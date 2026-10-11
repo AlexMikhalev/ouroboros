@@ -202,8 +202,8 @@ keeps saved secrets masked. Pending reads and failures are shown at the field.
 A segmented choice row gives every choice the same width. Up to four fill their
 row; a longer scale wraps into equal columns of four and leaves its last row partly
 empty rather than stretching a lone choice; a narrow card stacks two; one-glyph
-values such as review cycles stay one row. An empty choice (Same as Task / Chat) is
-as real as any other, and the focused choice wears the one focus ring.
+values such as review cycles stay one row. An empty inherit choice is as real as
+any other, and the focused choice wears the one focus ring.
 
 Short fixed choices keep native selects, including the platform's own popup.
 A control never widens its column: a select shows its chosen label on one
@@ -214,6 +214,14 @@ without becoming an allowlist. A saved unknown model remains editable; a
 catalog refresh preserves the real input, selection and composition. Escape
 or blur closes suggestions without assigning a value. Selected, hover, focus,
 disabled and invalid states have different meanings and remain distinguishable.
+Availability never rewrites a selection: a Claude `[1m]` variant whose base
+model a usable account lists reads Available, noting that the engine checks the
+variant at session start, and an unread catalog reads Not checked. Maximum
+response sits beside the context window as Auto or a whole number for this
+exact model, server and account; Apply acknowledges it outside the Settings
+draft, and a route change clears it. Web search is its own Source and Model:
+Auto lists the routes it may use, a chosen source is strict, and skills, MCP
+and browser tools stay independent.
 
 Tabs expose one selected view and one keyboard entry point. Arrow keys and
 Home/End move through available tabs; restoring a selected tab reveals it by
@@ -232,6 +240,39 @@ held Enter sends once, and an empty, disabled, read-only or settled field sends
 nothing; a rejected answer keeps its draft. The field requests a Send label
 from touch keyboards; native keyboard support varies. Every other multiline field — file editors, JSON, settings and
 widget forms — keeps Enter as a line break.
+
+### Composer owner controls
+
+Two controls in the composer's pill row write a global owner setting rather than
+a fact about the next message: the Nano/Low/Max context mode and the **effort
+range**. Both save at once through their owner endpoint, show the server's refusal
+as a toast and read the one saved value back from `/api/state`, so Main and every
+Project composer show the same thing; Settings → Behavior only reads the range.
+
+The effort range is a round button (the pills' height) wearing a ring glyph — a
+300° arc whose band is the minimum..maximum and whose dot is the recommended
+level. It opens **inline**, never as a dropdown, into a labelled seven-level
+strip (None · Low · Medium · High · X-High · Max · Ultra) with two brackets, the
+recommended pill and a reset that appears only while the range differs from Low ·
+Medium · High. The brackets push the recommended level along and it stays between
+them; a tap inside the range sets it, a tap outside moves the nearer bracket; a
+drag keeps the grab offset; when levels coincide the brackets stay reachable from
+either side of the pill. A stored tier outside the seven (`minimal`) shows at the
+nearest owner tier and is rewritten only when its own handle moves.
+
+**Hover is an accelerator; the press always works.** With a hovering fine pointer
+the strip opens about 160 ms after the pointer arrives and closes about 450 ms after
+it leaves, unless a press pinned it; the same press unpins. Touch and keyboard use
+the press alone: Enter or Space opens and focuses the recommended handle, arrows
+and PageUp/PageDown step a handle, Home and End take it to the ends, Esc closes and
+returns focus to the button, an outside press closes. The three handles are
+sliders whose value text names the level; closed, they leave the tab order. A
+narrow composer column — a phone, a Project pane on a wide screen — gives the open
+strip its own line, decided by the column, not the viewport, and never a page
+scroll. A change saves when the gesture ends, saves run one after another with the
+last winning, and Send waits for a pending save so the next root starts at the
+level the owner just chose; a refused save keeps the draft, says why and returns
+the control to the saved value — unsaved values are never shown as saved.
 
 ### `.muted`
 
@@ -719,9 +760,14 @@ preference when it opens and on every reconnect; there is no file watcher.
   an inline label inside a row is semibold at the row's own size.
 - **A nested child card is subordinate to its root.** Its compact identity
   row shows status, role, notes and a chevron; a short task id disambiguates
-  otherwise identical siblings. Executor facts and the agent/coordinator model
-  occupy the metadata row, so the task's coordinating model cannot masquerade
-  as its external executor. A child keeps one useful activity line visible;
+  otherwise identical siblings. Executor facts, the agent/coordinator model and
+  the effort chip occupy the metadata row, so the task's coordinating model cannot
+  masquerade as its external executor. The chip is one text part of that line,
+  composed from the child's own frames: the applied level (`Effort High`), the
+  asked level when it differed (`Effort High (asked Ultra)`), then its source — a
+  pin glyph before a pinned level, `· model name` for a level the model name
+  carries, `(Cyber Pro)` under Cyber Pro, nothing for the owner's range. A frame
+  without a level paints no chip; an older frame is never back-filled. A child keeps one useful activity line visible;
   a root permits up to three. Empty activity reserves no band, and a duplicate
   title is not activity. Full narration and Reviews expand independently.
   The root keeps primary title ink at weight 500, children secondary ink at
@@ -779,6 +825,12 @@ keeps Open and Download as well.
   nothing retries by itself.
 
 ### History edges
+
+An initial read shows one disabled `Loading saved history…` pill at the feed edge,
+not a second loading sentence in the header. Task activity remains separate.
+Persistent history notices are wrapping text on the Project status bar, without
+an opaque strip. Only Main's floating header needs a content-sized, padded and
+rounded backing to keep that text readable above scrolling messages.
 
 A room always opens at its newest message: Main and every Project, however long
 ago its last message was and however much other rooms wrote since. Returning to
@@ -848,8 +900,7 @@ message's recipient, opening another work pane or manufacturing activity.
 ### List editors
 
 A list editor is any section where the owner adds and edits entries in place:
-the Available subagents roster, the Review lanes groups, MCP servers, custom
-keys.
+the Available subagents roster, MCP servers, custom keys.
 
 - A section-level add action acts from its group's header (§6). A list
   editor's new entry appears at the end of its own group, is scrolled into
@@ -1023,11 +1074,19 @@ the rest of the chat surface.
 
 **Project question mirror.** A Project question the owner has not answered appears in Main as the Project's own quiz card — the same `buildQuizCard` form with the question through the chat markdown pipeline, the options with their details and the `recommended` badge, the stake, the assumption or waiting line, the status and the own-answer field — inside the same assistant bubble. The one addition is the Project reference ("References and actions") in the head beside the `Question` chip: its inline pill (the `--project` tints, the Project name in project ink with `↗`) opens that exact question in its Project, with the card's shared keyboard ring. A long Project name yields first (the chip is capped and ellipsized, its title names the Project whole) so the status keeps its place; a phone column wraps the head. Every lifecycle state reads as it does in the Project: waiting, open, resumed and finished questions stay answerable, and a replaced question stays as a read-only record. An unreadable source keeps what Main already knew; with nothing known the copy says `Status unavailable`, takes no answer and keeps its chip, and a row that cannot carry the form yet shows `Open the original question for its text.` until it can. The first confirmed answer from any source — a press in Main, the Project form or another device, a history or census snapshot — shows the recorded result (the chosen option, `Owner's answer: …`, `You answered`) for five seconds and then removes only the Main copy, through the ordinary message retirement and without moving the reader's viewport; the Project keeps its card. The countdown starts once and later observations never restart it. When focus was inside the copy it stays there while the result shows, then moves to the next Main question, or to the composer for a keyboard owner, never summoning a touch keyboard. A copy that learns its form and its answer in one delivery shows that result for the same five seconds. An answered question never enters Main again: fresh history, a reconnect or a stale open snapshot cannot bring the copy back. Main remembers the lifecycle of a bounded number of questions; a question it no longer remembers mounts a safe unknown copy, whose answer controls appear only after a fresh canonical record confirms it unanswered. A failed, missing or wrong-project canonical read leaves a safe `Status unavailable` copy with its Project chip and no answer controls; the chip opens the original Project form, while a later owned refresh retries the Main copy, so an unavailable read never turns a stale open snapshot into an answerable form and never permanently suppresses a legitimate unanswered question. The mirror and the quiz header share the lifecycle wording above.
 
-**Project handoff.** Each independent Main request transferred into a Project retains
-one compact chronological anchor, not one mutable capsule for the whole Project.
-The anchor names the work, projects its observed phase and ends with the shared
-Project reference. It uses Project colour, not a warning treatment. Binding alone
-means neither Working nor Done; unavailable activity stays explicitly unconfirmed.
+**Project work entries.** An agent-created Project and each independent Main request
+transferred into a Project use the same compact Project-colour card. The work title
+is primary, followed by one Project reference and the existing time; there is no
+System heading or extra created/transferred caption. Structured `task_name` names
+the work without repeating the Project; older history uses its retained task result.
+Creation and transfer remain distinct durable events with their own publication
+eligibility and identities. A card follows its particular work, never the Project's
+latest unrelated task. Binding alone means neither Working nor Done.
+The task card, compact entry and Project indicator share per-task status facts.
+Confirmed working/thinking/finalizing can move; queue, pause/pausing, actual waits
+and unknown activity stay still. Movement belongs to the status itself, survives
+reload and respects reduced motion. A known outcome stays primary while unfinished
+finalization is a separate quiet fact. An answered/resumed question is not a wait.
 A manually converted card opens its room; an agent-created handoff does not steal
 focus. A converted card is always visible — two cards of one owner message both stay —
 and the durable receipt row shows only when no card carries the transfer; a folded
@@ -1036,10 +1095,10 @@ references fold visually into that anchor only while it is mounted; their durabl
 records remain, including their plain-text presentation to non-browser consumers.
 A converted card whose Main receipt is not durable keeps a dashed border and a plain
 warning names the gap; the binding still holds. Genuine initiator work and failures
-are not hidden. A later final answer remains a separate message at its completion
-time, never a replacement for the handoff.
+are not hidden. Folding never lends another task's outcome to the visible card.
+A later final answer remains a separate message at its completion time.
 
-**Project completion mirror.** A Project root that ended with Ouroboros's own final answer reaches Main as an ordinary Ouroboros message: that answer through the chat markdown pipeline, in the assistant voice, because the bytes are model-authored — the host stamps the answer on the completion row only for a model-authored final, so the browser never infers authorship. A long answer is folded to about seven lines; the fold is a visual clamp over the complete, selectable text, with a fade only when it really hides something, and never a cut. Under it sits one control, the Project reference ("References and actions"). The durable row and its wire frame stay `role="system"`: like the Project question mirror, this is a browser presentation of model-authored bytes, not a change of the row's author. The message carries no status word, cause sentence, title or duration, so a host verdict on that answer (a warning, an unaccepted review) is not shown in Main: it stays loud on the task's card in the Project, one press away. Copy copies the answer. An ending with no model-authored answer (a provider failure, a stop, preserved output), a start row, and every row written before the answer rode the row keep the System row, which ends with that same reference: the voice of a row never chooses how the UI points at its Project. One durable row either way: its plain text is unchanged, so the Telegram mirror, Ouroboros's own context and one-ending-one-notification behave as before.
+**Project completion mirror.** A Project root that ended with Ouroboros's own final answer reaches Main as an ordinary Ouroboros message: that answer through the chat markdown pipeline, in the assistant voice, because the bytes are model-authored — the host stamps the answer on the completion row only for a model-authored final, so the browser never infers authorship. A long answer is folded to about seven lines; the fold is a visual clamp over the complete, selectable text, with a fade only when it really hides something, and never a cut. Under it sits one control, the Project reference ("References and actions"). The durable row and its wire frame stay `role="system"`: like the Project question mirror, this is a browser presentation of model-authored bytes, not a change of the row's author. The message carries no status word, cause sentence, title or duration, so a host verdict on that answer (a warning, an unaccepted review) is not shown in Main: it stays loud on the task's card in the Project, one press away. Copy copies the answer. An ending with no model-authored answer (a provider failure, a stop, preserved output), and every completion row written before the answer rode the row keep the System row, which ends with that same reference: the voice of a row never chooses how the UI points at its Project. One durable row either way: its plain text is unchanged, so the Telegram mirror, Ouroboros's own context and one-ending-one-notification behave as before.
 
 The row under a Project lifecycle row or a routed message is the shared `createSystemMessageActions` composition around the Project reference. It owns token-based space above and below the controls, wrapping and clearance for the focus ring; a control never sits in a clipped/nowrap text line. This is a row composition, not a new card framework or a global button-margin rule.
 
@@ -1079,6 +1138,8 @@ file (owner choice 1C/2A/3A/4A/5A/6A with mobile first-class).
   visible and finger-sized under a coarse pointer; a long name wraps to two lines
   and the card's dialog shows it whole. Open/Save succeed only when the desktop
   bridge says so; a copied link is a fallback, never reported as opened.
+  The photo's Copy to clipboard puts the image itself there or says it could
+  not (Open in new tab and Download stay); it never copies an address instead.
 - **The same view everywhere:** the sender's bubble, another tab and the replay
   after reload or restart render the one server view of each attachment. The
   stored text still names the files for the model; only the exact tail the web
@@ -1166,7 +1227,7 @@ on both root and child cards, preserving terminal task phase and controls.
 The row keeps its live position; history admits carrier evidence before summaries,
 progress or references choose their presentation. Block
 presence is consistent across reload and reconnect. A turn moved into a Project
-with `ensure_project_scope` lives there; Main retains its Started annotation.
+with `ensure_project_scope` lives there; Main retains its compact Project work entry.
 `N notes` in the collapsed header counts timeline items, the evidence row
 among them.
 
@@ -1284,7 +1345,9 @@ retains the engine's reset forecast and keeps automatic continuation without
 claiming quota exhaustion or guaranteed availability. It never offers sign-in.
 Only confirmed quota pauses the execution clock; authentication and unconfirmed
 availability waits consume it. Calendar deadlines remain fixed. Configured
-fallback routes are tried before a wait card is shown.
+fallback routes are tried before a wait card is shown. Work continuing on a
+fallback is not a wait: nothing claims the primary recovered, the model alone
+asks to return, and only the primary's own accepted reply counts as a return.
 
 A submitted action is shown as pending until the task reports its application.
 A saved Settings change and a still-pending task change are disclosed separately.
@@ -1381,7 +1444,7 @@ widget's content belongs to its author.
 
 ## 6. Account group / row anatomy
 
-For a repeated identity row (a connected agent account, a reviewer slot,
+For a repeated identity row (a connected agent account, a subagent row,
 a server entry):
 
 1. **Classification chip** — neutral pair, `--type-meta`. Only where the row's
@@ -1389,13 +1452,29 @@ a server entry):
    card the chip repeats the header and is dropped.
 2. **Name** — `--type-body` semibold, `--text-primary`. The one primary thing.
 3. **Identity detail** (email, plan) — `--type-meta`, `--text-meta`.
-4. **Status** — dot + text from the status pairs.
+4. **Status** — dot + a factual label from the status pairs. On Agents cards,
+   use one short availability label; its sentence is the title, and is said
+   under the head when it adds a specific pin, model or limit. Other row types
+   keep the status wording their own contract requires.
 5. **Meta line** — `--type-meta`, `--text-meta`, on its own line under the
    name. Quantities are stated in human words ("38% used · resets in 2h"), and
    an instant is humanized. A row never leads with a raw ISO timestamp.
-6. **Actions** — docked right, legible at rest. A control rendered at
-   secondary ink reads as disabled; if the owner can click it, it is
+6. **Actions** — docked right in a slot of their own, legible at rest. A control
+   rendered at secondary ink reads as disabled; if the owner can click it, it is
    `--text-primary`.
+
+**Information has a place, not a permanent caption.** A row keeps its identity,
+primary choices and current exceptions visible (a specific refusal, a mark that
+no longer acts, an error); a rule shared by every row is said once for the
+section, never as a caption on every row; history, provenance, stored spellings
+and secondary explanations wait behind one explicit disclosure that pointer and
+keyboard open, never behind hover alone. New copy serves a concrete decision or error and adds meaning no
+control or status already carries: a checked box is not re-said beside it, and
+an unsaved draft is said once by the editor or its host page, not on every row. A conditional
+line never moves the control that caused it: controls own stable slots, and a
+line an edit toggles opens beside or below them. Clarity comes from placement,
+never from smaller text, tooltip-only meaning or a line quota; real exceptions
+all stay.
 
 For a row with one action and a durable result, the result occupies the flexible
 left side and the neutral action stays docked on the right. Field-level actions
@@ -1428,14 +1507,12 @@ manual value labelled "set by you". Changing an account withdraws the previous
 account's metadata immediately, including during a failed or pending catalog
 read. Unknown limits stay unknown. Catalog updates keep the edited field and
 caret in place and never assign a model. `model_roles.js` and `model_roles.css`
-own the shared Settings/wizard editor; `reviewer_slots.css` supplies the same
-reviewer-row layout to both documents.
+own the shared Settings/wizard editor.
 
 A source is chosen, never spelled. Every surface that assigns a model — the
-Models roles, Available subagents, every review lane, the first-run wizard and
+Models roles, Available subagents (reviewers included), the first-run wizard and
 the quota-wait picker — offers one grouped source select with the same groups
-in the same order: configured subagents where references are allowed,
-Subscriptions · models, API keys (one entry per provider with a stored
+in the same order: Subscriptions · models, API keys (one entry per provider with a stored
 credential, then one disabled pointer to Accounts; a saved choice without a
 credential stays selectable as "(no key)"), Agents · sessions where a session
 is possible. The model chooser lists only the chosen source's catalog, so a
@@ -1443,8 +1520,8 @@ suggestion's transport is the selected source; any id can still be typed. The
 stored spellings (`provider::model`, `claudexor::source=model`,
 `harness=model`) are serialization authored by the editor: never required from
 the owner, never a field placeholder or help-text instruction, never the
-primary displayed value; the exact stored id may appear in a meta line or
-tooltip. A configured-subagent reference is the one place a stored spelling
+primary displayed value; the exact stored id may appear in secondary details
+(Agents use Details & history). A configured-subagent reference is the one place a stored spelling
 names a thing: a roster row is labelled by its handle — its route target plus
 the facets that row really runs with, defaults omitted — because a friendlier
 stored label rots as soon as the owner re-points the row. The route identity chip names the source (API · OpenAI, Codex · model,
@@ -1515,10 +1592,10 @@ has migrated. Migrated today:
   menu/chooser chrome, used by both top-level documents and optional author pages)
 - `web/settings.css` (settings shell, model/effort cards, MCP cards)
 - `web/onboarding.css` (the whole first-run wizard)
-- `web/model_roles.css` and `web/reviewer_slots.css` (shared role editors)
+- `web/model_roles.css` (shared role editor)
 - `web/style.css` between the `design-system:migrated-begin` and
   `design-system:migrated-end` marker pairs (several — migrated surfaces are
-  not contiguous in the file): harness accounts, reviewer slots, the
+  not contiguous in the file): harness accounts, the
   Dashboard → Updates tab (status card, one action row, collapsed Recovery
   with a single restore list), and chat (typography, foreground and status
   colour; component geometry keeps its local literals per the viewport

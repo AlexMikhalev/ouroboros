@@ -1046,8 +1046,8 @@ def test_boot_recovery_rolls_back_interrupted_materialization(tmp_path, monkeypa
     )
     monkeypatch.setattr(
         workers,
-        "open_repo_writer_admission",
-        lambda expected_reason="": gate_calls.append(("open", expected_reason)),
+        "open_repo_writer_admission_after_update_abort",
+        lambda expected_reason="": gate_calls.append(("open", expected_reason)) or True,
     )
     _git(repo, "reset", "--hard", "HEAD")
     _git(repo, "clean", "-fd")
@@ -1096,12 +1096,13 @@ def test_dirty_local_work_is_in_the_reviewed_diff(tmp_path, monkeypatch):
 
 
 def _stub_worker_gates(monkeypatch):
-    """Neutral worker-pool/admission stubs for rollback paths (parallel-safe)."""
+    """Stub pool and saved-work handoff outside these Git-focused rollback tests."""
     import supervisor.workers as workers
 
     monkeypatch.setattr(workers, "ensure_worker_pool_started", lambda **_kwargs: True)
     monkeypatch.setattr(workers, "close_repo_writer_admission", lambda reason: None)
-    monkeypatch.setattr(workers, "open_repo_writer_admission", lambda expected_reason="": None)
+    monkeypatch.setattr(workers, "open_repo_writer_admission_after_update_abort",
+                        lambda expected_reason="": True)
 
 
 def _supervisor_events(tmp_path, event_type):
@@ -1171,7 +1172,7 @@ def test_tests_evidence_records_only_for_authorized_resolver_and_live_suite(tmp_
     suite must not forge a proof)."""
     from ouroboros import preflight_runner as pr
     from ouroboros.commit_admission import preflight_test_proof_matches
-    from tests.test_advisory_preflight import _stub_preflight_lanes
+    from tests.test_git_review_preflight_gate import _stub_preflight_lanes
 
     repo, head, plan, tx = _materialized_conflict_tx(tmp_path, monkeypatch)
     meta = _authority_metadata(tx)
@@ -1211,7 +1212,7 @@ def test_managed_post_commit_gate_reuses_matching_workload_proof(tmp_path, monke
     is a plain resolver-writable file) never suppresses the mandatory run."""
     from ouroboros import preflight_runner as pr
     from ouroboros.tools import git as git_tool
-    from tests.test_advisory_preflight import _stub_preflight_lanes
+    from tests.test_git_review_preflight_gate import _stub_preflight_lanes
 
     repo, head = _init_repo(tmp_path)
     _point_at(monkeypatch, tmp_path, repo, head)

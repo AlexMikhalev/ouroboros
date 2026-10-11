@@ -1,4 +1,13 @@
-"""Typed internal tool results with a byte-compatible legacy text adapter."""
+"""Typed internal tool results with a byte-compatible legacy text adapter.
+
+Host route and safety notes trail the producer payload in ``text``. When notes are
+added, ``producer_text`` keeps the payload captured before composition and
+``host_annotations`` the notes, both outside the bounded ``meta``; annotated ``text``
+and the typed status stay authoritative. Unannotated results leave both fields empty.
+``loop_tool_execution`` stores ``producer_text`` as a separate task source exposed as
+``PRODUCER_RESULT_SOURCE_JSON`` (distinct from ``FULL_RESULT_SOURCE_JSON``) and
+re-appends the notes when the annotated text is truncated.
+"""
 
 from __future__ import annotations
 
@@ -393,12 +402,6 @@ TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
             "error",
             "error",
             "call recover_image for the original request_id; never blind-retry generation",
-        ),
-        "IMAGE_ERROR": _code_spec(
-            "error",
-            "error",
-            "error",
-            "inspect the engine operation state for the failure reason",
         ),
         # Direct image APIs (gateways/image_api.py): the request never left the
         # host (nothing billed; a new call is safe), the provider answered with a
@@ -891,7 +894,6 @@ _EXACT_IDENTIFIER_CODES = MappingProxyType(
         # browser unknown-outcome marker, with the rate window its own lane.
         "IMAGE_RATE_LIMITED": "IMAGE_RATE_LIMITED",
         "IMAGE_OUTCOME_UNKNOWN": "IMAGE_OUTCOME_UNKNOWN",
-        "IMAGE_ERROR": "IMAGE_ERROR",
         "IMAGE_NOT_DISPATCHED": "IMAGE_NOT_DISPATCHED",
         "IMAGE_PROVIDER_REJECTED": "IMAGE_PROVIDER_REJECTED",
         "IMAGE_RESULT_INCOMPLETE": "IMAGE_RESULT_INCOMPLETE",

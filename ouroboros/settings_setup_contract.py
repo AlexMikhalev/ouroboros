@@ -141,7 +141,6 @@ _MODEL_DEFAULTS["local"] = dict(_MODEL_DEFAULTS["openrouter"])
 for _profile_defaults in _MODEL_DEFAULTS.values():
     _profile_defaults.setdefault("consciousness", "")
     _profile_defaults.setdefault("vision", "")
-    _profile_defaults.setdefault("image", "")
 
 _STEPS = _rows(("id", "title", "railCopy", "copy", "footer"), (
     ("accounts", "Connect your accounts", "Subscriptions + API", "Connect Codex to start without an API key, or add an API key or local model. The same account can serve models and agents.", "Add more subscriptions or API access later in Settings → Accounts. Subscription limits and optional provider credits still apply."),
@@ -201,7 +200,7 @@ _REVIEW_MODES = _rows(("value", "label", "tone", "className", "copy"), (
 _RUNTIME_MODES = _rows(("value", "label", "tone", "className", "copy"), (
     ("light", "Light", "Safest", "light", "Self-modification of the main repo is disabled. Best for trying Ouroboros out without repo self-modification."),
     ("advanced", "Advanced", "Default", "advanced", "Self-modification of the evolutionary layer is allowed (current behaviour). Protected core/contract/release files stay guarded by Advanced mode."),
-    ("pro", "Pro", "Power", "pro", "Direct protected-surface mode. Protected core/contract/release edits are allowed on disk, but commits still require the normal triad + scope review gate."),
+    ("pro", "Pro", "Power", "pro", "Direct protected-surface mode. Protected core/contract/release edits are allowed on disk, but commits still require the normal review gate."),
     ("cyber_pro", "Cyber Pro", "Maximum power", "cyber-pro", "Host and configuration authority, including credentials, models, Supervisor and protected rewrites. Review scope and Blocking or Advisory enforcement remain owner-controlled."),
 ))
 
@@ -516,6 +515,17 @@ def wizard_authors_safety_light() -> bool:
 
 
 def validate_setup_payload(data: dict, current_settings: dict) -> Tuple[dict, str | None]:
+    """Structural validation shared by the desktop and web wizard.
+
+    Returns ``(prepared_settings, None)`` or ``({}, error)``. Requires a remote key
+    or URL, a local model source, or an agent subscription (a pending connection or
+    a selected Claudexor model); a local-only setup must route at least one active
+    lane locally. Main is required unless a subscription is pending; Light, Vision,
+    Consciousness and Fallback are not validated, so empty keeps its inheritance
+    semantics. Enforcement and runtime mode are closed enums, budgets finite and
+    positive, the MiniMax region is closed, and a Hugging Face local source needs a
+    filename. Credential length is checked only on fields changed in the payload,
+    so an unchanged short stored value cannot discard the whole form."""
     subscriptions_connected, skip_presets = parse_subscription_intent(data)
     pending_subscription = subscriptions_connected and not skip_presets
     selected_subscription = provider_for_model(_string(data.get("OUROBOROS_MODEL"))) == "claudexor"

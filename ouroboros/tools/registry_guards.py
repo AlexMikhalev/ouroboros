@@ -460,7 +460,7 @@ def _capability_resource_guard_result(
             code="RESOURCE_CONSTRAINT_BLOCKED",
             text=(
                 "⚠️ RESOURCE_CONSTRAINT_BLOCKED: task_contract.allowed_resources.network=false "
-                "blocks 'vcs_pull_ff'."
+                f"blocks {name!r}."
             ),
         )
     if (is_mcp or ext_tool) and not _resource_allowed(ctx, "network"):

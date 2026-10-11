@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, Iterator, Literal, Optional, Tuple, get_
 from ouroboros.pricing import estimate_cost_optional
 from ouroboros._usage_response import (
     _normalized_input_token_usage, _reported_token_count, processing_receipt, observed_processing_mode, usage_from_response,
+    _plain, _provider_exception_facts, physical_failure_evidence, provider_failure_payload, provider_cost_value,
 )
 from ouroboros.review_dispatch import invoke_bound_api_review_paid_stamp
 from ouroboros.transport_custody import release_pre_dispatch_attempt
@@ -62,6 +63,7 @@ __all__ = (
     "record_subscription_session",
     "record_unmetered_external_dispatch", "refresh_root_accounting",
     "release_attempt", "reserve_attempt", "settle_attempt",
+    "apply_provider_price_receipt", "bind_provider_generation",
     "skill_review_usage", "usage_breakdown", "usage_from_response", "usage_projection", "usage_scope",
     "usage_writer_snapshot", "read_usage_records",
     "review_wave_admission",
@@ -84,6 +86,7 @@ _PHYSICAL_PREDICATE: contextvars.ContextVar[Optional[Callable[["AttemptRequest"]
 _LAST_PHYSICAL_ATTEMPT: contextvars.ContextVar[Optional["PhysicalAttemptCapture"]] = contextvars.ContextVar(
     "ouroboros_last_physical_attempt", default=None
 )
+_PHYSICAL_DRIVE_ROOT: contextvars.ContextVar[Optional[Tuple[str, pathlib.Path]]] = contextvars.ContextVar("ouroboros_physical_drive_root", default=None)
 _ROOT_ACCOUNTING_TELEMETRY: Dict[str, Dict[str, Any]] = {}
 _ROOT_ACCOUNTING_TELEMETRY_LOCK = threading.Lock()
 _ROOT_ACCOUNTING_TELEMETRY_CAP = 64
@@ -320,6 +323,8 @@ class AttemptRequest:
     # None when the candidate carries none. An identity, never a row field.
     candidate_clock_free_sha256: Optional[str] = None
     effort: Optional[Dict[str, Any]] = None
+    allow_live_fetch: bool = True  # False only for a price display: cached tariffs, never a fetch
+    provider_receipt_binding: Optional[Dict[str, str]] = None
 @dataclass(frozen=True)
 class AttemptReservation:
     attempt_id: str
@@ -399,6 +404,12 @@ def current_physical_attempt_predicate() -> Optional[Callable[[AttemptRequest], 
     return _PHYSICAL_PREDICATE.get()
 def last_physical_attempt_capture() -> Optional[PhysicalAttemptCapture]:
     return _LAST_PHYSICAL_ATTEMPT.get()
+
+
+def current_physical_attempt_drive_root() -> Optional[pathlib.Path]:
+    """Execution-local evidence root; not a serialized capture/IPC field."""
+    bound, capture = _PHYSICAL_DRIVE_ROOT.get(), _LAST_PHYSICAL_ATTEMPT.get()
+    return bound[1] if bound and capture and bound[0] == capture.attempt_id else None
 
 
 def adopt_physical_attempt_capture(capture: Optional[PhysicalAttemptCapture]) -> None:
@@ -630,7 +641,7 @@ def _reservation_cost(request: AttemptRequest) -> Optional[float]:
         cache_usage={"cache_write_tokens": cache_write_tokens,
                      "cached_tokens": cached_tokens,
                      "prompt_cache_ttl": prompt_cache_ttl},
-        allow_live_fetch=True,
+        allow_live_fetch=request.allow_live_fetch,
         provider=request.provider,
         **({"processing_mode": request.submitted_processing_mode}
            if request.submitted_processing_mode else {}),
@@ -703,7 +714,7 @@ def _check_dispatch_fences(scope: UsageScope, root: pathlib.Path) -> None:
 
 
 def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
-    """Atomically check global/root/group limits and record a ``reserved`` attempt."""
+    """Atomically check global/root/group limits and record a ``reserved`` attempt whose row carries the applied global limit, its source and revision."""
     request, scope = _merge_scope(request)
     root = _drive_root(scope.drive_root)
     from ouroboros._usage_wait import send_acquisition
@@ -782,6 +793,8 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
                     "candidate_context_size_bytes": request.candidate_context_size_bytes,
                     "candidate_measurement_kind": request.candidate_measurement_kind,
                     "physical_context": asdict(request.physical_context) if request.physical_context else None,
+                    **({"provider_receipt_binding": copy.deepcopy(request.provider_receipt_binding)}
+                       if request.provider_receipt_binding else {}),
                     **({"effort": copy.deepcopy(request.effort)} if request.effort is not None else {}),
                     **({"processing_preference": request.processing_preference,
                         "submitted_processing_mode": request.submitted_processing_mode,
@@ -993,6 +1006,8 @@ def _transition(reservation: AttemptReservation, state: str, **fields: Any) -> D
                 return copy.deepcopy(current)
             else:
                 fields["reason"] = abandon_reason
+                if current.get("reason") and not current.get("unresolved_reason"):
+                    fields["unresolved_reason"] = current["reason"]
         if state == "unresolved" and abandoned:
             return copy.deepcopy(current)
         if state == "settled" and current["state"] == "settled" and not abandoned:
@@ -1167,6 +1182,88 @@ def settle_attempt(
     )
 
 
+def apply_provider_price_receipt(drive_root, attempt_id: str, receipt: dict, *, expected_revision=None) -> dict:
+    """Apply a provider-validated exact-attempt fact, preserving other observations.
+
+    Provider leaves prove source bytes before calling this writer. Binding is
+    opaque here: only its exact equality with the attempt's binding matters.
+    Callers own live task/review custody checks; price evidence grants no right
+    to take over an active send or continue its response.
+    Final identity/price repeats are duplicates; a different final price conflicts.
+    Stale nonfinal revisions never report an applied effect. No network runs here.
+    """
+    from ouroboros.usage_ledger import provider_price_refinable
+    from ouroboros._usage_money import amount, billing_group_key
+
+    root = _drive_root(drive_root)
+    cost = provider_cost_value(receipt.get("cost_usd")) if isinstance(receipt, dict) else None
+    if (cost is None or receipt.get("attempt_id") != attempt_id
+            or not receipt.get("evidence_ref") or not isinstance(receipt.get("binding"), dict)
+            or not receipt["binding"]):
+        return {"status": "ineligible", "reason": "invalid_price_fact"}
+    with _locked(root, migrate=False) as view:
+        current = view.attempt(attempt_id)
+        binding = (current or {}).get("provider_receipt_binding")
+        if (binding is None or receipt["binding"] != binding
+                or receipt.get("provider") != current.get("provider")):
+            return {"status": "ineligible", "reason": "binding_mismatch"}
+        if current.get("cost_final") is True:
+            return {"status": "duplicate" if amount(current.get("cost_usd")) == amount(cost) else "conflict", "row": current}
+        if not provider_price_refinable(current):
+            return {"status": "ineligible", "reason": "attempt_state"}
+        if expected_revision is not None and current["revision"] != expected_revision:
+            return {"status": "stale", "row": current}
+        row = {key: value for key, value in current.items() if key not in {"seq", "ts", "revision", "pre_compaction_seq"}}
+        row.update(state="settled", cost_usd=cost, cost_final=True, settle_reason="late_receipt",
+                   provider_price_receipt=copy.deepcopy(receipt))
+        stored = view.write(row, current)
+        for key, summary, limit in (
+            (current.get("root_task_id"), view.summary(current.get("root_task_id")), current.get("root_limit_usd")),
+            (f"group:{billing_group_key(current)}" if billing_group_key(current) else "",
+             view.summary(billing_group_id=billing_group_key(current)), current.get("billing_group_limit_usd")),
+        ):
+            if key:
+                _stash_root_accounting(key, summary, _number(limit))
+        return {"status": "applied", "row": stored}
+
+
+def bind_provider_generation(generation_id: str, *, reservation: Optional[AttemptReservation] = None) -> None:
+    """Compatibility entrypoint; the provider leaf owns generation grammar."""
+    from ouroboros.openrouter_cost import bind_generation
+
+    bind_generation(generation_id, reservation=reservation)
+
+
+def _retain_physical_failure(reservation, *, exc=None, response=None):
+    """Failure source is durable before a caller can retry or replace its capture."""
+    payload = None
+    try:
+        payload = provider_failure_payload(exc) if exc is not None else _plain(response)
+        stream_receipt = (getattr(exc, "stream_receipt", None) if exc is not None else
+                          payload.get("_stream_receipt") if isinstance(payload, dict) else None)
+        stream_receipt = stream_receipt if isinstance(stream_receipt, dict) else {}
+        if not stream_receipt.get("generation_bound"):
+            try:
+                # Cleanup workers deliberately clear ambient captures. The
+                # reservation, and a retained failed stream's ID, still belong
+                # to this exact physical send.
+                generation_id = stream_receipt.get("generation_id") or (
+                    payload.get("id") if isinstance(payload, dict) else None)
+                bind_provider_generation(generation_id, reservation=reservation)
+                if stream_receipt.get("conflicting_generation_id"):
+                    bind_provider_generation(stream_receipt["conflicting_generation_id"], reservation=reservation)
+            except Exception:
+                log.exception("Failed to bind provider generation: %s", reservation.attempt_id)
+        facts = physical_failure_evidence(reservation.drive_root, reservation.attempt_id, payload=payload, exc=exc, response=response)
+        if facts is not None:
+            with _locked(reservation.drive_root) as view:
+                row = view.attempt(reservation.attempt_id)
+                view.record_evidence(reservation.attempt_id, {"physical_failure": facts}, expected_revision=row["revision"])
+    except Exception:
+        log.exception("Failed to retain physical failure evidence: %s", reservation.attempt_id)
+    return payload
+
+
 def _settlement_fields(reservation, usage, cost_usd, cost_final) -> Dict[str, Any]:
     """Normalize reported usage before the monetary transaction; no live pricing I/O."""
     normalized = dict(usage or {})
@@ -1184,7 +1281,7 @@ def _settlement_fields(reservation, usage, cost_usd, cost_final) -> Dict[str, An
     has_usage = bool((prompt_tokens or 0) or (completion_tokens or 0))
     if cost is None and str(reservation.provider or "").lower() == "local":
         cost, cost_final = 0.0, True
-    elif cost is None and has_usage:
+    elif cost is None and cost_usd is None and not normalized.get("cost_invalid") and has_usage:
         cost = estimate_cost_optional(
             reservation.model,
             int(prompt_tokens or 0),
@@ -1257,18 +1354,27 @@ def _return_physical_claim(attempt_id: str) -> None:
 
 def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseException) -> str:
     """Route a raised provider send to its honest terminal ledger state."""
+    if getattr(exc, "receiver_abandoned", False):  # owner Pause: the sender settles it late; still dispatched
+        return "dispatched"
+    payload = _retain_physical_failure(reservation, exc=exc)
     if release_pre_dispatch_attempt(reservation, exc):
         _return_physical_claim(reservation.attempt_id)
         return "released"
     provider = str(reservation.provider or "").strip().lower()
     stream_usage = getattr(exc, "stream_usage", None)
-    if provider == "openrouter" and _is_pre_routing_rejection(exc):
-        _transition(reservation, "settled", cost_usd=0.0, cost_final=True, settle_reason="pre_routing_rejection")
-        return "settled"
-    elif provider == "openrouter" and _is_tos_rejection(exc):
-        _transition(reservation, "settled", cost_usd=0.0, cost_final=True, settle_reason="tos_rejection")
-        return "settled"
-    elif isinstance(stream_usage, dict) and stream_usage:
+    for evidence in ({"usage": stream_usage}, payload):
+        if isinstance(evidence, dict):
+            evidence = {key: value for key, value in evidence.items() if key != "error"}
+        usage, cost, final = usage_from_response(evidence)
+        if final and cost is not None:
+            settle_attempt(reservation, usage, cost_usd=cost, cost_final=True)
+            return "settled"
+    if provider == "openrouter":
+        for reason, predicate in (("pre_routing_rejection", _is_pre_routing_rejection), ("tos_rejection", _is_tos_rejection)):
+            if predicate(exc):
+                _transition(reservation, "settled", cost_usd=0.0, cost_final=True, settle_reason=reason)
+                return "settled"
+    if isinstance(stream_usage, dict) and stream_usage:
         # The usage frame was read before the body was judged unusable: money is
         # known, so settle through the success path's extractor and cost derivation
         # from that frame alone (no assembled-body facts such as service_tier, no
@@ -1283,36 +1389,6 @@ def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseExcept
         # Suffix leads: a verbose provider body must not truncate it away (mark_unresolved keeps 500 chars).
         mark_unresolved(reservation, f"{type(exc).__name__}{suffix}: {exc}")
         return "unresolved"
-
-
-def _provider_exception_facts(exc: BaseException) -> Tuple[Optional[int], str, str, str]:
-    response = getattr(exc, "response", None)
-    status = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
-    try:
-        status = int(status) if status is not None else None
-    except (TypeError, ValueError, OverflowError):
-        status = None
-    payload = getattr(exc, "body", None)
-    if payload is None and response is not None and callable(getattr(response, "json", None)):
-        try:
-            payload = response.json()
-        except Exception:
-            payload = None
-    error = payload.get("error") if isinstance(payload, dict) and isinstance(payload.get("error"), dict) else payload
-    code = getattr(exc, "code", None)
-    error_type = getattr(exc, "type", None)
-    message = str(exc or "")
-    if isinstance(error, dict):
-        code = error.get("code", code)
-        error_type = error.get("type", error_type)
-        details = json.dumps(error, ensure_ascii=False, sort_keys=True, default=str)
-        message = f"{message}; provider_error={details}" if message else details
-    try:
-        from ouroboros.observability import redact_projection
-        message = str(redact_projection(message).value)
-    except Exception:
-        message = f"{type(exc).__name__}: provider error details unavailable"
-    return status, str(code or ""), str(error_type or type(exc).__name__), message
 
 
 def _record_attempt_capture(
@@ -1348,6 +1424,7 @@ def _record_attempt_capture(
         effort=copy.deepcopy(request.effort),
     )
     _LAST_PHYSICAL_ATTEMPT.set(capture)
+    _PHYSICAL_DRIVE_ROOT.set((reservation.attempt_id, reservation.drive_root))
     if exc is not None:
         try:
             setattr(exc, "physical_attempt_capture", capture)
@@ -1391,6 +1468,7 @@ def execute_physical_attempt(
     *,
     extractor: Callable[[Any], Tuple[Dict[str, Any], Optional[float], bool]] = usage_from_response,
     before_dispatch: Optional[Callable[[AttemptReservation], Optional[Dict[str, Any]]]] = None,
+    late_owner: Optional[Callable[[Any, Optional[BaseException]], None]] = None,
 ) -> Any:
     """Execute one synchronous provider send with durable lifecycle accounting."""
     _LAST_PHYSICAL_ATTEMPT.set(None)
@@ -1412,8 +1490,9 @@ def execute_physical_attempt(
             raise
         raise failure from exc
     try:
-        from ouroboros._usage_wait import model_send
-        response = model_send(reservation, send)
+        from ouroboros._usage_wait import late_settler, model_send
+        response = model_send(reservation, send, settle_late=late_settler(
+            reservation, request, extractor, manifest_ref, dispatch_capture, late_owner))
     except BaseException as exc:
         terminal_state = "dispatched"
         try:
@@ -1429,9 +1508,10 @@ def execute_physical_attempt(
 
 def _account_response(reservation, request, response, extractor, manifest_ref):
     """Complete received-response accounting once, preserving its open bound on failure."""
+    payload = _retain_physical_failure(reservation, response=response)
     terminal_state = "settled"
     try:
-        usage, cost, final = extractor(response)
+        usage, cost, final = extractor(response, payload=payload) if extractor is usage_from_response else extractor(response)
         usage = dict(usage or {})
         if request.prompt_cache_ttl and not usage.get("prompt_cache_ttl"):
             usage["prompt_cache_ttl"] = request.prompt_cache_ttl
@@ -1456,10 +1536,10 @@ async def execute_physical_attempt_async(
     *,
     extractor: Callable[[Any], Tuple[Dict[str, Any], Optional[float], bool]] = usage_from_response,
     before_dispatch: Optional[Callable[[AttemptReservation], Any]] = None,
+    late_owner: Optional[Callable[[Any, Optional[BaseException]], None]] = None,
 ) -> Any:
     _LAST_PHYSICAL_ATTEMPT.set(None)
-    from ouroboros._usage_wait import postresponse_off_loop, presend_off_loop
-    from ouroboros.llm_observability import retain_cancelled_response
+    from ouroboros._usage_wait import model_send_async, postresponse_off_loop, presend_off_loop, retain_unadopted
 
     reservation = await presend_off_loop(reserve_attempt, request, on_cancel=lambda held: (
         _pre_dispatch_failure(held, request, asyncio.CancelledError())))
@@ -1494,22 +1574,18 @@ async def execute_physical_attempt_async(
                 reservation, request, terminal_state, candidate_manifest_ref=manifest_ref, exc=exc,
             )
             raise
-        return await postresponse_off_loop(
-            _account_response, reservation, request, response, extractor, manifest_ref,
-            retain_on_cancel=lambda exact, capture: retain_cancelled_response(
-                replace(request, drive_root=reservation.drive_root,
-                                    task_id=(reservation.scope or UsageScope()).task_id or request.task_id), exact, capture),
-        )
+        return await postresponse_off_loop(_account_response, reservation, request, response, extractor, manifest_ref,
+                                           retain_on_cancel=retain_unadopted(request, reservation))
 
 
-    from ouroboros._usage_wait import model_send_async
     try:
-        return await model_send_async(reservation, complete,
-            retain_on_cancel=lambda response, capture: retain_cancelled_response(
-                replace(request, drive_root=reservation.drive_root,
-                        task_id=(reservation.scope or UsageScope()).task_id or request.task_id), response, capture))
+        return await model_send_async(reservation, complete, retain_on_cancel=retain_unadopted(request, reservation),
+            retain_on_abandon=retain_unadopted(request, reservation, control_reason="owner_pause_abandoned"),
+            late_owner=late_owner)
     except BaseException as exc:
-        if getattr(exc, "model_sender_cancelled_before_entry", False):
+        if getattr(exc, "receiver_abandoned", False):
+            _record_attempt_capture(reservation, request, "dispatched", candidate_manifest_ref=manifest_ref, exc=exc)
+        elif getattr(exc, "model_sender_cancelled_before_entry", False):
             await presend_off_loop(_pre_dispatch_failure, reservation, request, exc, candidate_manifest_ref=manifest_ref)
         elif getattr(exc, "model_sender_not_started", False):
             terminal_state = await presend_off_loop(_terminalize_failed_attempt, reservation, exc)

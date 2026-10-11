@@ -59,18 +59,18 @@ export function createHistoryControls(messagesDiv, statusHost = null) {
             const changedView = error?.body?.reason_code === 'history_view_changed';
             const incomplete = coverage.gaps === true;
             let noteText = error ? 'Some saved history could not be loaded.'
-                : hydrating && feedIsEmpty(messagesDiv) ? 'Loading saved history…'
+                : hydrating && feedIsEmpty(messagesDiv) ? ''
                 : incomplete ? 'Some saved history is not loaded. Shown messages may have gaps.'
                 : !hydrating && coverage.complete ? 'Beginning of saved history' : '';
             if (approximate) noteText += `${noteText ? ' ' : ''}Saved position could not be restored exactly.`;
             // One note moves into persistent chrome when it describes the reading
             // window; the ordinary beginning marker belongs at the feed's start.
-            const host = statusHost && (error || incomplete || approximate || hydrating) ? statusHost : root;
+            const host = statusHost && noteText && (error || incomplete || approximate) ? statusHost : root;
             if (note.parentNode !== host) host.appendChild(note);
             note.classList.toggle('chat-history-status', host === statusHost);
             const buttonHidden = !error && !snapshot.canOlder && !(coverage.horizonGap && !snapshot.canNewer) && !hydrating;
             const fields = [
-                [button, { textContent: loading ? 'Loading…'
+                [button, { textContent: hydrating ? 'Loading saved history…' : loading ? 'Loading…'
                     : changedView ? 'Refresh history' : error ? 'Retry loading messages' : 'Load more history',
                     disabled: loading, hidden: buttonHidden }],
                 [note, { textContent: noteText, hidden: !noteText }],

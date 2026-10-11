@@ -14,7 +14,9 @@ ordinary immutable task artifacts. `model` is `openai::<id>`, `openrouter::<id>`
 Each edit input is `{root, path}` using the existing file-resource roots; originals
 are read with the same access and protected-file policy as ordinary reads. Inputs
 are bounded to 16 PNG/JPEG/WebP files, 32 MiB each and 64 MiB together. The provider
-may impose narrower limits. Unspecified native options are omitted.
+may impose narrower limits. Unspecified native options are omitted. Direct-API
+options pass through unchanged except for tool-owned prompt/input and buffered-result
+fields; the provider validates model-specific or newly introduced parameters.
 
 The response includes paths, MIME types, byte lengths and SHA-256 digests, without
 inline base64. The received API envelope is retained as an `image_response` artifact,
@@ -90,6 +92,11 @@ Sources: [image API and discovery](https://openrouter.ai/docs/guides/overview/mu
 
 Z.ai documents `glm-image` and `cogview-4-250304`, with no image-edit input field.
 Its temporary output URL is downloaded without forwarding the API credential.
+Every destination, including each of at most five redirects, must resolve to public
+addresses: the browser's shared address classifier excludes private, metadata,
+link-local and reserved targets. This is a bounded result downloader, not a new
+network-policy framework; DNS is checked before each hop but not pinned to the
+transport's connection. Public HTTP(S) CDN URLs remain supported.
 The image endpoint is PAYG even when `ZAI_PLAN=coding` is selected for text; discovery
 labels this route as API billing. Quality is `hd|standard`. Cost remains unknown unless reported by the provider;
 there is no hardcoded tariff. Sources: [image endpoint](https://docs.z.ai/api-reference/image/generate-image),
@@ -116,7 +123,9 @@ integer `n` from 1 to 10. Account selection is Auto unless `credential_profile_i
 pins a managed account. Neither ordinary host credentials nor a text-model slot
 is consulted.
 
-The uploaded ref and invocation key are retained before the single create POST.
+The input payload is retained once in private CAS; its small manifest gains the
+upload reference before the single create POST and the operation identity immediately
+after acceptance. Polls retain only their small operation observations, not edit bytes.
 Status and result reads, cancellation and ACK use the existing model-operation
 verbs. A failed control read after acceptance is unknown, including ConnectError;
 only a terminal `dispatch.state=not_started` or the engine's pre-admission
@@ -133,8 +142,9 @@ including `response_rejected.context.rejectedIndexes`, survive partial failure.
 The complete result bytes must match the engine custody size/digest. Each image's
 MIME, size and SHA-256 are checked before artifact publication. ACK binds that
 whole JSON digest only after private response custody, original ledger accounting
-and ordinary image/response artifacts are durable. Storage or accounting failure
-withholds ACK; explicit recovery can finish the same operation. Unknown execution
+and ordinary image/response artifacts are durable. Storage, settlement or confirmed
+not-started release failure withholds ACK and discloses pending accounting; explicit
+recovery can finish the same operation. Unknown execution
 with a ready receipt still exposes its unknown outcome: recording a receipt in the
 ledger does not assert successful generation or invent a known cost.
 ACK or image extraction failure never causes a new generation. Subscription cash

@@ -151,6 +151,12 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_evolution_commit_authority", "_preserve_evolution_orphan",
         "_record_commit_attempt", "_record_evolution_commit_intent", "run_cmd",
     })),
+    "ouroboros/tools/git_managed_postcommit.py": ("ouroboros/tools/git.py", "_git", frozenset({
+        "_acquire_git_lock", "_format_commit_result", "_managed_commit_gate_failure",
+        "_managed_post_commit_tests_gate", "_post_commit_result", "_publish_post_commit_test_fact",
+        "_record_commit_attempt", "_release_git_lock", "_verify_reviewed_commit_binding",
+        "record_bound_commit_success", "run_cmd",
+    })),
     "ouroboros/tools/git_plumbing.py": ("ouroboros/tools/git.py", "_git", frozenset({
         "_BINARY_EXTENSIONS", "acquire_exclusive_file_lock", "format_protected_paths",
         "get_runtime_mode", "run_cmd", "system_repo_dir_for", "unlink_lockfile",
@@ -170,13 +176,14 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     })),
     "ouroboros/tools/git_review_cycle.py": ("ouroboros/tools/git.py", "_git", frozenset({
         "_DOC_ONLY_EXTENSIONS", "_acquire_git_lock",
-        "_advisory_and_tests_gate", "_aggregate_review_verdict",
+        "_aggregate_review_verdict",
         "_authorized_managed_update_resolver", "_check_overlapping_review_attempt",
         "_current_runtime_mode", "_ensure_gitignore", "_finalize_blocked_review",
         "_finalize_pending_review", "_fingerprint_staged_diff", "_free_cycle_gate",
-        "_handle_advisory_pre_review", "_handle_revalidation_failure", "_install_paid_dispatch_stamp",
+        "_handle_revalidation_failure", "_install_paid_dispatch_stamp",
+        "_preflight_and_tests_gate",
         "_protected_paths_block_message", "_reconcile_and_clear_review_roster",
-        "_record_commit_attempt", "_release_git_lock", "_reconcile_advisory_before_preparation",
+        "_record_commit_attempt", "_release_git_lock",
         "_reset_commit_review_state",
         "_review_binding_precondition_error", "_review_custody_pending",
         "_review_cycle_infra_failure", "_run_parallel_review",
@@ -349,7 +356,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         '_drain_incoming_messages', '_emit_checkpoint_event', '_finalize_forced_services',
         '_finalize_task_services', '_force_plan_decision', '_force_plan_disclosure',
         '_force_plan_reminder', '_forced_delegation_note', '_forced_fallback_result',
-        '_forced_orphan_note', '_forced_unaccepted_binding', '_live_delivery_candidate',
+        '_forced_orphan_note', '_forced_unaccepted_binding', '_handle_model_wait_control', '_live_delivery_candidate',
         '_load_direct_child_results', '_prepare_forced_prompt', '_project_child_result_dispositions',
         '_publish_delivery_candidate', '_record_forced_acceptance_bypass', '_record_forced_finalization',
         '_replace_delivery_candidate', '_resolve_forced_delivery_control_body', '_server_web_allowed_by_task',
@@ -358,6 +365,10 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     })),
     "ouroboros/loop_messages.py": ("ouroboros/loop.py", "_loop", frozenset({
         "_record_owner_directive",
+        # context-attention 5A: the per-round facts line measures through the
+        # loop's fit wrapper so the measurement is the one the round records.
+        "_measure_round_main_fit",
+        "_wrapup_global_remaining",
     })),
     "ouroboros/loop_model_call.py": ("ouroboros/loop.py", "_loop", frozenset({
         "_RoundModelCallContext", "_account_compaction_usage", "_append_or_merge_user_message",
@@ -386,7 +397,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/review_projection.py": ("ouroboros/review_substrate.py", "_sub", frozenset({
         "DIALOGUE_STATUS_VALUES", "HARDNESS_ADVISORY_VISIBLE", "HARDNESS_HARD_GATE",
         "MAX_PROJECTED_ACTOR_FINDINGS", "OUTCOME_TIER_BEST_EFFORT", "OUTCOME_TIER_BLOCKED",
-        "OUTCOME_TIER_SOLVED", "disclosed_list_projection", "panel_reason",
+        "OUTCOME_TIER_SOLVED", "TYPED_FAILURE_FACT_KEYS", "disclosed_list_projection", "panel_reason",
         "projected_finding_row", "provider_for_model", "redact_projection",
         "review_binding_hash", "review_executions_from_actor_usage",
     })),
@@ -396,7 +407,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/review_state_model.py": ("ouroboros/review_state.py", "_rs", frozenset({
         "CommitReadinessDebtItem", "ObligationItem", "_DEFAULT_TOOL_NAME",
         "_LEGACY_CURRENT_REPO_KEY", "_MAX_ATTEMPT_HISTORY", "_MAX_COMMIT_READINESS_DEBTS",
-        "_MAX_RUN_HISTORY", "_OPEN_COMMIT_READINESS_DEBT_STATUSES", "_allocate_prefixed_id",
+        "_OPEN_COMMIT_READINESS_DEBT_STATUSES", "_allocate_prefixed_id",
         "_attempt_has_active_review_custody", "_attempt_history_evictable",
         "_attempt_identity_tuple", "_attempt_review_roster_rows",
         "_commit_readiness_debts_view", "_dedupe_strings", "_filter_lifecycle_records",
@@ -423,42 +434,22 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/tools/review_prompt_text.py": ("ouroboros/tools/review_helpers.py", "_rh", frozenset({
         "sanitize_tool_result_for_log",
     })),
-    # F2.3b D06 lane rows (advisory re-derive on the native-episode form).
-    # Same-leaf members that tests monkeypatch on the facades are declared too,
-    # so the patch points keep binding through the handle.
-    "ouroboros/tools/preflight_review_prompt.py": ("ouroboros/tools/claude_advisory_review.py", "_car", frozenset({
-        "CRITICAL_FINDING_CALIBRATION", "_build_blocking_history_section",
-        "_get_changed_file_list", "_get_staged_diff",
-        "build_blocking_findings_json_section", "build_goal_section",
-        "build_scope_section", "build_skill_host_context", "load_checklist_section",
-        "load_governance_doc", "load_state", "make_repo_key",
-    })),
-    "ouroboros/tools/preflight_review_run.py": ("ouroboros/tools/claude_advisory_review.py", "_car", frozenset({
-        "SEVERITY_DRIVEN_ITEMS", "_advisory_native_model", "_advisory_review_diff",
-        "_api_window_skip_warning",
-        "_build_advisory_prompt", "_format_advisory_error", "_get_changed_file_list",
-        "_get_runtime_diagnostics", "_llm_extract_advisory_items",
-        "_mandatory_read_corpus_chars", "_maybe_overflow_skip", "_predispatch_size_skip", "_persist_preflight_record",
-        "_run_advisory_delegated",
-        "_run_advisory_native", "_syntax_preflight_staged_py_files",
-        "advisory_gate_unavailability_reason",
-        "emit_review_event", "emit_review_usage", "empty_array_is_verified_clean",
-        "extract_json_array", "get_finalization_grace_sec",
-        "owner_deadline_exhausted_for_context",
-    })),
     "ouroboros/loop_round_limits.py": ("ouroboros/loop.py", "_loop", frozenset({
         "DeliveryCandidate", "_append_or_merge_user_content",
         "_append_or_merge_user_message", "_current_delivery_candidate",
         "_emit_checkpoint_event", "_finalize_forced_services",
         "_forced_fallback_result", "_forced_final_answer",
         "_handle_forced_finalization", "_last_assistant_text", "_owner_marked_content",
-        "_measure_main_context_view",
+        "_measure_main_context_view", "_measure_round_main_fit",
         "_provider_unavailable_result", "_record_owner_directive",
         "_soft_land_exhausted_ceiling", "_task_deadline_epoch", "compact_tool_history_llm",
         "provider_no_call_source", "utc_now",
         # #1196: a budget-pause HOLD ended by control rejoins the model-wait rails and
         # merges its forced trace like every other controlled exit.
         "_merge_finalization_trace",
+        # context-attention 7A: the model-free refusal rungs publish their rebuilt
+        # transcript through the same seal every other sanctioned rewrite uses.
+        "seal_task_transcript",
     })),
 }
 

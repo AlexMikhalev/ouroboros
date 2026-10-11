@@ -12,7 +12,7 @@ import base64
 import json
 import math
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -29,10 +29,6 @@ IMAGE_API_SOURCES = ("openai", "openrouter", "zai")
 # response) are refused up front; everything else is the provider's to accept
 # or reject, because its published contract is model/endpoint-specific.
 _CUSTODY_RESERVED_OPTIONS = {"stream", "partial_images", "response_format", "prompt", "model", "images", "input_references", "image", "mask"}
-# OpenAI documents both JSON bodies (`images[].image_url` data URLs) and the
-# fields below; Z.ai documents a text-only JSON body with `quality` hd|standard.
-_OPENAI_OPTIONS = {"n", "size", "quality", "background", "output_format", "output_compression", "moderation", "input_fidelity", "user"}
-_ZAI_OPTIONS = {"size", "quality", "user_id"}
 
 
 class ImageBackendError(RuntimeError):
@@ -81,16 +77,12 @@ def resolve_image_target(model: str) -> dict[str, Any]:
 
 def prepare_image_request(provider: str, model: str, prompt: str, *, base_url: str,
                           images: list[tuple[bytes, str]], options: dict[str, Any]) -> tuple[str, dict]:
-    """Project exact caller options onto the documented body; refuse before spending."""
+    """Preserve native options; refuse only tool-owned custody/input replacements."""
     if provider not in IMAGE_API_SOURCES:
         raise ValueError(f"Unsupported image API source: {provider}")
     reserved = set(options) & _CUSTODY_RESERVED_OPTIONS
     if reserved:
         raise ValueError(f"options may not set {sorted(reserved)}; prompt, inputs and the buffered response are fixed by the tool.")
-    documented = {"openai": _OPENAI_OPTIONS, "zai": _ZAI_OPTIONS}.get(provider)
-    unknown = set(options) - documented if documented else set()
-    if unknown:
-        raise ValueError(f"{provider} image options do not document {sorted(unknown)}; see list_image_models.")
     if provider == "zai" and images:
         raise ValueError("Z.ai's documented image endpoint accepts text only; choose an edit-capable route.")
     if provider == "openai" and len(images) > 16:
@@ -189,6 +181,35 @@ def fetch_image_models(base_url: str) -> list[dict]:
     return [row for row in rows if isinstance(row, dict)]
 
 
+def _download_result_image(url: str) -> bytes:
+    """A provider's URL is a public result locator, not authority over local services.
+
+    Reuse the browser's address classification on every hop. No credential is
+    attached and redirects are never followed before checking their destination.
+    DNS checks are not connection pinning; the shared transport owns resolution.
+    """
+    from ouroboros.browser_policy import _is_blocked_subagent_ip, _resolved_addresses
+
+    try:
+        with _client(llm_transport_timeout_sec(), follow_redirects=False) as client:
+            for _hop in range(6):
+                parsed = urlsplit(url)
+                if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+                    raise ImageBackendError("IMAGE_RESULT_INVALID", "Provider image URL must be an HTTP(S) resource without credentials.")
+                addresses = _resolved_addresses(parsed.hostname)
+                if any(_is_blocked_subagent_ip(getattr(ip, "ipv4_mapped", None) or ip) or ip.is_multicast for ip in addresses):
+                    raise ImageBackendError("IMAGE_RESULT_INVALID", "Provider image URL targets a private, metadata, link-local or reserved address.")
+                with client.stream("GET", url) as response:
+                    if response.has_redirect_location:
+                        url = urljoin(str(response.url), response.headers["location"])
+                        continue
+                    response.raise_for_status()
+                    return _bounded_body(response, MAX_IMAGE_BYTES)
+        raise ImageBackendError("IMAGE_DOWNLOAD_FAILED", "Generated image download exceeded five redirects; recover the retained result without generating.")
+    except (httpx.HTTPError, OSError) as exc:
+        raise ImageBackendError("IMAGE_DOWNLOAD_FAILED", "Generated image download failed; retained result can be read again without generating.") from exc
+
+
 def read_result_image(row: dict) -> tuple[bytes, str]:
     """Decode provider-owned bytes or download their URL without API credentials."""
     if isinstance(row.get("b64_json"), str):
@@ -200,17 +221,7 @@ def read_result_image(row: dict) -> tuple[bytes, str]:
         except ValueError as exc:
             raise ImageBackendError("IMAGE_RESULT_INVALID", "Image payload is not valid base64.") from exc
     elif isinstance(row.get("url"), str):
-        url = row["url"]
-        parsed = urlsplit(url)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
-            raise ImageBackendError("IMAGE_RESULT_INVALID", "Provider image URL must be an HTTP(S) resource without credentials.")
-        try:
-            with _client(llm_transport_timeout_sec(), follow_redirects=True) as client:
-                with client.stream("GET", url) as response:
-                    response.raise_for_status()
-                    data = _bounded_body(response, MAX_IMAGE_BYTES)
-        except httpx.HTTPError as exc:
-            raise ImageBackendError("IMAGE_DOWNLOAD_FAILED", "Generated image download failed; retained result can be read again without generating.") from exc
+        data = _download_result_image(row["url"])
     else:
         raise ImageBackendError("IMAGE_RESULT_INVALID", "Image row has neither b64_json nor url.")
     mime = sniff_image_mime(data)

@@ -67,7 +67,7 @@ const assertLoading = (f, why) => {
     assert.ok(f.controls(), `${why}: the history control is mounted in the feed`);
     assert.equal(f.controls().hidden, false, why);
     assert.equal(f.controls().getAttribute('aria-busy'), 'true', why);
-    assert.equal(f.button().textContent, 'Loading…', why);
+    assert.equal(f.button().textContent, 'Loading saved history…', why);
     assert.equal(f.button().hidden, false, why);
     assert.equal(f.button().disabled, true, why);
 };
@@ -83,7 +83,7 @@ test('an empty feed shows the loading state BEFORE the history request resolves'
     f.reads[0].ok(page([row('chat:10', 'First saved answer')]));
     assert.equal((await paint).painted, true);
     assert.equal(f.controls().getAttribute('aria-busy'), '', 'the loading state is lifted on success');
-    assert.notEqual(f.button().textContent, 'Loading…');
+    assert.notEqual(f.button().textContent, 'Loading saved history…');
     assert.equal(f.bubbles().length, 1);
 });
 
@@ -101,7 +101,7 @@ test('an ordinary refresh over a painted transcript keeps every rendered message
     assert.equal(f.reads.length, 2, 'the refresh request is in flight and unanswered');
     assert.deepEqual(f.bubbles(), painted, 'the painted messages stay mounted while the refresh is in flight');
     assert.equal(f.controls().getAttribute('aria-busy'), '');
-    assert.notEqual(f.button().textContent, 'Loading…');
+    assert.notEqual(f.button().textContent, 'Loading saved history…');
 
     f.reads[1].ok(page([row('chat:10', 'Kept answer one'), row('chat:20', 'Kept answer two')]));
     assert.equal((await second).painted, true);
@@ -195,7 +195,7 @@ test('closing the panel while its first read is in flight leaves no late write a
     f.reads[0].ok(page([row('chat:10', 'Arrived after close')]));
     assert.deepEqual(await paint, { painted: false, revision: 1 });
     assert.equal(f.bubbles().length, 0, 'a closed room consumes no late response');
-    assert.equal(controls.querySelector('.chat-load-older-btn').textContent, 'Loading…',
+    assert.equal(controls.querySelector('.chat-load-older-btn').textContent, 'Loading saved history…',
         'destroy() makes late continuations no-ops instead of repainting a removed control');
 });
 

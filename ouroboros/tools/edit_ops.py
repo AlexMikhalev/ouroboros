@@ -59,6 +59,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.tools.arg_feedback import payload_item_feedback, with_argument_notes
 from ouroboros.config import get_runtime_mode
+from ouroboros.reference_books import book_balance_note
 from ouroboros.runtime_mode_policy import (
     core_patch_notice,
     is_protected_runtime_path,
@@ -228,14 +229,13 @@ def _finish_mutation(
         if ctx.is_workspace_mode():
             footer += " " + workspace_edit_note(ctx)
         return footer
-    footer = (
-        "Files are on disk but NOT committed. Run commit_reviewed when ready.\n"
-        "⚠️ Advisory pre-review is now stale — run preflight_review before commit_reviewed."
-    )
+    footer = "Files are on disk but NOT committed. Run commit_reviewed when ready."
     # A pro-mode edit of a protected surface announces itself here exactly as it
     # does from git._repo_write / _str_replace_editor (the protected-write contract
     # in ARCHITECTURE "Safety and runtime mode" and SYSTEM.md "Safety-critical
     # files"): the mode ALLOWS the write, and the notice is what keeps it visible.
+    book_note = book_balance_note(binding.base_path, changed_paths)
+    footer += f"\n{book_note}" if book_note else ""
     protected = protected_paths_in(changed_paths)
     if protected and mode_allows_protected_write(_runtime_mode()):
         footer += "\n\n" + core_patch_notice(protected)
@@ -269,7 +269,7 @@ def _partial_write_failure(
         return (
             f"⚠️ EDIT_OPS_PARTIAL_WRITE_FAILED ({tag}): {detail}\n"
             f"PARTIALLY APPLIED — these files WERE written: {', '.join(changed_paths)}. "
-            "Re-read them before retrying; advisory pre-review is now stale.\n"
+            "Re-read them before retrying.\n"
             + footer
         )
     return f"⚠️ {tag}: {detail}\nNothing was written."

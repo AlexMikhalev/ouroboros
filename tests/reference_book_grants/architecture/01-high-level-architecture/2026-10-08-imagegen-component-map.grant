@@ -1,3 +1,0 @@
-850
-2026-10-08: two component-map rows for the image-generation feature — tools/imagegen.py (generate_image tool, one-attempt semantics, artifact-first results) and gateways/claudexor_images.py (image-operation client family). Required by the component-map invariant for every new runtime module; no removable prose was touched.
-2026-10-09: refine image rows to the unified model-operation facet, direct API adapter, discovery and exact-attempt recovery; add image_api component row.

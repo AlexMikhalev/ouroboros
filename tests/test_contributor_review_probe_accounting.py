@@ -60,7 +60,7 @@ try:
 except Exception as exc:
     result = f"{type(exc).__name__}: {exc}"
 from ouroboros import usage_store
-rows = [{key: row.get(key) for key in ("model", "state", "cost_usd", "cost_final", "task_id", "category")}
+rows = [{key: row.get(key) for key in ("model", "state", "cost_usd", "cost_final", "task_id", "category", "physical_failure")}
         for row in usage_store.read_usage_records(pathlib.Path(drive)) if row.get("kind") == "attempt"]
 print(json.dumps({"result": result, "sends": sends, "rows": rows}))
 '''
@@ -96,12 +96,17 @@ def _ok(cost: float) -> dict:
                                     "usage": {"prompt_tokens": 8, "completion_tokens": 1, "cost": cost}}}
 
 
+def _pool(*routes: dict) -> str:
+    """A review pool (``OUROBOROS_SUBAGENTS``) of these routes, one row each."""
+    return json.dumps({"enabled": True, "items": [
+        {"subagent_id": f"r{index}", "name": f"r{index}", "recommended_use": "Panel row.",
+         "review_eligible": True, "route": route} for index, route in enumerate(routes, 1)]})
+
+
 _OPENROUTER_PANEL = {
     "OPENROUTER_API_KEY": "probe-key-1",
-    "OUROBOROS_REVIEWER_SLOTS": json.dumps({
-        "triad": [{"slot_id": "t1", "route": {"kind": "api_chat", "target_id": f"openrouter::{_ONE}"}}],
-        "scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": f"openrouter::{_TWO}"}}],
-    }),
+    "OUROBOROS_SUBAGENTS": _pool({"kind": "api_model", "target_id": f"openrouter::{_ONE}"},
+                                 {"kind": "api_model", "target_id": f"openrouter::{_TWO}"}),
 }
 
 
@@ -132,13 +137,15 @@ def test_isolated_key_probes_are_attempts_of_the_runs_own_ledger(tmp_path):
     # Each outcome is honest in the drive's ledger, and the paid answer stays recorded
     # although the preflight failed after it: refusal and timeout keep their money
     # unknown, the unreadable answer is settled without a price, the unsent connect is
-    # released, the provider's 200-body error is its documented free settlement.
+    # released, and a 200-body error without usage has no proof of a free settlement.
     rows = first["rows"]
     assert [(row["model"], row["state"]) for row in rows] == [
         (_ONE, "unresolved"), (_ONE, "settled"), (_ONE, "unresolved"), (_ONE, "released"),
         (_ONE, "settled"), (_TWO, "settled")]
     assert [(row["cost_usd"], row["cost_final"]) for row in rows if row["state"] == "settled"] == [
-        (None, False), (0.25, True), (0.0, True)]
+        (None, False), (0.25, True), (None, False)]
+    assert rows[-1]["physical_failure"]["stage"] == "response_body_error"
+    assert rows[-1]["physical_failure"]["evidence_ref"]
     assert {(row["task_id"], row["category"]) for row in rows} == {("system:review_key_probe", "provider_test")}
     # Candidates and ledger rows are recorded on the drive; no key under test is.
     assert not [path for path in drive.rglob("*") if path.is_file() and b"probe-key-" in path.read_bytes()]
@@ -159,12 +166,14 @@ def test_isolated_key_probes_are_attempts_of_the_runs_own_ledger(tmp_path):
 def test_panels_without_openrouter_rows_send_no_probe(tmp_path, panel):
     # A local-only install (an OpenRouter credential would give it the remote default
     # panel), and a session-only panel beside a saved OpenRouter key.
+    from ouroboros.subscription_install_presets import factory_review_rows
+
     session = {"kind": "agent_session", "target_id": "codex=gpt-host"}
+    local = {"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "owner/local-model.gguf", "OUROBOROS_MODEL": "owner-local"}
     documents = {
-        "local": {"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "owner/local-model.gguf",
-                  "OUROBOROS_MODEL": "owner-local"},
-        "session": {"OPENROUTER_API_KEY": "probe-key-1", "OUROBOROS_REVIEWER_SLOTS": json.dumps({
-            "triad": [{"slot_id": "t1", "route": session}], "scope": [{"slot_id": "s1", "route": session}]})},
+        # The pool the one-time migration mints for a local-only install: Main on the local lane.
+        "local": {**local, "OUROBOROS_SUBAGENTS": json.dumps({"enabled": False, "items": factory_review_rows(local)})},
+        "session": {"OPENROUTER_API_KEY": "probe-key-1", "OUROBOROS_SUBAGENTS": _pool(session, session)},
     }
     run = _host(tmp_path, documents[panel])
 

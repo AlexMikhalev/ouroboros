@@ -91,6 +91,8 @@ from ouroboros.server_maintenance import (  # noqa: F401
     _resume_interrupted_project_deletions,
     _run_startup_task_recovery,
     _startup_retired_settings_notice,
+    _startup_environment_review_notice,
+    _startup_review_pool_notice,
     _startup_custody_sweep,
     _startup_prune_sweeps,
     _startup_worktree_prune,
@@ -167,8 +169,13 @@ def _restart_current_process(host: str, port: int) -> None:
         from ouroboros.server_restart import _RESTARTABLE_UPDATE_PHASES
         from supervisor.update_merge import read_update_tx_strict
 
-        if any((DATA_DIR / "state" / name).exists() for name in ("owner_restart_no_resume.flag", "panic_stop.flag")):
+        panic_flag = DATA_DIR / "state" / "panic_stop.flag"
+        if panic_flag.exists() and panic_flag.read_text(encoding="utf-8").strip() == "panic":
             os.environ.pop(PLANNED_RESTART_TRANSACTION_ENV, None)
+        elif (DATA_DIR / "state" / "owner_restart_no_resume.flag").exists():
+            from ouroboros.server_restart import arm_owner_restart_transaction
+
+            arm_owner_restart_transaction()  # only the work THIS owner Restart named returns
         else:
             status, tx = read_update_tx_strict()
             if status == "valid" and tx.get("phase") in _RESTARTABLE_UPDATE_PHASES:
@@ -324,6 +331,7 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
 
 def _handle_bridge_update_batch(bridge, updates, offset: int, ctx: Any, cursor: list) -> int:
     from supervisor.message_bus import coerce_chat_identity
+    from ouroboros.chat_uploads import attachment_placeholder
 
     for upd in updates:
         cursor[0] += 1
@@ -349,7 +357,7 @@ def _handle_bridge_update_batch(bridge, updates, offset: int, ctx: Any, cursor: 
         task_constraint = msg.get("task_constraint") if isinstance(msg.get("task_constraint"), dict) else None
         task_metadata = msg.get("task_metadata") if isinstance(msg.get("task_metadata"), dict) else None
         image_data = (image_base64, image_mime, image_caption) if image_base64 else None
-        log_text = text or image_caption or ("(image attached)" if image_base64 else "(file attached)" if (task_metadata or {}).get("chat_attachment_uploads") else "")
+        log_text = text.strip() or image_caption.strip() or attachment_placeholder(image_base64, task_metadata)
         now_iso = utc_now_iso()
         if not client_message_id:
             # Some owner transports have no client-generated id.  Give the
@@ -471,7 +479,11 @@ def _handle_bridge_update_batch(bridge, updates, offset: int, ctx: Any, cursor: 
         elif lowered == "/review" or lowered.startswith("/review "):
             # Target the requesting chat so the ack and results return to the
             # external transport owner, not the default web owner_chat_id.
-            ctx.queue_deep_self_review_task(reason="owner:/review", force=True, chat_id=chat_id)
+            # `/review <row>` names the executor (the Web selector sends it);
+            # a bare `/review` (Telegram) runs on the Main model.
+            parts = text.split(None, 1)
+            ctx.queue_deep_self_review_task(reason="owner:/review", force=True, chat_id=chat_id,
+                                            reviewer=parts[1].strip() if len(parts) > 1 else "")
         elif lowered.startswith("/evolve"):
             parts = lowered.split()
             action = parts[1] if len(parts) > 1 else "on"
@@ -726,6 +738,8 @@ def _run_supervisor(settings: dict) -> None:
                     )
                 send_with_budget(int(st_boot["owner_chat_id"]), " ".join(notice), role="system", system_type="startup_notice")
         _startup_retired_settings_notice(settings)
+        _startup_environment_review_notice()
+        _startup_review_pool_notice(settings)
         from ouroboros.upgrade_notices import startup_upgrade_notices
         startup_upgrade_notices(settings)
 
@@ -1055,13 +1069,18 @@ def _perform_supervisor_restart(
     try:
         from ouroboros.delegate_recovery import prepare_planned_restart_handoffs
         from ouroboros.owner_wait import prepare_owner_wait_handoffs
+        from supervisor.restart_retention import prepare_restart_returns
+        from supervisor.workers import direct_chat_turns
 
+        owner_waits = prepare_owner_wait_handoffs(ctx.DRIVE_ROOT, ctx.RUNNING, restart_transaction_id)
         planned_handoffs = prepare_planned_restart_handoffs(
             ctx.DRIVE_ROOT, ctx.RUNNING,
             restart_transaction_id=restart_transaction_id,
-            additional_task_ids=prepare_owner_wait_handoffs(
-                ctx.DRIVE_ROOT, ctx.RUNNING, restart_transaction_id),
+            additional_task_ids=owner_waits,
         )
+        # The planned restart also returns active work and the runnable queue (#1563).
+        prepare_restart_returns(ctx.DRIVE_ROOT, ctx.RUNNING, list(ctx.PENDING), transaction_id=restart_transaction_id,
+                                direct=direct_chat_turns(), owner_wait_ids=planned_handoffs)
     except Exception:
         log.debug("Planned self-restart delegate handoff preparation failed", exc_info=True)
     restart_kill_kwargs = _managed_update_pending_kwargs()
@@ -1074,6 +1093,7 @@ def _perform_supervisor_restart(
         result_reason=cleanup_reason,
         stop_source="server_shutdown",
         preserve_running_task_ids=planned_handoffs,
+        retain_saved_work=True,
         **restart_kill_kwargs,
     )
     try:  # a field update: a stale snapshot never erases a control written meanwhile (#1307)
@@ -1572,10 +1592,11 @@ def _actual_bound_port() -> int:
 
 
 def _restart_cleanup_kwargs() -> dict:
-    """Keep owner Restart from re-opening daemon custody after its stop."""
+    """Keep owner Restart from re-opening daemon custody after its stop; every
+    application stop keeps saved work and accepted queue for the next boot (#1563)."""
     if _owner_restart_requested.is_set():
-        return {"reconcile_delegate_custody": False}
-    return {}
+        return {"reconcile_delegate_custody": False, "retain_saved_work": True}
+    return {"retain_saved_work": True}
 
 
 def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:

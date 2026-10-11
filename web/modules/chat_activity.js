@@ -2,6 +2,7 @@
 // live-card presentation projections (moved verbatim from chat.js) plus the
 // in-flight direct/ephemeral turn status reducer and snapshot hydration.
 import { executorIdentityMarkup, joinMetaParts } from './harness_presentation.js';
+import { effortChipMarkup } from './effort_chip.js';
 import { resultFilesItemHtml } from './result_files.js';
 import { taskSourceDownloadUrl } from './api_client.js';
 import { compactModel, formatLogDuration, modelExecutionLabel } from './log_events.js';
@@ -416,8 +417,8 @@ const PAUSING_PHASES = new Set(['budget_pausing', 'pausing']);
  */
 export function restartConfirmBody(activities) {
     const lines = [
-        'Running tasks stop. Tasks already paused stay paused.',
-        'Queued tasks that have not started are kept on hold under the same task, and wait for your Resume.',
+        'Running tasks stop, then eligible saved work resumes after the restart. Tasks already paused stay paused.',
+        'Runnable queued tasks return to the queue. Existing holds and limits still apply.',
         'Saved settings apply after the restart.',
     ];
     if (!Array.isArray(activities) || activities.some((row) => row?.phase === 'unknown')) {
@@ -820,8 +821,7 @@ export function clearStickyCardState(record) {
     // A recycled slot must not inherit the previous cycle's finalizing hold —
     // nor the outcome observed under it (#1110), which would otherwise paint the
     // new cycle's chip with the old cycle's Failed.
-    record.finalizingHold = false;
-    record.observedOutcome = '';
+    Object.assign(record, { finalizingHold: false, censusPhase: '', observedOutcome: '' });
     // The activity clock is cycle state too: a recycled slot ('active') would
     // otherwise open showing the previous cycle's "updated" time.
     record.latestActivityTs = '';
@@ -830,6 +830,7 @@ export function clearStickyCardState(record) {
         record.activityEl.removeAttribute('title');
     }
     record.modelExecution = null;
+    record.effort = null;
     record.toolCalls = null;
     record.toolErrors = null;
     // The folded evidence is cycle state too: a recycled slot must not count
@@ -1133,7 +1134,7 @@ export function chatStatusCounts(activities, records, isWaiting = () => false) {
         if (projectHold) counts.projectWaitLabel = projectHold;
         else if (isWaiting(id)) continue;
         const waitPhase = activityWaitPhase(entry);
-        if (entry?.phase === 'unknown') counts.unknownActivityCount += 1;
+        if (entry?._activityUnconfirmed || entry?.phase === 'unknown') counts.unknownActivityCount += 1;
         else if (entry?.phase === 'budget_pausing') counts.pausingManagedCount += 1;
         else if (entry?.phase === 'budget_paused') { counts.pausedManagedCount += 1; pauseCauses.add(entry.pause_cause || ''); }
         else if (waitPhase === 'unknown') counts.unknownActivityCount += 1;
@@ -1310,8 +1311,8 @@ export function routingAnnotationText(annotation) {
  * authority follows from that — on a
  * `complete` snapshot every id the census does not list is gone, whatever its
  * kind, with no wall-clock barrier and no generation marker. An incomplete
- * snapshot (supervisor not ready, or a source failed) is a partial listing and
- * deletes nothing.
+ * snapshot retains omitted rows as unconfirmed; only its positive rows can
+ * affirm current activity.
  *
  * `concludedIds` (Set/Map with .has) is the client-side conclusion ledger: a
  * turn already concluded by its keyed final must never be re-inserted by a
@@ -1319,7 +1320,8 @@ export function routingAnnotationText(annotation) {
  * never restart, so conclusion is final).
  */
 export function computeHydratedDirectActivities(existingMap, turnsList, chatId, concludedIds = null, complete = true) {
-    const nextMap = new Map(existingMap || []);
+    const nextMap = new Map(Array.from(existingMap || [], ([id, row]) => [id,
+        complete ? row : { ...row, _activityUnconfirmed: true }]));
     if (!Array.isArray(turnsList)) return nextMap;
     const listed = new Set();
     for (const turn of turnsList) {
@@ -1328,14 +1330,10 @@ export function computeHydratedDirectActivities(existingMap, turnsList, chatId, 
         if (!aid || (concludedIds && concludedIds.has(aid))) continue;
         listed.add(aid);
         nextMap.set(aid, {
+            ...turn, _activityUnconfirmed: false,
             activityId: aid,
             kind: turn.kind || 'direct_chat',
             phase: turn.phase || 'thinking',
-            ...(turn.pause_cause ? { pause_cause: turn.pause_cause } : {}),
-            ...(turn.required_question ? { required_question: turn.required_question } : {}),
-            ...(turn.owner_wait ? { owner_wait: turn.owner_wait } : {}),
-            ...(turn.required_question_unavailable ? { required_question_unavailable: true } : {}),
-            ...(turn.project_admission_hold ? { project_admission_hold: turn.project_admission_hold } : {}),
             clientMessageId: turn.client_message_id || nextMap.get(aid)?.clientMessageId || '',
         });
     }
@@ -1540,7 +1538,7 @@ export function costMetaKeys(src) {
 const CARD_META_KEYS = [
     ...COST_META_KEYS, 'executor_route', 'execution_evidence', 'actual_substrate',
     'executor_observation', 'model_execution', 'tool_calls', 'model', 'ts', 'initiator', 'cancel_origin',
-    'delegated_activity', 'outcome_axes', 'task_completion',
+    'delegated_activity', 'outcome_axes', 'task_completion', 'effort_level', 'effort_requested', 'effort_source',
 ];
 export function cardMetaKeys(src) {
     return Object.fromEntries(CARD_META_KEYS.map((key) => [key, src?.[key]]));
@@ -1556,6 +1554,7 @@ export function renderLiveCardMeta(record, { agentModel = record?.agentModel || 
     // because only the flex gap separated them.
     const html = joinMetaParts([
         executorIdentityMarkup(record.executorChip, { agentModel: compactModel(agentModel) }),
+        effortChipMarkup(record.effort),
         ...[
             record.initiator === 'consciousness' ? 'Consciousness' : '',
             record.historicalUnavailable ? 'Outcome unavailable' : (record.historicalUnconfirmed ? 'Activity unconfirmed' : ''),

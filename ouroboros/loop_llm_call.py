@@ -32,7 +32,7 @@ from ouroboros.observability import new_call_id, new_execution_id, persist_call
 from ouroboros.pricing import emit_llm_usage_event, estimate_cost_optional, infer_model_category
 from ouroboros.send_clock import main_send_scope
 from ouroboros.task_pacing import main_loop_wire_options
-from ouroboros.transport_custody import attempt_custody_event_fields, is_pre_dispatch_transport_failure, is_retryable_transport_death
+from ouroboros.transport_custody import attempt_custody_event_fields, is_pre_dispatch_transport_failure, is_retryable_transport_death, outcome_unknown_on_chain
 from ouroboros._usage_response import OUTPUT_LIMIT_FINISH_REASONS, output_exhaustion_facts, provider_cost_value as _provider_cost_value, response_finish_reason
 from ouroboros.usage_accounting import PhysicalAttemptContext, UsageAccountingError, bind_physical_attempt_context, last_physical_attempt_capture
 from ouroboros.utils import (
@@ -774,10 +774,11 @@ def classify_llm_exception(exc: Exception, safe_error: str = "") -> LlmErrorClas
     if status_code is not None and 400 <= status_code <= 499:
         return LlmErrorClassification("provider_error", False, status_code, provider_code)
     capture = getattr(exc, "physical_attempt_capture", None)
-    if str(getattr(capture, "state", "") or "") in {"dispatched", "unresolved"}:
+    if outcome_unknown_on_chain(exc):
         # The provider may still finish a request whose socket outcome is
-        # unknown. Neither a same-model retry nor a different paid fallback is
-        # safe until a typed terminal provider fact exists.
+        # unknown, even when an earlier usage frame settled its exact price.
+        # Money does not establish a terminal response. Typed provider errors
+        # above retain their existing classifications and retry policy.
         return LlmErrorClassification(
             "provider_outcome_unknown", False, status_code, provider_code,
         )
@@ -849,7 +850,7 @@ def _normalize_usage_cost(
     if use_local:
         cost = 0.0
         display_model = f"{model} (local)"
-    elif provider_reported_cost and cost is None:
+    elif cost is None and (provider_reported_cost or usage.get("cost_invalid")):
         # Invalid reported cost stays unknown under the shared trust predicate.
         log.warning(
             "Provider reported an invalid cost (type=%s, value=%s) for %s; recording "
@@ -1062,7 +1063,11 @@ def provider_no_call_source(accumulated_usage: Dict[str, Any], deadline_exhauste
     wall makes one more forced call a second full retry window; the deadline_local
     rail keeps its grace call, so ``deadline_exhausted`` suppresses the wall. A round
     still holding an unresolved attempt (its transport-death record: written at a grant,
-    cleared only by a usable response) forbids the resend whatever the sticky kind."""
+    cleared only by a usable response) forbids the resend whatever the sticky kind.
+    Sources: ``provider_outcome_unknown_no_resend``, ``resource_refusal_no_resend`` and
+    ``same_route_refusal_no_resend`` (typed refusals), ``retry_wall_exhausted_no_repay``
+    (``RETRY_WALL_EXHAUSTED_KEY``, a per-invocation bool on the shared usage dict). The
+    rail stamps ``provider_unavailable`` except for ``resource_refusal_no_resend``."""
     if (str(accumulated_usage.get("_last_llm_error_kind") or "") == "provider_outcome_unknown"
             or accumulated_usage.get("_pending_transport_outcome") or isinstance(accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict)):
         return "provider_outcome_unknown_no_resend", False
@@ -1129,6 +1134,8 @@ def _record_round_cache_facts(
     *,
     round_idx: int,
     round_id: str = "",
+    model: str = "",
+    provider: str = "",
 ) -> tuple:
     """Cold-restart telemetry — FACTS of this round only (no dollar counterfactuals).
 
@@ -1159,6 +1166,10 @@ def _record_round_cache_facts(
     )
     accumulated_usage["_last_llm_round_finished_monotonic"] = now
     accumulated_usage["_last_prompt_cache_ttl"] = prompt_cache_ttl
+    accumulated_usage["_last_round_cache_usage"] = {
+        "round": round_idx, "model": model, "provider": provider,
+        **{key: usage.get(key) for key in ("prompt_tokens", "cached_tokens", "cache_write_tokens")},
+    }
     return prompt_cache_ttl, cache_hit_rate, cache_cold_restart, gap_since_prev_round_sec, duration_ms
 
 
@@ -1521,7 +1532,8 @@ def call_llm_with_retry(
             accumulated_usage["rounds"] = accumulated_usage.get("rounds", 0) + 1
             cached_tokens = int(usage.get("cached_tokens") or 0)
             prompt_cache_ttl, cache_hit_rate, cache_cold_restart, gap_since_prev_round_sec, duration_ms = (
-                _record_round_cache_facts(accumulated_usage, usage, round_idx=round_idx, round_id=round_id))
+                _record_round_cache_facts(accumulated_usage, usage, round_idx=round_idx, round_id=round_id,
+                                          model=display_model, provider=provider))
             ledger_ids = list(usage.get("ledger_attempt_ids") or [])  # the last one carried this response (#807)
             _round_event = {
                 "ts": utc_now_iso(), "type": "llm_round",

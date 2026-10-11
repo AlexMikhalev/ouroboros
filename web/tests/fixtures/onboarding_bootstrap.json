@@ -322,7 +322,7 @@
       },
       {
         "className": "pro",
-        "copy": "Direct protected-surface mode. Protected core/contract/release edits are allowed on disk, but commits still require the normal triad + scope review gate.",
+        "copy": "Direct protected-surface mode. Protected core/contract/release edits are allowed on disk, but commits still require the normal review gate.",
         "label": "Pro",
         "tone": "Power",
         "value": "pro"
@@ -453,7 +453,6 @@
       "consciousness": "",
       "deep_self_review": "anthropic::claude-opus-5",
       "fallback": "anthropic::claude-sonnet-5",
-      "image": "",
       "light": "anthropic::claude-sonnet-5",
       "main": "anthropic::claude-opus-5",
       "vision": ""
@@ -461,7 +460,6 @@
     "cloudru": {
       "consciousness": "",
       "fallback": "cloudru::zai-org/GLM-4.7",
-      "image": "",
       "light": "cloudru::zai-org/GLM-4.7",
       "main": "cloudru::zai-org/GLM-4.7",
       "vision": ""
@@ -470,7 +468,6 @@
       "consciousness": "",
       "deep_self_review": "deepseek::deepseek-v4-pro",
       "fallback": "deepseek::deepseek-v4-flash",
-      "image": "",
       "light": "deepseek::deepseek-v4-flash",
       "main": "deepseek::deepseek-v4-pro",
       "vision": ""
@@ -478,7 +475,6 @@
     "local": {
       "consciousness": "",
       "fallback": "openai/gpt-5.6-luna",
-      "image": "",
       "light": "openai/gpt-5.6-luna",
       "main": "google/gemini-3.8-flash",
       "vision": ""
@@ -486,7 +482,6 @@
     "minimax": {
       "consciousness": "",
       "fallback": "minimax::MiniMax-M2.7",
-      "image": "",
       "light": "minimax::MiniMax-M2.7",
       "main": "minimax::MiniMax-M3",
       "vision": ""
@@ -495,7 +490,6 @@
       "consciousness": "",
       "deep_self_review": "openai::gpt-5.6-sol",
       "fallback": "openai::gpt-5.6-sol",
-      "image": "",
       "light": "openai::gpt-5.6-luna",
       "main": "openai::gpt-5.6-terra",
       "vision": ""
@@ -503,7 +497,6 @@
     "openai-compatible": {
       "consciousness": "",
       "fallback": "",
-      "image": "",
       "light": "",
       "main": "",
       "vision": ""
@@ -511,7 +504,6 @@
     "openrouter": {
       "consciousness": "",
       "fallback": "openai/gpt-5.6-luna",
-      "image": "",
       "light": "openai/gpt-5.6-luna",
       "main": "google/gemini-3.8-flash",
       "vision": ""
@@ -519,7 +511,6 @@
     "zai": {
       "consciousness": "",
       "fallback": "zai::glm-5.3-flash",
-      "image": "",
       "light": "zai::glm-5.3-flash",
       "main": "zai::glm-5.3",
       "vision": "zai::glm-5.3-flash"

@@ -52,6 +52,12 @@ def _transport(monkeypatch, handler):
         return httpx.MockTransport(handler)
     monkeypatch.setattr(image_api, "remote_httpx_transport", shared)
     monkeypatch.setattr(image_api, "env_proxies_configured", lambda: False)
+    # Fixture CDNs have synthetic public DNS; address checks still run normally.
+    import ipaddress
+    from ouroboros import browser_policy
+    resolve = browser_policy._resolved_addresses
+    monkeypatch.setattr(browser_policy, "_resolved_addresses", lambda host:
+                        {ipaddress.ip_address("8.8.8.8")} if host.endswith(".example") else resolve(host))
     return seen
 
 
@@ -184,11 +190,18 @@ def test_zai_uses_payg_single_url_and_does_not_leak_key(monkeypatch, ctx):
     assert "signature=token" not in text and "fixture-secret" not in text
 
 
-@pytest.mark.parametrize("options", [{"n": 2}, {"background": "transparent"}])
-def test_zai_rejects_undocumented_options_before_paid_attempt(monkeypatch, ctx, options):
+@pytest.mark.parametrize("source", ["zai", "openai"])
+def test_native_options_are_validated_by_the_selected_provider(monkeypatch, ctx, source):
+    seen = []
+    def handle(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(400, json={"error": {"code": "unsupported_parameter"}})
+    _transport(monkeypatch, handle)
     attempts = _account(monkeypatch)
-    result = ig._generate_image(ctx, "a castle", "zai::glm-image", options=options)
-    assert "do not document" in result and not attempts
+    options = {"future_native_option": "owner-choice"}
+    result = ig._generate_image(ctx, "a castle", f"{source}::future-image", options=options)
+    assert "HTTP 400" in result and len(attempts) == 1
+    assert seen == [{"model": "future-image", "prompt": "a castle", **options}]
 
 
 def test_zai_cannot_edit(monkeypatch, ctx):
@@ -408,8 +421,10 @@ def test_readonly_and_network_constraints_block_generation(monkeypatch, ctx):
     ctx.task_constraint = None
     ctx.task_contract = build_task_contract({"id": ctx.task_id, "allowed_resources": {"network": False}})
     registry.set_context(ctx)
-    for tool, args in [("generate_image", {"prompt": "paint", "model": "openai::model-x"}), ("list_image_models", {})]:
-        assert "RESOURCE_CONSTRAINT_BLOCKED" in registry.execute(tool, args)
+    for tool, args in [("generate_image", {"prompt": "paint", "model": "openai::model-x"}),
+                       ("list_image_models", {}), ("recover_image", {"request_id": "no-request"}), ("vcs_pull_ff", {})]:
+        refusal = registry.execute(tool, args)
+        assert "RESOURCE_CONSTRAINT_BLOCKED" in refusal and f"blocks {tool!r}." in refusal
 
 
 def test_presence_requires_exact_tool_and_input_grants(monkeypatch, ctx):
@@ -504,7 +519,7 @@ def test_api_recovery_downloads_again_without_new_attempt(monkeypatch, ctx):
     def handle(request):
         calls.append(request.method)
         if request.method == "POST":
-            return httpx.Response(200, json={"data": [{"url": "https://fixture.test/image.png"}], "usage": {"cost": 0.02}})
+            return httpx.Response(200, json={"data": [{"url": "https://cdn.example/image.png"}], "usage": {"cost": 0.02}})
         return httpx.Response(503) if unavailable else httpx.Response(200, content=PNG)
     _transport(monkeypatch, handle)
     first = _summary(ig._generate_image(ctx, "paint", "openrouter::image"))
@@ -541,7 +556,6 @@ def test_registered_artifact_is_effect_without_automatic_delivery(monkeypatch, c
 def test_registered_and_parallel_control_reaches_loop_owner(monkeypatch, ctx, parallel, control):
     from ouroboros import loop_tool_execution as execution, usage_accounting as ua
     from ouroboros.model_wait import ModelWaitInterrupted
-    from ouroboros.tools.registry import ToolEntry
     # Use the actual registry and wrapper. Generation is sequential in production;
     # a parallel-safe helper may also invoke a provider, so exercise that rail too.
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root); registry.set_context(ctx)

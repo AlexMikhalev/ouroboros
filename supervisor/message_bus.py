@@ -1,4 +1,7 @@
-"""Queue-based bridge between UI/skill transports and the supervisor."""
+"""Queue-based bridge between UI/skill transports and the supervisor.
+
+Chat, media, typing and log frames never carry A2A synthetic chats to the browser; ``project_thread`` is stamped from Project registry membership (not a numeric range), so external transport ids stay unstamped.
+"""
 
 from __future__ import annotations
 
@@ -336,7 +339,7 @@ class LocalChatBridge:
         clean_text = str(text or "").strip()
         if self.panic.request(clean_text):
             return
-        if not clean_text and not image_base64:
+        if not clean_text and not image_base64 and not (task_metadata or {}).get("chat_attachment_uploads"):
             return
         import uuid
 
@@ -347,10 +350,9 @@ class LocalChatBridge:
         metadata = dict(task_metadata or {})
         if str(project_id or "").strip():
             metadata.setdefault("project_id", str(project_id).strip())
-        log_text = clean_text or str(image_caption or "").strip() or (
-            "(image attached)" if image_base64 else "(file attached)"
-            if metadata.get("chat_attachment_uploads") else ""
-        )
+        from ouroboros.chat_uploads import attachment_placeholder
+
+        log_text = clean_text or str(image_caption or "").strip() or attachment_placeholder(image_base64, metadata)
         placeholder = not clean_text  # a web caption is the gateway's own ``[user attachment: …]`` label
         # The canonical row precedes echo/dispatch: neither WS nor Queue survives
         # restart. Its returned witness lets dequeue validation avoid a chat scan.
@@ -1129,10 +1131,7 @@ class LocalChatBridge:
     def push_log(self, event: dict):
         """Stream append_jsonl events to UI."""
         if self._broadcast_fn and not is_a2a_chat_id(event.get("chat_id")):
-            # Task-scoped events arrive already addressed
-            # (supervisor/log_addressing.py); an unaddressable event keeps the
-            # legacy chat-0 default, which Main still admits. A2A synthetic
-            # chats are machine traffic and never enter the human stream.
+            # Task-scoped events arrive addressed (supervisor/log_addressing.py); an unaddressable one keeps the chat-0 default (Main admits it).
             frame = {"type": "log", "data": event, "chat_id": int(event.get("chat_id") or 0)}
             stamp_project_thread(DATA_DIR, frame)
             self._broadcast_fn(frame)
@@ -1361,7 +1360,7 @@ def log_chat(
         if "narration" in meta:
             record["narration"] = bool(meta["narration"])
         if record_type in ("project_started", "project_handoff", "project_completion_summary"):
-            for key in ("project_id", "project_name", "target_label", "status", "completion_answer", "handoff_id", "terminal_time"):
+            for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer", "handoff_id", "terminal_time"):
                 if key in meta:
                     record[key] = meta[key]
         if "task_terminal_status" in meta:

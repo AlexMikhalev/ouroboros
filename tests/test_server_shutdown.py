@@ -534,7 +534,7 @@ def test_emergency_cleanup_joins_the_one_owned_stop(monkeypatch):
     server._emergency_process_cleanup(port_sweep=False)
 
     assert stop_calls == [server.DATA_DIR]
-    assert worker_calls == [{"force": True, "archive_service_logs": False}]
+    assert worker_calls == [{"force": True, "archive_service_logs": False, "retain_saved_work": True}]  # #1563
 
 
 def test_emergency_cleanup_during_restart_marks_tasks_cancelled(monkeypatch):
@@ -740,7 +740,7 @@ def _supervisor_harness(monkeypatch, tmp_path, steps):
         # tests/test_retired_settings_chat_notice.py; here it would be a
         # crash alert (this harness's send_with_budget double records every
         # send, and the boot/crash assertions below own that list).
-        "_startup_retired_settings_notice",
+        "_startup_retired_settings_notice", "_startup_review_pool_notice",
     ):
         monkeypatch.setattr(server, name, noop)
     monkeypatch.setattr(server, "_start_supervisor_liveness_watchdog",

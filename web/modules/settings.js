@@ -6,13 +6,13 @@ import { bindEffortSegments, syncEffortSegments, readCustomSecretDraft, collectC
 import { bindLocalModelControls } from './settings_local_model.js';
 import { bindAutostartControl } from './settings_autostart.js';
 import { applyMcpSettings, collectMcpSettings, initMcpSettings, validateMcpSettings } from './mcp_settings.js';
-import { adoptSubagentRoster, collectReviewerSlots, initReviewerSlots, reloadReviewerSlots, validateReviewerSlots, noteReviewerSlotsSaveAttempt, discardReviewerSlotsDraft, setReviewerProcessingPreference, setReviewerSourceContext } from './reviewer_slots.js';
 import {
     applySubagentsSettings,
     availableSubagentsPreviewPayload,
     collectSubagentsSettings,
     initSubagentsSection,
     noteSubagentsSaveAttempt,
+    reloadReviewPool,
     reloadSubagentsSection,
     subagentSettingsFingerprint,
     validateSubagentsDraft,
@@ -23,12 +23,13 @@ import { initHarnessAccounts } from './harness_accounts.js';
 import { openConfirmDialog } from './confirm_dialog.js';
 import { confirmAndSendRestart } from './chat_activity.js';
 import { PROVIDER_TEST_INPUTS, SECRET_KEYS, bindSecretInputs, bindSettingsTabs, renderSettingsPage } from './settings_ui.js';
+import { paintEffortRangeSummary } from './effort_levels.js';
 import { showToast } from './toast.js';
 import { escapeHtmlAttr as escapeHtml, formatDualVersion } from './utils.js';
 import { apiClient, apiFetch, cleanExtensionRoute, extensionRoutePath } from './api_client.js';
 import { claudexorStatus } from './claudexor_status_store.js';
-import { createModelRolesEditor, modelRoleMap } from './model_roles.js';
-import { PROCESSING_PREFERENCE_KEY, MODEL_PROCESSING_PREFERENCES_KEY } from './route_editor_primitives.js';
+import { createModelRolesEditor } from './model_roles.js';
+import { PROCESSING_PREFERENCE_KEY } from './route_editor_primitives.js';
 import { collectSafeFieldValues, normalizeTone, renderSafeField, setInlineStatus, revealNewRow } from './ui_helpers.js';
 import { extensionActionStatus } from './extension_status_text.js';
 import { bindLanguageSettings } from './settings_language.js';
@@ -45,15 +46,11 @@ const INPUT_FIELDS = [
     ['s-minimax-region', 'MINIMAX_REGION'],
     ['s-zai-plan', 'ZAI_PLAN'],
     ['s-server-host', 'OUROBOROS_SERVER_HOST', '127.0.0.1'],
-    // 6.1: OUROBOROS_REVIEW_MODELS / OUROBOROS_SCOPE_REVIEW_MODELS are no
-    // longer authored here — the Review lanes section composes the ONE
-    // structured setting; the comma keys stay a backend-derived projection.
-    // R7: OUROBOROS_MODEL_DEEP_SELF_REVIEW is not authored here either — the
-    // deep self-review row lives in Review lanes; the key is the backend's
-    // invisible migration source for that row.
+    // No review route is authored here: the review pool is the Reviewer mark
+    // on the Available subagents rows.
     ['s-skills-repo-path', 'OUROBOROS_SKILLS_REPO_PATH'],
     ['s-extra-ca-bundle', 'OUROBOROS_EXTRA_CA_BUNDLE'],
-    ['s-clawhub-registry-url', 'OUROBOROS_CLAWHUB_REGISTRY_URL'], ['s-websearch-model', 'OUROBOROS_WEBSEARCH_MODEL'], ['s-gh-repo', 'GITHUB_REPO'],
+    ['s-clawhub-registry-url', 'OUROBOROS_CLAWHUB_REGISTRY_URL'], ['s-websearch-source', 'OUROBOROS_WEBSEARCH_BACKEND', 'auto'], ['s-websearch-model', 'OUROBOROS_WEBSEARCH_MODEL'], ['s-gh-repo', 'GITHUB_REPO'],
     ['s-local-source', 'LOCAL_MODEL_SOURCE'], ['s-local-filename', 'LOCAL_MODEL_FILENAME'], ['s-local-chat-format', 'LOCAL_MODEL_CHAT_FORMAT'],
     ['s-subagent-worktree-root', 'OUROBOROS_SUBAGENT_WORKTREE_ROOT'], ['s-subagent-projects-root', 'OUROBOROS_SUBAGENT_PROJECTS_ROOT'],
     ['s-evo-budget', 'OUROBOROS_POST_TASK_EVOLUTION_BUDGET_USD', '0'],
@@ -63,10 +60,7 @@ const INPUT_FIELDS = [
     ['s-max-rounds', 'OUROBOROS_MAX_ROUNDS', 'unlimited'], ['s-task-lifetime', 'OUROBOROS_TASK_ABS_CEILING_SEC', 'unlimited'],
 ];
 const VALUE_FIELDS = [
-    // 6.3: Review / Scope Review efforts are per-slot rows in Agents → Review
-    // lanes now; their global keys remain backend defaults, no longer UI-authored.
-    ['s-effort-task', 'OUROBOROS_EFFORT_TASK', 'medium'], ['s-effort-evolution', 'OUROBOROS_EFFORT_EVOLUTION', 'high'],
-    ['s-effort-consciousness', 'OUROBOROS_EFFORT_CONSCIOUSNESS', ''], ['s-effort-deep-self-review', 'OUROBOROS_EFFORT_DEEP_SELF_REVIEW', 'high'],
+    // Effort is not a Settings draft: the range is read-only here and edited in the chat composer.
     ['s-consciousness-autonomy', 'OUROBOROS_CONSCIOUSNESS_AUTONOMY', 'act'],
     ['s-review-enforcement', 'OUROBOROS_REVIEW_ENFORCEMENT', 'advisory'], ['s-task-review-mode', 'OUROBOROS_TASK_REVIEW_MODE', 'auto'], ['s-runtime-mode', 'OUROBOROS_RUNTIME_MODE', 'advanced'],
     // Shared paid-review-cycle cap (plan review / task acceptance / commit gate);
@@ -490,6 +484,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         })
         .catch(() => { /* about version is best-effort */ });
     let currentSettings = {};
+    let searchSelectionEdited = false;
     let extensionRefreshPending = false;
     let settingsLoaded = false;
     let settingsBaseline = '';
@@ -507,9 +502,9 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         onChange: (settings) => { syncProcessingPreference(settings); onSettingsEdited(); } });
     modelRoles.mount();
     initMcpSettings({ onChange: onSettingsEdited });
-    initReviewerSlots({ onChange: () => onSettingsEdited() });
     initSubagentsSection({
-        onChange: (setting) => { adoptSubagentRoster({ OUROBOROS_SUBAGENTS: setting }); onSettingsEdited(); },
+        hasPageDirtyIndicator: true,
+        onChange: () => onSettingsEdited(),
         // A judged roster may clear only the validation footer it authored.
         // A cadence or other field error keeps its typed subject and survives.
         onJudged: (clean) => {
@@ -529,7 +524,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
 
     function syncProcessingPreference(settings) {
         setSubagentsProcessingPreference(settings[PROCESSING_PREFERENCE_KEY]);
-        setReviewerProcessingPreference(settings[PROCESSING_PREFERENCE_KEY], modelRoleMap(settings[MODEL_PROCESSING_PREFERENCES_KEY]));
     }
 
     function syncRestartState(value) {
@@ -652,7 +646,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
 
     function discardUnsavedSettingsDraft() {
         applySettings(currentSettings || {});
-        discardReviewerSlotsDraft();
         renderCustomSecrets(page, currentSettings || {});
         validationAttempted = false;
         paintSettingsFieldErrors(page, []);
@@ -683,7 +676,9 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         page.querySelectorAll('[data-provider-test-status]').forEach((el) => setInlineStatus(el, '', 'muted'));
         applySecretInputs(page, s);
         INPUT_FIELDS.forEach(([id, key, fallback = '']) => applyInputValue(id, storedOrFallback(s[key], fallback)));
+        searchSelectionEdited = false;
         VALUE_FIELDS.forEach(([id, key, fallback]) => { byId(id).value = s[key] || fallback; });
+        paintEffortRangeSummary(page.querySelector('[data-effort-range-summary]'), s);
         modelRoles.load(s, { ...setupContract, modelSlots: setupModelSlots().map((slot) => ({
             ...slot, inputId: slot.settingsInputId,
         })) });
@@ -706,14 +701,10 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         // The actor list lives next to it in Agents → Available subagents.
         applySubagentsSettings(s);
         syncProcessingPreference(s);
-        // The Review-lanes «Configured subagent» selects reference the SAME
-        // roster; adopt it from the same loaded document.
-        adoptSubagentRoster(s);
-        // …and both editors offer the API providers THIS document has a
-        // credential for, named by the setup contract. Derived from the loaded
-        // settings, so a key added under Accounts shows up on the next load
-        // rather than being typed as a prefix (docs/DESIGN.md §7).
-        setReviewerSourceContext({ settings: s, providerProfiles: setupContract.providerProfiles });
+        // The editor offers the API providers THIS document has a credential
+        // for, named by the setup contract. Derived from the loaded settings,
+        // so a key added under Accounts shows up on the next load rather than
+        // being typed as a prefix (docs/DESIGN.md §7).
         setSubagentsSourceContext(s, setupContract.providerProfiles);
         // Post-task evolution: one owner-facing selector maps to enable + cadence.
         const evoEnabled =
@@ -753,6 +744,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         syncPolicyState(page, s?._meta);
         syncPostTaskEvolutionUi();
         refreshSafetySkipCounter();  // fire-and-forget; fills the 24h audited-skip note
+        void refreshSearchPreview();  // fire-and-forget; describes the applied search Source/Model
     }
 
     function syncMoreProvidersDisclosure() {
@@ -839,7 +831,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         // it was pending, so it lands only on an unchanged draft.
         const isCurrent = () => sequence === loadSequence && revision === draftRevision;
         const enriched = (async () => {
-            const enrichment = [reloadReviewerSlots({ isCurrent }), reloadSubagentsSection()];
+            const enrichment = [reloadReviewPool({ isCurrent }), reloadSubagentsSection()];
             const extData = await extensionsRead;
             if (extData && isCurrent()) {
                 renderRequestedSkillSecrets(page, extData.skills || [], data);
@@ -916,6 +908,16 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         }
     }
 
+    function collectSearchSelection() {
+        const backend = byId('s-websearch-source').value;
+        let model = byId('s-websearch-model').value.trim();
+        // Preserve untouched legacy settings. An edited native Anthropic id uses
+        // the existing routed spelling so dispatch can recognize the new intent.
+        if (searchSelectionEdited && backend === 'anthropic' && model
+                && !model.includes('::') && !model.startsWith('anthropic/')) model = `anthropic::${model}`;
+        return { backend, model };
+    }
+
     function collectBody() {
         const fieldValue = (id) => byId(id)?.value || '';
         const mutativeInput = byId('s-allow-mutative-subagents');
@@ -927,9 +929,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
                 ? ({ on: 'true', off: 'false' }[mutativeInput?.value] ?? '')
                 : (rawMutative ? ({ true: 'true', false: 'false' }[rawMutative] ?? rawMutative) : ''),
             ...collectMcpSettings(),
-            // 6.1: the ONE structured reviewer-slot setting; {} until the rows
-            // view has loaded, so an unrelated save cannot blank it.
-            ...collectReviewerSlots(),
             // Saved config and live availability are independent: a loaded
             // actor list is collected even when status is down; only an
             // unloaded/unparseable editor omits the key on an unrelated save.
@@ -940,6 +939,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             const value = fieldValue(id).trim();
             body[key] = key === 'OUROBOROS_SERVER_HOST' ? value || fallback : value || '';
         });
+        body.OUROBOROS_WEBSEARCH_MODEL = collectSearchSelection().model;
         VALUE_FIELDS
             // Owner-only keys travel through their audited owner endpoints, never
             // the generic settings POST (safety_mode joined runtime/context, r4).
@@ -1002,7 +1002,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             ['fields', fields.map(({ message }) => message)],
             ['models', modelRoles.validateAll()],
             ['subagents', validateSubagentsDraft().map((error) => `Available subagents: ${error}`)],
-            ['reviewers', validateReviewerSlots()],
         ];
         const messages = groups.flatMap(([, rows]) => rows).filter(Boolean);
         const subject = groups.find(([, rows]) => rows.some(Boolean))?.[0] || '';
@@ -1157,9 +1156,27 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     // ask the owner to discard "unsaved settings" that do not exist.
     const onServerSettingEdited = (event) => {
         if (event?.target?.closest?.('[data-notify-settings], [data-autostart-settings]')) return;
+        if (event?.target?.closest?.('[data-response-limit]')) return;   // a maximum is an evidence acknowledgement, not a setting
         if (event?.target?.closest?.('[data-i18n-settings]')) return;   // the interface language saves through its own endpoint
         onSettingsEdited();
     };
+    let searchPreviewSequence = 0;
+    async function refreshSearchPreview() {
+        const sequence = ++searchPreviewSequence;
+        const target = byId('s-websearch-preview');
+        if (!target?.isConnected) return;
+        try {
+            const data = await apiClient.webSearchPreview(searchSelectionEdited ? collectSearchSelection() : {});
+            if (sequence !== searchPreviewSequence || !target.isConnected) return;
+            // The help text already says skills, MCP and browser tools stay independent.
+            const legacy = data.ignored_legacy_model ? ` Anthropic does not apply the saved model ${data.ignored_legacy_model}; edit Source or Model to change it.`
+                : data.unapplied_model ? ` No built-in search serves the saved model ${data.unapplied_model}; Auto uses provider defaults.` : '';
+            target.textContent = data.error || `Eligible routes: ${(data.legs || []).map((leg) => `${leg.source}${leg.model ? ` · ${leg.model}` : ''}`).join(' → ') || 'none'}. Uses saved account credentials.${legacy}`;
+        } catch (_) { if (sequence === searchPreviewSequence && target.isConnected) target.textContent = 'Search routes could not be checked. Your choices are kept.'; }
+    }
+    const onSearchSelectionEdited = () => { searchSelectionEdited = true; void refreshSearchPreview(); };
+    byId('s-websearch-source')?.addEventListener('change', onSearchSelectionEdited);
+    byId('s-websearch-model')?.addEventListener('input', onSearchSelectionEdited);
     page.addEventListener('input', onServerSettingEdited);
     page.addEventListener('change', onServerSettingEdited);
     page.addEventListener('click', (event) => {
@@ -1325,7 +1342,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         // whichever validation aborts it below — so from here the roster shows
         // its own errors beside the rows they name, not only in this status.
         noteSubagentsSaveAttempt();
-        noteReviewerSlotsSaveAttempt();
         modelRoles.noteSaveAttempt();
         page.querySelectorAll('[data-custom-secret-row]').forEach((row) => { row.dataset.judged = '1'; });
         validationAttempted = true;

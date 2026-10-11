@@ -50,6 +50,21 @@ def disclosable_capability_delta(data: Dict[str, Any]) -> Dict[str, Any]:
     return delta if (delta.get("reduced") or delta.get("legacy_note")) else {}
 
 
+def disclosable_effort_fact(data: Dict[str, Any]) -> Dict[str, str]:
+    """The child's effort decision when it has something to SAY — the parent's request was
+    moved into the range or set aside by a pin or a model name (``effort_fact_says``) —
+    else ``{}``. The same predicate on both parent surfaces (``[SUBTASK_OUTCOME]`` and the
+    compact batch projection); a request that simply applied, or the plain default, is noise."""
+    from ouroboros.settings_scales import effort_fact_says
+
+    fact = {"requested": data.get("effort_requested"), "applied": data.get("effort_level"),
+            "source": data.get("effort_source")}
+    if not effort_fact_says(fact):
+        return {}
+    return {"level": str(fact["applied"] or ""), "requested": str(fact["requested"] or ""),
+            "source": str(fact["source"] or "")}
+
+
 def _subtask_outcome_summary(data: Dict[str, Any], receipts: list | None = None) -> str:
     ledger = data.get("verification_ledger") if isinstance(data.get("verification_ledger"), dict) else {}
     summary: Dict[str, Any] = {
@@ -110,6 +125,8 @@ def _subtask_outcome_summary(data: Dict[str, Any], receipts: list | None = None)
     _delta = disclosable_capability_delta(data)
     if _delta:
         summary["capability_delta"] = _delta
+    if _effort := disclosable_effort_fact(data):
+        summary["effort"] = _effort
     if isinstance(data.get("artifact_bundle"), dict):
         summary["artifact_bundle"] = data.get("artifact_bundle")
     if ledger:
@@ -206,6 +223,8 @@ def get_task_result_entry() -> ToolEntry:
             "source_start_char": {"type": "integer", "description": "Inclusive character offset for the requested canonical source range."},
             "source_end_char": {"type": "integer", "description": "Exclusive character offset for the requested canonical source range. A range outside the source returns no text: the answer names complete_chars and the range received, and is an argument error."},
             "presence_scope": {"type": "string", "enum": ["own_binding"], "description": "Presence tasks only: read just independent work started from this Presence binding (any of its conversations) or this task's own tree."},
+            "view_head_chars": {"type": "integer", "minimum": 0, "description": "Chars of this answer's head to show in this turn when the complete answer cannot be delivered whole (pair with view_tail_chars). The complete answer is kept as an exact, readable source either way; this only shapes the first view and never changes source_start_char/source_end_char selection."},
+            "view_tail_chars": {"type": "integer", "minimum": 0, "description": "Chars of this answer's tail to show in this turn (see view_head_chars)."},
         }},
     }, _get_task_result)
 
@@ -218,8 +237,14 @@ def _get_task_result(
     known_result_sha256: str = "", include_focus_source: bool = False, focus_source_sha256: str = "",
     presence_scope: str = "", review_source_sha256: str = "",
     presence_reentry_sha256: str = "", presence_reentry_offset: Any = None,
+    view_head_chars: Any = None, view_tail_chars: Any = None,
 ) -> str:
-    """Read a task result, or a bounded canonical work-order/completion source range."""
+    """Read a task result, or a bounded canonical work-order/completion source range.
+
+    ``view_head_chars``/``view_tail_chars`` are accepted here so the declared
+    parameters bind; the loop's delivery honors them when it shapes the first
+    view of this answer. They select nothing in the source arithmetic below.
+    """
     metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
     status_drive_root = Path(str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
     scoped = bool(str(presence_scope or "").strip())
@@ -772,6 +797,10 @@ def _wait_window(
     the tool's entry timeout, which each caller keeps at ``clamp + margin`` or
     more. Inside the finalization reserve the executor's 1 s floor stays the
     bounded exit.
+
+    The task waits pass minimum 0 and ``NESTED_SETTLEMENT_MARGIN_SEC``, so they end
+    that far inside the executor's emission; ``await_messages`` passes minimum 1 and
+    margin 1, and its last poll sleep is clipped to the remaining window.
     """
     from ouroboros.deadline_utils import deadline_remaining_sec, has_deadline
     from ouroboros.task_pacing import effective_finalization_reserve_sec
@@ -1097,6 +1126,8 @@ def _compact_child_projection(tid: str, data: Dict[str, Any], known_hash: Any) -
     _delta = disclosable_capability_delta(data)
     if _delta:
         projected["capability_delta"] = _delta
+    if _effort := disclosable_effort_fact(data):
+        projected["effort"] = _effort
     # Delegation honesty (Q1A, 2026-08-10 amendments): whether a
     # harness-dispatched child ACTUALLY delegated is a handoff fact the
     # fan-out parent absorbs here — the e9108a09 incident hid nine

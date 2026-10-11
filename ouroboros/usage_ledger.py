@@ -216,6 +216,8 @@ USAGE_LOCK_TIMEOUT_SEC = 45.0
 def _locked(root: pathlib.Path, *, timeout_sec: float = USAGE_LOCK_TIMEOUT_SEC) -> Iterator[Callable[[], bool]]:
     # Bounded maintenance and post-response custody. Task-owned pre-send policy
     # supplies short acquisition slices; it never retries the transaction body.
+    # Waits at most USAGE_LOCK_TIMEOUT_SEC; a lock with a recorded live owner is
+    # never evicted by age, and the 90 s stale age applies to ownerless locks.
     with _named_lock(root, LOCK_REL.name, timeout_sec=timeout_sec, stale_sec=90.0) as heartbeat:
         yield heartbeat
 
@@ -230,6 +232,27 @@ def late_receipt_eligible(row: Optional[Dict[str, Any]]) -> bool:
     """An attempt whose current row still accepts ONE late receipt."""
     return bool(row) and str(row.get("kind") or "attempt") == "attempt" and (
         row.get("state") == "unresolved" or is_abandoned_settlement(row))
+
+
+def provider_price_refinable(row: Optional[Dict[str, Any]]) -> bool:
+    """Exact attempt price refinement is independent of physical ownership."""
+    return bool(row) and row.get("kind", "attempt") == "attempt" and (
+        row.get("cost_final") is not True
+        and row.get("state") in {"dispatched", "unresolved", "settled"})
+
+
+def _provider_price_transition(row: dict, previous: Optional[dict]) -> bool:
+    if not provider_price_refinable(previous) or row.get("cost_final") is not True or row.get("cost_usd") is None:
+        return False
+    receipt, binding = row.get("provider_price_receipt"), previous.get("provider_receipt_binding")
+    if not isinstance(receipt, dict) or not isinstance(binding, dict) or not binding:
+        return False
+    if (receipt.get("attempt_id") != previous.get("attempt_id") or receipt.get("provider") != previous.get("provider")
+            or not receipt.get("evidence_ref") or amount(receipt.get("cost_usd")) != amount(row.get("cost_usd"))
+            or receipt.get("binding") != binding):
+        return False
+    changed = {"seq", "ts", "revision", "pre_compaction_seq", "cost_usd", "cost_final", "settle_reason", "provider_price_receipt"}
+    return all(row.get(key) == value for key, value in previous.items() if key not in changed)
 
 
 def validate_row_fields(row: Dict[str, Any], sequence: int) -> None:
@@ -269,7 +292,7 @@ def validate_row_fields(row: Dict[str, Any], sequence: int) -> None:
 
 
 def validate_transition(row: Dict[str, Any], previous: Optional[str], late_receipt: bool,
-                        sequence: int) -> None:
+                        sequence: int, *, previous_row: Optional[Dict[str, Any]] = None) -> None:
     """The per-attempt transition table: ``previous`` is the attempt's current
     state (``None`` for a new attempt) and ``late_receipt`` whether that current
     row still accepts one late receipt (``late_receipt_eligible``)."""
@@ -294,6 +317,9 @@ def validate_transition(row: Dict[str, Any], previous: Optional[str], late_recei
             raise UsageLedgerCorrupt(
                 f"dispatched->released requires a typed pre-dispatch reason at seq={row.get('seq')}"
             )
+    elif (previous == "settled" and state == "settled" and row.get("settle_reason") == "late_receipt"
+          and _provider_price_transition(row, previous_row)):
+        pass  # Nonfinal successful price only; no release or abandonment right.
     elif kind == "attempt" and late_receipt and (
         (state == "settled" and (
             row.get("settle_reason") == "late_receipt"

@@ -665,12 +665,13 @@ def test_provider_test_attempts_are_physically_accounted_without_chat_side_effec
     assert client.probe_provider_readiness("openai/test", settings=settings)["ok"] is True
     assert client.probe_provider_readiness("openai/test", settings=settings)["error"] == "Rate limited"
 
-    # One current row per attempt; revision 3 = reserved, dispatched, terminal.
+    # One current row per attempt; the failed probe also retains its failure before terminalization.
     finals = [row for row in ledger_rows(tmp_path) if row.get("kind") == "attempt"]
     assert len({row["attempt_id"] for row in finals}) == len(finals) == 2
     assert sorted(row["state"] for row in finals) == ["settled", "unresolved"]
+    assert sorted((row["state"], row["revision"]) for row in finals) == [("settled", 3), ("unresolved", 4)]
+    assert next(row for row in finals if row["state"] == "unresolved")["physical_failure"]
     for row in finals:
-        assert row["revision"] == 3
         assert row["task_id"] == "system:provider_test"
         assert row["root_task_id"] == "system:provider_test"
         assert row["category"] == "provider_test"
@@ -735,3 +736,26 @@ def test_provider_test_and_active_model_enumeration_never_select_legacy_heavy():
     assert provider_api._provider_test_model("anthropic", {
         "OUROBOROS_MODEL_HEAVY": "anthropic::owner-legacy-heavy",
     }) == "anthropic::claude-opus-5"
+
+
+@pytest.mark.parametrize("retired_key", [
+    "OUROBOROS_MODEL_DEEP_SELF_REVIEW", "OUROBOROS_REVIEW_MODELS",
+    "OUROBOROS_SCOPE_REVIEW_MODELS", "OUROBOROS_SCOPE_REVIEW_MODEL",
+])
+def test_provider_test_and_declarations_ignore_retired_review_keys(retired_key):
+    from ouroboros.provider_models import ACTIVE_MODEL_SETTING_KEYS, declared_model_settings
+
+    settings = {retired_key: "anthropic::retired-review"}
+    default_model = provider_api._provider_test_model("anthropic", {})
+    assert default_model
+    assert provider_api._provider_test_model("anthropic", settings) == default_model
+    assert declared_model_settings(settings) == declared_model_settings({})
+    assert retired_key not in ACTIVE_MODEL_SETTING_KEYS
+
+    # An active fallback still participates in both consumers, even with stale
+    # review bytes present. The provider resolver preserves comma-chain order.
+    settings["OUROBOROS_MODEL_FALLBACKS"] = "openai::active-first,anthropic::active-fallback"
+    assert provider_api._provider_test_model("anthropic", settings) == "anthropic::active-fallback"
+    declared = declared_model_settings(settings)
+    assert declared["OUROBOROS_MODEL_FALLBACKS"] == settings["OUROBOROS_MODEL_FALLBACKS"]
+    assert retired_key not in declared

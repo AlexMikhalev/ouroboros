@@ -72,7 +72,8 @@ def test_a_deep_place_with_an_open_review_and_line_reopens_at_the_newest_message
 
 
 @pytest.mark.parametrize('browser_engine', ['chromium', 'webkit'])
-def test_main_coverage_status_remains_readable_away_from_history_control(direct_server_with_data, browser_engine, tmp_path):
+@pytest.mark.parametrize('theme', ['light', 'dark'])
+def test_main_coverage_status_remains_readable_away_from_history_control(direct_server_with_data, browser_engine, theme, tmp_path):
     from playwright.sync_api import sync_playwright
 
     _write(direct_server_with_data['data_dir'] / 'logs/chat.jsonl', [
@@ -82,6 +83,7 @@ def test_main_coverage_status_remains_readable_away_from_history_control(direct_
         browser = getattr(pw, browser_engine).launch(headless=True)
         try:
             page = browser.new_page(viewport={'width':1280, 'height':850})
+            page.add_init_script(f"localStorage.setItem('ouroboros.theme', '{theme}')")
             _open(page, direct_server_with_data['url'])
             for _ in range(5):
                 _step(page, '#chat-messages', automatic=True)
@@ -96,7 +98,9 @@ def test_main_coverage_status_remains_readable_away_from_history_control(direct_
                 assert box['x'] >= 0 and box['x'] + box['width'] <= width + 1
                 assert box['y'] >= 0 and box['y'] + box['height'] < 850
                 assert page.locator('#page-chat .chat-load-older-note').count() == 1
-                _screenshot(page, tmp_path, f'main-history-status-{width}-{browser_engine}')
+                style = note.evaluate('e => { const s = getComputedStyle(e); return {bg:s.backgroundColor, radius:s.borderRadius, padding:s.paddingLeft}; }')
+                assert style['bg'] != 'rgba(0, 0, 0, 0)' and style['radius'] != '0px' and style['padding'] != '0px', style
+                _screenshot(page, tmp_path, f'main-history-status-{theme}-{width}-{browser_engine}')
         finally:
             browser.close()
 

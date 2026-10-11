@@ -741,7 +741,7 @@ def test_fresh_attempt_replays_exact_owner_text_until_terminal(
                 drive_logs=tmp_path / "logs", task_id=task_id, round_idx=1,
                 event_queue=None, accumulated_usage={}, task_type="task",
                 active_use_local=False, tools=SimpleNamespace(_ctx=first_ctx),
-                drive_root=tmp_path,
+                drive_root=tmp_path, context_fit_plan=None, active_context_mode="max",
             ),
             None,
             attempt_cap=1,
@@ -755,7 +755,7 @@ def test_fresh_attempt_replays_exact_owner_text_until_terminal(
             def __init__(self):
                 self.calls = []
                 self._ctx = SimpleNamespace(
-                    task_metadata={}, _request_wire_custom_receipts=(),
+                    task_metadata={}, _request_wire_custom_receipts=(), drive_root=tmp_path,
                 )
 
             def get_timeout(self, _name):
@@ -807,7 +807,7 @@ def test_fresh_attempt_replays_exact_owner_text_until_terminal(
             drive_logs=tmp_path / "logs", task_id=task_id, round_idx=1,
             event_queue=None, accumulated_usage={}, task_type="task",
             active_use_local=False, tools=SimpleNamespace(_ctx=successor_ctx),
-            drive_root=tmp_path,
+            drive_root=tmp_path, context_fit_plan=None, active_context_mode="max",
         ),
         None,
         attempt_cap=1,
@@ -900,8 +900,8 @@ def test_full_hurry_lifecycle_writes_zero_chat_rows_and_zero_bus_calls(tmp_path,
 
 
 def test_p3_commit_and_safety_surfaces_never_consult_hurry(monkeypatch, tmp_path):
-    """§19.7.2 item 10: no hurry predicate/import enters commit review, advisory
-    pre-review, triad/scope, deterministic gates, safety, or the tool boundary;
+    """§19.7.2 item 10: no hurry predicate/import enters commit review, the
+    preflight, triad/scope, deterministic gates, safety, or the tool boundary;
     and arming the latch leaves settings/env byte-identical."""
     import os
 
@@ -911,7 +911,8 @@ def test_p3_commit_and_safety_surfaces_never_consult_hurry(monkeypatch, tmp_path
         repo / "ouroboros" / "tools" / "registry.py",
         repo / "ouroboros" / "tools" / "git.py",
         repo / "ouroboros" / "tools" / "parallel_review.py",
-        repo / "ouroboros" / "tools" / "claude_advisory_review.py",
+        repo / "ouroboros" / "tools" / "commit_gate.py",
+        repo / "ouroboros" / "tools" / "preflight_review.py",
         repo / "prompts" / "SAFETY.md",
     ]
     for path in guarded:

@@ -97,12 +97,13 @@ def collect_routes(
         api_claudexor_status,
         api_claudexor_wake,
     )
-    from ouroboros.gateway.claudexor_quota import api_claudexor_quota_refresh
+    from ouroboros.gateway.claudexor_quota import api_claudexor_account_reset, api_claudexor_quota_refresh
+    from ouroboros.gateway.harness_maintenance import harness_maintenance_routes
     from ouroboros.gateway.onboarding import (
         api_onboarding_complete,
         api_onboarding_subagents_preview,
     )
-    from ouroboros.gateway.settings import api_reviewer_slots
+    from ouroboros.gateway.settings import api_review_pool
     from ouroboros.gateway.mcp import api_mcp_refresh, api_mcp_status, api_mcp_test
     from ouroboros.gateway.models import (
         api_local_model_install_runtime,
@@ -152,6 +153,7 @@ def collect_routes(
     )
     from ouroboros.gateway import desktop_autostart as desktop_host
     from ouroboros.gateway.onboarding_host import onboarding_page
+    from ouroboros.gateway.owner_effort import api_owner_effort_range
     from ouroboros.gateway.settings import (
         api_acknowledge_capability,
         api_onboarding,
@@ -231,11 +233,7 @@ def collect_routes(
         Route("/api/onboarding", endpoint=onboarding),
         # ONE atomic owner-scoped completion (D-8): replaces the wizard's old
         # POST /api/settings + POST /api/owner/runtime-mode pair.
-        Route(
-            "/api/onboarding/subagents/preview",
-            endpoint=api_onboarding_subagents_preview,
-            methods=["POST"],
-        ),
+        Route("/api/onboarding/subagents/preview", endpoint=api_onboarding_subagents_preview, methods=["POST"]),
         Route("/api/onboarding/complete", endpoint=api_onboarding_complete, methods=["POST"]),
         Route("/api/settings", endpoint=settings_get, methods=["GET"]),
         Route("/api/settings", endpoint=settings_post, methods=["POST"]),
@@ -248,6 +246,7 @@ def collect_routes(
         Route("/api/owner/runtime-mode", endpoint=api_owner_runtime_mode, methods=["POST"]),
         Route("/api/owner/auto-grant", endpoint=api_owner_auto_grant, methods=["POST"]),
         Route("/api/owner/context-mode", endpoint=api_owner_context_mode, methods=["POST"]),
+        Route("/api/owner/effort-range", endpoint=api_owner_effort_range, methods=["POST"]),
         Route("/api/owner/safety-mode", endpoint=api_owner_safety_mode, methods=["POST"]),
         Route("/api/owner/capability-ack", endpoint=api_acknowledge_capability, methods=["POST"]),
         Route("/api/model-catalog", endpoint=api_model_catalog),
@@ -302,13 +301,12 @@ def collect_routes(
         Route("/api/mcp/test", endpoint=api_mcp_test, methods=["POST"]),
         # Agent accounts (D30): thin proxies of the owned Claudexor daemon's
         # own account surface; zero auth logic on this side.
-        Route("/api/reviewer-slots", endpoint=api_reviewer_slots, methods=["GET"]),
+        Route("/api/review-pool", endpoint=api_review_pool, methods=["GET"]),
         Route("/api/claudexor/status", endpoint=api_claudexor_status, methods=["GET"]),
-        Route(
-            "/api/claudexor/quota/refresh",
-            endpoint=api_claudexor_quota_refresh,
-            methods=["POST"],
-        ),
+        Route("/api/claudexor/account-resets", endpoint=api_claudexor_account_reset, methods=["POST"]),
+        Route("/api/claudexor/account-resets/{operation_id}", endpoint=api_claudexor_account_reset, methods=["GET"]),
+        *harness_maintenance_routes(),
+        Route("/api/claudexor/quota/refresh", endpoint=api_claudexor_quota_refresh, methods=["POST"]),
         Route("/api/claudexor/wake", endpoint=api_claudexor_wake, methods=["POST"]),
         Route("/api/claudexor/login", endpoint=api_claudexor_login, methods=["POST"]),
         Route(

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import copy
 import hashlib
 import json
 from pathlib import Path
@@ -13,8 +12,8 @@ from jsonschema import Draft7Validator
 
 from ouroboros.tools import imagegen as ig
 from ouroboros.tools.registry import ToolRegistry
-from tests.test_claudexor_model_transport import ModelWire, _bytes, _ref, gateway_factory
-from tests.test_imagegen_tool import PNG, configured, ctx, _summary
+from tests.test_claudexor_model_transport import ModelWire, _bytes, _ref, gateway_factory as gateway_factory
+from tests.test_imagegen_tool import PNG, configured as configured, ctx as ctx, _summary
 
 CAPABILITY = {"models": ["gpt-image-2"], "modelsProvenance": "fixture upstream hint",
               "inputMimes": ["image/png", "image/jpeg", "image/webp"], "maxInputImages": 5,
@@ -137,7 +136,6 @@ def test_subscription_edit_whole_result_ack_after_durable_retention(engine, ctx)
 
 @pytest.mark.parametrize("stage", [("POST", "/v2/model-operations"), ("GET", "/v2/model-operations/op-one/result")])
 def test_lost_reply_retains_same_operation_identity_and_never_recreates(engine, ctx, stage):
-    from ouroboros.artifacts import task_artifact_dir_path
     from ouroboros.usage_accounting import read_usage_records
     wire = engine(ImageWire(lose=stage))
     result = invoke(ctx)

@@ -1,4 +1,4 @@
-/** Dependency-free JSDoc mirror of `ouroboros.gateway.contracts`; the interface-language envelopes (`UiI18n*`) sit in ./ui_i18n_types.js. */
+/** Dependency-free JSDoc mirror of `ouroboros.gateway.contracts`; the interface-language envelopes (`UiI18n*`) sit in ./ui_i18n_types.js, the model-route previews in ./model_route_types.js. */
 /**
  * @typedef {Object} CostPresentation
  * @property {'own'|'root_tree'} scope
@@ -32,6 +32,7 @@
  * @property {string} runtime_mode
  * @property {string} context_mode
  * @property {boolean} context_mode_auto_low  // frozen compatibility field; always false
+ * @property {EffortRange} effort_range  // the owner's effort range (POST /api/owner/effort-range), the tolerant read
  * @property {string} safety_mode
  * @property {boolean} skills_repo_configured
  * @property {boolean} github_token_configured
@@ -77,23 +78,7 @@
  * @property {string} phase
  * @property {number} started_at
  */
-/**
- * @typedef {Object} ActiveChatActivity
- * @property {Object=} owner_wait  // quiz-bound state, quiz_state and optional wait_ended_at, independent of Project detail
- * @property {Object=} project_admission_hold  // accepted unstarted work waiting for original Project authority
- * @property {string=} pause_cause  // budget | owner | restart | sleep | unknown; display only
- * @property {Object=} required_question  // read-only pointer to the current required Project quiz
- * @property {boolean=} required_question_unavailable  // a recorded owner-question wait whose detail could not be read: possibly blocked, never "no question"
- * @property {Object.<string,Object>=} model_waits
- * @property {number=} task_attempt
- * @property {string} activity_id
- * @property {number} chat_id
- * @property {string} project_id
- * @property {string} client_message_id  // empty for managed queue rows
- * @property {string} kind  // direct_chat | managed_task — presentational label; membership in this census, not kind, decides liveness
- * @property {string} phase  // managed: queued | budget_pausing | budget_paused | working | finalizing | unknown (unreadable Pause authority); direct: thinking or unknown; parked direct turns retain ID/kind and use managed phases
- * @property {number} started_at
- */
+/** @typedef {import('./task_activity_types.js').ActiveChatActivity} ActiveChatActivity */
 /**
  * @typedef {Object} EvolutionDataResponse
  * @property {Object[]} points
@@ -327,6 +312,9 @@
  * @property {string=} model_lane
  * @property {string=} requested_model_lane
  * @property {string=} effective_model_lane
+ * @property {string=} effort_level  The effort decided at dispatch (a session row: its leaf's); empty = unknown, no chip.
+ * @property {string=} effort_requested  The parent's request when it made one.
+ * @property {string=} effort_source  auto | pin | model_name | cyber.
  * @property {string=} executor_route
  *   Phase 6: the OPAQUE harness route RESOLVED AT DISPATCH for this bubble /
  *   subagent (delegated routes only) — the route it was sent to, not a receipt
@@ -462,6 +450,7 @@
  *   taskSourceDownloadUrl; not an original reviewer transcript or a copy of the row.
  * @property {string=} target_label
  * @property {string=} project_id
+ * @property {string=} task_name  // structured work title on Project creation/transfer entries
  * @property {string=} project_name
  * @property {string=} handoff_id  // immutable origin/destination receipt identity
  * @property {Object=} terminal_time  // host-owned occurrence; ts remains publication time
@@ -847,6 +836,15 @@
  */
 
 /**
+ * @typedef {Object} EffortRange  min ≤ recommended ≤ max, each an EFFORT_SCALE tier (the tolerant read)
+ * @property {string} min
+ * @property {string} recommended
+ * @property {string} max
+ *
+ * @typedef {Object} OwnerEffortRangeResponse
+ * @property {boolean} ok
+ * @property {EffortRange} effort_range
+ *
  * @typedef {Object} OwnerSafetyModeResponse
  * @property {boolean} ok
  * @property {string} safety_mode  // full | light | off (v6.54.3)
@@ -1099,7 +1097,6 @@
  * @property {string=} reason
  * @property {string=} error
  */
-
 /**
  * @typedef {Object} TaskEventCursor
  * @property {number} v
@@ -1107,20 +1104,17 @@
  * @property {string} view
  * @property {Object<string, Object<string, number>>} positions
  */
-
 /**
  * @typedef {Object} TaskEventsRequest
  * @property {number} v
  * @property {number=} wait
  * @property {?TaskEventCursor=} cursor
  */
-
 /**
  * @typedef {Object} TaskListResponse
  * @property {Object[]} tasks
  * @property {Object=} queue
  */
-
 /**
  * Read-time "where did the money go" projection on GET /api/tasks/{task_id}
  * (ROOT tasks only; computed from the physical-attempt ledger at read time,
@@ -1142,7 +1136,6 @@
  * @property {boolean} cost_final
  * @property {"physical_attempt_ledger"} authority
  */
-
 /**
  * GET /api/tasks/{task_id} — the public task-result envelope (open shape;
  * stored task-result keys pass through) plus additive typed projections.
@@ -1179,12 +1172,10 @@
  * @property {string=} error
  * @property {ContinuationOffer=} continuation_offer
  */
-
 /**
- * PROVENANCE for each independent facet of GET /api/claudexor/status. An empty
- * collection cannot say whether the daemon was ASKED: the owned Claudexor daemon
- * starts lazily, so an idle machine served empty lists that every consumer read
- * as "no account connected" while real accounts sat in the agent home.
+ * PROVENANCE for each independent facet of GET /api/claudexor/status. An empty collection
+ * cannot say whether the lazily started daemon was ASKED: an idle machine's empty lists
+ * read as "no account connected" while real accounts sat in the agent home.
  * "ok" — read, the matching collection is AUTHORITATIVE (empty means empty);
  * "not_read" — never asked: no daemon, or discovery/handshake died before the
  * fan-out (which leaves every facet untouched); "failed" — asked, and no
@@ -1192,7 +1183,6 @@
  * Facets are independent: one fanned-out read can fail while its siblings land.
  * @typedef {"ok"|"not_read"|"failed"} ClaudexorReadState
  */
-
 /**
  * Independent facets: ok=authoritative, not_read=never asked, failed=no usable answer. Empty without ok proves nothing.
  * @typedef {Object} ClaudexorStatusReads
@@ -1200,7 +1190,6 @@
  * @property {ClaudexorReadState} accounts
  * @property {ClaudexorReadState} quota
  */
-
 /**
  * Last settled external leaf projected for the Available-subagents editor.
  * `selected_subagent_id` is optional only for pre-migration receipts, which
@@ -1227,7 +1216,6 @@
  * @property {string=} attempt_id
  * @property {Object=} fallback
  */
-
 /**
  * @typedef {Object} ClaudexorStatusResponse
  * @property {Object=} daemon
@@ -1236,12 +1224,31 @@
  * @property {Object=} profiles
  * @property {Array<Object>=} quota
  * @property {Array<Object>=} quota_absences
+ * @property {Array<Object>=} resources Engine resource facets retain decimal strings, units and independent observation times.
+ * @property {Object<string, boolean>=} resource_capabilities Catalog-negotiated read, refresh, reset and inspect_reset operations.
+ * @property {ClaudexorReadState=} resource_capabilities_read Operations-catalog evidence, independent of reads.catalog (agent capabilities).
  * @property {ClaudexorStatusReads=} reads
  * @property {boolean=} unified_accounts
+ * @property {Object<string, {observed_at: ?string, stale: boolean, error: ?string}>=} facets Per facet; a failed or unasked facet serves its last read, stale.
  * @property {SubagentLastDelegation=} subagent_last_delegation
  * @property {string=} error
  */
-
+/**
+ * @typedef {Object} ClaudexorPassiveReadError
+ * @property {string} code
+ * @property {number=} status_code
+ */
+/**
+ * @typedef {Object} ClaudexorQuotaResponse
+ * @property {'quota'} view
+ * @property {Object} profiles
+ * @property {Array<Object>} quota
+ * @property {Array<Object>} quota_absences
+ * @property {boolean} unified_accounts
+ * @property {ClaudexorStatusReads} reads
+ * @property {Object<'discovery'|'accounts'|'quota', ClaudexorPassiveReadError>} read_errors
+ * @property {Object<string, number>} timings_ms
+ */
 /**
  * One required bare daemon job per operation. Create/input/snapshot metadata and deviceCode stay beside it; attach commands need the proven packaged role.
  * @typedef {Object} ClaudexorLoginJobResponse
@@ -1257,7 +1264,6 @@
  * @property {('posix'|'powershell')=} attach_shell
  * @property {boolean=} ok
  */
-
 /**
  * Typed engine job error; marked retryable probe 503 and bounded engine actions pass through.
  * @typedef {Object} ClaudexorLoginJobProblem
@@ -1265,14 +1271,12 @@
  * @property {string=} code
  * @property {Array<string>=} required_actions
  */
-
 /**
  * @typedef {Object} ClaudexorVendorCredentialDisposition
  * @property {'vendor'} owner
  * @property {'left_unchanged'} state
  * @property {'os_user'} scope
  */
-
 /**
  * Exact daemon receipt from deleting one credential-profile binding.
  * @typedef {Object} ClaudexorCredentialProfileDeleteResponse
@@ -1288,13 +1292,11 @@
  * @property {number} schema_version
  * @property {Object[]} tasks  // each row carries status/retained/restorable
  */
-
 /**
  * @typedef {Object} ScheduleUpsertResponse
  * @property {boolean} ok  // follows schedule.audit: an incomplete audit is not ok
  * @property {Object} schedule
  */
-
 /**
  * @typedef {Object} ScheduleActionResponse
  * @property {boolean} ok  // the requested state was ACHIEVED and both audit records landed (restored_not_ready: changed, not ok)
@@ -1308,7 +1310,6 @@
  * @property {Object=} schedule
  * @property {string[]=} allowed
  */
-
 /**
  * Legacy DELETE response: the ScheduleActionResponse subset read by previous callers.
  * @typedef {Object} ScheduleDeleteResponse

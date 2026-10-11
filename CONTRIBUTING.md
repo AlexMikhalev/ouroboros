@@ -118,9 +118,16 @@ That is the one fast recipe (node lane, then every default-lane test in a single
 xdist run); a bare `pytest tests/` runs the same tests in one process and takes
 many times longer. Like CI's default lanes it leaves out the opt-in marker
 lanes (`size_ratchet`, `browser`, `ui_browser`, `portable_detail`,
-`skill_smoke`, `integration`); a change that touches repository size or a
-reference-book chapter also runs `python -m pytest tests/ -m size_ratchet`. `python scripts/run_tests.py tests/test_x.py` forwards a
-focused run. Inside Ouroboros a reviewed commit (`commit_reviewed` /
+`skill_smoke`, `integration`). A change that touches repository size or a
+reference-book chapter also runs the size lane against its contribution base:
+
+```bash
+OURO_SIZE_RATCHET_BASE_REF=upstream/ouroboros python -m pytest -o addopts="" tests/ -m size_ratchet
+```
+
+Use the exact target-base SHA when verifying a frozen range. Without a base,
+the reference-book comparison is skipped. `python scripts/run_tests.py tests/test_x.py`
+forwards a focused run. Inside Ouroboros a reviewed commit (`commit_reviewed` /
 `vcs_commit_reviewed`) runs the complete battery in its hermetic gate unless
 `skip_tests` is set, so running it by hand first is optional rather than a
 second requirement; for a pull request, CI is that gate. If the full battery could
@@ -147,8 +154,8 @@ committed diff to a **separate agent context**. Use a subagent, new task, or
 fresh agent session. Reviewing in the authoring conversation does not count.
 
 The main review path is an **agentic checklist review**: the reviewer reads
-the repository with its own tools and covers the "Intent / Scope Review
-Checklist" from [`docs/CHECKLISTS.md`](docs/CHECKLISTS.md) — every one of its
+the repository with its own tools and covers the "Coupling questions"
+section of [`docs/CHECKLISTS.md`](docs/CHECKLISTS.md) — every one of its
 eight items (`intent_alignment`, `forgotten_touchpoints`,
 `cross_surface_consistency`, `regression_surface`, `prompt_doc_sync`,
 `architecture_fit`, `cross_module_bugs`, `implicit_contracts`) — following
@@ -168,7 +175,7 @@ docs/ARCHITECTURE.md, docs/DEVELOPMENT.md, and docs/DESIGN.md by their
 headings and read every section relevant to this change in full.
 Inspect the complete diff, touched files, relevant callers, tests, and docs.
 
-Cover the Intent / Scope Review Checklist from docs/CHECKLISTS.md exactly:
+Cover the Coupling questions from docs/CHECKLISTS.md exactly:
 output a JSON array of objects with the keys "item", "verdict" (PASS/FAIL),
 "severity" (critical/advisory), and "reason", covering all eight checklist
 items per its output contract — PASS rows are mandatory and justified with a
@@ -209,18 +216,19 @@ checkout of that staged patch, so edits during the run never reach the
 reviewers); with `--contributor` it runs the proposal's own hermetic tests and
 then the same runtime operation Ouroboros uses to review a change,
 `review_change`, over a committed `base..head` proposal, and writes the public
-packet. It uses the reviewer slots actually configured on the machine:
-`api_chat`, `agent_session`, or a mixture.
+packet. It uses the review pool actually configured on the machine — the
+catalog rows marked Reviewer in Settings → Agents (`review_eligible` rows of
+`OUROBOROS_SUBAGENTS`): API routes, agent sessions, or a mixture.
 
 Treat this command as **maintainer tooling**, not the default contributor
-path. What a scope reviewer is owed in full is change-relative: the touched
+path. What a retrieving reviewer is owed in full is change-relative: the touched
 protected runtime paths, prompts and frozen contracts, with their declared
 families and cross-language twins. Everything else it reaches itself with
 read-only tools, so the run does not depend on a very large reviewer window.
 Reading coverage is diagnostic: incomplete or unobserved ranges are recorded
 beside the received verdict and never remove a responding reviewer from quorum,
 block a commit or automatically buy another review. The author judges whether
-a concrete gap warrants more reading. A scope review that cannot run at
+a concrete gap warrants more reading. A coupling review that cannot run at
 all — an unreadable repository, an unavailable review subject, a reviewer that
 failed or answered outside the contract — is reported as
 `SCOPE_REVIEW_BLOCKED` with its cause, and the evidence packet is preserved
@@ -313,7 +321,7 @@ Complete the PR template with:
 - reviewed base SHA and head SHA;
 - verdict, findings, and their disposition;
 - checks, coverage limitations, and full output or artifact link;
-- the scope-checklist coverage table and the reviewer's checklist JSON;
+- the coupling-questions coverage table and the reviewer's checklist JSON;
 - `NOT_RUN` plus a reason for unavailable verification or review.
 
 Review output is public evidence. Inspect attachments for credentials, private

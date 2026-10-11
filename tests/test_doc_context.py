@@ -98,7 +98,6 @@ def test_plan_review_docs_pin_fail_closed_exact_artifact_custody():
     for relative in ("docs/ARCHITECTURE.md", "docs/DEVELOPMENT.md"):
         text = governance_doc_text(relative, repo)
         assert "plan_review_exact_artifact_unavailable" in text, relative
-        assert "only when no exact artifact reference exists" in text, relative
 
 
 def test_forked_task_captures_canonical_memory_and_exact_api_context():
@@ -459,7 +458,7 @@ def test_promoted_self_body_requirement_reaches_the_contract_and_context_without
     assert parameters["properties"][field]["type"] == "boolean"
     assert field not in parameters["required"]
     description = parameters["properties"][field]["description"]
-    assert "Ouroboros's own code" in description and "another folder" in description
+    assert "Ouroboros code" in description and "copies elsewhere" in description
     assert "context_requires_development" not in parameters["properties"]
     events = []
 

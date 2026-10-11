@@ -229,10 +229,12 @@ def _recover_image(ctx: ToolContext, request_id: str) -> str:
                            details={"request_id": request_id, "automatic_retry": False})
         reservation = usage.AttemptReservation(request_id, root, model, row["provider"], row.get("reservation_upper_bound_usd"))
         eligible = row["state"] in {"dispatched", "unresolved"} or is_abandoned_settlement(row)
+        accounted = True
         if recovered and recovered[0] == "released":
+            accounted = row["state"] == "released"
             if eligible:
-                release_pre_dispatch_attempt(reservation, ProviderNotDispatched("Recorded image operation never started"),
-                                             expected_revision=row["revision"])
+                accounted = release_pre_dispatch_attempt(reservation, ProviderNotDispatched("Recorded image operation never started"),
+                                                         expected_revision=row["revision"])
             eligible = False
         family = "model" if subscription else "image"
         manifest, payload, _ref = read_call_payload(root, task_id=task, call_id=f"{request_id}_{family}_response")
@@ -251,8 +253,9 @@ def _recover_image(ctx: ToolContext, request_id: str) -> str:
             return _retain_subscription_result(ctx, result, payload["result_json_utf8"].encode("utf-8"),
                 model=model, request_id=request_id,
                 facts={"operation_id": manifest.get("operation_id"), "recovered": True,
-                       "dispatch_state": manifest.get("dispatch_state"), "acknowledgement": "pending"},
-                acknowledge=lambda: _acknowledge_image(manifest["operation_id"], manifest["response_ref"]))
+                       "dispatch_state": manifest.get("dispatch_state"), "acknowledgement": "pending",
+                       "warnings": None if accounted else ["Original accounting release is pending; use recover_image before acknowledging custody."]},
+                acknowledge=(lambda: _acknowledge_image(manifest["operation_id"], manifest["response_ref"])) if accounted else None)
         return _retain_images(ctx, result, model=model, request_id=request_id, facts={"recovered": True})
     except (ClaudexorUnavailable, FileNotFoundError, ValueError, KeyError) as exc:
         return _result(ctx, "IMAGE_OUTCOME_UNKNOWN", f"Image observation unavailable ({type(exc).__name__}); no generation was submitted.",
@@ -428,7 +431,9 @@ def _generate_subscription_image(ctx: ToolContext, model: str, payload: dict) ->
     from ouroboros.gateways.claudexor import _READ_TIMEOUT_SEC
     from ouroboros.llm_claudexor import ClaudexorModelNotDispatched, _usage
     from ouroboros.model_wait import ModelWaitInterrupted, current_model_wait
+    from ouroboros.observability import call_manifest_path, write_call_manifest
     from ouroboros.usage_accounting import last_physical_attempt_capture
+    from ouroboros.utils import read_json_dict
 
     request_id, operation_id = uuid.uuid4().hex, ""
     request_ref, raw_result = {}, b""
@@ -448,6 +453,14 @@ def _generate_subscription_image(ctx: ToolContext, model: str, payload: dict) ->
         if set(payload["options"]) - set(capability["supportedOptions"]):
             raise ValueError("Selected engine source does not support the requested image options.")
 
+        def retain_request_identity(**facts):
+            # Input bytes have one private CAS write. Update only its tiny manifest
+            # when upload/create identity arrives, never rehash edit inputs on polls.
+            root = pathlib.Path(getattr(ctx, "budget_drive_root", None) or ctx.drive_root)
+            task, call = task_id_for_artifacts(ctx), f"{request_id}_model_request"
+            manifest = read_json_dict(call_manifest_path(root, task, call))
+            write_call_manifest(root, task_id=task, call_id=call, manifest={**manifest, **facts})
+
         def prepare(reservation):
             nonlocal request_ref, request_id
             request_id = reservation.attempt_id
@@ -455,7 +468,7 @@ def _generate_subscription_image(ctx: ToolContext, model: str, payload: dict) ->
             _retain_call(ctx, request_id, model, "request", payload)
             request_ref = gateway.upload_model_request(payload, idempotency_key=request_id)
             recovery["request_ref"] = request_ref
-            _retain_call(ctx, request_id, model, "request", payload, request_ref=request_ref)
+            retain_request_identity(request_ref=request_ref)
 
         def control():
             waiter = current_model_wait()
@@ -469,8 +482,6 @@ def _generate_subscription_image(ctx: ToolContext, model: str, payload: dict) ->
                 raise ModelWaitInterrupted(reason)
 
         def observe(detail):
-            _retain_call(ctx, request_id, model, "request", payload,
-                         request_ref=request_ref, operation_id=operation_id)
             _retain_call(ctx, request_id, model, "response", {"operation": detail},
                          operation_id=operation_id, operation_state=detail.get("state"),
                          dispatch_state=(detail.get("dispatch") or {}).get("state"),
@@ -484,6 +495,7 @@ def _generate_subscription_image(ctx: ToolContext, model: str, payload: dict) ->
                 detail = claudexor_images.create_image_operation(gateway, request_ref, idempotency_key=request_id)
                 operation_id = detail["id"]
                 recovery["operation_id"] = operation_id
+                retain_request_identity(operation_id=operation_id)
                 observe(detail)
                 while detail.get("state") in {"queued", "running"}:
                     control()
@@ -536,9 +548,13 @@ def _generate_subscription_image(ctx: ToolContext, model: str, payload: dict) ->
             acknowledge=(lambda: _acknowledge_image(operation_id, recovery["response_ref"], gateway)) if accounted else None)
     except ClaudexorModelNotDispatched:
         if raw_result:
+            capture = last_physical_attempt_capture()
+            released = capture is not None and capture.state == "released"
+            if not released:
+                recovery["warnings"] = ["Original accounting release is pending; use recover_image before acknowledging custody."]
             return _retain_subscription_result(ctx, json.loads(raw_result), raw_result,
                 model=model, request_id=request_id, facts=recovery,
-                acknowledge=lambda: _acknowledge_image(operation_id, recovery["response_ref"], gateway))
+                acknowledge=(lambda: _acknowledge_image(operation_id, recovery["response_ref"], gateway)) if released else None)
         return _result(ctx, "IMAGE_NOT_DISPATCHED", "Engine confirmed no image dispatch.", details=recovery)
     except (PhysicalAttemptPreparationFailed, PhysicalAttemptLimitExceeded, ClaudexorUnavailable) as exc:
         return _result(ctx, "CAPABILITY_UNAVAILABLE", f"Image request refused before dispatch ({type(exc).__name__}).", details=recovery)

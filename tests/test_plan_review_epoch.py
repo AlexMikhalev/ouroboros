@@ -769,46 +769,45 @@ def test_an_author_finish_narrates_its_rationale_in_the_models_voice(harness, mo
 
 
 def _pinned_xhigh_rows_env(monkeypatch):
-    """Three api rows the owner pinned `xhigh`, read by the REAL plan builder."""
-    from ouroboros.reviewer_slot_config import REVIEWER_SLOTS_ENV
+    """Three api pool rows the owner pinned `xhigh`, read by the REAL plan builder."""
     from ouroboros.tools import plan_review as pr, plan_review_runtime
+    from tests.review_pool_rosters import pool_roster, pool_seat
 
-    payload = {
-        "triad": [{"slot_id": sid, "route": {"kind": "api_chat", "target_id": model}, "effort": "xhigh"}
-                  for sid, model in (("s1", "m/a"), ("s2", "m/b"), ("s3", "m/c"))],
-        "scope": [{"slot_id": "scope-route", "route": {"kind": "api_chat", "target_id": "openai/gpt-5.6-sol"}}],
-        "advisory": {"enabled": True, "route": {"kind": "api", "target_id": ""}},
-    }
-    monkeypatch.setenv(REVIEWER_SLOTS_ENV, json.dumps(payload))
+    monkeypatch.setenv("OUROBOROS_SUBAGENTS", pool_roster(*(
+        pool_seat(sid, model, effort="xhigh") for sid, model in (("s1", "m/a"), ("s2", "m/b"), ("s3", "m/c")))))
     monkeypatch.setenv("OUROBOROS_EFFORT_REVIEW", "medium")
     monkeypatch.setattr(pr, "_plan_review_slots", plan_review_runtime.plan_review_slots)
 
 
-def test_the_order_outranks_pinned_rows_and_a_weaker_order_is_named(harness, monkeypatch):
-    """Through the real builder on rows pinned `xhigh`: an order `low` runs every seat at
-    low (reverted, the pins win), the wave records the effective per-seat effort and the
-    owner baseline as one typed `ordered_weaker`, and the verdict names it; the same order
-    replays free; `max` on the OPEN wave re-dispatches a paid panel with nothing weaker."""
+def test_the_order_outranks_pinned_rows_only_in_cyber_pro_and_a_weaker_order_is_named(harness, monkeypatch):
+    """Real builder, rows pinned `xhigh`: outside Cyber Pro an order `low` is NOT applied (the pins
+    win) and every seat says so; in Cyber Pro it beats the pins, the wave records the effective
+    efforts and the owner baseline as `ordered_weaker`, the same order replays free, `max` re-dispatches."""
     _patch_health(monkeypatch, lambda slots: {})
     _pinned_xhigh_rows_env(monkeypatch)
     open_finding = json.dumps([_finding("n1", "blocking", breaks="claim_1")])
     sub = harness.install({"s1": open_finding, "s2": CLEAN, "s3": CLEAN})
+    kept = _call(harness.make_ctx(task_id="task-pinned"), reviewer_effort="low")
+    pinned_wave = _state(harness, "task-pinned")["waves"][-1]
+    assert [(a["effort"], a["declared_effort"], "reviewer_effort_not_applied" in a["disclosures"])
+            for a in pinned_wave["actors"]] == [("xhigh", "", True)] * 3
+    assert "ordered_weaker" not in pinned_wave and "ORDERED WEAKER" not in kept and len(sub.calls) == 1
+    monkeypatch.setattr("ouroboros.config._BOOT_RUNTIME_MODE", "cyber_pro")
     ctx = harness.make_ctx()
     first = _call(ctx, reviewer_effort="low")
     assert _control(first) == {"outcome": "REVIEW_REQUIRED", "closed": False}
-    assert [s.effort for s in sub.calls[0]["slots"]] == ["low", "low", "low"]
+    assert [s.effort for s in sub.calls[1]["slots"]] == ["low"] * 3
     wave = _state(harness)["waves"][-1]
     assert [(a["effort"], a["declared_effort"]) for a in wave["actors"]] == [("low", "low")] * 3
-    assert wave["owner_efforts"] == {"s1": "xhigh", "s2": "xhigh", "s3": "xhigh"}
+    assert wave["owner_efforts"] == dict.fromkeys(("s1", "s2", "s3"), "xhigh")
     assert wave["ordered_weaker"] == {sid: {"effort": "low", "owner_effort": "xhigh"} for sid in ("s1", "s2", "s3")}
-    assert "ORDERED WEAKER THAN THE OWNER SETTING on s1 (low < xhigh), s2 (low < xhigh), s3 (low < xhigh)" in first
-    assert "· effort low (ordered) ·" in first
-    assert "cached exact review" in _call(ctx, reviewer_effort="low") and len(sub.calls) == 1
+    assert ("ORDERED WEAKER THAN THE OWNER SETTING on s1 (low < xhigh), s2 (low < xhigh), s3 (low < xhigh)" in first
+            and "· effort low (ordered) ·" in first)
+    assert "cached exact review" in _call(ctx, reviewer_effort="low") and len(sub.calls) == 2
     stronger = _call(ctx, reviewer_effort="max")
-    assert "cached exact review" not in stronger and len(sub.calls) == 2
-    assert [s.effort for s in sub.calls[1]["slots"]] == ["max", "max", "max"]
-    assert _state(harness)["cycles_paid"] == 2
-    assert "ordered_weaker" not in _state(harness)["waves"][-1] and "ORDERED WEAKER" not in stronger
+    assert "cached exact review" not in stronger and [s.effort for s in sub.calls[2]["slots"]] == ["max"] * 3
+    assert _state(harness)["cycles_paid"] == 2 and "ordered_weaker" not in _state(harness)["waves"][-1]
+    assert "ORDERED WEAKER" not in stronger
 
 
 def test_the_owner_baseline_is_recorded_at_dispatch_and_carried_through_collection(harness, monkeypatch):
@@ -819,6 +818,7 @@ def test_the_owner_baseline_is_recorded_at_dispatch_and_carried_through_collecti
 
     _patch_health(monkeypatch, lambda slots: {})
     _pinned_xhigh_rows_env(monkeypatch)
+    monkeypatch.setattr("ouroboros.config._BOOT_RUNTIME_MODE", "cyber_pro")  # the order beats the pins only here
     calls = []
     _install_barrier_substrate(monkeypatch, calls)
     ctx = harness.make_ctx()
@@ -826,11 +826,10 @@ def test_the_owner_baseline_is_recorded_at_dispatch_and_carried_through_collecti
     wave = _state(harness)["waves"][-1]
     assert wave["custody_pending"] is True and wave["owner_efforts"]["s1"] == "xhigh"
     # The owner drops every pin before collection: the recorded baseline still speaks.
-    from ouroboros.reviewer_slot_config import REVIEWER_SLOTS_ENV
-    payload = json.loads(__import__("os").environ[REVIEWER_SLOTS_ENV])
-    for row in payload["triad"]:
+    payload = json.loads(__import__("os").environ["OUROBOROS_SUBAGENTS"])
+    for row in payload["items"]:
         row["effort"] = "low"
-    monkeypatch.setenv(REVIEWER_SLOTS_ENV, json.dumps(payload))
+    monkeypatch.setenv("OUROBOROS_SUBAGENTS", json.dumps(payload))
     collected = _collect(ctx, wave["request_fingerprint"])
     settled = _state(harness)["waves"][-1]
     assert settled["custody_pending"] is False and settled["owner_efforts"] == wave["owner_efforts"]

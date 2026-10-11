@@ -365,6 +365,13 @@ CURRENT_PRODUCER_CONTRACTS = {
     # Owner Batch4: a call the owner's Pause fenced before its launch handoff never
     # ran; it is the substrate's answer, homed with the other runtime refusals.
     "OWNER_PAUSE_NOT_STARTED": (True, "blocked"),
+    # git_managed_postcommit: a managed merge whose post-commit gates Pause refused, and a
+    # retained commit whose binding changed before Resume. Both publish typed results; the
+    # bare texts carry no marker the adapter types, as for CANDIDATE_ALREADY_BOUND above.
+    "OWNER_PAUSE": (False, "ok"),
+    "native:LEGACY_BLOCKED:OWNER_PAUSE": (True, "blocked"),
+    "MANAGED_UPDATE_POSTCOMMIT_CHANGED": (False, "ok"),
+    "native:LEGACY_TOOL_ERROR:MANAGED_UPDATE_POSTCOMMIT_CHANGED": (True, "error"),
     "OWNER_LAUNCH_AUTHORITY_UNAVAILABLE": (True, "unavailable"),
     "STOP_ACTION_CONFLICT": (True, "blocked"),
     "SAFETY_ADVICE": (False, "ok"),
@@ -373,12 +380,11 @@ CURRENT_PRODUCER_CONTRACTS = {
     # tools/vision.py `_no_image_route`: no configured model could take the image at all,
     # told apart from VLM_NO_VISION_MODEL (every candidate confirmed unable); same VLM family answer.
     "VLM_NO_MODEL": (True, "vlm_error"),
-    # imagegen.py adds its three typed markers after the retired golden source.
+    # imagegen.py adds its typed markers after the retired golden source.
     # Same contract shape as the VLM family: rate limit is a soft window
     # (text lane unaffected), unknown outcome and provider failure are errors.
     "IMAGE_RATE_LIMITED": (True, "unavailable"),
     "IMAGE_OUTCOME_UNKNOWN": (True, "error"),
-    "IMAGE_ERROR": (True, "error"),
     "IMAGE_NOT_DISPATCHED": (True, "unavailable"),
     "IMAGE_PROVIDER_REJECTED": (True, "error"),
     "IMAGE_RESULT_INCOMPLETE": (True, "error"),
@@ -448,6 +454,13 @@ CURRENT_PRODUCER_CONTRACTS = {
     # voice (delegated, Presence, agent-to-agent) through native ACCESS_BLOCKED.
     "MAIN_NOTICE_BLOCKED": (True, "blocked"),
     "native:ACCESS_BLOCKED:MAIN_NOTICE_BLOCKED": (True, "blocked"),
+    # #1074: an admitted, absent path is a discovery miss — a successful call with
+    # a warning, the list_files/read_file parity. search_code's miss is a new
+    # identifier; the image loader now publishes the already-recorded
+    # FILE_NOT_FOUND text natively as LEGACY_WARNING (the plain answer is unchanged).
+    "SEARCH_NOT_FOUND": (False, "ok"),
+    "FILE_NOT_FOUND": (False, "ok"),
+    "native:LEGACY_WARNING:FILE_NOT_FOUND": (False, "ok"),
 }
 
 
@@ -737,14 +750,13 @@ _RESIDUAL_TEXT_INSPECTIONS: Mapping[str, tuple[int, str]] = MappingProxyType({
     # The row is gone rather than zeroed: a module absent from this inventory may
     # hold none at all, which is exactly the claim now.
     "ouroboros/memory.py": (1, "tools.jsonl rows appended by consciousness carry neither status nor code"),
-    "ouroboros/skill_review_prompt.py": (2, "skill review verdict text, not a tool result"),
     "ouroboros/tools/github.py": (12, "private helper-failure checks between two functions of one tool"),
     # Upstream re-homed the skill-publish helper checks into their own module
-    # (skill_publish_github.py) and split the advisory run into
-    # preflight_review_run.py on this tree — redistribution, not growth.
+    # (skill_publish_github.py) — redistribution, not growth. The advisory
+    # pipeline's seven (claude_advisory_review.py, preflight_review_run.py) and
+    # the skill advisory critic's two (skill_review_prompt.py) left with that
+    # pipeline; their rows are gone rather than zeroed.
     "ouroboros/skill_publish_github.py": (7, "private helper-failure checks between two functions of one tool"),
-    "ouroboros/tools/claude_advisory_review.py": (4, "private helper-failure checks between two functions of one tool"),
-    "ouroboros/tools/preflight_review_run.py": (3, "private helper-failure checks between two functions of one tool"),
     # Post-cutoff upstream module: the request-wire custom-tool receipts compose
     # their own ⚠️ argument-error texts; predates the organ, upstream truth.
     "ouroboros/openai_chat_dispatch.py": (2, "private helper-failure checks between two functions of one tool"),

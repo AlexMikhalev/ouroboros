@@ -988,7 +988,18 @@ def supervised_wait(
     checkpoint_reason: str = "",
     wait_once: Optional[Callable[..., str]] = None,
 ) -> ToolResult:
-    """Renew quiet windows internally and return only a meaningful wake batch."""
+    """Renew quiet windows internally and return only a meaningful wake batch.
+
+    The journal cursor is durable, so it survives worker restarts. ``cache_horizon_note``
+    is attached once per wake, only when the time since the last model response exceeds
+    the applied cache horizon. ``checkpoint_after_sec`` is a one-shot wake: an earlier
+    real event consumes it, and it never repeats. Renewal runs on a fixed three-second
+    tick with no backoff and no durable outage latch. A read that delivered no daemon
+    answer is a quiet renewal: ``observation_read_timeout`` is our own read bound
+    expiring, ``daemon_unreachable`` a socket that carried nothing, an engine busy code a
+    GET the daemon could not serve; only ``daemon_unreachable`` opens an outage episode
+    (one owner line, plus one line when a read is answered again).
+    """
 
     reason_text = str(checkpoint_reason or "").strip()
     ignored_note = ""
@@ -1083,15 +1094,19 @@ def supervised_wait(
                                 **({"gateway": gateway} if gateway is not None else {}))
             payload = _payload(raw)
             answered = str(payload.get("status") or "") not in _NO_DAEMON_ANSWER_STATUSES
+            # A typed 503 the engine itself sent to the read reached the daemon over an intact
+            # transport: rebuilding it would re-handshake into the same refusal and wake the
+            # model, and it is no outage either. Only a read nothing answered is a dead socket.
+            reached = answered or payload.get("answered") is True
             if observed:
                 _record_observation(state, payload, answered)
-            if not answered:
+            if not reached:
                 gateway = _drop_gateway(gateway)
             unreachable = (
                 payload.get("status") == "observation_pending"
-                and payload.get("reason") == _DAEMON_UNREACHABLE
+                and payload.get("reason") == _DAEMON_UNREACHABLE and not reached
             )
-            if observed and outage_since and answered:
+            if observed and outage_since and reached:
                 # The first read the daemon ANSWERED closes the episode. A refusal
                 # that never reached it (descriptor gone, token unreadable, engine
                 # too old) used to satisfy this and told the owner the daemon was

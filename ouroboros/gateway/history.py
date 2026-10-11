@@ -1,4 +1,15 @@
-"""History/cost endpoints extracted from server.py."""
+"""History/cost endpoints extracted from server.py.
+
+One mapper (``_assemble_history_response``) serves recent and older selections.
+A recent read with an unreadable source still projects the rows the recent
+collector can read, leaves that stream's ``coverage`` span null, adds
+``<stream>_source_unavailable`` to ``window.truncated_by`` and answers
+``has_more`` with null cursors and ``reason_code=history_source_unavailable``.
+A cursor-bound source failure (invalid cursor, unreadable chain, ``OSError``)
+returns an error body with the exact input cursor as ``next_cursor`` and
+``has_more`` true, so the same request can be repeated. ``has_more`` forces
+``window.complete`` false; gaps and older pages also leave it false.
+"""
 
 from __future__ import annotations
 
@@ -83,6 +94,7 @@ _PROGRESS_META_FIELDS = (
     # Phase 6: the resolved delegated route (a harness id), so a replayed
     # bubble keeps its executor chip instead of losing it on reload.
     "executor_route",
+    "effort_level", "effort_requested", "effort_source",  # the effort decision's chip on replay
     "executor_observation", "delegated_activity",  # the executor's typed words/technical events (#1350)
     # The completion-seam evidence block (delegated runs started/settled,
     # subscription spend, harness models) — the chip's layered truth on replay.
@@ -401,6 +413,7 @@ def _annotate_terminal_task_truth(
 
     try:
         from ouroboros.project_dialogue import outcome_phase
+        from ouroboros.projects_registry import task_presentation_name
         from ouroboros.task_status import FINAL_STATUSES
 
         cache = result_cache if result_cache is not None else {}
@@ -555,6 +568,9 @@ def _annotate_terminal_task_truth(
             task_id = str(message.get("task_id") or "")
             if not task_id or message.get("system_type") == "project_question_pointer":
                 continue
+            if message.get("system_type") in {"project_started", "project_handoff"} and not message.get("task_name"):
+                # Legacy rows reuse this request's result read, never split the prose label.
+                message["task_name"] = task_presentation_name(cache.get(task_id))
             # Selected receipt events keep their physical identity, but show current task-result truth.
             row_id = str(message.get("card_row_id") or "")
             if message.get("card_row") == "reviews" and row_id.startswith("merge-receipt:"):
@@ -826,7 +842,7 @@ def _collect_chat_rows(
                 rec["text"] = strip_markdown(rec["text"])
                 if isinstance(entry.get("terminal_time"), dict):
                     rec["terminal_time"] = dict(entry["terminal_time"])
-                for key in ("project_id", "project_name", "target_label", "status", "completion_answer", "handoff_id"):
+                for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer", "handoff_id"):
                     if key in entry:
                         rec[key] = str(entry.get(key) or "")
             annotation = _user_annotation(role, rec["client_message_id"], chat_annotations)

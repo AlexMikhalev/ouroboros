@@ -69,6 +69,7 @@ from ouroboros.gateway.contracts import (
     UploadResponse,
     VideoOutbound,
 )
+from ouroboros.gateway.contracts import ClaudexorPassiveReadError, ClaudexorQuotaResponse
 from ouroboros.gateway.router import collect_routes
 from ouroboros.gateway.widgets import WidgetTab, WidgetsResponse
 
@@ -150,6 +151,39 @@ def test_provider_test_gateway_contract_shape_is_exact():
     }
 
 
+def test_claudexor_quota_view_has_separate_required_contract():
+    hints = get_type_hints(ClaudexorQuotaResponse, include_extras=True)
+    assert set(hints) == {
+        "view", "profiles", "quota", "quota_absences", "unified_accounts",
+        "reads", "read_errors", "timings_ms",
+    }
+    assert ClaudexorQuotaResponse.__total__ and not _notrequired_fields(ClaudexorQuotaResponse)
+    assert get_args(hints["view"]) == ("quota",)
+    assert hints["reads"] is ClaudexorStatusReads
+    assert hints["unified_accounts"] is bool
+    phases, error_type = get_args(hints["read_errors"])
+    assert set(get_args(phases)) == {"discovery", "accounts", "quota"}
+    assert error_type is ClaudexorPassiveReadError
+    assert get_args(hints["timings_ms"]) == (str, int)
+    errors = get_type_hints(ClaudexorPassiveReadError, include_extras=True)
+    assert errors["code"] is str
+    assert get_args(errors["status_code"]) == (int,)
+    assert _notrequired_fields(ClaudexorPassiveReadError) == {"status_code"}
+    assert not {"view", "read_errors", "timings_ms"} & set(ClaudexorStatusResponse.__annotations__)
+    text = (pathlib.Path(__file__).resolve().parent.parent
+            / "web" / "modules" / "api_types.js").read_text(encoding="utf-8")
+    assert _js_typedef_properties(text, "ClaudexorQuotaResponse") == {
+        ("'quota'", "view"), ("Object", "profiles"),
+        ("Array<Object>", "quota"), ("Array<Object>", "quota_absences"),
+        ("boolean", "unified_accounts"), ("ClaudexorStatusReads", "reads"),
+        ("Object<'discovery'|'accounts'|'quota', ClaudexorPassiveReadError>", "read_errors"),
+        ("Object<string, number>", "timings_ms"),
+    }
+    assert _js_typedef_properties(text, "ClaudexorPassiveReadError") == {
+        ("string", "code"), ("number=", "status_code"),
+    }
+
+
 def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     tokens: set[str] = set()
     for route in collect_routes(data_dir=tmp_path):
@@ -171,9 +205,10 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     extra = tokens - contract_tokens
     assert not missing, f"HTTP_ENDPOINTS includes routes not mounted by gateway.router: {sorted(missing)}"
     assert not extra, f"gateway.router mounts routes missing from HTTP_ENDPOINTS: {sorted(extra)}"
-    text = (pathlib.Path(__file__).resolve().parent.parent / "web" / "modules" / "api_types.js").read_text(
-        encoding="utf-8"
-    )
+    modules = pathlib.Path(__file__).resolve().parent.parent / "web" / "modules"
+    text = (modules / "api_types.js").read_text(encoding="utf-8")
+    assert "import('./task_activity_types.js').ActiveChatActivity" in text
+    text += "\n" + (modules / "task_activity_types.js").read_text(encoding="utf-8")
     version = (pathlib.Path(__file__).resolve().parent.parent / "VERSION").read_text(encoding="utf-8").strip()
     assert f"GATEWAY_CONTRACT_VERSION = '{version}'" in text
     settings_meta_fields = {
@@ -237,6 +272,8 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
         "SettingsPostCommitFailureResponse",
         "ClaudexorLoginJobResponse",
         "ClaudexorLoginJobProblem",
+        "ClaudexorPassiveReadError",
+        "ClaudexorQuotaResponse",
         "ClaudexorCredentialProfileDeleteResponse",
         "ClaudexorVendorCredentialDisposition",
         "WidgetTab",
@@ -279,6 +316,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
                 ClaudexorCredentialProfileDeleteResponse,
                 ClaudexorVendorCredentialDisposition,
                 ClaudexorStatusReads, ClaudexorStatusResponse,
+                ClaudexorPassiveReadError, ClaudexorQuotaResponse,
                 WidgetTab, WidgetsResponse):
         expected = set(get_type_hints(cls, include_extras=True))
         actual = _js_typedef_fields(text, cls.__name__)
@@ -377,9 +415,13 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     )
     assert _notrequired_fields(ActiveChatActivity) == {
         "model_waits", "task_attempt", "required_question", "required_question_unavailable", "project_admission_hold", "pause_cause", "owner_wait",
-    }, "ActiveChatActivity keeps the same required base and optional wait/attempt/question facts"
+        "status", "outcome_axes", "reason_code", "root_phase_checkpoint", "timeout_retry_from", "original_task_id",
+        "finishing_reviews",
+    }, "ActiveChatActivity adds optional outcome/retry/review evidence without changing required activity facts"
     activity_fields = get_type_hints(ActiveChatActivity, include_extras=True)
     question_keys = {"required_question", "required_question_unavailable", "project_admission_hold", "pause_cause", "owner_wait"}
+    question_keys |= {"status", "outcome_axes", "reason_code", "root_phase_checkpoint", "timeout_retry_from", "original_task_id"}
+    question_keys |= {"finishing_reviews"}
     assert {key: value for key, value in activity_fields.items() if key not in question_keys} == get_type_hints(ActiveDirectTurn, include_extras=True), (
         "ActiveChatActivity must mirror ActiveDirectTurn's field shape so one client reducer hydrates both"
     )
@@ -391,6 +433,11 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     assert activity_schema["properties"].pop("project_admission_hold")["type"] == "object"
     assert activity_schema["properties"].pop("pause_cause")["type"] == "string"
     assert activity_schema["properties"].pop("owner_wait")["type"] == "object"
+    for field in ("status", "reason_code", "timeout_retry_from", "original_task_id"):
+        assert activity_schema["properties"].pop(field)["type"] == "string"
+    for field in ("outcome_axes", "root_phase_checkpoint"):
+        assert activity_schema["properties"].pop(field)["type"] == "object"
+    assert activity_schema["properties"].pop("finishing_reviews")["type"] == "boolean"
     assert not question_keys & set(activity_schema["required"])
     assert activity_schema == json_schema_for(ActiveDirectTurn), (
         "the shared activity shape must preserve flat keys, types and requiredness"

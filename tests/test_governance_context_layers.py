@@ -140,7 +140,7 @@ def _session_prompt(governance_root, *, layer: str, subject_root=None, explicit:
 
 def _native_prompt(governance_root, *, layer: str, subject_root=None, explicit: bool = True) -> str:
     """A native retrieving episode: the shared governance builder in retrieving
-    delivery, handed to the session-task builder as `_triad_session_task` does."""
+    delivery, handed to the session-task builder as `build_retrieving_brief` does."""
     layer_kwargs = {"layer": layer, "subject_root": subject_root} if explicit else {}
     checklist = load_checklist_layers(layer, governance_root / "docs" / "CHECKLISTS.md")
     governance = review._triad_governance_context(
@@ -154,6 +154,15 @@ def _native_prompt(governance_root, *, layer: str, subject_root=None, explicit: 
 
 
 DELIVERIES = {"packet": _packet_prompt, "session": _session_prompt, "native": _native_prompt}
+
+
+@pytest.mark.parametrize("layer", ["body", "core"])
+@pytest.mark.parametrize("delivery", sorted(DELIVERIES))
+def test_countercheck_reaches_each_layer_and_delivery_once(delivery, layer, governance_root, subject_root):
+    prompt = DELIVERIES[delivery](governance_root, layer=layer, subject_root=subject_root)
+
+    assert prompt.count(anti_pattern_lock_guard(layer).strip()) == 1
+    assert "deliberate SECOND pass" not in prompt
 
 
 @pytest.fixture(autouse=True)

@@ -1,11 +1,11 @@
 import { renderPageHeader, renderSegmentedField, renderTabStrip, bindTabStrip } from './page_header.js';
 import { PAGE_ICONS } from './page_icons.js';
 import { renderAgentAccountsSection, renderAgentsServiceBanner } from './harness_accounts.js';
-import { renderReviewerSlotsSection } from './reviewer_slots.js';
 import { renderSubagentsSection } from './subagents_settings.js';
 import { languageBlockHtml } from './settings_language.js';
 import { modelRolesHost } from './model_roles.js';
 import { bindSecretReveal } from './settings_secrets.js';
+import { EFFORT_RANGE_SUMMARY_TEMPLATE } from './effort_levels.js';
 
 // Reads as a sequence: keys → secrets → which API models → who among the agents
 // does what → behavior → technical. "Agents", not "Coding agents" (D-10): the
@@ -22,15 +22,6 @@ const SETTINGS_TABS = [
     { value: 'about', label: 'About' },
 ];
 // Guard markers: renderTabStrip emits behavior/advanced tabs at runtime.
-
-// 6.3: Review and Scope Review efforts moved to per-slot dropdowns in
-// Agents → Review lanes. Behavior keeps the surface-level lanes.
-const EFFORT_FIELDS = [
-    ['s-effort-task', 'Task / Chat', 'medium'],
-    ['s-effort-evolution', 'Evolution', 'high'],
-    ['s-effort-deep-self-review', 'Deep Self-Review', 'high'],
-    ['s-effort-consciousness', 'Consciousness', ''],  // '' = the Task / Chat effort (a wake-up is a Main turn)
-];
 
 // Runtime mode is one axis of the owner policy contract. Keep the Settings
 // presentation in the same vocabulary as the onboarding setup contract; the
@@ -206,32 +197,6 @@ function providerSettingsCard(spec) {
     });
 }
 
-// The owner-facing subset of ouroboros/config.py EFFORT_SCALE: `minimal` is a
-// valid runtime tier (bench adapters / agent-side switch_model use it) but is
-// deliberately NOT offered as an owner slot default — sub-`low` thinking is a
-// per-call tactical choice, not a standing configuration. xhigh/max/ultra adapt
-// down to each route's real ceiling (exact-route request-wire recovery on API
-// routes, per-model resolution on delegated ones); the adaptation is disclosed
-// in usage, and a cold route whose provider rejects without naming supported
-// tiers remains the PR-disclosed limit of the two-send recovery rail.
-const EFFORT_OPTIONS = [
-    { value: 'none', label: 'None' }, { value: 'low', label: 'Low' },
-    { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' },
-    { value: 'xhigh', label: 'X-High' }, { value: 'max', label: 'Max' }, { value: 'ultra', label: 'Ultra' },
-];
-
-function effortField({ id, label, defaultValue }) {
-    // Consciousness may inherit the Task / Chat effort ('' — a wake-up is a Main turn).
-    const options = id === 's-effort-consciousness' ? [{ value: '', label: 'Same as Task / Chat' }, ...EFFORT_OPTIONS] : EFFORT_OPTIONS;
-    return `
-        <div class="settings-effort-card">
-            <label for="${id}">${label}</label>
-            <input id="${id}" type="hidden" value="${defaultValue}">
-            ${renderSegmentedField({ target: id, options })}
-        </div>
-    `;
-}
-
 export const SECRET_KEYS = [
     ['OPENROUTER_API_KEY', 'OpenRouter API Key', 'sk-or-...'],
     ['OPENAI_API_KEY', 'OpenAI API Key', 'sk-...'],
@@ -377,23 +342,25 @@ export function renderSettingsPage() {
                         ${modelRolesHost('settings-model-roles')}
                     </div>
 
-                    <!-- Review lanes and Delegation moved to the Agents tab
-                         (D-10): they answer "who does the work", not "which API
-                         model id". One capability, one section — no control here
-                         duplicates one there. The deep self-review reviewer is a
-                         Review lanes row too (R7); its former model field's key,
-                         OUROBOROS_MODEL_DEEP_SELF_REVIEW, survives only as the
-                         backend's invisible migration source for that row. -->
+                    <!-- Reviewers and Delegation live in the Agents tab (D-10):
+                         they answer "who does the work", not "which API model
+                         id". One capability, one section — no control here
+                         duplicates one there. -->
 
                     <div class="form-section">
-                        <h3>Other Model Slots</h3>
+                        <h3>Web search</h3>
                         <div class="form-grid two">
                             <div class="form-field ui-field">
-                                <label for="s-websearch-model">Web Search Model</label>
-                                <input id="s-websearch-model" placeholder="gpt-5.2" class="ui-control" name="s-websearch-model" type="text" aria-describedby="s-websearch-model-help">
-                                <div class="settings-inline-note ui-field-help" id="s-websearch-model-help">OpenAI model for <code>web_search</code>. Requires <code>OPENAI_API_KEY</code> and an empty Legacy Base URL.</div>
+                                <label for="s-websearch-source">Source</label>
+                                <select id="s-websearch-source" class="ui-control"><option value="auto">Auto</option><option value="openai">OpenAI</option><option value="openrouter">OpenRouter</option><option value="anthropic">Anthropic</option><option value="ddgs">ddgs</option></select>
+                            </div>
+                            <div class="form-field ui-field">
+                                <label for="s-websearch-model">Model</label>
+                                <input id="s-websearch-model" placeholder="Auto: source defaults" class="ui-control" name="s-websearch-model" type="text" aria-describedby="s-websearch-model-help">
+                                <div class="settings-inline-note ui-field-help" id="s-websearch-model-help">Built-in <code>web_search</code> only. Skills, MCP and browser tools remain independent choices. Empty uses source defaults.</div>
                             </div>
                         </div>
+                        <div class="ui-field-help" id="s-websearch-preview" role="status"></div>
                     </div>
                 </section>
 
@@ -406,7 +373,6 @@ export function renderSettingsPage() {
                          daemon or runtime problem is explained, instead of the
                          scattering of "(not in discovery)" the owner reported. -->
                     ${renderSubagentsSection()}
-                    ${renderReviewerSlotsSection()}
                 </section>
 
                 <section class="settings-panel" data-settings-panel="behavior">
@@ -436,10 +402,8 @@ export function renderSettingsPage() {
 
                     <div class="form-section">
                         <h3>Reasoning Effort</h3>
-                        <div class="settings-section-copy">Preferred reasoning effort per task type. Unsupported levels adapt to the route; native mappings, required minimums or provider defaults may apply. Requested, sent and reported effort are recorded in Logs.</div>
-                        <div class="settings-effort-grid">
-                            ${EFFORT_FIELDS.map(([id, label, defaultValue]) => effortField({ id, label, defaultValue })).join('')}
-                        </div>
+                        <!-- The range is edited in the chat alone (the round Effort button next to Swarm); this line reads the saved document. -->
+                        <div class="settings-section-copy" data-effort-range-summary>${EFFORT_RANGE_SUMMARY_TEMPLATE}</div>
                     </div>
 
                     <div class="form-section">
@@ -479,7 +443,7 @@ export function renderSettingsPage() {
 
                     <div class="form-section">
                         <h3>Max Review Cycles</h3>
-                        <div class="settings-section-copy">Limits paid review waves, including dispatched technical failures: plan and task review per task, commit triad+scope per root task, and skill review per root task or manual snapshot. The last review still permits author corrections within ordinary task limits; explicit task-local author limits remain separate. Collection and exact replay are free. Advisory allows an explicit decision after receiving feedback or a disclosed unavailable result; Blocking still requires reviewer approval. <code>&infin;</code> removes the count cap, while deadlines, budgets and lifecycle limits still apply.</div>
+                        <div class="settings-section-copy">Limits paid review waves, including dispatched technical failures: plan and task review per task, commit review per root task, and skill review per root task or manual snapshot. The last review still permits author corrections within ordinary task limits; explicit task-local author limits remain separate. Collection and exact replay are free. Advisory allows an explicit decision after receiving feedback or a disclosed unavailable result; Blocking still requires reviewer approval. <code>&infin;</code> removes the count cap, while deadlines, budgets and lifecycle limits still apply.</div>
                         <div class="settings-effort-card">
                             <label>Max Review Cycles</label>
                             <input id="s-review-max-cycles" type="hidden" value="2">
@@ -533,7 +497,7 @@ export function renderSettingsPage() {
                         <div class="settings-section-copy">
                             Working-context size profile (separate axis from Runtime Mode and Review Enforcement).
                             <code>Max</code> inlines ARCHITECTURE and DEVELOPMENT in full &mdash; for ~1M-context models (today's behavior).
-                            <code>Nano</code> is the compact owner window. <code>Low</code> fits ~250K / local models: ARCHITECTURE becomes a navigation map (read full sections on demand), DEVELOPMENT stays full for normal runnable tasks unless a structured non-development caller opts out, and memory compacts sooner. It governs Ouroboros's own working window: it never changes the model or reasoning effort, and scope review runs in every mode.
+                            <code>Nano</code> is the compact owner window. <code>Low</code> fits ~250K / local models: ARCHITECTURE becomes a navigation map (read full sections on demand), DEVELOPMENT stays full for normal runnable tasks unless a structured non-development caller opts out, and memory compacts sooner. It governs Ouroboros's own working window: it never changes the model or reasoning effort, and the review panel runs in every mode.
                             <br><strong>Human controlled:</strong> saved via the owner endpoint; saves immediately (no restart), and lowering requires Ouroboros to be idle.
                         </div>
                         <div class="settings-effort-card">
@@ -628,7 +592,7 @@ export function renderSettingsPage() {
                             Separate axis from Review Enforcement. Controls how far Ouroboros is allowed to self-modify.
                             <code>Light</code> blocks repo self-modification but allows reviewed + enabled skills to run.
                             <code>Advanced</code> is the default &mdash; self-modify the evolutionary layer; protected core/contract/release files stay guarded by the shared runtime-mode policy.
-                            <code>Pro</code> can edit protected core/contract/release surfaces, but commits still go through the normal triad + scope review gate; Advanced remains limited to the evolutionary layer.
+                            <code>Pro</code> can edit protected core/contract/release surfaces, but commits still go through the normal review gate; Advanced remains limited to the evolutionary layer.
                             <code>Cyber Pro</code> grants the full host and configuration authority, including credentials, models, Supervisor configuration and protected rewrites. Review scope and enforcement stay owner-controlled. Review Enforcement remains independent, so <code>Blocking</code> stays available in Cyber Pro.
                             <br><strong>Human controlled:</strong> desktop builds ask the launcher for native confirmation before saving a mode change.
                             Web/Docker sessions save mode changes through the owner endpoint; the new mode takes effect after restart.
@@ -1037,7 +1001,7 @@ export function renderSettingsPage() {
                         title="Restart the agent process">Restart now</button>
                 </div>
                 <div class="settings-footer-status">
-                    <span id="settings-unsaved-indicator" class="settings-inline-status settings-unsaved-indicator" aria-hidden="true">Unsaved changes</span>
+                    <span id="settings-unsaved-indicator" class="settings-inline-status settings-unsaved-indicator">Unsaved changes</span>
                     <div id="settings-restart-status" class="settings-inline-status" role="status" aria-live="polite" hidden></div>
                     <div id="settings-status" class="settings-inline-status" role="status" aria-live="polite" aria-atomic="true"></div>
                 </div>
