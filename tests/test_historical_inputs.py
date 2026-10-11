@@ -19,6 +19,11 @@ from tests.test_main_authored_context import call
 main_loop = context_fixtures.main_loop
 
 
+def _numbered(source):
+    """``source`` as read_file displays it: every line behind its cat -n number."""
+    return "".join(f"{number:>6}\t{line}" for number, line in enumerate(source.splitlines(keepends=True), 1))
+
+
 def _input(f, system, user):
     plan = f.ctx.context_fit_plan
     f.ctx.context_fit_plan = replace(plan, user_content_json=json.dumps(user),
@@ -198,7 +203,7 @@ def test_first_and_latest_survive_real_authored_compaction(main_loop):
     assert len(exhibit["anchors"]) == len(sources) == 2
     assert old in json.dumps(sources[0])
     assert old not in json.dumps(sources[-1])
-    assert f.source in json.dumps(sources[-1]).replace("\\n", "\n")
+    assert _numbered(f.source) in json.dumps(sources[-1]).replace("\\n", "\n").replace("\\t", "\t")
     assert exhibit["anchors"][0]["source_ref"] != exhibit["anchors"][-1]["source_ref"]
     assert "coverage" in exhibit  # bounded anchors must disclose their coverage
 

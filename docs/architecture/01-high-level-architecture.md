@@ -14,7 +14,7 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
     chat_decision.js, question_presentation.js, chat_render_batch.js, task_phase_chip.js, task_activity_types.js, lifecycle_card.js — chat helpers: decision cards, the one Project-question form and its Main mirror (Python twin `project_dialogue.QUESTION_STATUS`), keyed timeline patches, shared status/motion and census schema, skill lifecycle card (§3 Chat and Projects)
     chat_history.js, chat_history_replay.js, chat_reading_position.js — bounded per-chat pages, replay without live-task authority, one reading intent (§3 Timeline ownership and ordering)
     delegated_activity.js — executor activity projection with explicit preview gaps (§3 Child cards and executor presentation)
-    welcome_preference.js — Main's empty state from the hidden `welcome` preference (DESIGN "Chat authorship and System rows")
+    welcome_preference.js, host_notice_text.js — Main's empty state from the hidden `welcome` preference; known host sentences painted without the leading pictograph (DESIGN "Chat authorship and System rows")
     project_answer.js — Main's Project lifecycle rows and folded mirrored answers (§3 Main rows)
     project_handoff.js — compact Main creation/transfer entries; receipt folding preserves work identity (§3 Project handoff receipts)
     project_reference.js — the one Project pointer control and the only raiser of `ouro:open-project` (DESIGN "References and actions")

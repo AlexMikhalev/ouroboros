@@ -1,7 +1,7 @@
 // S3 stream-gate fixes: MAJOR-A (owner decision №8/Q3) — an owner-requested
 // finalization renders as factual SUCCESS "Done", never as a warning — while
 // the owner-request marker stays in details. MINOR 7 (Q4): cancel_receipt
-// keeps the 📋 System render style, never assistant-styled.
+// keeps the System render style, never assistant-styled.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -86,13 +86,13 @@ test('the chat terminal seam shares one note with the owner marker in its body',
     } finally { globalThis.document = priorDocument; }
 });
 
-// --- MINOR 7 (Q4): cancel_receipt rendered as 📋 System, not assistant ---
+// --- MINOR 7 (Q4): cancel_receipt rendered as System, not assistant ---
 
-test('a system cancel_receipt row renders the 📋 System sender label', () => {
+test('a system cancel_receipt row renders the plain System sender label', () => {
     // The receipt is transported role="system", system_type="cancel_receipt"
     // (supervisor/terminal_delivery.py). The extracted shared mapping has no
     // receipt special case, so it must fall through to the generic system label.
-    assert.equal(senderLabel('system', false, 'cancel_receipt'), '📋 System');
+    assert.equal(senderLabel('system', false, 'cancel_receipt'), 'System');
 });
 
 test('the bubble keeps the system style class and the system_type marker', () => {

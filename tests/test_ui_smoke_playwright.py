@@ -2734,7 +2734,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
 
 @pytest.mark.ui_browser
 def test_ui_smoke_v639_skip_review_button(direct_server_with_data):
-    # C1: the owner-only "⚠️ Skip review" action is offered for the owner's OWN (external)
+    # C1: the owner-only "Skip review" action is offered for the owner's OWN (external)
     # skill and hash-verified official-hub payloads that still need review, and NEVER for
     # native/ClawHub/unverified marketplace payloads.
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")

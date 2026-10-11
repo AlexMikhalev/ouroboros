@@ -212,7 +212,7 @@ function restoreDom(prior) {
     Object.assign(globalThis, prior);
 }
 
-function makeInstance(mount) {
+function makeInstance(mount, options = {}) {
     const handlers = new Map();
     const ws = {
         on(type, fn) { handlers.set(type, fn); return () => handlers.delete(type); },
@@ -234,6 +234,7 @@ function makeInstance(mount) {
         idPrefix: 'chat',
         mountEl: mount,
         asPanel: true,
+        ...options,
     });
     return { instance, handlers };
 }
@@ -265,6 +266,34 @@ const referenceShape = (node) => ({
     spoken: node?.getAttribute?.('aria-label'),
 });
 const LAUNCH_REFERENCE = { intent: 'open-project', pill: true, parts: ['', 'Launch', '↗'], spoken: 'Open project Launch' };
+
+for (const systemType of ['project_handoff', 'project_started']) {
+    for (const missing of ['task_id', 'project_id']) {
+        test(`an incomplete ${systemType} without ${missing} keeps plain text and Copy`, () => {
+            const { prior, mount } = installHistoryDom();
+            let instance;
+            try {
+                const made = makeInstance(mount, { chatId: 1, asPanel: false });
+                instance = made.instance;
+                const row = { chat_id: 1, role: 'system', system_type: systemType,
+                    task_id: 'legacy-task', project_id: 'launch', project_name: 'Launch',
+                    content: 'Retained entry **as written**', ts: '2026-10-08T13:58:00Z' };
+                delete row[missing];
+                made.handlers.get('chat')(row);
+                const bubble = findBubble('system');
+                assert.ok(bubble);
+                assert.equal(bubble.classList.contains('project-handoff'), false);
+                assert.match(bubble.innerHTML, /Retained entry \*\*as written\*\*/);
+                const copy = bubble.querySelector('.chat-message-copy');
+                assert.ok(copy, 'declining compact rendering does not remove plain-message Copy');
+                assert.equal(copy.listeners.get('click').length, 1);
+            } finally {
+                instance?.destroy();
+                restoreDom(prior);
+            }
+        });
+    }
+}
 
 test('plain project row renders escaped text with the Project reference and no markdown machinery', async () => {
     const { prior, mount } = installDom();
@@ -573,7 +602,7 @@ for (const noticeRow of ORIGIN_ADDRESSED_NOTICE_ROWS) {
                 made.handlers.get('chat')(noticeRow);
                 const bubble = findBubble('system');
                 assert.ok(bubble, 'the notice row rendered a system bubble');
-                assert.match(bubble.innerHTML, /📋 System/);
+                assert.match(bubble.innerHTML, /<div class="sender">System<\/div>/);
                 assert.match(bubble.innerHTML, expectedText);
                 assert.doesNotMatch(bubble.innerHTML, /<br>|<h1|<h2|md-h1|md-h2|<strong/);
                 assert.equal(bubble.getAttribute('data-chat-markdown-enhanced'), '');
@@ -640,7 +669,7 @@ test('a refused steer leaves the running target card open', () => {
         made.handlers.get('chat')(notice);
         assert.equal(card.dataset.finished, '0', 'a refused message is no terminal task fact');
         assert.equal(liveCards().length, 1);
-        assert.match(findBubble('system').innerHTML, /📋 System/);
+        assert.match(findBubble('system').innerHTML, /<div class="sender">System<\/div>/);
     } finally {
         instance?.destroy();
         restoreDom(prior);
@@ -655,12 +684,15 @@ test('render arm order and enhancement guard are pinned in source', () => {
         chatSource.indexOf('const timeFmt =', chatSource.indexOf("const rendered = role === 'user'")),
     );
     assert.match(ternary, /renderSkillReviewDisclosure\(text, opts\.skillReview \|\| null\)/);
-    assert.match(ternary, /role === 'system' && systemType !== 'skill_review' && markdown !== true\n\s+\? escapeHtml\(text\)/);
-    assert.match(chatSource, /: renderChatMarkdown\(text\);/);
+    assert.match(ternary, /role === 'system' && markdown !== true\n\s+\? escapeHtml\(painted\)/);
+    assert.match(chatSource, /: renderChatMarkdown\(painted\);/);
+    // `painted` is render-only (host_notice_text.js); Copy keeps the pre-cleanup `shown`.
+    assert.match(chatSource, /const painted = hostRowDisplayText\(\{ text: stored, role, system_type: systemType, narration: opts\.narration \}, text\);/);
+    assert.match(chatSource, /chatMedia\.attachCopyControl\(bubble, String\(shown\)\)/);
     // The enhancement pass skips exactly the plain-system case.
     assert.match(
         chatSource,
-        /const richMarkdown = role !== 'user' && systemType !== 'skill_review' && \(role !== 'system' \|\| markdown === true\);/,
+        /const richMarkdown = role !== 'user' && !skillReview && \(role !== 'system' \|\| markdown === true\);/,
     );
 });
 

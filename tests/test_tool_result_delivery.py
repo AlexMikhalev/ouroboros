@@ -399,18 +399,23 @@ def test_render_line_slice_max_chars_names_complete_lines_and_the_next_cursor():
     content = "aaaa\nbbbb\ncccc\ndddd\n"
     extent = {}
     out = _render_line_slice("f", content, max_lines=4, start_line=1, start_char=2, max_chars=9, extent=extent)
-    assert out == "# f \u2014 lines 1\u20134 of 4 (from char 2 of this window, 9 chars; next start_char=11)\naa\nbbbb\nc"
+    # Both cursors count source characters; a partial row keeps its own line number.
+    assert out == ("# f \u2014 lines 1\u20134 of 4 (from char 2 of this window, 9 chars; next start_char=11)\n"
+                   "     1\taa\n     2\tbbbb\n     3\tc")
     assert extent["partial_head"] is True and extent["partial_tail"] is True
-    assert extent["first_line"] == 2 and extent["end_line"] == 2 and extent["line_ends"] == (8,)
-    assert extent["source_start_char"] == 2 and extent["source_end_char"] == 11
+    # line_ends are display offsets of COMPLETE rows only: row 2 ends after 10 + 12 chars.
+    assert extent["first_line"] == 2 and extent["end_line"] == 2 and extent["line_ends"] == (22,)
+    assert extent["source_start_char"] == 2 and extent["source_end_char"] == 11 and extent["body_chars"] == 9
     # Without a budget the facts are the ones every existing consumer already reads.
     extent2 = {}
     out2 = _render_line_slice("f", content, max_lines=4, start_line=1, start_char=2, extent=extent2)
-    assert out2 == "# f \u2014 lines 1\u20134 of 4 (from char 2 of this window)\naa\nbbbb\ncccc\ndddd\n"
-    assert extent2["end_line"] == 4 and extent2["partial_tail"] is False and extent2["line_ends"] == (8, 13, 18)
+    assert out2 == ("# f \u2014 lines 1\u20134 of 4 (from char 2 of this window)\n"
+                    "     1\taa\n     2\tbbbb\n     3\tcccc\n     4\tdddd\n")
+    assert extent2["end_line"] == 4 and extent2["partial_tail"] is False and extent2["line_ends"] == (22, 34, 46)
     # A budget larger than the window changes nothing; zero or junk means no budget.
-    assert _render_line_slice("f", content, max_lines=4, max_chars=10_000) == "# f \u2014 lines 1\u20134 of 4\n" + content
-    assert _render_line_slice("f", content, max_lines=4, max_chars=0) == "# f \u2014 lines 1\u20134 of 4\n" + content
+    numbered = "".join(f"{n:>6}\t{line}" for n, line in enumerate(content.splitlines(keepends=True), 1))
+    assert _render_line_slice("f", content, max_lines=4, max_chars=10_000) == "# f \u2014 lines 1\u20134 of 4\n" + numbered
+    assert _render_line_slice("f", content, max_lines=4, max_chars=0) == "# f \u2014 lines 1\u20134 of 4\n" + numbered
 
 
 def test_one_giant_unicode_line_is_reconstructed_exactly_through_char_pages(tmp_path):
@@ -425,8 +430,9 @@ def test_one_giant_unicode_line_is_reconstructed_exactly_through_char_pages(tmp_
     # The view's own address reads exactly the omitted range, nothing else.
     args = dict(view["read_omitted"])
     assert args.pop("tool") == "read_file"
+    row = f"{1:>6}\t"  # one source line: one numbered display row
     header, body = _read_file(ctx, **args).split("\n", 1)
-    assert body == line[o0:o1] and f"next start_char={o1}" in header
+    assert body == row + line[o0:o1] and f"next start_char={o1}" in header
     assert ctx.last_read_view["source_start_char"] == o0 and ctx.last_read_view["source_end_char"] == o1
     # Pages of 7,000 code points reconstruct the whole line exactly; each page
     # names the cursor the next page starts from.
@@ -435,6 +441,8 @@ def test_one_giant_unicode_line_is_reconstructed_exactly_through_char_pages(tmp_
         rendered = _read_file(ctx, ref["path"], root="artifact_store", start_line=1, max_lines=1,
                               start_char=cursor, max_chars=7_000)
         header, body = rendered.split("\n", 1)
+        assert body.startswith(row)
+        body = body[len(row):]
         assert body and body == line[cursor:cursor + len(body)]
         if cursor + len(body) < len(line):
             assert f"next start_char={cursor + len(body)}" in header

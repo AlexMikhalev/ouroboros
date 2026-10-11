@@ -488,8 +488,8 @@ def light_cognitive_or_root_redirect(tool_name: str, args: dict[str, Any]) -> st
                 continue
             return (
                 "⚠️ ROOT_REQUIRED_USER_FILES: an absolute home path "
-                f"({path_text!r}) was given but root defaulted to 'active_workspace'. "
-                "Pass root='user_files' to write under the owner's home, e.g. "
+                f"({path_text!r}) is outside root='active_workspace'. "
+                "Pass root='user_files' (or omit root) to write under the owner's home, e.g. "
                 "write_file(root='user_files', path='Desktop/file.html', content=...)."
             )
     return None

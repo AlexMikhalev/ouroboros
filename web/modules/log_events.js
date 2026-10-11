@@ -6,6 +6,7 @@ import { harnessPresentation } from './harness_presentation.js';
 import { acceptanceIncidentClauses } from './acceptance_incident_presentation.js';
 import { fmt, tr } from './i18n.js';
 import { historyRetentionView } from './history_retention.js';
+import { hostRowDisplayText } from './host_notice_text.js';
 import { effortEvidenceText } from './effort_evidence.js';
 import { delegatedActivityView } from './delegated_activity.js';
 import { workerShaLogView, workerShaRelation } from './worker_sha_presentation.js';
@@ -1261,6 +1262,7 @@ function summarizeChatLiveEventView(evt) {
     const delegated = delegatedActivityView(evt); // a delegated run's typed observation, root or child
     if (delegated) return Object.assign(chatView({ ...delegated, chip: executorChip(evt), model: evt.model }), { activity: delegated.activity });
     if ((evt.is_progress || t === 'send_message') && isSubagentEvent(evt)) {
+        const note = describeText(hostRowDisplayText({ ...evt, text: progressText.full }), 240, { markdown: true });
         const sid = subagentId(evt);
         const rawEvent = String(evt.subagent_event || '').toLowerCase();
         const role = String(evt.subagent_role || '').trim();
@@ -1278,7 +1280,7 @@ function summarizeChatLiveEventView(evt) {
         const stopDetail = (evt.task_completion ?? evt.outcome_axes?.execution?.task_completion)?.action === 'stop' ? taskReasonDetail(evt) : '';
         const reasonDetail = cancelDetail || stopDetail || (evt.reason_code ? taskReasonPhrase(evt.reason_code) : '');
         const detailParts = [
-            progressText.full,
+            note.full,
             resultText.full ? `[RESULT]\n${resultText.full}` : '',
             traceText.full ? `[TRACE]\n${traceText.full}` : '',
             errorText.full ? `[ERROR]\n${errorText.full}` : '',
@@ -1317,8 +1319,8 @@ function summarizeChatLiveEventView(evt) {
                 : resultText.full ? resultText
                     : errorText.full ? errorText
                         : traceText.full ? traceText
-                            : progressText)
-            : (progressText.full ? progressText
+                            : note)
+            : (note.full ? note
                 : resultText.full ? resultText
                     : errorText.full ? errorText
                         : traceText);
@@ -1350,13 +1352,14 @@ function summarizeChatLiveEventView(evt) {
         // host note is a typed fact, never a text match. Both stay visible rows; only
         // narration is promoted (title, collapsed line). ABSENT = predates the fact.
         const narration = evt.narration === true || evt.narration === undefined;
+        const note = describeText(hostRowDisplayText({ ...evt, text: progressText.full }), 240, { markdown: true });
         return chatView({
             phase: lifecycleTerminal ? (/failed\b/i.test(progressText.full) ? 'lifecycle_error' : 'done') : 'working',
             // An empty note is no narration: a placeholder would become the card title as if said (#1369).
-            headline: progressText.preview || '',
-            fullHeadline: progressText.full || '',
-            activityPreview: progressText.preview || '',
-            visible: Boolean(progressText.preview),
+            headline: note.preview || '',
+            fullHeadline: note.full || '',
+            activityPreview: note.preview || '',
+            visible: Boolean(note.preview),
             promote: narration,
             human: narration,
             // «ТУТ бабл … на codex» — an ordinary progress bubble carries the chip

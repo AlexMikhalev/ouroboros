@@ -69,7 +69,7 @@ def test_final_answer_marker_uses_ordinary_message_presentation():
 
     assert "renderAssistantWithAnswerChip" not in source
     assert "final-answer-chip" not in css
-    assert ": renderChatMarkdown(text);" in source
+    assert ": renderChatMarkdown(painted);" in source
     # Both live and history assistant/system paths feed the same addMessage renderer;
     # reconnect notices do too, so marker-shaped text never gets a separate capsule.
     assert "addMessage(msg.content, msg.role" in source

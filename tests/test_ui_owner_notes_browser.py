@@ -80,7 +80,7 @@ def test_notes_reach_main_activity_and_the_live_banner(direct_server_with_data, 
             page.wait_for_selector('#chat-messages[data-history-hydrated="true"]', state="attached", timeout=30_000)
             bubble = page.locator(f"#chat-messages {BUBBLE}").filter(has_text=DUE)
             bubble.wait_for(state="visible", timeout=30_000)
-            assert bubble.locator(".sender").inner_text().strip() == "📋 System"
+            assert bubble.locator(".sender").inner_text().strip() == "System"
             message = bubble.locator(".message")
             signature, words = message.inner_text().split("\n", 1)
             assert signature.startswith("Reminder · Ouroboros · written Dec 31 ") and " · for Jan 1 " in signature

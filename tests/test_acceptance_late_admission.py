@@ -201,22 +201,46 @@ def test_worker_public_adapter_uses_venue_authority(late, tmp_path, monkeypatch,
 
 def _spawned_request(root, worker, workspace, tid, source, results):
     """Fresh process, real registered tool/operation; only the paid transport is synthetic."""
+    import sys
+    import tempfile
+    from ouroboros.llm import LLMClient
     from supervisor import queue as task_queue, workers
+    from tests._shared import _provider_catalog_snapshot, offline_provider_catalog
     os.environ['OUROBOROS_IN_WORKER'] = '1'
     f = SimpleNamespace(root=Path(root), worker=Path(worker), tmp_path=Path(workspace), tid=tid)
-    with pytest.MonkeyPatch.context() as patch:
-        fixture = late.__wrapped__(f.tmp_path, patch, None)
+
+    def isolation():
+        return ({key: os.environ.get(key) for key in (
+                    'HOME', 'OUROBOROS_DATA_DIR', 'OUROBOROS_SETTINGS_PATH', 'TMPDIR', 'PYTHONPYCACHEPREFIX')},
+                sys.pycache_prefix, tempfile.gettempdir(), 'tests.conftest' in sys.modules)
+    inherited, cold = isolation(), _provider_catalog_snapshot(LLMClient)
+    # Spawn does not inherit pytest's fixture injection or parent monkeypatches.
+    with (pytest.MonkeyPatch.context() as patch, offline_provider_catalog(patch) as catalog):
+        catalogue_requests = []
+        def no_catalogue_request(url, *_args, **_kwargs):
+            catalogue_requests.append(url)
+            raise AssertionError('the synthetic child panel must not fetch a live catalogue')
+        patch.setattr('requests.get', no_catalogue_request)
+        fixture = late.__wrapped__(f.tmp_path, patch, None, catalog)
         transport = next(fixture)
+        report = {'isolation': (inherited, isolation()),
+                  'catalog': (cold, catalog, _provider_catalog_snapshot(LLMClient))}
         try:
             ctx = _caller(f)
             ctx.drive_root = f.worker
             result = _request(f, ctx, source)
             until(lambda: not review_operation._LIVE)
-            results.put({'result': result, 'calls': len(transport.calls),
-                         'initialized': task_queue.INITIALIZED,
-                         'maps_empty': not task_queue.RUNNING and not workers.WORKERS})
+            assert not catalogue_requests, catalogue_requests
+            report.update({'result': result, 'calls': len(transport.calls),
+                           'initialized': task_queue.INITIALIZED,
+                           'maps_empty': not task_queue.RUNNING and not workers.WORKERS})
+            # As a live fetch would: leaving the helper must hand the found state back.
+            LLMClient._CONTEXT_LENGTH_CACHE['probe/model'] = 128_000
+            LLMClient._CAPABILITIES_FETCH_OK = True
         finally:
             next(fixture, None)
+    report['catalog'] += (_provider_catalog_snapshot(LLMClient),)
+    results.put(report)
 
 
 @pytest.mark.serial
@@ -261,6 +285,11 @@ def test_spawned_worker_public_request_waits_for_real_original_owner(late, tmp_p
                 assert process.exitcode == 0
                 result = results.get(timeout=2)
                 assert not result['initialized'] and result['maps_empty']
+                # Child fixture setup kept the inherited isolation and the catalog state;
+                # leaving it handed back the found catalog the child had dirtied.
+                inherited, setup = result['isolation']
+                assert setup == inherited and not inherited[-1], result['isolation']
+                assert all(state == result['catalog'][0] for state in result['catalog']), result['catalog']
                 if live:
                     assert result['result']['reason'] == 'historical_writer_still_live', result
                     assert result['calls'] == 0

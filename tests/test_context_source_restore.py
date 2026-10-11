@@ -188,7 +188,8 @@ def test_main_next_request_gets_exact_source_without_a_new_account(main_loop, mo
     [restored] = _sources(after)
     source_text = restored["content"][0]["text"].split("\n", 2)[2]
     assert source_text == prior["source_text"] and restored["role"] == "user"
-    assert f.source in next(row["content"] for row in json.loads(source_text) if row.get("tool_call_id") == "read")
+    numbered = "".join(f"{n:>6}\t{line}" for n, line in enumerate(f.source.splitlines(keepends=True), 1))
+    assert numbered in next(row["content"] for row in json.loads(source_text) if row.get("tool_call_id") == "read")
     assert not any(m.get("tool_call_id") == "read" for m in after)
     assert any(m.get("tool_call_id") == "restore" for m in after)
     assert len([m for m in after if (cc._capsule_metadata(m)[1] or {}).get("authorship") == "actor"]) == 1

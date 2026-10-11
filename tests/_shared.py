@@ -11,6 +11,7 @@ import ast
 import json
 import pathlib
 import re
+from contextlib import contextmanager
 from unittest.mock import MagicMock
 
 
@@ -216,3 +217,52 @@ def reconcile_receipt(action=None, reason=None):
     2-tuple silently breaks the caller. Keep fakes going through here.
     """
     return {"action": action, "reason": reason, "process": "", "server_reconcile": ""}
+
+
+# Measuring a reviewer's window (`reviewer_context_window` / `scope_window` ->
+# `capability_evidence.probe`) asks OpenRouter's live `/models` catalog through
+# `LLMClient.openrouter_context_length(allow_fetch=True)`; a retrieving work
+# order, the `## Review` block's cost hint and the retrieving brief all measure.
+# The answer lands in these CLASS caches for the rest of the process, so a later
+# unrelated send already strips a field the catalog lists as unsupported (the
+# `test_llm_no_proxy` parameter-rejection retry then has nothing left to drop).
+_PROVIDER_CATALOG_CLASS_STATE = (
+    "_SUPPORTED_PARAMS_CACHE", "_SUPPORTED_PARAMS_FETCHED",
+    "_CONTEXT_LENGTH_CACHE", "_CAPABILITIES_FETCH_OK",
+)
+_PROVIDER_CATALOG_PRISTINE = {
+    "_SUPPORTED_PARAMS_CACHE": {}, "_SUPPORTED_PARAMS_FETCHED": False,
+    "_CONTEXT_LENGTH_CACHE": {}, "_CAPABILITIES_FETCH_OK": False,
+}
+
+
+def _provider_catalog_snapshot(cls):
+    import copy
+    return {name: copy.copy(getattr(cls, name)) for name in _PROVIDER_CATALOG_CLASS_STATE}
+
+
+def _restore_provider_catalog(cls, saved):
+    for name, value in saved.items():
+        current = getattr(cls, name)
+        if isinstance(current, dict) and isinstance(value, dict):
+            current.clear()
+            current.update(value)  # the mixin's dict object itself, not a rebinding
+        else:
+            setattr(cls, name, value)
+
+
+@contextmanager
+def offline_provider_catalog(monkeypatch):
+    """Body of conftest's ``provider_catalog_offline`` fixture, for a process that
+    has no fixture injection. A spawned child must not import ``tests.conftest``:
+    its import-time isolation would rebind the inherited HOME, data, settings,
+    TMPDIR and pycache prefix after config modules already read them.
+    """
+    from ouroboros.llm import LLMClient
+
+    saved = _provider_catalog_snapshot(LLMClient)
+    monkeypatch.setattr(LLMClient, "_fetch_openrouter_capabilities", classmethod(lambda cls: None))
+    try:
+        yield saved
+    finally:
+        _restore_provider_catalog(LLMClient, saved)

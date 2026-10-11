@@ -146,20 +146,25 @@ def test_the_coverage_ack_binds_to_what_delivery_actually_hands_the_model(main_l
     assert read_view["complete_chars"] == len(content) < len(raw)
     visible = next(row["content"] for row in f.inputs[-1]["messages"] if row.get("tool_call_id") == "read-staged")
     key = f"{target.resolve()}|{entry.output_sha}"
+    last = "Завершение\n"
     if not partial:
-        assert content in visible and len(visible) > 160_000
+        numbered = "".join(f"{n:>6}\t{line}" for n, line in enumerate(content.splitlines(keepends=True), 1))
+        assert numbered in visible and len(visible) > 160_000
         assert output._READ_COVERAGE[key] == [[0, len(content)]]
         assert entry.output_consumed is True
     else:
         assert row["result_partial"] is True
         spans = row["result_source_view"]["shown_ranges"]
         assert len(spans) == 2
-        header = read_view["body_start"]
+        # The cursor lands inside line 2, so the first row is that line's partial
+        # head under its own number; display numbers are never source.
+        header = read_view["body_start"] + len(f"{2:>6}\t")
+        assert header < spans[0][1] and spans[1][0] < header + len(content) - offset - len(last)
         expected = [[offset, offset + spans[0][1] - header],
                     [offset + spans[1][0] - header, len(content)]]
         assert output._READ_COVERAGE[key] == expected
         assert content[expected[0][0]:expected[0][1]] in visible
-        assert content[expected[1][0]:expected[1][1]] in visible
+        assert content[expected[1][0]:-len(last)] + f"{3:>6}\t{last}" in visible
         assert expected[0][1] < expected[1][0] and not entry.output_consumed
         # Exact pages fill the omitted interval and the deliberately skipped prefix.
         _read_file(f.ctx, root="task_drive", path=entry.output_artifact, max_lines=100,
@@ -198,6 +203,104 @@ def test_unknown_delivery_metadata_never_claims_complete(main_loop, missing):
     output.acknowledge_staged_output_delivery(f.ctx, {"result": typed.text, "tool_result": typed}, {"result": typed.text})
     assert entry.output_consumed
     assert output._READ_COVERAGE[f"{target.resolve()}|{entry.output_sha}"] == [[0, len(target.read_bytes())]]
+
+
+def _numbered_display_oracle(content, rendered, body_start, *, start_line, start_char, max_chars):
+    """Display offset -> source offset, built from the content (never by parsing the display)."""
+    lines = content.splitlines(keepends=True)
+    window = "".join(lines[start_line - 1:])
+    body = window[start_char:][:max_chars] if max_chars else window[start_char:]
+    ends, total = [], 0
+    for line in window.splitlines(keepends=True):
+        total += len(line)
+        ends.append(total)
+    number = start_line + sum(1 for end in ends if end <= start_char)
+    mapping, pos = {}, body_start
+    source = sum(len(line) for line in lines[:start_line - 1]) + start_char
+    for row in body.splitlines(keepends=True):
+        pos += len(f"{number:>6}\t")
+        for _ in row:
+            mapping[pos] = source
+            pos, source = pos + 1, source + 1
+        number += 1
+    assert pos == len(rendered)
+    return mapping
+
+
+def _credited(mapping, shown):
+    offsets = sorted({mapping[d] for lo, hi in shown for d in range(lo, hi) if d in mapping})
+    ranges = []
+    for offset in offsets:
+        if ranges and ranges[-1][1] == offset:
+            ranges[-1][1] += 1
+        else:
+            ranges.append([offset, offset + 1])
+    return ranges
+
+
+@pytest.mark.parametrize("start_line,start_char,max_chars", [
+    (1, 0, None), (2, 7, None), (1, 3, 150), (3, 2, 40), (5, 0, 1)])
+def test_numbered_read_credit_counts_only_shown_source_characters(start_line, start_char, max_chars):
+    """The one delivered-range SSOT decodes read_file's numbered rows: display
+    numbers and a hidden middle credit nothing, partial rows keep exact offsets."""
+    from ouroboros import delegate_output as output
+    from ouroboros.tools.core_file_tools import _render_line_slice
+
+    content = "alpha\n" + "Ж🙂Ω" * 40 + "\n" + "mid line\n" + "x" * 90 + "\n" + "omega"
+    extent = {}
+    rendered = _render_line_slice("f", content, max_lines=10, start_line=start_line,
+                                  start_char=start_char, max_chars=max_chars, extent=extent)
+    oracle = _numbered_display_oracle(content, rendered, extent["body_start"], start_line=start_line,
+                                      start_char=start_char, max_chars=max_chars)
+    inside_first_row = min(len(rendered), extent["body_start"] + len(f"{1:>6}\t") + 2)
+    shown_sets = ([[0, len(rendered)]],                                   # whole
+                  [[0, extent["body_start"] + 3], [inside_first_row, len(rendered)]],  # cut inside a number
+                  [[0, (len(rendered) + extent["body_start"]) // 2], [len(rendered) - 9, len(rendered)]],
+                  [[0, extent["body_start"]]])                            # the header alone
+    for shown in shown_sets:
+        expected = _credited(oracle, shown)
+        assert output._delivered_source_ranges(extent, rendered, {}, content, shown) == expected, shown
+    whole = output._delivered_source_ranges(extent, rendered, {"result": rendered}, content)
+    assert whole == _credited(oracle, [[0, len(rendered)]])
+    assert whole == [[extent["source_start_char"], extent["source_end_char"]]]
+    # Tampered descriptors or display text credit nothing (never a guessed offset).
+    shape = extent["display_map"]
+    body_char = next(d for d in sorted(oracle))
+    forged = rendered[:body_char] + ("#" if rendered[body_char] != "#" else "!") + rendered[body_char + 1:]
+    for view, text in (({**extent, "display_map": {**shape, "first_number": shape["first_number"] + 1}}, rendered),
+                       ({**extent, "display_map": {**shape, "rows": shape["rows"] - 1}}, rendered),
+                       ({key: value for key, value in extent.items() if key != "display_map"}, rendered),
+                       ({**extent, "body_chars": extent["body_chars"] - 1}, rendered),
+                       (extent, forged)):
+        assert output._delivered_source_ranges(view, text, {}, content, [[0, len(text)]]) is None
+
+
+def test_a_real_2000_row_read_carries_its_display_map_on_the_bounded_result(tmp_path):
+    """The invocation-local read_view keeps the few-byte display map (never per-line
+    facts) and the SSOT credits the whole Unicode read from it."""
+    from ouroboros import delegate_output as output
+    from ouroboros.tools.core import _read_file
+    from ouroboros.tools.registry import ToolContext
+    from ouroboros.tools.tool_result import (
+        _install_tool_result_sidecar, _published_tool_result, _restore_tool_result_sidecar,
+    )
+
+    rows = [f"Ж🙂Ω row {i}\n" for i in range(2000)]
+    rows[999] = "mid "  # a Unicode line boundary is a row of its own
+    (tmp_path / "big.txt").write_text("".join(rows), encoding="utf-8")
+    content = (tmp_path / "big.txt").read_text(encoding="utf-8")
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path / "data")
+    sentinel = object()
+    token = _install_tool_result_sidecar(ctx, sentinel)
+    try:
+        text = _read_file(ctx, "big.txt", root="system_repo")
+        typed = _published_tool_result(ctx, sentinel)
+    finally:
+        _restore_tool_result_sidecar(token)
+    view = typed.meta["read_view"]
+    assert view["display_map"] == {"scheme": "numbered_rows_v1", "first_number": 1, "rows": 2000}
+    assert "line_ends" not in view and f"{2000:>6}\tЖ🙂Ω row 1999\n" in text
+    assert output._delivered_source_ranges(view, text, {"result": text}, content) == [[0, len(content)]]
 
 
 @pytest.mark.serial

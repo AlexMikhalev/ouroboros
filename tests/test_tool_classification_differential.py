@@ -461,6 +461,9 @@ CURRENT_PRODUCER_CONTRACTS = {
     "SEARCH_NOT_FOUND": (False, "ok"),
     "FILE_NOT_FOUND": (False, "ok"),
     "native:LEGACY_WARNING:FILE_NOT_FOUND": (False, "ok"),
+    # Owner decision (PR #1636): an exact edit that leaves .py/.json unparsable is
+    # applied and reported, never refused; the warning is a successful call.
+    "SYNTAX_WARNING": (False, "ok"),
 }
 
 
@@ -494,6 +497,14 @@ def test_output_capture_warning_preserves_the_successful_write(tool):
     case = Case("current:capture-suffix:" + tool, "OUTPUT_CAPTURE_FAILED", tool, text)
     assert _live_answer(case) == (False, "ok")
     assert _live_answer(case._replace(text=warning)) == CURRENT_PRODUCER_CONTRACTS["OUTPUT_CAPTURE_FAILED"]
+
+
+@pytest.mark.parametrize("tool", ["edit_text", "apply_patch", "edit_batch"])
+def test_syntax_warning_suffix_keeps_the_applied_edit_successful(tool):
+    """edit_ops.edit_syntax_note trails an edit that already landed."""
+    text = (f"✅ {tool} applied 1 edit(s) across 1 file(s):\n"
+            "⚠️ SYNTAX_WARNING: content is not valid JSON in a.json; the edit WAS applied.")
+    assert _live_answer(Case("current:syntax-suffix:" + tool, "SYNTAX_WARNING", tool, text)) == (False, "ok")
 
 
 def test_single_classifier_matches_the_retired_pair_except_approved_deltas() -> None:

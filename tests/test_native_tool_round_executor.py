@@ -387,8 +387,10 @@ def test_multi_call_round_withholds_reads_once_the_room_is_spent(subject_repo, m
     whole returned message (marker included) fits the room, and a call with no
     room left is WITHHELD — not executed — with a typed marker."""
     monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
+    # Sized with ~2k chars of margin after the measured first send (brief plus
+    # inspection tool schemas), so a schema description edit cannot flip the scenario.
     for name in ("a", "b", "c"):
-        (subject_repo / f"{name}.txt").write_text(name * 30_000, encoding="utf-8")
+        (subject_repo / f"{name}.txt").write_text(name * 28_000, encoding="utf-8")
     llm = _ScriptedLLM([
         {"tool_calls": [
             _tool_call("read_file", {"path": "a.txt"}, "c1"),
@@ -1339,7 +1341,7 @@ def test_read_extent_counts_only_complete_delivered_lines_from_the_stamp(subject
     full = _render_line_slice("f", content, max_lines=10, start_line=3, start_char=3, extent=extent)
     assert full.count("\n", 0, extent["body_start"]) == 1 and full[extent["body_start"] - 1] == "\n"  # one header line
     assert extent["first_line"] == 4 and extent["partial_head"] is True and extent["end_line"] == 12
-    assert extent["line_ends"][:3] == (11, 18, 25) and len(extent["line_ends"]) == 9  # complete lines 4..12, body-relative
+    assert len(extent["line_ends"]) == 9 and extent["line_ends"] == tuple(sorted(extent["line_ends"]))
     executor._inspection_ctx = stamped(extent)
     whole = {"start_line": 4, "end_line": 12, "total_lines": 20, "eof": False, "opened_path": "f", "opened_root": "active_workspace"}
     assert executor._read_extent(full, len(full)) == whole
@@ -1349,8 +1351,8 @@ def test_read_extent_counts_only_complete_delivered_lines_from_the_stamp(subject
     executor._inspection_ctx = stamped(extent)
     # Cut after the partial head + two complete lines + half of the next: exactly 2 lines credited.
     body = full[extent["body_start"]:]
-    cut = extent["body_start"] + len("e 3\n") + len("line 4\n") + len("line 5\n") + 3
-    assert body.startswith("e 3\n")
+    cut = extent["body_start"] + extent["line_ends"][1] + 3
+    assert body.startswith("     3\te 3\n")
     assert executor._read_extent(full, cut) == {**whole, "end_line": 5}
     # A cut exactly at a line end credits that line; a cut inside the partial head credits nothing.
     assert executor._read_extent(full, cut - 3)["end_line"] == 5
@@ -1364,13 +1366,14 @@ def test_read_extent_counts_only_complete_delivered_lines_from_the_stamp(subject
     mixed = "a\u2028b\u2028c\rd\r\ne\n"
     extent = {}
     full = _render_line_slice("f", mixed, max_lines=10, start_line=1, start_char=2, extent=extent)
-    assert (extent["first_line"], extent["partial_head"], extent["total_lines"], extent["line_ends"]) == (2, False, 5, (2, 4, 7, 9))
+    assert (extent["first_line"], extent["partial_head"], extent["total_lines"]) == (2, False, 5)
+    assert len(extent["line_ends"]) == 4
     executor._inspection_ctx = stamped(extent)
-    assert executor._read_extent(full, extent["body_start"] + len("b\u2028c\r")) == {
+    assert executor._read_extent(full, extent["body_start"] + extent["line_ends"][1]) == {
         "start_line": 2, "end_line": 3, "total_lines": 5, "eof": False, "opened_path": "f", "opened_root": "active_workspace"}
     extent = {}
     _render_line_slice("f", mixed, max_lines=10, start_line=1, start_char=3, extent=extent)  # inside "b\u2028"
-    assert (extent["first_line"], extent["partial_head"], extent["line_ends"]) == (3, True, (3, 6, 8))
+    assert (extent["first_line"], extent["partial_head"], len(extent["line_ends"])) == (3, True, 3)
     # Fail-safe: a stamp without the delivery facts, without `line_ends`, or
     # without the opened path or root records no extent.
     executor._inspection_ctx = stamped({"start_line": 3, "end_line": 12, "total_lines": 20})

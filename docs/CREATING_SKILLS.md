@@ -29,7 +29,7 @@ can run.
 **Owner attestation (skip review for your own or verified official skill).** For
 an external or self-authored skill, and for a hash-verified official
 OuroborosHub payload, the OWNER may skip the expensive LLM review via the
-**⚠️ Skip review** action on the skill card (owner-only
+**Skip review** action on the skill card (owner-only
 `POST /api/owner/skills/{skill}/attest-review`). The deterministic preflight +
 manifest-validation floor STILL runs (an invalid or unsafe payload is refused),
 and official-hub payloads are freshly rechecked against the live catalog before

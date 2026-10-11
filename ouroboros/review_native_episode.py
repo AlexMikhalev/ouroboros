@@ -1300,11 +1300,14 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 or type(view["body_start"]) is not int or not 0 <= body_start <= len(full)
                 or not view["opened_path"] or not view["opened_root"]
                 or not 0 <= view["source_start_char"] <= view["source_end_char"] <= view["complete_chars"]
-                or view["source_end_char"] - view["source_start_char"] != view["body_chars"]
-                or body_start + view["body_chars"] > len(full)):
+                or view["source_end_char"] - view["source_start_char"] != view["body_chars"]):
             return result
-        delivered_chars = min(view["body_chars"], max(0, shown - body_start))
-        delivered = full[body_start:body_start + delivered_chars]
+        from ouroboros.tools.core_file_tools import delivered_source_prefix, display_source_segments
+
+        if display_source_segments(view, full) is None:  # not this read's numbered display
+            return result
+        delivered = delivered_source_prefix(view, full, shown)
+        delivered_chars = len(delivered)
         result.update({k: view[k] for k in (*source_hashes, "source_bytes", "complete_chars", "range_basis")})
         result.update({"source_start_char": view["source_start_char"],
                        "source_end_char": view["source_start_char"] + delivered_chars,

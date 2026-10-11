@@ -82,21 +82,11 @@ pytest.register_assert_rewrite("tests.ui_media_delivery_smoke")
 pytest_plugins = ["tests.browser_lane", "tests.ci_evidence"]
 
 
-# Measuring a reviewer's window (`reviewer_context_window` / `scope_window` ->
-# `capability_evidence.probe`) asks OpenRouter's live `/models` catalog through
-# `LLMClient.openrouter_context_length(allow_fetch=True)`; a retrieving work
-# order, the `## Review` block's cost hint and the retrieving brief all measure.
-# The answer lands in these CLASS caches for the rest of the process, so a later
-# unrelated send already strips a field the catalog lists as unsupported (the
-# `test_llm_no_proxy` parameter-rejection retry then has nothing left to drop).
-_PROVIDER_CATALOG_CLASS_STATE = (
-    "_SUPPORTED_PARAMS_CACHE", "_SUPPORTED_PARAMS_FETCHED",
-    "_CONTEXT_LENGTH_CACHE", "_CAPABILITIES_FETCH_OK",
+# Provider-catalog class state and its snapshot/restore live in tests/_shared.py,
+# so a spawned child reuses them without importing this module's isolation boundary.
+from tests._shared import (  # noqa: E402
+    _PROVIDER_CATALOG_PRISTINE, _provider_catalog_snapshot, _restore_provider_catalog, offline_provider_catalog,
 )
-_PROVIDER_CATALOG_PRISTINE = {
-    "_SUPPORTED_PARAMS_CACHE": {}, "_SUPPORTED_PARAMS_FETCHED": False,
-    "_CONTEXT_LENGTH_CACHE": {}, "_CAPABILITIES_FETCH_OK": False,
-}
 
 
 def _provider_catalog_class():
@@ -116,21 +106,6 @@ def _provider_catalog_class():
     real = [cls for cls in mixin.__subclasses__()
             if cls.__name__ == "LLMClient" and cls.__module__ == "ouroboros.llm"]
     return real[-1] if real else None
-
-
-def _provider_catalog_snapshot(cls):
-    import copy
-    return {name: copy.copy(getattr(cls, name)) for name in _PROVIDER_CATALOG_CLASS_STATE}
-
-
-def _restore_provider_catalog(cls, saved):
-    for name, value in saved.items():
-        current = getattr(cls, name)
-        if isinstance(current, dict) and isinstance(value, dict):
-            current.clear()
-            current.update(value)  # the mixin's dict object itself, not a rebinding
-        else:
-            setattr(cls, name, value)
 
 
 @pytest.fixture(autouse=True)
@@ -155,12 +130,8 @@ def provider_catalog_offline(monkeypatch):
     Yields the state as found, keyed by `LLMClient` attribute name, so a test can
     pin that a preparation leaves exactly these caches untouched.
     """
-    from ouroboros.llm import LLMClient
-
-    saved = _provider_catalog_snapshot(LLMClient)
-    monkeypatch.setattr(LLMClient, "_fetch_openrouter_capabilities", classmethod(lambda cls: None))
-    yield saved
-    _restore_provider_catalog(LLMClient, saved)
+    with offline_provider_catalog(monkeypatch) as saved:
+        yield saved
 
 
 @pytest.fixture

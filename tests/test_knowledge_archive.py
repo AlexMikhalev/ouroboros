@@ -44,8 +44,11 @@ def previous_bytes(root, task_id, ref):
 
 
 def read_previous(registry, ref):
+    from ouroboros.tools.core_file_tools import delivered_source_prefix
+
     reply = registry.execute(ref["read"]["tool"], ref["read"]["arguments"])
-    return json.loads(reply.split("\n", 1)[1])[ref["field"]].encode("utf-8")
+    source = delivered_source_prefix(registry._ctx.last_read_view, reply, len(reply))  # numbered display
+    return json.loads(source)[ref["field"]].encode("utf-8")
 
 
 def setup(tmp_path, scope="global", fork=False):

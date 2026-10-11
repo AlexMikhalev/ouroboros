@@ -195,7 +195,9 @@ def test_staged_output_read_waits_for_the_consolidators_accepted_projection(tmp_
     }, facts={}, round_id="first")
     assert not entry.output_consumed and not output._READ_COVERAGE
     pending = reads.pending_delivery[0]
-    end = pending["result_source_view"]["delivered_range"][1] - pending["tool_result"].meta["read_view"]["body_start"]
+    # One numbered row: its display number is shown but is never source.
+    end = (pending["result_source_view"]["delivered_range"][1] - pending["tool_result"].meta["read_view"]["body_start"]
+           - len(f"{1:>6}\t"))
     content = target.read_text(encoding="utf-8")
     assert 0 < end < len(content) and content[:end] in delivered[-1]["content"]
     reads.accept_delivery()

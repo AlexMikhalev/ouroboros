@@ -263,7 +263,7 @@ export function initCosts({ state, mount }) {
             } else {
                 msg = 'Saved. Applies on the next task.';
             }
-            if (data.warnings && data.warnings.length) msg += ' ⚠️ ' + data.warnings.join(' | ');
+            if (data.warnings && data.warnings.length) msg += ' Warnings: ' + data.warnings.join(' | ');
             statusEl.textContent = msg;
             statusEl.dataset.tone = (data.warnings?.length || data.restart_required) ? 'warn' : 'ok';
             window.dispatchEvent(new CustomEvent('ouro:settings-updated', { detail: { reason: 'budget saved', source: 'costs' } }));

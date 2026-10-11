@@ -1,5 +1,7 @@
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
 import { tr } from './i18n.js';
+import { hostRowDisplayText } from './host_notice_text.js';
+import { strokeIcon } from './page_icons.js';
 import { showToast } from './toast.js';
 import { downloadViaHostBridge, normalizeTone, openViaHostBridge } from './ui_helpers.js';
 import { MAX_LINK_ACTIONS } from './api_types.js';
@@ -9,6 +11,17 @@ import { stampHistoryNode } from './chat_history_replay.js';
 import { isFileDrag } from './chat_activity.js';
 import { buildAttachmentBlock } from './chat_attachments.js';
 import { createDocumentReader, documentReaderKind } from './document_reader.js';
+
+// Player controls draw the house stroke vectors; each button's aria-label names its
+// current action and is rewritten with the icon whenever the state flips.
+const SPEAKER_PATH = '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"></path>';
+const MEDIA_ICONS = {
+    play: strokeIcon('<polygon points="6 3 20 12 6 21 6 3"></polygon>', 16),
+    pause: strokeIcon('<rect x="14" y="4" width="4" height="16" rx="1"></rect><rect x="6" y="4" width="4" height="16" rx="1"></rect>', 16),
+    volume: strokeIcon(`${SPEAKER_PATH}<path d="M16 9a5 5 0 0 1 0 6"></path><path d="M19.364 18.364a9 9 0 0 0 0-12.728"></path>`, 16),
+    muted: strokeIcon(`${SPEAKER_PATH}<line x1="22" x2="16" y1="9" y2="15"></line><line x1="16" x2="22" y1="9" y2="15"></line>`, 16),
+    fullscreen: strokeIcon('<path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M21 8V5a2 2 0 0 0-2-2h-3"></path><path d="M3 16v3a2 2 0 0 0 2 2h3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path>', 16),
+};
 
 const MIME_RE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
 const BASE64_RE = /^[A-Za-z0-9+/=\s]+$/;
@@ -80,7 +93,8 @@ export function showTaskIncidentToast(msg) {
     // a wait is a warning, an exhaustion or a cancellation fault is the alarm.
     // No tone on the frame (older producers, cancellation_fault) keeps the
     // alarm tone; the text is never parsed for it.
-    return showToast(String(msg?.content || msg?.text || incident), normalizeTone(msg?.toast_tone || 'error', 'error'));
+    const text = String(msg?.content || msg?.text || incident);
+    return showToast(hostRowDisplayText({ ...msg, text }), normalizeTone(msg?.toast_tone || 'error', 'error'));
 }
 
 // Best-effort teardown of temporary uploads after a failed send; lives with
@@ -428,7 +442,7 @@ export function createChatMedia({
             time.textContent = `${formatDuration(current)} / ${formatDuration(duration)}`;
         };
         const syncPlay = () => {
-            play.textContent = media.paused ? '▶' : '❚❚';
+            play.innerHTML = media.paused ? MEDIA_ICONS.play : MEDIA_ICONS.pause;
             play.setAttribute('aria-label', media.paused ? tr('media.play', 'Play') : tr('media.pause', 'Pause'));
         };
         const toggle = async () => {
@@ -472,7 +486,7 @@ export function createChatMedia({
         });
         if (mute) listen(mute, 'click', () => {
             media.muted = !media.muted;
-            mute.textContent = media.muted ? '🔇' : '🔊';
+            mute.innerHTML = media.muted ? MEDIA_ICONS.muted : MEDIA_ICONS.volume;
             mute.setAttribute('aria-label', media.muted ? tr('media.unmute', 'Unmute') : tr('media.mute', 'Mute'));
         });
         if (fullscreen) listen(fullscreen, 'click', async () => {
@@ -507,13 +521,13 @@ export function createChatMedia({
                 ${SPEEDS.map((rate) => `<option value="${rate}">×${rate}</option>`).join('')}
             </select>
             <button type="button" data-media-action="repeat" aria-label="${escapeHtmlAttr(tr('media.repeat', 'Repeat'))}">↻</button>
-            <button type="button" data-media-action="mute" aria-label="${escapeHtmlAttr(tr('media.mute', 'Mute'))}">🔊</button>
-            <button type="button" data-media-action="fullscreen" aria-label="${escapeHtmlAttr(tr('media.enter_fullscreen', 'Enter fullscreen'))}">⛶</button>`;
+            <button type="button" data-media-action="mute" aria-label="${escapeHtmlAttr(tr('media.mute', 'Mute'))}">${MEDIA_ICONS.volume}</button>
+            <button type="button" data-media-action="fullscreen" aria-label="${escapeHtmlAttr(tr('media.enter_fullscreen', 'Enter fullscreen'))}">${MEDIA_ICONS.fullscreen}</button>`;
         return `<div class="chat-media-player${audio ? ' is-audio' : ''}">
             ${title ? `<div class="chat-media-title">${escapeHtml(title)}</div>` : ''}
             <div class="chat-media-stage">${media}</div>
             <div class="chat-media-controls">
-                <button type="button" data-media-action="play" aria-label="${escapeHtmlAttr(tr('media.play', 'Play'))}">▶</button>
+                <button type="button" data-media-action="play" aria-label="${escapeHtmlAttr(tr('media.play', 'Play'))}">${MEDIA_ICONS.play}</button>
                 <input class="chat-media-progress" type="range" min="0" max="100" value="0" step="0.1" aria-label="${escapeHtmlAttr(tr('media.progress', 'Media progress'))}">
                 <span class="chat-media-time">0:00 / 0:00</span>
                 ${videoControls}

@@ -215,8 +215,14 @@ def acknowledge_staged_output_read(ctx: ToolContext, read_view: Dict[str, Any], 
 def _delivered_source_ranges(read_view: Dict[str, Any], original: str,
                              projected: Dict[str, Any], content: str,
                              shown_ranges: Optional[List[List[int]]] = None) -> Optional[List[List[int]]]:
-    """Intersect the host's delivered result ranges with this reader's file body."""
+    """Intersect the host's delivered result ranges with this reader's file body.
+
+    The body is read_file's numbered display: the renderer's own decoder maps
+    result offsets to source characters, after its rows proved equal to the
+    exact source window, so display numbers and a hidden middle credit nothing.
+    """
     from ouroboros.tool_result_delivery import RESULT_VIEW_BASIS, reader_text
+    from ouroboros.tools.core_file_tools import delivered_source_prefix, display_intervals_to_source
 
     original = reader_text(original)
     if (read_view.get("range_basis") != RESULT_VIEW_BASIS
@@ -229,7 +235,7 @@ def _delivered_source_ranges(read_view: Dict[str, Any], original: str,
     if (not all(isinstance(n, int) for n in (start, end, body_start, body_chars))
             or not 0 <= start <= end <= len(content) or body_start < 0
             or body_chars != end - start
-            or original[body_start:body_start + body_chars] != content[start:end]):
+            or delivered_source_prefix(read_view, original, len(original)) != content[start:end]):
         return None
     if shown_ranges is not None:
         shown = shown_ranges
@@ -245,16 +251,13 @@ def _delivered_source_ranges(read_view: Dict[str, Any], original: str,
         shown = [[0, len(original)]]
     else:
         return None
-    ranges = []
     for span in shown:
         if (not isinstance(span, (list, tuple)) or len(span) != 2
                 or not all(isinstance(n, int) for n in span)
                 or not 0 <= span[0] <= span[1] <= len(original)):
             return None
-        lo, hi = max(span[0], body_start), min(span[1], body_start + body_chars)
-        if lo < hi:
-            ranges.append([start + lo - body_start, start + hi - body_start])
-    return ranges
+    ranges = display_intervals_to_source(read_view, original, [(lo, hi) for lo, hi in shown])
+    return None if ranges is None else [[lo, hi] for lo, hi in ranges]
 
 
 def acknowledge_staged_output_delivery(ctx: ToolContext, exec_result: Dict[str, Any],

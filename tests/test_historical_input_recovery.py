@@ -14,6 +14,11 @@ from tests import test_main_authored_context as context_fixtures
 main_loop = context_fixtures.main_loop
 
 
+def _numbered(source):
+    """``source`` as read_file displays it: every line behind its cat -n number."""
+    return "".join(f"{number:>6}\t{line}" for number, line in enumerate(source.splitlines(keepends=True), 1))
+
+
 @pytest.mark.parametrize("failed_root", ["first", "second"])
 def test_never_published_first_input_retries_exact_observation(main_loop, monkeypatch, tmp_path, failed_root):
     from ouroboros import artifacts
@@ -87,8 +92,8 @@ def test_never_published_first_input_is_not_replaced_by_a_later_observation(main
     assert first["status"] == "unavailable"
     assert latest["position"] == "latest" and latest["status"] == "captured"
     assert first["physical_attempt_id"] != latest["physical_attempt_id"]
-    assert f.source in json.dumps(json.loads(read_actor_source_bytes(
-        f.ctx.drive_root, f.ctx.task_id, latest["source_ref"]))).replace("\\n", "\n")
+    assert _numbered(f.source) in json.dumps(json.loads(read_actor_source_bytes(
+        f.ctx.drive_root, f.ctx.task_id, latest["source_ref"]))).replace("\\n", "\n").replace("\\t", "\t")
 
 
 def test_never_published_input_does_not_retry_after_its_physical_source_is_lost(main_loop, monkeypatch):

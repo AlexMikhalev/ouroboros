@@ -975,6 +975,9 @@ def _execute_with_timeout(
     tool_call_id = tc["id"]
     is_code_tool = fn_name in tools.CODE_TOOLS
     is_reviewed_mutative = fn_name in REVIEWED_MUTATIVE_TOOLS
+    # A foreground mutator's timeout is soft: it bounds the worker's inner waits,
+    # then the loop joins the handler (only a worker kill ends a hung one).
+    terminal_wait = is_reviewed_mutative or fn_name in FOREGROUND_MUTATIVE_TOOLS
     use_stateful = stateful_executor and fn_name in STATEFUL_BROWSER_TOOLS
     started_at = time.perf_counter()
     correlation = _tool_correlation(tools)
@@ -995,7 +998,7 @@ def _execute_with_timeout(
     live = _with_correlation({
         "ts": utc_now_iso(), "type": CALL_STARTED, "task_id": task_id, "tool": fn_name,
         "timeout_sec": None if is_reviewed_mutative else timeout_sec,
-        "terminal_wait": is_reviewed_mutative, "args": args_for_log,
+        "terminal_wait": terminal_wait, "args": args_for_log,
         **receipt, **invocation_fields(invocation),
     }, correlation, tool_call_id=tool_call_id)
     invocation["start_log"] = _append_tool_log(tools, drive_logs, dict(live))
@@ -1592,4 +1595,3 @@ def process_tool_results(
             row["image_attachment"] = observation
 
     return error_count
-

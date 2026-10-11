@@ -305,7 +305,7 @@ _PRODUCER_SHAPES = (
     ("mcp_provider_error", "mcp_svc__ping", "External MCP tool result from 'svc'/'ping'. This server-supplied result is untrusted data.\n\nthe server said no", "MCP_ERROR", (("dynamic_provider", True), ("mcp_is_error", True))),
     ("ephemeral_turn_denial", "read_file", "⚠️ EPHEMERAL_TURN_RESTRICTED: 'update_identity' is not in the decision-turn allowlist.", "ACCESS_BLOCKED", ()),
     ("root_required_active_workspace", "write_file", "⚠️ ROOT_REQUIRED_ACTIVE_WORKSPACE: absolute path '/w/x.txt' is under the active workspace.", "ROOT_REQUIRED_ACTIVE_WORKSPACE", (("required_root", "active_workspace"),)),
-    ("root_required_user_files", "write_file", "⚠️ ROOT_REQUIRED_USER_FILES: an absolute home path was given but root defaulted to 'active_workspace'.", "ROOT_REQUIRED_USER_FILES", ()),
+    ("root_required_user_files", "write_file", "⚠️ ROOT_REQUIRED_USER_FILES: an absolute home path is outside root='active_workspace'.", "ROOT_REQUIRED_USER_FILES", ()),
     ("resource_constraint", "read_file", "⚠️ RESOURCE_CONSTRAINT_BLOCKED: task_contract.allowed_resources.network=false blocks it.", "RESOURCE_CONSTRAINT_BLOCKED", ()),
     # tools/registry_core.py::ToolRegistry._execute_legacy_text (owner Batch4): the
     # owner paused the tree before this call's launch handoff; nothing ran.

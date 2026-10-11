@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros.consolidator import KnowledgeReadContext
+from ouroboros.tools.core_file_tools import _render_line_slice, delivered_source_prefix
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 
 
@@ -48,7 +49,8 @@ def test_reflection_reads_exact_previous_source_after_restore(tmp_path, scope):
     observed = reader.read_call({"id": "historical-source", "function": {
         "name": ref["read"]["tool"], "arguments": json.dumps(ref["read"]["arguments"])}})
     assert observed["status"] == "ok", observed
-    payload = json.loads(observed["result"].split("\n", 1)[1])
+    shown = observed["result"]  # numbered display; the reader's own view maps it to source
+    payload = json.loads(delivered_source_prefix(observed["result_meta"]["read_file_source"], shown, len(shown)))
     raw = payload[ref["field"]].encode("utf-8")
     assert payload["revision"] == revision == hashlib.sha256(raw).hexdigest()
     assert b"Earlier facts." in raw and b"Later corrected facts." not in raw
@@ -103,7 +105,10 @@ def test_run_reflection_reads_previous_source_before_copyback(tmp_path, monkeypa
     assert ref["path"] in json.dumps(observed[0]), "the real prompt advertises the previous reader"
     delivered = [row["content"] for row in observed[1] if row.get("role") == "tool"]
     assert len(delivered) == 1 and "old_content" in delivered[0], delivered
-    payload = json.loads(delivered[0].split("\n", 1)[1])
+    view = {}  # the delivered numbered display, mapped by the renderer that produced it
+    _render_line_slice(ref["path"], exact.decode("utf-8"), extent=view)
+    view["body_start"] = delivered[0].find("\n") + 1
+    payload = json.loads(delivered_source_prefix(view, delivered[0], len(delivered[0])))
     assert payload["old_content"].encode("utf-8") == original
     assert payload["revision"] == hashlib.sha256(original).hexdigest()
     assert "LATER CURRENT BODY" not in delivered[0]

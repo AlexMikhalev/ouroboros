@@ -247,32 +247,45 @@ Two controls in the composer's pill row write a global owner setting rather than
 a fact about the next message: the Nano/Low/Max context mode and the **effort
 range**. Both save at once through their owner endpoint, show the server's refusal
 as a toast and read the one saved value back from `/api/state`, so Main and every
-Project composer show the same thing; Settings → Behavior only reads the range.
+Project composer show the same thing; the composer is the only place the range is
+shown or edited (Settings has no effort section).
 
 The effort range is a round button (the pills' height) wearing a ring glyph — a
 300° arc whose band is the minimum..maximum and whose dot is the recommended
-level. It opens **inline**, never as a dropdown, into a labelled seven-level
-strip (None · Low · Medium · High · X-High · Max · Ultra) with two brackets, the
-recommended pill and a reset that appears only while the range differs from Low ·
-Medium · High. The brackets push the recommended level along and it stays between
-them; a tap inside the range sets it, a tap outside moves the nearer bracket; a
-drag keeps the grab offset; when levels coincide the brackets stay reachable from
-either side of the pill. A stored tier outside the seven (`minimal`) shows at the
-nearest owner tier and is rewritten only when its own handle moves.
+level. It opens **inline**, never as a dropdown, into the seven-level strip (None ·
+Low · Medium · High · X-High · Max · Ultra) with two brackets and the recommended
+pill, and nothing else: no title word, no reset. A segment is its word plus
+`--effort-seg-pad` on each side; the pill covers its whole segment with the word
+centred, and the band, the pill and the brackets share one vertical inset, so their
+edges meet. Every handle pushes the ones it meets: a bracket carries the
+recommended level along, the pill carries a bracket past which it moves, a pushed
+bracket stays where it was pushed, and the brackets never cross. A tap inside the
+range sets the recommended level, a tap outside moves the nearer bracket; a drag
+keeps the grab offset and shows whole levels throughout. A stored tier outside the
+seven (`minimal`) shows at the nearest owner tier and is rewritten only when its own
+handle moves.
+
+**The open strip stays on the composer's line.** It sits beside the pills when it
+fits there (the padding may tighten to `--space-1`); otherwise Swarm and
+Nano/Low/Max step aside while it is open, and it appears and leaves at once with
+them (the padding may tighten to 3 px, the pill's corners tightening with it so it
+still covers its word); only when
+even that does not fit does the strip scroll inside itself, fading on the side that
+hides levels, while the round button stays put. The fit is measured from the row,
+so a Project pane, a phone and a translation need no breakpoint.
 
 **Hover is an accelerator; the press always works.** With a hovering fine pointer
-the strip opens about 160 ms after the pointer arrives and closes about 450 ms after
-it leaves, unless a press pinned it; the same press unpins. Touch and keyboard use
-the press alone: Enter or Space opens and focuses the recommended handle, arrows
-and PageUp/PageDown step a handle, Home and End take it to the ends, Esc closes and
-returns focus to the button, an outside press closes. The three handles are
-sliders whose value text names the level; closed, they leave the tab order. A
-narrow composer column — a phone, a Project pane on a wide screen — gives the open
-strip its own line, decided by the column, not the viewport, and never a page
-scroll. A change saves when the gesture ends, saves run one after another with the
-last winning, and Send waits for a pending save so the next root starts at the
-level the owner just chose; a refused save keeps the draft, says why and returns
-the control to the saved value — unsaved values are never shown as saved.
+the strip opens about 160 ms after the pointer arrives and closes a second after it
+leaves a 32 px zone around the control, unless a press pinned it; the same press
+unpins. Touch and keyboard use the press alone: Enter or Space opens and focuses the
+recommended handle, arrows and PageUp/PageDown step a handle, Home and End take it
+to the ends, Esc closes and returns focus to the button, an outside press closes.
+The three handles are sliders whose value text names the level; closed, they leave
+the tab order and the button's name states the range. A change saves when the
+gesture ends, saves run one after another with the last winning, and Send waits
+for a pending save so the next root starts at the level the owner just chose; a
+refused save keeps the draft, says why and returns the control to the saved value —
+unsaved values are never shown as saved.
 
 ### `.muted`
 
@@ -638,6 +651,15 @@ renderer regardless of `markdown`; ordinary System text is escaped unless
 Voice does not confer task finality. The existing untyped terminal-host-notice
 contract remains a documented exception, not a pattern for new notices.
 
+Built-in chrome uses words and monochrome `currentColor` vectors, not decorative
+emoji. System keeps its amber bubble and plain label; status stays explicit in
+words and the tone primitive. Functional icons keep state and accessible names.
+Known typed host prefixes are hidden only at display (`host_notice_text.js`);
+unlisted or ambiguous records remain literal. History, keys, exports and the
+existing Copy input are unchanged (Copy already uses translated text for two
+notice types). Authored text, quoted evidence, names, documents, logs and author
+widget icons/interiors are not chrome and keep their characters.
+
 Main's empty-chat greeting speaks in neither voice: it is host copy in a quiet
 `.chat-empty-welcome` placeholder (a `Welcome` label over one sentence), never a
 bubble, a history row or a model reply (`web/modules/welcome_preference.js`). It
@@ -680,6 +702,19 @@ preference when it opens and on every reconnect; there is no file watcher.
   (`--type-body`, `--text-meta`) → content → optional note (`--type-meta`,
   `--text-meta`). The description explains what the section decides; the note
   carries consequences and caveats.
+- **Order by importance and expected use.** Put first what a typical install
+  needs most often or what matters most, and last what most installs set once or
+  never: left to right for tabs, header actions, toolbars and pill rows, top to
+  bottom for sections, cards and sidebar entries. Decide from what the control does
+  on desktop, browser, Docker and phone installs, not from counts: the UI never
+  measures use and never reorders itself. Related sections stay together and move
+  as a group. The exceptions: the default tab is first; a setup flow keeps its
+  order (connect an account, choose models, assign agents); an ordered scale and an
+  owner-defined order (Widgets) are never re-sorted; destructive actions and About
+  come last, while an emergency stop (Panic) stays where people reach for it; Send
+  and Save keep their usual place. A familiar location moves only for a clear gain,
+  and a new section takes the place this rule gives it, not the top because it is
+  new.
 - Subsections inside a section use a `--type-body` semibold heading and stay
   visually grouped with their own rows, their own add action in the head
   (List editors, below). A heading that floats equidistant between two groups
@@ -1074,29 +1109,28 @@ the rest of the chat surface.
 
 **Project question mirror.** A Project question the owner has not answered appears in Main as the Project's own quiz card — the same `buildQuizCard` form with the question through the chat markdown pipeline, the options with their details and the `recommended` badge, the stake, the assumption or waiting line, the status and the own-answer field — inside the same assistant bubble. The one addition is the Project reference ("References and actions") in the head beside the `Question` chip: its inline pill (the `--project` tints, the Project name in project ink with `↗`) opens that exact question in its Project, with the card's shared keyboard ring. A long Project name yields first (the chip is capped and ellipsized, its title names the Project whole) so the status keeps its place; a phone column wraps the head. Every lifecycle state reads as it does in the Project: waiting, open, resumed and finished questions stay answerable, and a replaced question stays as a read-only record. An unreadable source keeps what Main already knew; with nothing known the copy says `Status unavailable`, takes no answer and keeps its chip, and a row that cannot carry the form yet shows `Open the original question for its text.` until it can. The first confirmed answer from any source — a press in Main, the Project form or another device, a history or census snapshot — shows the recorded result (the chosen option, `Owner's answer: …`, `You answered`) for five seconds and then removes only the Main copy, through the ordinary message retirement and without moving the reader's viewport; the Project keeps its card. The countdown starts once and later observations never restart it. When focus was inside the copy it stays there while the result shows, then moves to the next Main question, or to the composer for a keyboard owner, never summoning a touch keyboard. A copy that learns its form and its answer in one delivery shows that result for the same five seconds. An answered question never enters Main again: fresh history, a reconnect or a stale open snapshot cannot bring the copy back. Main remembers the lifecycle of a bounded number of questions; a question it no longer remembers mounts a safe unknown copy, whose answer controls appear only after a fresh canonical record confirms it unanswered. A failed, missing or wrong-project canonical read leaves a safe `Status unavailable` copy with its Project chip and no answer controls; the chip opens the original Project form, while a later owned refresh retries the Main copy, so an unavailable read never turns a stale open snapshot into an answerable form and never permanently suppresses a legitimate unanswered question. The mirror and the quiz header share the lifecycle wording above.
 
-**Project work entries.** An agent-created Project and each independent Main request
-transferred into a Project use the same compact Project-colour card. The work title
-is primary, followed by one Project reference and the existing time; there is no
-System heading or extra created/transferred caption. Structured `task_name` names
-the work without repeating the Project; older history uses its retained task result.
-Creation and transfer remain distinct durable events with their own publication
-eligibility and identities. A card follows its particular work, never the Project's
-latest unrelated task. Binding alone means neither Working nor Done.
-The task card, compact entry and Project indicator share per-task status facts.
-Confirmed working/thinking/finalizing can move; queue, pause/pausing, actual waits
-and unknown activity stay still. Movement belongs to the status itself, survives
-reload and respects reduced motion. A known outcome stays primary while unfinished
-finalization is a separate quiet fact. An answered/resumed question is not a wait.
-A manually converted card opens its room; an agent-created handoff does not steal
-focus. A converted card is always visible — two cards of one owner message both stay —
-and the durable receipt row shows only when no card carries the transfer; a folded
-receipt returns when its card leaves the feed. Matching Started and routing
-references fold visually into that anchor only while it is mounted; their durable
-records remain, including their plain-text presentation to non-browser consumers.
-A converted card whose Main receipt is not durable keeps a dashed border and a plain
-warning names the gap; the binding still holds. Genuine initiator work and failures
-are not hidden. Folding never lends another task's outcome to the visible card.
-A later final answer remains a separate message at its completion time.
+**Project work entries.** Creation, transfer and manual conversion share one compact
+Project-colour card, live and on replay: width, border, insets, type and footer.
+The work title leads; status sits beside it in a wide card and above it in a narrow
+one. The sole Project reference uses its available row, ellipsizing only when needed.
+The footer holds the recorded event time and Copy (work title and full Project name).
+A converted card gains its transfer time from the matching receipt, never the current
+clock or an unrelated task; missing time stays absent. Finished conversions keep
+Project colour. There is no System heading or created/transferred caption.
+Structured `task_name` names the work; older history uses its retained task result.
+Creation and transfer keep their event identities and publication eligibility; each
+card follows its work, never the Project's latest unrelated task. Binding proves no
+activity. Task cards, entries and Project indicators share per-task status facts:
+confirmed working/thinking/finalizing can move; queued, paused/pausing, waiting and
+unknown stay still. Motion survives reload and respects reduced motion. A known
+outcome leads beside quiet finalization; an answered/resumed question is not a wait.
+Manual conversion opens its room; agent handoffs do not steal focus. Converted cards
+stay visible, including several from one owner message. Their durable receipt folds
+under the visible anchor and returns when it leaves the feed. Matching Started and
+routing references fold only while that anchor is mounted; records and non-browser
+plain text remain. An undurable Main receipt keeps a dashed border and a plain warning;
+the binding holds. Genuine initiator work and failures remain visible; folding never
+lends another task's outcome. The later final answer stays a separate message.
 
 **Project completion mirror.** A Project root that ended with Ouroboros's own final answer reaches Main as an ordinary Ouroboros message: that answer through the chat markdown pipeline, in the assistant voice, because the bytes are model-authored — the host stamps the answer on the completion row only for a model-authored final, so the browser never infers authorship. A long answer is folded to about seven lines; the fold is a visual clamp over the complete, selectable text, with a fade only when it really hides something, and never a cut. Under it sits one control, the Project reference ("References and actions"). The durable row and its wire frame stay `role="system"`: like the Project question mirror, this is a browser presentation of model-authored bytes, not a change of the row's author. The message carries no status word, cause sentence, title or duration, so a host verdict on that answer (a warning, an unaccepted review) is not shown in Main: it stays loud on the task's card in the Project, one press away. Copy copies the answer. An ending with no model-authored answer (a provider failure, a stop, preserved output), and every completion row written before the answer rode the row keep the System row, which ends with that same reference: the voice of a row never chooses how the UI points at its Project. One durable row either way: its plain text is unchanged, so the Telegram mirror, Ouroboros's own context and one-ending-one-notification behave as before.
 
@@ -1638,7 +1672,7 @@ engineering rules; no second policy list may exist.
 never *look, I am still working*. It exists so the owner can leave the window
 and still be reached by a question or a finished task.
 
-**Startup & background.** Settings → Behavior owns host lifecycle choices, separate from the client-local Appearance controls. Sign-in startup is off until the owner opts in and always names the computer running Ouroboros, even in a remote client. OS registration is the truth: another copy, an OS-disabled entry and an unavailable app build remain visible rather than becoming a saved-settings guess. Automatic startup preserves Panic stops and saved pauses; an explicit owner start releases Panic. The second control, *keep Ouroboros running in the background when the window is closed*, is also off until chosen and lives in the host's settings. Until the owner decides, the first close of the desktop window asks once — Ouroboros will keep working in the background (tasks, schedules, Telegram): keep it running, or quit? — and the answer becomes that checkbox; dismissing the question quits. macOS labels its two buttons Keep running and Quit; Windows keeps its standard OK and Cancel, with a line saying that OK keeps it running and Cancel quits. While it is on, closing hides the window behind a live indicator (the Windows notification-area icon; the macOS menu-bar item and Dock) whose menu shows the server's real state (work only from confirmed phases; starting, an error, unconfirmed activity or no answer said as such) and offers Open, Panic and Quit; if no indicator appears the close quits, so a hidden process always has a visible way back. Quit, Cmd+Q and signing out always quit, unasked. A sign-in start stays hidden only when both checkboxes are on and the indicator actually appeared, and opening the app while it is still starting shows the window; there is no third "start minimized" setting. Linux shows the background control as not available yet and closing quits there. Android deliberately keeps its existing automatic boot entry by default, with the same Panic-preservation contract.
+**Startup & background.** Settings → Behavior owns host lifecycle choices, separate from the client-local Appearance controls. Sign-in startup is off until the owner opts in and always names the computer running Ouroboros, even in a remote client. OS registration is the truth: another copy, an OS-disabled entry and an unavailable app build remain visible rather than becoming a saved-settings guess. Automatic startup preserves Panic stops and saved pauses; an explicit owner start releases Panic. The second control, *keep Ouroboros running in the background when the window is closed*, is also off until chosen and lives in the host's settings. Until the owner decides, the first close of the desktop window asks once — Ouroboros will keep working in the background (tasks, schedules, Telegram): keep it running, or quit? — and the answer becomes that checkbox; dismissing the question quits. macOS labels its two buttons Keep running and Quit; Windows keeps its standard OK and Cancel, with a line saying that OK keeps it running and Cancel quits. While it is on, closing hides the window behind a live indicator (the Windows notification-area icon; the macOS menu-bar item and Dock) whose menu shows the server's real state (work only from confirmed phases; starting, an error, unconfirmed activity or no answer said as such) and offers Open, Panic and Quit; if no indicator appears the close quits, so a hidden process always has a visible way back. Quit, Cmd+Q and signing out always quit, unasked. A sign-in start stays hidden only when both checkboxes are on and the indicator actually appeared, and opening the app while it is still starting shows the window; there is no third "start minimized" setting. Linux shows the background control as not available yet and closing quits there. Android deliberately keeps its existing automatic boot entry by default, with the same Panic-preservation contract. The card is the last on Behavior: set once, and on a browser or Docker host it only explains itself. A control the host cannot offer says why as a plain note in meta ink (no warning dot); two controls with the same reason say it once, after both; a state the owner can change (another copy, an entry the OS turned off) is a warning, a failed read or write an error. Notes and statuses start at the checkbox label's text, a status dot hanging under the checkbox.
 
 **When the client runs.** Notifications are a property of a running client, and
 there is no push channel. On the desktop the Telegram bridge runs inside the same

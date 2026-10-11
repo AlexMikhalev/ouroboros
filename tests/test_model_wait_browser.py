@@ -387,7 +387,7 @@ def test_wait_reconnect_preserves_unsubmitted_form_without_context_or_animation(
     document_id = page.evaluate("window.waitDocumentId = crypto.randomUUID()")
     with page.expect_response('**/api/chat/history*'):
         ui["sockets"][-1].close()
-    page.get_by_text("♻️ Reconnected", exact=True).wait_for()
+    page.get_by_text("Reconnected", exact=True).wait_for()
     assert page.evaluate("window.waitDocumentId") == document_id
     assert field.input_value() == 'unfinished-owner-model'
     assert field.evaluate("el => document.activeElement === el")

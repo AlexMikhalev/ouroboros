@@ -14,6 +14,7 @@ import { REUSABLE_TASK_IDS } from './task_control_menu.js';
 import { activityWaitPhase, pausePhaseLabel } from './task_phase_chip.js';
 import { apiFetch } from './api_client.js';
 import { currentLanguage, fmt, isEnglish, tr, tx } from './i18n.js';
+import { hostRowDisplayText } from './host_notice_text.js';
 import {
     accountedUpperBound,
     accountedUpperBoundWithChildren,
@@ -56,11 +57,11 @@ export function senderLabel(role, isProgress = false, systemType = '', opts = {}
         return opts.senderLabel || 'You';
     }
     if (role === 'system') {
-        if (systemType === 'task_summary') return '📋 Task Summary';
-        if (systemType === 'skill_review') return '📋 Skill Review';
-        return '📋 System';
+        if (systemType === 'task_summary') return 'Task Summary';
+        if (systemType === 'skill_review') return 'Skill Review';
+        return 'System';
     }
-    if (isProgress) return '💬 Thought';
+    if (isProgress) return 'Thought';
     // A self-initiated turn (a consciousness wake-up) signs its final bubble
     // through the same sender line the user bubble uses for its source.
     if (opts.initiator === 'consciousness') return 'Ouroboros · Consciousness';
@@ -100,7 +101,7 @@ export function evidenceLinkHtml(evidenceRef) {
 // retain their record link. Only typed host pause copy enters the translator.
 export function cardRowSummary(msg, phase, rawTs = '') {
     const text = String(msg.text ?? msg.content ?? '');
-    const lines = (msg.role === 'system' && msg.system_type === 'task_pause_notice' ? tx(text) : text).split('\n');
+    const lines = hostRowDisplayText(msg, msg.role === 'system' && msg.system_type === 'task_pause_notice' ? tx(text) : text).split('\n');
     const rowId = String(msg.card_row_id || '').trim() || `${String(msg.system_type || '').trim()}|${rawTs}`;
     return {
         phase, headline: lines[0].trim(), body: lines.slice(1).join('\n').trim(), dedupeKey: `cardrow|${rowId}`,
@@ -1213,8 +1214,8 @@ export function buildMessageKey(role, text, timestamp, opts = {}) {
 }
 
 export function reconnectBannerText(reason = '') {
-    if (reason === 'sha-change') return '♻️ Restart complete';
-    if (reason) return '♻️ Reconnected';
+    if (reason === 'sha-change') return 'Restart complete';
+    if (reason) return 'Reconnected';
     return '';
 }
 

@@ -1,6 +1,7 @@
 import { isTerminalTaskDetail, taskPresentation, taskTerminalSummary } from './log_events.js';
 import { fmt, tr } from './i18n.js';
 import { waitFacts } from './question_presentation.js';
+import { strokeIcon } from './page_icons.js';
 
 // The live card's own words. Its root is one the overlay never enters (a transcript), so every
 // label is read through the translation seam here, at the producer.
@@ -26,6 +27,7 @@ const CHIP = {
     queued: () => tr('task.chip.queued', 'Queued'),
     ownerWait: () => tr('task.chip.waiting_for_answer', 'Waiting for your answer'),
     reviewWorkFinishing: () => tr('task.chip.review_work_finishing', 'review work finishing'),
+    ownerHurry: () => tr('task.chip.owner_hurry_applied', 'Owner hurry applied'),
 };
 
 export function pausePhaseLabel(phase, cause = '', finishingReviews = false) {
@@ -219,6 +221,23 @@ export function paintTaskPhase(phaseEl, view, secondaryEl = null, isSubagent = f
     if (phaseEl.getAttribute('aria-atomic') !== 'true') phaseEl.setAttribute('aria-atomic', 'true');
     if (phaseEl.getAttribute('aria-label') !== activeLabel) phaseEl.setAttribute('aria-label', activeLabel);
     return changed || secondaryChanged;
+}
+
+// HQ1: an applied owner hurry is one more fact beside the phase chip, drawn as the
+// house fast-forward vector and named for assistive technology; the root attribute
+// stays the card's record of it. Returns whether the card changed.
+export function markOwnerHurry(record) {
+    const root = record?.root;
+    if (!root || root.getAttribute('data-owner-hurry') === '1') return false;
+    root.setAttribute('data-owner-hurry', '1');
+    const mark = root.querySelector('[data-live-hurry]');
+    if (mark) {
+        mark.innerHTML = strokeIcon('<polygon points="13 19 22 12 13 5 13 19"></polygon><polygon points="2 19 11 12 2 5 2 19"></polygon>', 14);
+        mark.setAttribute('aria-label', CHIP.ownerHurry());
+        mark.title = CHIP.ownerHurry();
+        mark.hidden = false;
+    }
+    return true;
 }
 
 // Preserve the established setter while adapting the card's private facts to
