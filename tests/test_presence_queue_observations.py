@@ -92,6 +92,15 @@ def _park(h):
     return ref
 
 
+# The fixture runs a real host: its background acceptance-review claim may stamp the same
+# task row (its accounting block and updated_at) while a test watches the queue endpoints.
+_BACKGROUND_CLAIM_KEYS = ("task_acceptance_review_accounting", "updated_at")
+
+
+def _row_without_background_claim(row):
+    return {key: value for key, value in copy.deepcopy(row).items() if key not in _BACKGROUND_CLAIM_KEYS}
+
+
 def test_complete_empty_snapshot_replaces_old_queue_and_get_is_passive(host):
     h = host
     ref = _park(h)
@@ -101,7 +110,7 @@ def test_complete_empty_snapshot_replaces_old_queue_and_get_is_passive(host):
     assert refresh(h, ref, empty).json()["status"] == "recorded"
     before = load_task_result(h.data, ref)
     assert poll(h, ref).status_code == 202
-    assert load_task_result(h.data, ref) == before
+    assert _row_without_background_claim(load_task_result(h.data, ref)) == _row_without_background_claim(before)
     event = SimpleNamespace(**before["metadata"]["presence"]["event"])
     observation = transport_queue_observation(h.data, ref, event)
     assert observation["status"] == "available" and observation["snapshot"]["events"] == []
@@ -109,7 +118,7 @@ def test_complete_empty_snapshot_replaces_old_queue_and_get_is_passive(host):
     conflicting = snapshot(("different",), second=1)
     response = refresh(h, ref, conflicting)
     assert response.status_code == 400 and response.json()["code"] == "presence_observation_invalid"
-    assert load_task_result(h.data, ref) == before
+    assert _row_without_background_claim(load_task_result(h.data, ref)) == _row_without_background_claim(before)
 
 
 @pytest.mark.parametrize("change", [
@@ -160,4 +169,4 @@ def test_failed_retention_and_foreign_binding_do_not_replace_queue(host, monkeyp
     monkeypatch.setattr("ouroboros.artifacts.store_actor_source_bytes", fail)
     response = refresh(h, ref, snapshot(second=1))
     assert response.status_code == 500 and response.json()["disposition"] == "retry"
-    assert load_task_result(h.data, ref) == before
+    assert _row_without_background_claim(load_task_result(h.data, ref)) == _row_without_background_claim(before)
