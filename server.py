@@ -1656,6 +1656,16 @@ def main() -> int:
     # The server process is the single writer of logs/server.log; a test run on the
     # real default data root keeps the stream handler only.
     configure_process_logging(drive_logs=None if _pytest_default_real_data_dir else DATA_DIR / "logs")
+    if not _pytest_default_real_data_dir:
+        from ouroboros.process_scope import complete_pending_panic_sweep, plant_installation_scope
+
+        try:  # a Panic the previous generation could not finish ends before this one spawns anything
+            complete_pending_panic_sweep(DATA_DIR)
+        except Exception:
+            log.warning("pending Panic scope sweep failed; its record stays for the next start", exc_info=True)
+        # The installation scope marker: planted here, before any worker, command, service
+        # or the managed daemon exists, so every child inherits it (ARCHITECTURE §9).
+        plant_installation_scope(DATA_DIR)
     if not automatic_launch_allowed(os.environ.get("OUROBOROS_LAUNCH_INTENT", "owner"), DATA_DIR, log):
         return 0
     # A benchmark-owned child may receive an integrity pin from its parent.

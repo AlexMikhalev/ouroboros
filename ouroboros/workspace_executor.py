@@ -1283,6 +1283,9 @@ def service_env() -> dict[str, str]:
         if key.casefold() not in allowed_casefold and not key.startswith("LC_"):
             continue
         env[key] = str(value)
+    from ouroboros.process_scope import installation_scope_entries
+
+    env.update(installation_scope_entries(os.environ))  # a service stays in the installation's scope
     return env
 
 

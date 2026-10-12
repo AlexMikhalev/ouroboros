@@ -697,7 +697,12 @@ class OwnedClaudexorDaemon:
         """Publish our own startup through the existing marker and process custody."""
         config_dir = owned_config_dir()
         config_dir.mkdir(parents=True, exist_ok=True)
-        env = dict(os.environ)
+        from ouroboros.process_scope import shed_scopes
+
+        # Inheritance is not a lifetime transfer: the installation-owned daemon keeps the
+        # installation scope marker and sheds every task or engine-run marker the spawning
+        # worker's environment may carry, or the first task to need it would end it.
+        env = shed_scopes(dict(os.environ))
         env["CLAUDEXOR_CONFIG_DIR"] = str(config_dir)
         # Loopback-only ephemeral port is the engine default; explicitly
         # scrub any operator-level overrides that would cross homes.
