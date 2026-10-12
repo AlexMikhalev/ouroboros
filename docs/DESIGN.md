@@ -557,23 +557,23 @@ revision; this counter is not a guarantee of delivery durability.
 - **Read:** only after a covering history read paints the newest-arrived message
   on screen in the visible room, clear of header and composer. Being at the
   bottom is insufficient when later cards or owner messages buried it. Opening
-  an unread room therefore lands on that standalone message, once the read names
-  it on the loaded page; a read room opens at the bottom. This is one opening
-  intent, cancelled by a reader's gesture, never a jump on later reads or new
-  arrivals. A question opened from its Main mirror has priority; showing that
-  question does not read newer messages elsewhere. Collapsed cards need not open.
-  The newest message is the one that arrived last: a late answer keeps its written
-  time and chronological place. If it is beyond the loaded page, opening retains
-  the bottom and the honest gap; `Load more history` reaches it. While reading
-  elsewhere the dot remains until that message is shown by scrolling, `Scroll to
-  latest message`, or returning to the page/window; opening alone never clears it.
-  Unknown newest arrivals — an unfinished last line or damaged persisted row —
-  acknowledge nothing. Existing state refreshes recheck an open unread room until
-  history is repaired or newer standalone content arrives. A room with no
-  standalone message is read at the bottom only after the reader reaches its
-  clean start, through bounded search or `Load more history`. An old child's final
-  whose lineage becomes available only on another history page can also retain
-  the dot after the readable conversation has been shown.
+  an unread room therefore lands on that standalone message wherever it lies:
+  until a loaded page holds it, the opening reads older pages (the page limit
+  bounds what stays loaded, not this reach); a read room opens at the bottom.
+  This is one opening intent, ended by a gesture (in a bounded box too), a
+  question, closing the room or a failed page (bottom and Retry), never a jump
+  on later reads or new arrivals. A question opened from its Main mirror has
+  priority; showing it does not read newer messages elsewhere. Collapsed cards
+  need not open. The newest message is the one that arrived last: a late answer
+  keeps its written time and chronological place. While reading elsewhere the dot
+  remains until that message is shown by scrolling, `Scroll to latest message`,
+  or returning to the page/window; opening alone never clears it. Unknown newest
+  arrivals (an unfinished line, a damaged row) acknowledge nothing and are never
+  searched for; state refreshes recheck an open unread room until history is
+  repaired or newer standalone content arrives. A room with no standalone
+  message is read at the bottom only once its clean start is reached: by bounded
+  search, the opening or `Load more history`. An old child's final whose
+  lineage appears only on another page can keep the dot once the room is shown.
 - **Several clients** share one read cursor that only moves forward: a room read
   on one client stops showing the dot on the others at their next state
   refresh, and nothing read is shown unread again.

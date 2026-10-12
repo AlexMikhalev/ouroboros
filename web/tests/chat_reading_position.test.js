@@ -402,6 +402,27 @@ test('a box gesture supersedes a ↓ still awaiting history; with nothing pendin
     assert.equal(f.feed.scrollTop, f.feed.scrollHeight, 'the sent message is still followed');
 });
 
+test('an unread opening still owed yields to a box gesture after its claim reached the present, and lands only its own', t => {
+    const f = fixture(t);
+    f.feed.ownerDocument.defaultView = { getComputedStyle: node => ({ overflowY: node.overflowY || 'visible' }) };
+    const body = { inFeed: true, parentElement: f.feed, overflowY: 'auto', scrollTop: 200, scrollHeight: 1000, clientHeight: 400 };
+    const text = { inFeed: true, parentElement: body };
+    f.reading.bindGestures(() => {});
+    f.reading.cancel();
+    Object.assign(f.feed, { scrollHeight: 1000, scrollTop: 100, clientHeight: 400 });
+    f.reading.claim(true);
+    const stale = f.reading.arriving;
+    f.reading.claim(true);  // opened again
+    const token = f.reading.arriving;
+    f.reading.land(() => -50, stale);
+    assert.equal(f.reading.arriving, token, 'a superseded opening spends nothing');
+    f.reading.followAfterLayout(); f.frame(); f.frame();  // the opening's ↓ reached the present
+    f.gesture({ type: 'wheel', deltaY: 1, target: text, timeStamp: 1000 }); f.frame();
+    assert.equal(f.reading.arriving, null, 'reading inside a box ends the opening still owed');
+    f.feed.scrollTop = 100; f.reading.land(() => -50, token);
+    assert.equal(f.feed.scrollTop, 100, 'its later landing moves no one');
+});
+
 test('saved Review readiness distinguishes pending/error from confirmed absence and trails revisions', async () => {
     const reads = [], settled = [];
     const hydrator = createReviewHydrator({

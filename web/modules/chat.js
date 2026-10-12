@@ -2833,8 +2833,10 @@ export function createChatInstance({
         isReadingLatest: latest => !destroyed && !reading.pending && isInstanceVisible() && isAtNewestMessage(latest, {
             ...newestFacts, atBottom: () => isNearBottom() && !historyPager.getState().canNewer,
         }),
-        onReadingLatest,
-        land: latest => reading.land(() => newestMessageOffset(latest, newestFacts)),
+        onReadingLatest, arriving: () => reading.arriving, delivered: newestFacts.delivered,
+        older: current => historyPager.whenIdle().then(() => loadHistoryAtEdge('older', current)),
+        present: current => historyPager.whenIdle().then(() => current() && historyPager.getState().canNewer && historyPager.latest()),
+        land: (latest, token) => reading.land(() => newestMessageOffset(latest, newestFacts), token),
     });
 
     (async () => {
@@ -3364,15 +3366,16 @@ export function createChatInstance({
     // moved past the pager's chain (the room grew while open), the chain is first
     // re-anchored at that read, so the same press goes on into the missing rows;
     // a reader in older history with older rows left goes on above them instead.
-    async function loadHistoryAtEdge(direction) {
+    // An unread opening's reach asks for each page only while still `current()`.
+    async function loadHistoryAtEdge(direction, current = () => true) {
         const { canNewer, canOlder } = historyPager.getState();
-        if (direction === 'older' && historyWindow?.horizonGap && !canNewer && !(canOlder && readingHistory())) {
+        if (direction === 'older' && current() && historyWindow?.horizonGap && !canNewer && !(canOlder && readingHistory())) {
             const rebased = await historyPager.latest();
             if (destroyed || rebased.status !== 'applied') return rebased;
         }
         let result;
         do {
-            result = await historyPager[direction]();
+            result = current() ? await historyPager[direction]() : {};
         } while (!destroyed && result.status === 'applied' && result.messageCount === 0
             && historyPager.getState()[direction === 'older' ? 'canOlder' : 'canNewer']);
         return result;
