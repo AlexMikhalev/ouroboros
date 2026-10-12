@@ -57,6 +57,8 @@ HOLDING_JS = """tid => { const c = document.querySelector(`#chat-messages .chat-
 SETTLED_JS = """tid => { const c = document.querySelector(`#chat-messages .chat-live-card[data-task-id="${tid}"]`);
     const s = c?.querySelector('[data-live-phase-secondary]');
     return Boolean(c && c.dataset.finished === '1' && s.hidden); }"""
+# Settled work claims no activity: the header returns to idle with the card.
+HEADER_IDLE_JS = "() => document.querySelector('#chat-status')?.textContent === 'Online'"
 OBSERVE_JS = """tid => { const card = document.querySelector(`#chat-messages .chat-live-card[data-task-id="${tid}"]`);
     const chip = card.querySelector('[data-live-phase]'), second = card.querySelector('[data-live-phase-secondary]');
     window.__proofCard = card; window.__phaseLog = [];
@@ -241,6 +243,7 @@ def test_failed_root_reads_failed_then_finalizing(wait_clone, tmp_path, monkeypa
                                                   and row.get("status") != "running" else None), 120)
                     assert settled and settled["status"] == "failed", oracle.task_result(task_id)
                     desk.wait_for_function(SETTLED_JS, arg=task_id, timeout=60000)
+                    desk.wait_for_function(HEADER_IDLE_JS, timeout=60000)
                     facts["settled"] = state = desk.evaluate(STATE_JS, task_id)
                     assert state["count"] == 1 and state["chip"] == "Failed" and state["secondary"] == "", state
                     assert state["title"] == TITLE, state
@@ -263,6 +266,7 @@ def test_failed_root_reads_failed_then_finalizing(wait_clone, tmp_path, monkeypa
                     # Replay after synthesis closed settles too: no stale Finalizing….
                     desk.reload(wait_until="domcontentloaded")
                     desk.wait_for_function(SETTLED_JS, arg=task_id, timeout=60000)
+                    desk.wait_for_function(HEADER_IDLE_JS, timeout=60000)
                     facts["settled_reload"] = again = desk.evaluate(STATE_JS, task_id)
                     assert again["chip"] == "Failed" and again["secondary"] == "" and again["count"] == 1, again
                     assert again["title"] == TITLE, again
