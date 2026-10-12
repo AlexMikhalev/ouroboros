@@ -52,7 +52,8 @@ class _Race:
         self.candidate = server["candidate_identity"]
         self.chat_id, _log, self.initial = _backlog(self.data, project_id)
         self.question = _question(self.data, project_id, self.chat_id) if question else None
-        self.room = opening._Room(browser, server["url"], project_id, hold=5)
+        self.room = opening._Room(browser, server["url"], project_id, hold=5,
+                                  init=(opening._read_receipts(LATEST),))
         self.recent, self.history, self.returning = [], [], []
         self.hold_return = False
 
@@ -108,8 +109,12 @@ class _Race:
                                      initial_window=self.original_window, fresh_window=self.fresh["window"],
                                      fresh_rows=len(self.fresh.get("messages", [])), older=self.room.older,
                                      history=self.history, acks=self.room.acks, landed=self.room.shown(),
-                                     sources=sources, candidate=self.candidate, **facts)
+                                     sources=sources, candidate=self.candidate, receipts=self.receipts(), **facts)
         self.room.page.screenshot(path=str(evidence / f"{name}.png"))
+
+    def receipts(self):
+        return [(posted["seen"][self.project_id], posted["box"]) for posted in
+                self.room.page.evaluate("() => window.__receipts") if self.project_id in (posted.get("seen") or {})]
 
 
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
@@ -131,6 +136,8 @@ def test_a_new_offpage_reply_replaces_the_openings_frozen_target(direct_server_w
             race.evidence(engine, "new-arrival", read=read, before_return=before_return,
                           recent_reads=len(race.recent))
             assert read and opening._on_screen(landed), ("latest admitted reply is reached and read", landed, room.acks)
+            receipts = race.receipts()
+            assert receipts and all(opening._in_band(box) for _seen, box in receipts), ("read only while shown", receipts)
             assert room.seen() and all(value == race.revision for value in room.seen()), room.acks
             assert len(race.recent) == before_return + 1, ("one pager return to the fresh snapshot", race.history)
             room.row.locator(".nav-unread-dot").wait_for(state="detached")

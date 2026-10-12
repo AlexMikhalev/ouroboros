@@ -347,14 +347,15 @@ def test_a_reopened_room_lands_once_after_its_superseded_reach(direct_server_wit
 
 
 # Each read receipt as it is posted, with the reply's box at that moment.
-_RECEIPTS = f"""() => {{
+def _read_receipts(text):
+    return f"""() => {{
     const shown = {_SHOWN}, post = window.fetch;
     window.__receipts = [];
     window.fetch = function (url, init) {{
         if (init?.method === 'POST' && String(url).endsWith('/api/ui/preferences')) {{
             const messages = document.querySelector({json.dumps(PANEL)});
             window.__receipts.push({{seen: JSON.parse(init.body).project_seen_revision,
-                                     box: messages && shown(messages, {json.dumps(REPLY)})}});
+                                     box: messages && shown(messages, {json.dumps(text)})}});
         }}
         return post.apply(this, arguments);
     }};
@@ -388,7 +389,7 @@ def test_a_reply_arriving_while_the_opening_proves_a_quiet_start_is_reached_afte
         browser = getattr(pw, engine).launch()
         try:
             url = direct_server_with_data["url"]
-            room = _Room(browser, url, "late-room", hold=3, init=(_RECEIPTS,))
+            room = _Room(browser, url, "late-room", hold=3, init=(_read_receipts(REPLY),))
             room.open()
             assert _wait_for(room.page, lambda: len(room.held) == 1, attempts=200), room.older
             _chat_id, newer = _buried_room(data, monkeypatch, "late-room", 160, chat_id=chat_id)
