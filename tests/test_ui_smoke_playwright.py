@@ -948,9 +948,9 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
         }) + "\n",
         encoding="utf-8",
     )
-    task_results = data_dir / "task_results"
-    task_results.mkdir(parents=True, exist_ok=True)
-    (task_results / "named-act.json").write_text(json.dumps({
+    from tests._store_shared import seed_result  # the server reads its store, not later files
+
+    seed_result(data_dir, "named-act", {
         "_schema_version": 1,
         "task_id": "named-act",
         "status": "completed",
@@ -958,7 +958,7 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
         "cost_usd": 0.42,
         "cost_accounting_status": "available",
         "cost_final": True,
-    }) + "\n", encoding="utf-8")
+    })
     try:
         with sync_playwright() as pw:
             browser_type = getattr(pw, browser_engine)

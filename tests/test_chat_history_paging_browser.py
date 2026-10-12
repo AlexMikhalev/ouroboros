@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._store_shared import seed_result
 from tests.test_ui_smoke_playwright import direct_server_with_data as direct_server_with_data
 from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET, _SETTLE_RESTORE_FRAMES, _emit_ws_frame
 
@@ -59,9 +60,9 @@ def _write(path, rows):
 
 
 def _result(root, task_id, **fields):
-    _write(root / "task_results" / f"{task_id}.json", [{
-        "_schema_version": 1, "task_id": task_id, "status": "completed", **fields,
-    }])
+    # The running server reads task results from its store (#1733); a result file
+    # written after boot is imported only by the next boot.
+    seed_result(root, task_id, {"task_id": task_id, "status": "completed", **fields})
 
 
 def _human(index, chat_id=1, **extra):
