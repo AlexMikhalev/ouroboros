@@ -163,6 +163,42 @@ def test_rearm_replaces_the_previous_loop(monkeypatch):
     _run(scenario())
 
 
+def test_transient_rejection_429_backs_off_without_busy_loop(monkeypatch):
+    """Regression for the review finding: a transient TelegramRequestRejected
+    (429/5xx) must flow into the backoff sleep like any transient failure —
+    not retry with zero delay through a ``continue``. With every send
+    rejected, a backoff-bounded loop (0.01 -> 0.02 -> 0.04s capped) fires
+    ~5 attempts in 0.15s; the old zero-delay ``continue`` fired hundreds."""
+    telegram_api = _api_module()
+    TelegramRequestRejected = telegram_api.TelegramRequestRejected
+    mod = _load()
+    rejection = TelegramRequestRejected(
+        "Telegram API sendChatAction returned HTTP 429.", status_code=429
+    )
+
+    class _Always429(_Rec):
+        async def send_chat_action(self, chat_id, action="typing"):
+            self.actions += 1
+            raise rejection
+
+    rec = _Always429()
+    monkeypatch.setattr(mod, "_REFRESH_SEC", 0.01)
+    monkeypatch.setattr(mod, "_BACKOFF_MAX_SEC", 0.04)
+    monkeypatch.setattr(mod, "_SEND_TIMEOUT_SEC", 0.5)
+
+    async def scenario():
+        api = _Api()
+        mod.start_keep_typing(api, 7, "task-429", client_factory=lambda: rec)
+        await asyncio.sleep(0.15)
+        # Backoff-bounded: ~5 attempts, never a zero-delay burst.
+        assert 3 <= rec.actions <= 8
+        assert mod.active_keep_typing_keys() == ["7:task-429"]
+        mod.stop_keep_typing(7, "task-429")
+        return None
+
+    _run(scenario())
+
+
 def test_plugin_typing_handler_arms_and_outbound_terminal_retires(monkeypatch, tmp_path):
     """The wiring contract: chat.typing arms the loop for the event's activity,
     a non-progress outbound row retires it, a progress row does not."""

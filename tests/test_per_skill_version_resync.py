@@ -375,7 +375,7 @@ def test_telegram_owner_wait_upgrade_reseeds_current_version(tmp_path, fake_log)
 
     assert upgraded == 1
     assert "version: 1.2.13" in (installed / "SKILL.md").read_text(encoding="utf-8")
-    for path in ("plugin.py", "lib/telegram_quiz.py", "lib/telegram_state.py"):
+    for path in ("plugin.py", "lib/telegram_quiz.py", "lib/telegram_state.py", "lib/telegram_typing.py"):
         assert (installed / path).read_bytes() == (seed_dir / "telegram" / path).read_bytes()
 
 

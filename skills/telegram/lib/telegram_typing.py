@@ -82,6 +82,10 @@ async def _keep_typing_loop(
     warned_permanent = False
     try:
         while True:
+            # Sleep before every send, the first included: the chat.typing
+            # handler already fired the immediate action this loop refreshes,
+            # so an instant second send would only burn rate limit.
+            await asyncio.sleep(interval)
             if time.monotonic() >= deadline:
                 log.debug("Telegram keep-typing lifetime cap reached for %s", task_key)
                 return
@@ -99,22 +103,24 @@ async def _keep_typing_loop(
                 log.debug("Telegram keep-typing transient failure: %s", exc)
             except TelegramRequestRejected as exc:
                 if is_transient_telegram_error(exc):
+                    # 429/5xx backs off like any transient failure: falling
+                    # through to the next iteration's sleep is the whole
+                    # point — a zero-delay retry would busy-loop the limit.
                     interval = min(interval * 2, _BACKOFF_MAX_SEC)
                     log.debug("Telegram keep-typing rate-limited: %s", exc)
-                    continue
-                # Permanent rejection (bad token, blocked bot, wrong chat):
-                # stop refreshing this chat once, loudly enough to be seen.
-                if not warned_permanent:
-                    warned_permanent = True
-                    try:
-                        api.log("warning", f"Telegram typing indicator stopped for this chat: {exc}")
-                    except Exception:
-                        log.warning("Telegram typing indicator stopped: %s", exc)
-                return
+                else:
+                    # Permanent rejection (bad token, blocked bot, wrong chat):
+                    # stop refreshing this chat once, loudly enough to be seen.
+                    if not warned_permanent:
+                        warned_permanent = True
+                        try:
+                            api.log("warning", f"Telegram typing indicator stopped for this chat: {exc}")
+                        except Exception:
+                            log.warning("Telegram typing indicator stopped: %s", exc)
+                    return
             except Exception as exc:  # unknown failure shape: back off, keep trying
                 interval = min(interval * 2, _BACKOFF_MAX_SEC)
                 log.debug("Telegram keep-typing unexpected failure: %s", exc)
-            await asyncio.sleep(interval)
     except asyncio.CancelledError:
         pass  # normal stop: terminal row, replacement, or unload
     finally:
