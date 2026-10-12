@@ -56,6 +56,7 @@ from ouroboros.skill_loader import (
     save_enabled,
 )
 from ouroboros.skill_readiness import skill_readiness_for_execution
+from ouroboros.skill_review_history import load_history
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.skill_preflight import _handle_skill_preflight
 from tests.review_pool_rosters import pool_roster, pool_seat, set_review_pool
@@ -632,6 +633,12 @@ def _review_diag(name: str, status: str, error: str, payload: Dict[str, Any]) ->
             "raw_actor_records="
             + json.dumps(review.get("raw_actor_records"), ensure_ascii=False)
         )
+    # Quorum failures return before review.json is saved. Their actors live in
+    # history, including provider errors that look like malformed verdicts at
+    # this boundary. Include the latest attempt even if an older review exists.
+    history = load_history(DATA_DIR, name, limit=1)
+    if history:
+        parts.append("latest_review_history=" + json.dumps(history[-1], ensure_ascii=False))
     return "\n".join(parts)
 
 
