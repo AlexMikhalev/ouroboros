@@ -4,6 +4,8 @@ import pathlib
 import queue
 from types import SimpleNamespace
 
+import pytest
+
 
 def test_progress_thought_keeps_full_content_and_existing_authorship():
     from ouroboros.agent import OuroborosAgent
@@ -550,3 +552,30 @@ def test_a_non_provider_rail_without_a_candidate_is_a_host_notice(tmp_path, monk
     _text, usage, _returned_trace = loop._handle_round_limit(limit_ctx)
 
     assert usage["terminal_origin"] == loop.TERMINAL_ORIGIN_HOST_NOTICE
+
+
+@pytest.mark.parametrize("late_case", ["unknown_outcome", "second_directive"])
+def test_a_host_control_notice_on_the_forced_call_stays_host_notice(tmp_path, monkeypatch, late_case):
+    """Triad finding (12.10): owner input that arrives while the provider rail's one
+    forced call runs ends in the host's own control sentence, never model output. It is
+    ``host_notice`` (its words are the row), not a "preserved intermediate output" receipt."""
+    from tests.test_delivery_forced_finalization import _forced_test_context
+
+    incoming = queue.Queue()
+    loop, _registry, ctx, _trace = _forced_test_context(tmp_path, incoming=incoming)
+    ctx.accumulated_usage["_last_llm_error_kind"] = "llm_empty_response"
+    calls = []
+
+    def forced_model(*_args, **_kwargs):
+        calls.append(1)
+        incoming.put("Additional owner directive")
+        if late_case == "unknown_outcome":
+            ctx.accumulated_usage["_last_llm_error_kind"] = "provider_outcome_unknown"
+            return {"role": "assistant", "content": ""}, 0.0
+        return {"role": "assistant", "content": "Draft superseded by owner input"}, 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", forced_model)
+    text, usage, _trace = loop._handle_provider_unavailable(ctx, error_kind="llm_empty_response")
+    assert text.startswith("⚠️ ") and "Resume the task" in text
+    assert len(calls) == (1 if late_case == "unknown_outcome" else 2)
+    assert usage["terminal_origin"] == "host_notice", (text, usage["terminal_origin"])

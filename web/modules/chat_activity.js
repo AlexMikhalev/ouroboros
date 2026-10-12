@@ -1075,9 +1075,9 @@ export function unkeyedFrameEndsTurn(row) {
 
 /**
  * One header reducer: offline > active managed work > pausing > direct turns > pending submissions
- * > finalizing wrap-up (ended work writing its reflection) > queued work > access/answer wait > unknown
- * > paused > Project hold > idle. A queued task ranks below an unacknowledged submission; neither admission
- * nor a connected socket proves execution or readiness. Idle says Starting until the supervisor confirms
+ * > finalizing wrap-up (ended work, any kind, writing its reflection) > access wait > queued work > answer
+ * wait > unknown > paused > Project hold > idle. A queued task ranks below an unacknowledged submission; neither
+ * admission nor a connected socket proves execution or readiness. Idle says Starting until the supervisor confirms
  * readiness. Tasks are counted independently, so one paused task never hides another working.
  */
 export function computeDerivedChatStatus({
@@ -1132,7 +1132,7 @@ export function chatStatusCounts(activities, records, isWaiting = () => false) {
         else if (waitPhase === 'unknown') counts.unknownActivityCount += 1;
         else if (waitPhase === 'owner_wait') counts.waitingOwnerCount += 1;
         else if (projectHold) continue;
-        else if (String(entry?.kind || '') !== 'managed_task') counts.activeDirectCount += 1;
+        else if (String(entry?.kind || '') !== 'managed_task' && entry?.phase !== 'finalizing') counts.activeDirectCount += 1;
         else if (String(entry?.phase || '') === 'queued') counts.queuedManagedCount += 1;
         else counts[String(entry?.phase || '') === 'finalizing' ? 'finalizingCount' : 'activeManagedCount'] += 1;
         if (!entry?._activityUnconfirmed && ['preparing', 'thinking', 'working'].includes(entry?.phase)
@@ -1151,7 +1151,7 @@ export function chatStatusCounts(activities, records, isWaiting = () => false) {
         if (record.cancelPendingPolicy && calls.has(record.groupId)) calls.set(record.groupId,
             taskActivityPresentation({ phase: 'working', stopPolicy: record.cancelPendingPolicy }));
         if (record.modelWaiting) counts.waitingModelCount += 1;
-        else if (!record.direct && !record.parkedPhase) counts[record.finalizingHold ? 'hasFinalizingLiveCard' : 'hasActiveLiveCard'] = true;
+        else if ((record.finalizingHold || !record.direct) && !record.parkedPhase) counts[record.finalizingHold ? 'hasFinalizingLiveCard' : 'hasActiveLiveCard'] = true;
     }
     const views = [...calls.values()];
     if (views.length && views.length === counts.activeDirectCount + counts.activeManagedCount

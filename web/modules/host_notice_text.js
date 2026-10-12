@@ -59,6 +59,7 @@ export const RETIRED_HOST_NOTICE_PREFIXES = new Map(Object.entries({
         '⚠️ Some declared attachments could not be staged; '],
     task_admission_notice: ['✅ Repair task '],
     task_started: ['🧬 Evolution task ', '🔎 Review task '],
+    host_progress: ['🌐 Could not establish a provider connection '],
 }));
 
 const prefixFor = (text, type) => [...(HOST_NOTICE_PREFIXES.get(String(type || '')) || []),

@@ -12,8 +12,8 @@ the live queue, and synthesis receives the delivered outcome as ground truth
 Terminal provenance extends the same custody rule. A provider outage is an
 infrastructure failure even when useful text survived. A complete current
 model candidate remains Ouroboros's byte-exact answer and host outage facts
-become a separate System incident; stale/last-response/deterministic fallback
-bytes are host salvage, preserved durably but never promoted to speech. The
+become a separate System incident; stale/last-response model bytes are host
+salvage and a notice the host wrote alone is a host notice, neither speech. The
 provider rail may recover a compacted transcript from persisted LLM output,
 and forced finalization still retains its original semantics: owner-stop gets
 one logical model call because steering is fenced, while the generic rail may

@@ -248,10 +248,9 @@ def _provider_unavailable_result(
     llm_trace = llm_trace if isinstance(llm_trace, dict) else {}
 
     def with_terminal_notice(text, usage, trace):
-        # Host presentation stays beside the byte-exact result; final usage facts (a forced call can end unresolved).
+        # Host presentation is separate from the byte-exact model/salvage result.
+        # Use the final usage facts: a forced call can itself end unresolved.
         if str(usage.get("reason_code") or "") not in {"", "deadline_local"}:
-            if usage.get("terminal_origin") in (None, TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE):  # model_final stays
-                usage["terminal_origin"] = TERMINAL_ORIGIN_HOST_NOTICE if not salvaged and text == fallback else TERMINAL_ORIGIN_HOST_SALVAGE  # host words vs model output
             usage["terminal_provider_notice"] = _provider_terminal_fallback_text(
                 usage, is_context_overflow=is_context_overflow, is_transport_wait=is_transport_wait,
                 waited_sec=waited_sec, interactive=interactive,
@@ -279,7 +278,7 @@ def _provider_unavailable_result(
     if is_context_overflow:
         text, usage, llm_trace = _forced_fallback_result(
             ctx, llm_trace, fallback, "context_overflow",
-            source="context_overflow_local_salvage",
+            source="context_overflow_local_salvage", host_words=not salvaged,
         )
         usage.update(
             execution_status=RESULT_INFRA_FAILED,
@@ -291,7 +290,7 @@ def _provider_unavailable_result(
         # No-resend terminal over dead egress.
         ctx.accumulated_usage.update(execution_status=RESULT_INFRA_FAILED, reason_code="provider_unavailable")
         text, usage, llm_trace = _forced_fallback_result(
-            ctx, llm_trace, fallback, reason_code="provider_unavailable",
+            ctx, llm_trace, fallback, reason_code="provider_unavailable", host_words=not salvaged,
             source="provider_outcome_unknown_no_resend" if unknown_outcome else f"{wait_cause}_no_resend",
         )
         if usage.get("reason_code") == "provider_unavailable":
@@ -306,7 +305,7 @@ def _provider_unavailable_result(
             _drain_forced_owner_directives(ctx, llm_trace)
         text, usage, llm_trace = _forced_fallback_result(
             ctx, llm_trace, fallback, reason_code=terminal_reason,
-            source=no_call, provider_terminal=wall,
+            source=no_call, provider_terminal=wall, host_words=not salvaged,
         )
         if usage.get("execution_status") is not None:
             usage.update(execution_status=RESULT_INFRA_FAILED, reason_code=terminal_reason)
@@ -322,6 +321,7 @@ def _provider_unavailable_result(
         ctx, prompt=prompt, fallback_text=fallback,
         reason_code="deadline_local" if is_deadline_exhausted else "provider_unavailable",
         provider_terminal=not is_deadline_exhausted,
+        fallback_host_words=None if is_deadline_exhausted else not salvaged,
     )
     if not is_deadline_exhausted and usage.get("reason_code") == "provider_unavailable":
         usage["execution_status"] = RESULT_INFRA_FAILED
