@@ -147,6 +147,25 @@ test('a known failed outcome remains static beside the actual late phase', () =>
     assert.equal(full.phaseSecondaryEl.dataset.motion, '1');
 });
 
+test('the chat header says Finalizing… for ended work, never Working, while real work still wins', () => {
+    // 12.10: a failed root writing its reflection kept the header on "Working..." for ~19 min.
+    const finalizing = { activity_id: 'failed', kind: 'managed_task', phase: 'finalizing', status: 'failed',
+        root_phase_checkpoint: { post_task_synthesis: 'running' } };
+    const heldCard = { root: { isConnected: true }, groupId: 'failed', finished: false,
+        finalizingHold: true, observedOutcome: 'error' };
+    const status = (activities, records) => computeDerivedChatStatus(chatStatusCounts(new Map(activities), records)).text;
+    assert.equal(status([['failed', finalizing]], []), 'Finalizing…');
+    assert.equal(status([], [heldCard]), 'Finalizing…');
+    assert.equal(status([['failed', finalizing]], [heldCard]), 'Finalizing…');
+    const working = { activity_id: 'w', kind: 'managed_task', phase: 'working' };
+    assert.equal(status([['failed', finalizing], ['w', working]], [heldCard]), 'Working...');
+    const direct = { activity_id: 'd', kind: 'direct_turn', phase: 'working' };
+    assert.notEqual(status([['failed', finalizing], ['d', direct]], [heldCard]), 'Finalizing…');
+    assert.equal(status([], [{ root: { isConnected: true }, groupId: 'x', finished: false }]), 'Working...');
+    assert.equal(computeDerivedChatStatus({ ...chatStatusCounts(new Map([['failed', finalizing]]), []),
+        isConnected: false }).text, 'Reconnecting...');
+});
+
 test('terminal detail stays terminal offline; finalization cannot be ended by a stale detail response', () => {
     const done = { status: 'completed', root_phase_checkpoint: { post_task_synthesis: 'completed' } };
     assert.equal(censusTaskPhase(null, done, false).text, 'Done');
