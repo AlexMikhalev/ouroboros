@@ -451,8 +451,8 @@ def _child_process(
         cap_bytes=_INPUT_CAP,
         overflow_error="extension child protocol input exceeded safety cap",
     )
-    env = dict(env)
-    env["OUROBOROS_EXTENSION_IMPORT_ROOT_BASE"] = str(import_root_base)
+    from ouroboros.process_custody import lifeline_parent_env
+    env = {**env, "OUROBOROS_EXTENSION_IMPORT_ROOT_BASE": str(import_root_base), **lifeline_parent_env()}
     cmd = [_child_python(), "-m", "ouroboros.extension_process_runner", str(input_path)]
     kwargs: Dict[str, Any] = {
         "cwd": str(repo_dir),

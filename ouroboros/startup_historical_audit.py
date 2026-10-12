@@ -24,7 +24,7 @@ def spawn_maintenance_job(data_root, repo_dir, purpose):
     """The audit and packer share session custody, a dedicated group and containment env."""
     from ouroboros.config import SETTINGS_PATH
     from ouroboros.process_containment import CONTAINMENT_ENV_PREFIX
-    from ouroboros.process_custody import current_custody_session_id, spawn_supervised
+    from ouroboros.process_custody import current_custody_session_id, lifeline_parent_env, spawn_supervised
 
     env = {key: os.environ[key] for key in (
         "PATH", "HOME", "USERPROFILE", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
@@ -32,7 +32,7 @@ def spawn_maintenance_job(data_root, repo_dir, purpose):
     # Dropping this token hides the descendant from test/Panic containment reaping.
     env.update({key: value for key, value in os.environ.items() if key.startswith(CONTAINMENT_ENV_PREFIX)})
     env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(repo_dir), OUROBOROS_DATA_DIR=str(data_root),
-               OUROBOROS_REPO_DIR=str(repo_dir), OUROBOROS_SETTINGS_PATH=str(SETTINGS_PATH))
+               OUROBOROS_REPO_DIR=str(repo_dir), OUROBOROS_SETTINGS_PATH=str(SETTINGS_PATH), **lifeline_parent_env())
     # Never share the server group: custody-publication failure kills this group.
     return spawn_supervised(
         [sys.executable, "-m", "ouroboros." + purpose, "--data-root", str(data_root),
