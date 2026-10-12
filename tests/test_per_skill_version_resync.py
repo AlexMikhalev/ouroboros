@@ -374,14 +374,15 @@ def test_telegram_owner_wait_upgrade_reseeds_current_version(tmp_path, fake_log)
     )
 
     assert upgraded == 1
-    assert "version: 1.2.11" in (installed / "SKILL.md").read_text(encoding="utf-8")
+    assert "version: 1.2.12" in (installed / "SKILL.md").read_text(encoding="utf-8")
     for path in ("plugin.py", "lib/telegram_quiz.py", "lib/telegram_state.py"):
         assert (installed / path).read_bytes() == (seed_dir / "telegram" / path).read_bytes()
 
 
 @pytest.mark.serial
 @pytest.mark.parametrize("name,source,old_version,new_version", [
-    ("telegram", "d918b6973235013e5d7b9d78fe98701979396d4f", "1.2.6", "1.2.11"),
+    ("telegram", "d918b6973235013e5d7b9d78fe98701979396d4f", "1.2.6", "1.2.12"),
+    ("telegram", "5133c379dbde841c53f6a9ddbea2dbd8225da737", "1.2.11", "1.2.12"),
     ("unix_computer_use", "162ad3fe6791fcaf6cf625e6b0c50d3a2a27e7f8", "0.4.1", "0.4.2"),
 ])
 def test_resync_delivers_payload_from_real_previous_seed(
@@ -424,6 +425,8 @@ def test_resync_delivers_payload_from_real_previous_seed(
         "lib/telegram_api.py", "lib/telegram_notifier.py",
         "scripts/telegram_settings.py", "scripts/telegram_menu.py", "scripts/companion.py",
     ) if name == "telegram" else ()
+    if name == "telegram" and old_version == "1.2.11":
+        changed_payload = ("lib/miniapp_registration.py", "scripts/platform_support.py", "scripts/companion.py")
     for path in changed_payload:
         assert (installed / path).read_bytes() != (repo / "skills" / name / path).read_bytes()
     save_enabled(drive, name, False)
