@@ -57,10 +57,15 @@ const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve();
 function setup(fetchDetail) {
     const saved = globalThis.document;
     globalThis.document = { createElement: () => new Element() };
-    const nodes = new Set(), starts = [], annotations = [], copies = [];
+    const nodes = new Set(), starts = [], annotations = [], copies = [], listeners = new Map(), docListeners = new Map();
     let scans = 0;
+    const target = map => ({
+        addEventListener: (type, fn, capture) => map.set(type, [...(map.get(type) || []), { fn, capture }]),
+        removeEventListener: (type, fn, capture) => map.set(type, (map.get(type) || [])
+            .filter(other => other.fn !== fn || other.capture !== capture)) });
     const feed = { contains: node => nodes.has(node), querySelectorAll: sel => {
-        scans++; return sel === '.msg-routing-annotation' ? annotations : starts; } };
+        scans++; return sel === '.msg-routing-annotation' ? annotations : starts; },
+        ...target(listeners), ownerDocument: target(docListeners) };
     const controller = createProjectHandoffs({ feed, fetchDetail, mutate: fn => fn(),
         attachCopy: (node, text) => { copies.push({ node, text }); } });
     function mount(taskId = 't', handoffId = 'h', extra = {}) {
@@ -68,7 +73,7 @@ function setup(fetchDetail) {
         const anchor = controller.mount(node, { taskId, projectId: 'p', projectName: 'Room', title: 'Work', handoffId, ...extra });
         return { node, anchor, status: phaseNode(anchor) };
     }
-    return { controller, nodes, starts, annotations, copies, mount, scans: () => scans,
+    return { controller, nodes, starts, annotations, copies, listeners, docListeners, mount, scans: () => scans,
         done() { controller.destroy(); globalThis.document = saved; } };
 }
 const census = (activities = [], complete = true) => ({ active_chat_activities: activities,
@@ -456,5 +461,256 @@ test('fresh outcome facts replace cached open finalization, including offline', 
         assert.equal(card.status.textContent, 'Done');
         assert.equal(secondary.hidden, true, 'a completed checkpoint replaces the cached running checkpoint');
         assert.equal(card.status.dataset.motion, '0');
+    } finally { h.done(); }
+});
+
+// Direction A: one destination row, and the entry's free area as a second way to press it.
+import { isFreePress } from '../modules/project_handoff.js';
+const textNode = value => ({ nodeType: 3, nodeValue: value });
+function pressFixture() {
+    const opened = [];
+    const reference = { dataset: { intent: 'open-project' }, childNodes: [], click: () => opened.push('reference') };
+    const title = { childNodes: [textNode('Work title')], closest: () => null };
+    const blank = { childNodes: [], closest: () => null };
+    const copy = { childNodes: [], closest: () => copy };
+    const entry = { childNodes: [], closest: sel => (sel === '.project-handoff' ? entry : null),
+        contains: node => [entry, title, blank, copy, reference].includes(node),
+        querySelector: sel => (sel === '[data-intent="open-project"]' ? reference : null) };
+    for (const node of [title, blank, copy]) {
+        const own = node.closest;
+        node.closest = sel => (sel === '.project-handoff' ? entry : own(sel));
+    }
+    reference.closest = sel => (sel === '.project-handoff' ? entry : reference);
+    return { opened, reference, title, blank, copy, entry };
+}
+const click = (target, extra = {}) => ({ target, button: 0, detail: 1, clientX: 10, clientY: 10, ...extra });
+
+test('a free-area press is the first plain click on blank space; text, controls, drags and selections read', () => {
+    const { entry, title, blank, copy, reference } = pressFixture();
+    const press = { entry, x: 10, y: 10, travel: 0, selected: '' };
+    const none = { isCollapsed: true, rangeCount: 0, toString: () => '' };
+    assert.equal(isFreePress(click(blank), entry, press, none), true);
+    assert.equal(isFreePress(click(entry), entry, press, none), true, 'the card padding is free area');
+    // Text keeps native reading: one click places the caret, two select a word.
+    assert.equal(isFreePress(click(title), entry, press, none), false);
+    assert.equal(isFreePress(click(title, { detail: 2 }), entry, press, none), false);
+    // Controls own their press, so neither Copy nor the reference fires twice.
+    assert.equal(isFreePress(click(copy), entry, press, none), false);
+    assert.equal(isFreePress(click(reference), entry, press, none), false);
+    // A repeat cannot undo the first click; it only never navigates again.
+    assert.equal(isFreePress(click(blank, { detail: 2 }), entry, press, none), false);
+    assert.equal(isFreePress(click(blank, { detail: 0 }), entry, press, none), false, 'no pointer press, no forwarding');
+    assert.equal(isFreePress(click(blank), entry, null, none), false);
+    assert.equal(isFreePress(click(blank), entry, { ...press, entry: {} }, none), false, 'a press begun on another entry');
+    for (const key of ['shiftKey', 'altKey', 'ctrlKey', 'metaKey']) {
+        assert.equal(isFreePress(click(blank, { [key]: true }), entry, press, none), false, key);
+    }
+    assert.equal(isFreePress(click(blank, { button: 1 }), entry, press, none), false);
+    assert.equal(isFreePress(click(blank, { defaultPrevented: true }), entry, press, none), false);
+    // A drag never navigates, even when the selection it made has already vanished.
+    assert.equal(isFreePress(click(blank, { clientX: 17 }), entry, press, none), false);
+    assert.equal(isFreePress(click(blank, { clientX: 14, clientY: 14 }), entry, press, none), true, 'a tap wobble stays a press');
+    // The farthest point of the path decides, not where it ended: out and back again is a drag.
+    assert.equal(isFreePress(click(blank), entry, { ...press, travel: 100 }, none), false, 'out and back');
+    assert.equal(isFreePress(click(blank), entry, { ...press, travel: 6.1 }, none), false);
+    assert.equal(isFreePress(click(blank, { clientX: 12 }), entry, { ...press, travel: 6 }, none), true, 'a wobble out and back');
+    assert.equal(isFreePress(click(blank), entry, { ...press, travel: undefined }, none), false, 'an unmeasured path is no press');
+    // A selection this press made in the entry is the reader's; one elsewhere in the page is not.
+    const crossing = { isCollapsed: false, rangeCount: 1, anchorNode: {}, focusNode: {}, toString: () => 'Work',
+        getRangeAt: () => ({ intersectsNode: node => node === entry }) };
+    const foreign = { ...crossing, getRangeAt: () => ({ intersectsNode: () => false }) };
+    assert.equal(isFreePress(click(blank), entry, press, crossing), false);
+    assert.equal(isFreePress(click(blank), entry, press, foreign), true);
+    // A click inside an older selection keeps it (the browser does), so it must still be a press:
+    // otherwise the free area near selected text would stay dead until the reader clicked elsewhere.
+    assert.equal(isFreePress(click(blank), entry, { ...press, selected: 'Work' }, crossing), true);
+});
+
+test('one feed listener pair forwards to the reference the entry holds now, and leaves with the controller', () => {
+    const h = setup(async () => null);
+    const { opened, entry, blank, title } = pressFixture();
+    const fire = (type, event) => (h.listeners.get(type) || []).forEach(({ fn }) => fn(event));
+    try {
+        h.nodes.add(entry);
+        // Several mounts register nothing per entry: the feed owns the only pair.
+        for (let i = 0; i < 3; i++) h.mount(`t${i}`, `h${i}`);
+        assert.deepEqual([...h.listeners].map(([type, fns]) => [type, fns.length]), [['pointerdown', 1], ['click', 1]]);
+        fire('pointerdown', { target: blank, button: 0, clientX: 10, clientY: 10 });
+        fire('click', click(blank));
+        assert.deepEqual(opened, ['reference']);
+        // The pointerdown records the selection it found, so the click can tell a new one.
+        const prior = globalThis.getSelection;
+        let current = '';
+        globalThis.getSelection = () => ({ isCollapsed: !current, rangeCount: current ? 1 : 0, anchorNode: entry,
+            focusNode: entry, toString: () => current, getRangeAt: () => ({ intersectsNode: node => node === entry }) });
+        try {
+            fire('pointerdown', { target: blank, button: 0, clientX: 10, clientY: 10 });
+            current = 'Work title';
+            fire('click', click(blank));
+            assert.deepEqual(opened, ['reference'], 'the selection this press made stays the reader\'s');
+            fire('pointerdown', { target: blank, button: 0, clientX: 10, clientY: 10 });
+            fire('click', click(blank));
+            assert.deepEqual(opened, ['reference', 'reference'], 'a press inside that older selection still opens');
+        } finally { globalThis.getSelection = prior; }
+        fire('pointerdown', { target: title, button: 0, clientX: 10, clientY: 10 });
+        fire('click', click(title));
+        assert.deepEqual(opened, ['reference', 'reference'], 'the title stays text');
+        fire('click', click(blank));
+        assert.deepEqual(opened, ['reference', 'reference'], 'a click without its own press is not forwarded');
+        h.nodes.delete(entry);
+        fire('pointerdown', { target: blank, button: 0, clientX: 10, clientY: 10 });
+        fire('click', click(blank));
+        assert.deepEqual(opened, ['reference', 'reference'], 'an entry outside the feed is not this controller\'s');
+    } finally { h.done(); }
+    assert.deepEqual([...h.listeners].map(([type, fns]) => [type, fns.length]), [['pointerdown', 0], ['click', 0]]);
+    assert.deepEqual([...h.docListeners.values()].flat(), []);
+});
+
+// The controller's own listeners: the feed sees the press and its click, the document its pointer's path.
+function gesture(h) {
+    const fire = (map, type, event) => (map.get(type) || []).forEach(({ fn }) => fn(event));
+    return {
+        down: (target, x = 10, y = 10, pointerId = 1) => fire(h.listeners, 'pointerdown',
+            { target, button: 0, clientX: x, clientY: y, pointerId }),
+        path: (type, x = 10, y = 10, pointerId = 1) => fire(h.docListeners, type, { type, clientX: x, clientY: y, pointerId }),
+        click: (target, x = 10, y = 10) => fire(h.listeners, 'click', click(target, { clientX: x, clientY: y })),
+        // Which path listeners the document holds, and whether each sees the pointer before the page does.
+        traced: () => ['pointermove', 'pointerup', 'pointercancel']
+            .map(type => (h.docListeners.get(type) || []).map(({ capture }) => capture)),
+    };
+}
+const UNTRACED = [[], [], []], TRACED = [[true], [true], [true]];
+
+test('a press arms only on free area: released just off Copy, the reference or text, it is still theirs', () => {
+    const h = setup(async () => null);
+    const { opened, entry, blank, title, copy, reference } = pressFixture();
+    const g = gesture(h);
+    try {
+        h.nodes.add(entry);
+        // A browser sends a click whose press and release differ to their common ancestor, here the
+        // entry itself: three pixels off a control or text that click lands on free area.
+        for (const origin of [copy, reference, title]) {
+            g.down(origin);
+            assert.deepEqual(g.traced(), UNTRACED, 'nothing armed, nothing to follow');
+            g.path('pointerup', 13, 10);
+            g.click(entry, 13, 10);
+        }
+        assert.deepEqual(opened, []);
+        // The same three pixels from free area are an ordinary press.
+        g.down(blank);
+        g.path('pointerup', 13, 10);
+        g.click(entry, 13, 10);
+        assert.deepEqual(opened, ['reference']);
+        // The final target still decides too: a press from free area released on Copy is Copy's.
+        g.down(blank);
+        g.path('pointerup', 12, 10);
+        g.click(copy, 12, 10);
+        assert.deepEqual(opened, ['reference']);
+    } finally { h.done(); }
+});
+
+test('the farthest point of its path decides: out and back is a drag, a click or tap wobble stays a press', () => {
+    const h = setup(async () => null);
+    const { opened, entry, blank } = pressFixture();
+    const g = gesture(h);
+    try {
+        h.nodes.add(entry);
+        g.down(blank);
+        const pressed = g.traced();
+        g.path('pointermove', 110, 10);
+        g.path('pointermove', 10, 10);
+        g.path('pointerup', 10, 10);
+        const lifted = g.traced();
+        g.click(blank);
+        assert.deepEqual(opened, [], 'out and back again is a drag');
+        assert.deepEqual(pressed, TRACED, 'the document follows the armed pointer, wherever it goes');
+        assert.deepEqual(lifted, UNTRACED, 'and lets go when it lifts');
+        // Ordinary hands wobble a few pixels.
+        g.down(blank);
+        g.path('pointermove', 14, 10);
+        g.path('pointermove', 12, 11);
+        g.path('pointerup', 12, 11);
+        g.click(blank, 12, 11);
+        assert.deepEqual(opened, ['reference']);
+        // Many small moves are one number, not a recorded path: only the farthest counts.
+        g.down(blank);
+        for (let i = 0; i < 1000; i++) g.path('pointermove', 10 + (i % 8), 10);
+        g.path('pointerup', 10, 10);
+        g.click(blank);
+        assert.deepEqual(opened, ['reference'], 'seven pixels out, once, was already a drag');
+        // Another pointer's moves, release and cancel are not this press's.
+        g.down(blank);
+        g.path('pointermove', 300, 300, 2);
+        g.path('pointerup', 300, 300, 2);
+        g.path('pointercancel', 300, 300, 2);
+        assert.deepEqual(g.traced(), TRACED);
+        g.path('pointerup', 10, 10);
+        g.click(blank);
+        assert.deepEqual(opened, ['reference', 'reference']);
+    } finally { h.done(); }
+});
+
+test('a cancelled press, a second pointer, a remount and destroy leave no press and nothing on the document', () => {
+    const h = setup(async () => null);
+    const { opened, entry, blank } = pressFixture();
+    const g = gesture(h);
+    try {
+        h.nodes.add(entry);
+        // The browser took the pointer (a scroll, a native drag): no later click is its press.
+        g.down(blank);
+        g.path('pointercancel');
+        assert.deepEqual(g.traced(), UNTRACED);
+        g.click(blank);
+        assert.deepEqual(opened, []);
+        // A second pointer joining makes a gesture, never a press.
+        g.down(blank, 10, 10, 1);
+        g.down(blank, 40, 10, 2);
+        assert.deepEqual(g.traced(), UNTRACED);
+        g.path('pointerup', 40, 10, 2);
+        g.click(blank, 40, 10);
+        assert.deepEqual(opened, []);
+        // A pointer that lifted is no longer down: the next pointer starts its own press.
+        g.down(blank, 10, 10, 3);
+        g.path('pointerup', 10, 10, 3);
+        g.down(blank, 10, 10, 4);
+        g.path('pointerup', 10, 10, 4);
+        g.click(blank);
+        assert.deepEqual(opened, ['reference']);
+        // A remount mid-press: the press goes to the reference the entry holds now.
+        g.down(blank);
+        entry.querySelector = sel => (sel === '[data-intent="open-project"]' ? { click: () => opened.push('remounted') } : null);
+        g.path('pointerup');
+        g.click(blank);
+        assert.deepEqual(opened, ['reference', 'remounted']);
+        // An entry evicted mid-press: the document still lets the pointer go; the click is no entry's.
+        g.down(blank);
+        h.nodes.delete(entry);
+        g.path('pointerup');
+        assert.deepEqual(g.traced(), UNTRACED);
+        g.click(blank);
+        assert.deepEqual(opened, ['reference', 'remounted']);
+        h.nodes.add(entry);
+        g.down(blank);
+        assert.deepEqual(g.traced(), TRACED);
+    } finally { h.done(); }
+    // Destroyed mid-press: neither the feed nor the document keeps a listener.
+    assert.deepEqual(g.traced(), UNTRACED);
+    assert.deepEqual([...h.listeners.values()].flat(), []);
+    assert.deepEqual(opened, ['reference', 'remounted']);
+});
+
+test('the destination row holds the reference before the recorded time; the title leads alone', () => {
+    const h = setup(async () => null);
+    try {
+        const { node } = h.mount('t', 'h', { title: 'Same name', projectName: 'Same name', ts: '2026-10-08T13:58:00Z' });
+        const [heading, row] = node.children;
+        assert.equal(node.children.length, 2);
+        assert.equal(heading.className, 'project-handoff-heading');
+        assert.equal(row.className, 'project-handoff-footer');
+        assert.deepEqual(row.children.map(child => child.className),
+            ['chat-live-project-card-btn chat-quiz-project', 'msg-time']);
+        // Equal work and Project names stay two named things: nothing replaces the name.
+        assert.equal(row.children[0].querySelector('.chat-live-project-name').textContent, 'Same name');
+        assert.equal(h.copies.find(copy => copy.node === node).text, 'Same name\nSame name');
     } finally { h.done(); }
 });

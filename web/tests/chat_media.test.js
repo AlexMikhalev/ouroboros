@@ -307,10 +307,12 @@ test('rejected clipboard writeText falls back to textarea copy', async () => {
         });
         const bubble = new NodeStub('div', fx.tracker);
         const button = fx.controller.attachCopyControl(bubble, 'raw message');
+        button.focus();
 
         await button.click();
 
         assert.equal(execCalls, 1);
+        assert.equal(globalThis.document.activeElement, button, 'a keyboard owner stays on Copy');
         assert.equal(button.textContent, '✓');
         assert.equal(button.attributes.get('aria-label'), 'Message copied');
         assert.equal(fx.tracker.created.filter((node) => node.tagName === 'TEXTAREA').at(-1).selectCalls, 1);

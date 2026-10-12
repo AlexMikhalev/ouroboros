@@ -25,7 +25,8 @@ window.chat=createChatInstance({ws,state:{activePage:'chat',projectChatIds:new S
     apply(request,data){window.chat?.hydrateStateSnapshot(data);}}});
 document.getElementById('reconnect-overlay').hidden=true;
 document.getElementById('reconnect-overlay').style.display='none';
-window.addEventListener('ouro:open-project',event=>window.openedProject=event.detail);
+window.openCount=0;
+window.addEventListener('ouro:open-project',event=>{window.openedProject=event.detail;window.openCount++;});
 </script>"""
 
 
@@ -131,7 +132,7 @@ def _shell_geometry(card):
             return {left: box.left - bounds.left, top: box.top - bounds.top,
                 right: box.right - bounds.left, bottom: box.bottom - bounds.top,
                 width: box.width, height: box.height, overflow: node.scrollWidth > node.clientWidth + 1,
-                font: style.fontSize, line: style.lineHeight};
+                font: style.fontSize, line: style.lineHeight, weight: style.fontWeight};
         };
         return {width: bounds.width, height: bounds.height, overflow: root.scrollWidth > root.clientWidth + 1,
             surface: Object.fromEntries(['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
@@ -139,7 +140,7 @@ def _shell_geometry(card):
                 'borderColor', 'borderRadius', 'backgroundColor', 'boxShadow'].map(key => [key, css[key]])),
             title: measure('.project-handoff-title'), phase: measure('.project-handoff-phase'),
             reference: measure('[data-intent="open-project"]'), footer: measure('.project-handoff-footer'),
-            time: measure('.msg-time'), copy: measure('.chat-message-copy')};
+            name: measure('.chat-live-project-name'), time: measure('.msg-time'), copy: measure('.chat-message-copy')};
     }""")
 
 
@@ -153,18 +154,35 @@ def _assert_shared_shell(cards, *, narrow):
         assert result["surface"]["paddingTop"] == "12px"
         assert result["surface"]["paddingLeft"] == "16px"
         assert not result["overflow"]
-        for part in ("title", "phase", "reference", "footer", "time", "copy"):
+        for part in ("title", "phase", "reference", "footer", "name", "time", "copy"):
             geometry = result[part]
             assert geometry["left"] >= 16 and geometry["right"] <= result["width"] - 16
             assert geometry["top"] >= 12 and geometry["bottom"] <= result["height"] - 12
-            if part != "reference":
+            if part not in ("reference", "name"):
                 assert not geometry["overflow"], (part, result)
             for dimension in ("left", "top", "width", "height"):
                 assert geometry[dimension] == pytest.approx(baseline[part][dimension], abs=1), part
             assert geometry["font"] == baseline[part]["font"]
             assert geometry["line"] == baseline[part]["line"]
-        # A long Project name uses its available row, rather than the generic 32ch cap.
-        assert result["reference"]["width"] >= result["width"] - 35
+        # Direction A: a light title over one destination row. The reference fills that row
+        # beside the recorded time and Copy (on a narrow card, the whole row above them).
+        assert result["title"]["weight"] == "500"
+        reference, footer, time, copy = (result[part] for part in ("reference", "footer", "time", "copy"))
+        assert reference["left"] == pytest.approx(footer["left"], abs=1)
+        assert reference["height"] >= 36, "the destination keeps a full pointer target"
+        assert time["right"] <= copy["left"] + 1
+        assert copy["right"] == pytest.approx(footer["right"], abs=1)
+        if narrow:
+            assert reference["width"] == pytest.approx(footer["width"], abs=1)
+            assert time["top"] >= reference["bottom"] - 1
+        else:
+            assert time["left"] >= reference["right"] - 1
+            assert reference["width"] >= footer["width"] - time["width"] - copy["width"] - 2 * 8 - 2
+            for part in (time, copy):
+                assert part["top"] + part["height"] / 2 == pytest.approx(reference["top"] + reference["height"] / 2, abs=2)
+        # A long name reads on two lines at the reading size, never a smaller font.
+        assert result["name"]["font"] == "14px"
+        assert result["name"]["height"] == pytest.approx(2 * float(result["name"]["line"].removesuffix("px")), abs=2)
         if narrow:
             assert result["phase"]["bottom"] < result["title"]["top"]
             assert result["phase"]["left"] == pytest.approx(result["title"]["left"], abs=1)
@@ -236,10 +254,14 @@ def test_conversion_replay_and_creation_share_the_whole_project_shell(project_ch
     keyboard_trace = []
     for card in cards:
         assert card.locator('.message, .sender').count() == 0, "every host mounts the same content shell"
+        # Creation, replay and conversion alike: the reference is the one door and stop.
+        assert card.evaluate("e=>['role','tabindex','aria-label'].map(name=>e.getAttribute(name))") == [None, None, None]
         expect(card.locator('.project-handoff-title')).to_have_text(title)
         reference = card.locator('[data-intent="open-project"]')
         expect(reference).to_have_attribute("aria-label", f"Open project {name}")
-        assert reference.locator('.chat-live-project-name').evaluate("e=>e.scrollWidth>e.clientWidth")
+        # Clamped at two lines; the whole name stays in the accessible name, the tooltip and Copy.
+        assert reference.locator('.chat-live-project-name').evaluate("e=>e.scrollHeight>e.clientHeight+1")
+        expect(reference).to_have_attribute("title", f"Open project {name}")
         reference.focus()
         expect(reference).to_be_focused()
         page.keyboard.press("Tab")
@@ -426,3 +448,183 @@ def test_project_work_entries_share_live_phase_title_and_motion(project_chat, tm
     expect(late.locator('[data-live-phase]')).to_have_text("Cancelled")
     assert late.locator('[data-live-phase]').get_attribute("data-motion") == "0"
     assert late.get_attribute("data-finished") == "1"
+
+
+def test_entry_free_area_presses_its_reference_while_text_and_copy_stay_their_own(project_chat):
+    page, expect = project_chat["page"], project_chat["expect"]
+    rows, touch = project_chat["rows"], project_chat["width"] < 980
+    start = page.locator('[data-system-type="project_started"]')
+    transfer = page.locator('[data-system-type="project_handoff"]')
+    expect(transfer.locator('.chat-live-phase')).to_have_text("Working")
+
+    def press(x, y):
+        if touch:
+            page.touchscreen.tap(x, y)
+        else:
+            page.mouse.click(x, y)
+
+    def free_point(entry):
+        # The card padding under the destination row is neither text nor a control.
+        box = entry.bounding_box()
+        return box["x"] + 6, box["y"] + box["height"] - 4
+
+    for entry, task_id, project_id in ((start, "creation", "alpha"), (transfer, "transfer", "beta")):
+        # The entry adds no stop and no name: the reference is the one door, keyboard included.
+        assert entry.evaluate("e=>['role','tabindex','aria-label'].map(name=>e.getAttribute(name))") == [None, None, None]
+        before = page.evaluate("openCount")
+        press(*free_point(entry))
+        assert page.evaluate("openCount") == before + 1
+        assert page.evaluate("[openedProject.task_id, openedProject.project.id]") == [task_id, project_id]
+
+    title = transfer.locator('.project-handoff-title')
+    before = page.evaluate("openCount")
+    if touch:
+        title.tap()
+    else:
+        title.click()
+        title.dblclick()
+        assert page.evaluate("String(getSelection()).trim()"), "a double click selects a word of the title"
+        box = title.bounding_box()
+        page.mouse.move(box["x"] + 2, box["y"] + box["height"] / 2)
+        page.mouse.down()
+        page.mouse.move(*free_point(transfer), steps=8)
+        page.mouse.up()
+        assert page.evaluate("String(getSelection())"), "a drag from the title into free area selects"
+        # Displacement alone is a drag too, with nothing selected.
+        x, y = free_point(transfer)
+        page.mouse.move(x + 40, y)
+        page.mouse.down()
+        page.mouse.move(x + 70, y, steps=4)
+        page.mouse.up()
+    transfer.locator('.chat-message-copy').click()
+    page.wait_for_function("expected=>window.copiedText===expected",
+                           arg=f"{rows[1]['task_name']}\n{rows[1]['project_name']}")
+    assert page.evaluate("openCount") == before, "text, drags and Copy never navigate"
+
+    # A duplicate delivery of the same receipt leaves one press per click.
+    page.evaluate("r=>emit('chat',{...r,content:r.text})", rows[1])
+    visible = page.locator('[data-system-type="project_handoff"]:not([hidden])')
+    expect(visible).to_have_count(1)
+    press(*free_point(visible))
+    assert page.evaluate("openCount") == before + 1
+
+
+# Test-only: the pointer listeners project_handoff.js holds on the document, so a release is
+# observable in every engine apart from the page's other document listeners.
+_HANDOFF_DOCUMENT_LISTENERS = """(() => {
+    const live = [], add = EventTarget.prototype.addEventListener, remove = EventTarget.prototype.removeEventListener;
+    const capture = options => Boolean(typeof options === 'object' ? options?.capture : options);
+    const index = (type, fn, options) => live.findIndex(row => row.type === type && row.fn === fn && row.capture === capture(options));
+    EventTarget.prototype.addEventListener = function (type, fn, options) {
+        if (this === document && type.startsWith('pointer') && /project_handoff\\.js/.test(new Error().stack)
+            && index(type, fn, options) < 0) live.push({type, fn, capture: capture(options)});
+        return add.call(this, type, fn, options);
+    };
+    EventTarget.prototype.removeEventListener = function (type, fn, options) {
+        const at = this === document ? index(type, fn, options) : -1;
+        if (at >= 0) live.splice(at, 1);
+        return remove.call(this, type, fn, options);
+    };
+    window.handoffListeners = () => live.map(row => `${row.type}${row.capture ? ':capture' : ''}`).sort();
+})();"""
+_PATH = ["pointercancel:capture", "pointermove:capture", "pointerup:capture"]
+
+
+def test_a_press_begun_on_a_control_or_text_or_gone_astray_never_navigates(project_chat, tmp_path):
+    """A press released three pixels off Copy used to reach the card as a free-area click, and a
+    drag out and back was judged only by where it ended (review rl-20261012T144241-d2842d826b1f)."""
+    page, expect = project_chat["page"], project_chat["expect"]
+    engine, theme, width = (project_chat[key] for key in ("engine", "theme", "width"))
+    page.add_init_script(_HANDOFF_DOCUMENT_LISTENERS)
+    page.reload()
+    transfer = page.locator('[data-system-type="project_handoff"]')
+    expect(transfer.locator('.chat-live-phase')).to_have_text("Working")
+    page.evaluate("window.copiedText = ''")
+    trace = []
+
+    def edges(locator):
+        box = locator.bounding_box()
+        return box["x"], box["y"], box["x"] + box["width"], box["y"] + box["height"]
+
+    def hit(point, selector):
+        return page.evaluate("([x, y, s]) => Boolean(document.elementFromPoint(x, y)?.matches(s))", [*point, selector])
+
+    def gesture(label, *points, steps=1):
+        before = page.evaluate("openCount")
+        page.mouse.move(*points[0])
+        page.mouse.down()
+        armed = page.evaluate("handoffListeners()")
+        for point in points[1:]:
+            page.mouse.move(*point, steps=steps)
+        page.mouse.up()
+        trace.append({"gesture": label, "points": points, "opened": page.evaluate("openCount") - before,
+                      "selection": page.evaluate("String(getSelection())"), "armed": armed,
+                      "after": page.evaluate("handoffListeners()")})
+
+    left, top, right, bottom = edges(transfer)
+    free = (left + 6, bottom - 4)
+    free_area = '.project-handoff, .project-handoff-heading, .project-handoff-footer'
+    feed_top = page.locator('#chat-messages').bounding_box()["y"]
+    c_left, c_top, c_right, c_bottom = edges(transfer.locator('.chat-message-copy'))
+    r_left, r_top, r_right, r_bottom = edges(transfer.locator('[data-intent="open-project"]'))
+    t_left, t_top, t_right, t_bottom = edges(transfer.locator('.project-handoff-title'))
+    # Three pixels off a control or text, the browser sends the click to the card's free area.
+    origins = (
+        ("copy", (c_right - 1, (c_top + c_bottom) / 2), (c_right + 2, (c_top + c_bottom) / 2), '.chat-message-copy, .chat-message-copy *'),
+        ("reference", (r_left + 1, (r_top + r_bottom) / 2), (r_left - 2, (r_top + r_bottom) / 2), '[data-intent], [data-intent] *'),
+        ("title", (t_right - 1, (t_top + t_bottom) / 2), (t_right + 2, (t_top + t_bottom) / 2), '.project-handoff-title'),
+    )
+    assert hit(free, free_area)
+    assert not hit((free[0], feed_top - 8), '#chat-messages, #chat-messages *')
+    for label, start, end, origin in origins:
+        assert hit(start, origin) and hit(end, free_area), label
+    assert page.evaluate("handoffListeners()") == [], "nothing is followed until a press arms"
+
+    # An ordinary click wobbles a few pixels and still opens its Project.
+    gesture("wobble", free, (free[0] + 4, free[1]), (free[0] + 2, free[1] + 1))
+    # Out and back to where it began is a drag: a hundred pixels beyond the card, or past the
+    # feed in one jump each way, where only the document sees the pointer at all.
+    gesture("out-and-back", free, (free[0], free[1] + 100), free, steps=10)
+    gesture("beyond-feed", free, (free[0], feed_top - 8), free)
+    # A press begun on a control or on text stays theirs: never a second way to navigate.
+    for label, start, end, _ in origins:
+        gesture(label, start, end)
+    # Afterwards a plain press on free area still opens.
+    gesture("plain", free)
+    copied = page.evaluate("copiedText")
+    evidence = _evidence_dir(tmp_path)
+    suffix = f"{engine}-{theme}-{width}"
+    (evidence / f"project-press-{suffix}.json").write_text(json.dumps(trace, indent=2), encoding="utf-8")
+    transfer.screenshot(path=str(evidence / f"project-press-{suffix}.png"), animations="disabled")
+
+    for row in trace:
+        assert not row["selection"].strip(), ("no case may lean on a selection", row)
+    assert {row["gesture"]: row["opened"] for row in trace} == {
+        "wobble": 1, "out-and-back": 0, "beyond-feed": 0, "copy": 0, "reference": 0, "title": 0, "plain": 1}
+    assert copied == "", "Copy released off itself copies nothing"
+    for row in trace:
+        # Only a press armed on free area follows its pointer, and every release lets it go.
+        assert row["armed"] == ([] if row["gesture"] in ("copy", "reference", "title") else _PATH), row
+        assert row["after"] == [], row
+    if width < 980:
+        before = page.evaluate("openCount")
+        page.touchscreen.tap(*free)
+        page.wait_for_function("n => openCount === n", arg=before + 1)
+        if engine == "chromium":
+            # A finger wobbles too, followed under its own pointer identity. A second tap inside
+            # the double-tap time is a repeat (detail 2), which never navigates: let it pass.
+            page.wait_for_timeout(1000)
+            cdp = page.context.new_cdp_session(page)
+            for kind, points in (("touchStart", [free]), ("touchMove", [(free[0] + 3, free[1])]), ("touchEnd", [])):
+                cdp.send("Input.dispatchTouchEvent", {"type": kind, "touchPoints": [{"x": x, "y": y} for x, y in points]})
+            page.wait_for_function("n => openCount === n", arg=before + 2)
+        assert page.evaluate("handoffListeners()") == []
+    # Destroyed mid-press: the release navigates nowhere and the document keeps no listener of it.
+    page.mouse.move(*free)
+    page.mouse.down()
+    assert page.evaluate("handoffListeners()") == _PATH
+    before = page.evaluate("openCount")
+    page.evaluate("chat.destroy()")
+    assert page.evaluate("handoffListeners()") == []
+    page.mouse.up()
+    assert page.evaluate("openCount") == before
