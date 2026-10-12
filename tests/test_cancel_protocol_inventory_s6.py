@@ -136,6 +136,8 @@ TERMINAL_WRITERS = {
     ('supervisor/events_task_done.py::_refresh_terminal_task_cost', 'current["status"]'): 'dynamic',
     ('supervisor/queue_snapshot.py::restore_pending_from_snapshot', 'STATUS_CANCELLED'): 'terminal',
     ('supervisor/queue_snapshot.py::_refuse_restore_invalid_fences', 'STATUS_CANCELLED'): 'terminal',
+    # Explicit calendar expiry retains pending custody until the result and delivery are durable.
+    ('supervisor/queue_timeouts.py::_settle_pending_deadline', '"failed"'): 'terminal',
     # Positive never-admitted refusal; exact receipt readback precedes resource cleanup.
     ('supervisor/task_admission.py::persist_never_admitted_refusal', 'STATUS_FAILED'): 'terminal',
     # Accepted pending restore refusal; retain custody for retry until its terminal is durable.

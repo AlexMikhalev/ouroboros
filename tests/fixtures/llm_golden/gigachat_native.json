@@ -146,6 +146,11 @@
             "resolved_model": "gigachat/GigaChat-3-Pro",
             "cost": null,
             "cost_final": false,
+            "reported_tokens": {
+              "prompt_tokens": 50,
+              "completion_tokens": 7,
+              "cached_tokens": 10
+            },
             "effort": {
               "requested": "medium",
               "sent": {},
@@ -300,6 +305,11 @@
             "resolved_model": "gigachat/GigaChat-3-Pro",
             "cost": null,
             "cost_final": false,
+            "reported_tokens": {
+              "prompt_tokens": 11,
+              "completion_tokens": 2,
+              "cached_tokens": null
+            },
             "effort": {
               "requested": "medium",
               "sent": {},
@@ -410,6 +420,11 @@
             "resolved_model": "gigachat/GigaChat-3-Pro",
             "cost": null,
             "cost_final": false,
+            "reported_tokens": {
+              "prompt_tokens": 5,
+              "completion_tokens": 1,
+              "cached_tokens": null
+            },
             "effort": {
               "requested": "medium",
               "sent": {},

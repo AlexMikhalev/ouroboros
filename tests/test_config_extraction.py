@@ -111,6 +111,10 @@ _ADDED_OWNERS = {
     "get_max_rounds": runtime_limits,
     "OPERATION_WINDOW_FALLBACK_SEC": runtime_limits,
     "operation_window_sec": runtime_limits,
+    # #939: the numeric duration resolver is a leaf; config supplies its settings seam.
+    "_CURRENT_TASK_CEILING": runtime_limits,
+    "explicit_execution_timeout_sec": runtime_limits,
+    "resolve_task_execution_timeout_sec": runtime_limits,
 }
 
 _MOVED_OWNERS = {
@@ -303,6 +307,20 @@ def test_provider_models_reads_the_shared_leaves_instead_of_importing_config():
     assert provider_models.OPENROUTER_DEFAULTS is settings_defaults.OPENROUTER_DEFAULTS
     assert (provider_models.OPENROUTER_REVIEW_DEFAULTS
             is settings_defaults.OPENROUTER_REVIEW_DEFAULTS)
+
+
+def test_execution_bound_resolution_keeps_leaf_and_facade_defaults_separate(monkeypatch):
+    task = {"execution_timeout_sec": 900}
+    monkeypatch.setattr(runtime_limits, "get_task_abs_ceiling_sec", lambda: 300)
+    monkeypatch.setattr(config, "get_task_abs_ceiling_sec", lambda: 600)
+    assert runtime_limits.resolve_task_execution_timeout_sec(task) == 300
+    assert config.resolve_task_execution_timeout_sec(task) == 600
+    for resolver in (runtime_limits.resolve_task_execution_timeout_sec, config.resolve_task_execution_timeout_sec):
+        assert resolver(task, global_ceiling=None) == 900
+        assert resolver(task, global_ceiling=120) == 120
+        assert resolver({}, global_ceiling=None) is None
+    monkeypatch.setattr(config, "get_task_abs_ceiling_sec", lambda: None)
+    assert config.resolve_task_execution_timeout_sec(task) == 900
 
 
 def test_config_facade_reexports_every_moved_identity():

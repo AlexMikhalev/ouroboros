@@ -375,6 +375,11 @@ class ReviewActorRecord:
     # perform the send itself (a free replay, a rejoin of an earlier process's
     # paid operation): the owner is never shown an inferred moment.
     awaiting_since: str = ""
+    # A durable ``review_model_error`` append already SUCCEEDED for this actor
+    # (#1578): a positive receipt that rides the run result, never inferred from
+    # status. The wave it ran in, as the request resolved it.
+    error_event_logged: bool = False
+    review_wave_id: str = ""
 
 
 @dataclass

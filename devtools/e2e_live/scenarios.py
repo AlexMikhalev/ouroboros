@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 from devtools.benchmarks.common.server_runner import _api, _api_status
 from devtools.e2e_live.ui_probe import GuardedUI
+from ouroboros.event_token_totals import event_token_totals
 
 SM1_NEW_ACCENT = "#2f7de1"
 SM1_COMMIT_MESSAGE = "ui: e2e_live SM1 accent token change (reviewed commit)"
@@ -378,14 +379,14 @@ class LaneContext:
             lambda: [row for row in oracle.events(event_type) if predicate(row)] or None, timeout) or []
 
     def check_paid_tokens(self, task_ids: list[str]) -> None:
-        """NOT fail-open: a 0/0 llm_usage row is the crashed-subprocess / silent-403 signature."""
+        """Require positive disclosed usage; unknown native-session tokens do not prove success."""
         ids = set(task_ids)
         rows = self.wait_events(self.oracle, "llm_usage",
                                 lambda row: str(row.get("task_id") or "") in ids or str(row.get("root_task_id") or "") in ids)
-        prompt_tokens = sum(int(row.get("prompt_tokens") or 0) for row in rows)
-        self.check("prompt_tokens_positive", prompt_tokens > 0,
-                   llm_usage_rows=len(rows), prompt_tokens=prompt_tokens,
-                   completion_tokens=sum(int(row.get("completion_tokens") or 0) for row in rows))
+        evidence = event_token_totals(rows)
+        self.check("prompt_tokens_positive", evidence["prompt_tokens"]["known_total"] > 0,
+                   llm_usage_rows=len(rows), prompt_tokens=evidence["prompt_tokens"]["total"],
+                   completion_tokens=evidence["completion_tokens"]["total"], token_evidence=evidence)
 
     @property
     def ui(self) -> GuardedUI | None:

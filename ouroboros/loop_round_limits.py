@@ -872,27 +872,32 @@ def _handle_model_wait_control(
 def _maybe_deadline_local_finalize(
     ctx: _RoundLimitContext, tools: ToolRegistry
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
-    """Loop-local graceful finalization on a REAL task deadline.
+    """Loop-local graceful finalization on a REAL task deadline or explicit execution budget.
 
     Headless runs (benchmarks, harbor) often get no supervisor finalize_now:
-    the process is killed at the deadline, discarding any best-effort
-    artifact. With a real deadline_at set and less than the
-    finalization-grace window left, self-finalize one tool-less best answer —
-    independent of the supervisor — so a deadline NEVER returns emptiness.
-    Never fires without a real deadline_at (no synthesized deadline;
-    leaderboard timeouts stay legal)."""
+    the process is killed at the bound, discarding any best-effort artifact.
+    With less than the finalization-grace window left on an explicit calendar
+    ``deadline_at`` or API/CLI ``execution_timeout_sec`` (#939), self-finalize
+    one tool-less best answer — independent of the supervisor — so a bound
+    NEVER returns emptiness. Never fires without one (no synthesized deadline;
+    leaderboard timeouts stay legal); confirmed waits extend only the execution budget."""
     meta = getattr(tools._ctx, "task_metadata", {})
     if not isinstance(meta, dict):
         return None
+    from ouroboros.model_wait import explicit_execution_window_remaining
+
     deadline = parse_deadline_ts(meta.get("deadline_at"))
-    if deadline is None:
+    execution_left = explicit_execution_window_remaining(tools._ctx)
+    if deadline is None and execution_left is None:
         return None
-    ctx.deadline_ts = deadline.timestamp()
-    remaining = (deadline - _loop().utc_now()).total_seconds()
+    if deadline is not None:
+        ctx.deadline_ts = deadline.timestamp()
+    remaining = min(value for value in ((deadline - _loop().utc_now()).total_seconds() if deadline else None,
+                                        execution_left) if value is not None)
     if remaining > task_pacing.effective_finalization_reserve_sec(tools._ctx):
         return None
     prompt = (
-        f"[DEADLINE] The task deadline ({meta.get('deadline_at')}) is ~{max(0.0, remaining)/60:.1f} min away "
+        f"[DEADLINE] The task's remaining time is ~{max(0.0, remaining)/60:.1f} min "
         "and the run will stop at it. Produce your best final answer NOW from the verified work so far; "
         "clearly mark anything unverified or incomplete. An honest best-effort result is the expected "
         "outcome here, not a failure."

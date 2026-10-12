@@ -7,15 +7,13 @@ import functools
 import logging
 import pathlib
 import shutil
-import time
 import uuid
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from ouroboros.gateway._helpers import coerce_int, json_error, json_exception, migrating_error, request_drive_root, request_json_or, request_repo_dir, run_sync_to_completion, stage_initial_task_attachments
+from ouroboros.gateway._helpers import coerce_int, json_error, json_exception, migrating_error, request_drive_root, request_json_or, request_repo_dir, run_sync_to_completion, stage_initial_task_attachments, task_time_limits
 from ouroboros.gateway.cost_breakdown import _task_cost_breakdown_view  # noqa: F401
 from ouroboros.gateway.contracts import TaskCreateRequest
 from ouroboros.gateway.schema import validate_ingress
@@ -152,19 +150,6 @@ def _external_subagent_label(body: Dict[str, Any], metadata: Dict[str, Any]) -> 
         str(source.get("delegation_role") or "").strip().lower() == "subagent"
         for source in (body, metadata)
     )
-
-
-def _normalize_deadline_at(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError("deadline_at must be an ISO-8601 datetime") from exc
-    if parsed.tzinfo is None:
-        raise ValueError("deadline_at must include a timezone offset or Z")
-    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _fold_contract_policies(body: Dict[str, Any], raw_metadata: Dict[str, Any], metadata: Dict[str, Any]):
@@ -360,7 +345,8 @@ def _complete_api_task_admission(
         "artifacts": artifacts,
         "artifact_status": ARTIFACT_STATUS_PENDING if workspace_root else "",
         "metadata": metadata,
-        **{key: task[key] for key in ("attachment_manifest", "attachment_manifest_ref", "reasoning_effort") if key in task},
+        **{key: task[key] for key in ("attachment_manifest", "attachment_manifest_ref", "reasoning_effort",
+                                      "execution_timeout_sec") if key in task},
         "api_admission": {"token": admission_token, "status": "accepted"},
         "result": "Task accepted and durably scheduled.",
     }
@@ -565,7 +551,7 @@ def _create_task_from_body(request: Request, body: Any) -> JSONResponse:
         return json_error("delegation_role=subagent is only allowed through the internal schedule_subagent tool", 400)
     if str(body.get("parent_task_id") or "").strip() or str(body.get("root_task_id") or "").strip():
         return json_error("parent_task_id and root_task_id are internal lineage fields; external tasks must start as roots", 400)
-    for _top_level_only in ("project_id", "title", "reasoning_effort"):
+    for _top_level_only in ("project_id", "title", "reasoning_effort", "execution_timeout_sec"):
         # Top-level fields; silently dropping one from metadata would let a caller
         # believe isolation, a name or a starting effort was accepted when it was not.
         if _top_level_only in raw_metadata:
@@ -585,15 +571,10 @@ def _create_task_from_body(request: Request, body: Any) -> JSONResponse:
     except ValueError as exc:
         return json_error(str(exc), 400)
     try:
-        deadline_at = _normalize_deadline_at(body.get("deadline_at") or raw_metadata.get("deadline_at") or "")
+        time_limits = task_time_limits(body, raw_metadata)
     except ValueError as exc:
         return json_error(str(exc), 400)
-    try:
-        timeout_sec = float(body.get("timeout_sec") or body.get("timeout") or 0)
-    except (TypeError, ValueError):
-        timeout_sec = 0.0
-    if not deadline_at and timeout_sec > 0:
-        deadline_at = datetime.fromtimestamp(time.time() + timeout_sec, timezone.utc).isoformat().replace("+00:00", "Z")
+    deadline_at = time_limits.pop("deadline_at")
     if deadline_at:
         metadata["deadline_at"] = deadline_at
     admission_token = uuid.uuid4().hex
@@ -706,7 +687,7 @@ def _create_task_from_body(request: Request, body: Any) -> JSONResponse:
         "resource_policy": resource_policy,
         "disabled_tools": disabled_tools,
         "acceptance_claims": acceptance_claims,
-        "deadline_at": deadline_at,
+        "deadline_at": deadline_at, **time_limits,  # execution_timeout_sec: top-level, never metadata
         "depth": depth,
         "parent_task_id": None,
         "root_task_id": task_id,

@@ -112,6 +112,29 @@ class TestCacheHitRateInvariant:
         assert _compute_cache_hit_rate(env) == 0.0
         assert "LOW CACHE HIT RATE" in build_health_invariants(env)
 
+    def test_historical_cache_zeros_are_not_measured_misses(self, tmp_path):
+        """Record contract LEGACY_RULE (#1578): an unstamped or v1 zero may be an older
+        writer's unknown-to-zero projection, so after an upgrade those rounds must not
+        read as measured misses and fire LOW CACHE HIT RATE. Their positive counts and
+        every v2 count, a v2 zero included, stay measurements; null and malformed
+        counters measure nothing and void no neighbour."""
+        from ouroboros.context_health import _compute_cache_hit_rate
+
+        legacy_zero = [{"type": "llm_round", "prompt_tokens": 1000, "cached_tokens": 0, **stamp}
+                       for stamp in ({}, {"record_contract_version": 1}) * 3]
+        legacy_hit = [{"type": "llm_round", "prompt_tokens": 1000, "cached_tokens": 600}] * 5
+        unknown = [{"type": "llm_round", "record_contract_version": 2, "prompt_tokens": 1000, "cached_tokens": bad}
+                   for bad in (None, -1, True)]
+        env = self._make_env(tmp_path, [json.dumps(row) for row in legacy_zero])
+        assert _compute_cache_hit_rate(env) is None
+        assert "cache hit rate" not in build_health_invariants(env).lower()
+        env = self._make_env(tmp_path, [json.dumps(row) for row in legacy_zero + legacy_hit + unknown])
+        assert _compute_cache_hit_rate(env) == 0.6
+        assert "OK: cache hit rate (60%)" in build_health_invariants(env)
+        self._emit_producer_rounds(tmp_path, 0, count=7)  # the real producer's v2 zeros ARE misses
+        assert _compute_cache_hit_rate(env) == pytest.approx(3000 / 12000)
+        assert "LOW CACHE HIT RATE" in build_health_invariants(env)
+
     def test_a_window_with_fewer_than_five_reporting_rounds_stays_unknown(self, tmp_path):
         """The five-round threshold counts MEASUREMENTS, not rounds. Three
         reporters beside three silent rounds are still too thin a sample to

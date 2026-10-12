@@ -245,8 +245,8 @@ def _emit_simple_usage(
     *,
     provider: str,
     model: str,
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
     usage: Dict[str, Any] | None = None,
 ) -> None:
     if not hasattr(ctx, "pending_events"):
@@ -256,14 +256,15 @@ def _emit_simple_usage(
         metadata = {}
     try:
         from ouroboros._usage_response import observed_processing_mode, provider_cost_value
+        from ouroboros.event_usage import event_token_counts
 
         mode = observed_processing_mode(provider, usage or {})
         cost = provider_cost_value((usage or {}).get("cost"))
         if cost is None:
             cost = estimate_cost_optional(
                 model if "/" in str(model) else f"{provider}/{model}",
-                prompt_tokens,
-                completion_tokens,
+                int(prompt_tokens or 0),
+                int(completion_tokens or 0),
                 provider=provider,
                 **({"processing_mode": mode} if mode else {}),
             )
@@ -277,8 +278,8 @@ def _emit_simple_usage(
             "model": model,
             "api_key_type": provider,
             "model_category": "websearch",
-            "prompt_tokens": int(prompt_tokens or 0),
-            "completion_tokens": int(completion_tokens or 0),
+            # #1578: an unreported counter stays null, never a measured zero.
+            **event_token_counts(usage, {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}),
             "usage": usage or {},
             "cost": cost,
             "source": "web_search",
@@ -331,8 +332,8 @@ def _web_search_openrouter(ctx: ToolContext, query: str, model: str = "", search
             ctx,
             provider="openrouter",
             model=active_model,
-            prompt_tokens=int((usage or {}).get("prompt_tokens") or 0),
-            completion_tokens=int((usage or {}).get("completion_tokens") or 0),
+            prompt_tokens=(usage or {}).get("prompt_tokens") if isinstance(usage, dict) else None,
+            completion_tokens=(usage or {}).get("completion_tokens") if isinstance(usage, dict) else None,
             usage=usage if isinstance(usage, dict) else {},
         )
         return json.dumps({
@@ -383,12 +384,15 @@ def _web_search_anthropic(ctx: ToolContext, query: str, model: str = "",
 
         attach_processing_receipt({"provider": "anthropic", "usage_model": active_model}, usage)
         usage["ledger_attempt_ids"] = list(attempt_ids)
+        from ouroboros.event_usage import REPORTED_TOKENS_KEY, anthropic_token_counts
+
+        usage[REPORTED_TOKENS_KEY] = anthropic_token_counts(usage)  # native input_tokens is not the total (#1578)
         _emit_simple_usage(
             ctx,
             provider="anthropic",
             model=active_model,
-            prompt_tokens=int((usage or {}).get("input_tokens") or 0) if isinstance(usage, dict) else 0,
-            completion_tokens=int((usage or {}).get("output_tokens") or 0) if isinstance(usage, dict) else 0,
+            prompt_tokens=(usage or {}).get("input_tokens") if isinstance(usage, dict) else None,
+            completion_tokens=(usage or {}).get("output_tokens") if isinstance(usage, dict) else None,
             usage=usage if isinstance(usage, dict) else {},
         )
         return json.dumps({
@@ -679,6 +683,8 @@ def _web_search_openai(
             if not isinstance(metadata, dict):
                 metadata = {}
             try:
+                from ouroboros.event_usage import event_token_counts
+
                 ctx.pending_events.append({
                     "type": "llm_usage",
                     "task_id": str(getattr(ctx, "task_id", "") or ""),
@@ -689,8 +695,7 @@ def _web_search_openai(
                     "model": active_model,
                     "api_key_type": api_key_type,
                     "model_category": "websearch",
-                    "prompt_tokens": input_tokens,
-                    "completion_tokens": output_tokens,
+                    **event_token_counts(usage),  # the cost estimate above alone reads unknown as 0
                     "usage": usage,
                     "cost": cost,
                     "source": "web_search",

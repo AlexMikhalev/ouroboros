@@ -13,7 +13,7 @@ import pathlib
 import time
 from typing import Any, Dict
 
-from ouroboros.model_wait import budget_paused_seconds
+from ouroboros.model_wait import budget_paused_seconds, settle_execution_carry
 from supervisor.events_budget import budget_fence_selected, budget_hold_fact
 from supervisor.queue import _queue_lock
 from supervisor.schedule_occurrence import record_dispatch_possible
@@ -230,12 +230,38 @@ def _mirror_assigned_running_status(task: Dict[str, Any]) -> None:
         log.debug("Failed to mirror the running assigned status", exc_info=True)
 
 
+def _settled_running_task(task: Dict[str, Any], resume: Dict[str, Any]) -> Dict[str, Any]:
+    """#939: choose the clock carry on a copy, before the physical handoff."""
+    running = dict(task)
+    settle_execution_carry(running, origin_preserved=bool(resume.get("started_at")))
+    return running
+
+
+def _deadline_refuses_launch(queue, candidate, *, unsubmitted=None) -> bool:
+    """#939: an explicit calendar deadline that passed before the physical handoff buys
+    no worker start; an ordinary row moves to the reaper's non-dispatch custody instead.
+    Rechecked at the handoff because the pass may wait on admission or persistence."""
+    deadline = queue._task_deadline_ts(candidate)
+    if not deadline or time.time() < deadline:
+        return False
+    from supervisor.queue_timeouts import pending_deadline_expirable, _retain_unsubmitted_deadline
+
+    if unsubmitted is not None:
+        _retain_unsubmitted_deadline(candidate, unsubmitted)
+    if pending_deadline_expirable(candidate):
+        queue._expire_pending_deadlines_locked(_pool(), time.time())
+    return True  # unknown or protected custody never authorizes an expired handoff
+
+
 def _claim_worker_launch(queue, candidate, worker):
     """Commit prepared work to the local worker queue under Pause's lock."""
     from types import SimpleNamespace
     from ouroboros.owner_pause import launch_admission, OwnerPauseRefused
     from supervisor.task_admission import record_project_dispatch_possible
+    from supervisor.queue_timeouts import _pending_continuation, _deadline_launch_claim, pending_deadline_expirable
 
+    if _deadline_refuses_launch(queue, candidate):
+        return False
     try:
         from supervisor.followup_policy import scheduled_start
         with scheduled_start(queue.DRIVE_ROOT, candidate) as allowed:
@@ -253,6 +279,18 @@ def _claim_worker_launch(queue, candidate, worker):
                     task_id=candidate.get("id"), root_task_id=candidate.get("root_task_id"),
                     budget_drive_root=candidate.get("budget_drive_root") or queue.DRIVE_ROOT),
                     root_resume=resume if not latch or selected_child else None):
+                unsubmitted = None
+                if (queue._task_deadline_ts(candidate) and _pending_continuation(candidate) == "_working_recovery"
+                        and pending_deadline_expirable(candidate)):
+                    import copy
+                    from ouroboros.task_results import load_task_result
+
+                    # Before this invocation claims: retain its exact authorized
+                    # source and prior owner, not an inference from persisted possible.
+                    stored = load_task_result(candidate.get("budget_drive_root") or queue.DRIVE_ROOT,
+                                              candidate["id"], strict=True) or {}
+                    unsubmitted = copy.deepcopy({"task_id": candidate["id"], "task_attempt": candidate["_attempt"],
+                        "source": candidate["_working_recovery"], "claim": _deadline_launch_claim(stored)})
                 prior = candidate.get("admitted_dispatch")
                 candidate["admitted_dispatch"] = "possible"
                 if queue.persist_queue_snapshot(reason="worker_launch_claimed") is not True:
@@ -265,7 +303,13 @@ def _claim_worker_launch(queue, candidate, worker):
                 from ouroboros.obligations import drive_started
                 drive_started(_pool().DRIVE_ROOT, candidate)
                 _mirror_assigned_running_status(candidate)
-                worker.in_q.put(candidate)
+                if _deadline_refuses_launch(queue, candidate, unsubmitted=unsubmitted):  # positively before any put
+                    return False
+                continuation = candidate.get("_owner_wait_resume") or candidate.get("_budget_pause_resume") or candidate.get("_working_recovery") or {}
+                launched = _settled_running_task(candidate, continuation)
+                worker.in_q.put(launched)
+                candidate.pop("_execution_handoff_sec", None)
+                candidate.update(launched)
                 return True
     except OwnerPauseRefused:
         return False
@@ -550,7 +594,7 @@ def assign_tasks() -> None:
                 now_ts = time.time()
                 resume = task.get("_owner_wait_resume") or task.get("_budget_pause_resume") or task.get("_working_recovery") or {}
                 _pool().RUNNING[task["id"]] = {
-                    "task": dict(task), "worker_id": w.wid,
+                    "task": _settled_running_task(task, resume), "worker_id": w.wid,
                     "started_at": float(resume.get("started_at") or now_ts), "last_heartbeat_at": now_ts,
                     "last_progress_at": now_ts,
                     **({"model_wait_quota_clock": dict(resume["model_wait_quota_clock"])}

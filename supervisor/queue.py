@@ -459,7 +459,7 @@ def ensure_control_task_result(task_id: str) -> Dict[str, Any]:
             "delegation_role", "project_id", "workspace_root", "workspace_mode", "memory_mode",
             "budget_drive_root", "queued_at", "admitted_dispatch", "_admission_owner_token",
             "origin_message_text", "origin_message_ref", "objective", "title", "suggested_name",
-            "original_task_id", "timeout_retry_from", "deadline_at", "root_cost_ceiling_usd",
+            "original_task_id", "timeout_retry_from", "deadline_at", "execution_timeout_sec", "root_cost_ceiling_usd",
             "billing_group", "task_constraint", "objective_author", "owner_corpus", "task_group_id", "task_group",
             "reasoning_effort",
         ) if key in task}
@@ -862,6 +862,7 @@ from supervisor.queue_snapshot import (  # noqa: E402, F401 -- intentional publi
 )
 from supervisor.queue_timeouts import (  # noqa: E402, F401 -- intentional public re-exports
     _enforce_task_timeouts_locked,
+    _expire_pending_deadlines_locked,
     _has_live_descendant,
     _has_pending_descendant,
     _is_descendant_of,
