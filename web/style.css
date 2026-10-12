@@ -446,18 +446,62 @@ body.resizing-panels { user-select: none; }
     font-size: var(--type-meta);
 }
 
+/* A Project door that is a row or a capsule carries the glyph on a tile of the
+   Project hue; the question head keeps its compact pill (docs/DESIGN.md
+   "References and actions"). */
+.project-handoff .chat-live-project-icon,
+.chat-live-bound-pointer .chat-live-project-icon,
+.system-message-actions .chat-quiz-project .chat-live-project-icon {
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: var(--space-5);
+    height: var(--space-5);
+    border-radius: var(--radius-sm);
+    background: var(--project);
+    color: var(--bg-primary);
+    font-size: var(--type-body);
+}
+
+/* Under a message the reference is a capsule with the reading size and a full target. */
+.system-message-actions .chat-quiz-project.chat-live-project-card-btn {
+    min-height: var(--touch-target-min);
+    padding: var(--space-1) var(--space-3) var(--space-1) var(--space-1);
+    gap: var(--space-2);
+    font-size: var(--type-body);
+}
+.system-message-actions .chat-quiz-project :is(.chat-live-project-name, .chat-live-project-status) {
+    font-size: var(--type-body);
+}
+
 /* F4 — a bound (project-chat) card keeps its live timeline above and gets the
-   project pointer as a calm fuchsia footer, so a divider sets it apart. */
+   project pointer as a wide fuchsia footer, so a divider sets it apart. The
+   task title stays the one primary thing in text ink; the destination speaks
+   in the Project hue, its arrow on a round mark at the row's end. */
 .chat-live-bound-pointer {
     border-top: 1px solid var(--project-18);
     background: var(--project-08);
 }
 
-/* On a task card the task title stays the one primary thing; the pointer's
-   project name steps down to meta ink. */
 .chat-live-bound-pointer .chat-live-project-name {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+    overflow-wrap: anywhere;
     font-weight: 500;
-    color: var(--text-meta);
+    color: var(--project);
+}
+
+.chat-live-bound-pointer .chat-live-project-status {
+    display: inline-grid;
+    place-items: center;
+    width: var(--space-5);
+    height: var(--space-5);
+    border: 1px solid var(--project-18);
+    border-radius: var(--pill-radius);
+    font-size: var(--type-body);
 }
 
 .nav-section {
@@ -8447,12 +8491,15 @@ textarea.chat-input {
 .chat-bubble.has-copy .msg-time { margin-right: 28px; }
 
 /* One Project entry surface, independent of the task or history shell it
-   replaced. This follows the base shells and their copy/time recipes. */
+   replaced (docs/DESIGN.md "Project work entries"): a light title over one
+   destination row, the Project reference filling it beside time and Copy. Its
+   free area forwards a press to that reference (project_handoff.js), so it shows
+   the pointer; text keeps the reading cursor and its selection. */
 .chat-live-card.project-handoff,
 .chat-bubble.project-handoff {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
+    gap: var(--space-1);
     align-self: flex-start;
     width: min(100%, 760px);
     max-width: max(80%, min(100%, 620px));
@@ -8467,6 +8514,7 @@ textarea.chat-input {
     overflow: hidden;
     container-type: inline-size;
     container-name: projectcard;
+    cursor: pointer;
     transition: border-color 250ms ease, background-color 250ms ease, box-shadow 250ms ease;
 }
 
@@ -8477,34 +8525,59 @@ textarea.chat-input {
     white-space: normal;
 }
 .project-handoff-title {
-    flex: 1;
+    flex: 0 1 auto;
     min-width: 0;
     overflow-wrap: anywhere;
     font-size: var(--type-section);
     line-height: var(--line-title);
-    font-weight: 600;
+    font-weight: 500;
     color: var(--text-primary);
 }
 .project-handoff-phase {
     display: flex;
+    flex-shrink: 0;
     align-items: baseline;
     justify-content: flex-end;
     flex-wrap: wrap;
     gap: var(--space-2);
     max-width: 100%;
+    margin-inline-start: auto;
     line-height: var(--line-meta);
 }
-.project-handoff .chat-quiz-project { align-self: flex-start; max-width: 100%; margin: 0; }
-.project-handoff-footer { display: flex; align-items: center; gap: var(--space-2); min-height: var(--space-5); }
-.project-handoff .project-handoff-footer .msg-time { margin: 0; opacity: 1; color: var(--text-meta); }
+.project-handoff :is(.project-handoff-title, .project-handoff-phase > *, .msg-time) { cursor: auto; }
+.project-handoff-footer { display: flex; align-items: center; gap: var(--space-2); min-height: var(--touch-target-min); }
+.project-handoff .chat-quiz-project.chat-live-project-card-btn {
+    flex: 1 1 auto; align-self: stretch; max-width: none; min-height: var(--touch-target-min);
+    margin: 0; padding: 0; gap: var(--space-2);
+    border: 0; border-radius: var(--radius-sm); background: transparent;
+    font-size: var(--type-body); line-height: var(--line-meta);
+}
+.project-handoff .chat-quiz-project .chat-live-project-name {
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+    white-space: normal; overflow-wrap: anywhere;
+    font-size: var(--type-body); color: var(--project);
+}
+.project-handoff .chat-quiz-project .chat-live-project-status { font-size: var(--type-body); color: var(--project); }
+.project-handoff .project-handoff-footer .msg-time { flex: none; margin: 0; opacity: 1; white-space: nowrap; color: var(--text-meta); }
 .project-handoff .chat-message-copy { position: static; margin-inline-start: auto; flex: 0 0 auto; }
+@media (hover: hover) {
+    .project-handoff:hover .chat-live-project-name { text-decoration: underline; text-underline-offset: 3px; }
+}
+@media (pointer: coarse) {
+    .project-handoff .chat-message-copy { min-width: var(--touch-target-min); min-height: var(--touch-target-min); }
+}
 
 /* A saved binding with no durable Main receipt retains its visible gap mark. */
 .project-handoff.project-handoff--unsaved { border-style: dashed; }
 
 @container projectcard (max-width: 560px) {
     .project-handoff-heading { flex-direction: column; align-items: flex-start; }
-    .project-handoff-phase { order: -1; justify-content: flex-start; }
+    .project-handoff-phase { order: -1; justify-content: flex-start; margin-inline-start: 0; }
+    /* The name takes the whole row; time and Copy follow on the right. */
+    .project-handoff-footer { flex-wrap: wrap; }
+    .project-handoff .project-handoff-footer > [data-intent] { flex-basis: 100%; }
+    .project-handoff .project-handoff-footer .msg-time { margin-inline-start: auto; }
+    .project-handoff .project-handoff-footer .msg-time:not([hidden]) + .chat-message-copy { margin-inline-start: 0; }
 }
 
 .chat-copy-fallback {

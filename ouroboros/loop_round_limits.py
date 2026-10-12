@@ -25,7 +25,6 @@ from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_nega
 from ouroboros.loop_transport import TransportWaitEpisode, finalize_now_transport_terminal as _finalize_now_transport_terminal
 from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
 from ouroboros.pricing import estimate_cost_optional
-from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.transcript_prefix import sanction_rewrite
 from ouroboros.usage_accounting import invalidate_task_cache_splits
@@ -684,21 +683,18 @@ def _handle_provider_unavailable(
     wait_cause: str = "", waited_sec: float = 0.0, interactive: bool = False,
     control_reason: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Provider-death rail wrapper: every arm carries terminal provenance.
-    The forced-finalization sink stamps ``host_notice``; retained/generated
-    model candidates stamp ``model_final``. Read the recognized control here
-    so ordinary and delegated-hold terminal paths share the same cause."""
+    """Provider-death rail wrapper: every arm carries terminal provenance, decided by
+    ``_provider_unavailable_result`` where the salvage is known (retained model
+    output is ``host_salvage``, the host's own notice ``host_notice``, model
+    candidates ``model_final``). Read the recognized control here so ordinary
+    and delegated-hold terminal paths share the same cause."""
     if control_reason is None:
         owner_ctx = getattr(ctx.tools, "_ctx", None)
         control_reason = str(getattr(owner_ctx, "_transport_repeat_control_reason", "") or "")
-    text, usage, llm_trace = _loop()._provider_unavailable_result(
+    return _loop()._provider_unavailable_result(
         ctx, error_kind=error_kind, wait_cause=wait_cause, waited_sec=waited_sec,
         interactive=interactive, control_reason=control_reason,
     )
-    if str(usage.get("reason_code") or "") not in ("", "deadline_local") and usage.get(
-            "terminal_origin") in (None, TERMINAL_ORIGIN_HOST_NOTICE):
-        usage["terminal_origin"] = TERMINAL_ORIGIN_HOST_SALVAGE
-    return text, usage, llm_trace
 
 
 def _loop_exit_after_exception(

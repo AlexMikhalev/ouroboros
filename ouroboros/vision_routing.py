@@ -881,7 +881,7 @@ def prepare_messages_for_send(
 _ROUND_ERROR_KEYS = ("_last_llm_error", "_last_llm_error_kind", "_last_llm_retry_same_request", "_last_llm_status_code",
                      "_last_llm_provider_code", "_last_llm_provider_message", "_last_llm_provider_fields",
                      "_last_llm_provider_message_cut", "_last_llm_resource_refusal", "_last_llm_reset_at",
-                     "execution_status", "reason_code")
+                     "_last_llm_attempt_custody", "execution_status", "reason_code")
 
 
 def _round_capture(ctx: Any, failed: Any) -> bool:

@@ -67,7 +67,7 @@ A host fact about a task is a row of its card, never a bubble beside it: the pro
 
 `project_handoff.py` owes a Main transfer receipt through the terminal outbox after durable binding. `handoff_id` binds the captured ingress message and Project: technical retries share a receipt, independent requests do not. `RECEIPT_STATES` separates binding from receipt durability; `durable`/`already_delivered` prove the Main row owed/delivered, `origin_unproven` writes none, and other states name a gap. Main is never a default destination. `POST /api/projects/from-task` returns `handoff_receipt` and `handoff_id`; a non-durable result warns on the card without inventing history.
 
-`project_handoff.js` owns creation/transfer layout, live and replayed, with `formatMsgTime` and chat copy controls. Folding supplies the matching receipt time; anchors and task outcomes stay separate. Structured `task_name` follows producers, bus and history. `task_phase_chip.censusTaskPhase`/`paintTaskPhase` share outcome and motion with tasks and Project summaries (DESIGN "Project work entries"). Only explicit technical retry follows work; owner Continue starts a new root, and reconnect must re-prove activity.
+`project_handoff.js` owns creation/transfer layout and free-area press (`isFreePress`), live or replayed, with `formatMsgTime`/Copy. Folding supplies the matching receipt time; anchors and task outcomes stay separate. Structured `task_name` follows producers, bus and history. `task_phase_chip.censusTaskPhase`/`paintTaskPhase` share outcome and motion with tasks and Project summaries (DESIGN "Project work entries"). Only explicit technical retry follows work; Continue is a new root; reconnect re-proves activity.
 
 #### Composer, attachments and delivered media
 

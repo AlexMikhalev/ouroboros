@@ -287,7 +287,7 @@ def _record_and_emit_empty_response(
         kind = "llm_output_exhausted" if exhausted else _cooldown_kind_for_empty_response(body_error, event_type)
     accumulated_usage.update({
         "_last_llm_error": _short_error_text(log_msg), "execution_status": status,
-        "reason_code": reason, "_last_llm_error_kind": kind,
+        "reason_code": reason, "_last_llm_error_kind": kind, "_last_llm_attempt_custody": "",  # a response arrived
     })
     if exhausted:  # this attempt's own facts for the next round's host fact (loop.run_llm_loop)
         capture = last_physical_attempt_capture()  # the response's own receipt, read as send_clock reads it
@@ -713,9 +713,9 @@ def classify_llm_exception(exc: Exception, safe_error: str = "") -> LlmErrorClas
     if getattr(exc, "code", "") == "model_outcome_unknown":
         return LlmErrorClassification("provider_outcome_unknown", False)
     if getattr(exc, "code", "") == "model_substituted": return LlmErrorClassification("model_substituted", False, 0, exc.code)  # a well-formed request the route answered with another model: chain-eligible, never cools the requested one
-    if getattr(exc, "code", "") in {"unsupported_parameter", "invalid_continuation", "auth_changed", "model_unavailable"}:
+    if getattr(exc, "code", "") in {"unsupported_parameter", "invalid_continuation", "auth_changed", "model_unavailable", "model_source_unavailable", "model_catalog_identity_mismatch"}:
         return LlmErrorClassification("bad_request", False, _exception_status_code(exc), exc.code)
-    if getattr(exc, "code", "") == "auth_required":
+    if getattr(exc, "code", "") in {"auth_required", "auth_unavailable", "auth_refresh_failed"}:
         return LlmErrorClassification("auth_error", False, _exception_status_code(exc), exc.code)
     if isinstance(exc, LocalContextTooLargeError):
         return LlmErrorClassification("context_overflow", False)
@@ -986,7 +986,7 @@ def _record_llm_call_error(
         "failure_code": classification.kind, "reset_at": classification.reset_at,
     })
     ctx.accumulated_usage.update(_last_llm_error=_short_error_text(display_error), _last_llm_resource_refusal=model_wait_reason(error),
-                                 _last_llm_error_kind=classification.kind, _last_llm_retry_same_request=will_retry)
+                                 _last_llm_error_kind=classification.kind, _last_llm_retry_same_request=will_retry, _last_llm_attempt_custody=custody_fields.get("attempt_custody_state", ""))
     if classification.reset_at:  # a disclosed fact for the terminal hint, never a retry schedule
         ctx.accumulated_usage["_last_llm_reset_at"] = classification.reset_at
     else:
@@ -1237,7 +1237,7 @@ def _take_response_facts(usage: Dict[str, Any], msg: Dict[str, Any], accumulated
     for stale in ("_last_llm_error", "_last_llm_error_kind", "_last_llm_retry_same_request",
                   "_last_llm_status_code", "_last_llm_provider_code", "_last_llm_provider_message",
                   "_last_llm_provider_fields", "_last_llm_provider_message_cut", "_last_llm_resource_refusal",
-                  "_last_llm_output_exhausted"):
+                  "_last_llm_output_exhausted", "_last_llm_attempt_custody"):
         accumulated_usage.pop(stale, None)
     receipts = pop_custom_validation_receipts(usage, msg.get("tool_calls") or [])
     accumulated_usage.pop(CUSTOM_RECEIPTS_USAGE_KEY, None)

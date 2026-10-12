@@ -1,5 +1,6 @@
 /** A navigation pointer to existing Project cards, never another work dashboard. */
 import { compareHistoryPosition } from './chat_history_replay.js';
+import { desiredLiveCardPhase } from './task_phase_chip.js';
 
 // The pointer names the card; it never restates the card's latest status line
 // (a plan_task verdict runs to ~400 characters, and the card itself clamps its
@@ -16,7 +17,9 @@ export function projectWorkTarget(records = []) {
 }
 
 /** `Working · <name>` / `Latest task · <name>`: the coined name first, else the
- *  card's own title, whitespace-normalized and capped to one line's worth. */
+ *  card's own title, whitespace-normalized and capped to one line's worth. Work
+ *  that already ended and only finishes its wrap-up names its outcome instead of
+ *  Working (`Failed · Finalizing… · <name>`), from the card's own chip facts. */
 export function projectWorkLabel(target) {
     if (!target) return '';
     const name = String(target.suggestedName || target.titleEl?.textContent || '')
@@ -24,7 +27,11 @@ export function projectWorkLabel(target) {
     const short = name.length > POINTER_NAME_CHARS
         ? `${name.slice(0, POINTER_NAME_CHARS - 1).trimEnd()}…`
         : name;
-    return `${target.finished ? 'Latest task' : 'Working'} · ${short}`;
+    const view = !target.finished && target.finalizingHold && target.observedOutcome
+        ? desiredLiveCardPhase(target) : null;
+    const state = target.finished ? 'Latest task'
+        : view ? [view.text, view.secondary].filter(Boolean).join(' · ') : 'Working';
+    return `${state} · ${short}`;
 }
 
 export function bindProjectWorkPointer(host, { records, onNavigate }) {
