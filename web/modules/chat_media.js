@@ -817,6 +817,8 @@ export function createChatMedia({
         button.title = tr('code.copy', 'Copy');
         button.setAttribute('aria-label', tr('media.copy_message', 'Copy message'));
         const writeFallback = () => {
+            // Selecting the hidden field takes focus; it goes back, so a keyboard owner stays on Copy.
+            const owner = document.activeElement;
             const area = document.createElement('textarea');
             area.className = 'chat-copy-fallback';
             area.value = String(rawText);
@@ -829,6 +831,7 @@ export function createChatMedia({
                 if (!copied) throw new Error('Clipboard access is unavailable');
             } finally {
                 area.remove();
+                if (owner && owner !== document.body && owner.isConnected !== false) owner.focus?.({ preventScroll: true });
             }
         };
         listen(button, 'click', async () => {
