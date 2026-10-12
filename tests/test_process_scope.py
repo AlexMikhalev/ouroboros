@@ -409,6 +409,54 @@ def test_an_unverified_entry_is_dropped_once_a_later_scan_ends_or_confirms_the_p
     assert outcome["settled"] is True and signalled == ([4300, 4242] if later == "ended" else [4300])
 
 
+@pytest.mark.parametrize("failure", ["unreadable", "signal_failed"])
+def test_resolving_a_stale_birth_never_discharges_another_birth_on_the_same_pid(monkeypatch, failure):
+    """Astra delta3 1: a recorded identity (P, A) whose child exited is confirmed gone while a
+    NEW scope member reused P with birth B and could not be ended (identity unreadable, or
+    its signal failed). Resolution is per identity: A's resolution never erases B's
+    unverified evidence, so the pass stays unsettled and B rides into the next one."""
+    old, new = "Sun Oct 11 12:00:00 2026", "Mon Oct 12 12:00:00 2026"
+    marker = ps.mint_marker(ps.INSTALL_SCOPE_PREFIX)
+    monkeypatch.setattr(ps, "census", lambda markers=(): {4242: ps._Row(4242, 1, 4242, new, ps.birth_epoch(new), markers={marker})})
+    if failure == "unreadable":
+        monkeypatch.setattr(ps, "read_identities", lambda pids: {int(pid): ps._Identity(ps.IDENTITY_UNREADABLE) for pid in pids})
+        result, reason = _pl.SIGNAL_SENT, ps.UNVERIFIED_IDENTITY
+    else:
+        monkeypatch.setattr(ps, "read_identities", lambda pids: {int(pid): ps._Identity(ps.IDENTITY_ALIVE, new, int(pid)) for pid in pids})
+        result, reason = _pl.SIGNAL_FAILED, ps.UNVERIFIED_FAILED
+    signalled = []
+    monkeypatch.setattr(_pl, "deliver_signal", lambda pid, *, graceful: signalled.append(pid) or result)
+    monkeypatch.setattr(ps, "_await_exit", lambda targets, deadline: ({}, {}))
+    monkeypatch.setattr(ps, "_RESCAN_SETTLE_SEC", 0)
+    outcome = ps.end_scope(marker=marker, captured=[{"pid": 4242, "birth": old}], exclude={os.getpid(), 1},
+                           grace_sec=0.0, term_first=False, rescans=1)
+    assert outcome["captured_gone"] == [4242] and outcome["ended"] == [], "A is gone; nothing was ended"
+    assert outcome["unverified"] == [{"pid": 4242, "birth": new, "reason": reason}], "B keeps its own evidence"
+    assert outcome["settled"] is False and ps._known_members(outcome) == [{"pid": 4242, "birth": new}]
+    assert signalled == ([] if failure == "unreadable" else [4242])
+
+
+def test_each_birth_recorded_for_one_pid_is_judged_on_its_own(monkeypatch):
+    """Two custodians may both owe pid P under different births (a pending record's known
+    member and a task record's). A table without P asks the reader once and judges each
+    birth: unreadable keeps both; alive with B confirms A gone and ends B."""
+    old, new = "Sun Oct 11 12:00:00 2026", "Mon Oct 12 12:00:00 2026"
+    captured = [{"pid": 4242, "birth": old}, {"pid": 4242, "birth": new}]
+    monkeypatch.setattr(ps, "census", lambda markers=(): {})
+    signalled = []
+    monkeypatch.setattr(_pl, "deliver_signal", lambda pid, *, graceful: signalled.append(pid) or _pl.SIGNAL_SENT)
+    monkeypatch.setattr(ps, "_await_exit", lambda targets, deadline: ({}, {}))
+    monkeypatch.setattr(ps, "read_identities", lambda pids: {int(pid): ps._Identity(ps.IDENTITY_UNREADABLE) for pid in pids})
+    outcome = ps.end_scope(captured=captured, exclude={os.getpid(), 1}, grace_sec=0.0)
+    assert outcome["unverified"] == [{"pid": 4242, "birth": old, "reason": ps.UNVERIFIED_IDENTITY},
+                                     {"pid": 4242, "birth": new, "reason": ps.UNVERIFIED_IDENTITY}]
+    assert outcome["settled"] is False and signalled == []
+    monkeypatch.setattr(ps, "read_identities", lambda pids: {int(pid): ps._Identity(ps.IDENTITY_ALIVE, new, int(pid)) for pid in pids})
+    outcome = ps.end_scope(captured=captured, exclude={os.getpid(), 1}, grace_sec=0.0)
+    assert (outcome["captured_gone"], outcome["ended"], outcome["unverified"]) == ([4242], [4242], [])
+    assert outcome["settled"] is True and signalled == [4242]
+
+
 def test_a_proc_stat_read_failure_other_than_absence_is_unreadable(monkeypatch):
     def controlled(path, *args, **kwargs):
         if str(path) == "/proc/4242/stat":

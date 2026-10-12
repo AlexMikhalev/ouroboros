@@ -623,6 +623,48 @@ def test_panic_reads_the_known_members_task_cleanups_still_owe_and_carries_them_
         _end(child)
 
 
+@pytest.mark.parametrize("failure", ["unreadable", "signal_failed"])
+def test_a_stale_known_birth_confirmed_gone_never_retires_the_record_owing_the_current_birth(tmp_path, monkeypatch, failure):
+    """Astra delta3 1 (records): a task cleanup saved (P, A) unverified; that child exited and
+    a new installation member reused P with birth B. Panic confirms A gone and cannot end B
+    (identity unreadable, or its signal failed): B's evidence stays, the pending record is
+    kept with B, and the completion ends B by identity before retiring. Synthetic pids,
+    mocked signals."""
+    from ouroboros.task_results import write_task_result
+
+    install = ps.installation_marker(tmp_path)
+    old, new, pid = "Sun Oct 11 12:00:00 2026", "Mon Oct 12 12:00:00 2026", 4242
+    row = lambda birth, marker: {pid: ps._Row(pid, 1, pid, birth, ps.birth_epoch(birth), markers={marker})}
+    signals = []
+    monkeypatch.setattr(ps, "_await_exit", lambda targets, deadline: ({}, {}))
+    monkeypatch.setattr(ps, "_RESCAN_SETTLE_SEC", 0)
+    monkeypatch.setattr(ps, "note_task_terminal_transition", lambda *a, **k: None)
+    task_marker = ps.task_scope_marker(tmp_path, "t-stale")
+    write_task_result(tmp_path, "t-stale", "completed", result="done")
+    monkeypatch.setattr(ps, "census", lambda markers=(): row(old, task_marker))
+    monkeypatch.setattr(ps, "read_identities", lambda pids: {int(p): ps._Identity(ps.IDENTITY_UNREADABLE) for p in pids})
+    assert ps.settle_task_scope(tmp_path, "t-stale")["settled"] is False
+    assert ps.task_scope_record(tmp_path, "t-stale")["known_members"] == [{"pid": pid, "birth": old}]
+    monkeypatch.setattr(ps, "census", lambda markers=(): row(new, install))  # A exited; B reused its pid
+    if failure == "unreadable":
+        result, reason = _pl.SIGNAL_SENT, ps.UNVERIFIED_IDENTITY
+    else:
+        monkeypatch.setattr(ps, "read_identities", lambda pids: {int(p): ps._Identity(ps.IDENTITY_ALIVE, new, int(p)) for p in pids})
+        result, reason = _pl.SIGNAL_FAILED, ps.UNVERIFIED_FAILED
+    monkeypatch.setattr(_pl, "deliver_signal", lambda p, *, graceful: signals.append(p) or result)
+    panic = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
+    pending = ps.panic_sweep_pending_path(tmp_path)
+    assert panic["task_known"] == 1 and panic["captured_gone"] == [pid] and panic["ended"] == []
+    assert panic["unverified"] == [{"pid": pid, "birth": new, "reason": reason}], "B's own evidence survives A's resolution"
+    assert panic["settled"] is False and panic["pending_retired"] is False and pending.exists()
+    assert json.loads(pending.read_text(encoding="utf-8"))["known_members"] == [{"pid": pid, "birth": new}]
+    monkeypatch.setattr(ps, "read_identities", lambda pids: {int(p): ps._Identity(ps.IDENTITY_ALIVE, new, int(p)) for p in pids})
+    monkeypatch.setattr(_pl, "deliver_signal", lambda p, *, graceful: signals.append(p) or _pl.SIGNAL_SENT)
+    completed = ps.complete_pending_panic_sweep(tmp_path, exclude={os.getpid(), 1})
+    assert completed["ended"] == [pid] and completed["unverified"] == [] and completed["pending_retired"] is True
+    assert not pending.exists() and signals[-1] == pid
+
+
 def test_a_denied_signal_is_disclosed_as_final_and_the_panic_record_retires(tmp_path, monkeypatch):
     marker = ps.installation_marker(tmp_path)
     member = _sleeper({marker: "1"})

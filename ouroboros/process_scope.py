@@ -164,8 +164,9 @@ def scope_members(rows: Mapping[int, _Row], *, marker: str = "", markers: Iterab
     """The scope's live members from one snapshot: marker members ∪ members of the
     recorded groups that pass the pgid-reuse rule ∪ individually recorded descendants
     whose birth still matches (a recorded pid missing from the snapshot is read by the typed
-    identity reader, never called gone). Returns ``{"members": {pid: row}, "groups_reused":
-    [...], "groups_gone": [...], "captured_gone": [...], "captured_unverified": [...]}``."""
+    identity reader, never called gone; each birth recorded for that pid is judged on its
+    own). Returns ``{"members": {pid: row}, "groups_reused": [pgid], "groups_gone": [pgid],
+    "captured_gone": [{pid, birth}], "captured_unverified": [{pid, birth, reason}]}``."""
     excluded = {int(pid) for pid in exclude} | {0, 1}
     names = {str(name) for name in [marker, *markers] if name}
     members: Dict[int, _Row] = {}
@@ -204,32 +205,34 @@ def scope_members(rows: Mapping[int, _Row], *, marker: str = "", markers: Iterab
         for row in candidates:
             if row.pid not in excluded:
                 members[row.pid] = row
-    captured_gone: List[int] = []
+    captured_gone: List[Dict[str, Any]] = []  # identities: a pid is resolved per recorded birth, never as a number
     unverified: List[Dict[str, Any]] = []
-    missing: Dict[int, str] = {}
+    missing: Dict[int, List[str]] = {}
     for item in captured:
         pid, birth = int(item.get("pid") or 0), str(item.get("birth") or "")
         if pid <= 1 or pid in excluded or not birth:
             continue
         row = rows.get(pid)
         if row is None:
-            missing[pid] = birth  # not in this snapshot: asked for by name below, never read as gone
+            missing.setdefault(pid, []).append(birth)  # not in this snapshot: asked for by name below, never read as gone
         elif row.birth == birth:
             members[pid] = row
         else:
-            captured_gone.append(pid)  # the pid names another process now
+            captured_gone.append({"pid": pid, "birth": birth})  # the pid names another process now
     if missing:
         # A partial table (Linux: a ``/proc/<pid>/stat`` the census could not read) must not
-        # call a known pid gone; the typed reader answers absent, reused, alive or unreadable.
+        # call a known pid gone; the typed reader answers absent, reused, alive or unreadable,
+        # and that one answer judges every birth recorded for the pid.
         identities = read_identities(missing)
-        for pid, birth in missing.items():
+        for pid, births in missing.items():
             identity = identities.get(pid) or _Identity(IDENTITY_UNREADABLE)
-            if identity.state == IDENTITY_UNREADABLE:
-                unverified.append({"pid": pid, "birth": birth, "reason": UNVERIFIED_IDENTITY})
-            elif identity.state == IDENTITY_ALIVE and identity.birth == birth:
-                members[pid] = _Row(pid, 0, identity.pgid, birth, birth_epoch(birth), IDENTITY_ALIVE, set())
-            else:
-                captured_gone.append(pid)  # confirmed absent, a corpse, or another process now
+            for birth in births:
+                if identity.state == IDENTITY_UNREADABLE:
+                    unverified.append({"pid": pid, "birth": birth, "reason": UNVERIFIED_IDENTITY})
+                elif identity.state == IDENTITY_ALIVE and identity.birth == birth:
+                    members[pid] = _Row(pid, 0, identity.pgid, birth, birth_epoch(birth), IDENTITY_ALIVE, set())
+                else:
+                    captured_gone.append({"pid": pid, "birth": birth})  # confirmed absent, a corpse, or another process now
     return {"members": members, "groups_reused": reused, "groups_gone": gone, "captured_gone": captured_gone,
             "captured_unverified": unverified}
 
@@ -271,8 +274,9 @@ def end_scope(*, marker: str = "", markers: Iterable[str] = (), groups: Iterable
     ``survivors``: members alive with their recorded birth after the last pass.
     ``unverified``: members whose identity could not be read or whose signal was denied
     or failed, and every recorded identity a failed table left unchecked
-    (``census_unreadable``) — never counted as ended or gone; an entry a later scan of the
-    same pass ended or confirmed gone is dropped. ``census_failed``: the table could not be
+    (``census_unreadable``) — never counted as ended or gone; an entry whose exact identity
+    (pid AND birth) a later scan of the same pass ended or confirmed gone is dropped, while
+    another birth on the same pid keeps its own. ``census_failed``: the table could not be
     read and NOTHING is claimed clean. ``settled`` is true only with a readable census, no
     survivors and no unverified member other than a denied signal (EPERM), which no later
     pass of this installation can change: final, disclosed.
@@ -288,6 +292,7 @@ def end_scope(*, marker: str = "", markers: Iterable[str] = (), groups: Iterable
     groups, captured = list(groups), list(captured)
     excluded = set(int(pid) for pid in exclude)
     seen: Dict[int, str] = {}
+    resolved: set = set()  # every (pid, birth) this pass ended or confirmed gone: resolution is per identity
     for scan in range(max(1, int(rescans) + 1)):
         names = [name for name in [marker, *markers] if name]
         rows = census(names)
@@ -295,17 +300,19 @@ def end_scope(*, marker: str = "", markers: Iterable[str] = (), groups: Iterable
             outcome["census_failed"] = True
             # The table could not be read: every recorded identity this pass has not resolved
             # stays owed as unverified (never gone), an input of the next readable pass.
-            resolved = _resolved_pids(outcome) | {int(item["pid"]) for item in outcome["survivors"]}
+            judged = resolved | {(int(item["pid"]), str(item["birth"])) for item in outcome["survivors"]}
             for item in captured:
                 pid, birth = int(item.get("pid") or 0), str(item.get("birth") or "")
-                if pid > 1 and pid not in excluded and birth and pid not in resolved:
+                if pid > 1 and pid not in excluded and birth and (pid, birth) not in judged:
                     _add_unverified(outcome, pid, birth, UNVERIFIED_CENSUS)
             break
         outcome["scans"] = scan + 1
         view = scope_members(rows, markers=names, groups=groups, captured=captured,
                              scope_start_epoch=scope_start_epoch, exclude=excluded)
-        for key in ("groups_reused", "groups_gone", "captured_gone"):
+        for key in ("groups_reused", "groups_gone"):
             outcome[key] = sorted(set(outcome[key]) | set(view[key]))
+        for item in view["captured_gone"]:
+            _add_gone(outcome, resolved, "captured_gone", item["pid"], item["birth"])
         for item in view["captured_unverified"]:
             _add_unverified(outcome, item["pid"], item["birth"], item["reason"])
         fresh = {pid: row.birth for pid, row in view["members"].items() if pid not in seen}
@@ -313,32 +320,29 @@ def end_scope(*, marker: str = "", markers: Iterable[str] = (), groups: Iterable
             break  # nothing in the scope, or a quiet rescan after the kill pass
         seen.update(fresh)
         if term_first:
-            termed = _signal_pass(fresh, outcome, graceful=True, gone_bucket="already_gone")
+            termed = _signal_pass(fresh, outcome, resolved, graceful=True, gone_bucket="already_gone")
             alive, unverified = _await_exit(termed, time.monotonic() + max(0.0, float(grace_sec)))
             _note_unverified(outcome, unverified, termed)
-            outcome["ended"].extend(pid for pid in termed if pid not in alive and pid not in unverified)
-            to_confirm = _signal_pass(alive, outcome, graceful=False, gone_bucket="ended")  # died of our TERM
+            _note_ended(outcome, resolved, termed, alive, unverified)
+            to_confirm = _signal_pass(alive, outcome, resolved, graceful=False, gone_bucket="ended")  # died of our TERM
         else:
-            to_confirm = _signal_pass(fresh, outcome, graceful=False, gone_bucket="already_gone")
+            to_confirm = _signal_pass(fresh, outcome, resolved, graceful=False, gone_bucket="already_gone")
         left, unverified = _await_exit(to_confirm, time.monotonic() + _KILL_CONFIRM_SEC)
         _note_unverified(outcome, unverified, to_confirm)
-        outcome["ended"].extend(pid for pid in to_confirm if pid not in left and pid not in unverified)
+        _note_ended(outcome, resolved, to_confirm, left, unverified)
         outcome["survivors"].extend({"pid": pid, "birth": birth} for pid, birth in left.items())
         time.sleep(_RESCAN_SETTLE_SEC)
-    outcome["ended"] = sorted(set(outcome["ended"]))
-    # A pid a later scan ended or confirmed gone owes nothing: its earlier unverified entry goes.
-    outcome["unverified"] = [item for item in outcome["unverified"] if item["pid"] not in _resolved_pids(outcome)]
+    for key in ("ended", "captured_gone"):
+        outcome[key] = sorted(set(outcome[key]))
+    # An identity a later scan ended or confirmed gone owes nothing: its earlier unverified
+    # entry goes. Another birth on the same pid is another process: its entry stays.
+    outcome["unverified"] = [item for item in outcome["unverified"] if (item["pid"], item["birth"]) not in resolved]
     outcome["settled"] = not outcome["census_failed"] and not outcome["survivors"] and all(
         item["reason"] == UNVERIFIED_DENIED for item in outcome["unverified"])
     return outcome
 
 
-def _resolved_pids(outcome: Mapping[str, Any]) -> set:
-    """Members this pass ended or confirmed gone (absent, a corpse, or another birth)."""
-    return set(outcome["ended"]) | set(outcome["already_gone"]) | set(outcome["captured_gone"])
-
-
-def _signal_pass(targets: Mapping[int, str], outcome: Dict[str, Any], *, graceful: bool,
+def _signal_pass(targets: Mapping[int, str], outcome: Dict[str, Any], resolved: set, *, graceful: bool,
                  gone_bucket: str) -> Dict[int, str]:
     """Re-measure every target in ONE read, then signal each still-matching member once.
     Returns the members whose signal was accepted. A target found absent, a corpse or
@@ -352,25 +356,34 @@ def _signal_pass(targets: Mapping[int, str], outcome: Dict[str, Any], *, gracefu
             _add_unverified(outcome, pid, birth, UNVERIFIED_IDENTITY)
             continue
         if identity.state != IDENTITY_ALIVE or identity.birth != birth:
-            _add_gone(outcome, gone_bucket, pid)  # absent, a corpse, or another process now
+            _add_gone(outcome, resolved, gone_bucket, pid, birth)  # absent, a corpse, or another process now
             continue
         result = _pl.deliver_signal(pid, graceful=graceful)
         if result == _pl.SIGNAL_SENT:
             accepted[pid] = birth
         elif result == _pl.SIGNAL_ABSENT:
-            _add_gone(outcome, gone_bucket, pid)
+            _add_gone(outcome, resolved, gone_bucket, pid, birth)
         else:
             _add_unverified(outcome, pid, birth, UNVERIFIED_DENIED if result == _pl.SIGNAL_DENIED else UNVERIFIED_FAILED)
     return accepted
 
 
-def _add_gone(outcome: Dict[str, Any], bucket: str, pid: int) -> None:
+def _add_gone(outcome: Dict[str, Any], resolved: set, bucket: str, pid: int, birth: str) -> None:
+    """The public buckets list pids; the resolution itself is the exact (pid, birth)."""
+    resolved.add((int(pid), str(birth)))
     if pid not in outcome[bucket]:
         outcome[bucket].append(int(pid))
 
 
+def _note_ended(outcome: Dict[str, Any], resolved: set, signalled: Mapping[int, str], alive: Mapping[int, str],
+                unverified: Mapping[int, str]) -> None:
+    for pid, birth in signalled.items():
+        if pid not in alive and pid not in unverified:
+            _add_gone(outcome, resolved, "ended", pid, birth)
+
+
 def _add_unverified(outcome: Dict[str, Any], pid: int, birth: str, reason: str) -> None:
-    if not any(item["pid"] == pid for item in outcome["unverified"]):
+    if not any(item["pid"] == pid and item["birth"] == birth for item in outcome["unverified"]):
         outcome["unverified"].append({"pid": int(pid), "birth": birth, "reason": reason})
 
 
