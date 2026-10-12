@@ -77,9 +77,11 @@ def test_native_agent_returns_durable_result_before_synthesis_and_retry_reuses_i
     try:
         with ThreadPoolExecutor(max_workers=1) as requests:
             first_future = requests.submit(run_presence_turn, **kwargs)
-            # Timeouts bound a hung test; the held event proves completion order.
+            # Synthesis stays held until the test releases it: the first turn must answer
+            # within 10 s of synthesis starting, so a turn that waits on it fails; the other
+            # timeouts only bound a hung test (Windows needs over 3 s to reach `started`).
             assert started.wait(30)
-            first = first_future.result(timeout=30)
+            first = first_future.result(timeout=10)
             assert first.outcome == outcome
             assert first.text == ("Reply" if outcome == "message" else "")
             row = load_task_result(tmp_path, first.task_id)
