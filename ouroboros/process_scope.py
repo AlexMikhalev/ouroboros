@@ -208,11 +208,11 @@ def birth_epoch(text: str) -> float:
         return 0.0
 
 
-def measure_birth(pid: int) -> str:
-    """The live birth text of ``pid`` (``""`` when gone, a zombie, or unmeasurable).
+def birth_text(pid: int) -> str:
+    """The birth text of ``pid`` as the table still shows it (``""`` when gone or unmeasurable).
 
-    The identity re-measured immediately before every signal and every liveness
-    answer: a pid that now names another process has another birth."""
+    A just-exited leader not yet waited for is a zombie with its birth intact: that is the
+    identity a group RECORD needs (the command may have exited before its row was written)."""
     if _pl.IS_WINDOWS or int(pid) <= 0:
         return ""
     try:
@@ -221,7 +221,17 @@ def measure_birth(pid: int) -> str:
     except Exception:
         return ""
     text = (out.stdout or "").strip()
-    if out.returncode != 0 or not text:
+    return text if out.returncode == 0 else ""
+
+
+def measure_birth(pid: int) -> str:
+    """The LIVE birth text of ``pid`` (``""`` when gone, a zombie, or unmeasurable).
+
+    The identity re-measured immediately before every signal and every liveness
+    answer: a pid that now names another process has another birth; a corpse can
+    execute nothing and is gone."""
+    text = birth_text(pid)
+    if not text:
         return ""
     from ouroboros.process_containment import pid_is_zombie
 
@@ -474,6 +484,28 @@ def task_scope_env(drive_root: Any, task_id: str) -> Dict[str, str]:
     return {task_scope_marker(drive_root, task_id): SCOPE_VALUE}
 
 
+def task_launch_target(binding: Optional[Mapping[str, Any]] = None, *, drive_root: Any = None,
+                       task_id: str = "") -> Optional[tuple]:
+    """``(drive_root, task_id)`` the launch belongs to, from the context-bound invocation
+    binding (``tool_custody.invocation_binding()``) or the caller's own context; ``None``
+    for a launch outside any task (nothing is scoped, nothing is recorded)."""
+    binding = binding or {}
+    root = binding.get("drive_root") or drive_root
+    task = str(binding.get("task_id") or task_id or "")
+    if not root or not task or task == "manual":
+        return None
+    return pathlib.Path(root), task
+
+
+def scoped_child_env(env: Mapping[str, str], target: Optional[tuple]) -> Dict[str, str]:
+    """The child's final environment: a task launch adds its task marker; a launch handed to
+    a longer-lived custodian (``target=None``: a keep/session service) sheds every task and
+    engine-run marker and keeps the installation marker. Never mutates ``env``."""
+    if target is None:
+        return shed_scopes(env)
+    return {**env, **task_scope_env(*target)}
+
+
 def record_task_group(drive_root: Any, task_id: str, pid: int) -> Optional[Dict[str, Any]]:
     """Record the group a just-spawned task child leads, with its measured birth.
 
@@ -482,7 +514,7 @@ def record_task_group(drive_root: Any, task_id: str, pid: int) -> Optional[Dict[
     if _pl.IS_WINDOWS or not drive_root or not task_id or int(pid) <= 0:
         return None
     pgid = _pl.process_group_id(int(pid))
-    birth = measure_birth(int(pid))
+    birth = birth_text(int(pid))  # the leader may already have exited: its corpse still names its birth
     if pgid <= 1 or not birth:
         return None
     entry = {"pgid": pgid, "leader_pid": int(pid), "leader_birth": birth, "recorded_at": utc_now_iso()}
@@ -696,7 +728,7 @@ def complete_pending_panic_sweep(data_dir: Any, *, exclude: Optional[Iterable[in
 __all__ = [
     "COVERAGE_POSIX", "COVERAGE_UNSUPPORTED", "INSTALL_SCOPE_PREFIX", "RUN_SCOPE_PREFIX", "SCOPE_NAME_RE",
     "SCOPE_VALUE", "TASK_END_GRACE_SEC", "TASK_SCOPE_PREFIX", "birth_epoch", "census",
-    "complete_pending_panic_sweep", "end_scope", "installation_marker", "installation_scope_entries",
+    "birth_text", "complete_pending_panic_sweep", "end_scope", "installation_marker", "installation_scope_entries",
     "is_scope_name", "measure_birth", "mint_marker", "note_task_terminal_transition", "panic_census_exclusions",
     "panic_scope_census", "panic_sweep_pending_path", "plant_installation_scope", "record_task_group",
     "scope_entries", "scope_members", "settle_task_scope", "settle_task_scopes", "shed_scopes",

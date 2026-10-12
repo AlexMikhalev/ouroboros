@@ -316,8 +316,14 @@ def _execute_local(
     from ouroboros.owner_pause import operation_start
     from ouroboros.settings_integrity import runtime_environ
 
+    from ouroboros.process_scope import record_task_group, scoped_child_env, task_launch_target
+    from ouroboros.tool_custody import invocation_binding
+
     base_env = local_env if local_env is not None else scrub_repo_from_pythonpath(runtime_environ(), _system_repo_dir())
     process_env = overlay_env(overlay_env(base_env, target_env), env_overlay)
+    target = task_launch_target(invocation_binding())
+    if target is not None:  # after every overlay: the task marker is the last word on a task launch
+        process_env = scoped_child_env(process_env, target)
     with operation_start():
         try:
             proc = subprocess.Popen(
@@ -337,6 +343,8 @@ def _execute_local(
     _FOREGROUND[proc] = (None, executor.kind)
     if _panic_requested:
         request_process_tree_kill(proc)
+    if target is not None:
+        record_task_group(*target, proc.pid)
     record_path = _register_process(
         drive_root,
         {
@@ -962,11 +970,22 @@ def start_service(
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_fh = log_path.open("ab")
 
+        from ouroboros.process_scope import record_task_group, scoped_child_env, task_launch_target
+        from ouroboros.tool_custody import invocation_binding
+
+        # A task-scoped service is the task's: its launch carries the task marker and its
+        # group is recorded; a keep/session service is handed to the installation and sheds
+        # every task marker (inheritance is not a lifetime transfer).
+        scope_target = None if record.keep_alive else task_launch_target(
+            invocation_binding(), drive_root=_drive_root_from_ctx(ctx), task_id=record.task_id)
+
         def publish_process(proc):
             record.local_proc = proc
             record.backend_pid = str(proc.pid)
             record.backend_log_path = str(log_path)
             _SERVICES[key] = record
+            if scope_target is not None:
+                record_task_group(*scope_target, proc.pid)
             if _panic_requested:
                 raise RuntimeError(f"Emergency Stop during service spawn: {request_process_tree_kill(proc)}")
 
@@ -976,8 +995,9 @@ def start_service(
                 purpose=f"workspace_service:{name}", scope="session" if record.keep_alive else "task",
                 owner_task_id=record.task_id, on_spawn=publish_process, cwd=str(host_cwd),
                 stdout=log_fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                # Host interpreter overlay applies only to the local executor.
-                env=overlay_env(overlay_env(base_env, env_overlay), env),
+                # Host interpreter overlay applies only to the local executor; the scope
+                # marker (or its shedding) is the last word, after every overlay.
+                env=scoped_child_env(overlay_env(overlay_env(base_env, env_overlay), env), scope_target),
             )
         finally:
             log_fh.close()

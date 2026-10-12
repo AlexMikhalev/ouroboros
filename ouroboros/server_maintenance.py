@@ -281,6 +281,15 @@ def _run_periodic_custody_sweep(stop_event: Any = None, latch: Any = None) -> No
                 live_owner_skills=_installed_skill_names(),
                 retained_purposes={CUSTODY_PURPOSE},
             )
+            # Outstanding task-scope obligations: a task whose durable result is truly
+            # terminal (never a live, paused, retained or placeholder owner) has the
+            # processes its commands left behind ended by scope (abrupt worker death).
+            step = "settle_task_scopes"
+            if _stop_requested(stop_event):
+                return
+            from ouroboros.process_scope import settle_task_scopes
+
+            settle_task_scopes(DATA_DIR, _live_task_ids)
             # A delegated Claudexor run is an orphan under exactly the same predicate:
             # its owning task is no longer running. It has no pid, so the process
             # reaper cannot see it — but it is still spending quota and still writing.
@@ -292,7 +301,8 @@ def _run_periodic_custody_sweep(stop_event: Any = None, latch: Any = None) -> No
             if _stop_requested(stop_event):
                 return
             _cursor_refresh_settled_terminals(_live_task_ids)
-            for name in ("reap_orphaned_processes", "reconcile_delegated_runs", "cursor_refresh_settled_terminals"):
+            for name in ("reap_orphaned_processes", "settle_task_scopes", "reconcile_delegated_runs",
+                         "cursor_refresh_settled_terminals"):
                 _step_recovered(name)
         except Exception:
             _step_failed(step, "Periodic custody step %s failed")
@@ -780,6 +790,15 @@ def _startup_custody_sweep() -> None:
             log.info("Process custody reaper killed %d orphaned process(es): %s", len(reaped), reaped)
     except Exception:
         log.debug("Process custody startup reap failed", exc_info=True)
+    try:
+        from ouroboros.process_scope import settle_task_scopes
+
+        settled = settle_task_scopes(DATA_DIR, _live_task_ids)
+        if settled:
+            log.info("Task scope sweep settled %d ended task(s): %s", len(settled),
+                     [(row["task_id"], row.get("ended"), row.get("survivors")) for row in settled])
+    except Exception:
+        log.debug("Task scope startup sweep failed", exc_info=True)
     _reconcile_delegated_runs(_live_task_ids)
     try:
         # D1a boot backfill, ONCE per generation and AFTER the orphan reconcile
