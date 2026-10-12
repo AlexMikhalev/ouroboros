@@ -1741,7 +1741,8 @@ jobs:
       # Unprivileged handoff, never a release asset: windows-sign signs and
       # repacks it when ESIGNER_CERT_SHA1 is set, otherwise windows-proof
       # proves it as the explicitly unsigned release ZIP. Both check the
-      # job-output digest before extracting.
+      # job-output digest before extracting. Seven days, so a signing stop
+      # that waits for the owner can resume with a rerun of the failed job.
       - name: Transfer unsigned Windows archive
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1750,7 +1751,7 @@ jobs:
           path: ${{ steps.release_asset.outputs.path }}
           overwrite: true
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
       - name: Smoke final macOS DMG
         id: smoke_macos
@@ -2259,7 +2260,7 @@ jobs:
           path: ${{ steps.release_asset.outputs.path }}
           overwrite: true
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   # No eSigner secrets on this fresh runner, in either mode: it checks the
   # final ZIP against its producer's job-output digest before extracting,
