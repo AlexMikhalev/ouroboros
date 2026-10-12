@@ -9,6 +9,7 @@ process and are ended by exact pid.
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import os
 import pathlib
@@ -69,6 +70,7 @@ def test_the_census_ends_marker_members_and_recorded_task_groups_with_no_daemon_
         assert set(outcome["ended"]) == {member.pid, platform_child.pid}
         assert outcome["survivors"] == [] and outcome["recorded_groups"] == 1
         assert outcome["residual"] == ps.PANIC_CENSUS_RESIDUAL  # the engine's harness shells are disclosed
+        assert outcome["engine_index"]["status"] == "absent" and outcome["settled"] is True, "no index: nothing owed to it"
         assert _gone(member.pid) and _gone(platform_child.pid)
         assert foreign.poll() is None, "another installation's member is never signalled"
         assert not ps.panic_sweep_pending_path(tmp_path).exists(), "a finished census owes nothing"
@@ -399,13 +401,17 @@ def test_the_engines_run_scope_index_members_are_ended_by_identity_and_its_state
         _end(captured, group_leader, marked, stranger)
 
 
-@pytest.mark.parametrize("body,status", [
-    (None, "absent"),
-    ("{not json", "unreadable"),
-    ('{"schema_version": 2, "entries": []}', "unsupported_schema"),
-    ('[]', "unreadable"),
+@pytest.mark.parametrize("body,status,settles", [
+    (None, "absent", True),
+    ("{not json", "unreadable", False),
+    ('{"schema_version": 2, "entries": []}', "unsupported_schema", False),
+    ('[]', "unreadable", False),
+    ('{"schema_version": 1}', "invalid", False),
+    ('{"schema_version": 1, "entries": "broken"}', "invalid", False),
+    ('{"schema_version": 1, "entries": []}', "read", True),
 ])
-def test_a_missing_unreadable_or_newer_engine_index_is_disclosed_never_read_as_empty(tmp_path, body, status):
+def test_the_engine_index_is_disclosed_never_read_as_empty_and_only_absent_or_valid_lets_a_pass_settle(
+        tmp_path, body, status, settles):
     ps.installation_marker(tmp_path)
     index = ps.engine_run_scopes_path(tmp_path)
     index.parent.mkdir(parents=True, exist_ok=True)
@@ -415,6 +421,110 @@ def test_a_missing_unreadable_or_newer_engine_index_is_disclosed_never_read_as_e
     assert entries == [] and disclosure["status"] == status
     outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
     assert outcome["engine_index"]["status"] == status, "the Panic facts carry the index's state"
+    assert outcome["settled"] is settles and outcome["pending_retired"] is settles
+    assert ps.panic_sweep_pending_path(tmp_path).exists() is not settles, "an unknown index keeps the obligation"
+
+
+def test_an_unreadable_engine_index_keeps_the_pending_record_and_the_completion_reaches_the_recorded_member(tmp_path):
+    """Astra delta 1: the index decides completion. Its read fails on the Panic pass while
+    it names a platform-binary descendant the census cannot see by marker; the obligation
+    stays, and once the index reads, the completion ends that member."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root reads a mode-0 file")
+    ps.installation_marker(tmp_path)
+    captured = _sleeper(argv=["/bin/sleep", "120"])
+    index = ps.engine_run_scopes_path(tmp_path)
+    index.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        birth = ps.birth_text(captured.pid)
+        index.write_text(json.dumps({"schema_version": 1, "entries": [{
+            "run_id": "r", "marker": ps.mint_marker(ps.RUN_SCOPE_PREFIX), "state": "running", "scope_start": birth,
+            "root_groups": [], "captured": [{"pid": captured.pid, "pgid": captured.pid, "birth": birth}]}]}), encoding="utf-8")
+        index.chmod(0)
+        outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
+        assert outcome["engine_index"]["status"] == "unreadable" and outcome["ended"] == [] and captured.poll() is None
+        assert outcome["settled"] is False and outcome["pending_retired"] is False
+        assert ps.panic_sweep_pending_path(tmp_path).exists(), "retryable: the record stays"
+        index.chmod(0o600)
+        completed = ps.complete_pending_panic_sweep(tmp_path, exclude={os.getpid(), 1})
+        assert completed["engine_index"]["status"] == "read" and completed["ended"] == [captured.pid] and _gone(captured.pid)
+        assert completed["settled"] is True and completed["pending_retired"] is True
+        assert not ps.panic_sweep_pending_path(tmp_path).exists()
+    finally:
+        try:
+            index.chmod(0o600)
+        except OSError:
+            pass
+        _end(captured)
+
+
+def test_a_malformed_index_row_is_disclosed_the_valid_rows_are_acted_on_and_the_pass_stays_pending(tmp_path):
+    ps.installation_marker(tmp_path)
+    member = _sleeper(argv=["/bin/sleep", "120"])
+    index = ps.engine_run_scopes_path(tmp_path)
+    index.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        birth = ps.birth_text(member.pid)
+        good = {"run_id": "good", "marker": ps.mint_marker(ps.RUN_SCOPE_PREFIX), "state": "running", "scope_start": birth,
+                "root_groups": [{"pgid": member.pid, "leader_pid": member.pid, "leader_birth": None,
+                                 "leader_identity": {"ignored": True}}], "captured": []}
+        bad = {"run_id": "bad", "marker": ps.mint_marker(ps.RUN_SCOPE_PREFIX), "state": "running", "scope_start": birth,
+               "root_groups": [], "captured": [{"pid": 4242, "pgid": "not-a-number", "birth": birth}]}
+        index.write_text(json.dumps({"schema_version": 1, "entries": [bad, good, "junk"]}), encoding="utf-8")
+        entries, disclosure = ps.engine_scope_index(tmp_path)  # never raises
+        assert [entry["run_id"] for entry in entries] == ["good"] and disclosure["status"] == "invalid"
+        assert [(row["index"], row["run_id"], row["reason"]) for row in disclosure["malformed"]] == [
+            (0, "bad", "captured.pgid malformed"), (2, "", "entry is not an object")]
+        outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
+        assert outcome["ended"] == [member.pid] and _gone(member.pid), "the valid row is acted on (null leader_birth: floor)"
+        assert outcome["settled"] is False and ps.panic_sweep_pending_path(tmp_path).exists(), "invalid cannot complete"
+    finally:
+        _end(member)
+
+
+def test_a_known_member_rides_the_pending_record_into_the_completion(tmp_path, monkeypatch):
+    """Astra delta 2 (Panic): a member whose identity could not be read at Panic is carried by
+    pid and birth; the completion reaches it once its marker is no longer visible."""
+    marker = ps.installation_marker(tmp_path)
+    member = _sleeper({marker: "1"})
+    try:
+        birth = ps.measure_birth(member.pid)
+        real_read = ps.read_identities
+        monkeypatch.setattr(ps, "read_identities", lambda pids: {
+            **real_read(pids), **({member.pid: ps._Identity(ps.IDENTITY_UNREADABLE)} if member.pid in set(pids) else {})})
+        outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
+        assert outcome["unverified"] == [{"pid": member.pid, "birth": birth, "reason": ps.UNVERIFIED_IDENTITY}]
+        assert outcome["pending_retired"] is False
+        pending = json.loads(ps.panic_sweep_pending_path(tmp_path).read_text(encoding="utf-8"))
+        assert pending["known_members"] == [{"pid": member.pid, "birth": birth}]
+        monkeypatch.setattr(ps, "read_identities", real_read)
+        real_census = ps.census
+
+        def hidden(markers=()):  # it exec'd a platform binary: same pid and birth, no visible marker
+            rows = real_census(markers)
+            if rows and member.pid in rows:
+                row = rows[member.pid]
+                rows[member.pid] = ps._Row(row.pid, row.ppid, row.pgid, row.birth, row.epoch, row.state, set())
+            return rows
+
+        monkeypatch.setattr(ps, "census", hidden)
+        completed = ps.complete_pending_panic_sweep(tmp_path, exclude={os.getpid(), 1})
+        assert completed["ended"] == [member.pid] and _gone(member.pid) and completed["pending_retired"] is True
+    finally:
+        _end(member)
+
+
+def test_a_denied_signal_is_disclosed_as_final_and_the_panic_record_retires(tmp_path, monkeypatch):
+    marker = ps.installation_marker(tmp_path)
+    member = _sleeper({marker: "1"})
+    try:
+        monkeypatch.setattr(_pl, "deliver_signal", lambda pid, *, graceful: _pl.SIGNAL_DENIED)
+        outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
+        assert [item["reason"] for item in outcome["unverified"]] == [ps.UNVERIFIED_DENIED] and outcome["ended"] == []
+        assert outcome["settled"] is True and outcome["pending_retired"] is True and member.poll() is None
+        assert not ps.panic_sweep_pending_path(tmp_path).exists(), "no later pass of this installation can change EPERM"
+    finally:
+        _end(member)
 
 
 def test_a_newer_schema_entry_is_never_acted_on(tmp_path):

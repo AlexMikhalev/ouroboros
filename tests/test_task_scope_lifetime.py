@@ -285,18 +285,18 @@ def test_cleanup_threads_are_named_and_bounded(tmp_path):
 
 
 def test_an_unverified_member_keeps_the_record_and_the_sweep_settles_it_later_writing_the_result_once(tmp_path, monkeypatch):
-    """Astra 1-2: a denied or failed signal is unverified, never ended; the record stays with
-    its group evidence for the sweep; an unchanged outcome is recorded once, not on every
+    """Astra 1-2: a failed signal is unverified, never ended; the record stays with its
+    group evidence for the sweep; an unchanged outcome is recorded once, not on every
     sweep; the retirement waits for a settled, recorded outcome."""
     from ouroboros import task_store
 
     pid = _leftover(tmp_path, "t-denied")
     real_deliver = _pl.deliver_signal
     try:
-        monkeypatch.setattr(_pl, "deliver_signal", lambda pid, *, graceful: _pl.SIGNAL_DENIED)
+        monkeypatch.setattr(_pl, "deliver_signal", lambda pid, *, graceful: _pl.SIGNAL_FAILED)
         write_task_result(tmp_path, "t-denied", "completed", result="done")
         ps.wait_for_cleanups()
-        assert _alive(pid), "a denied signal ends nothing and claims nothing"
+        assert _alive(pid), "a failed signal ends nothing and claims nothing"
         record = ps.task_scope_record(tmp_path, "t-denied")
         assert record["cleanup"]["state"] == "pending" and record["cleanup"]["reason"] == "unverified"
         assert [group["pgid"] for group in record["groups"]] == [os.getpgid(pid)], "the group evidence stays"
@@ -317,3 +317,115 @@ def test_an_unverified_member_keeps_the_record_and_the_sweep_settles_it_later_wr
         assert load_task_result(tmp_path, "t-denied")["status"] == "completed", "no status writer touched the row"
     finally:
         _end_pids(pid)
+
+
+# --------------------------------------------------------------------------- fix round 2
+
+def test_a_denied_signal_is_final_disclosed_on_the_result_and_retires_the_record(tmp_path, monkeypatch):
+    """Fable delta NIT 2: EPERM (a root child, ``sudo -n … &``) cannot be ended by any later
+    pass of this installation: disclosed with pid, birth and reason, the obligation retired."""
+    pid = _leftover(tmp_path, "t-root")
+    try:
+        monkeypatch.setattr(_pl, "deliver_signal", lambda pid, *, graceful: _pl.SIGNAL_DENIED)
+        write_task_result(tmp_path, "t-root", "completed", result="done")
+        ps.wait_for_cleanups()
+        facts = load_task_result(tmp_path, "t-root")["process_scope"]
+        assert facts["unverified"] == [{"pid": pid, "birth": ps.measure_birth(pid), "reason": ps.UNVERIFIED_DENIED}]
+        assert facts["settled"] is True and facts["ended"] == [] and _alive(pid)
+        assert ps.task_scope_record(tmp_path, "t-root") is None, "nothing a later pass could change"
+    finally:
+        _end_pids(pid)
+
+
+def test_a_denied_member_beside_an_unverified_one_keeps_the_record_with_both_known(tmp_path, monkeypatch):
+    denied, failed = _leftover(tmp_path, "t-mixed"), _leftover(tmp_path, "t-mixed")
+    try:
+        monkeypatch.setattr(_pl, "deliver_signal",
+                            lambda pid, *, graceful: _pl.SIGNAL_DENIED if pid == denied else _pl.SIGNAL_FAILED)
+        write_task_result(tmp_path, "t-mixed", "completed", result="done")
+        ps.wait_for_cleanups()
+        record = ps.task_scope_record(tmp_path, "t-mixed")
+        assert record["cleanup"]["reason"] == "unverified"
+        assert {item["pid"] for item in record["known_members"]} == {denied, failed}, "both ride into the next pass"
+        facts = load_task_result(tmp_path, "t-mixed")["process_scope"]
+        assert facts["settled"] is False
+        assert {item["reason"] for item in facts["unverified"]} == {ps.UNVERIFIED_DENIED, ps.UNVERIFIED_FAILED}
+    finally:
+        _end_pids(denied, failed)
+
+
+def _marker_child(root, task_id) -> subprocess.Popen:
+    """A marker-visible child outside any recorded group (a setsid escape): first the
+    marker, later only its known identity, names it."""
+    marker = ps.task_scope_marker(root, task_id)
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], env={**os.environ, marker: "1"},
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+
+
+def _unreadable_for(monkeypatch, pid):
+    real = ps.read_identities
+    monkeypatch.setattr(ps, "read_identities", lambda pids: {
+        **real(pids), **({pid: ps._Identity(ps.IDENTITY_UNREADABLE)} if pid in set(pids) else {})})
+    return real
+
+
+def _hide_marker(monkeypatch, pid, *, birth=None):
+    """The census row of ``pid`` as after an exec into a platform binary (no visible marker),
+    or, with ``birth``, as a replacement process that took the pid."""
+    real = ps.census
+
+    def hidden(markers=()):
+        rows = real(markers)
+        if rows and pid in rows:
+            row = rows[pid]
+            rows[pid] = ps._Row(row.pid, row.ppid, row.pgid, birth or row.birth, row.epoch, row.state, set())
+        return rows
+
+    monkeypatch.setattr(ps, "census", hidden)
+
+
+def test_a_known_member_is_carried_into_the_next_pass_and_ended_once_its_identity_reads(tmp_path, monkeypatch):
+    """Astra delta 2: a member observed but left unverified (its identity read failed) is an
+    input of the next pass by pid and birth; losing marker visibility in between (an exec
+    into a platform binary) never discharges it; continued unreadability keeps the record."""
+    proc = _marker_child(tmp_path, "t-known")
+    try:
+        birth = ps.measure_birth(proc.pid)
+        real_read = _unreadable_for(monkeypatch, proc.pid)
+        write_task_result(tmp_path, "t-known", "completed", result="done")
+        ps.wait_for_cleanups()
+        record = ps.task_scope_record(tmp_path, "t-known")
+        assert record["known_members"] == [{"pid": proc.pid, "birth": birth}] and record["cleanup"]["reason"] == "unverified"
+        _hide_marker(monkeypatch, proc.pid)  # it exec'd a platform binary: no marker, same pid and birth
+        assert ps.settle_task_scopes(tmp_path, set()) and _alive(proc.pid), "still unreadable: still owed"
+        record = ps.task_scope_record(tmp_path, "t-known")
+        assert record is not None and record["known_members"] == [{"pid": proc.pid, "birth": birth}]
+        monkeypatch.setattr(ps, "read_identities", real_read)
+        settled = ps.settle_task_scopes(tmp_path, set())
+        assert settled and proc.pid in settled[0]["ended"] and _gone(proc.pid), "the known identity reaches it"
+        assert ps.task_scope_record(tmp_path, "t-known") is None
+    finally:
+        _end_pids(proc.pid)
+        proc.wait(timeout=5)
+
+
+def test_a_known_member_whose_birth_changed_is_spared_and_discharged(tmp_path, monkeypatch):
+    proc = _marker_child(tmp_path, "t-reborn")
+    try:
+        birth = ps.measure_birth(proc.pid)
+        real_read = _unreadable_for(monkeypatch, proc.pid)
+        write_task_result(tmp_path, "t-reborn", "completed", result="done")
+        ps.wait_for_cleanups()
+        assert ps.task_scope_record(tmp_path, "t-reborn")["known_members"] == [{"pid": proc.pid, "birth": birth}]
+        monkeypatch.setattr(ps, "read_identities", real_read)
+        _hide_marker(monkeypatch, proc.pid, birth="Mon Jan  1 00:00:00 2001")  # a replacement process took the pid
+        signalled = []
+        monkeypatch.setattr(_pl, "deliver_signal", lambda pid, *, graceful: signalled.append(pid) or _pl.SIGNAL_SENT)
+        settled = ps.settle_task_scopes(tmp_path, set())
+        assert settled and settled[0]["captured_gone"] == [proc.pid] and settled[0]["settled"] is True
+        assert signalled == [] and _alive(proc.pid), "a replacement process on the same pid is never signalled"
+        assert ps.task_scope_record(tmp_path, "t-reborn") is None, "discharged: ours is gone"
+    finally:
+        _end_pids(proc.pid)
+        proc.wait(timeout=5)

@@ -58,6 +58,9 @@ TASK_SCOPES_DIR = "task_scopes"
 # (``claudexor_daemon.owned_config_dir()``: ``<data>/claudexor``), never another root.
 ENGINE_RUN_SCOPES_FILE = pathlib.Path("daemon") / "run-scopes.json"
 ENGINE_RUN_SCOPES_SCHEMA = 1
+# Only these index states let a Panic pass complete; unreadable, invalid or a newer schema
+# keeps the pending record while every row that was read is still acted on.
+_INDEX_COMPLETE_STATUSES = ("absent", "read")
 
 # Task-end: TERM, a bounded grace, then KILL; Panic sends KILL at once. Bounded rescans
 # catch a fork between the snapshot and the signal; nothing here is a polling monitor.
@@ -159,8 +162,9 @@ def scope_members(rows: Mapping[int, _Row], *, marker: str = "", markers: Iterab
                   scope_start_epoch: float = 0.0, exclude: Iterable[int] = ()) -> Dict[str, Any]:
     """The scope's live members from one snapshot: marker members ∪ members of the
     recorded groups that pass the pgid-reuse rule ∪ individually recorded descendants
-    whose birth still matches. Returns ``{"members": {pid: row}, "groups_reused": [...],
-    "groups_gone": [...], "captured_gone": [...]}``."""
+    whose birth still matches (a recorded pid missing from the snapshot is read by the typed
+    identity reader, never called gone). Returns ``{"members": {pid: row}, "groups_reused":
+    [...], "groups_gone": [...], "captured_gone": [...], "captured_unverified": [...]}``."""
     excluded = {int(pid) for pid in exclude} | {0, 1}
     names = {str(name) for name in [marker, *markers] if name}
     members: Dict[int, _Row] = {}
@@ -197,16 +201,33 @@ def scope_members(rows: Mapping[int, _Row], *, marker: str = "", markers: Iterab
             if row.pid not in excluded:
                 members[row.pid] = row
     captured_gone: List[int] = []
+    unverified: List[Dict[str, Any]] = []
+    missing: Dict[int, str] = {}
     for item in captured:
         pid, birth = int(item.get("pid") or 0), str(item.get("birth") or "")
+        if pid <= 1 or pid in excluded or not birth:
+            continue
         row = rows.get(pid)
-        if pid <= 1 or pid in excluded:
-            continue
-        if row is None or not birth or row.birth != birth:
-            captured_gone.append(pid)  # absent, or the pid names another process now
-            continue
-        members[pid] = row
-    return {"members": members, "groups_reused": reused, "groups_gone": gone, "captured_gone": captured_gone}
+        if row is None:
+            missing[pid] = birth  # not in this snapshot: asked for by name below, never read as gone
+        elif row.birth == birth:
+            members[pid] = row
+        else:
+            captured_gone.append(pid)  # the pid names another process now
+    if missing:
+        # A partial table (Linux: a ``/proc/<pid>/stat`` the census could not read) must not
+        # call a known pid gone; the typed reader answers absent, reused, alive or unreadable.
+        identities = read_identities(missing)
+        for pid, birth in missing.items():
+            identity = identities.get(pid) or _Identity(IDENTITY_UNREADABLE)
+            if identity.state == IDENTITY_UNREADABLE:
+                unverified.append({"pid": pid, "birth": birth, "reason": UNVERIFIED_IDENTITY})
+            elif identity.state == IDENTITY_ALIVE and identity.birth == birth:
+                members[pid] = _Row(pid, 0, identity.pgid, birth, birth_epoch(birth), IDENTITY_ALIVE, set())
+            else:
+                captured_gone.append(pid)  # confirmed absent, a corpse, or another process now
+    return {"members": members, "groups_reused": reused, "groups_gone": gone, "captured_gone": captured_gone,
+            "captured_unverified": unverified}
 
 
 def _await_exit(targets: Mapping[int, str], deadline: float) -> Tuple[Dict[int, str], Dict[int, str]]:
@@ -246,8 +267,9 @@ def end_scope(*, marker: str = "", markers: Iterable[str] = (), groups: Iterable
     ``survivors``: members alive with their recorded birth after the last pass.
     ``unverified``: members whose identity could not be read or whose signal was denied
     or failed — never counted as ended or gone. ``census_failed``: the table could not be
-    read and NOTHING is claimed clean. ``settled`` is true only with a readable census,
-    no survivors and no unverified member.
+    read and NOTHING is claimed clean. ``settled`` is true only with a readable census, no
+    survivors and no unverified member other than a denied signal (EPERM), which no later
+    pass of this installation can change: final, disclosed.
     """
     outcome: Dict[str, Any] = {
         "coverage": COVERAGE_UNSUPPORTED if _pl.IS_WINDOWS else COVERAGE_POSIX,
@@ -271,6 +293,8 @@ def end_scope(*, marker: str = "", markers: Iterable[str] = (), groups: Iterable
                              scope_start_epoch=scope_start_epoch, exclude=excluded)
         for key in ("groups_reused", "groups_gone", "captured_gone"):
             outcome[key] = sorted(set(outcome[key]) | set(view[key]))
+        for item in view["captured_unverified"]:
+            _add_unverified(outcome, item["pid"], item["birth"], item["reason"])
         fresh = {pid: row.birth for pid, row in view["members"].items() if pid not in seen}
         if not fresh:
             break  # nothing in the scope, or a quiet rescan after the kill pass
@@ -289,7 +313,8 @@ def end_scope(*, marker: str = "", markers: Iterable[str] = (), groups: Iterable
         outcome["survivors"].extend({"pid": pid, "birth": birth} for pid, birth in left.items())
         time.sleep(_RESCAN_SETTLE_SEC)
     outcome["ended"] = sorted(set(outcome["ended"]))
-    outcome["settled"] = not outcome["census_failed"] and not outcome["survivors"] and not outcome["unverified"]
+    outcome["settled"] = not outcome["census_failed"] and not outcome["survivors"] and all(
+        item["reason"] == UNVERIFIED_DENIED for item in outcome["unverified"])
     return outcome
 
 
@@ -365,20 +390,21 @@ def task_scope_records(drive_root: Any) -> List[Dict[str, Any]]:
     return records
 
 
-def _fresh_record(task_id: str, groups: Optional[List[Dict[str, Any]]] = None,
-                  previous_markers: Iterable[str] = ()) -> Dict[str, Any]:
+def _fresh_record(task_id: str, groups: Optional[List[Dict[str, Any]]] = None, previous_markers: Iterable[str] = (),
+                  known_members: Iterable[Mapping[str, Any]] = ()) -> Dict[str, Any]:
     return {"task_id": str(task_id), "marker": mint_marker(TASK_SCOPE_PREFIX),
             "minted_at": utc_now_iso(), "minted_epoch": time.time(), "groups": list(groups or []),
-            "previous_markers": [name for name in previous_markers if is_scope_name(name)]}
+            "previous_markers": [name for name in previous_markers if is_scope_name(name)],
+            "known_members": [dict(item) for item in known_members]}
 
 
 def _rotated(task_id: str, current: Dict[str, Any]) -> Dict[str, Any]:
     """A fresh record for a NEW launch of a task whose cleanup already started: the new
-    children get a fresh id so the running cleanup cannot reach them, while the groups
-    AND the markers the old record still owed are carried (rule 2 and the census judge
-    each at the next settlement)."""
+    children get a fresh id so the running cleanup cannot reach them, while the groups,
+    the markers AND the known members the old record still owed are carried (rule 2, the
+    census and the identity reader judge each at the next settlement)."""
     previous = [str(current.get("marker") or ""), *(current.get("previous_markers") or [])]
-    return _fresh_record(task_id, current.get("groups") or [], previous)
+    return _fresh_record(task_id, current.get("groups") or [], previous, _saved_members(current))
 
 
 def _record_markers(record: Mapping[str, Any]) -> List[str]:
@@ -567,9 +593,22 @@ def _unsettled_reason(outcome: Mapping[str, Any]) -> str:
         return "census_failed"
     if outcome.get("survivors"):
         return "survivors"
-    if outcome.get("unverified"):
+    if any(item.get("reason") != UNVERIFIED_DENIED for item in outcome.get("unverified") or []):
         return "unverified"
     return ""
+
+
+def _known_members(outcome: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """The members this pass could not end or confirm, by pid AND birth: inputs of the next
+    pass, checked like a captured descendant — losing marker visibility never discharges
+    one; confirmed absence, a corpse or another birth does."""
+    return [{"pid": int(item["pid"]), "birth": str(item["birth"])}
+            for item in [*(outcome.get("survivors") or []), *(outcome.get("unverified") or [])] if item.get("birth")]
+
+
+def _saved_members(record: Optional[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    return [{"pid": int(item["pid"]), "birth": str(item["birth"])} for item in (record or {}).get("known_members") or []
+            if isinstance(item, dict) and str(item.get("pid") or "").isdigit() and item.get("birth")]
 
 
 def settle_task_scope(drive_root: Any, task_id: str, *, reason: str = "sweep") -> Optional[Dict[str, Any]]:
@@ -579,8 +618,9 @@ def settle_task_scope(drive_root: Any, task_id: str, *, reason: str = "sweep") -
     row is a reopenable placeholder, or unreadable) is left alone. The outcome is attached
     to the result (``process_scope``, no status write) when it changed since the last
     attempt; the record is retired only when the outcome is SETTLED (census readable, no
-    survivor, no unverified member) and was recorded — otherwise it stays, with its marker
-    and group evidence, for the next sweep. An unsupported platform is a final disclosure.
+    survivor, nothing unverified but denied signals) and was recorded — otherwise it stays,
+    with its marker, its group evidence and the known members (pid, birth) the next sweep
+    must check, for that sweep. An unsupported platform is a final disclosure.
     """
     path = task_scope_path(drive_root, task_id)
     record = read_json_dict(path)
@@ -610,7 +650,7 @@ def settle_task_scope(drive_root: Any, task_id: str, *, reason: str = "sweep") -
         return None
     previous_cleanup = dict(claimed.get("cleanup") or {})
     outcome = end_scope(markers=_record_markers(claimed), groups=claimed.get("groups") or [],
-                        scope_start_epoch=float(claimed.get("minted_epoch") or 0.0),
+                        captured=_saved_members(claimed), scope_start_epoch=float(claimed.get("minted_epoch") or 0.0),
                         exclude={os.getpid(), 1})
     facts = {**outcome, "marker_role": "task", "reason": reason, "settled_at": utc_now_iso()}
     digest = outcome_digest(outcome)
@@ -624,8 +664,9 @@ def settle_task_scope(drive_root: Any, task_id: str, *, reason: str = "sweep") -
     pending = {"state": "pending", "reason": _unsettled_reason(outcome) or "outcome_unrecorded",
                "attempts": int(previous_cleanup.get("attempts") or 0) + 1, "attempted_at": utc_now_iso(),
                **({"last_digest": digest} if recorded else {})}
+    known = _known_members(outcome)
     try:
-        update_json_locked(path, lambda current: {**current, "cleanup": pending}
+        update_json_locked(path, lambda current: {**current, "cleanup": pending, "known_members": known}
                            if str((current or {}).get("marker") or "") == str(claimed.get("marker") or "") else None)
     except (OSError, TimeoutError, ValueError):
         pass
@@ -667,9 +708,11 @@ def engine_scope_index(data_dir: Any) -> Tuple[List[Dict[str, Any]], Dict[str, A
     """The managed engine's durable run-scope index (``daemon/run-scopes.json``,
     ``schema_version`` 1): per entry ``run_id``, ``marker``, ``state``, ``scope_start``,
     ``root_groups[{pgid, leader_pid, leader_birth}]``, ``captured[{pid, pgid, birth}]``,
-    births as C-locale ``ps -o lstart=`` text. Returns ``(entries, disclosure)``; a
-    missing, unreadable or newer-schema file yields no entries and a typed disclosure,
-    never an empty scope read as clean."""
+    births as C-locale ``ps -o lstart=`` text. Returns ``(valid entries, disclosure)``: a
+    missing, unreadable (I/O, torn JSON, not an object) or newer-schema file yields no
+    entries and a typed status; a schema-1 file without a top-level ``entries`` list is
+    ``invalid``; a malformed row is disclosed under ``malformed`` (status ``invalid``) while
+    the well-formed rows are returned — never an empty scope read as clean, never a raise."""
     path = engine_run_scopes_path(data_dir)
     try:
         raw = path.read_text(encoding="utf-8")
@@ -686,16 +729,58 @@ def engine_scope_index(data_dir: Any) -> Tuple[List[Dict[str, Any]], Dict[str, A
     version = data.get("schema_version")
     if version != ENGINE_RUN_SCOPES_SCHEMA:
         return [], {"status": "unsupported_schema", "path": str(path), "schema_version": version}
-    raw_entries: Any = None
-    for key in ("entries", "scopes", "runs"):
-        if isinstance(data.get(key), (list, dict)):
-            raw_entries = data[key]
-            break
-    if isinstance(raw_entries, dict):
-        raw_entries = [{"run_id": run_id, **value} for run_id, value in raw_entries.items() if isinstance(value, dict)]
-    entries = [entry for entry in (raw_entries or []) if isinstance(entry, dict)]
-    return entries, {"status": "read", "path": str(path), "entries": len(entries),
-                     "states": sorted({str(entry.get("state") or "") for entry in entries})}
+    entries = data.get("entries")
+    if not isinstance(entries, list):
+        return [], {"status": "invalid", "path": str(path),
+                    "error": "entries is not a list" if "entries" in data else "entries missing"}
+    valid: List[Dict[str, Any]] = []
+    malformed: List[Dict[str, Any]] = []
+    for position, entry in enumerate(entries):
+        defect = _entry_defect(entry)
+        if defect:
+            malformed.append({"index": position, "reason": defect,
+                              "run_id": str(entry.get("run_id") or "") if isinstance(entry, dict) else ""})
+        else:
+            valid.append(entry)
+    disclosure = {"status": "invalid" if malformed else "read", "path": str(path), "entries": len(valid),
+                  "states": sorted({str(entry.get("state") or "") for entry in valid})}
+    if malformed:
+        disclosure["malformed"] = malformed
+    return valid, disclosure
+
+
+_ENTRY_ROWS = {"root_groups": {"pgid": (int,), "leader_pid": (int, None), "leader_birth": (str, None)},
+               "captured": {"pid": (int,), "pgid": (int,), "birth": (str,)}}
+
+
+def _entry_defect(entry: Any) -> str:
+    """Why ``entry`` falls outside the schema-1 contract (``""`` when it fits): a
+    grammar-shaped ``marker``; ``scope_start`` a string or null; ``root_groups`` and
+    ``captured`` lists of objects with integer pids/pgids, string births and a string or
+    null ``leader_birth`` (null keeps the ``scope_start`` floor); the optional
+    ``leader_identity`` is ignored."""
+    if not isinstance(entry, dict):
+        return "entry is not an object"
+    if not is_scope_name(str(entry.get("marker") or "")):
+        return "marker outside the grammar"
+    if entry.get("scope_start") is not None and not isinstance(entry["scope_start"], str):
+        return "scope_start is not a string"
+    for key, shape in _ENTRY_ROWS.items():
+        rows = entry.get(key)
+        if rows is None:
+            continue
+        if not isinstance(rows, list):
+            return f"{key} is not a list"
+        for row in rows:
+            if not isinstance(row, dict):
+                return f"{key} row is not an object"
+            for name, kinds in shape.items():
+                value = row.get(name)
+                if (value is None and None in kinds) or (str in kinds and isinstance(value, str)) or (
+                        int in kinds and isinstance(value, int) and not isinstance(value, bool)):
+                    continue
+                return f"{key}.{name} malformed"
+    return ""
 
 
 def _engine_scope_targets(entries: Iterable[Mapping[str, Any]]) -> Tuple[List[str], List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -734,7 +819,8 @@ def panic_sweep_pending_path(data_dir: Any) -> pathlib.Path:
     return _state_dir(data_dir) / PANIC_SWEEP_PENDING_FILE
 
 
-def _installation_census(data_dir: Any, *, exclude: Iterable[int], rescans: int) -> Dict[str, Any]:
+def _installation_census(data_dir: Any, *, exclude: Iterable[int], rescans: int,
+                         known: Iterable[Mapping[str, Any]] = ()) -> Dict[str, Any]:
     marker = installation_marker(data_dir, create=False)
     task_markers: List[str] = []
     groups: List[Dict[str, Any]] = []
@@ -743,17 +829,21 @@ def _installation_census(data_dir: Any, *, exclude: Iterable[int], rescans: int)
         groups.extend(record.get("groups") or [])
     engine_entries, engine = engine_scope_index(data_dir)
     engine_markers, engine_groups, captured = _engine_scope_targets(engine_entries)
+    known = list(known)
     outcome = end_scope(marker=marker, markers=[*task_markers, *engine_markers], groups=[*groups, *engine_groups],
-                        captured=captured, exclude=exclude, grace_sec=0.0, term_first=False, rescans=rescans)
+                        captured=[*captured, *known], exclude=exclude, grace_sec=0.0, term_first=False, rescans=rescans)
+    # The index decides completion: a pass whose index was unreadable, invalid or of a newer
+    # schema may have missed recorded members, so it is not settled whatever the census said.
+    outcome["settled"] = bool(outcome["settled"]) and engine.get("status") in _INDEX_COMPLETE_STATUSES
     outcome.update(marker_role="installation", recorded_groups=len(groups), engine_index=engine,
-                   engine_groups=len(engine_groups), engine_captured=len(captured),
+                   engine_groups=len(engine_groups), engine_captured=len(captured), known_members=len(known),
                    residual=PANIC_CENSUS_RESIDUAL)
     return outcome
 
 
 def _compact_outcome(outcome: Mapping[str, Any]) -> Dict[str, Any]:
     return {key: outcome.get(key) for key in ("coverage", "ended", "already_gone", "survivors", "unverified",
-                                              "census_failed", "settled", "engine_index", "residual")}
+                                              "captured_gone", "census_failed", "settled", "engine_index", "residual")}
 
 
 def _record_panic_outcome(data_dir: Any, outcome: Mapping[str, Any], *, phase: str) -> bool:
@@ -769,9 +859,10 @@ def _record_panic_outcome(data_dir: Any, outcome: Mapping[str, Any], *, phase: s
 
 
 def _settle_pending_record(data_dir: Any, outcome: Dict[str, Any], *, phase: str) -> None:
-    """Retire ``panic_sweep_pending`` only when the outcome is settled (or final on an
-    unsupported platform) AND recorded; otherwise keep it, carrying the last outcome, for
-    the launcher or the next start."""
+    """Retire ``panic_sweep_pending`` only when the outcome is settled (census readable, index
+    absent or read, no survivor, nothing unverified but denied signals) or final on an
+    unsupported platform, AND recorded; otherwise keep it, carrying the last outcome and the
+    known members (pid, birth) the next pass must check, for the launcher or the next start."""
     pending = panic_sweep_pending_path(data_dir)
     recorded = _record_panic_outcome(data_dir, outcome, phase=phase)
     final = outcome.get("coverage") == COVERAGE_UNSUPPORTED
@@ -784,9 +875,11 @@ def _settle_pending_record(data_dir: Any, outcome: Dict[str, Any], *, phase: str
         outcome["pending_retired"] = True
         return
     outcome["pending_retired"] = False
+    known = _known_members(outcome)
     try:
         update_json_locked(pending, lambda current: {**(current or {}), "last_outcome": _compact_outcome(outcome),
-                                                     "last_attempt_at": utc_now_iso(), "last_phase": phase,
+                                                     "known_members": known, "last_attempt_at": utc_now_iso(),
+                                                     "last_phase": phase,
                                                      "attempts": int((current or {}).get("attempts") or 0) + 1})
     except (OSError, TimeoutError, ValueError):
         log.warning("panic sweep pending record could not be updated", exc_info=True)
@@ -799,19 +892,21 @@ def panic_scope_census(data_dir: Any, *, exclude: Optional[Iterable[int]] = None
     ``panic_sweep_pending`` record is written FIRST, with those exclusions, so whatever
     this process cannot finish before its Panic exit is completed by the launcher or by
     the next start before any child; it is retired only after a settled, recorded
-    outcome. Never waits on anything but its own signals."""
+    outcome. The known members an earlier unsettled sweep left ride along. Never waits on
+    anything but its own signals."""
     marker = installation_marker(data_dir, create=False)
     if not marker:
         return {"requested": False, "reason": "no installation marker planted"}
     excluded = set(panic_census_exclusions() if exclude is None else {int(pid) for pid in exclude})
     pending = panic_sweep_pending_path(data_dir)
+    known = _saved_members(read_json_dict(pending))
     try:
         pending.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(pending, {"requested_at": utc_now_iso(), "marker_role": "installation",
-                                    "server_pid": os.getpid(), "excluded": sorted(excluded)})
+                                    "server_pid": os.getpid(), "excluded": sorted(excluded), "known_members": known})
     except OSError:
         log.warning("panic sweep pending record could not be written", exc_info=True)
-    outcome = _installation_census(data_dir, exclude=excluded, rescans=1)
+    outcome = _installation_census(data_dir, exclude=excluded, rescans=1, known=known)
     _settle_pending_record(data_dir, outcome, phase="panic")
     return {"requested": True, **outcome}
 
@@ -819,15 +914,15 @@ def panic_scope_census(data_dir: Any, *, exclude: Optional[Iterable[int]] = None
 def complete_pending_panic_sweep(data_dir: Any, *, exclude: Optional[Iterable[int]] = None) -> Optional[Dict[str, Any]]:
     """Finish a Panic sweep a server could not complete before its exit (the launcher's
     Panic branch, or the next start before planting its marker and before any child).
-    The saved exclusions ride the pending record; the current controller, its parent and
-    pid 1 are added. ``None`` when nothing is pending."""
+    The saved exclusions and known members ride the pending record; the current controller,
+    its parent and pid 1 are added. ``None`` when nothing is pending."""
     pending = panic_sweep_pending_path(data_dir)
     record = read_json_dict(pending)
     if record is None and not pending.exists():
         return None
     saved = {int(pid) for pid in (record or {}).get("excluded") or [] if str(pid).isdigit() or isinstance(pid, int)}
     excluded = saved | {os.getpid(), os.getppid(), 1} | {int(pid) for pid in (exclude or ())}
-    outcome = _installation_census(data_dir, exclude=excluded, rescans=1)
+    outcome = _installation_census(data_dir, exclude=excluded, rescans=1, known=_saved_members(record))
     _settle_pending_record(data_dir, outcome, phase="completion")
     log.warning("completed the pending Panic scope sweep: ended=%s survivors=%s unverified=%s census_failed=%s "
                 "retired=%s", outcome["ended"], outcome["survivors"], outcome["unverified"],

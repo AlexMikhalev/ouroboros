@@ -222,6 +222,10 @@ def test_task_scope_marker_is_minted_once_and_rotated_only_after_a_cleanup_start
     assert rotated != first, "a successor's children never share an ending attempt's id"
     assert ps.task_scope_record(tmp_path, "t1")["groups"] == [{"pgid": 7, "leader_pid": 7, "leader_birth": "x"}], \
         "the groups the old record still owed are carried"
+    path.write_text(json.dumps({**ps.task_scope_record(tmp_path, "t1"), "known_members": [{"pid": 9, "birth": "y"}],
+                                "cleanup": {"state": "pending", "reason": "unverified"}}), encoding="utf-8")
+    assert ps.task_scope_marker(tmp_path, "t1") not in (first, rotated)
+    assert ps.task_scope_record(tmp_path, "t1")["known_members"] == [{"pid": 9, "birth": "y"}], "known members are carried too"
     assert ps.task_scope_records(tmp_path) == [ps.task_scope_record(tmp_path, "t1")]
 
 
@@ -275,8 +279,8 @@ def test_a_leader_that_already_exited_still_gets_its_group_recorded_and_its_chil
                 pass
 
 
-def test_a_denied_or_failed_signal_is_unverified_never_gone(monkeypatch):
-    for result, reason in ((_pl.SIGNAL_DENIED, ps.UNVERIFIED_DENIED), (_pl.SIGNAL_FAILED, ps.UNVERIFIED_FAILED)):
+def test_a_denied_or_failed_signal_is_unverified_never_gone_and_only_denied_is_final(monkeypatch):
+    for result, reason, final in ((_pl.SIGNAL_DENIED, ps.UNVERIFIED_DENIED, True), (_pl.SIGNAL_FAILED, ps.UNVERIFIED_FAILED, False)):
         child = _sleeper()
         try:
             group = _group(child)
@@ -284,7 +288,8 @@ def test_a_denied_or_failed_signal_is_unverified_never_gone(monkeypatch):
             outcome = ps.end_scope(groups=[group], exclude={os.getpid(), 1}, grace_sec=0.2)
             assert outcome["ended"] == [] and outcome["already_gone"] == [] and outcome["survivors"] == []
             assert outcome["unverified"] == [{"pid": child.pid, "birth": group["leader_birth"], "reason": reason}]
-            assert outcome["settled"] is False and child.poll() is None
+            assert outcome["settled"] is final, "EPERM is final and disclosed; a failed signal is retried"
+            assert child.poll() is None
         finally:
             monkeypatch.undo()
             _end(child)
@@ -329,6 +334,47 @@ def test_an_identity_that_turns_unreadable_after_the_signal_is_unverified_not_en
         assert outcome["settled"] is False and child.poll() is None
     finally:
         _end(child)
+
+
+def test_a_captured_pid_missing_from_a_partial_census_is_asked_by_identity_never_called_gone(monkeypatch):
+    """Astra delta 3: Linux omits the row of a ``/proc/<pid>/stat`` it could not read; the
+    known pid is then read by the typed reader — unreadable stays unverified, confirmed
+    absence or another birth discharges it, the same birth alive is signalled."""
+    birth = "Sat Oct 10 20:10:23 2026"
+    monkeypatch.setattr(ps, "census", lambda markers=(): {4000: ps._Row(4000, 1, 4000, birth, 1.0)})  # no row for 4242
+    signalled = []
+    monkeypatch.setattr(_pl, "deliver_signal", lambda pid, *, graceful: signalled.append(pid) or _pl.SIGNAL_SENT)
+    monkeypatch.setattr(ps, "_await_exit", lambda targets, deadline: ({}, {}))
+    answers = {}
+    monkeypatch.setattr(ps, "read_identities", lambda pids: {
+        int(pid): answers.get(int(pid), ps._Identity(pc.IDENTITY_ABSENT)) for pid in pids})
+    captured = [{"pid": 4242, "birth": birth}]
+    answers[4242] = ps._Identity(ps.IDENTITY_UNREADABLE)
+    outcome = ps.end_scope(captured=captured, exclude={os.getpid(), 1}, grace_sec=0.0)
+    assert outcome["unverified"] == [{"pid": 4242, "birth": birth, "reason": ps.UNVERIFIED_IDENTITY}]
+    assert outcome["captured_gone"] == [] and outcome["settled"] is False and signalled == []
+    answers[4242] = ps._Identity(ps.IDENTITY_ALIVE, "Mon Jan  1 00:00:00 2001", 4242)  # another process now
+    outcome = ps.end_scope(captured=captured, exclude={os.getpid(), 1}, grace_sec=0.0)
+    assert outcome["captured_gone"] == [4242] and outcome["settled"] is True and signalled == []
+    answers[4242] = ps._Identity(ps.IDENTITY_ALIVE, birth, 4242)  # ours, alive, merely absent from the table
+    outcome = ps.end_scope(captured=captured, exclude={os.getpid(), 1}, grace_sec=0.0)
+    assert signalled == [4242] and outcome["ended"] == [4242] and outcome["settled"] is True
+    del answers[4242]  # positive absence
+    outcome = ps.end_scope(captured=captured, exclude={os.getpid(), 1}, grace_sec=0.0)
+    assert outcome["captured_gone"] == [4242] and outcome["unverified"] == [] and outcome["settled"] is True
+
+
+def test_a_proc_stat_read_failure_other_than_absence_is_unreadable(monkeypatch):
+    def controlled(path, *args, **kwargs):
+        if str(path) == "/proc/4242/stat":
+            raise PermissionError(13, "denied")
+        if str(path) == "/proc/4243/stat":
+            raise FileNotFoundError(2, "gone")
+        raise AssertionError(path)
+
+    monkeypatch.setattr(pc, "open", controlled, raising=False)  # the census module's own reads only
+    assert pc._proc_identity(4242).state == pc.IDENTITY_UNREADABLE, "denied is not absent"
+    assert pc._proc_identity(4243).state == pc.IDENTITY_ABSENT
 
 
 def test_rotation_carries_the_previous_markers_so_an_old_setsid_child_is_still_named(tmp_path):
