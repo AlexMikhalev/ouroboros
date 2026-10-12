@@ -16,6 +16,10 @@ styles by both the SPA and the served onboarding document. Page styles own
 composition, not another copy of the shared palette. This file names roles;
 it does not copy an inventory.
 
+**Visual intent:** airy, never faint: room from hierarchy, rhythm and light
+material, not paler or smaller text; colour as identity with a role, at reading
+contrast; pressable looks only where going there is the job.
+
 The shell offers **Settings → Appearance → Light / Dark / System**. New clients
 start on System; explicit Light or Dark remains pinned. The shared semantic
 palettes in `web/ui.css` preserve geometry and status meanings. Light uses white
@@ -589,26 +593,28 @@ therefore about intents.
 - A **reference** points at an entity that exists in the product and goes there
   when pressed. A Project is referred to by the Project reference — the Projects
   glyph, the Project's name, `↗` — and by nothing else, wherever content points
-  at it: a bound task card's footer, a converted card, a System lifecycle row,
-  the owner's routed message, a mirrored answer, a mirrored question's head.
-  `web/modules/project_reference.js` builds it and alone raises
+  at it. `project_reference.js` builds it and alone raises
   `ouro:open-project`; a caller chooses a layout (`inline`, `bar`, `footer`),
   never a label or a class. It names the Project wherever its row carries the
-  name; a Project that was never named, and the owner's routed message (whose
-  caption names the destination), read `Project`, never an id. The handoff's separate phase chip states observed activity; the reference
-  itself makes no running claim. Its accessible name
-  says in words what the glyph and the arrow say in pixels (`Open project <name>`),
-  and nothing depends on hover.
+  name, even beside same-named work; a Project never named, and the owner's
+  routed message (whose caption names the destination), read `Project`, never an
+  id. It claims no activity (an entry's status chip does). Its accessible name
+  says in words what the glyph and the arrow say in pixels (`Open project
+  <name>`), and nothing depends on hover.
+- **Its form follows the surface's job.** It is a Project work entry's
+  destination row and a bound task card's wide footer (the body stays the
+  task's); under a mirrored answer, the owner's routed message or a System
+  lifecycle row, a reading-size capsule in the shared `createSystemMessageActions`
+  row (token spacing, wrapping, focus-ring clearance, never a clipped line: a
+  composition, not a card framework or global button-margin rule); in a question
+  head, a meta capsule. Long names: two lines in entry/footer, ellipsis in
+  capsules, no smaller type; accessible names stay whole.
 - A **command** is a button: it changes or confirms something, or goes to a
   place that is not such a reference (`Load older messages`, `Open widgets`).
   Tabs, toggles, menus and the navigation list keep their own roles; a status
   chip states a fact and is not a destination.
-- An intent that will be drawn in a second place gets its door first.
-  `docs/inventories/UI_CONTROL_TEXT_INVENTORY.md` lists the fixed text of the
-  hand-written buttons sorted by text (a label passed to a factory is that
-  factory's business), and the `ouro:*` events with the modules that raise
-  them, so a diff that adds a button shows its siblings in the same hunk. Read
-  them: "it reuses a shared primitive" does not show that two controls agree.
+- An intent that will be drawn in a second place gets its door first (siblings:
+  `docs/inventories/UI_CONTROL_TEXT_INVENTORY.md`).
 
 ### Chat authorship and System rows
 
@@ -1119,22 +1125,24 @@ the rest of the chat surface.
 **Project question mirror.** A Project question the owner has not answered appears in Main as the Project's own quiz card — the same `buildQuizCard` form with the question through the chat markdown pipeline, the options with their details and the `recommended` badge, the stake, the assumption or waiting line, the status and the own-answer field — inside the same assistant bubble. The one addition is the Project reference ("References and actions") in the head beside the `Question` chip: its inline pill (the `--project` tints, the Project name in project ink with `↗`) opens that exact question in its Project, with the card's shared keyboard ring. A long Project name yields first (the chip is capped and ellipsized, its title names the Project whole) so the status keeps its place; a phone column wraps the head. Every lifecycle state reads as it does in the Project: waiting, open, resumed and finished questions stay answerable, and a replaced question stays as a read-only record. An unreadable source keeps what Main already knew; with nothing known the copy says `Status unavailable`, takes no answer and keeps its chip, and a row that cannot carry the form yet shows `Open the original question for its text.` until it can. The first confirmed answer from any source — a press in Main, the Project form or another device, a history or census snapshot — shows the recorded result (the chosen option, `Owner's answer: …`, `You answered`) for five seconds and then removes only the Main copy, through the ordinary message retirement and without moving the reader's viewport; the Project keeps its card. The countdown starts once and later observations never restart it. When focus was inside the copy it stays there while the result shows, then moves to the next Main question, or to the composer for a keyboard owner, never summoning a touch keyboard. A copy that learns its form and its answer in one delivery shows that result for the same five seconds. An answered question never enters Main again: fresh history, a reconnect or a stale open snapshot cannot bring the copy back. Main remembers the lifecycle of a bounded number of questions; a question it no longer remembers mounts a safe unknown copy, whose answer controls appear only after a fresh canonical record confirms it unanswered. A failed, missing or wrong-project canonical read leaves a safe `Status unavailable` copy with its Project chip and no answer controls; the chip opens the original Project form, while a later owned refresh retries the Main copy, so an unavailable read never turns a stale open snapshot into an answerable form and never permanently suppresses a legitimate unanswered question. The mirror and the quiz header share the lifecycle wording above.
 
 **Project work entries.** Creation, transfer and manual conversion share one compact
-Project-colour card, live and on replay: width, border, insets, type and footer.
-The work title leads; status sits beside it in a wide card and above it in a narrow
-one. The sole Project reference uses its available row, ellipsizing only when needed.
-The footer holds the recorded event time and Copy (work title and full Project name).
-A converted card gains its transfer time from the matching receipt, never the current
-clock or an unrelated task; missing time stays absent. Finished conversions keep
-Project colour. There is no System heading or created/transferred caption.
+Project-colour card, live and on replay. The selectable work title leads at weight
+500, status beside it (above when narrow). Below, the sole Project reference fills
+a row beside the event time and Copy (work title and full Project name), above them
+when narrow. Only here does free area press the reference; text stays reading (a
+double click selects a word), controls keep their press, and a drag, a selection
+that press made, a repeat or a modifier never navigates. The entry adds no role, tab
+stop or name.
+A converted card gains its transfer time from the matching receipt, never the clock
+or an unrelated task; missing time stays absent. Finished or not, it keeps
+Project colour, with no System heading or created/transferred caption.
 Structured `task_name` names the work; older history uses its retained task result.
 Creation and transfer keep their event identities and publication eligibility; each
 card follows its work, never the Project's latest unrelated task. Binding proves no
-activity. Task cards, entries and Project indicators share per-task status facts:
-confirmed working/thinking/finalizing can move; queued, paused/pausing, waiting and
-unknown stay still. Motion survives reload and respects reduced motion. A known
+activity. Task cards, entries and Project indicators share per-task status facts and
+motion ("Sidebar activity dots"; pausing stays still too), across reload. A known
 outcome leads beside quiet finalization; an answered/resumed question is not a wait.
 Manual conversion opens its room; agent handoffs do not steal focus. Converted cards
-stay visible, including several from one owner message. Their durable receipt folds
+stay visible, several from one owner message included; their durable receipt folds
 under the visible anchor and returns when it leaves the feed. Matching Started and
 routing references fold only while that anchor is mounted; records and non-browser
 plain text remain. An undurable Main receipt keeps a dashed border and a plain warning;
@@ -1142,8 +1150,6 @@ the binding holds. Genuine initiator work and failures remain visible; folding n
 lends another task's outcome. The later final answer stays a separate message.
 
 **Project completion mirror.** A Project root that ended with Ouroboros's own final answer reaches Main as an ordinary Ouroboros message: that answer through the chat markdown pipeline, in the assistant voice, because the bytes are model-authored — the host stamps the answer on the completion row only for a model-authored final, so the browser never infers authorship. A long answer is folded to about seven lines; the fold is a visual clamp over the complete, selectable text, with a fade only when it really hides something, and never a cut. Under it sits one control, the Project reference ("References and actions"). The durable row and its wire frame stay `role="system"`: like the Project question mirror, this is a browser presentation of model-authored bytes, not a change of the row's author. The message carries no status word, cause sentence, title or duration, so a host verdict on that answer (a warning, an unaccepted review) is not shown in Main: it stays loud on the task's card in the Project, one press away. Copy copies the answer. An ending with no model-authored answer (a provider failure, a stop, preserved output), and every completion row written before the answer rode the row keep the System row, which ends with that same reference: the voice of a row never chooses how the UI points at its Project. One durable row either way: its plain text is unchanged, so the Telegram mirror, Ouroboros's own context and one-ending-one-notification behave as before.
-
-The row under a Project lifecycle row or a routed message is the shared `createSystemMessageActions` composition around the Project reference. It owns token-based space above and below the controls, wrapping and clearance for the focus ring; a control never sits in a clipped/nowrap text line. This is a row composition, not a new card framework or a global button-margin rule.
 
 History with no current execution or known outcome keeps its expandable content under `Outcome unavailable`, without a task chip, typing or Stop. Before complete live-source reconciliation, it is `Activity unconfirmed`. Positive current activity restores only its proven controls. A delivery warning may coexist with a preserved task-acceptance PASS. Model metadata says `Last solve response`, naming the initial request only when the route changed.
 
