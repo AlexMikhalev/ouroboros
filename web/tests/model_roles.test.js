@@ -96,6 +96,16 @@ test('role pins and context survive a no-edit save, including identical model na
     editor.destroy();
 });
 
+test('image generation has no settings default or chat model role', () => {
+    const editor = createModelRolesEditor({ hostId: 'test', doc: () => null });
+    editor.load({ OUROBOROS_MODEL: 'openai::model', OUROBOROS_MODEL_IMAGE: 'legacy' }, contract);
+    const saved = editor.collect();
+    assert.ok(!('OUROBOROS_MODEL_IMAGE' in saved));
+    assert.ok(!contract.modelSlots.some((slot) => slot.slot === 'image'));
+    assert.equal(editor.validate(), '');
+    editor.destroy();
+});
+
 test('an unloaded editor authors nothing and an API-only save does not create role maps', () => {
     const editor = createModelRolesEditor({ hostId: 'test', doc: () => null });
     assert.deepEqual(editor.collect(), {});

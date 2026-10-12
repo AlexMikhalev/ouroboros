@@ -48,6 +48,9 @@ def restart_case(tmp_path, monkeypatch):
     from supervisor import task_lifecycle, update_merge
 
     pending, running = [], {}
+    # The inert pool must not inherit a prior test's manager-backed event bus.
+    event_q = stdqueue.Queue()
+    monkeypatch.setattr(workers, "get_event_q", lambda: event_q)
     for module in (workers, queue):
         monkeypatch.setattr(module, "DRIVE_ROOT", tmp_path)
         monkeypatch.setattr(module, "PENDING", pending)

@@ -417,6 +417,31 @@ def test_model_id_classifiers_preserve_the_prior_ordered_vocabulary():
     )
     assert _ACTIVE_FIXED_MODEL_KEYS == prior
     assert _MODEL_ID_SLOT_KEYS == prior
+    # Image generation selects a route per call and has no Settings model slot.
+    from devtools.benchmarks.common.manifests import ACTIVE_MODEL_SLOT_KEYS
+
+    assert "OUROBOROS_MODEL_IMAGE" not in ACTIVE_MODEL_SLOT_KEYS
+    assert "OUROBOROS_MODEL_IMAGE" not in _MODEL_ID_SLOT_KEYS
+
+
+def test_programbench_image_slot_does_not_migrate_as_a_chat_model(tmp_path, monkeypatch):
+    from devtools.benchmarks.common.manifests import MODEL_SLOT_KEYS
+    from devtools.benchmarks.common.model_slots import single_model_subagents_setting
+    from devtools.benchmarks.programbench.run_programbench_e2e import preflight_model_slots
+    from ouroboros.provider_models import ALL_PROVIDER_CREDENTIAL_KEYS
+
+    for key in (*MODEL_SLOT_KEYS, *ALL_PROVIDER_CREDENTIAL_KEYS):
+        monkeypatch.delenv(key, raising=False)
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps({
+        "OPENAI_API_KEY": "synthetic-test-key",
+        "OUROBOROS_MODEL": "openai::model-x",
+        "OUROBOROS_MODEL_IMAGE": "openai/gpt-image-2",
+        "OUROBOROS_SUBAGENTS": single_model_subagents_setting("openai::model-x"),
+    }), encoding="utf-8")
+    slots = preflight_model_slots(settings_path, solve_model="openai::model-x")
+    assert slots["OUROBOROS_MODEL"] == "openai::model-x"
+    assert "OUROBOROS_MODEL_IMAGE" not in slots
 
 
 @pytest.mark.parametrize("model", ["openai::model-x", "claudexor::codex=model-x"])

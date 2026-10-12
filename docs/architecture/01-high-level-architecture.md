@@ -1,6 +1,6 @@
 # 1. High-Level Architecture
 
-Module/navigation, devtools, gateway/CLI, host and `~/Ouroboros/` data map. The packaged launcher recovers failed server edits. Supervisor/direct turns run in the server; queued tasks use crash-isolated workers.
+Modules, devtools, gateway/CLI, host and data map. Packaged launcher recovers failed server edits. Server: direct turns/supervision; crash-isolated queued workers.
 
 ```
 User → launcher.py (desktop/native) — the shared lifecycle; an immutable packaged shell, or source over an immutable seed on Android and the managed container (Runtime topology below; §2)
@@ -367,12 +367,14 @@ ouroboros/ — agent core and shared runtime (§6)
     record_contract.py — Record passport: the local ledger rows external observers may rely on (§11.1)
     plugin_api.py — PluginAPI, ExtensionRegistrationError and the closed vocabularies `FORBIDDEN_SKILL_SETTINGS`, `VALID_EXTENSION_PERMISSIONS`, `VALID_EXTENSION_ROUTE_METHODS` (§11.1)
   gateways/ — Thin outbound transport adapters; no business logic
-    claudexor.py — Loopback descriptor/handshake/runs/quota transport; the daemon token stays private; prefers the owned daemon, `discover_daemon_at` reads daemon/control-api.json (§6 Delegated subagents)
+    claudexor_images.py — requestKind=image upload and whole-result ACK (docs/IMAGE_GENERATION.md)
+    image_api.py — Image API routes/credentials; one send, bounded results, cost evidence
+    claudexor.py — Loopback descriptor/handshake/runs/quota; private token; owned daemon; `discover_daemon_at`: daemon/control-api.json (§6)
     claudexor_run_events.py — Catalog-negotiated, bounded run-journal SSE frames and durable seq cursors; no polling owner (§6 Delegated subagents)
-  claudexor_runtime.py — Reviewed engine pin: seed-or-download, verify, probe and atomic promote under `data/state/cx`; the reviewed pin is the next-spawn selection, with no mutable `current` pointer; `OUROBOROS_CLAUDEXOR_BIN` is an explicit operator override (§6 Delegated subagents)
+  claudexor_runtime.py — Reviewed next-spawn pin in `data/state/cx`: seed/download, verify/probe, atomic promote; no mutable current; override `OUROBOROS_CLAUDEXOR_BIN` (§6)
   claudexor_exit_facts.py — Bounded saved exits; live memory/loop/store/admission facts and dated capacity snapshots, without lifecycle policy (§9)
-  claudexor_daemon.py — Installation-owned Claudexor lifecycle over `data/claudexor`: lazy first use, authenticated attach, `stop_outcome`, the start-failure spawn latch, `install_missing_harness_cli` (§9)
-  claudexor_startup_failure.py — Typed vocabulary of a failed owned-daemon start: `ExitFact` (`failed_without_control` is the spawn-latch predicate), diagnostic-only log classification, the latch record; stdlib only (§9)
+  claudexor_daemon.py — Owned `data/claudexor`: lazy start, authenticated attach, `stop_outcome`, failed-start latch, `install_missing_harness_cli` (§9)
+  claudexor_startup_failure.py — Stdlib `ExitFact`; `failed_without_control` drives spawn latch; diagnostic-only log labels and latch record (§9)
   gateway/ — Gateway Boundary v1: browser-facing route ownership and the frontend contract SSOT (Gateway Boundary v1 below)
     contracts.py — Active WS/HTTP envelope contract owner
     decision_contracts.py, history_contracts.py, attachment_contracts.py, schedule_contracts.py — Typed contract leaves re-exported by contracts.py: decision families (each ingress owns runtime validation), paged Chat history, owner attachments, schedule responses
@@ -435,6 +437,7 @@ ouroboros/ — agent core and shared runtime (§6)
     git_plumbing.py, git_repo_edit.py, git_vcs_ops.py, git_review_cycle.py, git_managed_postcommit.py, git_evolution.py — The git tool's leaves: plumbing, the uncommitted repo write and edit surface, VCS inspection and rollback, staging plus the optional preflight and the one-wave two-part review, managed-merge post-commit gates under Pause, evolution-campaign authority at the reviewed-commit and publication boundaries
     search.py — `web_search`, one leg per Source/Model of `ouroboros/search_routes.py` (§6 Web access mechanisms)
     browser.py — Playwright browser tools with per-ToolContext lifecycle and thread affinity (§6 MCP and browser-facing external tools)
+    imagegen.py — list_image_models/generate_image/recover_image; explicit routes, artifacts first, separate view/send (docs/IMAGE_GENERATION.md)
     vision.py — Vision LLM tools for browser screenshots and uploaded images
     vision_process.py — Tracked vision-child IPC: validated receipts, result recovery, parent-owned cancellation
     knowledge.py — Persistent topic-based knowledge files with an auto-maintained index

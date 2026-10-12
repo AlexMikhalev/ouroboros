@@ -20,6 +20,16 @@ from ouroboros.provider_models import (
 )
 
 
+def test_image_generation_has_no_settings_default_or_chat_role():
+    from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+    from ouroboros.settings_setup_contract import build_setup_contract
+
+    assert "OUROBOROS_MODEL_IMAGE" not in SETTINGS_DEFAULTS
+    assert all(slot["slot"] != "image" for slot in build_setup_contract()["modelSlots"])
+    with pytest.raises(ValueError):
+        normalize_model_role_options(MODEL_ACCOUNTS_KEY, {"image": "profile"})
+
+
 def test_equal_model_names_keep_distinct_main_and_light_accounts():
     settings = {
         "OUROBOROS_MODEL": "claudexor::codex=one-model",
