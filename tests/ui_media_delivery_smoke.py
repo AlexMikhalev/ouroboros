@@ -8,7 +8,7 @@ import pathlib
 import pytest
 
 from ouroboros.artifacts import store_chat_media_bytes
-from tests.ui_console_errors import record_failed_loads, unexpected_console_errors
+from tests.ui_console_errors import record_console_errors, record_failed_loads, unexpected_console_errors
 
 
 def run_media_delivery_smoke(direct_server_with_data):
@@ -75,12 +75,7 @@ def run_media_delivery_smoke(direct_server_with_data):
             browser = pw.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1440, "height": 1000})
             try:
-                console_errors = []
-                page.on(
-                    "console",
-                    lambda message: console_errors.append(message.text)
-                    if message.type == "error" else None,
-                )
+                console_errors = record_console_errors(page, page_errors=False)
                 failed_loads = record_failed_loads(page)
                 page.add_init_script("""(() => {
                     const NativeWebSocket = window.WebSocket;
