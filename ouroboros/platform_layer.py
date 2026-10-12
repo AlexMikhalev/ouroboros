@@ -644,6 +644,36 @@ def pid_is_signalable(pid: int) -> bool:
     return pid > 0 and (pid_is_alive(pid) if IS_WINDOWS else signal_pid(pid))
 
 
+# Typed outcomes of ``deliver_signal``: delivery proves no identity and no exit.
+SIGNAL_SENT = "sent"            # the kernel accepted the signal for that pid
+SIGNAL_ABSENT = "absent"        # ESRCH: positive absence (or a Windows no-such-pid)
+SIGNAL_DENIED = "denied"        # EPERM: the process exists and refuses us; never "gone"
+SIGNAL_FAILED = "failed"        # any other OSError: unknown, never "gone"
+SIGNAL_UNSUPPORTED = "unsupported"  # Windows: the Job/TerminateProcess paths are the truth there
+
+
+def deliver_signal(pid: int, *, graceful: bool) -> str:
+    """Send TERM (``graceful``) or KILL to ONE POSIX pid, never to a group; a typed outcome.
+
+    The scope reaper (``process_scope``) calls this only after re-measuring the pid's
+    birth, and reads the outcome as evidence about the SIGNAL alone: ``SIGNAL_ABSENT`` is
+    the one answer that means gone; ``SIGNAL_DENIED`` and ``SIGNAL_FAILED`` are unknowns
+    the caller must disclose, never count as ended."""
+    if IS_WINDOWS:
+        return SIGNAL_UNSUPPORTED
+    if pid <= 1 or pid == os.getpid():
+        return SIGNAL_FAILED
+    try:
+        os.kill(int(pid), signal.SIGTERM if graceful else signal.SIGKILL)
+    except ProcessLookupError:
+        return SIGNAL_ABSENT
+    except PermissionError:
+        return SIGNAL_DENIED
+    except OSError:
+        return SIGNAL_FAILED
+    return SIGNAL_SENT
+
+
 def pid_provably_gone(pid: int) -> bool:
     """Positive absence only (#1554): POSIX ESRCH; Windows no such pid
     (ERROR_INVALID_PARAMETER) or a readable exit code. Access denial, EPERM and

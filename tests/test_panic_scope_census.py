@@ -83,20 +83,22 @@ def test_without_a_planted_marker_the_census_requests_nothing(tmp_path):
 
 def test_the_census_excludes_the_server_its_launcher_and_pid_one(tmp_path, monkeypatch):
     marker = ps.installation_marker(tmp_path)
+    birth = "Sat Oct 10 20:10:23 2026"
     rows = {
-        1: ps._Row(1, 0, 1, "Sat Oct 10 20:10:23 2026", 1.0, {marker}),
-        4000: ps._Row(4000, 1, 4000, "Sat Oct 10 20:10:23 2026", 1.0, {marker}),   # the launcher
-        4001: ps._Row(4001, 4000, 4001, "Sat Oct 10 20:10:23 2026", 1.0, {marker}),  # the server
-        4002: ps._Row(4002, 4001, 4002, "Sat Oct 10 20:10:23 2026", 1.0, {marker}),  # a worker
+        1: ps._Row(1, 0, 1, birth, 1.0, markers={marker}),
+        4000: ps._Row(4000, 1, 4000, birth, 1.0, markers={marker}),   # the launcher
+        4001: ps._Row(4001, 4000, 4001, birth, 1.0, markers={marker}),  # the server
+        4002: ps._Row(4002, 4001, 4002, birth, 1.0, markers={marker}),  # a worker
     }
     signalled = []
     monkeypatch.setattr(ps, "census", lambda markers=(): dict(rows))
-    monkeypatch.setattr(ps, "measure_birth", lambda pid: "Sat Oct 10 20:10:23 2026" if pid in rows else "")
-    monkeypatch.setattr(ps.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
-    monkeypatch.setattr(ps, "_await_exit", lambda targets, deadline: {})
+    monkeypatch.setattr(ps, "read_identities", lambda pids: {
+        int(pid): ps._Identity(ps.IDENTITY_ALIVE, "Sat Oct 10 20:10:23 2026", int(pid)) for pid in pids if int(pid) in rows})
+    monkeypatch.setattr(_pl, "deliver_signal", lambda pid, *, graceful: signalled.append((pid, graceful)) or _pl.SIGNAL_SENT)
+    monkeypatch.setattr(ps, "_await_exit", lambda targets, deadline: ({}, {}))
     outcome = ps.panic_scope_census(tmp_path, exclude={4001, 4000, 1})
-    assert [pid for pid, _sig in signalled] == [4002]
-    assert outcome["ended"] == [4002]
+    assert signalled == [(4002, False)], "KILL by identity, only the worker"
+    assert outcome["ended"] == [4002] and outcome["settled"] is True
 
 
 def test_a_stalled_census_leaves_a_durable_pending_record_that_the_next_start_completes(tmp_path, monkeypatch):
@@ -213,12 +215,14 @@ def test_a_failing_census_is_disclosed_and_the_other_requests_still_run(tmp_path
 def test_the_launcher_panic_exit_and_the_next_start_complete_a_pending_sweep_before_any_child():
     launcher = (REPO / "launcher.py").read_text(encoding="utf-8")
     panic_branch = launcher[launcher.index("if exit_code == PANIC_EXIT_CODE:"):]
-    assert (panic_branch.index("complete_pending_panic_sweep(DATA_DIR, exclude={os.getpid(), 1})")
-            < panic_branch.index('_kill_orphaned_children(reason="panic_stop")'))
+    completion = panic_branch.index('name="panic-scope-completion"')
+    assert completion < panic_branch.index('_kill_orphaned_children(reason="panic_stop")')
+    assert "join(timeout=" in panic_branch[completion:completion + 400], "bounded: the app's exit never waits on a stalled census"
+    assert "exclude\": {os.getpid(), os.getppid(), 1}" in panic_branch.replace("'", '"'), "the launcher and its parent are excluded"
     server = (REPO / "server.py").read_text(encoding="utf-8")
     main = server[server.index("def main() -> int:"):]
-    assert (main.index("admit_data_root(DATA_DIR)") < main.index("complete_pending_panic_sweep(DATA_DIR)")
-            < main.index("plant_installation_scope(DATA_DIR)") < main.index("automatic_launch_allowed("))
+    assert (main.index("admit_data_root(DATA_DIR)") < main.index("process_scope.initialize_installation_scope(DATA_DIR)")
+            < main.index("automatic_launch_allowed("))
     # Ordinary doors never sweep the installation scope: close, quit, planned and manual Restart.
     for path in ("ouroboros/server_restart.py", "ouroboros/owned_shutdown.py"):
         text = (REPO / path).read_text(encoding="utf-8")
@@ -293,5 +297,135 @@ def test_markers_are_names_only_and_never_logged_or_persisted_with_environment_b
             outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
         assert outcome["ended"] == [member.pid]
         assert marker not in caplog.text
+    finally:
+        _end(member)
+
+
+def test_the_imported_asgi_lifespan_initializes_the_installation_scope_after_admission_before_children():
+    """Architecture §1 names the imported-app route (`server:app` under an ASGI runner):
+    its lifespan admits the data root itself, so it plants the marker and completes a
+    pending sweep there too, before the supervisor spawns anything."""
+    import ast
+
+    tree = ast.parse((REPO / "server.py").read_text(encoding="utf-8"))
+    lifespan = next(node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan")
+    calls = sorted((node.lineno, node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", ""))
+                   for node in ast.walk(lifespan) if isinstance(node, ast.Call))
+    line = {name: lineno for lineno, name in reversed(calls)}  # first occurrence wins
+    assert line["admit_data_root"] < line["initialize_installation_scope"] < line["_start_supervisor_if_needed"]
+
+
+def test_initialize_installation_scope_is_idempotent_and_finishes_a_pending_sweep_first(tmp_path):
+    marker = ps.installation_marker(tmp_path)
+    leftover = _sleeper({marker: "1"})
+    try:
+        ps.panic_sweep_pending_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+        ps.panic_sweep_pending_path(tmp_path).write_text('{"requested_at": "x", "excluded": []}', encoding="utf-8")
+        env: dict = {}
+        planted = ps.initialize_installation_scope(tmp_path)
+        assert planted == marker and os.environ.get(marker) == "1"
+        assert _gone(leftover.pid), "the previous generation's unfinished Panic sweep ends first"
+        assert not ps.panic_sweep_pending_path(tmp_path).exists()
+        assert ps.initialize_installation_scope(tmp_path) == marker, "idempotent"
+        assert ps.plant_installation_scope(tmp_path, env) == marker and env == {marker: "1"}
+    finally:
+        _end(leftover)
+        os.environ.pop(marker, None)
+
+
+def test_a_survivor_keeps_the_pending_record_until_a_completion_settles_it(tmp_path, monkeypatch):
+    marker = ps.installation_marker(tmp_path)
+    member = _sleeper({marker: "1"})
+    real_deliver = _pl.deliver_signal
+    try:
+        monkeypatch.setattr(_pl, "deliver_signal", lambda pid, *, graceful: _pl.SIGNAL_SENT)  # accepted, nothing dies
+        outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
+        assert [row["pid"] for row in outcome["survivors"]] == [member.pid]
+        assert outcome["settled"] is False and outcome["pending_retired"] is False and outcome["recorded"] is True
+        pending = __import__("json").loads(ps.panic_sweep_pending_path(tmp_path).read_text(encoding="utf-8"))
+        assert [row["pid"] for row in pending["last_outcome"]["survivors"]] == [member.pid] and pending["attempts"] == 1
+        journal = (tmp_path / "logs" / "supervisor.jsonl").read_text(encoding="utf-8")
+        assert journal.count('"panic_scope_census"') == 1 and marker not in journal
+        monkeypatch.setattr(_pl, "deliver_signal", real_deliver)
+        completed = ps.complete_pending_panic_sweep(tmp_path, exclude={os.getpid(), 1})
+        assert completed["ended"] == [member.pid] and completed["settled"] is True and completed["pending_retired"] is True
+        assert _gone(member.pid) and not ps.panic_sweep_pending_path(tmp_path).exists()
+    finally:
+        _end(member)
+
+
+def test_completion_reads_the_saved_exclusions_and_adds_the_current_controller_and_its_parent(tmp_path, monkeypatch):
+    marker = ps.installation_marker(tmp_path)
+    birth = "Sat Oct 10 20:10:23 2026"
+    me, parent = os.getpid(), os.getppid()
+    rows = {pid: ps._Row(pid, 1, pid, birth, 1.0, markers={marker}) for pid in (4000, 4002, me, parent)}
+    ps.panic_sweep_pending_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    ps.panic_sweep_pending_path(tmp_path).write_text(
+        __import__("json").dumps({"requested_at": "x", "excluded": [4000]}), encoding="utf-8")  # the old server saved 4000
+    signalled = []
+    monkeypatch.setattr(ps, "census", lambda markers=(): dict(rows))
+    monkeypatch.setattr(ps, "read_identities", lambda pids: {
+        int(pid): ps._Identity(ps.IDENTITY_ALIVE, birth, int(pid)) for pid in pids if int(pid) in rows})
+    monkeypatch.setattr(_pl, "deliver_signal", lambda pid, *, graceful: signalled.append(pid) or _pl.SIGNAL_SENT)
+    monkeypatch.setattr(ps, "_await_exit", lambda targets, deadline: ({}, {}))
+    outcome = ps.complete_pending_panic_sweep(tmp_path)  # no exclusions passed by this caller
+    assert signalled == [4002], "the saved exclusion, this controller and its parent are never signalled"
+    assert outcome["ended"] == [4002] and outcome["pending_retired"] is True
+
+
+def test_the_engines_run_scope_index_members_are_ended_by_identity_and_its_state_is_disclosed(tmp_path):
+    ps.installation_marker(tmp_path)
+    run_marker = ps.mint_marker(ps.RUN_SCOPE_PREFIX)
+    captured = _sleeper(argv=["/bin/sleep", "120"])          # a captured harness descendant (env invisible)
+    group_leader = _sleeper(argv=["/bin/sleep", "120"])      # the harness root's own group
+    marked = _sleeper({run_marker: "1"})                     # a run member the census can see by marker
+    stranger = _sleeper({ps.mint_marker(ps.RUN_SCOPE_PREFIX): "1"})  # a run of another engine: not in this index
+    index = ps.engine_run_scopes_path(tmp_path)
+    index.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        facts = ps.read_identities([captured.pid, group_leader.pid])
+        index.write_text(__import__("json").dumps({"schema_version": 1, "entries": [{
+            "run_id": "run-1", "marker": run_marker, "state": "running", "scope_start": facts[group_leader.pid].birth,
+            "root_groups": [{"pgid": group_leader.pid, "leader_pid": group_leader.pid, "leader_birth": facts[group_leader.pid].birth}],
+            "captured": [{"pid": captured.pid, "pgid": captured.pid, "birth": facts[captured.pid].birth}],
+        }]}), encoding="utf-8")
+        outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
+        assert outcome["engine_index"]["status"] == "read" and outcome["engine_index"]["entries"] == 1
+        assert set(outcome["ended"]) == {captured.pid, group_leader.pid, marked.pid}
+        assert stranger.poll() is None and outcome["settled"] is True
+        assert ps.PANIC_CENSUS_RESIDUAL in outcome["residual"]
+    finally:
+        _end(captured, group_leader, marked, stranger)
+
+
+@pytest.mark.parametrize("body,status", [
+    (None, "absent"),
+    ("{not json", "unreadable"),
+    ('{"schema_version": 2, "entries": []}', "unsupported_schema"),
+    ('[]', "unreadable"),
+])
+def test_a_missing_unreadable_or_newer_engine_index_is_disclosed_never_read_as_empty(tmp_path, body, status):
+    ps.installation_marker(tmp_path)
+    index = ps.engine_run_scopes_path(tmp_path)
+    index.parent.mkdir(parents=True, exist_ok=True)
+    if body is not None:
+        index.write_text(body, encoding="utf-8")
+    entries, disclosure = ps.engine_scope_index(tmp_path)
+    assert entries == [] and disclosure["status"] == status
+    outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
+    assert outcome["engine_index"]["status"] == status, "the Panic facts carry the index's state"
+
+
+def test_a_newer_schema_entry_is_never_acted_on(tmp_path):
+    ps.installation_marker(tmp_path)
+    member = _sleeper()
+    try:
+        birth = ps.birth_text(member.pid)
+        index = ps.engine_run_scopes_path(tmp_path)
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text(__import__("json").dumps({"schema_version": 2, "entries": [{
+            "run_id": "r", "captured": [{"pid": member.pid, "pgid": member.pid, "birth": birth}]}]}), encoding="utf-8")
+        outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
+        assert member.poll() is None and outcome["ended"] == [] and outcome["engine_index"]["status"] == "unsupported_schema"
     finally:
         _end(member)

@@ -771,10 +771,14 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
             # supervisor thread cannot end the main-thread Cocoa webview loop on
             # macOS (it leaves a black frozen window), so exit with parity to the
             # window-close path: kill orphans, release the pid lock, os._exit(0).
-            try:  # the server's census may not have finished before its hard exit (bounded, by identity)
+            try:  # the server's census may not have finished before its hard exit: finish it by identity, bounded
                 from ouroboros.process_scope import complete_pending_panic_sweep
 
-                complete_pending_panic_sweep(DATA_DIR, exclude={os.getpid(), 1})
+                completion = threading.Thread(
+                    target=complete_pending_panic_sweep, args=(DATA_DIR,),
+                    kwargs={"exclude": {os.getpid(), os.getppid(), 1}}, name="panic-scope-completion", daemon=True)
+                completion.start()
+                completion.join(timeout=3.0)  # unfinished: the record stays for the next start; the exit never waits longer
             except Exception:
                 log.warning("Pending Panic scope sweep failed; the next start completes it", exc_info=True)
             _kill_orphaned_children(reason="panic_stop")

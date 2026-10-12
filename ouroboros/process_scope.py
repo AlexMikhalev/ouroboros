@@ -8,45 +8,55 @@ never from what a command line looks like:
 * the scope MARKER, an environment entry ``NAME=1`` whose name carries a random
   128-bit hex id (``OURO_INSTALL_SCOPE_<hex>`` for the installation,
   ``OURO_TASK_SCOPE_<hex>`` for a task; the engine's ``CLAUDEXOR_RUN_SCOPE_<hex>`` is
-  recognised for shedding). Inherited by every descendant; on Linux readable for every
-  process of this user, on macOS only for non-platform binaries — ``ps -E`` shows no
-  environment for Apple's own ``/bin/sh``, ``/bin/sleep``, ``/usr/bin/find`` under SIP,
-  so the marker alone is blind to exactly a ``find`` orphaned under a killed shell;
+  recognised for shedding and read from the engine's own index at Panic). Inherited by
+  every descendant; on Linux readable for every process of this user, on macOS only for
+  non-platform binaries — ``ps -E`` shows no environment for Apple's own ``/bin/sh``,
+  ``/bin/sleep``, ``/usr/bin/find`` under SIP, so the marker alone is blind to exactly
+  a ``find`` orphaned under a killed shell;
 * the scope's RECORDED process groups: every own command, executor foreground
   command and task-scoped service is its own group leader (``start_new_session``), so
-  the group id with the leader's measured birth is recorded at spawn and a ``cmd &`` or
-  ``nohup`` child stays in that group after the shell exits. A recorded group is
-  signalled MEMBER BY MEMBER, never ``killpg`` on a bare number, and only under the
-  pgid-reuse rule: every candidate with that pgid was born at or after the scope
-  started, and a live process whose pid IS the group id carries the recorded leader
-  birth; otherwise the id was reused and the group is skipped entirely;
-* individually recorded descendants (the ledger and executor records keep theirs).
+  the group id with the leader's measured birth is recorded at spawn (zombie-visible:
+  the shell may have exited before its row is written) and a ``cmd &`` or ``nohup``
+  child stays in that group after the shell exits. A recorded group is signalled MEMBER
+  BY MEMBER, never ``killpg`` on a bare number, and only under the pgid-reuse rule:
+  every candidate with that pgid was born at or after the recorded leader, and a live
+  process whose pid IS the group id carries the recorded leader birth; otherwise the id
+  was reused and the group is skipped entirely. Disclosed residual: a group that
+  emptied and whose id was recycled as a new, leaderless group born after the recorded
+  leader passes both rules;
+* individually recorded descendants (the engine's captured pids; the ledger and
+  executor records keep theirs).
 
-Inheritance is not a lifetime transfer: a process handed to a longer-lived custodian
-sheds every shorter-lived marker at its spawn env (``shed_scopes``). Membership is
-re-measured immediately before every signal (birth time), environment bytes are never
-logged or persisted (pid, birth, reason only), an unreadable table is unknown and
-never an empty scope, and Windows has no environment census: ``end_scope`` reports
-``unsupported`` there and the existing Job/TerminateProcess paths stay the truth.
+Every answer about one process is typed: confirmed absent or reused (ESRCH, or a
+measured birth that differs), ended by our signal, a survivor, or UNVERIFIED (identity
+unreadable, a stalled reader, a denied or failed signal). Unverified is never ended or
+gone; it is recorded with pid, birth and reason, and a scope with survivors or
+unverified members is NOT settled: its record stays for the sweep, the launcher or the
+next start. Inheritance is not a lifetime transfer: a process handed to a longer-lived
+custodian sheds every shorter-lived marker at its spawn env (``shed_scopes``).
+Environment bytes are never logged or persisted (pid, birth, reason only). Windows has
+no environment census: ``end_scope`` reports ``unsupported`` there as a final
+disclosure and the existing Job/TerminateProcess paths stay the truth.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
+import json
 import logging
 import os
 import pathlib
 import re
 import secrets
-import signal
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ouroboros import platform_layer as _pl
-from ouroboros.utils import atomic_write_json, read_json_dict, update_json_locked, utc_now_iso
+from ouroboros.utils import append_jsonl, atomic_write_json, read_json_dict, update_json_locked, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +69,10 @@ RUN_SCOPE_PREFIX = "CLAUDEXOR_RUN_SCOPE_"
 INSTALLATION_SCOPE_FILE = "installation_scope.json"
 PANIC_SWEEP_PENDING_FILE = "panic_sweep_pending.json"
 TASK_SCOPES_DIR = "task_scopes"
+# The managed engine's durable scope index, under the installation's OWN Claudexor home
+# (``claudexor_daemon.owned_config_dir()``: ``<data>/claudexor``), never another root.
+ENGINE_RUN_SCOPES_FILE = pathlib.Path("daemon") / "run-scopes.json"
+ENGINE_RUN_SCOPES_SCHEMA = 1
 
 # Task-end: TERM, a bounded grace, then KILL; Panic sends KILL at once. Bounded rescans
 # catch a fork between the snapshot and the signal; nothing here is a polling monitor.
@@ -72,12 +86,23 @@ _CLEANUP_RUNNING_STALE_SEC = 60.0
 COVERAGE_POSIX = "marker+groups"
 COVERAGE_UNSUPPORTED = "unsupported"
 
-# The one disclosure the installation census cannot resolve itself: the engine's
-# harness shells and their platform-binary descendants belong to the engine's run
-# capture set (reaped at its run barrier or at its next daemon start), and on macOS
-# their environment is invisible to this census.
-PANIC_CENSUS_RESIDUAL = ("platform-binary orphans of engine harness shells are the engine's capture "
-                        "set; this census does not see their environment on macOS")
+# Typed per-member answers.
+IDENTITY_ALIVE = "alive"
+IDENTITY_ZOMBIE = "zombie"
+IDENTITY_ABSENT = "absent"
+IDENTITY_UNREADABLE = "unreadable"
+UNVERIFIED_IDENTITY = "identity_unreadable"
+UNVERIFIED_DENIED = "signal_denied"
+UNVERIFIED_FAILED = "signal_failed"
+
+# The disclosure the installation census cannot resolve itself (owner decision
+# 2026-10-12, accepted and disclosed): on macOS a system binary started with ``&`` by a
+# shell that exited before any group or capture was recorded shows no environment and
+# belongs to no recorded group; engine harness shells' leftovers are the engine's capture
+# set, read from its index below when that index is available.
+PANIC_CENSUS_RESIDUAL = ("macOS: a system binary started with & by a shell that exited before any capture "
+                        "shows no environment and is not reached; engine harness leftovers are reached "
+                        "through the engine's run-scope index when it is readable")
 
 
 # --------------------------------------------------------------------------- markers
@@ -109,7 +134,7 @@ def shed_scopes(env: Mapping[str, str], *, keep_prefixes: Iterable[str] = (INSTA
     """
     kept = tuple(keep_prefixes)
     return {key: value for key, value in env.items()
-            if not is_scope_name(key) or key.startswith(kept)}
+            if not is_scope_name(key) or (bool(kept) and key.startswith(kept))}
 
 
 def installation_scope_entries(env: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
@@ -172,28 +197,50 @@ def panic_census_exclusions() -> set:
     return {os.getpid(), int(_PLANTED.get("launcher_pid") or os.getppid()), 1}
 
 
-# --------------------------------------------------------------------------- census
+def initialize_installation_scope(data_dir: Any) -> str:
+    """The one post-admission, pre-child scope initialization every server entry runs:
+    finish a Panic sweep the previous generation could not complete (before this one
+    spawns anything, excluding this process and its parent), then plant the marker.
+    Idempotent; ``main`` and the imported ASGI ``lifespan`` share it."""
+    try:
+        complete_pending_panic_sweep(data_dir, exclude={os.getpid(), os.getppid(), 1})
+    except Exception:
+        log.warning("pending Panic scope sweep failed; its record stays for the next start", exc_info=True)
+    return plant_installation_scope(data_dir)
+
+
+# --------------------------------------------------------------------------- identity and census
 
 @dataclass
 class _Row:
     pid: int
     ppid: int
     pgid: int
-    birth: str          # the exact ``ps -o lstart`` text, compared for equality
-    epoch: float        # the same instant as seconds, for "born after the scope started"
+    birth: str          # the C-locale ``ps -o lstart`` text, compared for equality
+    epoch: float        # the same instant as seconds, for "born after the recorded leader"
+    state: str = IDENTITY_ALIVE
     markers: Optional[set] = field(default_factory=set)  # None: environment unreadable
+
+
+@dataclass
+class _Identity:
+    state: str          # alive | zombie | absent | unreadable
+    birth: str = ""
+    pgid: int = 0
 
 
 _MONTHS = {name: index for index, name in enumerate(
     ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), start=1)}
+_LSTART = r"[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} \d\d:\d\d:\d\d \d{4}"
 _LSTART_RE = re.compile(r"^[A-Za-z]{3} ([A-Za-z]{3}) +(\d{1,2}) (\d\d):(\d\d):(\d\d) (\d{4})$")
-_ROW_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+([A-Za-z]{3} [A-Za-z]{3} +\d{1,2} \d\d:\d\d:\d\d \d{4})\s*(.*)$")
+_CENSUS_ROW_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+(" + _LSTART + r")\s+(\S+)\s*(.*)$")
+_IDENTITY_ROW_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(" + _LSTART + r")\s+(\S+)\s*$")
 
 
 def _ps_env() -> Dict[str, str]:
-    # English month/day names whatever the server's locale: the parser below has no
-    # locale tables, and both the snapshot and the per-pid re-measure use this env.
-    return {**os.environ, "LC_ALL": "C", "LANG": "C"}
+    # English month/day names whatever the server's locale (the parser has no locale
+    # tables); the census's own ps child carries NO scope marker, so it never lists itself.
+    return shed_scopes({**os.environ, "LC_ALL": "C", "LANG": "C"}, keep_prefixes=())
 
 
 def birth_epoch(text: str) -> float:
@@ -208,72 +255,84 @@ def birth_epoch(text: str) -> float:
         return 0.0
 
 
-def birth_text(pid: int) -> str:
-    """The birth text of ``pid`` as the table still shows it (``""`` when gone or unmeasurable).
+def lstart_text(epoch: float) -> str:
+    """The C-locale ``ps -o lstart`` spelling of ``epoch`` (procps prints ``ctime`` of
+    ``btime + starttime // CLK_TCK``), so a Linux birth read from ``/proc`` compares
+    equal to the engine's recorded text."""
+    return time.strftime("%a %b %e %H:%M:%S %Y", time.localtime(int(epoch)))
 
-    A just-exited leader not yet waited for is a zombie with its birth intact: that is the
-    identity a group RECORD needs (the command may have exited before its row was written)."""
-    if _pl.IS_WINDOWS or int(pid) <= 0:
-        return ""
+
+def _state_letter(text: str) -> str:
+    return IDENTITY_ZOMBIE if str(text or "").startswith("Z") else IDENTITY_ALIVE
+
+
+# --- Linux: /proc needs no ps (the documented Docker image ships none)
+
+_BOOT_EPOCH: List[float] = []
+
+
+def _boot_epoch() -> float:
+    if _BOOT_EPOCH:
+        return _BOOT_EPOCH[0]
     try:
-        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True,
-                             text=True, timeout=_BIRTH_TIMEOUT_SEC, env=_ps_env())
-    except Exception:
-        return ""
-    text = (out.stdout or "").strip()
-    return text if out.returncode == 0 else ""
+        with open("/proc/stat", "rb") as handle:
+            for line in handle:
+                if line.startswith(b"btime "):
+                    _BOOT_EPOCH.append(float(int(line.split()[1])))
+                    return _BOOT_EPOCH[0]
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0.0
 
 
-def measure_birth(pid: int) -> str:
-    """The LIVE birth text of ``pid`` (``""`` when gone, a zombie, or unmeasurable).
-
-    The identity re-measured immediately before every signal and every liveness
-    answer: a pid that now names another process has another birth; a corpse can
-    execute nothing and is gone."""
-    text = birth_text(pid)
-    if not text:
-        return ""
-    from ouroboros.process_containment import pid_is_zombie
-
-    return "" if pid_is_zombie(pid) else text
+def parse_proc_stat(data: bytes, *, boot_epoch: float, hz: int) -> Tuple[str, int, int, float]:
+    """``(state, ppid, pgid, birth_epoch)`` from one ``/proc/<pid>/stat`` body (comm is
+    parenthesised and may hold spaces or ``)``, so fields follow the LAST ``)``)."""
+    fields = data.rpartition(b")")[2].split()
+    state = fields[0].decode("ascii", "replace")
+    ppid, pgid, start_ticks = int(fields[1]), int(fields[2]), int(fields[19])
+    return state, ppid, pgid, float(int(boot_epoch) + start_ticks // max(1, int(hz)))
 
 
-def census(markers: Iterable[str] = ()) -> Optional[Dict[int, _Row]]:
-    """One snapshot of the live process table: pid, ppid, pgid, birth and which of
-    ``markers`` each process visibly carries. ``None`` when the table could not be read
-    (unknown, never empty). macOS reads the environment column of one ``ps -E``;
-    Linux reads each ``/proc/<pid>/environ`` as exact NUL-separated entries."""
-    if _pl.IS_WINDOWS:
-        return None
-    wanted = {str(marker) for marker in markers if marker}
-    proc_available = os.path.isdir("/proc")
-    columns = "pid=,ppid=,pgid=,lstart=" + ("" if proc_available else ",command=")
-    argv = ["ps", "-A", "-o", columns] if proc_available else ["ps", "-E", "-ww", "-A", "-o", columns]
+def _proc_identity(pid: int) -> _Identity:
     try:
-        out = subprocess.run(argv, capture_output=True, text=True, errors="replace",
-                             timeout=_CENSUS_TIMEOUT_SEC, env=_ps_env())
-    except Exception:
+        with open(f"/proc/{int(pid)}/stat", "rb") as handle:
+            data = handle.read()
+    except FileNotFoundError:
+        return _Identity(IDENTITY_ABSENT)
+    except ProcessLookupError:
+        return _Identity(IDENTITY_ABSENT)
+    except OSError:
+        return _Identity(IDENTITY_UNREADABLE)
+    try:
+        state, _ppid, pgid, epoch = parse_proc_stat(data, boot_epoch=_boot_epoch(), hz=os.sysconf("SC_CLK_TCK"))
+    except (ValueError, IndexError, OSError):
+        return _Identity(IDENTITY_UNREADABLE)
+    return _Identity(_state_letter(state), lstart_text(epoch), pgid)
+
+
+def _proc_rows(assignments: set, wanted: set) -> Optional[Dict[int, _Row]]:
+    try:
+        names = os.listdir("/proc")
+    except OSError:
         return None
-    if out.returncode != 0:
-        return None
+    boot, hz = _boot_epoch(), os.sysconf("SC_CLK_TCK")
     rows: Dict[int, _Row] = {}
-    assignments = {f"{marker}={SCOPE_VALUE}" for marker in wanted}
-    for line in (out.stdout or "").splitlines():
-        match = _ROW_RE.match(line)
-        if not match:
+    for name in names:
+        if not name.isdigit():
             continue
-        pid, ppid, pgid, birth, rest = match.groups()
-        row = _Row(int(pid), int(ppid), int(pgid), birth.strip(), birth_epoch(birth))
-        if proc_available:
-            row.markers = _proc_markers(row.pid, assignments)
-        else:
-            words = set(rest.split())
-            row.markers = {marker for marker in wanted if f"{marker}={SCOPE_VALUE}" in words}
-        rows[row.pid] = row
+        pid = int(name)
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as handle:
+                state, ppid, pgid, epoch = parse_proc_stat(handle.read(), boot_epoch=boot, hz=hz)
+        except (OSError, ValueError, IndexError):
+            continue  # gone between listdir and read, or unreadable: not a row we can name
+        rows[pid] = _Row(pid, ppid, pgid, lstart_text(epoch), epoch, _state_letter(state),
+                         _proc_markers(pid, assignments, wanted))
     return rows or None
 
 
-def _proc_markers(pid: int, assignments: set) -> Optional[set]:
+def _proc_markers(pid: int, assignments: set, wanted: set) -> Optional[set]:
     if not assignments:
         return set()
     try:
@@ -281,23 +340,103 @@ def _proc_markers(pid: int, assignments: set) -> Optional[set]:
             entries = set(handle.read().split(b"\0"))
     except OSError:
         return None  # gone, nondumpable or another user's: unknown, not "no"
-    return {entry.decode("utf-8", "replace").split("=", 1)[0]
-            for entry in entries if entry.decode("utf-8", "replace") in assignments}
+    present = {entry.decode("utf-8", "replace") for entry in entries}
+    return {marker for marker in wanted if f"{marker}={SCOPE_VALUE}" in present}
+
+
+# --- macOS/BSD: ps is the only kernel-state reader
+
+def _ps_identities(pids: List[int]) -> Dict[int, _Identity]:
+    try:
+        out = subprocess.run(["ps", "-o", "pid=,pgid=,lstart=,state=", "-p", ",".join(str(pid) for pid in pids)],
+                             capture_output=True, text=True, errors="replace", timeout=_BIRTH_TIMEOUT_SEC,
+                             env=_ps_env())
+    except Exception:
+        return {pid: _Identity(IDENTITY_UNREADABLE) for pid in pids}
+    if out.returncode not in (0, 1):  # 1 = none of the pids exists; anything else is no answer
+        return {pid: _Identity(IDENTITY_UNREADABLE) for pid in pids}
+    found: Dict[int, _Identity] = {}
+    for line in (out.stdout or "").splitlines():
+        match = _IDENTITY_ROW_RE.match(line)
+        if match:
+            pid, pgid, birth, state = match.groups()
+            found[int(pid)] = _Identity(_state_letter(state), birth.strip(), int(pgid))
+    return {pid: found.get(pid, _Identity(IDENTITY_ABSENT)) for pid in pids}
+
+
+def read_identities(pids: Iterable[int]) -> Dict[int, _Identity]:
+    """One batched identity read (``alive``/``zombie`` with birth and pgid, ``absent`` or
+    ``unreadable``) for ``pids``: Linux from ``/proc``, macOS from ONE ``ps -p a,b,c``."""
+    wanted = sorted({int(pid) for pid in pids if int(pid) > 0})
+    if not wanted:
+        return {}
+    if _pl.IS_WINDOWS:
+        return {pid: _Identity(IDENTITY_UNREADABLE) for pid in wanted}
+    if os.path.isdir("/proc"):
+        return {pid: _proc_identity(pid) for pid in wanted}
+    return _ps_identities(wanted)
+
+
+def measure_birth(pid: int) -> str:
+    """The LIVE birth text of ``pid``: ``""`` when gone, a zombie, or unmeasurable (a
+    liveness answer for callers that only need "is this exact process still running")."""
+    identity = read_identities([pid]).get(int(pid))
+    return identity.birth if identity is not None and identity.state == IDENTITY_ALIVE else ""
+
+
+def birth_text(pid: int) -> str:
+    """The birth text as the table still shows it, a zombie's included (``""`` when gone
+    or unmeasurable): the identity a group RECORD needs for a leader that already exited."""
+    identity = read_identities([pid]).get(int(pid))
+    return identity.birth if identity is not None and identity.state in (IDENTITY_ALIVE, IDENTITY_ZOMBIE) else ""
+
+
+def census(markers: Iterable[str] = ()) -> Optional[Dict[int, _Row]]:
+    """One snapshot of the live process table: pid, ppid, pgid, birth, state and which
+    of ``markers`` each process visibly carries. ``None`` when the table could not be
+    read (unknown, never empty). Linux reads ``/proc`` (no ``ps`` needed); macOS reads
+    the environment column of one ``ps -E``."""
+    if _pl.IS_WINDOWS:
+        return None
+    wanted = {str(marker) for marker in markers if marker}
+    assignments = {f"{marker}={SCOPE_VALUE}" for marker in wanted}
+    if os.path.isdir("/proc"):
+        return _proc_rows(assignments, wanted)
+    try:
+        out = subprocess.run(["ps", "-E", "-ww", "-A", "-o", "pid=,ppid=,pgid=,lstart=,state=,command="],
+                             capture_output=True, text=True, errors="replace",
+                             timeout=_CENSUS_TIMEOUT_SEC, env=_ps_env())
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    rows: Dict[int, _Row] = {}
+    for line in (out.stdout or "").splitlines():
+        match = _CENSUS_ROW_RE.match(line)
+        if not match:
+            continue
+        pid, ppid, pgid, birth, state, rest = match.groups()
+        words = set(rest.split())
+        rows[int(pid)] = _Row(int(pid), int(ppid), int(pgid), birth.strip(), birth_epoch(birth),
+                              _state_letter(state), {marker for marker in wanted if f"{marker}={SCOPE_VALUE}" in words})
+    return rows or None
 
 
 # --------------------------------------------------------------------------- membership
 
-def scope_members(rows: Mapping[int, _Row], *, marker: str = "", groups: Iterable[Mapping[str, Any]] = (),
+def scope_members(rows: Mapping[int, _Row], *, marker: str = "", markers: Iterable[str] = (),
+                  groups: Iterable[Mapping[str, Any]] = (), captured: Iterable[Mapping[str, Any]] = (),
                   scope_start_epoch: float = 0.0, exclude: Iterable[int] = ()) -> Dict[str, Any]:
     """The scope's live members from one snapshot: marker members ∪ members of the
-    recorded groups that pass the pgid-reuse rule. Returns ``{"members": {pid: row},
-    "groups_reused": [pgid, ...], "groups_gone": [pgid, ...]}``."""
+    recorded groups that pass the pgid-reuse rule ∪ individually recorded descendants
+    whose birth still matches. Returns ``{"members": {pid: row}, "groups_reused": [...],
+    "groups_gone": [...], "captured_gone": [...]}``."""
     excluded = {int(pid) for pid in exclude} | {0, 1}
+    names = {str(name) for name in [marker, *markers] if name}
     members: Dict[int, _Row] = {}
-    if marker:
-        for row in rows.values():
-            if row.pid not in excluded and row.markers and marker in row.markers:
-                members[row.pid] = row
+    for row in rows.values():
+        if row.pid not in excluded and row.markers and names & row.markers:
+            members[row.pid] = row
     reused: List[int] = []
     gone: List[int] = []
     for group in groups:
@@ -313,88 +452,152 @@ def scope_members(rows: Mapping[int, _Row], *, marker: str = "", groups: Iterabl
         # latest); lstart has one-second resolution, hence the one-second tolerance.
         floor = (birth_epoch(leader_birth) or float(scope_start_epoch or 0.0)) - 1.0
         leader = rows.get(pgid)
-        if (leader is not None and leader.birth != leader_birth) or any(
+        # A live pid == G must carry the recorded leader birth; an unrecorded leader birth
+        # cannot vouch for a live leader, so the group is skipped (disclosed) rather than
+        # signalled on a guess.
+        if (leader is not None and (not leader_birth or leader.birth != leader_birth)) or any(
                 row.epoch and row.epoch < floor for row in candidates):
             reused.append(pgid)  # the id names another group now: skipped entirely
             continue
         for row in candidates:
             if row.pid not in excluded:
                 members[row.pid] = row
-    return {"members": members, "groups_reused": reused, "groups_gone": gone}
+    captured_gone: List[int] = []
+    for item in captured:
+        pid, birth = int(item.get("pid") or 0), str(item.get("birth") or "")
+        row = rows.get(pid)
+        if pid <= 1 or pid in excluded:
+            continue
+        if row is None or not birth or row.birth != birth:
+            captured_gone.append(pid)  # absent, or the pid names another process now
+            continue
+        members[pid] = row
+    return {"members": members, "groups_reused": reused, "groups_gone": gone, "captured_gone": captured_gone}
 
 
-def _signal_member(pid: int, birth: str, signum: int) -> bool:
-    """Signal ``pid`` only when it still carries ``birth``; True when a signal was sent."""
-    if measure_birth(pid) != birth:
-        return False
-    try:
-        os.kill(pid, signum)
-        return True
-    except (ProcessLookupError, PermissionError, OSError):
-        return False
-
-
-def _await_exit(targets: Mapping[int, str], deadline: float) -> Dict[int, str]:
-    """The ``{pid: birth}`` entries still alive with the same birth at ``deadline``."""
+def _await_exit(targets: Mapping[int, str], deadline: float) -> Tuple[Dict[int, str], Dict[int, str]]:
+    """Poll ``{pid: birth}`` with ONE batched identity read per iteration until every
+    target is gone or ``deadline``. Returns ``(still alive with the same birth,
+    unverified {pid: reason})``: a target whose identity turned unreadable is never read
+    as gone."""
     remaining = dict(targets)
+    unverified: Dict[int, str] = {}
     while remaining:
-        remaining = {pid: birth for pid, birth in remaining.items() if measure_birth(pid) == birth}
+        identities = read_identities(remaining)
+        alive: Dict[int, str] = {}
+        unverified = {}
+        for pid, birth in remaining.items():
+            identity = identities.get(pid) or _Identity(IDENTITY_UNREADABLE)
+            if identity.state == IDENTITY_UNREADABLE:
+                unverified[pid] = UNVERIFIED_IDENTITY
+                alive[pid] = birth  # keep asking until the deadline
+            elif identity.state == IDENTITY_ALIVE and identity.birth == birth:
+                alive[pid] = birth
+            # absent, zombie, or another birth: this exact process is gone
+        remaining = alive
         if not remaining or time.monotonic() >= deadline:
             break
         time.sleep(0.05)
-    return remaining
+    return {pid: birth for pid, birth in remaining.items() if pid not in unverified}, unverified
 
 
-def end_scope(*, marker: str = "", groups: Iterable[Mapping[str, Any]] = (), scope_start_epoch: float = 0.0,
+def end_scope(*, marker: str = "", markers: Iterable[str] = (), groups: Iterable[Mapping[str, Any]] = (),
+              captured: Iterable[Mapping[str, Any]] = (), scope_start_epoch: float = 0.0,
               exclude: Iterable[int] = (), grace_sec: float = TASK_END_GRACE_SEC, term_first: bool = True,
               rescans: int = 2) -> Dict[str, Any]:
-    """End every live member of a scope by measured identity; report what is left.
+    """End every live member of a scope by measured identity; report what is left, typed.
 
-    ``ended`` lists members gone after our signal; ``already_gone`` members that left
-    between the snapshot and the signal (a vanished, birth-checked member is gone);
-    ``survivors`` members alive with their recorded birth after the last pass;
-    ``census_failed`` means the table could not be read and NOTHING is claimed clean.
+    ``ended``: members gone after our signal. ``already_gone``: members confirmed absent or
+    reused (ESRCH, a corpse, or a measured birth that differs) before the signal.
+    ``survivors``: members alive with their recorded birth after the last pass.
+    ``unverified``: members whose identity could not be read or whose signal was denied
+    or failed — never counted as ended or gone. ``census_failed``: the table could not be
+    read and NOTHING is claimed clean. ``settled`` is true only with a readable census,
+    no survivors and no unverified member.
     """
     outcome: Dict[str, Any] = {
         "coverage": COVERAGE_UNSUPPORTED if _pl.IS_WINDOWS else COVERAGE_POSIX,
-        "ended": [], "already_gone": [], "survivors": [], "groups_reused": [], "groups_gone": [],
-        "census_failed": False, "scans": 0,
+        "ended": [], "already_gone": [], "survivors": [], "unverified": [],
+        "groups_reused": [], "groups_gone": [], "captured_gone": [],
+        "census_failed": False, "settled": False, "scans": 0,
     }
     if _pl.IS_WINDOWS:
         return outcome
-    groups = list(groups)
+    groups, captured = list(groups), list(captured)
     excluded = set(int(pid) for pid in exclude)
     seen: Dict[int, str] = {}
     for scan in range(max(1, int(rescans) + 1)):
-        rows = census([marker] if marker else [])
+        names = [name for name in [marker, *markers] if name]
+        rows = census(names)
         if rows is None:
             outcome["census_failed"] = True
             break
         outcome["scans"] = scan + 1
-        view = scope_members(rows, marker=marker, groups=groups, scope_start_epoch=scope_start_epoch,
-                             exclude=excluded)
-        outcome["groups_reused"] = sorted(set(outcome["groups_reused"]) | set(view["groups_reused"]))
-        outcome["groups_gone"] = sorted(set(outcome["groups_gone"]) | set(view["groups_gone"]))
+        view = scope_members(rows, markers=names, groups=groups, captured=captured,
+                             scope_start_epoch=scope_start_epoch, exclude=excluded)
+        for key in ("groups_reused", "groups_gone", "captured_gone"):
+            outcome[key] = sorted(set(outcome[key]) | set(view[key]))
         fresh = {pid: row.birth for pid, row in view["members"].items() if pid not in seen}
         if not fresh:
             break  # nothing in the scope, or a quiet rescan after the kill pass
         seen.update(fresh)
-        signalled: Dict[int, str] = {}
-        for pid, birth in fresh.items():
-            if _signal_member(pid, birth, signal.SIGTERM if term_first else signal.SIGKILL):
-                signalled[pid] = birth
-            else:
-                outcome["already_gone"].append(pid)
         if term_first:
-            left = _await_exit(signalled, time.monotonic() + max(0.0, float(grace_sec)))
-            for pid, birth in left.items():
-                _signal_member(pid, birth, signal.SIGKILL)
-        left = _await_exit(signalled, time.monotonic() + _KILL_CONFIRM_SEC)
-        outcome["ended"].extend(pid for pid in signalled if pid not in left)
+            termed = _signal_pass(fresh, outcome, graceful=True, gone_bucket="already_gone")
+            alive, unverified = _await_exit(termed, time.monotonic() + max(0.0, float(grace_sec)))
+            _note_unverified(outcome, unverified, termed)
+            outcome["ended"].extend(pid for pid in termed if pid not in alive and pid not in unverified)
+            to_confirm = _signal_pass(alive, outcome, graceful=False, gone_bucket="ended")  # died of our TERM
+        else:
+            to_confirm = _signal_pass(fresh, outcome, graceful=False, gone_bucket="already_gone")
+        left, unverified = _await_exit(to_confirm, time.monotonic() + _KILL_CONFIRM_SEC)
+        _note_unverified(outcome, unverified, to_confirm)
+        outcome["ended"].extend(pid for pid in to_confirm if pid not in left and pid not in unverified)
         outcome["survivors"].extend({"pid": pid, "birth": birth} for pid, birth in left.items())
         time.sleep(_RESCAN_SETTLE_SEC)
-    outcome["ended"].sort()
+    outcome["ended"] = sorted(set(outcome["ended"]))
+    outcome["settled"] = not outcome["census_failed"] and not outcome["survivors"] and not outcome["unverified"]
     return outcome
+
+
+def _signal_pass(targets: Mapping[int, str], outcome: Dict[str, Any], *, graceful: bool,
+                 gone_bucket: str) -> Dict[int, str]:
+    """Re-measure every target in ONE read, then signal each still-matching member once.
+    Returns the members whose signal was accepted. A target found absent, a corpse or
+    reborn lands in ``gone_bucket`` (``already_gone`` before any signal of ours, ``ended``
+    after our TERM); an unreadable identity, a denied or a failed signal is UNVERIFIED."""
+    identities = read_identities(targets)
+    accepted: Dict[int, str] = {}
+    for pid, birth in targets.items():
+        identity = identities.get(pid) or _Identity(IDENTITY_UNREADABLE)
+        if identity.state == IDENTITY_UNREADABLE:
+            _add_unverified(outcome, pid, birth, UNVERIFIED_IDENTITY)
+            continue
+        if identity.state != IDENTITY_ALIVE or identity.birth != birth:
+            _add_gone(outcome, gone_bucket, pid)  # absent, a corpse, or another process now
+            continue
+        result = _pl.deliver_signal(pid, graceful=graceful)
+        if result == _pl.SIGNAL_SENT:
+            accepted[pid] = birth
+        elif result == _pl.SIGNAL_ABSENT:
+            _add_gone(outcome, gone_bucket, pid)
+        else:
+            _add_unverified(outcome, pid, birth, UNVERIFIED_DENIED if result == _pl.SIGNAL_DENIED else UNVERIFIED_FAILED)
+    return accepted
+
+
+def _add_gone(outcome: Dict[str, Any], bucket: str, pid: int) -> None:
+    if pid not in outcome[bucket]:
+        outcome[bucket].append(int(pid))
+
+
+def _add_unverified(outcome: Dict[str, Any], pid: int, birth: str, reason: str) -> None:
+    if not any(item["pid"] == pid for item in outcome["unverified"]):
+        outcome["unverified"].append({"pid": int(pid), "birth": birth, "reason": reason})
+
+
+def _note_unverified(outcome: Dict[str, Any], unverified: Mapping[int, str], signalled: Mapping[int, str]) -> None:
+    for pid, reason in unverified.items():
+        _add_unverified(outcome, pid, signalled.get(pid, ""), reason)
 
 
 # --------------------------------------------------------------------------- task scopes
@@ -428,16 +631,25 @@ def task_scope_records(drive_root: Any) -> List[Dict[str, Any]]:
     return records
 
 
-def _fresh_record(task_id: str, groups: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+def _fresh_record(task_id: str, groups: Optional[List[Dict[str, Any]]] = None,
+                  previous_markers: Iterable[str] = ()) -> Dict[str, Any]:
     return {"task_id": str(task_id), "marker": mint_marker(TASK_SCOPE_PREFIX),
-            "minted_at": utc_now_iso(), "minted_epoch": time.time(), "groups": list(groups or [])}
+            "minted_at": utc_now_iso(), "minted_epoch": time.time(), "groups": list(groups or []),
+            "previous_markers": [name for name in previous_markers if is_scope_name(name)]}
 
 
 def _rotated(task_id: str, current: Dict[str, Any]) -> Dict[str, Any]:
     """A fresh record for a NEW launch of a task whose cleanup already started: the new
-    children get a fresh id so the running cleanup cannot reach them, while the groups the
-    old record still owed are carried (rule 2 judges each at the next settlement)."""
-    return _fresh_record(task_id, current.get("groups") or [])
+    children get a fresh id so the running cleanup cannot reach them, while the groups
+    AND the markers the old record still owed are carried (rule 2 and the census judge
+    each at the next settlement)."""
+    previous = [str(current.get("marker") or ""), *(current.get("previous_markers") or [])]
+    return _fresh_record(task_id, current.get("groups") or [], previous)
+
+
+def _record_markers(record: Mapping[str, Any]) -> List[str]:
+    return [name for name in [str(record.get("marker") or ""), *(record.get("previous_markers") or [])]
+            if is_scope_name(name)]
 
 
 def _retire_record(path: pathlib.Path, marker: str) -> bool:
@@ -506,6 +718,18 @@ def scoped_child_env(env: Mapping[str, str], target: Optional[tuple]) -> Dict[st
     return {**env, **task_scope_env(*target)}
 
 
+def leader_facts(pid: int) -> Tuple[int, str]:
+    """``(pgid, birth)`` of a just-spawned session leader, zombie-visible: the shell may
+    have exited before its row is written, and ``os.getpgid`` refuses a corpse (ESRCH on
+    macOS). Every seam spawns with ``start_new_session``, so a leader the table no longer
+    shows at all still led the group that bears its pid (structural); its birth is then
+    unrecorded, which rule 2 treats as "cannot vouch for a live leader"."""
+    identity = read_identities([pid]).get(int(pid))
+    if identity is not None and identity.state in (IDENTITY_ALIVE, IDENTITY_ZOMBIE):
+        return (identity.pgid or int(pid)), identity.birth
+    return int(pid), ""
+
+
 def record_task_group(drive_root: Any, task_id: str, pid: int) -> Optional[Dict[str, Any]]:
     """Record the group a just-spawned task child leads, with its measured birth.
 
@@ -513,9 +737,8 @@ def record_task_group(drive_root: Any, task_id: str, pid: int) -> Optional[Dict[
     syscall), so a task that runs thousands of commands keeps a small record."""
     if _pl.IS_WINDOWS or not drive_root or not task_id or int(pid) <= 0:
         return None
-    pgid = _pl.process_group_id(int(pid))
-    birth = birth_text(int(pid))  # the leader may already have exited: its corpse still names its birth
-    if pgid <= 1 or not birth:
+    pgid, birth = leader_facts(int(pid))
+    if pgid <= 1:
         return None
     entry = {"pgid": pgid, "leader_pid": int(pid), "leader_birth": birth, "recorded_at": utc_now_iso()}
     path = task_scope_path(drive_root, task_id)
@@ -586,20 +809,63 @@ def wait_for_cleanups(timeout_sec: float = 10.0) -> None:
         thread.join(timeout=max(0.0, deadline - time.monotonic()))
 
 
+_OUTCOME_DIGEST_KEYS = ("coverage", "ended", "already_gone", "survivors", "unverified", "groups_reused",
+                        "groups_gone", "captured_gone", "census_failed", "settled")
+
+
+def outcome_digest(outcome: Mapping[str, Any]) -> str:
+    """A digest of the facts that matter (never the clock), so a repeated unchanged
+    outcome is recorded once instead of on every sweep."""
+    body = json.dumps({key: outcome.get(key) for key in _OUTCOME_DIGEST_KEYS}, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _record_task_scope_outcome(drive_root: Any, task_id: str, facts: Mapping[str, Any]) -> bool:
+    """Attach the outcome to the task's result row WITHOUT writing a status: the row's
+    lifecycle stays whatever the terminal writer made it (C7: this is no status writer)."""
+    from ouroboros.task_results import require_writable_task_result_schema, stamp_task_result_schema
+    from ouroboros.task_store import patch_document
+
+    def attach(existing: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not existing:
+            return None
+        require_writable_task_result_schema(existing)
+        return stamp_task_result_schema({**existing, "process_scope": dict(facts), "updated_at": utc_now_iso()})
+
+    try:
+        stored = patch_document(drive_root, str(task_id), attach)
+    except Exception:
+        log.warning("task scope outcome for %s could not be recorded on its result", task_id, exc_info=True)
+        return False
+    return isinstance(stored, dict) and stored.get("process_scope") == dict(facts)
+
+
+def _unsettled_reason(outcome: Mapping[str, Any]) -> str:
+    if outcome.get("census_failed"):
+        return "census_failed"
+    if outcome.get("survivors"):
+        return "survivors"
+    if outcome.get("unverified"):
+        return "unverified"
+    return ""
+
+
 def settle_task_scope(drive_root: Any, task_id: str, *, reason: str = "sweep") -> Optional[Dict[str, Any]]:
     """Execute one task's cleanup obligation on positive terminal evidence only.
 
     Reads the record and the durable result; a task that is not truly terminal (or whose
-    row is a reopenable placeholder, or unreadable) is left alone. Records the outcome on
-    the result (``process_scope``, an identical-status rewrite) and retires the record;
-    a failed census keeps the record for the next sweep.
+    row is a reopenable placeholder, or unreadable) is left alone. The outcome is attached
+    to the result (``process_scope``, no status write) when it changed since the last
+    attempt; the record is retired only when the outcome is SETTLED (census readable, no
+    survivor, no unverified member) and was recorded — otherwise it stays, with its marker
+    and group evidence, for the next sweep. An unsupported platform is a final disclosure.
     """
     path = task_scope_path(drive_root, task_id)
     record = read_json_dict(path)
     if not record:
         return None
     try:
-        from ouroboros.task_results import load_task_result, write_task_result
+        from ouroboros.task_results import load_task_result
 
         row = load_task_result(drive_root, str(task_id))
     except Exception:
@@ -612,7 +878,7 @@ def settle_task_scope(drive_root: Any, task_id: str, *, reason: str = "sweep") -
         cleanup = (current or {}).get("cleanup") or {}
         if cleanup.get("state") == "running" and started_at - float(cleanup.get("started_epoch") or 0) < _CLEANUP_RUNNING_STALE_SEC:
             return None  # another custodian is on it right now
-        return {**current, "cleanup": {"state": "running", "started_epoch": started_at, "reason": reason}}
+        return {**current, "cleanup": {**cleanup, "state": "running", "started_epoch": started_at, "reason": reason}}
 
     try:
         claimed = update_json_locked(path, claim)
@@ -620,22 +886,27 @@ def settle_task_scope(drive_root: Any, task_id: str, *, reason: str = "sweep") -
         return None
     if (claimed.get("cleanup") or {}).get("started_epoch") != started_at:
         return None
-    outcome = end_scope(marker=str(claimed.get("marker") or ""), groups=claimed.get("groups") or [],
+    previous_cleanup = dict(claimed.get("cleanup") or {})
+    outcome = end_scope(markers=_record_markers(claimed), groups=claimed.get("groups") or [],
                         scope_start_epoch=float(claimed.get("minted_epoch") or 0.0),
                         exclude={os.getpid(), 1})
     facts = {**outcome, "marker_role": "task", "reason": reason, "settled_at": utc_now_iso()}
-    try:
-        write_task_result(drive_root, str(task_id), str(row.get("status") or ""), process_scope=facts)
-    except Exception:
-        log.warning("task scope outcome for %s could not be recorded on its result", task_id, exc_info=True)
-    if outcome["census_failed"]:
-        try:
-            update_json_locked(path, lambda current: {**current, "cleanup": {
-                "state": "pending", "reason": "census_failed", "attempted_at": utc_now_iso()}})
-        except (OSError, TimeoutError, ValueError):
-            pass
+    digest = outcome_digest(outcome)
+    recorded = digest == str(previous_cleanup.get("last_digest") or "")  # unchanged: recorded already
+    if not recorded:
+        recorded = _record_task_scope_outcome(drive_root, task_id, facts)
+    final = outcome["coverage"] == COVERAGE_UNSUPPORTED  # no census here: disclosed once, never retried
+    if recorded and (outcome["settled"] or final):
+        _retire_record(path, str(claimed.get("marker") or ""))
         return facts
-    _retire_record(path, str(claimed.get("marker") or ""))
+    pending = {"state": "pending", "reason": _unsettled_reason(outcome) or "outcome_unrecorded",
+               "attempts": int(previous_cleanup.get("attempts") or 0) + 1, "attempted_at": utc_now_iso(),
+               **({"last_digest": digest} if recorded else {})}
+    try:
+        update_json_locked(path, lambda current: {**current, "cleanup": pending}
+                           if str((current or {}).get("marker") or "") == str(claimed.get("marker") or "") else None)
+    except (OSError, TimeoutError, ValueError):
+        pass
     return facts
 
 
@@ -662,6 +933,79 @@ def settle_task_scopes(drive_root: Any, live_task_ids: Any = None) -> List[Dict[
     return settled
 
 
+# --------------------------------------------------------------------------- the engine's index
+
+def engine_run_scopes_path(data_dir: Any) -> pathlib.Path:
+    from ouroboros.claudexor_daemon import _OWNED_DIR_NAME
+
+    return pathlib.Path(data_dir) / _OWNED_DIR_NAME / ENGINE_RUN_SCOPES_FILE
+
+
+def engine_scope_index(data_dir: Any) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """The managed engine's durable run-scope index (``daemon/run-scopes.json``,
+    ``schema_version`` 1): per entry ``run_id``, ``marker``, ``state``, ``scope_start``,
+    ``root_groups[{pgid, leader_pid, leader_birth}]``, ``captured[{pid, pgid, birth}]``,
+    births as C-locale ``ps -o lstart=`` text. Returns ``(entries, disclosure)``; a
+    missing, unreadable or newer-schema file yields no entries and a typed disclosure,
+    never an empty scope read as clean."""
+    path = engine_run_scopes_path(data_dir)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return [], {"status": "absent", "path": str(path)}
+    except OSError as exc:
+        return [], {"status": "unreadable", "path": str(path), "error": type(exc).__name__}
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        return [], {"status": "unreadable", "path": str(path), "error": type(exc).__name__}
+    if not isinstance(data, dict):
+        return [], {"status": "unreadable", "path": str(path), "error": "not an object"}
+    version = data.get("schema_version")
+    if version != ENGINE_RUN_SCOPES_SCHEMA:
+        return [], {"status": "unsupported_schema", "path": str(path), "schema_version": version}
+    raw_entries: Any = None
+    for key in ("entries", "scopes", "runs"):
+        if isinstance(data.get(key), (list, dict)):
+            raw_entries = data[key]
+            break
+    if isinstance(raw_entries, dict):
+        raw_entries = [{"run_id": run_id, **value} for run_id, value in raw_entries.items() if isinstance(value, dict)]
+    entries = [entry for entry in (raw_entries or []) if isinstance(entry, dict)]
+    return entries, {"status": "read", "path": str(path), "entries": len(entries),
+                     "states": sorted({str(entry.get("state") or "") for entry in entries})}
+
+
+def _engine_scope_targets(entries: Iterable[Mapping[str, Any]]) -> Tuple[List[str], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """``(markers, groups, captured)`` the engine recorded: every entry's marker through
+    the census; its root groups and the groups its captured pids lead (a captured pid
+    that is its own group id vouches for that group's leader birth) under rule 2; and
+    each captured pid by its recorded birth."""
+    markers: List[str] = []
+    groups: List[Dict[str, Any]] = []
+    captured: List[Dict[str, Any]] = []
+    for entry in entries:
+        marker = str(entry.get("marker") or "")
+        if is_scope_name(marker):
+            markers.append(marker)
+        floor = str(entry.get("scope_start") or "")
+        for group in entry.get("root_groups") or []:
+            if isinstance(group, dict) and int(group.get("pgid") or 0) > 1:
+                groups.append({"pgid": int(group["pgid"]), "leader_pid": int(group.get("leader_pid") or 0),
+                               "leader_birth": str(group.get("leader_birth") or floor)})
+        leaders = {int(item.get("pid") or 0): str(item.get("birth") or "")
+                   for item in entry.get("captured") or [] if isinstance(item, dict)}
+        for item in entry.get("captured") or []:
+            if not isinstance(item, dict):
+                continue
+            pid, pgid, birth = int(item.get("pid") or 0), int(item.get("pgid") or 0), str(item.get("birth") or "")
+            if pid > 1 and birth:
+                captured.append({"pid": pid, "birth": birth})
+            if pgid > 1 and all(group["pgid"] != pgid for group in groups):
+                groups.append({"pgid": pgid, "leader_pid": pgid, "leader_birth": leaders.get(pgid, "") or floor})
+    return markers, groups, captured
+
+
 # --------------------------------------------------------------------------- Panic
 
 def panic_sweep_pending_path(data_dir: Any) -> pathlib.Path:
@@ -670,22 +1014,70 @@ def panic_sweep_pending_path(data_dir: Any) -> pathlib.Path:
 
 def _installation_census(data_dir: Any, *, exclude: Iterable[int], rescans: int) -> Dict[str, Any]:
     marker = installation_marker(data_dir, create=False)
-    groups = [group for record in task_scope_records(data_dir) for group in (record.get("groups") or [])]
-    outcome = end_scope(marker=marker, groups=groups, exclude=exclude, grace_sec=0.0, term_first=False,
-                        rescans=rescans)
-    outcome["marker_role"] = "installation"
-    outcome["recorded_groups"] = len(groups)
-    outcome["residual"] = PANIC_CENSUS_RESIDUAL
+    task_markers: List[str] = []
+    groups: List[Dict[str, Any]] = []
+    for record in task_scope_records(data_dir):
+        task_markers.extend(_record_markers(record))
+        groups.extend(record.get("groups") or [])
+    engine_entries, engine = engine_scope_index(data_dir)
+    engine_markers, engine_groups, captured = _engine_scope_targets(engine_entries)
+    outcome = end_scope(marker=marker, markers=[*task_markers, *engine_markers], groups=[*groups, *engine_groups],
+                        captured=captured, exclude=exclude, grace_sec=0.0, term_first=False, rescans=rescans)
+    outcome.update(marker_role="installation", recorded_groups=len(groups), engine_index=engine,
+                   engine_groups=len(engine_groups), engine_captured=len(captured),
+                   residual=PANIC_CENSUS_RESIDUAL)
     return outcome
+
+
+def _compact_outcome(outcome: Mapping[str, Any]) -> Dict[str, Any]:
+    return {key: outcome.get(key) for key in ("coverage", "ended", "already_gone", "survivors", "unverified",
+                                              "census_failed", "settled", "engine_index", "residual")}
+
+
+def _record_panic_outcome(data_dir: Any, outcome: Mapping[str, Any], *, phase: str) -> bool:
+    """The Panic census outcome in the supervisor journal (pid, birth, reason: never
+    environment bytes). Recording is what lets a settled pending record retire."""
+    try:
+        append_jsonl(pathlib.Path(data_dir) / "logs" / "supervisor.jsonl",
+                     {"ts": utc_now_iso(), "type": "panic_scope_census", "phase": phase, **_compact_outcome(outcome)})
+    except Exception:
+        log.warning("Panic scope census outcome could not be journalled", exc_info=True)
+        return False
+    return True
+
+
+def _settle_pending_record(data_dir: Any, outcome: Dict[str, Any], *, phase: str) -> None:
+    """Retire ``panic_sweep_pending`` only when the outcome is settled (or final on an
+    unsupported platform) AND recorded; otherwise keep it, carrying the last outcome, for
+    the launcher or the next start."""
+    pending = panic_sweep_pending_path(data_dir)
+    recorded = _record_panic_outcome(data_dir, outcome, phase=phase)
+    final = outcome.get("coverage") == COVERAGE_UNSUPPORTED
+    outcome["recorded"] = recorded
+    if recorded and (outcome.get("settled") or final):
+        try:
+            pending.unlink()
+        except OSError:
+            pass
+        outcome["pending_retired"] = True
+        return
+    outcome["pending_retired"] = False
+    try:
+        update_json_locked(pending, lambda current: {**(current or {}), "last_outcome": _compact_outcome(outcome),
+                                                     "last_attempt_at": utc_now_iso(), "last_phase": phase,
+                                                     "attempts": int((current or {}).get("attempts") or 0) + 1})
+    except (OSError, TimeoutError, ValueError):
+        log.warning("panic sweep pending record could not be updated", exc_info=True)
 
 
 def panic_scope_census(data_dir: Any, *, exclude: Optional[Iterable[int]] = None) -> Dict[str, Any]:
     """Panic's one more bounded request attempt: SIGKILL every live member of the
-    installation scope (marker ∪ recorded task groups) by re-measured identity, excluding
-    the server, its launcher and pid 1. The durable ``panic_sweep_pending`` record is
-    written FIRST so whatever this process cannot finish before its Panic exit is
-    completed by the launcher or by the next start before admission; it is removed only
-    after a census that succeeded. Never waits on anything but its own signals."""
+    installation scope (marker ∪ recorded task groups ∪ the engine's recorded runs) by
+    re-measured identity, excluding the server, its launcher and pid 1. The durable
+    ``panic_sweep_pending`` record is written FIRST, with those exclusions, so whatever
+    this process cannot finish before its Panic exit is completed by the launcher or by
+    the next start before any child; it is retired only after a settled, recorded
+    outcome. Never waits on anything but its own signals."""
     marker = installation_marker(data_dir, create=False)
     if not marker:
         return {"requested": False, "reason": "no installation marker planted"}
@@ -698,40 +1090,38 @@ def panic_scope_census(data_dir: Any, *, exclude: Optional[Iterable[int]] = None
     except OSError:
         log.warning("panic sweep pending record could not be written", exc_info=True)
     outcome = _installation_census(data_dir, exclude=excluded, rescans=1)
-    if not outcome["census_failed"]:
-        try:
-            pending.unlink()
-        except OSError:
-            pass
+    _settle_pending_record(data_dir, outcome, phase="panic")
     return {"requested": True, **outcome}
 
 
 def complete_pending_panic_sweep(data_dir: Any, *, exclude: Optional[Iterable[int]] = None) -> Optional[Dict[str, Any]]:
     """Finish a Panic sweep a server could not complete before its exit (the launcher's
     Panic branch, or the next start before planting its marker and before any child).
-    ``None`` when nothing is pending."""
+    The saved exclusions ride the pending record; the current controller, its parent and
+    pid 1 are added. ``None`` when nothing is pending."""
     pending = panic_sweep_pending_path(data_dir)
-    if not pending.exists():
+    record = read_json_dict(pending)
+    if record is None and not pending.exists():
         return None
-    excluded = {os.getpid(), 1} if exclude is None else {int(pid) for pid in exclude}
+    saved = {int(pid) for pid in (record or {}).get("excluded") or [] if str(pid).isdigit() or isinstance(pid, int)}
+    excluded = saved | {os.getpid(), os.getppid(), 1} | {int(pid) for pid in (exclude or ())}
     outcome = _installation_census(data_dir, exclude=excluded, rescans=1)
-    if not outcome["census_failed"]:
-        try:
-            pending.unlink()
-        except OSError:
-            pass
-    log.warning("completed the pending Panic scope sweep: ended=%s survivors=%s census_failed=%s",
-                outcome["ended"], outcome["survivors"], outcome["census_failed"])
+    _settle_pending_record(data_dir, outcome, phase="completion")
+    log.warning("completed the pending Panic scope sweep: ended=%s survivors=%s unverified=%s census_failed=%s "
+                "retired=%s", outcome["ended"], outcome["survivors"], outcome["unverified"],
+                outcome["census_failed"], outcome.get("pending_retired"))
     return outcome
 
 
 __all__ = [
-    "COVERAGE_POSIX", "COVERAGE_UNSUPPORTED", "INSTALL_SCOPE_PREFIX", "RUN_SCOPE_PREFIX", "SCOPE_NAME_RE",
-    "SCOPE_VALUE", "TASK_END_GRACE_SEC", "TASK_SCOPE_PREFIX", "birth_epoch", "census",
-    "birth_text", "complete_pending_panic_sweep", "end_scope", "installation_marker", "installation_scope_entries",
-    "is_scope_name", "measure_birth", "mint_marker", "note_task_terminal_transition", "panic_census_exclusions",
-    "panic_scope_census", "panic_sweep_pending_path", "plant_installation_scope", "record_task_group",
-    "scope_entries", "scope_members", "settle_task_scope", "settle_task_scopes", "shed_scopes",
-    "task_scope_env", "task_scope_marker", "task_scope_record", "task_scope_records",
-    "task_scope_terminal_evidence", "wait_for_cleanups",
+    "COVERAGE_POSIX", "COVERAGE_UNSUPPORTED", "ENGINE_RUN_SCOPES_FILE", "INSTALL_SCOPE_PREFIX",
+    "RUN_SCOPE_PREFIX", "SCOPE_NAME_RE", "SCOPE_VALUE", "TASK_END_GRACE_SEC", "TASK_SCOPE_PREFIX",
+    "birth_epoch", "birth_text", "census", "complete_pending_panic_sweep", "end_scope", "engine_scope_index",
+    "initialize_installation_scope", "installation_marker", "installation_scope_entries", "is_scope_name",
+    "leader_facts", "lstart_text", "measure_birth", "mint_marker", "note_task_terminal_transition",
+    "outcome_digest", "panic_census_exclusions", "panic_scope_census", "panic_sweep_pending_path",
+    "parse_proc_stat", "plant_installation_scope", "read_identities", "record_task_group", "scope_entries",
+    "scope_members", "settle_task_scope", "settle_task_scopes", "shed_scopes", "task_scope_env",
+    "task_scope_marker", "task_scope_record", "task_scope_records", "task_scope_terminal_evidence",
+    "wait_for_cleanups",
 ]

@@ -282,3 +282,38 @@ def test_cleanup_threads_are_named_and_bounded(tmp_path):
                        {thread.name for thread in threading.enumerate() if thread.is_alive()})
     finally:
         _end_pids(pid)
+
+
+def test_an_unverified_member_keeps_the_record_and_the_sweep_settles_it_later_writing_the_result_once(tmp_path, monkeypatch):
+    """Astra 1-2: a denied or failed signal is unverified, never ended; the record stays with
+    its group evidence for the sweep; an unchanged outcome is recorded once, not on every
+    sweep; the retirement waits for a settled, recorded outcome."""
+    from ouroboros import task_store
+
+    pid = _leftover(tmp_path, "t-denied")
+    real_deliver = _pl.deliver_signal
+    try:
+        monkeypatch.setattr(_pl, "deliver_signal", lambda pid, *, graceful: _pl.SIGNAL_DENIED)
+        write_task_result(tmp_path, "t-denied", "completed", result="done")
+        ps.wait_for_cleanups()
+        assert _alive(pid), "a denied signal ends nothing and claims nothing"
+        record = ps.task_scope_record(tmp_path, "t-denied")
+        assert record["cleanup"]["state"] == "pending" and record["cleanup"]["reason"] == "unverified"
+        assert [group["pgid"] for group in record["groups"]] == [os.getpgid(pid)], "the group evidence stays"
+        facts = load_task_result(tmp_path, "t-denied")["process_scope"]
+        assert facts["settled"] is False and facts["unverified"][0]["pid"] == pid and facts["ended"] == []
+        writes = []
+        real_patch = task_store.patch_document
+        monkeypatch.setattr(task_store, "patch_document", lambda *a, **k: writes.append(a[1]) or real_patch(*a, **k))
+        ps.settle_task_scopes(tmp_path, set())
+        ps.settle_task_scopes(tmp_path, set())
+        assert writes == [], "an unchanged outcome is not rewritten on every sweep"
+        assert ps.task_scope_record(tmp_path, "t-denied")["cleanup"]["attempts"] == 3
+        monkeypatch.setattr(_pl, "deliver_signal", real_deliver)
+        settled = ps.settle_task_scopes(tmp_path, set())
+        assert [row["task_id"] for row in settled] == ["t-denied"] and _gone(pid)
+        assert ps.task_scope_record(tmp_path, "t-denied") is None, "retired only once settled and recorded"
+        assert load_task_result(tmp_path, "t-denied")["process_scope"]["settled"] is True
+        assert load_task_result(tmp_path, "t-denied")["status"] == "completed", "no status writer touched the row"
+    finally:
+        _end_pids(pid)

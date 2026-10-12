@@ -30,7 +30,7 @@ from ouroboros.server_auth import (
 from ouroboros.server_entrypoint import (ServerAdmissionRefused, admit_data_root, bound_service_socket,
                                          find_free_port, parse_server_args, reserved_service_ports, write_port_file)
 from ouroboros.launcher_bootstrap import automatic_launch_allowed
-from ouroboros import body_adoption, store_switch
+from ouroboros import body_adoption, process_scope, store_switch
 from ouroboros.server_web import NoCacheStaticFiles, make_index_page, resolve_web_dir
 from ouroboros.config import resolve_port_file
 from ouroboros.process_logging import configure_process_logging
@@ -1283,6 +1283,7 @@ async def lifespan(app):
     )
     if not pytest_default_real_data_dir:  # an imported ASGI app is admitted here; main() already was
         admit_data_root(lifespan_drive_root)
+        process_scope.initialize_installation_scope(lifespan_drive_root)  # idempotent after main(); first for an imported app
     _event_loop = asyncio.get_running_loop()
     _set_ws_event_loop(_event_loop)
     ws_heartbeat_task = asyncio.create_task(
@@ -1656,16 +1657,8 @@ def main() -> int:
     # The server process is the single writer of logs/server.log; a test run on the
     # real default data root keeps the stream handler only.
     configure_process_logging(drive_logs=None if _pytest_default_real_data_dir else DATA_DIR / "logs")
-    if not _pytest_default_real_data_dir:
-        from ouroboros.process_scope import complete_pending_panic_sweep, plant_installation_scope
-
-        try:  # a Panic the previous generation could not finish ends before this one spawns anything
-            complete_pending_panic_sweep(DATA_DIR)
-        except Exception:
-            log.warning("pending Panic scope sweep failed; its record stays for the next start", exc_info=True)
-        # The installation scope marker: planted here, before any worker, command, service
-        # or the managed daemon exists, so every child inherits it (ARCHITECTURE §9).
-        plant_installation_scope(DATA_DIR)
+    if not _pytest_default_real_data_dir:  # a pending Panic sweep ends and the installation marker is planted before any child (§9)
+        process_scope.initialize_installation_scope(DATA_DIR)
     if not automatic_launch_allowed(os.environ.get("OUROBOROS_LAUNCH_INTENT", "owner"), DATA_DIR, log):
         return 0
     # A benchmark-owned child may receive an integrity pin from its parent.
