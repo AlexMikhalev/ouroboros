@@ -2725,7 +2725,7 @@ export function createChatInstance({
                 // from, and the rows the newest read let go stay below them; a shifted
                 // window re-anchors only a reader following the newest message.
                 const reader = readingHistory();
-                const rechainRecent = admitted && !reader && !data.reason_code && pagerBeforeRecent.initialized
+                const rechainRecent = admitted && reading.arriving === null && !reader && !data.reason_code && pagerBeforeRecent.initialized
                     && !pagerBeforeRecent.canNewer && [...oldRecentIds].some(id => !recentHistoryIds.has(id));
                 const result = historyPager.acceptRecent(data);
                 if (result.status !== 'applied') applyHistoryMessages(messages, { fromReconnect });
@@ -2834,7 +2834,14 @@ export function createChatInstance({
             ...newestFacts, atBottom: () => isNearBottom() && !historyPager.getState().canNewer,
         }),
         onReadingLatest, arriving: () => reading.arriving, delivered: newestFacts.delivered,
-        older: current => historyPager.whenIdle().then(() => loadHistoryAtEdge('older', current)),
+        older: async current => {
+            await historyPager.whenIdle();
+            if (!current()) return {};
+            const direction = readReceipt.continuation(pagerRecentWindow);
+            // A failed present keeps the existing horizon repair.
+            if (direction === 'latest' || (direction && !historyPager.getState().error)) return historyPager[direction]();
+            return loadHistoryAtEdge('older', current);
+        },
         present: current => historyPager.whenIdle().then(() => current() && historyPager.getState().canNewer && historyPager.latest()),
         land: (latest, token) => reading.land(() => newestMessageOffset(latest, newestFacts), token),
     });
@@ -3222,6 +3229,7 @@ export function createChatInstance({
 
     const pageHistoryIds = new Map();
     let recentCoverage = null;
+    let pagerRecentWindow = null;
     let recentHasOrigins = false;
     let recentHistoryIds = new Set();
     let recentRequest = 0, recentApplied = 0;
@@ -3319,6 +3327,7 @@ export function createChatInstance({
             const oldRecentIds = recentHistoryIds;
             const admitted = descriptor.direction === 'latest' && acceptRecentWindow(descriptor, messages);
             const archived = descriptor.direction !== 'recent' && descriptor.direction !== 'latest';
+            if (!archived) pagerRecentWindow = descriptor.window;
             applyHistoryMessages(messages, { archived });
             // The present re-anchors the chain: rows no page or window owns any more
             // (windows kept while the reader was in older history) go with it.
@@ -3359,14 +3368,10 @@ export function createChatInstance({
         if (snapshot.error) return historyPager.retry();
         return loadHistoryAtEdge('older');
     }
-    // `Load more history` only ever reads older messages; the present is the one ↓
-    // (owner decisions 2026-09-14, 2026-10-05). A page counts the room's own rows,
-    // so only the server's per-request read ceiling can land one empty: keep
-    // reading until rows land or the room's history ends. When the newest read has
-    // moved past the pager's chain (the room grew while open), the chain is first
-    // re-anchored at that read, so the same press goes on into the missing rows;
-    // a reader in older history with older rows left goes on above them instead.
-    // An unread opening's reach asks for each page only while still `current()`.
+    // `Load more history` reads older messages; ↓ returns to the present (owner
+    // decisions 2026-09-14, 2026-10-05). Empty pages cross the server read ceiling:
+    // read on until rows land or the chat ends. A grown room re-anchors unless the
+    // reader is still walking its older chain. Openings guard each request with `current`.
     async function loadHistoryAtEdge(direction, current = () => true) {
         const { canNewer, canOlder } = historyPager.getState();
         if (direction === 'older' && current() && historyWindow?.horizonGap && !canNewer && !(canOlder && readingHistory())) {

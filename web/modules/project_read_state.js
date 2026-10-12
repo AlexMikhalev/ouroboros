@@ -109,6 +109,14 @@ export function createProjectReadReceipt({ read, isShown, isReadingLatest, onRea
     };
     return {
         cancel() { generation += 1; },
+        // A named target belongs to the snapshot that named it, even after its
+        // pages leave memory. A different admitted target needs a new snapshot;
+        // growth naming the same target must not restart the opening's walk.
+        // Quiet/unknown windows keep their existing bounded-search continuation.
+        continuation(window) {
+            const id = recentRead.window?.latest_message?.history_id;
+            return id ? (window?.latest_message?.history_id === id ? 'older' : 'latest') : null;
+        },
         // Only a revision newer than any covered one needs a fresh read; the
         // receipt is still taken after this call's own paint either way. A read
         // that cannot name the newest message covers nothing, so the same revision

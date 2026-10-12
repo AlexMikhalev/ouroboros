@@ -69,9 +69,9 @@ def _buried_room(data, monkeypatch, project_id, children, padding=0, chat_id=Non
 class _Room:
     """One client opening the unread room; older page requests are recorded, and one may be held or failed."""
 
-    def __init__(self, browser, url, project_id, hold=None, fail=None):
+    def __init__(self, browser, url, project_id, hold=None, fail=None, init=()):
         self.acks, self.older, self.held = [], [], []
-        self.page, self.row = _client(browser, url, project_id, self.acks)
+        self.page, self.row = _client(browser, url, project_id, self.acks, init)
         self.project_id = project_id
 
         def route(route):
@@ -118,6 +118,11 @@ def _evidence(data, name, **facts):
 
 def _on_screen(box):
     return box is not None and box["top"] >= box["feedTop"] - 1 and box["top"] < box["bandBottom"]
+
+
+def _in_band(box):
+    """Some of the reply inside the band: what a read needs; a landing (`_on_screen`) puts its top there."""
+    return box is not None and box["bottom"] > box["feedTop"] and box["top"] < box["bandBottom"]
 
 
 @pytest.mark.parametrize(("children", "padding"), [(160, 0), (900, 0), (610, 130)],
@@ -341,13 +346,30 @@ def test_a_reopened_room_lands_once_after_its_superseded_reach(direct_server_wit
             browser.close()
 
 
+# Each read receipt as it is posted, with the reply's box at that moment.
+_RECEIPTS = f"""() => {{
+    const shown = {_SHOWN}, post = window.fetch;
+    window.__receipts = [];
+    window.fetch = function (url, init) {{
+        if (init?.method === 'POST' && String(url).endsWith('/api/ui/preferences')) {{
+            const messages = document.querySelector({json.dumps(PANEL)});
+            window.__receipts.push({{seen: JSON.parse(init.body).project_seen_revision,
+                                     box: messages && shown(messages, {json.dumps(REPLY)})}});
+        }}
+        return post.apply(this, arguments);
+    }};
+}}"""
+
+
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
 def test_a_reply_arriving_while_the_opening_proves_a_quiet_start_is_reached_after_its_return(
         direct_server_with_data, monkeypatch, engine):
     """The read-band quiet room past the pages kept: only the owner's own notes, the start four older pages
     down. While its opening walks there, a reply arrives and 160 child words bury it below the next recent
     read. The clean start proven, the opening returns to the newest page once, reads on to the reply that
-    fresh read names, lands there and reads it."""
+    fresh read names, lands there and reads it. Its receipt names the revision the client's state then
+    holds: the opened one, or the reply's if a state refresh came first; the next refresh reads the reply's
+    where the reader already is. Every receipt is posted with the reply shown, and the cursor ends at its revision."""
     from playwright.sync_api import sync_playwright
 
     from tests.test_project_unread_read_band_browser import _seed_room
@@ -365,22 +387,30 @@ def test_a_reply_arriving_while_the_opening_proves_a_quiet_start_is_reached_afte
     with sync_playwright() as pw:
         browser = getattr(pw, engine).launch()
         try:
-            room = _Room(browser, direct_server_with_data["url"], "late-room", hold=3)
+            url = direct_server_with_data["url"]
+            room = _Room(browser, url, "late-room", hold=3, init=(_RECEIPTS,))
             room.open()
             assert _wait_for(room.page, lambda: len(room.held) == 1, attempts=200), room.older
             _chat_id, newer = _buried_room(data, monkeypatch, "late-room", 160, chat_id=chat_id)
             room.release()
-            read = _wait_for(room.page, lambda: room.seen() == [revision], attempts=200)
+            read = _wait_for(room.page, lambda: room.seen() and _on_screen(room.shown()), attempts=200)
             room.settled(300)
             landed = room.shown()
             _emit_ws_frame(room.page, {"type": "projects_changed"})
-            both = _wait_for(room.page, lambda: room.seen() == [revision, newer], attempts=100)
+            newest = _wait_for(room.page, lambda: room.seen()[-1:] == [newer], attempts=100)
+            receipts = [(posted["seen"]["late-room"], posted["box"]) for posted in
+                        room.page.evaluate("() => window.__receipts") if "late-room" in (posted.get("seen") or {})]
+            cursor = room.page.request.get(f"{url}/api/ui/preferences").json()["project_seen_revision"]
             name = f"unread-opening-{engine}-reply-after-return"
-            evidence = _evidence(data, name, landed=landed, older=room.older, acks=room.acks)
+            evidence = _evidence(data, name, landed=landed, older=room.older, acks=room.acks, receipts=receipts,
+                                 cursor=cursor, revisions=[revision, newer])
             room.page.screenshot(path=str(evidence / f"{name}.png"))
             assert read and _on_screen(landed), ("the opening reaches the reply the return named", landed, room.acks)
             assert len(room.older) == 5, ("four pages to the start, then the page holding the reply", room.older)
-            assert both, ("the newer revision is read where the reader already is", room.acks)
+            assert receipts and all(_in_band(box) for _seen, box in receipts), ("read only while shown", receipts)
+            assert newest and room.seen() == sorted(room.seen()) and set(room.seen()) <= {revision, newer}, \
+                ("the newer revision is read where the reader already is", room.acks)
+            assert cursor.get("late-room") == newer, ("the shared cursor covers the reply's revision", cursor)
             room.row.locator(".nav-unread-dot").wait_for(state="detached")
         finally:
             browser.close()

@@ -1,0 +1,201 @@
+"""A still-owned unread opening follows fresh arrival evidence across its frozen pager chain.
+
+The retained counterexample holds the fifth older read after a kept-page hole forms, then a
+real producer adds a reply and 160 child words. The fresh recent read names that reply without
+containing it. The opening must rebase through the existing pager before continuing its reach;
+a reader cancelling either before or during that return must never inherit the new chain.
+"""
+from __future__ import annotations
+
+import hashlib
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+import pytest
+
+import tests.test_project_unread_opening_browser as opening
+from tests.test_project_unread_read_band_browser import _seed_room, _wait_for
+from tests.test_ui_smoke_playwright import direct_server_with_data as direct_server_with_data
+from tests.ui_chat_viewport_smoke import _SETTLE_RESTORE_FRAMES, _emit_ws_frame
+
+pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
+LATEST = "NEW ARRIVAL: opening must reach this reply"
+
+
+def _backlog(data, project_id):
+    base = datetime(2026, 9, 28, 10, 0, tzinfo=timezone.utc)
+    rows = [{"ts": base.isoformat(), "direction": "out", "text": opening.REPLY}]
+    rows += [{"ts": (base + timedelta(seconds=index + 1)).isoformat(), "direction": "in",
+              "text": f"Owner backlog note {index}: preserve this row"} for index in range(1100)]
+    return _seed_room(data, project_id, "New arrival race", rows)
+
+
+def _question(data, project_id, chat_id):
+    from ouroboros.projects_registry import bind_task_to_project, get_project
+    from ouroboros.task_results import write_task_result
+
+    project = get_project(data, project_id)
+    quiz = {"quiz_id": "q-rebase", "question": "Merge the opening fix now?", "options": ["Yes", "No"],
+            "state": "open", "asked_at": "2026-09-28T10:05:00Z"}
+    bind_task_to_project(data, "rebase-task", project_id, chat_id, origin={"absent": "system"})
+    write_task_result(data, "rebase-task", "running", project_id=project_id, chat_id=chat_id,
+                      owner_quiz={"q-rebase": quiz})
+    return project
+
+
+class _Race:
+    """Observe real request chains and hold their return; all room mechanics use the shared helper."""
+
+    def __init__(self, browser, server, monkeypatch, project_id, question=False):
+        self.data, self.monkeypatch, self.project_id = server["data_dir"], monkeypatch, project_id
+        self.candidate = server["candidate_identity"]
+        self.chat_id, _log, self.initial = _backlog(self.data, project_id)
+        self.question = _question(self.data, project_id, self.chat_id) if question else None
+        self.room = opening._Room(browser, server["url"], project_id, hold=5)
+        self.recent, self.history, self.returning = [], [], []
+        self.hold_return = False
+
+        def recent_route(route):
+            if self.hold_return:
+                self.hold_return = False
+                self.returning.append(route)
+            else:
+                route.continue_()
+
+        def record(response):
+            query = parse_qs(urlparse(response.url).query)
+            if "/api/chat/history?" not in response.url or query.get("chat_id") != [str(self.chat_id)]:
+                return
+            body = response.json()
+            self.history.append({"url": response.url, "window": body.get("window"),
+                                 "coverage": body.get("coverage"),
+                                 "ids": [row.get("history_id") for row in body.get("messages", [])]})
+            if "cursor" not in query:
+                self.recent.append(body)
+
+        self.room.page.route(lambda url: "/api/chat/history?" in url and "cursor=" not in url, recent_route)
+        self.room.page.on("response", record)
+
+    def admit(self):
+        room = self.room
+        room.open()
+        assert _wait_for(room.page, lambda: len(room.held) == 1, attempts=250), room.older
+        self.original_window = self.recent[-1]["window"]
+        # Page zero remains protected by the viewport after page one has been evicted: canNewer.
+        assert room.messages.locator(".chat-bubble").filter(has_text="Owner backlog note 900:").count() == 0
+        assert room.messages.locator(".chat-bubble").filter(has_text="Owner backlog note 1099:").count() == 1
+        self.monkeypatch.setattr(opening, "REPLY", LATEST)
+        _chat, self.revision = opening._buried_room(
+            self.data, self.monkeypatch, self.project_id, 160, chat_id=self.chat_id)
+        before = len(self.recent)
+        _emit_ws_frame(room.page, {"type": "projects_changed"})
+        assert _wait_for(room.page, lambda: len(self.recent) > before, attempts=150), self.history
+        self.fresh = self.recent[-1]
+        latest = self.fresh["window"]["latest_message"]
+        assert latest["history_id"] != self.original_window["latest_message"]["history_id"]
+        assert LATEST not in [row.get("text") for row in self.fresh.get("messages", [])]
+        room.page.evaluate(_SETTLE_RESTORE_FRAMES)
+        assert room.seen() == [] and room.row.locator(".nav-unread-dot").count() == 1, room.acks
+
+    def evidence(self, engine, suffix, **facts):
+        name = f"unread-race-{engine}-{suffix}"
+        root = Path(__file__).resolve().parents[1]
+        sources = {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in (
+            "web/modules/project_read_state.js", "web/modules/chat.js",
+            "tests/test_project_unread_opening_race_browser.py", "tests/test_project_unread_opening_browser.py")}
+        evidence = opening._evidence(self.data, name, initial=self.initial, revision=self.revision,
+                                     initial_window=self.original_window, fresh_window=self.fresh["window"],
+                                     fresh_rows=len(self.fresh.get("messages", [])), older=self.room.older,
+                                     history=self.history, acks=self.room.acks, landed=self.room.shown(),
+                                     sources=sources, candidate=self.candidate, **facts)
+        self.room.page.screenshot(path=str(evidence / f"{name}.png"))
+
+
+@pytest.mark.parametrize("engine", ["chromium", "webkit"])
+def test_a_new_offpage_reply_replaces_the_openings_frozen_target(direct_server_with_data, monkeypatch, engine):
+    """Latest admission wins while this opening still owns navigation, then later reads never jump."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser = getattr(pw, engine).launch()
+        try:
+            race = _Race(browser, direct_server_with_data, monkeypatch, "arrival-race")
+            race.admit()
+            room = race.room
+            before_return = len(race.recent)
+            room.release()
+            read = _wait_for(room.page, lambda: race.revision in room.seen(), attempts=200)
+            room.settled(300)
+            landed = room.shown()
+            race.evidence(engine, "new-arrival", read=read, before_return=before_return,
+                          recent_reads=len(race.recent))
+            assert read and opening._on_screen(landed), ("latest admitted reply is reached and read", landed, room.acks)
+            assert room.seen() and all(value == race.revision for value in room.seen()), room.acks
+            assert len(race.recent) == before_return + 1, ("one pager return to the fresh snapshot", race.history)
+            room.row.locator(".nav-unread-dot").wait_for(state="detached")
+            pages = len(room.older)
+            # A completed opening owns no later refresh: no repeated return, old-chain walk or jump.
+            opening._wheel(room, False)
+            room.settled(300)
+            top = room.messages.evaluate("n => n.scrollTop")
+            _emit_ws_frame(room.page, {"type": "projects_changed"})
+            room.settled(800)
+            after = room.messages.evaluate("n => n.scrollTop")
+            race.evidence(engine, "later-read", pages=pages, before=top, after=after,
+                          before_return=before_return, recent_reads=len(race.recent))
+            assert len(room.older) == pages and len(race.recent) == before_return + 1, race.history
+            assert abs(after - top) <= 1, ("a later read preserves the reader's position", top, after)
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize(("stage", "move"), [
+    ("fresh-admission", "wheel"), ("pager-return", "wheel"), ("pager-return", "question")])
+@pytest.mark.parametrize("engine", ["chromium", "webkit"])
+def test_cancelling_a_rebased_opening_never_resumes_it(direct_server_with_data, monkeypatch, engine, stage, move):
+    """A wheel or explicit question ends ownership before an old page or the fresh return resolves."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser = getattr(pw, engine).launch()
+        try:
+            race = _Race(browser, direct_server_with_data, monkeypatch, "cancel-race", question=move == "question")
+            race.admit()
+            room = race.room
+            before_return = len(race.recent)
+            if stage == "pager-return":
+                race.hold_return = True
+                room.release()
+                assert _wait_for(room.page, lambda: len(race.returning) == 1, attempts=200), race.history
+            if move == "question":
+                room.page.evaluate("""project => window.dispatchEvent(new CustomEvent('ouro:open-project', {
+                    detail: {project, task_id: 'rebase-task', quiz_id: 'q-rebase'}}))""", race.question)
+                card = room.messages.locator('.chat-quiz-card[data-quiz-id="q-rebase"]')
+                card.wait_for(state="visible")
+            else:
+                opening._wheel(room, False)
+            room.page.evaluate(_SETTLE_RESTORE_FRAMES)
+            pages = len(room.older)
+            room.release()
+            for route in race.returning:
+                route.continue_()
+            room.settled()
+            top = room.messages.evaluate("n => n.scrollTop")
+            latest = room.shown()
+            assert not opening._on_screen(latest), latest
+            assert room.seen() == [] and len(room.older) == pages, (room.acks, room.older)
+            assert len(race.recent) == before_return + (stage == "pager-return"), race.history
+            _emit_ws_frame(room.page, {"type": "projects_changed"})
+            room.settled(800)
+            after = room.messages.evaluate("n => n.scrollTop")
+            asked = card.evaluate(opening._ON_FEED) if move == "question" else None
+            race.evidence(engine, f"cancel-{stage}-{move}", pages=pages, before=top, after=after,
+                          before_return=before_return, recent_reads=len(race.recent), asked=asked)
+            assert len(room.older) == pages and not opening._on_screen(room.shown()), race.history
+            assert room.seen() == [] and room.row.locator(".nav-unread-dot").count() == 1, room.acks
+            assert abs(after - top) <= 1, ("a later read cannot revive a cancelled opening", top, after)
+            if asked:
+                assert asked["focused"] and asked["feedTop"] <= asked["top"] < asked["feedBottom"], asked
+        finally:
+            browser.close()
