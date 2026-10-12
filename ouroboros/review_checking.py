@@ -496,9 +496,21 @@ def checking_writers_settled(detail: Mapping[str, Any]) -> bool:
     required: Codex's ordinary app-server teardown deliberately stops its process.
     This covers engine-owned writers, not arbitrary detached processes or OS
     containment. Failed, interrupted and unobserved runs keep their copies.
+
+    An engine that settles a run's process scope projects ``summary.processScope``
+    (``{settled, coverage, completeness, ...}``) into the detail: the copy is released
+    only when that outcome is SETTLED (every member ended or confirmed gone). Absent or
+    ``null`` is an older engine or a historical run: today's boundary stands. Present
+    and unsettled keeps the copy (survivors may still write into it) while the review
+    verdict is kept and delivered unchanged; nothing here starts another review.
     """
     summary = detail.get("summary")
-    return isinstance(summary, Mapping) and summary.get("state") == "succeeded"
+    if not isinstance(summary, Mapping) or summary.get("state") != "succeeded":
+        return False
+    scope = summary.get("processScope")
+    if scope is None:
+        return True
+    return isinstance(scope, Mapping) and scope.get("settled") is True
 
 
 def capture_seat_evidence(data_root: Any, task_id: str, operation_id: str, *,
