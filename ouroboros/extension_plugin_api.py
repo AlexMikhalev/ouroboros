@@ -979,11 +979,11 @@ class PluginAPIImpl:
         except Exception:
             app_version = ""
         try:
-            from ouroboros.config import AGENT_SERVER_PORT, PORT_FILE
+            from ouroboros.config import AGENT_SERVER_PORT, resolve_port_file
             try:
-                # The live port file wins over the configured default: a server
-                # that started on a fallback port must still be reachable here.
-                live_port = int(pathlib.Path(PORT_FILE).read_text(encoding="utf-8").strip())
+                # The live port file of the hosting root wins over the configured default:
+                # a server that started on a fallback port must still be reachable here.
+                live_port = int(resolve_port_file(hosting_data_dir=self._drive_root).read_text(encoding="utf-8").strip())
             except Exception:
                 live_port = 0
             server_port = live_port if live_port > 0 else int(AGENT_SERVER_PORT)

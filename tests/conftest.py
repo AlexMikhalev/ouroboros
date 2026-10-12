@@ -643,6 +643,16 @@ def _rebind_runtime_roots_between_tests():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_restart_generation(monkeypatch):
+    """Panic and parent observation belong to one process generation, not later tests."""
+    from ouroboros import delegate_recovery, server_control
+
+    monkeypatch.setattr(server_control, "_restart_successors", [])
+    monkeypatch.setattr(server_control, "_restart_stop_requested", False)
+    monkeypatch.setattr(delegate_recovery, "_restart_parent", None)
+
+
+@pytest.fixture(autouse=True)
 def _reset_custody_memo_between_tests():
     """Isolate the process-local custody caches: active custody is keyed only by run ID and
     the delegated-activity memo by path. Tests reuse both identities: no first-wins binding
@@ -695,6 +705,19 @@ def _clear_server_stop_flags_between_tests():
         server_process._supervisor_stop.clear()
         server_process._restart_requested.clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _release_server_admission_between_tests():
+    """``server.main()`` and an in-process lifespan hold their data root's admission lock
+    until the process exits — production's contract. One pytest process plays many servers
+    over many temporary roots; a held root would refuse a later test's real server there."""
+    yield
+    import sys
+
+    entrypoint = sys.modules.get("ouroboros.server_entrypoint")
+    if entrypoint is not None:
+        entrypoint.release_admission_for_tests()
 
 
 @pytest.fixture(autouse=True)

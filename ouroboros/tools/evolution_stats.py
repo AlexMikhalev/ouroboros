@@ -8,13 +8,13 @@ import os
 import re
 import subprocess
 import time
-from pathlib import Path
 from typing import Any
+
+from ouroboros.config import resolve_repo_dir
 
 log = logging.getLogger(__name__)
 
 _VERSION_RE = re.compile(r"v(\d+\.\d+\.\d+)")
-_REPO_DIR = Path(os.environ.get("OUROBOROS_REPO_DIR", str(Path.home() / "Ouroboros" / "repo")))
 
 MAX_POINTS = 100
 
@@ -23,7 +23,7 @@ def _git(args: list[str], timeout: int = 15) -> str:
     try:
         r = subprocess.run(
             ["git"] + args,
-            cwd=str(_REPO_DIR),
+            cwd=str(resolve_repo_dir()),  # per call: the serving checkout, never a home default
             capture_output=True,
             text=True,
             timeout=timeout,

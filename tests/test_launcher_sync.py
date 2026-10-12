@@ -4,6 +4,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import time
 import types
 
 import pytest
@@ -270,55 +271,6 @@ def test_ensure_managed_repo_rejects_tampered_bundle(tmp_path):
         assert "bundle hash mismatch" in str(exc)
 
 
-# ---------------------------------------------------------------------------
-# Host service port cleanup (formerly test_launcher_host_service_cleanup.py)
-# ---------------------------------------------------------------------------
-
-
-def test_host_service_cleanup_uses_configured_port(monkeypatch):
-    import launcher
-
-    killed: list[int] = []
-
-    monkeypatch.setenv("OUROBOROS_HOST_SERVICE_PORT", "9876")
-    monkeypatch.setattr(launcher, "_kill_stale_on_port", lambda port: killed.append(port))
-
-    launcher._kill_stale_runtime_ports(8765)
-
-    assert killed == [8765, 9876]
-
-
-def test_agent_lifecycle_preflight_cleans_host_service_port(monkeypatch):
-    import launcher
-
-    killed: list[int] = []
-
-    class FakeProcess:
-        pid = 12345
-        returncode = 0
-
-        def wait(self):
-            launcher._shutdown_event.set()
-
-    launcher._shutdown_event.clear()
-    monkeypatch.setattr(launcher, "_host_service_port", lambda: 9876)
-    monkeypatch.setattr(launcher, "_kill_stale_on_port", lambda port: killed.append(port))
-    # The per-generation stray sweep must never signal a real process from a test.
-    monkeypatch.setattr(launcher, "_reap_same_install_strays", lambda reason: [])
-    monkeypatch.setattr(launcher, "start_agent", lambda port: FakeProcess())
-    monkeypatch.setattr(launcher, "_poll_port_file", lambda timeout=30, abort_event=None: 8765)
-    monkeypatch.setattr(launcher, "_wait_for_server", lambda port, timeout=30.0, abort_event=None: True)
-    monkeypatch.setattr(launcher, "_agent_job", None)
-    monkeypatch.setattr(launcher, "log", types.SimpleNamespace(info=lambda *args, **kwargs: None))
-
-    try:
-        launcher.agent_lifecycle_loop(port=8765)
-    finally:
-        launcher._shutdown_event.clear()
-
-    assert killed[:2] == [8765, 9876]
-
-
 def test_start_agent_exports_presentation_posture(monkeypatch, tmp_path):
     """Producer contract (Owner Surface Fact): the launcher's OWN env assembly
     must export OUROBOROS_PRESENTATION — a monkeypatched reader test cannot
@@ -454,7 +406,7 @@ def test_recorded_server_cleanup_ignores_unrelated_pid(monkeypatch, tmp_path):
     monkeypatch.setattr(launcher, "IS_WINDOWS", False)
     monkeypatch.setattr(launcher, "DATA_DIR", data_dir)
     monkeypatch.setattr(launcher, "REPO_DIR", repo_dir)
-    monkeypatch.setattr(launcher, "pid_is_alive", lambda _pid: True)
+    monkeypatch.setattr(launcher, "pid_provably_gone", lambda _pid: False)
     monkeypatch.setattr(launcher, "process_group_id", lambda _pid: 22222)
     monkeypatch.setattr(launcher, "process_command", lambda _pid: "/usr/bin/python unrelated.py")
     monkeypatch.setattr(launcher, "kill_pid_tree", lambda pid, **kw: killed.append(("pid", pid)))
@@ -490,16 +442,17 @@ def test_recorded_server_cleanup_kills_verified_process_group(monkeypatch, tmp_p
     monkeypatch.setattr(launcher, "IS_WINDOWS", False)
     monkeypatch.setattr(launcher, "DATA_DIR", data_dir)
     monkeypatch.setattr(launcher, "REPO_DIR", repo_dir)
-    monkeypatch.setattr(launcher, "pid_is_alive", lambda _pid: True)
+    monkeypatch.setattr(launcher, "pid_provably_gone", lambda _pid: ("pid", 33333) in killed)  # dies when killed
     monkeypatch.setattr(launcher, "process_group_id", lambda _pid: 33333)
     monkeypatch.setattr(launcher, "process_command", lambda _pid: f"{sys.executable} {server_py}")
     monkeypatch.setattr(launcher, "current_process_group_id", lambda: 99999)
-    monkeypatch.setattr(launcher, "time", types.SimpleNamespace(sleep=lambda *_a, **_k: None))
+    monkeypatch.setattr(launcher, "_retained_shared_daemon_pids", lambda: set())
+    monkeypatch.setattr(launcher, "time", types.SimpleNamespace(sleep=lambda *_a, **_k: None, monotonic=time.monotonic))
     monkeypatch.setattr(launcher, "terminate_process_group_id", lambda pgid, **kw: killed.append(("term", pgid)))
     monkeypatch.setattr(launcher, "kill_process_group_id", lambda pgid, **kw: killed.append(("killpg", pgid)))
     monkeypatch.setattr(launcher, "kill_pid_tree", lambda pid, **kw: killed.append(("pid", pid)))
 
-    launcher._cleanup_recorded_server_process("test")
+    assert launcher._cleanup_recorded_server_process("test") == []
 
     assert ("term", 33333) in killed
     assert ("killpg", 33333) in killed
@@ -531,7 +484,7 @@ def test_recorded_server_cleanup_ignores_mismatched_process_group(monkeypatch, t
     monkeypatch.setattr(launcher, "IS_WINDOWS", False)
     monkeypatch.setattr(launcher, "DATA_DIR", data_dir)
     monkeypatch.setattr(launcher, "REPO_DIR", repo_dir)
-    monkeypatch.setattr(launcher, "pid_is_alive", lambda _pid: True)
+    monkeypatch.setattr(launcher, "pid_provably_gone", lambda _pid: False)
     monkeypatch.setattr(launcher, "process_group_id", lambda _pid: 44444)
     monkeypatch.setattr(launcher, "process_command", lambda _pid: f"{sys.executable} {server_py}")
     monkeypatch.setattr(launcher, "terminate_process_group_id", lambda pgid, **kw: killed.append(("term", pgid)))
@@ -727,10 +680,10 @@ def test_external_restart_reexecs_current_source_after_sync_in_same_process(tmp_
             _run(['git', 'commit', '-am', 'adopted candidate'], cwd=repo)
         return process
 
-    monkeypatch.setattr(launcher, '_pre_generation_cleanup', lambda port: [])
+    monkeypatch.setattr(launcher, '_pre_generation_cleanup', lambda: [])
     monkeypatch.setattr(launcher, 'update_external_host', lambda *a: calls.append('native') or {})
     monkeypatch.setattr(launcher, 'start_agent', start_agent)
-    monkeypatch.setattr(launcher, '_poll_port_file', lambda **kw: 8765)
+    monkeypatch.setattr(launcher, '_await_generation_endpoint', lambda *a, **kw: 8765)
     monkeypatch.setattr(launcher, '_update_server_process_record_port', lambda *a: None)
     monkeypatch.setattr(launcher, '_wait_for_server', lambda *a, **kw: True)
     monkeypatch.setattr(launcher, '_cleanup_recorded_server_group_for_pid', lambda *a: None)

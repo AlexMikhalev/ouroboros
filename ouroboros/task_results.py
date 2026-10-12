@@ -870,6 +870,11 @@ def write_task_result(
             log.debug("Blocked status regression %s -> %s for task %s",
                       existing.get("status"), projected_status, task_id)
             return None
+        if isinstance(projected_fields.get("delegate_terminal_reconciliation"), dict):
+            # #1573: no writer, a wholesale terminal one included, unpublishes a retained output.
+            from ouroboros.delegate_terminal import keep_published_receipts
+            projected_fields["delegate_terminal_reconciliation"] = keep_published_receipts(
+                existing, projected_fields["delegate_terminal_reconciliation"])
         # Only this accepted transition can originate terminal delivery debt:
         # enrichment/replica fields cannot adopt historical terminal rows or
         # erase provenance persisted before the separate readiness write.

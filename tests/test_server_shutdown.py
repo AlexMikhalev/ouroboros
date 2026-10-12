@@ -445,10 +445,9 @@ def test_main_normal_exit_does_not_run_emergency_cleanup(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "load_settings", lambda: {"OUROBOROS_SERVER_HOST": "127.0.0.1"})
     monkeypatch.setattr(server, "parse_server_args", lambda *_a, **_k: SimpleNamespace(host="127.0.0.1", port=0, host_explicit=False))
     monkeypatch.setattr(server, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(server, "_ACTUAL_BOUND_PORT", None)
     monkeypatch.setattr(server, "get_network_auth_startup_warning", lambda _host: "")
     monkeypatch.setattr(server, "validate_network_auth_configuration", lambda _host: "")
-    monkeypatch.setattr(server, "find_free_port", lambda _host, port: port)
+    monkeypatch.setattr(server, "find_free_port", lambda _host, port, **_: port)
     monkeypatch.setattr(server, "write_port_file", lambda *_a, **_k: None)
     monkeypatch.setattr(server.uvicorn, "Config", lambda *a, **k: object())
     monkeypatch.setattr(server, "_SignalStopServer", FakeServer)  # the main() server seam (#1142)
@@ -467,7 +466,7 @@ def test_main_normal_exit_does_not_run_emergency_cleanup(monkeypatch, tmp_path):
 def test_main_graceful_restart_cleanup_avoids_port_sweep(monkeypatch, tmp_path, launcher_managed):
     import server
 
-    cleanup_calls = []
+    cleanup_calls, bound = [], []
 
     class FakeServer:
         def __init__(self, _config):
@@ -480,16 +479,16 @@ def test_main_graceful_restart_cleanup_avoids_port_sweep(monkeypatch, tmp_path, 
         def run(self, *, sockets):
             assert self.stop_watcher_bound
             assert len(sockets) == 1 and sockets[0].getsockname()[1] > 0
+            bound.append(sockets[0].getsockname()[1])
             server._restart_requested.set()
             return None
 
     monkeypatch.setattr(server, "load_settings", lambda: {"OUROBOROS_SERVER_HOST": "127.0.0.1"})
     monkeypatch.setattr(server, "parse_server_args", lambda *_a, **_k: SimpleNamespace(host="127.0.0.1", port=0, host_explicit=False))
     monkeypatch.setattr(server, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(server, "_ACTUAL_BOUND_PORT", None)
     monkeypatch.setattr(server, "get_network_auth_startup_warning", lambda _host: "")
     monkeypatch.setattr(server, "validate_network_auth_configuration", lambda _host: "")
-    monkeypatch.setattr(server, "find_free_port", lambda _host, port: port)
+    monkeypatch.setattr(server, "find_free_port", lambda _host, port, **_: port)
     monkeypatch.setattr(server, "write_port_file", lambda *_a, **_k: None)
     monkeypatch.setattr(server.uvicorn, "Config", lambda *a, **k: object())
     monkeypatch.setattr(server, "_SignalStopServer", FakeServer)  # the main() server seam (#1142)
@@ -502,7 +501,7 @@ def test_main_graceful_restart_cleanup_avoids_port_sweep(monkeypatch, tmp_path, 
     transfers = []
 
     def transfer(host, port):
-        assert cleanup_calls == [{"port_sweep": False}]
+        assert cleanup_calls == [{}]
         assert seam_calls == [(tmp_path, server.REPO_DIR, census)]
         transfers.append((host, port))
 
@@ -517,9 +516,9 @@ def test_main_graceful_restart_cleanup_avoids_port_sweep(monkeypatch, tmp_path, 
     finally:
         _stop_restart_watcher(server)
 
-    assert cleanup_calls == [{"port_sweep": False}]
+    assert cleanup_calls == [{}]
     assert seam_calls == [(tmp_path, server.REPO_DIR, census)]
-    assert transfers == ([] if launcher_managed else [("127.0.0.1", server._ACTUAL_BOUND_PORT)])
+    assert transfers == ([] if launcher_managed else [("127.0.0.1", bound[0])])  # the port it bound
     assert exits == [server.RESTART_EXIT_CODE]
 
 
@@ -537,7 +536,7 @@ def test_emergency_cleanup_joins_the_one_owned_stop(monkeypatch):
     monkeypatch.setattr("ouroboros.gateway.host_service.host_service_port", lambda: 8767)
     server._restart_requested.clear()
 
-    server._emergency_process_cleanup(port_sweep=False)
+    server._emergency_process_cleanup()
 
     assert stop_calls == [server.DATA_DIR]
     assert worker_calls == [{"force": True, "archive_service_logs": False, "retain_saved_work": True}]  # #1563
@@ -559,7 +558,7 @@ def test_emergency_cleanup_during_restart_marks_tasks_cancelled(monkeypatch):
     server._restart_requested.set()
 
     try:
-        server._emergency_process_cleanup(port_sweep=False)
+        server._emergency_process_cleanup()
     finally:
         server._restart_requested.clear()
 

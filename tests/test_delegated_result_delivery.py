@@ -68,7 +68,13 @@ def test_a_large_delegated_result_is_delivered_whole_or_declared_partial(tmp_pat
     assert payload["primary_output_preview"] and payload["primary_output_preview"] in verdict
 
     artifact = delivery["artifact"]
-    assert artifact["root"] == "task_drive"
+    # #1573: retained once in the staging task's CANONICAL source store, read back by
+    # its absolute path through the artifact_store lineage read.
+    from ouroboros.artifacts import task_artifact_dir_path
+
+    assert artifact["root"] == "artifact_store"
+    assert artifact["source"]["task_id"] == "t-a"
+    assert pathlib.Path(artifact["path"]) == task_artifact_dir_path(tmp_path, "t-a") / artifact["source"]["path"]
     staged = pathlib.Path(artifact["abs_path"]).read_text(encoding="utf-8")
     assert json.loads(staged)["primary_output"] == verdict, "the whole result must survive"
     assert delivery["read_next"]["tool"] == "read_file"
@@ -81,8 +87,8 @@ def test_a_large_delegated_result_is_delivered_whole_or_declared_partial(tmp_pat
     from ouroboros.contracts.task_constraint import TaskConstraint
 
     ctx.task_constraint = TaskConstraint(mode=LOCAL_READONLY_SUBAGENT_MODE)
-    head = _read_file(ctx, path=artifact["path"], root="task_drive", start_line=1, max_lines=5)
-    tail = _read_file(ctx, path=artifact["path"], root="task_drive",
+    head = _read_file(ctx, path=artifact["path"], root=artifact["root"], start_line=1, max_lines=5)
+    tail = _read_file(ctx, path=artifact["path"], root=artifact["root"],
                       start_line=artifact["lines"], max_lines=5)
     assert "BLOCKED" not in head and "NOT_FOUND" not in head and "ERROR" not in head
     assert head != tail, "start_line must be a real cursor, not a no-op"
@@ -94,7 +100,7 @@ def _read_artifact_whole(ctx, artifact, step=7):
 
     lines = pathlib.Path(artifact["abs_path"]).read_text(encoding="utf-8").splitlines(keepends=True)
     for line_no in range(1, len(lines) + 1, step):
-        _read_file(ctx, path=artifact["path"], root="task_drive", start_line=line_no, max_lines=step)
+        _read_file(ctx, path=artifact["path"], root=artifact["root"], start_line=line_no, max_lines=step)
 
 
 def _staged_for_main(f, raw, run_id="run-coverage"):
@@ -380,14 +386,14 @@ def test_reading_the_staged_artifact_whole_writes_the_canonical_acknowledgement(
     assert spilled[-1]["full_content"] is True
 
     # A head read is served in full and acknowledges nothing.
-    head = _read_file(ctx, path=artifact["path"], root="task_drive", start_line=1, max_lines=5)
+    head = _read_file(ctx, path=artifact["path"], root=artifact["root"], start_line=1, max_lines=5)
     assert "BLOCKED" not in head and "ERROR" not in head
     assert "delegate_run_output_consumed" not in _event_types(tmp_path)
 
     # THE NEGATIVE THAT DEFINES THE CONTRACT: a tail window whose end touches EOF, with
     # the middle never read, is NOT full reading and must not acknowledge. (The first
     # cut of this feature acknowledged exactly this shape.)
-    tail = _read_file(ctx, path=artifact["path"], root="task_drive",
+    tail = _read_file(ctx, path=artifact["path"], root=artifact["root"],
                       start_line=artifact["lines"], max_lines=5)
     assert "BLOCKED" not in tail and "ERROR" not in tail
     assert "delegate_run_output_consumed" not in _event_types(tmp_path), \
@@ -419,7 +425,8 @@ def test_reading_the_staged_artifact_whole_writes_the_canonical_acknowledgement(
     replayed = dc.replay(tmp_path)["run-1"]
     assert replayed.output_consumed is True
     assert replayed.output_complete is True
-    assert replayed.output_artifact == artifact["path"]
+    assert replayed.output_artifact == artifact["source"]["path"]
+    assert replayed.output_source == artifact["source"]
     delegate._CUSTODY.clear()
 
 
@@ -634,7 +641,7 @@ def test_a_reader_selected_partial_line_is_not_covered(tmp_path, monkeypatch):
     # A line-window sweep with an explicit character bound leaves the long-line gap.
     line = 1
     while line <= artifact["lines"]:
-        _read_file(ctx, path=artifact["path"], root="task_drive",
+        _read_file(ctx, path=artifact["path"], root=artifact["root"],
                    start_line=line, max_lines=7, max_chars=budget)
         line += 7
     assert "delegate_run_output_consumed" not in _event_types(tmp_path), \
@@ -649,7 +656,7 @@ def test_a_reader_selected_partial_line_is_not_covered(tmp_path, monkeypatch):
     for line_no, line in enumerate(staged_lines, start=1):
         offset = 0
         while offset < len(line):
-            view = _read_file(ctx, path=artifact["path"], root="task_drive",
+            view = _read_file(ctx, path=artifact["path"], root=artifact["root"],
                               start_line=line_no, max_lines=1, start_char=offset, max_chars=stride)
             if offset:
                 assert f"(from char {offset} of this window" in view.splitlines()[0], \
@@ -886,7 +893,10 @@ def test_a_reconciled_run_with_an_unread_artifact_is_visible_as_uncollected(
     results = dc.reconcile_orphaned_runs(tmp_path, {"t-alive"}, gateway_factory=lambda: stub)
     assert [r["run_id"] for r in results] == ["run-1"]
     assert results[0]["staged_output_consumed"] is False
-    assert results[0]["staged_output"] == out["output_delivery"]["artifact"]["path"]
+    staged = out["output_delivery"]["artifact"]
+    assert results[0]["staged_output"] == staged["source"]["path"]
+    assert results[0]["staged_output_source"] == staged["source"], \
+        "the retained source names its staging task beside the store path (#1573)"
     reconciled = [json.loads(l) for l
                   in (tmp_path / "logs" / "events.jsonl").read_text().splitlines()
                   if '"delegate_run_reconciled"' in l]

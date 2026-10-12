@@ -225,6 +225,9 @@ def test_owned_child_grandchild_and_nonowned_drive(ctx):
 
 
 def test_shared_drive_run_uses_the_delegate_writer_location(ctx):
+    """#1573: the writer retains a run's terminal JSON once in the staging task's canonical
+    store and the run's custody row names it; a pre-retention run keeps its task-drive file."""
+    from ouroboros import delegate_custody as custody
     from ouroboros.delegate_output import _stage_full_output
     from ouroboros.task_custody import HEADLESS_TASKS_DIR
 
@@ -232,12 +235,31 @@ def test_shared_drive_run_uses_the_delegate_writer_location(ctx):
     child_ctx = ToolContext(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root, task_id="child")
     raw = '{ "primary_output": {"text": "shared child output"} }\n'
     staged = _stage_full_output(child_ctx, "run-one", raw)
-    path = ctx.drive_root / "task_drives" / "child" / "delegated_runs" / "run-one.json"
-    assert staged["abs_path"] == str(path) and path.read_bytes() == raw.encode("utf-8")
+    retained = ctx.drive_root / "task_results" / "artifacts" / "child" / staged["source"]["path"]
+    assert staged["abs_path"] == str(retained) and retained.read_bytes() == raw.encode("utf-8")
+    for run_id, owner in (("run-one", "child"), ("run-legacy", "child"), ("run-other", "second")):
+        assert custody.record_started(ctx.drive_root, custody.RunCustody(
+            run_id=run_id, task_id=owner, route_id="r", ledger_root=str(ctx.drive_root)))
+    assert custody.emit(ctx.drive_root, custody.OUTPUT_SPILLED, {
+        "run_id": "run-one", "task_id": "child", "artifact": staged["source"]["path"], "source": staged["source"],
+        "staged": True, "full_content": True, "sha256": staged["sha256"]})
     assert not (ctx.drive_root / HEADLESS_TASKS_DIR / "child").exists()
     result = call(ctx, op="json", kind="run", child_task_id="child", ids=["run-one"], save_as="shared-run.json")
     assert result["status"] == "ok", result
     assert saved(ctx, result) == raw.encode("utf-8")
+    legacy = write(ctx, "task_drives/child/delegated_runs/run-legacy.json", b'{"legacy": true}\n')
+    assert call(ctx, op="json", kind="run", child_task_id="child", ids=["run-legacy"])["data"] == {"legacy": True}
+    # Another task's retained run is not the selected child's: no path reaches it here.
+    other = _stage_full_output(ToolContext(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root, task_id="second"),
+                               "run-other", raw)
+    assert custody.emit(ctx.drive_root, custody.OUTPUT_SPILLED, {
+        "run_id": "run-other", "task_id": "second", "artifact": other["source"]["path"], "source": other["source"],
+        "staged": True, "full_content": True, "sha256": other["sha256"]})
+    assert call(ctx, op="json", kind="run", child_task_id="child", ids=["run-other"])["status"] != "ok"
+    # Retained bytes that no longer match the custody ref are refused, never served.
+    retained.write_bytes(raw.replace("shared", "SHARED").encode("utf-8"))
+    assert call(ctx, op="json", kind="run", child_task_id="child", ids=["run-one"])["status"] != "ok"
+    assert legacy.exists()
 
 
 @pytest.mark.parametrize("identity", ["../caller", "/tmp/caller", "a/b", "a\\b", "..", "C:caller"])

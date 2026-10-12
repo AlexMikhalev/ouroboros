@@ -277,10 +277,21 @@ def action_writers(q: Any, predecessor: str, *, drive_root: Any = None,
 
 def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: Dict[str, Any],
                     verdict: Dict[str, Any], sources: Dict[str, Any], admission: Dict[str, Any]) -> Dict[str, Any]:
-    from ouroboros.owner_continue import owner_corpus_rows, work_order_text
+    from ouroboros.owner_continue import owner_corpus_rows, recorded_system_checkout, work_order_text
 
+    authority_source: Dict[str, Any] = {}
+    try:
+        from ouroboros.agent_startup_checks import valid_task_result_authority_source
+        from ouroboros.server_routing_context import _task_result_ground_truth
+
+        source = _task_result_ground_truth({**result, "task_id": predecessor}).get("authority_source")
+        if valid_task_result_authority_source(source, predecessor):
+            authority_source = dict(source)
+    except Exception:
+        log.debug("Predecessor authority pointer unavailable for %s", predecessor, exc_info=True)
     deadline_at = str(binding.get("deadline_at") or "")
-    text = work_order_text(predecessor, verdict["cause"], sources, deadline_at=deadline_at)
+    text = work_order_text(predecessor, verdict["cause"], sources, deadline_at=deadline_at,
+                           authority_source=authority_source, checkout=recorded_system_checkout(result))
     title = str(result.get("title") or result.get("suggested_name") or result.get("objective") or predecessor)[:80]
     original = sources.get("original") or {}
     origin_ref = original.get("origin_message_ref")
@@ -290,8 +301,17 @@ def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: D
     # only that explicit choice (dispatch stamps children alone; a switch_model is not
     # stored), read from the result row its admission wrote even if no worker ever ran.
     effort = str(result.get("reasoning_effort") or "")
+    # Admission/replay persist under metadata until a worker publishes the canonical
+    # contract. Merge stored carriers per field, canonical winning; don't normalize
+    # an absent handbook choice into false before deciding whether to copy it.
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    stored = metadata.get("task_contract") if isinstance(metadata.get("task_contract"), dict) else {}
+    canonical = result.get("task_contract") if isinstance(result.get("task_contract"), dict) else {}
+    contract = {**stored, **canonical}
+    self_body_docs = contract.get("context_requires_self_body_docs")
     task: Dict[str, Any] = {
         **({"reasoning_effort": effort} if effort in EFFORT_SCALE else {}),
+        **({"context_requires_self_body_docs": self_body_docs} if isinstance(self_body_docs, bool) else {}),
         "id": binding["successor_task_id"], "type": "task", "chat_id": binding.get("chat_id"),
         "project_id": str(binding.get("project_id") or ""), "text": text, "objective": text,
         "title": f"Continue: {title}", "suggested_name": f"Continue: {title}",
@@ -320,16 +340,9 @@ def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: D
             },
         },
     }
-    try:
-        from ouroboros.agent_startup_checks import valid_task_result_authority_source
-        from ouroboros.server_routing_context import _task_result_ground_truth
-
-        source = _task_result_ground_truth({**result, "task_id": predecessor}).get("authority_source")
-        if valid_task_result_authority_source(source, predecessor):
-            task["predecessor_task_id"] = predecessor
-            task["predecessor_authority_source"] = dict(source)
-    except Exception:
-        log.debug("Predecessor authority pointer unavailable for %s", predecessor, exc_info=True)
+    if authority_source:
+        task["predecessor_task_id"] = predecessor
+        task["predecessor_authority_source"] = authority_source
     return task
 
 

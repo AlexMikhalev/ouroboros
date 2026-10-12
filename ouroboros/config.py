@@ -97,9 +97,7 @@ from ouroboros.runtime_limits import (
     NETWORK_WAIT_NOTE_INTERVAL_SEC,  # noqa: F401
     NETWORK_WAIT_BACKOFF_START_SEC,  # noqa: F401
     NETWORK_WAIT_BACKOFF_MAX_SEC,  # noqa: F401
-    TCP_KEEPALIVE_IDLE_SEC,  # noqa: F401
-    TCP_KEEPALIVE_INTERVAL_SEC,  # noqa: F401
-    TCP_KEEPALIVE_PROBE_COUNT,  # noqa: F401
+    TCP_KEEPALIVE_IDLE_SEC, TCP_KEEPALIVE_INTERVAL_SEC, TCP_KEEPALIVE_PROBE_COUNT,  # noqa: F401
     EXTENSION_STREAM_METADATA_BYTES,  # noqa: F401
     WS_RELAY_BURST,  # noqa: F401
     WS_RELAY_REFILL_PER_SEC,  # noqa: F401
@@ -150,14 +148,9 @@ from ouroboros.runtime_limits import (
 )
 from ouroboros.update_channels import UPDATE_SETTINGS_DEFAULTS, normalize_update_channel  # noqa: F401
 
-# Paths
-#
-# The resolve_*() trio is the per-call form of the constants below (same env
-# precedence). The constants freeze the env of the moment this module was first
-# imported; a writer that must follow isolation applied AFTER its import (an
-# isolated test or a spawned child whose OUROBOROS_* env landed late) resolves
-# per call through these instead of caching a root at import time (the
-# hermeticity class of issue #455).
+# Paths. resolve_*() is the per-call form of the constants below, which freeze the env at first
+# import: a writer that must follow isolation applied AFTER its import (an isolated test, a child
+# whose OUROBOROS_* env landed late) resolves per call (the hermeticity class of issue #455).
 
 
 def resolve_app_root() -> pathlib.Path:
@@ -172,13 +165,25 @@ def resolve_data_dir() -> pathlib.Path:
     return pathlib.Path(os.environ.get("OUROBOROS_DATA_DIR", resolve_app_root() / "data"))
 
 
+def resolve_port_file(data_dir=None, *, hosting_data_dir=None) -> pathlib.Path:
+    """The main-server port file of ``data_dir`` (default: the hosting root). ``OUROBOROS_PORT_FILE``
+    relocates only the root this process hosts (``hosting_data_dir``, default ``resolve_data_dir()``),
+    so an inspected foreign root (a task drive, another installation) keeps its ``state/server_port``."""
+    hosting = pathlib.Path(hosting_data_dir if hosting_data_dir is not None else resolve_data_dir())
+    root = hosting if data_dir is None else pathlib.Path(data_dir)
+    override = os.environ.get("OUROBOROS_PORT_FILE", "").strip()
+    if override and (root == hosting or os.path.realpath(root) == os.path.realpath(hosting)):
+        return pathlib.Path(override)
+    return root / "state" / "server_port"
+
+
 HOME = pathlib.Path.home()
 APP_ROOT = resolve_app_root()
 REPO_DIR = resolve_repo_dir()
 DATA_DIR = resolve_data_dir()
 SETTINGS_PATH = pathlib.Path(os.environ.get("OUROBOROS_SETTINGS_PATH", DATA_DIR / "settings.json"))
 PID_FILE = pathlib.Path(os.environ.get("OUROBOROS_PID_FILE", APP_ROOT / "ouroboros.pid"))
-PORT_FILE = pathlib.Path(os.environ.get("OUROBOROS_PORT_FILE", DATA_DIR / "state" / "server_port"))
+PORT_FILE = resolve_port_file(DATA_DIR)
 
 # Settings pin + write guards: SSOT settings_integrity; re-exported for config.X imports.
 from ouroboros import settings_integrity as _settings_integrity  # noqa: E402
@@ -340,13 +345,15 @@ def get_allow_mutative_subagents(write_surface: str = "", *, source_is_system_re
             or (surface == "self_worktree" and not source_is_system_repo))
 
 
+def _work_root(key: str, leaf: str) -> str:
+    """A work root: the saved setting, else the environment (``runtime_setting``), else ``~/Ouroboros/<leaf>``."""
+    raw = str(runtime_setting(key, "") or SETTINGS_DEFAULTS.get(key, "")).strip()
+    return raw or os.path.expanduser(os.path.join("~", "Ouroboros", leaf))
+
+
 def get_subagent_worktree_root() -> str:
     """Filesystem root for acting self_worktree checkouts (outside repo/ and data/)."""
-    raw = str(
-        runtime_setting("OUROBOROS_SUBAGENT_WORKTREE_ROOT", "")
-        or SETTINGS_DEFAULTS.get("OUROBOROS_SUBAGENT_WORKTREE_ROOT", "")
-    ).strip()
-    return raw or os.path.expanduser(os.path.join("~", "Ouroboros", "subagent_worktrees"))
+    return _work_root("OUROBOROS_SUBAGENT_WORKTREE_ROOT", "subagent_worktrees")
 
 
 def get_subagent_projects_root() -> str:
@@ -354,11 +361,7 @@ def get_subagent_projects_root() -> str:
 
     Outside repo/ and data/. Unlike self_worktree checkouts, genesis projects are
     durable deliverables and are never age-pruned by the GC retention sweep."""
-    raw = str(
-        runtime_setting("OUROBOROS_SUBAGENT_PROJECTS_ROOT", "")
-        or SETTINGS_DEFAULTS.get("OUROBOROS_SUBAGENT_PROJECTS_ROOT", "")
-    ).strip()
-    return raw or os.path.expanduser(os.path.join("~", "Ouroboros", "projects"))
+    return _work_root("OUROBOROS_SUBAGENT_PROJECTS_ROOT", "projects")
 
 
 def get_deliverables_root() -> str:
@@ -366,11 +369,7 @@ def get_deliverables_root() -> str:
     instead of cluttering the home root. Sibling of the genesis projects root under ~/Ouroboros,
     outside data/, and never GC-pruned. An explicit placement (Desktop/..., Downloads/..., or any
     path WITH a directory) is always honored as given. Override with OUROBOROS_DELIVERABLES_ROOT."""
-    raw = str(
-        runtime_setting("OUROBOROS_DELIVERABLES_ROOT", "")
-        or SETTINGS_DEFAULTS.get("OUROBOROS_DELIVERABLES_ROOT", "")
-    ).strip()
-    return raw or os.path.expanduser(os.path.join("~", "Ouroboros", "Deliverables"))
+    return _work_root("OUROBOROS_DELIVERABLES_ROOT", "Deliverables")
 
 
 def get_task_review_mode() -> str:
@@ -992,7 +991,8 @@ def apply_settings_to_env(settings: dict, *, environ=None) -> None:
 # PID lock: platform_layer uses OS-released locks on Unix and Windows.
 
 def acquire_pid_lock() -> bool:
-    APP_ROOT.mkdir(parents=True, exist_ok=True)
+    for root in (APP_ROOT, PID_FILE.parent):  # an overridden PID_FILE may live elsewhere (a data volume)
+        root.mkdir(parents=True, exist_ok=True)
     return _compat_pid_lock_acquire(str(PID_FILE))
 
 

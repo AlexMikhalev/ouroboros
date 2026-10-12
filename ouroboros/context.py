@@ -1269,7 +1269,11 @@ def _capture_context_core(
 
     from ouroboros.tools.tool_resolution import active_repo_dir_for
     active_root = str(active_repo_dir_for(ctx)) if ctx is not None else ""
-    health_section = build_health_invariants(context_env, task_id=str(task.get("id") or ""), active_root=active_root)
+    # The actual attempt, normalized exactly as the terminal-wake acknowledgement records it.
+    from ouroboros.delegate_supervision import _attempt_key
+    attempt_key = _attempt_key(ctx if ctx is not None else SimpleNamespace(task_attempt=task.get("_attempt")))
+    health_section = build_health_invariants(context_env, task_id=str(task.get("id") or ""),
+                                             active_root=active_root, attempt_key=attempt_key)
     dynamic_parts = []
     if health_section:
         dynamic_parts.append(health_section)

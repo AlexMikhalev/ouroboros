@@ -18,6 +18,7 @@ import pathlib
 from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros._outcome_tool_errors import _OK_TOOL_STATUSES
+from ouroboros._usage_response import OUTPUT_LIMIT_FINISH_REASONS, response_finish_reason
 from ouroboros.utils import utc_now_iso, append_jsonl, write_text_atomic
 
 
@@ -1050,6 +1051,13 @@ def _update_patterns(drive_root: pathlib.Path, entry: Dict[str, Any]) -> None:
             update_budget_from_usage(patterns_usage)
         except Exception:
             pass
+    # The shared finish reader, as the consolidator: a reply cut at the output
+    # ceiling is a prefix of a whole-file rewrite, never the register (BIBLE P1).
+    # The paid call is already accounted; the owner above logs and degrades.
+    finish = str(response_finish_reason(patterns_usage, resp_msg)[1] or "").strip().lower()
+    if finish in OUTPUT_LIMIT_FINISH_REASONS:
+        raise RuntimeError(f"Pattern Register reply was cut at the output ceiling (finish_reason={finish}); "
+                           "the previous register was kept")
     updated = (resp_msg.get("content") or "").strip()
     if not updated or "|" not in updated:
         log.warning("Pattern register LLM returned invalid output, skipping update")

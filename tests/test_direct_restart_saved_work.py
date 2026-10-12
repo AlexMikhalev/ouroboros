@@ -1,10 +1,12 @@
 """Direct restart composition with production custody/transactions/restore.
 
-Only process/platform observations are simulated; this is not native Windows
+Only process/platform observations are simulated: the Windows branch's inherited
+parent handle and its observed exit code are doubles. This is not native Windows
 qualification and never launches a server, daemon, or provider.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -12,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroboros import config, server_control
+from ouroboros import config, platform_layer, server_control
 from ouroboros import delegate_recovery as dr
 from ouroboros import process_custody as pc
 from ouroboros.task_results import STATUS_SCHEDULED, write_task_result
@@ -32,7 +34,8 @@ def direct_restart(tmp_path, monkeypatch):
     workers.PENDING.append(_queued("queued", root_task_id="queued"))
     case = SimpleNamespace(root=tmp_path, queue=queue, workers=workers, parent=os.getpid(),
                            pid=912345, current=os.getpid(), birth="spawn-birth", command="python server.py",
-                           env={}, child_env={}, calls=[], killed=[], failure="", on_spawn=None)
+                           env={}, child_env={}, calls=[], killed=[], failure="", on_spawn=None,
+                           parent_birth="parent-birth", parent_exit=42, handle_error=None)
     proc = SimpleNamespace(pid=case.pid, wait=lambda timeout=None: -9)
 
     def popen(argv, **kwargs):
@@ -62,6 +65,21 @@ def direct_restart(tmp_path, monkeypatch):
     monkeypatch.setattr(pc, "pid_is_alive", lambda pid: pid == case.pid)
     monkeypatch.setattr(pc, "pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pc, "kill_process_tree", case.killed.append)
+
+    @contextlib.contextmanager
+    def inheritable():  # the Windows parent handle the successor inherits
+        if case.handle_error:
+            raise case.handle_error
+        yield 77, {}
+
+    def await_parent(handle):  # the successor's observation of that handle once it signalled
+        assert handle == 77
+        return {"pid": case.parent, "birth": case.parent_birth, "exit_code": case.parent_exit}
+
+    monkeypatch.setattr(platform_layer, "inheritable_self_handle", inheritable)
+    monkeypatch.setattr(platform_layer, "await_process_handle", await_parent)
+    monkeypatch.setattr(platform_layer, "process_start_time", lambda pid: (
+        case.birth if pid == case.pid else case.parent_birth if pid == case.parent else ""))
     append = pc.append_jsonl
     monkeypatch.setattr(pc, "append_jsonl", lambda *a, **kw: False if case.failure == "custody" else append(*a, **kw))
 
@@ -80,6 +98,7 @@ def direct_restart(tmp_path, monkeypatch):
 
     def transfer(windows=True):
         monkeypatch.setattr(server_control, "IS_WINDOWS", windows)
+        monkeypatch.setattr(dr, "IS_WINDOWS", windows)
         server_control.restart_current_process("127.0.0.1", 8765, repo_dir=tmp_path,
                                                log=logging.getLogger(__name__))
 
@@ -112,32 +131,49 @@ def test_direct_spawn_returns_saved_work_and_runnable_queue_once(direct_restart,
     assert saved["messages"][-1] == {"role": "tool", "tool_call_id": "call_a", "content": "done a"}
     tx = dr._read_restart_transaction(case.root, "direct-return")
     assert tx["supervisor_pid"] == case.parent != case.pid
-    assert tx["ack_source"] == "direct_spawn_successor"
     [receipt] = [json.loads(line) for line in pc.ledger_path(case.root).read_text().splitlines()]
-    assert tx["direct_spawn_successor"] == receipt
     assert receipt["pid"] == case.pid and receipt["scope"] == "daemon"
+    if windows:  # one Windows proof: the observed exit 42 of the bound parent, never a custody receipt
+        assert tx["ack_source"] == dr.WINDOWS_PARENT_ACK and "direct_spawn_successor" not in tx
+        assert (tx["supervisor_birth"], tx["successor_pid"], tx["successor_birth"]) == (
+            case.parent_birth, case.pid, case.birth)
+    else:  # POSIX exec failed: S1's exact custodied spawn
+        assert tx["ack_source"] == "direct_spawn_successor" and tx["direct_spawn_successor"] == receipt
     assert tx["returns_restored_at"] and fresh_return_transaction(case.root) == {}
     assert dr.PLANNED_RESTART_TRANSACTION_ENV not in case.env
     assert case.calls == (["spawn"] if windows else ["exec", "spawn"])
 
 
-@pytest.mark.parametrize("fault", ["wrong-pid", "source-pid", "recycled-pid", "wrong-command", "unknown-birth",
-                                   "wrong-active", "stale-preparation", "consumed", "no-token",
-                                   "wrong-source", "spawn", "custody"])
-def test_direct_spawn_cannot_return_work_without_its_exact_fresh_receipt(direct_restart, fault):
+_SHARED_FAULTS = ["wrong-pid", "source-pid", "recycled-pid", "unknown-birth", "wrong-active", "stale-preparation",
+                  "consumed", "no-token", "wrong-source", "spawn", "custody"]
+
+
+@pytest.mark.parametrize("windows,fault", [
+    *[(True, fault) for fault in _SHARED_FAULTS],
+    # Windows-only: the parent's own exit is the proof (Panic 99, a failure, no handle, another parent).
+    *[(True, fault) for fault in ("parent-exit-99", "parent-exit-1", "no-parent-handle", "other-parent-birth")],
+    *[(False, fault) for fault in [*_SHARED_FAULTS, "wrong-command"]],
+], ids=lambda value: {True: "windows", False: "posix-fallback"}.get(value, value))
+def test_direct_spawn_cannot_return_work_without_its_exact_fresh_receipt(direct_restart, windows, fault):
     case = direct_restart
     case.prepare()
     if fault == "wrong-source":
         tx = dr._read_restart_transaction(case.root, "direct-return")
         dr._write_restart_transaction(case.root, {**tx, "supervisor_pid": case.parent + 1})
+    if fault == "no-parent-handle":
+        case.handle_error = OSError("fixture handle unavailable")
     if fault in {"spawn", "custody"}:
         case.failure = fault
         with pytest.raises((OSError, RuntimeError), match="spawn failed|durable custody"):
-            case.transfer()
+            case.transfer(windows)
         assert len(case.killed) == (fault == "custody")
     else:
-        case.transfer()
+        case.transfer(windows)
     case.successor()
+    if fault in {"parent-exit-99", "parent-exit-1"}:
+        case.parent_exit = 99 if fault == "parent-exit-99" else 1
+    elif fault == "other-parent-birth":
+        case.parent_birth = "a-later-process-under-the-same-pid"
     if fault == "wrong-pid":
         case.current += 1
     elif fault == "source-pid":
@@ -166,7 +202,7 @@ def test_direct_spawn_cannot_return_work_without_its_exact_fresh_receipt(direct_
 
 
 @pytest.mark.parametrize("control", ["prior-hold", "stop", "panic"])
-def test_direct_spawn_keeps_owner_controls(direct_restart, control):
+def test_direct_spawn_keeps_owner_controls(direct_restart, control):  # the Windows branch
     from ouroboros.cancel_intents import request_cancel
     from supervisor.events_budget import HOLD_OWNER_RESTART, hold_budget_row
 
@@ -220,6 +256,7 @@ def test_early_spawned_successor_waits_for_custody_publication(direct_restart, m
     child = threading.Thread(target=boot)
 
     def early_boot():
+        case.env[dr.PLANNED_RESTART_PARENT_ENV] = case.child_env[dr.PLANNED_RESTART_PARENT_ENV]
         child.start()
         assert entering.wait(2), "successor must take the transaction lock"
         assert not done.wait(.05), "Popen has returned neither custody nor a transaction receipt yet"
@@ -230,7 +267,7 @@ def test_early_spawned_successor_waits_for_custody_publication(direct_restart, m
     finally:
         child.join(3)
     assert not child.is_alive()
-    assert observed and observed[0].get("ack_source") == "direct_spawn_successor"
+    assert observed and observed[0].get("ack_source") == dr.WINDOWS_PARENT_ACK
     case.successor()
     monkeypatch.setattr(dr.os, "getpid", lambda: case.current)
     case.env.pop(dr.PLANNED_RESTART_TRANSACTION_ENV, None)  # boot already consumed it
@@ -243,7 +280,7 @@ def test_failed_transaction_publication_keeps_successful_spawn_unacknowledged(di
     write = dr._write_restart_transaction
 
     def fail_binding(root, row):
-        if "direct_spawn_successor" in row:
+        if "successor_pid" in row or "direct_spawn_successor" in row:
             raise OSError("fixture full transaction disk")
         return write(root, row)
 
@@ -255,13 +292,45 @@ def test_failed_transaction_publication_keeps_successful_spawn_unacknowledged(di
     assert case.killed == []
 
 
+def test_restart_before_acknowledgement_lends_nothing_to_the_next_generation(direct_restart, monkeypatch, caplog):
+    """P binds S1; S1 restarts before acknowledging (a boot resuming a pending store switch).
+
+    S1 is not the prepared supervisor, so its own spawn binds nothing, and S2 observes
+    S1's exit 42, not P's: both servers stay custodied while every return stays held.
+    """
+    case = direct_restart
+    case.prepare()
+    case.transfer()  # P -> S1, bound under the transaction lock
+    case.successor()
+    assert dr.observe_restart_parent()["pid"] == case.parent  # S1 saw P's exit 42 but never acknowledged
+    p, s1 = case.parent, case.pid
+    case.parent, case.parent_birth, case.pid, case.birth = s1, case.birth, s1 + 1, "s2-birth"
+
+    def popen(argv, **kwargs):  # S1's spawn of S2, still carrying P's unconsumed token
+        case.child_env.update(kwargs["env"])
+        return SimpleNamespace(pid=case.pid, wait=lambda timeout=None: -9)
+
+    monkeypatch.setattr(pc, "subprocess", SimpleNamespace(Popen=popen))
+    case.transfer()
+    case.successor()
+    monkeypatch.setattr(dr, "_restart_parent", None)  # S2's own first observation
+    rows = case.restore()
+    tx = dr._read_restart_transaction(case.root, "direct-return")
+    assert (tx["status"], tx["supervisor_pid"], tx["successor_pid"]) == ("prepared", p, s1)
+    assert set(rows) == {"saved-root", "queued"}
+    assert all(budget_hold_fact(row)["reason"] == HOLD_SAVED_WORK for row in rows.values())
+    assert "the exited parent is not the prepared generation" in caplog.text
+    assert [json.loads(line)["pid"] for line in pc.ledger_path(case.root).read_text().splitlines()] == [s1, s1 + 1]
+    assert case.killed == []
+
+
 @pytest.mark.parametrize("fault", ["wrong-pid", "recycled-pid", "stale-preparation"])
 def test_acknowledged_spawn_cannot_lend_its_return_to_a_later_process(direct_restart, fault):
     case = direct_restart
     case.prepare()
     case.transfer()
     case.successor()
-    assert fresh_return_transaction(case.root)["ack_source"] == "direct_spawn_successor"
+    assert fresh_return_transaction(case.root)["ack_source"] == dr.WINDOWS_PARENT_ACK
     if fault == "wrong-pid":
         case.current += 1
     elif fault == "recycled-pid":

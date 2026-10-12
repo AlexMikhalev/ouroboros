@@ -13,6 +13,7 @@ from dataclasses import asdict
 from typing import Any, Mapping, Optional
 
 from ouroboros import delegate_custody as custody
+from ouroboros.platform_layer import IS_WINDOWS
 from ouroboros.subagent_work_order import work_order_fingerprint
 from ouroboros.utils import atomic_write_json, utc_now_iso
 
@@ -26,6 +27,10 @@ NO_RESUME_CAUSES = (
     "deadline", "timeout", "explicit_cancellation", "abrupt_whole_app_loss",
 )
 PLANNED_RESTART_TRANSACTION_ENV = "OUROBOROS_PLANNED_RESTART_TRANSACTION_ID"
+PLANNED_RESTART_PARENT_ENV = "OUROBOROS_PLANNED_RESTART_PARENT_HANDLE"
+PLANNED_RESTART_BINDING_ENV = "OUROBOROS_PLANNED_RESTART_BINDING_HANDLE"
+WINDOWS_PARENT_ACK = "windows_direct_parent_handle"
+_restart_parent: Optional[dict[str, Any]] = None  # this process's one observation of an inherited parent
 
 
 def _canonical_hash(value: Any) -> str:
@@ -213,22 +218,104 @@ def direct_spawn_successor_matches(row: Mapping[str, Any]) -> bool:
                 and _fingerprint_matches(entry, require_measured=True))
 
 
+def spawned_successor_is_current(row: Mapping[str, Any]) -> bool:
+    """A spawn acknowledgement lends its returns only to the exact successor it bound."""
+    if row.get("ack_source") == WINDOWS_PARENT_ACK:
+        from ouroboros.platform_layer import process_start_time
+
+        return (row.get("successor_pid"), row.get("successor_birth")) == (os.getpid(), process_start_time(os.getpid()))
+    return row.get("ack_source") != "direct_spawn_successor" or direct_spawn_successor_matches(row)
+
+
+def bind_restart_successor(drive_root: Any, row: dict[str, Any], proc: Any) -> None:
+    """Inside the held transaction, the spawning parent names its one successor.
+
+    POSIX (exec failed): the exact custodied spawn. Windows: this generation's birth
+    and the successor's PID/birth, which count only after the successor has observed
+    this exact parent's exit 42 through its inherited handle.
+    """
+    if IS_WINDOWS:
+        from ouroboros.platform_layer import process_start_time
+
+        births = process_start_time(os.getpid()), process_start_time(int(proc.pid))
+        if not all(births):
+            raise ValueError(f"restart transaction {row.get('transaction_id')!r} cannot bind its successor")
+        row.update(supervisor_birth=births[0], successor_pid=int(proc.pid), successor_birth=births[1])
+    else:
+        row["direct_spawn_successor"] = proc._ouroboros_custody
+    _write_restart_transaction(drive_root, row)
+
+
+def observe_restart_parent() -> dict[str, Any]:
+    """Wait once for the parent a Windows direct restart passed as an inherited handle.
+
+    Returns its ``pid``, ``birth`` and ``exit_code`` (empty without a handle or an
+    observation); later readers share this one result, and children never inherit it.
+    """
+    global _restart_parent
+    if _restart_parent is None:
+        _restart_parent, handle = {}, os.environ.pop(PLANNED_RESTART_PARENT_ENV, "")
+        binding = os.environ.pop(PLANNED_RESTART_BINDING_ENV, "")
+        if binding:
+            try:
+                from ouroboros.platform_layer import await_restart_binding
+
+                await_restart_binding(int(binding))
+            except Exception as exc:
+                log.warning("The bootstrap restart binding wait failed: %s", exc)
+        if handle:
+            try:
+                from ouroboros.platform_layer import await_process_handle
+
+                _restart_parent = await_process_handle(int(handle))
+            except Exception as exc:
+                log.warning("The restart parent handle could not be observed: %s", exc)
+    return _restart_parent
+
+
+def _windows_successor_problem(row: Mapping[str, Any], parent: Mapping[str, Any]) -> str:
+    from ouroboros.platform_layer import process_start_time
+
+    if not row:
+        return "the transaction is not this restart's active prepared one"
+    if parent.get("exit_code") != 42:
+        return f"parent exit {parent.get('exit_code', 'unobserved')}"
+    if (parent.get("pid"), parent.get("birth")) != (int(row.get("supervisor_pid") or 0), row.get("supervisor_birth")):
+        return "the exited parent is not the prepared generation"
+    if (row.get("successor_pid"), row.get("successor_birth")) != (os.getpid(), process_start_time(os.getpid())):
+        return "this process is not the bound successor"
+    return ""
+
+
+def _transfer_proof(transaction_id: str, row: Mapping[str, Any], parent: Mapping[str, Any]) -> str:
+    """This process's acknowledgement source for a valid prepared row, else ``""``.
+
+    POSIX: same-PID exec, or the exact custodied spawn after a failed exec. Windows
+    accepts neither: only the inherited parent's observed exit 42 and the identities
+    that parent bound, read after that wait.
+    """
+    if IS_WINDOWS:
+        if problem := _windows_successor_problem(row, parent):
+            log.warning("Restart %s continuation unproven, its handoffs are not resumed: %s", transaction_id, problem)
+            return ""
+        return WINDOWS_PARENT_ACK
+    if not row:
+        return ""
+    if "direct_spawn_successor" in row:
+        return "direct_spawn_successor" if direct_spawn_successor_matches(row) else ""
+    return "direct_exec_successor" if int(row.get("supervisor_pid") or 0) == os.getpid() else ""
+
+
 def _ack_direct_exec_successor(drive_root: Any) -> None:
-    """A one-shot token plus same-PID exec or the exact custodied spawn proves transfer."""
+    """A one-shot token plus this platform's transfer proof acknowledges the restart."""
 
     transaction_id = str(os.environ.pop(PLANNED_RESTART_TRANSACTION_ENV, "") or "")
     if not transaction_id:
         return
+    parent = observe_restart_parent() if IS_WINDOWS else {}
     with direct_restart_transaction(drive_root, transaction_id) as row:
-        if not row:
-            return
-        if "direct_spawn_successor" in row:
-            if not direct_spawn_successor_matches(row):
-                return
-            ack_source = "direct_spawn_successor"
-        elif int(row.get("supervisor_pid") or 0) == os.getpid():
-            ack_source = "direct_exec_successor"
-        else:
+        ack_source = _transfer_proof(transaction_id, row, parent)
+        if not ack_source:
             return
         row.update({
             "status": "normal_exit_acknowledged", "exit_code": 42,
@@ -801,7 +888,10 @@ def pre_adopt_planned_handoffs(
             mismatch = "restart_transaction_task_mismatch"
         elif task is None:
             mismatch = "startup_restored_task_missing"
-        elif old_pid != os.getpid() and _pid_alive(old_pid):
+        elif (old_pid != os.getpid()
+              # The inherited handle observed this exact generation's exit; its number may be reused.
+              and transaction.get("ack_source") != WINDOWS_PARENT_ACK
+              and _pid_alive(old_pid)):
             mismatch = "previous_supervisor_generation_not_dead"
         elif int(row.get("new_attempt") or 0) != int(task.get("_attempt") or 1):
             mismatch = "startup_attempt_mismatch"
@@ -881,6 +971,34 @@ def pre_adopt_planned_handoffs(
         )
         adopted.add(task_id)
     return adopted
+
+
+def planned_handoff_resume_allowed(drive_root: Any, task: Mapping[str, Any]) -> bool:
+    """Release no-dispatch custody only for this exact, pre-adopted continuation.
+
+    Startup owns pre-adoption and its physical-run checks. Admission only reads
+    that authority; it must neither adopt a run nor authorize ordinary replay.
+    """
+    try:
+        task_id = str(task.get("id") or "")
+        row = _read(drive_root, task_id)
+        if (not task_id or row.get("task_id") != task_id
+                or row.get("cause") != CAUSE_PLANNED_SELF_RESTART or row.get("status") != "pre_adopted"
+                or int(row.get("new_attempt") or 0) != int(task.get("_attempt") or 1)
+                or _successor_binding_mismatch(row, task)):
+            return False
+        if any((pathlib.Path(drive_root) / "state" / name).exists()
+               for name in ("owner_restart_no_resume.flag", "panic_stop.flag")):
+            return False
+        transaction_id = str(row.get("restart_transaction_id") or "")
+        transaction = _read_restart_transaction(drive_root, transaction_id)
+        return bool(transaction_id and transaction.get("transaction_id") == transaction_id
+                    and transaction.get("status") == "normal_exit_acknowledged"
+                    and int(transaction.get("supervisor_pid") or 0) == int(row.get("supervisor_pid") or 0)
+                    and int(transaction.get("exit_code") or 0) == 42
+                    and task_id in set(transaction.get("task_ids") or []))
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return False
 
 
 def veto_handoff(drive_root: Any, task_id: str, reason: str) -> dict[str, Any]:
@@ -1089,13 +1207,17 @@ __all__ = [
     "CAUSE_PLANNED_SELF_RESTART",
     "CAUSE_WORKER_CRASH",
     "NO_RESUME_CAUSES",
+    "PLANNED_RESTART_PARENT_ENV",
     "PLANNED_RESTART_TRANSACTION_ENV",
     "arm_active_planned_restart_transaction",
     "acknowledge_observed_restart_exit",
     "adopt_handoff",
     "authority_fingerprint_from_context",
     "authority_fingerprint_from_task",
+    "bind_restart_successor",
     "has_planned_restart_handoffs",
+    "observe_restart_parent",
+    "planned_handoff_resume_allowed",
     "prepare_handoff",
     "prepare_planned_restart_handoffs",
     "prepare_worker_crash_handoff",

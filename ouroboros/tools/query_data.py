@@ -116,7 +116,21 @@ def _jsonl(path, where, tail, cap):
     return raw, [row[1] for row in rows], partial, consumed
 
 
-def _record(ctx, root, kind, identity, child, state_file, op, where, tail, cap):
+def _retained_run(canonical, identity, child):
+    """A run's terminal JSON retained once in its staging task's canonical store (#1573), named by
+    the run's current custody ``output_source``; only a run the selected task (the caller or its
+    owned descendant) staged qualifies, as its task-drive staging did. ``None``: the legacy path."""
+    from ouroboros.artifacts import read_actor_source_bytes
+    from ouroboros.delegate_custody_current import run
+
+    entry = run(canonical, identity)
+    source = entry.output_source if entry is not None else {}
+    if not source or str(source.get("task_id") or "") != child:
+        return None
+    return read_actor_source_bytes(canonical, child, {key: source.get(key) for key in ("kind", "root", "path", "size", "sha256")})
+
+
+def _record(ctx, root, kind, identity, child, state_file, op, where, tail, cap, canonical=None):
     if kind == "task_result":
         if not _path(ctx, root, store.STORE_REL).is_file():
             raise FileNotFoundError("task store is unavailable in the selected data root")
@@ -130,6 +144,13 @@ def _record(ctx, root, kind, identity, child, state_file, op, where, tail, cap):
             value = txn.load(identity)
         raw = _canonical(value)
         return raw, value, True, False, len(raw)
+    raw = _retained_run(canonical, identity, child) if kind == "run" else None
+    if raw is not None:  # size and sha256 verified against the custody ref
+        if len(raw) > cap:
+            raise ValueError("document exceeds input byte limit")
+        return raw, json.loads(raw), False, False, len(raw)
+    if root is None:
+        raise FileNotFoundError("owned child drive is unavailable")
     relative = _FILES[kind].format(id=identity, child=child, state_file=state_file)
     if kind == "run" and root.parts[-2:] == ("task_drives", child):
         relative = f"delegated_runs/{identity}.json"
@@ -179,7 +200,12 @@ def _query_data(ctx: ToolContext, *, op: str, db="current", query="", kind="", i
         canonical = Path((ctx.task_metadata or {}).get("native_data_root") or canonical_data_root(ctx)).resolve()
         root = Path(ctx.drive_root).resolve()
         if child_task_id:
-            root = _child_root(ctx, canonical, _name(child_task_id))
+            try:
+                root = _child_root(ctx, canonical, _name(child_task_id))
+            except FileNotFoundError:
+                if kind != "run":
+                    raise
+                root = None  # lineage held; a retained run outlives its execution drive (#1573)
         source = {"op": op, "child_task_id": child_task_id}
         reconstructed, partial = False, False
         if op == "sql":
@@ -228,7 +254,7 @@ def _query_data(ctx: ToolContext, *, op: str, db="current", query="", kind="", i
             for identity in identities:
                 raw, value, rebuilt, clipped, consumed = _record(
                     ctx, root, kind, identity, _name(child_task_id or ctx.task_id) if kind == "run" else "",
-                    state_file, op, filter, tail, remaining)
+                    state_file, op, filter, tail, remaining, canonical)
                 remaining -= consumed
                 if remaining < 0:
                     raise ValueError("input byte limit exceeded")

@@ -881,12 +881,19 @@ def effective_task_result(
             if effective_retry:
                 merged_retry = dict(effective_retry)
                 lineage = list(merged_retry.get("retry_lineage") or [])
+                # #1573: the successor's answer must not hide retained outputs THIS
+                # physical row published; each receipt keeps its own physical read call.
+                audit = result.get("delegate_terminal_reconciliation")
+                published = [dict(row) for row in ((audit.get("terminal_runs") if isinstance(audit, dict)
+                                                    else None) or [])
+                             if isinstance(row, dict) and isinstance(row.get("staged_output"), dict)]
                 lineage.insert(0, {
                     "task_id": task_id,
                     "status": result.get("status"),
                     "outcome_axes": normalize_outcome_axes(result),
                     "reason_code": result.get("reason_code"),
                     "retry_task_id": retry_id,
+                    **({"terminal_runs": published} if published else {}),
                 })
                 merged_retry["retry_lineage"] = lineage
                 merged_retry.setdefault("original_task_id", task_id)

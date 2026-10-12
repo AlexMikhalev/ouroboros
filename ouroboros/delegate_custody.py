@@ -62,6 +62,9 @@ OUTPUT_CONSUMED = "delegate_run_output_consumed"
 # read to EOF: the "launched and never collected" class, named at the moment it becomes
 # permanent instead of inferred later from a field nobody joined.
 SETTLED_UNREAD = "delegate_run_settled_unread"
+# #1573: the owner's ACCEPTED terminal wake for this run was appended to the transcript
+# of ``attempt_key`` (written only after the supervision acknowledgement landed).
+TERMINAL_ACKNOWLEDGED = "delegate_run_terminal_acknowledged"
 # C1 (delegated-run isolation): a MUTATING run executes in a private snapshot; its
 # diff is captured durably at terminal, then EXPLICITLY applied or rejected by the
 # nanny. Capture is idempotent (the flag replays); the disposition row is what
@@ -143,6 +146,10 @@ class RunCustody:
     settled: bool = False
     terminal_state: str = ""  # SETTLED row's state, replayed (empty pre-existing/CLOSED_ABSENT)
     terminal_reason: str = ""  # #1196: engine ``outcomeFacts.reason`` replayed from SETTLED ("" = none)
+    settled_at: str = ""  # the SETTLED row's own timestamp
+    # #1573: SETTLED's engine locators (runDir, primary kind/path/bytes/truncated, no text); None = legacy.
+    engine_locator: Optional[Dict[str, Any]] = None
+    terminal_ack_attempt: str = ""  # the attempt whose transcript took the terminal wake
     continuation_of: str = ""  # the settled run this one explicitly continued (``continue_from``)
     # Same-tree continuation (``delegate_continuation``): a run that continues IN its
     # predecessor's undisposed snapshot records its own capture identity (``capture_id``,
@@ -153,17 +160,16 @@ class RunCustody:
     superseded_by: str = ""  # replayed: the run that continued in this run's snapshot
     containment_disclosed: bool = False  # written once; a re-poll must not re-find
     unread_disclosed: bool = False  # settled-never-read omission named durably
-    # Staged-output half of the terminal story (D7). ``output_artifact``:
-    # task-drive-relative staging path (empty when inline). ``output_complete``:
-    # staged body matches the run's OWN report - served size or carried preview
-    # prefix (no engine content hash, so equal length binds to the CLAIM; an
-    # artifact matching neither stages incomplete, never acknowledgeable).
-    # ``output_sha``: hash of what is staged NOW; ``output_consumed``: the
-    # canonical ack exists FOR THAT HASH (an ack names bytes, not a path).
+    # D7: store-relative ``output_artifact`` (empty inline; see ``output_source``).
+    # ``output_complete`` matches the run's OWN reported size or preview prefix (no engine hash:
+    # equal length binds to the CLAIM); neither match means incomplete, never acknowledgeable.
+    # ``output_sha`` hashes current staging; ``output_consumed`` means its canonical ack FOR THAT HASH, not path.
     output_artifact: str = ""
     output_complete: bool = False
     output_sha: str = ""
     output_consumed: bool = False
+    # #1573: canonical ``task_source`` ref + ACTUAL staging task (a retry reader's own); {} = legacy task drive.
+    output_source: Dict[str, Any] = field(default_factory=dict)
     # Immutable pairs keep custody memo copies independent. Aggregate consumption
     # settles work debt; each reader still owes its own receipt for the current hash.
     output_reader_receipts: Tuple[Tuple[str, str], ...] = ()
@@ -545,6 +551,7 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
     elif kind == OUTPUT_SPILLED:
         if row.get("staged") and str(row.get("artifact") or ""):
             custody.output_artifact = str(row.get("artifact") or "")
+            custody.output_source = dict(row["source"]) if isinstance(row.get("source"), dict) else {}
             # Strict: a row that does not POSITIVELY claim full content replays as
             # incomplete. An absent flag must never bless a preview as the result.
             custody.output_complete = row.get("full_content") is True
@@ -587,6 +594,9 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
         custody.ledger_recorded = custody.settled = True
         custody.terminal_state = str(row.get("state") or "") or custody.terminal_state
         custody.terminal_reason = str(row.get("outcome_reason") or "") or custody.terminal_reason
+        custody.settled_at = str(row.get("ts") or "") or custody.settled_at
+        if isinstance(row.get("engine_locator"), dict):
+            custody.engine_locator = dict(row["engine_locator"])
         custody.engine_model = str(row.get("model") or "") or custody.engine_model
         custody.access_profile = str(row.get("access_profile") or "")[:32] or custody.access_profile
         custody.spend_disclosed = bool(row.get("spend_disclosed")) and row.get("cost_usd") is not None
@@ -596,6 +606,9 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
         except (TypeError, ValueError):
             custody.cost_usd, custody.spend_disclosed = None, False
         custody.containment_fault = {}
+    elif kind == TERMINAL_ACKNOWLEDGED:
+        if str(row.get("task_id") or "") == custody.task_id:  # only the owner's own transcript
+            custody.terminal_ack_attempt = str(row.get("attempt_key") or "")
     elif kind == CLOSED_ABSENT:
         # Closed, not settled: custody is over, the run leaves ``open_runs``.
         # The registration survives independently (wholesale clearing here was
@@ -1147,13 +1160,14 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
         return {"settled": True, "ledger_recorded": True,
                 "project_retired": not custody.project_owned and not custody.project_persistent,
                 "project_persistent": custody.project_persistent, "retried": False}
+    from ouroboros.delegate_output import engine_locator
     from ouroboros.gateways.claudexor import final_attempt_facts, run_failure_cause
 
     summary = summary_of(detail)
     observed = final_attempt_facts(detail, custody.run_id)
     # A run that did not succeed says WHY on its settlement row: the model asked for, the
     # ENGINE's own code ("" = it gave none) and the words it reported (opaque, never
-    # branched on). A succeeded row is byte-identical to before.
+    # branched on). A succeeded row carries none of these failure facts.
     failure = summary.get("failure") if isinstance(summary.get("failure"), dict) else {}
     outcome_facts = summary.get("outcomeFacts") if isinstance(summary.get("outcomeFacts"), dict) else {}
     failure_facts = {} if str(summary.get("state") or "") in SUCCEEDED_STATES else {
@@ -1243,9 +1257,12 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
                 # a replayed ledger can retain its older observation unchanged.
                 "credential_profile_id": applied_profile,
                 "access_profile": applied_access,
+                "engine_locator": engine_locator(detail),
             })
-            if custody.settled and (custody.review_owned or custody.project_persistent):
-                _retire_project_locked(drive_root, gateway, custody)
+            if custody.settled:
+                custody.engine_locator = engine_locator(detail)
+                if custody.review_owned or custody.project_persistent:
+                    _retire_project_locked(drive_root, gateway, custody)
     if custody.settled:
         from ouroboros.subagent_history import record_session_execution
         try:
@@ -1309,6 +1326,7 @@ def record_settled_unread(drive_root: Any, custody: RunCustody) -> bool:
             "run_id": custody.run_id, "task_id": custody.task_id,
             "root_task_id": custody.root_task_id, "parent_task_id": custody.parent_task_id,
             "route": custody.route_id, "artifact": custody.output_artifact,
+            **({"source": dict(custody.output_source)} if custody.output_source else {}),
         })
     return True
 

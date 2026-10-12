@@ -159,8 +159,8 @@ def lock_busy_facts(exc: BaseException) -> Dict[str, Any]:
                           "lock; wait for it (see holder) and retry delegate_start."}
 
 
-def _emit(ctx: ToolContext, kind: str, payload: Dict[str, Any]) -> None:
-    custody.emit(custody.custody_root(ctx), kind, {
+def _emit(ctx: ToolContext, kind: str, payload: Dict[str, Any]) -> bool:
+    return custody.emit(custody.custody_root(ctx), kind, {
         "task_id": str(getattr(ctx, "task_id", "") or ""), **payload,
     })
 

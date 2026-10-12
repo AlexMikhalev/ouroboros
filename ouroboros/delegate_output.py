@@ -1,6 +1,7 @@
 """Staged output for delegated runs, and the durable receipt that it was READ.
 
-Terminal payloads too large for the tool budget are written whole to the task drive.
+Terminal payloads too large for the tool budget are retained whole in the staging
+task's canonical source store (#1573), beyond drive cleanup and the engine's own GC.
 The inline payload then carries bounded ``*_preview`` heads of the bulk fields while
 the file carries the full bytes. D7's acknowledgement records which authorized reader
 received every character of which content: it binds the reader, the content sha256 and
@@ -26,9 +27,16 @@ from ouroboros.utils import truncate_review_artifact
 
 log = logging.getLogger(__name__)
 
-# Where the full terminal detail is staged under the task's own drive, to be read back
-# with the ordinary read_file contract.
+# Where a SECONDARY per-run artifact (a spilled question set) is staged under the
+# task's own drive, and where terminal payloads were staged before #1573 (legacy rows).
 _ARTIFACT_SUBDIR = "delegated_runs"
+# #1573: the terminal payload is retained ONCE in the staging task's own source store on
+# the CANONICAL drive and read back through ``artifact_store`` by its absolute path: the
+# existing lineage read admits that store for the staging task on its own or a forked
+# drive, for its children and for a direct Continue. No new root, category or grant.
+_STAGED_SOURCE_ROOT = "artifact_store"
+_STAGED_SOURCE_CATEGORY = "tool_results"
+_STAGED_SOURCE_PREFIX = "delegated-run-"
 
 # Room inside a self-bounding delivery budget for the JSON scaffold and the
 # delivery block itself — shared by every producer that measures itself against
@@ -44,18 +52,17 @@ def _safe_run_filename(run_id: str) -> str:
 
 def _stage_full_output(ctx: ToolContext, run_id: str, text: str,
                        suffix: str = "") -> Optional[Dict[str, Any]]:
-    """Write the WHOLE terminal detail to the task's own drive and describe it.
+    """Write the WHOLE terminal detail where its reader can reach it, and describe it.
 
-    Host-owned by construction: the host writes it, and every profile that can call a
-    nanny verb has task_drive as READ-only or better, so the artifact is reachable
-    through the ordinary ``read_file`` contract (which already carries a stable
-    ``start_line`` cursor) instead of a parallel artifact system.
+    The terminal payload (no ``suffix``) is retained by ``_retain_terminal_output``.
+    Host-owned by construction either way: the artifact is reachable through the
+    ordinary ``read_file`` contract (which already carries a stable ``start_line``
+    cursor) instead of a parallel artifact system.
 
     ``suffix`` distinguishes a SECONDARY per-run artifact (e.g. ``.interactions``
-    for a spilled question set) from the terminal result: the D7 read-receipt
-    matcher keys on the exact ``<run>.json`` name, so a suffixed artifact is
-    deliberately outside the consumed-receipt contract — its receipt is the
-    sha256/size pair returned here.
+    for a spilled question set), still written to the task's own drive (every
+    nanny profile reads ``task_drive``): it is deliberately outside the
+    consumed-receipt contract — its receipt is the sha256/size pair returned here.
     """
     from ouroboros.tool_access import resource_root_path
 
@@ -65,6 +72,8 @@ def _stage_full_output(ctx: ToolContext, run_id: str, text: str,
     # the declared hash described a file that never existed on disk and the D7
     # acknowledgement could never be recorded for any staged output.
     staged_bytes = text.encode("utf-8", "replace")
+    if not suffix:
+        return _retain_terminal_output(ctx, run_id, text, staged_bytes)
     tmp = None
     try:
         base = resource_root_path(ctx, "task_drive") / _ARTIFACT_SUBDIR
@@ -97,6 +106,93 @@ def _stage_full_output(ctx: ToolContext, run_id: str, text: str,
         "bytes": len(staged_bytes),
         "sha256": hashlib.sha256(staged_bytes).hexdigest(),
     }
+
+
+def _retain_terminal_output(ctx: ToolContext, run_id: str, text: str,
+                            staged_bytes: bytes) -> Optional[Dict[str, Any]]:
+    """Retain the terminal payload once in the STAGING task's canonical source store.
+
+    The staging task is the reader whose context staged it (a confirmed retry
+    successor stages an old run into its own store), named on the returned
+    ``source`` beside the standard ``task_source`` ref. Write-once and
+    digest-named, so a re-wait of identical bytes rewrites nothing, and neither
+    the execution drive's cleanup nor the engine's GC reaches it. The read
+    address is the absolute canonical path under ``artifact_store``.
+    """
+    from ouroboros.artifacts import store_actor_source_bytes, task_id_for_artifacts
+
+    try:
+        drive = custody.custody_root(ctx)
+        task_id = task_id_for_artifacts(ctx)
+        ref = store_actor_source_bytes(
+            drive, task_id, category=_STAGED_SOURCE_CATEGORY,
+            source_id=f"{_STAGED_SOURCE_PREFIX}{_safe_run_filename(run_id)}",
+            data=staged_bytes, extension="json")
+        source = {**{key: ref[key] for key in ("kind", "root", "path", "size", "sha256")},
+                  "task_id": task_id}
+        target = staged_source_path(drive, source)
+    except Exception:
+        log.warning("Failed to retain delegated run output for %s", run_id, exc_info=True)
+        return None
+    return {
+        "root": _STAGED_SOURCE_ROOT,
+        "path": str(target),
+        "abs_path": str(target),
+        "source": source,
+        "chars": len(text),
+        "lines": text.count("\n") + 1,
+        "bytes": len(staged_bytes),
+        "sha256": source["sha256"],
+    }
+
+
+def staged_source_path(drive_root: Any, source: Dict[str, Any]) -> pathlib.Path:
+    """The canonical file one recorded ``output_source`` names (raises when malformed)."""
+    from ouroboros.artifacts import task_artifact_dir_path
+
+    rel = pathlib.PurePosixPath(str(source.get("path") or ""))
+    if rel.is_absolute() or not rel.parts or rel.parts[0] != "source_handles" or ".." in rel.parts:
+        raise ValueError("staged output source has an invalid path")
+    return task_artifact_dir_path(drive_root, str(source.get("task_id") or "")).joinpath(*rel.parts)
+
+
+def staged_output_address(drive_root: Any, entry: _RunCustody) -> Dict[str, str]:
+    """``read_file`` root/path of a run's CURRENT staged output ({} when none).
+
+    A legacy row names its path relative to the staging task's own drive, as before."""
+    if not entry.output_artifact:
+        return {}
+    if not entry.output_source:
+        return {"root": "task_drive", "path": entry.output_artifact}
+    try:
+        return {"root": _STAGED_SOURCE_ROOT, "path": str(staged_source_path(drive_root, entry.output_source))}
+    except ValueError:
+        return {}
+
+
+def engine_locator(detail: Any) -> Dict[str, Any]:
+    """The engine's OWN locators for a run's work, recorded on its SETTLED row.
+
+    ``run_dir`` and the primary output's kind/path/bytes/truncated — never its
+    text. Engine-owned: the engine may reclaim them, and they grant no read
+    authority. Absent facts stay absent; nothing here is inferred or guessed.
+    """
+    detail = detail if isinstance(detail, dict) else {}
+    locator: Dict[str, Any] = {}
+    run_dir = custody.summary_of(detail).get("runDir")
+    if isinstance(run_dir, str) and run_dir.strip():
+        locator["run_dir"] = run_dir
+    primary = detail.get("primaryOutput")
+    if isinstance(primary, dict):
+        facts: Dict[str, Any] = {key: primary[key] for key in ("kind", "path")
+                                 if isinstance(primary.get(key), str) and primary[key]}
+        if isinstance(primary.get("bytes"), int) and not isinstance(primary.get("bytes"), bool):
+            facts["bytes"] = primary["bytes"]
+        if isinstance(primary.get("truncated"), bool):
+            facts["truncated"] = primary["truncated"]
+        if facts:
+            locator["primary_output"] = facts
+    return locator
 
 
 # Proven-coverage ledger for staged artifacts: merged, sorted character intervals
@@ -159,6 +255,7 @@ def output_disposition(custody: _RunCustody) -> Dict[str, Any]:
         return {}
     return {
         "staged_output": custody.output_artifact,
+        **({"staged_output_source": dict(custody.output_source)} if custody.output_source else {}),
         "staged_output_complete": custody.output_complete,
         "staged_output_consumed": custody.output_consumed,
     }
@@ -279,18 +376,48 @@ def acknowledge_staged_output_delivery(ctx: ToolContext, exec_result: Dict[str, 
     _acknowledge_staged_output(ctx, read_view, exec_result.get("result", ""), projected, shown_ranges)
 
 
+def _staged_source_candidate(resolved: pathlib.Path) -> bool:
+    """Read-free qualifier: only a delegated-run source-store file name can be one."""
+    return (resolved.suffix == ".json" and resolved.name.startswith(_STAGED_SOURCE_PREFIX)
+            and resolved.parent.name == _STAGED_SOURCE_CATEGORY
+            and resolved.parent.parent.name == "source_handles")
+
+
+def _names_staged_source(drive: Any, entry: _RunCustody, resolved: pathlib.Path) -> bool:
+    if not entry.output_source:
+        return False
+    try:
+        return staged_source_path(drive, entry.output_source).resolve(strict=False) == resolved
+    except ValueError:
+        return False
+
+
 def _acknowledge_staged_output(ctx: ToolContext, read_view: Any, original: str,
                               projected: Dict[str, Any],
                               shown_ranges: Optional[List[List[int]]] = None) -> None:
+    """The ONE D7 credit: actual delivered ranges of the exact staged source.
+
+    A legacy staging is the reader's own ``task_drive`` ``delegated_runs/<run>.json``;
+    a retained one (#1573) must be EXACTLY the canonical file its custody row
+    recorded (staging task plus source path), read through ``artifact_store`` or
+    ``runtime_data`` — a name, category or equal text is no evidence, and the name
+    test runs before any read or custody replay so unrelated reads cost nothing.
+    Only the run's starter or its confirmed retry successor earns a receipt.
+    """
     try:
         from ouroboros.tool_access import resource_root_path
 
-        if not isinstance(read_view, dict) or read_view.get("opened_root") != "task_drive":
+        if not isinstance(read_view, dict):
             return
+        opened_root = read_view.get("opened_root")
         path = pathlib.Path(read_view["target"])
-        artifact_dir = (resource_root_path(ctx, "task_drive") / _ARTIFACT_SUBDIR).resolve(strict=False)
         resolved = path.resolve(strict=False)
-        if resolved.parent != artifact_dir:
+        legacy = opened_root == "task_drive"
+        if legacy:
+            artifact_dir = (resource_root_path(ctx, "task_drive") / _ARTIFACT_SUBDIR).resolve(strict=False)
+            if resolved.parent != artifact_dir:
+                return
+        elif opened_root not in {"artifact_store", "runtime_data"} or not _staged_source_candidate(resolved):
             return
         raw = path.read_bytes()
         source_sha = hashlib.sha256(raw).hexdigest()
@@ -301,13 +428,18 @@ def _acknowledge_staged_output(ctx: ToolContext, read_view: Any, original: str,
         if ranges is None or (not ranges and content):
             return
         task_id = str(getattr(ctx, "task_id", "") or "")
-        wanted = path.name
         drive = custody.custody_root(ctx)
 
-        def _match(candidates: Any) -> Optional[_RunCustody]:
-            return next((c for c in candidates
-                         if _safe_run_filename(c.run_id) + ".json" == wanted), None)
+        def _is(entry: _RunCustody) -> bool:
+            if legacy:
+                return not entry.output_source and _safe_run_filename(entry.run_id) + ".json" == path.name
+            return _names_staged_source(drive, entry, resolved)
 
+        def _match(candidates: Any) -> Optional[_RunCustody]:
+            return next((c for c in candidates if _is(c)), None)
+
+        # Memo first; a restarted worker (empty or unrelated memo) falls through to the
+        # durable replay, the same authority every other custody question consults.
         entry = _match(list(custody._CUSTODY.values())) or _match(custody.replay(drive).values())
         if entry is None:
             return
@@ -316,7 +448,7 @@ def _acknowledge_staged_output(ctx: ToolContext, read_view: Any, original: str,
             from ouroboros.delegate_shared import retry_result_status
 
             status, entry, predecessor = retry_result_status(ctx, drive, entry.run_id)
-            if status != custody.OWNED or entry is None or not predecessor:
+            if status != custody.OWNED or entry is None or not predecessor or not _is(entry):
                 return
         identity = f"{resolved}|{source_sha}"
         if successor:
@@ -327,12 +459,54 @@ def _acknowledge_staged_output(ctx: ToolContext, read_view: Any, original: str,
         if not complete or output_consumed_by_reader(entry, task_id):
             return
         custody.record_output_consumed(
-            drive, entry, artifact=f"{_ARTIFACT_SUBDIR}/{wanted}",
+            drive, entry, artifact=entry.output_artifact if entry.output_source else f"{_ARTIFACT_SUBDIR}/{path.name}",
             byte_length=len(raw), sha256=source_sha, chars=len(content),
             lines=len(content.splitlines(keepends=True)), reader_task_id=task_id,
         )
     except Exception:
         log.warning("coverage acknowledgement for a staged delegated output failed", exc_info=True)
+
+
+def delegated_output_source_projection(drive_root: Any, result: Any, sha256: Any,
+                                       start_char: Any = None, end_char: Any = None) -> Dict[str, Any]:
+    """Read one retained full delegated output that ``result`` itself publishes (#1573).
+
+    Only a ``staged_output`` or ``other_staged_outputs`` ref already published in this task
+    result's own ``delegate_terminal_reconciliation.terminal_runs`` qualifies, selected by its
+    exact sha256: no digest search, filesystem scan or engine call. The bytes come from the
+    ACTUAL staging task's store on the canonical root, verified against the published
+    size and hash, so a reader on any drive gets the same exact source. Discovery, never
+    consumption: this read is not the D7 acknowledgement and records nothing.
+    """
+    from ouroboros.artifacts import read_actor_source_bytes, text_source_range_projection
+
+    unavailable: Dict[str, Any] = {"schema": 1, "kind": "delegated_run_output", "status": "unavailable"}
+    wanted = str(sha256 or "").strip().lower()
+    if len(wanted) != 64 or wanted.strip("0123456789abcdef"):
+        return {**unavailable, "reason": "source_ref_invalid"}
+    audit = result.get("delegate_terminal_reconciliation") if isinstance(result, dict) else None
+    rows = audit.get("terminal_runs") if isinstance(audit, dict) else None
+    row, staged = next(((row, ref) for row in (rows if isinstance(rows, list) else []) if isinstance(row, dict)
+                        for others in [row.get("other_staged_outputs")]
+                        for ref in (row.get("staged_output"), *(others if isinstance(others, list) else ()))
+                        if isinstance(ref, dict) and str(ref.get("sha256") or "") == wanted), (None, None))
+    if row is None:
+        return {**unavailable, "reason": "source_not_published", "requested_sha256": wanted}
+    facts = {"run_id": str(row.get("run_id") or ""), "staging_task_id": str(staged.get("task_id") or ""),
+             "sha256": wanted, "source_complete": staged.get("complete") is True}
+    ref = {key: staged.get(key) for key in ("kind", "root", "path", "size", "sha256")}
+    try:
+        raw = read_actor_source_bytes(drive_root, facts["staging_task_id"], ref)
+        projection, reason = text_source_range_projection(
+            raw.decode("utf-8"), unavailable["kind"], start_char, end_char)
+    except ValueError as exc:
+        reason = "source_identity_mismatch" if "verification" in str(exc) else "source_ref_invalid"
+        return {**unavailable, **facts, "reason": reason}
+    except (OSError, RuntimeError):
+        return {**unavailable, **facts, "reason": "source_unavailable"}
+    # A retained ENGINE PREVIEW stays an explicit gap: the bytes are exact, the result is not whole.
+    status = "available" if facts["source_complete"] else "incomplete"
+    return {**(projection or unavailable), "status": status, **facts, **({"reason": reason} if reason else {})}
 
 
 # -- bounded delivery of a structured payload (moved with the size-gate split;
@@ -387,8 +561,8 @@ def _preview_payload(full: Dict[str, Any], text: str, artifact: Optional[Dict[st
              "Treat this result as incomplete evidence, not as "
              "the verdict; it can never be acknowledged as fully read.")
             if artifact else
-            "PARTIAL and UNRECOVERABLE INLINE: the full payload could not be staged to the "
-            "task drive. Treat this result as incomplete evidence, not as the verdict."
+            "PARTIAL and UNRECOVERABLE INLINE: the full payload could not be retained. "
+            "Treat this result as incomplete evidence, not as the verdict."
         ),
     }
     if full_note is not None:

@@ -451,21 +451,27 @@ def _delivered_terminal_payload(ctx: ToolContext, run_id: str, detail: Dict[str,
             full["output_delivery"]["primary_output_full"] = full_note
         return full
     artifact = _delegate()._stage_full_output(ctx, run_id, text)
-    _delegate()._emit(ctx, _delegate().custody.OUTPUT_SPILLED, {"run_id": run_id, "total_chars": len(text),
-                                        "artifact": (artifact or {}).get("path", ""),
+    # The retained source names the ACTUAL staging task (this reader's context, which
+    # for a confirmed retry successor is not the run's starter) beside its store path.
+    source = (artifact or {}).get("source") or {}
+    landed = _delegate()._emit(ctx, _delegate().custody.OUTPUT_SPILLED, {"run_id": run_id, "total_chars": len(text),
+                                        "artifact": source.get("path") or (artifact or {}).get("path", ""),
+                                        **({"source": dict(source)} if source else {}),
                                         "bytes": (artifact or {}).get("bytes"),
                                         "sha256": (artifact or {}).get("sha256", ""),
                                         "staged": artifact is not None,
                                         "full_content": bool(full_ok and artifact is not None)})
-    if entry is not None and artifact is not None:
+    if landed and entry is not None and artifact is not None:
         if entry.output_consumed and entry.output_sha and artifact["sha256"] != entry.output_sha:
             # The ack named OTHER bytes: a re-stage of different content at the same
             # path owes a fresh acknowledgement — consumed never transfers by path.
             entry.output_consumed = False
         entry.output_sha = artifact["sha256"]
-        entry.output_artifact = artifact["path"]
+        entry.output_artifact = source.get("path") or artifact["path"]
+        entry.output_source = dict(source)
         entry.output_complete = bool(full_ok)
     return _delegate()._preview_payload(full, text, artifact, budget,
-                            consumed=bool(entry is not None and output_consumed_by_reader(
-                                entry, str(getattr(ctx, "task_id", "") or ""))),
+                            consumed=bool(full_ok and artifact is not None and entry is not None
+                                and artifact["sha256"] == entry.output_sha
+                                and output_consumed_by_reader(entry, str(getattr(ctx, "task_id", "") or ""))),
                             full_ok=full_ok, full_note=full_note)

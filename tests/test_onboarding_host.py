@@ -130,7 +130,7 @@ def test_first_run_onboarding_is_presented_only_after_the_gateway_is_healthy():
         "check_git()",
         "bootstrap_repo()",
         "_prepare_first_run_settings()",
-        '_cleanup_recorded_server_process("preflight")',
+        "_requested_server_port()",
         "lifecycle_thread.start()",
         "_await_server_ready(port, _abort, lifecycle_thread)",
         "_present_first_run_onboarding(",

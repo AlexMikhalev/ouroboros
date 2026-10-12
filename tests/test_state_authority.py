@@ -277,10 +277,11 @@ def test_panic_requests_every_physical_stop_before_any_persistence_and_never_wai
         control.execute_panic_stop(  # a stalled log handler and a held clock lock block nothing either
             SimpleNamespace(stop=lambda: release.wait(30)),
             lambda **kw: order.append("workers"), data_dir=root, panic_exit_code=99,
-            log=SimpleNamespace(critical=lambda *a, **k: release.wait(30)), bound_port=12345)
+            log=SimpleNamespace(critical=lambda *a, **k: release.wait(30)))
     release.set()
     assert time.monotonic() - started < 15  # every write bounded, never awaited
-    assert "workers" not in order and ("port", 12345) in order  # lifelines own pooled child requests
+    assert "workers" not in order  # lifelines own pooled child requests
+    assert not [step for step in order if isinstance(step, tuple) and step[0] == "port"]  # no port sweep
     assert order.index("flag") < order.index("state")
     assert (root / "state" / "panic_stop.flag").read_text() == "panic"
 

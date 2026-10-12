@@ -233,7 +233,98 @@ def _memory_health_lines(env: Any) -> List[str]:
     return lines
 
 
-def build_health_invariants(env: Any, task_id: str = "", active_root: str = "") -> str:
+def _unread_output_line(custody_root: Any, run: Any, task_id: str) -> str:
+    """The D7 NEVER-READ line for one settled, complete, unread staged output.
+
+    The instruction clause is ownership-aware: only the owner (or its confirmed
+    retry) can earn the read acknowledgement, so telling a foreign task to read
+    a legacy task-drive staging mints an obligation it structurally cannot
+    discharge. A retained (#1573) output names its exact canonical read address,
+    which other readers may open without earning a receipt; a legacy row keeps
+    its task-drive wording byte for byte.
+    """
+    from ouroboros.delegate_output import staged_output_address
+
+    address = staged_output_address(custody_root, run) if run.output_source else {}
+    if task_id and run.task_id and task_id != run.task_id:
+        action = (
+            "Reading permission alone grants no acknowledgement; only the owner or its confirmed retry "
+            "can record full consumption."
+        ) if address else (
+            f"Only its owner task {run.task_id} can read and acknowledge it; "
+            f"note the gap honestly instead of attempting the read here."
+        )
+    else:
+        how = f"root='{address['root']}' at that path" if address else "root='task_drive'"
+        action = (
+            f"Read it with read_file {how} until the artifact is "
+            "covered end to end, or say plainly that the result was not "
+            "collected."
+        )
+    return (f"WARNING: DELEGATED RESULT NEVER READ — run {run.run_id or '?'} settled "
+            f"with its full output staged at {address.get('path') or run.output_artifact} and never read to "
+            f"EOF (owner task {run.task_id or '?'}). {action}")
+
+
+# One line per own settled run, bounded like ``terminal_custody_notice``.
+_OWN_RUN_OUTCOME_LINES = 10
+
+
+def _own_run_outcome_lines(custody_root: Any, custody_state: Any, task_id: str,
+                           attempt_key: str) -> List[str]:
+    """The reader's OWN settled runs whose terminal payload its current transcript lacks.
+
+    #1573: a run the sweep settled while its owner was parked (or that it never
+    waited on) left no fact in the owner's context. From the ONE custody state the
+    other delegated-run checks already replayed: own (never a foreign or review-owned
+    run), settled terminal, recorded by a writer that also records the terminal
+    acknowledgement (``engine_locator`` is not None — before it, absence proved
+    nothing), not acknowledged in THIS attempt, and not already a D7 line. Facts and
+    locators only, never output text or a command. A retained payload is called
+    full only when its custody says ``output_complete``; an unverified engine
+    preview keeps its address but is named incomplete. The line leaves the next
+    fresh context build after the run's terminal wake is appended in this attempt.
+    """
+    if not task_id or not attempt_key or custody_state is None:
+        return []
+    from ouroboros.delegate_custody import TERMINAL_STATES, settled_output_unread
+    from ouroboros.delegate_output import staged_output_address
+
+    runs = sorted((run for run in custody_state.values()
+                   if run.task_id == task_id and run.settled and not run.review_owned
+                   and run.terminal_state in TERMINAL_STATES and run.engine_locator is not None
+                   and run.terminal_ack_attempt != attempt_key and not settled_output_unread(run)),
+                  key=lambda run: (run.settled_at, run.run_id), reverse=True)
+    lines = []
+    for run in runs[:_OWN_RUN_OUTCOME_LINES]:
+        locator = run.engine_locator or {}
+        primary = locator.get("primary_output") if isinstance(locator.get("primary_output"), dict) else {}
+        engine = [f"run folder {locator['run_dir']}"] if locator.get("run_dir") else []
+        if primary:
+            engine.append("primary output " + " ".join(str(part) for part in (
+                primary.get("kind"), primary.get("path"),
+                f"({primary['bytes']} bytes)" if "bytes" in primary else None,
+                "(truncated preview)" if primary.get("truncated") else None) if part))
+        address = staged_output_address(custody_root, run)
+        retained = ("retained full output" if run.output_complete else
+                    "retained INCOMPLETE payload (unverified engine preview, never acknowledgeable as read)")
+        lines.append(
+            f"INFO: OWN DELEGATED RUN ENDED — run {run.run_id} {run.terminal_state}"
+            + (f" ({run.terminal_reason})" if run.terminal_reason else "")
+            + (f" at {run.settled_at}" if run.settled_at else "")
+            + "; at context capture, no terminal-wake acknowledgement was recorded for this attempt"
+            + ("; engine-owned, may be reclaimed: " + "; ".join(engine) if engine else "")
+            + (f"; {retained}: read_file root='{address['root']}' path='{address['path']}'"
+               if address else "")
+            + ".")
+    if len(runs) > _OWN_RUN_OUTCOME_LINES:
+        lines.append(f"INFO: OWN DELEGATED RUNS ENDED — +{len(runs) - _OWN_RUN_OUTCOME_LINES} older "
+                     "settled runs also lacked this attempt's acknowledgement at context capture.")
+    return lines
+
+
+def build_health_invariants(env: Any, task_id: str = "", active_root: str = "",
+                            attempt_key: str = "") -> str:
     """Render the health-invariant WARNING block for one reader's context.
 
     Called once when a task's context is built (a task-start snapshot, not
@@ -254,6 +345,11 @@ def build_health_invariants(env: Any, task_id: str = "", active_root: str = "") 
     call for a FOREIGN obligation the reader's root already satisfies, instead
     of leaving sixteen identical abstract rows. Empty keeps the static wording
     byte-for-byte.
+
+    ``attempt_key`` is the reader's actual task attempt, normalized exactly as the
+    supervision acknowledgement records it; with ``task_id`` it names the reader's
+    OWN settled runs whose terminal payload this attempt's transcript never took
+    (``_own_run_outcome_lines``). Empty renders none of those lines.
     """
     checks: List[str] = []
 
@@ -388,26 +484,12 @@ def build_health_invariants(env: Any, task_id: str = "", active_root: str = "") 
             # nothing is live and nothing is mutating — but it stays visible until the
             # read happens, which is the whole difference between a disclosure and a fact
             # someone acts on. It clears itself the moment the acknowledgement lands.
-            # The instruction clause is ownership-aware: the staged artifact lives
-            # under the OWNER's task drive and the read acknowledgement only
-            # credits the owner, so telling a foreign task to read it mints an
-            # obligation it structurally cannot discharge.
-            if task_id and run.task_id and task_id != run.task_id:
-                action = (
-                    f"Only its owner task {run.task_id} can read and acknowledge it; "
-                    f"note the gap honestly instead of attempting the read here."
-                )
-            else:
-                action = (
-                    "Read it with read_file root='task_drive' until the artifact is "
-                    "covered end to end, or say plainly that the result was not "
-                    "collected."
-                )
-            checks.append(
-                f"WARNING: DELEGATED RESULT NEVER READ — run {run.run_id or '?'} settled "
-                f"with its full output staged at {run.output_artifact} and never read to "
-                f"EOF (owner task {run.task_id or '?'}). {action}"
-            )
+            checks.append(_unread_output_line(custody_root, run, task_id))
+    except Exception:
+        pass
+
+    try:
+        checks.extend(_own_run_outcome_lines(custody_root, custody_state, task_id, attempt_key))
     except Exception:
         pass
 

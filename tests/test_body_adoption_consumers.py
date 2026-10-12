@@ -131,7 +131,7 @@ def test_exit_tail_arms_only_with_the_stop_owners_confirmation(scene, monkeypatc
     # An ordinary shutdown (no restart requested) never arms.
     monkeypatch.setattr(server, "stop_owned_work", lambda _root: {"state": "completed", "unconfirmed": []})
     server._restart_requested.clear()
-    server._emergency_process_cleanup(port_sweep=False)
+    server._emergency_process_cleanup()
     assert body_adoption.read(scene.data)["phase"] == "authorized" and not pointer.exists()
 
     server._restart_requested.set()
@@ -139,7 +139,7 @@ def test_exit_tail_arms_only_with_the_stop_owners_confirmation(scene, monkeypatc
         # A custodied survivor of the owned stop defers arming: the next generation boots the old tree.
         monkeypatch.setattr(server, "stop_owned_work",
                             lambda _root: {"state": "unconfirmed", "unconfirmed": [{"pid": 77}]})
-        server._emergency_process_cleanup(port_sweep=False)
+        server._emergency_process_cleanup()
         handoff = body_adoption.read(scene.data)
         assert handoff["phase"] == "authorized" and "owned_work_unconfirmed" in handoff["events"][-1]["detail"]
         assert not pointer.exists()
@@ -149,7 +149,7 @@ def test_exit_tail_arms_only_with_the_stop_owners_confirmation(scene, monkeypatc
         monkeypatch.setattr(server, "stop_owned_work", lambda _root: {"state": "completed", "unconfirmed": []})
         # A kill whose join could not confirm one worker's exit: the census, not kill_workers' bool, decides.
         census["value"] = {**EXITED, "unconfirmed": [4001]}
-        server._emergency_process_cleanup(port_sweep=False)
+        server._emergency_process_cleanup()
         handoff = body_adoption.read(scene.data)
         assert handoff["phase"] == "authorized" and "worker_exits_unconfirmed" in handoff["events"][-1]["detail"]
         census["value"] = EXITED
@@ -158,7 +158,7 @@ def test_exit_tail_arms_only_with_the_stop_owners_confirmation(scene, monkeypatc
         body_switch.write_handoff(str(body_adoption.helper_dir(scene.data)), handoff)
         server._owner_restart_requested.set()  # the owner pressed Restart meanwhile: newer control governs
         try:
-            server._emergency_process_cleanup(port_sweep=False)
+            server._emergency_process_cleanup()
         finally:
             server._owner_restart_requested.clear()
         assert body_adoption.read(scene.data)["phase"] == "authorized" and not pointer.exists()
@@ -166,7 +166,7 @@ def test_exit_tail_arms_only_with_the_stop_owners_confirmation(scene, monkeypatc
         handoff = body_adoption.read(scene.data)
         handoff["restart_bound"] = True
         body_switch.write_handoff(str(body_adoption.helper_dir(scene.data)), handoff)
-        server._emergency_process_cleanup(port_sweep=False)
+        server._emergency_process_cleanup()
     finally:
         server._restart_requested.clear()
     assert body_adoption.read(scene.data)["phase"] == "armed"

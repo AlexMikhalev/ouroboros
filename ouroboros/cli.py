@@ -756,9 +756,9 @@ def _default_base_url() -> str:
         return env_url
     port = DEFAULT_PORT
     try:
-        from ouroboros.config import DATA_DIR
+        from ouroboros.config import resolve_port_file
 
-        port_text = (pathlib.Path(DATA_DIR) / "state" / "server_port").read_text(encoding="utf-8").strip()
+        port_text = resolve_port_file().read_text(encoding="utf-8").strip()
         if port_text:
             port = int(port_text)
     except Exception:

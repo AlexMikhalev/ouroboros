@@ -153,7 +153,8 @@ def _audit_task_custody(drive_root: Any, mine: str, result: Dict[str, Any], *,
             terminal_runs = sorted((
                 {"run_id": str(row.run_id), "state": str(row.terminal_state),
                  "model": str(row.model), "profile_id": str(row.profile_id),
-                 "selected_subagent_id": str(row.selected_subagent_id)}
+                 "selected_subagent_id": str(row.selected_subagent_id),
+                 **_answer_locators(drive_root, row)}
                 for row in state.values()
                 if row.task_id == mine and row.settled and not row.review_owned
                 and row.terminal_state in custody.TERMINAL_STATES
@@ -183,6 +184,37 @@ def _audit_task_custody(drive_root: Any, mine: str, result: Dict[str, Any], *,
         })
     if emit_evidence:
         _emit_audit_evidence(drive_root, result)
+
+
+def _answer_locators(drive_root: Any, row: Any) -> Dict[str, Any]:
+    """Where a settled run's answer lives, as recorded facts only (#1573).
+
+    ``engine_locator`` is the engine's own run folder and primary-output metadata
+    (never text; engine-owned and possibly reclaimed). ``staged_output`` is the
+    retained full terminal payload: its exact ``task_source`` ref with the ACTUAL
+    staging task, completeness, the ``read_file`` address the existing lineage read
+    admits, and ``source_read``: the exact ``get_task_result`` call that reads it
+    from any drive, pinned to the PHYSICAL task publishing this receipt (the run's
+    owner, which a retry successor's staging task need not be). A row that recorded
+    neither — every run settled before these facts existed — adds no key, so its
+    stored receipt stays byte-identical.
+    """
+    facts: Dict[str, Any] = {}
+    if row.engine_locator:
+        facts["engine_locator"] = dict(row.engine_locator)
+    if row.output_source and row.output_artifact:
+        from ouroboros.delegate_output import staged_output_address
+
+        address = staged_output_address(drive_root, row)
+        facts["staged_output"] = {
+            **dict(row.output_source), "complete": bool(row.output_complete),
+            **({"read": {"tool": "read_file", "arguments": {
+                **address, "start_line": 1, "max_lines": 2000}}} if address else {}),
+            "source_read": {"tool": "get_task_result", "arguments": {
+                "task_id": str(row.task_id),
+                "delegated_output_sha256": str(row.output_source.get("sha256") or "")}},
+        }
+    return facts
 
 
 def terminal_custody_notice(result: Mapping[str, Any]) -> str:
@@ -356,7 +388,7 @@ def refresh_terminal_reconciliation(
     projections, which read this row live).
 
     ``trigger`` names the refreshing surface on the envelope and its evidence
-    rows (``sweep_refresh`` | ``boot_backfill`` | ``kill_path_clear``);
+    rows (``sweep_refresh`` | ``boot_backfill`` | ``kill_path_clear`` | ``output_spilled``);
     ``snapshot`` shares one ``custody_audit_snapshot`` across a batch. An audit
     that MATCHES the stored disclosure (and finds no stale evidence mirror)
     performs no write and no emit — a permanently-unreconcilable row must not
@@ -385,20 +417,23 @@ def refresh_terminal_reconciliation(
     if snapshot is None:
         snapshot = custody_audit_snapshot(drive_root)
     _audit_task_custody(drive_root, mine, result, snapshot=snapshot, emit_evidence=False)
-    # Completed receipts already on the result are history, not missing current facts.
-    prior = (existing.get("delegate_terminal_reconciliation") or {}).get("terminal_runs") or []
-    receipts = {row["run_id"]: row for row in prior}
-    receipts.update({row["run_id"]: row for row in result.get("terminal_runs", [])})
-    result["terminal_runs"] = sorted(receipts.values(), key=lambda row: row["run_id"])
-    if _stored_disclosure_matches(existing, result) and not evidence_stale:
-        _ack_current_receipts(drive_root, mine, snapshot)
+    # Completed receipts already on the result are history, not missing current facts. Merged
+    # here only for the no-op comparison: the recorder merges against CURRENT under the write,
+    # so a historical locator never overrides a concurrent publication as an incoming fact.
+    comparison = _merge_current_receipts(existing, result, addressed=True)
+    # Only an audit that knew the receipts may retire them: a failed one keeps every owed receipt.
+    acknowledge = result.get("audit_status") == "ok"
+    if _stored_disclosure_matches(existing, comparison) and not evidence_stale:
+        if acknowledge:
+            _ack_current_receipts(drive_root, mine, snapshot)
         return False
     refreshed = False
     # Disclosure class: the recorder itself re-checks the no-churn gate and the
     # monotonic guard; evidence is emitted only after it confirms a landed row.
-    if record_terminal_reconciliation(drive_root, mine, result):
+    if record_terminal_reconciliation(drive_root, mine, result, addressed=True):
         _emit_audit_evidence(drive_root, result)
-        _ack_current_receipts(drive_root, mine, snapshot)
+        if acknowledge:
+            _ack_current_receipts(drive_root, mine, snapshot)
         refreshed = True
     # Evidence-mirror class: substrate counters/cost rewritten from live
     # custody through the same producers the terminal write used.
@@ -489,6 +524,70 @@ def _stored_disclosure_matches(
     )
 
 
+# Receipt facts a later custody row adds to an already-settled run (#1573). An
+# audit without one is older than the row that has it, never proof of removal.
+_RECEIPT_LOCATOR_KEYS = ("engine_locator", "staged_output")
+# Every other immutable ref a receipt published for its run, sorted by digest: no
+# order is known between them and ``staged_output``, which a delayed audit may set.
+_OTHER_OUTPUTS_KEY = "other_staged_outputs"
+
+
+def _published_refs(receipt: Mapping[str, Any]) -> List[Mapping[str, Any]]:
+    others = receipt.get(_OTHER_OUTPUTS_KEY)
+    return [ref for ref in (receipt.get("staged_output"), *(others if isinstance(others, list) else ()))
+            if isinstance(ref, Mapping) and ref.get("sha256")]
+
+
+def _keep_published_outputs(row: Dict[str, Any], old: Mapping[str, Any]) -> Dict[str, Any]:
+    """``row`` plus every digest ``old`` published beside ``row``'s own ``staged_output``."""
+    refs = {ref["sha256"]: ref for receipt in (old, row) for ref in _published_refs(receipt)}
+    own = row.get("staged_output")
+    refs.pop(own.get("sha256") if isinstance(own, Mapping) else None, None)
+    kept = {key: value for key, value in row.items() if key != _OTHER_OUTPUTS_KEY}
+    return {**kept, _OTHER_OUTPUTS_KEY: [refs[sha] for sha in sorted(refs)]} if refs else kept
+
+
+def _merge_current_receipts(
+    current: Mapping[str, Any], result: Mapping[str, Any], *, addressed: bool,
+) -> Dict[str, Any]:
+    """``result`` plus the receipt facts ``current`` holds and the audit lacks.
+
+    Per run, every key the audit carries wins; a locator only ``current`` carries
+    is kept, and so is every staged-output digest it published: a delayed audit's
+    own ref may be older than a later publication, so the replaced ref stays
+    readable in ``other_staged_outputs`` (unordered, never a recency claim).
+    ``addressed`` (a current-store refresh, whose snapshot no longer holds
+    acknowledged receipts) and a failed audit (which knows no receipt) also keep
+    whole receipts the audit omits; any audit keeps one that published a digest.
+    The open/pending/patch/deferred/unreconciled lists stay the audit's own: debt
+    is never unioned, so a writer cannot keep debt a fresher audit cleared, and
+    stale debt it writes keeps its ``delegated_runs`` membership for the heal.
+    """
+    stored = current.get("delegate_terminal_reconciliation")
+    rows = stored.get("terminal_runs") if isinstance(stored, Mapping) else None
+    prior = {row["run_id"]: row for row in (rows if isinstance(rows, list) else [])
+             if isinstance(row, Mapping) and row.get("run_id")}
+    if not prior:
+        return dict(result)
+    receipts = {run_id: row for run_id, row in prior.items()
+                if addressed or "terminal_runs" not in result or _published_refs(row)}
+    for row in result.get("terminal_runs") or []:
+        old = prior.get(row["run_id"]) or {}
+        receipts[row["run_id"]] = _keep_published_outputs(
+            {**row, **{key: old[key] for key in _RECEIPT_LOCATOR_KEYS if key in old and key not in row}}, old)
+    return {**result, "terminal_runs": sorted(receipts.values(), key=lambda row: row["run_id"])}
+
+
+def keep_published_receipts(current: Mapping[str, Any], envelope: Mapping[str, Any]) -> Dict[str, Any]:
+    """The result writer's floor (#1573): ``envelope`` merged as a non-addressed audit.
+
+    ``write_task_result`` applies it inside its CURRENT reducer to every incoming envelope,
+    so a wholesale terminal writer (kill, reap, cancel) cannot unpublish a staged-output
+    digest either; idempotent over a recorder's own merge.
+    """
+    return _merge_current_receipts(current, envelope, addressed=False)
+
+
 def refresh_recently_settled_terminals(drive_root: Any, live_task_ids: Any = None) -> int:
     """Refresh terminal results of tasks whose runs closed since their terminal write.
 
@@ -542,7 +641,7 @@ def _task_is_terminal(drive_root: Any, task_id: str) -> bool:
 
 
 def record_terminal_reconciliation(
-    drive_root: Any, task_id: str, result: Mapping[str, Any],
+    drive_root: Any, task_id: str, result: Mapping[str, Any], *, addressed: bool = False,
 ) -> bool:
     """Attach the audit to the task record without choosing lifecycle policy.
 
@@ -550,6 +649,11 @@ def record_terminal_reconciliation(
     audit's disclosure (R3) — a lock timeout, a raising store, or a write the
     monotonic guard refused all report False, so callers (the guarded refresh,
     the boot backfill) cannot claim a heal that never landed.
+
+    The audit is merged with CURRENT inside the write transaction
+    (``_merge_current_receipts``; ``addressed`` as there): an audit read before a
+    concurrent writer published a receipt locator cannot erase it, and an audit
+    that then matches is not written at all.
     """
 
     try:
@@ -561,17 +665,32 @@ def record_terminal_reconciliation(
         # STATUS_RUNNING fallback below exists for a legitimately mid-flight
         # loop-exit row, never for inventing one), and an already-current
         # disclosure is not rewritten on every kill or boot.
-        if _stored_disclosure_matches(existing, result):
+        if _stored_disclosure_matches(
+                existing, _merge_current_receipts(existing, result, addressed=addressed)):
             return False
+        landed: Dict[str, Any] = {}
+
+        def project(current, incoming):
+            # The read above chose the status and the fast no-op; CURRENT decides the merge.
+            landed.clear()
+            merged = _merge_current_receipts(
+                current, incoming["delegate_terminal_reconciliation"], addressed=addressed)
+            if _stored_disclosure_matches(current, merged):
+                return None
+            landed.update(merged)
+            return {**incoming, "delegate_terminal_reconciliation": merged,
+                    "delegated_runs_unreconciled": list(merged.get("unreconciled") or [])}
+
         stored = write_task_result(
             drive_root,
             str(task_id or ""),
             str(existing.get("status") or STATUS_RUNNING),
+            _field_projector=project,
             delegate_terminal_reconciliation=dict(result),
             delegated_runs_unreconciled=list(result.get("unreconciled") or []),
         )
-        return _stored_disclosure_matches(
-            stored if isinstance(stored, dict) else {}, result,
+        return bool(landed) and _stored_disclosure_matches(
+            stored if isinstance(stored, dict) else {}, landed,
         )
     except Exception:
         log.warning("Failed to persist terminal custody audit for %s", task_id, exc_info=True)
@@ -647,6 +766,7 @@ def refresh_disposed_reconciliation(drive_root: Any, run_id: str, *, reader_task
 __all__ = [
     "backfill_terminal_reconciliations",
     "custody_audit_snapshot",
+    "keep_published_receipts",
     "record_terminal_reconciliation",
     "refresh_disposed_reconciliation",
     "refresh_recently_settled_terminals",

@@ -302,6 +302,6 @@ def test_panic_does_not_wait_for_a_hung_editor_and_completes_nothing(hung_editor
     row = load_task_result(h.root, "root")
     # Panic writes no terminal state: the claim stays unresolved custody for the next boot.
     assert row["status"] == "running" and h.claim_id in row["launch_handoffs"], row
-    assert ports  # the port sweep ran against the stub, never a real listener
+    assert ports == []  # Panic sweeps no port: the exiting server's own listeners close with it
     assert isolated._panic_requested  # the companion phase ran, against the test-only owner
     assert extension_companion._GLOBAL_SUPERVISOR is earlier and not earlier._panic_requested

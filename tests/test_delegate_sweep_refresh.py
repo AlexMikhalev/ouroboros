@@ -160,8 +160,8 @@ def test_truncated_custody_disclosure_names_both_retry_lineage_rows(tmp_path):
     custody = summary["delegated_custody"]
     assert custody["unreconciled_omitted"] == 2
     assert custody["full_source"] == [
-        "get_task_result(task_id='t-retry')",
-        "get_task_result(task_id='t-orig')",
+        "get_task_result(task_id='t-retry', include_authority=True)",
+        "get_task_result(task_id='t-orig', include_authority=True)",
     ]
 
 

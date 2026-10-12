@@ -18,7 +18,7 @@ from ouroboros.config import (
     DATA_DIR,
     SETTINGS_DEFAULTS as _SETTINGS_DEFAULTS,
     apply_settings_to_env as _apply_settings_to_env,
-    load_settings,
+    load_settings, resolve_port_file,
 )
 from ouroboros.config import ENDPOINT_AUTHORED_SETTINGS as _ENDPOINT_AUTHORED_SETTINGS
 from ouroboros.config import ENDPOINT_WRITTEN_SETTINGS as _ENDPOINT_WRITTEN_SETTINGS, ENDPOINT_WRITERS as _ENDPOINT_WRITERS
@@ -382,7 +382,7 @@ def _current_bind_host(request: Request) -> str:
 
 def _port_file(request: Request) -> pathlib.Path:
     configured = getattr(getattr(request.app, "state", None), "port_file", None)
-    return pathlib.Path(configured) if configured is not None else pathlib.Path(DATA_DIR) / "state" / "server_port"
+    return pathlib.Path(configured) if configured is not None else resolve_port_file(DATA_DIR)
 
 
 def _default_port(request: Request) -> int:

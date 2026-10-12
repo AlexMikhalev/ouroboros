@@ -1170,8 +1170,8 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
                     payload["result_not_collected"] = (
                         "THIS RESULT IS NOT COLLECTED YET: the run is settled and its "
                         "full output is staged, but nothing has read it to EOF. Read the "
-                        "artifact named in output_delivery with read_file "
-                        "root='task_drive' until it is covered end to end — a result you "
+                        "artifact with the read_file arguments in "
+                        "output_delivery.read_next until it is covered end to end — a result you "
                         "have not read is not a result you may report."
                     )
                 # The containment disclosure is read off what the PARENT was told, so the
