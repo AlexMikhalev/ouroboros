@@ -71,6 +71,10 @@ FACTS = """sel => {
         band: box(el.querySelector('.chat-effort-band')), minCap: box(el.querySelector('.chat-effort-min')),
         maxCap: box(el.querySelector('.chat-effort-max')),
         stripScrolls: strip.scrollWidth > strip.clientWidth + 1, stripScroll: strip.dataset.scroll || '',
+        // The platform face sets the words' width; everything else is the control's own.
+        words: [...el.querySelectorAll('.chat-effort-seg-text')].reduce((sum, word) => sum + rect(word).width, 0),
+        beside: r.width - strip.clientWidth,
+        room: rect(row).width - parseFloat(getComputedStyle(row).paddingLeft) - parseFloat(getComputedStyle(row).paddingRight),
     };
 }""" % HOVER_MEDIA
 
@@ -157,7 +161,11 @@ def test_desktop_hover_opens_press_pins_escape_and_outside_close(direct_server_w
             assert opened["fit"] == "inline" and opened["solo"] == "" and opened["pillsShown"], opened
             assert abs(opened["top"] - opened["pillsTop"]) <= 2, opened
             assert opened["right"] <= opened["rowRight"] + 1 and not opened["docScroll"], opened
-            assert opened["width"] <= 400, "the open control is compact: " + str(opened["width"])
+            # Compact: beyond its seven level words the open control spends only the round button,
+            # its border and the segment insets (148 px with macOS's SF Pro and CI's DejaVu Sans
+            # alike); the words are the platform face's own (229 and 253 px). The former 400 px
+            # bound, counted from SF Pro's words, is this 171 px.
+            assert opened["width"] - opened["words"] <= 171, ("the open control is compact", opened)
             assert opened["recTabIndex"] == 0, opened
             _assert_strip_geometry(opened)
             _shot(page, tmp_path, f"composer-open-{engine}-dark")
@@ -268,12 +276,17 @@ def test_phone_press_opens_alone_on_the_line_while_the_pills_step_aside(direct_s
             _assert_strip_geometry(_facts(page))
             page.wait_for_timeout(300)
             opened = _facts(page)
-            # Alone on the same line: the pills step aside, the row keeps one line, nothing scrolls.
-            assert opened["fit"] == "solo" and opened["solo"] == "true" and not opened["pillsShown"], opened
+            # Alone on the same line: the pills step aside and the row keeps one line. The fit is
+            # measured from the row (DESIGN "The open strip stays on the composer's line"): the strip
+            # stands alone while its seven words fit at the 3 px inset floor, else it scrolls inside
+            # itself. So the face decides a 360 px phone: SF Pro fits, CI's wider DejaVu Sans scrolls.
+            alone = opened["beside"] + opened["words"] + 2 * 7 * 3 <= opened["room"] - 1
+            assert opened["fit"] == ("solo" if alone else "overflow"), opened
+            assert opened["solo"] == "true" and not opened["pillsShown"], opened
             assert abs(opened["rowHeight"] - closed["rowHeight"]) <= 1, (opened, closed)
             assert abs(opened["areaHeight"] - closed["areaHeight"]) <= 1, (opened, closed)
             assert opened["right"] <= opened["rowRight"] + 1, opened
-            assert not opened["docScroll"] and not opened["areaScroll"] and not opened["stripScrolls"], opened
+            assert not opened["docScroll"] and not opened["areaScroll"] and opened["stripScrolls"] == (not alone), opened
             assert opened["top"] < opened["inputTop"], opened
             _assert_strip_geometry(opened)
             _shot(page, tmp_path, f"composer-phone-{width}-open-{engine}")

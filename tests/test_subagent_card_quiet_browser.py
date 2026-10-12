@@ -158,7 +158,9 @@ def test_current_exceptions_stay_visible_and_history_waits_in_details(role_ui):
     assert labels == ["Source", "Model", "Account", "Reasoning effort", "Access"]
     assert packet.locator('[data-subagent-field="delivery"]').input_value() == "packet"
     assert packet.locator("[data-subagent-delivery-cost]").inner_text() == "cost unknown"
-    assert pinned.locator('[data-subagent-field="effort"] option[value=""]').inner_text() == "Default (reviews at high)"
+    # A marked Auto row reviews at the top of the owner's chat range (#1693; ARCHITECTURE §3 "Available subagents").
+    assert pinned.locator('[data-subagent-field="effort"] option[value=""]').inner_text() == (
+        "Auto (reviews at the top of the chat range)")
     assert long.locator('[data-subagent-field="model"]').input_value() == LONG_MODEL
     roles.capture(page, "quiet-exceptions-closed")
 
