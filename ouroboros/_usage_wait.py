@@ -1,7 +1,7 @@
 """Caller-owned pre-send accounting waits; no provider retry or task policy below.
 
-Only positive lock contention can keep the same stack alive. Controls come
-from the existing model-operation owner. Cleanup and post-response accounting
+Lock contention and pre-mutation publication gaps keep the same stack alive.
+Controls come from the existing model-operation owner. Cleanup and post-response accounting
 retain bounded acquisitions. The async bridge joins its mutator on cancellation
 so a returned reservation cannot race a successor or lose its local owner.
 """
@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 
-from ouroboros.usage_ledger import UsageLockUnavailable, USAGE_LOCK_TIMEOUT_SEC
+from ouroboros.usage_ledger import UsageAccountingError, UsageLockUnavailable, USAGE_LOCK_TIMEOUT_SEC
 
 log = logging.getLogger(__name__)
 _CANCEL = contextvars.ContextVar("usage_presend_cancel", default=None)
@@ -102,6 +102,39 @@ def send_acquisition(check=None):
             if entered:
                 _hold(owner, "ended", started, episode_id)
     return acquire
+
+
+class DispatchAuthorityUnavailable(UsageAccountingError):
+    """The queue dispatch document lacks a usable publication certificate."""
+
+
+@contextlib.contextmanager
+def reservation_acquisition(root, check):
+    """Retry only the fence read BEFORE yielding to the reservation's mutator.
+
+    A publisher can revoke its certificate while money is being acquired. Drop
+    money before the bounded publication wait; exceptions from the yielded body
+    (including writes and commit) must escape without replay.
+    """
+    from ouroboros.queue_observation import DISPATCH_PUBLICATION_WAIT_SEC
+
+    deadline = None
+    acquire = send_acquisition(lambda: check(deadline=deadline))
+    while True:
+        with acquire(root) as view:
+            try:
+                check(retry=False)
+            except DispatchAuthorityUnavailable:
+                now = time.monotonic()
+                if deadline is None:
+                    deadline = now + DISPATCH_PUBLICATION_WAIT_SEC
+                elif now >= deadline:
+                    raise
+            else:
+                yield view
+                return
+        _check()
+        check(deadline=deadline)
 
 
 @contextlib.contextmanager

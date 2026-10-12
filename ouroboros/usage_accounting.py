@@ -665,7 +665,7 @@ _CANDIDATE_ROW_FIELDS = (
 )
 
 
-def _check_dispatch_fences(scope: UsageScope, root: pathlib.Path, *, retry: bool = True) -> None:
+def _check_dispatch_fences(scope: UsageScope, root: pathlib.Path, *, retry: bool = True, deadline=None) -> None:
     from ouroboros.budget_pause import budget_fence_selected, dispatch_fenced
 
     if dispatch_fenced(scope.task_id):
@@ -675,13 +675,14 @@ def _check_dispatch_fences(scope: UsageScope, root: pathlib.Path, *, retry: bool
             f"model dispatch fenced: task {scope.task_id} is entering an exact budget pause",
             limit_scope="pausing", root_task_id=scope.root_task_id)
     from ouroboros.queue_observation import published_dispatch
+    from ouroboros._usage_wait import DispatchAuthorityUnavailable, _check
 
     root_task_id = str(scope.root_task_id or "").strip()
     snapshot_path = root / "state" / "queue_dispatch.json"
     if root_task_id and any((root / "state" / name).exists() for name in ("queue_dispatch.json", "queue_snapshot.json", "queue.alive")):
-        snapshot = published_dispatch(root) if retry else published_dispatch(root, attempts=1)
+        snapshot = published_dispatch(root, deadline=deadline, check=_check) if retry else published_dispatch(root, attempts=1)
         if snapshot is None:
-            raise UsageAccountingError(f"root budget fence authority unavailable: {snapshot_path}")
+            raise DispatchAuthorityUnavailable(f"root budget fence authority unavailable: {snapshot_path}")
         rows = snapshot.get("budget_root_fences")
         if not isinstance(rows, list):
             raise UsageAccountingError(f"invalid root budget fence authority: {snapshot_path}")
@@ -705,17 +706,16 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
     """Atomically check global/root/group limits and record a ``reserved`` attempt whose row carries the applied global limit, its source and revision."""
     request, scope = _merge_scope(request)
     root = _drive_root(scope.drive_root)
-    from ouroboros._usage_wait import send_acquisition
+    from ouroboros._usage_wait import reservation_acquisition
 
     _check_dispatch_fences(scope, root)
-    acquire = send_acquisition(lambda: _check_dispatch_fences(scope, root))
+    acquire = reservation_acquisition(root, lambda **kw: _check_dispatch_fences(scope, root, **kw))
     # Pricing I/O stays outside the monetary transaction.
     bound = _reservation_cost(request)
     pricing_known = bound is not None
     attempt_id = uuid.uuid4().hex
 
-    with acquire(root) as view:
-        _check_dispatch_fences(scope, root, retry=False)
+    with acquire as view:
         global_limit = _global_limit(request)
         if view.exceeds_limit(global_limit):
             raise BudgetExceeded(
