@@ -42,10 +42,11 @@ from .telegram_api import (
 
 log = logging.getLogger(__name__)
 
-# Below Telegram's ~5s client expiry; the send timeout keeps one slow
-# round-trip from stretching the gap past the expiry for more than one lapse.
+# Below Telegram's ~5s client expiry. The client's own HTTP timeout bounds
+# one slow round-trip; wrapping the send in asyncio.wait_for() is deliberately
+# avoided — on Python 3.10 wait_for can swallow a concurrent cancel
+# (bpo-42130 family), leaving the loop task pending forever.
 _REFRESH_SEC = 3.0
-_SEND_TIMEOUT_SEC = 2.0
 # Ceiling for the transient-failure backoff; reset on the first success.
 _BACKOFF_MAX_SEC = 60.0
 # Safety cap: a turn whose terminal event was lost stops refreshing here.
@@ -91,10 +92,11 @@ async def _keep_typing_loop(
                 return
             try:
                 client = client_factory()
-                await asyncio.wait_for(
-                    client.send_chat_action(chat_id, "typing"),
-                    timeout=_SEND_TIMEOUT_SEC,
-                )
+                # Direct await, no wait_for(): the client's own HTTP timeout
+                # bounds the round-trip, and a bare await lets the cancel
+                # above reach this coroutine on every interpreter (see the
+                # _REFRESH_SEC comment about Python 3.10's wait_for).
+                await client.send_chat_action(chat_id, "typing")
                 interval = _REFRESH_SEC  # healthy again: resume the base cadence
             except asyncio.CancelledError:
                 raise

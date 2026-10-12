@@ -75,7 +75,6 @@ def test_refresh_resends_until_terminal_row(monkeypatch):
     rec = _Rec()
     sends = []
     monkeypatch.setattr(mod, "_REFRESH_SEC", 0.01)
-    monkeypatch.setattr(mod, "_SEND_TIMEOUT_SEC", 0.5)
 
     async def scenario():
         api = _Api()
@@ -103,7 +102,6 @@ def test_transient_failure_backs_off_then_recovers(monkeypatch):
     rec = _Rec(failures=[TelegramTransportError("dead network")])
     monkeypatch.setattr(mod, "_REFRESH_SEC", 0.01)
     monkeypatch.setattr(mod, "_BACKOFF_MAX_SEC", 0.04)
-    monkeypatch.setattr(mod, "_SEND_TIMEOUT_SEC", 0.5)
 
     async def scenario():
         api = _Api()
@@ -129,7 +127,6 @@ def test_permanent_rejection_stops_the_loop(monkeypatch):
     rejection = TelegramRequestRejected("Telegram API sendChatAction returned HTTP 403.")
     rec = _Rec(failures=[rejection])
     monkeypatch.setattr(mod, "_REFRESH_SEC", 0.01)
-    monkeypatch.setattr(mod, "_SEND_TIMEOUT_SEC", 0.5)
 
     async def scenario():
         api = _Api()
@@ -147,7 +144,6 @@ def test_rearm_replaces_the_previous_loop(monkeypatch):
     mod = _load()
     rec = _Rec()
     monkeypatch.setattr(mod, "_REFRESH_SEC", 0.01)
-    monkeypatch.setattr(mod, "_SEND_TIMEOUT_SEC", 0.5)
 
     async def scenario():
         api = _Api()
@@ -184,7 +180,6 @@ def test_transient_rejection_429_backs_off_without_busy_loop(monkeypatch):
     rec = _Always429()
     monkeypatch.setattr(mod, "_REFRESH_SEC", 0.01)
     monkeypatch.setattr(mod, "_BACKOFF_MAX_SEC", 0.04)
-    monkeypatch.setattr(mod, "_SEND_TIMEOUT_SEC", 0.5)
 
     async def scenario():
         api = _Api()
@@ -208,7 +203,6 @@ def test_plugin_typing_handler_arms_and_outbound_terminal_retires(monkeypatch, t
     rec = _Rec()
     monkeypatch.setattr(plugin, "_telegram_client", lambda api: rec)
     monkeypatch.setattr(mod, "_REFRESH_SEC", 0.01)
-    monkeypatch.setattr(mod, "_SEND_TIMEOUT_SEC", 0.5)
 
     class _Api:
         def __init__(self, tmp):
@@ -248,7 +242,6 @@ def test_lifetime_cap_stops_a_ghost_loop(monkeypatch):
     rec = _Rec()
     monkeypatch.setattr(mod, "_REFRESH_SEC", 0.01)
     monkeypatch.setattr(mod, "_MAX_LIFETIME_SEC", 0.03)
-    monkeypatch.setattr(mod, "_SEND_TIMEOUT_SEC", 0.5)
 
     async def scenario():
         api = _Api()
@@ -264,7 +257,6 @@ def test_unload_cancels_every_loop(monkeypatch):
     mod = _load()
     rec = _Rec()
     monkeypatch.setattr(mod, "_REFRESH_SEC", 0.01)
-    monkeypatch.setattr(mod, "_SEND_TIMEOUT_SEC", 0.5)
 
     async def scenario():
         api = _Api()
