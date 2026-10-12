@@ -799,6 +799,86 @@ def _no_settings_document_left_at_the_shared_root():
         )
 
 
+def engine_left_at_the_shared_root(root: pathlib.Path | None) -> dict | None:
+    """The owned Claudexor engine a test left at the worker-shared pytest data root, or ``None``.
+
+    Inspects ONLY ``root`` (never the teardown-time ``config.DATA_DIR`` or the manager
+    singleton, which another fixture may have rebound): the ownership marker
+    ``<root>/claudexor/ouroboros-owned.json`` must name ``root`` itself. A daemon is
+    stopped only when a ``claudexor_daemon`` ledger row under that root still carries a
+    measured live identity, through the production forced stop
+    (``process_custody.stop_ledgered_processes``: measured birth + command, never a name
+    or a port). A marker with no such row is a stale file: reported, no PID authority.
+    After a confirmed stop (or with nothing live) the engine home is removed so the later
+    tests of this worker see no provisioned daemon; an unconfirmed stop keeps everything
+    and is reported. Plain function so the contract is testable without pytest plumbing."""
+    if root is None:
+        return None
+    home = pathlib.Path(root) / "claudexor"
+    marker_path = home / "ouroboros-owned.json"
+    if not marker_path.exists():
+        return None
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        marker = {"<unreadable>": True}
+    marker = marker if isinstance(marker, dict) else {"<not a JSON object>": True}
+    report: dict = {"marker": marker, "stopped": [], "unconfirmed": [], "stale": False, "foreign": False}
+    try:
+        names_root = pathlib.Path(str(marker.get("data_dir") or "")).resolve() == pathlib.Path(root).resolve()
+    except OSError:
+        names_root = False
+    if not names_root:
+        report["foreign"] = True  # a marker of another data plane: a test artifact to name, never PID authority
+        shutil.rmtree(home, ignore_errors=True)
+        return report
+    from ouroboros.claudexor_daemon import CUSTODY_PURPOSE
+    from ouroboros.process_custody import process_fingerprint_matches, stop_ledgered_processes
+    from ouroboros.process_custody import _read_ledger_records
+
+    _ok, rows, _raw = _read_ledger_records(pathlib.Path(root), strict=False)
+    live = [row for row in rows if str(row.get("purpose") or "") == CUSTODY_PURPOSE
+            and process_fingerprint_matches(row, require_measured=True)]
+    if not live:
+        report["stale"] = True
+    else:
+        report["stopped"] = stop_ledgered_processes(pathlib.Path(root), {CUSTODY_PURPOSE},
+                                                   unconfirmed=report["unconfirmed"])
+    try:  # the in-process manager may hold the dead child's handle: reap the zombie, drop the singleton
+        from ouroboros import claudexor_daemon
+
+        manager = claudexor_daemon.get_owned_daemon(create=False)
+        if manager is not None and getattr(manager, "_proc", None) is not None:
+            manager._proc.poll()
+        claudexor_daemon._MANAGER = None
+    except Exception:
+        pass
+    if not report["unconfirmed"]:
+        shutil.rmtree(home, ignore_errors=True)
+    return report
+
+
+@pytest.fixture(autouse=True)
+def _no_engine_left_at_the_shared_root():
+    """An owned Claudexor daemon spawned at the worker-shared pytest data root outlives the
+    battery (own session, daemon scope, reparented to init) and every later test on the
+    worker reads a provisioned home. Issue #1772: a real loop exit reconciled custody through
+    the ensure transport and downloaded, spawned and admitted an engine under
+    ``config.DATA_DIR``. Name the leaker, not the victim: the engine is stopped by its
+    measured ledger identity and the test that left it fails. Fixtures that bind their own
+    data root start and stop their own engines unaffected: only ``_PYTEST_DATA_DIR`` is read."""
+    yield
+    report = engine_left_at_the_shared_root(_PYTEST_DATA_DIR)
+    if report is not None:
+        pytest.fail(
+            "this test left an owned Claudexor engine home at the worker-shared pytest data root "
+            f"({_PYTEST_DATA_DIR / 'claudexor'}): stopped pids {report['stopped']}, unconfirmed "
+            f"{report['unconfirmed']}, stale marker only: {report['stale']}, foreign marker: "
+            f"{report['foreign']}; a release or terminal path must attach only (read_owned_gateway), "
+            "and a test that needs a real engine binds its own data root"
+        )
+
+
 @pytest.fixture(autouse=True)
 def _scrub_inherited_subagent_selection(monkeypatch):
     """Keep tests independent of the operator's saved actor list, account pin
