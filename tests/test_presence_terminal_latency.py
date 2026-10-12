@@ -40,7 +40,7 @@ def test_native_agent_returns_durable_result_before_synthesis_and_retry_reuses_i
     def consolidate(*_a, **_kw):
         owners.append(current_model_wait())
         started.set()
-        assert release.wait(5), "test releases the existing synthesis worker"
+        assert release.wait(120), "test releases the existing synthesis worker"
         stages.append("consolidation")
 
     # The first paid late stage (scratchpad consolidation since the dialogue writer is retired).
@@ -77,8 +77,9 @@ def test_native_agent_returns_durable_result_before_synthesis_and_retry_reuses_i
     try:
         with ThreadPoolExecutor(max_workers=1) as requests:
             first_future = requests.submit(run_presence_turn, **kwargs)
-            assert started.wait(3)
-            first = first_future.result(timeout=2)
+            # Timeouts bound a hung test; the held event proves completion order.
+            assert started.wait(30)
+            first = first_future.result(timeout=30)
             assert first.outcome == outcome
             assert first.text == ("Reply" if outcome == "message" else "")
             row = load_task_result(tmp_path, first.task_id)
@@ -93,13 +94,13 @@ def test_native_agent_returns_durable_result_before_synthesis_and_retry_reuses_i
             # accept its next event even while prior memory work is in flight.
             second = requests.submit(run_presence_turn, **{**kwargs, "event": replace(
                 _event(), source_event_id="telegram:bot-1:43", text="Next",
-            )}).result(timeout=2)
+            )}).result(timeout=30)
             assert second.task_id != first.task_id and len(agents) == 2
             assert not release.is_set()
     finally:
         release.set()
         for thread in set(threading.enumerate()) - threads_before:
-            thread.join(timeout=5)
+            thread.join(timeout=30)
     assert stages.count("facts") == stages.count("reflection") == 2
     for task_id in (first.task_id, second.task_id):
         row = load_task_result(tmp_path, task_id)

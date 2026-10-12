@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import shutil
@@ -249,6 +250,9 @@ def test_the_store_opens_in_a_fresh_interpreter_without_the_runtime(tmp_path):
     """``task_store`` depends on ``store`` alone (an importer/exporter and the P8 lane run it bare)."""
     code = ("import pathlib, sys; from ouroboros import task_store; "
             "print(task_store.exists(pathlib.Path(sys.argv[1]), 'none'))")
+    child_env = {"PYTHONPATH": str(REPO), "PATH": os.defpath, "OUROBOROS_DATA_DIR": str(tmp_path)}
+    if os.environ.get("SystemRoot"):  # Windows Python needs this even before importing the store.
+        child_env["SystemRoot"] = os.environ["SystemRoot"]
     out = subprocess.run([sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True, cwd=REPO,
-                         env={"PYTHONPATH": str(REPO), "PATH": "/usr/bin:/bin", "OUROBOROS_DATA_DIR": str(tmp_path)})
+                         env=child_env)
     assert out.returncode == 0 and out.stdout.strip() == "False", out.stderr
