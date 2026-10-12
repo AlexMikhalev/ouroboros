@@ -48,7 +48,7 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
     skill_review: ['✅ Skill review round ', '⚠️ Skill review round ', '❌ Skill review round ', '⏳ Skill review round '],
     host_progress: ['🌐 Connection restored ', '🌐 The new attempt could not reach the provider ',
         '🌐 Provider connection ', '🌐 The primary provider temporarily refused ',
-        '🌐 Could not establish a provider connection ', '🌐 Primary provider answered after ',
+        '🌐 The request did not reach the provider ', '🌐 Primary provider answered after ',
         '🌐 Stopped waiting for ', '🌐 Still waiting for ', '⚡ Fallback: ', '📐 Plan review:', '📐 Plan review so far:', '✅ PR #', '⚠️ PR #'],
 }));
 
