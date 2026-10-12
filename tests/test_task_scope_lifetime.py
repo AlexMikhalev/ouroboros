@@ -410,6 +410,35 @@ def test_a_known_member_is_carried_into_the_next_pass_and_ended_once_its_identit
         proc.wait(timeout=5)
 
 
+def test_known_identities_survive_a_failed_census_and_the_next_readable_pass_ends_them(tmp_path, monkeypatch):
+    """Astra delta2 1 (task record): pass 1 saves a hidden member it could not verify; pass 2
+    cannot read the table at all — the saved identity must survive, never be replaced by that
+    pass's empty list; pass 3 reads and ends it. Synthetic pid, mocked signals."""
+    birth, pid = "Sat Oct 10 20:10:23 2026", 4242
+    marker = ps.task_scope_marker(tmp_path, "t-table")
+    monkeypatch.setattr(ps, "note_task_terminal_transition", lambda *a, **k: None)
+    write_task_result(tmp_path, "t-table", "completed", result="done")
+    signals = []
+    monkeypatch.setattr(_pl, "deliver_signal", lambda p, *, graceful: signals.append(p) or _pl.SIGNAL_SENT)
+    monkeypatch.setattr(ps, "_await_exit", lambda targets, deadline: ({}, {}))
+    row = lambda markers: {pid: ps._Row(pid, 1, pid, birth, ps.birth_epoch(birth), markers=set(markers))}
+    monkeypatch.setattr(ps, "census", lambda markers=(): row([marker]))
+    monkeypatch.setattr(ps, "read_identities", lambda pids: {int(p): ps._Identity(ps.IDENTITY_UNREADABLE) for p in pids})
+    first = ps.settle_task_scope(tmp_path, "t-table")
+    assert first["settled"] is False and ps.task_scope_record(tmp_path, "t-table")["known_members"] == [{"pid": pid, "birth": birth}]
+    monkeypatch.setattr(ps, "census", lambda markers=(): None)  # a ps timeout is evidence of nothing
+    failed = ps.settle_task_scope(tmp_path, "t-table")
+    record = ps.task_scope_record(tmp_path, "t-table")
+    assert failed["census_failed"] is True and failed["settled"] is False and record["cleanup"]["reason"] == "census_failed"
+    assert record["known_members"] == [{"pid": pid, "birth": birth}], "a failed census keeps the known identity"
+    assert [item["reason"] for item in failed["unverified"]] == [ps.UNVERIFIED_CENSUS]
+    monkeypatch.setattr(ps, "census", lambda markers=(): row([]))  # it exec'd a platform binary: no marker left
+    monkeypatch.setattr(ps, "read_identities", lambda pids: {int(p): ps._Identity(ps.IDENTITY_ALIVE, birth, int(p)) for p in pids})
+    recovered = ps.settle_task_scope(tmp_path, "t-table")
+    assert signals == [pid] and recovered["ended"] == [pid] and recovered["settled"] is True, "the saved identity reaches it"
+    assert ps.task_scope_record(tmp_path, "t-table") is None
+
+
 def test_a_known_member_whose_birth_changed_is_spared_and_discharged(tmp_path, monkeypatch):
     proc = _marker_child(tmp_path, "t-reborn")
     try:

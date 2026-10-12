@@ -364,6 +364,43 @@ def test_a_captured_pid_missing_from_a_partial_census_is_asked_by_identity_never
     assert outcome["captured_gone"] == [4242] and outcome["unverified"] == [] and outcome["settled"] is True
 
 
+def test_a_failed_census_carries_every_unresolved_known_identity_as_unverified(monkeypatch):
+    """Astra delta2 1: when the table cannot be read, the recorded identities this pass did
+    not resolve are owed, never dropped: they ride the outcome, and so the record."""
+    birth = "Sat Oct 10 20:10:23 2026"
+    monkeypatch.setattr(ps, "census", lambda markers=(): None)
+    outcome = ps.end_scope(captured=[{"pid": 4242, "birth": birth}, {"pid": 4243, "birth": birth}], exclude={os.getpid(), 1})
+    assert outcome["census_failed"] is True and outcome["settled"] is False and outcome["ended"] == []
+    assert outcome["unverified"] == [{"pid": 4242, "birth": birth, "reason": ps.UNVERIFIED_CENSUS},
+                                     {"pid": 4243, "birth": birth, "reason": ps.UNVERIFIED_CENSUS}]
+    assert ps._known_members(outcome) == [{"pid": 4242, "birth": birth}, {"pid": 4243, "birth": birth}]
+
+
+@pytest.mark.parametrize("later", ["ended", "gone"])
+def test_an_unverified_entry_is_dropped_once_a_later_scan_ends_or_confirms_the_pid(monkeypatch, later):
+    """Fable delta2 NIT 2: a captured pid unreadable on scan 1 and ended (or confirmed gone)
+    on scan 2 owes nothing; a stale unverified entry would cost one more sweep."""
+    birth, other = "Sat Oct 10 20:10:23 2026", "Mon Jan  1 00:00:00 2001"
+    scans = []
+
+    def census(markers=()):  # scan 1: a readable table without the pid; scan 2: its row (or a replacement's)
+        scans.append(1)
+        return {} if len(scans) == 1 else {4242: ps._Row(4242, 1, 4242, birth if later == "ended" else other, 1.0)}
+
+    monkeypatch.setattr(ps, "census", census)
+    answers = iter([ps.IDENTITY_UNREADABLE])  # scan 1: unreadable; afterwards alive with the recorded birth
+    monkeypatch.setattr(ps, "read_identities", lambda pids: {
+        int(pid): (ps._Identity(state) if state == ps.IDENTITY_UNREADABLE else ps._Identity(state, birth, int(pid)))
+        for pid in pids for state in [next(answers, ps.IDENTITY_ALIVE)]})
+    signalled = []
+    monkeypatch.setattr(_pl, "deliver_signal", lambda pid, *, graceful: signalled.append(pid) or _pl.SIGNAL_SENT)
+    monkeypatch.setattr(ps, "_await_exit", lambda targets, deadline: ({}, {}))
+    outcome = ps.end_scope(captured=[{"pid": 4242, "birth": birth}], exclude={os.getpid(), 1}, grace_sec=0.0)
+    assert outcome["unverified"] == [], "resolved on scan 2: nothing left to disclose"
+    assert (outcome["ended"], outcome["captured_gone"]) == (([4242], []) if later == "ended" else ([], [4242]))
+    assert outcome["settled"] is True and signalled == ([4242] if later == "ended" else [])
+
+
 def test_a_proc_stat_read_failure_other_than_absence_is_unreadable(monkeypatch):
     def controlled(path, *args, **kwargs):
         if str(path) == "/proc/4242/stat":

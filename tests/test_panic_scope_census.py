@@ -554,6 +554,35 @@ def test_a_known_member_rides_the_pending_record_into_the_completion(tmp_path, m
         _end(member)
 
 
+def test_known_identities_survive_a_failed_census_on_the_pending_record(tmp_path, monkeypatch):
+    """Astra delta2 1 (Panic pending record): Panic saves a hidden member it could not verify;
+    a completion that cannot read the table keeps the saved identity; the next completion
+    reads and ends it. Synthetic pid, mocked signals."""
+    marker = ps.installation_marker(tmp_path)
+    birth, pid = "Sat Oct 10 20:10:23 2026", 4242
+    signals = []
+    monkeypatch.setattr(_pl, "deliver_signal", lambda p, *, graceful: signals.append(p) or _pl.SIGNAL_SENT)
+    monkeypatch.setattr(ps, "_await_exit", lambda targets, deadline: ({}, {}))
+    row = lambda markers: {pid: ps._Row(pid, 1, pid, birth, ps.birth_epoch(birth), markers=set(markers))}
+    monkeypatch.setattr(ps, "census", lambda markers=(): row([marker]))
+    monkeypatch.setattr(ps, "read_identities", lambda pids: {int(p): ps._Identity(ps.IDENTITY_UNREADABLE) for p in pids})
+    first = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
+    pending = ps.panic_sweep_pending_path(tmp_path)
+    assert first["pending_retired"] is False
+    assert json.loads(pending.read_text(encoding="utf-8"))["known_members"] == [{"pid": pid, "birth": birth}]
+    monkeypatch.setattr(ps, "census", lambda markers=(): None)  # the launcher's completion meets a stalled table
+    failed = ps.complete_pending_panic_sweep(tmp_path, exclude={os.getpid(), 1})
+    assert failed["census_failed"] is True and failed["pending_retired"] is False
+    assert [item["reason"] for item in failed["unverified"]] == [ps.UNVERIFIED_CENSUS]
+    assert json.loads(pending.read_text(encoding="utf-8"))["known_members"] == [{"pid": pid, "birth": birth}], \
+        "a failed census keeps the known identity"
+    monkeypatch.setattr(ps, "census", lambda markers=(): row([]))  # no marker left to see
+    monkeypatch.setattr(ps, "read_identities", lambda pids: {int(p): ps._Identity(ps.IDENTITY_ALIVE, birth, int(p)) for p in pids})
+    recovered = ps.complete_pending_panic_sweep(tmp_path, exclude={os.getpid(), 1})
+    assert signals == [pid] and recovered["ended"] == [pid] and recovered["pending_retired"] is True
+    assert not pending.exists()
+
+
 def test_a_denied_signal_is_disclosed_as_final_and_the_panic_record_retires(tmp_path, monkeypatch):
     marker = ps.installation_marker(tmp_path)
     member = _sleeper({marker: "1"})

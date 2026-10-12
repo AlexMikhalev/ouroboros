@@ -76,6 +76,7 @@ COVERAGE_UNSUPPORTED = "unsupported"
 UNVERIFIED_IDENTITY = "identity_unreadable"
 UNVERIFIED_DENIED = "signal_denied"
 UNVERIFIED_FAILED = "signal_failed"
+UNVERIFIED_CENSUS = "census_unreadable"  # the table itself could not be read: a known identity stays owed
 
 # The disclosure the installation census cannot resolve itself (owner decision
 # 2026-10-12, accepted and disclosed): on macOS a system binary started with ``&`` by a
@@ -269,7 +270,9 @@ def end_scope(*, marker: str = "", markers: Iterable[str] = (), groups: Iterable
     reused (ESRCH, a corpse, or a measured birth that differs) before the signal.
     ``survivors``: members alive with their recorded birth after the last pass.
     ``unverified``: members whose identity could not be read or whose signal was denied
-    or failed — never counted as ended or gone. ``census_failed``: the table could not be
+    or failed, and every recorded identity a failed table left unchecked
+    (``census_unreadable``) — never counted as ended or gone; an entry a later scan of the
+    same pass ended or confirmed gone is dropped. ``census_failed``: the table could not be
     read and NOTHING is claimed clean. ``settled`` is true only with a readable census, no
     survivors and no unverified member other than a denied signal (EPERM), which no later
     pass of this installation can change: final, disclosed.
@@ -290,6 +293,13 @@ def end_scope(*, marker: str = "", markers: Iterable[str] = (), groups: Iterable
         rows = census(names)
         if rows is None:
             outcome["census_failed"] = True
+            # The table could not be read: every recorded identity this pass has not resolved
+            # stays owed as unverified (never gone), an input of the next readable pass.
+            resolved = _resolved_pids(outcome) | {int(item["pid"]) for item in outcome["survivors"]}
+            for item in captured:
+                pid, birth = int(item.get("pid") or 0), str(item.get("birth") or "")
+                if pid > 1 and pid not in excluded and birth and pid not in resolved:
+                    _add_unverified(outcome, pid, birth, UNVERIFIED_CENSUS)
             break
         outcome["scans"] = scan + 1
         view = scope_members(rows, markers=names, groups=groups, captured=captured,
@@ -316,9 +326,16 @@ def end_scope(*, marker: str = "", markers: Iterable[str] = (), groups: Iterable
         outcome["survivors"].extend({"pid": pid, "birth": birth} for pid, birth in left.items())
         time.sleep(_RESCAN_SETTLE_SEC)
     outcome["ended"] = sorted(set(outcome["ended"]))
+    # A pid a later scan ended or confirmed gone owes nothing: its earlier unverified entry goes.
+    outcome["unverified"] = [item for item in outcome["unverified"] if item["pid"] not in _resolved_pids(outcome)]
     outcome["settled"] = not outcome["census_failed"] and not outcome["survivors"] and all(
         item["reason"] == UNVERIFIED_DENIED for item in outcome["unverified"])
     return outcome
+
+
+def _resolved_pids(outcome: Mapping[str, Any]) -> set:
+    """Members this pass ended or confirmed gone (absent, a corpse, or another birth)."""
+    return set(outcome["ended"]) | set(outcome["already_gone"]) | set(outcome["captured_gone"])
 
 
 def _signal_pass(targets: Mapping[int, str], outcome: Dict[str, Any], *, graceful: bool,
