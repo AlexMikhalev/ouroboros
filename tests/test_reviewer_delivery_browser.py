@@ -124,7 +124,8 @@ def test_an_unrelated_save_re_posts_the_shown_catalog_and_writes_no_lanes(subscr
     """Every Settings save re-posts the catalog: one saved before (no reviewer marked), or the
     unsaved candidate a fresh install is shown, whose factory review rows come marked (the
     read seam's never-configured cell). Re-posting either is no catalog change, so an unrelated
-    save is never refused, not even for the saved catalog's empty pool, and no lanes key is written."""
+    save is never refused, not even for the saved catalog's empty pool. The fresh catalog stays
+    automatic (#1765); the saved one stays authored, and neither writes a lanes key."""
     ui, gateway, writes = subscription_ui, settings_gateway, []
     _install(gateway, {"enabled": True, "items": [_OWNER_ROW]} if case == "saved" else None)
     shown = gateway.client.get("/api/settings").json()
@@ -153,8 +154,14 @@ def test_an_unrelated_save_re_posts_the_shown_catalog_and_writes_no_lanes(subscr
     assert "OUROBOROS_REVIEWER_SLOTS" not in writes[-1] and "allow_empty_review_pool" not in writes[-1]
     stored = _stored(gateway)
     assert "OUROBOROS_REVIEWER_SLOTS" not in stored
-    assert [row["subagent_id"] for row in json.loads(stored["OUROBOROS_SUBAGENTS"])["items"]] == [
-        row["subagent_id"] for row in shown["items"]]
+    reread = gateway.client.get("/api/settings").json()
+    assert reread["_meta"]["available_subagents"]["automatic"] is (case == "fresh")
+    if case == "fresh":
+        assert "OUROBOROS_SUBAGENTS" not in stored, "an unrelated save does not author the automatic catalog"
+        catalog = reread["_meta"]["available_subagents"]["candidate"]
+    else:
+        catalog = json.loads(stored["OUROBOROS_SUBAGENTS"])
+    assert [row["subagent_id"] for row in catalog["items"]] == [row["subagent_id"] for row in shown["items"]]
 
 
 def test_a_marked_row_round_trips_through_the_real_gateway(subscription_ui, settings_gateway):
