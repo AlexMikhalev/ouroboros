@@ -35,6 +35,11 @@ from .lib.telegram_state import (
 from .lib import telegram_i18n, telegram_inbound, telegram_quiz
 from .lib.telegram_health import _collect_health, _build_menu_tasks
 from .lib.telegram_notifier import _make_notifier
+from .lib.telegram_typing import (
+    start_keep_typing,
+    stop_keep_typing,
+    stop_all_keep_typing,
+)
 from .lib.miniapp_registration import _read_status, register as register_miniapp
 from .scripts.telegram_settings import (
     TelegramSettingsError,
@@ -1030,6 +1035,16 @@ def _make_outbound(api):
                 return
             lang = telegram_i18n.language()
 
+            # A delivered row retires the typing refresh of the turn it belongs
+            # to (#1766): progress rows keep it, the terminal row (and any
+            # media/quiz delivery, which clears the bubble in the client) ends
+            # the loop — the next chat.typing event re-arms it.
+            if not event.get("is_progress"):
+                stop_keep_typing(
+                    chat_id,
+                    str(event.get("task_id") or event.get("activity_id") or ""),
+                )
+
             # Subagent lifecycle → one dedicated bubble per subagent, edited in
             # place across its lifecycle (not a flood of new messages). Since 6.22
             # the supervisor emits one is_progress chat.outbound per subagent state
@@ -1121,6 +1136,15 @@ def _make_typing(api):
             chat_id = _target_chat(local_settings, event)
             if chat_id:
                 await client.send_chat_action(chat_id, "typing")
+                # One sendChatAction decays on clients in ~5s while the turn
+                # runs for minutes: arm the periodic refresh for this exact
+                # activity (#1766). The immediate action above stays the owner's
+                # first signal; the loop only re-sends it.
+                start_keep_typing(
+                    api, chat_id,
+                    str(event.get("activity_id") or event.get("task_id") or ""),
+                    client_factory=lambda: _telegram_client(api),
+                )
         except Exception as exc:
             api.log("error", f"Telegram typing error: {exc}")
     return handle
@@ -1377,6 +1401,15 @@ def _make_quiz_state(api):
 
 def register(api):
     telegram_i18n.configure(_data_dir(api))
+    # The keep-typing refresh loops are plain asyncio tasks, not supervised
+    # tasks: losing the indicator on a Telegram outage degrades to today's
+    # behavior (#1766) and must never burn restart budget. Unload still owes
+    # them a cancel so no refresh outlives the skill; a host API without the
+    # unload hook (older contract) just loses that cancel, nothing more.
+    try:
+        api.on_unload(stop_all_keep_typing)
+    except Exception:
+        api.log("warning", "Telegram keep-typing unload hook was not registered.")
     api.register_supervised_task("poller", _make_poller(api), restart_policy="on_failure", max_restarts=10)
     api.register_supervised_task("notifier", _make_notifier(api, trust_env=_HONOR_ENV_PROXIES), restart_policy="on_failure", max_restarts=10)
     api.subscribe_event("chat.outbound", _make_outbound(api))

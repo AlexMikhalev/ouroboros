@@ -1,7 +1,7 @@
 ---
 name: telegram
 description: Owner-only Telegram text bridge and Mini App gateway for the existing Ouroboros interface.
-version: 1.2.12
+version: 1.2.13
 type: extension
 entry: plugin.py
 plugin_api: "2.0"
@@ -85,6 +85,13 @@ retired bridge-only `TELEGRAM_LANGUAGE` setting is migrated once.
 Version 1.2.12 starts the Mini App when the Ouroboros server is a container's
 PID 1 without an init. PID 1 counts as the server only when the host named
 itself so; a companion adopted by init or a subreaper still stops.
+
+Version 1.2.13 keeps the typing indicator alive while a turn runs: Telegram
+clears one `typing` action after ~5 seconds, so the bridge now re-sends it
+every few seconds until the turn's answer (or any non-progress row) lands in
+the chat. Transient network failures back off and recover silently; a
+permanent Telegram rejection stops the refresh for that chat with one warning
+line, and disabling/unloading the skill cancels every refresh loop.
 
 The Mini App exposes the unchanged Ouroboros SPA through the established
 owner-authenticated sidecar and a pinned Cloudflare Quick Tunnel. It is enabled
