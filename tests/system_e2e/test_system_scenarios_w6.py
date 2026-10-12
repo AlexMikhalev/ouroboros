@@ -335,7 +335,8 @@ def test_s26_direct_chat_turn_owner_stop_mid_round_is_typed_and_ends_the_turn(
                     lambda: (_direct_activities(server, client_message_id) or [None])[0], 30)
                 assert activity, "the direct turn is not in /api/state.active_chat_activities"
                 task_id = str(activity.get("activity_id") or "")
-                assert task_id and activity.get("phase") == "thinking", activity
+                # #1740 uses neutral Working once a physical model call starts.
+                assert task_id and activity.get("phase") == "working", activity
                 assert wait_until(lambda: task_id in _running_task_ids(server), 30), (
                     "the live direct turn is not listed by GET /api/tasks?status=running")
                 assert task_id not in oracle.running_ids(), "a direct turn must have no queue row"

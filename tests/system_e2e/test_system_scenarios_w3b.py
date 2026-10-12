@@ -229,6 +229,7 @@ _SCOUT_ROW = {
     "subagent_id": "cx-scout",
     "recommended_use": "Delegated scout for the system_e2e transport scenarios.",
     "route": {"kind": "agent_session", "target_id": "fake-harness=mock-model"},
+    "access": "readonly",  # these wire/custody scenarios deliberately use ask mode (#1726)
     "effort": "low",
 }
 _PINNED_ROW = {
@@ -236,6 +237,7 @@ _PINNED_ROW = {
     "recommended_use": "Pinned-profile refusal probe for the system_e2e transport scenarios.",
     "route": {"kind": "agent_session", "target_id": "fake-harness=mock-model",
               "credential_profile_id": "ghost-profile"},
+    "access": "readonly",
     "effort": "low",
 }
 

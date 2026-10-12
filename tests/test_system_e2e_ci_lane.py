@@ -124,6 +124,7 @@ def test_the_lane_runs_the_keyless_suite_on_a_throwaway_root():
     assert [step.get("uses") for step in steps][:2] == [
         "actions/checkout@v4", "./.github/actions/setup-python-env",
     ]
+    assert steps[1]["with"]["install-project"] == "false"
     run_steps = [step for step in steps if "run" in step]
     assert len(run_steps) == 2
     expected = [("tests/system_e2e/", "OUROBOROS_E2E_DEEP"),

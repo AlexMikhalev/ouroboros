@@ -106,7 +106,7 @@ SCENARIOS = {
     "S19": ("managed update conflicting: typed budget refusal at the assisted gate, tree byte-identical, dirty work restored", LANE_MOCK),
     "S20": ("managed update crash mid-apply: boot-finalize honesty across stash-crash / half-written tx / applied-but-unrestarted", LANE_MOCK),
     "S21": ("cancellation with chat lineage: outbox-delivered receipt, chat.jsonl row, cancel_receipt block, intent forensics", LANE_MOCK),
-    "S22": ("evolution absorb kill-recovery: SIGKILL after the reviewed commit, markerless boot reconcile absorbs once, never twice", LANE_MOCK),
+    "S22": ("evolution absorb kill-recovery: explicit Cyber Pro in-place authoring, SIGKILL after the reviewed commit, markerless boot reconcile absorbs once, never twice", LANE_MOCK),
     "S23": ("delegated interactive answer: waiting_on_user -> delegate_answer -> run continues; wire + custody truth", LANE_MOCK),
     # Ф4 wave 5: the MUTATING delegated runs the earlier waves carried and never
     # landed (ADOPTION row DEFER-E2E-DELEG-MUT). The one delegation branch that
@@ -129,7 +129,7 @@ SCENARIOS = {
     # real consumer: priced stub, tiny wallet, the ledger fence pauses the task
     # nonterminally under its own id; an increase wakes nothing; Resume grants once.
     "S30": ("exact budget pause -> owner Resume, MANAGED root: priced rounds hit the global ledger fence, the task parks nonterminal under its SAME id (durable paused row + PENDING _budget_pause carrier, no task_done, no paid wrap-up, /api/state budget_paused); Resume while exhausted is the typed 409; raising TOTAL_BUDGET alone wakes nothing (bounded watch); Resume after the increase mints ONE single-use grant, the loop consumes it, the task completes with cumulative rounds/spend and task_done exactly once; a repeated Resume is the typed 404", LANE_MOCK),
-    "S31": ("exact budget pause -> owner Resume, DIRECT owner-chat turn: a WS chat turn hits its graceful in-task ceiling mid-turn, the live actor ends and its own record parks inline as the PENDING _budget_pause carrier with _is_direct_chat under the SAME id (no second actor, no task_done, no paid wrap-up; census direct_chat/budget_paused); a budget increase wakes nothing; Resume mints one grant, a pooled worker continues the checkpoint with the Q10 threshold refresh, and the turn concludes in the chat (durable chat row + keyed final frame over the same /ws); a repeated Resume is the typed 404", LANE_MOCK),
+    "S31": ("exact budget pause -> owner Resume, DIRECT owner-chat turn: an ordinary WS chat turn hits the known-spend dispatch fence mid-turn, the live actor ends and its own record parks inline as the PENDING _budget_pause carrier with _is_direct_chat under the SAME id (no second actor, no task_done, no paid wrap-up; census direct_chat/budget_paused); a budget increase wakes nothing; Resume mints one grant, a pooled worker continues the checkpoint without a graceful-threshold refresh, and the turn concludes in the chat (durable chat row + keyed final frame over the same /ws); a repeated Resume is the typed 404", LANE_MOCK),
     "S32": ("exact budget pause survives the physical epoch: a paused MANAGED root rides a GRACEFUL server SIGTERM (the lifespan teardown's kill_workers ran: server_shutdown row) untouched — no task_done, no cancel, the same paused row and PENDING _budget_pause carrier in the final snapshot; the next boot parks the SAME id again unheld and un-dispatched (census budget_paused, public detail scheduled/budget_paused, Resume still the typed 409 while exhausted); after the increase one Resume grant completes the same id with cumulative rounds/spend", LANE_MOCK),
     # Presence resilience: Host responsiveness and turn custody under real waits.
     # FOUR tests: executor starvation alone, a held Host authentication alone,
@@ -1345,28 +1345,17 @@ class ArtifactOracle:
         from ouroboros.task_results import load_task_result
         return load_task_result(self.data_root, task_id) or {}
 
-    def task_result_bytes(self, task_id: str) -> bytes:
-        return (self.data_root / "task_results" / f"{task_id}.json").read_bytes()
-
     def child_task_ids(self, parent_task_id: str) -> list:
-        """Direct children of *parent_task_id* per the durable task_results rows.
+        """Direct children from the canonical current-facts store (#1733)."""
+        from ouroboros.task_store import task_facts
+        return list(task_facts(self.data_root, where="parent_task_id=?", params=(str(parent_task_id),)))
 
-        The parent's own stored row deliberately does NOT list children ids (only a
-        derived swarm rollup), so lineage enumeration reads the children's rows —
-        the same truth ``find_child_tasks`` derives from.
-        """
-        results_dir = self.data_root / "task_results"
-        if not results_dir.is_dir():
-            return []
-        children = []
-        for path in sorted(results_dir.glob("*.json")):
-            try:
-                row = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if isinstance(row, dict) and str(row.get("parent_task_id") or "") == str(parent_task_id):
-                children.append(str(row.get("task_id") or path.stem))
-        return children
+    def body_candidate(self, task_id: str = "") -> dict:
+        """One authoring candidate; callbacks before submit returns may omit its owner."""
+        rows = [row for row in self._json("state/subagent_worktrees.json").get("worktrees", [])
+                if row.get("kind") == "body_candidate" and (not task_id or row.get("task_id") == task_id)]
+        assert len(rows) == 1, rows
+        return rows[0]
 
     def tree_blackboard(self, root_task_id: str) -> list:
         """Rows of the task-tree ledger (task_trees/<root>/blackboard.jsonl)."""

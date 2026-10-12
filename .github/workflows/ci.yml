@@ -726,11 +726,14 @@ jobs:
     # (owner decision, batch №13 item 4, 2026-09-02).
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # 94 scenarios plus the cancellation E-suite measured ~45 min end to end (2026-10-12).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-python-env
         id: setup_python
+        with:
+          install-project: 'false'  # candidate servers must import their own checkout (#1644)
       # -o addopts="" replaces the pyproject default markexpr wholesale: the
       # lane's own `integration` marker is exactly what that default excludes.
       - name: Run the keyless system E2E scenario lane (real isolated servers)

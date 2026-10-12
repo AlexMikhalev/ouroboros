@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pathlib
 import re
 import subprocess
 
@@ -537,7 +538,7 @@ def test_s15_advisory_class_red_verdict_recorded_and_commit_lands(e2e_clone, tmp
         try:
             calls = {c["id"]: c["function"]["name"] for m in body["messages"] for c in m.get("tool_calls", [])}
             message = next(m for m in reversed(body["messages"]) if m.get("role") == "tool" and calls.get(m.get("tool_call_id")) == "commit_reviewed")
-            feedback.update(json.loads(message["content"].split("\n", 1)[1]), head=_head(e2e_clone))
+            feedback.update(json.loads(message["content"].split("\n", 1)[1]), head=_head(oracle.body_candidate()["path"]))
             critic = feedback["review_outcome"]
             assert feedback["head"] == head_before, "commit preceded feedback exposure"
             if critic["status"] == "reviewing":
@@ -555,14 +556,17 @@ def test_s15_advisory_class_red_verdict_recorded_and_commit_lands(e2e_clone, tmp
         server = start_server(e2e_clone, root, settings)
         try:
             head_before = _head(e2e_clone)
+            oracle = ArtifactOracle(server.data_root)
             task_id = submit_running(server, "Write the advisory-class note, inspect the critical feedback, explicitly choose whether to commit, then finish.")
             result = server.wait_task(task_id, timeout=600)
             assert result.get("status") == "completed", result
             assert "E2E_SCRIPT_ERROR" not in str(result), result
-            oracle = ArtifactOracle(server.data_root)
             wait_durable_result(oracle, task_id)
             assert feedback["head"] == head_before and stub.script_consumed()
-            assert _git_log_subjects(e2e_clone).count(S12_MSG) == 1
+            candidate = oracle.body_candidate(task_id)
+            assert _git_log_subjects(candidate["path"]).count(S12_MSG) == 1
+            assert _head(candidate["path"]) in candidate["reviewed_commits"]
+            assert _head(e2e_clone) == head_before and not (e2e_clone / S12_DOC).exists()
             task_drive = oracle.task_drive(task_id)
             # Loud Advisory remains durable: the original critical cause and counter.
             overrides = task_drive.events("review_advisory_override")
@@ -667,18 +671,22 @@ def test_s16_blocking_class_red_blocks_identical_refused_free_then_green_lands(
 
             # The commit landed exactly once, with the FIXED content, and the
             # blocked attempts moved HEAD not at all (one new commit total).
-            log_subjects = _git_log_subjects(e2e_clone)
+            candidate = oracle.body_candidate(task_id)
+            candidate_path = pathlib.Path(candidate["path"])
+            log_subjects = _git_log_subjects(candidate_path)
             assert log_subjects.count(S13_MSG) == 1, log_subjects
             committed = subprocess.run(
-                ["git", "show", f"HEAD:{S13_DOC}"], cwd=str(e2e_clone),
+                ["git", "show", f"HEAD:{S13_DOC}"], cwd=str(candidate_path),
                 check=True, capture_output=True, text=True).stdout
             assert "W3A_MARKER" in committed, committed
-            head_after = _head(e2e_clone)
+            head_after = _head(candidate_path)
             parent = subprocess.run(
-                ["git", "rev-parse", "HEAD~1"], cwd=str(e2e_clone),
+                ["git", "rev-parse", "HEAD~1"], cwd=str(candidate_path),
                 check=True, capture_output=True, text=True).stdout.strip()
             assert head_after != head_before and parent == head_before, (
                 head_before, head_after, parent)
+            assert head_after in candidate["reviewed_commits"] and candidate["base_sha"] == head_before
+            assert _head(e2e_clone) == head_before and not (e2e_clone / S13_DOC).exists()
 
             # Durable ledger: a VERDICT-blocked attempt (critical_findings) is
             # recorded; the identical resubmit paid nothing (two paid waves over
@@ -733,9 +741,10 @@ def test_s16_rejects_post_verdict_mutation(tmp_path_factory):
         # settlement). The two-part verdict returned here is ALL-CLEAN — the
         # refusal below can only come from the freshness gate, never from the
         # verdicts.
-        (clone / S13B_JUNK).write_text("staged mid-review to prove post-verdict freshness\n",
+        candidate_path = pathlib.Path(oracle.body_candidate()["path"])
+        (candidate_path / S13B_JUNK).write_text("staged mid-review to prove post-verdict freshness\n",
                                        encoding="utf-8")
-        subprocess.run(["git", "add", S13B_JUNK], cwd=str(clone),
+        subprocess.run(["git", "add", S13B_JUNK], cwd=str(candidate_path),
                        check=True, capture_output=True)
         return two_part_clean_text()
 
@@ -750,11 +759,11 @@ def test_s16_rejects_post_verdict_mutation(tmp_path_factory):
         server = start_server(clone, root, settings)
         try:
             head_before = _head(clone)
+            oracle = ArtifactOracle(server.data_root)
             task_id = submit_running(
                 server, "Run the freshness smoke: write the note, then try to commit; finish.")
             result = server.wait_task(task_id, timeout=600)
             assert result.get("status") == "completed", result
-            oracle = ArtifactOracle(server.data_root)
             wait_durable_result(oracle, task_id)
             task_drive = oracle.task_drive(task_id)
 
@@ -774,8 +783,12 @@ def test_s16_rejects_post_verdict_mutation(tmp_path_factory):
                 "typed revalidation event missing")
 
             # Nothing ever landed: HEAD did not move, the message is nowhere.
-            assert _head(clone) == head_before
-            assert S13B_MSG not in _git_log_subjects(clone)
+            candidate = oracle.body_candidate(task_id)
+            candidate_path = pathlib.Path(candidate["path"])
+            assert _head(candidate_path) == candidate["base_sha"] == head_before
+            assert S13B_MSG not in _git_log_subjects(candidate_path)
+            assert (candidate_path / S13B_JUNK).is_file()
+            assert _head(clone) == head_before and not (clone / S13B_JUNK).exists()
 
             # Call accounting: no preflight was named, so no preflight seat ran;
             # exactly one wave over the whole pool — the packet rows and the
