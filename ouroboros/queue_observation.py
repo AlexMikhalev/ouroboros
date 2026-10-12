@@ -48,7 +48,7 @@ def published_dispatch(drive_root, *, attempts=None, pause_sec=0.05, deadline=No
     queue.alive, whatever its age (a stalled tick never stops a send). A publication in flight
     (the stamp is unlinked first) is re-read for up to DISPATCH_PUBLICATION_WAIT_SEC; None when
     it stays uncertified (issue #1754: a one-second window failed sends under load).
-    A caller may share its deadline across acquisitions and check controls each read."""
+    A caller may share its deadline across acquisitions and check controls on each re-read."""
     if attempts is None:
         attempts = max(1, int(DISPATCH_PUBLICATION_WAIT_SEC / pause_sec))
     if deadline is None:
