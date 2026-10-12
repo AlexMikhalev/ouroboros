@@ -456,8 +456,9 @@ def _resume_continuation(tools: Any, carriers: tuple, messages: list, trace: dic
 
     Returns ``(*route, round_idx, cost_ceiling, pending_tool_budget,
     pending_no_tool_budget, free_redial)``: a cold owner wait rejoins its tool
-    tail; an exact pause its saved budget tail; a working checkpoint its tool
-    tail after a batch, else the same logical round (#1563).
+    tail; an exact pause, or its Resume handover, its saved budget tail; a
+    working checkpoint its tool tail after a batch, else the same logical round
+    (#1563).
     """
     saved, saved_pause, saved_working = carriers
     if saved:
@@ -469,7 +470,8 @@ def _resume_continuation(tools: Any, carriers: tuple, messages: list, trace: dic
         return (*resumed, _resolve_task_cost_ceiling(tools._ctx, budget_remaining_usd), not no_tool, no_tool, no_tool)
     if saved_working:
         *resumed, tool_tail = working_checkpoint.resume_from_working(tools, saved_working, messages, trace, usage, seen)
-        return (*resumed, _resolve_task_cost_ceiling(tools._ctx, budget_remaining_usd), tool_tail, False, not tool_tail)
+        no_tool = not tool_tail and (saved_working.get("working") or {}).get("boundary") == working_checkpoint.RESUMED
+        return (*resumed, _resolve_task_cost_ceiling(tools._ctx, budget_remaining_usd), tool_tail, no_tool, not tool_tail)
     return (*route, cost_ceiling, False, False, False)
 
 
@@ -985,6 +987,7 @@ from ouroboros.loop_forced_finalization import (  # noqa: E402, F401 -- intentio
     _maybe_enforce_child_absorption_gate,
     _enforce_swarm_actions,
     _finalize_forced_services,
+    _disclose_service_finalization,
     _drain_forced_owner_directives,
     _call_forced_model_once,
     _publish_model_forced_candidate,

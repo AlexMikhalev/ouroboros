@@ -654,9 +654,12 @@ def _delegate_answer(
             "detail": str(body.get("message") or ""),
             "note": _ANSWER_NOTES.get(status, ""),
         }
-        if status == "rejected":
-            # The daemon's typed refusal of these rows: an agent fault, recorded.
-            result.update({"ok": False, "host_code": AGENT_FAULT_CODE})
+        if status in ("rejected", "not_found"):
+            # A definite typed refusal is recorded, never an OK observation: rejected
+            # rows are the agent's fault; an absent interaction or run is a substrate
+            # refusal, the class the untyped 404 above already records.
+            result.update({"ok": False, "host_code": (
+                AGENT_FAULT_CODE if status == "rejected" else SUBSTRATE_REFUSAL_CODE)})
         if source_receipt is not None:
             result["work_order_verification"] = source_receipt
         return delegate_result(result)

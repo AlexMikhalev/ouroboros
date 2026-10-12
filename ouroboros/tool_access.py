@@ -43,10 +43,8 @@ from ouroboros.tool_access_paths import (  # noqa: F401 — re-exported moved su
     _deliverables_root,
     _path_is_relative_to_casefold,
     _user_files_root,
-    canonical_data_root,
-    normalize_root,
-    normalize_root_relative,
-    normalize_runtime_data_path,
+    canonical_data_root, docker_process_alias_target,
+    normalize_root, normalize_root_relative, normalize_runtime_data_path,
     path_is_relative_to,
     paths_overlap_casefold,
     workspace_mode_block_reason,
@@ -579,6 +577,8 @@ def _select_process_target(
         [(root / safe_relpath(text)).resolve(strict=False)
          for _label, root, _source, _name in candidate_records]
     )
+    if aliased := docker_process_alias_target(ctx, operation, text, candidate_records, physical_candidates[0]):
+        return _finish(*aliased)  # Identity mounts and unmapped host paths use normal roots below.
     for target in physical_candidates:
         for record in candidate_records:
             label, base, _source, _name = record

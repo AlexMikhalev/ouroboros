@@ -81,6 +81,19 @@ def test_a_publication_in_flight_is_waited_out(tmp_path, monkeypatch, alive_gene
     assert _reserve(tmp_path, CHILD).attempt_id and waits
 
 
+def test_a_publication_slower_than_the_former_window_is_waited_out(tmp_path, monkeypatch):
+    _publish(tmp_path, alive_generation=None)  # issue #1754: 20 reads failed sends on a loaded host
+    waits = []
+
+    def slow_publisher(_sec):
+        waits.append(_sec)
+        if len(waits) == 25:
+            _write(tmp_path, "queue.alive", {"generation": "g1", "ts": OLD_TS, "heartbeats": {}})
+
+    monkeypatch.setattr(queue_observation, "_sleep", slow_publisher)
+    assert _reserve(tmp_path, CHILD).attempt_id and len(waits) == 25
+
+
 @pytest.mark.parametrize("damage", ["malformed", "non_object", "missing", "no_generation", "unreadable"])
 def test_an_unreadable_dispatch_document_refuses_typed(tmp_path, monkeypatch, caplog, damage):
     _publish(tmp_path)

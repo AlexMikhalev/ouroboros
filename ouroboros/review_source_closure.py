@@ -105,6 +105,9 @@ def source_carrier(value: dict, key: str, carrier: str) -> str:
             return ''
         if key == 'historical_author_inputs':
             return 'historical_inputs'
+        if key == 'service_finalization':
+            # Host teardown rows: only their log_finalization refs are walked.
+            return 'metadata' if isinstance(provenance, dict) and provenance.get(key) == 'host_attested' else ''
     if key == 'task_contract' and carrier in {'evidence', 'task_result'}:
         return 'contract'
     if key == 'request' and carrier == 'metadata':

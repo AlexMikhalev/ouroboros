@@ -39,10 +39,16 @@ def load_queue_document(drive_root, name="queue_snapshot.json") -> dict:
     return document
 
 
-def published_dispatch(drive_root, *, attempts=20, pause_sec=0.05):
+DISPATCH_PUBLICATION_WAIT_SEC = 30.0  # the wait budget for an in-flight queue publication on a loaded host
+
+
+def published_dispatch(drive_root, *, attempts=None, pause_sec=0.05):
     """The dispatch document of the last successful publication: its generation certified by
     queue.alive, whatever its age (a stalled tick never stops a send). A publication in flight
-    (the stamp is unlinked first) is re-read briefly; None when it stays uncertified."""
+    (the stamp is unlinked first) is re-read for up to DISPATCH_PUBLICATION_WAIT_SEC; None when
+    it stays uncertified (issue #1754: a one-second window failed sends under load)."""
+    if attempts is None:
+        attempts = max(1, int(DISPATCH_PUBLICATION_WAIT_SEC / pause_sec))
     for attempt in range(attempts):
         document = load_queue_document(drive_root, "queue_dispatch.json")
         if not document.get("generation"):

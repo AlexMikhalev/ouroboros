@@ -102,14 +102,14 @@ restored from quarantine) is projected on a later pass without a new receipt.
 One configuration per installation, decided by the import with
 `platform_layer.kernel_file_locks_enforced` on the lock directory, recorded in
 `meta.lock_tier` and in the database header's `application_id`, so every
-process chooses the protocol before it opens the file. On POSIX the header is
-read through one descriptor per file that the process never closes: closing
-any descriptor of a SQLite file releases every lock the process holds on it,
-an open transaction's on another thread included. Code that reads or copies
-arbitrary files in a process that may hold a store (the Files panel, the read
-tools, artifact capture) goes through `store.open_for_read`, `iter_file_bytes`,
-`read_file_bytes` or `copy_file_bytes`, which use that kept descriptor for a
-held store file. The connection, tier,
+process chooses the protocol before it opens the file. On POSIX closing any
+descriptor of a SQLite file releases every lock the process holds on it, an
+open transaction's on another thread included. So `store.connect` counts its
+connections per inode, and every raw read in a process that may hold a store
+(the header probe, the Files panel, the read tools, artifact capture:
+`store.open_for_read`, `iter_file_bytes`, `read_file_bytes`, `copy_file_bytes`)
+borrows one shared descriptor per inode that closes only when no counted
+connection has the file open, as SQLite's unix VFS defers its own closes. The connection, tier,
 file-identity and transaction core is `ouroboros/store.py`, shared with the
 current-facts store; `usage_store` keeps the money error vocabulary over it.
 

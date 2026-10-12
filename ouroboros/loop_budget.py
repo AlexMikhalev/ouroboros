@@ -19,6 +19,7 @@ from ouroboros.loop_transport import TransportWaitEpisode, end_episode_budget as
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.context_fit import messages_carry_native_images
 from ouroboros.usage_accounting import BudgetExceeded
+from ouroboros.utils import truncate_within_limit
 
 
 from typing import TYPE_CHECKING
@@ -396,19 +397,6 @@ def _service_finalization_evidence(llm_trace: Dict[str, Any]) -> list[Dict[str, 
     """Return the stable, answer-relevant part of service finalization events."""
 
     rows: list[Dict[str, Any]] = []
-    stable_fields = (
-        "service_id",
-        "name",
-        "task_id",
-        "lifecycle",
-        "backend",
-        "pid",
-        "port",
-        "artifact_outputs",
-        "artifact_output_failed",
-        "artifact_audit_gap",
-        "log_finalization",
-    )
     for event in llm_trace.get("verification_events") or []:
         if not isinstance(event, dict) or str(event.get("kind") or "") not in {
             "services_stopped",
@@ -416,19 +404,12 @@ def _service_finalization_evidence(llm_trace: Dict[str, Any]) -> list[Dict[str, 
             "service_finalization_error",
         }:
             continue
-        services = []
-        for service in event.get("services") or []:
-            if not isinstance(service, dict):
-                continue
-            services.append({
-                key: service.get(key)
-                for key in stable_fields
-                if service.get(key) not in (None, "", [], {})
-            })
+        services = [_service_identity_projection(service)
+                    for service in event.get("services") or [] if isinstance(service, dict)]
         rows.append({
             "kind": str(event.get("kind") or ""),
             "services": services,
-            "error": str(event.get("error") or ""),
+            "error": truncate_within_limit(str(event.get("error") or ""), 2000),
         })
     return rows
 
@@ -693,12 +674,19 @@ def _service_identity_projection(service: Dict[str, Any]) -> Dict[str, Any]:
         "artifact_output_failed",
         "artifact_audit_gap",
         "log_finalization",
+        "state",
+        "stop_failed",
+        "cleanup_dispatched",
+        "stop_error",
     )
-    return {
-        key: service.get(key)
-        for key in fields
-        if service.get(key) not in (None, "", [], {})
-    }
+    projected = {}
+    for key in fields:
+        value = service.get(key)
+        if key == "stop_error" and value not in (None, ""):
+            value = truncate_within_limit(str(value), 2000)
+        if value not in (None, "", [], {}):
+            projected[key] = value
+    return projected
 
 
 def _finalize_task_services(ctx: _LoopExitContext) -> bool:
@@ -733,27 +721,27 @@ def _finalize_task_services(ctx: _LoopExitContext) -> bool:
                 continue
             seen.add(signature)
             fresh.append(service)
-        stopped = [service for service in fresh if service.get("lifecycle") != "kept"]
-        kept = [service for service in fresh if service.get("lifecycle") == "kept"]
-        if stopped:
+        stopped, kept, pending = [], [], []
+        for service in fresh:
+            if (service.get("lifecycle") == "cleanup_pending" or service.get("stop_failed")
+                    or service.get("cleanup_dispatched") is False or service.get("state") == "cleanup_pending"):
+                pending.append(_service_identity_projection(service))
+            elif service.get("lifecycle") == "kept":
+                kept.append(service)
+            else:
+                stopped.append(service)
+        for kind, services in (("services_stopped", stopped),
+                               ("service_finalization_error", pending), ("services_kept", kept)):
+            if not services:
+                continue
+            details = {"services": services}
+            if kind == "service_finalization_error":
+                details["error"] = "service cleanup was not confirmed"
             _loop()._emit_checkpoint_event(ctx.event_queue, ctx.task_id, ctx.drive_logs, {
-                "checkpoint_kind": "services_stopped",
-                "services": stopped,
+                "checkpoint_kind": kind, **details,
             })
-            ctx.llm_trace.setdefault("verification_events", []).append({
-                "kind": "services_stopped",
-                "services": stopped,
-            })
-        if kept:
-            _loop()._emit_checkpoint_event(ctx.event_queue, ctx.task_id, ctx.drive_logs, {
-                "checkpoint_kind": "services_kept",
-                "services": kept,
-            })
-            ctx.llm_trace.setdefault("verification_events", []).append({
-                "kind": "services_kept",
-                "services": kept,
-            })
-        return bool(stopped or kept)
+            ctx.llm_trace.setdefault("verification_events", []).append({"kind": kind, **details})
+        return bool(fresh)
     except Exception as exc:
         log.debug("Failed to stop task services", exc_info=True)
         event = {

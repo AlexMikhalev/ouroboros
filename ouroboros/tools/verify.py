@@ -910,7 +910,8 @@ def get_tools() -> List[ToolEntry]:
                     "default": "",
                     "description": (
                         "For run-kind checks, omit for active_workspace; use system_repo[/subdir] "
-                        "for Ouroboros or skill_payload[/subdir] with bucket+skill_name for a skill."
+                        "for Ouroboros or skill_payload[/subdir] with bucket+skill_name for a skill. "
+                        "Docker backend aliases inside active_workspace are accepted."
                     ),
                 },
                 "bucket": {

@@ -33,11 +33,12 @@ def author(tmp_path):
     (repo / "f.txt").write_text("v0\n")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "init")
-    (repo / "f.txt").write_text("A staged\n")
+    # Frozen copies preserve bytes; text-mode writes would create CRLF on Windows.
+    (repo / "f.txt").write_bytes(b"A staged\n")
     _git(repo, "add", "f.txt")
-    (repo / "f.txt").write_text("A staged\nB unstaged\n")
+    (repo / "f.txt").write_bytes(b"A staged\nB unstaged\n")
     (repo / ".review-drive" / "task").mkdir(parents=True)
-    (repo / ".review-drive" / "task" / "view.txt").write_text("byte-exact evidence\n")
+    (repo / ".review-drive" / "task" / "view.txt").write_bytes(b"byte-exact evidence\n")
     return repo
 
 

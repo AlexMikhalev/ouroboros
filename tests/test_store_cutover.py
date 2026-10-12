@@ -145,7 +145,11 @@ _TABLES = re.compile(r"\bFROM\s+(tasks|task_bodies|obligations|custody_runs|hand
 def captured_statements(monkeypatch, call) -> list:
     """``(sql, params)`` of every read over the store's tables that ``call`` made."""
     real = sqlite3.connect
-    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: real(*a, factory=_Recording, **k))
+
+    def recording(*args, factory=sqlite3.Connection, **kwargs):  # over the store's own connection class
+        return real(*args, factory=type("Recording", (_Recording, factory), {}), **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", recording)
     _Recording.captured = []
     try:
         call()

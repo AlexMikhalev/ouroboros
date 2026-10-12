@@ -17,6 +17,7 @@ export const CHECKPOINT_LABELS = {
     budget_scope_paused: 'Budget scope paused',
     services_stopped: 'Background services stopped',
     services_kept: 'Background services kept',
+    service_finalization_error: 'Background service cleanup unconfirmed',
     forced_candidate_drift: 'Forced candidate drifted',
 };
 

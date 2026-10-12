@@ -540,7 +540,8 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
             return {"ok": False, "error": "root_budget_fence_missing", "action": "cancel_or_new_run"}
         if root_scope and str(pause.get("fence_id") or "") != str(fence.get("fence_id") or ""):
             return {"ok": False, "error": "replay_unsafe", "action": "cancel_or_new_run"}
-        if observation["authority"]["owner_fence"]:
+        authority = observation["authority"]  # a member's consumed Resume completes at its selection
+        if authority["owner_fence"] and (selected_by or not authority["consumed_resume"]):
             return {"ok": False, "error": "selection_owner_held"}
         nominated_safe, nominated_error = observation["safe"], observation["unsafe_error"]
         nominated_safe = bool(

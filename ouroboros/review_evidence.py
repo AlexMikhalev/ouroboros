@@ -165,6 +165,17 @@ def _accept_repo_diff(ctx: Any, *, include_recent_commit: bool, drive_root: Any,
     return repo_diff, diff_meta
 
 
+def _accept_service_finalization(ev: Dict[str, Any], prov: Dict[str, str], llm_trace: Dict[str, Any],
+                                 drive_root: Any, task_id: str) -> None:
+    """Teardown facts arise outside any tool call: the panel reads the author's
+    complete redacted projection as evidence, never a veto. Its typed log refs
+    are host edges the review source closure retains for retrieving readers."""
+    from ouroboros.loop_forced_finalization import _service_finalization_projection
+
+    if rows := _service_finalization_projection(llm_trace, drive_root=drive_root, task_id=task_id):
+        ev["service_finalization"], prov["service_finalization"] = rows, "host_attested"
+
+
 def build_task_acceptance_evidence(
     ctx: Any,
     *,
@@ -338,8 +349,8 @@ def build_task_acceptance_evidence(
             if omitted:
                 ev["tool_trajectory_omitted_leading"] = omitted
                 ev["tool_trajectory_complete"] = False
-        if unresolved:
-            partial_sources.extend(unresolved)
+        partial_sources.extend(unresolved)
+        _accept_service_finalization(ev, prov, llm_trace, drive_root, task_id)
         notes = llm_trace.get("reasoning_notes") or []
         if notes:
             ev["reasoning_notes"] = truncate_review_artifact("\n".join(str(n) for n in notes), limit=_ACCEPT_NOTES_CAP)

@@ -288,7 +288,7 @@ def test_backend_cleanup_requires_receipt_even_with_zero_cli_exit(monkeypatch, r
         subprocess.CompletedProcess(argv, 0, receipt, ""))
     assert executor._cleanup_docker_exec_timeout("simulated", "/tmp/owned.pid") is bool(receipt)
     record = {"container_name": "simulated", "backend_pidfile": "/tmp/owned.pid"}
-    assert executor._dispatch_docker_record_cleanup(record) is bool(receipt)
+    assert executor._kill_docker_record(record) is bool(receipt)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Exercises backend receipt script through local sh")

@@ -118,8 +118,10 @@ def test_shell_catalog_schema_bytes_and_handler_owners_are_stable():
     # source-addressed delivery (owner Q4): both tools gain the additive
     # `view_head_chars`/`view_tail_chars` first-view request (the complete output
     # stays an exact readable source either way); the handlers' **kwargs bind them.
+    # Both cwd descriptions now say Docker backend aliases inside active_workspace
+    # are accepted (#1515); restoring only those two strings reproduces 47e50519….
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "47e5051938e513c9798291e8d24224d0a9f8825cd9554bbc7ed16721772bc72f"
+        "a6793fd123d719957c3058d8e8ec14d741e2546938771644426c96fc8bcca76d"
     )
     original = json.loads(schema_bytes)
     for schema in original:
@@ -134,7 +136,7 @@ def test_shell_catalog_schema_bytes_and_handler_owners_are_stable():
     )
     assert hashlib.sha256(json.dumps(original, sort_keys=True, ensure_ascii=False,
                                     separators=(",", ":")).encode()).hexdigest() == (
-        "13ade213656361e8faae67439a364d8629d076fe3f27e72e4dfb03f48094889b"
+        "dc0e1fb674853ead4d8f3b51f4d568057049075422b8287e262096dc91b49e9f"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

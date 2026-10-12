@@ -1019,7 +1019,10 @@ def write_call_manifest(
         "call_id": safe_call,
         **dict(manifest or {}),
     }
-    with store.name_lock(pathlib.Path(drive_root), evidence_packs.PUBLICATION_LOCK_NAME, timeout_sec=4.0):
+    # The packer's deletion sections and other manifests hold this lock briefly; a model call
+    # waits for them rather than failing its task (issue #1754).
+    with store.name_lock(pathlib.Path(drive_root), evidence_packs.PUBLICATION_LOCK_NAME,
+                         timeout_sec=evidence_packs.PUBLICATION_WAIT_SEC):
         evidence_packs.note_manifest_publication(drive_root, payload)
         atomic_write_json(path, payload, trailing_newline=True)
     _chmod_private(path)

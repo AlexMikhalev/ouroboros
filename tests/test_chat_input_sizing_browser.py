@@ -435,6 +435,40 @@ def _cut_ink(run, field, text):
             "cutRows": sum(held[height:]), "placeholderBox": height}
 
 
+def _fitting_placeholder(field):
+    """Choose a multirow prefix using an uncapped text probe, not the sizer under test.
+
+    The same translation is five rows on macOS but six on Linux. Keep a full row
+    of headroom for this below-cap case; the separate long case must still scroll.
+    """
+    return field.evaluate("""(el, source) => {
+        const style = getComputedStyle(el);
+        const probe = document.createElement('textarea');
+        // No id, sizing flag, listener or application height rule reaches this probe.
+        for (const name of ['font', 'letter-spacing', 'padding', 'border', 'box-sizing',
+                            'white-space', 'word-break', 'overflow-wrap', 'tab-size']) {
+            probe.style.setProperty(name, style.getPropertyValue(name));
+        }
+        Object.assign(probe.style, {position: 'absolute', visibility: 'hidden',
+            width: style.width, height: '1px', minHeight: '0', maxHeight: 'none',
+            fieldSizing: 'fixed', overflow: 'hidden'});
+        document.body.append(probe);
+        const line = parseFloat(style.lineHeight);
+        const pad = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+        const cap = parseFloat(style.maxHeight);
+        let text = '', natural = 0;
+        try {
+            for (const word of source.split(' ')) {
+                probe.value = text ? `${text} ${word}` : word;
+                if (probe.scrollHeight > cap - line) break;
+                text = probe.value;
+                natural = probe.scrollHeight;
+            }
+            return {text, natural, line, pad, cap};
+        } finally { probe.remove(); }
+    }""", _LONG_PLACEHOLDER)
+
+
 def _placeholder(run, field, row):
     """An empty field holds its placeholder like text: a long one wraps and grows without a
     cut glyph or a scrollbar, and past the cap it scrolls. A placeholder rewritten in place
@@ -446,12 +480,15 @@ def _placeholder(run, field, row):
     _assert_fits(run.geometry(field, "placeholder-390"), mode, "placeholder-390", rows=1)
     run.shoot(row, "placeholder-390")
     original = field.get_attribute("placeholder")
-    field.evaluate("(el, text) => { el.placeholder = text; }", _LONG_PLACEHOLDER)
+    fitting = _fitting_placeholder(field)
+    assert fitting["text"] and 3 * fitting["line"] + fitting["pad"] - 1 <= fitting["natural"] <= fitting["cap"] - fitting["line"], fitting
+    run.records.append({"engine": run.engine, "run": run.label, "case": "placeholder-text-oracle", **fitting})
+    field.evaluate("(el, text) => { el.placeholder = text; }", fitting["text"])
     g = run.geometry(field, "long-placeholder-390")
     run.shoot(row, "long-placeholder-390")
     _assert_fits(g, mode, "long-placeholder-390")
     assert g["clientHeight"] > 3 * g["line"] and g["scrollTop"] == 0, g
-    ink = _cut_ink(run, field, _LONG_PLACEHOLDER)
+    ink = _cut_ink(run, field, fitting["text"])
     run.records.append({"engine": run.engine, "run": run.label, "case": "long-placeholder-ink", **ink})
     assert ink["placeholderInkRows"] > 3 * g["line"] / 2 and ink["cutRows"] == 0, ink
     # A placeholder longer than the cap scrolls like text: the owner can reach its end.

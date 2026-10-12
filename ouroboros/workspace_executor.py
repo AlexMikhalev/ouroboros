@@ -1,7 +1,8 @@
 """Host-owned external workspace execution behind semantic task executor_ref.
 
 Completion belongs to the backend, not its host CLI. Its unique pidfile keeps
-wrapper wait evidence; failed readback retains task-attributed executor custody.
+wrapper wait evidence, not absence of detached descendants. Failed readback
+retains task-attributed executor custody.
 Stop also requires a backend receipt. Live children survive exception unwind
 in these records independently of the closed tool invocation. Root join proves
 nothing about escaped descendants; pre-spawn failure starts nothing.
@@ -22,6 +23,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from ouroboros.docker_process_observer import proc_observer_function as _docker_proc_observer_function
 from ouroboros.observability import redact_projection
 from ouroboros.platform_layer import (
     IS_WINDOWS,
@@ -39,6 +41,15 @@ from ouroboros.utils import atomic_write_json, utc_now_iso
 class PathMapping:
     host_path: pathlib.Path
     backend_path: str
+
+
+class BackendPathNoMatch(ValueError):
+    """The backend spelling does not select any configured mapping.
+
+    Mapping callers use this narrow distinction to preserve their existing
+    host-path fallback.  A matched mapping with an invalid descendant remains
+    a plain ``ValueError`` and must be refused.
+    """
 
 @dataclass(frozen=True)
 class ExecutorRef:
@@ -212,7 +223,7 @@ def map_backend_path_lexical(executor: ExecutorRef, path_text: str) -> pathlib.P
     """
     normalized = str(path_text or "").replace("\\", "/").rstrip("/")
     if not normalized.startswith("/"):
-        raise ValueError(f"backend path is not absolute: {path_text}")
+        raise BackendPathNoMatch(f"backend path is not absolute: {path_text}")
     for mapping in sorted(executor.mappings, key=lambda item: len(item.backend_path.rstrip("/")), reverse=True):
         base = str(mapping.backend_path or "").replace("\\", "/").rstrip("/")
         if not base:
@@ -224,7 +235,7 @@ def map_backend_path_lexical(executor: ExecutorRef, path_text: str) -> pathlib.P
         if any(part == ".." for part in rel_parts):
             raise ValueError(f"backend path escapes executor mapping: {path_text}")
         return mapping.host_path.joinpath(*rel_parts)
-    raise ValueError(f"path is outside executor backend mappings: {path_text}")
+    raise BackendPathNoMatch(f"path is outside executor backend mappings: {path_text}")
 
 
 def execute(
@@ -522,11 +533,8 @@ def _docker_exec_pidfile_stop_shell(pidfile: str) -> str:
     return (
         f"pid=$(cat {quoted_pidfile} 2>/dev/null || true); "
         'case "$pid" in completed) printf completed; exit $?;; '
-        "''|*[!0-9]*) exit 1;; esac; "
-        "kill -TERM -$pid 2>/dev/null || kill -TERM $pid 2>/dev/null || true; "
-        "sleep 0.5; "
-        "kill -KILL -$pid 2>/dev/null || kill -KILL $pid 2>/dev/null || true; "
-        "if kill -0 -$pid 2>/dev/null || kill -0 $pid 2>/dev/null; then exit 1; fi; "
+        "''|0|*[!0-9]*) exit 1;; esac; "
+        + _docker_stop_group_shell() + "; "
         f"printf completed > {quoted_pidfile} && printf completed"
     )
 
@@ -537,7 +545,8 @@ def _docker_record_stop_shell(record: dict[str, Any]) -> str:
     backend_pid = str(record.get("backend_pid") or "").strip()
     return _docker_service_stop_shell(backend_pid) if backend_pid else ""
 
-def _dispatch_docker_record_cleanup(record: dict[str, Any]) -> bool:
+def _kill_docker_record(record: dict[str, Any], *, wait: bool = True) -> bool:
+    """Both wait modes require the same bounded backend stop and confirmation."""
     container = str(record.get("container_name") or "").strip()
     shell = _docker_record_stop_shell(record)
     if not container or not shell:
@@ -794,70 +803,33 @@ def _kill_host_pid(host_pid: Any) -> None:
     kill_pid_tree(pid)
 
 
-def _kill_docker_record(record: dict[str, Any], *, wait: bool = True) -> bool:
-    if not wait:
-        return _dispatch_docker_record_cleanup(record)
-    container = str(record.get("container_name") or "").strip()
-    if not container:
-        return True
-    pidfile = str(record.get("backend_pidfile") or "").strip()
-    if pidfile:
-        return _cleanup_docker_exec_timeout(container, pidfile)
-    backend_pid = str(record.get("backend_pid") or "").strip()
-    if backend_pid:
-        try:
-            bootstrap_process_path()
-            proc = subprocess.run(
-                ["docker", "exec", container, "sh", "-lc", _docker_service_stop_shell(backend_pid)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=5,
-            )
-        except Exception:
-            return False
-        if proc.returncode != 0:
-            return False
-        if _docker_pid_state(container, backend_pid) != "exited":
-            return False
-    return True
-
-
 def _docker_pid_state(container_name: str, backend_pid: str) -> str:
-    """Probe Docker and preserve ``unknown`` when the probe is inconclusive."""
+    """Probe the backend process group and preserve ``unknown`` when inconclusive."""
+    return _docker_observe_state(container_name, backend_pid, scope="group", timeout=5)
 
+
+def _docker_proc_observer_shell(backend_pid: str, *, scope: str) -> str:
+    pid = shlex.quote(str(backend_pid or "").strip())
+    return f"{_docker_proc_observer_function()}; _ouroboros_proc_observe {pid} {shlex.quote(scope)}"
+
+
+def _docker_observe_state(container_name: str, backend_pid: str, *, scope: str, timeout: int) -> str:
     pid = str(backend_pid or "").strip()
     if not pid:
         return "unknown"
     try:
         bootstrap_process_path()
         proc = subprocess.run(
-            [
-                "docker",
-                "exec",
-                str(container_name),
-                "sh",
-                "-lc",
-                f"kill -0 {shlex.quote(pid)} 2>/dev/null && echo running || echo exited",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=5,
+            ["docker", "exec", str(container_name), "sh", "-lc",
+             _docker_proc_observer_shell(pid, scope=scope)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
         )
     except Exception:
         return "unknown"
     if proc.returncode != 0:
         return "unknown"
-    raw_output = proc.stdout or ""
-    if isinstance(raw_output, bytes):
-        raw_output = raw_output.decode("utf-8", errors="replace")
-    output = str(raw_output).strip()
-    if output == "running":
-        return "running"
-    if output == "exited":
-        return "exited"
-    return "unknown"
+    output = str(proc.stdout or "").strip()
+    return output if output in {"running", "exited"} else "unknown"
 
 
 def kill_all_foreground(drive_root: pathlib.Path | None = None, *, wait: bool = True, request_only: bool = False) -> list[dict[str, Any]]:
@@ -1082,7 +1054,7 @@ def service_execution_facts(service_id: str) -> dict[str, Any] | None:
     """One executor service's start identity and execution state, without readiness work.
 
     The local backend's Popen gives the real return code. Docker gives state only:
-    its ``kill -0`` probe's own exit status is not the service's, so ``returncode``
+    its leader probe's own exit status is not the service's, so ``returncode``
     stays ``None`` and an inconclusive probe reads ``unknown``. ``None`` = no record.
     """
     with _STATE_LOCK:
@@ -1113,7 +1085,7 @@ def service_logs(ctx: Any, name: str, tail: int) -> dict[str, Any] | None:
 
 def _stop_service_record(record: _ExecutorService, *, wait: bool = True) -> dict[str, Any]:
     """Stop one owned process and finalize its local log before forgetting env.
-    Unconfirmed termination keeps the record for later cleanup; Docker records only dispatch cleanup."""
+    Unconfirmed termination keeps the record; Docker cleanup confirms group quiescence."""
     def failed(message: str) -> dict[str, Any]:
         payload = _service_payload(record)
         payload.update(stop_failed=True, cleanup_dispatched=False,
@@ -1139,9 +1111,14 @@ def _stop_service_record(record: _ExecutorService, *, wait: bool = True) -> dict
             )
             if proc.returncode != 0:
                 return failed(proc.stderr.strip() or proc.stdout.strip() or "docker service stop failed")
-            probe_state = _safe_service_state(record)
+            # Stop confirmation is a group-quiescence fact.  Service status
+            # remains leader-scoped, but cleanup/fence custody must retain any
+            # live member left behind by a zombie or exited leader.
+            probe_state = _docker_observe_state(
+                record.executor.container_name, record.backend_pid, scope="group", timeout=10,
+            )
             if probe_state != "exited":
-                return failed(f"docker service stop returned success but kill-0 confirmation is {probe_state}")
+                return failed(f"docker service stop returned success but process-group confirmation is {probe_state}")
     except Exception as exc:
         return failed(f"{type(exc).__name__}: {exc}")
     payload = _service_payload(record, state="stopped")
@@ -1172,26 +1149,21 @@ def stop_service(ctx: Any, name: str) -> dict[str, Any] | None:
 
 def stop_task_services(ctx: Any) -> list[dict[str, Any]]:
     task_id = str(getattr(ctx, "task_id", "") or "manual")
-    kept = [
-        _service_payload(record, state=_safe_service_state(record), note="keep_alive")
-        for record in _services_snapshot()
-        if record.task_id == task_id
-        and bool(getattr(record, "keep_alive", False))
-    ]
-    for item in kept:
-        item["lifecycle"] = "kept"
-    names = [
-        record.name
-        for record in _services_snapshot()
-        if record.task_id == task_id
-        and not bool(getattr(record, "keep_alive", False))
-    ]
-    stopped: list[dict[str, Any]] = []
-    for name in names:
+    kept, stopped = [], []
+    for record in _services_snapshot():
+        if record.task_id != task_id:
+            continue
+        if record.keep_alive:
+            kept.append({**_service_payload(record, note="keep_alive"), "lifecycle": "kept"})
+            continue
         try:
-            payload = stop_service(ctx, name)
+            payload = stop_service(ctx, record.name)
             if payload is not None:
-                payload["lifecycle"] = "stopped"
+                payload["lifecycle"] = (
+                    "cleanup_pending"
+                    if payload.get("stop_failed") or payload.get("cleanup_dispatched") is False
+                    else "stopped"
+                )
                 stopped.append(payload)
         except Exception:
             pass
@@ -1349,18 +1321,24 @@ def _docker_service_start_shell(record: _ExecutorService, log_path: str, aliases
 
 def _docker_service_stop_shell(backend_pid: str) -> str:
     pid = str(backend_pid or "").strip()
-    if pid.isdigit():
-        return (
-            f"pid={pid}; "
-            "kill -TERM -$pid 2>/dev/null || kill -TERM $pid 2>/dev/null || true; "
-            "sleep 0.5; "
-            "kill -KILL -$pid 2>/dev/null || kill -KILL $pid 2>/dev/null || true; "
-            "if kill -0 -$pid 2>/dev/null || kill -0 $pid 2>/dev/null; then exit 1; fi"
-        )
+    if pid.isdigit() and int(pid) > 0:
+        return f"pid={pid}; " + _docker_stop_group_shell()
     quoted_pid = shlex.quote(pid)
     return (
-        f"kill -TERM {quoted_pid} 2>/dev/null || true; "
-        f"if kill -0 {quoted_pid} 2>/dev/null; then exit 1; fi"
+        f"printf 'invalid backend service pid: %s\\n' {quoted_pid} >&2; exit 1"
+    )
+
+
+def _docker_stop_group_shell() -> str:
+    """Signal the recorded $pid/group, then require quiescence, not a reap."""
+    return (
+        "kill -TERM -$pid 2>/dev/null || kill -TERM $pid 2>/dev/null || true; "
+        "sleep 0.5; "
+        "kill -KILL -$pid 2>/dev/null || kill -KILL $pid 2>/dev/null || true; "
+        f"{_docker_proc_observer_function()}; "
+        '_probe=$(_ouroboros_proc_observe "$pid" group); _probe_rc=$?; '
+        'if [ "$_probe" != exited ] || [ "$_probe_rc" -ne 0 ]; then '
+        'printf "backend process group is %s\\n" "$_probe" >&2; exit 1; fi'
     )
 
 
@@ -1416,27 +1394,8 @@ def _service_state(record: _ExecutorService) -> str:
             return "running" if proc.poll() is None else "exited"
         except Exception:
             return "unknown"
-    try:
-        proc = subprocess.run(
-            ["docker", "exec", record.executor.container_name, "sh", "-lc", f"kill -0 {shlex.quote(record.backend_pid)} 2>/dev/null && echo running || echo exited"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=10,
-        )
-    except Exception:
-        return "unknown"
-    if proc.returncode != 0:
-        return "unknown"
-    raw_output = proc.stdout or ""
-    if isinstance(raw_output, bytes):
-        raw_output = raw_output.decode("utf-8", errors="replace")
-    output = str(raw_output).strip()
-    if output == "running":
-        return "running"
-    if output == "exited":
-        return "exited"
-    return "unknown"
+    return _docker_observe_state(record.executor.container_name, record.backend_pid,
+                                 scope="leader", timeout=10)
 
 
 def _safe_service_state(record: _ExecutorService) -> str:

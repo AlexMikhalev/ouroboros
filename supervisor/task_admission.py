@@ -417,6 +417,7 @@ def record_project_dispatch_possible(task: dict) -> bool:
     snapshot cannot overrule it if the best-effort RUNNING mirror fails. Its
     attempt mark never decreases; fresh admission's positive 'none' lives
     on the queue row. No early result may preempt the admission receipt owner.
+    Only the governing continuation's own check applies (``governing_continuation``).
     """
     if not task.get("project_id") and task.get("_project_scope_none") is not True and "_working_recovery" not in task:
         return True
@@ -426,7 +427,8 @@ def record_project_dispatch_possible(task: dict) -> bool:
     attempt = task.get("_attempt") or 1
     if type(attempt) is not int or attempt < 1:
         return False
-    source = _working_source(task, queue.DRIVE_ROOT) if "_working_recovery" in task else None
+    governing = governing_continuation(task)
+    source = _working_source(task, queue.DRIVE_ROOT) if governing == "working" else None
     accepted = [False]
 
     def project(current, _incoming):
@@ -438,6 +440,8 @@ def record_project_dispatch_possible(task: dict) -> bool:
         marked = current.get("admitted_dispatch_attempt")
         if (marked is not None and (type(marked) is not int or marked < 1 or marked > attempt)
                 or "admitted_dispatch_attempt" in current and marked is None
+                or governing == "owner_wait" and not _owner_wait_current(task, current)
+                or governing == "exact_pause" and not _exact_resume_granted(task, queue.DRIVE_ROOT, existing=current)
                 or source is not None and not _working_attempt_unstarted(task, current, source)):
             return None
         accepted[0] = True
@@ -458,6 +462,28 @@ def record_project_dispatch_possible(task: dict) -> bool:
     except Exception:
         log.warning("Project dispatch evidence unavailable for %s", task.get("id"), exc_info=True)
         return False
+
+
+def governing_continuation(task: dict) -> str:
+    """Name the ONE carrier the loop resumes: owner wait, then exact pause, then saved work.
+
+    The loop loads the first present carrier and never falls back when it fails,
+    so admission validates that carrier alone. A later carrier legitimately
+    retains the earlier saved-work locator; a valid newer one never reads it, and
+    an invalid one never falls back to it. Null snapshot fields are absent.
+    """
+    if task.get("_owner_wait_resume"):
+        return "owner_wait"
+    if task.get("_budget_pause_resume"):
+        return "exact_pause"
+    return "working" if "_working_recovery" in task else ""
+
+
+def _owner_wait_current(task: dict, stored: dict) -> bool:
+    """The handoff names the result's still-waiting wait; restart authority stays with restore."""
+    handoff, wait = task.get("_owner_wait_resume"), stored.get("owner_wait")
+    return (isinstance(handoff, dict) and isinstance(wait, dict) and wait.get("state") == "waiting"
+            and bool(wait.get("wait_id")) and wait.get("wait_id") == handoff.get("wait_id"))
 
 
 def _working_source(task: dict, drive_root: Any) -> dict:
@@ -505,7 +531,7 @@ def _working_resume_granted(task: dict, drive_root: Any, *, existing: Optional[d
     return _working_attempt_unstarted(task, stored, source)
 
 
-def _exact_resume_granted(task: dict, drive_root: Any) -> bool:
+def _exact_resume_granted(task: dict, drive_root: Any, *, existing: Optional[dict] = None) -> bool:
     """Whether the owner's single-use exact Resume grant is this row's handoff authority.
 
     A mid-run pause was dispatched, so it never has first-dispatch 'none'. Its
@@ -519,8 +545,8 @@ def _exact_resume_granted(task: dict, drive_root: Any) -> bool:
     handoff = task.get("_budget_pause_resume")
     if not isinstance(handoff, dict) or not str(handoff.get("grant_id") or ""):
         return False
-    root = pathlib.Path(task.get("budget_drive_root") or drive_root)
-    stored = load_task_result(root, str(task.get("id") or ""), strict=True) or {}
+    stored = existing if existing is not None else load_task_result(
+        pathlib.Path(task.get("budget_drive_root") or drive_root), str(task.get("id") or ""), strict=True) or {}
     pause = stored.get("budget_pause") if isinstance(stored.get("budget_pause"), dict) else {}
     grant = pause.get("grant") if isinstance(pause.get("grant"), dict) else {}
     return (pause.get("state") == STATE_RESUME_GRANTED
@@ -605,9 +631,11 @@ def revalidate_project_holds() -> None:
             # old RUNNING mirror was best-effort. Fresh queue admission supplies
             # positive 'none'; canonical possible handoff always vetoes that row.
             stored = load_task_result(queue.DRIVE_ROOT, tid, strict=True) or {}
-            granted = (owner_resume or _exact_resume_granted(task, queue.DRIVE_ROOT)
-                       or _working_resume_granted(task, queue.DRIVE_ROOT, existing=stored)
-                       or assisted_resume_authorizes(task, stored))
+            governing = governing_continuation(task)  # the final dispatch's selection, no fallback
+            granted = (owner_resume if governing == "owner_wait"
+                       else _exact_resume_granted(task, queue.DRIVE_ROOT) if governing == "exact_pause"
+                       else governing == "working" and _working_resume_granted(task, queue.DRIVE_ROOT, existing=stored)
+                       ) or assisted_resume_authorizes(task, stored)
             if (stored.get("admission_outcome") == "never_admitted"
                     or not granted and (
                         stored.get("status") != STATUS_SCHEDULED or stored.get("started_at")

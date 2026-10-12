@@ -10,6 +10,7 @@ import os
 import pathlib
 import sqlite3
 import threading
+import time
 import uuid
 import zlib
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
@@ -23,6 +24,9 @@ INDEX_LOCK_NAME = "packs_index.lock"  # the name lock under state/ around every 
 PUBLICATION_LOCK_NAME = "packs_publication.lock"  # manifest publication vs reference census + unlink
 PUBLICATIONS_NAME = ".publications"  # pass-local refs appended before manifest publication, under the same lock
 INDEX_WAIT_SEC = 5.0
+UNLINK_SECTION_SEC = 0.5  # one deletion section's budget under the store write lock, publication lock included
+UNLINK_SECTION_GAP_SEC = 0.15  # between sections: longer than a waiting writer's SQLite busy poll (100 ms)
+PUBLICATION_WAIT_SEC = 90.0  # a manifest's contention budget for the publication lock (not a stale-owner bound)
 FORMAT_VERSION = 1
 INDEX_SCHEMA_VERSION = 2
 CODEC, PRESET = "xz", 1
@@ -847,7 +851,7 @@ def _unlink_phase(root: Any) -> Iterator[tuple]:
         return
     entered = False
     try:
-        with store.open_store(root, write=True) as txn:
+        with store.open_store(root, write=True, barrier=True) as txn:
             entered = True
             yield True, txn
             return
@@ -868,19 +872,25 @@ def unlink_loose(root: Any, task_id: str, sidecars: List[Dict[str, Any]], *, kee
     packed = {_member_key(m) for s in sidecars for m in s["members"]}
     report = {"unlinked": 0, "kept": 0, "busy": 0, "deferred": 1}
 
-    def remove(txn):
+    def remove(txn, todo: list, until: float) -> Optional[list]:
+        """One section under both locks: the O(1) staleness recheck and the journal suffix, then
+        unlinks until ``until``; the members left, or ``None`` when the candidate went stale."""
+        nonlocal revision
         if not sweep.current(txn):
-            return
+            return None
         duties, external = sweep.duties, sweep.external
         if (task_stamps(root, task_id, obligation_rows=duties, external=external, txn=txn) != revision
                 or not task_settled(root, task_id, obligation_rows=duties, external=external, txn=txn)):
-            return
+            return None
         keep = sweep.refresh_keep()
         if not sweep.current(txn):
-            return
-        report["deferred"] = 0
-        for member in members:
-            if _member_key(member) not in packed or not member["source"].is_file():
+            return None
+        for index, member in enumerate(todo):
+            if index and time.monotonic() >= until:
+                # Still under the locks: this section's own unlinks are the only change to the stamps.
+                revision = task_stamps(root, task_id, obligation_rows=duties, external=external, txn=txn)
+                return todo[index:]
+            if not member["source"].is_file():
                 continue
             if member["kind"] != CHECKPOINT and (member["sha256"] in keep or member["sha256"] in keep_shas):
                 report["kept"] += 1
@@ -892,15 +902,32 @@ def unlink_loose(root: Any, task_id: str, sidecars: List[Dict[str, Any]], *, kee
                 pass
             except PermissionError:
                 report["busy"] += 1
+        return []
 
-    sweep.refresh()  # outside the locks; inside, only this task and an O(1) staleness check
-    # Compression precedes custody -> store write -> manifest publication locks.
+    # Compression precedes custody -> store write -> manifest publication locks. A section holds
+    # the store write lock (a rollback barrier) and the publication lock for one UNLINK_SECTION_SEC
+    # budget; model calls and every store writer wait on them. Between sections the census refreshes
+    # outside both, and a waiting writer gets a poll-length gap. A stale check defers the candidate.
+    todo: Optional[list] = [m for m in members if _member_key(m) in packed]
     with task_custody_lock(root, task_id) as acquired:
-        if acquired:
+        while acquired and todo:
+            sweep.refresh()  # outside the locks; inside, only this task and an O(1) staleness check
+            left: Optional[list] = None
             with _unlink_phase(root) as (allowed, txn):
+                until = time.monotonic() + UNLINK_SECTION_SEC
                 if allowed:
-                    with store.name_lock(root, PUBLICATION_LOCK_NAME, timeout_sec=INDEX_WAIT_SEC):
-                        remove(txn)
+                    with contextlib.ExitStack() as held:
+                        try:
+                            held.enter_context(store.name_lock(root, PUBLICATION_LOCK_NAME,
+                                                               timeout_sec=max(0.0, until - time.monotonic())))
+                        except store.StoreBusy:
+                            pass  # busy for the whole section budget: the next pass retries the candidate
+                        else:
+                            left = remove(txn, todo, until)
+            todo = left
+            if todo:
+                time.sleep(UNLINK_SECTION_GAP_SEC)
+    report["deferred"] = int(todo != [])
     return report
 
 

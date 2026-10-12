@@ -1332,6 +1332,7 @@ def _no_tool_final_answer(
             llm_trace["reasoning_notes"].append(
                 "Task services were finalized before acceptance; the complete answer must bind the resulting evidence."
             )
+            _loop()._disclose_service_finalization(limit_ctx, llm_trace)
             _loop()._arm_delivery_control(tools, limit_ctx, llm_trace)
             return held()
 

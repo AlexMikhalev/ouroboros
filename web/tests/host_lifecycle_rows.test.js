@@ -31,6 +31,7 @@ test('#931 every typed checkpoint kind names itself; only a kindless one is peri
         ['budget_scope_paused', 'Budget scope paused'],
         ['services_stopped', 'Background services stopped'],
         ['services_kept', 'Background services kept'],
+        ['service_finalization_error', 'Background service cleanup unconfirmed'],
         ['forced_candidate_drift', 'Forced candidate drifted'],
     ]) {
         assert.equal(taskCheckpointLabel({ checkpoint_kind: kind, round: 30 }), label);
@@ -137,4 +138,22 @@ test('two wait episodes retain all phases through the actual live and history re
         assert.equal(live.items.length, index + 1);
     });
     assert.deepEqual(live.items.map(row => row.headline), replay.items.map(row => row.headline));
+});
+
+test('unconfirmed service cleanup is visible without claiming stopped', () => {
+    const pending = { type: 'task_checkpoint', task_id: 'task', round: 1,
+        checkpoint_kind: 'service_finalization_error',
+        services: [{ service_id: 'task:svc', lifecycle: 'cleanup_pending', stop_failed: true }] };
+    const live = summarizeChatLiveEvent(pending);
+    assert.equal(live.visible, true);
+    assert.equal(live.headline, 'Background service cleanup unconfirmed');
+    assert.equal(live.phase, 'warn');
+    assert.equal(summarizeLogEvent(pending).phase, 'warn');
+    const stopped = { ...pending, checkpoint_kind: 'services_stopped' };
+    assert.equal(summarizeChatLiveEvent(stopped).phase, 'thinking');
+    assert.equal(summarizeLogEvent(stopped).phase, 'thinking');
+    assert.equal(live.terminal, false);
+    assert.equal(live.promote, false);
+    assert.notEqual(live.dedupeKey, summarizeChatLiveEvent({ ...pending,
+        checkpoint_kind: 'services_stopped' }).dedupeKey);
 });
