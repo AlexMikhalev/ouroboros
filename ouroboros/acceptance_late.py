@@ -66,16 +66,26 @@ def historical_operation_controls(root: Any, purpose: dict, *, admission: bool =
         return ['historical_control_authority_unavailable']
 
 
-def owner_paused_only(root: Any, purpose: dict, blocked: list) -> bool:
-    """Only the accounting root's closed owner Pause blocks this work: unsent, it waits for Resume (D10)."""
+def owner_paused_controls(root: Any, purpose: dict, **controls: Any) -> tuple[list[str], bool]:
+    """The controls, and whether only the accounting root's closed owner Pause blocks this work:
+    unsent, it waits for Resume (D10).
+
+    A Resume opens that fence while its restored or waiting preparer reads them, so the
+    fence is read on both sides: a block read while it was closed waits for the next read.
+    """
     from ouroboros.owner_pause import fence_closed, read_fence
 
+    def closed() -> bool:
+        try:
+            return fence_closed(read_fence(root, purpose['accounting_root_task_id']))
+        except Exception:
+            return False
+
+    before = closed()
+    blocked = historical_operation_controls(root, purpose, **controls)
     if not blocked or any(item != 'root_budget_fence' and not str(item).startswith('pause:') for item in blocked):
-        return False
-    try:
-        return fence_closed(read_fence(root, purpose['accounting_root_task_id']))
-    except Exception:
-        return False
+        return blocked, False
+    return blocked, before or closed()
 
 
 def _receipt(root: Path, debt: dict) -> dict | None:
@@ -366,8 +376,8 @@ def _run_historical_acceptance(ctx: Any, *, task_id: str, debt_id: str,
                        for owner, p in (row.get('review_operations') or {}).items() if owner != operation.owner_id)):
             return _collect_existing(usage_ctx, row, retry_key)
         purpose = operation.historical_purpose
-        blocked = historical_operation_controls(root, purpose, admission=True)
-        if blocked and not owner_paused_only(root, purpose, blocked):
+        blocked, paused = owner_paused_controls(root, purpose, admission=True)
+        if blocked and not paused:
             return refused(blocked[0])
         if not _receipt(root, debt):
             return refused('exact_delivery_unconfirmed')
@@ -377,8 +387,8 @@ def _run_historical_acceptance(ctx: Any, *, task_id: str, debt_id: str,
             # terminal writer releases custody — and, automatic and still unsent,
             # through an owner Pause of that root until its Resume — without a scheduler.
             live = _historical_writer_live(root, task_id, operation.owner_id)
-            blocked = [] if live else historical_operation_controls(root, purpose, admission=True)
-            if not live and not owner_paused_only(root, purpose, blocked):
+            blocked, paused = ([], False) if live else owner_paused_controls(root, purpose, admission=True)
+            if not live and not paused:
                 break
             if live and not automatic:
                 return refused('historical_writer_still_live')
