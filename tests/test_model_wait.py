@@ -1,7 +1,7 @@
 """Model-wait ownership, controls and execution clocks preserve the live task."""
 
 import contextvars
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 import asyncio
 import json
 import queue
@@ -315,28 +315,36 @@ def test_async_cancellation_resolves_only_its_wait_and_keeps_shared_task(live_wa
     root, transport, client, controller, events, _decide = live_wait
     transport.results = [_refusal()]
     transport.dispatch = ["not_started"]
-    entered = threading.Event()
+    entered, resolved = Future(), Future()
 
     def catalog(*_, **_kw):
-        entered.set()
+        if not entered.done():
+            entered.set_result(None)
         raise ClaudexorUnavailable("subscription_window_exhausted", "not ready")
 
+    original_put = events.put
+
+    def record(event):
+        original_put(event)
+        if event["state"] == "resolved" and not resolved.done():
+            resolved.set_result(event)
+
     monkeypatch.setattr(client, "claudexor_model_catalog", catalog)
+    monkeypatch.setattr(events, "put", record)
 
     async def run():
         task = asyncio.create_task(client.chat_async([{"role": "user", "content": "hi"}], MODEL, model_role="main"))
-        assert await asyncio.to_thread(entered.wait, 2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        terminal = None
-        while terminal is None:
-            event = await asyncio.to_thread(events.get, True, 2)
-            if event["state"] == "resolved":
-                terminal = event
+        try:
+            await asyncio.wrap_future(entered)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            task.cancel()
+        terminal = await asyncio.wrap_future(resolved)
         assert terminal["resolution"] == "caller_cancelled"
 
-    asyncio.run(run())
+    asyncio.run(asyncio.wait_for(run(), timeout=30))
     assert not controller.closed and len(transport.accepted_operations) == 1
     assert all(row["state"] == "resolved" for row in load_task_result(root, "task-one")["model_waits"].values())
 

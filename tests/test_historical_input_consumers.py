@@ -98,7 +98,7 @@ def test_native_historical_read_reaches_next_model_input_after_author_cleanup(tm
         def _reply(self, kwargs):
             self.calls.append(copy.deepcopy(kwargs))
             if len(self.calls) == 1:
-                prompt = json.dumps(kwargs["messages"], ensure_ascii=False)
+                prompt = "\n".join(row["content"] for row in kwargs["messages"])
                 assert _OLD not in prompt and _TODAY not in prompt
                 binding = _historical_binding(request)
                 assert binding["retained_path"] in prompt

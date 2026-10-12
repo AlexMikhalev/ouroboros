@@ -21,6 +21,7 @@ from pathlib import Path
 import platform
 import sys
 import tempfile
+from time import monotonic
 
 _PHASES = frozenset({"setup", "call", "teardown"})
 
@@ -513,6 +514,7 @@ class _Results:
         self.collection_failures = []
         self.secrets = tuple(os.environ[key] for key in MASKED_SECRET_SETTING_KEYS if os.environ.get(key))
         self.safe_text = {}
+        self.started_at = monotonic()
         self.journal = None
         if not hasattr(config, "workerinput"):  # xdist re-emits worker events on the controller.
             try:
@@ -539,8 +541,11 @@ class _Results:
         try:
             # A parametrized nodeid can carry a secret: every value is redacted
             # before its first write; the cache keeps that to once per distinct text.
-            row = {"event": event, "nodeid": nodeid, **facts}
+            row = {"event": event, "nodeid": nodeid,
+                   "elapsed_seconds": monotonic() - self.started_at, **facts}
             for key, value in row.items():
+                if not isinstance(value, str):  # Only approved numeric timing facts bypass redaction.
+                    continue
                 if value not in self.safe_text:
                     self.safe_text[value] = _redact(value, self.secrets)
                 row[key] = self.safe_text[value]
@@ -579,7 +584,7 @@ class _Results:
         }
         self.reports.append(row)
         self._event("report", row["nodeid"], phase=row["phase"], outcome=row["outcome"],
-                    error_type=row["error_type"])
+                    error_type=row["error_type"], duration_seconds=row["duration_seconds"])
 
     def pytest_collectreport(self, report):
         if report.failed:

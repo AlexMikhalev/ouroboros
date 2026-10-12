@@ -47,7 +47,8 @@ class InertProcess:
 def restart_case(tmp_path, monkeypatch):
     from supervisor import task_lifecycle, update_merge
 
-    pending, running = [], {}
+    pending, running, events = [], {}, stdqueue.Queue()
+    monkeypatch.setattr(workers, "get_event_q", lambda: events)
     for module in (workers, queue):
         monkeypatch.setattr(module, "DRIVE_ROOT", tmp_path)
         monkeypatch.setattr(module, "PENDING", pending)
@@ -91,7 +92,8 @@ def restart_case(tmp_path, monkeypatch):
         0: workers.Worker(0, process, SimpleNamespace(), busy_task_id=task_id, active_capacity=False),
     })
     return SimpleNamespace(root=tmp_path, task_id=task_id, attempt=attempt, started=started,
-                           task=task, ctx=ctx, wait=wait, process=process, transaction_id="native-restart-tx")
+                           task=task, ctx=ctx, wait=wait, process=process, events=events,
+                           transaction_id="native-restart-tx")
 
 
 def first_cleanup(case):
@@ -214,6 +216,8 @@ def test_preserved_question_parent_keeps_its_saved_running_child(restart_case, m
     assert set(workers.RUNNING) == (set() if control == "stop_child" else {"saved-child"})
     if control == "stop_child":
         assert load_task_result(case.root, "saved-child")["status"] == "cancelled"
+        done = [event for event in case.events.queue if event.get("type") == "task_done"]
+        assert [(event["task_id"], event["status"]) for event in done] == [("saved-child", "cancelled")]
     else:
         assert load_task_result(case.root, "saved-child")["status"] == "running"
     # The lifespan's second cleanup sees the parent already queued and the child

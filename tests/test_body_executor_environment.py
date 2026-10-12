@@ -54,8 +54,12 @@ def test_docker_candidate_uses_mapped_clean_environment(tmp_path, monkeypatch, c
         return real_popen(['sh', '-c', cmd[-1]], **kwargs)
 
     monkeypatch.setattr(executor.subprocess, 'Popen', transport)
+    # This local MSYS shell launches a Windows Python, unlike a real container.
+    # Keep the mapped POSIX environment intact at that synthetic boundary.
+    target_env = {'MSYS2_ENV_CONV_EXCL': '*'}
     if consumer == 'command':
-        result = executor.execute(ctx, [sys.executable, '-c', script], candidate, 10)
+        result = executor.execute(ctx, [sys.executable, '-c', script], candidate, 10,
+                                  target_env=target_env)
         assert result.returncode == 0 and result.operation_outcome == 'completed', result
         env = json.loads(result.stdout)
     else:
@@ -79,7 +83,7 @@ def test_docker_candidate_uses_mapped_clean_environment(tmp_path, monkeypatch, c
         monkeypatch.setattr(executor, '_service_state', lambda record: 'exited')
         monkeypatch.setattr(executor, '_service_payload', lambda record, **kwargs: {'state': 'exited'})
         executor.start_service(ctx, name='env', cmd=[sys.executable, '-c', script], host_cwd=candidate,
-                               cwd_root='system_repo', readiness={}, outputs=[], before_outputs={}, env={})
+                               cwd_root='system_repo', readiness={}, outputs=[], before_outputs={}, env=target_env)
         env = captured['env']
     assert env['OUROBOROS_DATA_DIR'] == expected
     assert env['HOME'] == str(mount / (candidate.name + '.env') / 'home')
