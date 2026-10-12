@@ -606,9 +606,9 @@ therefore about intents.
   task's); under a mirrored answer, the owner's routed message or a System
   lifecycle row, a reading-size capsule in the shared `createSystemMessageActions`
   row (token spacing, wrapping, focus-ring clearance, never a clipped line: a
-  composition, not a card framework or global button-margin rule); in a mirrored
-  question's head, a compact meta capsule. A long name takes two lines in a row,
-  never smaller; its accessible name stays whole.
+  composition, not a card framework or global button-margin rule); in a question
+  head, a meta capsule. Long names: two lines in entry/footer, ellipsis in
+  capsules, no smaller type; accessible names stay whole.
 - A **command** is a button: it changes or confirms something, or goes to a
   place that is not such a reference (`Load older messages`, `Open widgets`).
   Tabs, toggles, menus and the navigation list keep their own roles; a status
