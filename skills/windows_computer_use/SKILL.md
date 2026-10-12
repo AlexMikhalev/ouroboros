@@ -25,8 +25,9 @@ UIA patterns. This is the Windows slot the bundled `unix_computer_use` defers:
 it does not duplicate macOS/Linux functionality, and it deliberately does not
 take screenshots or click at coordinates.
 
-Ported from Yegor Kosyrev's Praxis/Hélène `uia.rs`/`element.rs` (MIT-hearted
-lineage), keeping its contracts:
+Ported from Yegor Kosyrev's Praxis/Hélène `uia.rs`/`element.rs`, keeping
+its contracts. See [NOTICE](NOTICE) for source links, the upstream Apache-2.0
+licence and attribution; the contribution's licensing is a separate matter.
 
 ## Tools
 
