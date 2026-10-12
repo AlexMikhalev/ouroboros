@@ -427,9 +427,7 @@ unrecognised frontmatter key is kept as an extra rather than refused —
 `install_specs` and the forward-compatible `presence:` block are both read that
 way — so `companion_process:` in the singular parses, declares no companions,
 and currently produces no warning from the parser, `validate()`, or
-`skill_preflight`. The error you eventually meet names the
-plural key and cannot tell you that the singular one was sitting in the
-manifest all along.
+`skill_preflight`. The eventual error names only the plural key.
 
 There is no `on_enable` trigger and no `once` flag. After a skill is enabled, the
 host starts a companion whose name `register()` has registered; for an
@@ -442,11 +440,12 @@ happen before the first tool call, remember that an out-of-process extension
 already runs `register()` in every per-call child — see the out-of-process
 caveats above — so cheap idempotent setup belongs there, not in a companion.
 
-`env` and `ports` may also be declared on the descriptor. Neither is passed
-through as written: the host drops `HOST_SERVICE_TOKEN`, `HOST_SERVICE_URL` and
-any forbidden settings key out of `env` (and sets the first two itself), and it
-keeps only all-digit entries from `ports`, so a negative or non-numeric one is
-dropped in silence.
+`env` and `ports` may also be declared on the descriptor. Neither passes as
+written: the host drops `HOST_SERVICE_TOKEN`, `HOST_SERVICE_URL`,
+`OUROBOROS_PARENT_PID` and any forbidden settings key from `env` and sets the
+first three itself; the last is the server's PID, telling a container's PID-1
+server from an init adoption. `ports` keeps only all-digit entries; a negative
+or non-numeric one is silently dropped.
 
 ## The `skill_preflight` tool
 
