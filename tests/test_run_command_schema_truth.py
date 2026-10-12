@@ -90,7 +90,8 @@ def test_description_states_what_happens_to_a_background_child():
     description = _schema()["description"]
     # What the empirical tests below prove: the call stalls until timeout_sec while the
     # child holds stdio, and the child lives until the TASK ends, then is ended by scope.
-    for word in ("&", "nohup", "stalls the call until timeout_sec", "lives until this task ends", "start_service"):
+    for word in ("&", "nohup", "stalls the call until timeout_sec", "lives until this task ends",
+                 "start_service keep_alive=true outlives the task"):
         assert word in description, word
     assert "nothing tracks it" not in description, "the old untracked-forever contract is gone (owner 2A)"
     assert "cleaned up" not in description  # no promise the host does not keep

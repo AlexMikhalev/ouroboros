@@ -701,7 +701,7 @@ def get_tools() -> List[ToolEntry]:
                 "cmd MUST be an array of strings, never one shell string. A builtin as cmd[0] (cd, export, ...) "
                 "is refused: use cwd= or [\"sh\", \"-c\", \"cd x && a | b\"] (also for pipes/chaining). "
                 "A background child (&, nohup) is no service: holding stdout/stderr it stalls the call until "
-                "timeout_sec; it lives until this task ends, then is ended (start_service outlives the task). "
+                "timeout_sec; it lives until this task ends (start_service keep_alive=true outlives the task). "
                 "Prefer read_file, search_code/query_code, write_file/edit_text to cat/head/sed, grep/find, redirects."
             ),
             "parameters": {"type": "object", "properties": {
