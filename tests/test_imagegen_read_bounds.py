@@ -24,7 +24,6 @@ from ouroboros import loop_tool_execution as execution
 from ouroboros.gateways import claudexor as cx
 from ouroboros.gateways import image_api
 from ouroboros.task_pacing import effective_finalization_reserve_sec
-from ouroboros.tools import imagegen as ig
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros.usage_ledger import UsageAccountingError
 from tests.test_imagegen_subscription import ImageWire
@@ -138,8 +137,8 @@ def _engine(monkeypatch, peers, wire, hold=lambda _request: False):
     peer = peers(wire, hold)
     port = int(peer.url.rsplit(":", 1)[1])
     gateway = lambda: cx.ClaudexorGateway(cx.DaemonEndpoint("127.0.0.1", port, "test-control-token"))  # noqa: E731
-    monkeypatch.setattr(ig, "read_owned_gateway", gateway)
-    monkeypatch.setattr(ig, "ensure_owned_gateway", gateway)
+    monkeypatch.setattr("ouroboros.claudexor_daemon.read_owned_gateway", gateway)
+    monkeypatch.setattr("ouroboros.claudexor_daemon.ensure_owned_gateway", gateway)
     monkeypatch.setattr("ouroboros.llm_claudexor.read_owned_gateway", gateway)
     return peer
 

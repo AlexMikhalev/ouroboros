@@ -86,8 +86,8 @@ class ImageWire(ModelWire):
 @pytest.fixture
 def engine(monkeypatch, gateway_factory):
     def bind(wire):
-        monkeypatch.setattr(ig, "read_owned_gateway", lambda: gateway_factory(wire))
-        monkeypatch.setattr(ig, "ensure_owned_gateway", lambda: gateway_factory(wire))
+        monkeypatch.setattr("ouroboros.claudexor_daemon.read_owned_gateway", lambda: gateway_factory(wire))
+        monkeypatch.setattr("ouroboros.claudexor_daemon.ensure_owned_gateway", lambda: gateway_factory(wire))
         monkeypatch.setattr("ouroboros.llm_claudexor.read_owned_gateway", lambda: gateway_factory(wire))
         return wire
     return bind
@@ -380,7 +380,7 @@ def test_private_custody_failure_withholds_whole_ack_and_preserves_recovery_id(e
 
 
 def test_existing_terminal_maintenance_consumes_image_receipt(engine, ctx, monkeypatch):
-    from ouroboros import claudexor_daemon, terminal_cost_reconciliation
+    from ouroboros import terminal_cost_reconciliation
     from ouroboros.task_results import write_task_result
     from ouroboros.usage_accounting import read_usage_records
     from supervisor import queue
@@ -388,7 +388,6 @@ def test_existing_terminal_maintenance_consumes_image_receipt(engine, ctx, monke
     assert invoke(ctx).code == "IMAGE_OUTCOME_UNKNOWN"
     original = read_usage_records(ctx.drive_root)[0]
     wire.lose = None
-    monkeypatch.setattr(claudexor_daemon, "read_owned_gateway", ig.read_owned_gateway)
     monkeypatch.setattr(queue, "task_has_live_ownership", lambda *a, **k: False)
     write_task_result(ctx.drive_root, ctx.task_id, "cancelled", result="Fixture stopped", budget_drive_root=str(ctx.drive_root))
     terminal_cost_reconciliation.reconcile_abandoned_usage(ctx.drive_root)

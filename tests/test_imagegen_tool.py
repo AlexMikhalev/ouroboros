@@ -26,8 +26,8 @@ def configured(monkeypatch):
     def no_engine():
         from ouroboros.gateways.claudexor import ClaudexorUnavailable
         raise ClaudexorUnavailable("fixture_offline", "No fixture engine")
-    monkeypatch.setattr(ig, "read_owned_gateway", no_engine)
-    monkeypatch.setattr(ig, "ensure_owned_gateway", no_engine)
+    monkeypatch.setattr("ouroboros.claudexor_daemon.read_owned_gateway", no_engine)
+    monkeypatch.setattr("ouroboros.claudexor_daemon.ensure_owned_gateway", no_engine)
     # A missed mock must not become a paid network call.
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", lambda *args: pytest.fail("unexpected real HTTP"))
 

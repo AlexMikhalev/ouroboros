@@ -11,9 +11,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ouroboros.artifacts import store_task_artifact_bytes, task_artifact_dir_path, task_id_for_artifacts
-from ouroboros.gateways import image_api, claudexor_images
-from ouroboros.gateways.claudexor import ClaudexorUnavailable
-from ouroboros.claudexor_daemon import ensure_owned_gateway, read_owned_gateway
+from ouroboros.gateways import image_api
+# Subscription imports stay lazy for API-only use; their dependency remains in lazy_only.
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 from ouroboros.usage_accounting import (
@@ -73,6 +72,10 @@ def _catalog_entry(source: str, model: str, *, editing: bool | None, evidence: s
 
 
 def _subscription_catalog() -> tuple[list[dict], list[dict]]:
+    from ouroboros.claudexor_daemon import read_owned_gateway
+    from ouroboros.gateways import claudexor_images
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
     try:
         gateway = read_owned_gateway()
         try:
@@ -80,23 +83,45 @@ def _subscription_catalog() -> tuple[list[dict], list[dict]]:
                 return [], [{"source": "claudexor", "code": "CAPABILITY_UNAVAILABLE",
                              "detail": "Engine does not advertise requestKind=image."}]
             sources = gateway.list_model_sources(view="accounts").get("sources", [])
-            rows = []
+            rows, errors = [], []
             for source in sources:
-                capability = source.get("imageGeneration")
-                if not isinstance(capability, dict):
+                try:
+                    capability = _image_capability(source)
+                except image_api.ImageBackendError as exc:
+                    errors.append({"source": "claudexor", "code": exc.code, "detail": str(exc)})
                     continue
-                for model in capability.get("models", []):
+                if capability is None:
+                    continue
+                for model in capability["models"]:
                     rows.append({"model": f"claudexor::{source['id']}={model}", "source": source["id"],
                         "billing": "subscription", "credential_configured": None,
                         "account_availability": "unverified", "generation": True,
-                        "editing": capability.get("maxInputImages", 0) > 0,
-                        "evidence": capability, "parameters": capability.get("supportedOptions", []),
+                        "editing": capability["maxInputImages"] > 0,
+                        "evidence": capability, "parameters": capability["supportedOptions"],
                         "pricing": None, "actual_cost_usd": None})
-            return rows, []
+            return rows, errors
         finally:
             gateway.close()
     except ClaudexorUnavailable as exc:
         return [], [{"source": "claudexor", "code": "CAPABILITY_UNAVAILABLE", "detail": exc.code}]
+
+
+def _image_capability(source: Any) -> dict | None:
+    """Validate the fields consumed from an advertised facet; absence is not zero."""
+    if not isinstance(source, dict) or "imageGeneration" not in source:
+        return None
+    capability = source["imageGeneration"]
+    if capability is None:
+        return None
+    if isinstance(capability, dict):
+        limit, options, models = (capability.get(key) for key in ("maxInputImages", "supportedOptions", "models"))
+        if (isinstance(source.get("id"), str) and source["id"].strip()
+                and type(limit) is int and limit >= 0
+                and all(isinstance(values, list) and all(isinstance(value, str) and value.strip()
+                        for value in values) for values in (options, models))):
+            return capability
+    raise image_api.ImageBackendError("CAPABILITY_UNAVAILABLE",
+        "Malformed engine image capability: source id, model hints, edit limit and supported options are required; no request sent.")
 
 
 def _list_image_models(ctx: ToolContext, model: str = "") -> str:
@@ -148,7 +173,7 @@ def _list_image_models(ctx: ToolContext, model: str = "") -> str:
 def _read_inputs(ctx: ToolContext, images: list[dict]) -> list[tuple[bytes, str]]:
     from ouroboros.presence_authority import presence_ceiling_allows_binding, presence_ceiling_from_context
     from ouroboros.protected_artifacts import block_reason_for_path
-    from ouroboros.tool_access import build_resolved_resource_binding
+    from ouroboros.tool_access import build_resolved_resource_binding, normalize_root
     from ouroboros.tools.core_file_tools import _runtime_data_read_block
     from ouroboros.tools.vision import _read_file_parity_block
 
@@ -159,8 +184,11 @@ def _read_inputs(ctx: ToolContext, images: list[dict]) -> list[tuple[bytes, str]
     for item in images:
         if not isinstance(item, dict) or not isinstance(item.get("path"), str) or not item["path"]:
             raise ValueError("Every image input needs a file path and its resource root.")
-        binding = build_resolved_resource_binding(ctx, root=item.get("root", "active_workspace"),
-                                                 path=item["path"], operation="read")
+        root = normalize_root(item.get("root"))
+        try:
+            binding = build_resolved_resource_binding(ctx, root=root, path=item["path"], operation="read")
+        except ValueError as exc:
+            raise PermissionError(str(exc)) from exc
         path = binding.target_path
         if ceiling is not None and not presence_ceiling_allows_binding(ceiling, binding):
             raise PermissionError("Image input lies outside the Presence file grant.")
@@ -245,6 +273,7 @@ def _list_image_attempts(ctx: ToolContext, after_request_id: str) -> str:
 def _recover_image(ctx: ToolContext, request_id: str = "", after_request_id: str = "") -> str:
     """Observe one recorded request, or list them without one; never upload, create, reserve or generate."""
     from ouroboros import usage_accounting as usage, usage_store
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
     from ouroboros.llm_claudexor import recover_model_attempt
     from ouroboros.observability import read_call_payload
     from ouroboros.transport_custody import ProviderNotDispatched, release_pre_dispatch_attempt
@@ -368,8 +397,15 @@ def _generate_image(ctx: ToolContext, prompt: str, model: str, images: list[dict
         if options is not None and not isinstance(options, dict):
             raise ValueError("options must be an object of provider-supported image parameters.")
         source, _name = _route(model)
-        inputs = _read_inputs(ctx, [] if images is None else images)
+        try:
+            inputs = _read_inputs(ctx, [] if images is None else images)
+        except PermissionError:
+            raise
+        except OSError as exc:
+            return _result(ctx, "TOOL_ERROR", f"Image input could not be read ({type(exc).__name__}); no image request sent.")
         if source == "claudexor":
+            from ouroboros.gateways import claudexor_images
+
             payload = claudexor_images.image_request(_name, prompt, inputs, options or {}, credential_profile_id)
             return _generate_subscription_image(ctx, model, payload)
         if credential_profile_id:
@@ -381,7 +417,7 @@ def _generate_image(ctx: ToolContext, prompt: str, model: str, images: list[dict
                                                     images=inputs, options=options or {})
     except PermissionError as exc:
         return _result(ctx, "PATH_BLOCKED", str(exc))
-    except (ValueError, OSError) as exc:
+    except ValueError as exc:
         return _result(ctx, "TOOL_ARG_ERROR", str(exc))
     request_id = uuid.uuid4().hex
     request = AttemptRequest(model=model, provider=source, force_unknown_reservation=True,
@@ -399,13 +435,18 @@ def _generate_image(ctx: ToolContext, prompt: str, model: str, images: list[dict
         request_id = reservation.attempt_id
         _retain_call(ctx, request_id, model, "request", body)
 
+    custody_failures = []
+
     def send():
+        from ouroboros.store import StoreError
+
         result = image_api.send_image_request(url, body, target["api_key"], target["headers"])
         # Retain before settlement/publication can lose the received response.
         # A disk fault must not discard useful bytes or their usage receipt.
         try:
             _retain_call(ctx, request_id, model, "response", {"result_json_utf8": json.dumps(result)})
-        except OSError:
+        except (OSError, StoreError) as exc:
+            custody_failures.append({"stage": "private_response_retention", "error": type(exc).__name__})
             log.exception("Image response custody unavailable; retaining task artifacts next")
         return result
 
@@ -422,7 +463,7 @@ def _generate_image(ctx: ToolContext, prompt: str, model: str, images: list[dict
                        "automatic_retry": False})
     from ouroboros.usage_accounting import last_physical_attempt_capture
     capture = last_physical_attempt_capture()
-    facts = {}
+    facts = {"failures": custody_failures} if custody_failures else {}
     if capture is not None and capture.attempt_id == request_id and capture.state != "settled":
         warnings = result.get("warnings") or []
         facts["warnings"] = (warnings if isinstance(warnings, list) else [warnings]) + [
@@ -432,6 +473,9 @@ def _generate_image(ctx: ToolContext, prompt: str, model: str, images: list[dict
 
 def _acknowledge_image(operation_id: str, response_ref: dict, gateway=None) -> dict:
     """Called only after the original ledger and ordinary artifacts are durable."""
+    from ouroboros.claudexor_daemon import read_owned_gateway
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
     owned = gateway is None
     try:
         gateway = gateway or read_owned_gateway()
@@ -446,6 +490,7 @@ def _acknowledge_image(operation_id: str, response_ref: dict, gateway=None) -> d
 
 def _retain_subscription_result(ctx: ToolContext, result: dict, raw: bytes, *,
                                 model: str, request_id: str, facts: dict, acknowledge=None) -> str:
+    from ouroboros.gateways import claudexor_images
     from ouroboros.llm_claudexor import _usage
 
     _counters, cost, final = _usage(result, request_kind="image")
@@ -481,26 +526,29 @@ def _retain_subscription_result(ctx: ToolContext, result: dict, raw: bytes, *,
 def _generate_subscription_image(ctx: ToolContext, model: str, payload: dict) -> str:
     """One create; persist observed identity and whole receipt in existing CAS."""
     from ouroboros import config
+    from ouroboros.claudexor_daemon import ensure_owned_gateway
     from ouroboros.deadline_utils import llm_transport_timeout_sec
-    from ouroboros.gateways.claudexor import _READ_TIMEOUT_SEC
+    from ouroboros.gateways import claudexor_images
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable, _READ_TIMEOUT_SEC
     from ouroboros.llm_claudexor import ClaudexorModelNotDispatched, _usage
     from ouroboros.model_wait import ModelWaitInterrupted, current_model_wait
     from ouroboros.observability import call_manifest_path, write_call_manifest
     from ouroboros.usage_accounting import last_physical_attempt_capture
     from ouroboros.utils import read_json_dict
 
-    request_id, operation_id = uuid.uuid4().hex, ""
+    request_id, operation_id = "", ""
     request_ref, raw_result = {}, b""
     gateway = None
-    recovery = {"request_id": request_id, "model": model, "automatic_retry": False}
+    recovery = {"model": model, "automatic_retry": False}
     timeout = llm_transport_timeout_sec()
     try:
         gateway = ensure_owned_gateway()
         if not claudexor_images.image_operation_supported(gateway.operations()):
             return _result(ctx, "CAPABILITY_UNAVAILABLE", "Engine does not advertise requestKind=image; no request sent.")
         sources = gateway.list_model_sources(view="accounts").get("sources", [])
-        capability = next((row.get("imageGeneration") for row in sources if row.get("id") == payload["source"]), None)
-        if not isinstance(capability, dict):
+        selected = next((row for row in sources if isinstance(row, dict) and row.get("id") == payload["source"]), None)
+        capability = _image_capability(selected)
+        if capability is None:
             return _result(ctx, "CAPABILITY_UNAVAILABLE", "Selected engine source has no image facet; no request sent.")
         if len(payload["images"]) > capability["maxInputImages"]:
             raise ValueError("Too many edit references for the selected engine source.")

@@ -44,6 +44,10 @@ or upper-bound guarantee is invented. Timeouts and uncertain server failures pro
 provider code and retry fact; this client never alters text-lane quota state.
 Output/download/storage failure is `IMAGE_RESULT_INCOMPLETE`; retained files stay
 available. The model decides the next step.
+If private response custody fails after a direct provider response, ordinary
+response/image artifacts are still retained and the custody failure is disclosed.
+Access and OS permission refusals are `PATH_BLOCKED`, other file I/O faults are
+`TOOL_ERROR`, and malformed inputs are `TOOL_ARG_ERROR`; none submits a request.
 
 `recover_image(request_id)` reads only this task's recorded attempt. Direct recovery
 uses the retained envelope for decoding/download/storage and original accounting.
@@ -99,6 +103,7 @@ alone does not prove support for this dedicated endpoint. Output bytes may be PN
 JPEG, WebP, GIF or SVG; file delivery and viewing retain their own format support.
 A task file opened as SVG gets a `sandbox` CSP and `nosniff`: exact bytes and static
 view stay, script and the application origin do not.
+This policy does not block external SVG subresource fetches when opened.
 Sources: [image API and discovery](https://openrouter.ai/docs/guides/overview/multimodal/image-generation),
 [editing example](https://openrouter.ai/blog/tutorials/nano-banana/),
 [error envelope](https://openrouter.ai/docs/api_reference/errors-and-debugging).
@@ -127,6 +132,8 @@ Discovery passively reads the owned engine; explicit generation uses the same
 owned-daemon ensure/admission seam as ordinary model calls. An unlisted explicitly
 requested model is forwarded unchanged. Absent structural
 support returns `CAPABILITY_UNAVAILABLE` before submission, without an API fallback.
+Malformed advertised edit-limit/option/model fields also return unavailable,
+not a guessed zero limit or a caller argument error.
 
 `gateways/claudexor_images.py` mirrors the engine's `model-image.ts`:
 `{source, model, account, prompt, images, options}` is uploaded through the existing
@@ -139,6 +146,9 @@ is consulted.
 The input payload is retained once in private CAS; its small manifest gains the
 upload reference before the single create POST and the operation identity immediately
 after acceptance. Polls retain only their small operation observations, not edit bytes.
+An original worker's late status-only observation can overwrite a concurrently
+recovered terminal private receipt. Ordinary response/image files survive and no
+extra generation is sent, but repeated recovery may report unknown; use those files.
 Status and result reads, cancellation and ACK use the existing model-operation
 verbs. A failed control read after acceptance is unknown, including ConnectError;
 only a terminal `dispatch.state=not_started` or the engine's pre-admission
