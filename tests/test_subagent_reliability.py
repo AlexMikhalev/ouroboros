@@ -90,7 +90,8 @@ def test_progress_dedup_uses_full_array_not_last_item():
     source = _read("web/modules/chat_render_batch.js")
     src = source[source.index("export function updateLiveTimelineItem"):]
     # full-array dedup
-    assert "const existingIdx = record.items.findIndex((it) => it.dedupeKey === syntheticKey);" in src
+    assert ("const existingIdx = record.items.findIndex((it) => it.dedupeKey === syntheticKey"
+            " || it.occurrenceKey === syntheticKey);") in src
     # the old last-item-only check is gone
     assert "record.items[lastIdx].dedupeKey === syntheticKey ? lastIdx : -1" not in src
     # a historical re-feed (found, not the last item) is skipped, not re-appended
