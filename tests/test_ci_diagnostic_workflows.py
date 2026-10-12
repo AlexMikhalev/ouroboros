@@ -337,6 +337,8 @@ def _run_shell(step, tmp_path, *, diagnostic="viewport", result=0):
         pytest.skip("workflow shell unavailable on this host")
     args = tmp_path / "args"
     command = step["run"].replace("${{ runner.temp }}", str(tmp_path)).replace("${{ matrix.shard }}", "2")
+    command = command.replace("${{ runner.os == 'Windows' && format('--default-suite-shard={0}/4', matrix.shard) || '' }}",
+                              "--default-suite-shard=2/4")
     stub = 'python() { printf "%s\\n" "$@" > "$ARGV_FILE"; return "$PRODUCER_EXIT"; }\n'
     env = {**os.environ, "ARGV_FILE": str(args), "PRODUCER_EXIT": str(result), "DIAGNOSTIC": diagnostic}
     completed = subprocess.run([bash, "-e", "-o", "pipefail", "-c", stub + command],
@@ -351,7 +353,7 @@ def _run_shell(step, tmp_path, *, diagnostic="viewport", result=0):
     (*PARTIAL, "ui_diagnostic"),
     ("ui-browser.yml", "ui-shard", "browser_tools"),
     ("ui-browser.yml", "ui-manifest", "ui_manifest"),
-    *[("ci.yml", job, f"tests_{label}") for job in ("quick-test", "full-test")
+    *[("ci.yml", job, f"tests_{label}") for job in ("quick-test", "full-test-runs")
       for label in ("parallel", "serial", "size")],
 ])
 def test_actual_producer_shell_preserves_success_and_failure_exit(tmp_path, workflow, job, step, result):
@@ -619,7 +621,7 @@ def _evidence_action():
 
 
 @pytest.mark.parametrize("jobname,artifact", [
-    ("quick-test", "quick-test"), ("full-test", "full-test-${{ matrix.os }}"),
+    ("quick-test", "quick-test"), ("full-test-runs", "full-test-${{ matrix.os }}${{ runner.os == 'Windows' && format('-shard-{0}', matrix.shard) || '' }}"),
 ])
 def test_ordinary_jobs_name_their_failures_without_owning_the_result(jobname, artifact):
     job = _workflow("ci.yml")["jobs"][jobname]

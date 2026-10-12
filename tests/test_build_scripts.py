@@ -1148,7 +1148,7 @@ def test_ci_collects_independent_failures_without_relaxing_release_gates():
 def test_ci_setup_aware_failure_collection_guards_each_independent_lane():
     import yaml
     jobs = yaml.safe_load(_ci_workflow())["jobs"]
-    for job_name in ("quick-test", "full-test", "marker-guards", "docker-ui-smoke", "system-e2e-mock", "android-test"):
+    for job_name in ("quick-test", "full-test-runs", "marker-guards", "docker-ui-smoke", "system-e2e-mock", "android-test"):
         steps = jobs[job_name]["steps"]
         assert any("!cancelled()" in str(step.get("if", "")) for step in steps if "run" in step), job_name
     ui = {step.get("name"): step for step in _ui_browser_jobs()["ui-shard"]["steps"]}
@@ -1188,7 +1188,7 @@ def test_ci_failure_collection_guards_every_independent_step_and_rerun_uploads()
     jobs = yaml.safe_load(_ci_workflow())["jobs"]
     expected = {
         "quick-test": ["Verify generated Pages output", "Lint (deterministic F-rule gate — catches the NameError-under-except class)", "Run browser-module tests (node --test — mirrored by the hermetic commit gate)", "Lint browser modules (ESLint no-undef — CI-only second layer of the acorn gate)", "Run tests (parallel — excludes the costly marker lanes AND the serial real-process suites)", "Run tests (serial — real subprocess/port/global-state suites that flake under -n)", "Run tests (size-ratchet lane — blocking here, warning-only locally)", "Guard extracted transport imports stay out of core"],
-        "full-test": ["Run browser-module tests (node --test — mirrored by the hermetic commit gate)", "Lint browser modules (ESLint no-undef — CI-only second layer of the acorn gate)", "Run tests (parallel — excludes the costly marker lanes AND the serial real-process suites)", "Run tests (serial — real subprocess/port/global-state suites that flake under -n)", "Run tests (size-ratchet lane — blocking here, warning-only locally)", "Guard extracted transport imports stay out of core"],
+        "full-test-runs": ["Run browser-module tests (node --test — mirrored by the hermetic commit gate)", "Lint browser modules (ESLint no-undef — CI-only second layer of the acorn gate)", "Run tests (parallel — excludes the costly marker lanes AND the serial real-process suites)", "Run tests (serial — real subprocess/port/global-state suites that flake under -n)", "Run tests (size-ratchet lane — blocking here, warning-only locally)", "Guard extracted transport imports stay out of core"],
         "marker-guards": ["Guard non-empty browser marker lanes", "Guard non-empty serial marker lane", "Guard non-empty skill_smoke marker lane", "Guard non-empty size_ratchet marker lane"],
         "docker-ui-smoke": ["Install UI smoke browser binaries", "Run Docker UI smoke", "Run Docker browser tools Chromium/WebKit smoke"],
         "system-e2e-mock": ["Run the keyless system E2E scenario lane (real isolated servers)", "Run the cancellation E-suite mock lane"],

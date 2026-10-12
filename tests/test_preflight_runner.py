@@ -244,7 +244,7 @@ def _ci_pytest_suite_commands(job: str) -> list[tuple[str, str]]:
     return re.findall(r'run: python -m pytest tests/ -m "([^"]+)"(.*)', block.group(1))
 
 
-@pytest.mark.parametrize("job", ["quick-test", "full-test"])
+@pytest.mark.parametrize("job", ["quick-test", "full-test-runs"])
 def test_each_ci_job_runs_the_same_split_the_gate_runs(job, monkeypatch):
     """The gate's whole promise is "what CI will do, before you push". Both jobs
     must carry BOTH passes with the gate's own markexprs and the gate's own
@@ -426,7 +426,7 @@ def test_the_real_spawn_lane_declares_which_tests_go_dark_when_it_skips():
     # ...and CI, which provisions the plugins, declares the flag — otherwise no
     # shipped environment ever executes the lane and the pins stay inert.
     ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    for job in ("quick-test", "full-test"):
+    for job in ("quick-test", "full-test-runs"):
         block = re.search(
             rf"^  {re.escape(job)}:\n(.*?)(?=^  [A-Za-z0-9_-]+:$|\Z)", ci, re.MULTILINE | re.DOTALL
         )

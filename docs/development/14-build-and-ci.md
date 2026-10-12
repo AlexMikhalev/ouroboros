@@ -1,6 +1,6 @@
 # Build & CI
 
-This chapter maps dependency locks, opt-in pytest lanes, CI's parallel/serial split, its hermetic commit-gate mirror, and Actions secret gating. The gate must be reproducible and independent of the candidate; the CI job graph, its triggers and the release chain live in ARCHITECTURE §8.
+Rules for dependency locks, pytest lanes, CI and commit-gate tests, and Actions secrets. The gate stays reproducible and candidate-independent; ARCHITECTURE §8 owns the job graph, triggers and release chain.
 
 ### Python dependency locks
 
@@ -19,7 +19,7 @@ Default local pytest excludes seven costly or environment-dependent lanes — `i
 
 ### Parallel CI and the `serial` marker
 
-CI runs the default suite in two passes (`.github/workflows/ci.yml`, jobs `quick-test` / `full-test`): a parallel pass, `-m "not serial and <the seven lane exclusions>"` with `PARALLEL_PASS_FLAGS` (`-n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread`), then a flag-free serial pass, `-m "serial and <the same exclusions>"`. Two rules keep new tests from breaking that:
+CI runs the default suite in two passes (`.github/workflows/ci.yml`, runners `quick-test` / `full-test-runs`): a parallel pass, `-m "not serial and <the seven lane exclusions>"` with `PARALLEL_PASS_FLAGS` (`-n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread`), then a flag-free serial pass, `-m "serial and <the same exclusions>"`. Windows alone adds `--default-suite-shard=K/4` (`tests/default_lane.py`): greedy packing by collected default-node count keeps whole files together across both passes, with path/index tie breaks. Shard 1 also collects unsharded `--default-suite-manifest` witnesses in fresh processes. Two rules preserve the split:
 
 - Mark real-process and real-port tests, and tests that mutate process-global state without reliable fixture isolation, `@pytest.mark.serial` (or add the file to `_SERIAL_TEST_FILES` in `tests/conftest.py`): under `-n` such a test flakes on kill/reap or port-reclaim timing or crashes its worker, and with `--max-worker-restart=0` a dead worker fails its whole co-located batch as spurious failures in unrelated files.
 - Keep every other test parallel-safe so it stays in the fast pass: `tmp_path` (never a fixed path), `monkeypatch.setenv`/`delenv`/`setattr` for environment and attribute changes, no execution-order assumptions. A module-global mutation reliably snapshot-and-restored by a fixture may stay in the parallel pass (pattern: `tests/conftest.py::_isolate_workspace_executor_globals`).
@@ -49,7 +49,7 @@ OUROBOROS_RUN_UI_SMOKE=1 OUROBOROS_EXPECT_BROWSER_ENGINES=chromium,webkit \
 
 ### Reading CI failure evidence
 
-Test reports are informational projections (`tests/ci_evidence.py`, published through `.github/actions/test-evidence`), never the verdict: a report states the Actions producer outcome separately from testcase counts, so a passing case never overrides a nonzero session exit; skips and unavailable credentials stay explicit; raw JUnit stays out of uploads. An upload or report failure reads `diagnostics_incomplete` and does not alter release eligibility, with one exception: the sharded UI lane (`ui-browser.yml`, four `ui-shard` jobs under a cooperative `--session-timeout` plus one unsharded `ui-manifest` collection) is proven only by its shards' and manifest's projections, so `ui-smoke` (`tests/ci_evidence.py reconcile-shards`) is red, naming each gap, when a projection is missing, unreadable or red, when a shard differs from its assigned manifest slice or fails to execute it, or when any judged session ended nonzero; after a re-run the proof is the highest attempt. Each producer step has its own wall-clock ceiling that fails the step without cancelling the job, so the evidence step still runs after a hang; a dead xdist worker is phase `crash`. `ui-browser-push.yml` dispatched with `viewport` or `inflight` runs one partial diagnostic scenario, and partial success is never full proof.
+`tests/ci_evidence.py` and `.github/actions/test-evidence` report Actions producer outcomes separately from testcase counts: passing cases never override a nonzero exit, skips and absent credentials remain explicit, and raw JUnit is never uploaded. Diagnostic failures report `diagnostics_incomplete` without changing release eligibility. Shard proof is authoritative: `reconcile-shards` rejects missing/unreadable/red projections, wrong assignments, duplicate or unexecuted nodes, and nonzero sessions, using each producer's highest attempt. UI uses four `ui-shard` jobs plus `ui-manifest`; Windows default passes use independent manifests on shard 1 and `full-test` reconciliation. Proof export/upload failures also fail the producing attempt, preventing fallback to old evidence. Step ceilings fail without cancelling the job, leaving evidence steps runnable; dead xdist workers report phase `crash`. UI shards additionally stop cooperatively between tests via `--session-timeout`. The `viewport`/`inflight` dispatches in `ui-browser-push.yml` are partial diagnostics, never full proof.
 
 ### The commit gate mirrors the CI split
 
