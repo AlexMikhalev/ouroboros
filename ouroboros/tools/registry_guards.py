@@ -451,13 +451,13 @@ def _capability_resource_guard_result(
                 f"blocks {name!r}."
             ),
         )
-    if name == "vcs_pull_ff" and not _resource_allowed(ctx, "network"):
+    if name in {"vcs_pull_ff", "generate_image", "list_image_models", "recover_image"} and not _resource_allowed(ctx, "network"):
         return ToolResult(
             status="blocked",
             code="RESOURCE_CONSTRAINT_BLOCKED",
             text=(
                 "⚠️ RESOURCE_CONSTRAINT_BLOCKED: task_contract.allowed_resources.network=false "
-                "blocks 'vcs_pull_ff'."
+                f"blocks {name!r}."
             ),
         )
     if (is_mcp or ext_tool) and not _resource_allowed(ctx, "network"):

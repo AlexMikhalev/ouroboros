@@ -16,11 +16,10 @@ from typing import Any
 
 from ouroboros import _usage_wait, config, context_fit
 from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY
-from ouroboros._usage_response import provider_cost_value
+from ouroboros._usage_response import model_operation_usage as _usage
 from ouroboros.anthropic_native_custody import scrub_native_custody
 from ouroboros.claudexor_daemon import ensure_owned_gateway, owned_engine_version, read_owned_gateway
 from ouroboros.deadline_utils import llm_transport_timeout_sec
-from ouroboros.effort_evidence import model_effort_usage
 from ouroboros.gateways.claudexor import (ClaudexorUnavailable, engine_at_least, model_failure_evidence_supported,
                                           operation_query_supported, _READ_TIMEOUT_SEC)
 from ouroboros.llm_attempt import _attempt_request, _candidate_before_dispatch, effort_request_facts
@@ -160,31 +159,6 @@ def propagate_model_error(error: Exception) -> None:
                 or model_wait_reason(error)
                 or outcome_unknown_on_chain(error)):
             raise error
-
-
-def _usage(result: dict, effort: dict | None = None) -> tuple[dict, float | None, bool]:
-    """Normalize explicit model usage; never run the generic body-error/free branch."""
-    counters = result.get("usage") or {}
-    cost_evidence = result.get("cost") or {}
-    cash = provider_cost_value(cost_evidence.get("cashUsd"))
-    knowledge = cost_evidence.get("knowledge")
-    cost = cash if knowledge in {"exact", "estimated"} else None
-    if knowledge == "estimated" and cost is None:
-        cost = provider_cost_value(cost_evidence.get("estimatedUsd"))
-    usage = {key: counters.get(native) for key, native in (
-        ("prompt_tokens", "input_tokens"), ("completion_tokens", "output_tokens"),
-        ("cached_tokens", "cached_input_tokens"), ("cache_write_tokens", "cache_write_tokens"),
-        ("reasoning_tokens", "reasoning_tokens"))}
-    usage.update(model_effort_usage(result, effort))
-    if isinstance(result.get("processing"), dict):
-        usage["processing"] = copy.deepcopy(result["processing"])
-    if cost_evidence:
-        usage["cost_evidence"] = copy.deepcopy(cost_evidence)
-    usage["total_tokens"] = (
-        int(usage["prompt_tokens"] or 0) + int(usage["completion_tokens"] or 0)
-        if all(usage[key] is not None for key in ("prompt_tokens", "completion_tokens")) else None
-    )
-    return usage, cost, cost is not None and knowledge == "exact"
 
 
 class ModelTurnState:
@@ -913,10 +887,12 @@ def recover_model_attempt(drive_root, row: dict, *, gateway_factory=None):
     if not operation_id or (request.get("operation_id") and request["operation_id"] != operation_id):
         return None
     operation_state, dispatch_state = manifest.get("operation_state"), manifest.get("dispatch_state")
+    image = request.get("request_kind") == "image"
     raw = payload.get("result_json_utf8") if isinstance(payload, dict) else None
     gateway = None
     try:
-        if operation_state not in TERMINAL_STATES or not dispatch_state:
+        if (operation_state not in TERMINAL_STATES or not dispatch_state
+                or (raw is None and (image or dispatch_state == "response_received"))):
             gateway = (gateway_factory or read_owned_gateway)()
             detail = gateway.get_model_operation(operation_id, timeout_sec=_READ_TIMEOUT_SEC)
             operation_state = detail.get("state")
@@ -933,20 +909,24 @@ def recover_model_attempt(drive_root, row: dict, *, gateway_factory=None):
                          call_type="llm_claudexor_response", payload=payload, keep_raw=True,
                          manifest={"operation_id": operation_id, "invocation_id": attempt_id,
                                    "response_ref": response_ref, "operation_state": operation_state,
-                                   "dispatch_state": dispatch_state})
-            if raw is not None and response.get("state") == "ready":
+                                   "dispatch_state": dispatch_state,
+                                   "request_kind": request.get("request_kind", "chat")})
+            # Image ACK belongs to its artifact consumer AFTER ledger reconciliation.
+            # Terminal maintenance retains the receipt but cannot claim artifact custody.
+            if not image and raw is not None and response.get("state") == "ready":
                 try:
                     gateway.acknowledge_model_result(operation_id, response_ref["sha256"])
                 except Exception:
                     log.debug("Recovered model response retained without ACK", exc_info=True)
         if dispatch_state == "not_started":
             return "released", {}, None, False
-        if dispatch_state != "response_received" or raw is None:
+        if raw is None or (not image and dispatch_state != "response_received"):
             return "abandoned", {}, None, False
         result = json.loads(raw)
-        if not isinstance(result, dict) or result.get("outcome") not in {"completed", "incomplete", "failed"}:
+        outcomes = {"completed", "failed", "unknown"} if image else {"completed", "incomplete", "failed"}
+        if not isinstance(result, dict) or result.get("outcome") not in outcomes:
             return "abandoned", {}, None, False
-        usage, cost, final = _usage(result, row.get("effort"))
+        usage, cost, final = _usage(result, row.get("effort"), request_kind=request.get("request_kind", "chat"))
         return "settled", usage, cost, final
     finally:
         if gateway is not None and gateway_factory is None:

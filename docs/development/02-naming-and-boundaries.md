@@ -294,34 +294,33 @@ is where a deliberate exception states its reason.
 
 ### External facts: unknown is not no
 
-A fact about a model or provider that Ouroboros does not own (what it accepts, holds,
-costs, how it is spelled, whether it is still served) changes without a release.
+External model/provider facts (inputs, capacity, prices, ids, availability) can change
+without an Ouroboros release.
 
-1. Evidence of the exact route, not lists: the route's own metadata, a dated probe
-   recorded beside a provider-keyed wire projection with a recovery path, or the
+1. Exact-route evidence, not lists: the route's own metadata, a dated probe
+   beside a provider-keyed wire projection with a recovery path, or the
    owner's setting. A model name, prefix or family is never that evidence, nor is
    another route's catalog.
 2. Unknown is not no. Without evidence the owner's input, the tool and the explicit
    request go through unchanged and the route answers; no shipped literal may drop
    input, refuse a tool, rewrite a saved choice or narrow a request.
-3. A refusal is an observation about one request. It repairs that attempt and is
-   disclosed as what happened; a durable "no" needs evidence that states the absence
-   for that scope.
+3. Disclose a refusal as one request's outcome and repair that attempt; a durable "no"
+   needs scoped evidence of absence.
 4. A limit of our own transport is a fact about Ouroboros, declared at the lane and
    named as such in what the model reads.
 5. A retained wire fact (the table) keeps source and date, exact scope and what happens
-   when it goes stale either way; requested, sent and provider-reported values stay
+   when stale either way; requested, sent and provider-reported values stay
    distinct.
 
-Guards: `tests/test_image_capability_contract.py` (an unseen model id keeps its image on
-every image-capable transport), `tests/test_model_name_invariance.py` (with empty
-evidence the physical payload does not depend on the model name; its declared
-exceptions are rows below), `tests/test_tristate_truthiness_guard.py` (a yes/no/unknown
-answer is never tested for truth). The table is maintenance provenance, grants no
-runtime authority, and probe detail lives in the docstring at each location.
+Guards: `tests/test_image_capability_contract.py` keeps unseen models' images on all
+image-capable transports; `tests/test_model_name_invariance.py` keeps unevidenced
+payloads name-independent (exceptions below); `tests/test_tristate_truthiness_guard.py`
+forbids truth-testing yes/no/unknown. This provenance grants no runtime authority;
+probes live in cited docstrings or linked contracts.
 
 | Location | Fact | Evidence & re-probe | If stale |
 |---|---|---|---|
+| `ouroboros/tools/imagegen.py`; `ouroboros/gateways/image_api.py` | Image wire facts | [Dated sources](../IMAGE_GENERATION.md#direct-api-contracts); re-check each exact route | Stale positives refuse requests; negatives hide capability |
 | `ouroboros/llm_attempt.py::supports_message_cache_control` | Families whose message cache controls OpenRouter accepts or translates (`anthropic/`, `google/gemini-`, `openai/`) | `openai/` rests on the OpenRouter caching guide cited in the docstring, not a live probe; re-probe before widening, never by name resemblance | False positive invalidates a request; false negative loses the prompt cache |
 | `ouroboros/llm_attempt.py::openai_family_model` | OpenAI's public API looks a cache up only at message ends unless a breakpoint is explicit | Probe in the docstring; re-probe `cached_tokens` across two conversations before widening; never match on a substring such as `gpt` | Stale positive moves the cache boundary for a prefix-caching family; stale negative pays cold prefixes |
 | `ouroboros/llm_openai_compatible.py` OpenRouter `extra_body.provider.require_parameters` for `anthropic/` | Anthropic models on OpenRouter route only to endpoints accepting every sent parameter | Undated; OpenRouter per-endpoint `supported_parameters` (`/api/v1/models/{author}/{slug}/endpoints`); a declared exception of `tests/test_model_name_invariance.py` | Stale positive narrows failover; stale negative routes to an endpoint that drops or refuses a parameter |
