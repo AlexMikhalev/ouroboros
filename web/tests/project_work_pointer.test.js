@@ -41,6 +41,18 @@ test('the pointer label names the card and caps a status-line title to one line 
     assert.ok(label.length <= 'Latest task · '.length + POINTER_NAME_CHARS);
 });
 
+test('ended work still wrapping up names its outcome, never Working', () => {
+    // 12.10: the pointer read "Working · <task>" for ~19 min after the task had failed.
+    const card = (extra = {}) => ({ root: { isConnected: true }, finished: false,
+        titleEl: { textContent: 'X' }, ...extra });
+    assert.equal(projectWorkLabel(card({ finalizingHold: true, observedOutcome: 'error' })), 'Failed · Finalizing… · X');
+    assert.equal(projectWorkLabel(card({ finalizingHold: true })), 'Working · X');
+    assert.equal(projectWorkLabel(card({ observedOutcome: 'error' })), 'Working · X');
+    assert.equal(projectWorkLabel(card()), 'Working · X');
+    assert.equal(projectWorkLabel(card({ finished: true, finalizingHold: true, observedOutcome: 'error' })),
+        'Latest task · X');
+});
+
 test('the bound pointer hides without a represented card and owns no competing history notice', () => {
     const { prior, mount } = installDom();
     try {

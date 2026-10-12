@@ -415,7 +415,7 @@ def reconcile_transport_wait(
              "on the same primary with paced requests; prior attempt costs remain recorded." if refused else
              "🌐 Provider connection was lost after dispatch. The outcome and any unreported cost remain unknown. "
              "Waiting for connectivity, then continuing from saved work with a new attempt; another charge is possible."
-             if unknown else "🌐 Could not establish a provider connection — waiting and "
+             if unknown else "🌐 The request did not reach the provider — waiting and "
              "redialing automatically (failed attempts are $0).")
             + ("" if interactive else " Stop cancels."),
             incident=None,
@@ -635,7 +635,7 @@ def transport_wait_step(
             emit_progress(
                 ("🌐 Stopped waiting for the primary provider after " if episode.wait_cause in PRIMARY_REFUSAL_KINDS
                  else "🌐 Stopped waiting for a provider connection after ") +
-                f"{elapsed / 60.0:.1f} min — this turn ends as a provider outage.",
+                f"{elapsed / 60.0:.1f} min — this turn ends as an outage.",
                 incident=None,
             )
         return False
@@ -831,7 +831,8 @@ def provider_terminal_fallback_text(
     if control_reason in {REASON_OWNER_REQUESTED_FINALIZATION, REASON_OWNER_STOPPED_DIRECT_TURN}:
         action = "Stop" if control_reason == REASON_OWNER_STOPPED_DIRECT_TURN else "Wrap up"
         waited = f" The wait ended after {waited_sec / 60.0:.1f} min;" if waited_sec else ""
-        subject = "the primary provider was refusing requests" if wait_cause in PRIMARY_REFUSAL_KINDS else "the provider connection was unavailable"
+        subject = ("the primary provider was refusing requests" if wait_cause in PRIMARY_REFUSAL_KINDS else "requests were not reaching the provider"
+                   if wait_cause == "transport_unavailable" else "the provider had not returned a usable answer")
         return (f"⚠️ The owner requested {action} while {subject}."
                 f"{waited} No new summary request was sent. Any files written so far are preserved."
                 + (provider_recovery_hint(accumulated_usage) if unknown else ""))
@@ -853,40 +854,33 @@ def provider_terminal_fallback_text(
                 " Inspect the preserved facts before starting another run."
                 f"{_unknown_terminal_recovery_hint(accumulated_usage)}{UNKNOWN_ATTEMPT_COST_NOTE}"
             )
-        advice = ("Inspect the preserved facts before starting another run." if unknown
-                  else "Retry when connectivity returns.")
+        # A released attempt proves only that the request never reached the provider: a broken
+        # connect, an incomplete upload or an engine refusal before dispatch, never a provider reply.
+        code = str(accumulated_usage.get("_last_llm_provider_code") or "")
         if interactive and waited_sec > 0:
-            text = (
-                "⚠️ Could not establish a provider connection; this turn waited and "
-                f"redialed for {waited_sec / 60.0:.1f} min and ended as a provider outage, "
-                f"not completed. {advice}"
-            )
+            text = ("⚠️ The request did not reach the provider; this turn waited and "
+                    f"redialed for {waited_sec / 60.0:.1f} min and ended as an outage, not completed.")
         elif interactive:
-            text = (
-                "⚠️ Could not establish a provider connection, and no wait window was left; "
-                f"this turn ended as a provider outage, not completed. {advice}"
-            )
+            text = ("⚠️ The request did not reach the provider, and no wait window was left; "
+                    "this turn ended as an outage, not completed.")
         elif waited_sec > 0:
-            text = (
-                "⚠️ Could not establish a provider connection; the task waited and redialed "
-                f"for {waited_sec / 60.0:.1f} min until its own limits ran out and ended as a provider outage, not completed. "
-                f"Any files written so far are preserved in the workspace. {advice}"
-            )
+            text = ("⚠️ The request did not reach the provider; the task waited and redialed "
+                    f"for {waited_sec / 60.0:.1f} min until its own limits ran out and ended as an outage, not completed. "
+                    "Any files written so far are preserved in the workspace.")
         else:
-            text = (
-                "⚠️ Could not establish a provider connection, and the owner deadline left no "
-                "time to wait; the task ended as a provider outage, not completed. Any files "
-                f"written so far are preserved in the workspace. {advice}"
-            )
-        return text
+            text = ("⚠️ The request did not reach the provider, and the owner deadline left no "
+                    "time to wait; the task ended as an outage, not completed. Any files "
+                    "written so far are preserved in the workspace.")
+        return text + (f" Last reported code: {code}." if code else "")
     if is_deadline_exhausted:
         text = "⚠️ The owner deadline ended primary model work; any files written so far are preserved."
         if unknown:
             text += _unknown_terminal_recovery_hint(accumulated_usage) + UNKNOWN_ATTEMPT_COST_NOTE
         return text
+    released = accumulated_usage.get("_last_llm_attempt_custody") == "released" and not unknown
     return (
-        "⚠️ The model provider returned no usable response."
-        f"{_unknown_wait_note(unknown, waited_sec, interactive)}"
+        ("⚠️ The model request did not start generation." if released else "⚠️ The model provider returned no usable response.")
+        + f"{_unknown_wait_note(unknown, waited_sec, interactive)}"
         f"{provider_failure_hint(accumulated_usage)}"
         f"{_unknown_terminal_recovery_hint(accumulated_usage) if unknown else provider_recovery_hint(accumulated_usage)}"
         f"{UNKNOWN_ATTEMPT_COST_NOTE if unknown else ''} "
@@ -906,7 +900,7 @@ _FAILURE_KIND_WORDS = {
     "bad_request": "a rejected request",
     "request_too_large": "a request the provider found too large",
     "context_overflow": "a context overflow",
-    "transport_unavailable": "no connection to the provider",
+    "transport_unavailable": "a request that never reached the provider",
     "provider_outcome_unknown": "an attempt with no known outcome",
     "provider_transient": "a temporary provider failure",
     "provider_incomplete_response": "an incomplete response",
@@ -1016,7 +1010,7 @@ def provider_failure_hint(accumulated_usage: Dict[str, Any]) -> str:
     if named:  # the provider's own typed fields; its body, if any, stays private
         return (f" The provider reported {' and '.join(named)} but no sentence the host can quote; "
                 f"the host classified the failure as {words}. {_DIAGNOSTIC_POINTER}")
-    return f" The provider gave no readable message; the host classified the failure as {words}. {_DIAGNOSTIC_POINTER}"
+    return f" No readable provider message is available; the host classified the failure as {words}. {_DIAGNOSTIC_POINTER}"
 
 
 # What the host KNOWS it did. It asks again and names no account; which account
@@ -1109,11 +1103,8 @@ def provider_recovery_hint(accumulated_usage: Dict[str, Any]) -> str:
             "retry or paid fallback was sent; either could duplicate live work."
         )
     if kind == "transport_unavailable":
-        return (
-            " No provider connection could be established (typed pre-dispatch "
-            "failure, $0 spent); the exact exception class is in the durable "
-            "llm_api_error event. Retrying when connectivity returns will help."
-        )
+        return (" The request did not reach the provider (typed pre-dispatch failure, $0 spent); "
+                "the exact cause is in the durable llm_api_error event.")
     if (accumulated_usage.get("resource_refusal") or {}).get("reason") == "unavailable" or (
             accumulated_usage.get("_last_llm_resource_refusal") == "unavailable"):
         reset = str(accumulated_usage.get("_last_llm_reset_at") or "")
@@ -1159,9 +1150,9 @@ def provider_recovery_hint(accumulated_usage: Dict[str, Any]) -> str:
     if kind in {"quota_exhausted", "auth_error", "request_too_large", "bad_request", "context_overflow"}:
         guidance = {
             "quota_exhausted": "The provider rejected the request for quota/billing reasons; retrying the same request will not help until the key/account limit changes.",
-            "auth_error": "The provider rejected authentication/authorization; retrying the same request will not help until the configured key or provider access is fixed.",
+            "auth_error": "Authentication or authorization was refused; retrying the same request will not help until the configured key, account or provider access is fixed.",
             "request_too_large": "The provider rejected the request size/output-token shape; retrying the same request will not help without reducing context/output demand or changing model capacity.",
-            "bad_request": "The provider rejected the request shape; retrying the same request will not help until the transcript/tool payload is fixed.",
+            "bad_request": "The request was rejected as invalid for this route; retrying it unchanged will not help until the transcript/tool payload or the route configuration is fixed.",
             "context_overflow": "The context overflowed the model window; retrying the same request will not help without reducing context or changing model capacity.",
         }.get(kind, "Retrying the same provider request will not help until the underlying request/account issue changes.")
         return f" {guidance}"
@@ -1176,4 +1167,4 @@ def provider_recovery_hint(accumulated_usage: Dict[str, Any]) -> str:
             " The provider returned incomplete responses repeatedly; this may "
             "be transient, but it can also indicate malformed client input."
         )
-    return " If background consciousness is running, it will retry when the provider recovers."
+    return ""  # no claim of an automatic retry: nothing resumes a failed task by itself

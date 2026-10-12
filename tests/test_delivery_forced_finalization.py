@@ -718,16 +718,19 @@ def test_provider_unavailable_prefers_current_candidate_over_incomplete_forced_r
     assert returned_trace["forced_finalization"]["source"] == "retained_candidate"
 
 
-def test_provider_unavailable_without_model_answer_stamps_host_salvage(
+def test_provider_unavailable_without_model_answer_stamps_host_notice(
     tmp_path, monkeypatch,
 ):
+    """Nothing salvaged: the text is the host's own notice, so it is ``host_notice``
+    (its words are the row), never a ``host_salvage`` "preserved output" receipt."""
     loop, _registry, limit_ctx, _trace = _forced_test_context(tmp_path)
     monkeypatch.setattr(loop, "call_llm_with_retry", lambda *_a, **_k: (None, 0.0))
 
     text, usage, _returned_trace = loop._handle_provider_unavailable(limit_ctx)
 
     assert "provider returned no usable response" in text
-    assert usage["terminal_origin"] == "host_salvage"
+    assert usage["terminal_origin"] == "host_notice"
+    assert text == usage["terminal_provider_notice"]
 
 
 def test_deadline_exhausted_forced_finalization_keeps_local_reason(tmp_path, monkeypatch):

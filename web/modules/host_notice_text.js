@@ -48,7 +48,7 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
     skill_review: ['✅ Skill review round ', '⚠️ Skill review round ', '❌ Skill review round ', '⏳ Skill review round '],
     host_progress: ['🌐 Connection restored ', '🌐 The new attempt could not reach the provider ',
         '🌐 Provider connection ', '🌐 The primary provider temporarily refused ',
-        '🌐 Could not establish a provider connection ', '🌐 Primary provider answered after ',
+        '🌐 The request did not reach the provider ', '🌐 Primary provider answered after ',
         '🌐 Stopped waiting for ', '🌐 Still waiting for ', '⚡ Fallback: ', '📐 Plan review:', '📐 Plan review so far:', '✅ PR #', '⚠️ PR #'],
 }));
 
@@ -59,6 +59,7 @@ export const RETIRED_HOST_NOTICE_PREFIXES = new Map(Object.entries({
         '⚠️ Some declared attachments could not be staged; '],
     task_admission_notice: ['✅ Repair task '],
     task_started: ['🧬 Evolution task ', '🔎 Review task '],
+    host_progress: ['🌐 Could not establish a provider connection '],
 }));
 
 const prefixFor = (text, type) => [...(HOST_NOTICE_PREFIXES.get(String(type || '')) || []),

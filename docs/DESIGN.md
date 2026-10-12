@@ -338,7 +338,7 @@ derived from whatever generic opacity happens to sit on the element.
 The connected Chat header says `Starting…` until a complete server-ready
 observation confirms the supervisor can assign work; a live socket alone means
 only that the UI transport is open. `Online` is reserved for a ready, idle
-runtime, while known queued or active work retains its own factual label. A
+runtime, while known queued, active or finalizing work keeps its own factual label. A
 durably accepted incoming message likewise proves acceptance, not that its
 task has begun or that a model has read it.
 
@@ -937,8 +937,8 @@ reconciliation.
 
 A Project keeps its conversation and real nested task cards. One compact pointer
 leads to an unfinished represented root, or the latest represented root when all
-are finished. It occupies one line: it names the card (its coined name, else its
-title) and ellipsizes rather than restating a status headline in full, so the status bar
+are finished. It occupies one line: `Working`, or for ended work still wrapping up its
+outcome beside `Finalizing…`, then the card's coined name (else its title), ellipsized, so the status bar
 never grows into the reading area; the complete text stays on the card itself,
 one click away, not in a mouse-only tooltip. The pointer and status pill share the
 bar; the common history note wraps below them when needed, readable on touch

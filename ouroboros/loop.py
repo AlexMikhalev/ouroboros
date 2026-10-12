@@ -272,14 +272,13 @@ def _provider_unavailable_result(
         fallback = _provider_terminal_fallback_text(
             ctx.accumulated_usage, is_context_overflow=is_context_overflow,
             is_transport_wait=is_transport_wait, waited_sec=waited_sec,
-            interactive=interactive,
-            is_deadline_exhausted=is_deadline_exhausted,
+            interactive=interactive, is_deadline_exhausted=is_deadline_exhausted,
             control_reason=control_reason, wait_cause=wait_cause,
         )
     if is_context_overflow:
         text, usage, llm_trace = _forced_fallback_result(
             ctx, llm_trace, fallback, "context_overflow",
-            source="context_overflow_local_salvage",
+            source="context_overflow_local_salvage", host_words=not salvaged,
         )
         usage.update(
             execution_status=RESULT_INFRA_FAILED,
@@ -291,7 +290,7 @@ def _provider_unavailable_result(
         # No-resend terminal over dead egress.
         ctx.accumulated_usage.update(execution_status=RESULT_INFRA_FAILED, reason_code="provider_unavailable")
         text, usage, llm_trace = _forced_fallback_result(
-            ctx, llm_trace, fallback, reason_code="provider_unavailable",
+            ctx, llm_trace, fallback, reason_code="provider_unavailable", host_words=not salvaged,
             source="provider_outcome_unknown_no_resend" if unknown_outcome else f"{wait_cause}_no_resend",
         )
         if usage.get("reason_code") == "provider_unavailable":
@@ -306,7 +305,7 @@ def _provider_unavailable_result(
             _drain_forced_owner_directives(ctx, llm_trace)
         text, usage, llm_trace = _forced_fallback_result(
             ctx, llm_trace, fallback, reason_code=terminal_reason,
-            source=no_call, provider_terminal=wall,
+            source=no_call, provider_terminal=wall, host_words=not salvaged,
         )
         if usage.get("execution_status") is not None:
             usage.update(execution_status=RESULT_INFRA_FAILED, reason_code=terminal_reason)
@@ -322,6 +321,7 @@ def _provider_unavailable_result(
         ctx, prompt=prompt, fallback_text=fallback,
         reason_code="deadline_local" if is_deadline_exhausted else "provider_unavailable",
         provider_terminal=not is_deadline_exhausted,
+        fallback_host_words=None if is_deadline_exhausted else not salvaged,
     )
     if not is_deadline_exhausted and usage.get("reason_code") == "provider_unavailable":
         usage["execution_status"] = RESULT_INFRA_FAILED

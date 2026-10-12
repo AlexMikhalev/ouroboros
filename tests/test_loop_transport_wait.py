@@ -255,7 +255,7 @@ def test_transport_outage_waits_redials_free_rounds_and_recovers(tmp_path, monke
     assert phases[0] == "entered"
     assert phases.count("waiting") == 3
     assert phases[-1] == "recovered"
-    assert any("provider connection" in note for note in notes)  # first note, immediate
+    assert any("did not reach the provider" in note for note in notes)  # first note, immediate
     assert any("restored" in note for note in notes)  # mandatory recovery note
 
 
@@ -782,7 +782,7 @@ def test_finalize_now_during_episode_takes_no_resend_terminal_via_mailbox(tmp_pa
     assert usage.get("execution_status") == "infra_failed"
     assert usage.get("reason_code") == "provider_unavailable"
     assert trace.get("forced_finalization", {}).get("source") == "transport_unavailable_no_resend"
-    assert "ended as a provider outage" in result
+    assert "ended as an outage" in result
     events = _read_network_wait_events(tmp_path)
     assert events[-1]["phase"] == "ended"
     assert events[-1].get("detail") == "finalize_now"
@@ -938,18 +938,18 @@ def test_terminal_wordings_cover_four_wait_outcomes():
     kwargs = dict(is_context_overflow=False, is_transport_wait=True, is_deadline_exhausted=False)
     waited = loop_transport.provider_terminal_fallback_text({}, waited_sec=610.0, **kwargs)
     assert "the task waited and redialed" in waited
-    assert "ended as a provider outage, not completed" in waited
+    assert "ended as an outage, not completed" in waited
     assert "INTERRUPTED" not in waited
     zero_wait = loop_transport.provider_terminal_fallback_text({}, waited_sec=0.0, **kwargs)
     assert "left no time to wait" in zero_wait
     chat_waited = loop_transport.provider_terminal_fallback_text(
         {}, waited_sec=610.0, interactive=True, **kwargs)
     assert "this turn waited and redialed for 10.2 min" in chat_waited
-    assert "ended as a provider outage, not completed" in chat_waited
+    assert "ended as an outage, not completed" in chat_waited
     chat_zero = loop_transport.provider_terminal_fallback_text(
         {}, waited_sec=0.0, interactive=True, **kwargs)
     assert "no wait window was left" in chat_zero
-    assert "this turn ended as a provider outage" in chat_zero
+    assert "this turn ended as an outage" in chat_zero
     for text in (chat_waited, chat_zero):
         assert "task" not in text.lower()
         assert "INTERRUPTED" not in text

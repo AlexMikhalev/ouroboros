@@ -1074,19 +1074,18 @@ export function unkeyedFrameEndsTurn(row) {
 }
 
 /**
- * One header reducer: offline > active managed work > pausing > direct turns
- * > pending submissions > queued work > access/answer wait > unknown > paused
- * > Project hold > idle. A queued task ranks below an unacknowledged submission;
- * neither admission nor a connected socket proves execution or readiness.
- * Idle says Starting until the supervisor confirms readiness. Multiple tasks
- * are counted independently, so one paused task never hides another working.
+ * One header reducer: offline > active managed work > pausing > direct turns > pending submissions
+ * > finalizing wrap-up (ended work, any kind, writing its reflection) > access wait > queued work > answer
+ * wait > unknown > paused > Project hold > idle. A queued task ranks below an unacknowledged submission; neither
+ * admission nor a connected socket proves execution or readiness. Idle says Starting until the supervisor confirms
+ * readiness. Tasks are counted independently, so one paused task never hides another working.
  */
 export function computeDerivedChatStatus({
     isConnected = true,
     hasActiveLiveCard = false,
     activeDirectCount = 0, activeManagedCount = 0,
     queuedManagedCount = 0, pausingManagedCount = 0,
-    pausedManagedCount = 0,
+    pausedManagedCount = 0, finalizingCount = 0, hasFinalizingLiveCard = false,
     pausedCause = '',
     waitingOwnerCount = 0, unknownActivityCount = 0,
     waitingModelCount = 0,
@@ -1102,6 +1101,7 @@ export function computeDerivedChatStatus({
     if (pausingManagedCount > 0) return { kind: 'thinking', text: 'Pausing…', showDots: true };
     if (activeDirectCount > 0) return observed || { kind: 'thinking', text: taskActivityPresentation({ phase: 'working' }).text, showDots: true };
     if (pendingSubmissionsCount > 0) return { kind: 'thinking', text: 'Sending...', showDots: true };
+    if (finalizingCount > 0 || hasFinalizingLiveCard) return { kind: 'thinking', text: taskActivityPresentation({ phase: 'finalizing' }).text, showDots: true };
     if (waitingModelCount > 0) return { kind: 'online', text: 'Waiting for access', showDots: false };
     if (queuedManagedCount > 0) return { kind: 'thinking', text: 'Queued...', showDots: true };
     if (waitingOwnerCount > 0) return { kind: 'online', text: tr('task.chip.waiting_for_answer', 'Waiting for your answer'), showDots: false };
@@ -1116,7 +1116,7 @@ export function computeDerivedChatStatus({
 // Count census activity and unfinished cards; parked/waiting rows retain their own state.
 export function chatStatusCounts(activities, records, isWaiting = () => false) {
     const counts = { activeDirectCount: 0, activeManagedCount: 0, queuedManagedCount: 0, pausingManagedCount: 0,
-        pausedManagedCount: 0, unknownActivityCount: 0, hasActiveLiveCard: false, waitingModelCount: 0,
+        pausedManagedCount: 0, unknownActivityCount: 0, hasActiveLiveCard: false, waitingModelCount: 0, finalizingCount: 0, hasFinalizingLiveCard: false,
         projectWaitLabel: '', waitingOwnerCount: 0, pausedCause: '' };
     const pauseCauses = new Set(), calls = new Map();
     for (const [id, entry] of activities) {
@@ -1132,9 +1132,9 @@ export function chatStatusCounts(activities, records, isWaiting = () => false) {
         else if (waitPhase === 'unknown') counts.unknownActivityCount += 1;
         else if (waitPhase === 'owner_wait') counts.waitingOwnerCount += 1;
         else if (projectHold) continue;
-        else if (String(entry?.kind || '') !== 'managed_task') counts.activeDirectCount += 1;
+        else if (String(entry?.kind || '') !== 'managed_task' && entry?.phase !== 'finalizing') counts.activeDirectCount += 1;
         else if (String(entry?.phase || '') === 'queued') counts.queuedManagedCount += 1;
-        else counts.activeManagedCount += 1;
+        else counts[String(entry?.phase || '') === 'finalizing' ? 'finalizingCount' : 'activeManagedCount'] += 1;
         if (!entry?._activityUnconfirmed && ['preparing', 'thinking', 'working'].includes(entry?.phase)
             && !waitPhase && !projectHold) calls.set(id, modelActivityPresentation(
                 entry.phase === 'preparing' ? { phase: 'preparing' } : entry.model_activity)
@@ -1151,7 +1151,7 @@ export function chatStatusCounts(activities, records, isWaiting = () => false) {
         if (record.cancelPendingPolicy && calls.has(record.groupId)) calls.set(record.groupId,
             taskActivityPresentation({ phase: 'working', stopPolicy: record.cancelPendingPolicy }));
         if (record.modelWaiting) counts.waitingModelCount += 1;
-        else if (!record.direct && !record.parkedPhase) counts.hasActiveLiveCard = true;
+        else if ((record.finalizingHold || !record.direct) && !record.parkedPhase) counts[record.finalizingHold ? 'hasFinalizingLiveCard' : 'hasActiveLiveCard'] = true;
     }
     const views = [...calls.values()];
     if (views.length && views.length === counts.activeDirectCount + counts.activeManagedCount
