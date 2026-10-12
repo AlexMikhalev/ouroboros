@@ -235,8 +235,10 @@ def test_failed_root_reads_failed_then_finalizing(wait_clone, tmp_path, monkeypa
                     assert "running" in (_synthesis(r) for r in _rows(oracle, task_id)), _rows(oracle, task_id)
                     desk.evaluate(OBSERVE_JS, task_id)
                     gate.release.set()
+                    # Synthesis closes its checkpoint before the supervisor records task_done
+                    # (through the event queue), so the settled row is the one carrying both.
                     settled = wait_until(lambda: (row if _synthesis(row := oracle.task_result(task_id)) == "completed"
-                                                  else None), 120)
+                                                  and row.get("status") != "running" else None), 120)
                     assert settled and settled["status"] == "failed", oracle.task_result(task_id)
                     desk.wait_for_function(SETTLED_JS, arg=task_id, timeout=60000)
                     facts["settled"] = state = desk.evaluate(STATE_JS, task_id)
