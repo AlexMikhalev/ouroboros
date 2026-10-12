@@ -10,10 +10,11 @@ import pytest
 
 from ouroboros import review_native_episode as native
 from ouroboros.artifacts import read_actor_source_bytes
+from ouroboros.tools.scope_required_sources import REQUIRED_SOURCE_ROOT
 from tests.test_native_tool_round_executor import _assignment, _tool_call, _ScriptedLLM
 
 
-def _source(path, root="system_repo"):
+def _source(path, root=REQUIRED_SOURCE_ROOT):
     raw = path.read_bytes()
     text = raw.decode().replace("\r\n", "\n").replace("\r", "\n")
     return {"root": root, "path": path.name, "source_revision": hashlib.sha256(raw).hexdigest(),

@@ -258,7 +258,8 @@ def test_review_keys_in_the_environment_are_one_loud_fact_not_a_configuration(no
     loaded = cfg.load_settings_lock_held(_settings_lock_held=False)
     items = json.loads(loaded["OUROBOROS_SUBAGENTS"])["items"]
     assert "x/y" not in [row["route"]["target_id"] for row in items], "env lanes are not read"
-    assert "OUROBOROS_REVIEWER_SLOTS" not in loaded and all(row["minted_from"] == "factory_default" for row in items)
+    assert "OUROBOROS_REVIEWER_SLOTS" not in loaded and all(
+        row["minted_from"] == "factory_default" for row in items if row.get("review_eligible"))
 
     assert server_maintenance.environment_retired_review_keys() == ("OUROBOROS_REVIEWER_SLOTS", "OUROBOROS_EFFORT_REVIEW")
     with caplog.at_level(logging.WARNING, logger="server"):

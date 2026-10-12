@@ -74,7 +74,7 @@ LIVE_SNAPSHOT = {
         {
             "id": "claude", "status": "ok", "enabled": True,
             "access_profiles_supported": ["readonly", "workspace_write"],
-            "models": [{"id": "claude-opus-5"}, {"id": "claude-sonnet-5"},
+            "models": [{"id": "claude-opus-5-5"}, {"id": "claude-opus-5"}, {"id": "claude-sonnet-5"},
                        {"id": "claude-fable-5"}, {"id": "claude-opus-4-6"}],
         },
         {
@@ -175,16 +175,16 @@ def test_fresh_install_applies_the_preset_in_one_write(onboarding):
     assert onboarding.calls["snapshot"] == 1  # exactly ONE daemon read
 
     saved = onboarding.saved()
-    assert saved[PRESET_MARKER_KEY] == "3"
+    assert saved[PRESET_MARKER_KEY] == "4"
     assert saved["OUROBOROS_SUBAGENT_HARNESS"] == ""
     available = json.loads(saved[SUBAGENTS_SETTING])
     # One list: the actors are Auto rows (the owner's effort range decides), so the
     # review seats keep their pinned levels on minted rows of their own (the scope
-    # seat merges into the codex reviewer row); the advisory seat mints nothing,
-    # and no lane key is written.
+    # seat merges into the codex reviewer row); no advisory seat exists, and no
+    # lane key is written.
     assert [(row["route"]["target_id"], row.get("review_eligible", False)) for row in available["items"]] == [
-        ("claude=claude-opus-5", False), ("codex=gpt-5.6-sol", False), ("openai/gpt-5.6-luna", False),
-        ("claude=claude-opus-5", True), ("codex=gpt-5.6-sol", True),
+        ("claude=claude-opus-5-5", False), ("codex=gpt-5.6-sol", False), ("openai/gpt-5.6-luna", False),
+        ("claude=claude-opus-5-5", True), ("codex=gpt-5.6-sol", True),
     ]
     assert all("name" not in row for row in available["items"])  # retired (1=A)
     assert [row.get("effort") for row in available["items"]] == [None, None, None, "medium", "medium"]
@@ -580,7 +580,7 @@ def test_completion_validates_but_never_replaces_owner_edited_actor_rows(onboard
     # connected subscriptions' reviewer rows are appended to it, marked.
     assert expected["items"][0] == {k: v for k, v in owner["items"][0].items() if k != "name"}
     assert [(row["route"]["target_id"], row["review_eligible"], row["minted_from"]) for row in expected["items"][1:]] == [
-        ("claude=claude-opus-5", True, "factory_default"), ("codex=gpt-5.6-sol", True, "factory_default")]
+        ("claude=claude-opus-5-5", True, "factory_default"), ("codex=gpt-5.6-sol", True, "factory_default")]
     assert not onboarding.settings_path.exists()
 
     response = onboarding.client.post(
@@ -751,7 +751,7 @@ def test_an_environment_completion_fact_cannot_close_the_install_window(monkeypa
     assert body["preset"]["applied"] is True
     assert onboarding.calls["snapshot"] == 1, "the daemon was never consulted"
     saved = onboarding.saved()
-    assert saved[PRESET_MARKER_KEY] == "3"
+    assert saved[PRESET_MARKER_KEY] == "4"
     # The endpoint's own timestamp, not the environment's.
     assert saved[ONBOARDING_COMPLETED_KEY] != "2020-01-01T00:00:00Z"
 
@@ -778,7 +778,7 @@ def test_subscription_free_completion_still_materializes_actor_default(onboardin
     assert response.json()["preset"]["applied"] is True
     saved = onboarding.saved()
     assert saved[ONBOARDING_COMPLETED_KEY], "the completion fact IS unconditional"
-    assert saved.get(PRESET_MARKER_KEY) == "3"
+    assert saved.get(PRESET_MARKER_KEY) == "4"
     assert json.loads(saved[SUBAGENTS_SETTING])["items"]
 
 
@@ -866,7 +866,7 @@ def test_a_post_commit_failure_reports_the_save_that_landed(monkeypatch, onboard
     assert "supervisor refused to start" in body["error"]
     # And the transaction really IS on disk, preset marker included.
     saved = onboarding.saved()
-    assert saved[PRESET_MARKER_KEY] == "3"
+    assert saved[PRESET_MARKER_KEY] == "4"
     assert saved[ONBOARDING_COMPLETED_KEY]
     assert saved["OPENROUTER_API_KEY"] == WIZARD_PAYLOAD["OPENROUTER_API_KEY"]
 
@@ -1211,7 +1211,7 @@ def test_a_seat_with_no_capacity_still_reaches_the_compiled_preset_with_its_mode
         [_no_capacity_now("claude", native_login=True), _native_account("codex")],
         harnesses=[
             {"id": "claude", "status": "ok", "enabled": True,
-             "models": [{"id": "claude-opus-5"}, {"id": "claude-sonnet-5"},
+             "models": [{"id": "claude-opus-5-5"}, {"id": "claude-opus-5"}, {"id": "claude-sonnet-5"},
                         {"id": "claude-fable-5"}, {"id": "claude-opus-4-6"}]},
             {"id": "codex", "status": "ok", "enabled": True,
              "models": [{"id": "gpt-5.6-sol"}, {"id": "gpt-5.6-terra"}, {"id": "gpt-5.5"}]},
@@ -1513,7 +1513,7 @@ def test_a_connected_agy_account_composes_with_core_reviewers(onboarding):
         "daemon": {"state": "running"},
         "harnesses": [
             {"id": "claude", "status": "ok", "enabled": True,
-             "models": [{"id": "claude-opus-5"}, {"id": "claude-sonnet-5"},
+             "models": [{"id": "claude-opus-5-5"}, {"id": "claude-opus-5"}, {"id": "claude-sonnet-5"},
                         {"id": "claude-fable-5"}, {"id": "claude-opus-4-6"}]},
             {"id": "agy", "status": "unavailable", "enabled": True,
              "models": [{"id": "gemini-3.8-flash-high"}, {"id": "gemini-3.1-pro-high"}]},

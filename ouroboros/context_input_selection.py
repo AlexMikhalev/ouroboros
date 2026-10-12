@@ -332,5 +332,6 @@ def _capture_declared_context_core(
         docs_need_development=_task_requires_self_body_docs(task),
         reference_books=tuple(sources["books"]), reference_book_errors=tuple(sources["book_errors"]),
         compact_reference_docs=True,
+        dynamic_head_text=sources.get("design_nav", ""),
         supplementary_messages_json=json.dumps(supplementary_messages, ensure_ascii=False, sort_keys=True),
     )

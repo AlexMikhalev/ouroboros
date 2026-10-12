@@ -48,7 +48,48 @@ def _projected_keys() -> set[str]:
     from ouroboros.model_slots import _LEGACY_SLOT_RENAMES
 
     return (set(settings_env_keys()) | set(RETIRED_COMMA_LIST_SETTING_KEYS)
-            | {old for old, _new in _LEGACY_SLOT_RENAMES})
+            | {old for old, _new in _LEGACY_SLOT_RENAMES} | {PROJECTED_PROPOSALS_ENV})
+
+
+# The values this process tree projected (``config.apply_settings_to_env``) for the keys whose absence takes a
+# proposal — the model slots and the never-configured factory catalog — handed down with the environment: a read
+# of a key the document does not set tells this tree's own echo from an operator's variable, so an absent slot
+# keeps following the configured access and an absent catalog its factory (owner 2A).
+PROJECTED_PROPOSALS_ENV = "OUROBOROS_PROJECTED_PROPOSALS"
+
+
+def projected_proposals(environ: Mapping) -> dict:
+    """``{key: value}`` this process tree last projected into ``environ`` for a proposal key."""
+    try:
+        echo = json.loads(environ.get(PROJECTED_PROPOSALS_ENV) or "{}")
+    except ValueError:
+        return {}
+    return echo if isinstance(echo, dict) else {}
+
+
+def operator_variables(environ: Mapping, keys) -> dict:
+    """``{key: value}`` of an operator's own variables in ``environ`` for proposal ``keys``: present, not blank and not
+    this tree's projection — what the loader lets stand in for a key the document does not set."""
+    echo = projected_proposals(environ)
+    return {key: environ[key] for key in keys if environ.get(key) and environ[key] != echo.get(key)}
+
+
+def note_proposal_projection(environ, before: Mapping) -> None:
+    """Record the proposal-key values a projection left in ``environ`` (``before``: their values before it),
+    except where it kept or respelled an operator's own variable (``operator_variables`` of ``before``): our echo
+    must never turn the operator's choice into a proposal the next read replaces."""
+    from ouroboros.configured_subagents import SUBAGENTS_SETTING
+    from ouroboros.server_runtime import MODEL_SLOT_KEYS
+
+    keys = (*MODEL_SLOT_KEYS, SUBAGENTS_SETTING)
+    echo, operator = projected_proposals(environ), operator_variables(before, keys)
+    for key in keys:
+        after = environ.get(key)
+        if after is None or key in operator or (after == before.get(key) and after != echo.get(key)):
+            echo.pop(key, None)
+        else:
+            echo[key] = after
+    environ[PROJECTED_PROPOSALS_ENV] = json.dumps(echo, sort_keys=True)
 
 
 @contextlib.contextmanager

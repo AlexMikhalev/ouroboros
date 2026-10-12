@@ -794,13 +794,15 @@ class AvailableSubagentsSettingsMeta(TypedDict, total=False):
     """Saved/migrated intent returned beside ``GET /api/settings``.
 
     ``candidate`` is an unsaved canonical object.  Absence stays ``None``; a
-    read never materializes the value on disk.
+    read never materializes the value on disk.  ``automatic``: the catalog is
+    the read's own, following Main and access until an edit saves one.
     """
 
     source: str
     diagnostic: str
     diagnostics: list[Dict[str, Any]]
     candidate: Optional[Dict[str, Any]]
+    automatic: bool
 
 
 class SettingsPolicyAxis(TypedDict, total=False):

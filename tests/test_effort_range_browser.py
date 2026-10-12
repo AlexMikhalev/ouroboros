@@ -1,12 +1,13 @@
 """The effort range control in the real composer (DECISIONS v3 §6; DESIGN "Composer owner controls").
 
-On a real server in Chromium and WebKit: the round button after the pills opens inline into the
-strip — by hover (an accelerator) and by press (which pins) on a desktop with a mouse, by press
-alone on a phone; the mouse may drift within 32 px and the strip closes a second after it leaves
-that zone; Esc closes and returns focus, an outside press closes. The open strip never takes a
-second line: beside the pills on a wide screen, alone while the pills step aside on a 390 px
-phone and in a ~440 px Project pane, scrolling inside itself on a 320 px phone; the pill covers
-its word and the band meets the brackets. A drag and the keyboard save the full triple through
+On a real server in Chromium and WebKit: the capsule `Effort <recommended level>` after the pills
+and the context capsule (closed, no range in words) opens inline into the strip — by hover (an
+accelerator) and by press (which pins) on a desktop with a mouse, by press alone on a phone; the
+mouse may drift within 32 px and the strip closes a second after it leaves that zone; Esc closes
+and returns focus, an outside press closes. The open strip never takes a second line and stays
+inside its row: beside the others on a wide screen, alone while they step aside on a 390 px phone
+and in a ~440 px Project pane, scrolling inside itself on a 320 px phone; the pill covers its word
+and the band meets the brackets. A drag and the keyboard save the full triple through
 the owner endpoint, the pill pushes a bracket and the bracket stays pushed, and every composer
 reads the one value back from /api/state; a change made just before Send lands before the
 message; Settings → Behavior has no effort section and ends with Startup & background, whose
@@ -46,6 +47,7 @@ FACTS = """sel => {
     const box = (node) => { const b = node ? rect(node) : null; return b && { left: b.left, right: b.right, top: b.top, bottom: b.bottom }; };
     const recSeg = el.querySelector('.chat-effort-seg[data-rec="true"]');
     const strip = el.querySelector('.chat-effort-strip');
+    const shown = (node) => Boolean(node) && getComputedStyle(node).display !== 'none';
     return {
         open: el.dataset.open, known: el.dataset.known, saving: el.dataset.saving || 'false',
         expanded: head.getAttribute('aria-expanded'), title: head.title,
@@ -64,7 +66,10 @@ FACTS = """sel => {
         recTabIndex: el.querySelector('.chat-effort-rec').tabIndex,
         min: text('min'), rec: text('rec'), max: text('max'),
         hoverMedia: matchMedia('%s').matches,
-        fit: el.dataset.fit || '', solo: row.dataset.effortSolo || '', pillsShown: getComputedStyle(pills).display !== 'none',
+        fit: el.dataset.fit || '', solo: row.dataset.ownerSolo || '', pillsShown: shown(pills),
+        contextShown: shown(row.querySelector('.chat-context-mode')), label: el.dataset.label || '',
+        name: el.querySelector('.chat-capsule-name').textContent, nameShown: shown(el.querySelector('.chat-capsule-name')),
+        value: el.querySelector('.chat-capsule-value').textContent, headText: head.textContent,
         rowHeight: rect(row).height, rowTop: rect(row).top,
         extras: el.querySelectorAll('.chat-effort-label, .chat-effort-sep, .chat-effort-reset').length,
         pill: box(el.querySelector('.chat-effort-rec')), seg: box(recSeg), word: box(recSeg?.querySelector('.chat-effort-seg-text')),
@@ -142,22 +147,26 @@ def test_desktop_hover_opens_press_pins_escape_and_outside_close(direct_server_w
             closed = _facts(page)
             assert closed["hoverMedia"] is True, closed
             assert closed["open"] == "false" and closed["expanded"] == "false", closed
-            # A round 32 px button on the pills' row, after them.
-            assert abs(closed["headWidth"] - 32) <= 2 and abs(closed["headHeight"] - 32) <= 2, closed
+            # A labelled capsule of the pills' height on their row: ring, Effort and the recommended
+            # level, and no range in words (the ring and the button's name carry it).
+            assert abs(closed["height"] - 32) <= 1 and closed["headHeight"] >= 29, closed
+            assert (closed["name"], closed["value"], closed["headText"]) == ("Effort", "Medium", "EffortMedium"), closed
             assert abs(closed["top"] - closed["pillsTop"]) <= 2, closed
             assert closed["recTabIndex"] == -1, "closed handles are out of the tab order"
-            assert closed["title"].startswith("Effort: ") and "Applies to new work." in closed["title"], closed
-            assert closed["extras"] == 0, "no word Effort, no separator, no reset"
+            assert closed["title"] == "Effort: Medium, range Low–High. Applies to new work.", closed
+            assert closed["extras"] == 0, "no title word of the strip's own, no separator element, no reset"
             _shot(page, tmp_path, f"composer-closed-{engine}-dark")
             # Hover opens after ~160 ms; at this width the strip stays beside the pills.
             page.hover(HEAD)
             _wait(page, "el.dataset.open === 'true'")
             page.wait_for_timeout(500)  # the open animation
             opened = _facts(page)
-            assert opened["fit"] == "inline" and opened["solo"] == "" and opened["pillsShown"], opened
+            assert opened["fit"] == "inline" and opened["solo"] == "" and opened["pillsShown"] and opened["contextShown"], opened
+            assert opened["label"] == "true" and opened["nameShown"], "a wide row keeps the name beside the strip"
             assert abs(opened["top"] - opened["pillsTop"]) <= 2, opened
-            assert opened["right"] <= opened["rowRight"] + 1 and not opened["docScroll"], opened
-            assert opened["width"] <= 400, "the open control is compact: " + str(opened["width"])
+            # Contained: inside its row, on the row's one line, nothing scrolls the page.
+            assert opened["right"] <= opened["rowRight"] + 1 and not opened["docScroll"] and not opened["areaScroll"], opened
+            assert abs(opened["rowHeight"] - closed["rowHeight"]) <= 1, (opened, closed)
             assert opened["recTabIndex"] == 0, opened
             _assert_strip_geometry(opened)
             _shot(page, tmp_path, f"composer-open-{engine}-dark")
@@ -225,7 +234,7 @@ def test_a_tight_row_keeps_one_line_while_the_strip_closes(direct_server_with_da
                 page.set_viewport_size({"width": width, "height": 900})
                 page.click(HEAD)
                 _wait(page, "el.dataset.open === 'true'")
-                pad = page.evaluate(f"() => parseFloat(document.querySelector('{CONTROL}').style.getPropertyValue('--effort-seg-pad'))")
+                pad = page.evaluate(f"() => parseFloat(document.querySelector('{CONTROL}').style.getPropertyValue('--capsule-seg-pad'))")
                 fit = _facts(page)["fit"]
                 if fit == "inline" and pad < 8:
                     break
@@ -268,8 +277,10 @@ def test_phone_press_opens_alone_on_the_line_while_the_pills_step_aside(direct_s
             _assert_strip_geometry(_facts(page))
             page.wait_for_timeout(300)
             opened = _facts(page)
-            # Alone on the same line: the pills step aside, the row keeps one line, nothing scrolls.
-            assert opened["fit"] == "solo" and opened["solo"] == "true" and not opened["pillsShown"], opened
+            # Alone on the same line: the pills and the context capsule step aside, the row keeps one
+            # line, nothing scrolls.
+            assert opened["fit"] == "solo" and opened["solo"] == "effort", opened
+            assert not opened["pillsShown"] and not opened["contextShown"], opened
             assert abs(opened["rowHeight"] - closed["rowHeight"]) <= 1, (opened, closed)
             assert abs(opened["areaHeight"] - closed["areaHeight"]) <= 1, (opened, closed)
             assert opened["right"] <= opened["rowRight"] + 1, opened
@@ -281,7 +292,7 @@ def test_phone_press_opens_alone_on_the_line_while_the_pills_step_aside(direct_s
             page.tap("#chat-messages")
             _wait(page, "el.dataset.open === 'false'")
             back = _facts(page)
-            assert back["pillsShown"] and back["solo"] == "" and back["fit"] == "", back
+            assert back["pillsShown"] and back["contextShown"] and back["solo"] == "" and back["fit"] == "", back
             assert abs(back["rowHeight"] - closed["rowHeight"]) <= 1, (back, closed)
             page.tap(HEAD)
             _wait(page, "el.dataset.open === 'true'")
@@ -326,7 +337,7 @@ def test_project_pane_strip_stands_alone_and_shows_the_same_value(direct_server_
             assert saves == [], saves
             page.wait_for_timeout(300)
             opened = _facts(page, panel)
-            assert opened["fit"] == "solo" and not opened["pillsShown"], opened
+            assert opened["fit"] == "solo" and not opened["pillsShown"] and not opened["contextShown"], opened
             assert abs(opened["rowHeight"] - closed["rowHeight"]) <= 1, (opened, closed)
             assert opened["right"] <= opened["rowRight"] + 1 and not opened["areaScroll"] and not opened["docScroll"], opened
             assert opened["top"] < opened["inputTop"], opened
@@ -447,7 +458,7 @@ def test_a_320_px_phone_scrolls_the_strip_inside_the_control(direct_server_with_
             assert opened["stripScrolls"] and opened["stripScroll"] in ("start", "middle"), opened
             assert not opened["docScroll"] and not opened["areaScroll"], opened
             assert abs(opened["rowHeight"] - closed["rowHeight"]) <= 1, (opened, closed)
-            assert opened["headWidth"] > 20, "the round button stays"
+            assert opened["headWidth"] > 20, "the ring stays"
             _assert_strip_geometry(opened)
             _shot(page, tmp_path, f"composer-phone-320-open-{engine}")
             # The hidden end is reached by scrolling the strip; a tap there moves the bracket.

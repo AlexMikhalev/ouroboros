@@ -71,6 +71,8 @@ _ADDED_OWNERS = {
     "task_model_binding": model_slots,
     "route_binding": model_slots,
     "apply_model_role_override": model_slots,
+    "_persisted_role": model_slots,
+    "model_role_setting_keys": model_slots,
     # A slot's model as it routes (its USE_LOCAL_* flag), for image candidate choice.
     "_SLOT_LOCAL_FLAGS": model_slots,
     "local_lane_label": model_slots,

@@ -44,7 +44,9 @@ Rules (contract §1.5, counter-examples §2 F4-F8):
    never-configured install — neither the lanes key nor a catalog
    (``OUROBOROS_SUBAGENTS`` missing or ``""``: Docker / Colab / a mounted
    volume without the wizard, or no settings file at all) — is the same cell;
-   never a structural catalog the owner saved empty: empty is not never-configured;
+   never a structural catalog the owner saved empty: empty is not never-configured.
+   When the factory has no reviewer for the document (a Main its access cannot run),
+   nothing is migrated yet: the lane keys stay until that Main runs;
 7. invalid lanes (a non-string value included), unresolvable references, an
    invalid catalog (marked rows do not excuse it), or authored lanes beside a
    catalog that already holds pool rows -> NO partial migration and nothing
@@ -516,9 +518,10 @@ def factory_lanes(document: Mapping[str, Any]) -> ReviewLanes:
     processing = _row_processing(view)
     templates = factory_review_rows(view) if factory_review_rows is not None else []
     return ReviewLanes(
-        triad=tuple(
+        triad=tuple(  # a seat is its row's whole engine: Main's account pin and processing included
             LaneRow(slot_id=slot_id_for_row(idx + 1, prefix=SLOT_ID_PREFIX), kind=ROUTE_KIND_API,
-                    target_id=_row_route(row).target_id, processing_preference=processing,
+                    target_id=_row_route(row).target_id, profile_id=_row_route(row).credential_profile_id,
+                    processing_preference=_row_processing(view, row.get("processing_preference")),
                     delivery=DEFAULT_TRIAD_DELIVERY)
             for idx, row in enumerate(templates)
         ),
@@ -527,19 +530,23 @@ def factory_lanes(document: Mapping[str, Any]) -> ReviewLanes:
     )
 
 
-# Package A's seam: the rows a fresh install's onboarding mints for the pool
-# (``subscription_install_presets.factory_review_rows(document)``). M mints
-# exactly those rows for a document without lanes and only covers what they
-# leave uncovered (the frozen factory lanes above say which seats the shipped
-# panel had). The import is deferred: the preset compiler reaches the provider
-# readers, which import this module's callers. Tests monkeypatch the attribute.
-def _package_a_factory_review_rows(document: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    from ouroboros.subscription_install_presets import factory_review_rows as mint
+# Package A's seams: the rows a fresh install's onboarding mints
+# (``subscription_install_presets.factory_review_rows`` / ``factory_actor_rows``). M mints
+# exactly the review rows for a document without lanes and only covers what they leave
+# uncovered (the frozen factory lanes above say which seats the shipped panel had); the
+# actors join only the never-configured cell, never as review templates (``factory_lanes``
+# reads every template as a seat). The import is deferred: the preset compiler reaches the
+# provider readers, which import this module's callers. Tests monkeypatch the attributes.
+def _package_a(name: str) -> Callable[[Mapping[str, Any]], List[Dict[str, Any]]]:
+    def mint(document: Mapping[str, Any]) -> List[Dict[str, Any]]:
+        from ouroboros import subscription_install_presets as presets
 
-    return mint(document)
+        return getattr(presets, name)(document)
+    return mint
 
 
-factory_review_rows: Optional[Callable[[Mapping[str, Any]], List[Dict[str, Any]]]] = _package_a_factory_review_rows
+factory_review_rows: Optional[Callable[[Mapping[str, Any]], List[Dict[str, Any]]]] = _package_a("factory_review_rows")
+factory_actor_rows: Optional[Callable[[Mapping[str, Any]], List[Dict[str, Any]]]] = _package_a("factory_actor_rows")
 
 
 # ---------------------------------------------------------------------------
@@ -794,14 +801,14 @@ def environment_overridable_keys(document: Any) -> frozenset:
     """The keys whose read-seam value for ``document`` stands in for an ABSENT key, so a
     reader that merges the environment over the document lets an environment value win.
 
-    One key: the factory reviewer rows ``apply_at_read_seam`` mints into
-    ``OUROBOROS_SUBAGENTS`` when the document authored NO review lanes (the key absent, or
-    the ``""`` every 6.90+ document saved for "the default lanes ran" — retired comma keys
-    never entered the panel, canon 11) and holds no catalog text are a default, not the
-    owner's disk value — a catalog the environment carries (a container's roster, a
-    benchmark's; explicit configuration) wins over them exactly as it won over the absence
-    before the mint existed. Rows minted from the owner's own lanes, and a catalog the owner
-    saved (marked or not), are the document's decision and shadow the environment like every
+    One key: ``OUROBOROS_SUBAGENTS`` of a document that authored NO review lanes (the key absent, or the ``""``
+    every 6.90+ document saved for "the default lanes ran" — retired comma keys never entered the panel, canon 11)
+    and holds no catalog text. Its factory reviewer rows are a default, not the owner's disk value: a catalog the
+    environment carries (a container's roster, a benchmark's; explicit configuration) wins over the rows the raw
+    stage mints for an old document (``config.normalize_settings_raw``) exactly as it won over the absence before
+    the mint existed; a never-configured document mints only over the effective input, environment included
+    (``apply_at_read_seam(merged=True)``), so that catalog is what runs. Rows minted from the owner's own lanes, and
+    a catalog the owner saved (marked or not), are the document's decision and shadow the environment like every
     disk-authored key. A missing or unreadable document has no keys at all.
     """
     if not isinstance(document, Mapping):
@@ -822,6 +829,9 @@ _SHA_PRESENCE_KEYS = (
     "ZAI_API_KEY", "CLOUDRU_FOUNDATION_MODELS_API_KEY", "GIGACHAT_CREDENTIALS", "GIGACHAT_USER",
     "GIGACHAT_PASSWORD", "OPENAI_BASE_URL", "OPENAI_COMPATIBLE_BASE_URL",
 )
+# The factory rows follow Main's whole route, so a document without lanes of its own is also keyed by
+# its local source (and Main's and Light's account pins); a document WITH lanes never reads the factory.
+_FACTORY_PRESENCE_KEYS = ("LOCAL_MODEL_SOURCE",)
 _SHA_VALUE_KEYS = REVIEW_POOL_MIGRATED_SETTING_KEYS + (
     SUBAGENTS_KEY, "OUROBOROS_SUBAGENT_HARNESS", "OUROBOROS_SUBAGENT_PROFILE", "OUROBOROS_PROCESSING_PREFERENCE",
     "OUROBOROS_MODEL_PROCESSING_PREFERENCES", "OUROBOROS_MODEL", "OUROBOROS_MODEL_LIGHT", "USE_LOCAL_MAIN",
@@ -838,6 +848,15 @@ def input_sha256(document: Mapping[str, Any]) -> str:
     fact left out would replay another document's outcome."""
     facts = {key: document.get(key) for key in _SHA_VALUE_KEYS if key in document}
     facts["_present"] = sorted(key for key in _SHA_PRESENCE_KEYS if _text(document, key))
+    lanes = document.get(REVIEWER_SLOTS_KEY)
+    if lanes is None or (isinstance(lanes, str) and not lanes.strip()):
+        from ouroboros.subscription_install_presets import role_route_binding
+
+        facts["_present"] += sorted(key for key in _FACTORY_PRESENCE_KEYS if _text(document, key))
+        pins = {role: role_route_binding(document, role).get("route", {}).get("credential_profile_id", "")
+                for role in ("main", "light")}
+        if any(pins.values()):
+            facts["_accounts"] = pins  # a factory row that follows Main or Light carries that role's pin
     return hashlib.sha256(json.dumps(facts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
 
 
@@ -1226,6 +1245,12 @@ def migrate_review_lanes(loaded: Mapping[str, Any]) -> Optional[MigrationOutcome
     for seat in executions["scope"]:
         _place_scope(pool, seat, minted_from)
     helper_lines = _place_helpers(pool, executions, lanes, factory=not authored)
+    never_configured = migration_trigger(document) == TRIGGER_NEVER_CONFIGURED
+    if never_configured and catalog.state == "absent" and not catalog.seeded_from_legacy and factory_actor_rows:
+        # The wizard's Auto helpers beside the reviewers; an owner catalog is never populated.
+        actors = [row for row in factory_actor_rows(document) if row["subagent_id"] not in pool.used_ids]
+        pool.used_ids.update(row["subagent_id"] for row in actors)
+        pool.minted[:0] = actors
     rows_after = pool.rows_after()
     from ouroboros.configured_subagents import MAX_CONFIGURED_SUBAGENTS
 
@@ -1236,9 +1261,13 @@ def migrate_review_lanes(loaded: Mapping[str, Any]) -> Optional[MigrationOutcome
             f"the maximum is {MAX_CONFIGURED_SUBAGENTS}", executions)
     payload = {"enabled": catalog.enabled if catalog.state != "absent" or catalog.seeded_from_legacy else True,
                "items": rows_after}
-    catalog_after = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    rows_report = _rows_report(pool)
     eligible = [row for row in rows_after if row.get("review_eligible")]
+    # No reviewer the document's Main can run and no catalog of the owner's: nothing is migrated yet (no
+    # partial migration, rule 7) — every lane key stays and the read seam names Main; the document migrates
+    # whole once its Main runs, never pinned to an empty or helper-only catalog a later read takes for the owner's.
+    waits = not authored and catalog.state == "absent" and not catalog.seeded_from_legacy and not eligible
+    catalog_after = None if waits else json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    rows_report = _rows_report(pool)
     summary = {
         "seats_before": len(executions["triad"]) + len(executions["scope"]),
         "rows_marked_after": len(eligible),
@@ -1260,11 +1289,11 @@ def migrate_review_lanes(loaded: Mapping[str, Any]) -> Optional[MigrationOutcome
         "summary": summary,
         "error": "",
     })
+    lane_keys = tuple(key for key in REVIEW_POOL_MIGRATED_SETTING_KEYS if key in document)
     return MigrationOutcome(
         input_sha256=snapshot["input_sha256"], catalog_state=catalog.state, slots_state=slots_state,
-        snapshot=snapshot, catalog_after=catalog_after,
-        consumed_keys=tuple(key for key in REVIEW_POOL_MIGRATED_SETTING_KEYS if key in document),
-        trigger=snapshot["before"]["trigger"],
+        snapshot=snapshot, catalog_after=catalog_after, consumed_keys=() if waits else lane_keys,
+        retained_keys=lane_keys if waits else (), noop=waits, trigger=snapshot["before"]["trigger"],
     )
 
 
@@ -1312,11 +1341,14 @@ def migrations_seen() -> Tuple[MigrationOutcome, ...]:
     return tuple(_MIGRATIONS_SEEN.values())
 
 
-def apply_at_read_seam(loaded: Dict[str, Any]) -> Tuple[str, ...]:
-    """Run (or replay) the migration on ``loaded`` inside ``config.normalize_settings_raw``;
-    returns the lane keys the retired-key purge must leave in place (an error outcome
-    keeps them for the owner's save)."""
-    if not migration_applies(loaded):
+def apply_at_read_seam(loaded: Dict[str, Any], *, merged: bool = False) -> Tuple[str, ...]:
+    """Run (or replay) the migration on ``loaded``; returns the lane keys the retired-key purge
+    must leave in place (an error outcome keeps them for the owner's save). The historical cells
+    run on the raw document before the purge (``config.normalize_settings_raw``); the
+    never-configured cell is a default, not a translation, so it runs only over the MERGED
+    configuration (``merged=True``): no file and ``{}`` mint alike from what actually runs."""
+    trigger = migration_trigger(loaded)
+    if not trigger or (trigger == TRIGGER_NEVER_CONFIGURED) != merged:
         return ()
     digest = input_sha256(loaded)
     outcome = _MIGRATIONS_SEEN.get(digest)
@@ -1328,6 +1360,8 @@ def apply_at_read_seam(loaded: Dict[str, Any]) -> Tuple[str, ...]:
         summary = outcome.snapshot.get("summary") or {}
         if outcome.error:
             log.warning("settings: review lanes not migrated: %s", outcome.error)
+        elif outcome.noop and summary and not summary.get("rows_marked_after"):
+            log.warning("settings: the factory review rows wait for Main: %s", NO_REACHABLE_MAIN)
         elif outcome.trigger == TRIGGER_NEVER_CONFIGURED:
             log.info("settings: no review settings configured; the factory review rows run (%s reviewer rows)",
                      summary.get("rows_marked_after"))
@@ -1346,6 +1380,12 @@ def apply_at_read_seam(loaded: Dict[str, Any]) -> Tuple[str, ...]:
 def _seat_label(row: Mapping[str, Any]) -> str:
     return _row_label(row)
 
+
+# A mixed install without a chosen Main gets no invented provider panel; the owner chooses Main.
+NO_REACHABLE_MAIN = ("no factory reviewer row can be derived: access is configured, but no OpenRouter key, no single "
+                     "direct provider, and Main (OUROBOROS_MODEL) is no model of a configured provider — set "
+                     "OUROBOROS_MODEL to one (for example openai::…, anthropic::… or openai-compatible::…) or mark "
+                     "reviewers in Settings → Agents.")
 
 ROLLBACK_SENTENCE = (
     f"To roll back, restore {SUBAGENTS_KEY} and {REVIEWER_SLOTS_KEY} (and the effort keys it lists) from the "
@@ -1392,7 +1432,7 @@ def owner_message(outcome: MigrationOutcome, snapshot_path: str, *,
         return "\n".join([
             head,
             f"{summary.get('rows_marked_after', 0)} reviewer rows, {summary.get('distinct_models', 0)} distinct models: "
-            + "; ".join(rows) + ".",
+            + "; ".join(rows) + "." + ("" if rows else f" Nothing reviews yet: {NO_REACHABLE_MAIN}"),
             f"{where} Adjust in Settings → Agents.",
         ])
     if outcome.slots_state == "absent":

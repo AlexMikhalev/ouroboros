@@ -230,14 +230,38 @@ def test_the_subscription_wizards_preset_is_a_pool_that_reviews_in_one_wave(stag
 # Colab: the kernel builds the Drive document from the collected secrets and writes it
 # (``build_colab_settings`` -> ``write_colab_settings``), the server reads it back. The
 # pool that write pins must run on the provider the install holds a credential for
-# (VD3-02): on the first run (the seed is the channel alone) and on a re-run over a
-# lane-era Drive document alike. The OpenRouter launch is the control: the default
-# aggregator keeps its shipped rows.
+# (VD3-02). The OpenRouter launch is the control: the default aggregator keeps its shipped
+# rows. A re-run over a lane-era Drive document keeps that document's saved Main
+# (``test_a_colab_rerun_over_an_nminus1_document_pins_no_pool_its_saved_main_cannot_run``).
 COLAB_LAUNCHES = {
     "colab_first_run_openai": ({"OPENAI_API_KEY": "present"}, {}),
-    "colab_rerun_over_nminus1_openai": ({"OPENAI_API_KEY": "present"}, N1_DOC),
     "colab_first_run_openrouter": ({"OPENROUTER_API_KEY": "present"}, {}),
 }
+
+
+def test_a_colab_rerun_over_an_nminus1_document_pins_no_pool_its_saved_main_cannot_run(tmp_path, caplog):
+    """The lane-era Drive document saved the then-shipped router Main; the relaunch brings only an
+    OpenAI key. The saved Main stays the owner's value, honestly unavailable (owner 2A), and no panel
+    is derived from OpenAI's own default (4A): nothing is migrated yet — no catalog is pinned, every
+    lane key stays and the read names ``OUROBOROS_MODEL`` — and once the owner names a Main the
+    document migrates whole: that Main's panel plus the legacy deep row, never a provider it lacks."""
+    from ouroboros.colab_bootstrap import build_colab_settings, write_colab_settings
+
+    seed = {**N1_DOC, "OUROBOROS_UPDATE_CHANNEL": "stable"}
+    with caplog.at_level("WARNING"):
+        settings = build_colab_settings({"TELEGRAM_BOT_TOKEN": "present", "OPENAI_API_KEY": "present"},
+                                        runtime_mode="pro", existing=seed, drive_document_present=True)
+    document = json.loads(write_colab_settings(tmp_path / "colab_drive", settings).read_text(encoding="utf-8"))
+    assert document["OUROBOROS_MODEL"] == N1_DOC["OUROBOROS_MODEL"]
+    assert not str(document.get(SUBAGENTS) or "").strip(), "no catalog is pinned"
+    assert {key: document.get(key) for key in m.REVIEW_POOL_MIGRATED_SETTING_KEYS if key in N1_DOC} == {
+        key: N1_DOC[key] for key in m.REVIEW_POOL_MIGRATED_SETTING_KEYS if key in N1_DOC}, "the lane keys wait"
+    assert "OUROBOROS_MODEL" in caplog.text
+    outcome = m.migrate_review_lanes({**document, "OUROBOROS_MODEL": "openai::gpt-5.6-sol"})
+    rows = json.loads(outcome.catalog_after)["items"]
+    assert [row["route"]["target_id"] for row in rows if row.get("review_eligible")] == ["openai::gpt-5.6-sol"] * 3
+    assert [row["route"]["target_id"] for row in rows if not row.get("review_eligible")] == [
+        N1_DOC["OUROBOROS_MODEL_DEEP_SELF_REVIEW"]]
 
 
 @pytest.mark.parametrize("launch", sorted(COLAB_LAUNCHES))

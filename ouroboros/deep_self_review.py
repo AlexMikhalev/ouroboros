@@ -511,9 +511,12 @@ def _retrieving_task(repo_dir: pathlib.Path, drive_root: pathlib.Path, *,
     always inline. Exact matching required sources record that delivery, so
     the reviewer need not reread a document it already received in full."""
     from ouroboros.tools.governance_context import governance_context
+    from ouroboros.tools.review_helpers import REPO_ROOT
     from ouroboros.tools.scope_required_sources import source_text_identity, with_inline_sources
 
-    bible = load_governance_doc(repo_dir, "BIBLE.md", on_missing="silent")
+    # Match inspection_registry: system_repo is installed governance; repo_dir
+    # is the review subject, read through active_workspace/default paths.
+    bible = load_governance_doc(REPO_ROOT, "BIBLE.md", on_missing="silent")
     if not bible.strip():
         raise RuntimeError("BIBLE.md is missing at the repository root — a deep self-review has no constitution to check against")
     # The memory whitelist, inlined byte-exact, and the typed memory fact every
@@ -544,7 +547,7 @@ def _retrieving_task(repo_dir: pathlib.Path, drive_root: pathlib.Path, *,
     memory = {"inlined": sum(1 for d in dispositions.values() if d == "inlined"),
               "total": len(_MEMORY_WHITELIST), "dispositions": dispositions}
     governance = governance_context(
-        repo_dir, surface="deep_self_review", touched_paths=(),
+        REPO_ROOT, surface="deep_self_review", touched_paths=(), subject_root=repo_dir,
         usable_window_tokens=usable_window_tokens, delivery="retrieving",
         checklist_section_text="")
     sources = required_sources if required_sources is not None else [

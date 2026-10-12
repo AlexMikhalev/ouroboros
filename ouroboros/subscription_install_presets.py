@@ -46,7 +46,7 @@ from ouroboros.route_spec import ROUTE_KIND_AGENT_SESSION, ROUTE_KIND_API_MODEL,
 # The marker written beside the applied preset. Its ABSENCE is not authority to
 # apply anything (every pre-preset install lacks it too); the server-side
 # fresh-install latch is. Bumping this string marks a NEW preset generation.
-SUBSCRIPTION_PRESET_VERSION = "3"
+SUBSCRIPTION_PRESET_VERSION = "4"
 PRESET_MARKER_KEY = "OUROBOROS_SUBSCRIPTION_PRESET_VERSION"
 
 HARNESS_CLAUDE = "claude"
@@ -60,7 +60,6 @@ PRESET_HARNESSES: Tuple[str, ...] = (
 )
 
 SURFACE_SUBAGENT = "subagent"
-SURFACE_ADVISORY = "advisory"
 SURFACE_TRIAD = "triad"
 SURFACE_SCOPE = "scope"
 
@@ -74,12 +73,10 @@ _EFFORT_IN_MODEL_ID = frozenset({HARNESS_CURSOR, HARNESS_AGY})
 # different model or to the harness default.
 _MODEL_ALIASES: Dict[str, Dict[str, Tuple[str, ...]]] = {
     HARNESS_CLAUDE: {
-        "opus-5": ("claude-opus-5",),
-        "sonnet-5": ("claude-sonnet-5",),
+        "opus-5.5": ("claude-opus-5-5",),
     },
     HARNESS_CODEX: {
         "gpt-5.6-sol": ("gpt-5.6-sol",),
-        "gpt-5.6-terra": ("gpt-5.6-terra",),
     },
     HARNESS_CURSOR: {
         "grok-4.6": ("cursor-grok-4.6-{effort}", "grok-4.6-{effort}"),
@@ -183,9 +180,9 @@ class SurfacePolicy:
 
 @dataclass(frozen=True)
 class ReviewerHarnessPolicy:
-    """Review-only model choices; task actors have an independent catalog."""
+    """Review-only model choices; task actors have an independent catalog. Only the
+    surfaces that mark rows are resolved: a model no row runs never refuses a preset."""
 
-    advisory: SurfacePolicy
     triad: SurfacePolicy
     scope: SurfacePolicy
 
@@ -196,24 +193,21 @@ def _surface(preference: str, effort: str) -> SurfacePolicy:
 
 _REVIEWER_POLICIES: Dict[str, ReviewerHarnessPolicy] = {
     HARNESS_CLAUDE: ReviewerHarnessPolicy(
-        advisory=_surface("sonnet-5", "low"),
-        triad=_surface("opus-5", "medium"),
-        scope=_surface("opus-5", "medium"),
+        triad=_surface("opus-5.5", "medium"),
+        scope=_surface("opus-5.5", "medium"),
     ),
     HARNESS_CODEX: ReviewerHarnessPolicy(
-        advisory=_surface("gpt-5.6-terra", "medium"),
         triad=_surface("gpt-5.6-sol", "medium"),
         scope=_surface("gpt-5.6-sol", "medium"),
     ),
     HARNESS_CURSOR: ReviewerHarnessPolicy(
-        advisory=_surface("grok-4.6", "medium"),
         triad=_surface("grok-4.6", "medium"),
         scope=_surface("grok-4.6", "high"),
     ),
 }
 
 _TASK_POLICIES: Dict[str, SurfacePolicy] = {
-    HARNESS_CLAUDE: _surface("opus-5", "medium"),
+    HARNESS_CLAUDE: _surface("opus-5.5", "medium"),
     HARNESS_CODEX: _surface("gpt-5.6-sol", "medium"),
     HARNESS_CURSOR: _surface("grok-4.6", "high"),
     HARNESS_AGY: _surface("gemini-3.8-flash", "high"),
@@ -221,7 +215,6 @@ _TASK_POLICIES: Dict[str, SurfacePolicy] = {
 
 _POLICY_HARNESSES = (HARNESS_CLAUDE, HARNESS_CODEX, HARNESS_CURSOR)
 REVIEWER_PRESET_HARNESSES = _POLICY_HARNESSES
-_ADVISORY_ORDER = _POLICY_HARNESSES
 _TRIAD_ORDER = (HARNESS_CLAUDE, HARNESS_CODEX, HARNESS_CURSOR)
 _SCOPE_ORDER = (HARNESS_CODEX, HARNESS_CLAUDE, HARNESS_CURSOR)
 
@@ -238,7 +231,6 @@ def _policy_seat(surface: str, position: int, harness: str) -> PresetSeat:
 def _compile_policy_seats(connected: Sequence[str]) -> Dict[str, Tuple[PresetSeat, ...]]:
     """Apply linear priority rules; no powerset row grows when a harness is added."""
     present = set(connected)
-    advisory = _first_connected(_ADVISORY_ORDER, present)
     scope = _first_connected(_SCOPE_ORDER, present)
 
     triad_harnesses = [harness for harness in _TRIAD_ORDER if harness in present]
@@ -246,7 +238,6 @@ def _compile_policy_seats(connected: Sequence[str]) -> Dict[str, Tuple[PresetSea
         triad_harnesses *= 3
 
     return {
-        SURFACE_ADVISORY: (_policy_seat(SURFACE_ADVISORY, 1, advisory),),
         SURFACE_TRIAD: tuple(
             _policy_seat(SURFACE_TRIAD, position, harness)
             for position, harness in enumerate(triad_harnesses, start=1)
@@ -443,68 +434,119 @@ def _document_catalog_ids(doc: Mapping[str, Any]) -> set[str]:
         return set()
 
 
+def _factory_settings(doc: Mapping[str, Any]) -> Dict[str, Any]:
+    """The configuration a factory row is derived from: ``doc`` over the shipped defaults, its
+    unauthored model slots on their provider proposals and saved ids respelled onto the one
+    exclusive provider — exactly what the runtime makes of the same document. A saved blank Main
+    runs as the runtime reads it (``model_slots._main_model``: the shipped Main)."""
+    from ouroboros.server_runtime import (
+        apply_runtime_provider_defaults, authored_model_slots, propose_unauthored_model_slots,
+    )
+    from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+
+    settings = propose_unauthored_model_slots({**SETTINGS_DEFAULTS, **doc}, authored_model_slots(doc))
+    settings = apply_runtime_provider_defaults(settings)[0]
+    settings["OUROBOROS_MODEL"] = _runtime_main(settings)
+    return settings
+
+
+def _runtime_main(settings: Mapping[str, Any]) -> str:
+    """Main as the runtime runs it: a saved blank Main is ``model_slots._main_model``'s shipped Main
+    (a mapping without the key names no Main; every merged view carries the slot)."""
+    from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+
+    main = settings.get("OUROBOROS_MODEL")
+    return "" if main is None else str(main).strip() or str(SETTINGS_DEFAULTS["OUROBOROS_MODEL"])
+
+
+def role_route_binding(settings: Mapping[str, Any], role: str = "main") -> Dict[str, Any]:
+    """Main's (or Light's) model as a catalog row runs it — the reachable route in full identity
+    (the ``(local)`` label), a managed source's account pin and that role's processing — or ``{}``
+    without access."""
+    from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option, resolve_processing_preference
+    from ouroboros.provider_models import provider_for_model
+
+    model = dict(zip(("main", "light"), _effective_api_models(settings))).get(role, "")
+    if not model:
+        return {}
+    route: Dict[str, Any] = {"kind": ROUTE_KIND_API_MODEL, "target_id": model}
+    try:  # a malformed role map is the settings validator's refusal, never a read-seam crash
+        pin = str(model_role_option(MODEL_ACCOUNTS_KEY, role, settings=dict(settings)) or "")
+        processing = resolve_processing_preference(role, settings=dict(settings))
+    except ValueError:
+        pin = processing = ""
+    if pin and provider_for_model(model) == "claudexor":
+        route["credential_profile_id"] = pin
+    return {"route": route, **({"processing_preference": processing} if processing else {})}
+
+
 def factory_review_rows(doc: Mapping[str, Any]) -> List[Dict[str, Any]]:
     """The factory review pool for THIS settings document, as catalog rows (pure).
 
-    The semantics the lane era's shipped default panel had (frozen in
-    ``review_pool_migration``), minted into the catalog instead of a lane:
-    one exclusive direct provider → its ``DIRECT_PROVIDER_REVIEW_ROLES`` triad;
-    a compatible-only route or a local-only Main → as many twin rows of that
-    one reachable model as the shipped panel had seats (three independent runs
-    of Main, quorum 2 of 3 — what ``get_review_models`` ran for those installs);
-    otherwise OpenRouter's three ``OPENROUTER_REVIEW_DEFAULTS``.
-    Every row is marked (``review_eligible``), ``minted_from: factory_default``,
-    reads natively (the catalog's default delivery), and carries a non-empty
-    effort: the document's ``OUROBOROS_EFFORT_REVIEW`` when it is on the scale,
-    else ``high`` (Astra F7 — no seat loses its effort). Ids are the first free
-    ``review-<n>`` against the document's own catalog. Nothing is read from the
-    process environment; the advisory and deep-review lanes mint nothing (the
-    preflight and system reviewers are rows the author names).
+    The panel follows the Main the document runs (owner 4A), whatever other access sits beside
+    it: a reachable OpenRouter Main → OpenRouter's three ``OPENROUTER_REVIEW_DEFAULTS``; a
+    reachable direct Main → its provider's ``DIRECT_PROVIDER_REVIEW_ROLES`` panel, each seat in
+    its ROLE's whole binding (a Light seat runs Light's, never Main's by a shared model name; a
+    blank or another provider's Light leaves the provider's shipped Light standing in, plain); any other
+    reachable Main (compatible, local, managed) → as many twin rows of it, in its whole binding
+    (``role_route_binding``: ``(local)`` label, account pin, processing), as the shipped panel
+    has seats (three runs, quorum 2 of 3). With no configured access at all the shipped
+    OpenRouter Main keeps its panel (the defaults before any provider is chosen). A Main the
+    configured access cannot run — several direct keys and none chosen, or an explicit route
+    without access — mints nothing rather than a panel derived from another default; the read
+    seam names the setting. Every row is marked (``review_eligible``), ``minted_from:
+    factory_default``, reads natively (the catalog's default delivery), and carries a non-empty
+    effort: the document's ``OUROBOROS_EFFORT_REVIEW`` when it is on the scale, else ``high``
+    (Astra F7). Ids are the first free ``review-<n>`` against the document's own catalog. Nothing
+    is read from the process environment; task actors are ``factory_actor_rows``, never a
+    reviewer template.
     """
     from ouroboros.config import EFFORT_SCALE
-    from ouroboros.provider_models import (
-        DIRECT_PROVIDER_DEFAULTS,
-        compatible_only_main_model,
-        compute_direct_review_models_fallback,
-        migrate_model_value,
-    )
-    from ouroboros.server_runtime import _exclusive_direct_remote_provider, has_remote_provider
+    from ouroboros.provider_models import compute_direct_review_seats, provider_for_model
+    from ouroboros.server_runtime import has_startup_ready_provider
     from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
 
-    settings = dict(doc)
-    provider = _exclusive_direct_remote_provider(settings)
-    if provider:
-        # The provider's role panel around the document's Main (its own default
-        # Main when the document's is not on this provider).
-        main = migrate_model_value(provider, str(settings.get("OUROBOROS_MODEL") or ""))
-        if not main.startswith(f"{provider}::"):
-            main = migrate_model_value(provider, DIRECT_PROVIDER_DEFAULTS.get(provider, {}).get("main", ""))
-        models = compute_direct_review_models_fallback(
-            provider, main, str(settings.get("OUROBOROS_MODEL_LIGHT") or ""))
-    elif compatible := compatible_only_main_model(settings):  # #1116: the one reachable route
-        models = [compatible] * len(OPENROUTER_REVIEW_DEFAULTS["triad"])
-    elif not has_remote_provider(settings) and str(settings.get("USE_LOCAL_MAIN")).lower() in {"true", "1"}:
-        main = str(settings.get("OUROBOROS_MODEL") or "")
-        models = [main] * len(OPENROUTER_REVIEW_DEFAULTS["triad"]) if main else []
-    else:
-        models = list(OPENROUTER_REVIEW_DEFAULTS["triad"])
+    settings = _factory_settings(doc)
+    main, light = settings["OUROBOROS_MODEL"], str(settings.get("OUROBOROS_MODEL_LIGHT") or "")
+    router_panel = list(OPENROUTER_REVIEW_DEFAULTS["triad"])
+    bindings = {role: role_route_binding(settings, role) for role in ("main", "light")}
+    main = bindings["main"]["route"]["target_id"] if bindings["main"] else main
+    router_main = provider_for_model(main) == "openrouter"
+    if bindings["main"] and not router_main:
+        seats = (compute_direct_review_seats(provider_for_model(main), main, light)
+                 or [("main", main)] * len(router_panel))
+    else:  # a router Main reviews on the diverse router panel, never as twins of itself
+        reachable = router_main and (bindings["main"] or not has_startup_ready_provider(settings))
+        seats = [("", model) for model in router_panel] if reachable else []
     effort = str(settings.get("OUROBOROS_EFFORT_REVIEW") or "").strip().lower()
     if effort not in EFFORT_SCALE:
         effort = "high"
     used = _document_catalog_ids(settings)
     rows: List[Dict[str, Any]] = []
-    for model in models:
+    for role, model in seats:
         row_id = _free_review_id(used, "review-")
         used.add(row_id)
+        binding = bindings.get(role) or {}
         rows.append({
             "subagent_id": row_id,
             "recommended_use": _REVIEW_SEAT_RECOMMENDATION,
-            "route": {"kind": ROUTE_KIND_API_MODEL, "target_id": model},
+            "route": dict(binding["route"]) if binding else {"kind": ROUTE_KIND_API_MODEL, "target_id": model},
             "effort": effort,
+            **({"processing_preference": binding["processing_preference"]}
+               if "processing_preference" in binding else {}),
             "review_eligible": True,
             "minted_from": MINTED_FROM_FACTORY_DEFAULT,
         })
     return rows
+
+
+def factory_actor_rows(doc: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """The wizard's API/local task actors for a never-configured install (pure): one Auto
+    generalist on the reachable Main and a scout only for a reachable Light that differs in its
+    whole binding — exactly ``compile_available_subagents`` without sessions, as the wizard runs it,
+    so none without a reachable Main."""
+    available, _diagnostics = compile_available_subagents((), _factory_settings(doc))
+    return configured_subagents_dict(available)["items"] if available is not None else []
 
 
 def connected_preset_harnesses(discoveries: Sequence[HarnessDiscovery]) -> Tuple[str, ...]:
@@ -523,7 +565,7 @@ def _local_model(settings: Mapping[str, Any], slot: str, model: str) -> str:
 
 
 def _effective_api_models(settings: Mapping[str, Any]) -> Tuple[str, str]:
-    main = str(settings.get("OUROBOROS_MODEL") or "").strip()
+    main = _runtime_main(settings)
     light_raw = str(settings.get("OUROBOROS_MODEL_LIGHT") or "").strip()
     light = light_raw or main
     main = _local_model(settings, "MAIN", main) if main else ""
@@ -536,7 +578,7 @@ def _effective_api_models(settings: Mapping[str, Any]) -> Tuple[str, str]:
 
 
 def _actor(
-    row_id: str, recommendation: str, route: RouteSpec, effort: str,
+    row_id: str, recommendation: str, route: RouteSpec, effort: str, processing: str = "",
 ) -> ConfiguredSubagent:
     # `name` is retired (owner decision 1=A): identity is the neutral id plus
     # derived route facts; recommended_use is the one semantic field.
@@ -545,6 +587,7 @@ def _actor(
         recommended_use=recommendation,
         route=route,
         effort=effort,
+        processing_preference=processing,
     )
 
 
@@ -559,11 +602,17 @@ def compile_available_subagents(
     resolved row with its historical pin; both paths deliberately share this
     one composition policy. A minted ACTOR row carries no ``effort`` — Auto, so
     the owner's effort range decides — unless its model id spells the level
-    (``_EFFORT_IN_MODEL_ID``); reviewer seats keep their explicit levels.
+    (``_EFFORT_IN_MODEL_ID``); reviewer seats keep their explicit levels. An
+    API/local row runs its role's whole binding (``role_route_binding``), and a
+    row's identity is that whole binding: rows alike in every setting are one,
+    a Light on Main's model with its own account pin or processing is a second.
+    Main is read as the runtime runs it (a saved blank is the shipped Main); a
+    Light row only joins a session or that Main, so an API-only setup whose Main
+    has no access gets the typed ``main_without_access``, never a Light primary.
     """
     actors: list[ConfiguredSubagent] = []
     diagnostics: list[Dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()  # route kind, target, account pin, processing
 
     for index, row in enumerate(session_rows):
         harness = str(row["harness"])
@@ -572,7 +621,7 @@ def compile_available_subagents(
             str(row["target_id"]),
             str(row.get("credential_profile_id") or "").strip(),
         )
-        identity = (route.kind, route.target_id, route.credential_profile_id)
+        identity = (route.kind, route.target_id, route.credential_profile_id, "")
         if identity in seen:
             continue
         if index == 0:
@@ -587,25 +636,24 @@ def compile_available_subagents(
                              str(row["effort"]) if row.get("effort_in_model_id") else ""))
         seen.add(identity)
 
+    def api_actor(row_id: str, recommendation: str, role: str) -> bool:
+        binding = role_route_binding(settings, role)
+        route = RouteSpec(ROUTE_KIND_API_MODEL, binding["route"]["target_id"],
+                          binding["route"].get("credential_profile_id", ""))
+        processing = binding.get("processing_preference", "")
+        identity = (route.kind, route.target_id, route.credential_profile_id, processing)
+        if identity in seen:
+            return False
+        actors.append(_actor(row_id, recommendation, route, "", processing))
+        seen.add(identity)
+        return True
+
     main, light = _effective_api_models(settings)
-    if not actors and (main or light):
-        route = RouteSpec(ROUTE_KIND_API_MODEL, main or light)
-        actors.append(_actor("primary-builder", PRIMARY_RECOMMENDATION, route, ""))
-        seen.add((route.kind, route.target_id, ""))
-
-    if light:
-        route = RouteSpec(ROUTE_KIND_API_MODEL, light)
-        identity = (route.kind, route.target_id, "")
-        if identity not in seen:
-            actors.append(_actor("fast-scout", SCOUT_RECOMMENDATION, route, ""))
-            seen.add(identity)
-
+    if not actors and main:
+        api_actor("primary-builder", PRIMARY_RECOMMENDATION, "main")
+    scout = bool(actors and light) and api_actor("fast-scout", SCOUT_RECOMMENDATION, "light")
     if len(session_rows) == 1 and main:
-        route = RouteSpec(ROUTE_KIND_API_MODEL, main)
-        identity = (route.kind, route.target_id, "")
-        if identity not in seen:
-            actors.append(_actor("independent-perspective", INDEPENDENT_RECOMMENDATION, route, ""))
-            seen.add(identity)
+        api_actor("independent-perspective", INDEPENDENT_RECOMMENDATION, "main")
 
     if len(session_rows) == 1 and not (main or light):
         diagnostics.append({
@@ -615,7 +663,7 @@ def compile_available_subagents(
                 "Light API/local route to add another real actor."
             ),
         })
-    elif not session_rows and main and light and main == light:
+    elif not session_rows and main and light and not scout:
         diagnostics.append({
             "code": "duplicate_api_routes_omitted",
             "message": "Main and Light resolve to the same route, so no duplicate actor was created.",
@@ -623,6 +671,10 @@ def compile_available_subagents(
 
     if not actors:
         return None, ({
+            "code": "main_without_access",
+            "message": ("Main (OUROBOROS_MODEL) has no access in this setup, and the Light model does not "
+                        "stand in for it: choose a Main model with access or connect an agent subscription."),
+        } if light else {
             "code": "no_available_subagents",
             "message": "No connected session or credentialed API/local model is available.",
         },)
@@ -732,15 +784,15 @@ def compile_install_preset(
     resolved: Dict[str, List[Dict[str, Any]]] = {}
     if reviewer_connected:
         seats = _compile_policy_seats(reviewer_connected)
-        for surface in (SURFACE_ADVISORY, SURFACE_TRIAD, SURFACE_SCOPE):
+        for surface in (SURFACE_TRIAD, SURFACE_SCOPE):
             rows, refusal = _resolve_surface(seats[surface], discovery)
             if refusal is not None:
                 return SubscriptionInstallPreset(connected=connected, refusal=refusal)
             resolved[surface] = rows
         # The review pool IS catalog rows, so an owner draft is extended too
         # (its marked rows are shown with it before the completion write); the
-        # former inline lane had no catalog to live in. The advisory seat mints
-        # nothing: the preflight reviewer is a row the author names.
+        # former inline lane had no catalog to live in. No advisory seat exists:
+        # the preflight reviewer is a row the author names.
         available, ref_diagnostics = _mark_review_rows(
             available, resolved[SURFACE_TRIAD], resolved[SURFACE_SCOPE])
         if ref_diagnostics:
@@ -759,9 +811,6 @@ def compile_install_preset(
         "diagnostics": list(diagnostics),
         "surfaces": {
             SURFACE_SUBAGENT: task_rows,
-            SURFACE_ADVISORY: (
-                resolved[SURFACE_ADVISORY][0] if resolved.get(SURFACE_ADVISORY) else None
-            ),
             SURFACE_TRIAD: resolved.get(SURFACE_TRIAD, []),
             SURFACE_SCOPE: resolved.get(SURFACE_SCOPE, []),
         },
@@ -797,7 +846,6 @@ __all__ = [
     "PRESET_MARKER_KEY",
     "REVIEWER_PRESET_HARNESSES",
     "SUBSCRIPTION_PRESET_VERSION",
-    "SURFACE_ADVISORY",
     "SURFACE_SCOPE",
     "SURFACE_SUBAGENT",
     "SURFACE_TRIAD",
@@ -808,5 +856,7 @@ __all__ = [
     "compile_available_subagents",
     "compile_install_preset",
     "connected_preset_harnesses",
+    "factory_actor_rows",
     "factory_review_rows",
+    "role_route_binding",
 ]

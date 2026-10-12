@@ -300,8 +300,8 @@ def native_first_send_messages(prompt: str) -> List[Dict[str, Any]]:
 
 
 def inspection_registry(root: str, drive_root: Any, task_id: str = "") -> tuple[Any, Any, List[Dict[str, Any]]]:
-    """A fresh registry pinned to ``root``, read-only, with its context and the
-    inspection tool schemas that ride every send of an episode.
+    """A fresh read-only registry with ``root`` as its active subject and the
+    installed repository as ``system_repo`` for canonical governance reads.
 
     Reuses the existing capability machinery wholesale instead of a new
     allowlist mechanism: the ``local_readonly_subagent`` constraint gives
@@ -320,10 +320,12 @@ def inspection_registry(root: str, drive_root: Any, task_id: str = "") -> tuple[
 
     from ouroboros.tool_capabilities import LOCAL_READONLY_SUBAGENT_TOOL_NAMES
     from ouroboros.tools.registry import ToolContext, ToolRegistry
+    from ouroboros.tools.review_helpers import REPO_ROOT
 
     registry = ToolRegistry(repo_dir=_pathlib.Path(root), drive_root=_pathlib.Path(drive_root))
     ctx = ToolContext(
         repo_dir=_pathlib.Path(root),
+        system_repo_dir=REPO_ROOT,
         drive_root=_pathlib.Path(drive_root),
         task_id=str(task_id or "") or None,
         task_lifecycle_bound=False,  # a standalone inspection episode is an operation

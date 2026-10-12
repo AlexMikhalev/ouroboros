@@ -179,12 +179,13 @@ ANTON_EXPECTED_EXECUTIONS = {
 
 # The N-1 fixture (6.113.4, no provider keys, lanes "" and catalog ""): the shipped
 # OpenRouter panel at the document's "high" — the factory rows themselves (one factory
-# source: no scope seat beside them), plus the deep row the legacy key synthesized.
+# source, contract rule 6: so it follows the current shipped triad; no scope seat beside
+# them), plus the deep row the legacy key synthesized.
 N1_EXPECTED_EXECUTIONS = {
     "triad": [
         _seat("slot_1", "api_chat", "google/gemini-3.8-flash", "high", "document", "native", authored=False),
-        _seat("slot_2", "api_chat", "openai/gpt-5.6-terra", "high", "document", "native", authored=False),
-        _seat("slot_3", "api_chat", "anthropic/claude-opus-5", "high", "document", "native", authored=False),
+        _seat("slot_2", "api_chat", "openai/gpt-6.1-sol", "high", "document", "native", authored=False),
+        _seat("slot_3", "api_chat", "anthropic/claude-opus-5.5", "high", "document", "native", authored=False),
     ],
     "scope": [],
     "advisory": _seat("advisory_slot_1", "api_chat", "", "low", "row", "native", authored=False, enabled=True),
@@ -197,6 +198,18 @@ def _executions(document):
     authored = isinstance(raw, str) and bool(raw.strip())
     parsed = m.parse_reviewer_slots(document, raw) if authored else m.factory_lanes(document)
     return m._executions_dict(m.effective_executions(document, parsed, authored=authored))
+
+
+def _read(document):
+    """The document as the loader reads it: the raw-stage translation, then the never-configured
+    cell's factory catalog over that document (``apply_at_read_seam(merged=True)``)."""
+    loaded = cfg.normalize_settings_raw(dict(document))
+    m.apply_at_read_seam(loaded, merged=True)
+    return loaded
+
+
+def _reviewers(items):
+    return [row for row in items if row.get("review_eligible")]
 
 
 def _migrated(document):
@@ -293,7 +306,7 @@ def test_the_owner_message_names_the_snapshot_and_the_rollback_its_before_really
     assert "restore OUROBOROS_SUBAGENTS and OUROBOROS_REVIEWER_SLOTS" in text and "`before`" in text
     assert "no rollback source" in m.owner_message(outcome, "")
 
-    migrated = cfg.normalize_settings_raw(dict(document))
+    migrated = _read(document)
     assert SLOTS not in migrated and migrated[SUBAGENTS]
     before = outcome.snapshot["before"]
     rolled_back = {k: v for k, v in migrated.items() if not str(k).startswith("_")}
@@ -317,10 +330,10 @@ def test_the_nminus1_fixture_migrates_to_the_contract_catalog():
          "route": {"kind": "api_model", "target_id": "google/gemini-3.8-flash"},
          "effort": "high", "review_eligible": True, "minted_from": "factory_default"},
         {"subagent_id": "review-2", "recommended_use": factory,
-         "route": {"kind": "api_model", "target_id": "openai/gpt-5.6-terra"},
+         "route": {"kind": "api_model", "target_id": "openai/gpt-6.1-sol"},
          "effort": "high", "review_eligible": True, "minted_from": "factory_default"},
         {"subagent_id": "review-3", "recommended_use": factory,
-         "route": {"kind": "api_model", "target_id": "anthropic/claude-opus-5"},
+         "route": {"kind": "api_model", "target_id": "anthropic/claude-opus-5.5"},
          "effort": "high", "review_eligible": True, "minted_from": "factory_default"},
         {"subagent_id": "review-4", "recommended_use": LANE_RECOMMENDATION,
          "route": {"kind": "api_model", "target_id": "openai/gpt-5.6-sol-pro"},
@@ -745,9 +758,17 @@ def test_f6_c0_is_the_ordinary_upgrade_of_antons_catalog_without_lanes():
     rows = {entry["subagent_id"]: entry for entry in outcome.snapshot["rows"]}
     assert rows["review-2"]["from_seats"] == ["slot_2"]  # one factory source: no scope seat beside the rows
     assert "advisory" in " ".join(outcome.snapshot["notes"]) and outcome.snapshot["summary"]["helper_rows_minted"] == 0
-    # The panel at the document's "medium" coincides with an existing terra@medium row:
-    # that row is marked (at most once) instead of a new one, the other two are minted.
+    # The panel at the document's "medium" coincides with an existing row of a seat's engine:
+    # that row is marked (at most once) instead of a new one, the other two are minted. Anton's
+    # own terra@medium helper is no longer the shipped middle seat, so it stays a helper; a
+    # copy of the catalog carrying that seat's model keeps the merge pinned.
     doc["OUROBOROS_EFFORT_REVIEW"] = doc["OUROBOROS_EFFORT_SCOPE_REVIEW"] = "medium"
+    outcome, after = _migrated(doc)
+    assert len(after["items"]) == 12 and _marked(after["items"]) == ["review-1", "review-2", "review-3"]
+    rows = json.loads(doc[SUBAGENTS])["items"]
+    next(row for row in rows if row["subagent_id"] == "subagent_a2")["route"]["target_id"] = (
+        OPENROUTER_REVIEW_DEFAULTS["triad"][1])
+    doc[SUBAGENTS] = catalog(*rows)
     outcome, after = _migrated(doc)
     assert len(after["items"]) == 11 and _marked(after["items"]) == ["subagent_a2", "review-1", "review-2"]
     assert {e["subagent_id"]: e["from_seats"] for e in outcome.snapshot["rows"]}["subagent_a2"] == ["slot_2"]
@@ -762,16 +783,23 @@ def test_f6_c0_is_the_ordinary_upgrade_of_antons_catalog_without_lanes():
 def test_m1_a_never_configured_document_reads_the_factory_rows_at_the_seam(document):
     """Contract §1.5, the both-absent cell: an install with neither the lanes key nor a
     catalog (Docker / Colab / a mounted volume without the wizard) ran the shipped default
-    panel; the read seam mints the factory rows with the mark, and the runtime pool reader
-    sees them. The same document read twice is one migration, never a second set of rows."""
+    panel; the loader's merged stage mints the factory rows with the mark (and, with access to
+    run them, the wizard's Auto helpers beside them), and the runtime pool reader sees them.
+    The same document read twice is one migration, never a second set of rows."""
     from ouroboros import reviewer_slot_config as rs
 
     assert m.migration_trigger(document) == m.TRIGGER_NEVER_CONFIGURED
-    loaded = cfg.normalize_settings_raw(dict(document))
+    assert cfg.normalize_settings_raw(dict(document)).get(SUBAGENTS, "") == document.get(SUBAGENTS, ""), (
+        "the raw stage mints no default")
+    loaded = _read(document)
     items = json.loads(loaded[SUBAGENTS])["items"]
     assert _marked(items) == ["review-1", "review-2", "review-3"]
-    assert all(row["minted_from"] == "factory_default" and row["effort"] == "high" for row in items)
-    assert [row["route"]["target_id"] for row in items] == list(OPENROUTER_REVIEW_DEFAULTS["triad"])
+    assert all(row["minted_from"] == "factory_default" and row["effort"] == "high" for row in _reviewers(items))
+    assert [row["route"]["target_id"] for row in _reviewers(items)] == list(OPENROUTER_REVIEW_DEFAULTS["triad"])
+    helpers = [row for row in items if not row.get("review_eligible")]
+    assert [row["subagent_id"] for row in helpers] == (
+        ["primary-builder", "fast-scout"] if "OPENROUTER_API_KEY" in document else [])
+    assert not any(row.get("effort") or row.get("minted_from") for row in helpers)
     pool = rs.review_pool_rows(loaded)
     assert [row.slot_id for row in pool] == ["review-1", "review-2", "review-3"]
     assert rs.review_pool_state(loaded[SUBAGENTS])["state"] == "structured"
@@ -780,7 +808,7 @@ def test_m1_a_never_configured_document_reads_the_factory_rows_at_the_seam(docum
     assert not outcome.error and not outcome.noop
     # Idempotent: the migrated document is a pool document — read again, nothing is re-minted.
     assert m.migrate_review_lanes(dict(loaded)) is None
-    assert cfg.normalize_settings_raw(dict(loaded)) == loaded
+    assert _read(loaded) == loaded
     assert len(cfg.review_pool_migrations_seen()) == 1
     # The owner hears what RUNS, not a migration story about lanes this install never had.
     text = m.owner_message(outcome, "snap.json")
@@ -820,7 +848,7 @@ def test_m1_the_no_settings_file_path_reaches_the_factory_pool(tmp_path, monkeyp
     settings = cfg.load_settings_lock_held(_settings_lock_held=False)
     pool = rs.review_pool_rows(settings)
     assert [row.target_id for row in pool] == list(OPENROUTER_REVIEW_DEFAULTS["triad"])
-    assert all(row["minted_from"] == "factory_default" for row in json.loads(settings[SUBAGENTS])["items"])
+    assert all(row["minted_from"] == "factory_default" for row in _reviewers(json.loads(settings[SUBAGENTS])["items"]))
     (outcome,) = cfg.review_pool_migrations_seen()
     assert outcome.trigger == m.TRIGGER_NEVER_CONFIGURED
     # Read again: the same digest replays the recorded outcome, one set of rows.
@@ -836,17 +864,18 @@ DIRECT_PROVIDER_CELLS = [
 
 def _exactly_the_factory_pool(loaded, document, provider, main):
     """FIX5 M1-direct: the marked rows ARE ``factory_review_rows(document)`` — the provider's
-    three direct rows around its default Main — and nothing else; every seat routes to the
-    provider the document holds a credential for, none to the credential-less OpenRouter ids."""
+    three direct rows around its default Main — and nothing else is marked (the wizard's Auto
+    helpers stand beside them unmarked); every seat routes to the provider the document holds a
+    credential for, none to the credential-less OpenRouter ids."""
     from ouroboros import reviewer_slot_config as rs
     from ouroboros.provider_models import model_has_credentials_in_settings, provider_for_model
-    from ouroboros.subscription_install_presets import factory_review_rows
+    from ouroboros.subscription_install_presets import factory_actor_rows, factory_review_rows
 
     items = json.loads(loaded[SUBAGENTS])["items"]
-    assert items == factory_review_rows(document), items
+    assert items == factory_actor_rows(document) + factory_review_rows(document), items
     assert _marked(items) == ["review-1", "review-2", "review-3"]
-    assert [row["route"]["target_id"] for row in items] == [main] * 3
-    assert all(row["minted_from"] == "factory_default" and row["effort"] == "high" for row in items)
+    assert [row["route"]["target_id"] for row in _reviewers(items)] == [main] * 3
+    assert all(row["minted_from"] == "factory_default" and row["effort"] == "high" for row in _reviewers(items))
     pool = rs.review_pool_rows(loaded)
     assert [(row.slot_id, row.target_id) for row in pool] == [(f"review-{n}", main) for n in (1, 2, 3)]
     assert {provider_for_model(row.target_id) for row in pool} == {provider}
@@ -869,7 +898,7 @@ def test_m1_a_never_configured_direct_provider_document_reads_exactly_its_factor
     if catalog_cell == "blank-string":
         document[SUBAGENTS] = ""
     assert m.migration_trigger(document) == m.TRIGGER_NEVER_CONFIGURED
-    loaded = cfg.normalize_settings_raw(dict(document))
+    loaded = _read(document)
     _exactly_the_factory_pool(loaded, document, provider, main)
     (outcome,) = cfg.review_pool_migrations_seen()
     assert outcome.trigger == m.TRIGGER_NEVER_CONFIGURED and not outcome.error and not outcome.noop
@@ -877,7 +906,7 @@ def test_m1_a_never_configured_direct_provider_document_reads_exactly_its_factor
     assert document == ({key: "present", SUBAGENTS: ""} if catalog_cell == "blank-string" else {key: "present"})
     # Idempotent: the migrated document is a pool document; a second read re-mints nothing.
     assert m.migrate_review_lanes(dict(loaded)) is None
-    assert cfg.normalize_settings_raw(dict(loaded)) == loaded
+    assert _read(loaded) == loaded
     assert len(cfg.review_pool_migrations_seen()) == 1
     text = m.owner_message(outcome, "snap.json")
     assert text.startswith("⚙️ Review pool initialized.") and "3 reviewer rows, 1 distinct models" in text
@@ -903,7 +932,7 @@ def test_m1_the_no_settings_file_path_of_a_direct_provider_reaches_exactly_its_f
     assert [(row.slot_id, row.target_id) for row in pool] == [(f"review-{n}", main) for n in (1, 2, 3)]
     items = json.loads(settings[SUBAGENTS])["items"]
     assert _marked(items) == ["review-1", "review-2", "review-3"]
-    assert all(row["minted_from"] == "factory_default" for row in items)
+    assert all(row["minted_from"] == "factory_default" for row in _reviewers(items))
     assert not {row.target_id for row in pool} & set(OPENROUTER_REVIEW_DEFAULTS["triad"])
     (outcome,) = cfg.review_pool_migrations_seen()
     assert outcome.trigger == m.TRIGGER_NEVER_CONFIGURED
@@ -959,7 +988,7 @@ def test_m1_an_environment_catalog_wins_over_the_factory_rows_of_a_document_that
     monkeypatch.delenv(SUBAGENTS)
     factory = cfg.load_settings_lock_held(_settings_lock_held=False)
     assert _marked(json.loads(factory[SUBAGENTS])["items"]) == ["review-1", "review-2", "review-3"]
-    assert all(row["minted_from"] == "factory_default" for row in json.loads(factory[SUBAGENTS])["items"])
+    assert all(row["minted_from"] == "factory_default" for row in _reviewers(json.loads(factory[SUBAGENTS])["items"]))
 
 
 @pytest.mark.parametrize("document", [
@@ -1154,15 +1183,16 @@ def test_factory_cells_of_a_one_model_install_mint_the_three_runs_of_main(instal
     and a fresh onboarding mint one shape; an OpenRouter install keeps three models."""
     from ouroboros.review_model_routes import adaptive_quorum
 
+    target = main["OUROBOROS_MODEL"] + (" (local)" if install == "local-only" else "")  # the full route identity
     outcome, after = _migrated({SLOTS: "", **main})
     marked = [row for row in after["items"] if row.get("review_eligible")]
     assert [row["subagent_id"] for row in marked] == ["review-1", "review-2", "review-3"], install
-    assert [row["route"]["target_id"] for row in marked] == [main["OUROBOROS_MODEL"]] * 3, install
+    assert [row["route"]["target_id"] for row in marked] == [target] * 3, install
     assert all(row["minted_from"] == "factory_default" and row["effort"] == "high" for row in marked), install
     assert outcome.snapshot["summary"]["rows_marked_after"] == 3 and adaptive_quorum(len(marked)) == 2
     assert outcome.snapshot["summary"]["distinct_models"] == 1, "twins are one engine, disclosed"
     # The same seam on an existing catalog with one row of that engine: marked, not twinned (F6).
-    twin = api_row("mine", main["OUROBOROS_MODEL"], "high")
+    twin = api_row("mine", target, "high")
     _outcome, after = _migrated({SLOTS: "", SUBAGENTS: catalog(twin), **main})
     assert _marked(after["items"]) == ["mine", "review-1", "review-2"], install
     # OpenRouter: three different models, as before.
@@ -1171,29 +1201,42 @@ def test_factory_cells_of_a_one_model_install_mint_the_three_runs_of_main(instal
         OPENROUTER_REVIEW_DEFAULTS["triad"])
 
 
-@pytest.mark.parametrize("install, document", [
+@pytest.mark.parametrize("install, document, seats", [
     ("local Main behind a dead OPENAI_BASE_URL (D1-V04)",
-     {"USE_LOCAL_MAIN": True, "OUROBOROS_MODEL": "local-demo", "OPENAI_BASE_URL": "http://127.0.0.1:9/v1"}),
+     {"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "owner/local.gguf", "OUROBOROS_MODEL": "local-demo",
+      "OPENAI_BASE_URL": "http://127.0.0.1:9/v1"}, 3),
     ("one direct key beside an OpenRouter-style Main (the Colab re-run over N-1)",
-     {"OPENAI_API_KEY": "present", "OUROBOROS_MODEL": "anthropic/claude-opus-5"}),
+     {"OPENAI_API_KEY": "present", "OUROBOROS_MODEL": "anthropic/claude-opus-5"}, 0),
 ])
-def test_d1_v04_a_document_without_lanes_gets_exactly_the_factory_rows_from_one_source(install, document):
+def test_d1_v04_a_document_without_lanes_gets_exactly_the_factory_rows_from_one_source(install, document, seats):
     """D1-V04 / D1-V06: ``factory_lanes`` and ``factory_review_rows`` are ONE source. A
     second provider table once read these documents differently (a bare base URL made
     the panel "remote"; a Main not on the provider kept the OpenRouter ids), so the
     frozen seats minted three OpenRouter rows BESIDE the factory rows: six marked rows
     for the ``""`` lanes key against three for the absent key. Both cells are the same
-    pool now — exactly the factory rows, no second table."""
+    pool now — exactly the factory rows, no second table. A Main the document's access
+    cannot run is named, never replaced by the provider's default (owner 2A/4A): neither
+    cell mints a seat or pins a catalog, so the never-configured read can name the setting."""
     from ouroboros.subscription_install_presets import factory_review_rows
 
     templates = factory_review_rows(document)
     targets = [row["route"]["target_id"] for row in templates]
-    assert len(targets) == 3 and [row.target_id for row in m.factory_lanes(document).triad] == targets, install
+    assert len(targets) == seats and [row.target_id for row in m.factory_lanes(document).triad] == targets, install
     for lanes_cell in ({}, {SLOTS: ""}):
+        if not seats:
+            outcome = m.migrate_review_lanes({**document, **lanes_cell})
+            assert outcome.noop and outcome.catalog_after is None, (install, lanes_cell)
+            assert outcome.snapshot["summary"]["seats_before"] == 0, (install, lanes_cell)
+            continue
         outcome, after = _migrated({**document, **lanes_cell})
         marked = [row for row in after["items"] if row.get("review_eligible")]
         assert [row["route"]["target_id"] for row in marked] == targets, (install, lanes_cell)
-        assert len(after["items"]) == 3 and outcome.snapshot["summary"]["seats_before"] == 3, (install, lanes_cell)
+        assert len(marked) == 3 and outcome.snapshot["summary"]["seats_before"] == 3, (install, lanes_cell)
+        # Only the never-configured cell (no lanes key) adds the wizard's unmarked Auto helpers;
+        # the historical blank-lanes cell migrates exactly as it did.
+        helpers = [row["subagent_id"] for row in after["items"] if not row.get("review_eligible")]
+        assert helpers == ([] if lanes_cell else [row["subagent_id"] for row in
+                                                  m.factory_actor_rows(document)]), (install, lanes_cell)
 
 
 # --- 5. the read seam -----------------------------------------------------------------
@@ -1354,8 +1397,7 @@ def test_without_an_owner_chat_the_snapshot_is_written_but_the_message_waits(boo
     assert len(sent) == 1
 
 
-@pytest.mark.parametrize("document", [N1_DOC, {"OUROBOROS_MODEL": "x/y", "OPENROUTER_API_KEY": "present"}],
-                         ids=["ui-saved-n-minus-1", "never-configured"])
+@pytest.mark.parametrize("document", [N1_DOC], ids=["ui-saved-n-minus-1"])
 def test_n1_the_boot_notice_names_the_environment_pool_in_force_not_the_minted_rows(boot, monkeypatch, document):
     """N1: when the environment's catalog runs in place of the rows the seam minted for a
     document without review settings of its own, the owner is told THAT — which rows run,
@@ -1519,7 +1561,7 @@ def test_a_save_receipts_the_document_it_replaces_not_every_document_the_process
     path = root / "settings.json"
     monkeypatch.setattr(cfg, "DATA_DIR", root)
     monkeypatch.setattr(cfg, "SETTINGS_PATH", path)
-    for unsaved in (dict(N1_DOC), {"OUROBOROS_MODEL": "x/y", "OPENROUTER_API_KEY": "present"}):
+    for unsaved in (dict(N1_DOC), {"OUROBOROS_MODEL": "x/y", "OPENROUTER_API_KEY": "present", SLOTS: ""}):
         cfg.normalize_settings_raw(unsaved)
     path.write_text(json.dumps(anton_document()), encoding="utf-8")
     loaded = cfg.normalize_settings_raw(anton_document())

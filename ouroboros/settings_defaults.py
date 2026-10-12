@@ -31,7 +31,7 @@ CLAUDEXOR_ADMISSION_POLL_SEC = 0.15
 OPENROUTER_DEFAULTS = {
     "main": "google/gemini-3.8-flash",
     "heavy": "",
-    "light": "openai/gpt-5.6-luna",
+    "light": "openai/gpt-6-luna",
     "vision": "",
     "consciousness": "",
     "fallback": "openai/gpt-5.6-luna",
@@ -45,12 +45,12 @@ OPENROUTER_DEFAULTS = {
 OPENROUTER_REVIEW_DEFAULTS = {
     "triad": (
         "google/gemini-3.8-flash",
-        "openai/gpt-5.6-terra",
-        "anthropic/claude-opus-5",
+        "openai/gpt-6.1-sol",
+        "anthropic/claude-opus-5.5",
     ),
+    # Scope and advisory are the retired lanes' values as they shipped, read only by the
+    # retired-key tolerance; the factory pool is the triad (``factory_review_rows``).
     "scope": ("openai/gpt-5.6-terra",),
-    # Routed catalog id (the retired Claude-SDK spelling migrated same-model);
-    # without provider credentials the advisory gate records an audited bypass.
     "advisory": "anthropic/claude-sonnet-5",
 }
 

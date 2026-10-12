@@ -850,16 +850,18 @@ def _load_settings() -> dict:
     return load_settings()
 
 
-def _save_settings(settings: dict) -> None:
+def _save_settings(changes: dict) -> None:
     # The desktop launcher is the owner-controlled writer.  The generic
     # config.save_settings ratchet deliberately makes allow_elevation inert
     # after boot, which is correct for agent-reachable callers but also made a
     # confirmed Cyber Pro selection fall back to Advanced.  Reuse the existing
     # owner writer so the confirmation is honored while its document lock,
     # persistence normalization and other owner-only checks remain in force.
-    from ouroboros.gateway.owner_settings import _owner_write_settings
+    # Only ``changes`` land, on the document as it is under that lock: a merged
+    # read's defaults, environment values and proposals are no choice.
+    from ouroboros.gateway.owner_settings import _owner_update_settings, fields_on_saved_document
 
-    _owner_write_settings(settings)
+    _owner_update_settings(fields_on_saved_document(changes))
 
 
 def _request_runtime_mode_change(mode: str, confirm_fn) -> dict:
@@ -878,8 +880,7 @@ def _request_runtime_mode_change(mode: str, confirm_fn) -> dict:
     )
     if not confirm_fn("Confirm Runtime Mode Change", message):
         return {"ok": False, "error": "Runtime mode change cancelled."}
-    settings["OUROBOROS_RUNTIME_MODE"] = new_mode
-    _save_settings(settings)
+    _save_settings({"OUROBOROS_RUNTIME_MODE": new_mode})
     return {"ok": True, "runtime_mode": new_mode, "restart_required": restart_required}
 
 
@@ -901,8 +902,7 @@ def _request_auto_grant_reviewed_skills_change(enabled: bool, confirm_fn) -> dic
         message = "Disable auto-grant for reviewed skills?"
     if not confirm_fn("Confirm Reviewed Skill Auto-Grant", message):
         return {"ok": False, "error": "Auto-grant setting change cancelled."}
-    settings["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = "true" if new_enabled else "false"
-    _save_settings(settings)
+    _save_settings({"OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS": "true" if new_enabled else "false"})
     return {"ok": True, "enabled": new_enabled}
 
 

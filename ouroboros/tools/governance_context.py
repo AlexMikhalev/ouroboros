@@ -14,7 +14,8 @@ carry inline and which it reaches through a navigation map. Three tiers:
    change touches ``web/``; the review-and-commit protocol chapter always; and
    every DEVELOPMENT chapter whose text mentions a touched file NAME. Bounded by
    :data:`~ouroboros.runtime_limits.REVIEW_GOVERNANCE_INLINE_SHARE` of the
-   reviewer's usable window, largest-relevance-first.
+   reviewer's usable window, largest-relevance-first. Whenever DESIGN is not
+   inlined, every body reviewer receives its generated heading map.
 3. **Map, never whole.** ``docs/ARCHITECTURE.md`` arrives as book navigation for
    every delivery. A PACKET reviewer (a row with no tools of its own)
    additionally receives the top-level sections whose text mentions a touched
@@ -63,7 +64,7 @@ DEVELOPMENT_BOOK_ID = "development"
 ARCHITECTURE_BOOK_ID = "architecture"
 # Always relevant: it is the protocol the reviewer is executing right now.
 REVIEW_PROTOCOL_CHAPTER = "docs/development/05-review-and-commit-protocol.md"
-# The one change class that decides a whole document: DESIGN governs web/ work.
+# Existing whole-DESIGN inline selection; the heading map is body-wide.
 DESIGN_CHANGE_CLASS_PREFIX = "web/"
 
 PACKET_DELIVERY = "packet"
@@ -435,14 +436,17 @@ def governance_context(
                              "no touched file mentioned"))
 
     design_touched = any(path.startswith(DESIGN_CHANGE_CLASS_PREFIX) for path in touched)
-    design_text = ""
-    if design_touched:
-        design_text = load_governance_doc(root, DESIGN_PATH, on_missing="explicit")
+    design_text = load_governance_doc(root, DESIGN_PATH, on_missing="explicit")
+    design_missing = design_text.startswith("[⚠️ OMISSION") or not design_text.strip()
+    if design_missing:
+        rows.append(_row(DESIGN_PATH, 2, "navigation", 0,
+                         design_text or "DESIGN source is empty; content not delivered"))
+    elif design_touched:
         candidates.append(((1, 0, DESIGN_PATH), DESIGN_PATH, DESIGN_PATH,
                            f"a touched path is under {DESIGN_CHANGE_CLASS_PREFIX}"))
     else:
-        rows.append(_row(DESIGN_PATH, 2, "navigation", 0,
-                         f"no touched path under {DESIGN_CHANGE_CLASS_PREFIX}"))
+        rows.append(_row(DESIGN_PATH, 2, "navigation", len(design_text),
+                         "heading map only; no touched path under " + DESIGN_CHANGE_CLASS_PREFIX))
 
     chapter_text = {chapter.source_path: chapter.text for chapter in dev_chapters}
     chapter_text[DESIGN_PATH] = design_text
@@ -483,9 +487,12 @@ def governance_context(
     checklist_pointer = (f"{' and '.join(inlined)} {'are' if len(inlined) > 1 else 'is'} inlined above."
                          if inlined else "NO section of it is inlined for this review.")
     pointers = [f"- `{CHECKLISTS_PATH}` — the complete checklist book; {checklist_pointer}"]
-    if not design_touched:
-        pointers.append(f"- `{DESIGN_PATH}` — the design system; not inlined because no "
-                        f"touched path is under `{DESIGN_CHANGE_CLASS_PREFIX}`.")
+    design_map = ""
+    if DESIGN_PATH not in inline_texts:
+        from ouroboros.context_layout import design_navigation
+
+        design_map = design_navigation(
+            None if design_missing else design_text, source=str(root / DESIGN_PATH))
     navigation = _join([
         "## Governance navigation (index of sources not inlined)" if packet else
         "## Governance navigation (read on demand)",
@@ -493,13 +500,14 @@ def governance_context(
          "delivers. This row has no repository tools: the map below identifies sources and "
          "ranges that were NOT delivered, not additional evidence. State any resulting "
          "uncertainty; do not claim to have read the named sources." if packet else
-        "The rules above are the ones this change activates. Everything below is complete "
-        "on disk and untruncated: read any range with "
+        "The rules above are the ones this change activates. Available sources below remain "
+        "complete on disk and untruncated; missing sources are named. Read any range with "
         '`read_file(root="system_repo", path=..., start_line=A, max_lines=N)`. Ranges are '
         "inclusive and a parent heading includes its descendant group. A document named here "
         "and not inlined was NOT dropped — it is one read away, and the review's governance "
         "manifest records the disposition of each one."),
         "\n".join(pointers),
+        design_map,
         _book_navigation(root, DEVELOPMENT_BOOK_ID, dev_book, load_governance_doc, instructions=not packet),
         _book_navigation(root, ARCHITECTURE_BOOK_ID, arch_book, load_governance_doc, instructions=not packet),
     ])

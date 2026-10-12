@@ -930,8 +930,8 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
                 : (rawMutative ? ({ true: 'true', false: 'false' }[rawMutative] ?? rawMutative) : ''),
             ...collectMcpSettings(),
             // Saved config and live availability are independent: a loaded
-            // actor list is collected even when status is down; only an
-            // unloaded/unparseable editor omits the key on an unrelated save.
+            // actor list is collected even when status is down; an unloaded,
+            // unparseable or untouched generated draft omits the key.
             ...collectSubagentsSettings(),
         };
         Object.assign(body, modelRoles.collect());

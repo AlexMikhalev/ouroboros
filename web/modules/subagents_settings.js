@@ -369,14 +369,18 @@ function reviewPoolSummary(state) {
 const INTENT = {
     draft: { label: 'Unsaved changes', tone: 'neutral' },
     generated: { label: 'Generated draft', tone: 'neutral' },
+    automatic: { label: 'Automatic', tone: 'neutral' },
     saved: { label: 'Saved', tone: 'ok' },
 };
 
 function editorIntent(state, hasPageDirtyIndicator) {
-    // Settings already names the dirty draft in its Save bar; keep this slot empty
-    // there. The wizard has no page indicator and still needs the editor's word.
-    if (state.dirty && hasPageDirtyIndicator) return { label: '', title: '', tone: 'neutral' };
-    const intent = INTENT[state.dirty ? 'draft' : state.baseline] || INTENT.saved;
+    // Nothing loaded claims no intent. Settings already names the dirty draft in its Save bar; keep
+    // this slot empty there. The wizard has no page indicator and still needs the editor's word.
+    if (!state.loaded || (state.dirty && hasPageDirtyIndicator)) return { label: '', title: '', tone: 'neutral' };
+    // The read says what is unsaved: an undecided candidate, or its own catalog following Main (`automatic`).
+    const word = state.dirty ? 'draft'
+        : state.source === 'undecided' ? 'generated' : state.automatic ? 'automatic' : state.baseline;
+    const intent = INTENT[word] || INTENT.saved;
     return { ...intent, title: intent.label };
 }
 
@@ -612,6 +616,7 @@ export function availableSubagentsRenderSignature(state, nowMs = Date.now()) {
         state.setting,
         state.saveAttempted,
         state.baseline,
+        state.automatic,
         state.source,
         diagnosticsText(state.diagnostics),
         state.statusError,
@@ -659,6 +664,7 @@ export function createAvailableSubagentsEditor({
         dirty: false,
         saveAttempted: false,
         baseline: baseline === 'generated' ? 'generated' : 'saved',
+        automatic: false,
         statusError: '',
         catalogKnown: false,
         accountsKnown: false,
@@ -1047,7 +1053,7 @@ export function createAvailableSubagentsEditor({
         revealNewRow(row, row?.querySelector?.('[data-subagent-field="recommended_use"]'));
     }
 
-    function load(value, { source = '', diagnostics = [], allowOmission = false } = {}) {
+    function load(value, { source = '', diagnostics = [], allowOmission = false, automatic = false } = {}) {
         // Invalidate a preview launched for the previous settings document.
         // A late response must never overwrite a freshly loaded configured row.
         state.previewGeneration += 1;
@@ -1066,6 +1072,7 @@ export function createAvailableSubagentsEditor({
         state.reviewCosts = new Map();
         state.allowEmptyReviewPool = false;
         state.source = String(source || '');
+        state.automatic = automatic === true;
         state.diagnostics = diagnostics;
         state.dirty = false;
         state.saveAttempted = false;
@@ -1226,7 +1233,8 @@ export function createAvailableSubagentsEditor({
         setPreviewFailure,
         validate: validationErrors,
         noteSaveAttempt,
-        collect: () => availableSubagentsSavePayload(state),
+        // An untouched generated draft is no owner choice: Save leaves it unsaved (only an edit here authors it).
+        collect: () => (state.source === 'undecided' && !state.dirty ? {} : availableSubagentsSavePayload(state)),
         /** Adopt GET /api/review-pool for the catalog loaded last. */
         setReviewPool(payload) {
             state.reviewPool = payload && typeof payload === 'object' ? payload : null;
@@ -1382,6 +1390,7 @@ export function applySubagentsSettings(settings) {
         source: settingsSource(settings),
         diagnostics: meta.diagnostics || meta.diagnostic || [],
         allowOmission: !availableSubagentsHasExplicitDraft(settings),
+        automatic: meta.automatic === true,
     });
 }
 

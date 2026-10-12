@@ -122,15 +122,13 @@ def test_a_compatible_only_install_reviews_on_main(clean_env):
 
 @pytest.mark.parametrize("other_key", ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL"])
 def test_another_remote_route_keeps_the_existing_defaults(clean_env, other_key):
-    from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
+    """Whatever other access sits beside it — a router key, another direct key, the legacy
+    base — the factory follows the chosen compatible Main (owner 4A)."""
     from ouroboros.subscription_install_presets import factory_review_rows
 
     doc = {"OPENAI_COMPATIBLE_BASE_URL": "https://llm.example/v1", "OUROBOROS_MODEL": "openai-compatible::glm-5.3",
            other_key: "x-key" if other_key != "OPENAI_BASE_URL" else "https://base.example"}
-    models = [row["route"]["target_id"] for row in factory_review_rows(doc)]
-    assert models != ["openai-compatible::glm-5.3"] * 3
-    if other_key == "OPENROUTER_API_KEY":
-        assert models == list(OPENROUTER_REVIEW_DEFAULTS["triad"])
+    assert [row["route"]["target_id"] for row in factory_review_rows(doc)] == ["openai-compatible::glm-5.3"] * 3
 
 
 # --- one-time notices (#1334, #1335) --------------------------------------------------

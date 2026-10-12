@@ -243,9 +243,7 @@ BOOT_RUNTIME_MODE_ENV_KEY = "OUROBOROS_BOOT_RUNTIME_MODE"
 def _resolve_baseline_from_env() -> Optional[str]:
     """Return the parent-pinned runtime-mode baseline inherited via env."""
     raw = os.environ.get(BOOT_RUNTIME_MODE_ENV_KEY, "")
-    if not raw:
-        return None
-    return normalize_runtime_mode(raw)
+    return normalize_runtime_mode(raw) if raw else None
 
 
 def initialize_runtime_mode_baseline(mode: Optional[str] = None) -> None:
@@ -254,13 +252,8 @@ def initialize_runtime_mode_baseline(mode: Optional[str] = None) -> None:
     global _BOOT_RUNTIME_MODE
     if _BOOT_RUNTIME_MODE is not None:
         return
-    if mode is None:
-        # Prefer the parent-exported BOOT key; RUNTIME_MODE is mutable app state.
-        inherited = _resolve_baseline_from_env()
-        if inherited is not None:
-            mode = inherited
-        else:
-            mode = os.environ.get("OUROBOROS_RUNTIME_MODE", "advanced") or "advanced"
+    if mode is None:  # prefer the parent-exported BOOT key; RUNTIME_MODE is mutable app state
+        mode = _resolve_baseline_from_env() or os.environ.get("OUROBOROS_RUNTIME_MODE", "advanced") or "advanced"
     _BOOT_RUNTIME_MODE = normalize_runtime_mode(mode)
     # Propagate the pin to subprocesses.
     os.environ[BOOT_RUNTIME_MODE_ENV_KEY] = _BOOT_RUNTIME_MODE
@@ -826,6 +819,7 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
     compatibility migration is persisted only while that lock is held; the write contains
     the raw mapping plus the normalized pair, never a defaults-merged settings document."""
     from ouroboros.review_pool_migration import apply_at_read_seam, environment_overridable_keys
+    from ouroboros.server_runtime import MODEL_SLOT_KEYS, authored_model_slots, propose_unauthored_model_slots
     loaded: dict = {}
     try:
         raw = _settings_integrity.read_settings_json_verified(SETTINGS_PATH)
@@ -845,10 +839,13 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
     settings = defaults_for_settings_document(raw is not None or SETTINGS_PATH.exists())
     settings.update(loaded)
     env_wins = environment_overridable_keys(raw)  # a seam default for an ABSENT key is not the owner's value
+    env_authored, echo = set(), _settings_integrity.projected_proposals(os.environ)
     for key in SETTINGS_DEFAULTS:
         raw_env = os.environ.get(key)
         if raw_env is None or key in _DISK_AUTHORED_SETTINGS or key in ENDPOINT_AUTHORED_SETTINGS:  # DISK-authored
             continue
+        if raw_env == echo.get(key) or (key in MODEL_SLOT_KEYS and key in loaded):
+            continue  # this tree's own projection of a proposal is no choice; a saved slot (blank too) is the owner's
         if key == "OUROBOROS_RETURN_REASONING" and raw_env == "":
             settings[key] = ""
             continue
@@ -857,9 +854,10 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
         if key in loaded and key not in env_wins and settings.get(key) not in {None, ""}:
             continue
         settings[key] = _coerce_setting_value(key, raw_env)
-    if not isinstance(raw, dict):
-        # No document went through the read seam: the never-configured install (§1.5) takes its factory rows here.
-        apply_at_read_seam(settings)
+        env_authored.add(key)
+    # Unauthored model slots follow the configured access; a never-configured install (§1.5) mints its factory catalog here.
+    propose_unauthored_model_slots(settings, authored_model_slots(loaded) | env_authored)
+    apply_at_read_seam(settings, merged=True)
     return settings
 
 
@@ -967,13 +965,14 @@ def apply_settings_to_env(settings: dict, *, environ=None) -> None:
         # "settings.json over env" clobber). Silence stays silent. ONE fail-closed exception: env may not author
         # the explicit-false owner-Low provenance claim, which would switch the BIBLE P3 scope gate off.
         unauthored = {k for k in _DISK_AUTHORED_SETTINGS if not _settings_file_value(k, "")}
+        before = dict(environ)
         for k in env_keys:
             val = settings.get(k)
             if k in unauthored and not owner_declared_low(
                     environ.get(k) if k == "OUROBOROS_CONTEXT_MODE_AUTO_LOW" else ""):
                 continue
-            if k == "OUROBOROS_RETURN_REASONING" and val == "":
-                environ[k] = ""
+            if k in {"OUROBOROS_RETURN_REASONING", "OUROBOROS_MODEL_FALLBACKS"} and val == "":
+                environ[k] = ""  # a blank that means something (no reasoning, no fallback chain) stays present
                 continue
             if val is None or val == "":
                 environ.pop(k, None)
@@ -983,6 +982,7 @@ def apply_settings_to_env(settings: dict, *, environ=None) -> None:
                 elif isinstance(val, (dict, list)):
                     val = json.dumps(val, ensure_ascii=False, separators=(",", ":"))
                 environ[k] = str(val)
+        _settings_integrity.note_proposal_projection(environ, before)
         if not environ.get("OUROBOROS_REVIEW_ENFORCEMENT"):
             environ["OUROBOROS_REVIEW_ENFORCEMENT"] = str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_ENFORCEMENT"])
         if not environ.get("OUROBOROS_TASK_REVIEW_MODE"):

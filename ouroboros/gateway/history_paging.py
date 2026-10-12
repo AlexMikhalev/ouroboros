@@ -22,6 +22,7 @@ from ouroboros.gateway import _helpers
 from ouroboros.gateway._helpers import _TAIL_WINDOW_START_BYTES
 from ouroboros.gateway.history_segments import segment_summary
 from ouroboros.jsonl_tail import JsonlChainSnapshot
+from ouroboros.project_dialogue import ORIGIN_ADDRESSED_NOTICE_TYPES
 from ouroboros.subagent_messages import CARD_ROW_PLACEMENTS, is_task_card_message, subagent_message_meta
 
 _SOURCES = ("chat", "progress")
@@ -385,9 +386,11 @@ def deferred_before(source, entries, candidates, messages, before):
 
 def _card_content(row, kind, child=lambda _row: False):
     """Task-card content: a host placement, or a child's own words (``child``: by the
-    lineage its task result recovers). What a child delivers stands alone."""
+    lineage its task result recovers). What a child delivers stands alone, and so does
+    a routing notice: its task_id names the task it refused, never its speaker."""
     return row.get("card_row") in CARD_ROW_PLACEMENTS or (
-        kind not in _STANDALONE_KINDS and (is_task_card_message(row) or child(row)))
+        kind not in _STANDALONE_KINDS and kind not in ORIGIN_ADDRESSED_NOTICE_TYPES
+        and (is_task_card_message(row) or child(row)))
 
 
 def _feed_message(row):

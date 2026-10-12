@@ -96,6 +96,18 @@ _PROVIDER_ENV_KEYS = (
 )
 
 
+def _loaded(document: dict) -> dict:
+    """What every route consumer reads for ``document``: its unauthored model slots on their
+    provider proposals (the loader's ``propose_unauthored_model_slots``), then normalization."""
+    from ouroboros.server_runtime import authored_model_slots, propose_unauthored_model_slots
+
+    proposed = propose_unauthored_model_slots(dict(document), authored_model_slots(document))
+    return apply_runtime_provider_defaults(proposed)[0]
+
+
+_SLOTS = ("OUROBOROS_MODEL", "OUROBOROS_MODEL_LIGHT", "OUROBOROS_MODEL_FALLBACKS")
+
+
 def _factory_pool_models(provider_env: dict) -> list:
     """ABI 7.0 (ABI-10) / PR-3: the retired comma keys are never INTRODUCED into
     settings — the direct-provider review adaptation is the factory review POOL
@@ -106,30 +118,28 @@ def _factory_pool_models(provider_env: dict) -> list:
     return [row["route"]["target_id"] for row in factory_review_rows(provider_env)]
 
 
-def test_apply_runtime_provider_defaults_autofills_official_openai_models():
-    normalized, changed, changed_keys = apply_runtime_provider_defaults({
+def test_an_openai_only_install_keeps_saved_slots_and_proposes_only_absent_ones():
+    """Owner decision 2A: saved slots — former defaults included — stay as written (an id the
+    install cannot reach is honestly unavailable, never silently another provider); only the
+    retired Heavy default clears. An ABSENT slot takes the provider's proposal (the loader)."""
+    saved = {
         "OPENAI_API_KEY": "sk-openai",
         "OUROBOROS_MODEL": "anthropic/claude-opus-4.6",
         "OUROBOROS_MODEL_HEAVY": "anthropic/claude-opus-4.6",
         "OUROBOROS_MODEL_LIGHT": "anthropic/claude-sonnet-4.6",
         "OUROBOROS_MODEL_FALLBACKS": "anthropic/claude-sonnet-4.6",
-    })
-
-    assert changed
-    assert set(changed_keys) == {
-        "OUROBOROS_MODEL",
-        "OUROBOROS_MODEL_HEAVY",
-        "OUROBOROS_MODEL_LIGHT",
-        "OUROBOROS_MODEL_FALLBACKS",
     }
-    assert normalized["OUROBOROS_MODEL"] == "openai::gpt-5.6-terra"
+    normalized, changed, changed_keys = apply_runtime_provider_defaults(dict(saved))
+
+    assert (changed, changed_keys) == (True, ["OUROBOROS_MODEL_HEAVY"])
+    assert {key: normalized[key] for key in _SLOTS} == {key: saved[key] for key in _SLOTS}
     assert normalized["OUROBOROS_MODEL_HEAVY"] == ""
-    assert normalized["OUROBOROS_MODEL_LIGHT"] == "openai::gpt-5.6-luna"
-    assert normalized["OUROBOROS_MODEL_FALLBACKS"] == "openai::gpt-5.6-sol"
     # ABI-10: retired comma keys are never introduced into settings.
     assert "OUROBOROS_REVIEW_MODELS" not in normalized
 
-    normalized, changed, changed_keys = apply_runtime_provider_defaults({
+    # A stale retired review list on a raw dict is only respelled; it is never expanded
+    # around a Main the install cannot reach.
+    normalized, _changed, changed_keys = apply_runtime_provider_defaults({
         "OPENAI_API_KEY": "sk-openai",
         "OUROBOROS_MODEL": "google/gemini-3.1-flash-lite",
         "OUROBOROS_MODEL_HEAVY": "google/gemini-3.1-flash-lite",
@@ -139,33 +149,19 @@ def test_apply_runtime_provider_defaults_autofills_official_openai_models():
             "openai/gpt-5.5,google/gemini-3.1-pro-preview,anthropic/claude-opus-4.6"
         ),
     })
-
-    assert changed
-    assert "OUROBOROS_MODEL" in changed_keys
-    assert normalized["OUROBOROS_MODEL"] == "openai::gpt-5.6-terra"
+    assert normalized["OUROBOROS_MODEL"] == "google/gemini-3.1-flash-lite"
     assert normalized["OUROBOROS_MODEL_HEAVY"] == ""
-    assert normalized["OUROBOROS_MODEL_LIGHT"] == "openai::gpt-5.6-luna"
     assert normalized["OUROBOROS_REVIEW_MODELS"] == (
-        "openai::gpt-5.6-terra,openai::gpt-5.6-terra,openai::gpt-5.6-terra"
+        "openai::gpt-5.5,google/gemini-3.1-pro-preview,anthropic/claude-opus-4.6"
     )
     # ABI-10: the scope keys were absent on input — never introduced.
     assert "OUROBOROS_SCOPE_REVIEW_MODEL" not in normalized
     assert "OUROBOROS_SCOPE_REVIEW_MODELS" not in normalized
 
-    # Triad-expansion contract: the SETTINGS_DEFAULTS-fed case — the shipped
-    # mixed-provider triad is foreign to an OpenAI-only install,
-    # so it expands to the new OPENAI_DIRECT_DEFAULTS [main, light, light] fallback.
-    payload = dict(SETTINGS_DEFAULTS)
-    payload["OPENAI_API_KEY"] = "sk-openai"
-    normalized, changed, changed_keys = apply_runtime_provider_defaults(payload)
-
-    assert changed
-    assert "OUROBOROS_MODEL" in changed_keys
-    assert normalized["OUROBOROS_MODEL"] == "openai::gpt-5.6-terra"
-    assert normalized["OUROBOROS_MODEL_HEAVY"] == ""
-    assert normalized["OUROBOROS_MODEL_LIGHT"] == "openai::gpt-5.6-luna"
-    assert normalized["OUROBOROS_MODEL_FALLBACKS"] == "openai::gpt-5.6-sol"
-    # ABI 7.0 (ABI-10): retired comma keys are never introduced into settings.
+    # The loader's view of a document carrying only the key: every slot is a proposal.
+    normalized = _loaded({"OPENAI_API_KEY": "sk-openai"})
+    assert tuple(normalized[key] for key in _SLOTS) == (
+        "openai::gpt-5.6-terra", "openai::gpt-5.6-luna", "openai::gpt-5.6-sol")
     assert "OUROBOROS_REVIEW_MODELS" not in normalized
 
 
@@ -174,7 +170,7 @@ def test_openai_only_factory_pool_stays_on_openai():
     assert pool and all(m.startswith("openai::") for m in pool)
 
 
-def test_apply_runtime_provider_defaults_migrates_saved_openai_values():
+def test_apply_runtime_provider_defaults_respells_saved_openai_values_onto_the_direct_prefix():
     normalized, changed, changed_keys = apply_runtime_provider_defaults({
         "OPENAI_API_KEY": "sk-openai",
         "OUROBOROS_MODEL": "openai/gpt-5.5",
@@ -196,16 +192,15 @@ def test_apply_runtime_provider_defaults_migrates_saved_openai_values():
     }
     assert "OUROBOROS_SCOPE_REVIEW_MODEL" not in normalized
     assert "OUROBOROS_SCOPE_REVIEW_MODELS" not in normalized
-    # Active Main/Light/Fallback defaults migrate. The known shipped Heavy is
-    # product-authored, not custom owner intent, so it does not become an actor.
-    assert normalized["OUROBOROS_MODEL"] == "openai::gpt-5.6-terra"
+    # The same models, respelled onto the one direct provider (owner 2A: no generation
+    # replacement). The known shipped Heavy is product-authored, so it is not an actor.
+    assert normalized["OUROBOROS_MODEL"] == "openai::gpt-5.5"
     assert normalized["OUROBOROS_MODEL_HEAVY"] == ""
-    assert normalized["OUROBOROS_MODEL_LIGHT"] == "openai::gpt-5.6-luna"
-    assert normalized["OUROBOROS_MODEL_FALLBACKS"] == "openai::gpt-5.6-sol"
+    assert normalized["OUROBOROS_MODEL_LIGHT"] == "openai::gpt-4.1"
+    assert normalized["OUROBOROS_MODEL_FALLBACKS"] == "openai::gpt-4.1"
     # v6.36.0 (D4): an explicit provider-matching review list is honored EXACTLY
     # (1 model = 1 slot — a loud single_reviewer_no_diversity degraded mode), not
-    # silently expanded to [main, light, light]. Expansion fires only when the
-    # configured list is empty or contains foreign (non-provider) models.
+    # silently expanded to [main, light, light].
     assert normalized["OUROBOROS_REVIEW_MODELS"] == "openai::gpt-5.5"
 
 
@@ -359,9 +354,8 @@ def test_apply_runtime_provider_defaults_migrates_prior_scope_default_on_general
 
 
 def test_apply_runtime_provider_defaults_normalizes_anthropic_only_setup():
-    """Legacy path: saved settings.json from older versions had claude-opus-4.6 —
-    must still normalize to the Anthropic direct-provider prefix form.
-    This guards backward compatibility for existing user installs."""
+    """Legacy path: saved settings.json from older versions had claude-opus-4.6 — it keeps
+    its model and only moves onto the Anthropic direct-provider spelling."""
     normalized, changed, changed_keys = apply_runtime_provider_defaults({
         "ANTHROPIC_API_KEY": "sk-ant",
         "OUROBOROS_MODEL": "anthropic/claude-opus-4.6",
@@ -377,10 +371,10 @@ def test_apply_runtime_provider_defaults_normalizes_anthropic_only_setup():
         "OUROBOROS_MODEL_LIGHT",
         "OUROBOROS_MODEL_FALLBACKS",
     }
-    assert normalized["OUROBOROS_MODEL"] == "anthropic::claude-opus-5"
+    assert normalized["OUROBOROS_MODEL"] == "anthropic::claude-opus-4-6"
     assert normalized["OUROBOROS_MODEL_HEAVY"] == ""
-    assert normalized["OUROBOROS_MODEL_LIGHT"] == "anthropic::claude-sonnet-5"
-    assert normalized["OUROBOROS_MODEL_FALLBACKS"] == "anthropic::claude-sonnet-5"
+    assert normalized["OUROBOROS_MODEL_LIGHT"] == "anthropic::claude-sonnet-4-6"
+    assert normalized["OUROBOROS_MODEL_FALLBACKS"] == "anthropic::claude-sonnet-4-6"
     # ABI-10: retired comma keys are never introduced into settings.
     assert "OUROBOROS_REVIEW_MODELS" not in normalized
     assert "OUROBOROS_SCOPE_REVIEW_MODEL" not in normalized
@@ -398,14 +392,13 @@ def test_apply_runtime_provider_defaults_normalizes_anthropic_only_setup():
     })
 
     assert changed
-    assert "OUROBOROS_MODEL" in changed_keys
-    assert normalized["OUROBOROS_MODEL"] == "anthropic::claude-opus-5"
+    assert "OUROBOROS_MODEL" not in changed_keys, "a saved former default stays (owner 2A)"
+    assert normalized["OUROBOROS_MODEL"] == "google/gemini-3.1-flash-lite"
     assert normalized["OUROBOROS_MODEL_HEAVY"] == ""
-    assert normalized["OUROBOROS_MODEL_LIGHT"] == "anthropic::claude-sonnet-5"
+    assert normalized["OUROBOROS_MODEL_LIGHT"] == "google/gemini-3.1-flash-lite"
+    assert normalized["OUROBOROS_MODEL_FALLBACKS"] == "anthropic::claude-sonnet-4-6"
     assert normalized["OUROBOROS_REVIEW_MODELS"] == (
-        "anthropic::claude-opus-5,"
-        "anthropic::claude-opus-5,"
-        "anthropic::claude-opus-5"
+        "openai/gpt-5.5,google/gemini-3.1-pro-preview,anthropic::claude-opus-4-6"
     )
 
 
@@ -420,8 +413,8 @@ def test_apply_runtime_provider_defaults_keeps_new_triad_on_openrouter():
     assert not changed
     assert changed_keys == []
     assert normalized["OUROBOROS_MODEL"] == "google/gemini-3.8-flash"
-    assert normalized["OUROBOROS_MODEL_LIGHT"] == "openai/gpt-5.6-luna"
-    assert normalized["OUROBOROS_MODEL_FALLBACKS"] == "openai/gpt-5.6-luna"
+    assert normalized["OUROBOROS_MODEL_LIGHT"] == SETTINGS_DEFAULTS["OUROBOROS_MODEL_LIGHT"]
+    assert normalized["OUROBOROS_MODEL_FALLBACKS"] == SETTINGS_DEFAULTS["OUROBOROS_MODEL_FALLBACKS"]
     # ABI 7.0 (ABI-10): the comma keys are retired settings — a defaults-only
     # payload carries none and none may be introduced.
     assert "OUROBOROS_REVIEW_MODELS" not in normalized
@@ -535,9 +528,9 @@ class TestSettingsSaveWarningContract:
         return warnings
 
     def test_direct_normalization_produces_warning(self):
-        # First save with only OpenAI — direct normalization fires, warning expected
+        # A save with only OpenAI whose slot is respelled onto the direct prefix — warning expected
         old = {}
-        new = {"OPENAI_API_KEY": "sk-openai"}
+        new = {"OPENAI_API_KEY": "sk-openai", "OUROBOROS_MODEL": "openai/gpt-5.5"}
         warnings = self._simulate_save_warning(old, new)
         assert len(warnings) == 1
         assert "Normalized" in warnings[0]
@@ -553,16 +546,10 @@ class TestSettingsSaveWarningContract:
 
 
 def test_apply_runtime_provider_defaults_cloudru_only_elevates_to_direct():
-    """A Cloud.ru-only user (no OpenRouter/OpenAI/Anthropic) must get cloudru::
-    direct routing for main/code AND for the review/scope reviewer slots, so they
-    can fully use Ouroboros (incl. passing tri-model review) with only a Cloud.ru key."""
-    from ouroboros.server_runtime import apply_runtime_provider_defaults
-
-    normalized, changed, changed_keys = apply_runtime_provider_defaults({
-        "CLOUDRU_FOUNDATION_MODELS_API_KEY": "cr-key",
-    })
-    assert changed
-    assert "OUROBOROS_MODEL" in changed_keys
+    """A Cloud.ru-only user (no OpenRouter/OpenAI/Anthropic) whose document authors no model
+    gets cloudru:: proposals for every slot, so they can fully use Ouroboros with only a
+    Cloud.ru key; reviewers come from the factory pool, never from introduced retired keys."""
+    normalized = _loaded({"CLOUDRU_FOUNDATION_MODELS_API_KEY": "cr-key"})
     assert normalized["OUROBOROS_MODEL"].startswith("cloudru::")
     assert "OUROBOROS_MODEL_HEAVY" not in normalized
     # ABI-10: reviewer reachability resolves at READ time, not by introducing
@@ -578,12 +565,8 @@ def test_cloudru_only_factory_pool_stays_on_cloudru():
 
 
 def test_apply_runtime_provider_defaults_minimax_only_uses_current_models():
-    normalized, changed, changed_keys = apply_runtime_provider_defaults({
-        "MINIMAX_API_KEY": "minimax-key",
-    })
+    normalized = _loaded({"MINIMAX_API_KEY": "minimax-key"})
 
-    assert changed
-    assert "OUROBOROS_MODEL" in changed_keys
     assert normalized["OUROBOROS_MODEL"] == "minimax::MiniMax-M3"
     assert "OUROBOROS_MODEL_HEAVY" not in normalized
     assert normalized["OUROBOROS_MODEL_LIGHT"] == "minimax::MiniMax-M2.7"
@@ -600,15 +583,13 @@ def test_minimax_only_factory_pool_is_the_provider_role_panel():
     assert pool == ["minimax::MiniMax-M3", "minimax::MiniMax-M2.7", "minimax::MiniMax-M2.7"]
 
 
-def test_apply_runtime_provider_defaults_cloudru_migrates_populated_shipped_defaults():
-    """The realistic save path: a Cloud.ru-only user whose settings already carry
-    shipped non-cloudru defaults, including the immediately outgoing v6.104 Main
-    and Light values. Every active model/review slot migrates to cloudru::;
-    the product-authored Heavy default is discarded rather than becoming an
-    owner-custom actor."""
-    from ouroboros.server_runtime import apply_runtime_provider_defaults
-
-    normalized, changed, _ = apply_runtime_provider_defaults({
+def test_apply_runtime_provider_defaults_cloudru_keeps_saved_shipped_values():
+    """A Cloud.ru-only document still carrying saved non-cloudru values (shipped defaults of
+    an earlier release among them) keeps them as written — unreachable, so honestly
+    unavailable (owner 2A). The product-authored Heavy default is discarded rather than
+    becoming an owner-custom actor, and the retired scope keys a raw dict may still carry
+    keep their own former-default classification."""
+    saved = {
         "CLOUDRU_FOUNDATION_MODELS_API_KEY": "cr-key",
         "OUROBOROS_MODEL": "x-ai/grok-4.5",
         "OUROBOROS_MODEL_HEAVY": "google/gemini-3.5-flash",
@@ -617,29 +598,21 @@ def test_apply_runtime_provider_defaults_cloudru_migrates_populated_shipped_defa
         "OUROBOROS_REVIEW_MODELS": "openai/gpt-5.5,google/gemini-3.5-flash,anthropic/claude-opus-4.8",
         "OUROBOROS_SCOPE_REVIEW_MODEL": "openai/gpt-5.5",
         "OUROBOROS_SCOPE_REVIEW_MODELS": "openai/gpt-5.5",
-    })
+    }
+    normalized, changed, _ = apply_runtime_provider_defaults(dict(saved))
     assert changed
-    assert normalized["OUROBOROS_MODEL"].startswith("cloudru::")
+    assert {key: normalized[key] for key in _SLOTS} == {key: saved[key] for key in _SLOTS}
     assert normalized["OUROBOROS_MODEL_HEAVY"] == ""
-    assert all(m.startswith("cloudru::") for m in normalized["OUROBOROS_REVIEW_MODELS"].split(","))
+    assert normalized["OUROBOROS_REVIEW_MODELS"] == saved["OUROBOROS_REVIEW_MODELS"]
     assert normalized["OUROBOROS_SCOPE_REVIEW_MODEL"].startswith("cloudru::")
     assert normalized["OUROBOROS_SCOPE_REVIEW_MODELS"].startswith("cloudru::")
 
 
 def test_apply_runtime_provider_defaults_gigachat_only_elevates_to_direct():
-    """A GigaChat-only user (user/password auth, no other provider) must get
-    gigachat:: direct routing for main/code AND for the review/scope reviewer
-    slots — exercises the exclusive-direct path that previously KeyError'd because
-    gigachat lacked a _DIRECT_PROVIDER_AUTO_DEFAULTS entry."""
-    from ouroboros.server_runtime import apply_runtime_provider_defaults
-
-    normalized, changed, changed_keys = apply_runtime_provider_defaults({
-        "GIGACHAT_USER": "user",
-        "GIGACHAT_PASSWORD": "pass",
-    })
-    assert changed
-    assert "OUROBOROS_MODEL" in changed_keys
-    assert normalized["OUROBOROS_MODEL"].startswith("gigachat::")
+    """A GigaChat-only user (user/password auth, no other provider) whose document authors no
+    model gets gigachat:: proposals — exercises the exclusive-direct path that previously
+    KeyError'd because gigachat lacked a _DIRECT_PROVIDER_AUTO_DEFAULTS entry."""
+    normalized = _loaded({"GIGACHAT_USER": "user", "GIGACHAT_PASSWORD": "pass"})
     assert normalized["OUROBOROS_MODEL"] == "gigachat::GigaChat-2-Max"
     assert "OUROBOROS_MODEL_HEAVY" not in normalized
     # ABI-10: retired comma keys are never introduced into settings.
@@ -653,71 +626,58 @@ def test_gigachat_only_factory_pool_stays_on_gigachat():
     assert pool and all(m.startswith("gigachat::") for m in pool)
 
 
-def test_apply_runtime_provider_defaults_gigachat_credentials_migrates_shipped_defaults():
-    """A GigaChat-only user (authorization key) whose settings still carry the
-    shipped (non-gigachat) defaults: active Main/Light and every review/scope
-    reviewer slot migrate; the shipped Heavy is not misclassified as custom."""
-    from ouroboros.server_runtime import apply_runtime_provider_defaults
-
-    normalized, changed, _ = apply_runtime_provider_defaults({
+def test_apply_runtime_provider_defaults_gigachat_credentials_keeps_saved_shipped_values():
+    """A GigaChat-only user (authorization key) whose document still carries saved
+    non-gigachat values keeps them (owner 2A); the shipped Heavy is not misclassified as
+    custom, and the retired scope keys keep their own former-default classification."""
+    saved = {
         "GIGACHAT_CREDENTIALS": "base64-key",
         "OUROBOROS_MODEL": "google/gemini-3.5-flash",
         "OUROBOROS_MODEL_HEAVY": "google/gemini-3.5-flash",
         "OUROBOROS_MODEL_LIGHT": "google/gemini-3.5-flash",
         "OUROBOROS_MODEL_FALLBACKS": "anthropic/claude-sonnet-4.6",
-        "OUROBOROS_REVIEW_MODELS": "openai/gpt-5.5,google/gemini-3.5-flash,anthropic/claude-opus-4.8",
         "OUROBOROS_SCOPE_REVIEW_MODEL": "openai/gpt-5.5",
         "OUROBOROS_SCOPE_REVIEW_MODELS": "openai/gpt-5.5",
-    })
+    }
+    normalized, changed, _ = apply_runtime_provider_defaults(dict(saved))
     assert changed
-    assert normalized["OUROBOROS_MODEL"].startswith("gigachat::")
-    assert normalized["OUROBOROS_MODEL"] == "gigachat::GigaChat-2-Max"
+    assert {key: normalized[key] for key in _SLOTS} == {key: saved[key] for key in _SLOTS}
     assert normalized["OUROBOROS_MODEL_HEAVY"] == ""
-    assert all(m.startswith("gigachat::") for m in normalized["OUROBOROS_REVIEW_MODELS"].split(","))
-    assert normalized["OUROBOROS_SCOPE_REVIEW_MODEL"].startswith("gigachat::")
-    assert normalized["OUROBOROS_SCOPE_REVIEW_MODELS"].startswith("gigachat::")
+    assert normalized["OUROBOROS_SCOPE_REVIEW_MODEL"] == "gigachat::GigaChat-2-Max"
+    assert normalized["OUROBOROS_SCOPE_REVIEW_MODELS"] == "gigachat::GigaChat-2-Max"
 
 
 def test_gigachat_defaults_are_reachable_for_personal_and_legal_scopes():
-    """Ultra is Freemium-personal only; the shipped Max default works for every
+    """Ultra is Freemium-personal only; the shipped Max proposal works for every
     supported auth scope instead of stranding B2B/CORP fresh installs."""
     for scope in ("GIGACHAT_API_PERS", "GIGACHAT_API_B2B", "GIGACHAT_API_CORP"):
-        normalized, changed, _keys = apply_runtime_provider_defaults({
-            "GIGACHAT_CREDENTIALS": "base64-key",
-            "GIGACHAT_SCOPE": scope,
-        })
-        assert changed
+        normalized = _loaded({"GIGACHAT_CREDENTIALS": "base64-key", "GIGACHAT_SCOPE": scope})
         assert normalized["OUROBOROS_MODEL"] == "gigachat::GigaChat-2-Max"
         assert normalized["GIGACHAT_SCOPE"] == scope
 
 
 def test_local_only_install_keeps_light_and_fallback_on_the_local_main_route():
-    """Provider Independence: with NO remote credential, the shipped remote Light /
-    Fallback defaults are cleared so both slots inherit Main (the local route). An
-    explicit choice is never touched, and a remote install keeps the defaults."""
-    from ouroboros.config import SETTINGS_DEFAULTS
-    from ouroboros.server_runtime import apply_runtime_provider_defaults
+    """Provider Independence: with NO remote credential, an UNAUTHORED Light / Fallbacks is
+    proposed blank so both follow Main (the local route); a saved choice — the shipped value
+    included — is never touched (owner 2A), and a remote install proposes the defaults."""
+    from ouroboros.server_runtime import provider_slot_proposals
 
     local_only = {
-        "OUROBOROS_MODEL": SETTINGS_DEFAULTS["OUROBOROS_MODEL"],
         "OUROBOROS_MODEL_HEAVY": "google/gemini-3.5-flash",
-        "OUROBOROS_MODEL_LIGHT": SETTINGS_DEFAULTS["OUROBOROS_MODEL_LIGHT"],
-        "OUROBOROS_MODEL_FALLBACKS": SETTINGS_DEFAULTS["OUROBOROS_MODEL_FALLBACKS"],
         "LOCAL_MODEL_SOURCE": "repo/model.gguf",
         "USE_LOCAL_MAIN": True,
     }
-    out, changed, keys = apply_runtime_provider_defaults(dict(local_only))
+    out = _loaded(local_only)
     assert out["OUROBOROS_MODEL_HEAVY"] == ""
-    assert out["OUROBOROS_MODEL_LIGHT"] == ""
-    assert out["OUROBOROS_MODEL_FALLBACKS"] == ""
-    assert changed and "OUROBOROS_MODEL_LIGHT" in keys
+    assert (out["OUROBOROS_MODEL_LIGHT"], out["OUROBOROS_MODEL_FALLBACKS"]) == ("", "")
 
     explicit = dict(local_only, OUROBOROS_MODEL_LIGHT="local-light")
-    assert apply_runtime_provider_defaults(explicit)[0]["OUROBOROS_MODEL_LIGHT"] == "local-light"
+    assert _loaded(explicit)["OUROBOROS_MODEL_LIGHT"] == "local-light"
+    saved_shipped = dict(local_only, OUROBOROS_MODEL_LIGHT=SETTINGS_DEFAULTS["OUROBOROS_MODEL_LIGHT"])
+    assert _loaded(saved_shipped)["OUROBOROS_MODEL_LIGHT"] == SETTINGS_DEFAULTS["OUROBOROS_MODEL_LIGHT"]
 
     remote = dict(local_only, OPENROUTER_API_KEY="sk-or-test")
-    kept = apply_runtime_provider_defaults(remote)[0]["OUROBOROS_MODEL_LIGHT"]
-    assert kept == SETTINGS_DEFAULTS["OUROBOROS_MODEL_LIGHT"]
+    assert provider_slot_proposals(remote)["OUROBOROS_MODEL_LIGHT"] == SETTINGS_DEFAULTS["OUROBOROS_MODEL_LIGHT"]
 
     local_heavy = dict(
         local_only,
@@ -728,43 +688,25 @@ def test_local_only_install_keeps_light_and_fallback_on_the_local_main_route():
         "google/gemini-3.5-flash"
     )
 
-    # UPGRADE path: a local-only settings file still holding the immediately
-    # outgoing shipped values is just as unreachable and must inherit local Main.
-    upgraded = {
-        "OUROBOROS_MODEL": "local-main",
-        "OUROBOROS_MODEL_LIGHT": "google/gemini-3.6-flash",
-        "OUROBOROS_MODEL_FALLBACKS": "openai/gpt-5.6-luna",
-        "LOCAL_MODEL_SOURCE": "repo/model.gguf",
-        "USE_LOCAL_MAIN": True,
-    }
-    out_upgraded = apply_runtime_provider_defaults(dict(upgraded))[0]
-    assert out_upgraded["OUROBOROS_MODEL_LIGHT"] == ""
-    assert out_upgraded["OUROBOROS_MODEL_FALLBACKS"] == ""
-
 
 def test_local_only_install_keeps_a_slot_the_owner_routed_to_local(monkeypatch):
-    """The shipped-default clearing exists to drop UNREACHABLE remote defaults. A slot
+    """The blank local-only proposal exists to avoid UNREACHABLE remote defaults. A lane
     explicitly routed to local is reachable — and for Fallbacks the model string is the
-    only chain entry, so clearing it would delete the lane rather than inherit Main."""
+    only chain entry, so a blank would delete the lane rather than inherit Main."""
     from ouroboros.config import SETTINGS_DEFAULTS
-    from ouroboros.server_runtime import _clear_shipped_defaults_for_local_only
+    from ouroboros.server_runtime import provider_slot_proposals
 
-    settings = {
+    proposals = provider_slot_proposals({
         "LOCAL_MODEL_SOURCE": "lmstudio",
         "USE_LOCAL_MAIN": False,
         "USE_LOCAL_FALLBACK": True,
-        "OUROBOROS_MODEL_LIGHT": SETTINGS_DEFAULTS["OUROBOROS_MODEL_LIGHT"],
-        "OUROBOROS_MODEL_FALLBACKS": SETTINGS_DEFAULTS["OUROBOROS_MODEL_FALLBACKS"],
-    }
-    changed = _clear_shipped_defaults_for_local_only(settings)
+    })
 
-    assert "OUROBOROS_MODEL_FALLBACKS" not in changed
-    assert settings["OUROBOROS_MODEL_FALLBACKS"] == SETTINGS_DEFAULTS["OUROBOROS_MODEL_FALLBACKS"], (
+    assert proposals["OUROBOROS_MODEL_FALLBACKS"] == SETTINGS_DEFAULTS["OUROBOROS_MODEL_FALLBACKS"], (
         "a locally-routed fallback lane must keep a concrete chain entry"
     )
-    # ...while a slot with NO local flag is still cleared as unreachable.
-    assert "OUROBOROS_MODEL_LIGHT" in changed
-    assert settings["OUROBOROS_MODEL_LIGHT"] == ""
+    # ...while a lane with NO local flag is proposed blank as unreachable.
+    assert proposals["OUROBOROS_MODEL_LIGHT"] == ""
 
 
 def test_the_retired_deep_review_key_is_left_to_the_read_seam():
@@ -778,8 +720,8 @@ def test_the_retired_deep_review_key_is_left_to_the_read_seam():
     for creds in ({"OPENAI_API_KEY": "sk-test"}, {"ANTHROPIC_API_KEY": "sk-test"},
                   {"MINIMAX_API_KEY": "minimax-test"}):
         populated = {**SETTINGS_DEFAULTS, **creds}
-        normalized, _changed, changed_keys = apply_runtime_provider_defaults(populated)
-        assert "OUROBOROS_MODEL" in changed_keys, "the ordinary slots still normalize"
+        normalized = _loaded(creds)
+        assert "::" in normalized["OUROBOROS_MODEL"], "the ordinary slots still take the provider's proposal"
         assert "OUROBOROS_MODEL_DEEP_SELF_REVIEW" not in normalized
         stale = {**populated, "OUROBOROS_MODEL_DEEP_SELF_REVIEW": "openai/gpt-5.5-pro"}
         kept, _c, kept_keys = apply_runtime_provider_defaults(stale)
@@ -788,9 +730,9 @@ def test_the_retired_deep_review_key_is_left_to_the_read_seam():
 
 
 def test_a_fresh_local_first_install_still_authors_safety_light(tmp_path, monkeypatch):
-    """LOCAL-FIRST: LOCAL_MODEL_SOURCE is present at first launch, so the
-    pre-wizard normalization DOES flag changes (it clears the unreachable remote
-    Light/Fallback defaults). The launcher must not persist that on a fresh
+    """LOCAL-FIRST: LOCAL_MODEL_SOURCE is present at first launch, and the
+    pre-wizard normalization DOES flag changes (here it clears a retired shipped
+    Heavy default). The launcher must not persist that on a fresh
     install — the save would create the settings file and silently cost the
     wizard its safety-light authorship. Pins the launcher's actual decision:
     persist only when the file already exists."""
@@ -802,9 +744,10 @@ def test_a_fresh_local_first_install_still_authors_safety_light(tmp_path, monkey
 
     fresh = dict(SETTINGS_DEFAULTS)
     fresh["LOCAL_MODEL_SOURCE"] = "lmstudio"
+    fresh["OUROBOROS_MODEL_HEAVY"] = "google/gemini-3.5-flash"
     _normalized, changed, changed_keys = apply_runtime_provider_defaults(fresh)
     assert changed, "local-first normalization genuinely flags changes"
-    assert "OUROBOROS_MODEL_LIGHT" in changed_keys
+    assert "OUROBOROS_MODEL_HEAVY" in changed_keys
 
     # The launcher's persistence decision, verbatim: changed AND file exists.
     assert not (changed and settings_path.exists()), (

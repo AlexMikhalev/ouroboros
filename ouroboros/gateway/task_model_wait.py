@@ -208,7 +208,7 @@ def _decide(root: Any, body: dict) -> JSONResponse:
         if not applied:
             if action.get("persist_role"):
                 from ouroboros.gateway.owner_settings import _owner_update_settings, settings_document_mutation
-                from ouroboros.model_slots import apply_model_role_override
+                from ouroboros.model_slots import apply_model_role_override, model_role_setting_keys
 
                 if row.get("saved_request_id") != action["request_id"]:
                     def transform(settings):
@@ -220,8 +220,9 @@ def _decide(root: Any, body: dict) -> JSONResponse:
                         transformation_completed = True
                         return value
 
-                    with settings_document_mutation():
-                        _owner_update_settings(transform, boundary=boundary)
+                    with settings_document_mutation():  # a chosen model is authored, the shown default included
+                        _owner_update_settings(transform, boundary=boundary,
+                                               authored_keys=model_role_setting_keys(row["role"]))
                     row = mutate(wait_id,
                                       lambda previous: {**previous, "saved_request_id": action["request_id"]})
             # Re-check after the optional settings write. A persistent owner

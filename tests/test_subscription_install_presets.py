@@ -31,10 +31,12 @@ def _pool_rows(preset):
     return [(row.target_id, row.effort) for row in _pool(preset)]
 
 # Verbatim from the live Claudexor daemon (GET /v2/harnesses/<id>/models,
-# 2026-08-09). Trimmed only of ids no seat can name.
+# 2026-08-09). Trimmed only of ids no seat can name; the Claude generation the
+# refreshed policy names (claude-opus-5-5) is added beside the old one. Codex keeps
+# gpt-5.6-sol: the installed engine's Codex catalog lists no gpt-6.1-sol.
 LIVE_MODELS = {
     "claude": (
-        "sonnet", "opus", "haiku", "fable", "best",
+        "sonnet", "opus", "haiku", "fable", "best", "claude-opus-5-5",
         "claude-fable-5", "claude-sonnet-5", "claude-opus-5", "claude-opus-4-8",
         "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5",
         "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5",
@@ -75,20 +77,17 @@ AGY_COMBINATIONS = (("agy",),) + tuple(
 )
 EXPECTED_SURFACES = {
     "claude": {
-        "subagent": ("claude-opus-5", "medium"),
-        "advisory": ("claude-sonnet-5", "low"),
-        "triad": ("claude-opus-5", "medium"),
-        "scope": ("claude-opus-5", "medium"),
+        "subagent": ("claude-opus-5-5", "medium"),
+        "triad": ("claude-opus-5-5", "medium"),
+        "scope": ("claude-opus-5-5", "medium"),
     },
     "codex": {
         "subagent": ("gpt-5.6-sol", "medium"),
-        "advisory": ("gpt-5.6-terra", "medium"),
         "triad": ("gpt-5.6-sol", "medium"),
         "scope": ("gpt-5.6-sol", "medium"),
     },
     "cursor": {
         "subagent": ("cursor-grok-4.6-high", "high"),
-        "advisory": ("cursor-grok-4.6-medium", "medium"),
         "triad": ("cursor-grok-4.6-medium", "medium"),
         "scope": ("cursor-grok-4.6-high", "high"),
     },
@@ -133,21 +132,19 @@ def test_every_combination_follows_the_declarative_policy(connected):
 
     assert sorted(_pool_rows(preset)) == sorted(_expected_pool(connected))
     assert all(row.is_session for row in _pool(preset))
-    # The advisory seat mints nothing (the preflight reviewer is a row the
-    # author names); it is still resolved and disclosed on the receipt.
-    advisory = preset.receipt["surfaces"]["advisory"]
-    assert (advisory["target_id"], advisory["effort"]) == _target(primary, "advisory")
+    # No advisory seat is resolved: the preflight reviewer is a row the author
+    # names, so a model no row runs can neither refuse the preset nor be receipted.
+    assert "advisory" not in preset.receipt["surfaces"]
     assert preset.receipt["review_pool"] == [row.slot_id for row in _pool(preset)]
 
 
 @pytest.mark.parametrize("connected", COMBINATIONS)
 def test_only_exact_discovery_ids_are_ever_written(connected):
-    """No owner shorthand (``opus-5``, ``terra``, ``grok-4.6``) may survive
+    """No owner shorthand (``opus-5.5``, ``grok-4.6``) may survive
     into the saved value — every model must exist in that harness's live list."""
     preset = compile_install_preset(_discoveries(*connected))
 
     targets = [row.target_id for row in _pool(preset)]
-    targets.append(preset.receipt["surfaces"]["advisory"]["target_id"])
     targets.extend(
         row["route"]["target_id"]
         for row in json.loads(preset.available_subagents)["items"]
@@ -197,7 +194,7 @@ def test_settings_keys_write_new_actor_ssot_and_receipt_not_legacy_singleton():
 
 def test_unresolvable_model_refuses_typed_and_emits_nothing():
     models = dict(LIVE_MODELS)
-    models["claude"] = tuple(m for m in LIVE_MODELS["claude"] if m != "claude-opus-5")
+    models["claude"] = tuple(m for m in LIVE_MODELS["claude"] if m != "claude-opus-5-5")
 
     preset = compile_install_preset(_discoveries("claude", models=models))
 
@@ -206,8 +203,9 @@ def test_unresolvable_model_refuses_typed_and_emits_nothing():
     assert preset.refusal.code == "model_not_in_discovery"
     assert preset.refusal.seat is not None
     assert (preset.refusal.seat.surface, preset.refusal.seat.position) == ("subagent", 1)
-    assert preset.refusal.seat.preference == "opus-5"
-    assert "claude-opus-5" in preset.refusal.candidates
+    assert preset.refusal.seat.preference == "opus-5.5"
+    # The previous generation is still discovered and still never substituted.
+    assert preset.refusal.candidates == ("claude-opus-5-5",) and "claude-opus-5" in models["claude"]
     # Nothing partial: no subagent value, no settings keys at all.
     assert preset.available_subagents == ""
     assert preset.settings_keys() == {}
@@ -296,7 +294,7 @@ def test_receipt_records_what_was_resolved_and_from_where():
     assert receipt["profile_pinned"] is False
     assert receipt["discovery_counts"]["codex"] == len(LIVE_MODELS["codex"])
     assert receipt["capability"]["claude"]["status"] == "ok"
-    assert receipt["surfaces"]["advisory"]["model"] == "claude-sonnet-5"
+    assert "advisory" not in receipt["surfaces"]
     assert len(receipt["surfaces"]["triad"]) == 2
     # Reviewer seats keep their explicit levels on rows of their own; the Auto actors stay actors.
     assert receipt["review_pool"] == ["review-claude", "review-codex"]
@@ -484,7 +482,7 @@ def test_one_harness_plus_distinct_main_and_light_normally_yields_three_real_act
 
     items = json.loads(preset.available_subagents)["items"]
     # One list: the actors are Auto rows (no effort), so the three identical triad seats
-    # mint their own pinned reviewer rows and the scope seat merges. The advisory seat mints nothing.
+    # mint their own pinned reviewer rows and the scope seat merges.
     assert [row["subagent_id"] for row in items] == [
         "primary-builder", "fast-scout", "independent-perspective",
         "review-claude", "review-claude-2", "review-claude-3",
@@ -493,8 +491,8 @@ def test_one_harness_plus_distinct_main_and_light_normally_yields_three_real_act
     assert [row.slot_id for row in _pool(preset)] == ["review-claude", "review-claude-2", "review-claude-3"]
     assert [row.effort for row in _pool(preset)] == ["medium"] * 3
     assert [row["route"]["target_id"] for row in items] == [
-        "claude=claude-opus-5", "openai/gpt-5.6-luna", "openai/gpt-5.6-sol",
-        "claude=claude-opus-5", "claude=claude-opus-5", "claude=claude-opus-5",
+        "claude=claude-opus-5-5", "openai/gpt-5.6-luna", "openai/gpt-5.6-sol",
+        "claude=claude-opus-5-5", "claude=claude-opus-5-5", "claude=claude-opus-5-5",
     ]
     assert [row.get("minted_from") for row in items] == [None, None, None] + ["factory_default"] * 3
 
@@ -579,7 +577,7 @@ def _factory(doc):
 def test_factory_review_rows_mint_the_shipped_panel_for_each_install_class():
     from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
 
-    # OpenRouter (or any non-exclusive remote mix): the three shipped reviewers.
+    # An OpenRouter key: the three shipped reviewers.
     rows = factory_review_rows({"OPENROUTER_API_KEY": "configured"})
     assert [row["route"]["target_id"] for row in rows] == list(OPENROUTER_REVIEW_DEFAULTS["triad"])
     assert [row["subagent_id"] for row in rows] == ["review-1", "review-2", "review-3"]
@@ -592,12 +590,13 @@ def test_factory_review_rows_mint_the_shipped_panel_for_each_install_class():
     minimax = _factory({"MINIMAX_API_KEY": "configured", "OUROBOROS_MODEL": "minimax::MiniMax-M3",
                         "OUROBOROS_MODEL_LIGHT": "minimax::MiniMax-M3-light"})
     assert [effort for _target, effort in minimax] == ["high"] * 3 and len({t for t, _e in minimax}) == 2
-    # The provider's own default Main when the document's Main is not on it.
-    assert len(_factory({"DEEPSEEK_API_KEY": "configured", "OUROBOROS_MODEL": "openai/gpt-5.5"})) == 3
+    # A Main the provider cannot run is named, never replaced by the provider's default (owner 2A/4A).
+    assert _factory({"DEEPSEEK_API_KEY": "configured", "OUROBOROS_MODEL": "openai/gpt-5.5"}) == []
     assert all(t.startswith("deepseek::") for t, _e in _factory({"DEEPSEEK_API_KEY": "configured"}))
-    # A compatible-only route or a local-only Main: the shipped panel's three seats
-    # on the one reachable model (three independent runs of Main; twins are allowed,
-    # the quorum stays 2 of 3) — what ``get_review_models`` ran for those installs.
+    # No router and no single direct provider: the shipped panel's three seats on the
+    # reachable Main in its full route identity (three independent runs; twins are
+    # allowed, the quorum stays 2 of 3) — a compatible route, a local Main (labelled
+    # local, so delegation runs it locally too).
     from ouroboros.review_model_routes import adaptive_quorum
 
     compatible = _factory({"OPENAI_COMPATIBLE_API_KEY": "configured", "OPENAI_COMPATIBLE_BASE_URL": "http://x",
@@ -605,12 +604,14 @@ def test_factory_review_rows_mint_the_shipped_panel_for_each_install_class():
     assert compatible == [("openai-compatible::glm-5.3", "high")] * 3 and adaptive_quorum(len(compatible)) == 2
     local = _factory({"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "owner/model.gguf",
                       "OUROBOROS_MODEL": "owner/local-main"})
-    assert local == [("owner/local-main", "high")] * 3 and adaptive_quorum(len(local)) == 2
+    assert local == [("owner/local-main (local)", "high")] * 3 and adaptive_quorum(len(local)) == 2
     assert [row["subagent_id"] for row in factory_review_rows({"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "o/m.gguf",
                                                                "OUROBOROS_MODEL": "owner/local-main"})] == [
         "review-1", "review-2", "review-3"]
-    # A local-only document without a Main mints nothing (there is no model to run).
-    assert factory_review_rows({"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "o/m.gguf"}) == []
+    # Without a local source the flag routes nowhere: nothing to run. With no configured
+    # access at all the shipped (router) panel stands, as the shipped defaults do.
+    assert factory_review_rows({"USE_LOCAL_MAIN": True}) == []
+    assert _factory({"TOTAL_BUDGET": 5.0}) == [(model, "high") for model in OPENROUTER_REVIEW_DEFAULTS["triad"]]
 
 
 def test_factory_review_rows_take_the_document_effort_and_free_ids():
@@ -622,7 +623,8 @@ def test_factory_review_rows_take_the_document_effort_and_free_ids():
     rows = factory_review_rows(doc)
     assert [row["effort"] for row in rows] == ["medium"] * 3
     assert [row["subagent_id"] for row in rows] == ["review-2", "review-3", "review-4"]
-    assert [row["effort"] for row in factory_review_rows({"OUROBOROS_EFFORT_REVIEW": "bogus"})] == ["high"] * 3
+    assert [row["effort"] for row in factory_review_rows(
+        {"OPENROUTER_API_KEY": "configured", "OUROBOROS_EFFORT_REVIEW": "bogus"})] == ["high"] * 3
 
 
 def test_missing_exact_agy_flash_refuses_without_partial_actor_or_reviewer_output():

@@ -550,11 +550,11 @@ def _onboarding_client(tmp_path):
 def test_the_readiness_probe_never_authors_settings_json(monkeypatch, tmp_path):
     """A GET must never be the first author of settings.json (D-8).
 
-    The fixture is the case that actually persisted: a fresh install whose
-    shipped remote defaults normalization CLEARS because LOCAL_MODEL_SOURCE is
-    present. That write created the file before the owner had answered
-    anything, destroying the fresh-install proof the install presets and the
-    `light` safety default are both gated on.
+    The fixture is the case that actually persisted: a fresh local-first install
+    whose normalization changes a value (today the retired shipped Heavy default it
+    clears). That write created the file before the owner had answered anything,
+    destroying the fresh-install proof the install presets and the `light` safety
+    default are both gated on.
     """
     from ouroboros.config import SETTINGS_DEFAULTS
     from ouroboros.gateway import settings as gw_settings
@@ -564,6 +564,7 @@ def test_the_readiness_probe_never_authors_settings_json(monkeypatch, tmp_path):
     saves: list = []
     fresh_local_first = dict(SETTINGS_DEFAULTS)
     fresh_local_first["LOCAL_MODEL_SOURCE"] = "Qwen/Qwen2.5-7B-Instruct-GGUF"
+    fresh_local_first["OUROBOROS_MODEL_HEAVY"] = "google/gemini-3.5-flash"
 
     # Normalization must still have something to change, or the fixture would
     # prove nothing about persistence.

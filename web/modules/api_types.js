@@ -123,6 +123,7 @@
  * @property {string=} diagnostic
  * @property {Object[]=} diagnostics
  * @property {Object|null=} candidate
+ * @property {boolean=} automatic The read's own unsaved catalog, following Main and access.
  */
 
 /**

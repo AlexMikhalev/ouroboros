@@ -244,49 +244,49 @@ Enter as a line break.
 
 ### Composer owner controls
 
-Two controls in the composer's pill row write a global owner setting rather than
-a fact about the next message: the Nano/Low/Max context mode and the **effort
-range**. Both save at once through their owner endpoint, show the server's refusal
-as a toast and read the one saved value back from `/api/state`, so Main and every
-Project composer show the same thing; the composer is the only place the range is
-shown or edited (Settings has no effort section).
+Two controls in the composer's pill row write a global owner setting rather than a
+fact about the next message: the context mode and the **effort range**. Both save at
+once through their owner endpoint, show the server's refusal as a toast and read the
+one saved value back from `/api/state`, so Main and every Project composer agree;
+Settings has no effort section.
 
-The effort range is a round button (the pills' height) wearing a ring glyph — a
-300° arc whose band is the minimum..maximum and whose dot is the recommended
-level. It opens **inline**, never as a dropdown, into the seven-level strip (None ·
-Low · Medium · High · X-High · Max · Ultra) with two brackets and the recommended
-pill, and nothing else: no title word, no reset. A segment is its word plus
-`--effort-seg-pad` on each side; the pill covers its whole segment with the word
-centred, and the band, the pill and the brackets share one vertical inset, so their
-edges meet. Every handle pushes the ones it meets: a bracket carries the
-recommended level along, the pill carries a bracket past which it moves, a pushed
-bracket stays where it was pushed, and the brackets never cross. A tap inside the
-range sets the recommended level, a tap outside moves the nearer bracket; a drag
-keeps the grab offset and shows whole levels throughout. A stored tier outside the
-seven (`minimal`) shows at the nearest owner tier and is rewritten only when its own
-handle moves.
+Each is a **capsule** of the pills' height — ring, name, value: `Context Max`,
+`Effort X-High`. Closed, Effort names only the recommended level; its ring (a 300°
+arc: band minimum..maximum, dot recommended) and the button's name carry the range.
+Context's ring is three arcs, the chosen one lit: one of three modes, never a fill
+level or capacity. A capsule opens **inline**, never as a dropdown, one at a time;
+its value yields to the strip. Context's is Nano · Low · Max under a glass thumb; a
+choice posts at once and the strip waits for the answer (lowering only while idle,
+outside Cyber Pro). Effort's: seven levels, two brackets, the recommended pill. A
+segment is its word plus `--capsule-seg-pad` a side; the pill covers its segment;
+band, pill and brackets share one vertical inset. Every handle pushes the ones it
+meets, a pushed bracket stays, the brackets never cross. A tap inside the range sets
+the recommended level, outside it the nearer bracket; a drag keeps the grab offset
+on whole levels. A stored `minimal` shows at Low until its handle moves.
 
-**The open strip stays on the composer's line.** It sits beside the pills when it
-fits there (the padding may tighten to `--space-1`); otherwise Swarm and
-Nano/Low/Max step aside while it is open, and it appears and leaves at once with
-them (the padding may tighten to 3 px, the pill's corners tightening with it so it
-still covers its word); only when
-even that does not fit does the strip scroll inside itself, fading on the side that
-hides levels, while the round button stays put. The fit is measured from the row,
-so a Project pane, a phone and a translation need no breakpoint.
+**A mark keeps from a rounded end the clearance it keeps from the straight edges.**
+A pill (the thumb, the recommended pill) is concentric with the capsule, so the band
+inset suffices; a square bracket at the last level would graze the curve, so
+Effort's end gutter also clears it. The gutter is measured into the fit and outlasts
+scrolling and dragging.
 
-**Hover is an accelerator; the press always works.** With a hovering fine pointer
-the strip opens about 160 ms after the pointer arrives and closes a second after it
-leaves a 32 px zone around the control, unless a press pinned it; the same press
-unpins. Touch and keyboard use the press alone: Enter or Space opens and focuses the
-recommended handle, arrows and PageUp/PageDown step a handle, Home and End take it
-to the ends, Esc closes and returns focus to the button, an outside press closes.
-The three handles are sliders whose value text names the level; closed, they leave
-the tab order and the button's name states the range. A change saves when the
-gesture ends, saves run one after another with the last winning, and Send waits
-for a pending save so the next root starts at the level the owner just chose; a
-refused save keeps the draft, says why and returns the control to the saved value —
-unsaved values are never shown as saved.
+**The open strip stays on the composer's line**: beside the others when it fits
+(padding down to `--space-1`), else alone while they step aside (down to 3 px, the
+pill's corners tightening; the name and divider yield first), last scrolling inside
+itself, faded where levels hide. A closed line too narrow drops the names, then
+ellipsizes the longest values, never rings. All is measured, so no breakpoint.
+
+**Hover is an accelerator; the press always works.** With a hovering fine pointer a
+capsule opens ~160 ms after arrival (not while the other is open) and closes a
+second after it leaves a 32 px zone unless a press pinned it; the press unpins.
+Touch and keyboard use the press: Enter or Space opens onto the recommended handle
+or the chosen mode; arrows step a handle (PageUp/PageDown too) or choose the next
+mode, Home/End reach the ends; Esc closes and returns focus to the head; an outside
+press closes. Handles are sliders naming their level; closed, they leave the tab
+order. An effort change saves when the gesture ends, saves run in order (last wins),
+and Send waits for a pending one so the next root starts at that level; a refused
+save keeps the draft, says why and returns to the saved value — unsaved values are
+never shown as saved.
 
 ### `.muted`
 
@@ -554,28 +554,26 @@ revision; this counter is not a guarantee of delivery durability.
   them. Where a row is shown decides, never its kind: an incident shown alone as
   a System message counts, one shown in a card does not. A placed row is card
   content even where the page has not loaded its card and shows it alone.
-- **Read:** only once the newest message is painted in the visible room with
-  the reader at it — on screen, clear of the header and composer, normally at
-  the bottom of the conversation with nothing newer to load. Being at the bottom
-  is not enough when later card rows or the owner's own messages pushed it above
-  the fold. Opening a room, or new messages arriving, while the reader is
-  elsewhere leaves the dot; scrolling to the newest message, `Scroll to latest
-  message`, or showing the page or window again clears it. Collapsed cards need
-  not be expanded. A question opened from its Main mirror is shown first; landing on it
-  is not reading the newer messages below it. The newest message is the one that
-  arrived last: a late answer keeps the time it was written and takes that place
-  in the conversation, so it is read only once it is itself on screen, clear of
-  the header and composer — above the loaded messages, after `Load more history` shows
-  it — and never while the room cannot tell which message arrived last, as
-  while the newest line of the conversation is still being written. A
-  damaged persisted row can leave this unknown until the history is repaired or
-  a newer standalone message arrives; while the unread room is open, existing
-  state refreshes recheck the source. A message that later card rows and the
-  owner's own messages pushed past the newest page is read the same way. A room
-  holding no standalone message is read at the bottom once the history reader
-  reaches its clean start, through the bounded search or `Load more history`.
-  An old child's final whose lineage is available only on another history page
-  can also keep the dot after the readable conversation has been shown.
+- **Read:** only after a covering history read paints the newest-arrived message
+  on screen in the visible room, clear of header and composer. Being at the
+  bottom is insufficient when later cards or owner messages buried it. Opening
+  an unread room therefore lands on that standalone message, once the read names
+  it on the loaded page; a read room opens at the bottom. This is one opening
+  intent, cancelled by a reader's gesture, never a jump on later reads or new
+  arrivals. A question opened from its Main mirror has priority; showing that
+  question does not read newer messages elsewhere. Collapsed cards need not open.
+  The newest message is the one that arrived last: a late answer keeps its written
+  time and chronological place. If it is beyond the loaded page, opening retains
+  the bottom and the honest gap; `Load more history` reaches it. While reading
+  elsewhere the dot remains until that message is shown by scrolling, `Scroll to
+  latest message`, or returning to the page/window; opening alone never clears it.
+  Unknown newest arrivals — an unfinished last line or damaged persisted row —
+  acknowledge nothing. Existing state refreshes recheck an open unread room until
+  history is repaired or newer standalone content arrives. A room with no
+  standalone message is read at the bottom only after the reader reaches its
+  clean start, through bounded search or `Load more history`. An old child's final
+  whose lineage becomes available only on another history page can also retain
+  the dot after the readable conversation has been shown.
 - **Several clients** share one read cursor that only moves forward: a room read
   on one client stops showing the dot on the others at their next state
   refresh, and nothing read is shown unread again.

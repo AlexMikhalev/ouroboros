@@ -381,7 +381,8 @@ def test_every_owner_endpoint_reaches_the_same_normalized_read(isolated_settings
             )
         }
 
-    assert _callers(owner_mod, "_owner_read_settings_raw") == {"_owner_update_settings"}
+    # ``_owner_settings_document`` is that one reader's authored-document view (the save's provenance input).
+    assert _callers(owner_mod, "_owner_read_settings_raw") == {"_owner_update_settings", "_owner_settings_document"}
     readers = _callers(settings_mod, "_owner_read_settings_raw") | _callers(
         settings_mod, "_owner_update_settings")
     assert readers == {

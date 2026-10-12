@@ -751,15 +751,15 @@
   },
   {
     "id": "test_swarm_and_context_dom_present",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer_owner_controls.js",
     "kind": "contains",
-    "value": "data-mode=\"low\""
+    "value": "const CONTEXT_MODES = ['nano', 'low', 'max'];"
   },
   {
     "id": "test_swarm_and_context_dom_present",
-    "path": "web/modules/chat.js",
+    "path": "web/modules/composer_owner_controls.js",
     "kind": "contains",
-    "value": "data-mode=\"max\""
+    "value": "role=\"radio\" tabindex=\"-1\" aria-checked=\"false\" data-mode=\"${mode}\""
   },
   {
     "id": "test_swarm_and_context_dom_present",
@@ -831,13 +831,13 @@
     "id": "test_context_segmented_css_exists",
     "path": "web/style.css",
     "kind": "contains",
-    "value": ".chat-context-mode[data-context-mode=\"max\"] .chat-seg[data-mode=\"max\"]"
+    "value": ".chat-context-mode .chat-seg[aria-checked=\"true\"]"
   },
   {
     "id": "test_context_segmented_css_exists",
     "path": "web/style.css",
     "kind": "contains",
-    "value": ".chat-context-mode[data-context-mode=\"low\"] .chat-seg[data-mode=\"low\"]"
+    "value": ".chat-context-mode[data-context-mode=\"low\"] {"
   },
   {
     "id": "test_swarm_armed_marker_css",
@@ -873,7 +873,7 @@
     "id": "test_context_segment_click_handler",
     "path": "web/modules/composer_owner_controls.js",
     "kind": "contains",
-    "value": "event.target.closest('.chat-seg')"
+    "value": "event.target?.closest?.('.chat-seg')"
   },
   {
     "id": "test_context_segment_click_handler",

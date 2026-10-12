@@ -83,6 +83,13 @@ def test_naming_the_documented_default_starts_exactly_like_omitting_it(
         roots[1], acting=False, monkeypatch=monkeypatch, start_kwargs=named_default, access="readonly")
     assert "execution" not in explicit
     assert payload["access"] == "readonly"
+    # These requests use different repositories. Keep the honest missing-DESIGN
+    # disclosure and normalize only its exact source address before comparison.
+    for request, root in ((omitted, roots[0]), (explicit, roots[1])):
+        source = str(root / "repo/docs/DESIGN.md")
+        assert source in request["instructions"]
+        assert "No DESIGN content or navigation delivered" in request["instructions"]
+        request["instructions"] = request["instructions"].replace(source, "<selected-repo>/docs/DESIGN.md")
     assert {key: value for key, value in explicit.items() if key != "scope"} == {
         key: value for key, value in omitted.items() if key != "scope"}
 

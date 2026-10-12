@@ -91,6 +91,7 @@ def build_plan_review_system_prompt(
     architecture_locator: str = "docs/ARCHITECTURE.md",
     architecture_nav_map: Optional[str] = None,
     governance_by_retrieval: bool = False,
+    design_nav_map: Optional[str] = None,
 ) -> str:
     """Findings-only reviewer stance with optional brainstorming, not a competing
     plan or an issue quota. Governance pack per the owner-approved
@@ -106,7 +107,9 @@ def build_plan_review_system_prompt(
     prompt is compact by contract (`review_execution` — a delegated reviewer retrieves with
     its own tools, D12), so a constitutional pack names both documents as MANDATORY full
     reads at their resolvable locators instead of inlining ~500k chars; the documents must
-    still exist (same typed failure)."""
+    still exist (same typed failure). ``design_nav_map`` is supplied only for
+    own-body work, including recognized body copies; it is navigation, not
+    delivered DESIGN content or a claim that a reviewer read its rules."""
     parts = [
         "You are one independent reviewer of an INTENTION — a plan spec — before the work starts. "
         "The work may be code, research, a deliverable, a computer-use flow, or an action in the "
@@ -177,8 +180,8 @@ def build_plan_review_system_prompt(
             )
     else:
         parts.append(
-            "This plan does not touch the Ouroboros system repository; the constitutional pack and "
-            "the architecture reference are named on-demand pointers — request either as "
+            "The constitutional pack and the architecture reference are named on-demand "
+            "pointers for this plan — request either as "
             f"`need_evidence` with locator `{str(bible_locator or 'BIBLE.md').strip()}` or "
             f"`{str(architecture_locator or 'docs/ARCHITECTURE.md').strip()}` if you need it, or "
             "with `::lines=A-B` for one section; the host attaches what its evidence policy "
@@ -195,6 +198,14 @@ def build_plan_review_system_prompt(
             )
         else:
             parts.append("\n⚠️ OMISSION NOTE: ARCHITECTURE navigation map not supplied by the host.\n")
+    if design_nav_map:
+        parts.append("\n" + design_nav_map + "\n")
+        parts.append(
+            "Read relevant original DESIGN sections with your own tools.\n" if governance_by_retrieval else
+            "This reviewer has no repository tools. Relevant DESIGN text must be supplied as "
+            "evidence; if absent, request it with `need_evidence` using the source locator above "
+            "and `::lines=A-B`. A heading map is not those excerpts.\n"
+        )
     return "\n".join(parts)
 
 

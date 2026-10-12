@@ -647,3 +647,26 @@ for (const [name, models, expected] of [
         if (name === 'main-edited') assert.equal(body.OUROBOROS_MODEL, 'zai::owner-main');
     });
 }
+
+// Owner 4A: a fresh local-only setup proposes no unreachable remote Light or Fallbacks — blank
+// Light follows the local Main and blank Fallbacks is no chain (the server's own proposal). An
+// owner's edit is saved as typed; with a router key beside the local runtime, the shipped
+// router Light and Fallbacks are reachable and stay the proposal.
+test('a fresh local-only setup saves Light and Fallbacks that follow the local Main', async () => {
+    const local = { 'local-source': '/models/local-test.gguf' };
+    const routerDefaults = BOOTSTRAP.modelDefaults.openrouter;
+    const body = await finishFromAccounts(FRESH, 'local-only-slots', { inputs: local, localMode: 'all' });
+    assert.deepEqual([body.LOCAL_ROUTING_MODE, body.OUROBOROS_MODEL, body.OUROBOROS_MODEL_LIGHT, body.OUROBOROS_MODEL_FALLBACKS],
+        ['all', routerDefaults.main, '', '']);
+    const edited = await finishFromAccounts(FRESH, 'local-only-edited', { inputs: local, localMode: 'all',
+        models: { 'light-model': 'owner-light' } });
+    assert.deepEqual([edited.OUROBOROS_MODEL_LIGHT, edited.OUROBOROS_MODEL_FALLBACKS], ['owner-light', '']);
+    const initialState = { ...BOOTSTRAP.initialState, localSource: '/models/local-test.gguf', localRoutingMode: 'all',
+        mainModel: 'owner-main', lightModel: 'owner-light', fallbackModel: 'owner-fallback' };
+    const reopened = await finishFromAccounts({ ...BOOTSTRAP, freshInstall: false, initialState }, 'local-only-saved');
+    assert.deepEqual([reopened.OUROBOROS_MODEL, reopened.OUROBOROS_MODEL_LIGHT, reopened.OUROBOROS_MODEL_FALLBACKS],
+        ['owner-main', 'owner-light', 'owner-fallback']);
+    const mixed = await finishFromAccounts(FRESH, 'local-fallback-router', { localMode: 'fallback',
+        inputs: { ...local, 'openrouter-key': 'sk-or-v1-test-not-a-secret' } });
+    assert.deepEqual([mixed.OUROBOROS_MODEL_LIGHT, mixed.OUROBOROS_MODEL_FALLBACKS], [routerDefaults.light, routerDefaults.fallback]);
+});

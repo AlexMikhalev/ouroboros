@@ -1156,13 +1156,25 @@ def _capture_context_core(
             book_text[book_id] = ""
     architecture_md = book_text["architecture"]
     development_md = book_text["development"]
+    from ouroboros.context_layout import task_design_navigation
+
+    # DESIGN follows the selected body, not document names or task prose. Capture
+    # it once for every mode; its root belongs after the shared cache prefix.
+    design_ctx = ctx if ctx is not None else SimpleNamespace(
+        repo_dir=env.repo_dir, system_repo_dir=getattr(env, "system_repo_dir", None),
+        drive_root=env.drive_root, budget_drive_root=getattr(env, "budget_drive_root", None),
+        workspace_root=task.get("workspace_root"), workspace_mode=task.get("workspace_mode", ""),
+        task_metadata=task.get("metadata") or task, project_id=task.get("project_id", ""),
+        is_direct_chat=bool(task.get("_is_direct_chat")),
+    )
+    design_nav = task_design_navigation(design_ctx, task)
 
     if declared:
         return _capture_declared_context_core(
             env, memory, task, ctx, runtime_builder=build_runtime_section,
             user_builder=build_user_content, captured_at=captured_at, base_prompt=base_prompt,
             bible_md=bible_md, architecture_md=architecture_md, development_md=development_md,
-            books=books, book_errors=book_errors,
+            books=books, book_errors=book_errors, design_nav=design_nav,
         )
 
     # A fork is an execution boundary, not a second mind.  Keep the agent's
@@ -1234,6 +1246,8 @@ def _capture_context_core(
     # rides only where the view holds it: a child or nanny reads it by knowledge_read.
     head_parts = (build_knowledge_sections(context_env, project_id=resolve_project_id(task),
                                            include_pattern_body=not is_child) if view_spec.knowledge else [])
+    if design_nav:
+        head_parts.append(design_nav)
 
     deep_review_path = context_env.drive_path("memory/deep_review.md")
     try:

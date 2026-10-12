@@ -341,8 +341,9 @@ function navigationHarness({ pendingWork }) {
     const instance = () => {
         const inst = {
             page: { hidden: false, isConnected: true, dataset: {} }, generation: 0, draft: 'Yes, after the tag',
-            refreshes: 0, destroyed: false, latestShown: 0, transientCloses: 0,
-            hasPendingWork: () => pendingWork, hasPaintedHistory: () => true, showLatest() { this.latestShown += 1; },
+            refreshes: 0, destroyed: false, latestShown: 0, transientCloses: 0, arrivals: [],
+            hasPendingWork: () => pendingWork, hasPaintedHistory: () => true,
+            showLatest(options) { this.latestShown += 1; this.arrivals.push(options?.arrive === true); },
             closeTransient() { this.transientCloses += 1; },
             cancelHistoryPaint() { this.generation += 1; },
             destroy() { this.destroyed = true; this.page.isConnected = false; },
@@ -444,6 +445,24 @@ for (const pendingWork of [true, false]) {
         assert.equal(reopened.draft, 'Yes, after the tag', 'the reopened room keeps its draft');
     });
 }
+
+test('only an unread room opened from its row lands on what arrived last', async () => {
+    const h = navigationHarness({ pendingWork: true });
+    await h.api.open();
+    const room = h.built[0];
+    assert.deepEqual(room.arrivals, [true], 'unread: the opening lands on its newest arrival (owner decision 2026-10-11)');
+    h.api.close();
+    h.context.state.projectSeenRevision.p1 = 5;
+    await h.api.open();
+    assert.deepEqual(room.arrivals, [true, false], 'a read room reopens at its newest message, as before');
+    h.api.close();
+    h.context.state.projectSeenRevision.p1 = 4;
+    const revealed = h.api.open({ openOnly: true, taskId: 't1', quizId: 'q1' });
+    await flush();
+    assert.deepEqual(room.arrivals, [true, false], 'a question opened from Main lands on the question');
+    h.held[0](true);
+    await revealed;
+});
 
 test('a question reveal still in progress keeps withholding the read of its own showing', async () => {
     const h = navigationHarness({ pendingWork: false });

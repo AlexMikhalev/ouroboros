@@ -156,22 +156,15 @@ def build_colab_settings(
     for key, value in (models or {}).items():
         if key in _COLAB_MODEL_OVERRIDE_KEYS and value:
             document[key] = str(value)
-    if document:
-        # The Drive document is an install's settings document, so it is read the way
-        # every reader reads one: the raw-stage normalization (coercion, retention fold,
-        # review-cycle seed, retired purge, slot rename, secret repair, the review-pool
-        # migration) runs BEFORE the defaults are merged — after the merge the renamed key
-        # is already present as its default and the customization under the former key is
-        # lost, then written back to Drive as the owner's choice. The freshly collected
-        # secrets and explicit model overrides are IN that document: the factory reviewer
-        # rows the migration mints for an install without review settings of its own are
-        # derived from the provider the document holds credentials for, so a Colab launch
-        # with one direct provider (OpenAI only) gets that provider's panel, not OpenRouter
-        # rows no key can run, pinned on Drive by this very write. Private sentinel keys
-        # stay out of the document.
-        settings.update({
-            k: v for k, v in normalize_settings_raw(document).items() if not str(k).startswith("_")
-        })
+    # The Drive document is an install's settings document, so it is read the way
+    # every reader reads one: the raw-stage normalization (coercion, retention fold,
+    # review-cycle seed, retired purge, slot rename, secret repair, the historical
+    # review-lane migration) runs BEFORE the defaults are merged — after the merge the
+    # renamed key is already present as its default and the customization under the
+    # former key is lost, then written back to Drive as the owner's choice. Private
+    # sentinel keys stay out of the document.
+    loaded = {k: v for k, v in normalize_settings_raw(document).items() if not str(k).startswith("_")} if document else {}
+    settings.update(loaded)
     if github_repo:
         settings["GITHUB_REPO"] = github_repo
     settings["TOTAL_BUDGET"] = float(total_budget)
@@ -183,12 +176,18 @@ def build_colab_settings(
     )
     if network_password:
         settings["OUROBOROS_NETWORK_PASSWORD"] = network_password
-    # Route model slots to the configured provider (same SSOT the desktop
-    # onboarding wizard uses): an OpenAI-only / Anthropic-only / Cloud.ru-only
-    # Colab config gets correct provider model defaults instead of OpenRouter-style
-    # ones. Explicitly supplied model overrides above are preserved.
-    from ouroboros.server_runtime import apply_runtime_provider_defaults
+    # Slots the document does not author take the configured provider's proposals (the
+    # loader's rule): an OpenAI-only Colab gets OpenAI's ids, while saved values and the
+    # explicit model overrides above stay. The freshly collected secrets are in the
+    # document, so a first launch's factory catalog (never-configured cell) is minted from
+    # the provider it holds credentials for and pinned on Drive by this very write.
+    from ouroboros.review_pool_migration import apply_at_read_seam
+    from ouroboros.server_runtime import (
+        apply_runtime_provider_defaults, authored_model_slots, propose_unauthored_model_slots,
+    )
+    propose_unauthored_model_slots(settings, authored_model_slots(loaded))
     settings, _changed, _changed_keys = apply_runtime_provider_defaults(settings)
+    apply_at_read_seam(settings, merged=True)
     return settings
 
 

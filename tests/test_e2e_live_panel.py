@@ -3,18 +3,28 @@ task and evolution at medium, written into every paid lane's settings; ``--produ
 own defaults in place and the stub lane keeps its loopback rows. The panel IS the review pool: catalog rows
 marked Reviewer. The isolated settings builder drops the retired lane-era keys, so a panel written under them
 vanished and the paid stand silently reviewed with the factory rows; what a lane runs is read back through the
-product's read seam (``normalize_settings_raw`` -> ``review_pool_rows``)."""
+product's read seam (``normalize_settings_raw``, then the loader's merged stage -> ``review_pool_rows``)."""
 from __future__ import annotations
 
 import json
 
 from devtools.e2e_live import run_live_lanes, scenarios
-from ouroboros.config import normalize_settings_raw
+from ouroboros.config import normalize_settings_raw as _normalize_raw
 from ouroboros.review_model_routes import adaptive_quorum
 from ouroboros.reviewer_slot_config import review_pool_rows
 from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
 
 FAKE_KEY = "sk-or-v1-e2e-live-test-key-value-never-printed-0123456789"
+
+
+def normalize_settings_raw(document: dict) -> dict:
+    """The document as the loader reads it: the raw translation, then the never-configured
+    cell's factory catalog over that (credential-carrying) document."""
+    from ouroboros.review_pool_migration import apply_at_read_seam
+
+    loaded = _normalize_raw(document)
+    apply_at_read_seam(loaded, merged=True)
+    return loaded
 
 
 def test_the_stand_panel_is_a_pool_of_three_families_in_marked_catalog_rows():

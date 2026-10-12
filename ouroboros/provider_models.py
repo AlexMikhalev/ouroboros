@@ -6,7 +6,7 @@ deep_self_review.py)."""
 from __future__ import annotations
 
 
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from ouroboros.model_slots import ResolvedModelTarget, parse_fallback_chain
 from ouroboros.settings_defaults import OPENROUTER_DEFAULTS, OPENROUTER_REVIEW_DEFAULTS, SETTINGS_DEFAULTS  # noqa: F401
@@ -273,6 +273,24 @@ def fallback_candidate_targets(active_model: str = "", *, preserve_slots: bool =
     )
 
 
+def compatible_endpoint(value: Callable[[str], str]) -> tuple[str, str]:
+    """``(api_key, base_url)`` of the OpenAI-compatible lane, one pair on every path.
+
+    A dedicated ``OPENAI_COMPATIBLE_BASE_URL`` travels only with its own key (blank = an
+    endpoint without auth); without it the legacy ``OPENAI_BASE_URL`` travels only with
+    ``OPENAI_API_KEY``. Neither pair borrows the other's key. ``value`` reads one stripped setting."""
+    if base := value("OPENAI_COMPATIBLE_BASE_URL"):
+        return value("OPENAI_COMPATIBLE_API_KEY"), base
+    return value("OPENAI_API_KEY"), value("OPENAI_BASE_URL")
+
+
+def compatible_endpoint_configured(value: Callable[[str], str]) -> bool:
+    """Readiness of that pair: the dedicated endpoint (its key optional), or the legacy endpoint
+    with its key. A dedicated key without its endpoint configures nothing."""
+    key, base = compatible_endpoint(value)
+    return bool(base and (key or value("OPENAI_COMPATIBLE_BASE_URL")))
+
+
 def provider_has_credentials(provider: str) -> bool:
     """Whether a route is configured; a managed engine's live readiness is separate."""
     if provider == "claudexor":
@@ -280,10 +298,7 @@ def provider_has_credentials(provider: str) -> bool:
     if provider == "local":
         return True
     if provider == "openai-compatible":
-        compat = str(runtime_setting("OPENAI_COMPATIBLE_API_KEY", "") or "").strip()
-        legacy_key = str(runtime_setting("OPENAI_API_KEY", "") or "").strip()
-        legacy_base = str(runtime_setting("OPENAI_BASE_URL", "") or "").strip()
-        return bool(compat or (legacy_key and legacy_base))
+        return compatible_endpoint_configured(lambda key: str(runtime_setting(key, "") or "").strip())
     if provider == "gigachat":
         creds = str(runtime_setting("GIGACHAT_CREDENTIALS", "") or "").strip()
         user = str(runtime_setting("GIGACHAT_USER", "") or "").strip()
@@ -304,10 +319,7 @@ def provider_has_credentials_in_settings(provider: str, settings: dict) -> bool:
     if provider == "local":
         return bool(get("LOCAL_MODEL_SOURCE"))
     if provider == "openai-compatible":
-        return bool(
-            get("OPENAI_COMPATIBLE_BASE_URL")
-            or (get("OPENAI_API_KEY") and get("OPENAI_BASE_URL"))
-        )
+        return compatible_endpoint_configured(get)
     if provider == "gigachat":
         return bool(
             get("GIGACHAT_CREDENTIALS")
@@ -663,6 +675,19 @@ def compute_direct_review_models_fallback(
     review_runs: int = 3,
 ) -> list[str]:
     """Compile a direct-provider review panel from declarative role names."""
+    return [model for _role, model in compute_direct_review_seats(
+        provider, main_model, light_model, review_runs=review_runs)]
+
+
+def compute_direct_review_seats(
+    provider: str,
+    main_model: str,
+    light_model: str = "",
+    *,
+    review_runs: int = 3,
+) -> list[tuple[str, str]]:
+    """The same panel as ``(role, model)`` seats: ``role`` is the owner slot a seat runs (``main``,
+    or ``light`` for a Light of this provider), '' where the provider's shipped Light stands in."""
     if provider not in DIRECT_PROVIDER_DEFAULTS:
         return []
     provider_prefix = f"{provider}::"
@@ -671,10 +696,10 @@ def compute_direct_review_models_fallback(
         return []
     light = migrate_model_value(provider, light_model) if light_model else ""
     default_light = migrate_model_value(provider, DIRECT_PROVIDER_DEFAULTS[provider].get("light", ""))
-    light_slot = light if light.startswith(provider_prefix) else default_light
-    role_models = {"main": main, "light": light_slot or main}
+    seats = {"main": ("main", main), "light": ("light", light) if light.startswith(provider_prefix)
+             else ("", default_light) if default_light else ("main", main)}
     roles = DIRECT_PROVIDER_REVIEW_ROLES.get(provider, ("main", "light", "light"))
-    compiled = [role_models.get(role, main) for role in roles]
+    compiled = [seats.get(role, seats["main"]) for role in roles]
     count = max(1, int(review_runs or 3))
     return [compiled[index % len(compiled)] for index in range(count)]
 

@@ -449,6 +449,45 @@ def test_permanent_switch_uses_existing_owner_writer_once(live_wait, monkeypatch
     assert (root / "settings.json").stat().st_mtime_ns == stamp
 
 
+@pytest.mark.serial
+@pytest.mark.parametrize("surface, role, key", [
+    ("web", "main", "OUROBOROS_MODEL"), ("host", "reviewer:main", "OUROBOROS_MODEL"),
+    ("web", "light", "OUROBOROS_MODEL_LIGHT"), ("host", "fallback:0", "OUROBOROS_MODEL_FALLBACKS")])
+def test_permanent_switch_to_the_shown_default_authors_the_slot(live_wait, monkeypatch, surface, role, key):
+    """Keeping a model is a choice even when it is the default an unsaved slot shows: the card saves
+    it, and the next task keeps it after an access change moves the slots nobody chose. An
+    unrelated owner write beside it still authors no slot."""
+    from ouroboros import config
+    from ouroboros.gateway.owner_settings import _owner_update_settings, fields_on_saved_document
+    from ouroboros.provider_models import ANTHROPIC_DIRECT_DEFAULTS
+    from ouroboros.subagent_runtime import apply_task_start_settings
+
+    root, _transport, _client, controller, _events, _decide = live_wait
+    path = root / "settings.json"
+    monkeypatch.setattr(config, "SETTINGS_PATH", path)
+    for name in (*config.SETTINGS_DEFAULTS, "OUROBOROS_MODEL_FALLBACK"):
+        monkeypatch.delenv(name, raising=False)
+    path.write_text(json.dumps({"OPENROUTER_API_KEY": "sk-or-present-key"}))
+    _owner_update_settings(fields_on_saved_document({"OUROBOROS_TOOL_TIMEOUT_SEC": 77}))
+    assert key not in json.loads(path.read_text())
+    chosen = config.SETTINGS_DEFAULTS[key]
+    row = {"wait_id": "wait-one", "revision": 1, "task_attempt": 1, "state": "waiting", "role": role}
+    model_wait.mutate_wait(root, "task-one", "wait-one", lambda _: row)
+    controller.waits["wait-one"] = dict(row)
+    with _decision_clients(root) as clients:
+        response = clients[surface](_action_for({**row, "task_id": "task-one"}, "switch", model=chosen,
+                                                credential_profile_id="", use_local=False, persist_role=True))
+    assert response.status_code == 202 and response.json()["saved"] is True
+    document = json.loads(path.read_text())
+    assert document[key] == chosen
+    del document["OPENROUTER_API_KEY"]
+    path.write_text(json.dumps({**document, "ANTHROPIC_API_KEY": "sk-ant-present-key"}))
+    started = apply_task_start_settings().settings
+    assert started[key] == chosen
+    other = "OUROBOROS_MODEL_LIGHT" if key == "OUROBOROS_MODEL" else "OUROBOROS_MODEL"
+    assert started[other] == ANTHROPIC_DIRECT_DEFAULTS["light" if key == "OUROBOROS_MODEL" else "main"]
+
+
 def test_invalid_persistent_choice_and_failed_revalidation_do_not_wedge_action(live_wait, monkeypatch):
     from ouroboros import config, model_slots
 

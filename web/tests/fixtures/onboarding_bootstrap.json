@@ -398,7 +398,7 @@
     "consciousnessModel": "",
     "deepseekKey": "",
     "fallbackModel": "openai/gpt-5.6-luna",
-    "lightModel": "openai/gpt-5.6-luna",
+    "lightModel": "openai/gpt-6-luna",
     "localChatFormat": "",
     "localContextLength": 16384,
     "localFilename": "",
@@ -472,10 +472,17 @@
       "main": "deepseek::deepseek-v4-pro",
       "vision": ""
     },
+    "direct-multi": {
+      "consciousness": "",
+      "fallback": "",
+      "light": "",
+      "main": "",
+      "vision": ""
+    },
     "local": {
       "consciousness": "",
-      "fallback": "openai/gpt-5.6-luna",
-      "light": "openai/gpt-5.6-luna",
+      "fallback": "",
+      "light": "",
       "main": "google/gemini-3.8-flash",
       "vision": ""
     },
@@ -504,7 +511,7 @@
     "openrouter": {
       "consciousness": "",
       "fallback": "openai/gpt-5.6-luna",
-      "light": "openai/gpt-5.6-luna",
+      "light": "openai/gpt-6-luna",
       "main": "google/gemini-3.8-flash",
       "vision": ""
     },
@@ -519,6 +526,9 @@
   "modelSuggestions": [
     "google/gemini-3.8-flash",
     "x-ai/grok-4.6",
+    "openai/gpt-6.1-sol",
+    "openai/gpt-6-luna",
+    "anthropic/claude-opus-5.5",
     "openai/gpt-5.6-terra",
     "openai/gpt-5.6-sol",
     "openai/gpt-5.6-luna",

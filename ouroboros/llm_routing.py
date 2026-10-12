@@ -22,6 +22,7 @@ from ouroboros.model_wait import dispatch_deadline_remaining_sec
 from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS
 from ouroboros.provider_models import (
     DEEPSEEK_BASE_URL,
+    compatible_endpoint,
     resolve_zai_base_url,
     PROVIDER_PREFIXES,
     normalize_anthropic_model_id,
@@ -465,20 +466,9 @@ class _ProviderRoutingMixin:
             }
 
         if provider == "openai-compatible":
-            compatible_key = (configured("OPENAI_COMPATIBLE_API_KEY", "") or "").strip()
-            compatible_base_url = (configured("OPENAI_COMPATIBLE_BASE_URL", "") or "").strip()
-            legacy_base_url = (configured("OPENAI_BASE_URL", "") or "").strip()
-            legacy_key = (configured("OPENAI_API_KEY", "") or "").strip()
-            # A request-local mapping is authoritative as a PAIR: when its
-            # dedicated compatible endpoint is present, an explicitly empty
-            # compatible key must not be rehydrated from the legacy OpenAI key.
-            # Ordinary env-based chat keeps the historical per-field fallback.
-            if explicit_settings and compatible_base_url:
-                api_key = compatible_key
-                base_url = compatible_base_url
-            else:
-                api_key = compatible_key or legacy_key
-                base_url = compatible_base_url or legacy_base_url
+            # One pair on every path (request-local mapping and ambient settings alike):
+            # a dedicated endpoint never borrows the legacy OpenAI key.
+            api_key, base_url = compatible_endpoint(lambda key: str(configured(key, "") or "").strip())
             return {
                 "provider": provider,
                 "resolved_model": resolved_model,

@@ -312,3 +312,47 @@ def test_wizard_consumer_keeps_the_reviewer_box_in_place(role_ui):
     assert _box(box) == start and page.evaluate("document.activeElement === window.reviewerNode")
     assert card.locator("[data-subagent-details] > summary").inner_text() == "Details & history"
     roles.capture(page, "quiet-wizard-1095")
+
+
+def test_the_toolbar_says_automatic_for_the_reads_own_catalog_and_saved_for_a_saved_one(subscription_ui, tmp_path,
+                                                                                          monkeypatch):
+    """The real page over a real Settings read: a never-configured install's factory catalog reads Automatic (it
+    follows Main and access) until the owner edits it, when the Save bar names the draft; the same catalog saved —
+    equal to the factory's row for row — reads Saved. The word is the read's fact, never inferred from the rows."""
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from ouroboros import config as cfg
+    from ouroboros import review_pool_migration
+    from ouroboros.gateway import settings as settings_mod
+
+    ui = subscription_ui
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(review_pool_migration, "_MIGRATIONS_SEEN", {})
+    for key in cfg.SETTINGS_DEFAULTS:
+        monkeypatch.delenv(key, raising=False)
+    app = Starlette(routes=[Route("/api/settings", endpoint=settings_mod.api_settings_get, methods=["GET"])])
+    app.state.drive_root = app.state.repo_dir = tmp_path
+
+    def agents_over(document):
+        cfg.SETTINGS_PATH.write_text(json.dumps(document), encoding="utf-8")
+        ui["settings"].clear()
+        ui["settings"].update(TestClient(app).get("/api/settings").json())
+        page = ui["new_page"]()
+        page.goto(ui["url"] + "/#settings")
+        page.locator('[data-settings-tab="agents"]').click()
+        page.wait_for_selector("[data-subagent-row]")
+        return page, page.locator("[data-subagents-intent]")
+
+    page, intent = agents_over({"ANTHROPIC_API_KEY": "sk-ant-present-key"})
+    assert ui["settings"]["_meta"]["available_subagents"]["automatic"] is True and intent.inner_text() == "Automatic"
+    roles.capture(page, "intent-automatic")
+    page.locator('[data-subagent-field="recommended_use"]').first.fill("Owner words.")
+    assert intent.inner_text() == "" and page.locator("#settings-unsaved-indicator").is_visible()
+    roles.capture(page, "intent-automatic-edited")
+    factory = ui["settings"]["OUROBOROS_SUBAGENTS"]
+    page, intent = agents_over({"ANTHROPIC_API_KEY": "sk-ant-present-key", "OUROBOROS_SUBAGENTS": factory})
+    assert ui["settings"]["_meta"]["available_subagents"]["automatic"] is False and intent.inner_text() == "Saved"
+    roles.capture(page, "intent-saved-factory-equal")

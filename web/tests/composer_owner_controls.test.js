@@ -1,7 +1,9 @@
-// The composer's owner controls (docs/DESIGN.md "Composer owner controls"): the effort
-// range's handle math, the open/pin state machine with and without a hovering pointer,
-// keyboard, serialized saves with a refused save returning to the server's value, the
-// one global value from /api/state, teardown — and the context-mode toggle it took over.
+// The composer's owner controls (docs/DESIGN.md "Composer owner controls"): two labelled
+// capsules. The effort range's handle math, the open/pin state machine with and without a
+// hovering pointer, keyboard, serialized saves with a refused save returning to the server's
+// value, the one global value from /api/state, teardown; the context capsule's three modes, its
+// save and a scrolling strip that keeps the chosen mode in view; one capsule open at a time, and
+// the names that give way on a narrow line.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -98,9 +100,15 @@ test('handle math: every handle pushes the ones it meets; min and max never cros
     assert.equal(nearestHandle({ min: 3, rec: 3, max: 3 }, 4), 'max');
 });
 
-test('the control mounts after the pills, closed, with three sliders out of the tab order and the ring glyph', () => {
+test('the control mounts after the pills, closed: ring, name and the recommended level only; three sliders out of the tab order', () => {
     const m = mount();
     assert.equal(m.el.dataset.open, 'false');
+    assert.ok(m.el.classList.contains('chat-capsule'));
+    assert.match(m.el.innerHTML, /class="chat-capsule-name">Effort</);
+    // Closed, the capsule names only the recommended level: no range in words (the ring and the
+    // button's name carry the range).
+    assert.equal(m.el.querySelector('.chat-capsule-value').textContent, 'Medium');
+    assert.equal(m.el.querySelector('.chat-capsule-value').dataset.i18nSkip, '', 'a catalog word the overlay leaves alone');
     assert.equal(m.el.getAttribute('data-effort-range'), '', 'the i18n DOM scope of the strip words');
     assert.equal(m.head.getAttribute('aria-expanded'), 'false');
     // The recommended level may go anywhere (it pushes the brackets); a bracket stops at the other one.
@@ -117,7 +125,7 @@ test('the control mounts after the pills, closed, with three sliders out of the 
     assert.equal(m.head.getAttribute('aria-label'), m.head.title, 'the closed button says the state, not just "Effort"');
     assert.match(m.el.querySelector('[data-ring-band]').getAttribute('d'), /^M[\d.]+ [\d.]+ A70 70 0 0 1 /);
     assert.equal(m.segs.length, 7);
-    // The strip is the seven levels alone: no word "Effort", no separator, no reset button.
+    // The strip is the seven levels alone: no title word of its own, no separator element, no reset button.
     for (const gone of ['.chat-effort-label', '.chat-effort-sep', '.chat-effort-reset']) assert.equal(m.el.querySelector(gone), null, gone);
     assert.deepEqual(m.segs.map((seg) => seg.dataset.in), ['false', 'true', 'true', 'true', 'false', 'false', 'false']);
     assert.deepEqual(m.segs.map((seg) => seg.dataset.rec), ['false', 'false', 'true', 'false', 'false', 'false', 'false']);
@@ -131,6 +139,7 @@ test('/api/state is the one global value: it paints every composer, a stored min
     assert.deepEqual(m.control.shown(), { min: 1, rec: 3, max: 6 });
     assert.deepEqual(m.control.stored(), { min: 'minimal', recommended: 'high', max: 'ultra' });
     assert.equal(m.handles.min.getAttribute('aria-valuetext'), 'Low');
+    assert.equal(m.el.querySelector('.chat-capsule-value').textContent, 'High', 'the closed capsule follows the saved level');
     m.control.syncState({ context_mode: 'max' });
     assert.deepEqual(m.control.shown(), { min: 1, rec: 3, max: 6 }, 'a snapshot without the range changes nothing');
 });
@@ -423,20 +432,21 @@ test('a mouse press on a level does not keep a hover-opened strip from closing; 
     m.escape();
 });
 
-test('fit: beside the pills when the strip fits there, alone when it does not, scrolling only below the tightest padding', () => {
+test('fit: beside the other controls when the strip fits there, alone when it does not, its name giving way, scrolling last', () => {
     const doc = stubDocument();
     const row = doc.createElement('div');
     row.className = 'chat-toolbar-row';
     const pills = doc.createElement('div');
     pills.className = 'chat-composer-pills';
     const swarm = doc.createElement('button');
-    const mode = doc.createElement('div');
+    const context = doc.createElement('div');
+    context.className = 'chat-context-mode';
     const sized = (node, width) => { node.getBoundingClientRect = () => ({ width }); };
     sized(swarm, 120);
-    sized(mode, 100);
+    sized(context, 100);              // the other capsule, closed
     pills.appendChild(swarm);
-    pills.appendChild(mode);
     row.appendChild(pills);
+    row.appendChild(context);
     const styles = new Map([
         [row, { paddingLeft: '8px', paddingRight: '8px', columnGap: '8px' }],
         [pills, { columnGap: '6px' }],
@@ -450,43 +460,72 @@ test('fit: beside the pills when the strip fits there, alone when it does not, s
         row, doc, win, saveEffortRange: async (triple) => ({ effort_range: triple }), showToast: () => {},
     });
     const el = control.el;
+    assert.equal(row.children.indexOf(el), 2, 'after the pills and the context capsule');
+    const q = (selector) => el.querySelector(selector);
     styles.set(el, { borderLeftWidth: '1px', borderRightWidth: '1px' });
-    styles.set(el.querySelector('[data-effort-strip]'), { marginRight: '4px' });
-    const head = el.querySelector('.chat-effort-head');
-    sized(head, 30);
+    styles.set(q('[data-effort-strip]'), { marginRight: '9.33px' });  // the end gutter
+    styles.set(q('.chat-capsule-name'), { marginLeft: '-2px', marginRight: '8px' });
+    styles.set(q('.chat-capsule-body'), { width: '1px', marginRight: '4px' });  // its ::before, the divider
+    sized(q('.chat-capsule-glyph'), 30);
+    sized(q('.chat-capsule-name'), 36);
     // Fractional words: whole-pixel offsets would lose almost a pixel here.
     [31.41, 24.19, 48.08, 28.19, 42.11, 24.94, 29.8].forEach((width, i) => {
         Object.defineProperty(el.querySelectorAll('.chat-effort-seg')[i], 'firstElementChild', { value: { getBoundingClientRect: () => ({ width }) } });
     });
+    const head = q('.chat-effort-head');
     const open = (width) => { sized(row, width); head.listeners.get('click').forEach((fn) => fn({ detail: 1 })); };
     const close = () => head.listeners.get('click').forEach((fn) => fn({ detail: 1 }));
-    const facts = () => [el.dataset.fit, el.style.getPropertyValue('--effort-seg-pad'), el.dataset.tight, row.dataset.effortSolo];
-    // Pills 120 + 6 + 100 = 226, gap 8; chrome = head 30 + borders 2 + margin 4; words 228.72; 1 px slack.
-    open(708);
-    assert.deepEqual(facts(), ['inline', '8px', 'false', undefined], 'the owner row: beside the pills at full padding');
+    const facts = () => [el.dataset.fit, el.style.getPropertyValue('--capsule-seg-pad'), el.dataset.tight, el.dataset.label, row.dataset.ownerSolo];
+    // Words 228.72 and 14 paddings; the gutter and the borders 11.33; the head 30 bare, 77 with the
+    // name and the divider; beside it Swarm 120 and the context capsule 100, a row gap each (236).
+    open(700);
+    assert.deepEqual(facts(), ['inline', '8px', 'false', 'true', undefined], 'the owner row: beside the others at full padding');
     close();
-    assert.deepEqual([el.dataset.fit, row.dataset.effortSolo], [undefined, undefined], 'closing restores the pills');
-    assert.deepEqual([el.style.getPropertyValue('--effort-seg-pad'), el.dataset.tight], ['8px', 'false'],
+    assert.deepEqual([el.dataset.fit, row.dataset.ownerSolo], [undefined, undefined], 'closing restores the others');
+    assert.deepEqual([el.style.getPropertyValue('--capsule-seg-pad'), el.dataset.tight], ['8px', 'false'],
         'the fitted padding stays while the strip collapses (the next open fits again)');
+    open(640);
+    assert.deepEqual(facts(), ['inline', '4px', 'true', 'true', undefined], 'beside them, the padding tightens to var(--space-1)');
+    close();
     open(560);
-    assert.deepEqual(facts(), ['solo', '8px', 'false', 'true'], 'no room beside the pills: they step aside');
-    sized(swarm, 0);                  // hidden pills measure 0: the width seen before hiding stays
-    sized(mode, 0);
+    assert.deepEqual(facts(), ['solo', '8px', 'false', 'true', 'effort'], 'no room beside them: they step aside');
+    sized(swarm, 0);                  // hidden controls measure 0: the width seen before hiding stays
+    sized(context, 0);
     resize.forEach((fn) => fn());
-    assert.deepEqual(facts(), ['solo', '8px', 'false', 'true'], 'a resize while alone keeps the pills aside');
+    assert.deepEqual(facts(), ['solo', '8px', 'false', 'true', 'effort'], 'a resize while alone keeps them aside');
     close();
     sized(swarm, 120);
-    sized(mode, 100);
-    open(342);
-    assert.deepEqual(facts(), ['solo', '4px', 'true', 'true'], 'a phone: alone, tighter padding, tighter pill corners');
+    sized(context, 100);
+    open(390);
+    assert.deepEqual(facts(), ['solo', '3px', 'true', 'true', 'effort'], 'alone, the name stays down to 3 px');
     close();
-    open(330);
-    assert.deepEqual(facts(), ['solo', '3px', 'true', 'true'], 'a 360 px phone: 3 px, the pill corners tighten with it');
+    open(350);
+    assert.deepEqual(facts(), ['solo', '4px', 'true', 'false', 'effort'], 'a phone: the name and the divider give way first');
+    // Open, the line narrows until the strip scrolls: it shows what opening shows (the recommended
+    // level, Medium at 80..120 in a 100 px view); once it scrolls, a relayout keeps the owner's scroll.
+    const strip = q('[data-effort-strip]');
+    el.querySelectorAll('.chat-effort-seg').forEach((seg, i) => { seg.offsetLeft = i * 40; seg.offsetWidth = 40; });
+    Object.assign(strip, { clientWidth: 100, scrollLeft: 0 });
+    sized(row, 320);
+    resize.forEach((fn) => fn());
+    assert.deepEqual([el.dataset.fit, strip.scrollLeft, strip.dataset.scroll], ['overflow', 120 + 12 - 100, 'middle']);
+    strip.scrollLeft = 0;             // the owner swipes back to None
+    resize.forEach((fn) => fn());
+    assert.deepEqual([el.dataset.fit, strip.scrollLeft, strip.dataset.scroll], ['overflow', 0, 'start'], 'the owner\'s scroll stays');
     close();
-    open(300);
-    assert.deepEqual(facts(), ['overflow', '3px', 'true', 'true'], 'even 3 px does not fit: the strip scrolls');
+    open(350);
+    control.syncState({ effort_range: { min: 'low', recommended: 'medium', max: 'ultra' } });
+    q('.chat-effort-max').focus();
+    strip.scrollLeft = 0;
+    sized(row, 320);
+    resize.forEach((fn) => fn());
+    assert.equal(strip.scrollLeft, 280 + 12 - 100, 'new overflow reveals the focused bracket, not the recommended pill');
     close();
-    assert.equal(row.dataset.effortSolo, undefined);
+    doc.activeElement = null;
+    open(320);
+    assert.deepEqual(facts(), ['overflow', '3px', 'true', 'false', 'effort'], 'even that does not fit: the strip scrolls');
+    close();
+    assert.equal(row.dataset.ownerSolo, undefined);
     control.destroy();
 });
 
@@ -574,39 +613,193 @@ test('destroy removes the element, its document listeners and its timers', async
     assert.equal(m.control.isOpen(), false, 'the hover timer died with the control');
 });
 
-test('the context-mode toggle posts the owner endpoint, shows a refusal, and always re-reads /api/state', async () => {
+/* Both capsules in one composer row, as chat.js builds it: the pills, then the context anchor. */
+function mountPair({ hover = false, reply } = {}) {
     const doc = stubDocument();
     const row = doc.createElement('div');
-    const contextMode = doc.createElement('div');
-    contextMode.dataset.contextMode = 'max';
-    const seg = { closest: (selector) => (selector === '.chat-seg' ? seg : null), dataset: { mode: 'low' } };
+    row.className = 'chat-toolbar-row';
+    row.getBoundingClientRect = () => ({ top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 });  // not laid out: no fit
+    const pills = doc.createElement('div');
+    pills.className = 'chat-composer-pills';
+    row.appendChild(pills);
+    const contextEl = doc.createElement('div');
+    contextEl.className = 'chat-context-mode';
+    contextEl.dataset.contextMode = 'max';
+    row.appendChild(contextEl);
     const posts = [];
     const toasts = [];
     const refreshes = [];
-    let reply = { ok: true };
+    const answer = { value: reply || { ok: true } };
     const controls = createComposerOwnerControls({
-        row, doc, win: hoverWindow(false), byId: (suffix) => (suffix === 'context-mode' ? contextMode : null),
-        apiFetch: async (url, init) => { posts.push([url, JSON.parse(init.body)]); return reply; },
+        row, doc, win: hoverWindow(hover), byId: (suffix) => (suffix === 'context-mode' ? contextEl : null),
+        apiFetch: async (url, init) => { posts.push([url, JSON.parse(init.body)]); return answer.value; },
         saveEffortRange: async (triple) => ({ effort_range: triple }),
         showToast: (message, tone) => toasts.push([message, tone]),
         refreshState: (force) => refreshes.push(force),
     });
-    const click = (target) => Promise.all((contextMode.listeners.get('click') || []).map((fn) => fn({ target })));
-    await click(seg);
-    assert.deepEqual(posts, [['/api/owner/context-mode', { mode: 'low' }]]);
-    assert.equal(contextMode.dataset.contextMode, 'low');
-    assert.equal(contextMode.dataset.disabled, 'false');
-    assert.deepEqual(refreshes, [true]);
-    await click(seg);
-    assert.equal(posts.length, 1, 'the current mode is not re-posted');
-    seg.dataset.mode = 'max';
-    reply = { ok: false, json: async () => ({ error: 'Context mode can only be lowered while Ouroboros is idle.' }) };
-    await click(seg);
-    assert.equal(contextMode.dataset.contextMode, 'low', 'a refusal leaves the shown value');
-    assert.deepEqual(toasts, [['Context mode can only be lowered while Ouroboros is idle.', 'error']]);
-    assert.deepEqual(refreshes, [true, true]);
-    assert.equal(controls.hasPendingSave(), false);
-    assert.equal(await controls.pendingSave(), true);
-    controls.destroy();
-    assert.equal(contextMode.listeners.get('click').length, 1, 'the stub keeps the registration; removal is a no-op there');
+    const fire = (node, type, event) => Promise.all((node.listeners.get(type) || []).map((fn) => fn(event)));
+    const effortEl = controls.effort.el;
+    const seg = (mode) => contextEl.querySelectorAll('.chat-seg').find((node) => node.dataset.mode === mode);
+    return {
+        controls, row, doc, contextEl, effortEl, posts, toasts, refreshes, answer, seg,
+        contextHead: contextEl.querySelector('.chat-context-head'), effortHead: effortEl.querySelector('.chat-effort-head'),
+        press: (head, detail = 1) => fire(head, 'click', { detail }),
+        choose: (mode) => fire(contextEl, 'click', { target: { closest: (selector) => (selector === '.chat-seg' ? seg(mode) : null) } }),
+        key: (mode, key) => fire(contextEl.querySelector('.chat-context-strip'), 'keydown', {
+            key, preventDefault() {}, target: { closest: (selector) => (selector === '.chat-seg' ? seg(mode) : null) },
+        }),
+        docDown: (target) => doc.fire('pointerdown', { target }),
+    };
+}
+
+test('the context capsule: ring, Context and the mode; it opens into exactly three modes, one tab stop among them', async () => {
+    const m = mountPair();
+    assert.ok(m.contextEl.classList.contains('chat-capsule'));
+    assert.equal(m.contextEl.getAttribute('aria-label'), 'Context size mode');
+    assert.match(m.contextEl.innerHTML, /class="chat-capsule-name">Context</);
+    assert.equal(m.contextEl.querySelector('.chat-capsule-value').textContent, 'Max');
+    assert.match(m.contextHead.title, /^Context mode \(owner setting\)\. Nano is the compact owner window/);
+    const segs = m.contextEl.querySelectorAll('.chat-seg');
+    // Three modes, a position among them, never a fill level: three arcs and three radios.
+    assert.deepEqual(segs.map((node) => node.dataset.mode), ['nano', 'low', 'max']);
+    assert.equal(m.contextEl.querySelectorAll('.chat-context-arc').length, 3);
+    assert.ok(m.contextEl.querySelectorAll('[data-mode]').every((node) => node.classList.contains('chat-seg')),
+        'inside the control [data-mode] still means a mode button: the arcs carry data-arc');
+    assert.deepEqual(segs.map((node) => node.getAttribute('aria-checked')), ['false', 'false', 'true']);
+    assert.deepEqual(segs.map((node) => node.tabIndex), [-1, -1, -1], 'closed: out of the tab order');
+    await m.press(m.contextHead, 0);  // Enter / Space
+    assert.equal(m.contextEl.dataset.open, 'true');
+    assert.equal(m.contextHead.getAttribute('aria-expanded'), 'true');
+    assert.deepEqual(segs.map((node) => node.tabIndex), [-1, -1, 0], 'one tab stop: the chosen mode');
+    assert.equal(m.doc.activeElement, m.seg('max'), 'the keyboard lands on the chosen mode');
+    m.doc.fire('keydown', { key: 'Escape' });
+    assert.equal(m.contextEl.dataset.open, 'false');
+    assert.equal(m.doc.activeElement, m.contextHead, 'Esc returns focus to the head');
+    m.controls.syncState({ context_mode: 'nano' });
+    assert.equal(m.contextEl.dataset.contextMode, 'nano', 'every composer shows the one global mode');
+    assert.equal(m.contextEl.querySelector('.chat-capsule-value').textContent, 'Nano');
+    m.controls.syncState({ context_mode: 'huge' });
+    assert.equal(m.contextEl.dataset.contextMode, 'max', 'an unknown mode reads as Max');
+    m.controls.destroy();
+});
+
+test('a context choice posts the owner endpoint at once, waits for the answer, shows a refusal and always re-reads /api/state', async () => {
+    const m = mountPair();
+    await m.press(m.contextHead);
+    await m.choose('low');
+    assert.deepEqual(m.posts, [['/api/owner/context-mode', { mode: 'low' }]]);
+    assert.equal(m.contextEl.dataset.contextMode, 'low');
+    assert.equal(m.contextEl.querySelector('.chat-capsule-value').textContent, 'Low');
+    assert.equal(m.seg('low').getAttribute('aria-checked'), 'true');
+    assert.equal(m.contextEl.dataset.disabled, 'false');
+    assert.deepEqual(m.refreshes, [true]);
+    await m.choose('low');
+    assert.equal(m.posts.length, 1, 'the current mode is not re-posted');
+    m.answer.value = { ok: false, json: async () => ({ error: 'Context mode can only be lowered while Ouroboros is idle.' }) };
+    await m.choose('max');
+    assert.equal(m.contextEl.dataset.contextMode, 'low', 'a refusal leaves the saved mode');
+    assert.equal(m.contextEl.querySelector('.chat-capsule-value').textContent, 'Low');
+    assert.deepEqual(m.toasts, [['Context mode can only be lowered while Ouroboros is idle.', 'error']]);
+    assert.deepEqual(m.refreshes, [true, true]);
+    // While a save is on its way the strip waits: a second choice and a stale poll change nothing.
+    let release;
+    m.answer.value = new Promise((resolve) => { release = resolve; });
+    const pending = m.choose('nano');
+    assert.equal(m.contextEl.dataset.disabled, 'true');
+    await m.choose('max');
+    m.controls.syncState({ context_mode: 'max' });
+    assert.equal(m.contextEl.dataset.contextMode, 'low', 'the save answers for itself, not a stale poll');
+    release({ ok: true });
+    await pending;
+    assert.deepEqual(m.posts.map(([, body]) => body.mode), ['low', 'max', 'nano']);
+    assert.equal(m.contextEl.dataset.contextMode, 'nano');
+    // Arrows move to a neighbour and choose it; Home and End go to the ends.
+    m.answer.value = { ok: true };
+    await m.key('nano', 'ArrowRight');
+    assert.equal(m.doc.activeElement, m.seg('low'));
+    assert.equal(m.contextEl.dataset.contextMode, 'low');
+    await m.key('low', 'End');
+    assert.equal(m.contextEl.dataset.contextMode, 'max');
+    await m.key('max', 'ArrowDown');
+    assert.equal(m.posts.length, 5, 'past the end nothing moves and nothing is posted');
+    assert.equal(m.controls.hasPendingSave(), false, 'Send waits for the effort save only');
+    assert.equal(await m.controls.pendingSave(), true);
+    m.controls.destroy();
+});
+
+test('a context strip that scrolls shows the chosen mode whole on opening, and the mode an arrow, Home or End reaches', async () => {
+    const m = mountPair();
+    const strip = m.contextEl.querySelector('.chat-context-strip');
+    // Long translated words on a phone: three 90 px modes in a 160 px view.
+    m.contextEl.querySelectorAll('.chat-seg').forEach((seg, i) => { seg.offsetLeft = i * 90; seg.offsetWidth = 90; });
+    Object.assign(strip, { clientWidth: 160, scrollLeft: 0 });
+    m.contextEl.dataset.fit = 'overflow';  // what fit() sets when even the tightest padding does not fit
+    await m.press(m.contextHead, 0);
+    assert.equal(strip.scrollLeft, 270 + 12 - 160, 'opening shows Max, the last mode, whole and clear of the fade');
+    assert.equal(strip.dataset.scroll, 'end');
+    await m.key('max', 'Home');
+    assert.deepEqual([m.contextEl.dataset.contextMode, strip.scrollLeft, strip.dataset.scroll], ['nano', 0, 'start']);
+    await m.key('nano', 'ArrowRight');
+    assert.deepEqual([m.contextEl.dataset.contextMode, strip.scrollLeft, strip.dataset.scroll], ['low', 180 + 12 - 160, 'middle']);
+    await m.key('low', 'End');
+    assert.deepEqual([m.contextEl.dataset.contextMode, strip.scrollLeft, strip.dataset.scroll], ['max', 270 + 12 - 160, 'end']);
+    m.controls.destroy();
+});
+
+test('one capsule is open at a time: opening one closes the other at once, a narrow solo strip included', async () => {
+    const m = mountPair();
+    await m.press(m.contextHead);
+    assert.equal(m.contextEl.dataset.open, 'true');
+    // The press on the other capsule is its own to answer: the document handler leaves it alone,
+    // and opening Effort closes Context at once.
+    m.docDown(m.effortHead);
+    assert.equal(m.contextEl.dataset.open, 'true');
+    await m.press(m.effortHead);
+    assert.deepEqual([m.contextEl.dataset.open, m.effortEl.dataset.open], ['false', 'true']);
+    await m.press(m.contextHead);
+    assert.deepEqual([m.contextEl.dataset.open, m.effortEl.dataset.open], ['true', 'false']);
+    // A narrow line: Effort stands alone (the pills and Context step aside); once it closes and
+    // Context opens, Context is the one alone, never hidden by Effort's flag.
+    m.row.dataset.ownerSolo = 'effort';
+    m.effortEl.dataset.fit = 'solo';
+    await m.press(m.effortHead);
+    assert.equal(m.effortEl.dataset.open, 'true');
+    m.row.dataset.ownerSolo = 'effort';
+    m.effortEl.dataset.fit = 'solo';
+    m.docDown(new ElementStub('div', m.doc));
+    assert.equal(m.effortEl.dataset.open, 'false');
+    assert.equal(m.row.dataset.ownerSolo, undefined, 'closing gives the line back to every control');
+    await m.press(m.contextHead);
+    assert.equal(m.contextEl.dataset.open, 'true');
+    assert.notEqual(m.row.dataset.ownerSolo, 'effort', 'Effort\'s flag never hides the capsule that opened');
+    m.controls.destroy();
+});
+
+test('hover never opens a capsule while the other one is open', async () => {
+    const m = mountPair({ hover: true });
+    await m.press(m.effortHead);  // pinned open
+    for (const fn of m.contextEl.listeners.get('pointerenter')) fn({ pointerType: 'mouse' });
+    await sleep(220);
+    assert.deepEqual([m.contextEl.dataset.open, m.effortEl.dataset.open], ['false', 'true']);
+    await m.press(m.effortHead);  // unpins and closes
+    for (const fn of m.contextEl.listeners.get('pointerenter')) fn({ pointerType: 'mouse' });
+    await sleep(220);
+    assert.equal(m.contextEl.dataset.open, 'true', 'with the other closed, hover opens it');
+    m.controls.destroy();
+});
+
+test('closed, the capsules keep their names while the line holds them; a narrower line keeps rings and values', () => {
+    const m = mountPair();
+    const line = (top) => { m.effortEl.getBoundingClientRect = () => ({ top, bottom: top + 32, width: 130 }); };
+    line(40);                         // the names push Effort onto a second line
+    m.controls.syncState({});
+    assert.equal(m.row.dataset.ownerCompact, 'true');
+    line(0);
+    m.controls.syncState({});
+    assert.equal(m.row.dataset.ownerCompact, undefined, 'room again: the names come back');
+    line(40);
+    m.contextHead.listeners.get('click').forEach((fn) => fn({ detail: 1 }));
+    m.controls.syncState({});
+    assert.equal(m.row.dataset.ownerCompact, undefined, 'never decided while a strip is open');
+    m.controls.destroy();
 });
