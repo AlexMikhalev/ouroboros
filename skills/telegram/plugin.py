@@ -1035,11 +1035,14 @@ def _make_outbound(api):
                 return
             lang = telegram_i18n.language()
 
-            # A delivered row retires the typing refresh of the turn it belongs
-            # to (#1766): progress rows keep it, the terminal row (and any
-            # media/quiz delivery, which clears the bubble in the client) ends
-            # the loop — the next chat.typing event re-arms it.
-            if not event.get("is_progress"):
+            # A TERMINAL row retires the typing refresh of the turn it belongs
+            # to (#1766 review): ``not is_progress`` alone is not completion —
+            # send_user_message emits a non-progress reply while its task keeps
+            # running — so the boundary is the same one history replay uses
+            # (gateway/history.py: ``not is_progress`` AND ``task_terminal_status``).
+            # Progress rows keep the loop: the turn is still working, and its
+            # next tick re-arms the bubble a landed message cleared.
+            if not event.get("is_progress") and str(event.get("task_terminal_status") or "").strip():
                 stop_keep_typing(
                     chat_id,
                     str(event.get("task_id") or event.get("activity_id") or ""),
@@ -1132,21 +1135,22 @@ def _make_typing(api):
     async def handle(event: Dict[str, Any]) -> None:
         try:
             local_settings = _load_settings(api)
-            client = _telegram_client(api)
+            # Arm BEFORE the first await: the bus dispatches handlers
+            # synchronously in publish order, so the turn's terminal
+            # chat.outbound row may already be waiting behind this handler.
+            # Arming first lets that row retire the loop instead of arming
+            # a ghost after the turn has ended (#1766 review).
             chat_id = _target_chat(local_settings, event)
+            task_key = str(event.get("activity_id") or event.get("task_id") or "")
             if chat_id:
-                await client.send_chat_action(chat_id, "typing")
-                # One sendChatAction decays on clients in ~5s while the turn
-                # runs for minutes: arm the periodic refresh for this exact
-                # activity (#1766). The immediate action above stays the owner's
-                # first signal; the loop only re-sends it.
                 start_keep_typing(
-                    api, chat_id,
-                    str(event.get("activity_id") or event.get("task_id") or ""),
+                    api, chat_id, task_key,
                     client_factory=lambda: _telegram_client(api),
                 )
+                client = _telegram_client(api)
+                await client.send_chat_action(chat_id, "typing")
         except Exception as exc:
-            api.log("error", f"Telegram typing error: {exc}")
+            api.log("error", f"Telegram typing event error: {exc}")
     return handle
 
 

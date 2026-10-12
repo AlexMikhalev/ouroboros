@@ -196,7 +196,9 @@ def test_transient_rejection_429_backs_off_without_busy_loop(monkeypatch):
 
 def test_plugin_typing_handler_arms_and_outbound_terminal_retires(monkeypatch, tmp_path):
     """The wiring contract: chat.typing arms the loop for the event's activity,
-    a non-progress outbound row retires it, a progress row does not."""
+    a non-progress row WITHOUT task_terminal_status (an intermediate owner
+    reply, e.g. send_user_message) does NOT retire it, and the terminal row
+    (non-progress + task_terminal_status) does."""
     mod = _load()  # plugin is loaded as a side effect (tg_kt.plugin)
     plugin = sys.modules["tg_kt.plugin"]
 
@@ -219,18 +221,79 @@ def test_plugin_typing_handler_arms_and_outbound_terminal_retires(monkeypatch, t
         (tmp / "state" / "skills" / "telegram-bridge").mkdir(parents=True)
         typing_handler = plugin._make_typing(api)
         outbound_handler = plugin._make_outbound(api)
-        # chat.typing: the immediate action fires AND the loop is armed.
+        # chat.typing: the loop is armed (before the first await) AND the
+        # immediate action fires.
         await typing_handler({"activity_id": "act-77", "chat_id": 77, "transport": {"kind": "telegram", "conversation_id": "77"}})
         assert rec.actions == 1
         await asyncio.sleep(0.04)
         assert mod.active_keep_typing_keys() == ["77:act-77"]
-        assert rec.actions >= 2
         # A progress row does not retire the loop.
         await outbound_handler({"chat_id": 77, "task_id": "act-77", "text": "working…", "is_progress": True, "transport": {"kind": "telegram", "conversation_id": "77"}})
         await asyncio.sleep(0.02)
         assert mod.active_keep_typing_keys() == ["77:act-77"]
-        # The terminal row retires it.
-        await outbound_handler({"chat_id": 77, "task_id": "act-77", "text": "the answer", "is_progress": False, "transport": {"kind": "telegram", "conversation_id": "77"}})
+        # An intermediate non-progress reply (send_user_message) does not
+        # retire the loop either: the task is still running.
+        await outbound_handler({"chat_id": 77, "task_id": "act-77", "text": "early reply", "is_progress": False, "system_type": "proactive_message", "transport": {"kind": "telegram", "conversation_id": "77"}})
+        await asyncio.sleep(0.02)
+        assert mod.active_keep_typing_keys() == ["77:act-77"]
+        # The terminal row (non-progress + task_terminal_status) retires it.
+        await outbound_handler({"chat_id": 77, "task_id": "act-77", "text": "the answer", "is_progress": False, "task_terminal_status": "completed", "transport": {"kind": "telegram", "conversation_id": "77"}})
+        assert mod.active_keep_typing_keys() == []
+        return None
+
+    _run(scenario(tmp_path))
+
+
+def test_typing_arms_before_the_first_await_so_a_late_terminal_still_retires(monkeypatch, tmp_path):
+    """Review finding B: _make_typing awaits its first send AFTER arming, so a
+    terminal row published while that send is pending retires the loop instead
+    of being missed and arming a ghost indicator after the turn has ended."""
+    mod = _load()
+    plugin = sys.modules["tg_kt.plugin"]
+
+    class _SlowFirstSend(_Rec):
+        def __init__(self):
+            super().__init__()
+            self.gate = asyncio.Event()
+        async def send_chat_action(self, chat_id, action="typing"):
+            self.actions += 1
+            if self.actions == 1:
+                await self.gate.wait()  # hold the immediate send pending
+            return None
+
+    rec = _SlowFirstSend()
+    monkeypatch.setattr(plugin, "_telegram_client", lambda api: rec)
+    monkeypatch.setattr(mod, "_REFRESH_SEC", 0.01)
+
+    class _Api:
+        def __init__(self, tmp):
+            self._tmp = tmp
+        def get_state_dir(self):
+            return str(self._tmp / "state" / "skills" / "telegram-bridge")
+        def get_settings(self, keys):
+            return {}
+        def log(self, *a, **k):
+            pass
+
+    async def scenario(tmp):
+        api = _Api(tmp)
+        (tmp / "state" / "skills" / "telegram-bridge").mkdir(parents=True)
+        typing_handler = plugin._make_typing(api)
+        outbound_handler = plugin._make_outbound(api)
+        typing_task = asyncio.get_running_loop().create_task(
+            typing_handler({"activity_id": "act-88", "chat_id": 88, "transport": {"kind": "telegram", "conversation_id": "88"}})
+        )
+        # The immediate send is now pending inside the handler. The loop is
+        # ALREADY armed — that is the whole point of arm-before-await.
+        await asyncio.sleep(0.01)
+        assert mod.active_keep_typing_keys() == ["88:act-88"]
+        # The terminal row lands while the first send is still pending.
+        await outbound_handler({"chat_id": 88, "task_id": "act-88", "text": "the answer", "is_progress": False, "task_terminal_status": "completed", "transport": {"kind": "telegram", "conversation_id": "88"}})
+        assert mod.active_keep_typing_keys() == []
+        # Release the pending first send: the handler must NOT re-arm a ghost.
+        rec.gate.set()
+        await asyncio.wait_for(typing_task, 1.0)
+        await asyncio.sleep(0.05)
         assert mod.active_keep_typing_keys() == []
         return None
 

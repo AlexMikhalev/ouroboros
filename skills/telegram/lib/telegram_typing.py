@@ -5,7 +5,10 @@ task turn runs for minutes. The host emits ``chat.typing`` exactly once per
 turn, so without a refresh the indicator decays and the owner cannot tell a
 working agent from a dead one (#1766). This module re-sends the action on an
 interval below the client expiry until the turn's terminal row lands on the
-outbound subscription, fail-soft by design:
+outbound subscription — a row is terminal only when it is BOTH non-progress
+AND carries ``task_terminal_status`` (the same boundary history replay uses;
+a non-progress reply like ``send_user_message`` does not complete its task)
+— fail-soft by design:
 
 - transient failures (transport, timeout, HTTP 429/5xx) back off exponentially
   up to ``_BACKOFF_MAX_SEC`` and recover to the base cadence on the first

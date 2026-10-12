@@ -88,8 +88,10 @@ itself so; a companion adopted by init or a subreaper still stops.
 
 Version 1.2.13 keeps the typing indicator alive while a turn runs: Telegram
 clears one `typing` action after ~5 seconds, so the bridge now re-sends it
-every few seconds until the turn's answer (or any non-progress row) lands in
-the chat. Transient network failures back off and recover silently; a
+every few seconds until the turn's terminal row lands in the chat (the same
+boundary history replay uses: a non-progress row carrying the task's terminal
+status — an intermediate owner reply does not end the refresh). Transient
+network failures back off and recover silently; a
 permanent Telegram rejection stops the refresh for that chat with one warning
 line, and disabling/unloading the skill cancels every refresh loop.
 
