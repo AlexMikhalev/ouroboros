@@ -13,12 +13,11 @@ Authority split:
 
 Shared values and control recipes live in `web/ui.css`, loaded before page
 styles by both the SPA and the served onboarding document. Page styles own
-composition, not another copy of the shared palette. This file names roles;
-it does not copy an inventory.
+composition, not a second shared palette. This file names roles, not an inventory.
 
-**Visual intent:** airy, never faint: room from hierarchy, rhythm and light
-material, not paler or smaller text; colour as identity with a role, at reading
-contrast; pressable looks only where going there is the job.
+**Visual intent:** airy, not faint: hierarchy, rhythm and light material, not
+paler or smaller text. Colour identifies at reading contrast; fill conveys
+importance. Identity marks stay subordinate; pressable looks belong to destinations.
 
 The shell offers **Settings → Appearance → Light / Dark / System**. New clients
 start on System; explicit Light or Dark remains pinned. The shared semantic
