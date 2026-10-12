@@ -7,7 +7,9 @@ a reader cancelling either before or during that return must never inherit the n
 """
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -78,7 +80,9 @@ class _Race:
         self.room.page.route(lambda url: "/api/chat/history?" in url and "cursor=" not in url, recent_route)
         self.room.page.on("response", record)
 
-    def admit(self):
+    def admit(self, kind="named"):
+        """``named``: 160 child words; the fresh read names the reply. ``searched``: 610 (460
+        archived and long, the reviewed counterexample): its bounded search runs out first."""
         room = self.room
         room.open()
         assert _wait_for(room.page, lambda: len(room.held) == 1, attempts=250), room.older
@@ -88,13 +92,17 @@ class _Race:
         assert room.messages.locator(".chat-bubble").filter(has_text="Owner backlog note 1099:").count() == 1
         self.monkeypatch.setattr(opening, "REPLY", LATEST)
         _chat, self.revision = opening._buried_room(
-            self.data, self.monkeypatch, self.project_id, 160, chat_id=self.chat_id)
+            self.data, self.monkeypatch, self.project_id, *((610, 130) if kind == "searched" else (160, 0)),
+            chat_id=self.chat_id)
         before = len(self.recent)
         _emit_ws_frame(room.page, {"type": "projects_changed"})
         assert _wait_for(room.page, lambda: len(self.recent) > before, attempts=150), self.history
         self.fresh = self.recent[-1]
         latest = self.fresh["window"]["latest_message"]
-        assert latest["history_id"] != self.original_window["latest_message"]["history_id"]
+        if kind == "searched":
+            assert latest is None and isinstance(self.fresh["window"].get("latest_before"), int), self.fresh["window"]
+        else:
+            assert latest["history_id"] != self.original_window["latest_message"]["history_id"]
         assert LATEST not in [row.get("text") for row in self.fresh.get("messages", [])]
         room.page.evaluate(_SETTLE_RESTORE_FRAMES)
         assert room.seen() == [] and room.row.locator(".nav-unread-dot").count() == 1, room.acks
@@ -112,36 +120,50 @@ class _Race:
                                      sources=sources, candidate=self.candidate, receipts=self.receipts(), **facts)
         self.room.page.screenshot(path=str(evidence / f"{name}.png"))
 
+    def chains(self):
+        """The frozen chain each older page continued: its cursor's ``upper``. A rebase starts a new one."""
+        def upper(url):
+            cursor = parse_qs(urlparse(url).query)["cursor"][0]
+            return json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))["upper"]["chat"]
+        return [upper(url) for url in self.room.older]
+
     def receipts(self):
         return [(posted["seen"][self.project_id], posted["box"]) for posted in
                 self.room.page.evaluate("() => window.__receipts") if self.project_id in (posted.get("seen") or {})]
 
 
+@pytest.mark.parametrize("kind", ["named", "searched"])
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
-def test_a_new_offpage_reply_replaces_the_openings_frozen_target(direct_server_with_data, monkeypatch, engine):
-    """Latest admission wins while this opening still owns navigation, then later reads never jump."""
+def test_a_new_offpage_reply_replaces_the_openings_frozen_target(direct_server_with_data, monkeypatch, engine, kind):
+    """Latest admission wins while this opening still owns navigation, whether the fresh read names the
+    reply or only searched past the frozen chain's bytes; then later reads never jump."""
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as pw:
         browser = getattr(pw, engine).launch()
         try:
             race = _Race(browser, direct_server_with_data, monkeypatch, "arrival-race")
-            race.admit()
+            race.admit(kind)
             room = race.room
             before_return = len(race.recent)
             room.release()
             read = _wait_for(room.page, lambda: race.revision in room.seen(), attempts=200)
             room.settled(300)
             landed = room.shown()
-            race.evidence(engine, "new-arrival", read=read, before_return=before_return,
+            race.evidence(engine, f"new-arrival-{kind}", read=read, before_return=before_return,
                           recent_reads=len(race.recent))
             assert read and opening._on_screen(landed), ("latest admitted reply is reached and read", landed, room.acks)
             receipts = race.receipts()
             assert receipts and all(opening._in_band(box) for _seen, box in receipts), ("read only while shown", receipts)
             assert room.seen() and all(value == race.revision for value in room.seen()), room.acks
-            assert len(race.recent) == before_return + 1, ("one pager return to the fresh snapshot", race.history)
+            chains = race.chains()
+            frozen, fresh = chains[0], race.fresh["coverage"]["upper"]["chat"]
+            assert chains == [frozen] * chains.index(fresh) + [fresh] * (len(chains) - chains.index(fresh)), \
+                ("one return to the fresh snapshot, no old-chain page after it", chains)
+            if kind == "named":
+                assert len(race.recent) == before_return + 1, ("one pager return to the fresh snapshot", race.history)
             room.row.locator(".nav-unread-dot").wait_for(state="detached")
-            pages = len(room.older)
+            pages, recent = len(room.older), len(race.recent)
             # A completed opening owns no later refresh: no repeated return, old-chain walk or jump.
             opening._wheel(room, False)
             room.settled(300)
@@ -149,18 +171,19 @@ def test_a_new_offpage_reply_replaces_the_openings_frozen_target(direct_server_w
             _emit_ws_frame(room.page, {"type": "projects_changed"})
             room.settled(800)
             after = room.messages.evaluate("n => n.scrollTop")
-            race.evidence(engine, "later-read", pages=pages, before=top, after=after,
+            race.evidence(engine, f"later-read-{kind}", pages=pages, before=top, after=after,
                           before_return=before_return, recent_reads=len(race.recent))
-            assert len(room.older) == pages and len(race.recent) == before_return + 1, race.history
+            assert len(room.older) == pages and len(race.recent) == recent, race.history
             assert abs(after - top) <= 1, ("a later read preserves the reader's position", top, after)
         finally:
             browser.close()
 
 
-@pytest.mark.parametrize(("stage", "move"), [
-    ("fresh-admission", "wheel"), ("pager-return", "wheel"), ("pager-return", "question")])
+@pytest.mark.parametrize(("stage", "move", "kind"), [
+    ("fresh-admission", "wheel", "named"), ("pager-return", "wheel", "named"), ("pager-return", "question", "named"),
+    ("fresh-admission", "wheel", "searched"), ("pager-return", "wheel", "searched")])
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
-def test_cancelling_a_rebased_opening_never_resumes_it(direct_server_with_data, monkeypatch, engine, stage, move):
+def test_cancelling_a_rebased_opening_never_resumes_it(direct_server_with_data, monkeypatch, engine, stage, move, kind):
     """A wheel or explicit question ends ownership before an old page or the fresh return resolves."""
     from playwright.sync_api import sync_playwright
 
@@ -168,7 +191,7 @@ def test_cancelling_a_rebased_opening_never_resumes_it(direct_server_with_data, 
         browser = getattr(pw, engine).launch()
         try:
             race = _Race(browser, direct_server_with_data, monkeypatch, "cancel-race", question=move == "question")
-            race.admit()
+            race.admit(kind)
             room = race.room
             before_return = len(race.recent)
             if stage == "pager-return":
@@ -192,12 +215,16 @@ def test_cancelling_a_rebased_opening_never_resumes_it(direct_server_with_data, 
             latest = room.shown()
             assert not opening._on_screen(latest), latest
             assert room.seen() == [] and len(room.older) == pages, (room.acks, room.older)
-            assert len(race.recent) == before_return + (stage == "pager-return"), race.history
+            assert set(race.chains()) == {race.chains()[0]}, ("no page of a new chain after cancellation", race.chains())
+            # A searched read names no newest message, so state refreshes re-read the unread room
+            # (DESIGN "Project unread dot"); a named one is covered and re-reads nothing.
+            if kind == "named":
+                assert len(race.recent) == before_return + (stage == "pager-return"), race.history
             _emit_ws_frame(room.page, {"type": "projects_changed"})
             room.settled(800)
             after = room.messages.evaluate("n => n.scrollTop")
             asked = card.evaluate(opening._ON_FEED) if move == "question" else None
-            race.evidence(engine, f"cancel-{stage}-{move}", pages=pages, before=top, after=after,
+            race.evidence(engine, f"cancel-{stage}-{move}-{kind}", pages=pages, before=top, after=after,
                           before_return=before_return, recent_reads=len(race.recent), asked=asked)
             assert len(room.older) == pages and not opening._on_screen(room.shown()), race.history
             assert room.seen() == [] and room.row.locator(".nav-unread-dot").count() == 1, room.acks

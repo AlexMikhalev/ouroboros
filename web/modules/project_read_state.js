@@ -17,6 +17,9 @@
 import { sameHistoryChain } from './chat_history.js';
 import { historyNodeOnScreen } from './chat_history_replay.js';
 
+// A read whose bounded search ran out first: none from `latest_before` up to it.
+const searched = (window) => window?.latest_message === null && Number.isSafeInteger(window.latest_before);
+
 /**
  * @param {{
  *   read: (fresh: boolean) => Promise<boolean>,  // true when the recent read succeeded
@@ -36,21 +39,23 @@ export function createProjectReadReceipt({ read, isShown, isReadingLatest, onRea
     let coveredRevision = 0;
     let readingLatest = false;
     let settledLatest;  // the newest message the previous settle named
-    let recentRead = {};  // the newest admitted recent read: its window and coverage
-    let found = null;  // what an older page of a quiet chain found: the newest message, none, or unknown
+    let recentRead = {};  // the newest admitted recent read: its window, coverage and request
+    let found = null;  // what an older page of a quiet chain found (the newest message, none, or unknown) and its coverage
     let reaching = null;  // the opening whose older pages are being read
+    // A history_id and a search bound are byte offsets: they mean the same bytes
+    // only through the same room view on one chain of byte coordinates.
+    const sameBytes = (coverage, frozen) => Boolean(coverage) && coverage.view === frozen?.view
+        && sameHistoryChain(coverage.spans?.chat, frozen?.spans?.chat);
+    // A read that searched from its `latest_before` up to itself and found none
+    // joins what was searched below `frozen`'s upper on the same bytes: none is left between them.
+    const joins = ({ window, coverage }, frozen) => searched(window)
+        && window.latest_before <= frozen?.upper?.chat && sameBytes(coverage, frozen);
     // The recent read names the newest message (null: unknown). When its bounded
     // search ran out first, the older pages of its quiet chain carry it on
     // (history_paging.latest_arrival): the message they name, or the absence the
-    // one reaching the start of the chat proves, still holds while this read found
-    // none from its `latest_before` up to that chain's frozen upper, read through
-    // the same room view on one chain of byte coordinates. A newer arrival, a
-    // source gap or another membership breaks that.
-    const carried = () => {
-        const { window, coverage } = recentRead;
-        return window?.latest_message === null && found && window.latest_before <= found.upper
-            && coverage?.view === found.view && sameHistoryChain(coverage?.spans?.chat, found.span);
-    };
+    // one reaching the start of the chat proves, still holds while this read joins
+    // that chain. A newer arrival, a source gap or another membership breaks that.
+    const carried = () => found !== null && joins(recentRead, found.coverage);
     const newest = () => carried() ? found.message : recentRead.window?.latest_message;
     // Still to reach: named but on no drawn page yet, or unknown only because the
     // bounded search ran out first and no page of its quiet chain has carried it on.
@@ -58,7 +63,7 @@ export function createProjectReadReceipt({ read, isShown, isReadingLatest, onRea
     const unreached = () => {
         const latest = newest();
         return latest?.history_id ? !delivered(latest.history_id)
-            : latest === null && !carried() && Number.isSafeInteger(recentRead.window?.latest_before);
+            : latest === null && !carried() && searched(recentRead.window);
     };
     // The unread opening lands once on the newest message, wherever it lies (DESIGN
     // "Project unread dot"). While it is still to reach, the room's older pages are
@@ -109,13 +114,20 @@ export function createProjectReadReceipt({ read, isShown, isReadingLatest, onRea
     };
     return {
         cancel() { generation += 1; },
-        // A named target belongs to the snapshot that named it, even after its
-        // pages leave memory. A different admitted target needs a new snapshot;
-        // growth naming the same target must not restart the opening's walk.
-        // Quiet/unknown windows keep their existing bounded-search continuation.
-        continuation(window) {
-            const id = recentRead.window?.latest_message?.history_id;
-            return id ? (window?.latest_message?.history_id === id ? 'older' : 'latest') : null;
+        // Whether the opening walks on the pager's frozen `chain` (described by its
+        // own recent read) or first returns to the newest admitted read's snapshot.
+        // The chain serves that read's target while it is that read, named the same
+        // message on the same bytes, or itself searched (its cursors carry the
+        // search on) and this read's search joins it; growth that keeps those facts
+        // never restarts the walk. A chain that named a message carries no search:
+        // its older pages name nothing. Unknown targets are never walked (null).
+        continuation(chain = {}) {
+            const { window, coverage } = recentRead, id = window?.latest_message?.history_id;
+            if (!id && !searched(window)) return null;
+            if (Number.isSafeInteger(chain.recentVersion) && chain.recentVersion === recentRead.recentVersion) return 'older';
+            const serves = id ? chain.window?.latest_message?.history_id === id && sameBytes(coverage, chain.coverage)
+                : searched(chain.window) && joins(recentRead, chain.coverage);
+            return serves ? 'older' : 'latest';
         },
         // Only a revision newer than any covered one needs a fresh read; the
         // receipt is still taken after this call's own paint either way. A read
@@ -144,8 +156,8 @@ export function createProjectReadReceipt({ read, isShown, isReadingLatest, onRea
         // Each admitted recent read, before its rows are drawn. One that cannot
         // name the newest message leaves no revision covered, so the next refresh
         // reads again: a healed source names it without a new revision.
-        recent({ window, coverage }) {
-            recentRead = { window, coverage };
+        recent({ window, coverage, recentVersion }) {
+            recentRead = { window, coverage, recentVersion };
             if (newest() === null) coveredRevision = 0;
         },
         // An older page, once drawn, can show the newest message or, on a quiet
@@ -153,8 +165,7 @@ export function createProjectReadReceipt({ read, isShown, isReadingLatest, onRea
         page({ window, coverage }) {
             const absent = window?.latest_absent === true, named = window?.latest_message;
             if ((absent || named !== undefined) && Number.isSafeInteger(coverage?.upper?.chat)) {
-                found = { message: absent ? undefined : named?.history_id ? named : null, upper: coverage.upper.chat,
-                    span: coverage.spans?.chat, view: coverage.view };
+                found = { message: absent ? undefined : named?.history_id ? named : null, coverage };
             }
             requestAnimationFrame(() => { settle(); note(); });
         },

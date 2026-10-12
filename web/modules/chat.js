@@ -2837,7 +2837,7 @@ export function createChatInstance({
         older: async current => {
             await historyPager.whenIdle();
             if (!current()) return {};
-            const direction = readReceipt.continuation(pagerRecentWindow);
+            const direction = readReceipt.continuation(pagerRecent);
             // A failed present keeps the existing horizon repair.
             if (direction === 'latest' || (direction && !historyPager.getState().error)) return historyPager[direction]();
             return loadHistoryAtEdge('older', current);
@@ -3229,7 +3229,7 @@ export function createChatInstance({
 
     const pageHistoryIds = new Map();
     let recentCoverage = null;
-    let pagerRecentWindow = null;
+    let pagerRecent = {};
     let recentHasOrigins = false;
     let recentHistoryIds = new Set();
     let recentRequest = 0, recentApplied = 0;
@@ -3327,7 +3327,7 @@ export function createChatInstance({
             const oldRecentIds = recentHistoryIds;
             const admitted = descriptor.direction === 'latest' && acceptRecentWindow(descriptor, messages);
             const archived = descriptor.direction !== 'recent' && descriptor.direction !== 'latest';
-            if (!archived) pagerRecentWindow = descriptor.window;
+            if (!archived) pagerRecent = descriptor;
             applyHistoryMessages(messages, { archived });
             // The present re-anchors the chain: rows no page or window owns any more
             // (windows kept while the reader was in older history) go with it.
