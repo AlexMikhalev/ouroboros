@@ -450,6 +450,65 @@ def test_project_work_entries_share_live_phase_title_and_motion(project_chat, tm
     assert late.get_attribute("data-finished") == "1"
 
 
+# The glyph tile as painted: its fill, its ink and both against what lies beneath them.
+_MARK_MATERIAL = """buttons => {
+    const rgba = value => { const [r, g, b, a = 1] = String(value).match(/[\\d.]+/g).map(Number); return {r, g, b, a}; };
+    const over = (top, base) => Object.fromEntries(['r', 'g', 'b'].map(k => [k, top[k] * top.a + base[k] * (1 - top.a)]));
+    const probe = document.body.appendChild(document.createElement('i'));
+    probe.style.color = 'var(--bg-primary)';
+    const page = rgba(getComputedStyle(probe).color);
+    probe.style.color = 'var(--project)';
+    const ink = getComputedStyle(probe).color;
+    probe.remove();
+    const painted = node => {
+        const layers = [];
+        for (let el = node; el; el = el.parentElement) layers.unshift(rgba(getComputedStyle(el).backgroundColor));
+        return layers.reduce((base, layer) => ({...over(layer, base), a: 1}), page);
+    };
+    const lum = c => ['r', 'g', 'b'].map(k => c[k] / 255).map(v => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
+        .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const contrast = (a, b) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
+    return buttons.map(button => {
+        const icon = button.querySelector('.chat-live-project-icon'), name = button.querySelector('.chat-live-project-name');
+        const tile = painted(icon), beneath = painted(icon.parentElement);
+        return {host: button.classList.contains('chat-live-bound-pointer') ? 'footer' : button.closest('.project-handoff') ? 'entry' : 'capsule', ink,
+            fill: rgba(getComputedStyle(icon).backgroundColor).a,
+            glyph: getComputedStyle(icon).color, name: getComputedStyle(name).color,
+            glyph_on_tile: contrast(rgba(getComputedStyle(icon).color), tile),
+            tile_on_beneath: contrast(tile, beneath),
+            name_on_beneath: contrast(rgba(getComputedStyle(name).color), beneath)};
+    });
+}"""
+
+
+def test_project_glyph_is_a_tinted_mark_never_a_solid_tile(project_chat):
+    """DESIGN "Visual intent": hue names identity, fill strength names importance. The
+    glyph only identifies the Project, so in each theme it is project ink on a tint,
+    readable, and lighter than the name it marks: never a second button in the row."""
+    page, expect = project_chat["page"], project_chat["expect"]
+    for answer in ("The review runner reports every reviewer in words.", None):
+        row = {"role": "system", "system_type": "project_completion_summary", "chat_id": 1,
+               "task_id": f"ended-{answer is None}", "project_id": "alpha", "project_name": "Project Alpha",
+               "text": "Project Alpha · Done", "ts": "2026-10-08T14:01:00Z"}
+        if answer:
+            row["completion_answer"] = answer
+        page.evaluate("r=>emit('chat',{...r,content:r.text})", row)
+    expect(page.locator('.system-message-actions [data-intent="open-project"]')).to_have_count(2)
+    # app.js renderBoundProjectPointer mounts this same footer on bound Main roots.
+    card = _emit_convertible_work(page, "bound", "An existing bound task")
+    card.evaluate("""async card => {
+        const {projectReference} = await import('/static/modules/project_reference.js');
+        card.append(projectReference({id: 'alpha', name: 'Project Alpha'}, {layout: 'footer'}));
+    }""")
+    marks = page.locator('[data-intent="open-project"]').evaluate_all(_MARK_MATERIAL)
+    assert sorted(mark["host"] for mark in marks) == ["capsule", "capsule", "entry", "entry", "footer"]
+    for mark in marks:
+        assert 0 < mark["fill"] < 1, mark
+        assert mark["glyph"] == mark["name"] == mark["ink"], mark
+        assert mark["glyph_on_tile"] >= 3, mark
+        assert mark["tile_on_beneath"] * 2 < mark["name_on_beneath"], mark
+
+
 def test_entry_free_area_presses_its_reference_while_text_and_copy_stay_their_own(project_chat):
     page, expect = project_chat["page"], project_chat["expect"]
     rows, touch = project_chat["rows"], project_chat["width"] < 980
