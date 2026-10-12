@@ -897,6 +897,9 @@ def test_every_settings_writer_routes_through_the_shared_prologue():
 
     # (module, function) -> why it may write settings.json without the prologue
     exempt = {
+        ("ouroboros/utils.py", "atomic_write_json"):
+            "generic atomic serializer: the settings filename selects indentation only; "
+            "semantic settings writers enforce the prologue before calling this primitive.",
         ("ouroboros/context_mode_compat.py", "normalize_and_persist_context_mode_compat"):
             "one-window startup migration: while the settings lock is held, atomically rewrites "
             "the raw document with only its context compatibility pair changed, in serializer "

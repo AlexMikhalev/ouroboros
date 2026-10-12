@@ -43,9 +43,12 @@ def _custody():
 
 def open_runs(drive_root: Any, state: Optional[Dict[str, "RunCustody"]] = None) -> List[RunCustody]:
     """Runs with a durable start and no durable settlement (``state``: a shared
-    pre-replayed snapshot, so a batch of audits pays one log traversal)."""
-    return [custody for custody in (state if state is not None else _custody().replay(drive_root)).values()
-            if not custody.settled]
+    pre-read snapshot, so a batch of audits pays one read; else the held rows)."""
+    if state is None:
+        from ouroboros.delegate_custody_current import runs as current_runs
+
+        state = current_runs(drive_root, "state=?", ("held",))
+    return [custody for custody in state.values() if not custody.settled]
 
 
 def pending_invocations(drive_root: Any,
@@ -104,18 +107,19 @@ def reconcile_task_runs(drive_root: Any, task_id: str, *,
     mine = str(task_id or "")
     if not mine:
         return []
-    held = [c for c in _custody().open_runs(drive_root) if c.task_id == mine]
-    stray = [record for record in _custody().pending_invocations(drive_root)
-             if record["task_id"] == mine]
+    from ouroboros.delegate_custody_current import runs as current_runs, task_snapshot
+
+    view = task_snapshot(drive_root, mine)  # the task's rows and pending starts, one read
+    held = [c for c in view["runs"].values() if not c.settled]
+    stray = view["pending"]
     # Also the registration retry lane for the task's OWN settled-but-owned
     # runs in retire-eligible projects (a one-shot process may never see a
-    # sweep tick); deferred registrations stay with the periodic sweep.
-    snapshot = _custody().replay(drive_root).values()
-    live = {r.project_id for r in snapshot
-            if r.project_id and r.run_id and not r.settled}
-    owed = [r for r in snapshot
-            if r.task_id == mine and r.project_owned and r.project_id
-            and r.settled and r.project_id not in live]
+    # sweep tick); deferred registrations stay with the periodic sweep. A
+    # project with ANY unsettled run is live; unsettled runs are held rows.
+    owned = [r for r in view["runs"].values() if r.project_owned and r.project_id and r.settled]
+    live = ({r.project_id for r in current_runs(drive_root, "state=?", ("held",)).values() if r.project_id and r.run_id and not r.settled}
+            if owned else set())
+    owed = [r for r in owned if r.project_id not in live]
     if not held and not stray and not owed:
         return []
     return _reconcile_each(drive_root, held, gateway_factory, pending=stray,
@@ -178,7 +182,10 @@ def _reconcile_each(drive_root: Any, runs: List[RunCustody],
     # a deferred one must not spin the daemon up.
     from ouroboros.delegate_continuation import still_continuable
 
-    snapshot = list(_custody().replay(drive_root).values())
+    from ouroboros.delegate_custody_current import runs as current_runs
+
+    # Owned registrations and unsettled runs are HELD rows: one indexed read.
+    snapshot = list(current_runs(drive_root, "state=?", ("held",)).values())
     # Only a still-owned registration can be retired, so only its rows are asked
     # (each ask reads task results); one continuable row keeps the whole project.
     owned = {row.project_id for row in snapshot if row.project_owned and row.project_id}

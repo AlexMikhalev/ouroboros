@@ -96,7 +96,7 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         note="the envelope every worker log line rides; the payload types that "
              "need their own answer are the nested_log_event rows below"),
     "main_llm_call_state": _handled(
-        "supervisor.events", "ouroboros/utils.py",
+        "supervisor.events", "ouroboros/loop_llm_call.py",
         note="the last handler still resolving on the facade itself"),
     "owner_message_injected": _handled(
         # v7 L-B split: the drain that emits the receipt lives in the round-limits leaf.
@@ -106,6 +106,7 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         "supervisor.events_project_routing", "ouroboros/agent_task_pipeline.py"),
     "promote_chat_to_task": _handled(
         "supervisor.events_project_routing", "ouroboros/tools/control_routing.py"),
+    "rollback_request": _handled("supervisor.events_runtime_controls", "ouroboros/tools/git_rollback.py"),
     "promote_to_stable": _handled(
         "supervisor.events_runtime_controls", "ouroboros/tools/control_runtime.py"),
     "review_late_result": _handled(

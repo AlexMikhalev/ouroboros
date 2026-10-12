@@ -109,7 +109,7 @@ def test_warm_owner_pause_registry_and_fence_reach_the_rendered_card(tmp_path, m
             fence, _ = owner_pause.install_fence(tmp_path, task["id"], request_id="pause")
             supervisor_queue.BUDGET_ROOT_FENCES[task["id"]] = {"cause": "owner_pause", "fence_id": fence["fence_id"]}
             requested = gateway_state._chat_activities_snapshot_safe(tmp_path)
-            assert requested[0]["phase"] == ("thinking" if kind == "direct_chat" else "budget_pausing")
+            assert requested[0]["phase"] == ("preparing" if kind == "direct_chat" else "budget_pausing")
             assert not requested[0].get("finishing_reviews"), "a requested Pause is not yet a paused author"
             set_owner_wait(tmp_path, task["id"], {"wait_id": "pause-wait", "state": "waiting", "reason": "owner_pause"})
             settling = gateway_state._chat_activities_snapshot_safe(tmp_path)[0]
@@ -133,8 +133,8 @@ def test_warm_owner_pause_registry_and_fence_reach_the_rendered_card(tmp_path, m
     assert _js_pause_cards(samples) == [
         {"phase": "Paused · owner pause · review work finishing", "resume": True, "typing": "none"},
         {"phase": "Paused · owner pause", "resume": True, "typing": "none"},
-        # A resumed direct turn reads its own census phase (``thinking``), a managed task ``working``.
-        {"phase": "Thinking" if kind == "direct_chat" else "Working", "resume": False, "typing": ""},
+        # A resumed direct turn reads its own census phase (``preparing``), a managed task ``working``.
+        {"phase": "Preparing request" if kind == "direct_chat" else "Working", "resume": False, "typing": ""},
     ]
 
 

@@ -167,6 +167,7 @@ def test_worker_public_adapter_uses_venue_authority(late, tmp_path, monkeypatch,
     snapshot = {'ts': utc_now_iso(), 'running': [], 'pending': []}
     fragment = {'ts': utc_now_iso(), 'roots': [], 'incomplete': False}
     target = snapshot if venue == 'pooled' else fragment
+    snapshot['generation'] = fragment['generation'] = 'fixture-generation'
     if evidence == 'live':
         target['running' if venue == 'pooled' else 'roots'] = [{'task_id': f.tid}]
     elif evidence == 'stale':
@@ -178,7 +179,14 @@ def test_worker_public_adapter_uses_venue_authority(late, tmp_path, monkeypatch,
         if selected and evidence == 'missing':
             continue
         (f.root / 'state' / f'{name}.json').write_text(
-            '{' if selected and evidence == 'invalid' else json.dumps(payload))
+            '{' if selected and evidence == 'invalid' else json.dumps(payload), encoding='utf-8')
+    from ouroboros.utils import atomic_write_json
+    atomic_write_json(f.root / 'state/queue.alive', {
+        'generation': 'fixture-generation', 'ts': target['ts'], 'heartbeats': {},
+    })
+    atomic_write_json(f.root / 'state/queue_dispatch.json', {
+        'generation': 'fixture-generation', 'budget_root_fences': [], 'members': {},
+    })
     ctx = _caller(f)
     ctx.event_queue = queue.Queue()  # This consumer owns a live notification sink.
     source = _source(ctx)
@@ -248,19 +256,20 @@ def _spawned_request(root, worker, workspace, tid, source, results):
 def test_spawned_worker_public_request_waits_for_real_original_owner(late, tmp_path, monkeypatch, venue):
     from ouroboros import agent_task_pipeline as pipeline
     from supervisor import queue as task_queue
-    from supervisor.direct_roots import publish_direct_roots
     from supervisor.queue_snapshot import persist_queue_snapshot
     f = delivered(tmp_path, monkeypatch)
     source = _source(_caller(f))
     entered, release = threading.Event(), threading.Event()
     postwork = None
+    monkeypatch.setattr(task_queue, "DRIVE_ROOT", f.root)
+    monkeypatch.setattr(task_queue, "QUEUE_SNAPSHOT_PATH", f.root / "state/queue_snapshot.json")
     if venue == 'pooled':
         monkeypatch.setattr(task_queue, 'QUEUE_SNAPSHOT_PATH', f.root / 'state' / 'queue_snapshot.json')
         monkeypatch.setattr(task_queue, 'RUNNING', {f.tid: {'task': f.task, 'worker_id': 4}})
         assert persist_queue_snapshot('synthetic original writer still owns its slot')
     else:
         write_task_result(f.root, f.tid, 'completed', _is_direct_chat=True)
-        publish_direct_roots(f.root)  # direct turn ended; its postwork has not
+        persist_queue_snapshot("direct owner observation")  # direct turn ended; its postwork has not
         def hold(*_a, **_kw):
             entered.set()
             assert release.wait(20)
@@ -308,7 +317,7 @@ def test_spawned_worker_public_request_waits_for_real_original_owner(late, tmp_p
                 release.set()
                 postwork.join(5)
                 assert not postwork.is_alive()
-                publish_direct_roots(f.root)
+                persist_queue_snapshot("direct owner observation")
     finally:
         release.set()
         if postwork is not None:

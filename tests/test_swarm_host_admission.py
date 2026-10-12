@@ -21,6 +21,7 @@ from ouroboros.project_dialogue import build_owner_message_ref
 from ouroboros.projects_registry import create_project, project_binding_for_task
 from ouroboros.task_results import load_task_result, write_task_result
 from ouroboros.utils import append_jsonl
+from tests._store_shared import unreadable_result
 from supervisor import git_ops, queue, state, worker_chat_lane as lane, workers
 from supervisor.events import _handle_promote_chat_to_task
 
@@ -315,7 +316,7 @@ def test_replayed_client_message_id_admits_nothing_new(host, room, phase):
 
 
 @pytest.mark.parametrize("collision", ["reserved", "different_token", "unreadable", "live_only"])
-def test_replay_identity_requires_original_durable_token(host, collision):
+def test_replay_identity_requires_original_durable_token(host, monkeypatch, collision):
     case = incoming_case(host, "main")
     host.pending.append({"id": case.task_id})
     if collision in {"reserved", "different_token"}:
@@ -326,9 +327,7 @@ def test_replay_identity_requires_original_durable_token(host, collision):
     if collision == "reserved":
         queue.ADMISSION_RESERVATIONS[case.task_id] = "other-token"
     if collision == "unreadable":
-        path = host.root / "task_results" / f"{case.task_id}.json"
-        path.parent.mkdir(exist_ok=True)
-        path.write_text("{broken")
+        unreadable_result(monkeypatch, case.task_id, root=host.root)
     result = queue.reserve_task_admission(case.task_id, case.token, drive_root=host.root)
     assert result == {"status": "blocked", "reason": (
         "task_id_lookup_failed" if collision == "unreadable" else "duplicate_task_id"

@@ -656,9 +656,10 @@ def test_continue_after_a_crash_rejoins_a_lost_answer_and_survives_reload(direct
 
                 # Its worker process dies (SIGKILL) while the application stays up: the
                 # existing policy keeps a signal death terminal, so Continue is its manual path.
-                workers = json.loads((data_dir / "state" / "worker_pids.json").read_text(encoding="utf-8"))["workers"]
+                from tests._shared import live_worker_pids
+                workers = live_worker_pids(data_dir)
                 assert len(workers) == 1, workers
-                os.kill(int(workers[0]["pid"]), signal.SIGKILL)
+                os.kill(next(iter(workers)), signal.SIGKILL)
                 delta = _wait(lambda: (lambda t: t if t["status"] == "failed" else None)(_task(page, url, DELTA)),
                               120, "DELTA settled by its worker's death")
                 record["delta"] = {key: delta.get(key) for key in ("status", "reason_code", "cancel_origin",

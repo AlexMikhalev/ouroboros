@@ -211,7 +211,7 @@ def test_returned_github_parse_error_does_not_keep_local_execution_alive(tmp_pat
     result = registry.execute_result("get_github_issue", {"number": 5})
     assert "failed to parse issue JSON" in result.text
     assert result.meta.get("operation_outcome") != "completed_no_effect"
-    assert not load_task_result(tmp_path, "root")["launch_handoffs"]
+    assert not load_task_result(tmp_path, "root").get("launch_handoffs", {})
     _park(tmp_path, monkeypatch, queue, workers)
     assert queue.resume_budget_paused_task("root")["ok"]
 

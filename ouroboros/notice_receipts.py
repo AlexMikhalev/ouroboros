@@ -7,7 +7,11 @@ remains at-least-once (an extra notice, never a loss). A pause-notice receipt
 lives only from its chat append to the task's acknowledgement
 (``ouroboros/pause_notices.py``).
 """
+import logging
+
 from ouroboros import obligations as o
+
+log = logging.getLogger(__name__)
 
 UPGRADE_TYPES = frozenset({"reviewer_default_notice", "optional_bounds_notice", "legacy_memory_notice"})
 PAUSE_TYPE = "task_pause_notice"
@@ -27,17 +31,19 @@ def pause_receipt_id(chat_id, identity):
 
 def record(root, row):
     """After the chat row landed: a receipt that cannot be written never turns the landed row into a
-    failure (the notice may repeat once; the next start rebuilds the sets)."""
+    failure (the notice may repeat once; the next import re-reads the receipts)."""
     kind = row.get("type")
     if row.get("direction") != "system":
         return
-    if kind in UPGRADE_TYPES and isinstance(row.get("chat_id"), int):
-        o._bookkeeping(root, "upgrade notice receipt", o.add, root, "upgrade_notices", notice_id(row["chat_id"], kind),
-                       {"chat_id": row["chat_id"], "type": kind, "ts": row.get("ts"), "recorded": True})
-    elif kind == PAUSE_TYPE and row.get("card_row_id") and isinstance(row.get("chat_id"), int):
-        o._bookkeeping(root, "pause notice receipt", o.add, root, "pause_notice_receipts",
-                       pause_receipt_id(row["chat_id"], row["card_row_id"]),
-                       {"task_id": row.get("task_id"), "ts": row.get("ts")})
+    try:
+        if kind in UPGRADE_TYPES and isinstance(row.get("chat_id"), int):
+            o.add(root, "upgrade_notices", notice_id(row["chat_id"], kind),
+                  {"chat_id": row["chat_id"], "type": kind, "ts": row.get("ts"), "recorded": True})
+        elif kind == PAUSE_TYPE and row.get("card_row_id") and isinstance(row.get("chat_id"), int):
+            o.add(root, "pause_notice_receipts", pause_receipt_id(row["chat_id"], row["card_row_id"]),
+                  {"task_id": row.get("task_id"), "ts": row.get("ts")})
+    except Exception:
+        log.warning("Notice receipt for %s could not be recorded", kind, exc_info=True)
 
 
 def import_upgrade_receipts(root):

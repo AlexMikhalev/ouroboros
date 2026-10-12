@@ -20,6 +20,7 @@ import httpx
 import pytest
 
 from ouroboros.test_environment import isolated_environment
+from tests._store_shared import read_result, result_exists
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = "lifecycle-fixture-token"
@@ -230,8 +231,7 @@ def test_direct_exec_restart_interrupts_same_pid_author_without_replaying_effect
         initial = host.turn().json()
         assert initial["status"] == "continuing"
         ref = initial["continuation_ref"]
-        record_path = tmp_path / "data" / "task_results" / f"{ref}.json"
-        before = json.loads(record_path.read_text())
+        before = read_result(tmp_path / "data", ref)
         original = before["presence_continuation"]["author_controller"]
         assert original == host.info["controller"] and original["birth"] and original["session"]
         # A genuine live controller in another process remains pending despite
@@ -262,7 +262,7 @@ def test_direct_exec_restart_interrupts_same_pid_author_without_replaying_effect
             assert host.turn().json() == initial
             assert host.work(ref).json() == interrupted.json()
         assert len(host.inputs()) == 2
-        after = json.loads(record_path.read_text())
+        after = read_result(tmp_path / "data", ref)
         assert after["status"] == before["status"] == "running"
         assert after["presence_continuation"] == before["presence_continuation"]
 
@@ -292,10 +292,9 @@ def test_killed_author_stays_interrupted_and_explicit_new_event_can_continue(tmp
         ref = first["continuation_ref"]
         assert first_host.work(ref).status_code == 202
         assert len(first_host.inputs()) == 2
-        record_path = tmp_path / "data" / "task_results" / f"{ref}.json"
         # The initial response is published before direct_owner_wait parks.
         def parked_record():
-            record = json.loads(record_path.read_text())
+            record = read_result(tmp_path / "data", ref)
             return record if record.get("owner_wait", {}).get("state") == "waiting" else None
 
         record = eventually(parked_record)
@@ -344,7 +343,7 @@ def test_killed_author_stays_interrupted_and_explicit_new_event_can_continue(tmp
         assert all("send_message" not in tool for row in inputs for tool in row["tools"])
         assert second_host.turn().json() == first
         assert second_host.work(ref).json() == interrupted.json()
-        assert json.loads(record_path.read_text())["presence_continuation"] == continuation
+        assert read_result(tmp_path / "data", ref)["presence_continuation"] == continuation
         (tmp_path / "consumer-facts.json").write_text(json.dumps({
             "death": death, "mode": mode, "initial": first, "interrupted": interrupted.json(),
             "manual": manual, "original_model_calls": 2, "manual_model_calls": 1,
@@ -377,16 +376,15 @@ def second_park_with_late_child(host):
     initial = response.json()
     assert initial["status"] == "continuing" and initial["work_ref"] == ""
     ref = initial["continuation_ref"]
-    record_path = host.root / "data" / "task_results" / f"{ref}.json"
 
     def parked():
-        record = json.loads(record_path.read_text())
+        record = read_result(host.root / "data", ref)
         return record if record.get("owner_wait", {}).get("state") == "waiting" else None
 
     before = eventually(parked)
     first_continuation = before["presence_continuation"]
     assert first_continuation["initial"]["work_ref"] == ""
-    assert not (host.root / "data" / "task_results" / f"{LATE_CHILD}.json").exists()
+    assert not result_exists(host.root / "data", LATE_CHILD)
     assert host.work(ref).status_code == 202 and len(host.inputs()) == 2
     assert host.client.post("/fixture/release-review").status_code == 200
 
@@ -404,7 +402,7 @@ def second_park_with_late_child(host):
     assert after["presence_continuation"]["author_controller"] == first_continuation["author_controller"]
     assert host.client.get("/fixture/live").json() == [ref]
     assert host.turn().json() == initial and len(host.inputs()) == 4
-    return initial, after, record_path
+    return initial, after
 
 
 @pytest.mark.parametrize("mode", ["blocking", "advisory"])
@@ -412,7 +410,7 @@ def second_park_with_late_child(host):
 def test_second_park_exposes_late_child_without_changing_initial_replay(tmp_path, mode, ending):
     host = Host(tmp_path, 1, mode, "late_child")
     try:
-        initial, record, record_path = second_park_with_late_child(host)
+        initial, record = second_park_with_late_child(host)
         ref = initial["continuation_ref"]
         pending = host.work(ref)
         assert pending.status_code == 202, pending.text
@@ -434,7 +432,7 @@ def test_second_park_exposes_late_child_without_changing_initial_replay(tmp_path
         # its model receiver. Require actual closure too; terminal is not its ACK.
         eventually(lambda: host.client.get("/fixture/live").json() == [])
         assert host.turn().json() == initial
-        assert json.loads(record_path.read_text())["presence_continuation"]["initial"] == record["presence_continuation"]["initial"]
+        assert read_result(host.root / "data", ref)["presence_continuation"]["initial"] == record["presence_continuation"]["initial"]
         assert host.work(child_ref).json() == child.json()  # independent work survives the author's end
         (tmp_path / "late-child-facts.json").write_text(json.dumps({
             "mode": mode, "ending": ending, "initial": initial, "second_park": pending.json(),
@@ -455,7 +453,7 @@ def test_terminal_poll_precedes_author_teardown_but_cleanup_must_finish(tmp_path
     """Deterministically expose the stop/advisory race; never infer cleanup from HTTP 200."""
     host = Host(tmp_path, 1, "advisory", "late_child_close_barrier")
     try:
-        initial, record, _ = second_park_with_late_child(host)
+        initial, record = second_park_with_late_child(host)
         ref = initial["continuation_ref"]
         assert host.client.post("/fixture/stop", json={"task_id": ref}).status_code == 200
         marker = tmp_path / "before-author-close.json"
@@ -486,7 +484,7 @@ def test_terminal_poll_precedes_author_teardown_but_cleanup_must_finish(tmp_path
 def test_killed_second_park_author_preserves_late_child_for_tcp_consumer(tmp_path, mode):
     first_host = Host(tmp_path, 1, mode, "late_child")
     try:
-        initial, record, record_path = second_park_with_late_child(first_host)
+        initial, record = second_park_with_late_child(first_host)
         ref = initial["continuation_ref"]
         # Physical process death drops the author stack and all in-memory refs.
         first_host.proc.kill()
@@ -512,7 +510,7 @@ def test_killed_second_park_author_preserves_late_child_for_tcp_consumer(tmp_pat
             assert second_host.work(child_ref).json() == child.json()
         assert len(second_host.inputs()) == 4  # no original author restart or event regeneration
         assert second_host.client.get("/fixture/live").json() == []
-        assert json.loads(record_path.read_text())["presence_continuation"] == record["presence_continuation"]
+        assert read_result(second_host.root / "data", ref)["presence_continuation"] == record["presence_continuation"]
         (tmp_path / "late-child-facts.json").write_text(json.dumps({
             "mode": mode, "death": "SIGKILL", "initial": initial,
             "interrupted": interrupted.json(), "independent_child": child.json(),
@@ -538,14 +536,13 @@ def test_v1_tcp_disconnect_before_first_park_keeps_one_author(tmp_path, mode):
                 f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode() + body)
             eventually(lambda: (tmp_path / "before-first-inference.json").exists())
             ref = presence_turn_task_id(host.info["binding"], "original")
-            record_path = tmp_path / "data" / "task_results" / f"{ref}.json"
-            before = json.loads(record_path.read_text())
+            before = read_result(tmp_path / "data", ref)
             assert not before.get("presence_continuation")
             assert len(host.inputs()) == 1
             connection.shutdown(socket.SHUT_RDWR)
         # Only now may the first inference return and later reach the review park.
         assert host.client.post("/fixture/release-inference").status_code == 200
-        eventually(lambda: json.loads(record_path.read_text()).get("presence_continuation"))
+        eventually(lambda: read_result(tmp_path / "data", ref).get("presence_continuation"))
         initial = host.turn().json()
         assert initial["status"] == "continuing" and initial["turn_ref"] == ref
         assert host.work(ref).status_code == 202 and len(host.inputs()) == 2
@@ -578,8 +575,7 @@ def test_proactive_caller_process_death_and_recycle_preserve_interrupted_work(tm
         initial = first_host.client.post("/fixture/proactive").json()
         assert initial["status"] == "continuing" and initial["continuation_ref"] == initial["turn_ref"]
         ref = initial["turn_ref"]
-        record_path = tmp_path / "data" / "task_results" / f"{ref}.json"
-        record = json.loads(record_path.read_text())
+        record = read_result(tmp_path / "data", ref)
         original_continuation = record["presence_continuation"]
         assert original_continuation["author_controller"]["pid"] == first_host.proc.pid
         assert record["metadata"]["presence"]["event"]["actor"]["kind"] == "proactive_initiation"
@@ -599,7 +595,7 @@ def test_proactive_caller_process_death_and_recycle_preserve_interrupted_work(tm
         assert second_host.client.post("/fixture/proactive").json() == initial
         assert len(second_host.inputs()) == 2
         assert second_host.client.get("/fixture/live").json() == []
-        assert json.loads(record_path.read_text())["presence_continuation"] == original_continuation
+        assert read_result(tmp_path / "data", ref)["presence_continuation"] == original_continuation
         (tmp_path / "consumer-facts.json").write_text(json.dumps({
             "mode": mode, "initial": initial, "interrupted": interrupted.json(),
             "caller_pid": first_host.proc.pid, "recycled_pid": second_host.proc.pid,

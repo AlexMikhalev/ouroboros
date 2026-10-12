@@ -15,6 +15,7 @@ import pytest
 
 from ouroboros import usage_accounting as ua
 from tests._usage_store_testing import ledger_rows, write_compacted_journal, write_journal
+from tests._store_shared import delete_result, unreadable_result
 
 
 @pytest.fixture
@@ -141,7 +142,7 @@ def test_the_review_wave_binds_on_the_group_when_it_is_tighter(data_root):
     assert wave["billing_group_id"] == "P"
 
 
-def test_task_start_fields_for_the_successor_its_helper_and_an_unreadable_root(data_root):
+def test_task_start_fields_for_the_successor_its_helper_and_an_unreadable_root(data_root, monkeypatch):
     from ouroboros.task_results import write_task_result
     from ouroboros.usage_admission import UNAVAILABLE_GROUP_PREFIX, task_billing_fields
 
@@ -155,7 +156,7 @@ def test_task_start_fields_for_the_successor_its_helper_and_an_unreadable_root(d
     plain = {"id": "R"}
     assert task_billing_fields(plain, "R", 5.0, data_root) == {
         "root_limit_usd": 5.0, "billing_group_id": "R", "billing_group_limit_usd": 5.0}
-    (data_root / "task_results" / "S.json").write_text("{not json", encoding="utf-8")
+    unreadable_result(monkeypatch, "S")
     fields = task_billing_fields(helper, "S", 5.0, data_root)
     assert fields["billing_group_id"].startswith(UNAVAILABLE_GROUP_PREFIX)
     with pytest.raises(ua.BudgetExceeded, match="billing group authority unavailable"):
@@ -218,7 +219,7 @@ def test_concurrent_siblings_are_admitted_on_known_spend_and_the_exposure_is_dis
 
 
 def test_late_session_uses_start_custody_after_root_loss_not_callers_group(data_root):
-    from ouroboros.task_results import write_task_result, task_result_path
+    from ouroboros.task_results import write_task_result
     from ouroboros.delegate_custody import record_start_requested
 
     binding = {"billing_group_id": "P", "billing_group_limit_usd": 20.0,
@@ -226,7 +227,7 @@ def test_late_session_uses_start_custody_after_root_loss_not_callers_group(data_
     write_task_result(data_root, "S", "running", billing_group=binding)
     assert record_start_requested(data_root, task_id="S", root_task_id="S", invocation_id="late-start",
                                   request={"prompt": "do work"}, idempotency_key="late-start")
-    task_result_path(data_root, "S").unlink()
+    delete_result(data_root, "S")
     with ua.usage_scope(_scope(data_root, "unrelated", "unrelated", group="unrelated", group_limit=999.0)):
         ua.record_subscription_session("late-session", drive_root=data_root, route="test", model="m",
                                        task_id="S", root_task_id="S", spend_usd=20.0)

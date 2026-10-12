@@ -103,7 +103,7 @@ def _take_undispatched(key: Tuple[int, str]) -> bool:
 #
 # Every web send and named skill delivery asks this before it may write, so the answer comes from a
 # process-local index over the retained chat chain, never a replay of it (DEVELOPMENT 03 "Projection
-# over replay"; the ``delegate_custody_memo`` fingerprint rules): the first lookup folds the whole
+# over replay"): the first lookup folds the whole
 # chain once — the cold cost each host process pays — and later ones fold only the bytes appended
 # since. The warm check is constant: the live file's identity, size and two short anchors of its
 # folded prefix. A rotation keeps the folded file's identity under its archive name, so its

@@ -588,9 +588,11 @@ def _promote_chat_to_task(
     response = (
         f"⚠️ PROMOTE_UNCONFIRMED: task {tid} admission was not confirmed {confirmation_window}; "
         f"the requested destination was {_requested_scope_label(display_name, pid)} and the "
-        "effective one is unknown until the admission is reconciled. Do not report this task as "
-        f"created and do not retry automatically: call get_task_result({tid}) to read the durable "
-        "outcome before promoting the same work again."
+        "effective one is unknown until the admission is reconciled. The request was emitted and "
+        "may still be admitted, or already was: while this turn keeps acting, a [ROUTING_RECEIPTS] "
+        "row reports the admission once it is recorded. Do not report this task as created yet and "
+        f"do not retry automatically: call get_task_result({tid}) to read the durable outcome before "
+        "promoting the same work again."
     )
     return _finish_swarm_handoff(
         ctx, evt, response, status="unconfirmed", reason=reason or "confirmation_timeout",
@@ -856,7 +858,10 @@ def _route_to_project(
         )
     response = (
         f"⚠️ ROUTE_UNCONFIRMED: task {tid} routing to project '{name}' was not durably "
-        "confirmed. Do not report it as routed and do not retry automatically."
+        "confirmed. Do not report it as routed and do not retry automatically. The request was "
+        "emitted and may still be admitted, or already was: while this turn keeps acting, a "
+        f"[ROUTING_RECEIPTS] row reports the admission once it is recorded; call get_task_result({tid}) "
+        "before routing the same work again."
     )
     return _finish_swarm_handoff(
         ctx, evt, response, status="unconfirmed", reason=reason_text,
@@ -1045,7 +1050,9 @@ def _steer_refusal_text(target: str, mode: str, receipt: Dict[str, Any]) -> str:
     return (
         f"⚠️ STEER_UNCONFIRMED: mailbox delivery to task {target} was not durably confirmed "
         f"({mode}, {reason}){_cause_words(reason)}. "
-        "Do not report the message as delivered."
+        "Do not report the message as delivered. The request was emitted and may still land, or "
+        "already has: while this turn keeps acting, a [ROUTING_RECEIPTS] row reports its outcome "
+        "once it is recorded. Sending it again is a second delivery, not a retry of this one."
     )
 
 

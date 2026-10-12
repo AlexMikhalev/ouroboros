@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from ouroboros.observability import without_finalization_timing
 from ouroboros.utils import update_json_locked, utc_now_iso
+from ouroboros.task_store import patch_document
 from ouroboros.task_finalization import (
     HOST_AUTHORED_TERMINAL_ORIGINS, TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL,
     artifact_store_roots, rescued_files_fact, rescued_files_sentence,
@@ -133,6 +134,15 @@ def _capture_emitted_answer(drive_root: Any, delivery_id: str, emitted: Dict[str
             "basis": record["basis"], "source_ref": ref}
 
 
+def _read_registry(drive_root: Any) -> Dict[str, Any]:
+    from ouroboros.utils import read_json_dict
+    path = pathlib.Path(drive_root) / "state" / "terminal_deliveries.json"
+    data = read_json_dict(path) if path.is_file() else {}
+    if data is None:
+        raise ValueError("registry file is malformed or is not an object")
+    return data
+
+
 def terminal_answer_receipts(drive_root: Any, task_id: str) -> Dict[str, Any]:
     """What the host can PROVE it emitted as one task's terminal answer.
 
@@ -144,12 +154,7 @@ def terminal_answer_receipts(drive_root: Any, task_id: str) -> Dict[str, Any]:
     fact: Dict[str, Any] = {"source": "terminal_delivery_registry", "state": "unknown", "delivered": [],
                             "unverified_delivery_ids": [], "owed_delivery_ids": []}
     try:
-        from ouroboros.utils import read_json_dict
-
-        path = pathlib.Path(drive_root) / "state" / "terminal_deliveries.json"
-        data = read_json_dict(path) if path.is_file() else {}
-        if data is None:
-            raise ValueError("registry file is malformed or is not an object")
+        data = _read_registry(drive_root)
         receipts, pending = _mapping_rows(data, "receipts", strict=True), _mapping_rows(data, "pending", strict=True)
         delivered = _delivered_rows(data, strict=True)
     except Exception:
@@ -355,24 +360,23 @@ def _log_unregistered_delivery(drive_root: Any, event: Dict[str, Any], did: str)
 
 
 def pending_deliveries(
-    drive_root: Any, *, disclose_corruption: bool = False,
+    drive_root: Any, *, disclose_corruption: bool = False, strict: bool = False,
 ) -> List[Dict[str, Any]]:
     """Read owed sends, excluding delivered ids, with disclosed corruption.
 
     An absent registry is empty. Unreadable/malformed data logs an error and
     returns []; malformed individual rows are skipped with their bytes intact.
-    ``disclose_corruption`` also emits the durable corruption event for replay."""
-    path = pathlib.Path(drive_root) / "state" / "terminal_deliveries.json"
-    if not path.is_file():
-        return []
+    ``disclose_corruption`` emits the corruption event; ``strict`` refuses an
+    unreadable registry (including receipts) for evidence settlement."""
     try:
-        from ouroboros.utils import read_json_dict
-
-        data = read_json_dict(path)
-        if data is None:
-            raise ValueError("registry file is malformed or is not an object")
+        data = _read_registry(drive_root)
         pending = _mapping_rows(data, "pending", strict=True)
+        if strict:
+            _mapping_rows(data, "receipts", strict=True)
+            _delivered_rows(data, strict=True)
     except Exception as exc:
+        if strict:
+            raise
         log.error(
             "terminal-delivery registry is unreadable/malformed (%s); the owed "
             "outbox reads as EMPTY until the file is repaired", exc,
@@ -1288,16 +1292,13 @@ def _persist_cancel_receipt(
     no contract change): full-copy path + size + full sha256 (or an honest
     unreadable/unpreserved marker), exact preview-omitted count, the stop
     reason when the intent is still readable, and the historical children
-    digest for a cascade root. Never creates the result file (a later full
+    digest for a cascade root. Never creates the result record (a later full
     write would clobber a block-only row) and never clobbers previously
     persisted non-empty facts with an emptier rebuild. Fail-soft.
     ``files_rescued`` (TZ-2 C2) is the typed stat-only store count the receipt text speaks.
     """
     tid = str(task_id or "")
     try:
-        from ouroboros.task_results import task_result_path
-        from ouroboros.utils import update_json_locked
-
         block: Dict[str, Any] = {
             "settled_status": str(settled_status or ""),
             "outcome": str(outcome or ""),
@@ -1367,7 +1368,7 @@ def _persist_cancel_receipt(
             current["cancel_receipt"] = merged
             return current
 
-        update_json_locked(task_result_path(pathlib.Path(drive_root), tid), _mutate)
+        patch_document(pathlib.Path(drive_root), tid, _mutate)
     except Exception:
         log.debug("cancel-receipt persistence failed for %s", tid, exc_info=True)
 
@@ -1381,8 +1382,6 @@ def record_cancel_receipt_delivery(
     destination evidence unknown; it never authorizes suppressing an excerpt.
     """
     try:
-        from ouroboros.task_results import task_result_path
-
         def _mutate(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             receipt = current.get("cancel_receipt")
             if (str(current.get("task_id") or "") != task_id
@@ -1391,7 +1390,7 @@ def record_cancel_receipt_delivery(
                 return None
             return {**current, "cancel_receipt": {**receipt, "delivered_chat_id": chat_id}}
 
-        update_json_locked(task_result_path(pathlib.Path(drive_root), task_id), _mutate)
+        patch_document(pathlib.Path(drive_root), task_id, _mutate)
     except Exception:
         log.debug("cancel-receipt delivery evidence failed for %s", task_id, exc_info=True)
 

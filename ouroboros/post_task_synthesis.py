@@ -520,7 +520,7 @@ def _record_task_facts(env: Any, task: Dict[str, Any], usage: Dict[str, Any],
     """Append the task's free host facts row to chat.jsonl: no model call, no prose.
 
     The owner removed the paid task narrative (TZ-2 decision 2=A). This row keeps
-    the facts its readers take from a ``task_summary`` row when the result file is
+    the facts its readers take from a ``task_summary`` row when the stored result is
     gone: the direct-turn fact, origin label, typed routing action, tool metrics,
     rounds, cost and review projection. Its kind is ``host_task_facts``, never
     ``authored_root_summary``, and it persists no continuation narrative, so a

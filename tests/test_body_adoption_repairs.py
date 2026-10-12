@@ -283,13 +283,14 @@ def test_next_generation_pin_comes_from_the_bound_candidate_when_the_switch_chan
 
     calls = []
     monkeypatch.setattr("ouroboros.claudexor_runtime.load_runtime_pin",
-                        lambda path=None: calls.append(path) or SimpleNamespace(path=path))
+                        lambda path=None, data=None: calls.append(data) or SimpleNamespace(data=data))
     monkeypatch.setattr(body_adoption, "bound_candidate_file", lambda data_dir, rel: None)
-    assert server_restart._next_generation_pin().path is None  # the landed checkout's own pin
+    assert server_restart._next_generation_pin().data is None  # the landed checkout's own pin
+    candidate = b'{"schema_version": 1, "release": null}'
     monkeypatch.setattr(body_adoption, "bound_candidate_file",
-                        lambda data_dir, rel: b'{"schema_version": 1, "release": null}' if rel.endswith(_PIN_FILENAME) else None)
+                        lambda data_dir, rel: candidate if rel.endswith(_PIN_FILENAME) else None)
     pin = server_restart._next_generation_pin()
-    assert pin.path is not None and pin.path.name == _PIN_FILENAME and calls[-1] == pin.path
+    assert pin.data == candidate and calls == [None, candidate]  # the candidate's bytes, through the one loader
 
 
 # --------------------------------------------------------------------------- #

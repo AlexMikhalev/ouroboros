@@ -78,10 +78,12 @@ OBJECTIVE_REPEAT_CAP: int = 3
 # Whether THIS process owns the supervisor's live maps (``init`` ran): a process that merely
 # imports the module sees empty maps, which prove nothing (``task_settlement_liveness``).
 INITIALIZED = False
+QUEUE_PUBLICATION = None  # Structural documents and their successfully published generation.
 
 
 def init(drive_root: pathlib.Path) -> None:
-    global DRIVE_ROOT, FINALIZATION_GRACE_SEC, INITIALIZED, QUEUE_SNAPSHOT_PATH
+    global DRIVE_ROOT, FINALIZATION_GRACE_SEC, INITIALIZED, QUEUE_SNAPSHOT_PATH, QUEUE_PUBLICATION
+    QUEUE_PUBLICATION = None
     DRIVE_ROOT = drive_root
     INITIALIZED = True
     QUEUE_SNAPSHOT_PATH = drive_root / "state" / "queue_snapshot.json"

@@ -115,6 +115,7 @@ from ouroboros.tools.review_synthesis import (
 )
 from ouroboros.tools.tool_result import TOOL_CODE_SPECS, ToolResult, _publish_tool_result
 from ouroboros.utils import utc_now_iso
+from ouroboros.store import StoreError
 
 log = logging.getLogger(__name__)
 
@@ -489,7 +490,7 @@ def _reviewer_requested_locators(ctx: ToolContext, state_root: pathlib.Path) -> 
     _root, task_id = _planning_state_location(ctx)
     try:
         state = load_plan_review_state(state_root, task_id)
-    except (OSError, TimeoutError) as exc:
+    except (OSError, TimeoutError, StoreError) as exc:
         raise ValueError(f"PLAN_REVIEW_STATE_INVALID: {exc}") from exc
     seen: list[str] = []
     dropped: list[str] = []
@@ -516,7 +517,7 @@ def _resource_form_refusal(ctx: ToolContext, state_root: pathlib.Path) -> dict:
     try:
         _root, task_id = _planning_state_location(ctx)
         wave = current_plan_review_wave(load_plan_review_state(state_root, task_id)) or {}
-    except (OSError, TimeoutError, ValueError):
+    except (OSError, TimeoutError, ValueError, StoreError):
         wave = {}
     if wave and not wave.get("closed"):
         detail = (
@@ -717,7 +718,7 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest, *, col
     fingerprint = prepared["fingerprint"]
     try:
         state = load_plan_review_state(state_root, task_id)
-    except (OSError, TimeoutError, ValueError) as exc:
+    except (OSError, TimeoutError, ValueError, StoreError) as exc:
         return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_INVALID: {exc}")
     if collect is None:  # I3 reconcile-before-supersede: collect an in-flight wave at $0 first
         state = await _collect.collect_before_supersede(ctx, state_root=state_root, task_id=task_id, state=state, fingerprint=fingerprint)
@@ -954,7 +955,7 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest, *, col
         return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}")
     try:
         paid_now = int(load_plan_review_state(state_root, task_id).get("cycles_paid") or 0)
-    except (OSError, TimeoutError, ValueError) as exc:
+    except (OSError, TimeoutError, ValueError, StoreError) as exc:
         return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_INVALID: {exc}")
     _emit_plan_review_reference(ctx, task_id, state_root=state_root)
     if not review_enforcement_blocks(enforcement) and not stored.get("closed"):
@@ -1203,7 +1204,7 @@ def _apply_author_subject(ctx: ToolContext, disposition: dict, envelope: Optiona
             author_subject={"source_ref": ref, "review_fingerprint": critic_fp, "author_disposition": author,
                             "review_wave_artifact": (wave or {}).get("wave_artifact") or {}})
         ref = state["current_attempt"]["author_subject"]["source_ref"]
-    except (OSError, TimeoutError, ValueError) as exc:
+    except (OSError, TimeoutError, ValueError, StoreError) as exc:
         return _typed_refusal(ctx, "TOOL_ARG_ERROR", f"ERROR: PLAN_AUTHOR_SUBJECT_INVALID: {exc}; "
             + _argument_values(disposition, ("author_action", "review_fingerprint", "items", "author_disposition")))
     _narrate_author_rationale(ctx, author)  # the durable write landed: the mind's own words reach the owner
@@ -1302,7 +1303,7 @@ def _apply_disposition(ctx: ToolContext, disposition: dict, *, then_review=None)
     try:
         root, task_id = _planning_state_location(ctx)
         state = load_plan_review_state(root, task_id)
-    except (OSError, TimeoutError, ValueError) as exc:
+    except (OSError, TimeoutError, ValueError, StoreError) as exc:
         return _typed_refusal(ctx, "TOOL_ERROR", "ERROR: PLAN_REVIEW_STATE_INVALID: " + str(exc))
     enforcement = get_review_enforcement()
     cap = review_max_cycles()

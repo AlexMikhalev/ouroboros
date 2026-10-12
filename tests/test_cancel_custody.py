@@ -27,6 +27,7 @@ from ouroboros.task_results import (
 from tests._cancel_intents_shared import _live_split_drive_task, _write_root_retry_pair
 
 from tests._cancel_intents_shared import qenv as _qenv
+from tests._store_shared import delete_result
 
 # The fixture is requested by name as a test parameter, so it is re-bound through a
 # module attribute: a direct import of a name that reappears as a parameter is an F811
@@ -440,7 +441,6 @@ def test_timeout_precheck_yields_retry_leaf_to_logical_root_cascade(
     assert leaf_id in qenv.q.RUNNING
 
 def test_retry_boundary_refuses_missing_physical_leaf_authority(qenv, monkeypatch):
-    from ouroboros.task_results import task_result_path
     from supervisor import task_reaper as tr
 
     _patch_retry_input_handoff(monkeypatch)
@@ -464,7 +464,7 @@ def test_retry_boundary_refuses_missing_physical_leaf_authority(qenv, monkeypatc
         scope=ci.SCOPE_CASCADE,
         requested_stop_policy=ci.STOP_POLICY_FINALIZE,
     )
-    task_result_path(qenv.drive, leaf_id, create=False).unlink()
+    delete_result(qenv.drive, leaf_id)
 
     requeued, _attempt, reason, suppression = tr._enqueue_retry(
         qenv.q,

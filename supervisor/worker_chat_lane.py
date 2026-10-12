@@ -199,6 +199,27 @@ def _host_operation_failure(metadata: Optional[dict]) -> dict:
     return {}
 
 
+def _rejected_rows(manifest: Any) -> list:
+    """The rejected declarations of one staging manifest."""
+    return [row for row in (manifest or []) if isinstance(row, dict) and row.get("status") == "rejected"]
+
+
+def _record_attachment_rejections(
+    task: Dict[str, Any], chat_id: int, metadata: Optional[dict], manifest: Any, *, started: bool,
+) -> None:
+    """One failure-only diagnostic row: the per-file reasons the owner's chat no longer carries."""
+    rows = [{key: row.get(key) for key in ("ordinal", "label", "status", "reason", "rule") if row.get(key) is not None}
+            for row in _rejected_rows(manifest)]
+    try:
+        append_jsonl(_pool().DRIVE_ROOT / "logs" / "supervisor.jsonl", {
+            "ts": utc_now_iso(), "type": "attachments_rejected", "task_id": str(task.get("id") or ""),
+            "chat_id": int(chat_id or 0), "started": started,
+            "origin_message_ref": (metadata or {}).get("origin_message_ref"), "rejected": rows,
+        })
+    except Exception:
+        log.debug("attachments_rejected row failed", exc_info=True)
+
+
 def _broadcast_task_named(msg: dict) -> None:
     """Bridge broadcast callback for admission naming (kept tiny + fail-soft)."""
     try:
@@ -351,29 +372,32 @@ def _admit_chat_task(
             from ouroboros.gateway.tasks import _render_attachment_lines
 
             manifest = stage_task_attachments(_pool().DRIVE_ROOT, str(task["id"]), uploads)
-            rendered = _render_attachment_lines(manifest)
             # Partial staging is the default (В25c, capinv-447); a FULLY-rejected
             # set stays atomic — the task would start with none of its material.
             if attachment_manifest_all_rejected(manifest):
                 from ouroboros.artifacts import remove_staged_attachments
+                from ouroboros.project_dialogue import routing_refusal_cause
 
                 remove_staged_attachments(manifest)
+                _record_attachment_rejections(task, chat_id, task_metadata, manifest, started=False)
+                # No mind will read this message: one short typed mark in owner words
+                # (closed class), never the model's block; the files are on the owner's
+                # bubble and the per-file causes in the diagnostic row.
+                cause = routing_refusal_cause("promote_chat_to_task", "rejected", "attachment_admission_rejected")
+                count = len(_rejected_rows(manifest))
                 _pool().send_with_budget(
-                    chat_id,
-                    f"⚠️ Task not started: every attachment was rejected.\n{rendered}",
+                    chat_id, f"{cause} ({count} file{'' if count == 1 else 's'})" if count else cause,
                     **_host_operation_failure(task_metadata),
-                    role="system", system_type="attachment_notice")
+                    role="system", system_type="task_not_started")
                 registry.unregister(task["id"])
                 return None
             from ouroboros.artifacts import attachment_manifest_projection
             authority = attachment_manifest_projection(_pool().DRIVE_ROOT, str(task["id"]), manifest)
             rendered = _render_attachment_lines(authority)
             if attachment_manifest_has_rejections(manifest):
-                _pool().send_with_budget(
-                    chat_id,
-                    "⚠️ Some declared attachments could not be staged; the task "
-                    f"starts with the rest.\n{rendered}",
-                    role="system", system_type="attachment_notice")
+                # The turn starts with the rejected rows in its own block and
+                # tells the owner itself; the host keeps only the diagnostic.
+                _record_attachment_rejections(task, chat_id, task_metadata, manifest, started=True)
             if manifest:
                 manifest = [dict(row) for row in manifest]
                 task["drive_root"] = str(_pool().DRIVE_ROOT)

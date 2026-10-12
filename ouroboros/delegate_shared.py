@@ -28,6 +28,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 from ouroboros import delegate_custody as custody
 from ouroboros.delegate_custody import RunCustody as _RunCustody
 from ouroboros.tools.registry import ToolContext
+from ouroboros.store import StoreError
 from ouroboros.tools.tool_result import (
     TOOL_CODE_SPECS,
     ToolResult,
@@ -280,7 +281,7 @@ def _confirmed_retry_chain(drive: Any, starter: str, reader: str) -> Tuple[str, 
                       and live["delegation_role"] != "subagent"):
                     return ()  # ambiguous live attempt outside the chain
         return tuple(chain) if active == [reader] else ()
-    except (OSError, ValueError, TypeError, KeyError):
+    except (OSError, ValueError, TypeError, KeyError, StoreError):
         return ()
 
 
@@ -355,7 +356,7 @@ def orphan_disposition_status(
                 if all(nxt.get(key) == reader for key in (
                         "supersedes_task_id", "original_task_id", "timeout_retry_from")):
                     return custody.FOREIGN, entry, ""
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, StoreError):
             return custody.UNKNOWN, entry, ""
     if status == custody.FOREIGN:
         retry_status, retry_entry, predecessor = retry_result_status(ctx, drive, run_id, state=state)

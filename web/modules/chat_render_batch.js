@@ -2,6 +2,7 @@
 // These helpers own no history source, navigation or task authority.
 import { compareHistoryPosition } from './chat_history_replay.js';
 import { appendDelegatedItem, reconcileDelegatedItems } from './delegated_activity.js';
+import { isStoreMigrating } from './api_client.js';
 
 const nodePosition = node => node?.dataset?.historySource
     ? { source: node.dataset.historySource, offset: Number(node.dataset.historyOffset) } : null;
@@ -54,11 +55,12 @@ export function createHistoryControls(messagesDiv, statusHost = null) {
         recentFailed: () => Boolean(recent?.error),
         render(snapshot, coverage = {}, approximate = false) {
             const error = recent?.error || snapshot.error;
+            const migrating = isStoreMigrating(error);
             const hydrating = Boolean(recent?.loading);
             const loading = hydrating || Boolean(snapshot.loading);
             const changedView = error?.body?.reason_code === 'history_view_changed';
             const incomplete = coverage.gaps === true;
-            let noteText = error ? 'Some saved history could not be loaded.'
+            let noteText = migrating ? 'Saved history is being upgraded…' : error ? 'Some saved history could not be loaded.'
                 : hydrating && feedIsEmpty(messagesDiv) ? ''
                 : incomplete ? 'Some saved history is not loaded. Shown messages may have gaps.'
                 : !hydrating && coverage.complete ? 'Beginning of saved history' : '';
@@ -68,7 +70,7 @@ export function createHistoryControls(messagesDiv, statusHost = null) {
             const host = statusHost && noteText && (error || incomplete || approximate) ? statusHost : root;
             if (note.parentNode !== host) host.appendChild(note);
             note.classList.toggle('chat-history-status', host === statusHost);
-            const buttonHidden = !error && !snapshot.canOlder && !(coverage.horizonGap && !snapshot.canNewer) && !hydrating;
+            const buttonHidden = migrating || (!error && !snapshot.canOlder && !(coverage.horizonGap && !snapshot.canNewer) && !hydrating);
             const fields = [
                 [button, { textContent: hydrating ? 'Loading saved history…' : loading ? 'Loading…'
                     : changedView ? 'Refresh history' : error ? 'Retry loading messages' : 'Load more history',
@@ -81,7 +83,7 @@ export function createHistoryControls(messagesDiv, statusHost = null) {
             }
             if (hydrating) root.setAttribute('aria-busy', 'true'); else root.removeAttribute('aria-busy');
             if ((snapshot.initialized || error || hydrating) && !root.isConnected) messagesDiv.prepend(root);
-            root.classList.toggle('has-gaps', incomplete || Boolean(error));
+            root.classList.toggle('has-gaps', !migrating && (incomplete || Boolean(error)));
             return { ...coverage, complete: Boolean(coverage.complete && !error),
                 error: Boolean(error), note: noteText, truncated_by: incomplete ? ['unloaded'] : [] };
         },

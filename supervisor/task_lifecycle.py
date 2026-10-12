@@ -1238,7 +1238,7 @@ def _finish_captured_running(
     # status this call recorded.
     # A4/F5 — the honesty fence on the capture. ``finalize_task_artifacts``
     # DEFAULTS a task with no durable result to ``completed``: a task killed
-    # inside the spawn→RUNNING-write window has no result file yet, so the
+    # inside the spawn→RUNNING-write window has no stored result yet, so the
     # capture used to write a FABRICATED completion, which the monotonic guard
     # then defended against the real ``cancelled`` write — and the invented
     # ``completed`` was published AND delivered to the owner. So the capture runs

@@ -15,6 +15,7 @@ from ouroboros.task_results import write_task_result
 from ouroboros.utils import append_jsonl
 from tests.test_acceptance_delivery import _CLEAN_VERDICT, _EpisodeLLM, _tool_call, _fake_session
 from tests.test_acceptance_source_first import _SOURCE_PATH, _prepared_request
+from tests._store_shared import result_exists
 
 
 @pytest.fixture(autouse=True)
@@ -80,7 +81,7 @@ def test_native_episode_reads_retained_external_sources_after_original_cleanup(t
     assert delivery["custody_root"] == str(canonical)
     assert delivery["external_ref_closure"] == "retained" and not author.exists()
     assert read_actor_source_bytes(delivery["reader_root"], tid, delivery["source"]) == read_actor_source_bytes(canonical, tid, delivery["custody_source"])
-    assert not (canonical / "task_results" / (tid + ".json")).exists()
+    assert not result_exists(canonical, tid)
     assert not (canonical / "logs" / "tools.jsonl").exists()
     assert len(result.actors[0]["usage"]["native_tool_receipts"]) >= len(markers)
 

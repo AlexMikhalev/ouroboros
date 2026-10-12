@@ -48,7 +48,7 @@ from ouroboros.agent_startup_checks import (
 from ouroboros.agent_task_pipeline import (
     emit_task_results, build_review_context,
 )
-from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE
+from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, terminal_result_fields
 from ouroboros.task_results import STATUS_RUNNING, write_task_result
 from ouroboros.contracts.task_constraint import normalize_task_constraint
 from ouroboros.consciousness_authority import apply_consciousness_authority
@@ -95,12 +95,15 @@ def _authority_source_terminal(refusal: Dict[str, Any]):
     return text, usage, {"reasoning_notes": ["authority_source_unavailable"], "tool_calls": []}
 
 
-def _task_exception_terminal(env: Any, task: Dict[str, Any], exc: Exception, drive_logs: pathlib.Path):
+def _task_exception_terminal(env: Any, task: Dict[str, Any], exc: Exception, drive_logs: pathlib.Path,
+                             *, keep_terminal: bool = False):
     """Project captured loop evidence, or its explicit absence, without recovery.
 
     A failed cold-source read is never permission to read unverified checkpoint
     bytes as usage. The loop tally stays in loop_outcome; top-level money and
-    counters remain the existing ledger reconstruction's answer.
+    counters remain the existing ledger reconstruction's answer. ``keep_terminal``
+    (the worker's ``handle_task`` boundary) never replaces a row that is already
+    truly terminal: a late exception does not rewrite an earlier outcome.
     """
     captured_usage = getattr(exc, "_ouroboros_loop_usage", None)
     captured_trace = getattr(exc, "_ouroboros_loop_trace", None)
@@ -119,17 +122,19 @@ def _task_exception_terminal(env: Any, task: Dict[str, Any], exc: Exception, dri
     try:
         from ouroboros.outcomes import collect_trace_refs, derive_loop_outcome
         from ouroboros.agent_task_pipeline import build_trace_summary
-        from ouroboros.task_results import STATUS_FAILED, write_task_result
+        from ouroboros.task_results import STATUS_FAILED, _TRULY_TERMINAL_STATUSES, write_task_result
 
         loop_outcome = derive_loop_outcome(text, usage, llm_trace)
         write_task_result(
             env.drive_root, str(task.get("id") or ""), STATUS_FAILED,
+            _field_projector=(lambda current, incoming: None if current.get("status") in _TRULY_TERMINAL_STATUSES
+                              else incoming) if keep_terminal else None,
             _terminal_observed=True, result=text, reason_code="task_exception", loop_outcome=loop_outcome,
             outcome_axes=loop_outcome.get("outcome_axes") or infra_failed_axes(
                 "task_exception", review_trigger="agent_exception"),
             trace_summary=build_trace_summary(llm_trace),
             trace_refs=loop_outcome.get("trace_refs") or collect_trace_refs(usage, llm_trace),
-            **effort_result_fields(task),
+            **effort_result_fields(task), **terminal_result_fields(usage),
         )
     except Exception:
         log.debug("Failed to persist task exception projection", exc_info=True)

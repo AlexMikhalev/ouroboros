@@ -871,6 +871,25 @@ def _complete_stash_recovery(
     return {**result, **disclosure}
 
 
+def _boot_smoke_rollback(tx: Dict[str, Any], reason: str) -> Tuple[bool, str]:
+    """The boot-smoke door: a pre-update tree WITHOUT the store is reached through the authority
+    switch (intent now, export and reset at the restart exit the caller requests); one with it
+    through today's restore. A second intent before the restart is a refusal, not a reset."""
+    from ouroboros.store_switch import switch_or_reset
+
+    pre = str(tx.get("pre_update_sha") or "")
+    if not pre:
+        return rollback_managed_update(reason, reopen_writer_admission=False)  # its own typed refusal
+    try:
+        ok, msg, _deferred = switch_or_reset(
+            _g.DRIVE_ROOT, _g.REPO_DIR, target_sha=pre, target_ref=str(tx.get("pre_update_branch") or pre),
+            reason=reason, door="boot_smoke_rollback",
+            reset=lambda: rollback_managed_update(reason, reopen_writer_admission=False))
+    except RuntimeError as exc:
+        return False, str(exc)
+    return ok, msg
+
+
 def _finalize_pending_boot_smoke(tx: Dict[str, Any], supervisor_ready: bool) -> Dict[str, Any]:
     """Health-check a committed-and-restarted update (auto_merge OR a committed assisted
     merge). Pre-restart smoke already ran inline; this is the post-boot backstop + boot-loop
@@ -890,9 +909,7 @@ def _finalize_pending_boot_smoke(tx: Dict[str, Any], supervisor_ready: bool) -> 
     ):
         smoke = update_restart_smoke()
         if not smoke.get("ok"):
-            ok, msg = rollback_managed_update(
-                "recovered_pre_restart_smoke_failed", reopen_writer_admission=False
-            )
+            ok, msg = _boot_smoke_rollback(tx, "recovered_pre_restart_smoke_failed")
             _log_supervisor({
                 "type": "managed_update_recovered_smoke_failed",
                 "ok": ok,
@@ -905,9 +922,7 @@ def _finalize_pending_boot_smoke(tx: Dict[str, Any], supervisor_ready: bool) -> 
     if bool(supervisor_ready) and merge_in_head:
         native_smoke = external_host_restart_smoke()
         if not native_smoke.get("ok"):
-            ok, msg = rollback_managed_update(
-                "external_host_post_boot_smoke_failed", reopen_writer_admission=False
-            )
+            ok, msg = _boot_smoke_rollback(tx, "external_host_post_boot_smoke_failed")
             _log_supervisor({"type": "managed_update_native_host_failed", "ok": ok,
                              "msg": msg, "smoke": native_smoke})
             return {"finalized": False, "rolled_back": ok, "msg": msg, "stash_note": msg, "smoke": native_smoke}
@@ -918,9 +933,7 @@ def _finalize_pending_boot_smoke(tx: Dict[str, Any], supervisor_ready: bool) -> 
             tx, "boot_finalize", {"finalized": True}, {"type": "managed_update_finalized", "head": head},
         )
     if (bool(supervisor_ready) and head_resolved and not merge_in_head) or attempts >= 2:
-        ok, msg = rollback_managed_update(
-            "post_boot_smoke_failed", reopen_writer_admission=False
-        )
+        ok, msg = _boot_smoke_rollback(tx, "post_boot_smoke_failed")
         _log_supervisor({"type": "managed_update_rollback_after_failed_boot",
                          "ok": ok, "msg": msg, "boot_attempts": attempts})
         return {"finalized": False, "rolled_back": ok, "msg": msg, "stash_note": msg}

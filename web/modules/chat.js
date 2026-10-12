@@ -18,7 +18,7 @@ import { createChatReadingPosition } from './chat_reading_position.js';
 import { createChatHistoryPager, historyCoverage, historyIslandAtEdge } from './chat_history.js';
 import { createProjectReadReceipt, isAtNewestMessage } from './project_read_state.js';
 import { mergeHistoricalTimelineItem, historyNodeIsProtected, historyRowIds, historyStamps, stampHistoryNode, compareHistoryPosition } from './chat_history_replay.js';
-import { apiClient, apiFetch, fetchTaskDetail, fetchTaskDetailStrict } from './api_client.js';
+import { apiClient, apiFetch, fetchTaskDetail, fetchTaskDetailStrict, isStoreMigrating } from './api_client.js';
 import { syncHistoryRetentionItem } from './history_retention.js';
 import {
     getLogTaskGroupId,
@@ -55,6 +55,7 @@ import { openConfirmDialog } from './confirm_dialog.js';
 import { chooseAndSendReview } from './review_command.js';
 import { bindEnterSubmit } from './ui_interactions.js';
 import { createComposerOwnerControls } from './composer_owner_controls.js';
+import { attachChatInputSizing } from './chat_input_sizing.js';
 import { effortFact } from './effort_chip.js';
 import { mountEmptyChatWelcome } from './welcome_preference.js';
 import {
@@ -2693,7 +2694,7 @@ export function createChatInstance({
 
     async function syncHistory({ includeUser = false, fromReconnect = false } = {}) {
         if (historySyncPromise) {
-            // Preserve reconnect intent across an in-flight ordinary sync.
+            // A reconnect joining an older read still owes a rebuild.
             if (fromReconnect) {
                 pendingReconnectSync = true;
                 return historySyncPromise.then(() => {
@@ -2710,8 +2711,7 @@ export function createChatInstance({
         historySyncPromise = (async () => {
             const armedAtStart = liveCardBound.begin();
             const cardsAtStart = new Set(liveCardRecords.keys());
-            // Whether the reader follows the newest message as the read begins: a
-            // replay can clear and refill the feed, which is not the reader moving.
+            // Replay can refill the feed without moving the reader's intent.
             const followingAtStart = reading.stick, generationAtStart = reading.generation;
             try {
                 // No welcome until this read lands.
@@ -2773,8 +2773,7 @@ export function createChatInstance({
                 }
 
                 const wasFirstLoad = !historyLoaded;
-                // The preview a failed first read leaves is no source read: the first
-                // source read after it still opens the room for a reader who followed.
+                // Recovery from a failed first read still opens at the newest message.
                 const opensAfterPreview = !sourceHydrated && followingAtStart && reading.generation === generationAtStart;
                 historyLoaded = sourceHydrated = true;
                 lastHistorySyncSucceeded = true;
@@ -2782,8 +2781,7 @@ export function createChatInstance({
                 emptyWelcome?.historyRead(data.window?.complete === true);
                 liveCardBound.settle({ rebuilt: wasFirstLoad || armedAtStart, size: liveCardRecords.size });
                 modelWaits.retainCards(liveCardRecords);
-                // ANY successful sync leaves the instance hydrated
-                // — later hydration triggers ride this sticky promise.
+                // Later hydration joins this successful source read.
                 initialHydrationPromise = historySyncPromise;
                 syncLoadOlderControl();
                 // A room opens at its newest message (owner decisions 2026-07-10,
@@ -2801,11 +2799,13 @@ export function createChatInstance({
                 readReceipt.settle();
                 return messages.length > 0;
             } catch (err) {
+                if (destroyed) return false;
                 lastHistorySyncSucceeded = false;
                 emptyWelcome?.historyRead(false);
                 initialHydrationPromise = null;
-                // Never leave an empty feed blank: failure and Retry replace the loading state.
+                // Migration keeps a calm note and retries through the existing 700 ms scheduler.
                 historyControls.endRecent(err); syncLoadOlderControl();
+                if (isStoreMigrating(err)) { historyResyncScheduler.schedule(true); return false; }
                 const socketState = ws?.ws?.readyState;
                 const expectedDisconnect = socketState !== WebSocket.OPEN;
                 if (expectedDisconnect && err instanceof TypeError) {
@@ -2877,12 +2877,10 @@ export function createChatInstance({
         inputDraft = '';
     }
 
+    // The field's height follows its text up to the stylesheet cap (chat_input_sizing.js).
+    const inputSizing = attachChatInputSizing(input);
     function resizeChatInput() {
-        const caretAtEnd = input.selectionEnd >= input.value.length - 1;
-        const previousScrollTop = input.scrollTop;
-        input.style.height = 'auto';
-        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
-        input.scrollTop = caretAtEnd ? input.scrollHeight : previousScrollTop;
+        inputSizing.sync();
         updateMessagesPadding();
     }
 
@@ -3901,6 +3899,7 @@ export function createChatInstance({
             if (documentKeydownHandler) document.removeEventListener('keydown', documentKeydownHandler);
             chatResizeObserver?.disconnect();
             chatResizeObserver = null;
+            inputSizing.dispose();
             historyResyncScheduler.cancel();
             if (headerControlInterval) { clearInterval(headerControlInterval); headerControlInterval = null; }
             for (const id of liveCardRecords.keys()) disposeLiveCard(id);

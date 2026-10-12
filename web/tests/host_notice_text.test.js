@@ -7,7 +7,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import test from 'node:test';
 
 import { createChatInstance } from '../modules/chat.js';
-import { HOST_NOTICE_PREFIXES, hostNoticeDisplayText, hostRowDisplayText } from '../modules/host_notice_text.js';
+import { HOST_NOTICE_PREFIXES, RETIRED_HOST_NOTICE_PREFIXES, hostNoticeDisplayText, hostRowDisplayText } from '../modules/host_notice_text.js';
 import { summarizeChatLiveEvent } from '../modules/log_events.js';
 import { cardRowSummary } from '../modules/chat_activity.js';
 import { loadSkillReviewDetail, renderSkillReviewDisclosure, summarizeSkillReviewMessage } from '../modules/skill_review_card.js';
@@ -56,12 +56,32 @@ test('every table entry names a mark and words a backend producer actually write
             const cut = prefix.indexOf(' ') + 1;
             assert.ok(cut > 1, prefix);
             assert.ok(backend.includes(prefix.slice(0, cut)), `mark of ${JSON.stringify(prefix)}`);
-            if (type === 'task_started') {
-                const producer = readFileSync(new URL('supervisor/worker_assignment.py', root), 'utf8');
-                assert.ok(producer.includes("emoji = '🧬' if task_type == 'evolution' else '🔎'"));
-                assert.ok(producer.includes('f"{emoji} {task_type.capitalize()} task'));
-                assert.ok(['🧬 Evolution task ', '🔎 Review task '].includes(prefix));
-            } else assert.ok(backend.includes(prefix.slice(cut).trimEnd()), `words of ${JSON.stringify(prefix)}`);
+            assert.ok(backend.includes(prefix.slice(cut).trimEnd()), `words of ${JSON.stringify(prefix)}`);
+        }
+    }
+});
+
+test('a retired producer\'s old rows still lose only their mark, and nothing writes its prefix again', () => {
+    const root = new URL('../../', import.meta.url);
+    const sources = [];
+    const walk = (dir) => {
+        for (const name of readdirSync(dir)) {
+            const path = new URL(name, dir);
+            if (statSync(path).isDirectory()) walk(new URL(`${name}/`, dir));
+            else if (name.endsWith('.py')) sources.push(readFileSync(path, 'utf8'));
+        }
+    };
+    walk(new URL('ouroboros/', root));
+    walk(new URL('supervisor/', root));
+    sources.push(readFileSync(new URL('server.py', root), 'utf8'));
+    const backend = sources.join('\n');
+    assert.ok(RETIRED_HOST_NOTICE_PREFIXES.size > 0);
+    for (const [type, prefixes] of RETIRED_HOST_NOTICE_PREFIXES) {
+        for (const prefix of prefixes) {
+            assert.ok(!backend.includes(prefix.trimEnd()), `a producer writes the retired ${JSON.stringify(prefix)} again`);
+            const words = prefix.slice(prefix.indexOf(' ') + 1);
+            assert.equal(hostNoticeDisplayText(`${prefix}x`, type), `${words}x`);
+            assert.equal(hostNoticeDisplayText(`${prefix}x`, 'another_type'), `${prefix}x`, 'only its own type');
         }
     }
 });

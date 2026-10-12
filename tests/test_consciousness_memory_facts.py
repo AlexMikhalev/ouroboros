@@ -18,6 +18,7 @@ from ouroboros import consciousness_wake as wake
 from ouroboros import memory_inventory as mi
 from ouroboros.chronicle_store import ChronicleStore
 from tests import _memory_inventory_shared as shared
+from tests._store_shared import seed_result
 
 NOW = 1_900_000_000.0  # well after the fixture's rows
 NOTHING_NEW = "\n- wake cause: scheduled heartbeat; no event reason is recorded for this wake"
@@ -54,7 +55,7 @@ def task_result(root, task_id):
     row = {"task_id": task_id, "status": "completed", "ts": stamp, "updated_at": stamp, "_schema_version": 1,
            "accounted_upper_bound_usd": 0.5, "description": f"do {task_id}", "metadata": {}, "_is_direct_chat": False}
     (root / "task_results").mkdir(exist_ok=True)
-    (root / "task_results" / f"{task_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    seed_result(root, task_id, row)
 
 
 def test_records_after_the_accepted_sequence_are_lines_under_their_own_header(tmp_path):

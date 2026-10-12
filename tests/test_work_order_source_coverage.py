@@ -7,6 +7,7 @@ import hashlib
 from types import SimpleNamespace
 
 import pytest
+from tests._store_shared import read_result
 
 
 def _fixture(tmp_path):
@@ -203,7 +204,7 @@ def test_orphaned_pending_recovery_preserves_partial_source_gate(tmp_path, monke
 
 
 def test_existing_task_result_reader_returns_the_same_canonical_range(tmp_path):
-    from ouroboros.task_results import task_result_path, write_task_result
+    from ouroboros.task_results import write_task_result
     from ouroboros.subagent_work_order import canonical_work_order_source
     from ouroboros.tools.control import _get_task_result
 
@@ -217,7 +218,7 @@ def test_existing_task_result_reader_returns_the_same_canonical_range(tmp_path):
         task_contract=dict(ctx.task_contract),
         task_constraint={},
     )
-    stored = json.loads(task_result_path(tmp_path, "source-child", create=False).read_text())
+    stored = read_result(tmp_path, "source-child")
     assert "workspace_root" not in stored
     assert "workspace_mode" not in stored
     expected_text, reason = canonical_work_order_source(ctx, request)

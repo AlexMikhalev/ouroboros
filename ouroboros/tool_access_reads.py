@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pathlib
 from typing import Any
+from ouroboros.store import StoreError
 
 
 def _access():
@@ -59,7 +60,7 @@ def _parent_records(ctx: Any):
                 return
             seen.add(parent)
             current = load_task_result(canonical, parent, strict=True) or {}
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, StoreError):
             return  # Missing historical provenance does not invent a different folder.
         if not current:
             return

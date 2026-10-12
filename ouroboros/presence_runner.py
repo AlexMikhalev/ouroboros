@@ -30,9 +30,10 @@ from ouroboros.task_results import (
     STATUS_RUNNING,
     is_reconciled_presence_placeholder,
     load_task_result,
-    task_result_path,
+    task_results_dir,
 )
 from ouroboros.utils import append_jsonl, atomic_write_json, iter_jsonl_objects, read_json_dict, utc_now_iso
+from ouroboros.store import StoreError
 
 log = logging.getLogger(__name__)
 
@@ -583,7 +584,7 @@ def _retry_target(drive_root: Path, first_id: str, identity: str, *, claim: bool
         try:
             write_task_result(drive_root, current_id, STATUS_FAILED,
                               strict_existing_dict=True, _field_projector=link)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, StoreError) as exc:
             if isinstance(exc, PresenceTurnError):
                 raise
             raise PresenceTurnError("presence_result_unreadable", "source_event_id", turn_ref=current_id) from exc
@@ -639,18 +640,17 @@ def _stored_turn(drive_root: Path, task_id: str, identity: str = "") -> dict[str
     """
     from ouroboros.task_result_schema import TASK_RESULT_QUARANTINE_DIR
 
-    path = task_result_path(drive_root, task_id, create=False)
-    quarantined = path.parent / TASK_RESULT_QUARANTINE_DIR
+    quarantined = task_results_dir(drive_root, create=False) / TASK_RESULT_QUARANTINE_DIR
     try:
         current = load_task_result(drive_root, task_id, strict=True) or {}
-        if (quarantined / path.name).exists() or any(quarantined.glob(f"{task_id}.*.json")):
+        if (quarantined / f"{task_id}.json").exists() or any(quarantined.glob(f"{task_id}.*.json")):
             # A strictly admitted, source-bound late terminal is newer authority than an old
             # quarantined attempt. Nothing else, including an unrelated or running row, clears it.
             if str(current.get("status") or "") not in {STATUS_COMPLETED, STATUS_FAILED} or not identity:
                 raise PresenceTurnError("presence_result_unreadable", "source_event_id", turn_ref=task_id)
         _assert_event_identity(current, task_id, identity)
         return current
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, StoreError) as exc:
         if isinstance(exc, PresenceTurnError):
             raise
         raise PresenceTurnError("presence_result_unreadable", "source_event_id", turn_ref=task_id) from exc
@@ -1315,7 +1315,7 @@ def run_presence_turn(
             if str(start.get("status") or "") != STATUS_RUNNING or (
                     start.get("metadata") or {}).get("presence_event_identity") != identity:
                 raise ValueError("Presence start record was not bound to this event")
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, StoreError) as exc:
             raise PresenceTurnError("presence_start_unwritable", "source_event_id", turn_ref=task_id) from exc
         events = agent.handle_task(task)
         # The model can have a draft reply before every allowed route refuses quota, and the

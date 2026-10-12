@@ -336,6 +336,8 @@ def test_migrated_region_markers_do_not_swallow_unmigrated_surfaces() -> None:
     # inside the guarded region so a later edit cannot drift them out of it.
     assert ".updates-status" in region
     assert ".updates-restore-row" in region
+    # Dashboard -> Storage (#1418) was written on the scale; its slice stays guarded.
+    assert ".storage-row-label" in region
     # Chat migrated on 2026-09-01 (frontend sprint, Q1=B): page chrome,
     # transcript/bubbles/live cards/composer, and the structured-delivery +
     # quiz-card slice, executor chip now included.

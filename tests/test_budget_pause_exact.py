@@ -186,13 +186,13 @@ def test_storage_failure_keeps_a_fenced_nonterminal_hold_and_buys_no_model_call(
     """A write that fails is a RETAINED hold, never a claimed pause and never
     the old paid terminal rail: the fence stays closed and the task keeps its
     worker until its own control ends the hold."""
-    from ouroboros import budget_pause, utils
+    from ouroboros import budget_pause, store
     from ouroboros.model_wait import ModelWaitInterrupted
 
     _running_row(tmp_path, "hold-store")
     ctx, limit_ctx = _loop_ctx(tmp_path, "hold-store")
-    monkeypatch.setattr(utils, "update_json_locked",
-                        lambda *_a, **_k: (_ for _ in ()).throw(OSError("read-only file system")))
+    monkeypatch.setattr(store, "update_task",
+                        lambda *_a, **_k: (_ for _ in ()).throw(store.StoreError("read-only file system")))
     published = []
     monkeypatch.setattr(budget_pause, "_publish_hold", lambda _c, row: published.append(row))
     monkeypatch.setattr(budget_pause, "_HOLD_POLL_SEC", 0.01)
@@ -475,8 +475,10 @@ def test_unreadable_external_custody_is_held_as_unknown_not_clean(tmp_path, monk
     observed = raised.value.pause["external_runs"]
     assert observed["custody_read"] == "failed" and observed["runs"] == []
     assert "boom" in observed["error"]
-    # The supervisor-side twin shares the body: a replay that fails is the same typed fact.
-    monkeypatch.setattr(custody, "replay", lambda _r, rows=None: (_ for _ in ()).throw(OSError("rows torn")))
+    # The supervisor-side twin shares the body: a store read that fails is the same typed fact.
+    from ouroboros import delegate_custody_current as current
+
+    monkeypatch.setattr(current, "task_snapshot", lambda _r, _t: (_ for _ in ()).throw(OSError("rows torn")))
     grant_side = budget_pause.observe_task_runs(tmp_path, ctx.task_id)
     assert grant_side["custody_read"] == "failed" and "rows torn" in grant_side["error"]
 

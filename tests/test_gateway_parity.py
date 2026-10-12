@@ -410,11 +410,11 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     # stamp the typed fields only for registry-tracked turns (optional).
     # (__required_keys__ ignores NotRequired on some 3.10 setups, so inspect
     # the declared annotations instead.)
-    assert _notrequired_fields(ActiveDirectTurn) == {"model_waits", "task_attempt"}, (
+    assert _notrequired_fields(ActiveDirectTurn) == {"model_waits", "task_attempt", "model_activity"}, (
         "ActiveDirectTurn keeps its required base; waits and attempt are optional live-owner facts"
     )
     assert _notrequired_fields(ActiveChatActivity) == {
-        "model_waits", "task_attempt", "required_question", "required_question_unavailable", "project_admission_hold", "pause_cause", "owner_wait",
+        "model_waits", "model_activity", "task_attempt", "required_question", "required_question_unavailable", "project_admission_hold", "pause_cause", "owner_wait",
         "status", "outcome_axes", "reason_code", "root_phase_checkpoint", "timeout_retry_from", "original_task_id",
         "finishing_reviews",
     }, "ActiveChatActivity adds optional outcome/retry/review evidence without changing required activity facts"
@@ -449,7 +449,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     turn_decl = re.search(r"@typedef \{Object\} ActiveDirectTurn\b([\s\S]*?)\*/", text)
     assert turn_decl and set(re.findall(
         r"@property \{[^}]*=\} (\w+)", turn_decl.group(1)
-    )) == {"model_waits", "task_attempt"}, (
+    )) == {"model_waits", "task_attempt", "model_activity"}, (
         "ActiveDirectTurn browser mirror keeps wait/attempt facts optional"
     )
     typing_decl = re.search(r"@typedef \{Object\} TypingOutbound\b([\s\S]*?)\*/", text)

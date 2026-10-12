@@ -10,6 +10,7 @@ from ouroboros import delegate_custody as custody
 from ouroboros.task_results import load_task_result, write_task_result
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros.utils import utc_now_iso
+from tests._shared import write_queue_document
 
 
 pytestmark = pytest.mark.serial
@@ -59,8 +60,8 @@ def queue_snapshot(ctx, active, *, ts=None):
     }} for task_id in active]
     path = data / "state" / "queue_snapshot.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"schema_version": 1, "ts": ts or utc_now_iso(),
-                                "running": rows, "pending": []}), encoding="utf-8")
+    write_queue_document(path, {"schema_version": 1, "ts": ts or utc_now_iso(),
+                                "running": rows, "pending": []})
     return path
 
 

@@ -102,7 +102,16 @@ restored from quarantine) is projected on a later pass without a new receipt.
 One configuration per installation, decided by the import with
 `platform_layer.kernel_file_locks_enforced` on the lock directory, recorded in
 `meta.lock_tier` and in the database header's `application_id`, so every
-process chooses the protocol before it opens the file.
+process chooses the protocol before it opens the file. On POSIX the header is
+read through one descriptor per file that the process never closes: closing
+any descriptor of a SQLite file releases every lock the process holds on it,
+an open transaction's on another thread included. Code that reads or copies
+arbitrary files in a process that may hold a store (the Files panel, the read
+tools, artifact capture) goes through `store.open_for_read`, `iter_file_bytes`,
+`read_file_bytes` or `copy_file_bytes`, which use that kept descriptor for a
+held store file. The connection, tier,
+file-identity and transaction core is `ouroboros/store.py`, shared with the
+current-facts store; `usage_store` keeps the money error vocabulary over it.
 
 - `enforced`: SQLite's own file locks. `usage_store.hold` is the acquisition
   primitive the existing waits slice (`_usage_wait`): sends retry it in short
@@ -177,9 +186,28 @@ the legacy-import watermark, aligns the `state.json` marker with the journal's
 own, and renames the store `usage.sqlite.exported-<UTC>`. A later upgrade
 imports that journal again, including what the older release added. The
 journal the import kept is set aside as `usage_attempts.jsonl.pre-export-<UTC>`;
-a journal that changed after the import, or one without a store, is never
-overwritten: move it aside by hand to export (the rows an older release added
-after the import are not in the store).
+a journal that changed after the import (its sha256 is neither the imported nor
+the exported one), or one without a store, is never overwritten: move it aside
+by hand to export (the rows an older release added after the import are not in
+the store).
+
+The export is one plan committed before any file moves. Under the write lock it
+computes the journal bytes and commits an export mark (`meta.export`: the
+journal's size, sha256 and row count, the names it will retire and set aside,
+the `state.json` marker it replaces) in the store itself. While that mark
+stands every write hold is refused typed (`UsageExportInProgress`; reads still
+serve), so a late writer cannot land a row the journal does not carry. Only then does it set the
+kept journal aside, write the new one, align the marker and rename the store.
+An interrupted export is resumed from the mark (the journal bytes are
+recomputed and must match the recorded digest; a partial own journal is told
+from a foreign one by the mark's set-aside record, never by size; a retired
+store is recognised by the digest in its own mark) or abandoned by the in-app switch
+(`usage_store.abandon_export`): the store comes back first, then the journal,
+then the marker, and the mark is cleared last, so a crash inside the
+abandonment resumes it instead of leaving two authorities. Residual: a process
+that was not holding the lock when the export began sees the store gone only
+on its next access, where the import path brings the exported journal back in
+— the quiescence census the switch runs first is what keeps that path cold.
 
 ## 8. Explicit history audit
 

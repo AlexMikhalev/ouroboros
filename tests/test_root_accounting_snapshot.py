@@ -17,6 +17,7 @@ from ouroboros.post_task_checkpoint import (
 )
 from ouroboros.task_results import STATUS_COMPLETED, load_task_result, write_task_result
 from ouroboros.task_status import load_effective_task_result
+from tests._store_shared import read_result
 
 
 @pytest.fixture
@@ -78,7 +79,7 @@ def test_root_snapshot_reaches_saved_and_gateway_results_without_flattening_own_
     assert stored["non_final_rows"] == 0  # Own-task openness is not tree openness.
     assert stored["cost_final"] is False
     assert "cost_estimated" not in stored
-    saved = json.loads((root / "task_results" / "root.json").read_text(encoding="utf-8"))
+    saved = read_result(root, "root")
     request = Request({
         "type": "http", "method": "GET", "path": "/api/tasks/root",
         "path_params": {"task_id": "root"}, "query_string": b"", "headers": [],

@@ -20,6 +20,7 @@ from ouroboros.config import CLAUDEXOR_DELEGATED_MARKER_MIN_VERSION
 from ouroboros.gateways import claudexor as cx
 
 from tests._cancel_intents_shared import qenv as _qenv
+from tests._store_shared import unreadable_result
 from tests._delegated_transport_shared import (  # noqa: F401  (autouse fixture applies on import)
     _LiveRunStub,
     _event_types,
@@ -788,7 +789,7 @@ def test_cancellation_uses_adopted_terminal_for_live_delegation(qenv, monkeypatc
         write_task_result(child, task_id, "failed", root_task_id=task_id, **failure)
         fields.update(child_drive_root=str(child), delegation_role="subagent")
         if case == "child_unreadable":
-            (child / "task_results" / f"{task_id}.json").write_text("{unreadable")
+            unreadable = unreadable_result(monkeypatch, task_id, root=child)
     if case == "prior_infra":
         fields.update(failure)
     write_task_result(root, task_id, "failed" if case == "prior_infra" else "running", **fields)
@@ -822,9 +823,9 @@ def test_cancellation_uses_adopted_terminal_for_live_delegation(qenv, monkeypatc
         assert transport.cancels == [] and recovered_keys == []
         assert task_id in qenv.q.RUNNING and not worker.proc.is_alive()
         assert cancel_intents.cancel_pending(root, task_id) and child.is_dir()
-        # The same open intent can finish after file access recovers; no new
-        # scheduler, flag or cancellation claim is needed.
-        write_task_result(child, task_id, "failed", root_task_id=task_id, **failure)
+        # The same open intent can finish after the child's store answers again;
+        # no new scheduler, flag or cancellation claim is needed.
+        unreadable["on"] = False
         assert qenv.tl.cancel_task_custody(task_id, deliver=False) == qenv.tl.CANCEL_ALREADY_SETTLED
         assert load_task_result(root, task_id)["status"] == "failed"
         assert transport.cancels == []

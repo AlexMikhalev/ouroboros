@@ -52,6 +52,9 @@ _TERMINAL_TOKENS = (
 # constant from the sticky set; "dynamic" is a variable or expression that can
 # carry one, which counts because the reducer, not the caller, decides.
 TERMINAL_WRITERS = {
+    # Advances only derived fan-out facts; the locked projector preserves the
+    # CURRENT status, including a concurrently completed terminal result.
+    ('ouroboros/swarm_rollup.py::load_swarm_rollup', 'row["status"]'): 'dynamic',
     # Selects an already retained actor account; its locked projector preserves
     # CURRENT lifecycle, including terminal state, and compares the prior pointer.
     ('ouroboros/review_history_view.py::publish_review_history_view', '"running"'): 'dynamic',
@@ -355,8 +358,8 @@ def test_c7_the_one_terminal_write_primitive_is_still_one():
     assert source.count("def write_task_result(") == 1
     assert callable(task_results.write_task_result)
     body = _function_source(REPO / "ouroboros" / "task_results.py", "write_task_result")
-    assert "update_json_locked" in body, "the write holds the per-file lock"
-    assert "_is_status_regression" in body, "the reducer is inside the lock, not at callers"
+    assert "patch_document" in body, "the write is one store write transaction"
+    assert "_is_status_regression" in body, "the reducer is inside the transaction, not at callers"
 
 
 # ---------------------------------------------------------------------------

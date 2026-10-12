@@ -144,6 +144,15 @@ def json_error(message: str, status: int = 500, **extra: Any) -> JSONResponse:
     return JSONResponse(payload, status_code=status)
 
 
+def migrating_error(drive_root: Any) -> JSONResponse | None:
+    """The write doors' 503 while the boot import owns the store (P1), else ``None``."""
+    from ouroboros.store import migrating
+
+    if not migrating(drive_root):
+        return None
+    return json_error("the task store is importing; retry shortly", 503, reason_code="migrating")
+
+
 def json_exception(exc: BaseException, status: int | None = None, *, context: str = "") -> JSONResponse:
     """Answer an exception as JSON. Without an explicit status it is an unexpected
     failure, recorded here once with its stack (#1138); a caller that chooses a status

@@ -22,6 +22,7 @@ from ouroboros.artifacts import read_actor_source_bytes, task_artifact_dir_path
 from ouroboros.task_results import load_task_result, write_task_result
 from ouroboros.utils import atomic_write_json
 from supervisor import queue, workers
+from tests._store_shared import result_signature, unreadable_result
 
 
 class InertProcess:
@@ -459,21 +460,25 @@ def test_project_wait_unreadable_authority_stays_same_id_then_recovers(restart_c
 
     case = restart_case
     restored = restore_project_wait(case, monkeypatch, registry_outage=fault != "result")
+    signature = result_signature(case.root, case.task_id)
     if fault == "result":
-        path = case.root / "task_results" / (case.task_id + ".json")
-    elif fault == "transaction":
-        path = delegate_recovery._restart_transaction_path(case.root, case.transaction_id)
+        unreadable = unreadable_result(monkeypatch, case.task_id)  # the store refuses the row
     else:
-        path = task_artifact_dir_path(case.root, case.task_id) / case.wait["source_ref"]["path"]
-    original = path.read_bytes()
-    path.write_bytes(b"{torn")
+        path = (delegate_recovery._restart_transaction_path(case.root, case.transaction_id) if fault == "transaction"
+                else task_artifact_dir_path(case.root, case.task_id) / case.wait["source_ref"]["path"])
+        original = path.read_bytes()
+        path.write_bytes(b"{torn")
     sent = worker(SimpleNamespace(root=case.root), monkeypatch)
     workers.assign_tasks()
     workers.assign_tasks()
     assert not sent and workers.PENDING == [restored]
     assert restored["_project_admission_restore_hold"] and not restored.get("_terminalization_retry")
-    assert restored["admitted_dispatch"] == "possible" and path.read_bytes() == b"{torn"
-    path.write_bytes(original)
+    assert restored["admitted_dispatch"] == "possible"
+    if fault == "result":
+        unreadable["on"] = False
+    else:
+        path.write_bytes(original)
+    assert result_signature(case.root, case.task_id) == signature  # the hold wrote nothing over the authority
     workers.assign_tasks()
     workers.assign_tasks()
     assert [row["id"] for row in sent] == [case.task_id]

@@ -36,6 +36,7 @@ from supervisor import (
     state as state_module,
     workers,
 )
+from tests._store_shared import delete_result, result_exists, result_signature
 
 
 def _acceptance_binding(seed: str) -> dict[str, str]:
@@ -78,8 +79,7 @@ def test_root_acceptance_review_claims_share_one_atomic_exact_binding_wallet(tmp
     assert sorted(row["status"] for row in outcomes) == ["claimed", "unknown"]
     state = load_task_acceptance_review_state(tmp_path, "root-wallet")
     assert list(state["claims_by_binding"]) == [first_binding["binding_hash"]]
-    result_path = tmp_path / "task_results" / "root-wallet.json"
-    before_duplicate = result_path.read_bytes()
+    before_duplicate = result_signature(tmp_path, "root-wallet")
     duplicate = claim_task_acceptance_review_cycle(
         tmp_path,
         "root-wallet",
@@ -88,7 +88,7 @@ def test_root_acceptance_review_claims_share_one_atomic_exact_binding_wallet(tmp
     )
     assert duplicate["status"] == "unknown"
     assert duplicate["reason"] == "binding_dispatch_already_claimed"
-    assert result_path.read_bytes() == before_duplicate
+    assert result_signature(tmp_path, "root-wallet") == before_duplicate
 
     second = claim_task_acceptance_review_cycle(
         tmp_path,
@@ -96,7 +96,7 @@ def test_root_acceptance_review_claims_share_one_atomic_exact_binding_wallet(tmp
         _acceptance_binding("5"),
         claimed_by_task_id="root-wallet",
     )
-    before_exhausted = result_path.read_bytes()
+    before_exhausted = result_signature(tmp_path, "root-wallet")
     exhausted = claim_task_acceptance_review_cycle(
         tmp_path,
         "root-wallet",
@@ -105,7 +105,7 @@ def test_root_acceptance_review_claims_share_one_atomic_exact_binding_wallet(tmp
     )
     assert second["status"] == "claimed"
     assert second["cycles_paid"] == 2
-    assert result_path.read_bytes() == before_exhausted
+    assert result_signature(tmp_path, "root-wallet") == before_exhausted
     assert exhausted == {
         "status": "unavailable",
         "reason": "review_cycles_exhausted",
@@ -126,7 +126,6 @@ def test_acceptance_review_wallet_rejects_present_empty_or_tampered_authority(tm
         load_task_acceptance_review_state,
     )
 
-    path = tmp_path / "task_results" / "root-invalid.json"
     write_task_result(
         tmp_path,
         "root-invalid",
@@ -135,7 +134,7 @@ def test_acceptance_review_wallet_rejects_present_empty_or_tampered_authority(tm
         task_contract=build_task_contract({}),
         **{TASK_ACCEPTANCE_REVIEW_STATE_KEY: {}},
     )
-    before = path.read_bytes()
+    before = result_signature(tmp_path, "root-invalid")
     with pytest.raises(ValueError, match="TASK_ACCEPTANCE_REVIEW_STATE_INVALID"):
         load_task_acceptance_review_state(tmp_path, "root-invalid")
     with pytest.raises(ValueError, match="TASK_ACCEPTANCE_REVIEW_STATE_INVALID"):
@@ -145,7 +144,7 @@ def test_acceptance_review_wallet_rejects_present_empty_or_tampered_authority(tm
             _acceptance_binding("1"),
             claimed_by_task_id="root-invalid",
         )
-    assert path.read_bytes() == before
+    assert result_signature(tmp_path, "root-invalid") == before
 
     write_task_result(
         tmp_path,
@@ -156,8 +155,7 @@ def test_acceptance_review_wallet_rejects_present_empty_or_tampered_authority(tm
     )
     tampered = _acceptance_binding("5")
     tampered["binding_hash"] = "f" * 64
-    tampered_path = tmp_path / "task_results" / "root-tampered.json"
-    before = tampered_path.read_bytes()
+    before = result_signature(tmp_path, "root-tampered")
     with pytest.raises(ValueError, match="binding digest mismatch"):
         claim_task_acceptance_review_cycle(
             tmp_path,
@@ -165,7 +163,7 @@ def test_acceptance_review_wallet_rejects_present_empty_or_tampered_authority(tm
             tampered,
             claimed_by_task_id="root-tampered",
         )
-    assert tampered_path.read_bytes() == before
+    assert result_signature(tmp_path, "root-tampered") == before
 
 
 def test_acceptance_review_wallet_cap_and_root_initialization_are_atomic(
@@ -182,7 +180,7 @@ def test_acceptance_review_wallet_cap_and_root_initialization_are_atomic(
             _acceptance_binding("1"),
             claimed_by_task_id="child",
         )
-    assert not (tmp_path / "task_results" / "missing-root.json").exists()
+    assert not result_exists(tmp_path, "missing-root")
 
     with pytest.raises(ValueError, match="TASK_ACCEPTANCE_REVIEW_STATE_UNKNOWN"):
         task_results.claim_task_acceptance_review_cycle(
@@ -227,13 +225,13 @@ def test_acceptance_review_wallet_cap_and_root_initialization_are_atomic(
         tmp_path, "racy-root", STATUS_RUNNING, root_task_id="racy-root",
         task_contract=build_task_contract({}),
     )
-    original_update = task_results.update_json_locked
+    original_update = task_results.patch_document
 
-    def remove_before_locked_read(path, mutator, **kwargs):
-        path.unlink()
-        return original_update(path, mutator, **kwargs)
+    def remove_before_locked_read(root, task_id, mutator, **kwargs):
+        delete_result(root, task_id)  # the row vanishes between the write above and the claim's transaction
+        return original_update(root, task_id, mutator, **kwargs)
 
-    monkeypatch.setattr(task_results, "update_json_locked", remove_before_locked_read)
+    monkeypatch.setattr(task_results, "patch_document", remove_before_locked_read)
     with pytest.raises(ValueError, match="TASK_ACCEPTANCE_REVIEW_STATE_UNKNOWN"):
         task_results.claim_task_acceptance_review_cycle(
             tmp_path,
@@ -241,7 +239,7 @@ def test_acceptance_review_wallet_cap_and_root_initialization_are_atomic(
             _acceptance_binding("a"),
             claimed_by_task_id="child",
         )
-    assert not (tmp_path / "task_results" / "racy-root.json").exists()
+    assert not result_exists(tmp_path, "racy-root")
 
 
 def test_descendant_cannot_initialize_missing_root_review_authority(tmp_path, monkeypatch):
@@ -261,7 +259,7 @@ def test_descendant_cannot_initialize_missing_root_review_authority(tmp_path, mo
     projection = project_task_acceptance_review_capacity(ctx)
     assert projection["state"] == "unknown"
     assert projection["claimed_cycles"] is None
-    assert not (tmp_path / "task_results" / "missing-root.json").exists()
+    assert not result_exists(tmp_path, "missing-root")
 
 
 def test_root_review_capacity_uses_existing_explicit_pass_semantics(tmp_path, monkeypatch):

@@ -494,11 +494,16 @@ def test_main_graceful_restart_cleanup_avoids_port_sweep(monkeypatch, tmp_path, 
     monkeypatch.setattr(server.uvicorn, "Config", lambda *a, **k: object())
     monkeypatch.setattr(server, "_SignalStopServer", FakeServer)  # the main() server seam (#1142)
     monkeypatch.setattr(server, "_LAUNCHER_MANAGED", launcher_managed)
-    monkeypatch.setattr(server, "_emergency_process_cleanup", lambda **kw: cleanup_calls.append(kw))
+    census = {"worker_exits": {"unconfirmed": []}, "live_children": [], "owned_stop": {"state": "completed"}}
+    monkeypatch.setattr(server, "_emergency_process_cleanup", lambda **kw: cleanup_calls.append(kw) or census)
+    seam_calls = []  # the authority switch seam runs on the cleanup's census, before the exit
+    monkeypatch.setattr(server.store_switch, "switch_at_restart",
+                        lambda root, repo_dir, cleanup: seam_calls.append((root, repo_dir, cleanup)) or {"status": "no_intent"})
     transfers = []
 
     def transfer(host, port):
         assert cleanup_calls == [{"port_sweep": False}]
+        assert seam_calls == [(tmp_path, server.REPO_DIR, census)]
         transfers.append((host, port))
 
     monkeypatch.setattr(server, "_restart_current_process", transfer)
@@ -513,6 +518,7 @@ def test_main_graceful_restart_cleanup_avoids_port_sweep(monkeypatch, tmp_path, 
         _stop_restart_watcher(server)
 
     assert cleanup_calls == [{"port_sweep": False}]
+    assert seam_calls == [(tmp_path, server.REPO_DIR, census)]
     assert transfers == ([] if launcher_managed else [("127.0.0.1", server._ACTUAL_BOUND_PORT)])
     assert exits == [server.RESTART_EXIT_CODE]
 
@@ -761,9 +767,10 @@ def _supervisor_harness(monkeypatch, tmp_path, steps):
         monkeypatch.setattr(state_mod, name, noop)
     monkeypatch.setattr(state_mod, "rotate_chat_log_if_needed", _tick_head)
     for name in ("enqueue_task", "enforce_task_timeouts", "enqueue_evolution_task_if_needed",
-                 "persist_queue_snapshot", "cancel_task_by_id", "queue_deep_self_review_task",
+                 "cancel_task_by_id", "queue_deep_self_review_task",
                  "sort_pending", "check_scheduled_tasks"):
         monkeypatch.setattr(queue_pkg, name, noop)
+    monkeypatch.setattr(queue_pkg, "persist_queue_snapshot", lambda **_k: True)
     monkeypatch.setattr(queue_pkg, "restore_pending_from_snapshot", rec.restore)
     for name in ("init", "spawn_workers", "kill_workers", "assign_tasks", "ensure_workers_healthy",
                  "auto_resume_after_restart"):

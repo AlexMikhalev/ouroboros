@@ -1113,9 +1113,6 @@ def _retry_terminalization_pending_for_assignment(queue: Any) -> None:
         )
 
 
-_WORKER_PIDS_FILENAME = "worker_pids.json"
-
-
 def _reconcile_confirmed_dead_review_owner(owner_pid: int) -> None:
     _reconcile_review_owners(DRIVE_ROOT, {owner_pid})
 
@@ -1136,7 +1133,6 @@ def spawn_workers(n: int = 0) -> None:
     # Never hold the queue's process-local threading.RLock across fork: a child
     # would inherit it owned by a vanished thread.  The dedicated lifecycle lock
     # is not used by worker code and serializes competing full-pool starts/kills.
-    reap_orphaned_workers()
     _CTX = mp.get_context(_WORKER_START_METHOD)
     event_q = get_event_q()
     events_cursor, spawned_at = events_log_cursor(), time.time()
@@ -1186,7 +1182,7 @@ def spawn_workers(n: int = 0) -> None:
         WORKERS.update(new_workers)
         _WORKER_POOL_DISABLED_REASON = ""
         _LAST_SPAWN_TIME = time.time()
-    _record_worker_pids()
+    _record_worker_processes()
     # Readiness + SHA verification run off-loop so spawn does not block the supervisor loop.
     threading.Thread(target=_verify_worker_sha_after_spawn, args=(dict(new_workers), events_cursor, 1, spawned_at), daemon=True).start()
 
@@ -2230,15 +2226,13 @@ from supervisor.worker_pool_lifecycle import (  # noqa: E402, F401 -- intentiona
     disable_exhausted_worker_pool,
     _first_worker_event_since,
     _kill_survivors,
-    _record_worker_pids,
+    _record_worker_processes,
     _serialized_worker_lifecycle,
     _verify_worker_sha_after_spawn,
-    _worker_pids_path,
     _write_failure_result,
     events_log_cursor,
     kill_worker_tree,
     kill_workers_for_update,
-    reap_orphaned_workers,
     respawn_worker,
 )
 from supervisor.worker_process import (  # noqa: E402, F401 -- intentional public re-exports

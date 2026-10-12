@@ -120,7 +120,7 @@ def _handle_main_llm_call_state(evt: Dict[str, Any], ctx: Any) -> None:
     round_id = str(evt.get("round_id") or "")
     if (
         not task_id
-        or phase not in {"started", "finished", "failed"}
+        or phase not in {"started", "observed", "finished", "failed"}
         or not llm_call_id
         or not execution_id
         or not round_id
@@ -135,12 +135,20 @@ def _handle_main_llm_call_state(evt: Dict[str, Any], ctx: Any) -> None:
         return
     running = getattr(ctx, "RUNNING", None)
     meta = running.get(task_id) if isinstance(running, dict) else None
+    direct = None
     if not isinstance(meta, dict):
-        return
-    expected_attempt = meta.get("attempt")
-    if expected_attempt is None:
+        from supervisor.active_activity import get_direct_activity_registry
+
+        direct = get_direct_activity_registry().get(task_id)
+        context = getattr(getattr(getattr(direct, "actor", None), "tools", None), "_ctx", None)
+        owner = getattr(context, "model_wait_context", None)
+        if owner is None or owner.closed or owner.task_id != task_id:
+            return
+        expected_attempt, active = owner.attempt, direct.active_llm_call
+    else:
         task = meta.get("task") if isinstance(meta.get("task"), dict) else {}
-        expected_attempt = task.get("_attempt")
+        expected_attempt = meta.get("attempt") if meta.get("attempt") is not None else task.get("_attempt")
+        active = meta.get("active_llm_call")
     try:
         if int(expected_attempt) != task_attempt:
             return
@@ -154,12 +162,23 @@ def _handle_main_llm_call_state(evt: Dict[str, Any], ctx: Any) -> None:
         "call_attempt": call_attempt,
     }
     if phase == "started":
-        meta["active_llm_call"] = {**identity, "started_at": time.time()}
+        updated = {**identity, "started_at": time.time()}
+    elif not isinstance(active, dict) or any(active.get(key) != value for key, value in identity.items()):
         return
-    active = meta.get("active_llm_call")
-    if not isinstance(active, dict) or any(active.get(key) != value for key, value in identity.items()):
-        return
-    meta.pop("active_llm_call", None)
+    elif phase == "observed":
+        activity = evt.get("model_activity")
+        if not isinstance(activity, dict):
+            return
+        updated = {**active, "model_activity": {**activity, **identity}}
+    else:
+        updated = None
+    if direct is not None:
+        direct.active_llm_call = updated
+        direct.phase = "working"  # starting a call proves no provider reasoning
+    elif updated is not None:
+        meta["active_llm_call"] = updated
+    else:
+        meta.pop("active_llm_call", None)
 
 
 # v7next F1 (D08): moved spans live in their owner leaves; re-exported here
@@ -213,6 +232,7 @@ from supervisor.events_runtime_controls import (  # noqa: E402, F401 -- intentio
     _handle_deep_self_review_request,
     _handle_owner_message_injected,
     _handle_promote_to_stable,
+    _handle_rollback_request,
     _handle_toggle_consciousness,
     _handle_toggle_evolution,
 )
@@ -284,6 +304,7 @@ EVENT_HANDLERS = {
     "task_metrics": _handle_task_metrics,
     "deep_self_review_request": _handle_deep_self_review_request,
     "promote_to_stable": _handle_promote_to_stable,
+    "rollback_request": _handle_rollback_request,
     # D06: the "schedule_task" key retired here had no producer anywhere in the
     # tree — it advertised a capability nothing could reach. The FUNCTION keeps
     # its name (its family and FUNCTION_DEBT key are pinned to it); only the

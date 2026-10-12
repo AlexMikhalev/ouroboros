@@ -66,7 +66,7 @@ def main() -> int:
         env = boundary(root, repo, keep=(
             "OUROBOROS_RUN_UI_SMOKE", "OUROBOROS_EXPECT_BROWSER_ENGINES",
             "OUROBOROS_PREFLIGHT_TEST_WORKERS", "OUROBOROS_PREFLIGHT_SERIAL",
-            "PLAYWRIGHT_BROWSERS_PATH", "OUROBOROS_E2E_DEEP",
+            "PLAYWRIGHT_BROWSERS_PATH", "OUROBOROS_E2E_DEEP", "OUROBOROS_UI_EVIDENCE_DIR",
         ))
         # Each pytest controller claims its own fresh basetemp beneath this retained
         # root (tests/conftest.py): pytest deletes an EXISTING --basetemp, so no two

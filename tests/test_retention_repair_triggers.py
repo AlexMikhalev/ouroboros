@@ -7,6 +7,7 @@ import pytest
 
 from ouroboros import artifacts, headless, observability, source_retention, task_custody
 from ouroboros.task_results import load_task_result, write_task_result
+from tests._store_shared import result_signature
 
 
 @pytest.mark.parametrize("count", [1, 26])
@@ -342,13 +343,12 @@ def test_immutable_artifact_failure_reuses_observation_and_reopens_on_exact_repa
     generation, copies, original = object(), [], artifacts.copy_artifact_file
     monkeypatch.setattr(artifacts, "copy_artifact_file", lambda *a, **kw: (copies.append(a), original(*a, **kw))[1])
     assert observability.retry_pending_child_ref_promotions(parent, generation=generation)["pending"] == [task]
-    row_path = parent / "task_results" / f"{task}.json"
-    before, first = row_path.read_bytes(), len(copies)
+    before, first = result_signature(parent, task), len(copies)
     failure = load_task_result(parent, task)["child_ref_promotion"]["pending_refs"][0]
     assert failure["failure_kind"] == "immutable_identity_mismatch"
     assert task_custody.settle_child_drive(parent, task, child, live=lambda _: False)["status"] == "retained"
     assert observability.retry_pending_child_ref_promotions(parent, generation=generation)["unchanged"] == [task]
-    assert len(copies) == first and row_path.read_bytes() == before and child.exists()
+    assert len(copies) == first and result_signature(parent, task) == before and child.exists()
     target = source if repair_at == "source" else Path(failure["canonical_path"])
     target.write_bytes(exact)
     assert observability.retry_pending_child_ref_promotions(parent, generation=generation)["completed"] == [task]

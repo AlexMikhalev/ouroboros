@@ -20,9 +20,7 @@ from __future__ import annotations
 import logging
 import json
 import os
-import pathlib
 import subprocess
-import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -561,26 +559,8 @@ def _replace_unready_slot(wid: int, slot: Any, owner_chat_id: int, started: floa
     _pool().disable_exhausted_worker_pool()
 
 
-def _worker_pids_path() -> pathlib.Path:
-    return _pool().DRIVE_ROOT / "state" / _pool()._WORKER_PIDS_FILENAME
-
-
-def _record_worker_pids() -> None:
-    """Persist current worker PIDs so a later server instance can reap any that
-    survive an abrupt restart. Workers run in their own ``os.setsid`` session, so
-    when the parent server dies they are reparented to init and outlive it."""
-    try:
-        from ouroboros.utils import atomic_write_json
-        recs = [{"pid": int(w.proc.pid)} for w in _pool().WORKERS.values() if w.proc.pid]
-        atomic_write_json(
-            _worker_pids_path(),
-            {"server_pid": os.getpid(), "ts": utc_now_iso(), "workers": recs},
-            trailing_newline=True,
-        )
-    except Exception:
-        log.debug("Failed to record worker pids", exc_info=True)
-    # Write-through into the custody ledger (SSOT for the generation reaper);
-    # worker_pids.json stays as the legacy session-leader reap path.
+def _record_worker_processes() -> None:
+    """Record worker identity in the process ledger for restart custody."""
     try:
         from ouroboros.process_custody import record_process
 
@@ -599,64 +579,6 @@ def _record_worker_pids() -> None:
                     w.process_birth = fingerprint.get("start_time_boot") or fingerprint.get("start_time") or ""
     except Exception:
         log.debug("Failed to ledger worker pids", exc_info=True)
-
-
-def reap_orphaned_workers() -> int:
-    """Kill leftover worker process groups left by a PRIOR server instance.
-
-    ``kill_workers`` only walks the in-memory ``WORKERS`` dict, so workers
-    orphaned by an abrupt restart (reparented to init, ~one Python interpreter
-    each) were never reaped and accumulated across restarts. On startup we read
-    the prior pid record and force-kill any that are still alive AND verifiably
-    ours — cmdline matches this interpreter/multiprocessing and the process is
-    its own session leader (``pgid == pid``) — which guards against PID reuse and
-    bounds the group kill to the worker's own setsid session."""
-    try:
-        from ouroboros.utils import read_json_dict
-        from ouroboros.platform_layer import (
-            kill_process_group_id,
-            process_command,
-            process_group_id,
-        )
-        from supervisor.queue import _retained_daemon_pids
-    except Exception:
-        return 0
-    data = read_json_dict(_worker_pids_path()) or {}
-    prior = data.get("workers") or []
-    if not isinstance(prior, list) or not prior:
-        return 0
-    current = {w.proc.pid for w in _pool().WORKERS.values() if w.proc.pid}
-    killed: List[int] = []
-    for rec in prior:
-        try:
-            pid = int((rec or {}).get("pid") or 0)
-        except (TypeError, ValueError):
-            continue
-        if not pid or pid in current or pid == os.getpid():
-            continue
-        cmd = process_command(pid)
-        if not cmd:
-            continue  # already dead
-        if sys.executable not in cmd and "multiprocessing" not in cmd:
-            continue  # PID reused by an unrelated process — do not touch it
-        pgid = process_group_id(pid)
-        spared = _retained_daemon_pids()
-        shares_retained_group = bool(pgid) and any(process_group_id(root) == pgid for root in spared)
-        # Capture and stop ordinary descendants before their parent disappears.
-        # This is the same selective owner as every current-worker teardown.
-        kill_worker_tree(pid)
-        if pgid and pgid == pid and not shares_retained_group:
-            kill_process_group_id(pgid)  # the worker's own setsid session
-        killed.append(pid)
-    if killed:
-        try:
-            append_jsonl(
-                _pool().DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                {"ts": utc_now_iso(), "type": "orphaned_workers_reaped", "pids": killed},
-            )
-        except Exception:
-            log.debug("Failed to log orphaned worker reap", exc_info=True)
-    return len(killed)
 
 
 @_serialized_worker_lifecycle
@@ -753,7 +675,7 @@ def retire_worker(wid: int, slot: Any) -> bool:
         slot.in_q.cancel_join_thread()
     except Exception:
         log.debug("Failed to close retired worker queue", exc_info=True)
-    _record_worker_pids()
+    _record_worker_processes()
     return True
 
 
@@ -801,7 +723,7 @@ def _spawn_worker_slot(wid: int, old: Any = None, *, ready_attempt: int = 1) -> 
             old.in_q.cancel_join_thread()
         except Exception:
             log.debug("Failed to close old worker queue on respawn", exc_info=True)
-    _record_worker_pids()
+    _record_worker_processes()
     threading.Thread(
         target=_pool()._verify_worker_sha_after_spawn,
         args=({wid: fresh}, events_cursor, int(ready_attempt), spawned_at), daemon=True,

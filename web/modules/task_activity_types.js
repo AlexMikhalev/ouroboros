@@ -1,3 +1,16 @@
+/**
+ * @typedef {Object} ActiveDirectTurn
+ * @property {Object=} model_activity  // exact-call transport observation; no request/account content
+ * @property {Object.<string,Object>=} model_waits
+ * @property {number=} task_attempt
+ * @property {string} activity_id
+ * @property {number} chat_id
+ * @property {string} project_id
+ * @property {string} client_message_id
+ * @property {string} kind
+ * @property {string} phase
+ * @property {number} started_at
+ */
 /** Shared census facts from the gateway; phase and outcome are independent. */
 /**
  * @typedef {Object} ActiveChatActivity
@@ -14,12 +27,13 @@
  * @property {Object=} required_question  // read-only pointer to the current required Project quiz
  * @property {boolean=} required_question_unavailable  // a recorded owner-question wait whose detail could not be read: possibly blocked, never "no question"
  * @property {Object.<string,Object>=} model_waits
+ * @property {Object=} model_activity  // exact-call transport observation; never quota wait or task liveness
  * @property {number=} task_attempt
  * @property {string} activity_id
  * @property {number} chat_id
  * @property {string} project_id
  * @property {string} client_message_id  // empty for managed queue rows
  * @property {string} kind  // direct_chat | managed_task — presentational label; membership in this census, not kind, decides liveness
- * @property {string} phase  // managed: queued | budget_pausing | budget_paused | working | finalizing | unknown (unreadable Pause authority); direct: thinking or unknown; parked direct turns retain ID/kind and use managed phases
+ * @property {string} phase  // managed: queued | budget_pausing | budget_paused | working | finalizing | unknown; direct: preparing | working | thinking | unknown; parked direct turns retain ID/kind
  * @property {number} started_at
  */

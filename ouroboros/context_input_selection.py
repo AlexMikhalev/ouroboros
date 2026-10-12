@@ -19,6 +19,7 @@ from ouroboros.context_fit import ContextCore as _ContextCore
 from ouroboros.context_runtime_facts import snapshot_labelled
 from ouroboros.contracts.task_contract import normalize_bool
 from ouroboros.memory import Memory
+from ouroboros.store import StoreError
 
 log = logging.getLogger("ouroboros.context")
 
@@ -48,7 +49,7 @@ def _historical_state(ctx, roots, task_id):
     for root in roots:
         try:
             row = load_task_result(root, task_id, strict=True) or {}
-        except (OSError, ValueError):
+        except (OSError, ValueError, StoreError):
             return {"version": 1, "task_id": task_id, "status": "unavailable",
                     "coverage": _HISTORICAL_COVERAGE, "anchors": [], "reason": "record_unavailable"}
         saved = (row.get("review_evidence") or {}).get(_HISTORICAL_INPUTS)

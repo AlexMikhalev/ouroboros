@@ -42,13 +42,13 @@ test('unkeyed terminal incidents do not clear unrelated live turns', () => {
     assert.match(finalCleanup, /pendingSubmissions\.clear\(\);/);
 });
 
-test('a note or skill notice arriving mid-turn keeps Thinking/Sending; an ordinary unkeyed final still ends it', () => {
+test('a note or skill notice arriving mid-turn keeps Working/Sending; an ordinary unkeyed final still ends it', () => {
     // What the live handler does with the unscoped turn for each frame (the branch pinned above).
     const turn = { isConnected: true, hasActiveLiveCard: false, activeDirectCount: 1, pendingSubmissionsCount: 1 };
     const after = (frame) => computeDerivedChatStatus(unkeyedFrameEndsTurn(frame)
         ? { ...turn, activeDirectCount: 0, pendingSubmissionsCount: 0 } : turn).text;
     for (const kind of ['reminder', 'skill_notice', 'terminal_incident']) {
-        assert.equal(after({ role: 'system', system_type: kind, task_id: '', content: 'Call mother' }), 'Thinking...', kind);
+        assert.equal(after({ role: 'system', system_type: kind, task_id: '', content: 'Call mother' }), 'Working', kind);
     }
     assert.equal(after({ role: 'assistant', task_id: '', content: 'Done.' }), 'Online');
     assert.equal(after({ role: 'system', system_type: 'startup_notice', task_id: '' }), 'Online');
@@ -163,7 +163,7 @@ test('computeDerivedChatStatus: working state when active live card is present',
     });
 });
 
-test('computeDerivedChatStatus: thinking state with dots when direct activities are active', () => {
+test('computeDerivedChatStatus: neutral work when only direct activity counts are known', () => {
     const status = computeDerivedChatStatus({
         isConnected: true,
         hasActiveLiveCard: false,
@@ -172,9 +172,25 @@ test('computeDerivedChatStatus: thinking state with dots when direct activities 
     });
     assert.deepEqual(status, {
         kind: 'thinking',
-        text: 'Thinking...',
+        text: 'Working',
         showDots: true,
     });
+});
+
+test('direct neutral and explicit legacy phases reuse the installed translation memory', async () => {
+    const { applyPayload, currentPayload, CODE_PREFIX } = await import('../modules/i18n.js');
+    const prior = currentPayload();
+    try {
+        applyPayload({ language: 'ru', english: false, entries: {
+            [CODE_PREFIX + 'task.chip.working']: { text: 'Работает' },
+            [CODE_PREFIX + 'task.chip.thinking']: { text: 'Думает' },
+        } });
+        for (const [phase, expected] of [['working', 'Работает'], ['thinking', 'Думает']]) {
+            const counts = chatStatusCounts(new Map([['call', { kind: 'direct_chat', phase }]]), []);
+            assert.equal(computeDerivedChatStatus(counts).text, expected);
+        }
+        assert.equal(computeDerivedChatStatus({ activeDirectCount: 2 }).text, 'Работает');
+    } finally { applyPayload(prior); }
 });
 
 test('computeDerivedChatStatus: sending state with dots when local submissions are pending', () => {
@@ -307,7 +323,7 @@ test('computeHydratedDirectActivities: a concluded turn is never resurrected by 
     assert.ok(updated.has('act-live'));
 });
 
-test('computeDerivedChatStatus: priority order is preserved (offline > live card > direct thinking > sending > online)', () => {
+test('computeDerivedChatStatus: priority order is preserved (offline > live card > direct work > sending > online)', () => {
     // 1. Disconnected beats everything
     assert.equal(computeDerivedChatStatus({
         isConnected: false,
@@ -316,7 +332,7 @@ test('computeDerivedChatStatus: priority order is preserved (offline > live card
         pendingSubmissionsCount: 3,
     }).text, 'Reconnecting...');
 
-    // 2. Active live card beats direct thinking & sending & attention
+    // 2. Active live card beats direct work & sending & attention
     assert.equal(computeDerivedChatStatus({
         isConnected: true,
         hasActiveLiveCard: true,
@@ -324,13 +340,13 @@ test('computeDerivedChatStatus: priority order is preserved (offline > live card
         pendingSubmissionsCount: 3,
     }).text, 'Working...');
 
-    // 3. Direct thinking beats local pending submissions & attention
+    // 3. Direct work beats local pending submissions & attention
     assert.equal(computeDerivedChatStatus({
         isConnected: true,
         hasActiveLiveCard: false,
         activeDirectCount: 2,
         pendingSubmissionsCount: 3,
-    }).text, 'Thinking...');
+    }).text, 'Working');
 
     // 4. Local pending submissions beat idle
     assert.equal(computeDerivedChatStatus({
@@ -408,6 +424,6 @@ test(`Batch4: a paused or pausing ${kind} card does not drive working header sta
     // Resumed: the census says working again and the released card drives Working.
     const resumed = chatStatusCounts(new Map([['p', { kind, phase: 'working' }]]),
         [{ root, groupId: 'p', direct: kind === 'direct_chat', finished: false, parkedPhase: '' }]);
-    assert.equal(computeDerivedChatStatus(resumed).text, kind === 'direct_chat' ? 'Thinking...' : 'Working...');
+    assert.equal(computeDerivedChatStatus(resumed).text, kind === 'direct_chat' ? 'Working' : 'Working...');
 });
 }

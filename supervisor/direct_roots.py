@@ -2,7 +2,7 @@
 
 Pooled roots reach a worker through ``state/queue_snapshot.json``; direct-chat
 turns live only in the server process's actor registry, so the main loop
-writes this small projection beside the snapshot (owner decision 6C).  Actor
+collects this projection for generation publication beside the snapshot. Actor
 locks are only ever tried (``acquire(blocking=False)``): a turn mid-admission
 is skipped and the fragment says so through ONE aggregate ``incomplete`` fact
 rather than blocking the loop or fabricating a row.  Queue init takes the
@@ -45,8 +45,8 @@ def direct_turn_facts(turn: Dict[str, Any]) -> Dict[str, Any]:
     return facts
 
 
-def publish_direct_roots(drive_root: Any) -> Dict[str, Any]:
-    """Write the current direct-root rows; never raises, never blocks on an actor."""
+def collect_direct_roots() -> Dict[str, Any]:
+    """Collect the current direct-root rows; never raises, never blocks on an actor."""
     rows = []
     incomplete = False
     try:
@@ -81,12 +81,7 @@ def publish_direct_roots(drive_root: Any) -> Dict[str, Any]:
     except Exception:
         log.debug("direct roots projection failed", exc_info=True)
         incomplete = True
-    payload = {"ts": utc_now_iso(), "roots": rows, "incomplete": incomplete}
-    try:
-        atomic_write_json(_fragment_path(drive_root), payload)
-    except Exception:
-        log.debug("direct roots fragment write failed", exc_info=True)
-    return payload
+    return {"roots": rows, "incomplete": incomplete}
 
 
 def clear_direct_roots(drive_root: Any) -> None:

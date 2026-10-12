@@ -1342,7 +1342,8 @@ class ArtifactOracle:
         return self._json("state/terminal_deliveries.json")
 
     def task_result(self, task_id: str) -> dict:
-        return self._json(f"task_results/{task_id}.json")
+        from ouroboros.task_results import load_task_result
+        return load_task_result(self.data_root, task_id) or {}
 
     def task_result_bytes(self, task_id: str) -> bytes:
         return (self.data_root / "task_results" / f"{task_id}.json").read_bytes()

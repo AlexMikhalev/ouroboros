@@ -150,11 +150,12 @@ def test_every_restore_re_reads_the_root_authority_never_a_stashed_policy(tmp_pa
     readable ordinary root -> the default it was is removed; readable explicit root ->
     the saved point is kept verbatim."""
     from ouroboros.contracts.task_contract import build_task_contract
-    from ouroboros.task_results import task_result_path, write_task_result
+    from ouroboros.task_results import write_task_result
     from ouroboros.tools.registry import ToolContext
+    from tests._store_shared import delete_result
 
     def root_row(profile):
-        task_result_path(tmp_path, "root-2").unlink(missing_ok=True)
+        delete_result(tmp_path, "root-2")
         write_task_result(tmp_path, "root-2", "running", metadata={}, task_contract=build_task_contract(
             {"id": "root-2", "type": "task", "task_contract": {"budget_profile": profile}}))
 

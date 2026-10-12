@@ -2,6 +2,7 @@
 #
 # Tier 1 (Quick):       Push to ouroboros or PR targeting ouroboros                   → Ubuntu-only tests
 # Tier 2 (Full):        Every PR and every ouroboros push → Windows/macOS; stable / manual / tag → full 3-OS matrix
+# Tier 1.5 (SQLite floor): Push to ouroboros or PR targeting ouroboros             → store modules on ubuntu-22.04's system SQLite 3.37.2
 # Tier 2.5 (Integration): Manual / tag (branch pushes: provider-canary-push.yml)       → Real-provider tests, reusable provider-canary.yml (~2 min)
 # Tier 2.6 (Skill smoke): Push to ouroboros-stable / manual / tag                     → LIVE OuroborosHub official-skill install smoke (3-OS, ~5 min) + review→grant→enable-persistence flow on one cheap reviewer slot (ubuntu-only step, OPENROUTER_API_KEY, ~$1.2/run)
 # Tier 3 (Build+Release): Tag v*                                                       → PyInstaller + GitHub Release (~15 min)
@@ -227,6 +228,33 @@ jobs:
         run: python -m pytest tests/test_devtools_benchmarks.py devtools/benchmarks -m "not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" --timeout=300 --timeout-method=thread -q --tb=short
 
   # ──────────────────────────────────────────────────────────────────
+  # Tier 1.5: the SQLite floor. A store file written by the bundled engine must
+  # open on the oldest engine an install may run it with: ubuntu-22.04's system
+  # libsqlite3 3.37.2. setup-python's interpreter bundles a newer SQLite, so this
+  # job builds the locked dependency venv on the runner's /usr/bin/python3 and
+  # runs the store modules there through the stdlib boundary launcher.
+  # ──────────────────────────────────────────────────────────────────
+  sqlite-floor:
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/ouroboros')
+      || (github.event_name == 'pull_request' && github.base_ref == 'ouroboros')
+      || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.12.1'
+      - name: Build the locked dependency venv on the system interpreter (system libsqlite3)
+        run: |
+          set -euo pipefail
+          uv sync --locked --extra browser --group dev --no-install-project --python /usr/bin/python3
+          .venv/bin/python -c "import sqlite3, sys; print(sys.version, sqlite3.sqlite_version); assert sqlite3.sqlite_version == '3.37.2'"
+      - name: Run the store modules on SQLite 3.37.2
+        run: /usr/bin/python3 -I -S scripts/safe_test.py --temp-parent "${{ runner.temp }}" -- .venv/bin/python -m pytest tests/test_store.py tests/test_store_import.py tests/test_store_switch.py tests/test_custody_store_rows.py tests/test_store_cutover.py tests/test_store_activation.py -q --tb=short --timeout=300 --timeout-method=thread
+
+  # ──────────────────────────────────────────────────────────────────
   # Tier 2: Windows/macOS for every PR and every landed `ouroboros` push (Ubuntu is
   # quick-test there); full 3-OS matrix for stable, manual runs and tags. The landed
   # push is what tells a later PR that a Windows/macOS failure is inherited. It runs
@@ -346,7 +374,7 @@ jobs:
       # launch fails, and a run in which no case ran or any case skipped is refused.
       # The browser fixture runs its candidate only from an interpreter that cannot import
       # an INSTALLED ouroboros (tests/candidate_checkout.py), and this job's shared env has
-      # the checkout installed. So these two steps own a dependency-only env from the same
+      # the checkout installed. So these steps own a dependency-only env from the same
       # reviewed lock and the shared env's own base interpreter (the setup action's test
       # profile with --no-install-project, as the UI lane's); the shared env and every
       # other step of this job stay as they are.
@@ -374,6 +402,34 @@ jobs:
         run: |
           "$ATTACHMENT_PYTHON" -I -S scripts/safe_test.py -- "$ATTACHMENT_PYTHON" -m pytest tests/test_chat_attachments_browser.py -m ui_browser -k chromium -q --tb=short -rs --junitxml="$RUNNER_TEMP/ci-private/attachment-browser.xml"
           python -c "import sys, xml.etree.ElementTree as E; s = next(E.parse(sys.argv[1]).getroot().iter('testsuite')); n, k = int(s.get('tests')), int(s.get('skipped')); print(f'{n} ran, {k} skipped'); sys.exit(n == 0 or k > 0)" "$RUNNER_TEMP/ci-private/attachment-browser.xml"
+      # The message field's sizing (tests/test_chat_input_sizing_browser.py) where scrollbars
+      # take width, in the same env and Chromium, under the same no-skip rule. Its geometry
+      # and screenshots are the evidence, so a run that wrote none fails. Chromium on Windows,
+      # not the packaged WebView2 window.
+      - name: Run the message-field sizing browser test on Windows (Chromium)
+        id: composer_browser
+        timeout-minutes: 20
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.attachment_browser_install.outcome == 'success' }}
+        shell: bash
+        env:
+          OUROBOROS_RUN_UI_SMOKE: "1"
+          OUROBOROS_UI_EVIDENCE_DIR: ${{ runner.temp }}/ci-evidence/composer
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/attachment-browsers
+          ATTACHMENT_PYTHON: ${{ runner.temp }}/attachment-env/Scripts/python.exe
+        run: |
+          "$ATTACHMENT_PYTHON" -I -S scripts/safe_test.py -- "$ATTACHMENT_PYTHON" -m pytest tests/test_chat_input_sizing_browser.py -m ui_browser -k chromium -q --tb=short -rs --junitxml="$RUNNER_TEMP/ci-private/composer-browser.xml"
+          python -c "import sys, xml.etree.ElementTree as E; s = next(E.parse(sys.argv[1]).getroot().iter('testsuite')); n, k = int(s.get('tests')), int(s.get('skipped')); print(f'{n} ran, {k} skipped'); sys.exit(n == 0 or k > 0)" "$RUNNER_TEMP/ci-private/composer-browser.xml"
+          python -c "import os, sys; sys.exit(os.path.getsize(sys.argv[1]) == 0)" "$OUROBOROS_UI_EVIDENCE_DIR/composer-sizing-chromium.json"
+      - name: Upload the Windows message-field sizing evidence (geometry, screenshots)
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.attachment_browser_install.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: composer-sizing-windows
+          overwrite: true
+          path: ${{ runner.temp }}/ci-evidence/composer/
+          if-no-files-found: warn
+          retention-days: 30
       # Names the failed, crashed and in-flight tests in the job summary and as
       # annotations; a killed step still reports through its incremental journal.
       - name: Publish test evidence

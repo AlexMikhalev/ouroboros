@@ -27,7 +27,7 @@ serializer, plane, or scheduler is minted here.
 
 from __future__ import annotations
 
-import gzip
+import contextlib
 import hashlib
 import json
 import logging
@@ -276,15 +276,19 @@ def _reconstruct_blob_bytes(candidate: Dict[str, Any]) -> bytes:
 
 def _read_blob_bytes(manifest: Any) -> Tuple[Optional[bytes], bool]:
     """(raw CAS bytes, cas_digest_intact) read back from the durable record."""
+    from ouroboros.evidence_packs import blob_bytes, read_loose_gzip
+
     ref = manifest.get("full_payload_ref") if isinstance(manifest, dict) else None
-    try:
-        path = pathlib.Path(str((ref or {}).get("path") or ""))
-        with gzip.open(path, "rb") as handle:
-            raw = handle.read()
+    path = pathlib.Path(str((ref or {}).get("path") or ""))
+    raw = None
+    with contextlib.suppress(Exception):
+        raw = read_loose_gzip(path)
+    if raw is not None and hashlib.sha256(raw).hexdigest() == str((ref or {}).get("sha256") or ""):
+        return raw, True
+    try:  # a missing or damaged loose blob: the pack of the root the ref names
+        return blob_bytes(path.parents[2], ref), True
     except Exception:
-        return None, False
-    intact = hashlib.sha256(raw).hexdigest() == str((ref or {}).get("sha256") or "")
-    return raw, intact
+        return raw, False
 
 
 def _first_divergent_offset(left: bytes, right: bytes) -> int:
@@ -623,15 +627,18 @@ def _retained_attempt_ids(root: pathlib.Path, wanted: set) -> Optional[set]:
                 return 0.0
         return sorted((path for path in paths if path.is_file()), key=mtime, reverse=True)
 
+    import lzma
+
     files = newest_first((root / "state").glob("usage_attempts.jsonl*"))
     archive = root / "archive" / "usage_ledger"
-    if archive.is_dir():
-        files += newest_first(archive.iterdir())
+    if archive.is_dir():  # segments stay readable once packed to ``.jsonl.xz``; their size sidecars are not journals
+        files += newest_first(path for path in archive.iterdir() if path.suffix != ".json")
     needles = {attempt_id.encode("utf-8"): attempt_id for attempt_id in wanted}
     found: set = set()
     try:
         for path in files:
-            with open(path, "rb") as handle:
+            opener = lzma.open if path.suffix == ".xz" else open
+            with opener(path, "rb") as handle:
                 for line in handle:
                     if not any(needle in line for needle in needles):
                         continue
@@ -644,7 +651,7 @@ def _retained_attempt_ids(root: pathlib.Path, wanted: set) -> Optional[set]:
                         found.add(attempt_id)
                         if len(found) == len(wanted):
                             return found
-    except OSError:
+    except (OSError, EOFError, lzma.LZMAError):  # damaged or truncated: unknown, never absence
         log.debug("model_send reconciliation: retained evidence unreadable", exc_info=True)
         return None
     return found

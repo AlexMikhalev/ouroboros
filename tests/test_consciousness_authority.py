@@ -21,6 +21,7 @@ import pytest
 
 from ouroboros import consciousness_authority as ca
 from ouroboros.tools.registry import ToolContext, ToolRegistry
+from tests._store_shared import seed_result
 
 WAKE_META = {
     "initiator": "consciousness", "usage_category": "consciousness",
@@ -905,7 +906,7 @@ def _addressable_result(tmp_path, task_id="racer-old"):
            "task_contract": {"objective": "Build the racer prototype", "context": "exact old context"}}
     results = tmp_path / "task_results"
     results.mkdir(parents=True, exist_ok=True)
-    (results / f"{task_id}.json").write_text(json.dumps({"_schema_version": 1, **row}), encoding="utf-8")
+    seed_result(tmp_path, task_id, {"_schema_version": 1, **row})
     return _task_result_ground_truth(row)
 
 
@@ -975,9 +976,9 @@ def test_a_wake_without_the_manifest_continues_a_settled_root_and_still_refuses_
     assert promote_evt["predecessor_task_id"] == "racer-old"
     assert promote_evt["initiator"] == "consciousness"
 
-    (tmp_path / "task_results" / "racer-live.json").write_text(json.dumps({
+    seed_result(tmp_path, "racer-live", {
         "_schema_version": 1, "task_id": "racer-live", "status": "running", "project_id": "racer",
-    }), encoding="utf-8")
+    })
     refused = _wake_routing_ctx(tmp_path)
     out = _route_to_project(refused, "racer", "Continue the racer", predecessor_task_id="racer-live")
     assert out.startswith("⚠️ AUTHORITY_SOURCE_UNAVAILABLE (route_to_project)") and "steer_task" in out

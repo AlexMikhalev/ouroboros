@@ -57,6 +57,7 @@ TOOL_POLICY: Dict[str, str] = {
     "codebase_health": POLICY_SKIP,
     "search_code": POLICY_SKIP,
     "query_code": POLICY_SKIP,
+    "query_data": POLICY_SKIP,
     "list_available_tools": POLICY_SKIP,
     "memory_map": POLICY_SKIP,
     "analyze_screenshot": POLICY_SKIP,

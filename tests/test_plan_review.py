@@ -11,6 +11,7 @@ import pathlib
 import unittest
 import pytest
 from unittest.mock import patch
+from tests._store_shared import result_exists, result_signature, seed_result, unreadable_result
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -321,7 +322,7 @@ def test_planning_state_requires_real_task_id(tmp_path):
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
     with pytest.raises(ValueError, match="PLAN_REVIEW_TASK_ID_REQUIRED"):
         _planning_state_location(ctx)
-    assert not (tmp_path / "task_results" / "plan_review.json").exists()
+    assert not result_exists(tmp_path, "plan_review")
 
 
 def test_disposition_without_task_id_returns_typed_state_error(tmp_path):
@@ -369,70 +370,57 @@ def test_malformed_reviewer_slots_block_plan_review_before_any_dispatch(tmp_path
     assert load_plan_review_state(tmp_path, "plan-slot-config")["current_attempt"]["status"] == "unavailable"
 
 
-@pytest.mark.parametrize("payload", ["{broken", "[]", "null"])
-def test_corrupt_parent_task_result_fails_closed_without_overwrite(tmp_path, payload):
+def test_unreadable_parent_task_result_fails_closed_without_overwrite(tmp_path, monkeypatch):
+    """The store refusing the parent row is a typed unknown for the reader and the writer
+    alike; neither invents an empty state nor writes over the row."""
+    from ouroboros.store import StoreError
     from ouroboros.task_results import load_plan_review_state, record_plan_review_wave
 
-    result_path = tmp_path / "task_results" / "parent-corrupt.json"
-    result_path.parent.mkdir(parents=True, exist_ok=True)
-    result_path.write_text(payload, encoding="utf-8")
+    seed_result(tmp_path, "parent-corrupt", {"task_id": "parent-corrupt", "status": "running"})
+    before = result_signature(tmp_path, "parent-corrupt")
+    unreadable = unreadable_result(monkeypatch, "parent-corrupt")
 
-    with pytest.raises(ValueError, match="PLAN_REVIEW_STATE_INVALID"):
+    with pytest.raises(StoreError):
         load_plan_review_state(tmp_path, "parent-corrupt")
-    with pytest.raises(ValueError, match="PLAN_REVIEW_STATE_INVALID"):
+    with pytest.raises(StoreError):
         record_plan_review_wave(tmp_path, "parent-corrupt", _wave("f" * 64))
 
-    assert result_path.read_text(encoding="utf-8") == payload
+    unreadable["on"] = False
+    assert result_signature(tmp_path, "parent-corrupt") == before
 
 
-def test_plan_state_read_waits_for_writer_without_rewriting_snapshot(tmp_path, monkeypatch):
+def test_plan_state_read_during_a_held_writer_sees_one_committed_state_and_writes_nothing(tmp_path):
+    """A reader that overlaps an open state transaction gets the committed state before or
+    after it, never a half-written one, and the read itself leaves no write behind."""
     from concurrent.futures import ThreadPoolExecutor
     import threading
-    from ouroboros import platform_layer, task_results as tr, utils
-    from ouroboros.tools import plan_review_artifacts
+    from ouroboros import task_results as tr
 
     tr._update_plan_review_state(tmp_path, "plan", lambda state: state)
-    path = tr.task_result_path(tmp_path, "plan", create=False)
-    writing, release, reader_waiting = (threading.Event() for _ in range(3))
-    acquire = platform_layer.acquire_exclusive_file_lock
-    write = utils.atomic_write_json
-    resolve = plan_review_artifacts.authority_state
-    snapshots = []
-
-    def observed_acquire(*args, **kwargs):
-        if threading.current_thread().name.startswith("plan-reader"):
-            reader_waiting.set()
-        return acquire(*args, **kwargs)
-
-    def observed_write(target, value, **kwargs):
-        write(target, value, **kwargs)
-        snapshots.append((path.read_bytes(), path.stat().st_mtime_ns))
-
-    def resolve_after_unlock(*args):
-        assert not path.with_name(path.name + ".lock").exists()
-        return resolve(*args)
+    before = result_signature(tmp_path, "plan")
+    writing, release = threading.Event(), threading.Event()
 
     def held_update(state):
         writing.set()
         assert release.wait(5), "test did not release the state writer"
         return {**state, "cycles_paid": 1}
 
-    monkeypatch.setattr(platform_layer, "acquire_exclusive_file_lock", observed_acquire)
-    monkeypatch.setattr(utils, "atomic_write_json", observed_write)
-    monkeypatch.setattr(plan_review_artifacts, "authority_state", resolve_after_unlock)
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="plan-writer") as writers, \
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="plan-reader") as readers:
         writer = writers.submit(tr._update_plan_review_state, tmp_path, "plan", held_update)
         try:
             assert writing.wait(3)
             reader = readers.submit(tr.load_plan_review_state, tmp_path, "plan")
-            assert reader_waiting.wait(2), "state reader bypassed the active writer's lock"
-            assert not reader.done()
+            release.set()  # the reader may be waiting on the store's write lock: let the writer finish
+            seen = reader.result(timeout=15)
         finally:
             release.set()
-        writer.result(timeout=3)
-        assert reader.result(timeout=3)["cycles_paid"] == 1
-    assert snapshots == [(path.read_bytes(), path.stat().st_mtime_ns)]
+        writer.result(timeout=15)
+    assert seen["cycles_paid"] in (0, 1)  # one committed state, whichever side of the writer
+    assert tr.load_plan_review_state(tmp_path, "plan")["cycles_paid"] == 1
+    after = result_signature(tmp_path, "plan")
+    assert after != before and after[0] == before[0] + 1  # exactly the writer's one write
+
 
 
 def test_missing_plan_state_read_does_not_create_a_store(tmp_path):
@@ -672,7 +660,7 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
                 )
             self.assertIn("PLAN_REVIEW_DISPOSITION_UNBINDABLE", out)
             run.assert_not_called()
-            self.assertFalse((root / "task_results" / "parent.json").exists())
+            self.assertFalse(result_exists(root, "parent"))
 
     def test_answer_beside_an_envelope_naming_no_wave_is_refused_without_mutation(self):
         """The valid envelope is prepared read-only, then the answers are bound to their wave:
@@ -695,16 +683,20 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
             self.assertIn("PLAN_REVIEW_DISPOSITION_UNBINDABLE", out)
             record.assert_not_called()
             run.assert_not_called()
-            self.assertFalse((root / "task_results" / "parent.json").exists())
+            self.assertFalse(result_exists(root, "parent"))
 
     def test_padded_disposition_is_disposition_mode_not_a_mixed_envelope(self):
         """Schema-default goal/plan/spec beside a real disposition say NOTHING, so they
         reach disposition mode exactly like the bare envelope. The reciprocal (a vacuous
         disposition beside a real plan) was already tolerated; this is the other side."""
+        import tempfile
         import ouroboros.tools.plan_review as pr
         from ouroboros.tools.registry import ToolContext
 
-        ctx = ToolContext(repo_dir=pathlib.Path("."), drive_root=pathlib.Path("."))
+        scratch = tempfile.TemporaryDirectory()  # a real root: the store's first touch builds under it, never the cwd
+        self.addCleanup(scratch.cleanup)
+        root = pathlib.Path(scratch.name)
+        ctx = ToolContext(repo_dir=root, drive_root=root)
         ctx.task_id = "parent"
         disposition = {"review_fingerprint": "f" * 64, "items": []}
         for padding in (
@@ -743,15 +735,19 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
                     self.assertTrue("PLAN_SPEC_INVALID" in out or "PLAN_RESOURCE_FORM_REQUIRED" in out, out)
                     apply_.assert_not_called()
                     run.assert_not_called()
-            self.assertFalse((root / "task_results" / "parent.json").exists())
+            self.assertFalse(result_exists(root, "parent"))
 
     def test_disposition_with_an_empty_item_beside_a_plan_is_not_vacuous(self):
         """``items=[{}]`` says something malformed, not nothing: beside a plan it is an answer
         with an envelope whose (malformed) form is refused typed, never plain review mode."""
+        import tempfile
         import ouroboros.tools.plan_review as pr
         from ouroboros.tools.registry import ToolContext
 
-        ctx = ToolContext(repo_dir=pathlib.Path("."), drive_root=pathlib.Path("."))
+        scratch = tempfile.TemporaryDirectory()  # a real root: the store's first touch builds under it, never the cwd
+        self.addCleanup(scratch.cleanup)
+        root = pathlib.Path(scratch.name)
+        ctx = ToolContext(repo_dir=root, drive_root=root)
         ctx.task_id = "parent"
         with patch.object(pr, "_run_plan_review_async") as run:
             out = pr._handle_plan_task(
@@ -772,12 +768,15 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
             root = pathlib.Path(raw)
             ctx = ToolContext(repo_dir=root, drive_root=root)
             ctx.task_id = "parent"
-            results_dir = root / "task_results"
-            results_dir.mkdir(parents=True, exist_ok=True)
-            (results_dir / "parent.json").write_text("{corrupt", encoding="utf-8")
-            out = pr._handle_plan_task(
-                ctx, review_disposition={"review_fingerprint": "d" * 64, "items": []},
-            )
+            seed_result(root, "parent", {"task_id": "parent", "status": "running"})
+            patches = pytest.MonkeyPatch()
+            try:
+                unreadable_result(patches, "parent")  # the store cannot answer for the parent row
+                out = pr._handle_plan_task(
+                    ctx, review_disposition={"review_fingerprint": "d" * 64, "items": []},
+                )
+            finally:
+                patches.undo()
             self.assertIn("PLAN_REVIEW_STATE_INVALID", out)
             self.assertNotIn("PLAN_REVIEW_DISPOSITION_UNBINDABLE", out)
 

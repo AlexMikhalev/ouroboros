@@ -6,12 +6,9 @@ owner can still act. The existing writers retire them (``tool_custody.
 retire_tool_invocations``, ``model_wait.retire_model_consumers``); this module
 gives those writers two kinds of positive evidence and one consumer:
 
-- A retained WITNESS: the producer that KNEW the owner ended — a confirmed
-  worker death (``worker_health``), a closed or abandoned receiver
-  (``model_wait``) — but could not publish the retirement keeps one minimal
-  addressed obligation (``state/obligations/local_custody_witnesses.json``:
-  task, identity, producer, reason). It is discharged only by a successful
-  retirement through the same writer.
+- A retained WITNESS: the producer that KNEW the owner ended (``worker_health``,
+  ``model_wait``) but could not publish the retirement keeps one owner-held row
+  (``local_custody_witnesses``), discharged only by a successful retirement.
 - A platform-qualified ABSENCE of the recorded owner: its pid is positively
   gone (``platform_layer.pid_provably_gone``: POSIX ESRCH, Windows no such pid
   or a read exit code — never access denial, EPERM or an unexplained error), an
@@ -191,8 +188,7 @@ def _discharge(root: Any, witness_id: str, facts: Dict[str, Any]) -> bool:
 def _witnesses(root: Any) -> Dict[str, Dict[str, Any]]:
     from ouroboros import obligations
 
-    with obligations.locked(root):
-        return obligations._read(root, WITNESS_SET, missing_ok=True)
+    return obligations.members(root, WITNESS_SET)
 
 
 def repair_ended_local_custody(root: Any, task_ids: Iterable[str], *, root_task_id: str) -> List[Dict[str, Any]]:

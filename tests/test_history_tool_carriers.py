@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros.gateway import history
+from ouroboros.store_import import ensure_current_store
 from ouroboros.tool_call_log import replay_evidence_for_tasks
 
 pytestmark = pytest.mark.serial
@@ -46,6 +47,7 @@ def test_plain_speech_and_user_rows_keep_authorship_beside_host_evidence(tmp_pat
                                            "text": "Actual words", "chat_id": 1}])
     _write(tmp_path / "logs/tools.jsonl", [_tool("root")])
     _write(tmp_path / "task_results/root.json", [{"_schema_version": 1, "task_id": "root", "status": "completed"}])
+    ensure_current_store(tmp_path)  # Boot publishes legacy facts; display reads never import.
     result = _read(tmp_path)
     speech, carrier = result["messages"]
     assert speech["text"] == "Actual words" and speech["role"] == ("user" if role == "in" else "assistant")
@@ -64,6 +66,7 @@ def test_child_only_window_recovers_parent_tools_without_parent_speech(tmp_path)
         "ts": TS, "content": "The child finished", "chat_id": 1}])
     _write(tmp_path / "logs/tools.jsonl", [_tool("root")])
     _write(tmp_path / "task_results/root.json", [{"_schema_version": 1, "task_id": "root", "status": "completed", "chat_id": 1}])
+    ensure_current_store(tmp_path)
     carriers = [row for row in _read(tmp_path)["messages"] if row.get("system_type") == "task_evidence"]
     assert [row["task_id"] for row in carriers] == ["root"]
     assert carriers[0]["task_terminal_status"] == "completed"
@@ -110,6 +113,7 @@ def test_child_cannot_address_parent_tool_evidence_to_its_own_room(tmp_path, mon
     if route != "unknown":
         result["chat_id"] = (foreign if route in {"stored_foreign", "bound_same"} else current)["chat_id"]
     _write(tmp_path / "task_results/parent.json", [result])
+    ensure_current_store(tmp_path)
     _write(tmp_path / "logs/progress.jsonl", [{"task_id": "child", "parent_task_id": "parent",
         "root_task_id": "parent", "delegation_role": "subagent", "subagent_event": "completed",
         "content": "Child complete", "chat_id": current["chat_id"], "ts": TS}])
@@ -158,6 +162,7 @@ def test_empty_known_missing_replay_is_carried_as_incomplete(tmp_path, witness):
         fields = {"tool_calls": 1} if witness == "result" else {
             "completion_observations": {"delivery_counts": {"send_message": {"calls": 1}}}}
         _write(tmp_path / "task_results/root.json", [{"_schema_version": 1, "task_id": "root", "status": "completed", "chat_id": 1, **fields}])
+        ensure_current_store(tmp_path)
         if witness == "parent_delivery":
             _write(tmp_path / "logs/chat.jsonl", [])
             _write(tmp_path / "logs/progress.jsonl", [{"task_id": "child", "parent_task_id": "root",
@@ -290,6 +295,7 @@ def test_shared_archive_listing_keeps_the_history_body_byte_identical(tmp_path, 
 
     _archived_tools_for(tmp_path, ["a", "b", "c"])
     _write(tmp_path / "task_results/a.json", [{"_schema_version": 1, "task_id": "a", "status": "completed", "chat_id": 1}])
+    ensure_current_store(tmp_path)
     shared = history._assemble_history_response(tmp_path, 1, 10, 10, None)
     # The per-task reader: every task lists and parses on its own (the pre-sharing shape).
     monkeypatch.setattr(tool_call_log, "replay_evidence_for_tasks", lambda root, task_ids: {
@@ -326,6 +332,7 @@ def test_a_carrier_that_is_the_tasks_only_terminal_row_keeps_the_whole_terminal_
     _write(tmp_path / "logs/tools.jsonl", [_tool("bare"), _tool("summarized")])
     for task in ("bare", "summarized"):
         _write(tmp_path / f"task_results/{task}.json", [{**truth, "task_id": task}])
+    ensure_current_store(tmp_path)
     rows = {row["task_id"]: row for row in _read_wide(tmp_path)["messages"]
             if row.get("system_type") in {"task_evidence", "task_summary"}}
     carrier, summary = rows["bare"], rows["summarized"]
@@ -349,6 +356,7 @@ def test_a_row_main_pins_for_a_project_task_does_not_mint_its_card_in_main(tmp_p
     _write(tmp_path / "logs/tools.jsonl", [_tool("root")])
     _write(tmp_path / "task_results/root.json", [{"_schema_version": 1, "task_id": "root", "status": "completed",
                                                   "chat_id": project["chat_id"]}])
+    ensure_current_store(tmp_path)
     main = _room_read(tmp_path, 1)["messages"]
     assert [(row["task_id"], row["system_type"]) for row in main] == [("root", row_type)], main
     room = _room_read(tmp_path, project["chat_id"])["messages"]

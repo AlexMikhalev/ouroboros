@@ -224,9 +224,11 @@ def execute_panic_stop(
     """
     import threading
     import time
+    from ouroboros.evidence_packer import packer
     from ouroboros.startup_historical_audit import audit
 
     audit.stop()
+    packer.stop()
     requests, settlements = {}, {}
     request_threads = []
 

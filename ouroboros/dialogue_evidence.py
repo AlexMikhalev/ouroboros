@@ -249,10 +249,12 @@ def chat_evidence_reader(drive_root: Any):
 
 def task_room_record(drive_root: Any, task_id: str) -> dict:
     """Read-only addressing projection; never quarantine/migrate a legacy result."""
-    from ouroboros.task_results import task_result_path
-    from ouroboros.utils import read_json_dict
+    from ouroboros.task_store import read_document
 
-    return read_json_dict(task_result_path(drive_root, task_id, create=False)) or {}
+    try:
+        return read_document(drive_root, task_id) or {}
+    except Exception:
+        return {}
 
 
 def own_room_chat(ctx: Any, drive_root: Any) -> int | None:

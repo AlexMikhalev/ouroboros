@@ -143,10 +143,11 @@ def test_ready_not_started_receipt_waits_for_failed_release_and_recovery(engine,
     assert initial.code == "IMAGE_NOT_DISPATCHED"
     request_id = _summary(initial.text)["request_id"]
     retry = registry.execute_result("recover_image", {"request_id": request_id})
-    for result in (initial, retry):
+    for result, warning in ((initial, "accounting release is pending"),
+                            (retry, "Original accounting is pending; use recover_image before acknowledging custody.")):
         facts = _summary(result.text)
         assert facts["response"] and facts["acknowledgement"] == "pending"
-        assert "accounting release is pending" in " ".join(facts["warnings"])
+        assert warning in " ".join(facts["warnings"])
     assert not any(call.url.path.endswith("/ack") for call in wire.calls)
     rows = usage.read_usage_records(ctx.drive_root)
     assert len(rows) == 1 and rows[0]["state"] == "unresolved"

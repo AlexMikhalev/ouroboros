@@ -9,6 +9,7 @@ import pytest
 
 from ouroboros import projects_registry as registry
 from ouroboros.task_results import load_task_result, write_task_result
+from tests._store_shared import unreadable_result
 from tests.test_schedule_occurrence import _row
 from tests.test_swarm_host_admission import host  # noqa: F401
 
@@ -155,9 +156,10 @@ def test_api_conversion_binding_overrides_old_result_scope_on_restore(host, tmp_
     prepared = copy.deepcopy(host.pending[0])
     assert queue.persist_queue_snapshot()
     if stale:
-        snapshot = json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        alive = queue.QUEUE_SNAPSHOT_PATH.with_name("queue.alive")
+        snapshot = json.loads(alive.read_text(encoding="utf-8"))
         snapshot["ts"] = "2000-01-01T00:00:00Z"
-        queue.QUEUE_SNAPSHOT_PATH.write_text(json.dumps(snapshot), encoding="utf-8")
+        alive.write_text(json.dumps(snapshot), encoding="utf-8")
     host.pending.clear()
     assert queue.restore_pending_from_snapshot() == 1
     assert bool(host.pending[0].get("_project_admission_restore_hold")) is stale
@@ -223,7 +225,7 @@ def test_conversion_rollback_restores_scope_and_exact_carrier(host, tmp_path, mo
 
 @pytest.mark.parametrize("timestamp", ["old", "invalid", "absent"])
 @pytest.mark.parametrize("schedule", [False, True])
-def test_project_hold_survives_early_restore_pruning(host, tmp_path, timestamp, schedule):  # noqa: F811
+def test_project_hold_survives_early_restore_pruning(host, tmp_path, monkeypatch, timestamp, schedule):  # noqa: F811
     from supervisor import queue
 
     registry.create_project(host.root, "chosen")
@@ -241,7 +243,7 @@ def test_project_hold_survives_early_restore_pruning(host, tmp_path, timestamp, 
     [held] = host.pending
     assert held["_project_admission_restore_hold"]
     if schedule:
-        (host.root / "task_results" / (prepared["id"] + ".json")).write_text("{torn", encoding="utf-8")
+        unreadable_result(monkeypatch, prepared["id"])  # its result row cannot be read: the hold still survives
     snapshot = json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
     if timestamp == "absent":
         snapshot.pop("ts", None)

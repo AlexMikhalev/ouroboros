@@ -9,6 +9,7 @@ from ouroboros.task_results import (closed_plan_review_wave, load_plan_review_st
 from ouroboros.tools import plan_review as pr
 from ouroboros.tools.plan_review_artifacts import current_author_plan, authority_wave
 from tests.test_plan_review_engine import harness, _call, _finding, DECK_SPEC  # noqa: F401
+from tests._store_shared import result_exists
 
 
 @pytest.mark.parametrize("enforcement", ["advisory", "blocking"])
@@ -179,7 +180,7 @@ def test_neutral_action_beside_a_malformed_envelope_is_refused_by_its_form(harne
     result = pr._handle_plan_task(ctx, **{field: value}, reviewer_effort="low", review_disposition={
         "review_fingerprint": "f" * 64, "items": [], "author_action": "none"})
     assert "PLAN_SPEC_INVALID" in result or "PLAN_RESOURCE_FORM_REQUIRED" in result, result
-    assert not transport.calls and not (harness.drive / "task_results" / (ctx.task_id + ".json")).exists()
+    assert not transport.calls and not result_exists(harness.drive, ctx.task_id)
 
 
 @pytest.mark.parametrize("action", ["finish", "stop", "bogus", ["finish"]])

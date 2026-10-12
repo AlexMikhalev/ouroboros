@@ -6,6 +6,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 from ouroboros.cost_projection import CostPresentation
+from ouroboros.storage import (  # noqa: F401 -- public re-exports
+    StorageCategory, StorageError, StorageMeasurement, StorageResponse,
+)
 from ouroboros.gateway.claudexor_contracts import (  # noqa: F401 -- public re-exports
     ClaudexorReadState, ClaudexorStatusReads, ClaudexorPassiveReadError, ClaudexorQuotaResponse,
 )
@@ -695,6 +698,7 @@ class ActiveDirectTurn(TypedDict):
     phase: str
     started_at: float
     model_waits: NotRequired[Dict[str, Any]]
+    model_activity: NotRequired[Dict[str, Any]]  # content-free observation bound to the active Main call
     task_attempt: NotRequired[int]
 
 
@@ -1584,6 +1588,7 @@ __all__ = [
     "OwnerHurryProjection",
     "EffortRange", "OwnerEffortRangeResponse",
     "LogTailResponse",
+    "StorageCategory", "StorageError", "StorageMeasurement", "StorageResponse",
     "HTTP_ENDPOINTS",
     "WS_MESSAGE_TYPES",
 ]

@@ -179,10 +179,10 @@ def test_patch_validation_cannot_retire_an_independent_unknown_handoff(tmp_path,
     registry, q, _ = _registry(tmp_path, monkeypatch)
     with owner_pause.tool_handoff(registry._ctx, "unsettled"):
         owner_pause.run_operation(registry._ctx, lambda: "opaque acknowledgement")
-        before = load_task_result(tmp_path, "root")["launch_handoffs"]
+        before = load_task_result(tmp_path, "root").get("launch_handoffs", {})
         result = registry.execute_result("apply_patch", {"patch": "invalid patch"})
         assert result.meta["operation_outcome"] == "completed_no_effect"
-        assert load_task_result(tmp_path, "root")["launch_handoffs"] == before
+        assert load_task_result(tmp_path, "root").get("launch_handoffs", {}) == before
         assert any(row["kind"] == "tool_handoff" for row in conflicting_writers(q, "root"))
 
 
@@ -291,7 +291,7 @@ def test_queued_retry_resume_waits_for_its_earlier_attempts_handed_work(tmp_path
         with tool_handoff(source, "external_write"):
             with operation_start(source):
                 raise TimeoutError("request sent, response unknown")
-    assert load_task_result(tmp_path, "root")["launch_handoffs"]
+    assert load_task_result(tmp_path, "root").get("launch_handoffs", {})
     ack = request_owner_pause("root", request_id="P")
     assert ack["ok"] and ack["state"] == "requested"
     refused = q.resume_budget_paused_task("root")

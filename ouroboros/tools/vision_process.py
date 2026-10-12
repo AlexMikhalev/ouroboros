@@ -141,17 +141,22 @@ def child_main(payload_path: str) -> None:
     if sleep_for > 0:
         import time
         time.sleep(sleep_for)
-    custody = None
+    custody = receipted_custody = None
 
     def observe(value):
-        nonlocal custody
-        Draft202012Validator(_CUSTODY).validate(value)
-        custody = value
+        nonlocal custody, receipted_custody
+        # The transport also publishes activity. IPC keeps its custody-only ABI.
+        projected = {key: value[key] for key in _CUSTODY["properties"] if key in value}
+        Draft202012Validator(_CUSTODY).validate(projected)
+        if projected == receipted_custody:
+            return
+        custody = projected
         capture = last_physical_attempt_capture()
         _private_json(payload_file.with_name("receipt.json"), {
             "receipt_id": receipt_id, "custody": custody,
             "capture": asdict(capture) if capture else None,
         })
+        receipted_custody = custody  # A failed write stays eligible at the next observation.
 
     def control():
         try:

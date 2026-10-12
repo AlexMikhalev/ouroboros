@@ -485,9 +485,8 @@ def test_remote_cleanup_requires_positive_birth_match(monkeypatch, observed_birt
 
 
 def _forge(root, wait_id, row, pointer=None, *, remove=False):
-    """Write (or ``remove``) one forged wait row and, when given, its own open pointer, in one locked write."""
-    from ouroboros.task_results import task_result_path
-    from ouroboros.utils import update_json_locked
+    """Write (or ``remove``) one forged wait row and, when given, its own open pointer, in one store write."""
+    from ouroboros.task_store import patch_document
 
     owner_id = row["review_operation"]["owner_id"]
 
@@ -500,7 +499,7 @@ def _forge(root, wait_id, row, pointer=None, *, remove=False):
             pointers.update({owner_id: pointer} if pointer is not None else {})
         return {**current, "model_waits": waits, "review_operations": pointers}
 
-    update_json_locked(task_result_path(root, TASK), change, strict_existing_dict=True)
+    patch_document(root, TASK, change)
 
 
 @pytest.mark.serial

@@ -162,14 +162,13 @@ def test_unresolved_summary_changes_once_and_caps_one_row_for_300_candidates(env
 @pytest.mark.parametrize('history', [10, 2000])
 def test_completed_history_does_not_add_duty_reads(env, monkeypatch, history):
     from collections import Counter
-    from pathlib import Path
-    from ouroboros import task_results
+    from ouroboros import store, task_results
     from supervisor import queue, queue_transitions, workers
 
     exemplar = task_results.write_task_result(env.root, 'history', 'completed', result='Stored')
-    for index in range(history):
-        (env.root / 'task_results' / f'history-{index}.json').write_text(
-            json.dumps({**exemplar, 'task_id': f'history-{index}'}), encoding='utf-8')
+    with store.open_store(env.root, write=True) as txn:
+        for index in range(history):
+            txn.store_task({**exemplar, 'task_id': f'history-{index}'})
     for index in range(5):
         tid = f'open-{index}'
         task_results.write_task_result(env.root, tid, 'completed', result='Stored')
@@ -185,16 +184,15 @@ def test_completed_history_does_not_add_duty_reads(env, monkeypatch, history):
     monkeypatch.setattr('ouroboros.llm_claudexor.recover_model_attempt', lambda *a, **k: None)
     counts = Counter()
     load, decode = task_results.load_task_result, usage_store._decode
-    body, bucket, owners = Path.read_text, usage_store._bucket_of, usage_store.Txn.dirty_owners
+    body, bucket, owners = store.Txn.load, usage_store._bucket_of, usage_store.Txn.dirty_owners
     def read(root, tid, **kw):
         assert not queue._queue_lock._is_owned()
         counts['ownership_loads'] += 1
         return load(root, tid, **kw)
-    def read_body(path, *a, **kw):
-        if path.parent == env.root / 'task_results' and path.suffix == '.json':
-            assert not queue._queue_lock._is_owned()
-            counts['result_parses'] += 1
-        return body(path, *a, **kw)
+    def read_body(txn, tid):
+        assert not queue._queue_lock._is_owned()
+        counts['result_parses'] += 1
+        return body(txn, tid)
     def decoded(row):
         counts['attempt_rows'] += 1
         return decode(row)
@@ -205,7 +203,7 @@ def test_completed_history_does_not_add_duty_reads(env, monkeypatch, history):
         rows = owners(txn)
         counts['dirty_rows'] += len(rows)
         return rows
-    monkeypatch.setattr(Path, 'read_text', read_body)
+    monkeypatch.setattr(store.Txn, 'load', read_body)
     monkeypatch.setattr(task_results, 'load_task_result', read)
     monkeypatch.setattr(usage_store, '_decode', decoded)
     monkeypatch.setattr(usage_store, '_bucket_of', summary)

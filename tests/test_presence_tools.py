@@ -6,9 +6,9 @@ import json
 from types import SimpleNamespace
 
 from ouroboros.presence_capabilities import load_presence_state
-from ouroboros.utils import atomic_write_json
 from ouroboros.tools.presence import get_tools
 from ouroboros.tools.registry import ToolContext
+from tests._store_shared import seed_result
 
 
 def _configure(ctx: ToolContext, action: str, **params):
@@ -187,7 +187,7 @@ def test_presence_cancel_work_accepts_own_binding_work_from_any_of_its_conversat
     }
 
     def row(task_id, *, binding="1" * 32, key="telegram:bot-1:room-1", **fields):
-        atomic_write_json(tmp_path / "task_results" / f"{task_id}.json", {
+        seed_result(tmp_path, task_id, {
             "_schema_version": 1, "task_id": task_id, "status": "running",
             "metadata": {"presence": {"binding_id": binding, "event": {"conversation_key": key}}} if binding else {},
             **fields,

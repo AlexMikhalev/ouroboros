@@ -13,6 +13,7 @@ import pytest
 from tests._budget_pause_exact_helpers import _install_queue
 from tests._usage_store_testing import ledger_rows
 from tests.test_owner_continue import NONCE, _interrupted
+from tests._store_shared import seed_result
 
 pytestmark = pytest.mark.serial
 
@@ -98,11 +99,11 @@ def test_unbound_model_and_generic_tool_effects_survive_terminal_owner(tmp_path,
 def test_unreadable_pause_preserves_cause_and_prevents_physical_send(tmp_path, monkeypatch):
     from ouroboros import owner_pause, usage_accounting as ua
     from ouroboros.llm_attempt import PhysicalDispatchInterrupted
-    from ouroboros.task_results import task_result_path
+    from tests._store_shared import seed_result, unreadable_result
 
     monkeypatch.setenv("TOTAL_BUDGET", "100")
-    path = task_result_path(tmp_path, "root")
-    path.write_text("{torn")
+    seed_result(tmp_path, "root", {"status": "running"})
+    unreadable_result(monkeypatch, "root")  # the store cannot answer for the root's row
     source = SimpleNamespace(task_id="root", root_task_id="root", drive_root=tmp_path)
     with pytest.raises(owner_pause.OwnerPauseRefused, match="owner_pause_authority_unreadable"):
         with owner_pause.launch_admission(source):
@@ -178,36 +179,39 @@ def test_owner_pause_cause_survives_root_selection_but_not_new_budget_pause(tmp_
     assert child[BUDGET_HOLD_KEY]["root_grant_id"] == "g2"
 
 
-def test_indexed_census_preserves_legacy_members_and_reloads_only_changed_foreign_rows(tmp_path, monkeypatch):
-    from ouroboros import task_result_facts as scan
+def test_indexed_census_preserves_legacy_members_and_reads_no_foreign_body(tmp_path, monkeypatch):
+    """The census selects the tree by the typed ``root_task_id`` column: a legacy member whose
+    root lives only in its metadata is still read (its column is NULL), the 1000 foreign roots
+    are never decoded, and an unavailable store refuses the census instead of narrowing it."""
+    from ouroboros import task_store
     from ouroboros.model_sleep import cold_blockers
-    from ouroboros.task_results import stamp_task_result_schema, task_result_path, write_task_result
+    from ouroboros.store import StoreBusy
+    from ouroboros.task_results import stamp_task_result_schema, write_task_result
     from supervisor.continuation_admission import conflicting_writers
 
     queue, _, _ = _install_queue(tmp_path, monkeypatch)
-    write_task_result(tmp_path, "root", "running", root_task_id="root")
-    path = task_result_path(tmp_path, "legacy-child")
-    path.write_text(json.dumps(stamp_task_result_schema({
+    seed_result(tmp_path, "legacy-child", stamp_task_result_schema({
         "task_id": "legacy-child", "status": "completed", "metadata": {"root_task_id": "root"},
-        "launch_handoffs": {"op": {"tool": "external_write"}}})))
+        "launch_handoffs": {"op": {"tool": "external_write"}}}))
     for number in range(1000):
         task_id = f"foreign-{number}"
-        task_result_path(tmp_path, task_id).write_text(json.dumps(stamp_task_result_schema({
-            "task_id": task_id, "status": "completed", "root_task_id": task_id})))
-    parsed = []
-    reader = scan.read_json_dict
-    monkeypatch.setattr(scan, "read_json_dict", lambda path: (parsed.append(path.name), reader(path))[1])
+        seed_result(tmp_path, task_id, stamp_task_result_schema({
+            "task_id": task_id, "status": "completed", "root_task_id": task_id}))
+    write_task_result(tmp_path, "root", "running", root_task_id="root")  # first touch imports the files above
+    from ouroboros import task_results
+    decoded = []
+    real = task_store.read_document
+    for module in (task_store, task_results):
+        monkeypatch.setattr(module, "read_document", lambda root, task_id: (decoded.append(task_id), real(root, task_id))[1])
     assert any(b.get("task_id") == "legacy-child" for b in conflicting_writers(queue, "root"))
-    assert len(parsed) == 1002
-    parsed.clear()
+    assert "legacy-child" in decoded and not any(task_id.startswith("foreign-") for task_id in decoded)
+    decoded.clear()
     context = SimpleNamespace(drive_root=tmp_path, task_id="root", root_task_id="root")
     assert any(b.get("detail") == "legacy-child" for b in cold_blockers(context))
-    assert parsed == []
-    changed = task_result_path(tmp_path, "foreign-0")
-    changed.write_text("{torn")
-    assert any(b["kind"] == "tree_census_unreadable" for b in conflicting_writers(queue, "root"))
-    assert parsed == ["foreign-0.json"]
-    changed.unlink()
+    assert not any(task_id.startswith("foreign-") for task_id in decoded)
+    with monkeypatch.context() as busy:
+        busy.setattr(task_store, "open_store", lambda *a, **kw: (_ for _ in ()).throw(StoreBusy("busy")))
+        assert any(b["kind"] == "tree_census_unreadable" for b in conflicting_writers(queue, "root"))
     assert any(b.get("task_id") == "legacy-child" for b in conflicting_writers(queue, "root"))
 
 
@@ -447,10 +451,10 @@ def test_escaping_tool_exception_keeps_unknown_effects_after_owner_terminal(tmp_
         with tool_handoff(source, "external_write"):
             with operation_start(source):
                 raise TimeoutError("request sent, response unknown")
-    claim = load_task_result(tmp_path, "root")["launch_handoffs"]
+    claim = load_task_result(tmp_path, "root").get("launch_handoffs", {})
     assert claim
     write_task_result(tmp_path, "root", "cancelled")
-    assert load_task_result(tmp_path, "root")["launch_handoffs"] == claim
+    assert load_task_result(tmp_path, "root").get("launch_handoffs", {}) == claim
     assert any(b["kind"] == "tool_handoff" for b in conflicting_writers(queue, "root"))
 
 

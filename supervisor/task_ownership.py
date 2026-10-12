@@ -24,13 +24,9 @@ class TaskOwnershipRead:
         self.errors = {}
 
     def _stamp(self, task_id):
-        from ouroboros.task_results import task_result_path
+        from ouroboros.task_store import signature
 
-        try:
-            stat = task_result_path(self.root, task_id, create=False).stat()
-            return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
-        except FileNotFoundError:
-            return None
+        return signature(self.root, task_id)
 
     def load(self, task_id):
         from ouroboros.task_results import load_task_result

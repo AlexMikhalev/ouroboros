@@ -12,6 +12,7 @@ import json
 import pathlib
 import queue
 import time
+from tests._store_shared import read_result
 
 
 def _make_fake_env(drive_root: pathlib.Path):
@@ -117,8 +118,7 @@ class TestLiveFinalAnswerDelivery:
         assert "send_message" in observed["pending_types_at_hook"]
 
         # Durable result was stored BEFORE the live delivery point.
-        stored = json.loads(
-            (drive_root / "task_results" / "live1.json").read_text(encoding="utf-8"))
+        stored = read_result(drive_root, "live1")
         assert stored["result"] == "Reply text"
 
     def test_no_duplicate_final_message_when_both_copies_flow(
@@ -447,22 +447,17 @@ class TestProjectLastResultPointer:
     """Durable registry pointer beats the bounded newest-64 mtime scan."""
 
     def _write_results(self, tmp_path, n_foreign=70):
-        import os
-
-        from ouroboros.task_results import task_result_path, write_task_result
+        from ouroboros.task_results import write_task_result
 
         write_task_result(
             tmp_path, "projres1", "completed", project_id="slime",
             objective="project deliverable", ts="2026-08-10T00:00:01Z",
         )
-        os.utime(task_result_path(tmp_path, "projres1", create=False), (100, 100))
-        for i in range(n_foreign):
-            tid = f"foreign{i:03d}"
+        for i in range(n_foreign):  # every foreign row is newer than the project's
             write_task_result(
-                tmp_path, tid, "completed", project_id="", objective="noise",
+                tmp_path, f"foreign{i:03d}", "completed", project_id="", objective="noise",
+                ts=f"2026-08-11T00:{i // 60:02d}:{i % 60:02d}Z",
             )
-            os.utime(task_result_path(tmp_path, tid, create=False),
-                     (200 + i, 200 + i))
 
     def test_pointer_survives_more_than_64_newer_foreign_results(self, tmp_path):
         import server

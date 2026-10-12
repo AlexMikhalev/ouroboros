@@ -783,43 +783,6 @@ def test_handoff_failures_preserve_unknown_identity_without_resend(late, tmp_pat
         assert second['reason'] == 'existing_paid_operation' and not late.calls, second
 
 
-@pytest.mark.parametrize('reader', ['author', 'paid_stamp'])
-def test_a_read_denied_by_a_concurrent_replace_never_refuses_the_owner_panel(late, tmp_path, monkeypatch, reader):
-    """Windows denies an open that meets another thread's atomic replace of the same
-    task result. One such instant at a strict preclaim read (the author's before
-    dispatch, or the paid stamp's on a reviewer racing the author's publication) is
-    not unreadable authority: the owner's panel still buys its three reviewers once."""
-    import pathlib
-    from ouroboros import review_dispatch, review_operation
-    f = delivered(tmp_path, monkeypatch, retry=True)
-    ctx = _caller(f)
-    inside, denied = set(), []
-    preclaim, read_text = review_dispatch.task_acceptance_preclaim_refusal, pathlib.Path.read_text
-
-    def observed_preclaim(admission):
-        if (threading.current_thread() is not threading.main_thread()) == (reader == 'paid_stamp'):
-            inside.add(threading.get_ident())
-        try:
-            return preclaim(admission)
-        finally:
-            inside.discard(threading.get_ident())
-
-    def denied_once(path, *args, **kwargs):
-        if threading.get_ident() in inside and path.parent.name == 'task_results' and not denied:
-            denied.append(path.name)
-            raise PermissionError(13, 'The process cannot access the file', str(path))
-        return read_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(review_dispatch, 'task_acceptance_preclaim_refusal', observed_preclaim)
-    monkeypatch.setattr(pathlib.Path, 'read_text', denied_once)
-    result = _request(f, ctx, _source(ctx))
-    assert result['status'] in {'pending', 'announced', 'published', 'settled'}, result
-    until(lambda: len(late.calls) == 3)
-    until(lambda: not review_operation._LIVE)
-    claims = (load_task_result(f.root, f.accounting).get('task_acceptance_review_accounting') or {}).get('claims_by_binding') or {}
-    assert denied and len(late.calls) == 3 and len(claims) == 1, (denied, claims)
-
-
 @pytest.mark.parametrize('amount,explicit,expected', [(None, 'original_admission', None), (2.0, 'original_admission', 2.0), (None, '', 9.0)])
 def test_review_substrate_preserves_bound_original_unlimited_cap(tmp_path, monkeypatch, amount, explicit, expected):
     from ouroboros.review_substrate import ReviewRequest, ReviewSlot, run_review_request

@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import json
 import types
+from tests._store_shared import result_exists
 
 
 def _load_script_module(repo_root):
@@ -92,7 +93,7 @@ def test_run_plan_review_script_runs_the_engine_on_the_new_envelope(monkeypatch,
     assert "| https://example.com/spec | url_not_fetched |" in captured["user_content"]
     assert "before the work starts" in captured["system_prompt"]
     assert '"aggregate": "GREEN"' in output
-    assert (tmp_path / "drive" / "task_results" / "plan-review-cli.json").exists()
+    assert result_exists(tmp_path / "drive", "plan-review-cli")
 
 
 def test_run_plan_review_script_has_no_personal_key_fallback():

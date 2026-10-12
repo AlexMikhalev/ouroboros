@@ -27,6 +27,7 @@ from ouroboros.tools.chronicle import (
     _chronicle_write, _memory_mark, _memory_read, check_quotes, host_stamp, page_covers,
 )
 from ouroboros.tools.registry import ToolContext
+from tests._store_shared import result_exists, seed_result
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 LIMIT = tool_result_limit("memory_read")
@@ -397,7 +398,6 @@ def test_an_install_without_any_lineage_row_attributes_old_outgoing_rows_by_task
     outgoing row was mine, so the task results decide and the rest is unattributed. Rows written
     after activation carry lineage when a child wrote them, so a lineage-free one is mine."""
     from ouroboros.task_result_schema import SCHEMA_VERSION_KEY, TASK_RESULT_SCHEMA_VERSION
-    from ouroboros.task_results import task_result_path
 
     rows = chat(tmp_path, [
         {"chat_id": 1, "direction": "in", "ts": ts(1), "text": "Review the patch."},
@@ -408,9 +408,8 @@ def test_an_install_without_any_lineage_row_attributes_old_outgoing_rows_by_task
     ])
     for task_id, fields in (("root0001", {}), ("kid00002", {"parent_task_id": "root0001", "root_task_id": "root0001",
                                                              "delegation_role": "subagent"})):
-        task_result_path(tmp_path, task_id).write_text(json.dumps({
-            SCHEMA_VERSION_KEY: TASK_RESULT_SCHEMA_VERSION, "task_id": task_id, "status": "completed", **fields}),
-            encoding="utf-8")
+        seed_result(tmp_path, task_id, {
+            SCHEMA_VERSION_KEY: TASK_RESULT_SCHEMA_VERSION, "task_id": task_id, "status": "completed", **fields})
     ctx = ctx_for(tmp_path)
     lines = _memory_read(ctx, rows=True).split("\n")[2:]
     assert lines[1].startswith(f"[{ts(2)}; outgoing, author not recorded; {addr(rows[1])}]")
@@ -703,11 +702,9 @@ def test_mark_view_and_release_including_an_imported_nomination(tmp_path):
 
 def test_host_stamp_prefers_terminal_then_host_facts_then_task_result(tmp_path):
     from ouroboros.task_result_schema import SCHEMA_VERSION_KEY, TASK_RESULT_SCHEMA_VERSION
-    from ouroboros.task_results import task_result_path
 
-    path = task_result_path(tmp_path, "fromfile", create=True)
-    path.write_text(json.dumps({SCHEMA_VERSION_KEY: TASK_RESULT_SCHEMA_VERSION, "task_id": "fromfile",
-                                "status": "cancelled"}), encoding="utf-8")
+    seed_result(tmp_path, "fromfile", {SCHEMA_VERSION_KEY: TASK_RESULT_SCHEMA_VERSION, "task_id": "fromfile",
+                                "status": "cancelled"})
     facts = {"type": "task_summary", "summary_kind": "host_task_facts", "task_id": "both", "status": "completed",
              "outcome": "Done", "outcome_phase": "done"}
     terminal = {**facts, "summary_kind": "terminal_root_projection", "status": "failed", "outcome_phase": "error"}
@@ -718,7 +715,7 @@ def test_host_stamp_prefers_terminal_then_host_facts_then_task_result(tmp_path):
     assert by_task["facts"]["source"] == "host_task_facts"
     assert by_task["fromfile"]["source"] == "task_results" and by_task["fromfile"]["status"] == "cancelled"
     assert by_task["nowhere"] == {"task_id": "nowhere", "status": "not_recorded"}
-    assert path.exists()  # the strict read never moves a result
+    assert result_exists(tmp_path, "fromfile")  # the strict read never moves a result
 
 
 def test_tools_module_imports_no_retired_memory_machinery_and_lazy_domains_stay_lazy():

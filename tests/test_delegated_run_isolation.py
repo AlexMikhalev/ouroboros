@@ -15,6 +15,7 @@ import subprocess
 import pytest
 
 from ouroboros import delegate_custody as custody
+from ouroboros.store import STORE_REL
 from ouroboros.task_results import write_task_result
 from ouroboros.subagent_worktrees import (
     find_execution_snapshot,
@@ -1187,15 +1188,13 @@ class TestStartupGCFailClosed:
         assert custody.record_started(data, entry)
         custody._CUSTODY.clear()
         assert "gc-open" in custody.open_snapshot_ids(data)
-
-        events = data / "logs" / "events.jsonl"
-        # Write-only: the log EXISTS but cannot be READ — replay would answer {}.
-        events.chmod(0o200)
+        events, store_path = data / "logs" / "events.jsonl", data / STORE_REL
+        store_path.chmod(0o000)  # the custody rows EXIST but cannot be READ: typed unreadable
         try:
             assert custody.custody_log_unreadable(data)
             srv._prune_delegated_snapshots()
         finally:
-            events.chmod(0o644)
+            store_path.chmod(0o644)
         # The open snapshot SURVIVED, registry row included.
         assert find_execution_snapshot("gc-open", data_dir=data) is not None
         assert pathlib.Path(handle.path).exists()
@@ -1223,13 +1222,14 @@ class TestStartupGCFailClosed:
                                    snapshot_id="gc-open3", execution_root=handle.path)
         assert custody.record_started(data, entry)
         custody._CUSTODY.clear()
-        events = data / "logs" / "events.jsonl"
-        events.chmod(0o000)  # unreadable AND unwritable
+        events, store_path = data / "logs" / "events.jsonl", data / STORE_REL
+        store_path.chmod(0o000)  # the custody rows cannot be read...
+        events.chmod(0o000)  # ...and the chain cannot take the skip row
         try:
             with caplog.at_level(logging.ERROR, logger="server"):
                 srv._prune_delegated_snapshots()
         finally:
-            events.chmod(0o644)
+            events.chmod(0o644), store_path.chmod(0o644)
         # The skip itself still protects the open snapshot.
         assert find_execution_snapshot("gc-open3", data_dir=data) is not None
         assert pathlib.Path(handle.path).exists()

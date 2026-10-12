@@ -516,11 +516,16 @@ def export_rows(header: Optional[Dict[str, Any]], aggregates: list, attempts: li
     return [durable_literals({**row, "seq": index}) for index, row in enumerate(out, 1)]
 
 
-def write_journal(root: pathlib.Path, rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    """Atomically write ``rows`` as the live journal; returns its identity."""
-    payload = b"".join(
+def journal_bytes(rows: Sequence[Dict[str, Any]]) -> bytes:
+    """The exact bytes ``write_journal`` writes for ``rows`` (an export records their identity first)."""
+    return b"".join(
         (json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
         for row in rows)
+
+
+def write_journal(root: pathlib.Path, rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Atomically write ``rows`` as the live journal; returns its identity."""
+    payload = journal_bytes(rows)
     _write_bytes_atomic_fsync(root / LEDGER_REL, payload)
     return {"path": str(root / LEDGER_REL), "rows": len(rows), "size": len(payload),
             "sha256": hashlib.sha256(payload).hexdigest()}

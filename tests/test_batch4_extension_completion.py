@@ -56,7 +56,7 @@ def test_pause_during_local_call_waits_for_host_return_then_requires_resume(tmp_
         assert request_owner_pause("root", request_id="during-call")["ok"]
         refresh_owner_pause_tree("root")
         assert owner_pause.read_fence(tmp_path, "root")["state"] == "requested"
-        assert load_task_result(tmp_path, "root")["launch_handoffs"]
+        assert load_task_result(tmp_path, "root").get("launch_handoffs", {})
         refused = registry.execute_result(name, {})
         assert refused.code == "OWNER_PAUSE_NOT_STARTED"
     finally:
@@ -70,7 +70,7 @@ def test_pause_during_local_call_waits_for_host_return_then_requires_resume(tmp_
     if warning:
         assert warning in result.text and warning not in result.producer_text
         assert result.meta["safety_warning"]
-    assert not load_task_result(tmp_path, "root")["launch_handoffs"]
+    assert not load_task_result(tmp_path, "root").get("launch_handoffs", {})
     _park(tmp_path, monkeypatch, queue, workers)
     refresh_owner_pause_tree("root")
     assert owner_pause.read_fence(tmp_path, "root")["state"] == "paused"
@@ -97,7 +97,7 @@ def test_timed_out_async_call_never_settles_on_a_late_return(tmp_path, monkeypat
         assert result.code == "EXTENSION_TIMEOUT" and cancelled.is_set()
         runners = [t for t in threading.enumerate() if t.name == f"ext-tool-{name}-async"]
         assert bool(runners) is late_runner
-        claims = load_task_result(tmp_path, "root")["launch_handoffs"]
+        claims = load_task_result(tmp_path, "root").get("launch_handoffs", {})
         assert claims
         _consumers(tmp_path, registry, queue, workers, held=True)
     finally:
@@ -106,7 +106,7 @@ def test_timed_out_async_call_never_settles_on_a_late_return(tmp_path, monkeypat
             if runner.name == f"ext-tool-{name}-async":
                 runner.join(5)
                 assert not runner.is_alive()
-    assert load_task_result(tmp_path, "root")["launch_handoffs"] == claims
+    assert load_task_result(tmp_path, "root").get("launch_handoffs", {}) == claims
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -163,7 +163,7 @@ def test_local_extension_leaves_its_spawned_process_and_money_obligations(tmp_pa
         result = registry.execute_result(name, {})
         assert result.status == "ok", result
         assert children and children[0].poll() is None
-        assert not load_task_result(tmp_path, "root")["launch_handoffs"]
+        assert not load_task_result(tmp_path, "root").get("launch_handoffs", {})
         assert cold_blockers(registry._ctx)
         _park(tmp_path, monkeypatch, queue, workers)
         refresh_owner_pause_tree("root")

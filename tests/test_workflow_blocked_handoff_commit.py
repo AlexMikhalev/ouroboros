@@ -11,6 +11,7 @@ from ouroboros.mutation_attribution import (
 )
 from ouroboros.review_state import load_state
 from ouroboros.task_results import load_task_result, write_task_result
+from ouroboros.task_store import list_documents
 from ouroboros.tools import git
 from ouroboros.tools.registry import ToolContext
 from ouroboros.review_ledger import CouplingOutcome
@@ -126,7 +127,7 @@ def test_second_task_reviews_and_commits_only_explicitly_selected_correction(tmp
             "source": "task_acceptance_review", "reason": "review_cycles_exhausted",
             "outcome_tier": "blocked_with_evidence"}, "review": {"status": "fail"}})
     first_result = load_task_result(data, "first")
-    assert {path.stem for path in (data / "task_results").glob("*.json")} == {"first"}
+    assert {row["task_id"] for row in list_documents(data)} == {"first"}
 
     # Independent admission explicitly selects the retained predecessor. It does
     # not copy its paid wallet or critic authority, and does not reset first.

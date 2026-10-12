@@ -17,6 +17,7 @@ from ouroboros.post_task_checkpoint import (
 )
 from ouroboros.task_results import STATUS_COMPLETED, load_task_result, write_task_result
 from ouroboros.task_status import load_effective_task_result
+from tests._store_shared import result_exists
 
 
 def _seed_atomic_race(tmp_path):
@@ -411,7 +412,7 @@ def test_terminal_truth_is_stable_before_and_after_physical_copyback(
     copied = copy_child_task_result(data, {"id": task_id, "drive_root": str(child)})
 
     assert copied is not None
-    assert (child / "task_results" / f"{task_id}.json").is_file()
+    assert result_exists(child, task_id)
     retained_child = load_task_result(child, task_id)
     assert retained_child["root_phase_checkpoint"]["post_task_synthesis"] == "running"
     _assert_terminal_projection(

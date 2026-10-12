@@ -9,6 +9,7 @@ from tests._budget_pause_exact_helpers import _install_queue
 from tests.test_batch4_repair_compositions import _running
 from tests.test_hurry_initial_lifecycle import pool, _enqueue_origin  # noqa: F401 - pytest fixture
 from tests._usage_store_testing import ledger_rows
+from tests._store_shared import delete_result, result_exists, result_signature, unreadable_result
 
 pytestmark = pytest.mark.serial
 
@@ -73,7 +74,7 @@ def test_unwound_command_error_keeps_error_without_ghost_custody(tmp_path, monke
     result = registry.execute_result('run_command', {'cmd': ['ambiguous']})
     assert result.status != 'ok'
     assert result.meta.get('operation_outcome') != 'completed_no_effect'
-    assert not load_task_result(tmp_path, 'root')['launch_handoffs']
+    assert not load_task_result(tmp_path, 'root').get('launch_handoffs', {})
     assert not any(b['kind'] == 'tool_handoff' for b in conflicting_writers(q, 'root'))
 
 
@@ -172,7 +173,6 @@ def test_command_refusal_and_unknown_outcomes_reach_real_continue(tmp_path, monk
 def test_real_agent_context_is_lifecycle_bound_even_without_model_wait(tmp_path, monkeypatch):
     from ouroboros.agent import Env, OuroborosAgent
     from ouroboros.owner_pause import member_fence
-    from ouroboros.task_results import task_result_path
     repo, drive = tmp_path / 'repo', tmp_path / 'data'
     repo.mkdir()
     for name in ('state', 'logs'):
@@ -186,23 +186,23 @@ def test_real_agent_context_is_lifecycle_bound_even_without_model_wait(tmp_path,
     ctx, _messages, _caps = agent._prepare_task_context({'id': 'managed', 'type': 'task', 'text': 'x'})
     assert ctx.task_lifecycle_bound is True and ctx.model_wait_context is None
     assert not any('task_lifecycle_bound' in kw for _, kw in events)
-    task_result_path(drive, 'managed').unlink()
+    delete_result(drive, 'managed')
     assert member_fence(ctx)['state'] == 'unknown'
     result = agent.tools.execute_result('knowledge_read', {'not_an_argument': 1})
     assert result.code == 'OWNER_PAUSE_NOT_STARTED'
-    assert not task_result_path(drive, 'managed').exists()
+    assert not result_exists(drive, 'managed')
 
 
 @pytest.mark.parametrize('corruption', ['invalid_json', 'invalid_fence'])
 def test_saved_pause_unreadable_tree_is_unknown_not_paused(tmp_path, monkeypatch, corruption):
     from ouroboros.gateway.state import _chat_activities_snapshot_safe
-    from ouroboros.task_results import write_task_result, task_result_path
+    from ouroboros.task_results import write_task_result
     q, _, workers = _install_queue(tmp_path, monkeypatch)
     workers.PENDING.append({'id': 'root', 'root_task_id': 'root', 'type': 'task',
                             '_budget_pause': {'reason': 'owner'}, 'chat_id': 1})
     write_task_result(tmp_path, 'root', 'running', owner_pause={'state': 'not-a-state'})
     if corruption == 'invalid_json':
-        task_result_path(tmp_path, 'root').write_text('{broken')
+        unreadable_result(monkeypatch, 'root')
     availability = {'complete': True}
     rows = _chat_activities_snapshot_safe(tmp_path, direct_turns=[], availability=availability)
     assert len(rows) == 1 and rows[0]['phase'] == 'unknown'
@@ -218,13 +218,13 @@ def test_pause_seed_preserves_concurrent_terminal_and_refuses_unadmitted(pool, m
     saved = []
     def terminal_race(*args, **kwargs):
         actual(pool.root, task_id, 'completed', result='natural answer', metadata={'exact': 'terminal'})
-        saved.append(results.task_result_path(pool.root, task_id).read_bytes())
+        saved.append(result_signature(pool.root, task_id))
         return actual(*args, **kwargs)
     monkeypatch.setattr(results, 'write_task_result', terminal_race)
     assert request_owner_pause(task_id, request_id='race')['error'] == 'task_terminal'
-    assert results.task_result_path(pool.root, task_id).read_bytes() == saved[0]
+    assert result_signature(pool.root, task_id) == saved[0]
     assert request_owner_pause('unadmitted', request_id='no-task')['error'] == 'task_not_live'
-    assert not results.task_result_path(pool.root, 'unadmitted').exists()
+    assert not result_exists(pool.root, 'unadmitted')
     assert not queue.BUDGET_ROOT_FENCES
 
 

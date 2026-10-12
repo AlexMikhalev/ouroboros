@@ -19,6 +19,9 @@ def _init_repo(tmp_path):
     _git(repo, "config", "commit.gpgsign", "false")
     (repo / "a.txt").write_text("base\n")
     (repo / "BIBLE.md").write_text("constitution\n")
+    (repo / "ouroboros").mkdir()
+    for name in ("store.py", "usage_store.py"):  # a store-bearing tree: the ordinary rollback resets at once
+        (repo / "ouroboros" / name).write_text("# store\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "base")
     head = _git(repo, "symbolic-ref", "--short", "HEAD").stdout.strip()

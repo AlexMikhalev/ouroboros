@@ -602,7 +602,7 @@ def test_writer_never_routes_through_write_task_result():
     # Docstrings NAME the forbidden writer; the code must never CALL or import it.
     assert "write_task_result(" not in source
     assert "import write_task_result" not in source
-    assert "update_json_locked" in source
+    assert "patch_document(" in source
 
 
 # ---------------------------------------------------------------------------

@@ -289,25 +289,22 @@ _FINALIZING_MEMO_MAX = 64
 
 
 def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
-    """One stat-keyed read serves outcome, finalizing, retry and question facts."""
+    """One signature-keyed read serves outcome, finalizing, retry and question facts."""
+    from ouroboros.task_store import read_document, signature
+
     memo_id = (str(pathlib.Path(drive_root).resolve()), task_id)
     try:
-        from ouroboros.task_results import task_results_dir
-
-        path = task_results_dir(pathlib.Path(drive_root), create=False) / f"{task_id}.json"
-        stat = path.stat()
+        key = signature(drive_root, task_id)
     except Exception:
+        key = None
+    if key is None:
         _FINALIZING_MEMO.pop(memo_id, None)
         return {}
-    # Atomic replacement can preserve size and mtime within one timestamp tick.
-    key = (str(path), stat.st_dev, stat.st_ino, stat.st_ctime_ns, stat.st_mtime_ns, stat.st_size)
     memo = _FINALIZING_MEMO.get(memo_id)
     if memo is not None and memo[0] == key:
         return memo[1]
     try:
-        from ouroboros.utils import read_json_dict
-
-        data = read_json_dict(path)
+        data = read_document(drive_root, task_id)
         if not isinstance(data, dict):
             return {}
     except Exception:
@@ -474,7 +471,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 (
                     str(task_id),
                     {**(meta.get("task") or {}), "_attempt": int(meta.get("attempt")
-                        or (meta.get("task") or {}).get("_attempt") or 1)} if isinstance(meta, dict) else {},
+                        or (meta.get("task") or {}).get("_attempt") or 1),
+                     "model_activity": (meta.get("active_llm_call") or {}).get("model_activity")} if isinstance(meta, dict) else {},
                     _epoch_or_zero(meta.get("started_at")) if isinstance(meta, dict) else 0.0,
                 )
                 for task_id, meta in queue_mod.RUNNING.items()
@@ -517,6 +515,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 "task_attempt": int(row.get("_attempt") or 1),
                 **{key: row[key] for key in ("timeout_retry_from", "original_task_id") if row.get(key)},
                 **({"model_waits": row["model_waits"]} if row.get("model_waits") else {}),
+                **({"model_activity": row["model_activity"]} if row.get("model_activity")
+                   and row["model_activity"].get("task_attempt") == int(row.get("_attempt") or 1) else {}),
                 **({"project_admission_hold": project_hold_fact(row)}
                    if row.get("_project_admission_restore_hold") else {}),
             }

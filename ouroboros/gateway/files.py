@@ -16,10 +16,10 @@ log = logging.getLogger(__name__)
 
 from starlette.datastructures import UploadFile
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from ouroboros import chat_uploads
+from ouroboros import chat_uploads, store
 from ouroboros.gateway._helpers import json_error, run_sync_to_completion
 from ouroboros.server_auth import is_loopback_host
 from ouroboros.utils import safe_relpath
@@ -250,8 +250,7 @@ def _format_path(root_dir: pathlib.Path, rel_path: str) -> str:
 
 
 def _read_prefix(path: pathlib.Path, limit: int) -> bytes:
-    with path.open("rb") as handle:
-        return handle.read(limit)
+    return store.read_file_bytes(path, limit=limit)
 
 
 def _guess_text_file(path: pathlib.Path) -> bool:
@@ -268,6 +267,15 @@ def _guess_text_file(path: pathlib.Path) -> bool:
         return True
     except UnicodeDecodeError:
         return False
+
+
+def _file_response(target: pathlib.Path, *, filename: str | None = None, media_type: str | None = None) -> Response:
+    """A store file this process holds is streamed through its kept descriptor (store.iter_file_bytes)."""
+    if store.held_descriptor(target) is None:
+        return FileResponse(str(target), filename=filename, media_type=media_type)
+    headers = {"Content-Disposition": f"attachment; filename*=utf-8''{quote(filename)}"} if filename else None
+    return StreamingResponse(store.iter_file_bytes(target), media_type=media_type or "application/octet-stream",
+                             headers=headers)
 
 
 def _sanitize_upload_filename(filename: str) -> str:
@@ -298,9 +306,9 @@ def _copy_path(source: pathlib.Path, destination: pathlib.Path) -> None:
         destination.symlink_to(os.readlink(source), target_is_directory=source.is_dir())
         return
     if source.is_dir():
-        shutil.copytree(source, destination, symlinks=True)
+        shutil.copytree(source, destination, symlinks=True, copy_function=store.copy_file_bytes)
         return
-    shutil.copy2(source, destination)
+    store.copy_file_bytes(source, destination)
 
 
 def _relative_path(root_dir: pathlib.Path, path: pathlib.Path) -> str:
@@ -509,7 +517,7 @@ async def api_files_download(request: Request) -> Response:
             return JSONResponse({"error": f"Not a file: {rel_path}"}, status_code=400)
         if _is_owner_only_file(target):
             return json_error("Owner-only state cannot be downloaded.", status=403)
-        return FileResponse(str(target), filename=target.name)
+        return _file_response(target, filename=target.name)
     except ValueError as exc:
         return json_error(str(exc), status=400)
     except Exception as exc:
@@ -528,7 +536,7 @@ async def api_files_content(request: Request) -> FileResponse | JSONResponse:
             return JSONResponse({"error": f"Not a file: {rel_path}"}, status_code=400)
         if _is_owner_only_file(target):
             return json_error("Owner-only state cannot be served.", status=403)
-        return FileResponse(str(target), media_type=_guess_media_type(target))
+        return _file_response(target, media_type=_guess_media_type(target))
     except ValueError as exc:
         return json_error(str(exc), status=400)
     except Exception as exc:

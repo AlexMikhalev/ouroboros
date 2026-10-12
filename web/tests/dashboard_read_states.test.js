@@ -5,6 +5,7 @@ import { initActivity } from '../modules/activity.js';
 import { initLogs } from '../modules/logs.js';
 import { initCosts } from '../modules/costs.js';
 import { initDashboard } from '../modules/dashboard.js';
+import { initStorage } from '../modules/storage.js';
 
 // DOM bookkeeping only: the production initializers, HTTP client, status helper,
 // stream subscription and log deduplication all run unchanged. Layout/AT behavior
@@ -47,6 +48,9 @@ class NodeStub {
     get nextElementSibling() { return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1]; }
     get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); }
     set textContent(text) { this._text = String(text); this.children = []; }
+    // escapeHtmlText's round trip (text written as textContent reads back escaped); markup
+    // children are not serialized back.
+    get innerHTML() { return this.textContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
     set innerHTML(html) {
         this.textContent = '';
         const stack = [this];
@@ -96,10 +100,15 @@ class NodeStub {
 function setup(t) {
     const mount = new NodeStub();
     const body = new NodeStub('body');
+    const documentEvents = new NodeStub('#document');
     const document = {
         body,
+        hidden: false,
         createElement: (tag) => new NodeStub(tag),
         getElementById: (id) => mount.querySelector(`#${id}`) || body.querySelector(`#${id}`),
+        addEventListener: (type, fn) => documentEvents.addEventListener(type, fn),
+        removeEventListener: (type, fn) => documentEvents.removeEventListener(type, fn),
+        dispatchEvent: (event) => documentEvents.dispatchEvent(event),
     };
     const window = new NodeStub();
     const routes = new Map();
@@ -136,7 +145,7 @@ function setup(t) {
         Object.assign(globalThis, previous);
     });
     const toasts = () => body.querySelectorAll('.toast').map((node) => node.textContent);
-    return { mount, window, ws, routes, calls, toasts };
+    return { mount, window, document, ws, routes, calls, toasts };
 }
 
 const response = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
@@ -153,6 +162,30 @@ function emptyActivity(routes) {
     routes.set(backgroundUrl, response({ bg_consciousness_enabled: false, active_chat_activities: [], active_chat_activities_complete: true }));
     routes.set(schedulesUrl, response({ tasks: [] }));
 }
+
+test('Activity task list waits for migration and refreshes itself after publication', async t => {
+    const { mount, routes, ws, calls, toasts } = setup(t);
+    emptyActivity(routes);
+    routes.set(queueUrl, response({ reason_code: 'migrating' }, 503));
+    const activity = initActivity({ mount, ws });
+    await activity.refresh();
+    assert.equal(message(section(mount, 'queue')), 'Saved tasks are being upgraded…');
+    assert.deepEqual(toasts(), []);
+    await new Promise(resolve => setTimeout(resolve, 750));
+    assert.equal(calls.filter(url => url === queueUrl).length, 2);
+    emptyActivity(routes);
+    await new Promise(resolve => setTimeout(resolve, 750));
+    assert.equal(calls.filter(url => url === queueUrl).length, 3);
+    assert.equal(message(section(mount, 'queue')), '');
+    assert.match(section(mount, 'queue').textContent, /Nothing running or queued/);
+    await new Promise(resolve => setTimeout(resolve, 750));
+    assert.equal(calls.filter(url => url === queueUrl).length, 3);
+    routes.set(queueUrl, response({ reason_code: 'migrating' }, 503));
+    await activity.refresh();
+    activity.destroy();
+    await new Promise(resolve => setTimeout(resolve, 750));
+    assert.equal(calls.filter(url => url === queueUrl).length, 4, 'destroy cancels migration retries');
+});
 
 test('Activity names known non-Project scope waits without implying a Project', async (t) => {
     const { mount, routes, ws } = setup(t);
@@ -785,4 +818,230 @@ test('Activity names saved sleep without claiming a budget pause and preserves o
     await activity.refresh();
     assert.match(section(mount, 'queue').textContent, /paused/);
     assert.doesNotMatch(section(mount, 'queue').textContent, /sleeping|budget/);
+});
+
+// ---------------------------------------------------------------------------
+// Dashboard -> Storage: the real controller over the fixture's fetch, window and document.
+// ---------------------------------------------------------------------------
+
+const storageUrl = '/api/storage';
+const measureUrl = '/api/storage/measure';
+const storageBody = (overrides = {}) => ({ measuring: false, measurement: null, error: null, ...overrides });
+const measuredBody = () => storageBody({ measurement: {
+    finished_at: '2026-10-05T10:00:01Z', duration_seconds: 1, measured_bytes: 1400000, complete: true, free_bytes: null,
+    categories: [{ id: 'results', bytes: 1400000, files: 3, coverage: 'complete', stopped: '', errors: 0, skipped: 0 }],
+    not_measured: [],
+} });
+const deferred = () => {
+    const handle = {};
+    handle.promise = new Promise((resolve, reject) => Object.assign(handle, { resolve, reject }));
+    return handle;
+};
+const storageSummary = (mount) => mount.querySelector('[data-storage-summary]').textContent;
+
+/** Timers by hand: the poll is a scheduled callback the test can see, fire or see cleared. */
+function manualTimers(t) {
+    const pending = new Map();
+    let next = 1;
+    const realClear = globalThis.clearTimeout;
+    globalThis.setTimeout = (fn, ms) => { pending.set(next, { fn, ms }); return next++; };
+    globalThis.clearTimeout = (id) => { pending.delete(id); };
+    t.after(() => { globalThis.clearTimeout = realClear; });
+    return {
+        polls: () => [...pending.values()].filter((timer) => timer.ms === 1000).length,
+        async fire() {
+            const due = [...pending.values()];
+            pending.clear();
+            for (const timer of due) await timer.fn();
+        },
+    };
+}
+
+function openStorage(t) {
+    const fixture = setup(t);
+    const timers = manualTimers(t);
+    const state = { activePage: 'dashboard', dashboardActiveSubtab: 'storage' };
+    const show = (tab) => {
+        state.dashboardActiveSubtab = tab;
+        fixture.window.dispatchEvent({ type: 'ouro:dashboard-subtab-shown', detail: { tab } });
+    };
+    return { ...fixture, timers, state, show, start: () => initStorage({ state, mount: fixture.mount }) };
+}
+
+test('Storage opens with one passive read; only the button measures, then polls while visible', async (t) => {
+    const { mount, routes, calls, timers, start } = openStorage(t);
+    routes.set(storageUrl, response(storageBody()));
+    start();
+    await settle();
+    assert.deepEqual(calls, [storageUrl]);
+    assert.match(storageSummary(mount), /Not measured yet/);
+    assert.equal(timers.polls(), 0, 'nothing runs, so nothing is polled');
+
+    routes.set(measureUrl, (_url, init) => {
+        assert.equal(init.method, 'POST');
+        return response(storageBody({ measuring: true, started: true }), 202);
+    });
+    await mount.querySelector('[data-storage-action="measure"]').fire('click');
+    await settle();
+    assert.deepEqual(calls, [storageUrl, measureUrl]);
+    assert.equal(timers.polls(), 1);
+    routes.set(storageUrl, response(measuredBody()));
+    await timers.fire();
+    await settle();
+    assert.deepEqual(calls, [storageUrl, measureUrl, storageUrl]);
+    assert.match(storageSummary(mount), /Measured data/);
+    assert.match(storageSummary(mount), /1\.4 MB/);
+    assert.equal(timers.polls(), 0, 'a finished walk is not polled');
+});
+
+test('Storage holds one measurement busy from the click to the finished walk', async (t) => {
+    const { mount, routes, calls, timers, start } = openStorage(t);
+    routes.set(storageUrl, response(storageBody()));
+    start();
+    await settle();
+    const button = mount.querySelector('[data-storage-action="measure"]');
+    const posted = deferred();
+    routes.set(measureUrl, () => posted.promise);
+    const click = button.fire('click');
+    await settle();
+    // The one button stays focusable (aria-disabled, never disabled) and a second click sends nothing.
+    assert.equal(button.textContent, 'Measuring…');
+    assert.equal(button.getAttribute('aria-disabled'), 'true');
+    assert.equal(button.getAttribute('aria-busy'), 'true');
+    assert.equal(button.disabled, false);
+    await button.fire('click');
+    assert.deepEqual(calls, [storageUrl, measureUrl]);
+
+    posted.resolve(response(storageBody({ measuring: true, started: true }), 202));
+    await click;
+    await settle();
+    assert.equal(button.getAttribute('aria-disabled'), 'true', 'a running walk keeps it busy');
+    await button.fire('click');
+    assert.deepEqual(calls, [storageUrl, measureUrl]);
+    assert.equal(timers.polls(), 1);
+
+    routes.set(storageUrl, response(measuredBody()));
+    await timers.fire();
+    await settle();
+    assert.equal(button.textContent, 'Refresh');
+    assert.equal(button.getAttribute('aria-disabled'), 'false');
+    assert.equal(button.hasAttribute('aria-busy'), false);
+
+    // A walk that finished before its POST answered is shown at once, with nothing to poll.
+    routes.set(measureUrl, response({ ...measuredBody(), started: true }, 202));
+    await button.fire('click');
+    await settle();
+    assert.deepEqual(calls, [storageUrl, measureUrl, storageUrl, measureUrl]);
+    assert.equal(timers.polls(), 0);
+    assert.equal(button.textContent, 'Refresh');
+    assert.equal(button.getAttribute('aria-disabled'), 'false');
+});
+
+test('Storage says when a first measurement cannot be read, keeps polling and does not measure twice', async (t) => {
+    const { mount, routes, calls, timers, start } = openStorage(t);
+    routes.set(storageUrl, response(storageBody()));
+    start();
+    await settle();
+    const button = mount.querySelector('[data-storage-action="measure"]');
+    routes.set(measureUrl, response(storageBody({ measuring: true, started: true }), 202));
+    await button.fire('click');
+    await settle();
+    assert.match(storageSummary(mount), /Measuring…[\s\S]*Reading file sizes/);
+
+    routes.set(storageUrl, response({ error: 'synthetic storage read refusal' }, 503));
+    await timers.fire();
+    await settle();
+    assert.match(storageSummary(mount), /Measuring…/);
+    assert.match(storageSummary(mount), /Storage status could not be read\. The last answer was still measuring; checking again\./);
+    assert.doesNotMatch(storageSummary(mount), /Reading file sizes/);
+    assert.equal(timers.polls(), 1, 'the passive read is retried');
+    assert.equal(button.getAttribute('aria-disabled'), 'true');
+    await button.fire('click');
+    await settle();
+    assert.deepEqual(calls, [storageUrl, measureUrl, storageUrl], 'no second measurement');
+
+    routes.set(storageUrl, response(measuredBody()));
+    await timers.fire();
+    await settle();
+    assert.match(storageSummary(mount), /Measured data/);
+    assert.doesNotMatch(storageSummary(mount), /could not be read/);
+    assert.equal(mount.querySelector('[data-storage-notes]').textContent, '');
+    assert.equal(timers.polls(), 0);
+    assert.equal(button.getAttribute('aria-disabled'), 'false');
+});
+
+test('Storage drops a read answered after its tab was left, and does not poll for it', async (t) => {
+    const { mount, routes, calls, timers, show, start } = openStorage(t);
+    const late = deferred();
+    let signal = null;
+    routes.set(storageUrl, (_url, init) => { signal = init.signal; return late.promise; });
+    start();
+    show('logs');
+    assert.equal(signal.aborted, true, 'leaving the tab aborts its read');
+    late.resolve(response(storageBody({ measuring: true })));  // a server that answered anyway
+    await settle();
+    assert.match(storageSummary(mount), /Loading/);
+    assert.equal(timers.polls(), 0);
+    assert.deepEqual(calls, [storageUrl]);
+});
+
+for (const outcome of ['answers', 'fails']) {
+    test(`Storage reads nothing while hidden when a pending measure ${outcome} after the tab was left`, async (t) => {
+        const { mount, routes, calls, timers, show, start, toasts } = openStorage(t);
+        routes.set(storageUrl, response(storageBody()));
+        start();
+        await settle();
+        const posted = deferred();
+        routes.set(measureUrl, () => posted.promise);
+        const click = mount.querySelector('[data-storage-action="measure"]').fire('click');
+        await settle();
+        show('logs');
+        if (outcome === 'answers') posted.resolve(response(storageBody({ measuring: true, started: true }), 202));
+        else posted.resolve(response({ error: 'The measurement could not be started.' }, 500));
+        await click;
+        await settle();
+        assert.deepEqual(calls, [storageUrl, measureUrl], 'no read while the tab is hidden');
+        assert.equal(timers.polls(), 0);
+        if (outcome === 'fails') assert.deepEqual(toasts(), ['The measurement could not be started.']);
+
+        routes.set(storageUrl, response(measuredBody()));
+        show('storage');
+        await settle();
+        assert.deepEqual(calls, [storageUrl, measureUrl, storageUrl], 'showing the tab again reads once');
+        assert.match(storageSummary(mount), /Measured data/);
+    });
+}
+
+test('Storage stops polling while the page is hidden and resumes when it returns', async (t) => {
+    const { routes, calls, timers, document, start } = openStorage(t);
+    routes.set(storageUrl, response(storageBody({ measuring: true })));
+    start();
+    await settle();
+    assert.equal(timers.polls(), 1);
+    document.hidden = true;
+    document.dispatchEvent({ type: 'visibilitychange' });
+    assert.equal(timers.polls(), 0, 'a hidden page keeps no poll');
+    document.hidden = false;
+    document.dispatchEvent({ type: 'visibilitychange' });
+    await settle();
+    assert.deepEqual(calls, [storageUrl, storageUrl]);
+    assert.equal(timers.polls(), 1);
+});
+
+test('Storage destroy aborts its read and ignores late answers, tab events and clicks', async (t) => {
+    const { mount, routes, calls, timers, show, start } = openStorage(t);
+    const late = deferred();
+    let signal = null;
+    routes.set(storageUrl, (_url, init) => { signal = init.signal; return late.promise; });
+    const storage = start();
+    storage.destroy();
+    assert.equal(signal.aborted, true);
+    late.resolve(response(measuredBody()));
+    await settle();
+    assert.match(storageSummary(mount), /Loading/);
+    show('storage');
+    await mount.querySelector('[data-storage-action="measure"]').fire('click');
+    await settle();
+    assert.deepEqual(calls, [storageUrl]);
+    assert.equal(timers.polls(), 0);
 });

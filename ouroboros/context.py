@@ -345,12 +345,9 @@ def _task_authority_projection(env: Any, task: Dict[str, Any]) -> Dict[str, Any]
                 "source": source,
             }
     except Exception as exc:
-        projection["plan_review_authority"] = {
-            "status": "authority_source_unavailable", "source": source,
-            "code": "PLAN_REVIEW_SOURCE_UNAVAILABLE",
-            "error": type(exc).__name__,
-            "rule": "Do not treat the current plan/review authority as complete.",
-        }
+        from ouroboros.tools.plan_review_artifacts import plan_review_source_gap
+
+        projection["plan_review_authority"] = plan_review_source_gap(task_id, exc, source=source)
     from ouroboros.review_history import review_dispute_history
 
     for repo in dict.fromkeys(str(p) for p in (task.get("workspace_root"), getattr(env, "repo_dir", None)) if p):

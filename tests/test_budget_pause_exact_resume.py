@@ -738,12 +738,13 @@ def test_paused_row_survives_a_snapshot_with_an_invalid_timestamp_while_ordinary
     workers.PENDING.append({"id": "ts-ordinary", "type": "task", "chat_id": 0, "_attempt": 1, "text": "x"})
     queue.persist_queue_snapshot(reason="test")
     workers.PENDING[:] = []
-    snap = json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text())
+    alive = queue.QUEUE_SNAPSHOT_PATH.with_name("queue.alive")
+    snap = json.loads(alive.read_text(encoding="utf-8"))
     if stamp:
         snap["ts"] = stamp
     else:
         snap.pop("ts", None)
-    queue.QUEUE_SNAPSHOT_PATH.write_text(json.dumps(snap))
+    alive.write_text(json.dumps(snap), encoding="utf-8")
     assert queue.restore_pending_from_snapshot() == 1
     assert [task["id"] for task in workers.PENDING] == ["ts-paused"]
     assert workers.PENDING[0]["_budget_pause"]["exact_continuation"] is True  # retained, not woken

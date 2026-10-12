@@ -12,6 +12,7 @@ import pytest
 from ouroboros import config, deadline_utils, owner_pause, owner_wait
 from ouroboros.artifacts import read_actor_source_bytes
 from ouroboros.model_wait import TaskModelWait, execution_elapsed_seconds
+from ouroboros.queue_observation import load_queue_document
 from ouroboros.task_results import load_task_result, write_task_result
 from supervisor import queue, worker_owner_wait, workers
 from tests._budget_pause_exact_helpers import _install_queue, _loop_ctx
@@ -112,7 +113,7 @@ def test_pool_timeout_does_not_charge_pause_and_duplicate_park_cannot_widen_it(p
     assert pool.original.in_q.get_nowait()["phase"] == "resume_granted"
     assert pool.meta["budget_paused_sec"] == 220
     assert "sleep_parked_at" not in pool.meta
-    snapshot = json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text())
+    snapshot = load_queue_document(pool.root)
     assert snapshot["running"][0]["budget_paused_sec"] == 220
     assert snapshot["running"][0]["execution_sec"] == 80
     worker_owner_wait.handle_owner_wait(event, workers)  # a consumed park is stale

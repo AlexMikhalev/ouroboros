@@ -261,8 +261,13 @@ def unsettled_start_ids(
     """
 
     mine = str(task_id or "")
-    snapshot = list(rows) if rows is not None else list(custody.custody_rows(drive_root))
-    runs = custody.replay(drive_root, rows=snapshot)
+    if rows is not None:
+        snapshot: Optional[list[dict[str, Any]]] = list(rows)
+        runs = custody.replay(drive_root, rows=snapshot)
+    else:
+        from ouroboros.delegate_custody_current import runs as current_runs
+
+        snapshot, runs = None, current_runs(drive_root, "task_id=?", (mine,))
     return {
         "open_run_ids": [
             row.run_id for row in runs.values()

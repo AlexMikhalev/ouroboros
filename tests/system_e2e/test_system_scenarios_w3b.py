@@ -716,14 +716,12 @@ def test_s13_hot_enable_reaches_an_already_spawned_worker_without_a_restart(
 
             # The premise: the WHOLE pool is up and every worker has closed its
             # extension registry before the payload exists. The roster is the
-            # supervisor's own durable one (state/worker_pids.json, written when
+            # supervisor's own durable one (state/process_ledger.jsonl, written when
             # the pool is spawned), so "already spawned" is a read fact — a
             # worker starting after the enable would load the skill the ordinary
             # way and prove nothing.
-            roster = wait_until(
-                lambda: {int(row.get("pid") or 0)
-                         for row in (oracle._json("state/worker_pids.json").get("workers") or [])},
-                timeout=180)
+            from tests._shared import live_worker_pids
+            roster = wait_until(lambda: live_worker_pids(data_root), timeout=180)
             assert roster, "the supervisor recorded no worker pool"
             assert wait_until(lambda: _worker_boot_pids(oracle) >= roster, timeout=180), (
                 f"pool never fully announced ready: {_worker_boot_pids(oracle)} vs {roster}")

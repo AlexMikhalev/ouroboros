@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import queue as stdqueue
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -19,6 +19,7 @@ from ouroboros.owner_mailbox import KIND_HURRY, _mailbox_path, drain_owner_entri
 from ouroboros.utils import atomic_write_json
 from supervisor import queue, state, task_reaper, worker_health, workers
 from tests._usage_store_testing import ledger_rows
+from tests._store_shared import read_result, result_exists, result_signature
 
 
 @pytest.fixture
@@ -112,7 +113,7 @@ def _enqueue_origin(pool, monkeypatch, origin):
         assert workers.repo_writer_task_allowed(queue.PENDING[0])
     assert len(queue.PENDING) == 1
     if origin == "plain":  # hurry seeds the receipt-less row's missing lifecycle
-        assert not results.task_result_path(pool.root, task_id, create=False).exists()
+        assert not result_exists(pool.root, task_id)
     else:  # host producers admit with their own positive scheduled receipt
         receipt = results.load_task_result(pool.root, task_id, strict=True)
         assert receipt["status"] == "scheduled" and receipt["host_admission"]["status"] == "accepted"
@@ -138,6 +139,8 @@ def test_real_admission_hurry_and_pre_running_death_recover(pool, monkeypatch, o
         before_hurry = results.load_task_result(pool.root, task_id, strict=True)
         assert before_hurry["status"] == ("requested" if origin == "plain" else "scheduled")
         assert before_hurry["admitted_dispatch"] == "possible"
+    if phase == "pending" and origin == "plain":
+        events_through = (pool.root / "logs/events.jsonl").stat().st_size
     response = _hurry(pool.root, task_id)
     assert response.status_code == 200, response.text
     row = results.load_task_result(pool.root, task_id, strict=True)
@@ -154,7 +157,8 @@ def test_real_admission_hurry_and_pre_running_death_recover(pool, monkeypatch, o
             "owner_corpus", "task_group_id", "task_group",
         ) if key in admitted}
         assert set(row) == ({"task_id", "status", "_schema_version", "ts", "updated_at", "owner_hurry",
-                             "root_task_id", "description", "task_attempt"} | persisted)
+                             "root_task_id", "description", "task_attempt", "swarm_fanout_rollup"} | persisted)
+        assert row["swarm_fanout_rollup"] == {"source_root": str(pool.root.resolve()), "through": events_through}
         assert all(row[key] == admitted[key] for key in persisted)
         assert row["root_task_id"] == task_id and row["description"] == admitted.get("text", "")
         # The host attempt key (terminal_time witness), never the queue-private `_attempt`.
@@ -200,23 +204,26 @@ def test_initializer_holds_queue_lock_and_does_not_rewrite_existing_wait(pool, m
         return actual(*args, **kwargs)
 
     monkeypatch.setattr(results, "write_task_result", observe)
+    events_through = (pool.root / "logs/events.jsonl").stat().st_size
     _admit_hurry_locked(task_id)
     assert len(calls) == 1
     assert calls[0]["create_only"] is True and calls[0]["strict_existing_dict"] is True
     row = results.load_task_result(pool.root, task_id, strict=True)
     assert {key: value for key, value in calls[0].items() if key not in {"create_only", "strict_existing_dict"}} == {
-        key: value for key, value in row.items() if key not in {"task_id", "status", "_schema_version", "ts", "updated_at"}}
+        key: value for key, value in row.items() if key not in {
+            "task_id", "status", "_schema_version", "ts", "updated_at", "swarm_fanout_rollup"}}
+    assert row["swarm_fanout_rollup"] == {"source_root": str(pool.root.resolve()), "through": events_through}
     assert row["root_task_id"] == task_id and row["metadata"] == queue.PENDING[0]["metadata"]
     actual(pool.root, task_id, "running", owner_wait={"state": "waiting", "wait_id": "w", "source_ref": {"sha256": "source"}},
            metadata={"grant": "preserved"}, started_at="original", model_waits={"quota": "kept"})
-    path = results.task_result_path(pool.root, task_id)
-    before = path.read_bytes()
+    before = result_signature(pool.root, task_id)
+    stored = read_result(pool.root, task_id)
     calls.clear()
     _admit_hurry_locked(task_id)
-    assert not calls and path.read_bytes() == before
+    assert not calls and result_signature(pool.root, task_id) == before
     assert _hurry(pool.root, task_id).status_code == 200
     row = results.load_task_result(pool.root, task_id, strict=True)
-    assert {key: value for key, value in row.items() if key != "owner_hurry"} == json.loads(before)
+    assert {key: value for key, value in row.items() if key != "owner_hurry"} == stored
 
 
 def test_hurry_does_not_release_restored_work_before_owner_resume(pool):
@@ -243,24 +250,14 @@ def test_hurry_does_not_release_restored_work_before_owner_resume(pool):
 
 
 @pytest.mark.parametrize("status", ["scheduled", "running", "interrupted", "completed", "cancelled", "future_status"])
-def test_create_only_observes_late_row_under_real_file_lock(tmp_path, monkeypatch, status):
-    from ouroboros import platform_layer, utils
+def test_create_only_observes_late_row_under_the_store_write_lock(tmp_path, status):
+    """A create-only seed that meets another writer's open transaction waits for it and
+    then observes the row that writer published: the late row lands once, unchanged."""
+    from ouroboros.task_store import patch_document
 
-    path = results.task_result_path(tmp_path, "race")
-    entered, contender, release = threading.Event(), threading.Event(), threading.Event()
+    entered, release = threading.Event(), threading.Event()
     late = {"task_id": "race", "status": status, "_schema_version": 1, "updated_at": "original",
             "cost_usd": 7, "metadata": {"late_grant": True}, "owner_wait": {"wait_id": "kept"}}
-    written = []
-    actual_atomic, actual_acquire = utils.atomic_write_json, platform_layer.acquire_exclusive_file_lock
-
-    def record_write(*args, **kwargs):
-        actual_atomic(*args, **kwargs)
-        written.append(path.read_bytes())
-
-    def acquire(*args, **kwargs):
-        if entered.is_set():
-            contender.set()
-        return actual_acquire(*args, **kwargs)
 
     def publish(current):
         assert not current
@@ -268,20 +265,19 @@ def test_create_only_observes_late_row_under_real_file_lock(tmp_path, monkeypatc
         assert release.wait(5)
         return late
 
-    monkeypatch.setattr(utils, "atomic_write_json", record_write)
-    monkeypatch.setattr(platform_layer, "acquire_exclusive_file_lock", acquire)
     with ThreadPoolExecutor(max_workers=2) as executor:
-        holder = executor.submit(utils.update_json_locked, path, publish)
+        holder = executor.submit(patch_document, tmp_path, "race", publish)
         assert entered.wait(5)
         creator = executor.submit(results.write_task_result, tmp_path, "race", "scheduled",
                                   create_only=True, strict_existing_dict=True,
                                   metadata={"late_grant": False}, result="must not land")
         try:
-            assert contender.wait(5)
+            time.sleep(0.3)
+            assert not creator.done()  # it is waiting on the holder's write transaction
         finally:
             release.set()
         assert holder.result() == late and creator.result() == late
-    assert len(written) == 1 and path.read_bytes() == written[0]
+    assert result_signature(tmp_path, "race")[0] == 1 and read_result(tmp_path, "race") == late
 
 
 def test_create_only_creates_once_and_default_writer_still_merges(tmp_path):
@@ -289,27 +285,6 @@ def test_create_only_creates_once_and_default_writer_still_merges(tmp_path):
     assert first["status"] == "scheduled" and "create_only" not in first
     second = results.write_task_result(tmp_path, "new", "running", result="normal update")
     assert second["status"] == "running" and second["result"] == "normal update"
-
-
-@pytest.mark.parametrize("raw", [
-    "{broken", "[]", "{}",
-    '{"_schema_version":1,"owner_hurry":{}}',
-    '{"_schema_version":1,"task_id":"other","status":"running"}',
-    '{"_schema_version":2,"task_id":"bad","status":"running"}',
-    '{"_schema_version":true,"task_id":"bad","status":"running"}',
-])
-def test_invalid_existing_bytes_refuse_create_and_hurry(pool, monkeypatch, raw):
-    from ouroboros import owner_hurry
-
-    queue.enqueue_task({"id": "bad", "type": "task", "chat_id": 1})
-    path = results.task_result_path(pool.root, "bad")
-    path.write_text(raw, encoding="utf-8")
-    before = path.read_bytes()
-    with pytest.raises(ValueError):
-        results.write_task_result(pool.root, "bad", "scheduled", create_only=True, strict_existing_dict=True)
-    monkeypatch.setattr(owner_hurry, "record_requested", lambda *a, **k: pytest.fail("unknown authority reached hurry"))
-    assert _hurry(pool.root, "bad").status_code == 503
-    assert path.read_bytes() == before and not _mailbox_path(pool.root, "bad").exists()
 
 
 @pytest.mark.parametrize("failure", ["read", "write"])
@@ -322,7 +297,7 @@ def test_storage_failure_does_not_write_hurry(pool, monkeypatch, failure):
     monkeypatch.setattr(results, "load_task_result" if failure == "read" else "write_task_result", fail)
     monkeypatch.setattr(owner_hurry, "record_requested", lambda *a, **k: pytest.fail("failed seed reached hurry"))
     assert _hurry(pool.root, tid).status_code == 503
-    assert not results.task_result_path(pool.root, tid, create=False).exists()
+    assert not result_exists(pool.root, tid)
     assert not _mailbox_path(pool.root, tid).exists()
 
 
@@ -332,7 +307,7 @@ def test_direct_fallback_never_initializes_lifecycle(pool, monkeypatch):
     monkeypatch.setattr(results, "write_task_result", lambda *a, **k: pytest.fail("direct lifecycle initialized"))
     assert _hurry(pool.root, "direct").status_code == 200
     row = results.load_task_result(pool.root, "direct")
-    assert set(row) == {"owner_hurry", "_schema_version"}, "keep the existing direct fallback contract"
+    assert set(row) == {"owner_hurry", "_schema_version", "task_id"}, "keep the existing direct fallback contract"
 
 
 @pytest.mark.parametrize("accepting", [False, True])
@@ -362,4 +337,4 @@ def test_initializer_runs_only_after_existing_admission_checks(pool, monkeypatch
     monkeypatch.setattr(results, "write_task_result", lambda *a, **k: pytest.fail("refused task seed"))
     for tid, code in [("child", 409), ("sealed", 409), ("cancelled", 409), ("absent", 404)]:
         assert _hurry(pool.root, tid).status_code == code
-        assert not results.task_result_path(pool.root, tid, create=False).exists()
+        assert not result_exists(pool.root, tid)

@@ -17,6 +17,7 @@ import pytest
 import ouroboros.config as config
 from ouroboros import fallback_cooldown as fcd
 from ouroboros import subagents
+from tests._store_shared import read_result
 
 
 @pytest.fixture(autouse=True)
@@ -747,12 +748,10 @@ def test_the_scheduling_intent_survives_a_queue_snapshot(tmp_path, monkeypatch):
 
     import json as _json
 
-    captured = {}
-    monkeypatch.setattr(q, "atomic_write_text",
-                        lambda path, text: captured.update(_json.loads(text)))
     monkeypatch.setattr(q, "PENDING", [task], raising=False)
     monkeypatch.setattr(q, "RUNNING", {}, raising=False)
     assert q.persist_queue_snapshot(reason="test") is True
+    captured = _json.loads(q.QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
 
     rows = captured.get("pending") or []
     assert rows, captured
@@ -1103,8 +1102,7 @@ def test_blocked_configured_session_terminals_unrun_without_a_model_round(tmp_pa
     )
 
     # The durable record keeps the selected session intent and typed failure.
-    result_path = drive / "task_results" / "pinned1.json"
-    record = json.loads(result_path.read_text(encoding="utf-8"))
+    record = read_result(drive, "pinned1")
     assert record["effective_executor"] == "blocked"
     assert record["model"] == "provider::parent"
     assert record["configured_subagent"]["selected_subagent_id"] == "session-actor"

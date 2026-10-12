@@ -6,7 +6,6 @@ thread — and the delegated-snapshot GC that fails closed on an unreadable log.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import pathlib
@@ -288,9 +287,7 @@ def _run_periodic_custody_sweep(stop_event: Any = None, latch: Any = None) -> No
             step = "reconcile_delegated_runs"
             if _stop_requested(stop_event):
                 return
-            from ouroboros.delegate_custody_current import current_reads
-            with current_reads(DATA_DIR):
-                _reconcile_delegated_runs(_live_task_ids, stop_event=stop_event)
+            _reconcile_delegated_runs(_live_task_ids, stop_event=stop_event)
             step = "cursor_refresh_settled_terminals"
             if _stop_requested(stop_event):
                 return
@@ -701,9 +698,7 @@ def _run_deferred_startup_prunes():
         return
     _STARTUP_PRUNES_OWED[0] = False
     _startup_worktree_prune()
-    from ouroboros.delegate_custody_current import current_reads
-    with current_reads(DATA_DIR):
-        _prune_delegated_snapshots()
+    _prune_delegated_snapshots()
     from ouroboros.delegate_state_sweep import sweep_settled_delegate_state
     _prune_event("delegate_state_sweep", ("removed", "errors", "skipped"),
                  report=sweep_settled_delegate_state(DATA_DIR))
@@ -781,9 +776,7 @@ def _startup_custody_sweep() -> None:
             log.info("Process custody reaper killed %d orphaned process(es): %s", len(reaped), reaped)
     except Exception:
         log.debug("Process custody startup reap failed", exc_info=True)
-    from ouroboros.delegate_custody_current import current_reads
-    with current_reads(DATA_DIR):
-        _reconcile_delegated_runs(_live_task_ids)
+    _reconcile_delegated_runs(_live_task_ids)
     try:
         # D1a boot backfill, ONCE per generation and AFTER the orphan reconcile
         # (so this generation's settlements are already visible to the audit):
@@ -793,8 +786,7 @@ def _startup_custody_sweep() -> None:
         # results instead and heals every generation-crossing stale row.
         from ouroboros.delegate_terminal import backfill_terminal_reconciliations
 
-        with current_reads(DATA_DIR):
-            refreshed = backfill_terminal_reconciliations(DATA_DIR)
+        refreshed = backfill_terminal_reconciliations(DATA_DIR)
         if refreshed:
             log.info("Boot custody backfill refreshed %d stored disclosure(s): %s",
                      len(refreshed), refreshed)
@@ -828,12 +820,9 @@ def _prune_delegated_snapshots() -> None:
     try:
         from ouroboros import delegate_custody as _delegate_custody
         from ouroboros import subagent_worktrees as _snap_worktrees
-        from ouroboros.obligations import REBUILD_MARK
         from supervisor.state import append_jsonl
 
-        reason = ("custody_log_unreadable" if _delegate_custody.custody_log_unreadable(DATA_DIR)
-                  else "obligations_rebuild_owed" if (DATA_DIR / "state" / "obligations" / REBUILD_MARK).exists()
-                  else "")
+        reason = "custody_log_unreadable" if _delegate_custody.custody_log_unreadable(DATA_DIR) else ""
         if reason:
             log.warning("Delegated snapshot prune SKIPPED (%s): open snapshots are unknowable (fail-closed)", reason)
             if not append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
@@ -900,6 +889,11 @@ def _run_periodic_reconcile_sweep(marker: list, stop_event: Any = None, latch: A
         if _stop_requested(stop_event):
             return
         _run_drive_custody_pass(stop_event)
+        if not _stop_requested(stop_event):  # settled evidence packs: a supervised child, never at boot
+            from ouroboros.config import REPO_DIR
+            from ouroboros.evidence_packer import packer
+
+            packer.tick(pathlib.Path(DATA_DIR), pathlib.Path(REPO_DIR))
         _step_recovered("reconcile_sweep")
     except Exception:
         _step_failed("reconcile_sweep", "Periodic %s failed")
@@ -951,7 +945,7 @@ def _periodic_zombie_reconcile(*, on_orphans_healed: Any = None, stop_event: Any
     """Heal zombie 'running' records on a supervisor cadence. A worker that died
     mid-review (crash / SIGKILL / manual stop) leaves ``review_job.json`` at running
     until the next boot reconcile (``GET /api/extensions`` is a passive read and
-    heals nothing); the same death leaves ``task_results/<id>.json`` at
+    heals nothing); the same death leaves the current task-store record at
     running. Both reconciles are liveness-gated (pid-dead / queue-empty + worker-boot
     evidence), so a live review or task is never touched. Off the loop thread, so
     ``stop_event`` (the generation token) is re-read before every step."""
@@ -969,7 +963,7 @@ def _periodic_zombie_reconcile(*, on_orphans_healed: Any = None, stop_event: Any
 
         expired_quizzes: list = []
         healed = reconcile_orphaned_running_tasks(
-            DATA_DIR, expired_quizzes=expired_quizzes,
+            DATA_DIR, expired_quizzes=expired_quizzes, boot=False,
             write_guard=lambda task_id: orphan_reconcile_write_guard(task_id, stop_event=stop_event),
         )
         _publish_expired_quiz_frames(expired_quizzes)
@@ -1059,26 +1053,17 @@ def _startup_live_task_ids(drive_root: pathlib.Path, *, include_pending: bool = 
 
 
 def _startup_worker_pids(drive_root: pathlib.Path) -> set[int] | None:
-    """Capture prior worker ownership before spawn overwrites its legacy pid file.
+    """Capture prior worker ownership from the process ledger before spawn.
 
     These observations only defer recovery; they grant no signal authority. An
     unconfirmed survivor or unreadable record never proves safe file capture.
     """
     from ouroboros.process_custody import _read_ledger_strict
     try:
-        path = pathlib.Path(drive_root) / "state" / "worker_pids.json"
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            record = {"workers": []}
-        pids = {int(row["pid"]) for row in record["workers"]}
-        server_pid = int(record.get("server_pid") or 0)
-        if server_pid and server_pid != os.getpid():
-            pids.add(server_pid)
         readable, entries = _read_ledger_strict(pathlib.Path(drive_root))
         if not readable:
             return None
-        pids.update(int(row["pid"]) for row in entries if str(row.get("purpose") or "").startswith("worker:"))
+        pids = {int(row["pid"]) for row in entries if str(row.get("purpose") or "").startswith("worker:")}
         return pids - {0, os.getpid()}
     except (OSError, ValueError, TypeError, KeyError):
         log.warning("Startup worker ownership is unreadable; file recovery is deferred", exc_info=True)
@@ -1105,6 +1090,15 @@ def _run_startup_task_recovery(
     if skip_live_data:
         return report
     from ouroboros.platform_layer import pid_is_alive
+    from ouroboros.store import StoreMigrating
+    from ouroboros.store_switch import require_published
+
+    try:
+        require_published(drive_root)  # the store is published before any recovery write (P1)
+    except StoreMigrating as exc:
+        report["errors"].append("store_not_published")
+        log.warning("Startup task recovery deferred: %s", exc)
+        return report
     if prior_worker_pids is None or any(pid_is_alive(pid) for pid in prior_worker_pids):
         report["errors"].append("prior_worker_ownership_unconfirmed")
         log.warning("Startup file/task recovery deferred: prior worker ownership is unconfirmed")

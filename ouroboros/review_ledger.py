@@ -213,11 +213,10 @@ def source_ref_resolvable(drive_root: Any, task_id: str, ref: Dict[str, Any]) ->
     if ref.get("status") != "retained" or not isinstance(inner, dict):
         return False
     try:
-        from ouroboros.artifacts import task_artifact_dir_path
+        from ouroboros.evidence_packs import handle_info  # loose or a pack member of this task
 
-        base = task_artifact_dir_path(drive_root, str(ref.get("task_id") or task_id), create=False)
-        target = base.joinpath(*pathlib.PurePosixPath(str(inner.get("path") or "")).parts)
-        return target.is_file() and target.stat().st_size == int(inner.get("size", -1))
+        info = handle_info(drive_root, str(ref.get("task_id") or task_id), str(inner.get("path") or ""))
+        return info is not None and int(info["size"]) == int(inner.get("size", -1))
     except Exception:
         return False
 

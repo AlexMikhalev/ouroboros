@@ -23,6 +23,7 @@ import pytest
 
 from tests.test_ui_smoke_playwright import direct_server_with_data as direct_server_with_data
 from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET, _SETTLE_RESTORE_FRAMES, _emit_ws_frame
+from tests._store_shared import seed_result
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 PANEL = "#project-panel .chat-messages"
@@ -683,8 +684,7 @@ def test_a_legacy_child_final_after_the_root_answer_does_not_hold_the_room_unrea
             "ts": at(4), "chat_id": _chat_id, "task_id": "root-legacy", "content": "Child scheduled",
             "subagent_event": "scheduled", **lineage})
         if lineage_source == "pre-upgrade-result":
-            (data / "task_results" / "kid-legacy.json").write_text(
-                json.dumps({"id": "kid-legacy", "status": "completed", **lineage}), encoding="utf-8")
+            seed_result(data, "kid-legacy", {"id": "kid-legacy", "status": "completed", **lineage})
     evidence = Path(os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", data.parent))
     evidence.mkdir(parents=True, exist_ok=True)
     acks = []

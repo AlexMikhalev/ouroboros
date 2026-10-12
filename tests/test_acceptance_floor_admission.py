@@ -49,6 +49,7 @@ from tests.test_acceptance_delivery import (
     _timing,
     _tool_call,
 )
+from tests._store_shared import result_signature
 
 
 class _KnownPricedLLM(_EpisodeLLM):
@@ -486,7 +487,7 @@ def test_an_empty_store_polls_known_zero_through_the_reader_and_writes_nothing(t
     import queue
 
     from ouroboros import delegate_custody as custody
-    from ouroboros import usage_store
+    from ouroboros import store_import, usage_store
     from ouroboros.delegate_supervision import coordination_live_context
     from ouroboros.usage_accounting import usage_breakdown
 
@@ -498,7 +499,8 @@ def test_an_empty_store_polls_known_zero_through_the_reader_and_writes_nothing(t
     )
     root = custody.custody_root(ctx)
     assert sorted(root.rglob("*")) == []  # genuinely fresh
-    usage_store.migrate_from_journal(root)  # the lifecycle job, before any worker
+    usage_store.migrate_from_journal(root)  # the lifecycle jobs, before any worker
+    store_import.ensure_current_store(root)
     attrs_before = set(vars(ctx))
     known_zero = {
         "state": "known", "settled_usd": 0.0, "accounted_usd": 0.0,
@@ -542,7 +544,7 @@ def test_a_stale_name_lock_is_the_readers_removal_and_the_poll_stays_known_zero(
     import queue
 
     from ouroboros import delegate_custody as custody
-    from ouroboros import platform_layer, usage_store
+    from ouroboros import platform_layer, store_import, usage_store
     from ouroboros.delegate_supervision import coordination_live_context
 
     ctx = SimpleNamespace(
@@ -553,7 +555,8 @@ def test_a_stale_name_lock_is_the_readers_removal_and_the_poll_stays_known_zero(
     )
     root = custody.custody_root(ctx)
     monkeypatch.setattr(platform_layer, "kernel_file_locks_enforced", lambda _path: enforced)
-    usage_store.migrate_from_journal(root)  # the lifecycle job decides the tier once
+    usage_store.migrate_from_journal(root)  # the lifecycle jobs decide the tier once
+    store_import.ensure_current_store(root)
     usage_store.forget(root)
 
     def _tree():
@@ -649,18 +652,17 @@ def test_the_whole_coordination_poll_writes_nothing_and_reports_an_unlatched_tas
     passes vacuously."""
     from ouroboros import config as cfg, task_pacing
     from ouroboros.delegate_supervision import coordination_live_context
-    from ouroboros.task_results import task_result_path
 
     ctx, events = _floor_band_ctx(
         monkeypatch, tmp_path, seconds_left=620, policy="adaptive")  # 7.0 ABI: until_deadline retired
     del ctx.task_metadata["created_at"]  # metadata-poor: no anchor without a WRITE
     monkeypatch.delenv("OUROBOROS_FINALIZATION_GRACE_SEC", raising=False)
     settings_path, settings_before = _legacy_settings(monkeypatch, tmp_path)
-    result_file = task_result_path(tmp_path, "root-floor-band", create=False)
-    from ouroboros import usage_store
+    from ouroboros import store_import, usage_store
 
-    usage_store.migrate_from_journal(tmp_path)  # the lifecycle job, before any worker
-    before = (events.read_bytes(), result_file.read_bytes())
+    usage_store.migrate_from_journal(tmp_path)  # the lifecycle jobs, before any worker
+    store_import.ensure_current_store(tmp_path)
+    before = (events.read_bytes(), result_signature(tmp_path, "root-floor-band"))
     attrs_before = set(vars(ctx))
 
     for _ in range(2):
@@ -671,7 +673,7 @@ def test_the_whole_coordination_poll_writes_nothing_and_reports_an_unlatched_tas
         assert live["review_capacity"]["state"] == "available"
         assert live["review_capacity"]["claimed_cycles"] == 1
     assert (settings_path.read_bytes(), settings_path.stat().st_mtime_ns) == settings_before
-    assert (events.read_bytes(), result_file.read_bytes()) == before
+    assert (events.read_bytes(), result_signature(tmp_path, "root-floor-band")) == before
     assert ctx.event_queue.empty() and ctx.pending_events == []
     assert set(vars(ctx)) == attrs_before  # the EXACT attribute set: nothing latched, nothing cached
     assert not hasattr(ctx, "_time_budget_started_at")  # the one latch a poll could take
@@ -706,7 +708,6 @@ def test_a_single_crash_torn_journal_gets_the_quarantine_its_one_time_import_per
 
     from ouroboros import delegate_custody as custody, usage_accounting as ua, usage_store
     from ouroboros.delegate_supervision import coordination_live_context
-    from ouroboros.task_results import task_result_path
     from ouroboros.usage_ledger import LEDGER_REL, QUARANTINE_REL
 
     ctx, events = _floor_band_ctx(monkeypatch, tmp_path, seconds_left=620)
@@ -723,8 +724,7 @@ def test_a_single_crash_torn_journal_gets_the_quarantine_its_one_time_import_per
     ledger, quarantine = root / LEDGER_REL, root / QUARANTINE_REL
     intact, torn = ledger.read_bytes(), b'{"seq": 99, "attempt_id": "half-writ'
     ledger.write_bytes(intact + torn)  # the process died mid-append
-    result_file = task_result_path(tmp_path, "root-floor-band", create=False)
-    before = (events.read_bytes(), result_file.read_bytes(), set(vars(ctx)))
+    before = (events.read_bytes(), result_signature(tmp_path, "root-floor-band"), set(vars(ctx)))
 
     live = coordination_live_context(ctx)
 
@@ -741,7 +741,7 @@ def test_a_single_crash_torn_journal_gets_the_quarantine_its_one_time_import_per
     added = [json.loads(line) for line in after[len(before[0]):].decode("utf-8").splitlines()]
     assert [row["type"] for row in added] == ["usage_ledger_tail_quarantined"]
     assert (settings_path.read_bytes(), settings_path.stat().st_mtime_ns) == settings_before
-    assert result_file.read_bytes() == before[1] and set(vars(ctx)) == before[2]
+    assert result_signature(tmp_path, "root-floor-band") == before[1] and set(vars(ctx)) == before[2]
     assert ctx.event_queue.empty() and ctx.pending_events == []
 
     # The imported store is the healthy case again: the second poll writes nothing.

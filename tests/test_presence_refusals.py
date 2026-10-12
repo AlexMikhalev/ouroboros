@@ -17,6 +17,7 @@ from ouroboros.presence_runner import PresenceTurnError
 from ouroboros.presence_runner import PresenceTurnGate, presence_turn_task_id, presence_retry_proof, run_presence_turn
 from ouroboros.presence_runner import _notify_unresolved_turn, presence_result_from_stored, presence_unknown_outcome
 from ouroboros.task_results import load_task_result, task_result_path, write_task_result
+from tests._store_shared import result_signature, seed_result, unreadable_result
 from ouroboros.tools.registry import ToolRegistry
 from tests.test_host_service_responsiveness import _answer, _event, _presence_app, _request, _turn
 from tests.test_presence_delivery import _payload
@@ -220,7 +221,9 @@ def test_unrecorded_owner_question_never_gets_a_notified_stamp(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize("quarantined", [False, True])
-def test_unreadable_or_quarantined_result_never_becomes_a_new_turn(tmp_path, quarantined):
+def test_unreadable_or_quarantined_result_never_becomes_a_new_turn(tmp_path, monkeypatch, quarantined):
+    """A row the store cannot answer for, or an id an old quarantined file still occupies,
+    is an admitted event whose state is unknown: a retry, never a fresh turn."""
     invoked = []
 
     def runner(**kwargs):
@@ -231,18 +234,25 @@ def test_unreadable_or_quarantined_result_never_becomes_a_new_turn(tmp_path, qua
 
     app, binding, ctx = _presence_app(tmp_path, runner)
     task_id = presence_turn_task_id(binding, "event")
-    result_path = task_result_path(tmp_path, task_id)
     if quarantined:
-        result_path = result_path.parent / "quarantine" / result_path.name
+        result_path = task_result_path(tmp_path, task_id).parent / "quarantine" / f"{task_id}.json"
         result_path.parent.mkdir(parents=True)
-    result_path.write_text("{broken", encoding="utf-8")
+        result_path.write_text("{broken", encoding="utf-8")
+    else:
+        seed_result(tmp_path, task_id, {"task_id": task_id, "status": "running"})
+        before = result_signature(tmp_path, task_id)
+        unreadable = unreadable_result(monkeypatch, task_id)
     for _ in range(2):
         response = asyncio.run(_turn(app, binding, "event"))
         body = json.loads(response.body)
         assert response.status_code == 409 and body["code"] == "presence_result_unreadable"
         assert body["disposition"] == "retry" and body["turn_ref"] == task_id
         assert invoked == [] and ctx.presence_turns.live() == [] and not any(ctx._inflight.values())
+    if quarantined:
         assert result_path.read_text(encoding="utf-8") == "{broken"
+    else:
+        unreadable["on"] = False
+        assert result_signature(tmp_path, task_id) == before  # nothing was written over the row
 
 
 def test_failed_durable_start_never_calls_agent_then_same_event_may_retry(tmp_path, monkeypatch):

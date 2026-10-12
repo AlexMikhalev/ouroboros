@@ -318,23 +318,21 @@ def _stop_owned_daemon_for_new_pin() -> None:
 def _next_generation_pin():
     """The engine pin the NEXT generation selects.
 
-    Ordinarily the landed checkout's own tracked pin file. When this restart carries
-    a bound body adoption whose switch changes that file, the next generation boots
-    the candidate commit: its pin is read from that commit
+    Ordinarily the landed checkout's own tracked pin file. When a store switch intent is
+    recorded, the restart exit's seam moves the checkout to the intent's target after this
+    cleanup: that target's pin is the answer (``store_switch.next_engine_pin``). When this
+    restart carries a bound body adoption whose switch changes that file, the next
+    generation boots the candidate commit: its pin is read from that commit
     (``body_adoption.bound_candidate_file``), through the same validating parser.
     """
-    import tempfile
-
-    from ouroboros import body_adoption
+    from ouroboros import body_adoption, config, store_switch
     from ouroboros.claudexor_runtime import _PIN_FILENAME, load_runtime_pin
 
+    intent = store_switch.read_switch_intent(DATA_DIR)
+    if intent is not None:
+        return store_switch.next_engine_pin(config.REPO_DIR, intent["target_sha"])
     raw = body_adoption.bound_candidate_file(DATA_DIR, "ouroboros/" + _PIN_FILENAME)
-    if raw is None:
-        return load_runtime_pin()
-    with tempfile.TemporaryDirectory(prefix="ouroboros-next-pin-") as scratch:
-        pin_file = pathlib.Path(scratch) / _PIN_FILENAME
-        pin_file.write_bytes(raw)
-        return load_runtime_pin(pin_file)
+    return load_runtime_pin() if raw is None else load_runtime_pin(data=raw)
 
 
 def _live_running_task_ids(ctx: Any) -> list:

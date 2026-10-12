@@ -21,6 +21,7 @@ import pytest
 from ouroboros.tools import plan_review as pr
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.review_synthesis import PLAN_REVIEW_CONTROL_PREFIX
+from tests._store_shared import read_result, seed_result
 
 FP_LEN = 64
 CLEAN = "[]\nNO_FINDINGS"
@@ -509,14 +510,13 @@ def test_v2_wave_without_exact_artifact_can_close_by_disposition(harness):
     _call(ctx)
     inline_wave = _state(harness)["waves"][-1]
     fp = inline_wave["request_fingerprint"]
-    result_path = harness.drive / "task_results" / "task-1.json"
-    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result = read_result(harness.drive, "task-1")
     result["plan_review_state"]["waves"][-1].pop("wave_artifact")
     # A historical pre-artifact wave retained its complete inline spec.
     result["plan_review_state"]["waves"][-1].pop("spec_in_artifact", None)
     result["plan_review_state"]["waves"][-1].pop("spec_source_ref", None)
     result["plan_review_state"]["waves"][-1]["spec"] = inline_wave["spec"]
-    result_path.write_text(json.dumps(result), encoding="utf-8")
+    seed_result(harness.drive, "task-1", result)
 
     closed = pr._handle_plan_task(ctx, review_disposition={
         "review_fingerprint": fp,
@@ -619,11 +619,8 @@ def _v1_state(kind, claims=None):
 
 def test_v1_open_wave_projects_legacy_open_until_a_fresh_series(harness):
     from ouroboros.task_results import PLAN_REVIEW_STATE_KEY, load_plan_review_state, plan_review_gate_projection
-    from ouroboros.utils import atomic_write_json
 
-    path = harness.drive / "task_results" / "task-1.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(path, {"task_id": "task-1", "status": "running", PLAN_REVIEW_STATE_KEY: _v1_state("open")})
+    seed_result(harness.drive, "task-1", {"task_id": "task-1", "status": "running", PLAN_REVIEW_STATE_KEY: _v1_state("open")})
     state = load_plan_review_state(harness.drive, "task-1")
     assert state["schema_version"] == 2 and state["legacy_v1"]["schema_version"] == 1
     held = plan_review_gate_projection(state, "blocking")

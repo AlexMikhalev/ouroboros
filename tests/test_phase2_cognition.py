@@ -437,9 +437,8 @@ def test_duplicate_task_done_after_child_copyback_appends_one_canonical_projecti
     assert len(rows) == 1
     assert rows[0]["result_ref"]["reader"] == "get_task_result"
     assert load_task_result(tmp_path, "child-copy")["canonical_terminal_projection"]["summary_id"] == "task-terminal:child-copy"
-    assert not child_drive.joinpath("task_results", "child-copy.json").samefile(
-        tmp_path / "task_results" / "child-copy.json"
-    )
+    # the child drive's own row is a separate document: the copy-back projected, it did not alias
+    assert "canonical_terminal_projection" not in (load_task_result(child_drive, "child-copy") or {})
 
 
 def test_child_projection_enters_main_cognition_and_project_lineage_not_main_ui(tmp_path):

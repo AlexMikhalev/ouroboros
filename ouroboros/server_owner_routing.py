@@ -293,15 +293,8 @@ def _route_project_chat_to_running_task(
             task_metadata["_attachment_report"] = attachment_report
         if isinstance(task_metadata, dict):
             task_metadata["_routing_target_label"] = target_label
-        if attachment_report:
-            try:
-                ctx.send_with_budget(
-                    chat_id,
-                    f"📎 Attachment staging report for {target_label or 'Task'}:\n"
-                    f"{attachment_report}",
-                    role="system", system_type="attachment_notice")
-            except Exception:
-                log.debug("Mailbox attachment report notice failed for %s", tid, exc_info=True)
+        # A landed delivery publishes no row: the receipt the caller records
+        # from this stash carries the manifest; the task's mailbox carries the block.
         return tid
     except Exception:
         log.debug("Mailbox follow-up routing failed; falling back to direct lane", exc_info=True)
@@ -509,28 +502,18 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
         else:
             event["origin_suppressed"] = True
         try:
-            outcome = _handle_promote_chat_to_task(event, ctx)
+            _handle_promote_chat_to_task(event, ctx)
         except Exception:
             log.warning("Direct skill-repair promotion failed", exc_info=True)
-            outcome = {
+            # Minted OUTSIDE the handler, so its publication boundary never saw it.
+            _notify_host_initiated_refusal(ctx, event, {
                 "status": "needs_manual_target",
                 "reason": "repair_promotion_failed",
                 "task_id": task_id,
-            }
-            # Minted OUTSIDE the handler, so its publication boundary never saw it.
-            _notify_host_initiated_refusal(ctx, event, outcome)
-        outcome = outcome if isinstance(outcome, dict) else {"status": "scheduled", "task_id": task_id}
-        outcome_status = str(outcome.get("status") or "needs_manual_target")
-        if outcome_status == "scheduled":
-            try:
-                ctx.send_with_budget(
-                    chat_id,
-                    f"✅ Repair task {task_id} was accepted and durably scheduled.",
-                    role="system", system_type="task_admission_notice")
-            except Exception:
-                log.debug("Repair promotion success notification failed", exc_info=True)
-        # A refusal is already told by the promote handler's typed System row
-        # (host_initiated) plus the receipt under the owner's message.
+            })
+        # A landed repair publishes no row: the receipt under the owner's message and
+        # the task's own card carry it. A refusal is told by the promote handler's
+        # typed System row (host_initiated) plus that receipt.
         return
     try:
         reserved_project = _reserved_project_for_chat(ctx, chat_id)

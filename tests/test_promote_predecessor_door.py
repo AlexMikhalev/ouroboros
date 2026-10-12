@@ -16,6 +16,7 @@ from __future__ import annotations
 import types
 
 import pytest
+from tests._store_shared import delete_result, result_exists
 
 
 def _room_ctx(tmp_path, metadata, *, project_id: str = "racer"):
@@ -414,7 +415,7 @@ def test_an_unreadable_predecessor_still_answers_authority_source_unavailable(tm
     metadata = server._decision_turn_metadata(
         _host_ctx(tmp_path), int(project["chat_id"]), "room-6", {"project_id": "racer"},
     )
-    (tmp_path / "task_results" / "racer-gone.json").unlink()
+    delete_result(tmp_path, "racer-gone")
 
     evt: dict = {}
     refusal = _door(_room_ctx(tmp_path, metadata), "racer-gone", evt)
@@ -429,7 +430,7 @@ def test_an_unreadable_predecessor_still_answers_authority_source_unavailable(tm
     assert "missing or unreadable" in out
     # Nothing was emitted, so no id was reserved and no second root can follow.
     assert ctx.event_queue.events == [] and ctx.pending_events == []
-    assert not (tmp_path / "task_results" / "racer-gone.json").exists()
+    assert not result_exists(tmp_path, "racer-gone")
 
 
 def test_outside_a_room_an_unlisted_settled_root_is_continued_too(tmp_path):
@@ -492,19 +493,16 @@ def test_the_self_heal_scan_never_offers_or_stamps_a_child(tmp_path):
     """The lookup's fallback scan is the pointer's SECOND writer: with no pointer
     yet and a child as the project's newest result, it answers with the newest ROOT
     and stamps that, never the child the hint does not offer."""
-    import os
-
     import server
     from ouroboros.projects_registry import create_project, get_project
-    from ouroboros.task_results import task_results_dir, write_task_result
+    from ouroboros.task_results import write_task_result
 
     create_project(tmp_path, "racer", name="Racer")
-    write_task_result(tmp_path, "racer-root", "completed", project_id="racer", result="root answer")
+    write_task_result(tmp_path, "racer-root", "completed", project_id="racer", result="root answer",
+                      ts="2026-09-21T10:00:00Z")
     write_task_result(tmp_path, "racer-child", "completed", project_id="racer", result="helper answer",
-                      parent_task_id="racer-root", root_task_id="racer-root", delegation_role="subagent")
-    results = task_results_dir(tmp_path, create=False)
-    os.utime(results / "racer-root.json", (1_000, 1_000))
-    os.utime(results / "racer-child.json", (2_000, 2_000))  # the child is the newest file
+                      parent_task_id="racer-root", root_task_id="racer-root", delegation_role="subagent",
+                      ts="2026-09-21T11:00:00Z")  # the child is the newest row
     assert not get_project(tmp_path, "racer").get("last_task_result_id")
 
     row = server._latest_project_task_result(_host_ctx(tmp_path), "racer")
@@ -537,22 +535,19 @@ def test_a_pointer_a_child_stamped_before_the_rule_heals_onto_the_root(tmp_path)
 
 
 def test_a_pending_promote_is_neither_the_last_result_nor_a_predecessor(tmp_path):
-    """An emitted stub carries the project's id and is the newest file, but it is an
+    """An emitted stub carries the project's id and is the newest row, but it is an
     admission still pending, not a result: the lookup answers with the root and never
     stamps the stub, and the door says what it is instead of "steer this live root"."""
-    import os
-
     import server
     from ouroboros.projects_registry import create_project, get_project
-    from ouroboros.task_results import task_results_dir, write_task_result
+    from ouroboros.task_results import write_task_result
 
     create_project(tmp_path, "racer", name="Racer")
-    write_task_result(tmp_path, "racer-root", "completed", project_id="racer", result="root answer")
-    write_task_result(tmp_path, "racer-promote", "requested", project_id="racer", promotion_admission={
-        "status": "emitted", "routing_token": "tok-1", "emitted_at": "2026-09-21T10:00:00Z"})
-    results = task_results_dir(tmp_path, create=False)
-    os.utime(results / "racer-root.json", (1_000, 1_000))
-    os.utime(results / "racer-promote.json", (2_000, 2_000))
+    write_task_result(tmp_path, "racer-root", "completed", project_id="racer", result="root answer",
+                      ts="2026-09-21T09:00:00Z")
+    write_task_result(tmp_path, "racer-promote", "requested", project_id="racer", ts="2026-09-21T10:00:00Z",
+                      promotion_admission={"status": "emitted", "routing_token": "tok-1",
+                                           "emitted_at": "2026-09-21T10:00:00Z"})  # the newest row
 
     assert server._latest_project_task_result(_host_ctx(tmp_path), "racer")["task_id"] == "racer-root"
     assert get_project(tmp_path, "racer")["last_task_result_id"] == "racer-root"

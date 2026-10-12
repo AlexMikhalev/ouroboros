@@ -151,6 +151,9 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
         return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text="⚠️ Provide a file_path."))
 
     fp = pathlib.Path(file_path).expanduser().resolve()
+    if not fp.exists():
+        from ouroboros.evidence_packs import materialize_path
+        materialize_path(fp)  # a packed checkpoint handle is written back beside its name first
     if not fp.exists() or not fp.is_file():
         return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ File not found: {file_path}"))
     mime = _detect_document_mime(str(fp))
@@ -185,7 +188,9 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
         # older caller's artifact context is unavailable. No uncaptured URL or
         # reference is published, and source-read failures still refuse delivery.
         try:
-            with fp.open("rb") as source:
+            from ouroboros.store import open_for_read
+
+            with open_for_read(fp) as source:
                 raw = source.read(_MAX_DOCUMENT_FILE_BYTES + 1)
             if len(raw) > _MAX_DOCUMENT_FILE_BYTES:
                 raise OSError(f"large file requires artifact capture: {exc}")

@@ -45,6 +45,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests._budget_pause_exact_helpers import _fast_hold, _install_queue, _mock_pause_observation
+from tests._store_shared import delete_result, read_result, seed_result
 
 pytestmark = pytest.mark.serial
 
@@ -300,7 +301,6 @@ def _spy_latches(monkeypatch):
 @pytest.mark.parametrize("authority", ["released", "newer_closed", "unreadable", "missing"])
 def test_restore_follows_the_roots_durable_owner_fence(tmp_path, monkeypatch, authority):
     from ouroboros import owner_pause
-    from ouroboros.task_results import task_result_path
     from supervisor.events_budget import budget_resume_dispatch_allowed
     from supervisor.owner_pause_control import request_owner_pause
     from supervisor.queue_transitions import budget_pause_fact
@@ -325,16 +325,13 @@ def test_restore_follows_the_roots_durable_owner_fence(tmp_path, monkeypatch, au
         _complete_root(tmp_path, workers)
     installed = _spy_latches(monkeypatch)
     if authority == "unreadable":
-        import json
-
-        path = task_result_path(tmp_path, ROOT)
-        stored = json.loads(path.read_text(encoding="utf-8"))
+        stored = read_result(tmp_path, ROOT)
         stored["owner_pause"] = {**stored["owner_pause"], "state": "not-a-fence-state"}
         assert queue.persist_queue_snapshot(reason="test_before_restart")
-        path.write_text(json.dumps(stored), encoding="utf-8")
+        seed_result(tmp_path, ROOT, stored)
     elif authority == "missing":
         assert queue.persist_queue_snapshot(reason="test_before_restart")
-        task_result_path(tmp_path, ROOT).unlink()
+        delete_result(tmp_path, ROOT)
 
     _restart(queue, workers, monkeypatch)
     latch = queue.BUDGET_ROOT_FENCES.get(ROOT)
@@ -643,9 +640,7 @@ def test_restore_keeps_the_snapshots_newer_latch_over_an_older_markers_identity(
     """The map holds the CURRENT latch B; a parked child's marker still names the older
     A. Restore keeps B (monetary marker, or an owner marker whose durable authority is
     unreadable) and never installs A, not even transiently."""
-    import json
 
-    from ouroboros.task_results import task_result_path
     from supervisor.owner_pause_control import request_owner_pause
 
     if cause == "monetary":
@@ -661,10 +656,9 @@ def test_restore_keeps_the_snapshots_newer_latch_over_an_older_markers_identity(
     assert fence_b != fence_a and _pending(workers, CHILD)["_budget_pause"]["fence_id"] == fence_a
     assert queue.persist_queue_snapshot(reason="test_before_restart")
     if cause == "owner_authority_unreadable":
-        path = task_result_path(tmp_path, ROOT)
-        stored = json.loads(path.read_text(encoding="utf-8"))
+        stored = read_result(tmp_path, ROOT)
         stored["owner_pause"] = {**stored["owner_pause"], "state": "not-a-fence-state"}
-        path.write_text(json.dumps(stored), encoding="utf-8")
+        seed_result(tmp_path, ROOT, stored)
     snapshot = queue.QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8")
     installed = _spy_latches(monkeypatch)
 
@@ -780,10 +774,8 @@ def test_a_stop_door_records_the_latch_its_park_owes_in_the_final_snapshot(tmp_p
 
 @pytest.mark.parametrize("authority", ["unreadable", "missing"])
 def test_historical_self_rooted_owner_marker_keeps_canonical_snapshot_b(tmp_path, monkeypatch, authority):
-    import json
 
     from ouroboros import budget_pause
-    from ouroboros.task_results import task_result_path
     from supervisor.owner_pause_control import request_owner_pause
 
     queue, workers, _sent, _marker, fence_a, _child, (_root_ctx, root_limit) = \
@@ -798,13 +790,12 @@ def test_historical_self_rooted_owner_marker_keeps_canonical_snapshot_b(tmp_path
     fence_b = queue.BUDGET_ROOT_FENCES[ROOT]["fence_id"]
     assert fence_a != fence_b
     assert queue.persist_queue_snapshot(reason="probe_unknown_owner_b_selfrooted_marker")
-    root_path = task_result_path(tmp_path, ROOT)
-    record = json.loads(root_path.read_text(encoding="utf-8"))
+    record = read_result(tmp_path, ROOT)
     if authority == "unreadable":
         record["owner_pause"]["state"] = "not-a-fence-state"
     else:
         record.pop("owner_pause", None)
-    root_path.write_text(json.dumps(record), encoding="utf-8")
+    seed_result(tmp_path, ROOT, record)
     installed = _spy_latches(monkeypatch)
     _restart(queue, workers, monkeypatch)
     facts = {"authority": authority, "fence_a": fence_a, "fence_b": fence_b,

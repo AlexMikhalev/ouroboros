@@ -8,6 +8,7 @@ import pytest
 
 from tests.test_review_decision_notes import first_plan, notes_for, LONG, NOTE, harness as _harness
 from tests.test_review_view_integration import _apply, _capture, staged_body as _staged_body
+from tests._store_shared import result_signature
 
 harness, staged_body = _harness, _staged_body
 OWNER = 'Keep the original protocol exactly; do not substitute a different format.'
@@ -38,7 +39,7 @@ def successor(ctx):
 def test_successor_startup_short_view_exact_read_and_new_gate_unchanged(harness, child_drive):
     from ouroboros.context import _task_authority_projection
     from ouroboros.review_history_view import capture_review_history_messages, SELECTED_VIEW_FIELD
-    from ouroboros.task_results import load_task_result, load_plan_review_state, task_result_path
+    from ouroboros.task_results import load_task_result, load_plan_review_state
     from ouroboros.tools.core_file_tools import _read_file
     from ouroboros.tools.registry import ToolContext
 
@@ -47,7 +48,7 @@ def test_successor_startup_short_view_exact_read_and_new_gate_unchanged(harness,
     assert receipt['status'] == 'applied'
     env, task = successor(ctx)
     canonical_task = deepcopy(task)
-    before = {tid: task_result_path(ctx.drive_root, tid).read_bytes() for tid in (ctx.task_id, task['id'])}
+    before = {tid: result_signature(ctx.drive_root, tid) for tid in (ctx.task_id, task['id'])}
     old_gate = deepcopy(load_plan_review_state(ctx.drive_root, ctx.task_id))
     new_gate = deepcopy(load_plan_review_state(ctx.drive_root, task['id']))
     runtime = _task_authority_projection(env, task)
@@ -65,7 +66,7 @@ def test_successor_startup_short_view_exact_read_and_new_gate_unchanged(harness,
     assert load_plan_review_state(ctx.drive_root, ctx.task_id) == old_gate
     assert len(sub.calls) == 1
     assert task == canonical_task and OWNER in messages[1]['content']
-    assert all(task_result_path(ctx.drive_root, tid).read_bytes() == raw for tid, raw in before.items())
+    assert all(result_signature(ctx.drive_root, tid) == raw for tid, raw in before.items())
     # A task-local relative reader would resolve to the successor's empty store.
     # Use the actual advertised address from the historical model view instead.
     drive = ctx.drive_root / 'different-child-drive' if child_drive else ctx.drive_root

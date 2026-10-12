@@ -845,12 +845,14 @@ def test_operation_observer_has_recovery_identity_without_provider_content(setup
         call = getattr(client, method)([], **kwargs)
         if method == "chat_async":
             asyncio.run(call)
-    assert [value["operation_id"] for value in events] == ["", "op-0"]
+    assert [value["operation_id"] for value in events] == ["", "op-0", "op-0"]
+    assert [value["model_activity"]["phase"] for value in events] == ["preparing", "response_ready", "response_received"]
     assert events[0]["invocation_id"] == events[1]["invocation_id"]
     assert events[1]["request_ref"] == REF
     assert events[1]["request_manifest_ref"]["path"]
     assert events[1]["request_manifest_ref"]["sha256"]
-    assert set(events[1]) == {"operation_id", "invocation_id", "request_ref", "request_manifest_ref"}
+    assert set(events[1]) == {"operation_id", "invocation_id", "request_ref", "request_manifest_ref", "model_activity"}
+    assert set(events[1]["model_activity"]) == {"operation_id", "invocation_id", "phase"}
     assert "model_operation_observer" not in gateway.uploads[0][0]
     assert retained(root, "request") == gateway.uploads[0][0]
 

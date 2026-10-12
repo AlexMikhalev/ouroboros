@@ -219,6 +219,26 @@ def reconcile_receipt(action=None, reason=None):
     return {"action": action, "reason": reason, "process": "", "server_reconcile": ""}
 
 
+def live_worker_pids(data_root):
+    """The ledger's live worker identities, including across pool respawns."""
+    from ouroboros.process_custody import _read_ledger_strict, _fingerprint_matches
+    readable, entries = _read_ledger_strict(data_root)
+    assert readable, "worker custody is unreadable"
+    return {int(row["pid"]) for row in entries
+            if str(row.get("purpose") or "").startswith("worker:") and _fingerprint_matches(row)}
+
+
+def write_queue_document(path, payload):
+    """Publish a fixture document and its matching liveness stamp; retain its date."""
+    from ouroboros.utils import atomic_write_json
+    payload = {**payload, "generation": "fixture-generation"}
+    atomic_write_json(path, payload)
+    atomic_write_json(path.parent / "queue.alive", {
+        "generation": payload["generation"], "ts": payload.get("ts"), "heartbeats": {},
+    })
+    return payload
+
+
 # Measuring a reviewer's window (`reviewer_context_window` / `scope_window` ->
 # `capability_evidence.probe`) asks OpenRouter's live `/models` catalog through
 # `LLMClient.openrouter_context_length(allow_fetch=True)`; a retrieving work

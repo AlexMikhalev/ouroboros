@@ -119,12 +119,8 @@ def update_late_phase_pause(drive_root: Any, task_id: str,
     Like the owner fence, this is a field write on the result's own locked
     read-modify-write: it never writes a lifecycle status.
     """
-    from ouroboros.task_results import (
-        require_writable_task_result_schema,
-        stamp_task_result_schema,
-        task_result_path,
-    )
-    from ouroboros.obligations import update_result
+    from ouroboros.task_results import require_writable_task_result_schema, stamp_task_result_schema
+    from ouroboros.task_store import patch_document
 
     applied: Dict[str, Any] = {}
 
@@ -140,10 +136,7 @@ def update_late_phase_pause(drive_root: Any, task_id: str,
         applied["record"] = record
         return stamp_task_result_schema({**latest, "root_phase_checkpoint": {**checkpoint, "post_task_pause": record}})
 
-    path = task_result_path(pathlib.Path(drive_root), str(task_id), create=False)
-    if not path.is_file():
-        return None
-    update_result(path, update, strict_existing_dict=True)
+    patch_document(pathlib.Path(drive_root), str(task_id), update)
     return applied.get("record")
 
 

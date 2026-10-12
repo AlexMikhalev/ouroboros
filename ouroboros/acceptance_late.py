@@ -238,7 +238,8 @@ def _historical_writer_live(root: Path, task_id: str, operation_id: str) -> bool
     from ouroboros.review_operation import task_has_live_review_operation
     from ouroboros.task_results import load_task_result
     from ouroboros.task_status import task_has_live_queue_ownership, queue_snapshot_observation
-    from ouroboros.utils import in_worker_process, read_json_dict
+    from ouroboros.utils import in_worker_process
+    from ouroboros.queue_observation import load_queue_document
     from supervisor import queue as task_queue
     from supervisor.direct_roots import FRAGMENT_NAME
 
@@ -256,7 +257,7 @@ def _historical_writer_live(root: Path, task_id: str, operation_id: str) -> bool
             return False
         # Direct turns do not enter the pooled snapshot. Their existing fragment
         # omits postwork, so absence also needs its terminal phase checkpoint.
-        fragment = read_json_dict(root / FRAGMENT_NAME) or {}
+        fragment = load_queue_document(root, FRAGMENT_NAME.name)
         roots = fragment.get('roots')
         if (not queue_snapshot_observation(fragment)['fresh'] or fragment.get('incomplete') is not False
                 or not isinstance(roots, list) or any(not isinstance(item, dict) for item in roots)):

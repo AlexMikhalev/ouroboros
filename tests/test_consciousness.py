@@ -21,6 +21,7 @@ from ouroboros.consciousness import (
     BackgroundConsciousness,
 )
 from supervisor.active_activity import get_direct_activity_registry
+from tests._store_shared import seed_result
 
 T0 = 1_800_000_000.0
 
@@ -127,10 +128,10 @@ def test_restored_boundary_reaches_the_launched_wake_text(clock):
     """Without an accepted observation boundary yet, the first window starts at the last wake."""
     clock.store[LAST_WAKE_STATE_KEY] = T0 - 3600
     (clock.root / "task_results").mkdir()
-    (clock.root / "task_results" / "settled.json").write_text(json.dumps({
+    seed_result(clock.root, "settled", {
         "task_id": "settled", "status": "completed", "updated_at": _iso(T0 - 1800),
         "ts": _iso(T0 - 1800), "description": "settled before restart", "_schema_version": 1,
-    }), encoding="utf-8")
+    })
     _chat_row(root=clock.root, ts=_iso(T0 - 7200), direction="system", type="task_summary", task_id="older",
               status="completed")
     _chat_row(root=clock.root, ts=_iso(T0 - 1800), direction="system", type="task_summary", task_id="settled",
@@ -177,7 +178,7 @@ def test_a_refused_wake_consumes_no_transition_and_the_admitted_one_persists_obs
     (clock.root / "task_results").mkdir()
     row = {"task_id": "kid", "status": "running", "ts": _iso(T0 - 100), "updated_at": _iso(T0 - 100),
            "_schema_version": 1, "metadata": {}, "description": "child work"}
-    (clock.root / "task_results" / "kid.json").write_text(json.dumps(row), encoding="utf-8")
+    seed_result(clock.root, "kid", row)
     assert clock.clock.tick(T0 + FLOOR + 1) == "launched"
     accepted = clock.store[OBSERVATION_STATE_KEY]["transitions"]
     from ouroboros.artifacts import read_actor_source_bytes
@@ -185,8 +186,7 @@ def test_a_refused_wake_consumes_no_transition_and_the_admitted_one_persists_obs
     header = json.loads(read_actor_source_bytes(clock.root, source['task_id'], source).splitlines()[0])
     inventory = header['boundary']['transitions']
     assert inventory["inventory"] == {"kid": []} and inventory["scan_at"] == _iso(T0 + FLOOR + 1)
-    (clock.root / "task_results" / "kid.json").write_text(json.dumps(
-        {**row, "status": "failed", "updated_at": _iso(T0 + FLOOR + 50)}), encoding="utf-8")  # the orphan sweep
+    seed_result(clock.root, "kid", {**row, "status": "failed", "updated_at": _iso(T0 + FLOOR + 50)})  # the orphan sweep
     clock.clock._wake_finished("wake0001", True)
     get_direct_activity_registry().clear()
     clock.receipt.update({"admitted": False, "task_id": "", "reason": "budget_exhausted"})

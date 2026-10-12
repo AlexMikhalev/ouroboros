@@ -7,14 +7,15 @@ import itertools
 import json
 
 from ouroboros import delegate_custody as custody
+from tests._store_shared import seed_result
 
 
 
 def _finished_owner(root, task_id):
     path = root / 'task_results' / f'{task_id}.json'
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({'_schema_version': 1, 'task_id': task_id,
-                               'status': 'completed'}), encoding='utf-8')
+    seed_result(root, task_id, {'_schema_version': 1, 'task_id': task_id,
+                               'status': 'completed'})
 
 def test_last_shared_project_sibling_retires_once_in_every_settlement_order(tmp_path):
     class _Gateway:
@@ -273,7 +274,7 @@ def test_persistent_sharer_branch_unchanged_and_a_new_registration_is_owned_agai
     assert gateway.removals == []
     retired = _of(tmp_path, custody.PROJECT_RETIRED)
     assert len(retired) == 1
-    assert set(retired[0]) == {"ts", "type", "run_id", "task_id", "project_id", "project_kept"}
+    assert set(retired[0]) == {"ts", "type", "event_id", "run_id", "task_id", "project_id", "project_kept"}
     assert retired[0]["project_kept"] is True
 
     # A discharged project, then a NEW registration of the same root (same id):

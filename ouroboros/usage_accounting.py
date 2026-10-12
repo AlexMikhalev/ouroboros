@@ -14,7 +14,6 @@ import contextlib
 import contextvars
 import copy
 import hashlib
-import json
 import logging
 import os
 import pathlib
@@ -666,7 +665,7 @@ _CANDIDATE_ROW_FIELDS = (
 )
 
 
-def _check_dispatch_fences(scope: UsageScope, root: pathlib.Path) -> None:
+def _check_dispatch_fences(scope: UsageScope, root: pathlib.Path, *, retry: bool = True) -> None:
     from ouroboros.budget_pause import budget_fence_selected, dispatch_fenced
 
     if dispatch_fenced(scope.task_id):
@@ -675,16 +674,15 @@ def _check_dispatch_fences(scope: UsageScope, root: pathlib.Path) -> None:
         raise DispatchFenced(
             f"model dispatch fenced: task {scope.task_id} is entering an exact budget pause",
             limit_scope="pausing", root_task_id=scope.root_task_id)
-    # The queue's atomic durable root-dispatch fence, read from its snapshot:
-    # a fenced root refuses every send until an explicit resume.
+    from ouroboros.queue_observation import published_dispatch
+
     root_task_id = str(scope.root_task_id or "").strip()
-    snapshot_path = root / "state" / "queue_snapshot.json"
-    if root_task_id and snapshot_path.exists():
-        try:
-            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise UsageAccountingError(f"root budget fence authority unavailable: {snapshot_path}") from exc
-        rows = snapshot.get("budget_root_fences", []) if isinstance(snapshot, dict) else None
+    snapshot_path = root / "state" / "queue_dispatch.json"
+    if root_task_id and any((root / "state" / name).exists() for name in ("queue_dispatch.json", "queue_snapshot.json", "queue.alive")):
+        snapshot = published_dispatch(root) if retry else published_dispatch(root, attempts=1)
+        if snapshot is None:
+            raise UsageAccountingError(f"root budget fence authority unavailable: {snapshot_path}")
+        rows = snapshot.get("budget_root_fences")
         if not isinstance(rows, list):
             raise UsageAccountingError(f"invalid root budget fence authority: {snapshot_path}")
         for row in rows:
@@ -693,18 +691,8 @@ def _check_dispatch_fences(scope: UsageScope, root: pathlib.Path) -> None:
             if (str(row.get("root_task_id") or "") != root_task_id or row.get("cause") == "owner_pause"
                     or str(row.get("status") or "") not in {"active", "paused"}):
                 continue  # an owner Pause gates launches itself (owner_pause.py): never a money stop
-            # ONE member explicitly selected against THIS fence generation is
-            # admitted (owner Q9, #1196): the queue recorded that selection on
-            # the row itself (a selected hold or an exact Resume handoff, read by
-            # the queue's own predicate), and the latch still refuses every
-            # unselected member. A just-assigned row may still be published pending.
-            selected = False
-            for bucket in ("running", "pending"):
-                for entry in (snapshot.get(bucket) or []) if isinstance(snapshot, dict) else []:
-                    member = entry.get("task") if isinstance(entry, dict) else None
-                    if not isinstance(member, dict) or str(member.get("id") or "") != scope.task_id:
-                        continue
-                    selected = budget_fence_selected(member, row)
+            member = (snapshot.get("members") or {}).get(scope.task_id)
+            selected = budget_fence_selected(member, row)
             if not selected:
                 raise BudgetExceeded(
                     f"root model dispatch paused pending explicit resume for {scope.root_task_id}",
@@ -727,7 +715,7 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
     attempt_id = uuid.uuid4().hex
 
     with acquire(root) as view:
-        _check_dispatch_fences(scope, root)
+        _check_dispatch_fences(scope, root, retry=False)
         global_limit = _global_limit(request)
         if view.exceeds_limit(global_limit):
             raise BudgetExceeded(
@@ -980,8 +968,11 @@ def _transition(reservation: AttemptReservation, state: str, **fields: Any) -> D
     from ouroboros._usage_wait import transition_acquisition
     from ouroboros.usage_ledger import is_abandoned_settlement
 
-    acquire = transition_acquisition(state, lambda: _check_dispatch_fences(
-        reservation.scope or current_usage_scope() or UsageScope(), reservation.drive_root))
+    def check_fences():
+        _check_dispatch_fences(reservation.scope or current_usage_scope() or UsageScope(), reservation.drive_root)
+    if state == "dispatched":
+        check_fences()
+    acquire = transition_acquisition(state, check_fences)
     with (acquire(reservation.drive_root) if acquire else _locked(reservation.drive_root)) as view:
         current = view.attempt(reservation.attempt_id)
         expected_seq = fields.pop("_expected_seq", None)
@@ -1038,7 +1029,7 @@ def _transition(reservation: AttemptReservation, state: str, **fields: Any) -> D
                                  root_limit_revision=scope.root_limit_revision)
             scope = replace(scope, **effective)
             fields.update(effective)
-            _check_dispatch_fences(scope, reservation.drive_root)
+            _check_dispatch_fences(scope, reservation.drive_root, retry=False)
             limit_request = AttemptRequest(model=reservation.model, provider=reservation.provider,
                 global_limit_usd=(current.get("global_limit_usd") if current.get("global_limit_source")
                                   not in {"", "settings_budget_resolver"} else None))

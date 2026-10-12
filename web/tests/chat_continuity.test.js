@@ -212,7 +212,7 @@ test('managed status priority: working > thinking > sending > queued > online', 
     }).text, 'Working...');
     assert.equal(computeDerivedChatStatus({
         activeDirectCount: 1, pendingSubmissionsCount: 1, queuedManagedCount: 1,
-    }).text, 'Thinking...');
+    }).text, 'Working');
     assert.equal(computeDerivedChatStatus({
         pendingSubmissionsCount: 1, queuedManagedCount: 1,
     }).text, 'Sending...');

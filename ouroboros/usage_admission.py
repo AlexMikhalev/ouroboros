@@ -32,6 +32,7 @@ import math
 import pathlib
 from dataclasses import replace
 from typing import Any, Dict, Optional, Sequence
+from ouroboros.task_store import patch_document
 
 log = logging.getLogger(__name__)
 
@@ -127,8 +128,8 @@ def task_billing_fields(task: Dict[str, Any], root_task_id: str, root_limit: Opt
     occurrences derive the initial binding here but persist it atomically with
     their canonical frozen receipt (persist_initial=False).
     """
-    from ouroboros.task_results import load_task_result, task_result_path, stamp_task_result_schema
-    from ouroboros.utils import update_json_locked, utc_now_iso
+    from ouroboros.task_results import load_task_result, stamp_task_result_schema
+    from ouroboros.utils import utc_now_iso
 
     unavailable = {"root_limit_usd": root_limit,
                    "billing_group_id": UNAVAILABLE_GROUP_PREFIX + root_task_id,
@@ -200,8 +201,7 @@ def task_billing_fields(task: Dict[str, Any], root_task_id: str, root_limit: Opt
                 return stamp_task_result_schema({"task_id": root_task_id, "status": "requested", **current,
                                                  "billing_group": binding})
             if persist_initial:
-                update_json_locked(task_result_path(pathlib.Path(budget_root), root_task_id), pin,
-                                   strict_existing_dict=True)
+                patch_document(pathlib.Path(budget_root), root_task_id, pin)
         if binding:
             if not isinstance(binding, dict) or not binding.get("billing_group_id") or "billing_group_limit_usd" not in binding:
                 return unavailable
@@ -223,17 +223,14 @@ def settlement_billing_fields(root: Any, task_id: str, root_task_id: str) -> Dic
     binding = task_billing_fields({"id": task_id}, root_task_id, None, root)
     if binding.get("billing_group_limit_source"):
         return binding
-    from ouroboros.delegate_custody_memo import custody_rows_with_integrity
+    from ouroboros.delegate_custody_current import tree_billing_group
+    from ouroboros.store import StoreError
 
-    rows, malformed = custody_rows_with_integrity(pathlib.Path(root), root_task_id)
-    if malformed is None or malformed:
+    try:
+        carried = tree_billing_group(pathlib.Path(root), root_task_id)
+    except StoreError:
         return {"billing_group_id": UNAVAILABLE_GROUP_PREFIX + root_task_id, "billing_group_limit_usd": 0.0}
-    for row in rows:
-        carried = row.get("billing_group") or {}
-        if (str(row.get("root_task_id") or row.get("task_id") or "") == root_task_id
-                and carried.get("billing_group_id") and "billing_group_limit_usd" in carried):
-            return carried
-    return binding
+    return carried if carried else binding
 
 
 def raise_group_refusal(view: Any, scope: Any) -> None:

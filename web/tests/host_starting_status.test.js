@@ -22,7 +22,7 @@ test('the reducer says Starting… only where it would say Online', () => {
         [{ isConnected: false }, 'Reconnecting...'],
         [{ hasActiveLiveCard: true }, 'Working...'],
         [{ activeManagedCount: 1 }, 'Working...'],
-        [{ activeDirectCount: 1 }, 'Thinking...'],
+        [{ activeDirectCount: 1 }, 'Working'],
         [{ pendingSubmissionsCount: 1 }, 'Sending...'],
         [{ queuedManagedCount: 1 }, 'Queued...'],
         [{ waitingModelCount: 1 }, 'Waiting for access'],

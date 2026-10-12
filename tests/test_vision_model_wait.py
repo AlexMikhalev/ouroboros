@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests._store_shared import read_result
 
 pytestmark = pytest.mark.serial
 
@@ -97,11 +98,23 @@ def _install_child_fixture(mode, events_path):
     transport.ensure_owned_gateway = lambda: gateway
     transport.config.CLAUDEXOR_MODEL_POLL_INTERVAL_SEC = 0.01
     pricing._fetch_live_rows = lambda *_: pytest.fail("VLM fixture must never fetch live pricing")
-    if mode == "checkpoint_fail":
+    original_write = vision_process._private_json
+
+    def record_receipt(path, value):
+        original_write(path, value)
+        if path.name == "receipt.json":
+            event("custody", fields=sorted(value["custody"]), operation_id=value["custody"]["operation_id"])
+
+    vision_process._private_json = record_receipt
+    if mode in {"checkpoint_fail", "checkpoint_retry"}:
         original = vision_process._private_json
+        refused_once = False
 
         def fail_receipt(path, value):
-            if path.name == "receipt.json":
+            nonlocal refused_once
+            if path.name == "receipt.json" and (mode == "checkpoint_fail"
+                    or not refused_once and value["custody"]["operation_id"]):
+                refused_once = True
                 raise OSError("controlled IPC write failure")
             return original(path, value)
 
@@ -176,7 +189,7 @@ def test_private_ipc_publication_never_exposes_an_empty_control_file(tmp_path, m
         assert path.stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("mode", ["success", "slow", "lose_create", "checkpoint_fail"])
+@pytest.mark.parametrize("mode", ["success", "slow", "lose_create", "checkpoint_fail", "checkpoint_retry"])
 def test_real_child_retains_one_generation_and_unknown_cost(child_fixture, mode):
     state, events, root = child_fixture
     state["mode"] = mode
@@ -192,6 +205,10 @@ def test_real_child_retains_one_generation_and_unknown_cost(child_fixture, mode)
     assert len([row for row in rows if row["kind"] == "generation"]) == 1
     assert len({row["key"] for row in rows if row["kind"] == "create"}) == 1
     assert any(row["kind"] == "ack" for row in rows)
+    custody = [row for row in rows if row["kind"] == "custody"]
+    if mode != "checkpoint_fail":
+        assert [row["operation_id"] for row in custody] == ["", "operation-exact"]
+        assert all(row["fields"] == ["invocation_id", "operation_id", "request_manifest_ref", "request_ref"] for row in custody)
     if mode == "slow":
         assert len([row for row in rows if row["kind"] == "poll"]) >= 8
         assert state["timeouts"][0] > 90
@@ -363,6 +380,6 @@ def test_real_parent_quota_controller_polls_metadata_then_rejoins_image_call(chi
     assert text == "pixels read exactly once 🐍" and catalog_calls == [("fixture", None)]
     assert resolutions == [MODEL] and phases == ["started", "finished"]
     assert len([row for row in _events(events) if row["kind"] == "upload"]) == 2
-    persisted = json.loads((root / "task_results" / "image-task.json").read_text())
+    persisted = read_result(root, "image-task")
     wait, = persisted["model_waits"].values()
     assert wait["state"] == "resolved" and wait["resolution"] == "resource_available"

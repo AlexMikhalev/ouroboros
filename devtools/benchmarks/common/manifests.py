@@ -102,19 +102,19 @@ def read_json(path: pathlib.Path) -> Any:
 def write_json(path: pathlib.Path, payload: Any) -> None:
     """Atomically overwrite ``path`` with pretty JSON plus a trailing newline.
 
-    ``ouroboros.utils.atomic_write_json`` is imported LAZILY on purpose: this module is
+    ``ouroboros.utils.write_text_atomic`` is imported LAZILY on purpose: this module is
     stdlib-only at import time and is imported by every benchmark launcher, including the
     container-side Terminal-Bench agent, so a module-level ``ouroboros`` import would make
     the runtime package a hard import dependency of all benchmark families.
-    ``trailing_newline=True`` (the helper's default is False) preserves the byte-for-byte
-    form of every manifest/sidecar written before this change. Note that an existing
+    Explicit indentation preserves the byte-for-byte form of each manifest/sidecar
+    independently of the runtime's compact machine JSON. Note that an existing
     SYMLINK at ``path`` is replaced by a regular file rather than written through — that is
     the atomic helper's documented confinement behaviour; benchmark sidecars are never
     file symlinks (the CephFS run archive uses directory-level links, which are unaffected).
     """
-    from ouroboros.utils import atomic_write_json
+    from ouroboros.utils import write_text_atomic
 
-    atomic_write_json(pathlib.Path(path), payload, trailing_newline=True)
+    write_text_atomic(pathlib.Path(path), json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
 def read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:

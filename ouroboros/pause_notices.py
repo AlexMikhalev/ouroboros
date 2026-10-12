@@ -35,8 +35,8 @@ def notice_fields(current: dict, root: Any, task_id: str, episode_id: str, reaso
 
 def _acknowledge(root: pathlib.Path, task_id: str, identity: str, notice: dict) -> None:
     """Drop one recorded notice from the task; the last one retires its membership."""
-    from ouroboros.obligations import update_result
-    from ouroboros.task_results import require_writable_task_result_schema, task_result_path
+    from ouroboros.task_results import require_writable_task_result_schema
+    from ouroboros.task_store import patch_document
 
     def update(current: dict):
         require_writable_task_result_schema(current)
@@ -49,23 +49,7 @@ def _acknowledge(root: pathlib.Path, task_id: str, identity: str, notice: dict) 
             updated.pop("pause_notices")
         return updated
 
-    update_result(task_result_path(root, task_id), update, strict_existing_dict=True)
-
-
-def _retire_if_nothing_owed(root: pathlib.Path, task_id: str) -> None:
-    """A crash between the membership and the result write leaves an extra
-    candidate. Retire it under the result lock, so a pause confirmed meanwhile
-    (membership published, result not replaced yet) keeps its membership."""
-    from ouroboros import obligations
-    from ouroboros.task_results import task_result_path
-    from ouroboros.utils import update_json_locked
-
-    def check(current: dict):
-        if not (current or {}).get("pause_notices"):
-            obligations.remove(root, "pause_notices", task_id)
-        return None  # the result itself is never rewritten here
-
-    update_json_locked(task_result_path(root, task_id, create=False), check)
+    patch_document(root, task_id, update)
 
 
 def reconcile_pause_notices(drive_root: Any, *, stop_requested=None) -> None:
@@ -94,8 +78,7 @@ def reconcile_pause_notices(drive_root: Any, *, stop_requested=None) -> None:
             try:
                 result = load_task_result(root, task_id, strict=True)
                 if not result or not result.get("pause_notices"):
-                    _retire_if_nothing_owed(root, task_id)
-                    continue
+                    continue  # the membership is the document's own flag: nothing owed, nothing to retire
                 event = address_task_event({task_id: {"task": result}}, root, {"task_id": task_id})
                 chat_id = message_bus.notification_chat_route(event.get("chat_id"))
                 if chat_id is None:

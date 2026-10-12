@@ -21,6 +21,8 @@ from ouroboros.terminal_cost_reconciliation import reconcile_abandoned_usage
 from supervisor import events_task_done as done
 from tests._usage_store_testing import ledger_rows
 from tests.test_terminal_cost_reconciliation import attempt, dirty, env as env, task  # noqa: F401 - fixture
+from ouroboros.task_store import patch_document
+from tests._store_shared import delete_result
 
 DUTY = "ouroboros.terminal_cost_reconciliation"
 
@@ -51,13 +53,24 @@ def finalized(env, tid):
     return [row for row in rows if row.get("type") == "task_cost_finalized" and row.get("task_id") == tid]
 
 
+def park(env, tid):
+    """Take the canonical row out of the store (what the import's quarantine leaves behind for an
+    inadmissible file); the returned document lands again through ``restore``."""
+    document = task_results.load_task_result(env.root, tid)
+    delete_result(env.root, tid)
+    return document
+
+
+def restore(env, tid, document):
+    patch_document(env.root, tid, lambda current: document)
+
+
 def quarantine(env, tid):
-    """Move the canonical body aside the way schema admission does."""
-    path = task_results.task_result_path(env.root, tid)
-    target = path.parent / "quarantine" / path.name
-    target.parent.mkdir(exist_ok=True)
-    os.replace(path, target)
-    return target
+    """What the import leaves for an inadmissible file: no row, its bytes under ``quarantine/``."""
+    document = park(env, tid)
+    box = env.root / "task_results" / "quarantine"
+    box.mkdir(parents=True, exist_ok=True)
+    (box / f"{tid}.json").write_text(json.dumps(document), encoding="utf-8")
 
 
 @pytest.mark.parametrize("missing", ["absent", "quarantined"])
@@ -68,7 +81,7 @@ def test_missing_result_keeps_its_exact_revision_without_fence_traversal(env, mo
     if missing == "quarantined":
         quarantine(env, "child")
     else:
-        task_results.task_result_path(env.root, "child").unlink()
+        delete_result(env.root, "child")
     before = dirty(env)["child"]
     fences, globs, glob = [], [], pathlib.Path.glob
     read_fence = owner_pause.read_fence
@@ -95,7 +108,7 @@ def test_missing_result_keeps_its_exact_revision_without_fence_traversal(env, mo
 
 
 @pytest.mark.parametrize("restart", [False, True])
-@pytest.mark.parametrize("arrival", ["child_copyback", "quarantine_restore"])
+@pytest.mark.parametrize("arrival", ["child_copyback", "late_row"])
 def test_a_body_landing_after_the_last_ledger_write_is_projected_without_a_receipt(env, restart, arrival):
     from ouroboros.headless import copy_child_task_result
 
@@ -111,7 +124,7 @@ def test_a_body_landing_after_the_last_ledger_write_is_projected_without_a_recei
         child(env)
     attempt(env, "child", logical="root", cost=0.4)
     revision = dirty(env)["child"]
-    parked = quarantine(env, "child") if arrival == "quarantine_restore" else None
+    parked = park(env, "child") if arrival == "late_row" else None
 
     reconcile_abandoned_usage(env.root)
     assert dirty(env) == {"child": revision}
@@ -121,7 +134,7 @@ def test_a_body_landing_after_the_last_ledger_write_is_projected_without_a_recei
         copy_child_task_result(env.root, {"id": "child", "drive_root": str(child_drive)})
         assert task_results.load_task_result(env.root, "child")["accounted_upper_bound_usd"] == 0.01
     else:
-        os.replace(parked, task_results.task_result_path(env.root, "child"))
+        restore(env, "child", parked)
     assert ledger_rows(env.root) == ledger_before and dirty(env) == {"child": revision}  # No new receipt.
     if restart:
         duty._LAST_UNRESOLVED.clear()
@@ -335,21 +348,18 @@ def test_a_failing_gateway_close_is_logged_once_per_change(env, monkeypatch, cap
 
 @pytest.mark.parametrize("scale", [(644, 367, 5)])
 def test_a_thousand_unprojectable_owners_cost_one_stat_each_and_no_repeated_bytes(env, monkeypatch, caplog, scale):
-    """The live install's #1569 shape: 1016 dirty owners, 644 with quarantined results,
-    367 with none and 5 present. Present owners are read and projected as before."""
+    """The live install's #1569 shape: 1016 dirty owners, 644 whose results the import
+    quarantined, 367 with none and 5 present. Present owners are read and projected as before."""
+    from ouroboros import task_store
     quarantined, absent, present = scale
     owners = [(f"q{index:04}", 1) for index in range(quarantined)]
     owners += [(f"m{index:04}", 1) for index in range(absent)]
     owners += [(f"p{index}", 1) for index in range(present)]
-    box = env.root / "task_results" / "quarantine"
-    box.mkdir(parents=True)
-    for tid, _ in owners[:quarantined]:
-        (box / f"{tid}.json").write_text("{", encoding="utf-8")
     for tid, _ in owners[-present:]:
         task(env, tid)
     monkeypatch.setattr(usage_store.Txn, "dirty_owners", lambda self: list(owners))
-    counts = {"stat": 0, "loads": 0, "fence": 0, "glob": 0}  # glob: of the quarantine directory
-    stat, load, fence, glob = pathlib.Path.stat, task_results.load_task_result, owner_pause.read_fence, pathlib.Path.glob
+    counts = {"presence": 0, "loads": 0, "fence": 0}
+    exists, load, fence = task_store.exists, task_results.load_task_result, owner_pause.read_fence
 
     def counted(name, real):
         def call(*a, **k):
@@ -357,21 +367,18 @@ def test_a_thousand_unprojectable_owners_cost_one_stat_each_and_no_repeated_byte
             return real(*a, **k)
         return call
 
-    monkeypatch.setattr(pathlib.Path, "stat", lambda self, *a, **k: (
-        counts.__setitem__("stat", counts["stat"] + (self.parent.name == "task_results")) or stat(self, *a, **k)))
+    monkeypatch.setattr(task_store, "exists", counted("presence", exists))
     monkeypatch.setattr(task_results, "load_task_result", counted("loads", load))
     monkeypatch.setattr(owner_pause, "read_fence", counted("fence", fence))
-    monkeypatch.setattr(pathlib.Path, "glob", lambda self, pattern: (
-        counts.__setitem__("glob", counts["glob"] + (self == box)) or glob(self, pattern)))
     summary = usage.usage_projection(env.root)
 
     reconcile_abandoned_usage(env.root)
     first = dict(counts)
     sink = env.root / "logs" / "supervisor.jsonl"
     size = sink.stat().st_size
-    assert first["fence"] == 0 and first["glob"] == 0
-    # One presence stat per owner; present owners add their ownership stamps and projection writes.
-    assert sum(scale) <= first["stat"] <= sum(scale) + 10 * present
+    assert first["fence"] == 0
+    # One presence query per owner, no body read for an absent one.
+    assert first["presence"] == sum(scale)
     assert first["loads"] <= 3 * present  # Ownership read plus the result writer's merge reads.
     rows = published(env, duty.COST_PROJECTIONS)
     assert [(row["count"], row["by_basis"], len(row["task_ids"])) for row in rows] == [
@@ -381,6 +388,6 @@ def test_a_thousand_unprojectable_owners_cost_one_stat_each_and_no_repeated_byte
     for name in counts:
         counts[name] = 0
     reconcile_abandoned_usage(env.root)
-    assert counts["fence"] == counts["glob"] == 0 and counts["loads"] <= 3 * present
+    assert counts["fence"] == 0 and counts["loads"] <= 3 * present
     assert sink.stat().st_size == size and duty_records(caplog) == []
     assert usage.usage_projection(env.root) == summary

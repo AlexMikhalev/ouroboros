@@ -1,5 +1,5 @@
-// Shared by chat_decision.test.js and question_mirrors.test.js: a small DOM stub (descendant lookup
-// by class), the chat-decision fixture and one quiz frame.
+// Shared by chat_decision.test.js, question_mirrors.test.js and chat_attachment_values.test.js: a small
+// DOM stub (descendant lookup by class), the chat-decision fixture and one quiz frame.
 import { createChatDecision } from '../modules/chat_decision.js';
 
 class Classes {

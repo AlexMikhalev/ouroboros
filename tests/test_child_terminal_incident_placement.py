@@ -24,6 +24,7 @@ from supervisor.terminal_delivery import (
     register_pending_delivery,
     replay_pending_deliveries,
 )
+from tests._store_shared import seed_result
 
 
 RAW = "RAW INTERMEDIATE OUTPUT " * 40
@@ -199,17 +200,15 @@ def test_telegram_holds_a_child_row_only_while_its_root_is_unfinished(tmp_path):
     there and follows the owner's progress toggle.
     """
     from tests.test_telegram_health_tasks import _api_with_data, _load_plugin
-    from ouroboros.task_results import task_result_path
 
     held = _load_plugin()._child_row_held_for_root
     api, data = _api_with_data(tmp_path)
     child = {"delegation_role": "subagent", "root_task_id": "root-one", "card_row": "timeline"}
     assert held(api, child), "an unreadable root counts as unfinished"
     assert held(api, {**child, "card_row": "", "system_type": "terminal_incident"})
-    path = task_result_path(data, "root-one")
-    path.write_text(json.dumps({"status": "running"}), encoding="utf-8")
+    seed_result(data, "root-one", {"status": "running"})
     assert held(api, child)
-    path.write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+    seed_result(data, "root-one", {"status": "completed"})
     assert not held(api, child)
     assert not held(api, {"card_row": "timeline", "is_progress": True}), "a root's own row is never held"
     assert not held(api, {**child, "card_row": ""}), "an ordinary child message is not a card row"

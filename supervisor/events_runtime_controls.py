@@ -447,3 +447,39 @@ def _handle_owner_message_injected(evt: Dict[str, Any], ctx: Any) -> None:
         })
     except Exception:
         log.warning("Failed to log owner_message_injected event", exc_info=True)
+
+
+def _handle_rollback_request(evt: Dict[str, Any], ctx: Any) -> None:
+    """The agent's ``vcs_rollback`` (P4-S): the UI Rollback button's own procedure, off the event
+    loop. Every writer is stopped first (the requesting task included), so the outcome reaches
+    the owner's chat, not the tool's answer; a fence refusal names its blockers there."""
+    target = str(evt.get("target") or evt.get("target_sha") or "").strip()
+    if not target:
+        return
+
+    def _restart() -> bool:
+        ctx.request_restart()
+        return True
+
+    def _run() -> None:
+        from ouroboros.gateway.control import rollback_through_door
+
+        try:
+            status, payload = rollback_through_door(target, door="vcs_rollback", request_restart=_restart)
+        except Exception as exc:  # the door raised past its own typed answers
+            status, payload = 500, {"error": str(exc)}
+        if status == 200:
+            text = (f"⏪ Rollback to {target[:12]} (agent request): {payload.get('message') or 'done'}; "
+                    f"{'the authority switch runs at the restart exit' if payload.get('switch_deferred') else 'restarting'}.")
+        else:
+            blockers = payload.get("blockers")
+            text = (f"❌ Rollback to {target[:12]} (agent request) refused: {payload.get('error') or payload.get('message') or status}"
+                    + (f"; blockers: {blockers}" if blockers else ""))
+        try:
+            st = ctx.load_state()
+            if st.get("owner_chat_id"):
+                ctx.send_with_budget(int(st["owner_chat_id"]), text, role="system", system_type="rollback_notice")
+        except Exception:
+            log.warning("rollback_request outcome not delivered: %s", text, exc_info=True)
+
+    threading.Thread(target=_run, name="agent-rollback-door", daemon=True).start()

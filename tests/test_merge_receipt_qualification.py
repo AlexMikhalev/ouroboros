@@ -20,6 +20,7 @@ from ouroboros import merge_receipts, review_ledger
 from ouroboros.tools import github
 from tests import test_pr_merge_receipts as merge_fixture
 from tests.test_pr_merge_receipts import BASE, HEAD, MERGE, TREE, _receipts
+from tests._store_shared import delete_result, read_result, seed_result, unreadable_result
 
 world = merge_fixture.world
 
@@ -254,11 +255,9 @@ def test_legacy_ambiguous_refusal_keeps_observation_custody(world):
     receipt["effect"]["failure"] = "exit"
     receipt["outcome"] = {"status": "refused"}
     # Reproduce an old persisted receipt, bypassing today's canonical join.
-    from ouroboros.task_results import task_result_path
-    path = task_result_path(world.root, "merge-task")
-    record = json.loads(path.read_text(encoding="utf-8"))
+    record = read_result(world.root, "merge-task")
     record["merge_receipts"] = [receipt]
-    path.write_text(json.dumps(record), encoding="utf-8")
+    seed_result(world.root, "merge-task", record)
     assert "PR_MERGE_UNKNOWN" in registered_merge(world)
     assert sum(c[:2] == ["pr", "merge"] for c in world.gh.calls) == 1
 
@@ -375,15 +374,13 @@ def test_cold_bounded_history_supplies_current_receipt_to_new_chat(world, monkey
 @pytest.mark.parametrize("gap", ["missing_result", "unreadable_result", "missing_receipt", "older_revision", "malformed_receipt", "other_task"])
 def test_bounded_history_discloses_unavailable_canonical_receipt(world, monkeypatch, gap):
     from ouroboros.gateway.history import make_chat_history_endpoint
-    from ouroboros.task_results import task_result_path
 
     bounded_receipt_history(world, monkeypatch)
-    result_path = task_result_path(world.root, "merge-task", create=False)
-    record = json.loads(result_path.read_text(encoding="utf-8"))
+    record = read_result(world.root, "merge-task")
     if gap == "missing_result":
-        result_path.unlink()
+        delete_result(world.root, "merge-task")
     elif gap == "unreadable_result":
-        result_path.write_text("{torn", encoding="utf-8")
+        unreadable_result(monkeypatch, "merge-task")
     else:
         if gap == "missing_receipt":
             record["merge_receipts"] = []
@@ -393,10 +390,9 @@ def test_bounded_history_discloses_unavailable_canonical_receipt(world, monkeypa
             record["merge_receipts"][0]["outcome"] = "malformed"
         else:
             # A same-id receipt from a different task must not supply truth.
-            other_path = task_result_path(world.root, "other-task")
-            other_path.write_text(json.dumps(record), encoding="utf-8")
+            seed_result(world.root, "other-task", record)
             record["merge_receipts"] = []
-        result_path.write_text(json.dumps(record), encoding="utf-8")
+        seed_result(world.root, "merge-task", record)
     source = world.root / "logs/progress.jsonl"
     before = source.read_bytes()
     response = asyncio.run(make_chat_history_endpoint(world.root)(SimpleNamespace(query_params={"chat_id": "7"})))

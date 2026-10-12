@@ -5,6 +5,7 @@ import os
 from types import SimpleNamespace
 
 import pytest
+from tests._store_shared import result_exists, result_signature, seed_result, unreadable_result
 
 
 def test_terminalization_retry_rows_prefer_one_marker_per_task_id():
@@ -259,7 +260,7 @@ def test_terminalization_retry_restore_survives_durable_result_until_event_publi
             "trigger": "worker_pool_kill",
         },
     }
-    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     snapshot_path.write_text(
         json.dumps({
             "ts": utc_now_iso(),
@@ -364,7 +365,7 @@ def test_terminalization_retry_restore_precedes_fence_validation(
         acceptance = {"invalid": True}
     else:
         budget = {"invalid": True}
-    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     snapshot_path.write_text(
         json.dumps({
             "ts": utc_now_iso(),
@@ -398,7 +399,7 @@ def test_restore_failed_depth_terminalization_preserves_snapshot_order(
     monkeypatch.setattr(queue, "QUEUE_SNAPSHOT_PATH", snapshot_path)
     queue.ACCEPTANCE_FENCES.clear()
     queue.ADMISSION_RESERVATIONS.clear()
-    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     snapshot_path.write_text(
         json.dumps({
             "ts": utc_now_iso(),
@@ -435,19 +436,9 @@ def test_restore_failed_depth_terminalization_preserves_snapshot_order(
     assert counter["value"] == 3
 
 
-@pytest.mark.parametrize(
-    "malformed",
-    [
-        b"{authority-is-not-json",
-        b"{}",
-        b'{"task_id":"another-task","status":"scheduled"}',
-    ],
-)
-def test_invalid_depth_restore_preserves_unreadable_result_authority(
-    tmp_path, monkeypatch,
-    malformed,
-):
-    """A malformed result must stay unreadable and keep its queue custody."""
+def test_invalid_depth_restore_preserves_unreadable_result_authority(tmp_path, monkeypatch):
+    """An unreadable result authority (the store refusing the row) stays untouched and
+    keeps its queue custody; the file era's unstamped/torn bodies cannot enter the store."""
     from supervisor import queue
     from ouroboros.utils import utc_now_iso
 
@@ -462,9 +453,9 @@ def test_invalid_depth_restore_preserves_unreadable_result_authority(
     queue.ADMISSION_RESERVATIONS.clear()
 
     task_id = "restore-corrupt-authority"
-    result_path = tmp_path / "task_results" / f"{task_id}.json"
-    result_path.parent.mkdir(parents=True)
-    result_path.write_bytes(malformed)
+    seed_result(tmp_path, task_id, {"task_id": task_id, "status": "scheduled"})
+    malformed = result_signature(tmp_path, task_id)
+    unreadable = unreadable_result(monkeypatch, task_id)
     task = {
         "id": task_id,
         "type": "task",
@@ -472,7 +463,7 @@ def test_invalid_depth_restore_preserves_unreadable_result_authority(
         "depth": -1,
         "budget_drive_root": str(tmp_path),
     }
-    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     snapshot_path.write_text(
         json.dumps({
             "ts": utc_now_iso(),
@@ -487,7 +478,9 @@ def test_invalid_depth_restore_preserves_unreadable_result_authority(
     assert queue.restore_pending_from_snapshot() == 0
     assert [row["id"] for row in pending] == [task_id]
     assert pending[0]["depth"] == -1
-    assert result_path.read_bytes() == malformed
+    unreadable["on"] = False
+    assert result_signature(tmp_path, task_id) == malformed
+    unreadable["on"] = True
     persisted = json.loads(snapshot_path.read_text(encoding="utf-8"))
     assert persisted["pending"][0]["task"]["_terminalization_retry"]["trigger"] == "pending_result_authority"
 
@@ -513,7 +506,8 @@ def test_invalid_depth_restore_preserves_unreadable_result_authority(
     workers.assign_tasks()
 
     assert [row["id"] for row in pending] == [task_id]
-    assert result_path.read_bytes() == malformed
+    unreadable["on"] = False
+    assert result_signature(tmp_path, task_id) == malformed
     assert worker.busy_task_id is None
 
 
@@ -636,7 +630,7 @@ def test_terminalization_retry_snapshot_bypasses_depth_gate_and_is_not_dispatcha
             "trigger": "worker_pool_kill",
         },
     }
-    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     ordinary = {
         "id": task["id"], "type": "task", "chat_id": 0, "depth": 0,
     }
@@ -729,5 +723,5 @@ def test_evolution_cleanup_preserves_unresolved_invalid_depth_rows(
     if evolution_block:
         assert load_task_result(tmp_path, sibling["id"])["status"] == STATUS_CANCELLED
     else:
-        assert not (tmp_path / "task_results" / f"{sibling['id']}.json").exists()
-    assert not (tmp_path / "task_results" / f"{task['id']}.json").exists()
+        assert not result_exists(tmp_path, sibling['id'])
+    assert not result_exists(tmp_path, task['id'])

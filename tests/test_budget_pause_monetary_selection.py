@@ -211,7 +211,7 @@ def test_stop_and_unpublished_or_unknown_selection_authority_admit_nothing(tmp_p
     assert stopped == {"ok": False, "error": "cancel_intent_active"}, stopped
     assert _reserve(tmp_path, CHILD) == FENCED
 
-    (tmp_path / "state" / "queue_snapshot.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / "state" / "queue_dispatch.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(UsageAccountingError, match="root budget fence authority unavailable"):
         _reserve(tmp_path, CHILD)
 

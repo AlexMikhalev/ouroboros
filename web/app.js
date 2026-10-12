@@ -27,6 +27,7 @@ import { initUpdates } from './modules/updates.js';
 import { initActivity } from './modules/activity.js';
 import { initUpdateStatus } from './modules/update_status.js';
 import { initDashboard } from './modules/dashboard.js';
+import { initStorage } from './modules/storage.js';
 import { hydrateNavIcons } from './modules/page_icons.js';
 
 import { fmt, markBootRead, pendingBootRead, refreshDictionary, setLanguage, storedLanguage, tr } from './modules/i18n.js';
@@ -944,6 +945,7 @@ const disposeEvolution = initEvolution({ ...ctx, mount: document.getElementById(
 initUpdates({ ...ctx, mount: document.getElementById('dashboard-panel-updates') });
 initActivity({ ...ctx, mount: document.getElementById('dashboard-panel-activity') });
 initCosts({ ...ctx, mount: document.getElementById('dashboard-panel-costs') });
+const disposeStorage = initStorage({ ...ctx, mount: document.getElementById('dashboard-panel-storage') });
 initSkills(ctx);
 initWidgets(ctx);
 initUpdateStatus(ctx);
@@ -955,6 +957,7 @@ const disposeScrollFades = Array.from(document.querySelectorAll('.scroll-fade-y'
 window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
     disposeEvolution();
+    disposeStorage?.destroy();
     disposeMatrixRain();
     disposeScrollFades.forEach((dispose) => dispose());
 });

@@ -576,8 +576,13 @@ def test_delegated_audit_failure_is_typed_unknown_never_clean(qenv, monkeypatch)
     )
     assert "DELEGATED RUN STATE UNKNOWN" in event["text"]
 
-    # The pending-invocation audit failure surfaces the same way.
+    # The pending-invocation audit failure surfaces the same way (the shared snapshot
+    # read failed first, so each projection reads for itself).
+    from ouroboros import delegate_terminal
+
     monkeypatch.setattr(dc, "open_runs", lambda *a, **kw: [])
+    monkeypatch.setattr(delegate_terminal, "custody_audit_snapshot",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("snapshot unreadable")))
 
     def _boom2(*a, **kw):
         raise RuntimeError("pending rows unreadable")

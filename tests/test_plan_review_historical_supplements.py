@@ -19,6 +19,7 @@ from ouroboros.review_records import ReviewActorRecord, ReviewRequest, ReviewSlo
 from ouroboros.tools import plan_review_artifacts as artifacts
 from ouroboros.tools import plan_review_collect as collect
 from ouroboros.tools.plan_review_runtime import plan_reviewer_config_fingerprint
+from tests._store_shared import result_signature
 
 TASK = "history-task"
 A, B, C = "a" * 64, "b" * 64, "c" * 64
@@ -244,10 +245,9 @@ def test_supervisor_event_is_explicit_recovery_and_get_projection_is_readonly(tm
     a, req, slots = wave(tmp_path, count=1)
     wave(tmp_path, B, cycle=2, count=0, closed=True)
     actor, _ = complete(tmp_path, a, req, slots[0])
-    path = tr.task_result_path(tmp_path, TASK)
-    before = path.read_bytes()
+    before = result_signature(tmp_path, TASK)
     state(tmp_path)
-    assert path.read_bytes() == before
+    assert result_signature(tmp_path, TASK) == before
     ctx = SimpleNamespace(DRIVE_ROOT=tmp_path, RUNNING={}, bridge=SimpleNamespace(push_log=lambda value: None))
     _handle_review_late_result({"type": "review_late_result", "surface": "plan_review", "task_id": TASK,
                                "operation_id": actor.operation_id}, ctx)

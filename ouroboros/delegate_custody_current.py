@@ -1,39 +1,42 @@
-"""Current delegated custody for bookkeeping; evidence replay stays explicit.
+"""The store half of delegated custody: one row per run, reduced by the existing reducer.
 
-Open runs, pending starts, undisposed patches and owned registrations live in
-``custody_open``. Closing a run also owes an addressed terminal-result refresh;
-its receipt travels in ``delegated_runs`` until that refresh lands. The existing
-reducer defines every run field. The boot/periodic sweep binds current reads so
-nested custody helpers cannot accidentally cold-fold the historical chain.
+``custody_runs`` is the authority for every run (indexed by task, project and invocation;
+``state`` is the custody hold: ``held`` while the run is open, owned or holds an undisposed
+patch, ``closed`` after). A pending start is the owner-held ``custody_open`` row
+``invocation:<id>`` until its STARTED or definite refusal; a definite refusal moves it to
+``custody_refused`` so the id's fate stays answerable. The task-scoped facts the evidence
+reader needs without a run (the nudge stamp, a blocked attempt, patch verdicts) are the
+``custody_marks`` row of the task. Closing a run also owes an addressed terminal-result
+refresh; its receipt travels in ``delegated_runs`` until that refresh lands.
+
+``publish`` is ONE ``BEGIN IMMEDIATE``: the reduced rows and the event's outbox row commit
+together; the chain append follows, and the outbox row is deleted only once the append
+confirmed. ``fold`` is the importer's single pass over the retained chain.
 """
 from __future__ import annotations
 
-import contextvars
-from contextlib import contextmanager
+import logging
+import os
 from copy import deepcopy
-from pathlib import Path
+from json import loads as json_loads
+from dataclasses import fields
+from typing import Any, Callable, Dict, List, Optional
 
-from ouroboros import obligations as o
+from ouroboros import store
+from ouroboros.utils import append_jsonl
 
-_CURRENT = contextvars.ContextVar("current_custody_root", default=None)
+log = logging.getLogger(__name__)
 
-
-def active(root) -> bool:
-    return _CURRENT.get() == str(Path(root).resolve())
-
-
-@contextmanager
-def current_reads(root):
-    token = _CURRENT.set(str(Path(root).resolve()))
-    try:
-        yield
-    finally:
-        _CURRENT.reset(token)
+HELD, CLOSED = "held", "closed"
+MARK_TYPES = ("delegate_run_patch_verdict",)  # task-scoped rows kept whole on the marks row
+# Task-scoped attempt facts without a run: the evidence reader's ``nanny_nudge_recorded`` and
+# ``delegate_start_attempted`` (the constants live beside that reader).
+_NUDGE = "delegate_run_nanny_nudge_injected"
+_ATTEMPTS = ("delegate_run_start_requested", "delegate_run_start_blocked", "delegate_run_configured_startup_fault")
 
 
 def _decode(raw):
     from ouroboros.delegate_custody import RunCustody
-    from dataclasses import fields
     raw = deepcopy(raw)  # Reducer mutations must not also mutate the comparison snapshot.
     entry = RunCustody(**{f.name: raw[f.name] for f in fields(RunCustody) if f.name in raw})
     entry.verified_source_ranges = [tuple(pair) for pair in entry.verified_source_ranges]
@@ -44,122 +47,369 @@ def _decode(raw):
     return entry
 
 
-def _held(entry):
+def _held(entry) -> bool:
     return (not entry.settled or entry.project_owned
             or ((entry.snapshot_id or (entry.resource_ref.get("workspace_kind") == "directory"
                                       and entry.resource_ref.get("strategy") == "copy"))
                 and not entry.patch_disposed))
 
 
-def state(root):
-    return {key[4:]: _decode(facts["custody"]) for key, facts in o.members(root, "custody_open").items()
-            if key.startswith("run:")}
+def _decode_all(rows: Dict[str, Dict[str, Any]]):
+    return {rid: _decode(facts) for rid, facts in rows.items()}
+
+
+
+def runs(root, where: str = "", params: tuple = ()):
+    """Custody selected by typed columns (all runs when unfiltered)."""
+    with store.open_store(root, write=False) as txn:
+        return _decode_all(txn.custody_rows(where, params))
+
+
+def run(root, run_id: str):
+    with store.open_store(root, write=False) as txn:
+        facts = txn.custody_row(str(run_id or ""))
+    return None if facts is None else _decode(facts)
+
+
+def tree_task_ids(root, tree_id: str) -> List[str]:
+    """Every task of a tree that ever delegated (a bound run, a pending or a refused request) —
+    the census the root's sleep check needs for members whose result row is gone (one SQL pass
+    over the run facts, no Python decode, plus the request rows)."""
+    tree = str(tree_id or "")
+    with store.open_store(root, write=False) as txn:
+        ids = {record["task_id"] for record in txn.conn.execute(
+            "SELECT DISTINCT task_id FROM custody_runs WHERE task_id<>'' AND "
+            "(json_extract(facts, '$.root_task_id')=? OR (json_extract(facts, '$.root_task_id')='' AND task_id=?))",
+            (tree, tree))}
+        for name in ("custody_open", "custody_refused"):
+            for facts in txn.set_rows(name).values():
+                request = facts.get("request") if isinstance(facts.get("request"), dict) else {}
+                tid = str(request.get("task_id") or "")
+                if tid and str(request.get("root_task_id") or tid) == tree:
+                    ids.add(tid)
+    return sorted(ids)
+
+
+def tree_billing_group(root, tree_id: str) -> Optional[Dict[str, Any]]:
+    """The admission bucket a tree's delegated starts carried (a bound run's request, else a
+    pending request): the late settlement's lineage when no execution scope is active."""
+    tree = str(tree_id or "")
+    with store.open_store(root, write=False) as txn:
+        carried = [json_loads(record["facts"]) for record in txn.conn.execute(
+            "SELECT facts FROM custody_runs WHERE json_extract(facts, '$.billing_group.billing_group_id')<>'' AND "
+            "(json_extract(facts, '$.root_task_id')=? OR (json_extract(facts, '$.root_task_id')='' AND task_id=?)) "
+            "ORDER BY updated_at, run_id", (tree, tree))]
+        requests = _pending_rows(txn)
+    for facts in carried:
+        group = facts.get("billing_group") or {}
+        if "billing_group_limit_usd" in group:
+            return dict(group)
+    for request in requests:
+        group = request.get("billing_group") or {}
+        if (str(request.get("root_task_id") or request.get("task_id") or "") == tree
+                and group.get("billing_group_id") and "billing_group_limit_usd" in group):
+            return dict(group)
+    return None
+
+
+def marks(root, task_id: str) -> Dict[str, Any]:
+    with store.open_store(root, write=False) as txn:
+        return txn.get_row("custody_marks", str(task_id or "")) or {}
+
+
+def _pending_rows(txn) -> List[Dict[str, Any]]:
+    return [facts["request"] for key, facts in txn.set_rows("custody_open").items() if key.startswith("invocation:")]
 
 
 def pending(root):
     from ouroboros.delegate_pending import pending_invocations
-    rows = [facts["request"] for key, facts in o.members(root, "custody_open").items()
-            if key.startswith("invocation:")]
+
+    with store.open_store(root, write=False) as txn:
+        rows = _pending_rows(txn)
     return pending_invocations(root, rows=rows)
 
 
-def snapshot(root):
-    runs = {}
-    for facts in o.members(root, "delegated_runs").values():
-        runs.update({rid: _decode(raw) for rid, raw in facts.get("closed_runs", {}).items()})
-    runs.update(state(root))
-    return {"state": runs, "pending": pending(root), "current": True}
+def task_snapshot(root, task_id: str):
+    """ONE transaction's view of a task: its runs and its pending invocations (a request that
+    becomes STARTED between two reads lands in exactly one of them)."""
+    from ouroboros.delegate_pending import pending_invocations
+
+    mine = str(task_id or "")
+    with store.open_store(root, write=False) as txn:
+        runs_by_id, requests = txn.custody_rows("task_id=?", (mine,)), _pending_rows(txn)
+    requests = [row for row in requests if str(row.get("task_id") or "") == mine]
+    return {"runs": _decode_all(runs_by_id), "pending": pending_invocations(root, rows=requests)}
 
 
-@contextmanager
-def publication(root, event):
-    """Publish before append, then merge discharge with current state after it.
+def invocation(root, invocation_id: str, request_facts: Callable) -> Optional[Dict[str, Any]]:
+    """``invocation_record``'s store answer: pending row, bound run, or definite refusal."""
+    with store.open_store(root, write=False) as txn:
+        requested = txn.get_row("custody_open", f"invocation:{invocation_id}")
+        bound = txn.custody_rows("invocation_id=?", (invocation_id,)) if requested is None else {}
+        refused = txn.get_row("custody_refused", invocation_id) if requested is None and not bound else None
+    if requested is not None:
+        return {**request_facts(root, requested["request"]), "state": "pending", "run_id": ""}
+    if bound:
+        rid, facts = next(iter(bound.items()))
+        if facts.get("request_event"):
+            return {**request_facts(root, facts["request_event"]), "state": "started", "run_id": rid}
+        return None
+    if refused is not None:
+        return {**request_facts(root, refused["request"]), "state": "failed_definite", "run_id": ""}
+    return None
 
-    The append may invoke a result writer (result lock -> obligations lock).
-    Never hold the obligations lock across that callback or await another owner.
-    A set update that fails (unreadable, contended, a disk error) never stops the row: it owes
-    a rebuild. The next start adds what the retained chain holds and the set lacks; a missed
-    discharge stays an open candidate until the reconcile sweep settles it again.
-    """
+
+def unreadable(root) -> bool:
+    """Whether the store cannot answer custody (the ``custody_log_unreadable`` of the store era)."""
+    try:
+        with store.open_store(root, write=False) as txn:
+            txn.phase()
+        return False
+    except store.StoreError:
+        return True
+
+
+def snapshot(root, closed: bool = True):
+    """One read: held runs and pending invocations, optionally including owed closing receipts."""
+    with store.open_store(root, write=False) as txn:
+        debts = txn.set_rows("delegated_runs") if closed else {}
+        held = txn.custody_rows("state=?", (HELD,))
+        invocations = _pending_rows(txn)
+    from ouroboros.delegate_pending import pending_invocations
+
+    state = {}
+    for facts in debts.values():
+        state.update({rid: _decode(raw) for rid, raw in facts.get("closed_runs", {}).items()})
+    state.update(_decode_all(held))
+    return {"state": state, "pending": pending_invocations(root, rows=invocations), "current": True}
+
+
+
+def _reduce(txn, event: Dict[str, Any], state: Dict[str, Any], marks_by_task: Dict[str, Dict[str, Any]]) -> None:
+    """Apply ONE event to the rows it touches (``state`` holds the decoded runs the caller
+    loaded; a PROJECT_RETIRED needs its project's siblings, a STARTED its invocation row)."""
     from ouroboros import delegate_custody as c
 
-    rid, iid = str(event.get("run_id") or ""), str(event.get("invocation_id") or "")
-    kind = event["type"]
-
-    def publish():
-        with o.locked(root):
-            rows = o._read(root, "custody_open", missing_ok=True)
-            before = dict(rows)
-            # Work is addressable before its source event can be lost.
-            if kind == c.START_REQUESTED and iid:
-                rows.setdefault(f"invocation:{iid}", {"request": event})
-            runs = {key[4:]: _decode(facts["custody"]) for key, facts in rows.items() if key.startswith("run:")}
-            c._apply(runs, event)
-            if kind == c.STARTED and rid in runs:
-                rows[f"run:{rid}"] = {"custody": vars(runs[rid])}
-            if rows != before:
-                o._write(root, "custody_open", rows)
-
-    def discharge():
-        with o.locked(root):
-            rows = o._read(root, "custody_open", missing_ok=True)
-            before = dict(rows)
-            runs = {key[4:]: _decode(facts["custody"]) for key, facts in rows.items() if key.startswith("run:")}
-            # Even with no STARTED in the set, retained closing receipts can accept
-            # later output/patch facts without reading the event chain.
-            debts = o._read(root, "delegated_runs", missing_ok=True)
-            prior_debts = {key: dict(value) for key, value in debts.items()}
-            if rid and rid not in runs:
-                for facts in debts.values():
-                    raw = facts.get("closed_runs", {}).get(rid)
-                    if raw:
-                        runs[rid] = _decode(raw)
-                        break
-            c._apply(runs, event)
-            for run_id, entry in runs.items():
-                if entry.settled and entry.task_id:
-                    facts = dict(debts.get(entry.task_id, {}))
-                    receipts = dict(facts.get("closed_runs", {}))
-                    receipts[run_id] = vars(entry)
-                    debts[entry.task_id] = {**facts, "task_id": entry.task_id, "closed_runs": receipts}
-                if _held(entry):
-                    rows[f"run:{run_id}"] = {"custody": vars(entry)}
-                else:
-                    rows.pop(f"run:{run_id}", None)
-            if iid and (kind == c.STARTED or (kind == c.START_FAILED and event.get("definite") is True)):
-                rows.pop(f"invocation:{iid}", None)
-            # Publish the closing receipt before dropping its open-custody member.
-            if debts != prior_debts:
-                o._write(root, "delegated_runs", debts)
-            if rows != before or not o.path(root, "custody_open").exists():
-                o._write(root, "custody_open", rows)
-
-    o._bookkeeping(root, "custody", publish)
-    landed = [False]
-    yield landed
-    if landed[0]:
-        o._bookkeeping(root, "custody discharge", discharge)
+    kind, rid, iid = str(event.get("type") or ""), str(event.get("run_id") or ""), str(event.get("invocation_id") or "")
+    tid = str(event.get("task_id") or "")
+    if kind == c.START_REQUESTED and iid:
+        key = f"invocation:{iid}"
+        if (txn.get_row("custody_open", key) is None and txn.get_row("custody_refused", iid) is None
+                and not txn.custody_rows("invocation_id=?", (iid,))):  # a replayed request of an answered invocation re-opens nothing
+            txn.put_row("custody_open", key, {"request": event})
+    before = {run_id: deepcopy(vars(entry)) for run_id, entry in state.items()}
+    c._apply(state, event)
+    if kind == c.STARTED and rid in state:
+        request = txn.get_row("custody_open", f"invocation:{iid}") if iid else None
+        if request is not None:
+            state[rid].request_event = dict(request["request"])
+            group = request["request"].get("billing_group")
+            state[rid].billing_group = dict(group) if isinstance(group, dict) else {}
+    for run_id, entry in state.items():
+        facts = vars(entry)
+        if facts != before.get(run_id):
+            txn.put_custody(run_id, facts, state=HELD if _held(entry) else CLOSED)
+            if entry.settled and entry.task_id:
+                # The closing receipt and the custody row commit together; a later fact on a
+                # settled run (its patch disposition, its output ack) refreshes the receipt.
+                debt = txn.get_row("delegated_runs", entry.task_id)
+                if debt is not None or (run_id == rid and kind in (c.SETTLED, c.CLOSED_ABSENT)):
+                    debt = dict(debt or {})
+                    receipts = {**debt.get("closed_runs", {}), run_id: facts}
+                    txn.put_row("delegated_runs", entry.task_id, {**debt, "task_id": entry.task_id, "closed_runs": receipts})
+    if iid and (kind == c.STARTED or (kind == c.START_FAILED and event.get("definite") is True)):
+        request = txn.get_row("custody_open", f"invocation:{iid}")
+        txn.delete_row("custody_open", f"invocation:{iid}")
+        if kind == c.START_FAILED and request is not None:
+            txn.put_row("custody_refused", iid, {"request": request["request"], "failure": event})
+    if tid and (kind in MARK_TYPES or (not rid and kind in (_NUDGE, *_ATTEMPTS))):
+        mark = marks_by_task.setdefault(tid, txn.get_row("custody_marks", tid) or {"task_id": tid})
+        _mark(mark, event)
+        txn.put_row("custody_marks", tid, mark)
 
 
-def rebuild(root, *, replace=False):
+def _mark(mark: Dict[str, Any], event: Dict[str, Any]) -> None:
+    from ouroboros import delegate_custody as c
+
+    kind = str(event.get("type") or "")
+    if kind == _NUDGE:
+        mark["nanny_nudge"] = True
+    elif kind in _ATTEMPTS:
+        if not c.review_owned_source(event.get("source")):
+            mark["start_attempted"] = True
+    elif kind in MARK_TYPES:
+        verdicts = list(mark.get("patch_verdicts", []))
+        verdicts.append({key: value for key, value in event.items() if key != "event_id"})
+        mark["patch_verdicts"] = verdicts
+
+
+def _loaded(txn, event: Dict[str, Any]) -> Dict[str, Any]:
+    """The runs ONE event may touch: its own, plus its project's siblings for a retirement."""
+    from ouroboros import delegate_custody as c
+
+    rid = str(event.get("run_id") or "")
+    state = {}
+    if str(event.get("type") or "") == c.PROJECT_RETIRED:
+        project_id = str(event.get("project_id") or "")
+        if rid and not project_id:
+            own = txn.custody_row(rid)
+            project_id = str((own or {}).get("project_id") or "")
+        if project_id:
+            state.update(_decode_all(txn.custody_rows("project_id=?", (project_id,))))
+    if rid and rid not in state:
+        facts = txn.custody_row(rid)
+        if facts is not None:
+            state[rid] = _decode(facts)
+    if str(event.get("type") or "") == c.STARTED:
+        prior = str(event.get("continuation_of") or "")
+        if prior and prior not in state:
+            facts = txn.custody_row(prior)
+            if facts is not None:
+                state[prior] = _decode(facts)  # ``_supersede`` hands the snapshot over
+    return state
+
+
+def publish(root, event: Dict[str, Any]) -> bool:
+    """Returns whether custody + outbox COMMITTED; append failure does not undo custody.
+    A failed append keeps the outbox for the next flush, so the chain never leads the store.
+    Transaction/append ordering: module docstring."""
+    try:
+        with store.open_store(root, write=True) as txn:
+            _reduce(txn, event, _loaded(txn, event), {})
+            txn.outbox_put(event)
+    except store.StoreError as exc:
+        log.warning("Custody %s not recorded under %s (%s)", event.get("type"), root, type(exc).__name__)
+        return False
+    flush_outbox(root)
+    return True
+
+
+CHAIN_BOUNDARY = "custody_chain_offset"  # meta: the chain's length after this store's last own row
+
+
+def flush_outbox(root) -> int:
+    """Append every parked event to the chain, oldest first; delete each row once its append
+    confirmed. Idempotent: a replayed append carries the same ``event_id`` the fold dedups."""
+    from ouroboros.delegate_custody import chain_length, event_log_path
+
+    try:
+        with store.open_store(root, write=False) as txn:
+            parked = txn.outbox_rows()
+    except store.StoreError:
+        return 0
+    appended = 0
+    for event in parked:
+        try:
+            if not _append_durable(event_log_path(root), event):
+                break
+            boundary = chain_length(event_log_path(root))  # this store's own rows end here: P6' applies only what follows
+            with store.open_store(root, write=True) as txn:
+                txn.outbox_delete(str(event.get("event_id") or ""))
+                txn.set_meta(CHAIN_BOUNDARY, max(int(txn.meta(CHAIN_BOUNDARY) or 0), boundary))
+        except (store.StoreError, OSError):
+            log.warning("custody outbox flush interrupted under %s", root, exc_info=True)
+            break
+        appended += 1
+    return appended
+
+
+def _append_durable(path, event: Dict[str, Any]) -> bool:
+    """The chain append an outbox delete may follow: under the chain's append lock (never the
+    unlocked fallback), the line boundary restored when the file ends mid-line, the bytes
+    fsynced — and the directory on create — before ``True``. A death after ``True`` leaves at
+    most a replayed ``event_id`` the fold dedups; a death before it leaves the outbox row. The
+    general ``append_jsonl`` keeps its fast path for the observational logs."""
+    created = not path.exists()
+    if not append_jsonl(path, event, ensure_record_boundary=True, require_lock=True):
+        return False
+    try:
+        fd = os.open(str(path), os.O_RDWR | os.O_APPEND)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        log.warning("custody chain append not durable under %s", path.parent, exc_info=True)
+        return False
+    if created:
+        store.fsync_directory(path.parent)
+    return True
+
+
+def outbox_depth(root) -> int:
+    with store.open_store(root, write=False) as txn:
+        return len(txn.outbox_rows())
+
+
+
+def fold(rows) -> Dict[str, Any]:
+    """Fold a retained chain ONCE into every custody table's rows: ``runs`` (facts by run
+    id, with the hold state), ``open`` (pending invocation rows), ``refused``, ``marks``."""
+    from ouroboros import delegate_custody as c
+
+    state: Dict[str, Any] = {}
+    requests: Dict[str, Dict[str, Any]] = {}
+    pending_ids: List[str] = []
+    refused: Dict[str, Dict[str, Any]] = {}
+    marks_by_task: Dict[str, Dict[str, Any]] = {}
+    for row in c._unique_rows(rows):
+        kind, rid, iid = str(row.get("type") or ""), str(row.get("run_id") or ""), str(row.get("invocation_id") or "")
+        tid = str(row.get("task_id") or "")
+        if kind == c.START_REQUESTED and iid and iid not in requests:
+            requests[iid] = row
+            pending_ids.append(iid)
+        c._apply(state, row)
+        if kind == c.STARTED and rid in state and iid in requests:
+            state[rid].request_event = dict(requests[iid])
+            group = requests[iid].get("billing_group")
+            state[rid].billing_group = dict(group) if isinstance(group, dict) else {}
+        if iid and iid in requests and (kind == c.STARTED or (kind == c.START_FAILED and row.get("definite") is True)):
+            if iid in pending_ids:
+                pending_ids.remove(iid)
+                if kind == c.START_FAILED:
+                    refused[iid] = {"request": requests[iid], "failure": row}
+        if tid and (kind in MARK_TYPES or (not rid and kind in (_NUDGE, *_ATTEMPTS))):
+            _mark(marks_by_task.setdefault(tid, {"task_id": tid}), row)
+    return {
+        "runs": {rid: (vars(entry), HELD if _held(entry) else CLOSED) for rid, entry in state.items()},
+        "open": {f"invocation:{iid}": {"request": requests[iid]} for iid in pending_ids},
+        "refused": refused,
+        "marks": marks_by_task,
+    }
+
+
+def write_fold(txn, folded: Dict[str, Any], *, replace: bool) -> None:
+    """Write a fold's rows on an open transaction (the importer's build, the explicit rebuild)."""
+    if replace:
+        txn.conn.execute("DELETE FROM custody_runs")
+    for rid, (facts, hold) in folded["runs"].items():
+        txn.put_custody(rid, facts, state=hold)
+    for name in ("refused", "marks"):
+        for identity, facts in folded[name].items():
+            txn.put_row(f"custody_{name}", identity, facts)
+    held = txn.set_rows("custody_open")
+    merged = dict(folded["open"]) if replace else {**folded["open"], **held}
+    for key in set(held) - set(merged):
+        txn.delete_row("custody_open", key)
+    for key, facts in merged.items():
+        if held.get(key) != facts:
+            txn.put_row("custody_open", key, facts)
+
+
+def rebuild(root, *, replace=False) -> int:
     """Explicit migration/repair only: fold the retained chain once."""
     from ouroboros import delegate_custody as c
-    if c.custody_log_unreadable(root):
-        raise o.ObligationsUnavailable("custody event chain is unreadable")
-    rows = tuple(c._iter_rows(c.event_log_path(root)))
-    runs = c.replay(root, rows=rows)
-    result = {f"run:{rid}": {"custody": vars(entry)} for rid, entry in runs.items() if _held(entry)}
-    for entry in c.pending_invocations(root, rows=rows):
-        result[f"invocation:{entry['invocation_id']}"] = {"request": {"type": c.START_REQUESTED, **entry}}
-    with o.locked(root):
-        # Migration runs before producers. On an interrupted import, any
-        # already-published obligations remain extra candidates.
-        if not replace:
-            result.update(o._read(root, "custody_open", missing_ok=True))
-        o._write(root, "custody_open", result)
-        debts = o._read(root, "delegated_runs", missing_ok=True)
+    from ouroboros.obligations import ObligationsUnavailable
+
+    if c.custody_chain_unreadable(root):
+        raise ObligationsUnavailable("custody event chain is unreadable")
+    folded = fold(tuple(c._iter_rows(c.event_log_path(root))))
+    with store.open_store(root, write=True) as txn:
+        write_fold(txn, folded, replace=replace)
+        debts = txn.set_rows("delegated_runs")
         for tid, facts in debts.items():
-            facts["closed_runs"] = {**facts.get("closed_runs", {}), **{
-                rid: vars(entry) for rid, entry in runs.items() if entry.task_id == tid and entry.settled}}
-        o._write(root, "delegated_runs", debts)
-    return len(result)
+            receipts = {rid: run_facts for rid, (run_facts, _hold) in folded["runs"].items()
+                        if run_facts.get("task_id") == tid and run_facts.get("settled")}
+            if receipts:
+                txn.put_row("delegated_runs", tid, {**facts, "closed_runs": {**facts.get("closed_runs", {}), **receipts}})
+    return len(folded["runs"]) + len(folded["open"])

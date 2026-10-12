@@ -12,6 +12,7 @@ from ouroboros.tools import control
 from ouroboros.tools.control_scheduling import _build_child_subagent_contract
 from ouroboros.tools.registry import ToolRegistry
 from supervisor.task_dispatch import build_scheduled_task_payload
+from tests._store_shared import read_result
 
 
 def _settings(kind="api_model"):
@@ -110,8 +111,7 @@ def test_declared_child_excludes_prior_carriers_keeps_authority_and_restarts(
     assert event["requested_executor"] == "native"
     assert "effective_model_lane" not in event and "model" not in event
 
-    saved = json.loads((registry._ctx.drive_root / "task_results" / f"{event['task_id']}.json")
-                       .read_text(encoding="utf-8"))
+    saved = read_result(registry._ctx.drive_root, event["task_id"])
     assert saved["task_contract"] == selected
     task = build_scheduled_task_payload({
         **event, "tid": event["task_id"], "parent_id": "parent",

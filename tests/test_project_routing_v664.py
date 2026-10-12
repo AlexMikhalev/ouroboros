@@ -4,6 +4,7 @@ import pathlib
 import types
 
 import pytest
+from tests._store_shared import unreadable_result
 
 
 class _ImmediateThread:
@@ -131,7 +132,8 @@ def test_project_fast_route_stages_attachment_in_actor_child_drive(tmp_path):
     assert "child-drive-readable" in _read_file(
         tool_ctx, manifest[0]["relpath"], root="artifact_store",
     )
-    assert notices and "status=staged" in notices[-1]
+    # A landed delivery publishes no row: the receipt the caller records carries the stashed report.
+    assert notices == [] and "status=staged" in metadata["_attachment_report"]
 
 
 def test_project_swarm_bypasses_single_root_mailbox_for_new_managed_root(tmp_path, monkeypatch):
@@ -509,158 +511,92 @@ def test_project_room_decision_turn_carries_last_task_result_ground_truth(tmp_pa
     assert "result" not in last and "RAW TEXT" not in str(last)
 
 
-@pytest.mark.parametrize("shape", ["group_crosses_the_window", "group_in_the_self_heal_tail", "equal_ts", "empty_ts"])
-def test_project_last_task_result_tie_order_is_total(tmp_path, monkeypatch, shape):
-    """The tie order is TOTAL: an equal-mtime group that crosses the 64-entry
-    search window is read to its end, a group met in the self-heal tail obeys
-    the same rule, a present `ts` beats an absent one, and equal `ts` falls
-    back to the task id deterministically. The production order is (mtime,
-    file name), so the file NAMES are chosen to sort adversely — the older or
-    key-less row ahead of the newer one — and the listing order is irrelevant."""
-    import json
-    import os
-
+@pytest.mark.parametrize("shape", ["many_foreign_rows", "equal_ts", "empty_ts"])
+def test_project_last_task_result_tie_order_is_total(tmp_path, shape):
+    """The order is TOTAL and the store's own: the project's root rows newest first by the
+    durable ``ts``, a present ``ts`` beats an absent one, and equal ``ts`` falls back to the
+    task id deterministically — however many newer foreign rows exist, and whatever order the
+    ids sort in (the older or key-less row is named to sort ahead of the newer one)."""
     import server
-    from ouroboros import task_results as task_results_module
-    from ouroboros.projects_registry import create_project, update_project
-    from ouroboros.task_results import task_results_dir, write_task_result
+    from ouroboros.projects_registry import create_project, get_project, update_project
+    from ouroboros.task_results import write_task_result
+    from ouroboros.task_store import patch_document
 
     create_project(tmp_path, "racer", name="Racer")
-    if shape == "group_crosses_the_window":
-        # Sorted by name: a00..a62 (foreign), y_old at index 63, z_new at 64 —
-        # the newer row is the FIRST entry past the window.
-        foreign = [f"a{i:02d}" for i in range(63)]
-        for name in foreign:
+    if shape == "many_foreign_rows":
+        for name in (f"a{i:02d}" for i in range(64)):
             write_task_result(tmp_path, name, "completed", project_id="boat", objective="c", ts="2026-08-10T00:00:03Z")
         write_task_result(tmp_path, "y_old", "completed", project_id="racer", objective="a", ts="2026-08-10T00:00:01Z")
         write_task_result(tmp_path, "z_new", "completed", project_id="racer", objective="b", ts="2026-08-10T00:00:02Z")
-        listing = foreign + ["y_old", "z_new"]
-        expected = "z_new"
-    elif shape == "group_in_the_self_heal_tail":
-        # Sorted by name: a00..a63 (foreign) fill the window; both project rows
-        # are met only by the self-heal tail, the older one first.
-        foreign = [f"a{i:02d}" for i in range(64)]
-        for name in foreign:
-            write_task_result(tmp_path, name, "completed", project_id="boat", objective="c", ts="2026-08-10T00:00:03Z")
-        write_task_result(tmp_path, "y_old", "completed", project_id="racer", objective="a", ts="2026-08-10T00:00:01Z")
-        write_task_result(tmp_path, "z_new", "completed", project_id="racer", objective="b", ts="2026-08-10T00:00:02Z")
-        listing = foreign + ["y_old", "z_new"]
         expected = "z_new"
     elif shape == "equal_ts":
         write_task_result(tmp_path, "a", "completed", project_id="racer", objective="a", ts="2026-08-10T00:00:01Z")
         write_task_result(tmp_path, "b", "completed", project_id="racer", objective="b", ts="2026-08-10T00:00:01Z")
-        listing = ["a", "b"]
-        expected = "b"  # equal ts: the greater task id, whatever the listing order
+        expected = "b"  # equal ts: the greater task id
     else:
-        # Sorted by name the key-less row comes FIRST; the stamped row must win.
         write_task_result(tmp_path, "b_stamped", "completed", project_id="racer", objective="a", ts="2026-08-10T00:00:01Z")
         write_task_result(tmp_path, "a_keyless", "completed", project_id="racer", objective="b", ts="2026-08-10T00:00:02Z")
-        keyless = task_results_dir(tmp_path, create=False) / "a_keyless.json"
-        stripped = json.loads(keyless.read_text(encoding="utf-8"))
-        for key in ("ts", "updated_at"):  # the store always stamps both; a foreign/legacy row may lack them
-            stripped.pop(key, None)
-        keyless.write_text(json.dumps(stripped), encoding="utf-8")
-        listing = ["a_keyless", "b_stamped"]
+        # The writer always stamps both; a foreign/legacy row may lack them.
+        patch_document(tmp_path, "a_keyless", lambda row: {k: v for k, v in row.items() if k not in ("ts", "updated_at")})
         expected = "b_stamped"  # a present ts beats an absent one
-    real_dir = task_results_dir(tmp_path, create=False)
-    tick = 1_700_000_000 * 10**9
-    for path in real_dir.glob("*.json"):
-        os.utime(path, ns=(tick, tick))  # every result in ONE tie group
 
-    class _Listing:  # the real directory with a controlled listing order
-        def __init__(self, order):
-            self.paths = [real_dir / f"{name}.json" for name in order]
-
-        def glob(self, pattern):
-            return iter(self.paths)
-
-        def __truediv__(self, name):
-            return real_dir / name
-
-    from ouroboros.projects_registry import get_project
-
-    for order in (listing, list(reversed(listing))):
-        update_project(tmp_path, "racer", last_task_result_id="")  # the scan, not the pointer, is under test
-        monkeypatch.setattr(task_results_module, "task_results_dir", lambda root, create=True, order=order: _Listing(order))
-        assert server._latest_project_task_result(_ctx(tmp_path), "racer")["task_id"] == expected
-        # The selected row — never an arbitrary tied one — became the durable pointer.
-        assert get_project(tmp_path, "racer")["last_task_result_id"] == expected
+    update_project(tmp_path, "racer", last_task_result_id="")  # the scan, not the pointer, is under test
+    assert server._latest_project_task_result(_ctx(tmp_path), "racer")["task_id"] == expected
+    # The selected row — never an arbitrary tied one — became the durable pointer.
+    assert get_project(tmp_path, "racer")["last_task_result_id"] == expected
 
 
 def test_project_last_task_result_uncertainty_never_persists_the_pointer(tmp_path, monkeypatch):
-    """A result file whose stat (or JSON) cannot be read might be the project's
-    NEWER result: the scan still answers best-effort for this call, but the
-    durable pointer is not written — a later lookup must see the file once it
-    is readable again instead of the frozen older row."""
+    """A row the store cannot answer for might be the project's NEWER result: the lookup is
+    refused as unknown (the caller logs and offers nothing) and the durable pointer is not
+    written — a later lookup must see the row once it is readable again instead of a frozen
+    older row."""
     import server
-    from ouroboros import task_results as task_results_module
     from ouroboros.projects_registry import create_project, get_project
-    from ouroboros.task_results import task_results_dir, write_task_result
+    from ouroboros.store import StoreError
+    from ouroboros.task_results import write_task_result
 
     create_project(tmp_path, "racer", name="Racer")
     write_task_result(tmp_path, "old1", "completed", project_id="racer", objective="a", ts="2026-08-10T00:00:01Z")
     write_task_result(tmp_path, "new1", "completed", project_id="racer", objective="b", ts="2026-08-10T00:00:02Z")
-    real_dir = task_results_dir(tmp_path, create=False)
-
-    class _Unstattable:  # readable JSON whose stat fails (a transient filesystem error)
-        def __init__(self, real):
-            self._real = real
-            self.name = real.name
-
-        def stat(self):
-            raise OSError("transient stat failure")
-
-        def __fspath__(self):
-            return str(self._real)
-
-        def __str__(self):
-            return str(self._real)
-
-    listing = [real_dir / "old1.json", _Unstattable(real_dir / "new1.json")]
-    monkeypatch.setattr(task_results_module, "task_results_dir",
-                        lambda root, create=True: types.SimpleNamespace(glob=lambda pattern: iter(listing),
-                                                                         __truediv__=lambda self, name: real_dir / name))
+    unreadable = unreadable_result(monkeypatch, "new1")
     ctx = _ctx(tmp_path)
-    assert server._latest_project_task_result(ctx, "racer")["task_id"] == "old1"  # best effort for THIS call
+    with pytest.raises(StoreError):
+        server._latest_project_task_result(ctx, "racer")
     assert not get_project(tmp_path, "racer").get("last_task_result_id")  # nothing frozen
-    monkeypatch.undo()
+    unreadable["on"] = False
     assert server._latest_project_task_result(ctx, "racer")["task_id"] == "new1"  # readable again: the truth wins
     assert get_project(tmp_path, "racer")["last_task_result_id"] == "new1"
 
 
 def test_project_last_task_result_lookup_is_bounded(tmp_path, monkeypatch):
-    """Finding 1: the one-row query parses newest-first by mtime and STOPS at
-    the first project match — never a full task_results replay per interaction
+    """Finding 1: the one-row query selects the project's root ids newest-first in the store
+    and STOPS at the first admissible row — never a full task-result replay per interaction
     (projection over replay)."""
-    import os
-
     import server
-    import ouroboros.utils as utils
+    from ouroboros import task_results as task_results_module
     from ouroboros.projects_registry import create_project
-    from ouroboros.task_results import task_result_path, write_task_result
+    from ouroboros.task_results import write_task_result
 
     create_project(tmp_path, "racer", name="Racer")
-    write_task_result(tmp_path, "oldracer1", "completed", project_id="racer", objective="v1")
-    write_task_result(tmp_path, "newracer1", "completed", project_id="racer", objective="v2")
-    write_task_result(tmp_path, "boat1", "completed", project_id="boat", objective="x")
-    # Deterministic mtime order regardless of filesystem timestamp granularity.
-    for name, mtime in (("oldracer1", 100), ("newracer1", 200), ("boat1", 300)):
-        os.utime(task_result_path(tmp_path, name, create=False), (mtime, mtime))
+    write_task_result(tmp_path, "oldracer1", "completed", project_id="racer", objective="v1", ts="2026-08-10T00:00:01Z")
+    write_task_result(tmp_path, "newracer1", "completed", project_id="racer", objective="v2", ts="2026-08-10T00:00:02Z")
+    write_task_result(tmp_path, "boat1", "completed", project_id="boat", objective="x", ts="2026-08-10T00:00:03Z")
 
     opened: list = []
-    real_read = utils.read_json_dict
+    real_read = task_results_module.read_document
 
-    def _counting_read(path):
-        opened.append(path.stem)
-        return real_read(path)
+    def _counting_read(root, task_id):
+        opened.append(str(task_id))
+        return real_read(root, task_id)
 
-    monkeypatch.setattr(utils, "read_json_dict", _counting_read)
+    monkeypatch.setattr(task_results_module, "read_document", _counting_read)  # load_task_result's body read
 
     row = server._latest_project_task_result(_ctx(tmp_path), "racer")
 
     assert str(row.get("task_id") or row.get("id")) == "newracer1"
-    # Newest-first, stop at the match: boat1 examined, oldracer1 NEVER opened.
-    assert opened == ["boat1", "newracer1"]
+    # The project's newest root only: boat1 is filtered in the store, oldracer1 NEVER opened.
+    assert opened == ["newracer1"]
 
 
 def test_main_manifest_carries_working_dir_and_workspace_facts(tmp_path):
@@ -693,22 +629,16 @@ def test_main_manifest_offers_owner_roots_not_swarm_children(tmp_path):
     roots and a result the owner had just read could not be continued from. Children
     are skipped and counted as their OWN omission; the final_results count keeps its
     cap-only meaning."""
-    import os
-
     import server
-    from ouroboros.task_results import task_result_path, write_task_result
+    from ouroboros.task_results import write_task_result
 
     for index in range(16):
-        tid = f"root{index:02d}"
-        write_task_result(tmp_path, tid, "completed", objective=f"owner work {index}",
+        write_task_result(tmp_path, f"root{index:02d}", "completed", objective=f"owner work {index}",
                           ts=f"2026-08-10T00:00:{index:02d}Z")
-        os.utime(task_result_path(tmp_path, tid, create=False), (100 + index, 100 + index))
     for index in range(2):
-        tid = f"child{index}"
-        write_task_result(tmp_path, tid, "completed", objective="helper work",
+        write_task_result(tmp_path, f"child{index}", "completed", objective="helper work",
                           parent_task_id="root15", root_task_id="root15",
                           delegation_role="subagent", ts=f"2026-08-11T00:00:{index:02d}Z")
-        os.utime(task_result_path(tmp_path, tid, create=False), (900 + index, 900 + index))
 
     manifest = server._main_routing_manifest(_ctx(tmp_path))
     offered = [row["task_id"] for row in manifest["final_results"]]
@@ -725,22 +655,16 @@ def test_omissions_count_children_ordered_after_the_cap(tmp_path):
     """The child count must not be a by-product of the capped loop: children older
     than the 16th root were skipped but counted nowhere, and the cap number silently
     absorbed them (A26 requires the two omissions to stay separate)."""
-    import os
-
     import server
-    from ouroboros.task_results import task_result_path, write_task_result
+    from ouroboros.task_results import write_task_result
 
     for index in range(17):
-        tid = f"root{index:02d}"
-        write_task_result(tmp_path, tid, "completed", objective=f"owner work {index}",
+        write_task_result(tmp_path, f"root{index:02d}", "completed", objective=f"owner work {index}",
                           ts=f"2026-08-20T00:00:{index:02d}Z")
-        os.utime(task_result_path(tmp_path, tid, create=False), (900 + index, 900 + index))
     for index in range(2):
-        tid = f"child{index}"
-        write_task_result(tmp_path, tid, "completed", objective="helper work",
+        write_task_result(tmp_path, f"child{index}", "completed", objective="helper work",
                           parent_task_id="root16", root_task_id="root16",
                           delegation_role="subagent", ts=f"2026-08-01T00:00:{index:02d}Z")
-        os.utime(task_result_path(tmp_path, tid, create=False), (100 + index, 100 + index))
 
     manifest = server._main_routing_manifest(_ctx(tmp_path))
 

@@ -191,23 +191,23 @@ _NON_CLEAN_PHASES = frozenset({"warn", "error", "cancelled"})
 # Only a ROOT outcome, and only in a room the owner actually talks in. ``summary_kind``
 # is the typed root fact the host stamps, without which a twelve-child swarm pushes
 # twelve lines; the chat id keeps the hidden partition (Skill Review and headless
-# admissions, HIDDEN_CHAT_ID = 0) and synthetic A2A rooms off the phone. A legacy row
-# that predates either field never triggers this floor.
+# admissions, HIDDEN_CHAT_ID = 0) and synthetic A2A rooms off the phone, for the floor
+# and the toggle alike. A legacy row that predates either field never pushes.
 _ROOT_SUMMARY_KIND = "terminal_root_projection"
 
 
 def _announce_summary(row: Dict[str, Any], *, notify_all: bool) -> bool:
-    """Does this settled task-summary row deserve a push?"""
-    if notify_all:
-        return True
-    if (str(row.get("summary_kind") or "") != _ROOT_SUMMARY_KIND
-            or str(row.get("outcome_phase") or "") not in _NON_CLEAN_PHASES):
+    """Does this settled task-summary row deserve a push? The audience comes first for both
+    lanes; the toggle then adds the clean finishes to the non-clean floor."""
+    if str(row.get("summary_kind") or "") != _ROOT_SUMMARY_KIND:
         return False
     try:
         chat_id = int(row.get("chat_id") or 0)
     except (TypeError, ValueError):
         return False
-    return chat_id == WEB_UI_CHAT_ID or is_project_chat_id(chat_id)
+    if chat_id != WEB_UI_CHAT_ID and not is_project_chat_id(chat_id):
+        return False
+    return notify_all or str(row.get("outcome_phase") or "") in _NON_CLEAN_PHASES
 
 
 async def _check_tasks_notify(
@@ -239,7 +239,11 @@ async def _check_tasks_notify(
         rounds = e.get("rounds")
         if rounds is not None:
             parts.append(f"{rounds}r")
-        tr = _read_json_file(_data_dir(api) / "task_results" / f"{tid}.json")
+        try:
+            from ouroboros.task_results import load_task_result
+            tr = load_task_result(_data_dir(api), tid) or {}
+        except Exception:
+            tr = {}
         try:
             if tr.get("cost_usd") is not None:
                 parts.append(f"${float(tr.get('cost_usd')):.2f}")

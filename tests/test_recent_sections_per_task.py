@@ -48,10 +48,6 @@ def test_task_sees_its_own_newest_rows_behind_a_busy_neighbour(tmp_path):
     assert "a-step-59" in progress and "a-step-10" in progress and "b-step" not in progress
     events = _section(sections, "## Recent events")
     assert "llm_round: 40" in events and "tool_error" not in events
-    # The guard's other side: the retired global-tail reader misses every A row.
-    stale = [e for e in Memory(drive_root=tmp_path).read_jsonl_tail("tools.jsonl", 200)
-             if e.get("task_id") == "task-a"]
-    assert stale == []
 
 
 def test_single_task_log_renders_exactly_as_before(tmp_path):

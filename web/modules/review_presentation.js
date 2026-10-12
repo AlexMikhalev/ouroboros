@@ -2,7 +2,7 @@ import { acceptanceGroupWithIncident, acceptanceIncidentFromTaskDetail } from '.
 export { acceptanceIncidentFromTaskDetail } from './acceptance_incident_presentation.js';
 import { setInertCardPresentation } from './task_phase_chip.js';
 import { escapeHtmlAttr, sinceLocalTime } from './utils.js';
-import { taskSourceDownloadUrl } from './api_client.js';
+import { isStoreMigrating, taskSourceDownloadUrl } from './api_client.js';
 import { harnessIdentityMarkup } from './harness_presentation.js';
 import { reconcileReviewMarkup } from './review_dom_patch.js';
 import { actorAwaiting, actorUnresolved, formatReviewProjection } from './review_record_card.js';
@@ -1118,6 +1118,7 @@ function reviewRevision(value) {
 export function createReviewHydrator({ fetchDetail, applyDetail, onState = () => {}, onSettled = () => {} } = {}) {
     const states = new Map();
     const start = (taskId, state, revision, onDomWrite) => {
+        clearTimeout(state.migrationTimer); state.migrationTimer = null;
         const generation = ++state.generation;
         state.inFlightRevision = revision;
         const write = typeof onDomWrite === 'function' ? onDomWrite : (mutate) => mutate();
@@ -1142,7 +1143,13 @@ export function createReviewHydrator({ fetchDetail, applyDetail, onState = () =>
                 notify('idle');
                 return applied;
             })
-            .catch(() => {
+            .catch(error => {
+                if (states.get(taskId) !== state) return false;
+                if (isStoreMigrating(error)) {
+                    notify('loading');
+                    state.migrationTimer = setTimeout(() => start(taskId, state, revision, onDomWrite), 700);
+                    return false;
+                }
                 notify('error');
                 return false;
             })
@@ -1165,7 +1172,7 @@ export function createReviewHydrator({ fetchDetail, applyDetail, onState = () =>
         // Saved Review: errors await Retry; a successful empty/404 permits fallback.
         ready(taskId) {
             const state = states.get(taskId);
-            return !state || (!state.inFlight && state.lastStatus !== 'error');
+            return !state || (!state.inFlight && !state.migrationTimer && state.lastStatus !== 'error');
         },
         hydrate(taskIdValue, revisionValue = null, { onDomWrite = null } = {}) {
             const taskId = text(taskIdValue);
@@ -1210,6 +1217,7 @@ export function createReviewHydrator({ fetchDetail, applyDetail, onState = () =>
             for (const state of states.values()) state.appliedRevision = null;
         },
         clear() {
+            for (const state of states.values()) clearTimeout(state.migrationTimer);
             states.clear();
         },
     };

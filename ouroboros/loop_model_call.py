@@ -1277,15 +1277,11 @@ ROUTING_RECEIPTS_HEADER = "[ROUTING_RECEIPTS]"
 
 
 def _append_routing_receipts(ctx: _RoundModelCallContext) -> bool:
-    """Show the model, at this boundary, the routing acts recorded for the owner message(s) it answers.
-
-    The decision turn's metadata holds only what was recorded before it started;
-    an act taken since — this turn's own promote or steer, a picker click, another
-    lane on the same message — reaches the next request as one append-only host
-    row, read from the existing receipt rail (``project_dialogue`` annotations) and
-    only when it changed what the model has already read. Facts, not a ban. An act
-    recorded under its own synthetic ``agent-steer:`` id, or keyed only to a task,
-    carries no link to the message and is named as not listed rather than guessed.
+    """Show the model, at this boundary, the routing acts recorded for the owner message(s) it
+    answers and the recorded outcome of its own acts whose tool result was unconfirmed
+    (``ToolContext.unconfirmed_routing_acts``, read by exact ids even where no owner message
+    carries them): one append-only host row in the projection every reader shares
+    (``routing_wait.routing_act_fields``), only when it changed what the model already read.
     """
     tool_ctx = ctx.tools._ctx
     meta = getattr(tool_ctx, "task_metadata", None)
@@ -1294,25 +1290,27 @@ def _append_routing_receipts(ctx: _RoundModelCallContext) -> bool:
     ids = [str(meta.get("client_message_id") or ""),
            str(delivery.get("client_message_id") or "") if isinstance(delivery, dict) else ""]
     ids = [value for index, value in enumerate(ids) if value and value not in ids[:index]]
-    root = meta.get("budget_drive_root") or ctx.drive_root or getattr(tool_ctx, "drive_root", None)
-    if not ids or not root or str(meta.get("delegation_role") or "") == "subagent":
+    own = [ref for ref in getattr(tool_ctx, "unconfirmed_routing_acts", None) or [] if isinstance(ref, dict)]
+    root = (getattr(tool_ctx, "budget_drive_root", "") or meta.get("budget_drive_root") or ctx.drive_root
+            or getattr(tool_ctx, "drive_root", None))
+    if not (ids or own) or not root or str(meta.get("delegation_role") or "") == "subagent":
         return False
     try:
         from ouroboros.project_dialogue import _ANNOTATIONS_NAME, _latest_annotations_by_token
+        from ouroboros.routing_wait import routing_act_fields, routing_act_lines as lines
 
-        rows = [row for (message_id, _token), row in _latest_annotations_by_token(
-            pathlib.Path(str(root)) / "logs" / _ANNOTATIONS_NAME).items() if message_id in ids]
+        root = pathlib.Path(str(root))
+        rows = _latest_annotations_by_token(root / "logs" / _ANNOTATIONS_NAME)
+        acts = [routing_act_fields(root, key[0], row) for key, row in rows.items() if key[0] in ids]
+        for ref in own:  # shown once settled: its unconfirmed tool result was already read
+            key = (str(ref.get("client_message_id") or ""), str(ref.get("routing_token") or ""))
+            act = routing_act_fields(root, key[0], rows.get(key) or ref) if key[0] not in ids else None
+            if act and act["status"] != "unconfirmed" and act not in acts:
+                acts.append(act)
     except Exception:
         log.debug("routing receipts unreadable at the model boundary", exc_info=True)
         return False
-    # One line per act from the receipt fields every reader shares, oldest first.
-    where = lambda label, target: (  # noqa: E731
-        f"{label} ({target})" if label and target and label != target else (label or target or "no target"))
-    lines = lambda acts: [  # noqa: E731
-        f"- {act.get('action') or '?'} → {where(str(act.get('target_label') or ''), str(act.get('target') or ''))}: "
-        f"{act.get('status') or 'unknown'}, recorded {act.get('ts') or '?'}"
-        for act in sorted(acts, key=lambda row: str(row.get("ts") or ""))]
-    current = lines(rows)
+    current = lines(acts)
     shown: Optional[List[str]] = None
     for message in reversed(ctx.messages):
         text = message.get("content") if isinstance(message, dict) and message.get("role") == "user" else None
@@ -1327,11 +1325,12 @@ def _append_routing_receipts(ctx: _RoundModelCallContext) -> bool:
     if not current or current == shown:
         return False
     ctx.messages.append({"role": "user", "content": "\n".join([
-        f"{ROUTING_RECEIPTS_HEADER} Routing acts recorded so far for the owner message(s) this turn answers, "
-        "oldest first — receipts from the routing rail; facts, not a ban: another act stays your choice.",
+        f"{ROUTING_RECEIPTS_HEADER} Routing acts recorded so far for the owner message(s) this turn answers "
+        "and late outcomes of its own unconfirmed acts, oldest first — receipts from the routing rail; "
+        "facts, not a ban: another act stays your choice.",
         *current,
-        "Not listed: an act recorded under its own agent-steer id (a steer after this message was already "
-        "routed, a scope bind) or keyed only to a task id; it carries no link to this message."])})
+        "Not listed: another turn's act under its own agent-steer id, or an act keyed only to a task id; "
+        "neither links to this message."])})
     return True
 
 

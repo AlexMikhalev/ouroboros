@@ -44,6 +44,8 @@ from ouroboros.task_results import (
     load_task_result,
     write_task_result,
 )
+from tests._shared import write_queue_document
+from tests._store_shared import result_signature
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -120,7 +122,6 @@ def test_gr6_1_cancel_kills_a_settled_tasks_live_worker_and_keeps_the_result(
     the shared-drive shape — so the settled row is exposed to the kill path's
     child-copy/finalize mutations and the byte-identity assertion actually
     catches them (a drive-less row made the mutating block a silent no-op)."""
-    from ouroboros.task_results import task_result_path
     from supervisor import workers
 
     task_id = "burn1"
@@ -137,7 +138,7 @@ def test_gr6_1_cancel_kills_a_settled_tasks_live_worker_and_keeps_the_result(
     }
     write_task_result(qenv.drive, task_id, STATUS_COMPLETED, chat_id=6,
                       result="the finished answer")
-    row_bytes_before = task_result_path(qenv.drive, task_id).read_bytes()
+    row_bytes_before = result_signature(qenv.drive, task_id)
 
     assert qenv.tl.task_has_live_ownership(task_id) is True
     minted = ci.request_cancel(qenv.drive, task_id, reason="stop spending",
@@ -151,7 +152,7 @@ def test_gr6_1_cancel_kills_a_settled_tasks_live_worker_and_keeps_the_result(
     stored = load_task_result(qenv.drive, task_id)
     assert stored["status"] == STATUS_COMPLETED, "completion wins: no overwrite"
     assert stored["result"] == "the finished answer"
-    assert task_result_path(qenv.drive, task_id).read_bytes() == row_bytes_before, (
+    assert result_signature(qenv.drive, task_id) == row_bytes_before, (
         "GR7-2: the settled terminal row survives the kill BYTE-IDENTICAL"
     )
     assert task_id not in qenv.q.RUNNING
@@ -181,11 +182,11 @@ def test_gr6_1_live_ownership_predicates(qenv, tmp_path):
     snap = tmp_path / "state" / "queue_snapshot.json"
     snap.parent.mkdir(parents=True, exist_ok=True)
     # A FRESH snapshot (GR7-1a): only a fresh one may prove a dead worker.
-    snap.write_text(json.dumps({
+    write_queue_document(snap, {
         "ts": utc_now_iso(),
         "running": [{"id": "own-s", "task": {"id": "own-s"}}],
         "pending": [{"id": "own-p", "task": {"id": "own-p"}}],
-    }), encoding="utf-8")
+    })
     assert task_has_live_queue_ownership(tmp_path, "own-s") is True
     assert task_has_live_queue_ownership(tmp_path, "own-p") is False, (
         "a queued row is not physical ownership (no process to kill)"
@@ -524,11 +525,14 @@ def test_gr6_4_unreadable_custody_log_is_typed_unknown_not_clean(qenv, monkeypat
     assert dc.custody_log_unreadable(qenv.drive) is False
     assert qenv.tl._reconcile_delegated_runs_on_kill(qenv.q, "au6") == []
 
-    # EXISTING but unreadable: event_log_path resolves to a directory, whose
-    # open(rb) raises OSError on every platform (the injected unreadability).
-    unreadable = qenv.drive / "unreadable-log"
-    unreadable.mkdir()
-    monkeypatch.setattr(dc, "event_log_path", lambda root: unreadable)
+    # EXISTING but unreadable: a directory where the custody store should be makes
+    # the store raise its typed unreadable on every platform (the injected unreadability).
+    from ouroboros.store import STORE_REL
+
+    unreadable = qenv.drive / STORE_REL
+    if unreadable.exists():
+        unreadable.unlink()
+    unreadable.mkdir(parents=True)
     assert dc.custody_log_unreadable(qenv.drive) is True
 
     still = qenv.tl._reconcile_delegated_runs_on_kill(qenv.q, "au6")

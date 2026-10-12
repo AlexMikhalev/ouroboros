@@ -37,7 +37,9 @@ from typing import Any, Callable, Dict, List, Optional
 from ouroboros.review_projection import (
     PLAN_REVIEW_ANSWERED_OPEN, PLAN_REVIEW_NONE_ANSWERED, PLAN_REVIEW_UNANSWERED,
 )
-from ouroboros.utils import update_json_locked, utc_now_iso
+from ouroboros.utils import utc_now_iso
+from ouroboros.task_store import patch_document
+from ouroboros.store import StoreError
 
 log = logging.getLogger(__name__)
 
@@ -82,19 +84,13 @@ def attempt_key(task_or_attempt: Any) -> int:
     return max(1, value)
 
 
-def _hurry_result_path(drive_root: Any, task_id: str) -> pathlib.Path:
-    from ouroboros.task_results import task_result_path
-
-    return task_result_path(pathlib.Path(drive_root), task_id)
-
-
 def _mutate_projection(
     drive_root: Any, task_id: str,
     mutator: Callable[[Optional[Dict[str, Any]], List[Dict[str, Any]]], Optional[Dict[str, Any]]],
 ) -> Dict[str, Any]:
     """The DEDICATED locked hurry writer (§19.7.2 item 5).
 
-    ``update_json_locked`` on the canonical task-result file, mutating ONLY the
+    ``patch_document`` on the canonical task-result row, mutating ONLY the
     ``owner_hurry``/``owner_hurry_history`` keys. Concurrent terminal writers
     merge-write around these keys (``write_task_result`` spreads ``**existing``),
     so the projection survives a terminal race; this writer never routes through
@@ -139,7 +135,7 @@ def _mutate_projection(
         })
         return stamp_task_result_schema(updated)
 
-    update_json_locked(_hurry_result_path(drive_root, task_id), _mutate)
+    patch_document(pathlib.Path(drive_root), task_id, _mutate)
     return view
 
 
@@ -548,7 +544,7 @@ def force_plan_decision(
         task_id = str(getattr(ctx, "task_id", "") or "").strip()
         state = load_plan_review_state(root, task_id) if (task_id and root) else None
         unreadable = False
-    except (OSError, TimeoutError, ValueError):
+    except (OSError, TimeoutError, ValueError, StoreError):
         log.warning("Unable to read durable force-plan review state", exc_info=True)
         state, unreadable = None, True
     # I-17: an UNREADABLE state used to release a self-opened blocking plan (no state ->
@@ -655,7 +651,7 @@ def unmet_force_plan_obligation(ctx: Any) -> Dict[str, Any]:
 
     try:
         state = load_plan_review_state(root, task_id)
-    except (OSError, TimeoutError, ValueError):
+    except (OSError, TimeoutError, ValueError, StoreError):
         log.warning("Unable to read durable force-plan review state", exc_info=True)
         return {"unmet": False, "reason": "plan_review_state_unreadable"}
     if _plan_review_engaged(state):

@@ -9,13 +9,13 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from ouroboros import projects_registry as registry
-from ouroboros import task_results as results
 from ouroboros.task_results import load_task_result, write_task_result
 from supervisor import queue, workers
 from tests.test_hurry_initial_lifecycle import pool  # noqa: F401
 from tests.test_main_project_consistency import owner_turn
 from tests.test_project_hold_recovery import accepted, restore_unreadable, resume_after_app_stop, worker
 from tests.test_swarm_host_admission import host  # noqa: F401
+from tests._store_shared import delete_result, result_exists, result_signature, seed_result, unreadable_result
 
 pytestmark = pytest.mark.serial
 
@@ -83,10 +83,9 @@ def test_first_restore_keeps_accepted_project_row_waiting_through_unreadable_res
     prepared = copy.deepcopy(accepted(host, tmp_path))
     accepted(host, tmp_path, tid="sibling")
     assert prepared["admitted_dispatch"] == "none" and "_project_admission_restore_hold" not in prepared
-    result = host.root / "task_results" / "held.json"
-    original = result.read_bytes()
+    original = result_signature(host.root, "held")
     assert queue.persist_queue_snapshot()
-    result.write_text("{torn", encoding="utf-8")
+    unreadable = unreadable_result(monkeypatch, "held")
     for _restart in range(2):  # the persisted hold survives a second restart during the fault
         host.pending.clear()
         assert queue.restore_pending_from_snapshot() == 2
@@ -109,7 +108,8 @@ def test_first_restore_keeps_accepted_project_row_waiting_through_unreadable_res
     workers.WORKERS[0].busy_task_id = None
     workers.assign_tasks()
     assert [row["id"] for row in sent] == ["sibling"] and [row["id"] for row in host.pending] == ["held"]
-    result.write_bytes(original)
+    unreadable["on"] = False
+    assert result_signature(host.root, "held") == original  # the original receipt is readable again, unchanged
     if veto == "possible":
         write_task_result(host.root, "held", "scheduled", admitted_dispatch="possible")
     elif veto == "started":
@@ -142,9 +142,8 @@ def _uncertain_child(host, monkeypatch):  # noqa: F811
 
     def write_then_tear(root, tid, *args, **kwargs):
         stored = write(root, tid, *args, **kwargs)
-        path = results.task_result_path(root, tid)
-        committed.append(path.read_bytes())
-        path.write_text("{torn", encoding="utf-8")  # committed, then unreadable before its readback
+        committed.append(result_signature(root, tid))
+        committed.append(unreadable_result(monkeypatch, tid))  # committed, then unreadable before its readback
         return stored
 
     monkeypatch.setattr(task_admission, "write_task_result", write_then_tear)
@@ -153,7 +152,7 @@ def _uncertain_child(host, monkeypatch):  # noqa: F811
         direct_child_count=0, pending_ref=host.pending)
     monkeypatch.setattr(task_admission, "write_task_result", write)
     assert not reason and admitted["_admission_uncertain"] and admitted in host.pending
-    return copy.deepcopy(admitted), committed[0]
+    return copy.deepcopy(admitted), committed[0], committed[1]
 
 
 @pytest.mark.parametrize("producer", ["promotion", "child_uncertain"])
@@ -170,12 +169,10 @@ def test_live_accepted_project_row_waits_through_its_first_unreadable_result(hos
     accepted(host, tmp_path, tid="sibling")
     if producer == "promotion":
         prepared = copy.deepcopy(accepted(host, tmp_path))
-        result = host.root / "task_results" / "held.json"
-        original = result.read_bytes()
-        result.write_text("{torn", encoding="utf-8")
+        original = result_signature(host.root, "held")
+        unreadable = unreadable_result(monkeypatch, "held")
     else:
-        prepared, original = _uncertain_child(host, monkeypatch)
-        result = host.root / "task_results" / "held.json"
+        prepared, original, unreadable = _uncertain_child(host, monkeypatch)
     assert prepared["admitted_dispatch"] == "none" and "_project_admission_restore_hold" not in prepared
     sent = worker(host, monkeypatch)
     workers.assign_tasks()
@@ -189,7 +186,8 @@ def test_live_accepted_project_row_waits_through_its_first_unreadable_result(hos
     assert next(row for row in snapshot["pending"] if row["id"] == "held")["task"]["_project_admission_restore_hold"]
     queue.RUNNING.clear()
     workers.WORKERS[0].busy_task_id = None
-    result.write_bytes(original)  # the original receipt is readable again
+    unreadable["on"] = False  # the original receipt is readable again
+    assert result_signature(host.root, "held") == original
     if veto == "stop":
         request_cancel(host.root, "held", reason="owner stopped")
     elif veto == "terminal":
@@ -277,11 +275,11 @@ def test_assisted_resolver_recovers_same_id_after_restore_scope_hold(pool, prior
 def test_resolver_boot_reenqueue_of_an_existing_id_fabricates_no_receipt(pool):  # noqa: F811
     write_task_result(pool.root, RESOLVER, "interrupted", result="mid-flight restart",
                       admitted_dispatch="possible")
-    before = results.task_result_path(pool.root, RESOLVER).read_bytes()
+    before = result_signature(pool.root, RESOLVER)
     _resolver(pool.root)
     assert [row["id"] for row in queue.PENDING] == [RESOLVER]
     assert queue.PENDING[0]["admitted_dispatch"] == "possible"  # never a first-dispatch claim
-    assert results.task_result_path(pool.root, RESOLVER).read_bytes() == before
+    assert result_signature(pool.root, RESOLVER) == before
     workers.assign_tasks()
     assert _drain(pool.slot) == [RESOLVER]  # the managed resume still runs its resolver
 
@@ -291,21 +289,20 @@ def _unadmitted(root):
     return [row["reason"] for row in rows if row["type"] == "managed_update_assisted_resolver_unadmitted"]
 
 
-@pytest.mark.parametrize("prior", ["torn", "future", "foreign"])
-def test_resolver_never_mints_a_receipt_over_an_unreadable_prior(pool, prior):  # noqa: F811
-    from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
-    from ouroboros.task_result_schema import TASK_RESULT_SCHEMA_VERSION
+def test_resolver_never_mints_a_receipt_over_an_unreadable_prior(pool, monkeypatch):  # noqa: F811
+    """A prior row the store cannot answer for: the strict read refuses, nothing is minted over
+    it. (A row naming another task or a newer schema cannot enter the store: the import judges
+    such files, the store keys every row by its own id.)"""
     from supervisor import update_merge
 
-    path = results.task_result_path(pool.root, RESOLVER)
-    body = "{torn" if prior == "torn" else json.dumps({
-        "task_id": RESOLVER if prior == "future" else "other", "status": "running",
-        SCHEMA_VERSION_KEY: TASK_RESULT_SCHEMA_VERSION + (prior == "future")})
-    path.write_text(body, encoding="utf-8")
+    seed_result(pool.root, RESOLVER, {"task_id": RESOLVER, "status": "running"})
+    original = result_signature(pool.root, RESOLVER)
+    unreadable = unreadable_result(monkeypatch, RESOLVER)
     tx = {"task_id": RESOLVER, "phase": "assisted_resolution", "owner_chat_id": 1, "target_sha": "target"}
     update_merge.write_update_tx(tx)
     assert update_merge.enqueue_assisted_resolution_task(tx) == ""  # possibly sent before: no replay
-    assert not queue.PENDING and path.read_text(encoding="utf-8") == body  # the unknown bytes keep their custody
+    unreadable["on"] = False
+    assert not queue.PENDING and result_signature(pool.root, RESOLVER) == original  # the unknown row keeps its custody
     assert tx["task_id"] == RESOLVER and _unadmitted(pool.root) == ["task_result_unreadable"]
 
 
@@ -333,7 +330,7 @@ def test_resolver_refused_by_its_admission_is_never_claimed_started(pool, prior)
 
 
 @pytest.mark.parametrize("queued", [False, True])
-@pytest.mark.parametrize("loss", [None, "removed", "quarantined", "legacy"])
+@pytest.mark.parametrize("loss", [None, "removed", "legacy"])
 def test_resolver_whose_dispatch_evidence_is_lost_is_never_replayed(pool, loss, queued):  # noqa: F811
     """A resolver that reached a worker and then lost its result may already have run:
     the managed resume neither sends it again nor mints a first-dispatch receipt, whether
@@ -341,7 +338,6 @@ def test_resolver_whose_dispatch_evidence_is_lost_is_never_replayed(pool, loss, 
     control (no loss, restart before the handoff) resumes the same id exactly once."""
     from supervisor import update_merge
 
-    path = results.task_result_path(pool.root, RESOLVER)
     _resolver(pool.root)
     assert update_merge.read_update_tx()["resolver_submitted_id"] == RESOLVER  # written ahead
     assert load_task_result(pool.root, RESOLVER)["status"] == "scheduled"  # its provable first
@@ -352,16 +348,11 @@ def test_resolver_whose_dispatch_evidence_is_lost_is_never_replayed(pool, loss, 
         assert load_task_result(pool.root, RESOLVER)["admitted_dispatch"] == "possible"
         queue.RUNNING.clear()  # the restart took it down with its worker
         pool.slot.busy_task_id = None
-        if loss == "quarantined":  # a fail-soft reader moves the torn bytes aside, then reports absence
-            path.write_text("{torn", encoding="utf-8")
-            assert load_task_result(pool.root, RESOLVER) is None
-            assert list((pool.root / "task_results" / "quarantine").glob(RESOLVER + "*.json"))
-        else:
-            path.unlink()
+        delete_result(pool.root, RESOLVER)  # the row is gone (a lost store, an older snapshot's world)
         if loss == "legacy":  # a transaction written before submissions were recorded
             update_merge.write_update_tx({key: value for key, value in update_merge.read_update_tx().items()
                                           if key != "resolver_submitted_id"})
-        assert not path.exists()
+        assert not result_exists(pool.root, RESOLVER)
     tx = update_merge.read_update_tx()
     queue.PENDING.clear()
     if queued:  # boot restores the row from the snapshot persisted before the handoff
@@ -374,7 +365,7 @@ def test_resolver_whose_dispatch_evidence_is_lost_is_never_replayed(pool, loss, 
     assert _drain(pool.slot) == ([] if loss else [RESOLVER])  # at most one handoff per id
     if not loss:
         return
-    assert _unadmitted(pool.root) == ["task_result_missing"] and not path.exists()  # no invented receipt
+    assert _unadmitted(pool.root) == ["task_result_missing"] and not result_exists(pool.root, RESOLVER)  # no invented receipt
     assert update_merge.read_update_tx().get("resolver_submitted_id") == (None if loss == "legacy" else RESOLVER)
     if queued:  # the same accepted row, its authority refreshed, waits visibly: never replayed
         [held] = queue.PENDING
@@ -408,11 +399,11 @@ def test_boot_recovery_claims_no_resume_until_its_resolver_is_admitted(pool, tmp
         broken = registry._bindings_path(pool.root)
         broken.parent.mkdir(parents=True, exist_ok=True)
         original = '{"bindings": {}}'.encode()
+        broken.write_text("{torn", encoding="utf-8")
     else:  # the prior resolver's own result is unreadable: it may have run
-        broken = results.task_result_path(pool.root, RESOLVER)
         write_task_result(pool.root, RESOLVER, "interrupted", admitted_dispatch="possible")
-        original = broken.read_bytes()
-    broken.write_text("{torn", encoding="utf-8")
+        original = result_signature(pool.root, RESOLVER)
+        unreadable = unreadable_result(monkeypatch, RESOLVER)
     assert update_merge.finalize_managed_update_on_boot(supervisor_ready=True) == {
         "finalized": False, "resumed": False, "resolution_attempts": 1}
     types = _supervisor_types(pool.root)
@@ -422,7 +413,11 @@ def test_boot_recovery_claims_no_resume_until_its_resolver_is_admitted(pool, tmp
     assert update_merge._merge_head_sha() == stored["target_sha"]  # never rolled back
     assert (repo / "a.txt").read_text(encoding="utf-8") == "the resolver's precious resolution\n"
     assert not queue.PENDING and not queue.RUNNING
-    broken.write_bytes(original)
+    if fault == "bindings":
+        broken.write_bytes(original)
+    else:
+        unreadable["on"] = False
+        assert result_signature(pool.root, RESOLVER) == original
     assert update_merge.finalize_managed_update_on_boot(supervisor_ready=True) == {
         "finalized": False, "resumed": True, "resolution_attempts": 2}
     assert [row["id"] for row in queue.PENDING] == [RESOLVER]
@@ -443,28 +438,33 @@ def test_boot_recovery_resumes_a_resolver_restored_from_its_claimed_handoff_once
     assert update_merge.finalize_managed_update_on_boot(supervisor_ready=True)["resumed"] is True
     receipt = load_task_result(pool.root, RESOLVER, strict=True)["host_admission"]
     claimed, put = [], pool.slot.in_q.put
-    pool.slot.in_q.put = lambda row, *a, **k: (claimed.append(queue.QUEUE_SNAPSHOT_PATH.read_bytes()), put(row, *a, **k))
+    def capture_claim(row, *args, **kwargs):
+        claimed.append({name: queue.QUEUE_SNAPSHOT_PATH.with_name(name).read_bytes()
+                        for name in ("queue_snapshot.json", "queue_dispatch.json", "direct_roots.json", "queue.alive")})
+        return put(row, *args, **kwargs)
+    pool.slot.in_q.put = capture_claim
     workers.assign_tasks()
     assert _drain(pool.slot) == [RESOLVER] and len(claimed) == 1
     write_task_result(pool.root, RESOLVER, "running", started_at="2026-01-01T00:00:00Z")  # the worker ran
     queue.RUNNING.clear()
     pool.slot.busy_task_id = None
     queue.PENDING.clear()
-    queue.QUEUE_SNAPSHOT_PATH.write_bytes(claimed[0])  # the post-handoff snapshot never landed
+    for name, data in claimed[0].items():  # the post-handoff publication never landed
+        queue.QUEUE_SNAPSHOT_PATH.with_name(name).write_bytes(data)
     assert queue.restore_pending_from_snapshot() == 1
     [held] = queue.PENDING
     assert held["_project_admission_restore_hold"] and held["admitted_dispatch"] == "possible"
     workers.assign_tasks()
     assert not _drain(pool.slot)  # restore alone never replays a possibly dispatched row
-    path = results.task_result_path(pool.root, RESOLVER)
-    original = path.read_bytes()
+    original = result_signature(pool.root, RESOLVER)
+    unreadable = {"on": False}
     if veto == "stop":
         request_cancel(pool.root, RESOLVER, reason="owner stopped")
     elif veto == "terminal":  # shutdown custody settled it: boot recovery mints a fresh id
         write_task_result(pool.root, RESOLVER, "cancelled", cancel_origin={"source": "snapshot_restore",
                                                                            "reason": "server_shutdown"})
     elif veto == "torn":
-        path.write_text("{torn", encoding="utf-8")
+        unreadable = unreadable_result(monkeypatch, RESOLVER)
     elif veto == "bound":  # the unscoped resolver's assignment changed after its admission
         registry.create_project(pool.root, "room")
         registry.bind_task_to_project(pool.root, RESOLVER, "room", origin={"absent": "system"})
@@ -479,7 +479,8 @@ def test_boot_recovery_resumes_a_resolver_restored_from_its_claimed_handoff_once
     waiting = [row["id"] for row in queue.PENDING if row.get("_project_admission_restore_hold")]
     assert waiting == ([RESOLVER] if veto in {"torn", "foreign_tx"} else [])
     if veto == "torn":  # unknown dispatch waits; the next boot's resume, not readability, releases it
-        path.write_bytes(original)
+        unreadable["on"] = False
+        assert result_signature(pool.root, RESOLVER) == original
         workers.assign_tasks()
         assert not _drain(pool.slot) and queue.PENDING[0]["_project_admission_restore_hold"]
         assert update_merge.finalize_managed_update_on_boot(supervisor_ready=True)["resumed"] is True
@@ -565,24 +566,21 @@ def _child_of(host, tmp_path, parent):  # noqa: F811
         snap = json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
         snap["running"] = [{"id": "parent", "task": {"id": "parent", "chat_id": 1}}]
         queue.QUEUE_SNAPSHOT_PATH.write_text(json.dumps(snap), encoding="utf-8")
-    return host.root / "task_results" / "parent.json"
 
 
 @pytest.mark.parametrize("parent", ["interrupted", "unreadable", "completed"])
 def test_held_project_child_never_starts_behind_an_interrupted_parent(host, tmp_path, monkeypatch, parent):  # noqa: F811
-    parent_path = _child_of(host, tmp_path, parent)
-    parent_bytes = parent_path.read_bytes()
-    if parent == "unreadable":
-        parent_path.write_text("{torn", encoding="utf-8")
-    result = host.root / "task_results" / "child.json"
-    original = result.read_bytes()
-    result.write_text("{torn", encoding="utf-8")  # the child's own receipt is unknown at restore
+    _child_of(host, tmp_path, parent)
+    parent_unreadable = unreadable_result(monkeypatch, "parent") if parent == "unreadable" else {"on": False}
+    original = result_signature(host.root, "child")
+    child_unreadable = unreadable_result(monkeypatch, "child")  # the child's own receipt is unknown at restore
     host.pending.clear()
     queue.restore_pending_from_snapshot()
     [held] = host.pending
     assert held["_project_admission_restore_hold"] and not held.get("_terminalization_retry")
     sent = worker(host, monkeypatch)
-    result.write_bytes(original)
+    child_unreadable["on"] = False
+    assert result_signature(host.root, "child") == original
     if parent == "completed":
         resume_after_app_stop(host, "child")
     workers.assign_tasks()
@@ -593,7 +591,7 @@ def test_held_project_child_never_starts_behind_an_interrupted_parent(host, tmp_
     elif parent == "unreadable":  # unknown lineage keeps the same accepted row waiting
         assert host.pending[0]["_project_admission_restore_hold"]
         assert not host.pending[0].get("_terminalization_retry")
-        parent_path.write_bytes(parent_bytes)
+        parent_unreadable["on"] = False
         resume_after_app_stop(host, "child")
         workers.assign_tasks()
         workers.assign_tasks()
@@ -603,9 +601,8 @@ def test_held_project_child_never_starts_behind_an_interrupted_parent(host, tmp_
 @pytest.mark.parametrize("parent", ["completed", "shutdown", "unreadable"])
 def test_readable_project_child_waits_for_its_unreadable_parent(host, tmp_path, monkeypatch, parent):  # noqa: F811
     """Only the parent is unknown at restore: the child's receipt and the bindings are healthy."""
-    parent_path = _child_of(host, tmp_path, "completed")
-    parent_bytes = parent_path.read_bytes()
-    parent_path.write_text("{torn", encoding="utf-8")
+    _child_of(host, tmp_path, "completed")
+    parent_unreadable = unreadable_result(monkeypatch, "parent")
     host.pending.clear()
     queue.restore_pending_from_snapshot()
     [held] = host.pending
@@ -615,10 +612,11 @@ def test_readable_project_child_waits_for_its_unreadable_parent(host, tmp_path, 
     workers.assign_tasks()
     assert not sent and load_task_result(host.root, "child")["status"] == "scheduled"
     if parent == "completed":
-        parent_path.write_bytes(parent_bytes)
+        parent_unreadable["on"] = False
         resume_after_app_stop(host, "child")
     elif parent == "shutdown":  # an earlier boot handed the parent to shutdown custody
-        parent_path.unlink()
+        parent_unreadable["on"] = False
+        delete_result(host.root, "parent")
         write_task_result(host.root, "parent", "cancelled", chat_id=1,
                           cancel_origin={"source": "snapshot_restore", "reason": "server_shutdown"})
     for _pass in range(3):
@@ -630,18 +628,20 @@ def test_readable_project_child_waits_for_its_unreadable_parent(host, tmp_path, 
         assert host.pending[0]["_project_admission_restore_hold"] and not host.attempts
 
 
-def _fault_parent(host, path, fault):  # noqa: F811
+def _fault_parent(host, monkeypatch, fault):  # noqa: F811
+    """The parent's evidence fails; returns the switch that makes it readable again."""
     if fault == "missing":
-        path.unlink()
+        delete_result(host.root, "parent")
     elif fault == "torn":
-        path.write_text("{torn", encoding="utf-8")
+        return unreadable_result(monkeypatch, "parent")
     elif fault == "never_admitted":  # a refusal receipt cannot be the parent that spawned it
-        path.unlink()
+        delete_result(host.root, "parent")
         write_task_result(host.root, "parent", "failed", chat_id=1, admission_outcome="never_admitted")
     elif fault == "shutdown":  # an earlier boot handed the parent to shutdown custody
-        path.unlink()
+        delete_result(host.root, "parent")
         write_task_result(host.root, "parent", "cancelled", chat_id=1,
                           cancel_origin={"source": "snapshot_restore", "reason": "server_shutdown"})
+    return {"on": False}
 
 
 def _passes(count=4, busy=""):
@@ -669,24 +669,24 @@ def test_healthy_child_waits_for_an_unknown_parent_inside_or_outside_the_snapsho
         accepted(host, tmp_path, tid="parent")  # restored beside the child, with its own receipt
     child = accepted(host, tmp_path, tid="child")
     child.update(parent_task_id="parent", root_task_id="parent", delegation_role="subagent")
-    parent_path = host.root / "task_results" / "parent.json"
     if where == "external":
         write_task_result(host.root, "parent", "completed", chat_id=1)
     assert queue.persist_queue_snapshot()
-    parent_bytes = parent_path.read_bytes()
-    child_path = host.root / "task_results" / "child.json"
-    child_bytes = child_path.read_bytes()
+    parent_document = load_task_result(host.root, "parent")
+    child_signature = result_signature(host.root, "child")
+    parent_unreadable = {"on": False}
     if phase == "restore":
-        _fault_parent(host, parent_path, fault)
+        parent_unreadable = _fault_parent(host, monkeypatch, fault)
     else:  # the child's own receipt is what is unknown at restore; its parent is healthy
-        child_path.write_text("{torn", encoding="utf-8")
+        child_unreadable = unreadable_result(monkeypatch, "child")
     host.pending.clear()
     queue.restore_pending_from_snapshot()
     sent = worker(host, monkeypatch)
     if phase == "release":
         assert next(row for row in host.pending if row["id"] == "child")["_project_admission_restore_hold"]
-        _fault_parent(host, parent_path, fault)  # the parent's evidence fails before release
-        child_path.write_bytes(child_bytes)
+        parent_unreadable = _fault_parent(host, monkeypatch, fault)  # the parent's evidence fails before release
+        child_unreadable["on"] = False
+        assert result_signature(host.root, "child") == child_signature
         _passes(1, busy="busy")
     rows = {row["id"]: row for row in host.pending}
     if fault == "shutdown":  # the restore's shutdown custody, never a later revival
@@ -704,7 +704,9 @@ def test_healthy_child_waits_for_an_unknown_parent_inside_or_outside_the_snapsho
         if fault == "never_admitted":
             assert host.pending[-1]["_project_admission_restore_hold"] and not host.attempts
             return
-        parent_path.write_bytes(parent_bytes)  # the parent's evidence returns
+        parent_unreadable["on"] = False  # the parent's evidence returns
+        if not result_exists(host.root, "parent"):
+            seed_result(host.root, "parent", parent_document)
     else:  # a readable parent satisfies lineage; explicit Resume still releases the app-stop hold
         assert not rows["child"].get("_project_admission_restore_hold")
     resume_after_app_stop(host, *("parent", "child") if where == "queued" else ("child",))

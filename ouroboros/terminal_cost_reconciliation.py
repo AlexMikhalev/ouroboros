@@ -212,7 +212,8 @@ def imported_projection_debt(root, buckets, *, degraded=False):
 
 def _refresh_costs(root: pathlib.Path, reads) -> None:
     from ouroboros import usage_store
-    from ouroboros.task_results import task_result_path, validate_task_id
+    from ouroboros.task_results import validate_task_id
+    from ouroboros.task_store import exists
     from ouroboros.task_status import SETTLED_STATUSES
     from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
     from supervisor.events_task_done import _refresh_terminal_task_cost
@@ -241,15 +242,15 @@ def _refresh_costs(root: pathlib.Path, reads) -> None:
             continue  # System accounting scopes own no task result.
         pending.add(task_id)
         try:
-            # Presence precedes the ownership read: an absent body keeps this
-            # exact revision without the fence's quarantine traversal, and the
-            # next pass projects a body copied back after the last ledger write.
-            task_result_path(root, task_id, create=False).stat()
-        except FileNotFoundError:
+            # Presence precedes the ownership read: an absent row keeps this exact
+            # revision without the fence's authority read, and the next pass projects
+            # a row copied back after the last ledger write.
+            present = exists(root, task_id)
+        except Exception:
+            present = True  # Only proven absence skips the read; the ownership read reports the rest.
+        if not present:
             failures[task_id] = "result_absent"
             continue
-        except OSError:
-            pass  # Only absence skips the read; the ownership read reports the rest.
         try:
             current = reads.load(task_id)
             if (not current or current.get("status") not in SETTLED_STATUSES

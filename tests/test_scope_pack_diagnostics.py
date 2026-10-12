@@ -61,6 +61,8 @@ def brief_env(tmp_path, monkeypatch):
     subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
     drive = tmp_path / "drive"
     drive.mkdir()
+    from ouroboros.store_import import ensure_current_store
+    ensure_current_store(drive, with_children=False)  # boot precedes the review-only log observation
     ctx = ToolContext(repo_dir=repo, drive_root=drive)
     ctx.task_id = "brief-task"
     ctx.pending_events = []

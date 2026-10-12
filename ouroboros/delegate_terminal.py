@@ -3,9 +3,10 @@
 Refreshing a stored terminal result never touches its ``delegated_runs_*``
 counters, which stay the snapshot of the original terminal write;
 ``actual_substrate`` and the envelope evidence mirror follow live custody.
-``refresh_recently_settled_terminals`` scans the custody event log from the
-byte-offset cursor ``state/delegate_terminal_refresh_cursor.json`` and reads at
-most ``_REFRESH_SCAN_CAP_BYTES`` (5 MB) per tick.
+``refresh_recently_settled_terminals`` reads the closing receipts the custody
+reducer parked in ``delegated_runs`` (the store's owner-held rows): a receipt
+stays until its task's terminal result absorbed it, so no cursor and no event
+scan are needed per tick.
 """
 
 from __future__ import annotations
@@ -58,19 +59,13 @@ def terminal_reconcile_task(
 
 
 def custody_audit_snapshot(drive_root: Any) -> Dict[str, Any]:
-    """One shared read of the custody rows for a BATCH of audits.
-
-    One ``replay()`` pass plus one pending-invocations pass, reused by every
-    audit in the batch — the boot backfill must not rescan the unbounded event
-    log four times per stored row.
+    """One shared read of the custody rows for a BATCH of audits: the held runs, the
+    closing receipts still owed and the pending invocations, reused by every audit in
+    the batch (the boot backfill must not re-read the store four times per stored row).
     """
-    from ouroboros.delegate_custody_current import active, snapshot
-    if active(drive_root):
-        return snapshot(drive_root)
-    return {
-        "state": custody.replay(drive_root),
-        "pending": custody.pending_invocations(drive_root),
-    }
+    from ouroboros.delegate_custody_current import snapshot
+
+    return snapshot(drive_root)
 
 
 @timed_phase("custody_audit", within="release_task_runs")
@@ -378,12 +373,8 @@ def refresh_terminal_reconciliation(
         existing = load_task_result(drive_root, mine) or {}
         if str(existing.get("status") or "") not in _TRULY_TERMINAL_STATUSES:
             return False
-        from ouroboros.delegate_custody_current import active
-        addressed = active(drive_root)
-        live = {} if addressed else custody.task_execution_evidence(drive_root, mine)
-        evidence_stale = False if addressed else _stored_evidence_stale(existing, live)
-        if not addressed and not existing.get("delegated_runs_unreconciled") and not evidence_stale:
-            return False
+        live = custody.task_execution_evidence(drive_root, mine)  # indexed store reads
+        evidence_stale = _stored_evidence_stale(existing, live)
     except Exception:
         log.debug("Sweep refresh skipped: task result unreadable for %s", mine, exc_info=True)
         return False
@@ -391,26 +382,23 @@ def refresh_terminal_reconciliation(
         "task_id": mine, "trigger": str(trigger or "sweep_refresh"),
         "outcomes": [], "unreconciled": [], "audit_status": "ok",
     }
-    if addressed and snapshot is None:
+    if snapshot is None:
         snapshot = custody_audit_snapshot(drive_root)
     _audit_task_custody(drive_root, mine, result, snapshot=snapshot, emit_evidence=False)
-    if addressed:
-        # Completed receipts already on the result are history, not missing current facts.
-        prior = (existing.get("delegate_terminal_reconciliation") or {}).get("terminal_runs") or []
-        receipts = {row["run_id"]: row for row in prior}
-        receipts.update({row["run_id"]: row for row in result.get("terminal_runs", [])})
-        result["terminal_runs"] = sorted(receipts.values(), key=lambda row: row["run_id"])
+    # Completed receipts already on the result are history, not missing current facts.
+    prior = (existing.get("delegate_terminal_reconciliation") or {}).get("terminal_runs") or []
+    receipts = {row["run_id"]: row for row in prior}
+    receipts.update({row["run_id"]: row for row in result.get("terminal_runs", [])})
+    result["terminal_runs"] = sorted(receipts.values(), key=lambda row: row["run_id"])
     if _stored_disclosure_matches(existing, result) and not evidence_stale:
-        if addressed:
-            _ack_current_receipts(drive_root, mine, snapshot)
+        _ack_current_receipts(drive_root, mine, snapshot)
         return False
     refreshed = False
     # Disclosure class: the recorder itself re-checks the no-churn gate and the
     # monotonic guard; evidence is emitted only after it confirms a landed row.
     if record_terminal_reconciliation(drive_root, mine, result):
         _emit_audit_evidence(drive_root, result)
-        if addressed:
-            _ack_current_receipts(drive_root, mine, snapshot)
+        _ack_current_receipts(drive_root, mine, snapshot)
         refreshed = True
     # Evidence-mirror class: substrate counters/cost rewritten from live
     # custody through the same producers the terminal write used.
@@ -501,144 +489,45 @@ def _stored_disclosure_matches(
     )
 
 
-_REFRESH_CURSOR_REL = "state/delegate_terminal_refresh_cursor.json"
-_REFRESH_SCAN_CAP_BYTES = 5 * 1024 * 1024  # bounded work per sweep tick
-_REFRESH_DEFERRED_CAP = 500  # terminal-boundary tasks awaiting their result
-
-
 def refresh_recently_settled_terminals(drive_root: Any, live_task_ids: Any = None) -> int:
-    """Refresh terminal results of tasks whose runs settled since the cursor.
+    """Refresh terminal results of tasks whose runs closed since their terminal write.
 
     The orphan sweep only revisits tasks named in THIS generation's reconcile
     outcomes; a run settled at the terminal boundary (or by an earlier
-    generation) never reappears there, so its task's stored evidence stays
-    stale forever. A durable byte-offset cursor over the append-only custody
-    event log keeps each tick bounded to newly appended SETTLED rows (house
-    projection-beside-the-log pattern) — never a full replay per sweep. The
-    offset counts bytes across the ROTATED CHAIN (archive segments + live
-    file, CPL4-C1): archive segments are immutable and never GC'd, so the
-    chain offset stays monotonic across rotation and no settled row is lost
-    to a rename. A shrunken chain (manual surgery) resets the cursor; the
-    one-time historical pass is paced by the per-tick byte cap. Returns the
-    number of refreshed tasks.
+    generation) never reappears there. The custody reducer parks every closing
+    receipt in ``delegated_runs`` (one owner-held row per task) in the settling
+    transaction; this tick reads those rows and heals each task whose result is
+    terminal, and ``_ack_current_receipts`` retires the receipts the healed result
+    absorbed. A receipt whose task is not terminal yet simply waits in its row.
+    Returns the number of refreshed tasks.
 
     ``live_task_ids`` is the sweep's one live-owner source — a set or a zero-arg
-    callable, read AFTER the batch like both custody surfaces read theirs. A task
-    whose owner still bills (the post-task synthesis window outlives the terminal
-    write) is DEFERRED, not healed under a live writer; None means unknown and
-    heals whatever the log named.
+    callable. A task whose owner still bills (the post-task synthesis window
+    outlives the terminal write) is DEFERRED, not healed under a live writer;
+    None means unknown and heals whatever holds a receipt.
     """
-    import os as _os
-    import pathlib as _pathlib
+    from ouroboros import store
 
-    from ouroboros.utils import atomic_write_json, jsonl_chain_handles, read_json_dict
-
-    log_path = custody.event_log_path(drive_root)
-    cursor_path = _pathlib.Path(drive_root) / _REFRESH_CURSOR_REL
-    stored = read_json_dict(cursor_path) or {}
-    offset = int(stored.get("offset") or 0)
-    deferred: Dict[str, str] = {
-        str(k): str(v) for k, v in (stored.get("deferred") or {}).items() if k
-    }
-    # A settled run whose OWNING TASK has not yet written its terminal result
-    # cannot be healed now (refresh no-ops on a non-terminal task) — the run
-    # settled at the terminal boundary, the exact class this pass exists to
-    # catch. Its task_id goes into the durable ``deferred`` map (retried every
-    # tick) while the byte offset ALWAYS advances: pinning the offset on the
-    # earliest deferred row would re-read the same window forever behind one
-    # long-lived parent and starve every later settlement past the per-tick
-    # byte cap.
-    batch_ids: set = set()
-    end_offset = offset
     try:
-        with jsonl_chain_handles(log_path) as handles:
-            sizes = []
-            for _, handle in handles:
-                try:
-                    sizes.append(_os.fstat(handle.fileno()).st_size)
-                except OSError:
-                    sizes.append(0)
-            total = sum(sizes)
-            if offset > total:
-                offset = 0  # shrunken chain: re-ground once
-            end_offset = offset
-            if offset >= total and not deferred:
-                return 0
-            consumed, index = offset, 0
-            while index < len(handles) and consumed >= sizes[index]:
-                consumed -= sizes[index]
-                index += 1
-            read_bytes = 0
-            for pos in range(index, len(handles)):
-                _, handle = handles[pos]
-                if pos == index and consumed:
-                    handle.seek(consumed)
-                is_live = pos == len(handles) - 1
-                for raw in handle:
-                    if read_bytes > _REFRESH_SCAN_CAP_BYTES:
-                        break
-                    if not raw.endswith(b"\n"):
-                        # A torn LIVE tail line completes on a later tick; a
-                        # torn line inside an immutable archive segment never
-                        # will — consume its bytes or the cursor wedges there.
-                        if is_live:
-                            break
-                        end_offset += len(raw)
-                        continue
-                    read_bytes += len(raw)
-                    end_offset += len(raw)
-                    row = _json_row(raw)
-                    if str(row.get("type") or "") in (custody.SETTLED, custody.CLOSED_ABSENT):
-                        tid = str(row.get("task_id") or "")
-                        if tid:
-                            batch_ids.add(tid)
-                if read_bytes > _REFRESH_SCAN_CAP_BYTES:
-                    break
-    except OSError:
+        with store.open_store(drive_root, write=False) as txn:
+            owed = sorted(tid for tid, facts in txn.set_rows("delegated_runs").items() if facts.get("closed_runs"))
+    except store.StoreError:
+        log.debug("Settled-terminal refresh skipped: custody receipts unavailable", exc_info=True)
         return 0
-    from ouroboros.utils import utc_now_iso
-
-    now_iso = utc_now_iso()
-    refreshed = 0
-    next_deferred: Dict[str, str] = {}
+    if not owed:
+        return 0
     live = live_task_ids() if callable(live_task_ids) else live_task_ids
-    for tid in sorted(batch_ids | set(deferred)):
-        since = deferred.get(tid) or now_iso
+    snapshot = custody_audit_snapshot(drive_root)
+    refreshed = 0
+    for tid in owed:
         if live is not None and tid in live:
-            next_deferred[tid] = since  # its owner is still writing; heal after it ends
-            continue
+            continue  # its owner is still writing; heal after it ends
         try:
-            if _task_is_terminal(drive_root, tid):
-                if refresh_terminal_reconciliation(drive_root, tid):
-                    refreshed += 1
-            else:
-                next_deferred[tid] = since
+            if _task_is_terminal(drive_root, tid) and refresh_terminal_reconciliation(drive_root, tid, snapshot=snapshot):
+                refreshed += 1
         except Exception:
-            log.debug("Cursor refresh failed for %s", tid, exc_info=True)
-            next_deferred[tid] = since
-    if len(next_deferred) > _REFRESH_DEFERRED_CAP:
-        # Oldest-first eviction, disclosed: a task deferred this long with no
-        # terminal result is overwhelmingly abandoned; keeping the map bounded
-        # protects the cursor write from unbounded growth.
-        keep = sorted(next_deferred.items(), key=lambda kv: kv[1])[-_REFRESH_DEFERRED_CAP:]
-        dropped = len(next_deferred) - len(keep)
-        next_deferred = dict(keep)
-        log.info("Settled-refresh deferred map over cap; dropped %d oldest entries", dropped)
-    try:
-        atomic_write_json(cursor_path, {"offset": end_offset, "deferred": next_deferred})
-    except Exception:
-        log.debug("Refresh cursor write failed", exc_info=True)
+            log.debug("Settled-terminal refresh failed for %s", tid, exc_info=True)
     return refreshed
-
-
-def _json_row(raw: bytes) -> Dict[str, Any]:
-    import json as _json
-
-    try:
-        row = _json.loads(raw)
-        return row if isinstance(row, dict) else {}
-    except Exception:
-        return {}
 
 
 def _task_is_terminal(drive_root: Any, task_id: str) -> bool:
@@ -767,30 +656,24 @@ __all__ = [
 
 
 def _ack_current_receipts(root, tid, snapshot):
-    from ouroboros import obligations as o
+    from ouroboros import store
     from ouroboros.delegate_custody_current import _decode
-    from ouroboros.task_results import task_result_path, require_writable_task_result_schema
-    from ouroboros.utils import update_json_locked
-    # Serialize with membership-before-result publication in the same lock order.
-    # Otherwise a new debt can be removed while its result still shows the old row.
+    from ouroboros.task_results import require_writable_task_result_schema
+    # One transaction over the result row and its closing receipts: a new debt cannot be
+    # removed while the result still shows the old row.
     state = (snapshot or {}).get("state", {})
-
-    def acknowledge(row):
+    with store.open_store(root, write=True) as txn:
+        row = txn.load(tid)
         if not row:
             return
         require_writable_task_result_schema(row)
-        with o.locked(root):
-            debts = o._read(root, "delegated_runs", missing_ok=True)
-            facts = debts.get(tid)
-            if facts is None:
-                return
-            held = {rid: raw for rid, raw in facts.get("closed_runs", {}).items()
-                    if rid not in state or vars(_decode(raw)) != vars(state[rid])}
-            if not held and not row.get("delegated_runs_unreconciled"):
-                debts.pop(tid, None)
-            else:
-                debts[tid] = {**facts, "closed_runs": held}
-            o._write(root, "delegated_runs", debts)
-        # None: acknowledge the receipt without rewriting the task result.
-
-    update_json_locked(task_result_path(root, tid, create=False), acknowledge, strict_existing_dict=True)
+        facts = txn.get_row("delegated_runs", tid)
+        if facts is None:
+            return
+        held = {rid: raw for rid, raw in facts.get("closed_runs", {}).items()
+                if rid not in state or vars(_decode(raw)) != vars(state[rid])}
+        if not held and not row.get("delegated_runs_unreconciled"):
+            txn.delete_row("delegated_runs", tid)
+        else:
+            txn.put_row("delegated_runs", tid, {**facts, "closed_runs": held})
+        # The result itself is never rewritten here.

@@ -38,10 +38,12 @@ import pathlib
 from typing import Any, Dict, List, Optional
 
 from ouroboros.utils import append_jsonl, utc_now_iso
+from ouroboros.task_store import patch_document
 
 log = logging.getLogger(__name__)
 
 from supervisor.events_budget import HOLD_CONTINUATION_WRITER  # noqa: E402 -- the one hold vocabulary
+from ouroboros.store import StoreError
 
 
 def _recorded_admission(result: Dict[str, Any], predecessor: str, nonce: str) -> Optional[Dict[str, Any]]:
@@ -184,13 +186,9 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
             from ouroboros.tool_custody import retained_tool_custody
             blockers.extend(retained_tool_custody(custody_root, task_id, row))
         # A member whose result has been collected can still own a remote start.
-        from ouroboros.delegate_custody_memo import custody_rows_with_integrity
-        rows, malformed = custody_rows_with_integrity(custody_root, predecessor)
-        if malformed is None or malformed:
-            raise OSError("tree_custody_unreadable")
-        for row in rows:
-            if str(row.get("root_task_id") or row.get("task_id") or "") == predecessor:
-                members.add(str(row.get("task_id") or predecessor))
+        from ouroboros.delegate_custody_current import tree_task_ids
+
+        members.update(tree_task_ids(custody_root, predecessor))  # the store answers or raises
     except Exception as exc:
         blockers.append({"kind": "tree_census_unreadable", "detail": str(exc)[:200]})
     for member in sorted(members):
@@ -362,8 +360,7 @@ def _billing_group(q: Any, predecessor: str, result: Dict[str, Any]) -> Dict[str
         return {"billing_group_id": group, "billing_group_limit_usd": found["limit_usd"],
                 "billing_group_limit_source": found["source"]}
     from ouroboros.config import runtime_setting
-    from ouroboros.task_results import stamp_task_result_schema, task_result_path
-    from ouroboros.utils import update_json_locked
+    from ouroboros.task_results import stamp_task_result_schema
 
     limit = float(runtime_setting("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
     binding = {"billing_group_id": group, "billing_group_limit_usd": limit if limit > 0 else None,
@@ -378,8 +375,8 @@ def _billing_group(q: Any, predecessor: str, result: Dict[str, Any]) -> Dict[str
 
     if result.get("status"):  # a recorded predecessor: the choice becomes its durable binding, or nothing is admitted
         try:
-            update_json_locked(task_result_path(q.DRIVE_ROOT, group), pin, strict_existing_dict=True)
-        except (OSError, ValueError, TimeoutError) as exc:
+            patch_document(q.DRIVE_ROOT, group, pin)
+        except (OSError, ValueError, TimeoutError, StoreError) as exc:
             # An unpinned choice would let the predecessor's own later work follow a changed
             # setting instead of the successor's ceiling: refuse now; the same nonce retries.
             log.warning("Could not pin the default billing group on %s", group, exc_info=True)

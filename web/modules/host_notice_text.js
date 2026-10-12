@@ -1,7 +1,7 @@
 // Display-only form of a host sentence that its producer opens with a decorative
 // pictograph (DESIGN "Chat authorship and System rows"). The stored row keeps its bytes:
 // history, message keys, Copy, Telegram, the model's context and outcomes.py, which
-// reads some of these prefixes, see exactly what the producer wrote.
+// reads their warning marks, see exactly what the producer wrote.
 //
 // A closed table, keyed by the row's typed `system_type`; each entry is one producer's
 // exact source prefix. Only a row whose type and opening both match loses the leading
@@ -30,9 +30,7 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
         '⚙️ Review settings could not be migrated automatically: '],
     optional_bounds_notice: ['⚙️ Task limits on this install: '],
     legacy_memory_notice: ['🧠 Memory: '],
-    attachment_notice: ['📎 Attachment staging report for ', '⚠️ Task not started: every attachment was rejected.',
-        '⚠️ Some declared attachments could not be staged; '],
-    task_admission_notice: ['✅ Repair task ', '⚠️ Cost accounting is unavailable. ', '🚫 Budget exhausted. '],
+    task_admission_notice: ['⚠️ Cost accounting is unavailable. ', '🚫 Budget exhausted. '],
     budget_notice: ['🚫 Model budget reached. '],
     deep_self_review_queued: ['🔎 Deep self-review queued: '],
     runtime_liveness_notice: ['⚠️ A chat turn looks wedged '],
@@ -44,7 +42,6 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
     worker_readiness_notice: ['⚠️ Worker checkout sampled after initialization ', '⚠️ Worker slot '],
     // Progress rows: a task card's timeline line (`log_events.summarizeChatLiveEvent`).
     task_scheduled: ['🗓️ Scheduled subagent ', '🗓️ Scheduled task '],
-    task_started: ['🧬 Evolution task ', '🔎 Review task '],
     task_error: ['⚠️ Error: '],
     cancellation_notice: ['❌ cancel '],
     finalization_notice: ['⏳ Task ', '▶️ Task '],
@@ -55,7 +52,17 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
         '🌐 Stopped waiting for ', '🌐 Still waiting for ', '⚡ Fallback: ', '📐 Plan review:', '📐 Plan review so far:', '✅ PR #', '⚠️ PR #'],
 }));
 
-const prefixFor = (text, type) => (HOST_NOTICE_PREFIXES.get(String(type || '')) || []).find(entry => text.startsWith(entry));
+// Producers this install no longer runs: rows they already wrote keep losing only the mark at
+// display (host_notice_text.test.js pins that none of them is written again).
+export const RETIRED_HOST_NOTICE_PREFIXES = new Map(Object.entries({
+    attachment_notice: ['📎 Attachment staging report for ', '⚠️ Task not started: every attachment was rejected.',
+        '⚠️ Some declared attachments could not be staged; '],
+    task_admission_notice: ['✅ Repair task '],
+    task_started: ['🧬 Evolution task ', '🔎 Review task '],
+}));
+
+const prefixFor = (text, type) => [...(HOST_NOTICE_PREFIXES.get(String(type || '')) || []),
+    ...(RETIRED_HOST_NOTICE_PREFIXES.get(String(type || '')) || [])].find(entry => text.startsWith(entry));
 
 // `text` is the row as stored and decides the match; `shown` is what the caller would
 // otherwise paint (the translated sentence for a `tx` type), which loses the same mark.

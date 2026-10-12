@@ -16,6 +16,8 @@ A drained owner message keys the visible receipt without changing authorship.
 
 from __future__ import annotations
 
+from tests._shared import write_queue_document
+
 import json
 import queue
 import types
@@ -436,10 +438,10 @@ def test_an_owner_turn_in_a_project_room_still_gets_the_room_veto(tmp_path, stam
 # --- forward_to_worker: one writer, two verb names ----------------------------
 
 def _snapshot(tmp_path, rows):
-    from ouroboros.utils import atomic_write_json, utc_now_iso
+    from ouroboros.utils import utc_now_iso
 
     (tmp_path / "state").mkdir(parents=True, exist_ok=True)
-    atomic_write_json(tmp_path / "state" / "queue_snapshot.json", {
+    write_queue_document(tmp_path / "state" / "queue_snapshot.json", {
         "ts": utc_now_iso(), "running": rows, "pending": [], "worker_total": 1,
     })
 
@@ -557,7 +559,8 @@ def test_the_direct_roots_fragment_never_blocks_on_a_held_actor_lock(tmp_path, m
     registry.register("turn-free", 1, actor=free_actor)
     registry.register("turn-held", 1, actor=held_actor)
     try:
-        payload = direct_roots.publish_direct_roots(tmp_path)
+        payload = direct_roots.collect_direct_roots()
+        write_queue_document(tmp_path / "state/direct_roots.json", payload)
     finally:
         registry.unregister("turn-free")
         registry.unregister("turn-held")

@@ -7,7 +7,7 @@ the terminal reconciliation — so the pinned surfaces (the escalate tool, the
 decision ingress, ``supervisor/queue_transitions``) keep thin dispatch only,
 mirroring ``ouroboros/owner_hurry.py``.
 
-Shape inside ``task_results/<task_id>.json`` (canonical drive root, exactly
+Shape inside the current task-store record (canonical drive root, exactly
 like the hurry projection):
 
     "owner_quiz": {
@@ -29,7 +29,7 @@ on an expired block (``record_answered(allow_expired=True)``), first answer
 still wins, and the block keeps ``answered_after_terminal`` for audit. The
 stored ``chat_id`` is the card's own chat, so that answer can be delivered as an
 ordinary owner message once its author is gone.
-The writers mutate ``owner_quiz`` and its paired terminal ``owner_wait`` via ``update_json_locked``
+The writers mutate ``owner_quiz`` and its paired terminal ``owner_wait`` via ``patch_document``
 (never ``write_task_result`` — its status-regression guard can drop the
 write), so concurrent terminal writers merge around it.
 """
@@ -38,7 +38,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 
-from ouroboros.utils import update_json_locked, utc_now_iso
+from ouroboros.utils import utc_now_iso
+from ouroboros.task_store import patch_document
 
 STATE_OPEN = "open"
 STATE_ANSWERED = "answered"
@@ -54,12 +55,6 @@ class _Keep:
 
 
 _KEEP = _Keep()
-
-
-def _quiz_result_path(drive_root: Any, task_id: str, *, create: bool = True):
-    from ouroboros.task_results import task_result_path
-
-    return task_result_path(drive_root, str(task_id), create=create)
 
 
 def _mutate_projection(
@@ -108,7 +103,7 @@ def _mutate_projection(
         view.update(quizzes)
         return stamp_task_result_schema(updated)
 
-    update_json_locked(_quiz_result_path(drive_root, task_id), _mutate)
+    patch_document(drive_root, str(task_id), _mutate)
     return view
 
 
@@ -329,20 +324,16 @@ def reconcile_terminal(drive_root: Any, task_id: str) -> List[str]:
         # The quiz and its waiting continuation share the same task-result
         # authority. Close the paired wait after the quiz projection so a
         # terminal task cannot replay as both expired and still waiting.
-        update_json_locked(
-            _quiz_result_path(drive_root, task_id),
-            _close_owner_wait,
-        )
+        patch_document(drive_root, str(task_id), _close_owner_wait)
     return expired
 
 
 def quiz_states(drive_root: Any, task_id: str) -> Dict[str, Dict[str, Any]]:
     """Read-only view of the projection for history replay merge."""
     try:
-        import json
+        from ouroboros.task_store import read_document
 
-        # create=False: a read-only replay view must not mkdir as a side effect.
-        raw = json.loads(_quiz_result_path(drive_root, task_id, create=False).read_text(encoding="utf-8"))
+        raw = read_document(drive_root, str(task_id))
     except Exception:
         return {}
     quizzes = raw.get("owner_quiz") if isinstance(raw, dict) else None

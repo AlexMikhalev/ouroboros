@@ -9,6 +9,7 @@ import pytest
 from ouroboros import task_results
 from ouroboros.tools import plan_review_artifacts as artifacts, plan_spec
 from tests import test_plan_review_engine
+from tests._store_shared import read_result
 
 
 plan_review_harness_fixture = pytest.fixture(name="_harness")(
@@ -34,7 +35,7 @@ def _record(root, raw, *, closed=True, findings=None, evidence_manifest=None):
 
 
 def _raw_state(root, task_id="large-plan"):
-    return json.loads(task_results.task_result_path(root, task_id).read_text(encoding="utf-8"))["plan_review_state"]
+    return read_result(root, task_id)["plan_review_state"]
 
 
 @pytest.mark.parametrize("field", ["goal", "acceptance_claims", "in_scope"])

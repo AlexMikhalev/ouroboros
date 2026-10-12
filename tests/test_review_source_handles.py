@@ -48,6 +48,8 @@ def test_failed_completion_promotion_retains_child_until_retry(tmp_path, monkeyp
                                              source_id="completion", data=raw, extension="json")
     write_task_result(child, "source", "completed", **_field(ref, "completion"))
     with monkeypatch.context() as patch:
+        # A failed placement must defeat both the hardlink and its copy fallback.
+        patch.setattr("ouroboros.source_retention.os.link", lambda *_a, **_k: (_ for _ in ()).throw(OSError("link unavailable")))
         patch.setattr(artifacts, "store_actor_source_bytes", lambda *_a, **_k: (_ for _ in ()).throw(OSError("copy failed")))
         copied = copy_child_task_result(parent, {"id": "source", "drive_root": str(child)})
         copied = retry_child_task_refs(parent, child, "source")
@@ -169,6 +171,7 @@ def test_nested_copy_failure_holds_child_and_rechecks_existing_checkpoint(tmp_pa
         return store(*args, **kwargs)
 
     with monkeypatch.context() as patch:
+        patch.setattr("ouroboros.source_retention.os.link", lambda *_a, **_k: (_ for _ in ()).throw(OSError("link unavailable")))
         patch.setattr(artifacts, "store_actor_source_bytes", fail_output)
         copied = copy_child_task_result(parent, {"id": "source", "drive_root": str(child)})
         copied = retry_child_task_refs(parent, child, "source")
@@ -236,6 +239,7 @@ def test_nested_trajectory_promotes_existing_call_blobs_without_crawling_prose(t
             return store(*args, **kwargs)
 
         with monkeypatch.context() as patch:
+            patch.setattr("ouroboros.source_retention.os.link", lambda *_a, **_k: (_ for _ in ()).throw(OSError("link unavailable")))
             patch.setattr(artifacts, "store_actor_source_bytes", fail_corpus)
             copied = copy_child_task_result(parent, task)
             copied = retry_child_task_refs(parent, child, task["id"])
@@ -495,8 +499,10 @@ def test_plan_dialogue_promotion_never_reads_a_foreign_source(tmp_path, monkeypa
     opened = _record_path_reads(monkeypatch, foreign)
     copied = copy_child_task_result(parent, {'id': 'source', 'drive_root': str(child)})
     copied = retry_child_task_refs(parent, child, 'source')
-    assert copied['plan_review_state']['waves'][0]['dialogue_source_ref']['availability'] == 'unavailable'
-    assert copied['child_ref_promotion']['unavailable_refs']
+    # The carrier keeps its own reference; the refusal is a promotion fact.
+    assert copied['plan_review_state']['waves'][0]['dialogue_source_ref'] == ref
+    assert [(row['path'], row['reason']) for row in copied['child_ref_promotion']['unavailable_refs']] == [
+        (ref['path'], 'invalid_scope' if link else 'invalid_ref')]
     assert not (artifacts.task_artifact_dir_path(parent, 'sibling') / ref['path']).exists()
     assert foreign not in opened
     # Positive control: the same guard intercepts the source reader on this very file.

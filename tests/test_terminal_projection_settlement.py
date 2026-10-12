@@ -30,6 +30,7 @@ from ouroboros.post_task_checkpoint import (
 )
 from ouroboros.project_dialogue import append_terminal_task_projection
 from ouroboros.task_results import STATUS_COMPLETED, load_task_result, write_task_result
+from tests._store_shared import seed_result
 
 DONE = {"chat_id": 1, "status": "completed", "outcome_axes": {"execution": {"status": "ok"}}}
 
@@ -352,7 +353,6 @@ class TestRestartRecovery:
             append_terminal_task_projection(project_root.root, "root-1", project_root.task, stored, DONE)
         # Historical terminals, retired publication obligations and children
         # share the startup scan but owe no Project/Main publication work.
-        folder = project_root.root / "task_results"
         for index in range(64):
             tid = f"history-{index}"
             row = {"task_id": tid, "status": "completed"}
@@ -362,7 +362,7 @@ class TestRestartRecovery:
             elif index % 3 == 2:
                 row.update(parent_task_id="root-1", root_task_id="root-1",
                            canonical_terminal_projection_origin="terminal_transition")
-            (folder / f"{tid}.json").write_text(json.dumps(stamp_task_result_schema(row)), encoding="utf-8")
+            seed_result(project_root.root, tid, stamp_task_result_schema(row))
         calls = []
         for name in ("capture_unread_mail", "capture_owner_mail"):
             original = getattr(task_custody, name)

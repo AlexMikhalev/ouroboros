@@ -24,6 +24,7 @@ import tempfile
 import pytest
 from tests._governance_docs_shared import governance_doc_text
 from tests.test_swarm_host_admission import host as _promotion_host
+from tests._store_shared import seed_result, unreadable_result
 
 promotion_host = _promotion_host
 
@@ -215,7 +216,7 @@ def test_current_plan_and_open_dispositions_enter_actual_model_request():
     fingerprint = "a" * 64
     result_dir = env.drive_root / "task_results"
     result_dir.mkdir(parents=True)
-    (result_dir / f"{task_id}.json").write_text(json.dumps({
+    seed_result(env.drive_root, task_id, {
         "_schema_version": 1,
         "task_id": task_id,
         "status": "running",
@@ -241,7 +242,7 @@ def test_current_plan_and_open_dispositions_enter_actual_model_request():
             }],
             "waves_omitted": 0,
         },
-    }), encoding="utf-8")
+    })
 
     messages, _ = build_llm_messages(
         env=env,
@@ -269,7 +270,7 @@ def test_valid_named_predecessor_materializes_into_first_model_request_and_actor
     tail = "CLAUDEXOR_ONLY_AND_L1_L2_L3"
     result_dir = env.drive_root / "task_results"
     result_dir.mkdir(parents=True)
-    (result_dir / f"{predecessor_id}.json").write_text(json.dumps({
+    seed_result(env.drive_root, predecessor_id, {
         "_schema_version": 1,
         "task_id": predecessor_id,
         "status": "completed",
@@ -279,7 +280,7 @@ def test_valid_named_predecessor_materializes_into_first_model_request_and_actor
             "context": "never use native API",
             "delegation_budget": {"intent_note": "L1 asks L2 to spawn L3"},
         },
-    }), encoding="utf-8")
+    })
     source = {
         "kind": "task_result", "task_id": predecessor_id,
         "human_label": "Cat Tower Builder",
@@ -306,14 +307,13 @@ def test_valid_named_predecessor_materializes_into_first_model_request_and_actor
     assert actor_read["authority"]["task_contract"]["objective"].endswith(tail)
 
 
-def test_unreadable_current_plan_review_source_returns_typed_startup_refusal():
+def test_unreadable_current_plan_review_source_returns_typed_startup_refusal(monkeypatch):
     from ouroboros.agent_startup_checks import validate_task_authority_sources
 
     tmpdir = pathlib.Path(tempfile.mkdtemp())
     env, _memory = _make_env_and_memory(tmpdir)
-    result_dir = env.drive_root / "task_results"
-    result_dir.mkdir(parents=True)
-    (result_dir / "plan-broken.json").write_text("{broken", encoding="utf-8")
+    seed_result(env.drive_root, "plan-broken", {"task_id": "plan-broken", "status": "running"})
+    unreadable_result(monkeypatch, "plan-broken")
 
     refusal = validate_task_authority_sources(
         env, {"id": "plan-broken", "title": "Cat plan", "text": "continue"},

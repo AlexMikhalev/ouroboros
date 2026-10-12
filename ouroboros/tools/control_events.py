@@ -250,18 +250,34 @@ def _emit_and_wait_for_routing(
             "detail": "The routing event was not emitted.",
         }
     timeout = _PROMOTE_CONFIRM_TIMEOUT_SEC if mode == "live" else 0.0
-    if str(evt.get("type") or "") == "promote_chat_to_task":
+    kind = str(evt.get("type") or "")
+    if kind == "promote_chat_to_task":
         _record_promotion_admission_stub(ctx, evt, mode)
-        return mode, _wait_for_promotion_admission(
+        receipt = _wait_for_promotion_admission(
             ctx,
             str(evt.get("task_id") or ""),
             str(evt.get("routing_token") or ""),
             client_message_id=str(evt.get("client_message_id") or ""),
             timeout_sec=timeout,
         )
-    return mode, _wait_for_routing_annotation(
-        ctx,
-        str(evt.get("client_message_id") or ""),
-        str(evt.get("routing_token") or ""),
-        timeout_sec=timeout,
-    )
+    else:
+        receipt = _wait_for_routing_annotation(
+            ctx,
+            str(evt.get("client_message_id") or ""),
+            str(evt.get("routing_token") or ""),
+            timeout_sec=timeout,
+        )
+    # Emitted, but its outcome was not seen in time: it may still land, or already
+    # has. The turn keeps the exact identity, so a later acting round reports the
+    # recorded outcome (``loop_model_call._append_routing_receipts``), even for an
+    # act no owner message carries (an agent-steer id, a wake's promote).
+    if str(receipt.get("status") or "unconfirmed") == "unconfirmed" and kind in {"promote_chat_to_task", "steer_task"}:
+        acts = getattr(ctx, "unconfirmed_routing_acts", None)
+        if isinstance(acts, list):
+            acts.append({
+                "action": kind if kind == "steer_task" or not evt.get("routed_from_main") else "route_to_project",
+                "client_message_id": str(evt.get("client_message_id") or ""),
+                "routing_token": str(evt.get("routing_token") or ""),
+                "target": str(evt.get("task_id") or evt.get("target_task_id") or ""),
+            })
+    return mode, receipt

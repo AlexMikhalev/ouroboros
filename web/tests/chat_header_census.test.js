@@ -93,6 +93,80 @@ function makeInstance({ details = {}, calls = [], state = { census: null }, chat
     };
 }
 
+for (const chatId of [1, 7]) {
+    test(`plain direct work stays neutral and explicit legacy thinking survives (chat ${chatId})`, () => {
+        const fx = makeInstance({ chatId });
+        const row = { activity_id: 'neutral-call', chat_id: chatId, kind: 'direct_chat', phase: 'working' };
+        try {
+            fx.handlers.get('chat')({ task_id: row.activity_id, chat_id: chatId, role: 'assistant',
+                is_progress: true, content: 'Inspecting current work', ts: '2026-10-11T00:00:00Z' });
+            const show = (facts, expected) => {
+                fx.census([{ ...row, ...facts }], true);
+                assert.equal(fx.status(), expected);
+                assert.equal(fx.card(row.activity_id).querySelector('[data-live-phase]').textContent, expected);
+            };
+            show({}, 'Working');
+            show({ phase: 'thinking' }, 'Thinking');
+            show({ phase: 'preparing' }, 'Preparing request');
+            show({ model_activity: { phase: 'response_received' } }, 'Response received · processing');
+            show({}, 'Working'); // finished call cleared its observation, not the task's work
+            fx.census([row, { ...row, activity_id: 'another-call', phase: 'preparing' }], true);
+            assert.equal(fx.status(), 'Working', 'different active phases never imply provider reasoning');
+        } finally { fx.instance.destroy(); restoreDom(fx.prior); }
+    });
+
+    test(`model observations retain mixed-control header priority (chat ${chatId})`, () => {
+        const fx = makeInstance({ chatId });
+        const row = { activity_id: 'queued-call', chat_id: chatId, kind: 'direct_chat', phase: 'working',
+            model_activity: { phase: 'queued' } };
+        const other = { activity_id: 'settling-task', chat_id: chatId, kind: 'managed_task', phase: 'budget_pausing' };
+        try {
+            fx.census([row, other], true);
+            assert.equal(fx.status(), 'Pausing…');
+            fx.census([{ ...row, model_activity: undefined }, other], true);
+            assert.equal(fx.status(), 'Pausing…', 'adding an observation must not reorder control priority');
+            fx.census([row], true);
+            assert.equal(fx.status(), 'Request accepted · waiting for admission');
+            fx.census([{ ...row, phase: 'budget_paused', pause_cause: 'owner' }], true);
+            assert.equal(fx.status(), 'Paused · owner pause', 'same-row Pause outranks stale model facts');
+            fx.census([row, { ...other, phase: 'working' }], true);
+            assert.equal(fx.status(), 'Working...', 'managed work keeps its existing priority');
+            fx.census([{ ...row, kind: 'managed_task' }, { ...other, kind: 'direct_chat' }], true);
+            assert.equal(fx.status(), 'Request accepted · waiting for admission',
+                'an active managed observation stays in the managed priority branch');
+        } finally { fx.instance.destroy(); restoreDom(fx.prior); }
+    });
+
+    test(`model observations reach header and card without typing or new polling (chat ${chatId})`, () => {
+        const fx = makeInstance({ chatId });
+        const row = { activity_id: 'observed-call', chat_id: chatId, kind: 'direct_chat', phase: 'working', task_attempt: 1 };
+        const show = phase => fx.census([{ ...row, model_activity: { phase, operation_id: 'same', invocation_id: 'same-send' } }], true);
+        try {
+            fx.handlers.get('chat')({ task_id: row.activity_id, chat_id: chatId, role: 'assistant',
+                is_progress: true, content: 'Inspecting current work', ts: '2026-10-11T00:00:00Z' });
+            for (const [phase, expected] of [
+                ['queued', 'Request accepted · waiting for admission'],
+                ['dispatching', 'Preparing request dispatch'],
+                ['awaiting_response', 'Sending request / waiting for response'],
+                ['rejoining', 'Rejoining the same model operation'],
+                ['response_received', 'Response received · processing'],
+            ]) {
+                show(phase);
+                assert.equal(fx.status(), expected);
+                assert.equal(fx.card(row.activity_id).querySelector('[data-live-phase]').textContent, expected);
+                assert.equal(fx.card(row.activity_id).querySelector('[data-wait-id]'), null);
+            }
+            fx.close();
+            assert.equal(fx.status(), 'Reconnecting...');
+            fx.handlers.get('chat')({ task_id: row.activity_id, chat_id: chatId, role: 'assistant',
+                content: 'Done', system_type: 'task_summary', task_terminal_status: 'completed', ts: '2026-10-11T00:00:01Z' });
+            show('queued');
+            assert.equal(fx.card(row.activity_id).querySelector('[data-live-phase]').textContent, 'Done');
+            assert.notEqual(fx.status(), 'Request accepted · waiting for admission');
+        } finally { fx.instance.destroy(); restoreDom(fx.prior); }
+    });
+}
+
 test('incident replay: a finished turn whose subagent typed with no kind returns to Online', async () => {
     const fx = makeInstance();
     try {
@@ -207,7 +281,7 @@ test('the census alone moves the header between Thinking... and Online', () => {
     const fx = makeInstance();
     try {
         fx.census([{ activity_id: 'direct-1', chat_id: 1, kind: 'direct_chat', phase: 'thinking' }], true);
-        assert.equal(fx.status(), 'Thinking...');
+        assert.equal(fx.status(), 'Thinking');
         assert.equal(fx.typingHidden(), false);
         fx.census([], true);
         assert.equal(fx.status(), 'Online');
@@ -355,7 +429,7 @@ test('R2 a terminal census retires only its linked Sending receipt without a typ
         assert.equal(fx.status(), 'Sending...', 'an old completion cannot retire a different request');
         fx.census([{ activity_id: 'second', client_message_id: 'second-send', chat_id: 1,
             kind: 'direct_chat', phase: 'thinking' }], true);
-        assert.equal(fx.status(), 'Thinking...');
+        assert.equal(fx.status(), 'Thinking');
     } finally { fx.instance.destroy(); restoreDom(fx.prior); }
 });
 
@@ -416,7 +490,7 @@ test('a direct owner Pause agrees between the actual card and header, then Resum
             _is_direct_chat: true, cancelable: true, content: 'Checking the saved work.', ts: '2026-09-28T06:00:00Z' });
         const row = { activity_id: id, chat_id: 1, kind: 'direct_chat' };
         fx.census([{ ...row, phase: 'thinking' }], true);
-        assert.equal(fx.status(), 'Thinking...');
+        assert.equal(fx.status(), 'Thinking');
         fx.census([{ ...row, phase: 'budget_pausing' }], true);
         assert.equal(fx.status(), 'Pausing…');
         assert.equal(fx.card(id).querySelector('[data-live-phase]')?.textContent, 'Pausing…');
@@ -433,7 +507,7 @@ test('a direct owner Pause agrees between the actual card and header, then Resum
         fx.census([{ ...row, phase: 'budget_paused' }], true);
         assert.equal(fx.status(), 'Paused');
         fx.census([{ ...row, phase: 'thinking' }], true);
-        assert.equal(fx.status(), 'Thinking...');
+        assert.equal(fx.status(), 'Thinking');
         assert.equal(fx.card(id).querySelector('[data-live-phase]')?.textContent, 'Thinking');
         assert.equal(fx.card(id).querySelector('[data-live-phase]')?.dataset.motion, '1');
     } finally { fx.instance.destroy(); restoreDom(fx.prior); }
@@ -446,7 +520,7 @@ for (const kind of ['', undefined, 'direct_chat', 'managed_task', 'future_kind']
             const fx = makeInstance();
             try {
                 fx.census(seed, true);
-                assert.equal(fx.status(), kind === 'managed_task' ? 'Working...' : 'Thinking...');
+                assert.equal(fx.status(), kind === 'managed_task' ? 'Working...' : 'Thinking');
                 fx.census([], complete);
                 assert.equal(fx.status(), complete ? 'Online' : 'Activity unconfirmed');
             } finally { fx.instance.destroy(); restoreDom(fx.prior); }
@@ -480,7 +554,7 @@ test('a typing frame is a receipt: Sending... steps to the census verdict, never
         };
         fx.handlers.get('typing')({ chat_id: 1, activity_id: 'turn-1', kind: 'direct_chat', client_message_id: 'cm-send' });
         await fx.settle();
-        assert.equal(fx.status(), 'Thinking...');
+        assert.equal(fx.status(), 'Thinking');
         assert.ok(stateCalls() > before, 'the receipt pulled the authoritative census at once');
         assert.ok(seen.includes('Sending...'), `the send was observed: ${seen.join(' > ')}`);
         assert.ok(!seen.slice(seen.indexOf('Sending...')).includes('Online'), `no Online blink: ${seen.join(' > ')}`);

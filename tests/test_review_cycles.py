@@ -24,6 +24,7 @@ from ouroboros import review_cycles as rc
 from ouroboros import task_pacing
 from ouroboros.contracts.task_contract import normalize_budget_profile
 from tests._governance_docs_shared import architecture_text, development_text
+from tests._store_shared import result_signature, unreadable_result
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 KEY = "OUROBOROS_REVIEW_MAX_CYCLES"
@@ -260,8 +261,11 @@ def test_empty_root_contract_cannot_mint_acceptance_wallet(tmp_path):
         )
 
 
-def test_corrupt_claimant_cancel_latch_cannot_spend_root_wallet(tmp_path):
+def test_unreadable_claimant_cancel_latch_cannot_spend_root_wallet(tmp_path, monkeypatch):
+    """The claimant's own cancel latch is read strictly inside the claim: a claimant row the
+    store cannot answer for refuses the claim and the root's wallet is left untouched."""
     from ouroboros.contracts.task_contract import build_task_contract
+    from ouroboros.store import StoreError
     from ouroboros.task_results import (
         STATUS_RUNNING, claim_task_acceptance_review_cycle, review_binding_hash,
         write_task_result,
@@ -271,23 +275,24 @@ def test_corrupt_claimant_cancel_latch_cannot_spend_root_wallet(tmp_path):
         tmp_path, "root-corrupt-claimant", STATUS_RUNNING,
         root_task_id="root-corrupt-claimant", task_contract=build_task_contract({}),
     )
-    root_path = tmp_path / "task_results" / "root-corrupt-claimant.json"
-    before = root_path.read_bytes()
-    claimant_path = tmp_path / "task_results" / "corrupt-claimant.json"
-    claimant_path.write_text("{", encoding="utf-8")
+    before = result_signature(tmp_path, "root-corrupt-claimant")
+    write_task_result(tmp_path, "corrupt-claimant", STATUS_RUNNING, root_task_id="root-corrupt-claimant")
+    claimant_before = result_signature(tmp_path, "corrupt-claimant")
+    unreadable = unreadable_result(monkeypatch, "corrupt-claimant")
     fields = {
         "candidate_hash": "b" * 64,
         "evidence_revision": "c" * 64,
         "fence_hash": "d" * 64,
     }
-    with pytest.raises(ValueError, match="task result authority is unreadable"):
+    with pytest.raises(StoreError):
         claim_task_acceptance_review_cycle(
             tmp_path, "root-corrupt-claimant",
             {**fields, "binding_hash": review_binding_hash(**fields)},
             claimed_by_task_id="corrupt-claimant",
         )
-    assert root_path.read_bytes() == before
-    assert claimant_path.read_text(encoding="utf-8") == "{"
+    unreadable["on"] = False
+    assert result_signature(tmp_path, "root-corrupt-claimant") == before
+    assert result_signature(tmp_path, "corrupt-claimant") == claimant_before
 
 
 def test_author_rails_separate_paid_cap_from_local_passes(monkeypatch):

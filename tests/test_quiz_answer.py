@@ -22,12 +22,14 @@ from ouroboros.owner_quiz import (
     record_answered,
     record_asked,
 )
+from tests._store_shared import read_result, result_signature
 
 
-def _result_path(tmp_path, task_id):
-    from ouroboros.task_results import task_result_path
+def _plant(tmp_path, task_id, **fields):
+    """Merge FIELDS into the stored row exactly as a concurrent writer would."""
+    from ouroboros.task_store import patch_document
 
-    return task_result_path(tmp_path, task_id)
+    return patch_document(tmp_path, task_id, lambda row: {**row, **fields})
 
 
 # ---------------------------------------------------------------- projection
@@ -113,13 +115,10 @@ def test_structural_expiry_flips_open_only(tmp_path):
 
 def test_structural_expiry_closes_the_paired_owner_wait(tmp_path):
     record_asked(tmp_path, "t1", quiz_id="q1", question="?", options=["A"])
-    path = _result_path(tmp_path, "t1")
-    row = json.loads(path.read_text())
-    row["owner_wait"] = {"quiz_id": "q1", "wait_id": "w1", "state": "waiting"}
-    path.write_text(json.dumps(row))
+    _plant(tmp_path, "t1", owner_wait={"quiz_id": "q1", "wait_id": "w1", "state": "waiting"})
 
     assert reconcile_terminal(tmp_path, "t1") == ["q1"]
-    updated = json.loads(path.read_text())
+    updated = read_result(tmp_path, "t1")
     assert updated["owner_quiz"]["q1"]["state"] == STATE_EXPIRED_TERMINAL
     assert updated["owner_wait"]["state"] == STATE_EXPIRED_TERMINAL
     assert updated["owner_wait"]["reconciled_at"]
@@ -127,39 +126,34 @@ def test_structural_expiry_closes_the_paired_owner_wait(tmp_path):
 
 def test_structural_expiry_repairs_wait_after_partial_pair_write_failure(tmp_path, monkeypatch):
     import ouroboros.owner_quiz as owner_quiz
-    from ouroboros.utils import update_json_locked as real_update_json_locked
+    from ouroboros.store import StoreError
+    from ouroboros.task_store import patch_document as real_patch_document
 
     record_asked(tmp_path, "t1", quiz_id="q1", question="?", options=["A"])
-    path = _result_path(tmp_path, "t1")
-    row = json.loads(path.read_text())
-    row["owner_wait"] = {"quiz_id": "q1", "wait_id": "w1", "state": "waiting"}
-    path.write_text(json.dumps(row))
+    _plant(tmp_path, "t1", owner_wait={"quiz_id": "q1", "wait_id": "w1", "state": "waiting"})
     calls = {"count": 0}
 
     def fail_pair_write(*args, **kwargs):
         calls["count"] += 1
         if calls["count"] == 2:
-            raise OSError("simulated paired projection failure")
-        return real_update_json_locked(*args, **kwargs)
+            raise StoreError("simulated paired projection failure")
+        return real_patch_document(*args, **kwargs)
 
-    monkeypatch.setattr(owner_quiz, "update_json_locked", fail_pair_write)
-    with pytest.raises(OSError):
+    monkeypatch.setattr(owner_quiz, "patch_document", fail_pair_write)
+    with pytest.raises(StoreError):
         reconcile_terminal(tmp_path, "t1")
-    assert json.loads(path.read_text())["owner_quiz"]["q1"]["state"] == STATE_EXPIRED_TERMINAL
+    assert read_result(tmp_path, "t1")["owner_quiz"]["q1"]["state"] == STATE_EXPIRED_TERMINAL
 
-    monkeypatch.setattr(owner_quiz, "update_json_locked", real_update_json_locked)
+    monkeypatch.setattr(owner_quiz, "patch_document", real_patch_document)
     assert reconcile_terminal(tmp_path, "t1") == []
-    assert json.loads(path.read_text())["owner_wait"]["state"] == STATE_EXPIRED_TERMINAL
+    assert read_result(tmp_path, "t1")["owner_wait"]["state"] == STATE_EXPIRED_TERMINAL
 
 
 def test_projection_survives_concurrent_result_fields(tmp_path):
     record_asked(tmp_path, "t1", quiz_id="q1", question="?", options=["A"] * 2)
-    path = _result_path(tmp_path, "t1")
-    data = json.loads(path.read_text())
-    assert "owner_quiz" in data
+    assert "owner_quiz" in read_result(tmp_path, "t1")
     # A terminal writer merging around the key keeps the projection intact.
-    data["status"] = "completed"
-    path.write_text(json.dumps(data))
+    _plant(tmp_path, "t1", status="completed")
     assert quiz_states(tmp_path, "t1")["q1"]["state"] == STATE_OPEN
 
 
@@ -830,20 +824,20 @@ def test_projection_refuses_foreign_schema_and_stamps_its_own_write(tmp_path):
 
     from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
     from ouroboros.task_result_schema import TASK_RESULT_SCHEMA_VERSION
+    from ouroboros.task_store import patch_document
 
-    path = _result_path(tmp_path, "t-schema")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"status": "running"}), encoding="utf-8")
+    patch_document(tmp_path, "t-schema", lambda _row: {"task_id": "t-schema", "status": "running"})  # unstamped
     record_asked(tmp_path, "t-schema", quiz_id="q1", question="?", options=["A", "B"])
-    row = json.loads(path.read_text(encoding="utf-8"))
+    row = read_result(tmp_path, "t-schema")
     assert row[SCHEMA_VERSION_KEY] == TASK_RESULT_SCHEMA_VERSION
     assert "q1" in row["owner_quiz"] and row["status"] == "running"
 
-    foreign = {"status": "running", SCHEMA_VERSION_KEY: TASK_RESULT_SCHEMA_VERSION + 1}
-    path.write_text(json.dumps(foreign), encoding="utf-8")
+    foreign = {"task_id": "t-schema", "status": "running", SCHEMA_VERSION_KEY: TASK_RESULT_SCHEMA_VERSION + 1}
+    patch_document(tmp_path, "t-schema", lambda _row: dict(foreign))
+    before = result_signature(tmp_path, "t-schema")
     with pytest.raises(ValueError, match="TASK_RESULT_SCHEMA_REFUSED"):
         record_asked(tmp_path, "t-schema", quiz_id="q2", question="?", options=["A"])
-    assert json.loads(path.read_text(encoding="utf-8")) == foreign
+    assert read_result(tmp_path, "t-schema") == foreign and result_signature(tmp_path, "t-schema") == before
 
 
 def test_quiz_state_frame_carries_the_comment_only_when_recorded():

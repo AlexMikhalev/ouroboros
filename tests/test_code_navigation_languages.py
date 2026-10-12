@@ -15,6 +15,30 @@ def project(tmp_path):
     return repo, data, ToolRegistry(repo_dir=repo, drive_root=data)
 
 
+def test_unchanged_inventory_skips_serialization_but_edits_and_head_publish(project, monkeypatch):
+    repo, data, _registry = project
+    source = repo / "module.py"
+    source.write_text("def original(): pass\n", encoding="utf-8")
+    monkeypatch.setattr(ci, "utc_now_iso", lambda: "first build")
+    ci.build_code_inventory(repo, drive_root=data)
+    path = ci.inventory_cache_path(repo, data)
+    before = path.read_text(encoding="utf-8")
+    assert before == json.dumps(json.loads(before), ensure_ascii=False, separators=(",", ":")) + "\n"
+    monkeypatch.setattr(ci, "utc_now_iso", lambda: "later build")
+    with monkeypatch.context() as unchanged:
+        unchanged.setattr(ci.CodeInventory, "to_json", lambda self: pytest.fail("unchanged inventory dumped"))
+        ci.build_code_inventory(repo, drive_root=data)
+    assert path.read_text(encoding="utf-8") == before
+    source.write_text("def edited(): pass\n", encoding="utf-8")
+    ci.build_code_inventory(repo, drive_root=data)
+    changed = json.loads(path.read_text(encoding="utf-8"))
+    assert changed["created_at"] == "later build"
+    assert changed["files"][0]["symbols"][0]["name"] == "edited"
+    monkeypatch.setattr(ci, "_git_head", lambda root: "new-head")
+    ci.build_code_inventory(repo, drive_root=data)
+    assert ci.load_cached_inventory(repo, data).git_head == "new-head"
+
+
 @pytest.mark.parametrize("extension,language", [
     ("mjs", "javascript"), ("cjs", "javascript"),
     ("mts", "typescript"), ("cts", "typescript"),

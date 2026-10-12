@@ -95,3 +95,71 @@ def test_generated_image_delivery_and_reload_in_main_and_project(direct_server_w
         finally:
             browser.close()
     assert len(calls) == 2
+
+
+def test_generated_svg_opens_from_its_file_card_as_an_inert_static_image(direct_server_with_data, monkeypatch, tmp_path):
+    """generate_image -> send_file -> the real card's Open on this application origin."""
+    from playwright.sync_api import sync_playwright
+    from ouroboros.tools.registry import ToolContext, ToolRegistry
+    from ouroboros.utils import append_jsonl
+    from supervisor import message_bus
+    from supervisor.events_chat_delivery import _handle_send_document
+
+    server = direct_server_with_data
+    root = server["data_dir"]
+    workspace = tmp_path / "svg-workspace"; workspace.mkdir()
+    svg = (b'<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" '
+           b'fill="#4b9b89"/><script>new Image().src = "/svg-script-ran?origin=" + encodeURIComponent(location.origin)'
+           b'</script></svg>')
+    _transport(monkeypatch, lambda _request: httpx.Response(200, json={"data": [
+        {"b64_json": base64.b64encode(svg).decode(), "media_type": "image/svg+xml"}]}))
+    monkeypatch.setattr(message_bus, "DATA_DIR", root)
+    monkeypatch.setattr(message_bus, "publish_event", lambda *a, **k: None)
+    supervisor = SimpleNamespace(bridge=message_bus.LocalChatBridge(), DRIVE_ROOT=root, append_jsonl=append_jsonl)
+    ctx = ToolContext(repo_dir=server["repo_dir"], drive_root=root, task_id="image-svg",
+                      workspace_root=workspace, workspace_mode="external", current_chat_id=1)
+    registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=root); registry.set_context(ctx)
+    result = registry.execute_result("generate_image", {"prompt": "Fixture vector", "model": "openai::fixture-image"})
+    assert result.status == "ok", result
+    image = _summary(result.text)["images"][0]
+    assert image["mime"] == "image/svg+xml" and Path(image["absolute_path"]).read_bytes() == svg
+    sent = registry.execute_result("send_file", {"file_path": image["absolute_path"], "caption": "Generated vector"})
+    assert sent.status == "ok", sent
+    _handle_send_document(ctx.pending_events[-1], supervisor)
+    row = next(row for row in map(json.loads, (root / "logs" / "chat.jsonl").read_text().splitlines())
+               if row.get("task_id") == "image-svg" and row.get("download_url"))
+    evidence = Path(os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", tmp_path / "evidence"))
+    evidence.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            context = browser.new_context(viewport={"width": 1280, "height": 844})
+            requests, served = [], {}
+            context.on("request", lambda request: requests.append(request.url))
+            context.on("response", lambda response: served.update(response.headers)
+                       if response.url.endswith(row["download_url"]) and response.request.resource_type == "document" else None)
+            page = context.new_page()
+            errors = []; page.on("pageerror", lambda error: errors.append(str(error)))
+            _open(page, server["url"])
+            card = page.locator(f"{MAIN} .chat-file-card").last
+            card.wait_for(state="visible")
+            # Static view: the card's thumbnail still renders the SVG as an image.
+            page.wait_for_function("selector => { const image = [...document.querySelectorAll(selector)].pop(); "
+                                   "return image?.complete && image.naturalWidth === 320; }", arg=f"{MAIN} img.chat-file-thumb")
+            card.click()
+            with page.expect_popup() as opened:
+                page.locator('dialog.chat-file-dialog [data-file-action="open"]').click()
+            popup = opened.value
+            popup.wait_for_load_state("load")
+            popup.wait_for_timeout(1500)  # a script that ran would have requested its beacon by now
+            popup.screenshot(path=str(evidence / "svg-opened-1280.png"))
+            observed = {"popup": popup.url, "script_beacons": [url for url in requests if "svg-script-ran" in url],
+                        "csp": served.get("content-security-policy"), "nosniff": served.get("x-content-type-options")}
+            assert popup.url.endswith(row["download_url"]) and not observed["script_beacons"], observed
+            assert (observed["csp"], observed["nosniff"]) == ("sandbox", "nosniff"), observed
+            fetched = page.request.get(server["url"] + row["download_url"])
+            assert fetched.status == 200 and fetched.body() == svg
+            assert fetched.headers["content-type"].startswith("image/svg+xml")
+            assert not errors
+        finally:
+            browser.close()

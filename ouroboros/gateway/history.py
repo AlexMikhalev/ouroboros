@@ -36,6 +36,7 @@ from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.history_retention import retention_summary
 from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
 from ouroboros.project_dialogue import historical_terminal_projection
+from ouroboros.store import StoreMigrating
 from ouroboros.subagent_messages import SUBAGENT_MESSAGE_FIELDS, delegated_activity_meta, executor_observation_meta, initiator_meta, subagent_message_meta
 from ouroboros.task_results import TASK_COST_META_FIELDS as _TASK_COST_META_FIELDS
 from ouroboros.utils import JsonlChainUnreadable, strip_markdown, utc_now_iso
@@ -360,10 +361,8 @@ def _load_terminal_result(
     task_id: str,
     cache: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Effective status/cost, receipts and child identity, read once per request.
-
-    Shared by lineage anchoring and annotation. A history GET must never copy
-    artifacts or claim disposition hashes (materialize contract).
+    """Read effective facts once for lineage/annotation, without artifact materialization.
+    Migration must reach the HTTP boundary, never become an absent terminal fact.
     """
     if task_id in cache:
         return cache[task_id]
@@ -371,21 +370,23 @@ def _load_terminal_result(
         from ouroboros.task_status import load_effective_task_result
 
         result = load_effective_task_result(data_dir, task_id, materialize_artifacts=False)
+    except StoreMigrating:
+        raise
     except Exception:
         result = None
     if result:
         cache[task_id] = result
     else:
-        # Empty effective read is not proof of absence: malformed/unreadable
-        # canonical files retain uncertainty. The existing schema owner may
-        # already have moved an obsolete result to quarantine.
-        from ouroboros.task_results import task_results_dir
+        # Empty effective read is not proof of absence: an unavailable store retains
+        # uncertainty; only a store that answers "no row" proves the result absent.
+        from ouroboros.task_store import exists
         cache[task_id] = {}
         try:
-            (task_results_dir(data_dir, create=False) / f"{task_id}.json").stat()
-        except FileNotFoundError:
-            cache[task_id] = {"_history_result_absent": True}
-        except OSError:
+            if not exists(data_dir, task_id):
+                cache[task_id] = {"_history_result_absent": True}
+        except StoreMigrating:
+            raise
+        except Exception:
             pass
     return cache[task_id]
 
@@ -403,12 +404,9 @@ def _annotate_terminal_task_truth(
 ) -> None:
     """Project task truth AFTER quotas, paying only for represented/current tasks.
 
-    Cost/axes/review use the in-window summary/latest progress; absent rows get
-    inert tool-evidence carriers. Results share the pre-floor lineage cache.
-    Precomputed floor/anchored_children strip unanchored pre-floor child identity
-    AFTER legacy injection, preventing orphaned Working parents. Anchoring is a
-    live child, represented/live immediate parent or its transitive children
-    (#496); stripping adds no reads.
+    Use in-window cost/axes/review and inert evidence carriers; share the pre-floor cache.
+    Strip unanchored pre-floor child identity AFTER injection (#496), without extra reads.
+    Anchor live children or those with represented/live immediate parents, transitively.
     """
 
     try:
@@ -648,6 +646,8 @@ def _annotate_terminal_task_truth(
                 for key in SUBAGENT_MESSAGE_FIELDS:
                     message.pop(key, None)
                 log.debug("Stripped stale subagent lineage from chat final %s", task_id)
+    except StoreMigrating:
+        raise
     except Exception as exc:
         log.debug("Failed to annotate terminal task status in history: %s", exc)
 
@@ -726,10 +726,9 @@ def _collect_chat_rows(
 
     def _quiz_source(task_id):
         if task_id not in quiz_projection_cache:
-            from ouroboros.task_results import task_result_path
-            from ouroboros.utils import read_json_dict
+            from ouroboros.task_results import load_task_result
 
-            data = read_json_dict(task_result_path(chat_path.parent.parent, task_id, create=False)) or {}
+            data = load_task_result(chat_path.parent.parent, task_id) or {}
             quiz_projection_cache[task_id] = {
                 "quizzes": data.get("owner_quiz") if isinstance(data.get("owner_quiz"), dict) else {},
                 "wait": data.get("owner_wait") if isinstance(data.get("owner_wait"), dict) else {},
@@ -921,6 +920,8 @@ def _collect_chat_rows(
                 if field in entry:
                     rec[field] = entry[field]
             combined.append(rec)
+    except StoreMigrating:
+        raise  # the endpoint's own typed 503 (the store is importing), never a disclosed gap
     except Exception as exc:
         log.warning("Failed to read chat history: %s", exc)
         stream_gaps = {*stream_gaps, PROJECTION_FAILED}  # rows after the fault are missing: never a clean window
@@ -1358,6 +1359,8 @@ def _apply_window_quotas(
                         grew = True
                 if not grew:
                     break
+        except StoreMigrating:
+            raise
         except Exception as exc:
             log.debug("Failed to resolve pre-floor lineage terminal truth: %s", exc)
     lineage = [
@@ -1584,8 +1587,9 @@ def make_chat_history_endpoint(data_dir: pathlib.Path):
         cursor = request.query_params.get("cursor")
         try:
             body = await asyncio.to_thread(_assemble_history_response, data_dir, thread_id, n_human, n_progress, cursor)
-        except (HistoryCursorError, JsonlChainUnreadable, OSError) as exc:
-            reason = exc.reason if isinstance(exc, HistoryCursorError) else "history_source_unavailable"
+        except (HistoryCursorError, JsonlChainUnreadable, OSError, StoreMigrating) as exc:
+            reason = (exc.reason if isinstance(exc, HistoryCursorError) else
+                      "migrating" if isinstance(exc, StoreMigrating) else "history_source_unavailable")
             return Response(content=json.dumps({"messages": [], "error": reason, "reason_code": reason,
                                                 "next_cursor": cursor, "has_more": True,
                                                 "window": {"complete": False, "truncated_by": [reason]}}),

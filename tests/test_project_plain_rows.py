@@ -21,6 +21,7 @@ import types
 from types import SimpleNamespace
 
 import pytest
+from tests._store_shared import read_result
 
 MARKDOWN_RESULT = (
     "# Report title\n\n## Short conclusion\n\nBody with `inline code` and **bold**."
@@ -480,9 +481,7 @@ def test_the_stored_reviewer_rationale_never_reaches_the_row(tmp_path):
     fields = {key: value for key, value in noisy.items()
               if key not in {"task_id", "status"}}
     write_task_result(tmp_path, "root-project", "completed", **fields)
-    stored = json.loads(
-        (tmp_path / "task_results" / "root-project.json").read_text(encoding="utf-8")
-    )
+    stored = read_result(tmp_path, "root-project")
     decision = stored["outcome_axes"]["review"]["acceptance_decision"]
     assert decision["reason"] == "evidence_refresh"
     assert "never ran with" in decision["rationale"]

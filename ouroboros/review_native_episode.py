@@ -199,7 +199,7 @@ def native_or_packet_attempt_rail(slot: Any, two_send_surface: bool) -> Any:
 # ---------------------------------------------------------------------------
 
 _INSPECTION_TOOL_NAMES = (
-    "read_file", "list_files", "search_code", "query_code",
+    "read_file", "list_files", "search_code", "query_code", "query_data",
     "vcs_status", "vcs_diff", "compact_context",
 )
 
@@ -207,7 +207,7 @@ _NATIVE_REVIEW_INSTRUCTIONS = (
     "You are an independent Ouroboros reviewer running a bounded read-only "
     "inspection episode. Retrieve the evidence yourself with the tools you are "
     "given inside the repository root — read_file, list_files, search_code, "
-    "query_code, vcs_status, vcs_diff and compact_context. You cannot "
+    "query_code, query_data, vcs_status, vcs_diff and compact_context. You cannot "
     "modify anything and have no shell. Read LARGE files in bounded chunks "
     "(read_file supports start_line/max_lines and start_char for long lines) instead of requesting a whole large "
     "document at once. The working window has a measured send bound; the full "
@@ -306,7 +306,7 @@ def inspection_registry(root: str, drive_root: Any, task_id: str = "") -> tuple[
     Reuses the existing capability machinery wholesale instead of a new
     allowlist mechanism: the ``local_readonly_subagent`` constraint gives
     the read-only operation/root matrix, ``disabled_tools`` trims its
-    broader name allowlist down to the inspection six, and the resource
+    broader name allowlist down to inspection tools, and the resource
     contract keeps extension/MCP discovery off. ``registry._ctx`` is
     per-instance, so the worker's own registry/context is never touched.
     ``drive_root`` is the data plane the inspection tools may read: an
@@ -344,6 +344,7 @@ def inspection_registry(root: str, drive_root: Any, task_id: str = "") -> tuple[
         ctx.task_metadata = {"root_task_id": scope.root_task_id or scope.task_id,
                              "budget_drive_root": str(scope.drive_root or drive_root)}
         ctx.task_lifecycle_bound = True
+    ctx.task_metadata["native_data_root"] = str(drive_root)
     registry.set_context(ctx)
     schemas = [schema for schema in (registry.get_schema_by_name(name) for name in _INSPECTION_TOOL_NAMES) if schema]
     if not any(s["function"]["name"] == "compact_context" for s in schemas):

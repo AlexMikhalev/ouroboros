@@ -75,29 +75,17 @@ def observe_task_runs(root: Any, task_id: str, *, reason: str = "budget_resume_u
             from ouroboros import delegate_custody as custody
 
             mine = str(task_id or "")
-            # The memo silently falls back to a lenient read that skips an
-            # unreadable segment; probe the chain first so hidden custody is
-            # UNKNOWN, never "no open runs" (Astra run-a882315dbcd7 #2).
-            if custody.custody_log_unreadable(pathlib.Path(root)):
-                raise OSError("custody_log_unreadable")
-            from ouroboros.delegate_custody_memo import custody_rows_with_integrity
+            # ONE store read feeds both projections: a START_REQUESTED that becomes
+            # STARTED between two reads must land in one of them (Astra 6fe5 #1).
+            # The store answers or raises; a raise is UNKNOWN custody, never "no
+            # open runs" (Astra run-a882315dbcd7 #2).
+            from ouroboros.delegate_custody_current import task_snapshot
 
-            # ONE snapshot feeds both projections: a START_REQUESTED that becomes
-            # STARTED between two reads must land in one of them (Astra 6fe5 #1),
-            # and its integrity is judged on that same read. An unparseable custody
-            # line naming this task may hide its request.
-            rows_read, malformed = custody_rows_with_integrity(pathlib.Path(root), mine)
-            snapshot = list(rows_read)
-            if malformed is None or malformed:
-                raise OSError(f"custody_rows_incomplete:{'unknown' if malformed is None else malformed}")
-            runs = [run for run in custody.replay(pathlib.Path(root), rows=snapshot).values()
-                    if str(getattr(run, "task_id", "") or "") == mine and not getattr(run, "settled", True)]
+            view = task_snapshot(pathlib.Path(root), mine)
+            runs = [run for run in view["runs"].values() if not getattr(run, "settled", True)]
+            pending = view["pending"]
             # A START_REQUESTED whose response was lost has no run id yet but may
             # be a live remote writer: unknown custody, never absence (#3).
-            from ouroboros.delegate_pending import pending_invocations
-
-            pending = [row for row in pending_invocations(pathlib.Path(root), rows=snapshot)
-                       if str(row.get("task_id") or "") == mine]
             # Every projected row also carries the custody facts a purpose-bound
             # reader may filter on: the registering ``source`` and whether the
             # row is an independent review without candidate-apply possibility

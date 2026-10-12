@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Any, Dict, List, TYPE_CHECKING
 
 from ouroboros.review_records import review_slot_awaiting, review_slot_unresolved
+from ouroboros.store import StoreError
 
 # A slot released at the dispatch barrier has no transport or parse event:
 # its projection is a gap, never a transport failure or a malformed answer.
@@ -728,7 +729,7 @@ def publish_acceptance_checkpoint(
 
     try:
         result = write_task_result(root, task_id, "running", strict_existing_dict=True, _field_projector=project)
-    except (OSError, ValueError, TimeoutError) as exc:
+    except (OSError, ValueError, TimeoutError, StoreError) as exc:
         logging.getLogger(__name__).warning("Applied acceptance projection unavailable", exc_info=True)
         return {"status": "unavailable", "revision": 0, "rejected": [], "projection": {},
                 "error": f"{type(exc).__name__}: {exc}"}

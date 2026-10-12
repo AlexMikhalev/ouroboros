@@ -1059,8 +1059,8 @@ def test_enqueue_evolution_omits_duplicate_cycle_message(tmp_path, monkeypatch):
 
     assert len(pending) == 1
     assert pending[0]["type"] == "evolution"
-    # The generic "... task started." lifecycle message is the only start bubble;
-    # the redundant "Evolution #N: <id>" enqueue bubble is gone.
+    # The task's own card is its start (no standalone bubble); the redundant
+    # "Evolution #N: <id>" enqueue bubble is gone.
     assert not any("Evolution #" in m for m in sent)
 
 

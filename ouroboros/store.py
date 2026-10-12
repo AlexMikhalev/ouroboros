@@ -1,0 +1,820 @@
+"""The current-facts store ``state/current.sqlite`` and the SQLite core it shares with money.
+
+The connection, lock-tier, identity, commit and transaction core ``usage_store`` imports back (one protocol
+for both files: rollback journal, ``synchronous=FULL``, no WAL, one connection per
+transaction, ``BEGIN IMMEDIATE`` for writes, every name-tier access inside one
+name lock, nothing above SQLite 3.24 so the bundled engine's file opens on a
+3.37 system engine);
+the tri-state open (``probe``/``open_store``: the boot door imports a root's facts
+inside the import window, a public write imports a never-imported root on first
+touch, a read never imports — a root holding facts reads as ``StoreMigrating``
+until published, one holding none reads empty); the one write gate (the window
+and the PUBLISHED phase; ``service`` for the importer/exporter/seam).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import errno
+import json
+import os
+import pathlib
+import shutil
+import sqlite3
+import threading
+import time
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+
+from ouroboros.utils import append_jsonl, machine_json, utc_now_iso  # one compact JSON text: key order kept, facts round-trip
+
+STORE_REL = pathlib.Path("state/current.sqlite")
+LOCK_NAME = "current.lock"  # the name-tier lock around every access
+IMPORT_LOCK_NAME = "current_import.lock"
+GENERATION = 8  # the lifecycle generation that owns the store
+GENERATION_KEY = "current_store_generation"  # in state/migrations.json
+SCHEMA_VERSION = 1
+STORE_WAIT_SEC = 10.0
+TIER_ENFORCED, TIER_NAME = "enforced", "name"
+PUBLISHED, EXPORTING, RETIRED = "published", "exporting", "retired"
+# The header's application id names the lock protocol before the file is opened ('OUCE'/'OUCN').
+_APPLICATION_ID = {TIER_ENFORCED: 0x4F554345, TIER_NAME: 0x4F55434E}
+TYPED_COLUMNS = ("status", "parent_task_id", "root_task_id", "delegation_role", "superseded_by",
+                 "retry_task_id", "project_id", "ts", "updated_at", "child_drive_root",
+                 "headless_child_drive_root", "drive_root", "presence_binding_id")
+# set name -> flag column; the writer decides ``pending_drive`` (nonterminal, or terminal files not ready)
+FLAG_COLUMNS = {"synthesis": "owes_synthesis", "terminal_projection": "owes_terminal_projection",
+                "promotions": "has_pending_promotion", "pause_notices": "has_pause_notices",
+                "delegated_runs": "delegated_runs_unreconciled", "pending_drives": "pending_drive"}
+# The per-operation projections of a document that live in ``task_handoffs`` rows (``kind`` = the
+# field): a claim, a wait or a retirement writes its one row, never the body. The body keeps a
+# present key as ``{}`` (its place and presence); ``load`` puts the rows back there, so a document
+# round-trips byte for byte. A key the body never had appears while it has rows.
+ROW_BACKED_FIELDS: Tuple[str, ...] = ("launch_handoffs", "model_waits", "retired_model_consumers")
+_SCHEMA = """
+CREATE TABLE tasks (
+  task_id TEXT PRIMARY KEY, status TEXT, parent_task_id TEXT, root_task_id TEXT, delegation_role TEXT,
+  superseded_by TEXT, retry_task_id TEXT, project_id TEXT, ts TEXT, updated_at TEXT,
+  child_drive_root TEXT, headless_child_drive_root TEXT, drive_root TEXT, presence_binding_id TEXT,
+  presence_authority_recorded INTEGER NOT NULL DEFAULT 0, write_seq INTEGER NOT NULL DEFAULT 0,
+  owes_synthesis INTEGER NOT NULL DEFAULT 0, owes_terminal_projection INTEGER NOT NULL DEFAULT 0,
+  has_pending_promotion INTEGER NOT NULL DEFAULT 0, has_pause_notices INTEGER NOT NULL DEFAULT 0,
+  delegated_runs_unreconciled INTEGER NOT NULL DEFAULT 0, pending_drive INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX tasks_parent ON tasks(parent_task_id); CREATE INDEX tasks_root ON tasks(root_task_id);
+CREATE INDEX tasks_status ON tasks(status); CREATE INDEX tasks_project ON tasks(project_id);
+CREATE INDEX tasks_ts ON tasks(ts, task_id); CREATE INDEX tasks_updated ON tasks(updated_at, task_id);
+CREATE INDEX tasks_superseded ON tasks(superseded_by) WHERE superseded_by IS NOT NULL;
+CREATE INDEX tasks_retry ON tasks(retry_task_id) WHERE retry_task_id IS NOT NULL;
+CREATE TABLE task_bodies (task_id TEXT PRIMARY KEY, body TEXT NOT NULL);
+CREATE TABLE obligations (set_name TEXT NOT NULL, id TEXT NOT NULL, facts TEXT NOT NULL, PRIMARY KEY (set_name, id));
+CREATE TABLE task_handoffs (task_id TEXT NOT NULL, op_id TEXT NOT NULL, kind TEXT NOT NULL, state TEXT,
+  claimed_at TEXT, returned_at TEXT, owner TEXT, facts TEXT NOT NULL, PRIMARY KEY (task_id, op_id));
+CREATE TABLE custody_runs (run_id TEXT PRIMARY KEY, task_id TEXT, project_id TEXT, invocation_id TEXT, state TEXT,
+  facts TEXT NOT NULL, updated_at TEXT);
+CREATE INDEX custody_task ON custody_runs(task_id); CREATE INDEX custody_state ON custody_runs(state);
+CREATE INDEX custody_project ON custody_runs(project_id) WHERE project_id<>'';
+CREATE INDEX custody_invocation ON custody_runs(invocation_id) WHERE invocation_id<>'';
+CREATE TABLE custody_outbox (event_id TEXT PRIMARY KEY, run_id TEXT, task_id TEXT, event TEXT NOT NULL, created_at TEXT);
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+""" + "".join(f"CREATE INDEX tasks_{column} ON tasks({column}) WHERE {column}=1;\n"
+              for column in FLAG_COLUMNS.values())
+
+
+class StoreError(RuntimeError):
+    """The current-facts store cannot serve; the subclass says why."""
+
+
+class StoreMigrating(StoreError):
+    """Not published yet: the importer runs, or never ran on this root."""
+
+
+class StoreRetired(StoreError):
+    """The export began or completed: the files are the authority now."""
+
+
+class StoreLost(StoreError):
+    """The store is missing beside its completed stamp, or unreadable; never replaced silently."""
+
+
+class StoreBusy(StoreError):
+    """Contention or exhausted process resources: retry; never a new store."""
+
+
+_PROCESS_LOCKS: Dict[str, threading.RLock] = {}
+_PROCESS_LOCKS_GUARD = threading.Lock()
+
+
+def process_lock(path: pathlib.Path) -> threading.RLock:
+    with _PROCESS_LOCKS_GUARD:
+        return _PROCESS_LOCKS.setdefault(str(path), threading.RLock())
+
+
+def file_identity(path: pathlib.Path) -> Optional[tuple]:
+    """``(inode, device)`` of a present file; ``None`` only for a missing one."""
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        return None
+    return info.st_ino, info.st_dev
+
+
+_HEADER_FDS: Dict[Tuple[int, int], int] = {}
+_HEADER_GUARD = threading.Lock()
+
+
+def _read_header(path: pathlib.Path) -> bytes:
+    """The first 100 bytes, without ever closing a descriptor of a live store file: on POSIX a
+    close releases every advisory lock this process holds on the file, an open transaction's on
+    another thread included, and another process then writes the same pages (sqlite.org
+    howtocorrupt §2.2). One descriptor per file stays open for the process lifetime; Windows
+    locks belong to their handle, and a held handle there would block the export rename."""
+    if os.name == "nt":
+        with open(path, "rb") as handle:
+            return handle.read(100)
+    info = os.stat(path)
+    with _HEADER_GUARD:
+        fd = _HEADER_FDS.get((info.st_dev, info.st_ino))
+        if fd is None:
+            fd = os.open(str(path), os.O_RDONLY)
+            opened = os.fstat(fd)  # the path may name a newer file than the stat did: key what was opened
+            _HEADER_FDS.setdefault((opened.st_dev, opened.st_ino), fd)
+        return os.pread(fd, 100, 0)
+
+
+def held_descriptor(path: Any) -> Optional[int]:
+    """The descriptor this process keeps on a store file it uses through SQLite, else ``None``."""
+    if os.name == "nt":
+        return None
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    with _HEADER_GUARD:
+        return _HEADER_FDS.get((info.st_dev, info.st_ino))
+
+
+class _KeptReader:
+    """A binary reader over a kept store descriptor; leaving or closing it keeps the descriptor."""
+
+    def __init__(self, fd: int) -> None:
+        self._fd, self._offset = fd, 0
+
+    def __enter__(self) -> "_KeptReader":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+    def fileno(self) -> int:
+        return self._fd
+
+    def tell(self) -> int:
+        return self._offset
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        if whence not in (os.SEEK_SET, os.SEEK_CUR, os.SEEK_END):
+            raise ValueError(f"invalid whence ({whence})")
+        base = os.fstat(self._fd).st_size if whence == os.SEEK_END else (0 if whence == os.SEEK_SET else self._offset)
+        if base + offset < 0:
+            raise ValueError("negative seek position")
+        self._offset = base + offset
+        return self._offset
+
+    def read(self, size: Optional[int] = -1) -> bytes:
+        """Up to ``size`` bytes (all that remain when negative); short ``pread``s are continued."""
+        wanted, parts = (-1 if size is None else size), []
+        while wanted:
+            data = os.pread(self._fd, wanted if wanted > 0 else 1 << 20, self._offset)
+            if not data:
+                break
+            parts.append(data)
+            self._offset += len(data)
+            wanted = wanted - len(data) if wanted > 0 else wanted
+        return b"".join(parts)
+
+
+def open_for_read(path: Any) -> Any:
+    """``open(path, "rb")`` for any reader in a process that may hold a store: a held store file
+    is read through its kept descriptor, never a new one whose close would release the process's
+    locks on it; any other file is opened and closed as usual."""
+    fd = held_descriptor(path)
+    return pathlib.Path(path).open("rb") if fd is None else _KeptReader(fd)
+
+
+def iter_file_bytes(path: Any, *, limit: Optional[int] = None, chunk: int = 1 << 20) -> Iterator[bytes]:
+    """A file's bytes (the first ``limit``, or all), read through ``open_for_read``."""
+    with open_for_read(path) as handle:
+        while limit is None or limit > 0:
+            data = handle.read(chunk if limit is None else min(chunk, limit))
+            if not data:
+                return
+            if limit is not None:
+                limit -= len(data)
+            yield data
+
+
+def read_file_bytes(path: Any, *, limit: Optional[int] = None) -> bytes:
+    return b"".join(iter_file_bytes(path, limit=limit))
+
+
+def copy_file_bytes(source: Any, destination: Any) -> Any:
+    """``shutil.copy2`` that reads a held store file through its kept descriptor (a ``copytree``
+    ``copy_function``); the copy is a byte copy, not a consistent snapshot of a live store."""
+    if held_descriptor(source) is None:
+        return shutil.copy2(source, destination)
+    target = pathlib.Path(destination)
+    if target.is_dir():
+        target = target / pathlib.Path(source).name
+    if target.exists() and os.path.samefile(source, target):
+        raise shutil.SameFileError(f"{source!r} and {str(target)!r} are the same file")
+    with open(target, "wb") as handle:
+        for data in iter_file_bytes(source):
+            handle.write(data)
+    shutil.copystat(source, target)
+    return str(target)
+
+
+def header_tier(path: pathlib.Path, application_ids: Dict[str, int]) -> Optional[str]:
+    """The lock tier the file's SQLite header names; ``None`` for a missing or foreign file."""
+    try:
+        header = _read_header(path)
+    except FileNotFoundError:
+        return None
+    if len(header) < 100 or not header.startswith(b"SQLite format 3\x00"):
+        return None
+    application_id = int.from_bytes(header[68:72], "big")
+    return next((tier for tier, value in application_ids.items() if value == application_id), None)
+
+
+def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: float = 0.0) -> sqlite3.Connection:
+    """A connection with the tier's lock protocol (``sqlite3.Error`` is the caller's to type);
+    ``wait_sec`` is SQLite's busy wait on the enforced tier (the name tier's one lock is the
+    name protocol the caller holds); no statement runs here, the first may wait on a commit."""
+    query = "mode=rwc" if create else "mode=rw"
+    if tier == TIER_NAME:
+        query += "&vfs=" + ("win32-none" if os.name == "nt" else "unix-none")
+    conn = sqlite3.connect(f"{path.absolute().as_uri()}?{query}", uri=True, isolation_level=None,
+                           timeout=max(0.0, wait_sec) if tier == TIER_ENFORCED else 0.0)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def busy(exc: BaseException) -> bool:
+    code = getattr(exc, "sqlite_errorcode", None)
+    return code in {5, 6} or "locked" in str(exc).lower()
+
+
+def commit(conn: sqlite3.Connection) -> None:
+    """COMMIT, rolling back on failure; the ``sqlite3.OperationalError`` is the caller's to type."""
+    try:
+        conn.execute("COMMIT")
+    except sqlite3.OperationalError:
+        with contextlib.suppress(sqlite3.Error):
+            conn.execute("ROLLBACK")
+        raise
+
+
+def fsync_directory(directory: pathlib.Path) -> None:
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def transaction(conn: sqlite3.Connection, *, write: bool, commit_wait_sec: Optional[float] = None,
+                finish: Optional[Callable[[], None]] = None) -> Iterator[sqlite3.Connection]:
+    """One transaction: a write takes the lock at ``BEGIN IMMEDIATE``, a read's only wait is
+    here; any exception rolls back and propagates; ``finish`` (default ``commit``) runs at the
+    end; ``commit_wait_sec`` is the busy wait a COMMIT spends on readers draining."""
+    try:
+        conn.execute("PRAGMA synchronous = FULL")
+        conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+        if not write:  # take the read lock now
+            conn.execute("SELECT 1 FROM meta LIMIT 1").fetchone()
+        if commit_wait_sec is not None:
+            conn.execute(f"PRAGMA busy_timeout = {int(commit_wait_sec * 1000)}")
+        yield conn
+    except BaseException:
+        with contextlib.suppress(sqlite3.Error):
+            conn.execute("ROLLBACK")
+        raise
+    (finish or (lambda: commit(conn)))()
+
+
+
+def store_path(root: Any) -> pathlib.Path:
+    return pathlib.Path(root) / STORE_REL
+
+
+def generation_stamped(root: Any) -> bool:
+    """Whether ``state/migrations.json`` records a completed store generation (a torn
+    file proves nothing and reads as unstamped)."""
+    from ouroboros.startup_migrations import watermarks
+
+    try:
+        return watermarks(root).get(GENERATION_KEY) == GENERATION
+    except ValueError:
+        return False
+
+
+def probe(root: Any) -> Tuple[str, Optional[str]]:
+    """``("absent", None)`` or ``("present", tier)``; the third answer is typed: ``StoreBusy`` when
+    the file cannot be inspected (an exhausted descriptor table is not absence), ``StoreLost`` for a foreign file."""
+    path = store_path(root)
+    try:
+        os.stat(path)
+        tier = header_tier(path, _APPLICATION_ID)
+    except FileNotFoundError:
+        return "absent", None
+    except OSError as exc:
+        name = errno.errorcode.get(exc.errno, str(exc.errno))
+        raise StoreBusy(f"current store not inspectable ({name}): {path}") from exc
+    if tier is None:
+        raise StoreLost(f"current store unreadable or foreign, never replaced: {path}")
+    return "present", tier
+
+
+def retired_sibling(root: Any) -> Optional[pathlib.Path]:
+    """The newest ``current.sqlite.exported-<UTC>`` beside the store path, or ``None``."""
+    path = store_path(root)
+    try:
+        names = sorted(name for name in os.listdir(path.parent) if name.startswith(path.name + ".exported-"))
+    except OSError:
+        return None
+    return path.with_name(names[-1]) if names else None
+
+
+def _typed(exc: sqlite3.Error) -> StoreError:
+    if isinstance(exc, sqlite3.OperationalError) and busy(exc):
+        return StoreBusy(f"current store busy: {exc}")
+    if isinstance(exc, sqlite3.DatabaseError) and not isinstance(
+            exc, (sqlite3.OperationalError, sqlite3.IntegrityError, sqlite3.ProgrammingError)):
+        return StoreLost(f"current store unreadable: {exc}")
+    return StoreError(f"current store unavailable: {exc}")
+
+
+@contextlib.contextmanager
+def name_lock(root: Any, filename: str, *, timeout_sec: float, stale_sec: float = 90.0) -> Iterator[None]:
+    """The owner-aware name lock under ``state/`` (the name tier's one lock, the import lock)."""
+    from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
+
+    path = pathlib.Path(root) / "state" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = acquire_exclusive_file_lock(path, timeout_sec=timeout_sec, stale_sec=stale_sec, owner_aware_stale=True)
+    if fd is None:
+        raise StoreBusy(f"current store lock unavailable: {path}")
+    try:
+        yield
+    finally:
+        release_exclusive_file_lock(path, fd)
+
+
+_IMPORTING: set = set()  # roots this process's lifespan is importing: their readers see ``StoreMigrating``
+_IMPORTING_GUARD = threading.Lock()
+_FIRST_TOUCH = threading.local()  # roots THIS thread is importing on first touch: a nested open answers typed
+_SERVICE = threading.local()  # the import owner's thread: its own post-publication writes pass the window
+
+
+def begin_import(root: Any) -> None:
+    """Open the lifespan's import window for ROOT: every public write of that root answers
+    ``StoreMigrating`` and ``migrating`` is true until ``end_import`` (the boot door closes it
+    only after a successful publication; a failed import leaves it open for the process's life)."""
+    with _IMPORTING_GUARD:
+        _IMPORTING.add(str(pathlib.Path(root)))
+
+
+def end_import(root: Any) -> None:
+    with _IMPORTING_GUARD:
+        _IMPORTING.discard(str(pathlib.Path(root)))
+
+
+@contextlib.contextmanager
+def importing(root: Any) -> Iterator[None]:
+    """The import window for the extent of a block (tests and the first-touch import)."""
+    begin_import(root)
+    try:
+        yield
+    finally:
+        end_import(root)
+
+
+@contextlib.contextmanager
+def service_thread() -> Iterator[None]:
+    """Service mode for every transaction THIS thread opens: the import owner's steps after
+    publication write through the public APIs (latch migration, obligations) past its own window."""
+    previous = getattr(_SERVICE, "active", False)
+    _SERVICE.active = True
+    try:
+        yield
+    finally:
+        _SERVICE.active = previous
+
+
+def _in_window(root: Any) -> bool:
+    with _IMPORTING_GUARD:
+        return str(pathlib.Path(root)) in _IMPORTING
+
+
+def published(root: Any) -> bool:
+    """Whether a published store answers for ROOT: present and in phase PUBLISHED (readiness is
+    publication, never the file's existence)."""
+    try:
+        if probe(root)[0] != "present":
+            return False
+        with open_store(root, write=False) as txn:
+            return txn.phase() == PUBLISHED
+    except StoreError:
+        return False
+
+
+def store_ready(root: Any) -> bool:
+    """Whether a write door may proceed: no import of ROOT runs here and its store is published."""
+    return not _in_window(root) and published(root)
+
+
+def migrating(root: Any) -> bool:
+    """The doors' predicate (P1): True while the import window is open for ROOT, while its
+    present store is not published (an export runs), or while ROOT holds facts no import has
+    published yet (the boot door imports them); a root without facts is not migrating — its first
+    write publishes an empty store. A pure read: nothing is opened for write, nothing imported."""
+    if _in_window(root):
+        return True
+    root = pathlib.Path(root)
+    try:
+        state, _tier = probe(root)
+    except StoreError:
+        return False  # the door proceeds; its write gets the typed answer
+    if state == "present":
+        return not published(root)
+    return holds_facts(root) and not (generation_stamped(root) or retired_sibling(root))
+
+
+def holds_facts(root: pathlib.Path) -> bool:
+    """Whether ROOT holds facts the importer would read: result files or obligation set files."""
+    from ouroboros.store_import import holds_facts as _holds
+
+    return _holds(root)
+
+
+def _absent(root: pathlib.Path, *, write: bool, service: bool) -> bool:
+    """The typed answer for an absent store; a first-touch import when a public WRITE asks for
+    one and nothing forbids it (the window, a nested open); ``True`` when a READ may answer
+    empty because ROOT holds no facts to import (a read never imports: a root with facts is
+    the boot door's, ``StoreMigrating`` until it publishes)."""
+    if generation_stamped(root):
+        raise StoreLost(f"current store missing beside its completed stamp: {store_path(root)}")
+    retired = retired_sibling(root)
+    if retired is not None:
+        raise StoreRetired(f"current store retired by an export as {retired.name}: the files are the authority")
+    entered = getattr(_FIRST_TOUCH, "roots", None) or set()
+    if _in_window(root) or str(root) in entered or (write and service):
+        raise StoreMigrating(f"current store not published yet: {store_path(root)}")
+    if not write:
+        if holds_facts(root):
+            raise StoreMigrating(f"current store not published yet: {store_path(root)} (a read never imports)")
+        return True
+    from ouroboros.store_import import ensure_current_store
+
+    # Another thread importing the same root is waited for inside ``ensure_current_store`` (its
+    # name lock); only THIS thread's nested open of the root answers typed instead of re-entering.
+    _FIRST_TOUCH.roots = entered | {str(root)}
+    try:
+        ensure_current_store(root, with_children=False)
+    except StoreError:
+        raise
+    except Exception as exc:  # the files the import reads are unavailable: the store cannot answer
+        raise StoreMigrating(f"current store not published: the first-touch import failed: {exc}") from exc
+    finally:
+        _FIRST_TOUCH.roots = entered
+    return False
+
+
+@contextlib.contextmanager
+def open_store(root: Any, *, write: bool, wait_sec: float = STORE_WAIT_SEC, service: bool = False) -> Iterator["Txn"]:
+    """One transaction on the published store: ``StoreMigrating`` while the lifespan imports or
+    for a read of a never-imported root that holds facts (a read never imports; a root without
+    facts, or one that does not exist, reads empty and creates nothing), a first-touch import
+    when a public write reaches a never-imported root (a nested drive's first row), ``StoreLost``
+    for a missing store beside its completed stamp, ``StoreRetired`` for one an export set aside
+    (the files are the authority until the next import), ``StoreBusy`` on contention;
+    ``mode=rw``, never creating here.
+
+    The one write gate: a public write (``write`` without ``service``) refuses ``StoreMigrating``
+    while ROOT is in the import window and ``StoreRetired`` inside the transaction when the phase
+    is not PUBLISHED. ``service`` is the importer's, the exporter's and the seam's mode (also the
+    import owner thread's, ``service_thread``): their transactions pass both checks."""
+    root = pathlib.Path(root)
+    service = service or bool(getattr(_SERVICE, "active", False))
+    if write and not service and _in_window(root):
+        raise StoreMigrating(f"current store not published yet: the import of {root} runs")
+    state, tier = probe(root)
+    if state == "absent" and ((not write and not root.is_dir()) or _absent(root, write=write, service=service)):
+        with contextlib.closing(sqlite3.connect(":memory:", isolation_level=None)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(_SCHEMA)
+            with transaction(conn, write=False):
+                yield Txn(conn, root)
+        return
+    if state == "absent":
+        state, tier = probe(root)
+        if state == "absent":
+            raise StoreMigrating(f"current store not published yet: {store_path(root)}")
+    with contextlib.ExitStack() as stack:
+        if tier == TIER_NAME:
+            stack.enter_context(name_lock(root, LOCK_NAME, timeout_sec=wait_sec))
+        try:
+            conn = connect(store_path(root), tier, wait_sec=wait_sec)
+        except sqlite3.Error as exc:
+            raise _typed(exc) from exc
+        stack.callback(conn.close)
+        try:
+            with transaction(conn, write=write, commit_wait_sec=wait_sec if tier == TIER_ENFORCED else None):
+                txn = Txn(conn, root)
+                if write and not service and (phase := txn.phase()) != PUBLISHED:
+                    raise StoreRetired(f"current store phase is {phase}: the files are the authority")
+                yield txn
+                if write and conn.total_changes:
+                    txn.set_meta("commit_seq", txn.revision() + 1)
+        except sqlite3.Error as exc:
+            raise _typed(exc) from exc
+
+
+def utc_stamp() -> str:
+    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+
+
+def supervisor_row(root: pathlib.Path, kind: str, payload: Dict[str, Any], *, best_effort: bool = True) -> None:
+    """One supervisor row; pack callers keep append failures, import/switch log them."""
+    try:
+        append_jsonl(root / "logs" / "supervisor.jsonl", {"ts": utc_now_iso(), "type": kind, **payload})
+    except Exception:
+        if not best_effort:
+            raise
+        import logging
+
+        logging.getLogger(__name__).warning("%s row not recorded", kind, exc_info=True)
+
+
+def document_text(document: Dict[str, Any]) -> str:
+    """The whole document serialized exactly as the result writer serializes a file: what an
+    export writes (the exact inverse of ``load``), what the content baseline hashes."""
+    return machine_json(document)
+
+
+def encode_document(document: Dict[str, Any]) -> str:
+    """The body text stored in ``task_bodies``: the document with each present row-backed field
+    emptied (the rows hold its content)."""
+    return document_text({key: ({} if key in ROW_BACKED_FIELDS else value) for key, value in document.items()})
+
+
+def typed_columns(document: Dict[str, Any], *, pending_drive: Optional[bool] = None) -> Dict[str, Any]:
+    """The ``tasks`` columns of a document: top-level typed facts, the two Presence facts
+    derived from their carriers, and the obligation flags from the existing predicates."""
+    from ouroboros.dialogue_provenance import presence_metadata_binding, presence_record_binding
+    from ouroboros.obligations import result_memberships
+
+    names = result_memberships(document)
+    columns: Dict[str, Any] = {}
+    for column in TYPED_COLUMNS:
+        value = document.get(column)
+        text = "" if value is None else str(value).strip()
+        columns[column] = text or None  # NULL is "no fact": the lineage prefilter and its index test IS NOT NULL
+    # One derived scalar selects a Presence binding's own work without a body read; an empty
+    # scalar is not proof of absent provenance (a malformed carrier, or a ceiling whose
+    # carrier was lost, must never inherit a queue claim), hence the second fact.
+    columns["presence_binding_id"] = presence_record_binding(document) or None
+    contract = document.get("task_contract")
+    columns["presence_authority_recorded"] = int(
+        presence_metadata_binding(document.get("metadata")) is not None
+        or (isinstance(contract, dict) and "capability_ceiling" in contract))
+    for name, column in FLAG_COLUMNS.items():
+        columns[column] = int(name in names)
+    columns["pending_drive"] = int("nonterminal" in names if pending_drive is None else pending_drive)
+    return columns
+
+
+def decode_handoffs(task_ids: List[str], records: list) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """``{task_id: {kind: {op_id: facts}}}`` from stored handoff rows, every kind present (no store held)."""
+    rows: Dict[str, Dict[str, Dict[str, Any]]] = {task_id: {kind: {} for kind in ROW_BACKED_FIELDS} for task_id in task_ids}
+    for record in records:
+        rows[record["task_id"]].setdefault(record["kind"], {})[record["op_id"]] = json.loads(record["facts"])
+    return rows
+
+
+def project_handoffs(document: Dict[str, Any], rows: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """The body's emptied keys take their rows back; a key the body lacks appears only with rows."""
+    for kind, held in rows.items():
+        if held or kind in document:
+            document[kind] = held
+    return document
+
+
+class Txn:
+    """One store transaction: documents, obligation rows, meta; riders of the cutover
+    (handoffs, custody, outbox) share the same connection."""
+
+    def __init__(self, conn: sqlite3.Connection, root: Any = None) -> None:
+        self.conn = conn
+        self.root = pathlib.Path(root) if root is not None else None
+
+    def meta(self, key: str) -> Any:
+        record = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return None if record is None else json.loads(record["value"])
+
+    def set_meta(self, key: str, value: Any) -> None:
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, machine_json(value)))
+
+    def phase(self) -> str:
+        return str(self.meta("phase") or PUBLISHED)
+
+    def revision(self) -> int:
+        """Committed current-fact writes; rollback and empty write barriers do not advance it."""
+        return int(self.meta("commit_seq") or 0)
+
+    def task_ids(self) -> List[str]:
+        return [record["task_id"] for record in self.conn.execute("SELECT task_id FROM tasks ORDER BY task_id")]
+
+    def write_seqs(self) -> Dict[str, int]:
+        """Every task's write sequence: one narrow scan that tells which rows changed since a census."""
+        return {record["task_id"]: record["write_seq"] for record in self.conn.execute("SELECT task_id, write_seq FROM tasks")}
+
+    def body_text(self, task_id: str) -> Optional[str]:
+        record = self.conn.execute("SELECT body FROM task_bodies WHERE task_id=?", (task_id,)).fetchone()
+        return None if record is None else record["body"]
+
+    def load(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """The document: its body with the row-backed fields projected from ``task_handoffs``."""
+        body = self.body_text(task_id)
+        return None if body is None else project_handoffs(json.loads(body), self.handoffs(task_id))
+
+    def store_task(self, document: Dict[str, Any], *, pending_drive: Optional[bool] = None) -> None:
+        """Upsert body, typed columns and handoffs; ``write_seq`` advances the memo signature."""
+        task_id = str(document["task_id"])
+        columns = typed_columns(document, pending_drive=pending_drive)
+        columns["write_seq"] = (self.row(task_id, "write_seq") or 0) + 1
+        self.conn.execute("INSERT OR REPLACE INTO task_bodies (task_id, body) VALUES (?, ?)",
+                          (task_id, encode_document(document)))
+        names = ("task_id", *columns)
+        self.conn.execute(f"INSERT OR REPLACE INTO tasks ({','.join(names)}) VALUES ({','.join('?' * len(names))})",
+                          (task_id, *columns.values()))
+        self.sync_handoffs(task_id, document)
+
+    def touch(self, task_id: str) -> None:
+        """A row-only write still moves the task's signature (the memos re-read)."""
+        self.conn.execute("UPDATE tasks SET write_seq = write_seq + 1 WHERE task_id=?", (task_id,))
+
+    def row(self, task_id: str, *columns: str) -> Any:
+        """One task's typed columns (one value for one column, a tuple for several; ``None`` when absent)."""
+        record = self.conn.execute(f"SELECT {','.join(columns)} FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        if record is None:
+            return None
+        return record[0] if len(columns) == 1 else tuple(record)
+
+    def delete_task(self, task_id: str) -> None:
+        for table in ("task_bodies", "tasks", "task_handoffs"):
+            self.conn.execute(f"DELETE FROM {table} WHERE task_id=?", (task_id,))
+
+    def set_names(self) -> List[str]:
+        return [record["set_name"] for record in
+                self.conn.execute("SELECT DISTINCT set_name FROM obligations ORDER BY set_name")]
+
+    def set_rows(self, set_name: str) -> Dict[str, Dict[str, Any]]:
+        """One obligation set, in insertion order (the order its file had)."""
+        return {record["id"]: json.loads(record["facts"]) for record in self.conn.execute(
+            "SELECT id, facts FROM obligations WHERE set_name=? ORDER BY rowid", (set_name,))}
+
+    def replace_set(self, set_name: str, rows: Dict[str, Dict[str, Any]]) -> None:
+        self.conn.execute("DELETE FROM obligations WHERE set_name=?", (set_name,))
+        self.conn.executemany("INSERT INTO obligations (set_name, id, facts) VALUES (?, ?, ?)",
+                              [(set_name, str(identity), machine_json(facts)) for identity, facts in rows.items()])
+
+    def put_row(self, set_name: str, identity: str, facts: Dict[str, Any]) -> None:
+        """One owner-held obligation row (an existing row keeps its place; only changed facts write)."""
+        self.conn.execute(
+            "INSERT INTO obligations (set_name,id,facts) VALUES (?,?,?) ON CONFLICT(set_name,id) "
+            "DO UPDATE SET facts=excluded.facts WHERE obligations.facts<>excluded.facts",
+            (set_name, identity, machine_json(facts)))
+
+    def delete_row(self, set_name: str, identity: str) -> None:
+        self.conn.execute("DELETE FROM obligations WHERE set_name=? AND id=?", (set_name, identity))
+
+    def get_row(self, set_name: str, identity: str) -> Optional[Dict[str, Any]]:
+        record = self.conn.execute("SELECT facts FROM obligations WHERE set_name=? AND id=?",
+                                   (set_name, identity)).fetchone()
+        return None if record is None else json.loads(record["facts"])
+
+    # -- handoff rows: one row per operation of a task's ``ROW_BACKED_FIELDS`` projection, keyed
+    #    (task_id, op_id); ``kind`` names the field. Insertion order is the dict order the document had.
+    def handoff_records(self, task_ids: List[str]) -> list:
+        """The handoff rows of the given tasks as stored (``facts`` still text), in row order."""
+        records: list = []
+        for start in range(0, len(task_ids), 500):
+            chunk = task_ids[start:start + 500]
+            records.extend(self.conn.execute(
+                f"SELECT task_id, kind, op_id, facts FROM task_handoffs WHERE task_id IN "
+                f"({','.join('?' * len(chunk))}) ORDER BY rowid", chunk).fetchall())
+        return records
+
+    def handoffs_of(self, task_ids: List[str]) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """``{task_id: {kind: {op_id: facts}}}`` for the given tasks (one query), every kind present."""
+        return decode_handoffs(task_ids, self.handoff_records(task_ids))
+
+    def handoffs(self, task_id: str) -> Dict[str, Dict[str, Any]]:
+        return self.handoffs_of([task_id]).get(task_id, {})
+
+    def handoff(self, task_id: str, op_id: str) -> Optional[Any]:
+        record = self.conn.execute("SELECT facts FROM task_handoffs WHERE task_id=? AND op_id=?",
+                                   (task_id, op_id)).fetchone()
+        return None if record is None else json.loads(record["facts"])
+
+    def put_handoff(self, task_id: str, kind: str, op_id: str, facts: Any) -> None:
+        """Upsert one operation row (an existing row keeps its place); the typed columns are read
+        from a dict's ``state`` / ``claimed_at`` / ``returned_at`` / ``local_owner`` when present."""
+        typed = facts if isinstance(facts, dict) else {}
+        owner = typed.get("local_owner")
+        self.conn.execute(
+            "INSERT INTO task_handoffs (task_id, op_id, kind, state, claimed_at, returned_at, owner, facts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, op_id) DO UPDATE SET kind=excluded.kind, "
+            "state=excluded.state, claimed_at=excluded.claimed_at, returned_at=excluded.returned_at, "
+            "owner=excluded.owner, facts=excluded.facts",
+            (task_id, op_id, kind, *(None if typed.get(key) is None else str(typed[key])
+                                     for key in ("state", "claimed_at", "returned_at")),
+             machine_json(owner) if isinstance(owner, dict) else None, machine_json(facts)))
+
+    def delete_handoff(self, task_id: str, op_id: str) -> None:
+        self.conn.execute("DELETE FROM task_handoffs WHERE task_id=? AND op_id=?", (task_id, op_id))
+
+    def sync_handoffs(self, task_id: str, document: Dict[str, Any]) -> None:
+        """The rows follow a whole-document write (the importer, a mutator over the projected
+        fields): rows the document no longer names go, changed or new ones are written."""
+        held = self.handoffs(task_id)
+        for kind in ROW_BACKED_FIELDS:
+            wanted = document.get(kind) if isinstance(document.get(kind), dict) else {}
+            current = held.get(kind, {})
+            for op_id in current.keys() - wanted.keys():
+                self.delete_handoff(task_id, str(op_id))
+            for op_id, facts in wanted.items():
+                if str(op_id) not in current or current[str(op_id)] != facts:
+                    self.put_handoff(task_id, kind, str(op_id), facts)
+
+    # -- custody rows: one row per delegated run, the reducer's output, indexed by task / project /
+    #    invocation; ``state`` is the custody hold (``held`` while the run owes work, ``closed`` after).
+    def custody_rows(self, where: str = "", params: Tuple[Any, ...] = ()) -> Dict[str, Dict[str, Any]]:
+        clause = f" WHERE {where}" if where else ""
+        return {record["run_id"]: json.loads(record["facts"]) for record in
+                self.conn.execute(f"SELECT run_id, facts FROM custody_runs{clause} ORDER BY run_id", params)}
+
+    def custody_row(self, run_id: str) -> Optional[Dict[str, Any]]:
+        record = self.conn.execute("SELECT facts FROM custody_runs WHERE run_id=?", (run_id,)).fetchone()
+        return None if record is None else json.loads(record["facts"])
+
+    def put_custody(self, run_id: str, facts: Dict[str, Any], *, state: str) -> None:
+        self.conn.execute(
+            "INSERT INTO custody_runs (run_id, task_id, project_id, invocation_id, state, facts, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET task_id=excluded.task_id, "
+            "project_id=excluded.project_id, invocation_id=excluded.invocation_id, state=excluded.state, "
+            "facts=excluded.facts, updated_at=excluded.updated_at",
+            (run_id, str(facts.get("task_id") or ""), str(facts.get("project_id") or ""),
+             str(facts.get("invocation_id") or ""), state, machine_json(facts), utc_now_iso()))
+
+    # -- the custody outbox: an emitted event waits here between its COMMIT and its chain append.
+    def outbox_put(self, event: Dict[str, Any]) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO custody_outbox (event_id, run_id, task_id, event, created_at) VALUES (?, ?, ?, ?, ?)",
+            (str(event.get("event_id") or ""), str(event.get("run_id") or ""), str(event.get("task_id") or ""),
+             machine_json(event), utc_now_iso()))
+
+    def outbox_rows(self) -> List[Dict[str, Any]]:
+        return [json.loads(record["event"]) for record in
+                self.conn.execute("SELECT event FROM custody_outbox ORDER BY created_at, event_id")]
+
+    def outbox_delete(self, event_id: str) -> None:
+        self.conn.execute("DELETE FROM custody_outbox WHERE event_id=?", (event_id,))
+
+
+def update_task(root: Any, task_id: str, mutator: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]], *,
+                pending_drive: Any = None) -> Optional[Dict[str, Any]]:
+    """The write seam: ``BEGIN IMMEDIATE`` with the gate's phase read inside (``StoreRetired``
+    once an export began, which a straggler's older connection sees in the retired inode); the
+    mutator over the current document (``None`` = no write: the read-only transaction commits
+    empty); COMMIT. ``pending_drive`` is a value, or
+    a callable ``(txn, current, updated) -> Optional[bool]`` deciding it from the written document."""
+    with open_store(root, write=True) as txn:
+        current = txn.load(task_id) or {}
+        updated = mutator(json.loads(json.dumps(current)))
+        if updated is None:
+            return None
+        flag = pending_drive(txn, current, updated) if callable(pending_drive) else pending_drive
+        txn.store_task({**updated, "task_id": task_id}, pending_drive=flag)
+        return updated

@@ -478,16 +478,25 @@ def focus_source_projection(
     if wanted and (not isinstance(handle, dict) or str(handle.get("sha256") or "") != wanted):
         if len(wanted) != 64 or any(c not in "0123456789abcdef" for c in wanted):
             return {**unavailable, "reason": "source_ref_invalid"}
-        try:
+        from fnmatch import fnmatch
+        from ouroboros.evidence_packs import handle_info, packed_handle_names
+        try:  # loose handles and this task's packed ones answer the same selector
             store = task_artifact_dir_path(drive_root, str(task_id), create=False) / "source_handles" / "context_checkpoints"
-            matches = sorted(p for p in store.glob(f"focus_source_*-{wanted}.md") if not p.is_symlink())
+            matches = {p.name for p in store.glob(f"focus_source_*-{wanted}.md") if not p.is_symlink()}
+            matches.update(n for n in packed_handle_names(drive_root, str(task_id)) if fnmatch(n, f"focus_source_*-{wanted}.md"))
         except (OSError, ValueError):
-            matches = []
+            matches = set()
         if len(matches) != 1:
             return {**unavailable, "reason": "source_unavailable", "requested_sha256": wanted}
-        handle = {"kind": "task_source", "root": "artifact_store",
-                  "path": f"source_handles/context_checkpoints/{matches[0].name}",
-                  "size": matches[0].stat().st_size, "sha256": wanted}
+        selected_handle_path = f"source_handles/context_checkpoints/{matches.pop()}"
+        try:
+            info = handle_info(drive_root, str(task_id), selected_handle_path) or {}
+        except ValueError:
+            return {**unavailable, "reason": "source_identity_mismatch"}
+        except OSError:
+            return {**unavailable, "reason": "source_unavailable"}
+        handle = {"kind": "task_source", "root": "artifact_store", "path": selected_handle_path,
+                  "size": info.get("size", 0), "sha256": wanted}
         focus = None  # a historical selector carries no current source_ref/authored_at claim
     if not isinstance(handle, dict):
         return {**unavailable, "reason": "source_unavailable"}
@@ -518,7 +527,7 @@ def host_acceptance_source(drive_root: Any, task_id: str, digest: str) -> tuple:
     or this raises. The model's ``review_source_sha256`` reader and the owner's
     record download (``gateway.task_archive.serve_task_source``) share it.
     """
-    from ouroboros.artifacts import read_actor_source_bytes, task_artifact_dir_path
+    from ouroboros.artifacts import read_actor_source_bytes
     from ouroboros.source_retention import retained_task_roots
 
     if len(digest) != 64 or digest.strip("0123456789abcdef"):
@@ -526,13 +535,13 @@ def host_acceptance_source(drive_root: Any, task_id: str, digest: str) -> tuple:
     path = f"source_handles/context_checkpoints/acceptance-{digest}.json"
     # The selector addresses exact bytes, not their current placement. Only
     # this author's known retained drives can supply a not-yet-canonical file.
+    from ouroboros.evidence_packs import handle_info
+
     roots = [drive_root, *retained_task_roots(drive_root, task_id)]
-    stored = next((candidate for root in roots
-                   if (candidate := task_artifact_dir_path(root, task_id, create=False) / path).exists()), None)
+    stored = next((info for root in roots if (info := handle_info(root, task_id, path)) is not None), None)
     if stored is None:
         raise FileNotFoundError(path)
-    ref = {"kind": "task_source", "root": "artifact_store", "path": path,
-           "size": stored.stat().st_size, "sha256": digest}
+    ref = {"kind": "task_source", "root": "artifact_store", "path": path, "size": stored["size"], "sha256": digest}
     raw = read_actor_source_bytes(drive_root, task_id, ref)
     run = json.loads(raw)
     request = run.get("request") if isinstance(run, dict) else None
@@ -803,35 +812,11 @@ def model_execution_projection(usage: Dict[str, Any]) -> Dict[str, Any] | None:
 
 
 def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | None:
-    """Compact derived swarm-efficiency rollup: observed fan-out, or the
-    zero-fanout disclosure block for a host-attested Swarm-intent task.
+    """Observed fan-out from the root row, plus current subtree depth.
 
-    (Moved verbatim from ``agent_task_pipeline`` — that module sits at its
-    line ceiling; this is the same finalization-time rollup.)
-
-    Computed from the durable ``swarm_fanout`` telemetry this task already emits
-    (control.py:_emit_swarm_fanout): the number of children, the number of fan-out
-    emissions, the summed wall-clock intervals between them, and the set of model lanes REQUESTED —
-    fanout events are written before any child starts, so effective lanes are not
-    knowable here; they live on each child's own dispatch record.
-    Returns None for a plain task (no fan-out), so the block only appears on real
-    swarms — with ONE exception: a task admitted with host-attested Swarm intent
-    (typed metadata ``force_plan_source == "swarm"``, never prompt inspection) that
-    fanned out NOTHING returns a minimal ``no_fanout_observed`` block instead of
-    disappearing, so a Swarm-button task that spawned zero children is
-    distinguishable from a plain task. ``planned`` in that block is null — never
-    inferred as 0 from the absence of events; a real planned figure exists only as
-    the emissions' ``requested_count`` sum, surfaced under that exact name on
-    swarm-intent rollups.
-
-    The rollup's ``depth`` block comes from ``depth_evidence.build_depth_summary``
-    (the task contract's request against what the child subtree reached); a read
-    failure there drops only ``depth``, never the fan-out numbers.
-
-    OMITTED (no reliable structured source today): ``observed_max_concurrency`` —
-    child task results carry only ``ts``/``updated_at``, not a per-child running-start
-    vs finish timestamp, so true overlap cannot be derived honestly here — and
-    ``parent_blocked_wait_sec`` (wait_task returns prose, not a typed duration).
+    Swarm intent with no observed fan-out stays explicit; requested counts and
+    lanes never claim actual concurrency, dispatch lanes or child-wait time.
+    Legacy rows catch up once; later calls decode only the unconsumed suffix.
     """
     task_id = str(task.get("id") or task.get("task_id") or "")
     if not task_id:
@@ -839,52 +824,16 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
     metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
     swarm_intent = metadata.get("force_plan_source") == "swarm"
     try:
-        from ouroboros.utils import iter_jsonl_chain_objects
+        from ouroboros.swarm_rollup import load_swarm_rollup
 
         drive_root = getattr(env, "drive_root", None)
         if drive_root is None:
             return None
-        events_path = pathlib.Path(drive_root) / "logs" / "events.jsonl"
-        child_ids: set[str] = set()
-        fanout_count = 0
-        requested_count_total = 0
-        fanout_interval_total = 0.0
-        lanes: list[str] = []
-        # Read the FULL per-task events stream (not a tail window): the swarm_fanout
-        # events can occur EARLY in a long fan-out task, so a bounded tail would
-        # silently undercount emissions/children (P1 no-silent-loss). This runs once at
-        # finalization (not a hot path), for fan-out and Swarm-intent tasks.
-        # Chain-aware (CPL4-C1): early fan-out events may already have rotated
-        # into archive/events_*.jsonl by finalization time.
-        for ev in iter_jsonl_chain_objects(events_path):
-            if ev.get("type") != "swarm_fanout":
-                continue
-            if str(ev.get("parent_task_id") or ev.get("task_id") or "") != task_id:
-                continue
-            fanout_count += 1
-            try:
-                requested_count_total += int(ev.get("requested_count") or 0)
-            except (TypeError, ValueError):
-                pass
-            for tid in ev.get("task_ids") or []:
-                if str(tid or "").strip():
-                    child_ids.add(str(tid))
-            try:
-                fanout_interval_total += float(ev.get("fanout_interval_sec", ev.get("inter_wave_latency_sec")) or 0.0)
-            except (TypeError, ValueError):
-                pass
-            # The lane a fan-out ASKED for. A fan-out event is written before any child
-            # starts, so it cannot know what they ran on — that is a per-child
-            # dispatch fact and lives on each child's own record.
-            lane = str(ev.get("requested_model_lane") or "").strip()
-            if lane and lane not in lanes:
-                lanes.append(lane)
+        facts = load_swarm_rollup(drive_root, task_id)
+        child_ids = facts.get("child_ids", [])
         if not child_ids:
             if swarm_intent:
-                # The owner asked for a swarm and nothing fanned out: say so instead
-                # of vanishing — this is the zero-fan-out visibility the block exists
-                # for. ``planned`` is null because no requested counts were ever
-                # recorded; 0 would be an inference from absence, not an observation.
+                # Absence proves neither a planned count nor a plain-task intent.
                 return {
                     "intent_source": "swarm",
                     "planned": None,
@@ -894,16 +843,12 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
             return None
         rollup: Dict[str, Any] = {
             "subagent_count": len(child_ids),
-            "fanout_count": fanout_count,
-            "fanout_interval_sec_total": round(fanout_interval_total, 3),
-            "lanes_requested": lanes,
+            "fanout_count": facts.get("fanout_count", 0),
+            "fanout_interval_sec_total": round(facts.get("fanout_interval_sec_total", 0), 3),
+            "lanes_requested": facts.get("lanes_requested", []),
         }
         try:
-            # Depth is the one swarm fact the root could not see: its own
-            # contract carries the request, the subtree carries what was
-            # actually reached. Its own try/except — the enclosing one returns
-            # None for the WHOLE rollup, and a subtree read failure must not
-            # erase the fan-out numbers.
+            # A depth read failure must not erase observed fan-out.
             from ouroboros.depth_evidence import build_depth_summary
             from ouroboros.task_status import find_child_tasks
 
@@ -919,9 +864,7 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
             log.debug("swarm depth summary failed", exc_info=True)
         if swarm_intent:
             rollup["intent_source"] = "swarm"
-            # The planned figure under its existing event name — the emissions'
-            # requested_count sum, no synonyms (rc-phaseC, fable 2.3 disposition).
-            rollup["requested_count"] = requested_count_total
+            rollup["requested_count"] = facts.get("requested_count", 0)
         return rollup
     except Exception:
         log.debug("swarm efficiency rollup failed", exc_info=True)

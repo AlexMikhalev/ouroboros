@@ -564,13 +564,6 @@ def assign_tasks() -> None:
                        if resume.get("sleep_exclusion_since") else {}),
                     "soft_sent": False, "attempt": int(task.get("_attempt") or 1),
                 }
-                task_type = str(task.get("type") or "")
-                if task_type in ("evolution", "review"):
-                    st = _pool().load_state()
-                    if st.get("owner_chat_id"):
-                        emoji = '🧬' if task_type == 'evolution' else '🔎'
-                        _pool().send_with_budget(
-                            int(st["owner_chat_id"]),
-                            f"{emoji} {task_type.capitalize()} task {task['id']} started.",
-                            role="system", system_type="task_started")
+                # A started task publishes no row: its own card says so (the agent's
+                # `task_started` live event).
                 queue.persist_queue_snapshot(reason="assign_task")

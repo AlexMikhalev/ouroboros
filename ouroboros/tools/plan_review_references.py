@@ -16,6 +16,7 @@ from ouroboros.task_results import (
 )
 from ouroboros.tools.plan_review_runtime import record_raw_plan_request_attempt
 from ouroboros.utils import append_jsonl, emit_log_event, utc_now_iso
+from ouroboros.store import StoreError
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ def _emit_plan_review_reference(
     if state is None:
         try:
             state = load_plan_review_state(state_root, task_id)
-        except (OSError, TimeoutError, ValueError):
+        except (OSError, TimeoutError, ValueError, StoreError):
             log.debug("Failed to reload plan-review state reference", exc_info=True)
             return
     attempt = state.get("current_attempt") if isinstance(state, dict) else {}

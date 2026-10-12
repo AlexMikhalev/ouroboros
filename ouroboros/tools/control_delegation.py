@@ -147,25 +147,25 @@ def durable_direct_child_count(
     if not parent or not str(drive_root or "").strip():
         return None
     try:
-        from ouroboros.task_results import STATUS_REJECTED_DUPLICATE, STATUS_REQUESTED, list_task_results
+        from ouroboros.task_results import STATUS_REJECTED_DUPLICATE, STATUS_REQUESTED
+        from ouroboros.task_store import documents_by_ids, task_facts
 
-        rows = list_task_results(drive_root, strict=True)
+        # One indexed SELECT of the parent's subagent rows (typed columns, no body); only a
+        # failed child's admission fact lives in its body, so those bodies alone are read.
+        facts = task_facts(drive_root, where="parent_task_id=? AND delegation_role='subagent'", params=(parent,))
+        failed = [task_id for task_id, row in facts.items() if row["status"] == "failed"]
+        admitted = {task_id for task_id, document in documents_by_ids(drive_root, failed).items()
+                    if isinstance(document.get("delegation_admission"), dict)
+                    and str(document["delegation_admission"].get("status") or "") == "accepted"}
     except Exception:
         return None
+    if any(not row["status"] for row in facts.values()):
+        return None  # a row the strict reader could not bind: the count is not proven
     return sum(
-        1 for row in rows
-        if isinstance(row, dict)
-        and str(row.get("parent_task_id") or "").strip() == parent
-        and str(row.get("delegation_role") or "") == "subagent"
-        and str(row.get("status") or "") not in {STATUS_REQUESTED, STATUS_REJECTED_DUPLICATE}
-        and not (
-            str(row.get("status") or "") == "failed"
-            and (
-                not isinstance(row.get("delegation_admission"), dict)
-                or str(row["delegation_admission"].get("status") or "") != "accepted"
-            )
-        )
-        and str(row.get("id") or row.get("task_id") or "").strip() != excluded
+        1 for task_id, row in facts.items()
+        if row["status"] not in {STATUS_REQUESTED, STATUS_REJECTED_DUPLICATE}
+        and (row["status"] != "failed" or task_id in admitted)
+        and task_id != excluded
     )
 
 

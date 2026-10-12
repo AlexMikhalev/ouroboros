@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from ouroboros.context_budget import SCRATCHPAD_BLOAT_WARN_CHARS
 from ouroboros.utils import iter_jsonl_objects, read_json_dict, read_text
+from ouroboros.store import StoreError
 
 log = logging.getLogger(__name__)
 
@@ -187,7 +188,7 @@ def _plan_review_note(env: Any, task_id: str) -> str:
             f"{pending} reviewer slot(s) recorded pending at {wave.get('reviewed_at') or '?'}. "
             "Work may still be running or awaiting collection."
         )
-    except (OSError, ValueError, TimeoutError):
+    except (OSError, ValueError, TimeoutError, StoreError):
         log.warning("Unable to read plan-review health for %s", task_id, exc_info=True)
         return ""
 

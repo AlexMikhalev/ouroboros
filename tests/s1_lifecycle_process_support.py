@@ -267,7 +267,7 @@ def archive_evidence(server, evidence):
     named = [
         "logs/server.log", "logs/supervisor.jsonl", "logs/events.jsonl", "logs/progress.jsonl",
         "logs/tools.jsonl", "logs/llm_usage.jsonl", "state/queue_snapshot.json", "state/state.json",
-        "state/worker_pids.json", "state/server_port.bindings.json", "state/panic_stop.flag",
+        "state/server_port.bindings.json", "state/panic_stop.flag",
     ]
     for rel in named:
         path = server.data_root / rel

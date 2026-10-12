@@ -161,9 +161,11 @@ def test_unreadable_ref_keeps_request_unknown_and_retry_refuses(tmp_path, damage
         Path(row["request_ref"]["path"]).unlink()
     elif damage == "corrupt":
         Path(row["request_ref"]["path"]).write_bytes(b"not gzip")
-    else:
+    else:  # the stored request row itself carries a malformed reference
+        from ouroboros import obligations
+
         row["request_ref"]["size"] = "invalid"
-        custody.event_log_path(tmp_path).write_text(json.dumps(row) + "\n", encoding="utf-8")
+        obligations.add(tmp_path, "custody_open", "invocation:lost", {"request": row})
     assert custody.invocation_record(tmp_path, "lost")["request"] is None
     pending = custody.pending_invocations(tmp_path)
     assert [row["invocation_id"] for row in pending] == ["lost"]

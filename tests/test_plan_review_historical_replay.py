@@ -16,6 +16,7 @@ from ouroboros.tools.plan_review_runtime import completed_historical_feedback, p
 from tests.test_plan_review_engine import harness, _call, _control, _state, DECK_SPEC  # noqa: F401
 from tests.test_plan_review_event_route import _install_real_substrate, _wait_until
 from tests.test_plan_review_historical_supplements import A, B, TASK, complete, original_authority, state, wave
+from tests._store_shared import result_signature
 
 
 @pytest.mark.parametrize("cap", [2, 5])
@@ -61,14 +62,14 @@ def _history(root, *, count=1):
 
 def test_full_historical_text_and_source_are_read_without_state_changes(tmp_path):
     ctx, old, text = _history(tmp_path)
-    before = tr.task_result_path(tmp_path, TASK).read_bytes()
+    before = result_signature(tmp_path, TASK)
     sources = completed_historical_feedback(ctx, old)
     shown = publish_rendered_wave(ctx, old, cap=2, cycles_paid=1, enforcement="blocking",
                                   cached=True, historical_feedback=sources)
     assert text in shown
     assert old["historical_supplements"][0]["source_ref"]["path"] in shown
     assert _parse_plan_review_control(shown) == (old["aggregate"], old["closed"])
-    assert tr.task_result_path(tmp_path, TASK).read_bytes() == before
+    assert result_signature(tmp_path, TASK) == before
 
 
 def test_partial_history_does_not_claim_whole_wave_completed(tmp_path):

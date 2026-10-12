@@ -14,6 +14,7 @@ import json
 import logging
 import pathlib
 import time
+import uuid
 from typing import Any, Optional
 
 from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
@@ -76,6 +77,28 @@ def _retained_daemon_pids() -> "set[int]":
         return set()
 
 
+# Preserve routing, model intent, holds and exact continuation sources on restart.
+_PENDING_FIELDS = (
+    'id', 'type', 'chat_id', 'text',
+    'priority', 'depth', 'description', 'objective',
+    'title', 'expected_output', 'constraints', 'role',
+    'context', 'parent_task_id', 'root_task_id', 'session_id',
+    'actor_id', 'delegation_role', 'workspace_root', 'workspace_mode',
+    'project_id', '_project_admission_restore_hold', 'focus', 'allowed_resources',
+    'deadline_at', 'task_contract', '_owner_hold', '_consciousness_continuation',
+    'model_lane', 'effective_model_lane', 'model',
+    'use_local_model', 'effective_executor', 'tool_profile', 'executor_route',
+    'reasoning_effort', 'effort_level', 'effort_requested', 'effort_source',
+    'capability_delta', 'task_group_id', 'task_group', 'subagent_envelope',
+    'configured_subagent', 'memory_mode', 'drive_root', 'parent_cognitive_route',
+    'subagent_availability', 'child_drive_root', 'budget_drive_root', 'task_constraint',
+    'predecessor_authority_source', 'metadata', 'origin_message_ref', 'origin_message_text',
+    '_attempt', 'review_reason', 'review_source_task_id', '_budget_pause',
+    'budget_resumed_at', '_terminalization_retry', '_cancel_intent_authority_hold', '_owner_wait_resume',
+    '_budget_pause_resume', '_budget_pause_hold', '_continuation_prepared', '_admission_owner_token',
+    '_is_direct_chat',
+)
+
 def persist_queue_snapshot(reason: str = "") -> bool:
     """Persist queue snapshot for restart/recovery diagnostics.
 
@@ -83,6 +106,9 @@ def persist_queue_snapshot(reason: str = "") -> bool:
     while HTTP handlers mutate them raised "dictionary changed size during
     iteration" in the supervisor loop (counted toward its crash limit).
     """
+    from supervisor.direct_roots import collect_direct_roots
+
+    direct = collect_direct_roots()  # Never wait for an actor while holding Q.
     with _queue()._queue_lock:
         pending_items = [dict(t) for t in _queue().PENDING]
         running_items = [
@@ -117,111 +143,85 @@ def persist_queue_snapshot(reason: str = "") -> bool:
             worker_pool_disabled_reason = "unknown"
             reaping_count = 0
             assignable_idle_workers = 0
-    pending_rows = []
-    for t in pending_items:
-        pending_rows.append({
-            "id": t.get("id"), "type": t.get("type"), "priority": t.get("priority"),
-            "attempt": t.get("_attempt"), "queued_at": t.get("queued_at"),
-            "queue_seq": t.get("_queue_seq"),
-            "task": {
-                "id": t.get("id"), "type": t.get("type"), "chat_id": t.get("chat_id"),
-                "text": t.get("text"), "priority": t.get("priority"),
-                "depth": t.get("depth"), "description": t.get("description"),
-                "objective": t.get("objective"), "title": t.get("title"),
-                "expected_output": t.get("expected_output"),
-                "constraints": t.get("constraints"), "role": t.get("role"),
-                "context": t.get("context"), "parent_task_id": t.get("parent_task_id"),
-                "root_task_id": t.get("root_task_id"), "session_id": t.get("session_id"),
-                "actor_id": t.get("actor_id"), "delegation_role": t.get("delegation_role"),
-                "workspace_root": t.get("workspace_root"), "workspace_mode": t.get("workspace_mode"),
-                "project_id": t.get("project_id"),
-                **({"_project_admission": t["_project_admission"]} if "_project_admission" in t else {}),
-                "_project_admission_restore_hold": t.get("_project_admission_restore_hold"),
-                **({"admitted_dispatch": t["admitted_dispatch"]} if "admitted_dispatch" in t else {}),
-                **({"_project_scope_none": t["_project_scope_none"]} if "_project_scope_none" in t else {}),
-                "focus": t.get("focus"),
-                "allowed_resources": t.get("allowed_resources"), "deadline_at": t.get("deadline_at"),
-                "task_contract": t.get("task_contract"),
-                "_owner_hold": t.get("_owner_hold"),
-                "_consciousness_continuation": t.get("_consciousness_continuation"),
-                # The same declared intent reaches workers and survives restart.
-                "model_lane": t.get("model_lane"),
-                **subagent_intent_fields(t),
-                "effective_model_lane": t.get("effective_model_lane"),
-                "model": t.get("model"), "use_local_model": t.get("use_local_model"),
-                "effective_executor": t.get("effective_executor"), "tool_profile": t.get("tool_profile"),
-                "executor_route": t.get("executor_route"), "reasoning_effort": t.get("reasoning_effort"),
-                "effort_level": t.get("effort_level"), "effort_requested": t.get("effort_requested"),
-                "effort_source": t.get("effort_source"),
-                "capability_delta": t.get("capability_delta"),
-                "task_group_id": t.get("task_group_id"),
-                "task_group": t.get("task_group"),
-                "subagent_envelope": t.get("subagent_envelope"), "configured_subagent": t.get("configured_subagent"),
-                "memory_mode": t.get("memory_mode"), "drive_root": t.get("drive_root"), "parent_cognitive_route": t.get("parent_cognitive_route"), "subagent_availability": t.get("subagent_availability"),
-                "child_drive_root": t.get("child_drive_root"),
-                "budget_drive_root": t.get("budget_drive_root"),
-                "task_constraint": t.get("task_constraint"), "predecessor_authority_source": t.get("predecessor_authority_source"),
-                "metadata": t.get("metadata"), "origin_message_ref": t.get("origin_message_ref"),
-                "origin_message_text": t.get("origin_message_text"), "_attempt": t.get("_attempt"),
-                "review_reason": t.get("review_reason"), "review_source_task_id": t.get("review_source_task_id"),
-                "_budget_pause": t.get("_budget_pause"), "budget_resumed_at": t.get("budget_resumed_at"), "_terminalization_retry": t.get("_terminalization_retry"),
-                "_cancel_intent_authority_hold": t.get("_cancel_intent_authority_hold"),
-                "_owner_wait_resume": t.get("_owner_wait_resume"),
-                "_budget_pause_resume": t.get("_budget_pause_resume"),
-                # The accepted successor may stop again before first dispatch.
-                # Keep its frozen cognition source; the original attempt's
-                # rolling checkpoint is not this successor's start authority.
-                **({"_working_recovery": t["_working_recovery"]} if "_working_recovery" in t else {}),
-                # The durable non-dispatch hold (#1196) and any recorded
-                # selection: a restart must not silently make a held row runnable.
-                "_budget_pause_hold": t.get("_budget_pause_hold"),
-                "_continuation_prepared": t.get("_continuation_prepared"), "_admission_owner_token": t.get("_admission_owner_token"),
-                # A direct owner-chat turn parked under its exact budget pause
-                # keeps its lane fact: it is resumed under the same id and its
-                # frames, census kind and delivery read that fact (#1196).
-                "_is_direct_chat": t.get("_is_direct_chat"),
-            },
-        })
-    running_rows = []
-    from ouroboros.model_wait import execution_elapsed_seconds
-    from supervisor.task_model_wait import quota_waited_seconds
-    now = time.time()
-    for task_id, meta in running_items:
-        task = meta.get("task") if isinstance(meta, dict) else {}
-        started = float(meta.get("started_at") or 0.0) if isinstance(meta, dict) else 0.0
-        hb = float(meta.get("last_heartbeat_at") or 0.0) if isinstance(meta, dict) else 0.0
-        paused_sec = float(meta.get("budget_paused_sec") or 0.0) if isinstance(meta, dict) else 0.0
-        running_rows.append({
-            "id": task_id, "type": task.get("type"), "priority": task.get("priority"),
-            "attempt": meta.get("attempt"), "worker_id": meta.get("worker_id"),
-            "owner_wait": meta.get("owner_wait"), "started_at": started,
-            "runtime_sec": round(max(0.0, now - started), 2) if started > 0 else 0.0,
-            "quota_wait_sec": quota_waited_seconds(meta, now),
-            "budget_paused_sec": paused_sec,
-            "execution_sec": execution_elapsed_seconds(meta if isinstance(meta, dict) else {}, now),
-            "heartbeat_lag_sec": round(max(0.0, now - hb), 2) if hb > 0 else None,
-            "soft_sent": bool(meta.get("soft_sent")), "task": task,
-        })
-    payload = {
-        SCHEMA_VERSION_KEY: QUEUE_SNAPSHOT_SCHEMA_VERSION,
-        "ts": utc_now_iso(),
-        "reason": reason,
-        "pending_count": len(pending_items), "running_count": len(running_items),
-        "reaping_count": reaping_count,
-        "worker_total": worker_total,
-        "active_worker_count": active_worker_count, "parked_worker_count": parked_worker_count,
-        "worker_pool_disabled_reason": worker_pool_disabled_reason,
-        "assignable_idle_workers": assignable_idle_workers,
-        "acceptance_fences": acceptance_fences,
-        "budget_root_fences": budget_root_fences,
-        "pending": pending_rows, "running": running_rows,
-    }
-    try:
-        _queue().atomic_write_text(_queue().QUEUE_SNAPSHOT_PATH, json.dumps(payload, ensure_ascii=False, indent=2))
-        return True
-    except Exception:
-        log.warning("Failed to persist queue snapshot (reason=%s)", reason, exc_info=True)
-        return False
+        pending_rows = []
+        for t in pending_items:
+            pending_rows.append({
+                "id": t.get("id"), "type": t.get("type"), "priority": t.get("priority"),
+                "attempt": t.get("_attempt"), "queued_at": t.get("queued_at"),
+                "queue_seq": t.get("_queue_seq"),
+                "task": {**{key: t.get(key) for key in _PENDING_FIELDS}, **subagent_intent_fields(t),
+                         **{key: t[key] for key in ('_project_admission', 'admitted_dispatch', '_project_scope_none', '_working_recovery') if key in t}},
+            })
+        running_rows = []
+        for task_id, meta in running_items:
+            task = meta.get("task") if isinstance(meta, dict) else {}
+            started = float(meta.get("started_at") or 0.0) if isinstance(meta, dict) else 0.0
+            paused_sec = float(meta.get("budget_paused_sec") or 0.0) if isinstance(meta, dict) else 0.0
+            running_rows.append({
+                "id": task_id, "type": task.get("type"), "priority": task.get("priority"),
+                "attempt": meta.get("attempt"), "worker_id": meta.get("worker_id"),
+                "owner_wait": meta.get("owner_wait"), "started_at": started,
+                "model_wait_quota_clock": meta.get("model_wait_quota_clock"),
+                "sleep_parked_at": meta.get("sleep_parked_at"),
+                "budget_paused_sec": paused_sec,
+                "soft_sent": bool(meta.get("soft_sent")), "task": task,
+            })
+        payload = {
+            SCHEMA_VERSION_KEY: QUEUE_SNAPSHOT_SCHEMA_VERSION,
+            "pending_count": len(pending_items), "running_count": len(running_items),
+            "reaping_count": reaping_count,
+            "worker_total": worker_total,
+            "active_worker_count": active_worker_count, "parked_worker_count": parked_worker_count,
+            "worker_pool_disabled_reason": worker_pool_disabled_reason,
+            "assignable_idle_workers": assignable_idle_workers,
+            "acceptance_fences": acceptance_fences,
+            "budget_root_fences": budget_root_fences,
+            "pending": pending_rows, "running": running_rows,
+        }
+        from ouroboros.budget_pause import BUDGET_HOLD_KEY
+
+        fenced = {str(row.get("root_task_id") or "") for row in budget_root_fences}
+        members = {}
+        for task in [*pending_items, *(meta.get("task") or {} for _, meta in running_items)]:
+            if str(task.get("root_task_id") or task.get("id") or "") in fenced:
+                member = {key: task[key] for key in ("id", "_budget_pause", "_budget_pause_consumed", "_continuation_prepared") if key in task}
+                for key, fields in ((BUDGET_HOLD_KEY, ("selected", "fence_id")),
+                                    ("_budget_pause_resume", ("pause_id", "grant_id", "authority", "root_fence_id", "selected_by", "root_grant_id", "root_resume_generation"))):
+                    if key in task:
+                        value = task[key]
+                        member[key] = {k: value[k] for k in fields if k in value} if isinstance(value, dict) else value
+                members[str(task.get("id") or "")] = member
+        dispatch = {"budget_root_fences": budget_root_fences, "members": members}
+        documents = {"queue_snapshot.json": payload, "queue_dispatch.json": dispatch, "direct_roots.json": direct}
+        previous = _queue().QUEUE_PUBLICATION
+        changed = previous is None or previous[:2] != (_queue().QUEUE_SNAPSHOT_PATH, documents) or reason in {"startup", "pre_restart_exit"}
+        generation = uuid.uuid4().hex if changed else previous[2]
+        state = _queue().QUEUE_SNAPSHOT_PATH.parent
+        try:
+            if changed:
+                # A partial publish must not certify the old no-fence document.
+                for attempt in range(3):
+                    try:
+                        (state / "queue.alive").unlink(missing_ok=True)
+                        break
+                    except PermissionError:
+                        if attempt == 2:
+                            raise
+                        time.sleep(0.01)  # Windows readers briefly deny delete sharing.
+                for name, document in documents.items():
+                    published = {**document, "generation": generation, "ts": utc_now_iso(), "reason": reason}
+                    if _queue().atomic_write_text(state / name, json.dumps(published, ensure_ascii=False, separators=(",", ":"))) is False:
+                        raise OSError(f"queue publication failed: {name}")
+            alive = {"generation": generation, "ts": utc_now_iso(),
+                     "heartbeats": {tid: meta.get("last_heartbeat_at") for tid, meta in running_items}}
+            if _queue().atomic_write_text(state / "queue.alive", json.dumps(alive, separators=(",", ":"))) is False:
+                raise OSError("queue liveness publication failed")
+            if changed:
+                _queue().QUEUE_PUBLICATION = (_queue().QUEUE_SNAPSHOT_PATH, copy.deepcopy(documents), generation)
+            return True
+        except Exception:
+            log.warning("Failed to persist queue snapshot (reason=%s)", reason, exc_info=True)
+            return False
 
 
 def parse_iso_to_ts(iso_ts: str) -> Optional[float]:
@@ -791,12 +791,11 @@ def restore_pending_from_snapshot(
     if _queue().PENDING:
         return 0
     try:
-        if not _queue().QUEUE_SNAPSHOT_PATH.exists():
+        from ouroboros.queue_observation import load_queue_document, queue_stamp
+        snap = load_queue_document(_queue().DRIVE_ROOT)
+        if snap.get("_snapshot_invalid") or snap.get("_snapshot_missing"):
             return 0
-        snap = json.loads(_queue().QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
-        if not isinstance(snap, dict):
-            return 0
-        ts = str(snap.get("ts") or "")
+        ts = str(queue_stamp(snap, boot=True).get("ts") or "")
         ts_unix = _queue().parse_iso_to_ts(ts)
         # Timestamp validity and freshness gate ORDINARY rows only (#1196): a
         # readable snapshot whose stamp is missing or malformed is treated as
@@ -856,10 +855,6 @@ def restore_pending_from_snapshot(
         )
         if terminalized is not None:
             terminalized.extend(fenced_running)
-        if stale and not snapshot_pending:
-            _record_queue_restore(terminalized_running=fenced_running,
-                                  direct_roots_incomplete=direct_roots.get("incomplete", False))
-            return 0
         snapshot_pending, pending_by_id, restored = restore_terminalization_retry_rows(
             snapshot_pending, pending=_queue().PENDING, running=_queue().RUNNING,
             queue_seq_counter_ref=_queue().QUEUE_SEQ_COUNTER_REF, sort_pending=_queue().sort_pending,
@@ -874,6 +869,10 @@ def restore_pending_from_snapshot(
             if restored > 0:
                 _queue().persist_queue_snapshot(reason="queue_restored")
             return restored
+        if stale and not snapshot_pending and not restored:
+            _record_queue_restore(terminalized_running=fenced_running,
+                                  direct_roots_incomplete=direct_roots.get("incomplete", False))
+            return 0
 
         skipped_terminal, invalid_depth_restore = 0, []
         cancel_authority_holds: list[str] = []

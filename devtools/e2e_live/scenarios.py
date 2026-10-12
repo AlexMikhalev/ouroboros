@@ -1,6 +1,6 @@
 """The scenario table of the live E2E stand: ``{id, prompt, settings_overrides, acceptance}``.
 
-Every acceptance is a CALLABLE over durable artifacts (task_results rows, the lane clone's
+Every acceptance is a CALLABLE over durable artifacts (task store rows, the lane clone's
 git history, the task-drive ledgers, /proc) — never a keyword judgement of model prose
 (BIBLE P5). The prompts are what a paid model sees; the ``stub_script`` of each row is the
 $0 rehearsal of the same flow against the loopback stub model (``--stub``).
@@ -726,14 +726,15 @@ def sw1_roster(child_model: str, template: dict | None = None) -> str:
 
 
 def _find_root_task(ctx: LaneContext, marker: str) -> str:
-    results_dir = ctx.data_root / "task_results"
-    for path in sorted(results_dir.glob("*.json")) if results_dir.is_dir() else []:
-        try:
-            row = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(row, dict) and not row.get("parent_task_id") and marker in json.dumps(row):
-            return str(row.get("task_id") or path.stem)
+    from ouroboros.store import StoreError
+    from ouroboros.task_store import list_documents
+    try:
+        rows = list_documents(ctx.data_root)
+    except StoreError:
+        return ""
+    for row in rows:
+        if not row.get("parent_task_id") and marker in json.dumps(row):
+            return str(row.get("task_id") or "")
     return ""
 
 

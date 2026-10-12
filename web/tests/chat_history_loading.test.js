@@ -28,7 +28,7 @@ function fixture(t, options = {}) {
         }
         return new Promise((resolve, reject) => reads.push({
             ok: data => resolve({ ok: true, status: 200, json: async () => data }),
-            http: status => resolve({ ok: false, status, json: async () => ({ error: `HTTP ${status}` }) }),
+            http: (status, reason_code) => resolve({ ok: false, status, json: async () => ({ error: `HTTP ${status}`, reason_code }) }),
             drop: () => reject(new TypeError('Failed to fetch')),
         }));
     });
@@ -71,6 +71,40 @@ const assertLoading = (f, why) => {
     assert.equal(f.button().hidden, false, why);
     assert.equal(f.button().disabled, true, why);
 };
+
+test('migration shows a calm note and retries until history publishes without a click', async t => {
+    const f = fixture(t);
+    const paint = f.instance.refreshHistory({ revision: 1 });
+    await settle();
+    f.reads[0].http(503, 'migrating');
+    await paint;
+    assert.equal(f.note().textContent, 'Saved history is being upgraded…');
+    assert.equal(f.button().hidden, true);
+    assert.equal(f.logged.length, 0);
+    await new Promise(resolve => setTimeout(resolve, 750));
+    assert.equal(f.reads.length, 2, 'publication is polled without an owner action');
+    f.reads[1].http(503, 'migrating');
+    await settle();
+    assert.equal(f.note().textContent, 'Saved history is being upgraded…');
+    await new Promise(resolve => setTimeout(resolve, 750));
+    assert.equal(f.reads.length, 3);
+    f.reads[2].ok(page([row('chat:10', 'Published answer')]));
+    await settle();
+    assert.equal(f.bubbles().length, 1);
+    assert.equal(f.instance.hasPaintedHistory(), true);
+    assert.doesNotMatch(f.note().textContent, /upgraded|could not/);
+    await new Promise(resolve => setTimeout(resolve, 750));
+    assert.equal(f.reads.length, 3, 'success stops migration retries');
+});
+
+test('closing a migrating chat cancels its automatic retry', async t => {
+    const f = fixture(t);
+    const paint = f.instance.refreshHistory({ revision: 1 });
+    await settle(); f.reads[0].http(503, 'migrating'); await paint;
+    f.instance.destroy();
+    await new Promise(resolve => setTimeout(resolve, 750));
+    assert.equal(f.reads.length, 1);
+});
 
 test('an empty feed shows the loading state BEFORE the history request resolves', async (t) => {
     const f = fixture(t);

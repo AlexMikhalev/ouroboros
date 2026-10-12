@@ -1,5 +1,4 @@
 """Cancellation completes interrupted file publication before delivery and cleanup."""
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +6,7 @@ import pytest
 from ouroboros import cancel_intents, headless
 from ouroboros.task_results import load_task_result, write_task_result
 from tests._cancel_intents_shared import qenv, settled_off_loop  # noqa: F401
+from tests._store_shared import read_result, result_signature
 
 
 @pytest.fixture
@@ -98,13 +98,13 @@ def test_genuinely_ready_current_survives_cancel_byte_identical(split, monkeypat
                       review_projection={"panels": [{"panel_id": "paid-PASS", "actors": []}]})
     assert not headless.prepare_terminal_task_files(s.drive, s.task)["error"]
     headless.retry_child_task_refs(s.drive, s.child, s.task["id"])
-    before = (s.drive / "task_results" / f'{s.task["id"]}.json').read_bytes()
+    before = result_signature(s.drive, s.task["id"])
     write_task_result(s.child, s.task["id"], "completed", result="Stale replica")
     monkeypatch.setattr(headless, "prepare_terminal_task_files", lambda *_a: pytest.fail("accepted CURRENT recopied"))
     cancel_intents.request_cancel(s.drive, s.task["id"], reason="owner", allow_settled_target=True)
     assert s.q.cancel_task_custody(s.task["id"]) == s.q.CANCEL_ALREADY_SETTLED
-    assert (s.drive / "task_results" / f'{s.task["id"]}.json').read_bytes() == before
-    assert json.loads(before)["result"] == "Accepted answer" and settled_off_loop(s.drive, s.task["id"], s.child)
+    assert result_signature(s.drive, s.task["id"]) == before
+    assert read_result(s.drive, s.task["id"])["result"] == "Accepted answer" and settled_off_loop(s.drive, s.task["id"], s.child)
 
 
 def test_reconciled_terminal_without_checkpoint_still_needs_real_file_adoption(split):

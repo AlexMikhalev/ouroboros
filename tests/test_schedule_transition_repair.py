@@ -15,6 +15,7 @@ from ouroboros.task_results import load_task_result, write_task_result
 from supervisor import queue_schedules
 from supervisor import schedule_occurrence as occurrence
 from tests.test_schedule_occurrence import _row, _rows, q  # noqa: F401
+from tests._store_shared import unreadable_result
 
 pytestmark = pytest.mark.serial
 
@@ -158,8 +159,7 @@ def test_api_edit_preserves_accepted_or_unprovable_occurrence(q, monkeypatch, ev
     elif evidence == "foreign":
         write_task_result(q.root, held["task_id"], "scheduled", schedule_admission={"token": "foreign"})
     elif evidence == "unreadable":
-        (q.root / "task_results").mkdir(exist_ok=True)
-        (q.root / "task_results" / f"{held['task_id']}.json").write_text("{broken")
+        unreadable_result(monkeypatch, held["task_id"])
     else:
         with queue_schedules.schedule_transaction(q.root):
             data = queue_schedules.load_schedule_store(q.root)
@@ -249,14 +249,14 @@ def test_worker_crash_retry_survives_settlement_and_successor(q, monkeypatch, cr
 
 
 @pytest.mark.parametrize("case", ["terminal", "foreign", "foreign_schedule", "owner_hold", "unknown"])
-def test_retired_row_does_not_authorize_invalid_redispatch(q, case):  # noqa: F811
+def test_retired_row_does_not_authorize_invalid_redispatch(q, monkeypatch, case):  # noqa: F811
     _row(q, intent={"kind": "system_repo"})
     q.queue.check_scheduled_tasks()
     task = q.pending.pop()
     assert occurrence.record_dispatch_possible(task)
     q.queue.check_scheduled_tasks()
     if case == "unknown":
-        (q.root / "task_results" / f"{task['id']}.json").write_text("{broken")
+        unreadable_result(monkeypatch, task["id"])
     else:
         result = load_task_result(q.root, task["id"])
         admission = result["schedule_admission"]

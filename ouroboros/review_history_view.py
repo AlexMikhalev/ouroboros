@@ -20,6 +20,7 @@ import copy
 import hashlib
 import json
 from typing import Any, Callable, Mapping, Sequence
+from ouroboros.store import StoreError
 
 _DEFAULT_SELECTION = object()
 
@@ -691,7 +692,7 @@ def selected_review_history(history: dict, *, drive_root: Any, task_id: str, ope
     try:
         saved = load_task_result(drive_root, task_id, strict=True) or {}
         selection = saved.get(SELECTED_VIEW_FIELD)
-    except (OSError, ValueError, TypeError) as exc:
+    except (OSError, ValueError, TypeError, StoreError) as exc:
         selection = {"unavailable": type(exc).__name__}
     return project_review_history(history, operative_subject=operative_subject, selection=selection,
         source_reader=lambda ref: read_actor_source_bytes(drive_root, task_id, ref))

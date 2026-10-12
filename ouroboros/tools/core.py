@@ -918,6 +918,8 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         return protected_root_block
     # An admitted, absent path is an ordinary discovery miss: a typed warning
     # (parity with list_files/read_file), never a denial or an invalid query.
+    from ouroboros.evidence_packs import materialize_tree
+    materialize_tree(search_root)  # a task's packed checkpoint handles are written back before the walk
     if not search_root.exists():
         return f"⚠️ SEARCH_NOT_FOUND: path not found: {display_search_path}"
     protected_root_read_block = block_reason_for_path(

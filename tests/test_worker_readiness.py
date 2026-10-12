@@ -81,7 +81,7 @@ def pool(monkeypatch, tmp_path):
     monkeypatch.setattr(workers, "REPO_DIR", tmp_path)
     monkeypatch.setattr(workers, "WORKERS", {})
     monkeypatch.setattr(workers, "load_state", lambda: {"current_sha": "abc123", "owner_chat_id": 0})
-    monkeypatch.setattr(workers, "_record_worker_pids", lambda: None)
+    monkeypatch.setattr(workers, "_record_worker_processes", lambda: None)
     # A prior TestClient lifespan in the same xdist worker leaves the process-lifetime
     # event bus latched (server shutdown calls shutdown_event_q()); these tests pin the
     # readiness seam, never the bus, so the latch is isolated here — the precedent of
@@ -119,7 +119,6 @@ def test_spawn_installs_every_slot_booting_and_hands_the_set_to_the_readiness_se
     monkeypatch.setattr(workers.mp, "get_context", lambda _method: fake_ctx)
     monkeypatch.setattr(workers, "get_event_q", lambda: object())   # the seam, not the bus
     monkeypatch.setattr(workers, "_EVENT_Q_GENERATION", "test-generation")
-    monkeypatch.setattr(workers, "reap_orphaned_workers", lambda: 0)
     handed = []
     monkeypatch.setattr(
         workers, "_verify_worker_sha_after_spawn",

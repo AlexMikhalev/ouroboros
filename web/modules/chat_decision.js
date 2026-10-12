@@ -3,6 +3,7 @@
 // wait. Both become records after settlement; confirmed routing becomes an ack.
 import { MAX_DECISION_COMMENT, MAX_QUIZ_OPTIONS } from './api_types.js';
 import { renderRoutingAnnotation, routingOptionLabel } from './chat_activity.js';
+import { paintAttachmentOutcome } from './chat_attachments.js';
 import { nameProjectReference, projectReference } from './project_reference.js';
 import { ANSWERABLE_QUIZ_STATES, QUIZ_LIFECYCLE, questionPresentation, waitFacts } from './question_presentation.js';
 import { bindEnterSubmit } from './ui_interactions.js';
@@ -909,11 +910,11 @@ export function createChatDecision({
     }
 
     function renderRoutingDecision(bubble, annotation) {
-        // ONE entry point for a user bubble's routing surface: an actionable
-        // refusal renders the picker card; every other annotation state
-        // settles back into the plain text ack line.
+        // ONE entry point for a user bubble's routing surface: the picker card for an actionable refusal, else the
+        // plain ack line; a file the host could not attach keeps its own never-folded note beside either.
         if (!bubble) return false;
         return onDomWrite(() => {
+            const outcome = paintAttachmentOutcome(bubble, annotation);
             const cmid = String(bubble.dataset.clientMessageId || '');
             const status = String((annotation && annotation.status) || '');
             const token = String((annotation && annotation.routing_token) || '');
@@ -923,17 +924,16 @@ export function createChatDecision({
             if (!actionable) {
                 const card = bubble.querySelector('.chat-routing-card');
                 card?.remove();
-                return renderRoutingAnnotation(bubble, annotation, chatId) || Boolean(card);
+                return renderRoutingAnnotation(bubble, annotation, chatId) || Boolean(card) || outcome;
             }
             const annotationChanged = bubble.querySelector('.msg-routing-annotation')
                 ? renderRoutingAnnotation(bubble, null) : false;
             let card = bubble.querySelector('.chat-routing-card');
-            if (card && card.dataset.routingToken === token) return annotationChanged;
+            if (card && card.dataset.routingToken === token) return annotationChanged || outcome;
             card?.remove();
             card = buildRoutingCard(cmid, token, options);
             const time = bubble.querySelector('.msg-time');
-            if (time) time.before(card);
-            else bubble.append(card);
+            if (time) time.before(card); else bubble.append(card);
             bubble.dataset.chatAnnotationStatus = status;
             return true;
         });

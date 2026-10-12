@@ -154,19 +154,19 @@ def test_a_child_of_a_wake_uses_the_producer_allowance_not_an_old_margin(tmp_pat
     assert task_pacing.cost_stop_authority(ctx) == task_pacing.COST_STOP_PRODUCER
 
 
-@pytest.mark.parametrize("damage", ["missing", "no_contract", "corrupt"])
-def test_unreadable_root_authority_keeps_the_inherited_number_provisionally(tmp_path, damage):
+@pytest.mark.parametrize("damage", ["missing", "no_contract", "unreadable"])
+def test_unreadable_root_authority_keeps_the_inherited_number_provisionally(tmp_path, monkeypatch, damage):
     """Neither the default removed on a guess nor an authored stop widened: the
     member keeps the number it already carries, labelled ``legacy_policy_unverified``,
     and the next start re-reads the root once it is readable again."""
-    from ouroboros.task_results import task_result_path
+    from tests._store_shared import delete_result, unreadable_result
 
+    switch = None
     if damage == "no_contract":
         _root_row(tmp_path, contract=False)
-    elif damage == "corrupt":
-        path = task_result_path(tmp_path, "root")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{not json", encoding="utf-8")
+    elif damage == "unreadable":
+        _root_row(tmp_path)
+        switch = unreadable_result(monkeypatch, "root")  # the store cannot answer for the root's row
     ctx, ceiling = _member(tmp_path, 239.66)
     assert ceiling.state == task_pacing.COST_CEILING_ACTIVE and ceiling.ceiling_usd == 239.66
     assert ceiling.basis == task_pacing.COST_BASIS_POLICY_UNVERIFIED
@@ -174,7 +174,9 @@ def test_unreadable_root_authority_keeps_the_inherited_number_provisionally(tmp_
     assert task_pacing.cost_stop_authority(ctx) == task_pacing.COST_STOP_UNKNOWN
     assert "legacy_policy_unverified" in task_pacing.cost_ceiling_disclosure(ceiling)["rule"]
     # Once the root's authority is readable (an ordinary root), the next start drops it.
-    task_result_path(tmp_path, "root").unlink(missing_ok=True)
+    if switch is not None:
+        switch["on"] = False
+    delete_result(tmp_path, "root")
     _root_row(tmp_path)
     _ctx, later = _member(tmp_path, 239.66)
     assert later.state == task_pacing.COST_CEILING_DISABLED

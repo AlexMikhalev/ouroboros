@@ -68,6 +68,30 @@ def test_mirror_progress_off_gates_firehose(tmp_path, monkeypatch):
     assert not _Rec.sent and not _Rec.edited         # explicit opt-out drops it
 
 
+@pytest.mark.parametrize("mirror", ["off", "on"])
+def test_a_cards_placed_row_is_a_progress_note_here(tmp_path, monkeypatch, mirror):
+    """The web shows a card's host rows inside the task card; this transport has none, so a
+    root's own placed row (a late review settlement, a custody note) follows the owner's
+    progress toggle. A child's row still waits for its root, toggle or not."""
+    plugin, api = _setup(tmp_path, monkeypatch, TELEGRAM_MIRROR_PROGRESS=mirror)
+    handle = plugin._make_outbound(api)
+    row = {"text": "Reviewers rejected the answer after it was delivered.", "role": "system",
+           "system_type": "acceptance_late_settlement", "card_row": "reviews", "task_id": "root-1"}
+    asyncio.run(handle(row))
+    child = {**row, "delegation_role": "subagent", "root_task_id": "root-done"}
+    asyncio.run(handle(child))  # its root's outcome is unreadable: the row waits
+    assert [sent[1] for sent in _Rec.sent] == ([row["text"]] if mirror == "on" else [])
+    # Once the root has finished, a child's late row goes as it always did, toggle or not.
+    from ouroboros.task_results import task_result_path
+
+    data = tmp_path / "data"
+    api.get_runtime_info = lambda: {"data_dir": str(data)}
+    task_result_path(data, "root-done").write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+    _Rec.sent = []
+    asyncio.run(handle(child))
+    assert [sent[1] for sent in _Rec.sent] == [row["text"]]
+
+
 def test_real_reply_is_sent(tmp_path, monkeypatch):
     plugin, api = _setup(tmp_path, monkeypatch)
     handle = plugin._make_outbound(api)
@@ -168,6 +192,41 @@ def test_routing_refusal_speaks_in_the_third_person(tmp_path, monkeypatch):
     assert lines[0] == "Choose a target for the last message:"
     assert "1. Fix the parser" in lines
     assert not any(line.startswith("I ") for line in lines) and "I couldn't" not in message
+
+
+@pytest.mark.parametrize("silent", ["off", "on"])
+def test_a_landed_receipt_stays_silent_unless_a_file_was_not_attached(tmp_path, monkeypatch, silent):
+    """A landed act publishes nothing here either; only a file the host could not attach earns one
+    plain line, sent fresh: it never edits or takes over silent mode's tracked answer."""
+    plugin, api = _setup(tmp_path, monkeypatch, TELEGRAM_SILENT_MODE=silent)
+    plugin._set_silent_msg(api, 42, 555)
+    handle = plugin._make_outbound(api)
+    ack = {"annotation_type": "routing_ack", "status": "delivered", "action": "steer_task", "target": "t1",
+           "attachment_manifest": [{"ordinal": 0, "label": "a.png", "status": "staged"}]}
+    asyncio.run(handle(ack))
+    assert _Rec.sent == []
+    ack["attachment_manifest"].append({"ordinal": 1, "label": "b.pdf", "status": "rejected", "reason": "source_missing"})
+    asyncio.run(handle(ack))
+    assert [(row[1], row[2]) for row in _Rec.sent] == [("Not attached to the task: b.pdf", "")]
+    assert _Rec.edited == [] and plugin._get_silent_msg(api, 42) == 555
+
+
+def test_the_not_attached_line_speaks_the_install_language(tmp_path, monkeypatch):
+    """The bridge composes this line itself, so it reads its own text table in the install's
+    language; the file names stay as the owner gave them."""
+    from ouroboros import i18n_memory as memory
+
+    plugin, api = _setup(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    plugin.telegram_i18n.configure(data)
+    monkeypatch.setenv("OUROBOROS_UI_LANGUAGE", "ru")
+    memory.update_memory(data, "ru", lambda doc: (memory.apply_generated(doc, {
+        "code:tg.menu.attachments_not_attached": {"text": "Не приложено к задаче: {names}"},
+    }, model="test"), doc)[1], create=True)
+    handle = plugin._make_outbound(api)
+    asyncio.run(handle({"annotation_type": "routing_ack", "status": "delivered", "target": "t1", "attachment_manifest": [
+        {"ordinal": 0, "label": "отчёт.pdf", "status": "rejected", "reason": "source_missing"}]}))
+    assert [row[1] for row in _Rec.sent] == ["Не приложено к задаче: отчёт.pdf"]
 
 
 def test_subagent_cards_off_hides_activity(tmp_path, monkeypatch):

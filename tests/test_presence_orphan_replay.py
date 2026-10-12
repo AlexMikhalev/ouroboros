@@ -48,7 +48,6 @@ from ouroboros.task_results import (
     is_reconciled_presence_placeholder,
     load_task_result,
     reopen_reconciled_presence_placeholder,
-    task_result_path,
     write_task_result,
 )
 from ouroboros.task_status import execution_owner_record, reconcile_orphaned_running_tasks
@@ -56,6 +55,7 @@ from ouroboros.tools.presence import _finish_presence
 from ouroboros.utils import append_jsonl
 from tests.test_host_service_api import _seed_presence_behavior, _seed_token
 from tests.test_presence_runner import _admission, _event
+from tests._store_shared import result_signature
 
 _PRESENCE_METADATA = {"source": "presence", "presence": {"binding_id": "1" * 32, "delivery_reporting_version": 0}}
 _NOW = 1_800_000_000.0  # 2027-01-15T08:00:00Z, the fresh queue snapshot's own time
@@ -130,9 +130,9 @@ def test_reopen_moves_the_host_mark_aside_exactly_once(tmp_path, monkeypatch, st
                     "status_reconciled_from", "canonical_terminal_projection_origin"):
         assert cleared not in reopened
     # A running row is no placeholder: the transition cannot fire twice.
-    before = task_result_path(tmp_path, "orphan-turn").read_bytes()
+    before = result_signature(tmp_path, "orphan-turn")
     assert reopen_reconciled_presence_placeholder(tmp_path, "orphan-turn") is False
-    assert task_result_path(tmp_path, "orphan-turn").read_bytes() == before
+    assert result_signature(tmp_path, "orphan-turn") == before
 
 
 def _outcome_failure(tmp_path, monkeypatch):
@@ -159,9 +159,9 @@ def _non_presence_orphan(tmp_path, monkeypatch):
 @pytest.mark.parametrize("seed", [_outcome_failure, _ordinary_failure, _non_presence_orphan])
 def test_only_the_orphan_placeholder_of_a_presence_turn_reopens(tmp_path, monkeypatch, seed):
     task_id = seed(tmp_path, monkeypatch)
-    before = task_result_path(tmp_path, task_id).read_bytes()
+    before = result_signature(tmp_path, task_id)
     assert reopen_reconciled_presence_placeholder(tmp_path, task_id) is False
-    assert task_result_path(tmp_path, task_id).read_bytes() == before
+    assert result_signature(tmp_path, task_id) == before
     if seed is _ordinary_failure:
         assert _cached_result(tmp_path, task_id) is not None  # the model's own terminal replays
     elif seed is _outcome_failure:
@@ -214,11 +214,11 @@ def _chat_rows(drive_root):
 
 def _trace(drive_root, task_id, conversation_key=_event().conversation_key):
     """What a refused retry must leave untouched: the turn's row, the conversation's pointer and dialogue."""
-    row, pointer = task_result_path(drive_root, task_id), _previous_turn_path(drive_root, conversation_key)
+    pointer = _previous_turn_path(drive_root, conversation_key)
     chat_id = _stable_numeric_id("presence-conversation", conversation_key)
     dialogue = [item for item in _chat_rows(drive_root)
                 if item.get("task_id") == task_id or item.get("chat_id") == chat_id]
-    return (row.read_bytes() if row.exists() else None, pointer.read_bytes() if pointer.exists() else None, dialogue)
+    return (result_signature(drive_root, task_id), pointer.read_bytes() if pointer.exists() else None, dialogue)
 
 
 def _retry_kwargs(tmp_path, built, *, version=1, reply="Regenerated answer", **overrides):
@@ -586,13 +586,13 @@ def test_a_lost_attempt_blocks_only_its_own_event(tmp_path, monkeypatch):
     """Another event of the same conversation has no running row of its own: it runs as a fresh turn,
     and neither touches the lost row nor unblocks it."""
     lost = _lose_attempt(tmp_path, monkeypatch, STATUS_RUNNING)
-    lost_row = task_result_path(tmp_path, lost["id"]).read_bytes()
+    lost_row = result_signature(tmp_path, lost["id"])
     built: list = []
     fresh_kwargs = _retry_kwargs(tmp_path, built, reply="Fresh answer")
     fresh_kwargs["event"] = replace(fresh_kwargs["event"], source_event_id="telegram:bot-1:43")
     fresh = run_presence_turn(**fresh_kwargs)
     assert fresh.text == "Fresh answer" and fresh.task_id != lost["id"] and len(built) == 1
-    assert task_result_path(tmp_path, lost["id"]).read_bytes() == lost_row
+    assert result_signature(tmp_path, lost["id"]) == lost_row
     built.clear()
     _assert_fails_closed(tmp_path, lost["id"], _retry_kwargs(tmp_path, built), built)
 

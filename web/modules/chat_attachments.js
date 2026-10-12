@@ -80,6 +80,37 @@ export function attachmentViews(value) {
     });
 }
 
+/**
+ * A file the host could not attach to the task, named directly under the owner's own words from the
+ * routing receipt's manifest (DESIGN "Chat attachments"). Its own node, not the receipt line, so the
+ * Main fold of a landed receipt never hides it; a clean delivery paints nothing. Upload availability
+ * is a separate fact: the file's own tile keeps Open/Download. Returns whether it changed.
+ */
+export function paintAttachmentOutcome(bubble, annotation) {
+    if (!bubble) return false;
+    const rows = Array.isArray(annotation?.attachment_manifest) ? annotation.attachment_manifest : [];
+    const names = rows.filter((row) => row && typeof row === 'object' && row.status === 'rejected')
+        .map((row) => String(row.label || `#${Number(row.ordinal || 0) + 1}`));
+    const text = names.length ? `${tr('chat.attachment_not_attached', 'Not attached to the task')}: ${names.join(', ')}` : '';
+    const child = (name) => [...bubble.children].find((node) => node.classList?.contains(name));
+    let note = child('msg-attachment-outcome');
+    if (!text) {
+        note?.remove();
+        return Boolean(note);
+    }
+    if (note?.textContent === text) return false;
+    if (!note) {
+        note = document.createElement('div');
+        note.className = 'msg-attachment-outcome';
+        // One place whatever lands later (saved mark, receipt line, time): right under the words.
+        const next = child('message')?.nextElementSibling;
+        if (next) next.before(note);
+        else bubble.append(note);
+    }
+    note.textContent = text;
+    return true;
+}
+
 function cardHtml(view, atoms, note = view.available ? '' : tr('media.attachment_unavailable', 'Unavailable')) {
     const meta = [atoms.fileExtension(view.name), atoms.humanSize(view.size), note].filter(Boolean).join(' · ');
     return `<div class="chat-file-item${view.available ? '' : ' is-unavailable'}">

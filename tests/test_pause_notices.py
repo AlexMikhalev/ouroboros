@@ -183,7 +183,7 @@ def test_worker_replica_cannot_resurrect_an_acknowledged_notice():
 
 def test_a_pass_reads_only_owing_tasks_among_completed_history(notices, monkeypatch):
     """Two-sided: 300 completed results and a long chat history cost nothing; the owing task is served."""
-    import ouroboros.task_result_facts as facts
+    import ouroboros.task_store as task_store
     import ouroboros.task_results as results
     import ouroboros.utils as utils
     root, sent = notices
@@ -193,7 +193,8 @@ def test_a_pass_reads_only_owing_tasks_among_completed_history(notices, monkeypa
     with (root / "logs" / "chat.jsonl").open("a", encoding="utf-8") as handle:
         for index in range(500):
             handle.write(json.dumps({"direction": "in", "chat_id": 1, "text": f"old {index}"}) + "\n")
-    monkeypatch.setattr(facts, "raw_result_facts", lambda *a, **k: pytest.fail("results enumerated"))
+    monkeypatch.setattr(task_store, "list_documents", lambda *a, **k: pytest.fail("results enumerated"))
+    monkeypatch.setattr(task_store, "task_facts", lambda *a, **k: pytest.fail("results enumerated"))
     monkeypatch.setattr(utils, "iter_jsonl_chain_objects", lambda *a, **k: pytest.fail("chat history read"))
     monkeypatch.setattr(results, "list_task_results", lambda *a, **k: pytest.fail("results listed"))
     loaded = []
@@ -206,45 +207,30 @@ def test_a_pass_reads_only_owing_tasks_among_completed_history(notices, monkeypa
     assert len(sent) == 1 and set(loaded) == {"task"}
 
 
-def test_a_crash_before_the_result_write_leaves_a_candidate_that_is_retired(notices):
-    """Membership is published first: a crash before the result write is an extra candidate, never a loss."""
+def test_membership_is_the_row_and_leaves_with_the_acknowledgement_or_the_row(notices):
+    """The membership is a column of the result row: it cannot exist without the result, the
+    acknowledgement retires it in the same write, and a deleted row owes nothing."""
+    from ouroboros.task_store import delete_document
+
     root, sent = notices
-    obligations.add(root, "pause_notices", "task", {"task_id": "task"})
+    _pause(root)
+    assert _owing(root) == {"task"}
     pause_notices.reconcile_pause_notices(root)
-    assert not sent and not _owing(root)
-    obligations.add(root, "pause_notices", "gone", {"task_id": "gone"})  # its result never landed
-    pause_notices.reconcile_pause_notices(root)
+    assert len(sent) == 1 and not _owing(root)
+    _pause(root, episode="two")
+    assert _owing(root) == {"task"}
+    delete_document(root, "task")
     assert not _owing(root)
-
-
-def test_retiring_a_stale_candidate_cannot_erase_a_pause_confirmed_meanwhile(notices, monkeypatch):
-    import ouroboros.task_results as results
-    root, sent = notices
-    obligations.add(root, "pause_notices", "task", {"task_id": "task"})  # stale: the result owes nothing yet
-    real_load = results.load_task_result
-    first = True
-
-    def read_then_new_pause(*args, **kwargs):
-        nonlocal first
-        old = real_load(*args, **kwargs)
-        if first:
-            first = False
-            _pause(root)  # commits after the maintenance read, before the stale-candidate retirement
-        return old
-
-    monkeypatch.setattr(results, "load_task_result", read_then_new_pause)
     pause_notices.reconcile_pause_notices(root)
-    assert not sent and real_load(root, "task")["pause_notices"]
-    assert _owing(root) == {"task"}  # retirement re-read the result under its lock
-    pause_notices.reconcile_pause_notices(root)
-    assert len(sent) == 1 and not real_load(root, "task").get("pause_notices")
+    assert len(sent) == 1
 
 
 def test_unavailable_sets_send_nothing_and_scan_nothing(notices, monkeypatch):
     import ouroboros.task_results as results
+    from ouroboros import store
     root, sent = notices
     _pause(root)
-    obligations.path(root, "pause_notices").write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(store, "open_store", lambda *a, **kw: (_ for _ in ()).throw(store.StoreBusy("busy")))
     monkeypatch.setattr(results, "load_task_result", lambda *a, **k: pytest.fail("a result was read"))
     pause_notices.reconcile_pause_notices(root)
     assert not sent
@@ -252,15 +238,13 @@ def test_unavailable_sets_send_nothing_and_scan_nothing(notices, monkeypatch):
 
 def test_the_lifecycle_import_seeds_pauses_owed_by_an_older_body(tmp_path, monkeypatch):
     """An install upgraded with a pause already owed: the one-time import publishes it."""
+    from ouroboros.task_results import stamp_task_result_schema
+
     root = tmp_path / "data"
     (root / "task_results").mkdir(parents=True)
     monkeypatch.setattr(message_bus, "DATA_DIR", root)
-    write_task_result(root, "old", "running", chat_id=1)
-    path = root / "task_results" / "old.json"
-    row = json.loads(path.read_text(encoding="utf-8"))
-    row["pause_notices"] = {"pause:old:one": {"reason": "budget", "confirmed_at": "2026-10-01T00:00:00+00:00"}}
-    path.write_text(json.dumps(row), encoding="utf-8")  # as a body without the sets wrote it
-    for name in obligations.BOOT_SETS:  # no set exists yet on that install
-        obligations.path(root, name).unlink(missing_ok=True)
-    prepare_startup_state(root, rebuild=True)
+    row = stamp_task_result_schema({"task_id": "old", "status": "running", "chat_id": 1, "pause_notices": {
+        "pause:old:one": {"reason": "budget", "confirmed_at": "2026-10-01T00:00:00+00:00"}}})
+    (root / "task_results" / "old.json").write_text(json.dumps(row), encoding="utf-8")  # as a body without the store wrote it
+    prepare_startup_state(root)
     assert set(obligations.members(root, "pause_notices")) == {"old"}

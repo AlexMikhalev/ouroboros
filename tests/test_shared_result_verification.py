@@ -13,6 +13,7 @@ from ouroboros.task_status import load_effective_task_result
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros.workspace_patch_capture import write_workspace_patch_artifacts
 from supervisor.events_subagent_admission import _resolve_subagent_constraint
+from tests._store_shared import read_result, seed_result
 
 # Actual Git subprocess fixtures follow the repository's real-process lane.
 pytestmark = pytest.mark.serial
@@ -143,14 +144,13 @@ def test_identity_refusals_precede_b_verification(env, monkeypatch, change):
     elif change == "base":
         manifest["base_head"] = "0" * 40
     else:
-        row_path = drive / "task_results" / "child.json"
-        row = json.loads(row_path.read_text())
+        row = read_result(drive, "child")
         if change == "result_root":
             row["workspace_root"] = str(a)
         else:
             row.pop("workspace_root")
             row["task_constraint"].pop("write_root")
-        row_path.write_text(json.dumps(row))
+        seed_result(drive, "child", row)
     (art / "workspace_patch.json").write_text(json.dumps(manifest))
     monkeypatch.setattr("ouroboros.tools.subagent_integration._verify_shared_external_workspace",
                         lambda *a, **k: pytest.fail("B was verified before identity admission"))
@@ -387,11 +387,10 @@ def test_early_refusals_keep_verdict_and_custody_without_absorption(env, refusal
     art = capture(parent, b, drive)
     args = {}
     if refusal == "missing_assignment":
-        row_path = drive / "task_results" / "child.json"
-        row = json.loads(row_path.read_text())
+        row = read_result(drive, "child")
         row.pop("workspace_root")
         row["task_constraint"].pop("write_root")
-        row_path.write_text(json.dumps(row))
+        seed_result(drive, "child", row)
     elif refusal == "conflicting_assignment":
         args["target_root"] = str(a)
     elif refusal == "presence_root":

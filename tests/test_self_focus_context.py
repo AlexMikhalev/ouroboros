@@ -9,6 +9,7 @@ from ouroboros.focus import normalize_focus
 from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY
 from ouroboros.loop_messages import append_context_facts
 from ouroboros.task_results import load_task_result, write_task_result
+from tests._store_shared import read_result, result_signature, unreadable_result
 from tests.test_loop_compaction import _ctx
 from tests.test_main_authored_context import call, main_loop  # noqa: F401
 from tests.test_subscription_main_wait import (  # noqa: F401
@@ -149,25 +150,28 @@ def test_missing_focus_is_optional_and_failed_read_is_visible(tmp_path, monkeypa
     assert "own focus unavailable" in _facts(ctx.messages)
 
 
-def test_unreadable_record_is_not_quarantined_and_recovery_refreshes_same_round(tmp_path):
+def test_unreadable_record_is_not_quarantined_and_recovery_refreshes_same_round(tmp_path, monkeypatch):
     ctx = _ctx(tmp_path)
     ctx.context_fit_plan = None
     _record(tmp_path, "Retain this dated thought")
-    path = tmp_path / "task_results" / "task.json"
-    original = path.read_bytes()
+    original = read_result(tmp_path, "task")
+    signature = result_signature(tmp_path, "task")
     assert append_context_facts(ctx)
     assert "Retain this dated thought" in _facts(ctx.messages)
     before = deepcopy(ctx.messages)
-    path.write_bytes(b"{broken record")
+    outage = unreadable_result(monkeypatch, "task", root=tmp_path)
     assert append_context_facts(ctx)
-    assert path.read_bytes() == b"{broken record"
-    assert not (path.parent / "quarantine").exists()
+    assert not (tmp_path / "task_results" / "quarantine").exists()
     assert "own focus unavailable" in _facts(ctx.messages)
+    assert "Retain this dated thought" not in _facts(ctx.messages)
     assert ctx.messages[:len(before)] == before
     assert not append_context_facts(ctx)
-    path.write_bytes(original)
+    outage["on"] = False
+    assert read_result(tmp_path, "task") == original
+    assert result_signature(tmp_path, "task") == signature
     assert append_context_facts(ctx)
     assert "Retain this dated thought" in _facts(ctx.messages)
+    assert not append_context_facts(ctx)
 
 
 @pytest.mark.parametrize("destination", [MODEL, "openai::gpt-5.6-terra"])

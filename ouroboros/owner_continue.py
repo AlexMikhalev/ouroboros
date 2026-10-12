@@ -44,6 +44,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.utils import utc_now_iso
+from ouroboros.task_store import patch_document
 
 log = logging.getLogger(__name__)
 
@@ -433,9 +434,8 @@ def claim_on_predecessor(drive_root: Any, predecessor_task_id: str, nonce: str,
     turned ineligible refuses. Every refusal writes nothing.
     """
     from ouroboros.task_results import (
-        require_writable_task_result_schema, stamp_task_result_schema, task_result_path,
+        require_writable_task_result_schema, stamp_task_result_schema,
     )
-    from ouroboros.utils import update_json_locked
 
     outcome: Dict[str, Any] = {}
 
@@ -456,17 +456,15 @@ def claim_on_predecessor(drive_root: Any, predecessor_task_id: str, nonce: str,
         outcome.update(claim=claim, created=True)
         return stamp_task_result_schema({**current, "continued_by": claim})
 
-    update_json_locked(task_result_path(pathlib.Path(drive_root), predecessor_task_id), update,
-                       strict_existing_dict=True)
+    patch_document(pathlib.Path(drive_root), predecessor_task_id, update)
     return dict(outcome["claim"]), bool(outcome["created"])
 
 
 def mark_claim_admitted(drive_root: Any, predecessor_task_id: str, nonce: str) -> None:
     """Record on the predecessor that its claimed successor is durably admitted."""
     from ouroboros.task_results import (
-        require_writable_task_result_schema, stamp_task_result_schema, task_result_path,
+        require_writable_task_result_schema, stamp_task_result_schema,
     )
-    from ouroboros.utils import update_json_locked
 
     def update(current: dict) -> Optional[dict]:
         require_writable_task_result_schema(current)
@@ -476,8 +474,7 @@ def mark_claim_admitted(drive_root: Any, predecessor_task_id: str, nonce: str) -
         return stamp_task_result_schema(
             {**current, "continued_by": {**claim, "state": "admitted", "admitted_at": utc_now_iso()}})
 
-    update_json_locked(task_result_path(pathlib.Path(drive_root), predecessor_task_id), update,
-                       strict_existing_dict=True)
+    patch_document(pathlib.Path(drive_root), predecessor_task_id, update)
 
 
 def recorded_continuation(drive_root: Any, predecessor_task_id: str, task_id: str) -> bool:

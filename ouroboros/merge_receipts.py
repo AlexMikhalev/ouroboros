@@ -40,7 +40,8 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros import review_ledger
-from ouroboros.utils import update_json_locked, utc_now_iso
+from ouroboros.utils import utc_now_iso
+from ouroboros.task_store import patch_document
 
 RECEIPTS_KEY = "merge_receipts"
 _RECEIPTS_CAP = 50
@@ -76,7 +77,7 @@ def write_receipt(drive_root: Any, task_id: str, receipt: Dict[str, Any], *, cla
     or regress a settled outcome. Publication updates only its matching source,
     never replay the publisher's earlier fact snapshot. Raises on failure.
     """
-    from ouroboros.task_results import require_writable_task_result_schema, stamp_task_result_schema, task_result_path
+    from ouroboros.task_results import require_writable_task_result_schema, stamp_task_result_schema
 
     selected = {}
 
@@ -128,7 +129,7 @@ def write_receipt(drive_root: Any, task_id: str, receipt: Dict[str, Any], *, cla
         return stamp_task_result_schema({**current, RECEIPTS_KEY: rows,
             **({"launch_handoffs": claims} if "launch_handoffs" in current else {})})
 
-    update_json_locked(task_result_path(drive_root, task_id), _mutate, strict_existing_dict=True)
+    patch_document(drive_root, task_id, _mutate)
     return selected
 
 

@@ -23,6 +23,7 @@ from ouroboros.task_results import load_task_result, write_task_result
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros.utils import atomic_write_json
 from tests.test_presence_authority import _resolution
+from tests._store_shared import unavailable_store
 
 BINDING = "a" * 32
 OTHER = "b" * 32
@@ -140,10 +141,9 @@ def test_running_work_is_listed_by_its_canonical_binding_not_its_queue_claim(tmp
     _work(tmp_path, "running-conflict", "running", binding=OTHER)  # the canonical row: another binding
     _work(tmp_path, "running-mine", "running", key=ROOM)
     _work(tmp_path, "running-requeued", "running", key=THREAD)  # mine, whatever its queue row says
-    # Rows that do not decide leave the queue's own task metadata deciding: a row that
-    # predates provenance, and a row that cannot be read right now.
+    # A row that does not decide (it predates provenance) leaves the queue's own task
+    # metadata deciding; a store that cannot be read at all is the next test's case.
     write_task_result(tmp_path, "running-legacy", "running", delegation_role="root")
-    (tmp_path / "task_results" / "running-torn.json").write_text("{", encoding="utf-8")
     mine = {"delegation_role": "root", "metadata": {"presence": _presence()}}
     _queue(tmp_path, running=[
         {"id": "running-conflict", "description": "their private goal", **mine},
@@ -151,7 +151,6 @@ def test_running_work_is_listed_by_its_canonical_binding_not_its_queue_claim(tmp
         {"id": "running-requeued", "description": "requeued goal", "delegation_role": "root",
          "metadata": {"presence": _presence(OTHER)}},
         {"id": "running-legacy", "description": "legacy goal", **mine},
-        {"id": "running-torn", "description": "torn goal", **mine},
         {"id": "queue-foreign", "description": "queue says theirs", "delegation_role": "root",
          "metadata": {"presence": _presence(OTHER)}},
     ])
@@ -160,8 +159,7 @@ def test_running_work_is_listed_by_its_canonical_binding_not_its_queue_claim(tmp
     page = json.loads(registry.execute("recent_tasks", {"limit": 20}))
 
     assert {row["task_id"]: row["description"] for row in page["running"]} == {
-        "running-mine": "my goal", "running-requeued": "requeued goal", "running-legacy": "legacy goal",
-        "running-torn": "torn goal"}
+        "running-mine": "my goal", "running-requeued": "requeued goal", "running-legacy": "legacy goal"}
     assert "running-conflict" not in json.dumps(page) and "their private goal" not in json.dumps(page)
     owner = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
     owner.set_context(ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="owner-turn"))
@@ -470,41 +468,40 @@ def test_context_lists_own_work_from_other_conversations_after_the_pointer_moved
 
 # --- repair pass: read gaps, effective redirects, unconfirmed promotion, forked roots ----
 
-def test_an_unreadable_result_row_leaves_queued_own_work_listed_and_the_gap_counted(tmp_path):
+def test_an_unavailable_store_leaves_queued_own_work_listed_and_the_gap_named(tmp_path, monkeypatch):
+    """The store answers for every row or for none: while it cannot answer, the queue's own
+    task metadata decides what is listed (own queued work stays, a foreign claim stays out)
+    and the page names the gap instead of claiming absence. The page is read directly: the
+    registry's own pause fence refuses every tool while the store cannot answer."""
     from ouroboros.presence_context import build_presence_context_section
+    from ouroboros.tools.recent_tasks import recent_tasks_page
 
-    task_dir = tmp_path / "task_results"
-    task_dir.mkdir(parents=True)
-    # A torn row of own queued work, a torn row nothing attributes, and a torn row
-    # the queue says is another binding's: only the first is this binding's work.
-    for name in ("queued-torn", "loose-torn", "foreign-torn"):
-        (task_dir / f"{name}.json").write_text("{not json", encoding="utf-8")
-    _work(tmp_path, "readable-queued", "scheduled")
+    _work(tmp_path, "recorded-queued", "scheduled")
     _queue(tmp_path, pending=[
-        {"id": "queued-torn", "delegation_role": "root", "description": "compile the figures",
+        {"id": "queued-only", "delegation_role": "root", "description": "compile the figures",
          "metadata": {"presence": _presence(key=THREAD)}},
-        {"id": "foreign-torn", "delegation_role": "root", "metadata": {"presence": _presence(OTHER)}},
-        {"id": "readable-queued", "delegation_role": "root", "metadata": {"presence": _presence()}},
+        {"id": "foreign-queued", "delegation_role": "root", "metadata": {"presence": _presence(OTHER)}},
+        {"id": "recorded-queued", "delegation_role": "root", "metadata": {"presence": _presence()}},
     ])
     registry, _ctx = _registry(tmp_path)
-
-    page = json.loads(registry.execute("recent_tasks", {"limit": 20}))
+    with monkeypatch.context() as patches:
+        unavailable_store(patches)
+        page = recent_tasks_page(tmp_path, limit=20, binding=BINDING, exclude="presence-turn-1")
+        section = build_presence_context_section(tmp_path, {**_presence(), "instructions": "Be useful."}, "turn-x")
 
     rows = {row["task_id"]: row for row in page["tasks"]}
-    assert set(rows) == {"queued-torn", "readable-queued"}  # the readable row replaced its queue row once
-    assert rows["queued-torn"] == {"task_id": "queued-torn", "status": "pending", "description": "compile the figures",
-                                   "source": "queue_snapshot", "result_row": "unreadable"}
-    assert rows["readable-queued"]["status"] == "scheduled" and "result_row" not in rows["readable-queued"]
-    assert page["read_gap"] == {"unattributed_unreadable_rows": 1}  # foreign-torn is attributed by its queue row
-    section = build_presence_context_section(tmp_path, {**_presence(), "instructions": "Be useful."}, "turn-x")
-    assert "queued-torn [pending, its result row is unreadable]" in section
-    assert "1 row(s) no record attributes; this binding's work may be among them" in section
+    assert set(rows) == {"queued-only", "recorded-queued"}  # the queue decides while no row can be read
+    assert rows["queued-only"] == {"task_id": "queued-only", "status": "pending", "description": "compile the figures",
+                                   "source": "queue_snapshot"}
+    assert rows["recorded-queued"]["source"] == "queue_snapshot"
+    assert page["read_gap"] == {"result_root": "unreadable"}
+    assert "some results are unreadable now: the task store; this binding's work may be among them" in section
 
-    # Nothing torn: no gap is claimed.
-    for name in ("queued-torn", "loose-torn", "foreign-torn"):
-        (task_dir / f"{name}.json").unlink()
+    # The store answers again: the recorded row replaced its queue row once, and no gap is claimed.
     clean = json.loads(registry.execute("recent_tasks", {"limit": 20}))
-    assert "read_gap" not in clean and {row["task_id"] for row in clean["tasks"]} == {"queued-torn", "readable-queued"}
+    rows = {row["task_id"]: row for row in clean["tasks"]}
+    assert "read_gap" not in clean and set(rows) == {"queued-only", "recorded-queued"}
+    assert rows["recorded-queued"]["status"] == "scheduled" and "source" not in rows["recorded-queued"]
 
 
 def test_an_effective_redirect_is_judged_before_projection_and_own_retries_still_read(tmp_path):

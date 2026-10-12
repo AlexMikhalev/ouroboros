@@ -50,6 +50,12 @@ class UsageNonFiniteMoney(UsageAccountingError):
     """Nonfinite monetary evidence: preserve bytes, never quarantine or zero it."""
 
 
+class UsageExportInProgress(UsageAccountingError):
+    """The store carries an export mark (its journal is being written or it was just
+    retired for a switch): a money write is refused typed until the switch completes
+    or the export is abandoned; nothing is lost and nothing is retried here."""
+
+
 class UsageLockUnavailable(UsageAccountingError):
     """A named monetary lock was not acquired: the caller's timeout ran out, or
     the platform refused the lock outright.

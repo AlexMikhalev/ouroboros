@@ -18,6 +18,7 @@ from ouroboros.contracts.task_constraint import normalize_task_constraint, resol
 from ouroboros.project_facts import filter_out_project_store as _filter_out_project_store
 from ouroboros.project_facts import project_store_access_block as _project_store_access_block
 from ouroboros.protected_artifacts import block_reason_for_path
+from ouroboros import store
 from ouroboros.tool_access import (
     ResolvedResourceBinding,
     UserFilesPathBlockedError,
@@ -297,7 +298,13 @@ def _read_source_text(target: pathlib.Path, extent: Optional[Dict[str, Any]]) ->
     text; source_revision names the actual file bytes, including CRLF. Reopening
     only to hash could bind a delivered view to a different concurrent revision.
     """
-    raw = target.read_bytes()
+    try:
+        raw = store.read_file_bytes(target)
+    except FileNotFoundError:
+        from ouroboros.evidence_packs import materialize_path
+        if materialize_path(target) is None:  # a packed checkpoint handle is written back first
+            raise
+        raw = store.read_file_bytes(target)
     content = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
     if extent is not None:
         extent.update(source_revision=hashlib.sha256(raw).hexdigest(), source_bytes=len(raw))
@@ -380,7 +387,11 @@ def _list_dir(root: pathlib.Path, rel: str, max_entries: int = 500) -> List[str]
     # A hard iterdir/permission/race failure PROPAGATES: _list_files renders it
     # as a first-class "⚠️ LIST_FILES_ERROR" tool error, never an ok-shaped JSON
     # listing carrying an error string inside (v6.54.3, review round 3).
-    for entry in sorted(target.iterdir()):
+    from ouroboros.evidence_packs import packed_handle_names_at
+    entries = list(target.iterdir())  # a task's packed checkpoint handles list beside the loose ones
+    present = {entry.name for entry in entries}
+    entries += [target / name for name in packed_handle_names_at(target) if name not in present]
+    for entry in sorted(entries):
         if len(items) >= max_entries:
             items.append(f"...(truncated at {max_entries})")
             break

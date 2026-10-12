@@ -175,6 +175,32 @@ def authority_state(drive_root: Any, task_id: str, state: Dict[str, Any]) -> Dic
     ]}
 
 
+def plan_review_source_gap(task_id: Any, exc: BaseException, *, source: Optional[dict] = None) -> dict:
+    """The one named gap for recorded plan/review authority a reader could not resolve."""
+    return {"status": "authority_source_unavailable", "code": "PLAN_REVIEW_SOURCE_UNAVAILABLE",
+            "task_id": str(task_id or ""), "error": type(exc).__name__,
+            "rule": "Do not treat this plan/review authority as complete.",
+            **({"source": source} if source else {})}
+
+
+def projected_authority_state(drive_root: Any, task_id: str, state: Dict[str, Any], *,
+                              promotion: Any = None) -> tuple[Dict[str, Any], Optional[dict]]:
+    """Read projection of a row's plan authority: an unreadable source is a named gap.
+
+    Deciders (acceptance, replay, collection, disposition) keep the strict
+    ``authority_state``. A legacy retention gap is re-addressed IN MEMORY from the
+    row's own promotion facts first; nothing is written. Any failure (the dialogue
+    read raises its reader's error unwrapped) returns the recorded state unresolved
+    plus the gap.
+    """
+    from ouroboros.observability import restore_recorded_task_source_gaps
+
+    try:
+        return authority_state(drive_root, task_id, restore_recorded_task_source_gaps(state, promotion, task_id)), None
+    except Exception as exc:
+        return state, plan_review_source_gap(task_id, exc)
+
+
 DISPUTE_HISTORY_RULE = (
     "Historical findings, recommendations and author answers belong to their recorded subjects. "
     "An author's rejection or closure is not reviewer agreement. Only the recorded reviewer "

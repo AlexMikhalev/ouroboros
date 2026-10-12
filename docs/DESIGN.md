@@ -196,7 +196,7 @@ configured-value placeholder is never a successful reveal. Hide removes that
 text and retains the draft. Viewing changes neither the dirty state nor the
 values submitted by Save or Test. Editing, clearing, reloading or leaving the
 page closes the reveal, and a late read cannot reopen it. Built-in, custom,
-skill-requested and MCP token fields use the same interaction; loading Settings
+skill-requested and MCP header fields use the same interaction; loading Settings
 keeps saved secrets masked. Pending reads and failures are shown at the field.
 
 A segmented choice row gives every choice the same width. Up to four fill their
@@ -232,14 +232,15 @@ focus stays in the modal context and returns on close when the caller remains
 available. Popups sit outside decorative clipping and fit the usable viewport.
 
 A **message field** — the Main and Project composer, a question's own answer —
-sends with Enter. The key presses that field's own Send action, so the action's
-validation, disabled and pending state decide what is sent, and a message is
-sent once. Shift+Enter inserts a line break; Ctrl, Cmd or Alt with Enter send
-like Enter. An Enter that commits an input-method composition sends nothing, a
-held Enter sends once, and an empty, disabled, read-only or settled field sends
-nothing; a rejected answer keeps its draft. The field requests a Send label
-from touch keyboards; native keyboard support varies. Every other multiline field — file editors, JSON, settings and
-widget forms — keeps Enter as a line break.
+sends with Enter by pressing its own Send action, whose validation, disabled
+and pending state decide what is sent; a message is sent once. Shift+Enter
+breaks the line; Ctrl, Cmd or Alt with Enter send like Enter. Enter sends
+nothing when it commits an input-method composition or the field is empty,
+disabled, read-only or settled, and once when held; a rejected answer keeps
+its draft. The composer grows with its text or placeholder to one cap, then
+scrolls. Touch keyboards are asked for a Send label; support varies. Every
+other multiline field — file editors, JSON, settings and widget forms — keeps
+Enter as a line break.
 
 ### Composer owner controls
 
@@ -613,16 +614,26 @@ therefore about intents.
 
 ### Chat authorship and System rows
 
-Voice follows authorship, not severity or the transport that delivered the text.
-Model-authored replies use Ouroboros's assistant voice; host-composed commands,
-receipts and diagnostics use System voice. A **System row** is a chat message
-with `role="system"`, rendered with the existing yellow/amber system treatment,
-or its existing task-card placement. `role` alone selects voice; `system_type`
-names the kind, not the author (two documented presentations of a System pointer row show
-model-authored bytes in Ouroboros's voice: the Project question mirror and the Project
-completion mirror). New host producers stamp both fields. Relays
-preserve them through live delivery, persistence and history. Model narration,
-proactive replies and questions remain model-authored even when typed.
+Voice follows authorship, not severity or transport. Model-authored replies use
+Ouroboros's assistant voice; host-composed commands, receipts and diagnostics use
+System voice. A **System row** is a chat message with `role="system"`, in the
+yellow/amber system treatment or its task-card placement. `role` alone selects
+voice; `system_type` names the kind, not the author (the Project question and
+completion mirrors are System pointer rows showing model-authored bytes in
+Ouroboros's voice). New host producers stamp both fields; relays keep them through
+delivery, persistence and history. Model narration, proactive replies and
+questions stay model-authored even when typed.
+
+A host fact has a subject, and the subject names its carrier: a task's fact is a
+row of its card, a fact about the owner's message is the typed annotation on that
+message, and a landed act publishes no row (its receipt or card already says it).
+A standalone System row exists only where nothing else can carry the fact: no mind
+can speak, no mind will read the message, the owner's own direct act, the
+runtime's state, Main's Project lifecycle, or words signed by their author (a
+reminder, a skill notice). It is one short typed mark in owner words, never a
+paragraph or text written for a model. `tests/test_host_message_voice.py` keeps
+every host type stamped as a literal at its send site in one of these classes, with
+its counted producer sites.
 
 Language follows the same line. The install's interface language
 (`OUROBOROS_UI_LANGUAGE`, Settings → Appearance → Language) translates chrome and
@@ -1174,6 +1185,13 @@ file (owner choice 1C/2A/3A/4A/5A/6A with mobile first-class).
   bridge says so; a copied link is a fallback, never reported as opened.
   The photo's Copy to clipboard puts the image itself there or says it could
   not (Open in new tab and Download stay); it never copies an address instead.
+- **Handing a file to a task adds nothing on success:** it arrives in the task's
+  own message. A file the host could not attach is named in one wrapping line
+  right under the owner's words ("Not attached to the task: …", from the routing
+  receipt, live and on replay, never folded away in Main), and Telegram gets the
+  same line. A new turn whose every file was refused is the System mark "Not
+  started: the attachments could not be staged (N files)"; one that starts with
+  only some of them says so in its own words.
 - **The same view everywhere:** the sender's bubble, another tab and the replay
   after reload or restart render the one server view of each attachment. The
   stored text still names the files for the model; only the exact tail the web
@@ -1629,14 +1647,12 @@ has migrated. Migrated today:
 - `web/settings.css` (settings shell, model/effort cards, MCP cards)
 - `web/onboarding.css` (the whole first-run wizard)
 - `web/model_roles.css` (shared role editor)
-- `web/style.css` between the `design-system:migrated-begin` and
-  `design-system:migrated-end` marker pairs (several — migrated surfaces are
-  not contiguous in the file): harness accounts, the
-  Dashboard → Updates tab (status card, one action row, collapsed Recovery
-  with a single restore list), and chat (typography, foreground and status
-  colour; component geometry keeps its local literals per the viewport
-  reserve contract, while the shared palette channels keep translucent glass
-  surfaces coherent across themes)
+- `web/style.css` regions paired by `design-system:migrated-begin` /
+  `design-system:migrated-end`: harness accounts; Dashboard → Updates (status
+  card, one action row, collapsed Recovery with one restore list) and Storage;
+  chat typography, foreground and status colour. Chat geometry retains local
+  literals per the viewport reserve contract; shared palette channels keep
+  translucent glass coherent across themes.
 - the global `.muted`, `.form-section h3` and shared `.ui-status` tone rules
 
 The remaining page-specific typography in skills, marketplace, widgets, logs

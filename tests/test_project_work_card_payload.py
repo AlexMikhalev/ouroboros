@@ -58,7 +58,7 @@ def test_live_census_keeps_known_outcome_separate_from_open_finalization(tmp_pat
 
 
 def test_census_result_memo_refreshes_without_inventing_a_missing_outcome(tmp_path, activity_queue, monkeypatch):
-    from ouroboros import utils
+    from ouroboros import task_store
 
     activity_queue.RUNNING["root"] = {"task": {"id": "root", "chat_id": 1}, "started_at": 1}
     initial = gateway_state._chat_activities_snapshot_safe(tmp_path, direct_turns=[])[0]
@@ -67,21 +67,21 @@ def test_census_result_memo_refreshes_without_inventing_a_missing_outcome(tmp_pa
     write_task_result(tmp_path, "root", "running")
     assert gateway_state._task_activity_facts(tmp_path, "root")["display"]["status"] == "running"
 
-    original = utils.read_json_dict
+    original = task_store.read_document
     reads = []
 
-    def counted(path):
-        reads.append(path)
-        return original(path)
+    def counted(root, task_id):
+        reads.append(str(task_id))
+        return original(root, task_id)
 
-    monkeypatch.setattr(utils, "read_json_dict", counted)
+    monkeypatch.setattr(task_store, "read_document", counted)  # the memo's body read
     gateway_state._task_activity_facts(tmp_path, "root")
-    assert reads == []
+    assert reads == []  # unchanged signature: no body read
     write_task_result(tmp_path, "root", "failed", root_phase_checkpoint={"post_task_synthesis": "running"})
     reads.clear()
     row = gateway_state._chat_activities_snapshot_safe(tmp_path, direct_turns=[])[0]
     assert row["status"] == "failed" and row["phase"] == "finalizing"
-    assert len([path for path in reads if path.name == "root.json"]) == 1
+    assert reads.count("root") == 1
 
 
 def test_active_successor_exposes_explicit_retry_link_before_result_publication(tmp_path, activity_queue):

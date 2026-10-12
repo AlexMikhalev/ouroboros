@@ -6,7 +6,7 @@
 // buttons and the agent's tool mean exactly the same thing. Skill rows retain an
 // owner override in the existing schedule store, so a lifecycle resync cannot undo it.
 
-import { fetchJson } from './api_client.js';
+import { fetchJson, isStoreMigrating } from './api_client.js';
 import { setInlineStatus } from './ui_helpers.js';
 import { openConfirmDialog } from './confirm_dialog.js';
 import { taskCancelPending } from './log_events.js';
@@ -205,6 +205,7 @@ export function initActivity({ mount, ws } = {}) {
     if (!mount) return { refresh: () => {} };
     let busy = false;
     let refreshRevision = 0;
+    let migrationTimer = null, destroyed = false;
     // Remembered across re-renders: the owner's retained-history disclosure state.
     let historyOpen = false;
     mount.innerHTML = `<div class="activity-scroll">
@@ -371,6 +372,8 @@ export function initActivity({ mount, ws } = {}) {
     }
 
     async function refresh() {
+        if (destroyed) return;
+        clearTimeout(migrationTimer); migrationTimer = null;
         const revision = ++refreshRevision;
         rememberDisclosure();
         const focused = focusedControl();
@@ -386,7 +389,7 @@ export function initActivity({ mount, ws } = {}) {
             getJson('/api/state'),
             getJson('/api/schedules'),
         ]);
-        if (revision !== refreshRevision) return;
+        if (destroyed || revision !== refreshRevision) return;
         // A request can take long enough for the owner to move focus elsewhere.
         // Only restore the original control when it is still the active owner;
         // if this render detaches it, activeElement is still the original node
@@ -408,7 +411,12 @@ export function initActivity({ mount, ws } = {}) {
                 content.innerHTML = renderers[index](result.value);
                 section.loaded = true;
                 setInlineStatus(status, '');
-            } catch {
+            } catch (error) {
+                if (isStoreMigrating(error)) {
+                    setInlineStatus(status, 'Saved tasks are being upgraded…');
+                    migrationTimer ??= setTimeout(refresh, 700);
+                    return;
+                }
                 setInlineStatus(status, section.loaded
                     ? 'Could not refresh. Previously loaded values shown; current state is unknown. Reopen Activity to try again.'
                     : 'Could not load. Current state is unknown. Reopen Activity to try again.', 'error');
@@ -537,9 +545,14 @@ export function initActivity({ mount, ws } = {}) {
         }
     });
 
-    window.addEventListener('ouro:dashboard-subtab-shown', (event) => {
+    const shown = (event) => {
         if (event?.detail?.tab === 'activity') refresh();
-    });
+    };
+    window.addEventListener('ouro:dashboard-subtab-shown', shown);
 
-    return { refresh };
+    return { refresh, destroy() {
+        destroyed = true;
+        clearTimeout(migrationTimer);
+        window.removeEventListener('ouro:dashboard-subtab-shown', shown);
+    } };
 }

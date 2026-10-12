@@ -162,7 +162,7 @@ def _retain_named_sources(request: Any, source: pathlib.Path, custody: pathlib.P
     from ouroboros.artifacts import (collect_task_artifact_records, copy_artifact_file, read_actor_source_bytes, store_actor_source_bytes,
                                     stream_artifact_file, task_artifact_dir_path)
     from ouroboros.outcome_receipt_store import publish_verification_receipt_union, verification_receipts_path
-    from ouroboros.task_results import load_task_result, task_result_path
+    from ouroboros.task_results import load_task_result
 
     task_id, rows = request.task_id, []
     base = task_artifact_dir_path(source, task_id)
@@ -242,7 +242,7 @@ def _retain_named_sources(request: Any, source: pathlib.Path, custody: pathlib.P
     # both explicit producer roots before copying into the private reader root.
     result = retain_review_refs(bind_artifacts(result), source, canonical, task_id, carrier='task_result')
     result = retain_review_refs(result, canonical, custody, task_id, carrier='task_result')
-    retain('task-result', task_result_path(source, task_id), json.dumps(result, ensure_ascii=False).encode())
+    retain('task-result', f'task:{task_id}', json.dumps(result, ensure_ascii=False).encode())
     request.evidence = bind_artifacts(request.evidence)
     retain('artifact-inventory', base, json.dumps({'task_id': task_id, 'artifacts': [
         row for row in rows if row['name'].startswith('artifact:')]}, ensure_ascii=False).encode())
@@ -283,6 +283,8 @@ def _reader_bindings(value: Any, root: pathlib.Path, task_id: str) -> list[dict]
     def visit(item, owner, carrier='request'):
         if isinstance(item, dict):
             if item.get('kind') == 'task_source':
+                if not item.get('path'):
+                    return  # a path-less legacy gap names no address to bind; it states its own loss
                 path = task_artifact_dir_path(root, owner) / item['path']
                 rows[(owner, str(path))] = {'owner_task_id': owner, 'source_path': item['path'],
                     'sha256': item['sha256'], 'size': item['size'],

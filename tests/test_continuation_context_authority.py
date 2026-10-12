@@ -484,3 +484,130 @@ def test_context_overflow_skips_cross_model_and_forced_provider_calls(tmp_path, 
     assert usage["_last_llm_error_kind"] == "context_overflow"
     outcome = derive_loop_outcome(result, usage, trace)
     assert outcome["failure"]["error_kind"] == "context_overflow"
+
+
+_PLAN_GAP_RULE = "Do not treat this plan/review authority as complete."
+
+
+def _pull_source(task_id: str) -> dict:
+    """The exact host-issued predecessor pointer a Continue startup accepts."""
+    return {"kind": "task_result", "task_id": task_id, "tool": "get_task_result",
+            "arguments": {"task_id": task_id, "include_authority": True}}
+
+
+def _plan_predecessor(root, task_id: str, damage: str) -> dict:
+    """A failed predecessor whose plan the real writer recorded, then damaged as named."""
+    from ouroboros import artifacts
+    from ouroboros.task_results import write_task_result
+    from tests.test_task_source_carrier_identity import _legacy_damage, _promotion, _record_plan
+
+    spec, plan = _record_plan(root, task_id)
+    wave, fields = plan["waves"][-1], {}
+    if damage == "spec_missing":
+        (artifacts.task_artifact_dir_path(root, task_id) / wave["spec_source_ref"]["path"]).unlink()
+    elif damage == "dialogue_missing":  # read after the spec, unwrapped: a raw OSError
+        wave["dialogue_source_ref"] = {"kind": "task_source", "root": "artifact_store", "size": 1, "sha256": "0" * 64,
+                                       "path": "source_handles/context_checkpoints/plan-dialogue-gone.jsonl"}
+        fields["plan_review_state"] = plan
+    else:  # the Quotas row: path-less placeholders, each path kept in a fact, the bytes intact
+        damaged, facts = _legacy_damage(plan, task_id)
+        fields.update(plan_review_state=damaged, child_ref_promotion=_promotion("complete", facts, []))
+    write_task_result(root, task_id, "failed", result="Provider unavailable.", reason_code="provider_unavailable",
+                      task_contract={"objective": "Build the tower"}, **fields)
+    return spec
+
+
+@pytest.mark.parametrize("damage", ["spec_missing", "dialogue_missing", "legacy_gap"])
+def test_continue_carries_an_unreadable_predecessor_plan_as_a_named_gap_through_every_projection(tmp_path, damage):
+    """Startup -> bounded envelope -> root Runtime context -> helper briefs -> get_task_result."""
+    from ouroboros.agent_startup_checks import validate_task_authority_sources
+    from ouroboros.context import build_llm_messages
+    from ouroboros.main_context_authority import project_helper_predecessor_authority
+    from ouroboros.task_results import load_plan_review_state, task_result_path
+    from ouroboros.tools.control import _get_task_result
+    from ouroboros.tools.plan_review_artifacts import PlanReviewSourceUnavailable
+    from ouroboros.tools.registry import ToolContext
+    from tests.test_doc_context import _make_env_and_memory
+
+    env, memory = _make_env_and_memory(tmp_path)
+    root, predecessor = env.drive_root, "plan-predecessor"
+    spec = _plan_predecessor(root, predecessor, damage)
+    row_bytes = task_result_path(root, predecessor).read_bytes()
+    task = {"id": "plan-successor", "type": "task", "text": "continue", "budget_drive_root": str(root),
+            "predecessor_authority_source": _pull_source(predecessor)}
+
+    assert validate_task_authority_sources(env, task) == {}  # the successor starts and decides
+
+    error = {"spec_missing": "PlanReviewSourceUnavailable", "dialogue_missing": "FileNotFoundError"}.get(damage)
+    gap = error and {"status": "authority_source_unavailable", "code": "PLAN_REVIEW_SOURCE_UNAVAILABLE",
+                     "task_id": predecessor, "error": error, "rule": _PLAN_GAP_RULE}
+    envelope = task["predecessor_authority"]
+    assert envelope.get("plan_review_source_gap") == gap
+    if not gap:  # the recorded address was restored in memory and the operative spec read whole
+        assert envelope["plan_review_state"]["decision_core"]["goal"] == spec["goal"]
+    rendered = json.dumps(build_llm_messages(env=env, memory=memory, task=task)[0], ensure_ascii=False)
+    assert ("plan_review_source_gap" in rendered and _PLAN_GAP_RULE in rendered) == bool(gap)
+    for declared in (False, True):
+        brief = project_helper_predecessor_authority(envelope, declared=declared)
+        assert brief.get("plan_review_source_gap") == gap
+        assert project_helper_predecessor_authority(brief, declared=declared) == brief
+    ctx = ToolContext(repo_dir=env.repo_dir, drive_root=root)
+    for flag, independent in (("include_authority", "authority"), ("include_work_order_source", "work_order_source"),
+                              ("include_completion_source", "completion_source"),
+                              ("include_focus_source", "focus_source")):
+        payload = json.loads(_get_task_result(ctx, predecessor, **{flag: True}))
+        assert payload["status"] == "available" and independent in payload
+        assert payload["authority"].get("plan_review_source_gap") == gap
+    with pytest.raises((PlanReviewSourceUnavailable, OSError)):
+        load_plan_review_state(root, predecessor)  # deciders stay strict
+    assert task_result_path(root, predecessor).read_bytes() == row_bytes  # reading wrote nothing
+
+
+def test_a_named_predecessor_whose_row_reads_back_empty_refuses_the_start(tmp_path):
+    from ouroboros.agent_startup_checks import validate_task_authority_sources
+    from tests.test_doc_context import _make_env_and_memory
+
+    env, _memory = _make_env_and_memory(tmp_path)
+    task = {"id": "next", "type": "task", "text": "continue", "predecessor_authority_source": _pull_source("never-written")}
+
+    refusal = validate_task_authority_sources(env, task)
+
+    assert refusal["reason_code"] == "authority_source_unavailable"
+    assert refusal["detail"] == "named predecessor task result is missing or unreadable"
+    assert refusal["source"]["task_id"] == "never-written" and "predecessor_authority" not in task
+
+
+def test_the_current_tasks_own_unreadable_plan_source_still_refuses_typed(tmp_path):
+    """Owner answer 2A: only a predecessor's plan becomes a gap; the task's own plan still refuses."""
+    from ouroboros import artifacts
+    from ouroboros.agent_startup_checks import validate_task_authority_sources
+    from tests.test_doc_context import _make_env_and_memory
+    from tests.test_task_source_carrier_identity import _record_plan
+
+    env, _memory = _make_env_and_memory(tmp_path)
+    _spec, plan = _record_plan(env.drive_root, "own-plan")
+    (artifacts.task_artifact_dir_path(env.drive_root, "own-plan") / plan["waves"][-1]["spec_source_ref"]["path"]).unlink()
+
+    refusal = validate_task_authority_sources(env, {"id": "own-plan", "title": "Cat plan", "text": "continue"})
+
+    assert refusal["reason_code"] == "authority_source_unavailable"
+    assert refusal["source"]["kind"] == "plan_review_state" and refusal["human_label"] == "Cat plan"
+
+
+def test_the_runtime_gap_of_the_current_tasks_plan_comes_from_the_same_constructor(tmp_path):
+    """context.py and the predecessor projection share one gap: one shape, one rule text."""
+    from ouroboros import artifacts
+    from ouroboros.context import _task_authority_projection, build_llm_messages
+    from tests.test_doc_context import _make_env_and_memory
+    from tests.test_task_source_carrier_identity import _record_plan
+
+    env, memory = _make_env_and_memory(tmp_path)
+    _spec, plan = _record_plan(env.drive_root, "own-plan")
+    (artifacts.task_artifact_dir_path(env.drive_root, "own-plan") / plan["waves"][-1]["spec_source_ref"]["path"]).unlink()
+    task = {"id": "own-plan", "type": "task", "text": "continue"}
+
+    assert _task_authority_projection(env, task)["plan_review_authority"] == {
+        "status": "authority_source_unavailable", "code": "PLAN_REVIEW_SOURCE_UNAVAILABLE", "task_id": "own-plan",
+        "error": "PlanReviewSourceUnavailable", "rule": _PLAN_GAP_RULE,
+        "source": {"tool": "get_task_result", "arguments": {"task_id": "own-plan", "include_authority": True}}}
+    assert _PLAN_GAP_RULE in json.dumps(build_llm_messages(env=env, memory=memory, task=task)[0], ensure_ascii=False)

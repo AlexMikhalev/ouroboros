@@ -67,6 +67,7 @@ def test_tool_descriptor_owner_facades_preserve_identity():
         ("project_id", ""),
         ("task_metadata", "factory:dict"),
         ("last_owner_delivery", None),
+        ("unconfirmed_routing_acts", "factory:list"),
         ("executor_ref", "factory:dict"),
         ("pending_events", "factory:list"),
         ("current_chat_id", None),

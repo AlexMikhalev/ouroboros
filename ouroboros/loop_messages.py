@@ -698,6 +698,7 @@ def _own_focus_fact(ctx: Any) -> Tuple[str, str]:
     result once per preparation; no history scan, second store or focus clock.
     """
     from ouroboros.focus import compact_focus, focus_fingerprint
+    from ouroboros.store import StoreError
     from ouroboros.task_results import load_task_result
 
     tool_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
@@ -715,7 +716,7 @@ def _own_focus_fact(ctx: Any) -> Tuple[str, str]:
         focus = compact_focus(raw)
         if focus is None:
             return "unknown", "own focus unavailable"
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, StoreError):
         log.debug("Cannot read this task's authored focus", exc_info=True)
         return "unknown", "own focus unavailable"
     if focus["author_task_id"] != task_id:

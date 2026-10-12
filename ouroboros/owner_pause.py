@@ -45,6 +45,8 @@ import time
 import uuid
 from typing import Any, Dict, Optional, Tuple
 
+from ouroboros.store import StoreError
+
 log = logging.getLogger(__name__)
 
 _TOOL_OPERATION = ContextVar("owner_pause_tool_operation", default=None)
@@ -81,43 +83,49 @@ _CACHE_LOCK = threading.Lock()
 _CACHE: Dict[str, Tuple[Tuple[int, int, int], Dict[str, Any]]] = {}
 
 
-def _result_path(root_drive: Any, root_task_id: str) -> pathlib.Path:
-    from ouroboros.task_results import task_result_path
+def _lock_path(root_drive: Any, root_task_id: str) -> pathlib.Path:
+    from ouroboros.task_results import task_results_dir
 
-    return task_result_path(pathlib.Path(root_drive), str(root_task_id), create=False)
+    return task_results_dir(pathlib.Path(root_drive), create=True) / f"{root_task_id}.launch.lock"
 
 
 def read_fence(root_drive: Any, root_task_id: str) -> Dict[str, Any]:
     """The root's current ``owner_pause`` projection (``{}`` when none).
 
-    Cached on the file's identity (inode, size, mtime): writers replace the
-    file atomically, so an unchanged identity is an unchanged projection and
-    the launch gate costs one ``stat`` on the hot path. An unreadable root
-    result raises: an unknown fence is never read as an open one.
+    Cached on the row's write signature: an unchanged signature is an unchanged
+    projection and the launch gate costs one indexed read on the hot path. An
+    unreadable root result raises: an unknown fence is never read as an open one.
     """
+    from ouroboros.task_store import signature
+
     root_task_id = str(root_task_id or "").strip()
     if not root_task_id or root_drive in (None, ""):
         return {}
-    path = _result_path(root_drive, root_task_id)
-    key = str(path)
+    key = f"{root_drive}:{root_task_id}"
     try:
-        stat = os.stat(path)
-    except FileNotFoundError:
-        quarantine = path.parent / "quarantine"
+        stamp = signature(root_drive, root_task_id)
+    except StoreError as exc:
+        raise ValueError("owner_pause_authority_unreadable") from exc  # the store could not answer: unknown, never open
+    if stamp is None:
+        from ouroboros.task_result_schema import TASK_RESULT_QUARANTINE_DIR
+        from ouroboros.task_results import task_results_dir
+
+        quarantine = task_results_dir(pathlib.Path(root_drive), create=False) / TASK_RESULT_QUARANTINE_DIR
         with _CACHE_LOCK:
             prior = _CACHE.get(key)
-        if (prior or (quarantine / path.name).exists()
-                or any(quarantine.glob(f"{root_task_id}.*.json"))):
-            raise ValueError("owner_pause_authority_missing")
+        if prior or (quarantine / f"{root_task_id}.json").exists() or any(quarantine.glob(f"{root_task_id}.*.json")):
+            raise ValueError("owner_pause_authority_missing")  # a row that was, or was refused: never an open fence
         return {}
-    stamp = (int(stat.st_ino), int(stat.st_size), int(stat.st_mtime_ns))
     with _CACHE_LOCK:
         cached = _CACHE.get(key)
         if cached is not None and cached[0] == stamp:
             return dict(cached[1])
     from ouroboros.task_results import load_task_result
 
-    row = load_task_result(pathlib.Path(root_drive), root_task_id, strict=True) or {}
+    try:
+        row = load_task_result(pathlib.Path(root_drive), root_task_id, strict=True) or {}
+    except StoreError as exc:
+        raise ValueError("owner_pause_authority_unreadable") from exc
     fence = row.get("owner_pause") or {}
     if not isinstance(fence, dict) or (fence and fence.get("state") not in
                                        {FENCE_REQUESTED, FENCE_PAUSED, FENCE_RELEASED}):
@@ -167,10 +175,10 @@ def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
     """
     from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
     from ouroboros.task_results import (
-        _TRULY_TERMINAL_STATUSES, require_writable_task_result_schema,
-        stamp_task_result_schema, task_result_path,
+        _TRULY_TERMINAL_STATUSES, require_writable_task_result_schema, stamp_task_result_schema,
     )
-    from ouroboros.utils import update_json_locked, utc_now_iso
+    from ouroboros.task_store import patch_document
+    from ouroboros.utils import utc_now_iso
 
     outcome: Dict[str, Any] = {}
 
@@ -215,8 +223,7 @@ def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
         return stamp_task_result_schema({**current, "owner_pause": fence})
 
     with launch_lock(root_drive, root_task_id):
-        update_json_locked(task_result_path(pathlib.Path(root_drive), str(root_task_id)), update,
-                           strict_existing_dict=True)
+        patch_document(pathlib.Path(root_drive), str(root_task_id), update)
     return dict(outcome["fence"]), bool(outcome["created"])
 
 
@@ -228,7 +235,7 @@ def set_fence_state(root_drive: Any, root_task_id: str, *, fence_id: str, state:
     released this same fence after that read refuses a stale write here.
     """
     from ouroboros.task_results import (
-        require_writable_task_result_schema, stamp_task_result_schema, task_result_path,
+        require_writable_task_result_schema, stamp_task_result_schema,
     )
     from ouroboros.utils import utc_now_iso
 
@@ -251,9 +258,8 @@ def set_fence_state(root_drive: Any, root_task_id: str, *, fence_id: str, state:
                   if state == FENCE_PAUSED and old.get("state") != FENCE_PAUSED else {})
         return stamp_task_result_schema({**current, **notice, "owner_pause": fence})
 
-    from ouroboros.obligations import update_result
-    update_result(task_result_path(pathlib.Path(root_drive), str(root_task_id)), update,
-                  strict_existing_dict=True)
+    from ouroboros.task_store import patch_document
+    patch_document(pathlib.Path(root_drive), str(root_task_id), update)
     return dict(written)
 
 
@@ -379,7 +385,8 @@ def member_fence(source: Any) -> Dict[str, Any]:
         owner = current_model_wait()
         required = getattr(source, "task_lifecycle_bound", False) or (
             owner is not None and owner.task_id == _task_id)
-        if required and not _result_path(root_drive, root_task_id).is_file():
+        from ouroboros.task_store import exists
+        if required and not exists(root_drive, root_task_id):
             raise ValueError("owner_pause_authority_missing")
         fence = read_fence(root_drive, root_task_id)
     except Exception:
@@ -472,7 +479,7 @@ def launch_lock(root_drive: Any, root_task_id: str, *, wait: bool = True):
     if not root_drive or not root_task_id:
         yield
         return
-    path = _result_path(root_drive, root_task_id).with_suffix(".launch.lock")
+    path = _lock_path(root_drive, root_task_id)
     fd = acquire_exclusive_file_lock(path, owner_aware_stale=True,
                                      **({} if wait else {"timeout_sec": 0.0}))
     if fd is None:
@@ -551,24 +558,19 @@ def launch_admission(source: Any, *, root_resume: Optional[Dict[str, Any]] = Non
 def tree_member_results(root_drive: Any, root_task_id: str) -> Dict[str, Dict[str, Any]]:
     """Select complete retained membership, then strictly read its authority.
 
-    Reuse the stat-invalidated lineage memo: unchanged foreign bodies are not
-    parsed on every Pause tick. Unreadable or inadmissible facts refuse the
-    census. Rows without a top-level root still need their legacy metadata read.
-    The memo selects files only; it never supplies live status or custody.
+    The typed ``root_task_id`` column selects the tree without reading a body; rows
+    without a top-level root still need their legacy metadata read. An unavailable
+    store refuses the census. Selection never supplies live status or custody.
     """
-    from ouroboros.task_result_facts import raw_result_facts
-    from ouroboros.task_results import load_task_result, task_results_dir
+    from ouroboros.task_results import load_task_result
+    from ouroboros.task_store import task_facts
 
-    facts, malformed = raw_result_facts(task_results_dir(root_drive, create=False))
-    if malformed:
-        raise ValueError("tree_membership_unreadable")
+    try:
+        facts = task_facts(root_drive, where="root_task_id=? OR root_task_id IS NULL", params=(root_task_id,))
+    except StoreError as exc:
+        raise ValueError("tree_membership_unreadable") from exc
     members = {}
-    for name, fact in facts.items():
-        task_id = pathlib.Path(name).stem
-        if fact.get("schema_refusal") or fact.get("task_id") != task_id:
-            raise ValueError("tree_membership_unreadable")
-        if fact.get("root_task_id") and fact["root_task_id"] != root_task_id:
-            continue
+    for task_id in facts:
         row = load_task_result(root_drive, task_id, strict=True)
         if row is None:
             raise ValueError("tree_member_disappeared")
@@ -586,27 +588,22 @@ def tool_handoff(source: Any, name: str):
     Pending host receipts and independently owned executors remain custody;
     neither a result code nor metadata can certify their completion.
     """
-    from ouroboros.task_results import stamp_task_result_schema
-    from ouroboros.utils import update_json_locked, utc_now_iso
+    from ouroboros.task_store import DELETE_ROW, exists, patch_handoff
+    from ouroboros.utils import utc_now_iso
 
     outcome: Dict[str, Any] = {"not_started": True}
     root_drive, root_id, task_id = _member_coordinates(source)
     if not root_drive or not task_id:
         yield outcome
         return
-    path = _result_path(root_drive, task_id)
+    holder = task_id
     op_id = uuid.uuid4().hex
     outcome["operation_id"] = op_id
-    outcome["claim_path"] = path
+    outcome["claim_root"], outcome["claim_task"] = root_drive, holder
     token = _TOOL_OPERATION.set((source, name, outcome))
-    def claim(current):
-        if not current.get("status") or current.get("task_id") != path.stem:
-            raise OwnerPauseRefused("owner_pause_authority_unreadable")
-        outstanding = dict(current.get("launch_handoffs") or {})
-        outstanding[op_id] = {"tool": name, "task_id": task_id, "root_task_id": root_id,
-                              "state": "claimed", "claimed_at": utc_now_iso(),
-                              **({"local_owner": local_owner} if local_owner else {})}
-        return stamp_task_result_schema({**current, "launch_handoffs": outstanding})
+    def claim(_current):  # the claim is one `launch_handoffs` row of the holder, never a body write
+        return {"tool": name, "task_id": task_id, "root_task_id": root_id, "state": "claimed",
+                "claimed_at": utc_now_iso(), **({"local_owner": local_owner} if local_owner else {})}
     from ouroboros.model_wait import current_model_wait
     owner = current_model_wait()
     local_owner = ({"pid": os.getpid(), "process_birth": owner.answer_owner_birth,
@@ -629,30 +626,26 @@ def tool_handoff(source: Any, name: str):
             # A standalone tool context is not a lifecycle producer. Never
             # manufacture a status-less result that the next strict read must
             # refuse. A not-yet-published member uses its existing root owner.
-            if not path.exists():
-                path = _result_path(root_drive, root_id)
-                outcome["claim_path"] = path
-            if path.exists():
-                update_json_locked(path, claim, strict_existing_dict=True)
+            if not exists(root_drive, holder):
+                holder = root_id
+                outcome["claim_task"] = holder
+            if exists(root_drive, holder):
+                try:
+                    patch_handoff(root_drive, holder, "launch_handoffs", op_id, claim)
+                except LookupError as exc:  # a row without a lifecycle status is no authority
+                    raise OwnerPauseRefused("owner_pause_authority_unreadable") from exc
                 claimed = True
             elif getattr(source, "task_lifecycle_bound", None) is not False:
                 raise OwnerPauseRefused("owner_pause_authority_unreadable")
         yield outcome
     finally:
         _TOOL_OPERATION.reset(token)
-        def settle(current):
-            if not current.get("status") or current.get("task_id") != path.stem:
-                raise OwnerPauseRefused("owner_pause_authority_unreadable")
-            outstanding = dict(current.get("launch_handoffs") or {})
-            claim = outstanding.get(op_id)
-            if claim is not None:
-                claim = {**claim, "state": "returned", "returned_at": utc_now_iso()}
-                from ouroboros.tool_custody import claim_still_owns_effect
-                if claim_still_owns_effect(root_drive, claim):
-                    outstanding[op_id] = claim
-                else:
-                    outstanding.pop(op_id, None)
-            return stamp_task_result_schema({**current, "launch_handoffs": outstanding})
+        def settle(claim):
+            if claim is None:
+                return None
+            claim = {**claim, "state": "returned", "returned_at": utc_now_iso()}
+            from ouroboros.tool_custody import claim_still_owns_effect
+            return claim if claim_still_owns_effect(root_drive, claim) else DELETE_ROW
         # Close local admission even if durable cleanup cannot acquire its lock.
         # Failure retains custody; it must not replace an executed result with
         # a false NOT STARTED answer. Settlement still serializes with starts.
@@ -660,7 +653,7 @@ def tool_handoff(source: Any, name: str):
         try:
             with launch_lock(root_drive, root_id):
                 if claimed and (outcome.get("settled") is True or outcome.get("not_started") is True):
-                    update_json_locked(path, settle, strict_existing_dict=True)
+                    patch_handoff(root_drive, holder, "launch_handoffs", op_id, settle)
         except Exception:
             log.warning("Tool %s custody could not settle (%s)", name, op_id, exc_info=True)
 

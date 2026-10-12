@@ -353,6 +353,8 @@ def _complete_exact_budget_pause_after_death(job: dict, root: pathlib.Path, task
     its own identity and the SAME task id is parked back on its exact pause for
     the owner to Resume again. A CONSUMED grant is never reopened — that task
     ran on, and its death takes terminal crash custody without ordinary retry.
+    ``budget_pause.death_returns_to_pause`` names this window for the worker,
+    which leaves a ``handle_task`` exception inside it to this recovery.
     """
     from ouroboros.budget_pause import (
         LIVE_PAUSE_STATES, STATE_RESUME_GRANTED, STATE_RESUMED, budget_pause_row,

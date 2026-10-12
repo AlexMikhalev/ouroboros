@@ -42,10 +42,11 @@ from ouroboros.task_results import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
     load_task_result,
-    task_result_path,
     write_task_result,
 )
 from ouroboros.utils import utc_now_iso
+from tests._shared import write_queue_document
+from tests._store_shared import result_signature
 
 
 class _CaptureQueue:
@@ -97,7 +98,7 @@ def _write_snapshot(drive, *, ts=None, running=(), pending=()):
     payload = {"running": list(running), "pending": list(pending)}
     if ts is not None:
         payload["ts"] = ts
-    snap.write_text(json.dumps(payload), encoding="utf-8")
+    write_queue_document(snap, payload)
     return snap
 
 
@@ -247,13 +248,12 @@ def test_gr7_2_shared_drive_settled_row_survives_byte_identical(qenv, monkeypatc
     }
     write_task_result(qenv.drive, task_id, STATUS_COMPLETED, chat_id=5,
                       result="the settled shared-drive answer")
-    row_path = task_result_path(qenv.drive, task_id)
-    before = row_path.read_bytes()
+    before = result_signature(qenv.drive, task_id)
     ci.request_cancel(qenv.drive, task_id, reason="stop", allow_settled_target=True)
 
     assert qenv.tl.cancel_task_custody(task_id) == qenv.tl.CANCEL_ALREADY_SETTLED
     assert not state["alive"]
-    assert row_path.read_bytes() == before, (
+    assert result_signature(qenv.drive, task_id) == before, (
         "GR7-2: the settled terminal row survives the kill BYTE-IDENTICAL"
     )
     stored = load_task_result(qenv.drive, task_id)
@@ -292,8 +292,7 @@ def test_gr7_2_split_drive_child_answer_never_replaces_the_settled_canonical(
     assert not prepare_terminal_task_files(qenv.drive, qenv.q.RUNNING[task_id]["task"])["error"]
     write_task_result(child_drive, task_id, STATUS_COMPLETED,
                       result="a DIFFERING child answer")
-    row_path = task_result_path(qenv.drive, task_id)
-    before = row_path.read_bytes()
+    before = result_signature(qenv.drive, task_id)
     ci.request_cancel(qenv.drive, task_id, reason="stop", allow_settled_target=True)
 
     assert qenv.tl.cancel_task_custody(task_id) == qenv.tl.CANCEL_ALREADY_SETTLED
@@ -302,7 +301,7 @@ def test_gr7_2_split_drive_child_answer_never_replaces_the_settled_canonical(
     assert stored["result"] == "the canonical settled answer", (
         "GR7-2: the kill is about the process, never the result"
     )
-    assert row_path.read_bytes() == before
+    assert result_signature(qenv.drive, task_id) == before
 
 
 # --------------------------------------------------------------------------

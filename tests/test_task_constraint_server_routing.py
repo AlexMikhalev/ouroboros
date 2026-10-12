@@ -72,9 +72,9 @@ def test_constrained_repair_promotes_managed_task_before_busy_direct_lane(monkey
     # The skill card issued this promote: the handler's publication boundary
     # owns any refusal notice, so the event says so.
     assert event["host_initiated"] is True
-    assert len(calls["sent"]) == 1
-    assert calls["sent"][0][0] == 1
-    assert "accepted and durably scheduled" in calls["sent"][0][1]
+    # A landed repair publishes no row: the card's own "Repair task queued" receipt
+    # and the task's card carry it (a refusal still gets its typed row, below).
+    assert calls["sent"] == []
 
 
 _REPAIR_INCOMING = {

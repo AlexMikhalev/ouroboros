@@ -26,6 +26,7 @@ from ouroboros.task_results import (
     is_reconciled_presence_placeholder, load_task_result, resolve_task_lineage, task_result_path, write_task_result,
 )
 from ouroboros.utils import jsonl_chain_handles, utc_now_iso
+from ouroboros.store import StoreError
 
 log = logging.getLogger(__name__)
 SETTLEMENT_NONE, SETTLEMENT_DEFERRED, SETTLEMENT_SETTLED = "none", "deferred", "settled"
@@ -402,7 +403,7 @@ def _result_entry(root: pathlib.Path, task_id: str) -> dict:
 
     try:
         result = load_task_result(root, task_id, strict=True)  # strict: never moves the file
-    except (OSError, ValueError):
+    except (OSError, ValueError, StoreError):
         result = None
     if not isinstance(result, dict) or not result:
         return {"task_id": task_id, "status": "not_recorded"}

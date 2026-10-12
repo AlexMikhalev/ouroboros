@@ -24,6 +24,7 @@ import queue
 import time
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from ouroboros.finalization_timing import finalization_child_scope
 from ouroboros._usage_wait import receiver_abandonable
 from ouroboros.loop_llm_call import forced_response_is_incomplete, forced_response_parts
 from ouroboros.model_wait import ModelWaitInterrupted
@@ -145,6 +146,7 @@ def _project_child_result_dispositions(
         llm_trace["child_result_dispositions"] = {"current": [], "deferred_count": 0}
 
 
+@finalization_child_scope()
 def _record_forced_finalization(
     ctx: _RoundLimitContext,
     llm_trace: Dict[str, Any],
@@ -539,6 +541,7 @@ def _forced_state_facts(ctx: _RoundLimitContext, llm_trace: Dict[str, Any]) -> s
         return ""
 
 
+@finalization_child_scope()
 def _prepare_forced_prompt(
     ctx: _RoundLimitContext, prompt: str, llm_trace: Dict[str, Any],
 ) -> str:

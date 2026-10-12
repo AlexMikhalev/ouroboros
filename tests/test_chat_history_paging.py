@@ -9,6 +9,7 @@ import pytest
 
 from ouroboros.gateway import history
 from ouroboros.gateway.history_paging import HistorySource, decode_cursor, encode_cursor
+from tests._store_shared import seed_result
 
 
 @pytest.fixture(autouse=True)
@@ -179,11 +180,15 @@ def test_historical_terminal_never_overrides_current_result_authority(tmp_path, 
     result.parent.mkdir(exist_ok=True)
     if current == "malformed":
         result.write_text("{broken", encoding="utf-8")
+    elif current == "future":
+        result.write_text(json.dumps({"_schema_version": 2, "task_id": "old-task", "status": "running"}), encoding="utf-8")
     elif current != "missing":
-        result.write_text(json.dumps({"_schema_version": 2 if current == "future" else 1,
+        seed_result(tmp_path, "old-task", {"_schema_version": 1,
                                       "task_id": "old-task", "status": "completed" if current == "finalizing" else "running",
                                       **({"root_phase_checkpoint": {"post_task_synthesis": "running"}}
-                                         if current == "finalizing" else {})}), encoding="utf-8")
+                                         if current == "finalizing" else {})})
+    from ouroboros.store_import import ensure_current_store
+    ensure_current_store(tmp_path)  # the boot door's import judges the planted file; a GET never imports
     status, payload = request(tmp_path)
     assert status == 200
     [narration] = [message for message in payload["messages"] if message.get("is_progress")]
@@ -309,7 +314,7 @@ def test_de_roled_recent_child_final_is_enriched_when_older_parent_arrives(tmp_p
     for task in ("parent", "child"):
         result = tmp_path / "task_results" / f"{task}.json"
         result.parent.mkdir(exist_ok=True)
-        result.write_text(json.dumps({"_schema_version": 1, "task_id": task, "status": "completed"}), encoding="utf-8")
+        seed_result(tmp_path, task, {"_schema_version": 1, "task_id": task, "status": "completed"})
     loaded = list(pages(tmp_path, n_human="1"))
     first = next(message for message in loaded[0]["messages"] if message.get("task_id") == "child")
     assert "parent_task_id" not in first

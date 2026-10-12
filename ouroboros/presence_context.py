@@ -125,8 +125,7 @@ def _own_work_section(drive_root: Path, value: Mapping[str, Any], task_id: str) 
         preview = " ".join(str(row.get("result_preview") or "").split())[:200]
         lines.append(
             f"- {row.get('task_id')} [{row.get('status') or 'unknown'}"
-            + (f", cancel {row['cancel_state']}" if row.get("cancel_state") else "")
-            + (", its result row is unreadable" if row.get("result_row") == "unreadable" else "") + f"] from {where}: "
+            + (f", cancel {row['cancel_state']}" if row.get("cancel_state") else "") + f"] from {where}: "
             + json.dumps(" ".join(str(row.get("description") or "").split())[:200], ensure_ascii=False)
             + (f"; result preview {json.dumps(preview, ensure_ascii=False)}"
                if preview and row.get("status") in {"completed", "failed", "cancelled"} else "")
@@ -134,8 +133,7 @@ def _own_work_section(drive_root: Path, value: Mapping[str, Any], task_id: str) 
         )
     gap = page.get("read_gap") if isinstance(page.get("read_gap"), Mapping) else {}
     unread = [text for key, text in (
-        ("result_root", "the result root"), ("queue_snapshot", "the queue snapshot (queued work)"),
-        ("unattributed_unreadable_rows", f"{gap.get('unattributed_unreadable_rows')} row(s) no record attributes"),
+        ("result_root", "the task store"), ("queue_snapshot", "the queue snapshot (queued work)"),
     ) if gap.get(key)]
     if unread:
         lines.append("(some results are unreadable now: " + "; ".join(unread)

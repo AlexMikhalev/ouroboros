@@ -17,6 +17,7 @@ import pytest
 from ouroboros import budget_pause, working_checkpoint as wc
 from ouroboros.task_results import write_task_result
 from tests._budget_pause_exact_helpers import _loop_ctx
+from tests._store_shared import read_result
 
 
 def _file(root, task_id="pause-task", attempt=1):
@@ -299,7 +300,6 @@ def test_a_held_question_wait_continues_through_its_own_reader_after_quit_and_re
     → Resume → the real loop. The wait's own continuation source is named as such
     (``source_kind=owner_wait``, bound to its ``wait_id``), never posing as a rolling
     state; the consumed wait reads ``resumed`` (an answer is still accepted)."""
-    import json as _json
 
     from ouroboros import loop
     from ouroboros.owner_wait import checkpoint_owner_wait, set_owner_wait
@@ -353,7 +353,7 @@ def test_a_held_question_wait_continues_through_its_own_reader_after_quit_and_re
     assert "Question posted; waiting for the owner" in contents
     notice = next(text for text in contents if "continued from its working checkpoint" in text)
     assert "owner_wait" in notice and "that question stays open" in notice
-    stored = _json.loads((tmp_path / "task_results" / "asker.json").read_text())["owner_wait"]
+    stored = read_result(tmp_path, "asker")["owner_wait"]
     assert stored["wait_id"] == wait["wait_id"] and stored["state"] == "resumed"
 
 

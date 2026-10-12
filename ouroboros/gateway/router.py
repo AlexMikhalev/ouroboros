@@ -73,6 +73,7 @@ def collect_routes(
     )
     from ouroboros.gateway.history import make_chat_history_endpoint, make_cost_breakdown_endpoint
     from ouroboros.gateway.logs import api_logs_tail
+    from ouroboros.gateway.storage import storage_routes
     from ouroboros.gateway.marketplace import (
         api_marketplace_info,
         api_marketplace_install,
@@ -104,7 +105,7 @@ def collect_routes(
         api_onboarding_subagents_preview,
     )
     from ouroboros.gateway.settings import api_review_pool
-    from ouroboros.gateway.mcp import api_mcp_refresh, api_mcp_status, api_mcp_test
+    from ouroboros.gateway.mcp import mcp_routes
     from ouroboros.gateway.models import (
         api_local_model_install_runtime,
         api_local_model_start,
@@ -280,6 +281,7 @@ def collect_routes(
         Route("/api/update/preflight", endpoint=api_update_preflight, methods=["POST"]),
         Route("/api/update/apply", endpoint=api_update_apply, methods=["POST"]),
         Route("/api/cost-breakdown", endpoint=make_cost_breakdown_endpoint(data_dir)),
+        *storage_routes(data_dir),
         Route("/api/evolution-data", endpoint=api_evolution_data),
         Route("/api/chat/history", endpoint=make_chat_history_endpoint(data_dir)),
         Route("/api/logs/{name}", endpoint=api_logs_tail, methods=["GET"]),
@@ -296,9 +298,7 @@ def collect_routes(
             endpoint=api_local_model_install_runtime,
             methods=["POST"],
         ),
-        Route("/api/mcp/status", endpoint=api_mcp_status, methods=["GET"]),
-        Route("/api/mcp/refresh", endpoint=api_mcp_refresh, methods=["POST"]),
-        Route("/api/mcp/test", endpoint=api_mcp_test, methods=["POST"]),
+        *mcp_routes(),
         # Agent accounts (D30): thin proxies of the owned Claudexor daemon's
         # own account surface; zero auth logic on this side.
         Route("/api/review-pool", endpoint=api_review_pool, methods=["GET"]),

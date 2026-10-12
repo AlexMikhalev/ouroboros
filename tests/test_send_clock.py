@@ -426,6 +426,28 @@ def test_a_routing_act_recorded_during_the_turn_rides_the_next_real_request(main
     assert ctx.messages[-1]["content"] == sent["messages"][-1]["content"]
 
 
+def test_a_wakes_own_unconfirmed_promote_reports_its_admission_on_the_next_real_request(main_call, ticking):
+    """A turn nobody typed (a wake) promoted work and its wait ended unconfirmed; its promote
+    writes no annotation at all. The turn kept the exact ids, so the canonical admission,
+    once recorded, rides the next real request; another attempt's admission confirms nothing."""
+    from ouroboros import loop
+    from ouroboros.loop_model_call import ROUTING_RECEIPTS_HEADER
+    from ouroboros.task_results import write_task_result
+    from tests.test_subscription_main_wait import _without_context_facts
+
+    ctx, gateway, _controller, _events, _decide, _observations = main_call
+    ctx.tools._ctx.task_metadata = {"routing_contract": {"llm_first": True}}
+    ctx.tools._ctx.unconfirmed_routing_acts = [{"action": "promote_chat_to_task", "client_message_id": "",
+                                                "routing_token": "tok-p", "target": "wake-root"}]
+    write_task_result(ctx.drive_root, "wake-root", "scheduled",
+                      promotion_admission={"status": "scheduled", "routing_token": "tok-p"})
+    answer, _cost, _mode = loop._call_round_model(ctx)
+    assert answer and len(gateway.uploads) == 1
+    texts = [json.dumps(message["content"], ensure_ascii=False)
+             for message in _without_context_facts(gateway.uploads[0][0]["messages"], physical=True)]
+    assert ROUTING_RECEIPTS_HEADER in texts[-2] and "promote_chat_to_task → wake-root: scheduled" in texts[-2]
+
+
 def test_the_consumed_line_makes_each_request_extend_the_last_byte_for_byte(transport, ticking, unstreamed):  # noqa: F811
     root, client, sent = transport
     logs = root / "logs"

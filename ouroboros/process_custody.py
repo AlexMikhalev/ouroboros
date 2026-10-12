@@ -313,7 +313,7 @@ def _service_group_survives_leader(entry: Dict[str, Any]) -> bool:
     scope = str(entry.get("scope") or "")
     pgid = int(entry.get("pgid") or 0)
     return bool(
-        purpose.startswith(("service:", "workspace_service:"))
+        (purpose.startswith(("service:", "workspace_service:")) or purpose == "evidence_packer")
         and scope in {"task", "session"}
         and pgid > 0
         and process_group_has_live_members(pgid)
@@ -729,7 +729,7 @@ def quiesce_custodied_services(
     blockers: List[str] = []
     for entry in entries:
         purpose = str(entry.get("purpose") or "")
-        is_service = purpose.startswith(("service:", "workspace_service:"))
+        is_service = purpose.startswith(("service:", "workspace_service:")) or purpose == "evidence_packer"
         leader_matches = _fingerprint_matches(entry)
         if (
             is_service

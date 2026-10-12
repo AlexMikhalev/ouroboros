@@ -20,8 +20,12 @@ TARGET = "b" * 40
 def _reset_writer_admission(monkeypatch):
     import supervisor.restart_retention as retention
     import supervisor.workers as workers
+    from ouroboros import store_switch
 
     monkeypatch.setattr(retention, "_update_returns", {})
+    # The synthetic SHAs here name no tree: the subject is the ordinary door, whose target
+    # carries the store (the authority switch of a store-less target: test_store_activation).
+    monkeypatch.setattr(store_switch, "switch_needs", lambda *_a: {"facts": False, "money": False, "handles": False})
     workers.open_repo_writer_admission()
     yield
     workers.open_repo_writer_admission()
@@ -74,8 +78,9 @@ def test_update_has_no_filename_based_protected_route():
 
 
 def test_other_owner_repo_mutations_share_the_managed_update_lock():
-    for endpoint in (control.api_reset, control._git_rollback_fenced, control.api_git_promote):
+    for endpoint in (control.api_reset, control.rollback_through_door, control.api_git_promote):
         assert "_acquire_repo_mutation_lock" in inspect.getsource(endpoint)
+    assert "rollback_through_door" in inspect.getsource(control._git_rollback_fenced)
     # Reset must not unlink the directory containing the lock while holding it.
     reset_source = inspect.getsource(control.api_reset)
     assert '"locks"' not in reset_source

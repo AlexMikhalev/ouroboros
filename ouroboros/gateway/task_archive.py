@@ -67,6 +67,10 @@ CONFINED, _DIR_FLAGS = POSIX_CONFINED, DIR_FLAGS
 _CHAT_MEDIA_DIGEST_RE = re.compile(r"chat-media-([0-9a-f]{64})\.[a-z0-9]+")
 _DELEGATED_SOURCE_RE = re.compile(r"source_handles/delegated_activity/([A-Za-z0-9][A-Za-z0-9_.-]*-([0-9a-f]{64})\.jsonl)")
 _ACCEPTANCE_SOURCE_RE = re.compile(r"source_handles/context_checkpoints/(acceptance-([0-9a-f]{64})\.json)")
+# An SVG is an image a browser also runs as a document. Its exact bytes, type and static
+# view stay; opened directly it gets the chat-upload inline policy (gateway/files.py):
+# no script or application origin, no sniffing. Other types keep their headers.
+_SVG_POLICY = {"content-security-policy": "sandbox", "x-content-type-options": "nosniff"}
 
 Route = Tuple[pathlib.Path, List[str]]  # (directory opened by absolute path, segments below it)
 
@@ -440,4 +444,5 @@ def serve_task_file(drive_root: Any, store: pathlib.Path, relpath: str, name: st
                               404, reason_code="artifact_unverified", task_id=task_id, artifact=name)
         return json_error("artifact could not be read", 503, reason_code="artifact_unavailable",
                           task_id=task_id, artifact=name)
-    return DescriptorResponse(handle, name, observed, str((expected or {}).get("sha256") or "") or None)
+    return DescriptorResponse(handle, name, observed, str((expected or {}).get("sha256") or "") or None,
+                              headers=_SVG_POLICY if mimetypes.guess_type(name)[0] == "image/svg+xml" else None)

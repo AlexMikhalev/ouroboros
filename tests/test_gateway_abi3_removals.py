@@ -13,6 +13,7 @@ import json
 from typing import get_type_hints
 
 import pytest
+from tests._store_shared import seed_result
 
 
 class TestCostAliasRemoval:
@@ -397,9 +398,7 @@ class TestProjectionBoundaryNormalization:
     def _write_legacy(self, data):
         results = data / "task_results"
         results.mkdir(parents=True, exist_ok=True)
-        (results / "legacy-cost.json").write_text(
-            json.dumps(self.LEGACY_ROW), encoding="utf-8"
-        )
+        seed_result(data, "legacy-cost", self.LEGACY_ROW)
 
     def test_public_task_result_emits_honest_names_only(self):
         from ouroboros.outcomes import public_task_result
@@ -458,10 +457,10 @@ class TestProjectionBoundaryNormalization:
 
         results = tmp_path / "task_results"
         results.mkdir(parents=True, exist_ok=True)
-        (results / "legacy-rw.json").write_text(json.dumps({
+        seed_result(tmp_path, "legacy-rw", {
             "_schema_version": 1, "task_id": "legacy-rw", "status": "running",
             "ts": "2026-01-01T00:00:00Z", "cost_usd": 1.0, "cost_final": False,
-        }), encoding="utf-8")
+        })
 
         write_task_result(tmp_path, "legacy-rw", "completed",
                           accounted_upper_bound_usd=7.0, cost_final=True)

@@ -117,40 +117,6 @@ def emit_cognitive_operation_event(
         log.debug("Failed to emit cognitive operation event", exc_info=True)
 
 
-def emit_main_llm_call_state_event(
-    event_queue: Any,
-    *,
-    task_id: str,
-    task_attempt: Any,
-    llm_call_id: str,
-    execution_id: str,
-    round_id: str,
-    call_attempt: int,
-    phase: str,
-) -> None:
-    """Publish one typed main-LLM in-flight fact to the supervisor.
-
-    This is a direct control-plane event, not a UI ``log_event``.  It has no
-    elapsed-time expiry: the supervisor uses it only to spare the idle rail
-    while the exact call is active; deadline, budget, cancellation, and the
-    absolute task ceiling remain independent hard axes.
-    """
-    if event_queue is None:
-        return
-    try:
-        event_queue.put({
-            "type": "main_llm_call_state",
-            "task_id": str(task_id or ""),
-            "task_attempt": task_attempt,
-            "llm_call_id": str(llm_call_id or ""),
-            "execution_id": str(execution_id or ""),
-            "round_id": str(round_id or ""),
-            "call_attempt": int(call_attempt),
-            "phase": str(phase or ""),
-        })
-    except Exception:
-        log.debug("Failed to emit main LLM call state event", exc_info=True)
-
 def sha256_text(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
@@ -348,23 +314,22 @@ def write_bytes_atomic(path: pathlib.Path, content: bytes, *, fsync: bool = Fals
 
 
 def write_text_atomic(path: pathlib.Path, content: str, *, fsync: bool = False) -> None:
-    """Atomically overwrite ``path`` with ``content`` encoded UTF-8, BYTE-EXACT.
-
-    The file receives exactly ``content.encode("utf-8")`` on every platform:
-    the newlines the caller wrote are the newlines on disk. This is the
-    contract every caller in this tree needs — durable JSON state (through
-    ``atomic_write_json``), receipts, run manifests, projection files, and the
-    agent's own file writes/edits, which round-trip source text that Python
-    reads back with universal newlines.
-
-    """
+    """Atomically overwrite ``path`` with ``content`` encoded UTF-8, BYTE-EXACT: the newlines the caller
+    wrote are the newlines on disk on every platform — the contract of durable JSON state (``atomic_write_json``),
+    receipts, run manifests, projection files and the agent's own file writes/edits, which round-trip source
+    text that Python reads back with universal newlines."""
     write_bytes_atomic(pathlib.Path(path), content.encode("utf-8"), fsync=fsync)
+
+
+def machine_json(payload: Any) -> str:
+    """The one compact text of machine JSON state (files and the current store's task bodies)."""
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def atomic_write_json(path: pathlib.Path, payload: Any, *, trailing_newline: bool = False,
                       fsync: bool = False) -> None:
-    """Atomically persist a JSON value (object or list) via a sibling temp file."""
-    content = json.dumps(payload, ensure_ascii=False, indent=2)
+    """Atomically persist ``machine_json``; keep settings.json human-readable."""
+    content = json.dumps(payload, ensure_ascii=False, indent=2) if pathlib.Path(path).name == "settings.json" else machine_json(payload)
     if trailing_newline:
         content += "\n"
     write_text_atomic(pathlib.Path(path), content, fsync=fsync)

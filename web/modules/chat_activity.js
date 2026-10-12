@@ -4,19 +4,17 @@
 import { executorIdentityMarkup, joinMetaParts } from './harness_presentation.js';
 import { effortChipMarkup } from './effort_chip.js';
 import { resultFilesItemHtml } from './result_files.js';
-import { taskSourceDownloadUrl } from './api_client.js';
+import { taskSourceDownloadUrl, apiFetch } from './api_client.js';
 import { compactModel, formatLogDuration, modelExecutionLabel } from './log_events.js';
 import { createSystemMessageActions } from './ui_helpers.js';
 import { projectReference } from './project_reference.js';
 import { delegatedActivityBodyHtml, delegatedHeadline, delegatedLineView } from './delegated_activity.js';
-import { joinMarkdownHeadings, MARKDOWN_FENCED_CODE } from './utils.js';
 import { REUSABLE_TASK_IDS } from './task_control_menu.js';
-import { activityWaitPhase, pausePhaseLabel } from './task_phase_chip.js';
-import { apiFetch } from './api_client.js';
+import { activityWaitPhase, pausePhaseLabel, modelActivityPresentation, taskActivityPresentation } from './task_phase_chip.js';
 import { currentLanguage, fmt, isEnglish, tr, tx } from './i18n.js';
 import { hostRowDisplayText } from './host_notice_text.js';
 import {
-    accountedUpperBound,
+    joinMarkdownHeadings, MARKDOWN_FENCED_CODE, accountedUpperBound,
     accountedUpperBoundWithChildren,
     escapeHtmlAttr,
     escapeHtmlText as escapeHtml,
@@ -1086,31 +1084,26 @@ export function unkeyedFrameEndsTurn(row) {
 export function computeDerivedChatStatus({
     isConnected = true,
     hasActiveLiveCard = false,
-    activeDirectCount = 0,
-    activeManagedCount = 0,
-    queuedManagedCount = 0,
-    pausingManagedCount = 0,
+    activeDirectCount = 0, activeManagedCount = 0,
+    queuedManagedCount = 0, pausingManagedCount = 0,
     pausedManagedCount = 0,
     pausedCause = '',
-    waitingOwnerCount = 0,
-    unknownActivityCount = 0,
+    waitingOwnerCount = 0, unknownActivityCount = 0,
     waitingModelCount = 0,
     projectWaitLabel = '',
     pendingSubmissionsCount = 0,
     supervisorStarting = false,
+    modelActivity = null,
 } = {}) {
     if (!isConnected) return { kind: 'offline', text: 'Reconnecting...', showDots: false };
-    if (hasActiveLiveCard) return { kind: 'thinking', text: 'Working...', showDots: false };
-    if (activeManagedCount > 0) return { kind: 'thinking', text: 'Working...', showDots: true };
+    const observed = modelActivity && { kind: modelActivity.waiting ? 'online' : 'thinking', text: modelActivity.text, showDots: modelActivity.motion };
+    if (hasActiveLiveCard || activeManagedCount > 0) return (activeManagedCount > 0 && observed) || { kind: 'thinking', text: 'Working...', showDots: !hasActiveLiveCard };
     // Sent work still finishing under the owner's Pause: settling, not working.
     if (pausingManagedCount > 0) return { kind: 'thinking', text: 'Pausing…', showDots: true };
-    if (activeDirectCount > 0) return { kind: 'thinking', text: 'Thinking...', showDots: true };
+    if (activeDirectCount > 0) return observed || { kind: 'thinking', text: taskActivityPresentation({ phase: 'working' }).text, showDots: true };
     if (pendingSubmissionsCount > 0) return { kind: 'thinking', text: 'Sending...', showDots: true };
-    if (queuedManagedCount > 0) {
-        if (waitingModelCount > 0) return { kind: 'online', text: 'Waiting for access', showDots: false };
-        return { kind: 'thinking', text: 'Queued...', showDots: true };
-    }
     if (waitingModelCount > 0) return { kind: 'online', text: 'Waiting for access', showDots: false };
+    if (queuedManagedCount > 0) return { kind: 'thinking', text: 'Queued...', showDots: true };
     if (waitingOwnerCount > 0) return { kind: 'online', text: tr('task.chip.waiting_for_answer', 'Waiting for your answer'), showDots: false };
     if (unknownActivityCount > 0) return { kind: 'online', text: 'Activity unconfirmed', showDots: false };
     // Mixed or unknown causes stay generic; paused work never claims Running.
@@ -1120,14 +1113,12 @@ export function computeDerivedChatStatus({
     return { kind: 'online', text: 'Online', showDots: false };
 }
 
-// The reducer's counted inputs: census activities not waiting on a model, and mounted unfinished
-// cards, where a managed root drives Working… and a direct turn keeps the census verdict (Thinking…);
-// a paused or pausing card (`task_phase_chip.syncParkedPhase`) is not working.
+// Count census activity and unfinished cards; parked/waiting rows retain their own state.
 export function chatStatusCounts(activities, records, isWaiting = () => false) {
     const counts = { activeDirectCount: 0, activeManagedCount: 0, queuedManagedCount: 0, pausingManagedCount: 0,
         pausedManagedCount: 0, unknownActivityCount: 0, hasActiveLiveCard: false, waitingModelCount: 0,
         projectWaitLabel: '', waitingOwnerCount: 0, pausedCause: '' };
-    const pauseCauses = new Set();
+    const pauseCauses = new Set(), calls = new Map();
     for (const [id, entry] of activities) {
         // A Project verification hold is a static wait: never queued or working,
         // while its pause/pausing/unknown census phase still counts as itself.
@@ -1144,6 +1135,10 @@ export function chatStatusCounts(activities, records, isWaiting = () => false) {
         else if (String(entry?.kind || '') !== 'managed_task') counts.activeDirectCount += 1;
         else if (String(entry?.phase || '') === 'queued') counts.queuedManagedCount += 1;
         else counts.activeManagedCount += 1;
+        if (!entry?._activityUnconfirmed && ['preparing', 'thinking', 'working'].includes(entry?.phase)
+            && !waitPhase && !projectHold) calls.set(id, modelActivityPresentation(
+                entry.phase === 'preparing' ? { phase: 'preparing' } : entry.model_activity)
+                || (entry.kind !== 'managed_task' ? taskActivityPresentation({ phase: entry.phase }) : null));
     }
     if (pauseCauses.size === 1) counts.pausedCause = [...pauseCauses][0];
     for (const record of records) {
@@ -1153,9 +1148,14 @@ export function chatStatusCounts(activities, records, isWaiting = () => false) {
             continue;
         }
         if (activities.get(record.groupId)?.project_admission_hold) continue;
+        if (record.cancelPendingPolicy && calls.has(record.groupId)) calls.set(record.groupId,
+            taskActivityPresentation({ phase: 'working', stopPolicy: record.cancelPendingPolicy }));
         if (record.modelWaiting) counts.waitingModelCount += 1;
         else if (!record.direct && !record.parkedPhase) counts.hasActiveLiveCard = true;
     }
+    const views = [...calls.values()];
+    if (views.length && views.length === counts.activeDirectCount + counts.activeManagedCount
+        && views.every(view => view && view.text === views[0]?.text)) counts.modelActivity = views[0];
     return counts;
 }
 

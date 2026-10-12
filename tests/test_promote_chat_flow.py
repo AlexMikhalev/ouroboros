@@ -10,6 +10,7 @@ import types
 import pytest
 
 from tests.test_swarm_host_admission import host as _swarm_host
+from tests._store_shared import delete_result, seed_result
 
 swarm_host = _swarm_host
 
@@ -182,9 +183,7 @@ def test_cat_root_keeps_full_authority_and_helpers_keep_a_predecessor_brief(
     }
     result_dir = tmp_path / "task_results"
     result_dir.mkdir()
-    (result_dir / f"{predecessor_id}.json").write_text(
-        json.dumps({"_schema_version": 1, **predecessor}), encoding="utf-8",
-    )
+    seed_result(tmp_path, predecessor_id, {"_schema_version": 1, **predecessor})
     assert len(json.dumps(predecessor["plan_review_state"])) < 1_000
     assert len(json.dumps({
         key: predecessor[key]
@@ -309,9 +308,7 @@ def test_main_promotion_selects_only_manifested_canonical_predecessor(tmp_path, 
         {"_schema_version": 1, "task_id": "old-b", "status": "completed", "title": "Chosen project"},
     ]
     for row in rows:
-        (result_dir / f"{row['task_id']}.json").write_text(
-            json.dumps(row), encoding="utf-8",
-        )
+        seed_result(tmp_path, row['task_id'], row)
     manifest = {"final_results": [server._task_result_ground_truth(row) for row in rows]}
     selected = _managed_swarm_ctx(tmp_path, task_metadata={
         "force_plan": True, "force_plan_source": "swarm",
@@ -359,7 +356,7 @@ def test_main_promotion_selects_only_manifested_canonical_predecessor(tmp_path, 
         "force_plan": True, "force_plan_source": "swarm",
         "main_routing_manifest": manifest,
     })
-    (result_dir / "old-b.json").unlink()
+    delete_result(tmp_path, "old-b")
     refused = _promote_chat_to_task(
         missing, "Continue missing work", predecessor_task_id="old-b",
     )
@@ -2497,7 +2494,7 @@ def test_handle_steer_task_delivers_once_to_running_task(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("chat_id", [1, 0, None])
-def test_steering_delivers_text_and_identical_typed_attachment_report(
+def test_steering_delivers_text_and_keeps_the_attachment_report_on_receipt_and_mailbox_only(
     tmp_path, monkeypatch, chat_id,
 ):
     import supervisor.queue as queue
@@ -2538,10 +2535,8 @@ def test_steering_delivers_text_and_identical_typed_attachment_report(
     delivered = drain_owner_entries(tmp_path, "t-report")[0]["text"]
     assert delivered.startswith(exact)
     report = delivered.split("[ATTACHMENTS]\n", 1)[1].split("\n[END_ATTACHMENTS]", 1)[0]
-    if chat_id is None:
-        assert notices == []
-    else:
-        assert report in notices[-1]
+    assert "read_file(" in report and "rejected (reason=" in report  # the model keeps its whole block
+    assert notices == []  # a landed act publishes no row, whatever the chat
     annotation = latest_chat_annotations(tmp_path)["cm-report"]
     assert annotation["attachment_manifest"] == acks[-1]["attachment_manifest"]
     assert [row["status"] for row in annotation["attachment_manifest"]] == [
@@ -2609,9 +2604,8 @@ def test_direct_root_steering_uses_live_human_identity_for_receipt_and_notice(
 
     assert acks[-1]["target"] == "direct-live-opaque-id"
     assert acks[-1]["target_label"] == "Tower Defence › Fix nested delegation"
-    assert notices[-1].splitlines()[0] == (
-        "📎 Attachment staging report for Tower Defence › Fix nested delegation:"
-    )
+    assert [row["status"] for row in acks[-1]["attachment_manifest"]] == ["staged"]
+    assert notices == []  # the receipt carries the identity; no staging row in the chat
 
 
 def test_direct_project_followup_carries_same_live_human_identity(tmp_path):
@@ -2662,9 +2656,8 @@ def test_direct_project_followup_carries_same_live_human_identity(tmp_path):
 
     assert routed == "direct-live-opaque-id"
     assert metadata["_routing_target_label"] == "Tower Defence › Fix nested delegation"
-    assert notices[-1].splitlines()[0] == (
-        "📎 Attachment staging report for Tower Defence › Fix nested delegation:"
-    )
+    assert [row["status"] for row in metadata["_attachment_manifest"]] == ["staged"]
+    assert notices == []  # the receipt recorded from this stash is the whole record
 
 
 def test_handle_steer_task_stale_target_notifies_visibly(tmp_path, monkeypatch):

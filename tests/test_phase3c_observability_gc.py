@@ -282,7 +282,14 @@ def test_real_truncated_tool_source_envelope_remains_actor_readable_after_gc(tmp
 
 
 @pytest.mark.parametrize("mismatch", ["tool", "root", "path"])
-def test_task_source_read_contract_mismatch_is_typed_unavailable(tmp_path, mismatch):
+def test_task_source_read_envelope_plays_no_part_in_retention(tmp_path, mismatch):
+    """``read`` is presentation its producer wrote; identity is owner + path + size + sha256.
+
+    The system's own producers write envelopes that differ from the ref
+    (``chat_chain.retain_memory_source`` names ``runtime_data``) or none at all
+    (compact focus/capsule handles), so the envelope neither hides verified bytes
+    nor is rewritten: the carrier keeps its own reference and the bytes are kept.
+    """
     from ouroboros.artifacts import store_actor_source_bytes
 
     task_id = f"phase3c-source-contract-{mismatch}"
@@ -317,15 +324,16 @@ def test_task_source_read_contract_mismatch_is_typed_unavailable(tmp_path, misma
     copied = retry_child_task_refs(parent, child, task_id)
 
     assert copied is not None
-    gap = copied["review_evidence"]["exact_source_ref"]
-    assert gap["availability"] == "unavailable"
-    assert gap["reason"] == "invalid_ref"
-    assert not (
-        parent / "task_results" / "artifacts" / task_id / pathlib.Path(ref["path"])
-    ).exists()
+    assert copied["review_evidence"]["exact_source_ref"] == malformed
+    assert copied["child_ref_promotion"]["status"] == "complete"
+    assert copied["child_ref_promotion"]["unavailable_refs"] == []
     assert prune_headless_task_drives(
         parent, retention_days=0, now=_future_now(), live=lambda _task: False
     )["pruned"]
+    assert not child.exists()
+    assert (
+        parent / "task_results" / "artifacts" / task_id / pathlib.Path(ref["path"])
+    ).read_bytes() == b"exact source"
 
 
 def test_copyback_promotes_service_full_log_refs_in_durable_evidence_and_tool_payload(tmp_path):

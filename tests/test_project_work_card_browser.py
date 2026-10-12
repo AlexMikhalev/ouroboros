@@ -58,8 +58,10 @@ def project_chat(request):
                "next_cursor": None, "window": {"complete": True}, "coverage": {
                    "v": 1, "view": "work", "upper": {"chat": 2, "progress": 0}, "spans": {
                        "chat": {"from": 0, "to": 2, "chain": "work", "gaps": []}, "progress": None}}}
+    chat_id = request.node.callspec.params.get("chat_id", 1)
+    boot = BOOT.replace("chatId:1,", f"chatId:{chat_id},asPanel:{str(chat_id != 1).lower()},")
     html = (WEB / "index.html").read_text(encoding="utf-8").replace(
-        '<script type="module" src="/static/app.js"></script>', BOOT)
+        '<script type="module" src="/static/app.js"></script>', boot)
 
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *_):

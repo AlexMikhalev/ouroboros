@@ -16,6 +16,8 @@ from ouroboros import model_wait
 from ouroboros.gateways.claudexor import ClaudexorUnavailable
 from ouroboros.task_results import load_task_result, write_task_result
 from tests.test_llm_claudexor import MODEL, result, ledger, setup as gateway_fixture
+from ouroboros.store import StoreError
+from tests._store_shared import result_signature, seed_result, unreadable_result
 
 setup = gateway_fixture
 
@@ -283,14 +285,14 @@ def test_owner_decision_revision_pending_and_replay_fences(live_wait):
     assert stale.status_code == 409 and json.loads(stale.body)["reason_code"] == "stale_model_wait"
 
 
-def test_wait_projection_refuses_corrupt_existing_task_result(tmp_path):
-    directory = tmp_path / "task_results"
-    directory.mkdir()
-    path = directory / "task-one.json"
-    path.write_bytes(b'{"broken":')
-    with pytest.raises(ValueError):
+def test_wait_projection_refuses_unreadable_existing_task_result(tmp_path, monkeypatch):
+    seed_result(tmp_path, "task-one", {"task_id": "task-one", "status": "running"})
+    before = result_signature(tmp_path, "task-one")
+    unreadable = unreadable_result(monkeypatch, "task-one")
+    with pytest.raises(StoreError):
         model_wait.mutate_wait(tmp_path, "task-one", "wait-one", lambda _: {"state": "waiting"})
-    assert path.read_bytes() == b'{"broken":'
+    unreadable["on"] = False
+    assert result_signature(tmp_path, "task-one") == before  # the row is exactly as before
 
 
 def test_dated_pool_of_unknown_cause_waits_visibly_as_unavailable_never_as_quota(elapsed_quota_wait):

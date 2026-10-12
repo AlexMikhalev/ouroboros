@@ -13,6 +13,7 @@ from ouroboros.usage_admission import task_billing_fields
 from supervisor import queue, queue_schedules as schedules
 from supervisor.followup_policy import observed_store, record_restart
 from tests.test_schedule_followup import _ctx
+from tests._store_shared import delete_result
 
 pytestmark = pytest.mark.serial
 ORIGIN = 'root-1'
@@ -289,17 +290,15 @@ def test_no_speculative_release_and_existing_first_cause_does_not_hide_stop(worl
 
 
 def test_failed_stop_transfer_keeps_active_intent_and_completed_result(world, monkeypatch):
-    import ouroboros.cancel_intents as ci
+    from ouroboros import store, task_store
     _, root, _ = world
     intent = stop(root)
     write_task_result(root, ORIGIN, 'completed', result='Answer survives')
-    real = ci.update_json_locked
-    def fail_result(path, *args, **kwargs):
-        if path.name != 'cancel_intents.json':
-            raise OSError('result persistence refused')
-        return real(path, *args, **kwargs)
-    monkeypatch.setattr(ci, 'update_json_locked', fail_result)
-    with pytest.raises(OSError, match='persistence refused'):
+
+    def fail_result(*_args, **_kwargs):  # the result's store write refuses; the intents file write stays real
+        raise store.StoreError('result persistence refused')
+    monkeypatch.setattr(task_store, 'patch_document', fail_result)
+    with pytest.raises(store.StoreError, match='persistence refused'):
         settle_intent(root, ORIGIN, outcome='already_settled')
     assert active_intent(root, ORIGIN)['followup_stop'] == intent['followup_stop']
     assert load_task_result(root, ORIGIN)['result'] == 'Answer survives'
@@ -567,7 +566,7 @@ def test_consumed_row_retained_until_actual_work_settles(world, monkeypatch, sta
     elif state == 'running':
         write_task_result(root, task['id'], 'running')
     elif state == 'missing':
-        path.unlink()
+        delete_result(root, task['id'])
     elif state == 'unreadable':
         path.write_text('{torn')
     queue.check_scheduled_tasks()

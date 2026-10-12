@@ -570,7 +570,6 @@ def test_no_post_fires_when_the_start_request_row_did_not_land(tmp_path, monkeyp
     a worker death before record_started would leave a live overpowered run that
     nothing durable names. The POST is now conditional on the row landing: a broken
     event log refuses the start, typed, with the created registration retired."""
-    import ouroboros.delegate_custody as dc
     import ouroboros.tools.delegate as delegate
     from ouroboros.gateways import claudexor as gw
 
@@ -586,14 +585,16 @@ def test_no_post_fires_when_the_start_request_row_did_not_land(tmp_path, monkeyp
     _select_transport_access(monkeypatch, "readonly")
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
-    real_append = dc.append_jsonl
+    from ouroboros import delegate_custody_current as current
 
-    def broken_append(path, row):
-        if row.get("type") == "delegate_run_start_requested":
-            return False               # append_jsonl's own "did not land" signal
-        return real_append(path, row)
+    real_publish = current.publish
 
-    monkeypatch.setattr(dc, "append_jsonl", broken_append)
+    def broken_publish(root, event):
+        if event.get("type") == "delegate_run_start_requested":
+            return False               # the reducing transaction's own "did not land" signal
+        return real_publish(root, event)
+
+    monkeypatch.setattr(current, "publish", broken_publish)
     delegate._CUSTODY.clear()
     out = json.loads(delegate._delegate_start(_nanny_ctx(tmp_path), "do the work").text)
     delegate._CUSTODY.clear()

@@ -11,6 +11,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from tests._store_shared import seed_result
 
 
 def _presence_metadata(**event_extra):
@@ -401,10 +402,10 @@ def test_the_acceptance_packet_reads_the_origin_from_the_persisted_record(tmp_pa
 
     results = tmp_path / "task_results"
     results.mkdir()
-    (results / "acc.json").write_text(json.dumps({
+    seed_result(tmp_path, "acc", {
         "_schema_version": 1, "task_id": "acc", "status": "running", "type": "task",
         "source": "promote_chat_to_task", "delegation_role": "root", "parent_task_id": "",
-    }), encoding="utf-8")
+    })
     ctx = SimpleNamespace(task_contract={}, task_metadata={"origin_message_ref": dict(OWNER_REF)},
                           drive_root=str(tmp_path), task_id="acc", repo_dir=str(tmp_path))
 
@@ -418,10 +419,10 @@ def test_the_acceptance_packet_reads_the_origin_from_the_persisted_record(tmp_pa
     assert ev["run_origin"]["owner_ingress"] is True and "source" not in ev["run_origin"]
 
     # A context without live metadata still reads the record's own metadata.
-    (results / "stored.json").write_text(json.dumps({
+    seed_result(tmp_path, "stored", {
         "_schema_version": 1, "task_id": "stored", "status": "running", "type": "task",
         "source": "presence_promote", "metadata": {"initiator": "presence", "origin_suppressed": True},
-    }), encoding="utf-8")
+    })
     bare = SimpleNamespace(task_contract={}, task_metadata={}, drive_root=str(tmp_path), task_id="stored", repo_dir=str(tmp_path))
     ev = build_task_acceptance_evidence(bare, llm_trace={"tool_calls": []}, drive_root=tmp_path, task_id="stored")
     assert (ev["run_origin"]["owner_ingress"], ev["run_origin"]["initiator"], ev["run_origin"]["source"]) == (

@@ -656,8 +656,9 @@ def _schedule_running_or_queued(schedule_id: str, drive_root: pathlib.Path | Non
     if not in_worker_process():
         return (_rows_hold_schedule(_queue().PENDING, schedule_id, task_id)
                 or _rows_hold_schedule(_queue().RUNNING.values(), schedule_id, task_id))
-    snapshot = read_json_dict(pathlib.Path(drive_root or _queue().DRIVE_ROOT)
-                              / "state" / "queue_snapshot.json")
+    from ouroboros.queue_observation import load_queue_document
+    from ouroboros.task_status import queue_snapshot_observation
+    snapshot = load_queue_document(drive_root or _queue().DRIVE_ROOT)
     if not isinstance(snapshot, dict):
         return None
     # ``read_json_dict`` intentionally returns ``{}``/None for malformed or
@@ -682,18 +683,8 @@ def _schedule_running_or_queued(schedule_id: str, drive_root: pathlib.Path | Non
             and not isinstance(task.get("metadata"), dict)
         ):
             return None
-    stamp = snapshot.get("ts")
-    try:
-        parsed = datetime.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
-        # A slightly future stamp can come from clock skew between supervisor
-        # and worker; it is still a fresh write.  Only an old stamp is evidence
-        # that this snapshot can no longer prove the absence of a live run.
-        age = time.time() - parsed.timestamp()
-        if age > _QUEUE_SNAPSHOT_MAX_AGE_SEC:
-            return None
-    except (TypeError, ValueError, OverflowError):
+    observation = queue_snapshot_observation(snapshot)
+    if observation["age_sec"] is None or observation["age_sec"] > _QUEUE_SNAPSHOT_MAX_AGE_SEC:
         return None
     return (_rows_hold_schedule(snapshot.get("pending"), schedule_id, task_id)
             or _rows_hold_schedule(snapshot.get("running"), schedule_id, task_id))

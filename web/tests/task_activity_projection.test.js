@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { activeModelWaits, mergeModelWaits } from '../modules/model_wait.js';
 import { summarizeProjectActivities } from '../modules/project_activity.js';
+import { chatStatusCounts, computeDerivedChatStatus } from '../modules/chat_activity.js';
 import { activityWaitPhase, censusTaskPhase, desiredLiveCardPhase, paintTaskPhase,
     setInertCardPresentation, setLiveCardPhase, syncParkedPhase, taskActivityPresentation } from '../modules/task_phase_chip.js';
 
@@ -20,6 +21,7 @@ const waitingModel = row => activeModelWaits(mergeModelWaits({}, row.model_waits
 const flattened = view => [view.text, view.secondary].filter(Boolean).join(' · ');
 
 for (const [patch, text, motion, waiting] of [
+    [{ phase: 'preparing' }, 'Preparing request', true, false],
     [{ phase: 'working' }, 'Working', true, false],
     [{ phase: 'thinking' }, 'Thinking', true, false],
     [{ phase: 'queued' }, 'Queued', false, false],
@@ -58,6 +60,37 @@ for (const [patch, text, motion, waiting] of [
         assert.equal(sidebar.label, text);
         assert.equal(sidebar.motion, motion);
         assert.equal(sidebar.waiting, waiting);
+    });
+}
+
+for (const [phase, text, motion] of [
+    ['queued', 'Request accepted · waiting for admission', false],
+    ['dispatching', 'Preparing request dispatch', true],
+    ['awaiting_response', 'Sending request / waiting for response', true],
+    ['response_ready', 'Response available', true],
+    ['response_received', 'Response received · processing', true],
+    ['rejoining', 'Rejoining the same model operation', false],
+    ['unknown', 'Model operation unconfirmed', false],
+]) {
+    test(`observed model ${phase} reaches the same task presenters and loses to lifecycle controls`, () => {
+        const row = { activity_id: 'root', phase: 'working', model_activity: { phase, operation_id: 'same' } };
+        const full = { phaseEl: element(), inlineTypingEl: { style: {}, isConnected: true } };
+        syncParkedPhase(full, row.phase, row);
+        assert.equal(full.phaseEl.textContent, text);
+        assert.equal(censusTaskPhase(row).text, text);
+        assert.equal(summarizeProjectActivities([row]).label, text);
+        assert.equal(full.phaseEl.dataset.motion, motion ? '1' : '0');
+        assert.equal(censusTaskPhase(row, null, false).text, 'Activity unconfirmed');
+        assert.equal(censusTaskPhase(row, null, true, true).text, 'Waiting for access');
+        assert.equal(censusTaskPhase({ ...row, phase: 'budget_paused', pause_cause: 'owner' }).text, 'Paused · owner pause');
+        full.cancelPendingPolicy = 'immediate';
+        assert.equal(desiredLiveCardPhase(full).text, 'Cancelling…');
+        const records = [{ ...full, root: { isConnected: true }, groupId: 'root', direct: true }];
+        const counts = chatStatusCounts(new Map([['root', row]]), records);
+        assert.equal(computeDerivedChatStatus(counts).text, 'Cancelling…');
+        full.finished = true;
+        assert.equal(syncParkedPhase(full, 'working', row), false);
+        assert.equal(desiredLiveCardPhase(full, 'cancelled').text, 'Cancelled');
     });
 }
 

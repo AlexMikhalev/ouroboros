@@ -10,7 +10,8 @@ import re
 from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros.cost_projection import COST_ALIAS_PAIRS, COST_OPENNESS_FIELDS, normalize_task_result_cost_planes
-from ouroboros.utils import read_json_dict, read_text_across_replace, update_json_locked, utc_now_iso
+from ouroboros.task_store import list_documents, patch_document, read_document
+from ouroboros.utils import utc_now_iso
 # Projection owner retains read custody; this historical import remains compatible.
 from ouroboros.review_projection import merge_review_projection as merge_review_projection
 from ouroboros.review_records import validate_author_disposition
@@ -207,11 +208,7 @@ def project_task_acceptance_review_capacity(
             root_task_id,
             require_root_result=not bool(lineage.get("is_root_task")),
         )
-        path = task_result_path(root, root_task_id, create=False)
-        root_result = read_json_dict(path) if path.is_file() else {}
-        if path.is_file() and root_result is None:
-            raise ValueError("root result is malformed")
-        root_result = root_result if isinstance(root_result, dict) else {}
+        root_result = read_document(root, root_task_id) or {}
         cap = _root_task_acceptance_review_cap(root_result)
         claims = state.get("claims_by_binding") or {}
         claimed = len(claims)
@@ -392,14 +389,11 @@ def load_task_acceptance_review_state(
 ) -> Dict[str, Any]:
     """Read the canonical root's shared paid-review claims without mutation."""
 
-    path = task_result_path(results_drive_root, root_task_id, create=False)
-    if not path.is_file():
+    result = read_document(results_drive_root, validate_task_id(root_task_id))
+    if result is None:
         if require_root_result:
             raise ValueError("TASK_ACCEPTANCE_REVIEW_STATE_UNKNOWN: root result is absent")
         return _empty_task_acceptance_review_state(root_task_id)
-    result = read_json_dict(path)
-    if result is None:
-        raise ValueError("TASK_ACCEPTANCE_REVIEW_STATE_INVALID: root result is malformed")
     if str(result.get("task_id") or "") != str(root_task_id):
         raise ValueError("TASK_ACCEPTANCE_REVIEW_STATE_INVALID: root identity mismatch")
     stored_root_id = str(result.get("root_task_id") or "")
@@ -421,11 +415,9 @@ def _update_task_acceptance_review_state(
     *,
     allow_create: bool,
 ) -> Dict[str, Any]:
-    """Strict root-result update; the file lock is the tree-wide claim fence."""
+    """Strict root-result update; the store transaction is the tree-wide claim fence."""
 
-    path = task_result_path(results_drive_root, root_task_id, create=allow_create)
-    if not allow_create and not path.is_file():
-        raise ValueError("TASK_ACCEPTANCE_REVIEW_STATE_UNKNOWN: root result is absent")
+    path = f"task:{validate_task_id(root_task_id)}"
     observed_state: Dict[str, Any] = {}
 
     def _merge(existing: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -462,19 +454,7 @@ def _update_task_acceptance_review_state(
             "updated_at": now,
         })
 
-    try:
-        updated = update_json_locked(
-            path,
-            _merge,
-            strict_existing_dict=True,
-            reject_existing_empty_dict=True,
-        )
-    except ValueError as exc:
-        if str(exc).startswith("update_json_locked:"):
-            raise ValueError(
-                "TASK_ACCEPTANCE_REVIEW_STATE_INVALID: root result is malformed"
-            ) from exc
-        raise
+    updated = patch_document(results_drive_root, root_task_id, _merge)
     if TASK_ACCEPTANCE_REVIEW_STATE_KEY not in updated:
         return _validated_task_acceptance_review_state(observed_state, root_task_id)
     return _validated_task_acceptance_review_state(
@@ -689,7 +669,7 @@ def is_reconciled_presence_placeholder(row: Dict[str, Any]) -> bool:
 
 def reopen_reconciled_presence_placeholder(drive_root: Any, task_id: str) -> bool:
     """Return a placeholder to ``running`` for its re-run; the host mark moves to ``superseded_placeholder``."""
-    path, reopened = task_result_path(drive_root, task_id), []
+    path, reopened = f"task:{validate_task_id(task_id)}", []
     # The terminal-projection bookkeeping of the placeholder's failed transition goes with it: the
     # re-run's own terminal transition must originate its own room row, never inherit a failed one.
     projection = ("canonical_terminal_projection", "canonical_terminal_projection_ready",
@@ -710,7 +690,7 @@ def reopen_reconciled_presence_placeholder(drive_root: Any, task_id: str) -> boo
             "superseded_placeholder": {**mark, "result": str(existing.get("result") or "")[-500:]},
         })
 
-    update_json_locked(path, _reopen, strict_existing_dict=True)
+    patch_document(drive_root, task_id, _reopen)
     return bool(reopened)
 
 
@@ -749,28 +729,6 @@ def _normalize_swarm_efficiency(data: Dict[str, Any]) -> Dict[str, Any]:
     return {**data, "swarm_efficiency": value}
 
 
-def _admit_task_result(
-    path: pathlib.Path, data: Any, task_id: str, *, strict: bool, noun: str,
-) -> tuple[Optional[Dict[str, Any]], str]:
-    """Schema admission shared by exact and scan reads: ``(row or None, refusal when quarantined)``.
-
-    Fail-soft refusal quarantines; strict refusal raises without moving, so
-    unreadable identities cannot be readmitted."""
-    refusal = task_result_schema_refusal(data)
-    if refusal and strict:  # "malformed" keeps the pre-ABI-2 strict message for unreadable rows
-        raise ValueError(f"{noun} is unreadable or invalid: {path}" if refusal == "malformed" else
-                         f"task result schema is inadmissible ({QUARANTINED_SCHEMA_REASON}: {refusal}): {path}")
-    if refusal:
-        outcome = _quarantine_task_result(path, refusal)
-        data = read_json_dict(path) if outcome == "kept_admissible" else None
-        if data is None or task_result_schema_refusal(data):
-            return None, refusal if outcome == "moved" else ""
-    if strict and (str(data.get("task_id") or "") != task_id or not isinstance(data.get("status"), str)
-                   or not str(data.get("status") or "").strip()):
-        raise ValueError(f"{noun} is unreadable or invalid: {path}")
-    return data, ""
-
-
 def load_task_result(
     drive_root: Any, task_id: str, *, strict: bool = False,
 ) -> Optional[Dict[str, Any]]:
@@ -781,21 +739,34 @@ def load_task_result(
     Neither mode materializes deliverables or independent state axes."""
     try:
         tid = validate_task_id(task_id)
-        path = task_result_path(drive_root, tid, create=False)
     except ValueError:
         if strict:
             raise
         return None
-    try:
-        data = json.loads(read_text_across_replace(path))
-    except FileNotFoundError:
+    data = read_document(drive_root, tid)
+    if data is None:
+        if strict:
+            _refuse_occupied(drive_root, tid, write=False)
         return None  # This read saw absence even if a writer publishes immediately after it.
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        data = None
-    data, moved = _admit_task_result(path, data, tid, strict=strict, noun="task result authority")
-    if moved:
-        _emit_quarantine_event(drive_root, [{"task_id": tid, "reason": moved}])
-    return _normalize_swarm_efficiency(data) if data is not None else None
+    _admit_stored(data, tid, strict=strict, noun="task result authority")
+    return _normalize_swarm_efficiency(data)
+
+
+def _refuse_occupied(drive_root: Any, task_id: str, *, write: bool) -> None:
+    """ABI-2: an identity whose file the import refused or quarantined has no row, yet a strict
+    reader or a create-only writer must not readmit it as a fresh absence."""
+    from ouroboros.store_import import occupied_reason
+
+    if occupied_reason(drive_root, task_id, write=write):
+        raise ValueError(f"task result authority is unreadable or invalid: task:{task_id}")
+
+
+def _admit_stored(data: Dict[str, Any], task_id: str, *, strict: bool, noun: str) -> None:
+    """A stored row was admitted when it entered the store; the strict reader still refuses an
+    identity or status it cannot bind (the file-era message, so callers keep their wording)."""
+    if strict and (str(data.get("task_id") or "") != task_id or not isinstance(data.get("status"), str)
+                   or not str(data.get("status") or "").strip()):
+        raise ValueError(f"{noun} is unreadable or invalid: task:{task_id}")
 
 
 def list_task_results(
@@ -804,31 +775,16 @@ def list_task_results(
     statuses: Optional[List[str]] = None,
     strict: bool = False,
 ) -> List[Dict[str, Any]]:
-    """List task results, optionally refusing an incomplete authority scan.
+    """List task results; ``statuses`` is the store's WHERE prefilter on the stored status.
 
-    Most observational callers remain tolerant of a malformed historical row.
-    Authority reducers such as direct-child admission pass ``strict=True`` so
-    an unreadable row cannot be silently reinterpreted as an absent child.
-
-    Schema admission (ABI 7.0, Q8=B): the fail-soft scan QUARANTINES every
-    inadmissible row it meets and reports the whole sweep as ONE durable
-    event; the strict scan raises WITHOUT moving anything. Rows already under
-    ``task_results/quarantine/`` are outside this scan (non-recursive glob).
+    Strict authority readers cannot treat an unbindable row as absent: one such row refuses
+    the whole list. Rows come back in task-id order.
     """
     wanted = {str(item) for item in list(statuses or []) if str(item).strip()}
     results: List[Dict[str, Any]] = []
-    quarantined: List[Dict[str, str]] = []
-    for path in sorted(task_results_dir(drive_root, create=False).glob("*.json")):
-        data = read_json_dict(path)
-        if data is None and not path.is_file():
-            continue  # vanished mid-scan — nothing to admit or quarantine
-        data, moved = _admit_task_result(path, data, path.stem, strict=strict, noun="task result")
-        if moved:
-            quarantined.append({"task_id": path.stem, "reason": moved})
-        if data is None or (wanted and str(data.get("status") or "") not in wanted):
-            continue
-        results.append(data)
-    _emit_quarantine_event(drive_root, quarantined)
+    for data in list_documents(drive_root, statuses=wanted or None):
+        _admit_stored(data, str(data.get("task_id") or ""), strict=strict, noun="task result")
+        results.append(_normalize_swarm_efficiency(data))
     return results
 
 
@@ -844,28 +800,41 @@ def write_task_result(
     _terminal_time_source: Optional[Dict[str, Any]] = None,
     **fields: Any,
 ) -> Dict[str, Any]:
-    """Merge-write a task result under a per-file lock.
+    """Merge-write a task result inside one store write transaction.
 
-    Workers, supervisor and gateways share CURRENT under this lock: the monotonic
+    Workers, supervisor and gateways share CURRENT under that transaction: the monotonic
     reducer decides terminal races, so natural completion wins a late cancel.
     Discarding a result remains the separate explicit ``discard_child_result``.
     ``_field_projector`` runs after review-publication selection under the same
     lock, deriving fields/status from CURRENT or publishing its verified refs;
     repeating the incoming-review merge afterward would undo that handoff.
-    ``strict_existing_dict`` refuses invalid authority under the write lock.
-    ``create_only`` initializes only absence, before projection or timestamps;
-    combined with strict validation it preserves unreadable existing bytes.
+    ``strict_existing_dict`` is accepted for its callers: every stored row is a dict.
+    ``create_only`` initializes only absence, before projection or timestamps.
+    The body is one store transaction: the merge over CURRENT, the typed columns and
+    obligation flags of the merged document, the custody and handoff riders, COMMIT.
     """
-    path = task_result_path(results_drive_root, task_id)
+    path = f"task:{validate_task_id(task_id)}"
+    if create_only:
+        _refuse_occupied(results_drive_root, task_id, write=True)
     explicit_ts = str(fields.pop("ts", "") or "")
     from ouroboros.task_custody import capture_owner_mail, capture_unread_mail, merge_unread_mail
+    from ouroboros.task_store import Reprepare, prepared_write
 
-    # TZ-1 V10: the mailbox bytes are read BEFORE the row lock (a bounded union happens
-    # under it); a terminal write that the projector turns terminal captures under it.
-    captured = capture_unread_mail(results_drive_root, task_id) if status in _TRULY_TERMINAL_STATUSES else None
-    owner_mail = capture_owner_mail(results_drive_root, task_id) if status in _TRULY_TERMINAL_STATUSES else None
+    prepared: Dict[str, Any] = {}
 
-    def _merge(existing: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _write(needs: set) -> Dict[str, Any]:
+        # TZ-1 V10: the mailbox bytes are read BEFORE the row lock (a bounded union happens
+        # under it); a write the projector turns terminal, or a first row, asks once
+        # (``Reprepare``) and the whole write repeats with that input prepared out here
+        # (what an earlier round prepared is kept, not read again).
+        if "mail" not in prepared and (status in _TRULY_TERMINAL_STATUSES or "mail" in needs):
+            prepared["mail"] = (capture_unread_mail(results_drive_root, task_id), capture_owner_mail(results_drive_root, task_id))
+        if "rollup" not in prepared and (create_only or "rollup" in needs) and "swarm_fanout_rollup" not in fields:
+            from ouroboros.swarm_rollup import initial_swarm_rollup
+            prepared["rollup"] = initial_swarm_rollup(results_drive_root)
+        return patch_document(results_drive_root, task_id, lambda existing: _merge(existing, prepared))
+
+    def _merge(existing: Dict[str, Any], prepared: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if strict_existing_dict and existing and (
             str(existing.get("task_id") or "") != str(task_id)
             or not isinstance(existing.get("status"), str)
@@ -879,6 +848,10 @@ def write_task_result(
         if create_only and existing:
             return None
         prepared_fields = dict(fields)
+        if not existing and "swarm_fanout_rollup" not in prepared_fields:
+            if "rollup" not in prepared:
+                raise Reprepare("rollup")
+            prepared_fields["swarm_fanout_rollup"] = prepared["rollup"]
         from ouroboros.acceptance_history import preserve_acceptance_history
         prepared_fields = preserve_acceptance_history(existing, prepared_fields)
         if "review_projection" in prepared_fields:
@@ -902,19 +875,19 @@ def write_task_result(
         # erase provenance persisted before the separate readiness write.
         projected_fields.pop("canonical_terminal_projection_origin", None)
         if projected_status in _TRULY_TERMINAL_STATUSES and existing_status not in _TRULY_TERMINAL_STATUSES:
+            if "mail" not in prepared:
+                raise Reprepare("mail")  # the projector turned the row terminal: the capture happens outside
+            captured, owner_mail = prepared["mail"]
             merged = {**existing, **projected_fields}
             lineage_keys = ("root_task_id", "parent_task_id", "delegation_role", "original_task_id", "timeout_retry_from")
             if resolve_task_lineage(task_id, metadata=merged.get("metadata"),
                                     **{key: merged.get(key) for key in lineage_keys})["is_root_task"]:
                 projected_fields["canonical_terminal_projection_origin"] = "terminal_transition"
                 # Batch4: the owner's exact rows, ACKed ones included, outlive the mailbox cleanup.
-                projected_fields["owner_mailbox"] = merge_unread_mail(existing.get("owner_mailbox"), owner_mail
-                                                                      or capture_owner_mail(results_drive_root, task_id))
+                projected_fields["owner_mailbox"] = merge_unread_mail(existing.get("owner_mailbox"), owner_mail)
             # TZ-1 V10: this accepted transition keeps the mail no attempt read (no ACK written);
             # later late mail joins through settlement, never through a rejected write.
-            projected_fields["unread_mailbox"] = merge_unread_mail(
-                projected_fields.get("unread_mailbox"),
-                captured if status in _TRULY_TERMINAL_STATUSES else capture_unread_mail(results_drive_root, task_id))
+            projected_fields["unread_mailbox"] = merge_unread_mail(projected_fields.get("unread_mailbox"), captured)
         # Unread-mail custody only grows: no replica or partial write can shrink it.
         projected_fields["unread_mailbox"] = merge_unread_mail(
             existing.get("unread_mailbox"), projected_fields.get("unread_mailbox"))
@@ -934,12 +907,7 @@ def write_task_result(
             "updated_at": now,
         }))
 
-    from ouroboros.obligations import update_result
-    return update_result(
-        path, _merge, writer=update_json_locked,
-        strict_existing_dict=bool(strict_existing_dict),
-        reject_existing_empty_dict=bool(strict_existing_dict),
-    )
+    return prepared_write(_write)
 
 
 # plan_review_state v2 records each task's plan_task cycles: a fresh series_id,
@@ -1073,14 +1041,9 @@ def _validated_plan_review_state(value: Any) -> Dict[str, Any]:
 
 def load_plan_review_state(results_drive_root: Any, task_id: str) -> Dict[str, Any]:
     """Read bounded state, then resolve the full specs used by decision consumers."""
-    path = task_result_path(results_drive_root, task_id, create=False)
-    if not path.is_file():
+    result = read_document(results_drive_root, validate_task_id(task_id))
+    if result is None:
         return _empty_plan_review_state()
-    # Share the writer's lock: Windows may deny reads during atomic replacement.
-    try:
-        result = update_json_locked(path, lambda _: None, strict_existing_dict=True)
-    except ValueError as exc:
-        raise ValueError("PLAN_REVIEW_STATE_INVALID: parent task result JSON is malformed") from exc
     from ouroboros.tools.plan_review_artifacts import authority_state
 
     return authority_state(
@@ -1347,8 +1310,8 @@ def _update_plan_review_state(
     task_id: str,
     mutator: Callable[[Dict[str, Any]], Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Strict locked update; unlike lifecycle writes, planning authority has no unlocked fallback."""
-    path = task_result_path(results_drive_root, task_id)
+    """Strict transactional update; unlike lifecycle writes, planning authority has no fallback."""
+    path = f"task:{validate_task_id(task_id)}"
 
     def _merge(existing: Dict[str, Any]) -> Dict[str, Any]:
         require_writable_task_result_schema(existing, path)
@@ -1366,14 +1329,7 @@ def _update_plan_review_state(
             "updated_at": now,
         })
 
-    try:
-        updated = update_json_locked(path, _merge, strict_existing_dict=True)
-    except ValueError as exc:
-        if str(exc).startswith("update_json_locked:"):
-            raise ValueError(
-                "PLAN_REVIEW_STATE_INVALID: parent task result JSON is malformed"
-            ) from exc
-        raise
+    updated = patch_document(results_drive_root, task_id, _merge)
     return _validated_plan_review_state(updated.get(PLAN_REVIEW_STATE_KEY))
 
 
@@ -1440,10 +1396,11 @@ def record_plan_review_wave(
     if not _PLAN_REVIEW_HASH_RE.fullmatch(fingerprint):
         raise ValueError("PLAN_REVIEW_STATE_INVALID: wave fingerprint is invalid")
 
-    def _record(state: Dict[str, Any]) -> Dict[str, Any]:
-        from ouroboros.tools.plan_author_history import retain_previous_selection
+    from ouroboros.task_store import prepared_write
+    from ouroboros.tools.plan_author_history import prepared_retention
 
-        retain_previous_selection(results_drive_root, task_id, state)
+    def _record(state: Dict[str, Any], retain: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
+        retain(state)  # the retention I/O ran before the transaction; a moved attempt repeats the write
         selected = state.get("current_attempt") or {}
         retained_author = (selected.get("author_subject") or {}).get("review_fingerprint") == fingerprint
         previous = [w for w in state.get("waves") or [] if str(w.get("request_fingerprint") or "") == fingerprint]
@@ -1509,7 +1466,11 @@ def record_plan_review_wave(
         state["current_attempt"] = selected if retained_author else {"fingerprint": fingerprint, "status": "open", "reason": ""}
         return state
 
-    state = _update_plan_review_state(results_drive_root, task_id, _record)
+    def _write(_needs: set) -> Dict[str, Any]:
+        retain = prepared_retention(results_drive_root, task_id)
+        return _update_plan_review_state(results_drive_root, task_id, lambda state: _record(state, retain))
+
+    state = prepared_write(_write)
     return plan_review_wave(state, fingerprint) or {}
 
 

@@ -173,15 +173,20 @@ def test_landed_push_desktop_matrix_runs_in_this_repository_only():
         assert _value(job["if"], event=event, ref=ref, base=base, repository="someone/private-copy")
 
 
-def test_the_windows_leg_runs_the_owner_attachment_browser_module_and_refuses_a_skip(tmp_path):
-    """Real Windows confined reads behind the attachment route, in THIS matrix (no second one):
-    one module's Chromium cases, never the UI lane's guard, and a run with no case or a skip fails."""
+@pytest.mark.parametrize("run_id,module", [
+    ("attachment_browser", "tests/test_chat_attachments_browser.py"),
+    ("composer_browser", "tests/test_chat_input_sizing_browser.py"),
+])
+def test_the_windows_leg_runs_its_browser_modules_and_refuses_a_skip(tmp_path, run_id, module):
+    """Real Windows browser cases in THIS matrix (no second one): the owner-attachment route's confined
+    reads and the message field's sizing, each one module's Chromium cases from one shared install,
+    never the UI lane's guard, and a run with no case or a skip fails."""
     import subprocess
     import sys
 
     job = WORKFLOW["jobs"]["full-test"]
     steps = {step.get("id"): step for step in job["steps"] if step.get("id")}
-    install, run = steps["attachment_browser_install"], steps["attachment_browser"]
+    install, run = steps["attachment_browser_install"], steps[run_id]
     for step in (install, run):
         assert "!cancelled()" in step["if"] and "runner.os == 'Windows'" in step["if"]
         assert isinstance(step["timeout-minutes"], int) and "continue-on-error" not in step
@@ -205,9 +210,9 @@ def test_the_windows_leg_runs_the_owner_attachment_browser_module_and_refuses_a_
     assert playwright == '"$UV_PROJECT_ENVIRONMENT/Scripts/python.exe" -m playwright install chromium'
     assert run["env"]["OUROBOROS_RUN_UI_SMOKE"] == "1"
     assert install["env"]["PLAYWRIGHT_BROWSERS_PATH"] == run["env"]["PLAYWRIGHT_BROWSERS_PATH"]
-    command, check = run["run"].strip().splitlines()
+    command, check, *evidence = run["run"].strip().splitlines()
     assert command.startswith('"$ATTACHMENT_PYTHON" -I -S scripts/safe_test.py -- "$ATTACHMENT_PYTHON" -m pytest '
-                              "tests/test_chat_attachments_browser.py")
+                              + module)
     assert " -m ui_browser -k chromium " in command and "--require-ui-browser" not in command
     assert "matrix" not in json.dumps(run) and job["strategy"]["matrix"].keys() == {"os"}
     # The skip guard, run as written against a junit report of each shape.
@@ -217,3 +222,27 @@ def test_the_windows_leg_runs_the_owner_attachment_browser_module_and_refuses_a_
         script = check.split('python -c "', 1)[1].rsplit('" "$RUNNER_TEMP', 1)[0]
         result = subprocess.run([sys.executable, "-c", script, str(report)], capture_output=True, text=True)
         assert (result.returncode == 0) is ok, (tests, skipped, result.stdout, result.stderr)
+    if run_id != "composer_browser":
+        assert not evidence
+        return
+    # The sizing evidence reaches the artifact: safe_test keeps the evidence root, the step fails
+    # without the geometry it wrote, and the upload takes that root whatever the test's outcome.
+    safe_test = (ROOT / "scripts/safe_test.py").read_text(encoding="utf-8")
+    assert '"OUROBOROS_UI_EVIDENCE_DIR"' in safe_test.split("keep=(", 1)[1].split("))", 1)[0]
+    root = run["env"]["OUROBOROS_UI_EVIDENCE_DIR"]
+    assert root == "${{ runner.temp }}/ci-evidence/composer"
+    [written] = evidence
+    script = written.split('python -c "', 1)[1].rsplit('" "$OUROBOROS_UI_EVIDENCE_DIR', 1)[0]
+    assert written.endswith('"$OUROBOROS_UI_EVIDENCE_DIR/composer-sizing-chromium.json"')
+    for content, ok in ((None, False), ("", False), ("[]", True)):
+        geometry = tmp_path / "composer-sizing-chromium.json"
+        geometry.unlink(missing_ok=True)
+        if content is not None:
+            geometry.write_text(content, encoding="utf-8")
+        result = subprocess.run([sys.executable, "-c", script, str(geometry)], capture_output=True, text=True)
+        assert (result.returncode == 0) is ok, (content, result.stdout, result.stderr)
+    upload = next(step for step in job["steps"] if step.get("with", {}).get("name") == "composer-sizing-windows")
+    assert job["steps"].index(upload) == job["steps"].index(run) + 1
+    assert upload["uses"].startswith("actions/upload-artifact@") and upload["continue-on-error"] is True
+    assert upload["with"]["path"].rstrip("/") == root
+    assert "runner.os == 'Windows'" in upload["if"] and "steps.attachment_browser_install.outcome == 'success'" in upload["if"]

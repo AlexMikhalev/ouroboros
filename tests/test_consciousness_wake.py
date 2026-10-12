@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros import consciousness_wake as wake
+from tests._store_shared import read_result, result_exists, seed_result
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 T0 = 1_800_000_000.0
@@ -29,7 +30,7 @@ def _result(root, task_id, *, status="completed", ts, cost=1.25, direct=False, q
         row["project_id"] = project_id
     if quizzes:
         row["owner_quiz"] = quizzes
-    (root / "task_results" / f"{task_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    seed_result(root, task_id, row)
 
 
 def test_wake_task_metadata_carries_origin_level_and_tree_cap(monkeypatch):
@@ -150,11 +151,10 @@ def test_the_boundary_survives_rotation_and_a_replaced_chain_is_disclosed(tmp_pa
 def _write(root, task_id, **fields):
     """A task result row exactly as stored (``ts`` is the first write; nothing else is inferred)."""
     (root / "task_results").mkdir(exist_ok=True)
-    path = root / "task_results" / f"{task_id}.json"
-    row = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {
+    row = read_result(root, task_id) if result_exists(root, task_id) else {
         "task_id": task_id, "_schema_version": 1, "metadata": {}, "description": f"do {task_id}"}
     row.update(fields)
-    path.write_text(json.dumps(row), encoding="utf-8")
+    seed_result(root, task_id, row)
     return row
 
 
@@ -227,10 +227,9 @@ def test_an_expired_card_is_a_transition_and_stays_answerable_in_the_inventory(t
     assert len(second.outstanding) == 1 and "q1" in second.outstanding[0]  # still answerable
     assert "1 card closed unanswered" in second.full_text()
     # The owner answers late: that is the next transition, the expiry is not repeated.
-    path = tmp_path / "task_results" / "asker.json"
-    row = json.loads(path.read_text(encoding="utf-8"))
+    row = read_result(tmp_path, "asker")
     row["owner_quiz"]["q1"].update(state="answered", answered_at=_iso(T0 + 700), comment="yes")
-    path.write_text(json.dumps(row), encoding="utf-8")
+    seed_result(tmp_path, "asker", row)
     third = _wake(tmp_path, second.boundary, T0 + 1200)
     assert [kind for kind, _o, _l in third.events] == ["card_answer"]
     assert "answered in own words: yes" in _lines(third)[0] and third.outstanding == ()
@@ -678,19 +677,26 @@ def test_partial_old_inventory_upgrades_with_explicit_coverage_gap(tmp_path):
 
 def test_wake_scan_reads_each_result_and_project_registry_once(tmp_path, monkeypatch):
     from collections import Counter
-    from ouroboros import projects_registry as projects, task_results
+    from ouroboros import projects_registry as projects, store, task_store
 
     total = 240
     for index in range(total):
         _write(tmp_path, f"t{index:04d}", status="completed", ts=_iso(T0 - 10), updated_at=_iso(T0 - 10), project_id="p1")
     reads, project_reads = Counter(), []
-    original = task_results.read_json_dict
+    real_decode, real_load = task_store._decode, store.Txn.load
 
-    def read(path, *args, **kwargs):
-        reads[str(path)] += 1
-        return original(path, *args, **kwargs)
+    def decode(*args):  # every body the scan decodes, by task
+        rows = real_decode(*args)
+        for row in rows:
+            reads[row["task_id"]] += 1
+        return rows
 
-    monkeypatch.setattr(task_results, "read_json_dict", read)
+    def load(self, task_id):
+        reads[task_id] += 1
+        return real_load(self, task_id)
+
+    monkeypatch.setattr(task_store, "_decode", decode)
+    monkeypatch.setattr(store.Txn, "load", load)
     monkeypatch.setattr(projects, "list_reserved_projects", lambda _root: project_reads.append(True) or [
         {"id": "p1", "name": "Project", "chat_id": 42, "lifecycle": "active"}])
     observed = _wake(tmp_path, None, T0)

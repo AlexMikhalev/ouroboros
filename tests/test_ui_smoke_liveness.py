@@ -24,6 +24,7 @@ from tests.test_ui_smoke_project_continuity import (
 )
 
 import tempfile
+from tests._store_shared import seed_result
 
 _SCREENSHOT_DIR = pathlib.Path(
     os.environ.get("OUROBOROS_UI_SMOKE_SHOT_DIR", "")
@@ -64,16 +65,13 @@ def _seed_orphan_swarm(data_dir: pathlib.Path) -> None:
     (logs / "progress.jsonl").write_text("\n".join(stale_progress) + "\n", encoding="utf-8")
     results = data_dir / "task_results"
     results.mkdir(parents=True, exist_ok=True)
-    (results / "swarm-root.json").write_text(
-        json.dumps({
+    seed_result(data_dir, "swarm-root", {
             "_schema_version": 1,
             "task_id": "swarm-root",
             "status": "completed",
             "summary": "swarm finished",
             "root_phase_checkpoint": {"post_task_synthesis": "completed"},
-        }),
-        encoding="utf-8",
-    )
+        })
 
 
 @pytest.mark.ui_browser

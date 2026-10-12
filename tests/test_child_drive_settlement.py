@@ -18,6 +18,7 @@ from ouroboros import artifacts, headless, owner_mailbox, task_custody
 from ouroboros.outcome_receipt_store import read_verification_receipts, verification_receipts_path
 from ouroboros.outcomes import append_verification_receipt
 from ouroboros.task_results import load_task_result, write_task_result
+from tests._store_shared import unreadable_result
 
 TASK = "settle1"
 
@@ -121,7 +122,7 @@ def test_unreadable_material_retains_the_drive(tmp_path, monkeypatch, material):
     data, drive, record = _cancelled_with_capture(tmp_path)
     store = artifacts.task_artifact_dir_path(drive, TASK)
     if material == "child_result":
-        (drive / "task_results" / f"{TASK}.json").write_text("{torn", encoding="utf-8")
+        unreadable_result(monkeypatch, TASK)
         expected = "task_result_unreadable"
     elif material == "registration":
         (store / ".artifact_manifest.json").write_text("{torn", encoding="utf-8")
@@ -292,13 +293,6 @@ def test_a_timeout_retry_occupying_the_original_drive_keeps_it_until_its_own_cus
     assert _settle(data, drive)["reason"] == "child_refs_pending"
     headless.retry_child_task_refs(data, drive, retry)
     assert _settle(data, drive)["status"] == "removed"
-
-
-@pytest.mark.parametrize("name", ["bad name", ".hidden"])
-def test_an_unidentifiable_occupant_keeps_the_drive(tmp_path, name):
-    data, drive, _record = _cancelled_with_capture(tmp_path)
-    (drive / "task_results" / f"{name}.json").write_text("{}", encoding="utf-8")
-    assert _settle(data, drive)["reason"] == "drive_occupant_unknown"
 
 
 def test_a_drive_that_is_not_the_tasks_own_is_never_touched(tmp_path):

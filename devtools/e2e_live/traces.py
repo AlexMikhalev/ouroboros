@@ -24,7 +24,7 @@ from devtools.benchmarks.common.secrets import credential_fingerprint
 
 TRACES_DIR = "traces"
 # Relative to a drive root: the lane's own and each headless task's forked one (FORK_ROOTS).
-TRACE_GLOBS = ("logs/*.jsonl", "logs/*.log", "logs/*.log.[0-9]*", "task_results/*.json", "state/advisory_review.json",
+TRACE_GLOBS = ("logs/*.jsonl", "logs/*.log", "logs/*.log.[0-9]*", "state/current.sqlite", "state/advisory_review.json",
                "state/usage.sqlite", "state/usage_attempts.jsonl", "state/queue_snapshot.json", "state/evolution_campaign.json",
                "observability/calls/*/*.json")
 FORK_ROOTS = "state/headless_tasks/*/data"

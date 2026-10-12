@@ -75,6 +75,38 @@ def retain_previous_selection(drive_root: Any, task_id: str, state: dict) -> Non
             state["author_history_head"] = _persist(drive_root, task_id, value)
 
 
+class _Retention:
+    """The retention I/O of ``retain_previous_selection`` run BEFORE the store transaction, over
+    the CURRENT state (``state`` is the prepared outcome); called inside the mutator it applies
+    that outcome while the current attempt is still the one it prepared for, and raises
+    ``Reprepare`` otherwise, so the whole write repeats outside the lock — never inline I/O."""
+
+    def __init__(self, drive_root: Any, task_id: str) -> None:
+        from ouroboros import task_results as results
+        from ouroboros.task_store import read_document
+
+        document = read_document(drive_root, task_id) or {}
+        before = results._validated_plan_review_state(document.get(results.PLAN_REVIEW_STATE_KEY))
+        self.attempt_before = copy.deepcopy(before.get("current_attempt") or {})
+        self.state = copy.deepcopy(before)
+        retain_previous_selection(drive_root, task_id, self.state)
+
+    def __call__(self, state: dict) -> None:
+        from ouroboros.task_store import Reprepare
+
+        if (state.get("current_attempt") or {}) != self.attempt_before:
+            raise Reprepare("retention")
+        subject = (self.state.get("current_attempt") or {}).get("author_subject")
+        if subject is not None and state.get("current_attempt"):
+            state["current_attempt"]["author_subject"] = copy.deepcopy(subject)
+        if "author_history_head" in self.state:
+            state["author_history_head"] = copy.deepcopy(self.state["author_history_head"])
+
+
+def prepared_retention(drive_root: Any, task_id: str) -> _Retention:
+    return _Retention(drive_root, task_id)
+
+
 def record_attempt(drive_root: Any, task_id: str, *, fingerprint: str, status: str, reason: str,
                    author_subject: dict | None, submitted_subject: dict | None = None) -> dict:
     """The existing locked attempt producer, with author-source retention first."""
@@ -96,20 +128,36 @@ def record_attempt(drive_root: Any, task_id: str, *, fingerprint: str, status: s
                            reason="submitted_source_unavailable", author_subject=None)
             raise
 
-    def record(state: dict) -> dict:
-        previous = state.get("current_attempt") or {}
-        retained = submitted or (previous.get("submitted_subject") if previous.get("fingerprint") == fingerprint else None)
-        retain_previous_selection(drive_root, task_id, state)
-        selected = retain_author_selection(drive_root, task_id, state, author_subject, fingerprint) if author_subject is not None else None
-        state["current_attempt"] = {"fingerprint": fingerprint, "status": status,
-                                    "reason": str(reason or "")[:results._PLAN_REVIEW_REASON_MAX_CHARS]}
-        if selected is not None:
-            state["current_attempt"]["author_subject"] = selected
-        elif retained:
-            state["current_attempt"]["submitted_subject"] = retained
-        return state
+    from ouroboros.task_store import Reprepare, prepared_write
 
-    return results._update_plan_review_state(drive_root, task_id, record)
+    def write(_needs: set) -> dict:
+        retain = prepared_retention(drive_root, task_id)
+        head_before = copy.deepcopy(retain.state.get("author_history_head") or {})
+        selected, head_after = None, head_before
+        if author_subject is not None:  # the selection's source read and write happen out here
+            staged = {"author_history_head": copy.deepcopy(head_before)}
+            selected = retain_author_selection(drive_root, task_id, staged, author_subject, fingerprint)
+            head_after = staged["author_history_head"]
+
+        def record(state: dict) -> dict:
+            previous = state.get("current_attempt") or {}
+            retained = submitted or (previous.get("submitted_subject") if previous.get("fingerprint") == fingerprint else None)
+            retain(state)
+            if author_subject is not None:
+                if (state.get("author_history_head") or {}) != head_before:
+                    raise Reprepare("selection")  # another writer moved the head: select again outside
+                state["author_history_head"] = copy.deepcopy(head_after)
+            state["current_attempt"] = {"fingerprint": fingerprint, "status": status,
+                                        "reason": str(reason or "")[:results._PLAN_REVIEW_REASON_MAX_CHARS]}
+            if selected is not None:
+                state["current_attempt"]["author_subject"] = copy.deepcopy(selected)
+            elif retained:
+                state["current_attempt"]["submitted_subject"] = retained
+            return state
+
+        return results._update_plan_review_state(drive_root, task_id, record)
+
+    return prepared_write(write)
 
 
 def author_selections(drive_root: Any, task_id: str, state: dict) -> tuple[list, list]:

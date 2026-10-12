@@ -79,23 +79,21 @@ Apply ARCHITECTURE §10 invariant 10 to current-state readers; review and growth
 
 - **Evaluate the whole operation as the project grows:** history, object count, nested
   repetition, cold caches, shared-resource contention. Where growth can hurt
-  responsiveness, show representative-scale evidence from monotonic spans and counts
-  in the event log, never new history reads for telemetry. Remove redundant work or
-  reuse a validated view before adding a
-  projection or cache. Unknown evidence never means empty. This advisory reasoning sets
+  responsiveness, use existing spans and test spies on real readers for scale evidence;
+  telemetry adds no steady-state writes or history reads. Remove redundant work or
+  reuse a validated view before adding a projection or cache. Unknown never means empty. This reasoning sets
   no universal time limit, mandatory benchmark or extra approval gate.
 - **Passive GET.** Read handlers perform no new steady-state durable writes.
   `ouroboros/usage_store.py::read` may initialize an empty store when nothing awaits
   import; display reads leave pending imports to startup and report unavailable data.
   Enforced by `tests/test_usage_store.py`; the read path never starts a history import.
 - **House precedents, reuse these shapes:** archive-aware chat log rotation
-  (`supervisor/state.py::rotate_chat_log_if_needed`); a compact projection beside an
-  unbounded event log with a warm-read memo (`ouroboros/delegate_custody.py`,
-  `ouroboros/delegate_custody_memo.py`); the bounded filtered tail
-  (`ouroboros/jsonl_tail.py`); per-archive room summaries
+  (`supervisor/state.py::rotate_chat_log_if_needed`); current rows reduced by the writing
+  transaction beside an unbounded event log (`ouroboros/delegate_custody_current.py`); the
+  bounded filtered tail (`ouroboros/jsonl_tail.py`); per-archive room summaries
   (`ouroboros/gateway/history_segments.py`); summary rows kept by the writing
-  transaction (`ouroboros/usage_store.py`); the stat-invalidated memo
-  (`task_result_facts.py`); the task-event SSE v2 cursor (ARCHITECTURE §3 "Chat and
+  transaction (`ouroboros/usage_store.py`, `store.py`); indexed selects
+  (`task_store.py`); the task-event SSE v2 cursor (ARCHITECTURE §3 "Chat and
   Projects").
 
 Enforcement: CHECKLISTS item 9 `perf_lifecycle` (advisory) fires on diffs that change

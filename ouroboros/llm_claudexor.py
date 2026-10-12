@@ -353,6 +353,7 @@ class _ModelInvocation:
         self.detail: dict = {}
         self.poll_control = parameters.get("model_poll_control")
         self.operation_observer = parameters.get("model_operation_observer")
+        self.last_observation: dict = {}
         self.request_manifest_ref: dict = {}
         self.interrupt_reason = ""
         self.create_attempted = False
@@ -421,8 +422,13 @@ class _ModelInvocation:
         except ClaudexorUnavailable as error:
             raise ClaudexorModelError({"code": error.code, "message": str(error)}, model_role=self.role) from None
 
-    def observe_operation(self, *, accepted: bool = False) -> None:
-        """Publish custody to an optional process boundary, not provider content."""
+    def observe_operation(self, *, accepted: bool = False, phase: str = "") -> None:
+        """Publish changed custody/activity facts, never account or provider content.
+
+        Dispatch started precedes the engine's flush barrier: it proves neither
+        delivered HTTP bytes nor provider reasoning. A control hole rejoins the
+        same operation. Activity is presentation only, separate from custody.
+        """
         if accepted:
             try:
                 # Only this operational request manifest is updated. The
@@ -438,10 +444,27 @@ class _ModelInvocation:
                 self.request_manifest_ref = {}
                 log.warning("Model custody checkpoint unavailable: %s", type(error).__name__)
         if self.operation_observer is not None:
+            detail, dispatch = self.detail, (self.detail.get("dispatch") or {}).get("state")
+            if not phase:
+                phase = ("preparing" if not self.operation_id else
+                    "response_ready" if (detail.get("response") or {}).get("state") == "ready" else
+                    "queued" if detail.get("state") == "queued" and "startedAt" in detail and detail["startedAt"] is None else
+                    "dispatching" if detail.get("state") == "running" and dispatch == "not_started" else
+                    "awaiting_response" if detail.get("state") == "running" and dispatch == "started" else "unknown")
+            activity = {"phase": phase, "operation_id": self.operation_id, "invocation_id": self.invocation_id}
+            admission = detail.get("admission") or {}
+            blockers = admission.get("blockers") if isinstance(admission, dict) else None
+            if phase == "queued" and isinstance(blockers, list):
+                activity["blockers"] = [{"kind": row["kind"]} for row in blockers if isinstance(row, dict)
+                    and row.get("kind") in {"global_limit", "class_limit", "thread_busy", "stopping"}]
+            observation = {"operation_id": self.operation_id, "invocation_id": self.invocation_id,
+                           "request_ref": copy.deepcopy(self.request_ref),
+                           "request_manifest_ref": copy.deepcopy(self.request_manifest_ref), "model_activity": activity}
+            if observation == self.last_observation:
+                return
             try:
-                self.operation_observer({"operation_id": self.operation_id, "invocation_id": self.invocation_id,
-                                         "request_ref": copy.deepcopy(self.request_ref),
-                                         "request_manifest_ref": copy.deepcopy(self.request_manifest_ref)})
+                self.operation_observer(copy.deepcopy(observation))
+                self.last_observation = observation
             except Exception as error:
                 log.warning("Model custody observer unavailable: %s", type(error).__name__)
 
@@ -464,10 +487,12 @@ class _ModelInvocation:
                         **({"capture_failure_evidence": True} if self.capture_failure_evidence else {}),
                         **({"capture_effort_evidence": True} if self.capture_effort_evidence else {}))
                     self.operation_id = detail["id"]
+                    self.detail = detail
                     self.observe_operation(accepted=True)
                 else:
                     detail = self.gateway.get_model_operation(self.operation_id, timeout_sec=min(self.timeout, _READ_TIMEOUT_SEC))
                 self.detail = detail
+                self.observe_operation()
                 if self.outage_episode is not None:
                     self._control_outage(recovered=True)
                 if detail.get("state") not in {"queued", "running"}:
@@ -479,6 +504,7 @@ class _ModelInvocation:
                     raw = self.gateway.get_model_result(self.operation_id, expected_ref=self.response_ref,
                                                         timeout_sec=min(self.timeout, _READ_TIMEOUT_SEC), raw_bytes=True)
                     self.retain(raw)
+                    self.observe_operation(phase="response_received")
                     result = json.loads(raw.decode("utf-8"))
                     if (detail.get("dispatch") or {}).get("state") == "not_started":
                         error = self.error(result.get("problem"), detail)
@@ -512,6 +538,7 @@ class _ModelInvocation:
                     # non-dispatch authority for an earlier accepted request.
                     raise self.error({"code": error.code, "message": str(error),
                                       "context": {"httpStatus": error.status_code}}) from None
+                self.observe_operation(phase="rejoining")
                 # A failed read after creation is never a provider connect failure.
                 # Drop its causal HTTP chain at this boundary: even ConnectError
                 # means only the local control read failed, not inference un-sent (a refused read, 404 too).

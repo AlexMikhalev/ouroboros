@@ -250,6 +250,12 @@ STARTED_PROGRESS_FLAGS: Tuple[str, ...] = (
     "ledger_recorded", "settled", "containment_disclosed", "unread_disclosed",
     "output_artifact", "output_complete", "output_sha", "output_consumed",
     "patch_captured", "patch_disposed", "patch_apply_pending", "superseded_by")
+# The closing facts SETTLED wrote (and the fault CONTAINMENT_FAULT recorded): a later
+# STARTED row never carries them, so replacing wholesale would forget a run's cost,
+# its spend disclosure, the engine's model/profile and an unresolved fault.
+STARTED_SETTLEMENT_FACTS: Tuple[str, ...] = (
+    "terminal_state", "terminal_reason", "engine_model", "access_profile",
+    "spend_disclosed", "spend_estimated", "cost_usd")
 # Binding/authority facts are FIRST-WINS (R1-2): a later idempotent STARTED row
 # may be minted by a context that no longer knows the original binding; the
 # first recorded fact is authoritative and is never erased or retargeted.

@@ -65,7 +65,7 @@ PLANES: Mapping[str, str] = {
     "drive_logs": (
         "The task's own log directory: the canonical file for Main turns and pooled roots; for every subagent "
         "and forked-memory task its child drive <data>/state/headless_tasks/<task_id>/data/logs/<log>.jsonl, "
-        "found through task_results/<task_id>.json child_drive_root. A child drive is never rotated and is "
+        "found through the task's store row (get_task_result / query_data) child_drive_root. A child drive is never rotated and is "
         "deleted once its task is terminal and older than OUROBOROS_GC_RETENTION_DAYS, or at once for a "
         "cancelled subagent."
     ),
@@ -101,7 +101,7 @@ ANCHOR_ROWS: tuple[AnchorRow, ...] = (
     ),
     AnchorRow(
         "task_done", "events", "canonical",
-        "The supervisor accepted a task's terminal; task_results/<task_id>.json stays the lifecycle authority.",
+        "The supervisor accepted a task's terminal; the task's store row (get_task_result / query_data) stays the lifecycle authority.",
         _fields("ts type task_id task_type chat_id status reason_code"), nullable=_fields("reason_code"),
         optional=_fields(_COST_META + " outcome_axes _is_direct_chat root_phase_checkpoint artifact_status "
                                       "total_rounds prompt_tokens completion_tokens review_status review_projection "
@@ -302,7 +302,7 @@ ACCOUNTING_RULE = (
 )
 
 COVERAGE_GAPS = (
-    "No canonical row marks a task start: task_results/<task_id>.json with status running is the start fact.",
+    "No canonical row marks a task start: the task's store row (get_task_result / query_data) with status running is the start fact.",
     "Worker rows (llm_round, llm_api_error, task_received, task_error) of a task with a child drive vanish "
     "with the drive after retention; canonical rows and the archive stay. Ship child drives before then.",
     "llm_round covers a task's main loop only: review, search, vision and memory calls appear only as "
@@ -311,8 +311,8 @@ COVERAGE_GAPS = (
     "Skill reviews started from the Skills page write no llm_usage row; their usage is in the accounting "
     "views only.",
     "A terminal whose supervisor handler failed has no task_done: supervisor.jsonl worker_event_handler_error "
-    "records it, and task_results stays the authority.",
-    "tools rows carry no chat_id; task_done carries no root_task_id (join task_results or task_cost_finalized).",
+    "records it, and the task's store row (get_task_result / query_data) stays the authority.",
+    "tools rows carry no chat_id; task_done carries no root_task_id (join the store rows or task_cost_finalized).",
     "Neighbours of llm_api_error (local_context_overflow, remote_context_overflow, "
     "llm_non_retryable_same_request, provider_incomplete_response, llm_empty_response, provider_body_error, "
     "llm_retry_deadline_exhausted, llm_not_dispatched), worker_event_handler_error and worker_crash_task_dump "

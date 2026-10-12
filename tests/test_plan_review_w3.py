@@ -13,6 +13,7 @@ import pytest
 import ouroboros.tools.plan_review as pr
 from tests.test_plan_review_engine import CLEAN, DECK_SPEC, _call, _control, _finding, _slots, _state, _user_text
 from tests.test_plan_review_engine import harness as _engine_harness  # the shared fixture, re-exported below
+from tests._store_shared import seed_result, unreadable_result
 
 harness = _engine_harness  # noqa: F811 - pytest registers the fixture under this module's namespace
 
@@ -280,14 +281,12 @@ def test_need_evidence_memory_is_bounded_per_task(harness):
 
 
 
-def test_unreadable_state_refuses_the_wave_instead_of_dropping_reviewer_requests(harness):
+def test_unreadable_state_refuses_the_wave_instead_of_dropping_reviewer_requests(harness, monkeypatch):
     """W3 (delta review S-4): the reviewers' recorded requests live in the durable state; if it
     cannot be read the wave is REFUSED (typed, no reviewer called) — never paid without them."""
-    from ouroboros.task_results import task_result_path
-
     sub = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
-    path = task_result_path(harness.drive, "task-1", create=True)
-    path.write_text("{not json", encoding="utf-8")
+    seed_result(harness.drive, "task-1", {"task_id": "task-1", "status": "running"})
+    unreadable_result(monkeypatch, "task-1")
     out = _call(harness.make_ctx())
     assert out.startswith("ERROR: PLAN_REVIEW_STATE_INVALID")
     assert sub.calls == []

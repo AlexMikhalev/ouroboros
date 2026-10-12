@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ouroboros.utils import iter_jsonl_objects, jsonl_chain_handles, utc_now_iso
+from ouroboros.store import StoreError
 
 DELIVERY_VERSION = 1
 _FIELDS = frozenset({
@@ -95,7 +96,7 @@ def _verified_task(data_dir: Path, skill: str, origin: dict[str, str]) -> tuple[
 
     try:
         task = load_task_result(data_dir, task_id, strict=True) or {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, StoreError):
         return "", {}
     provenance = presence_provenance_from_task(task)
     if provenance.get("transport_skill") != skill:

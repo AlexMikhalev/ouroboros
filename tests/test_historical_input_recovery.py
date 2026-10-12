@@ -10,6 +10,7 @@ from ouroboros.artifacts import read_actor_source_bytes
 from ouroboros.context_input_selection import historical_inputs_exhibit
 from tests.test_historical_inputs import _input
 from tests import test_main_authored_context as context_fixtures
+from tests._store_shared import unreadable_result
 
 main_loop = context_fixtures.main_loop
 
@@ -123,10 +124,8 @@ def test_never_published_input_does_not_retry_after_its_physical_source_is_lost(
     assert not first.get("source_ref")
 
 
-def test_unreadable_historical_record_preserves_specific_first_gap(main_loop):
+def test_unreadable_historical_record_preserves_specific_first_gap(main_loop, monkeypatch):
     from ouroboros.context_input_selection import capture_historical_inputs
-    from ouroboros.task_results import task_result_path
-
     f = main_loop
     _input(f, "CURRENT_INPUT_AFTER_UNREADABLE_RECORD", "Continue the correction.")
     f.run([{"content": "Continued."}])
@@ -134,8 +133,7 @@ def test_unreadable_historical_record_preserves_specific_first_gap(main_loop):
     # corrupt result before model dispatch is refused by owner-pause admission.
     cold = SimpleNamespace(task_id=f.ctx.task_id, drive_root=f.ctx.drive_root,
                            task_attempt=1, _last_context_observation=deepcopy(f.ctx._last_context_observation))
-    path = task_result_path(f.ctx.drive_root, f.ctx.task_id)
-    path.write_text("{unfinished historical record", encoding="utf-8")
+    unreadable_result(monkeypatch, f.ctx.task_id)
     capture_historical_inputs(cold)
 
     exhibit = historical_inputs_exhibit(cold)
@@ -145,4 +143,3 @@ def test_unreadable_historical_record_preserves_specific_first_gap(main_loop):
     assert latest["position"] == "latest" and latest["status"] == "captured"
     captured = json.loads(read_actor_source_bytes(f.ctx.drive_root, f.ctx.task_id, latest["source_ref"]))
     assert "CURRENT_INPUT_AFTER_UNREADABLE_RECORD" in json.dumps(captured["selected_messages"])
-    assert path.read_text(encoding="utf-8") == "{unfinished historical record"

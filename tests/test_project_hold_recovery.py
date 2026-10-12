@@ -11,6 +11,7 @@ from ouroboros import projects_registry as registry
 from ouroboros.task_results import load_task_result, write_task_result
 from supervisor import queue, state, workers
 from tests.test_swarm_host_admission import host  # noqa: F401
+from tests._store_shared import delete_result, unreadable_result
 
 pytestmark = pytest.mark.serial
 
@@ -127,9 +128,10 @@ def test_recovery_preserves_independent_guards(host, tmp_path, monkeypatch, guar
         queue.ADMISSION_RESERVATIONS["held"] = "foreign"
     elif guard == "running":
         write_task_result(host.root, "held", "running")
-    elif guard in {"missing_result", "unreadable_result"}:
-        result = host.root / "task_results/held.json"
-        result.unlink() if guard == "missing_result" else result.write_text("{torn", encoding="utf-8")
+    elif guard == "missing_result":
+        delete_result(host.root, "held")
+    elif guard == "unreadable_result":
+        unreadable_result(monkeypatch, "held")
     elif guard == "started":
         write_task_result(host.root, "held", "scheduled", started_at="2026-01-01T00:00:00Z")
     elif guard == "deadline":
@@ -250,9 +252,10 @@ def test_stop_during_project_hold_wins_recovery(host, tmp_path, monkeypatch):  #
 def test_first_restore_of_old_project_row_keeps_original_custody(host, tmp_path, monkeypatch, stamp):  # noqa: F811
     accepted(host, tmp_path)
     assert queue.persist_queue_snapshot()
-    snap = json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    alive = queue.QUEUE_SNAPSHOT_PATH.with_name("queue.alive")
+    snap = json.loads(alive.read_text(encoding="utf-8"))
     snap["ts"] = stamp
-    queue.QUEUE_SNAPSHOT_PATH.write_text(json.dumps(snap), encoding="utf-8")
+    alive.write_text(json.dumps(snap), encoding="utf-8")
     host.pending.clear()
     assert queue.restore_pending_from_snapshot() == 1
     assert host.pending[0]["_project_admission_restore_hold"]

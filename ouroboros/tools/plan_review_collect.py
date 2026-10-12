@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import pathlib
 from typing import Any, Dict
+from ouroboros.store import StoreError
 
 log = logging.getLogger(__name__)
 
@@ -236,7 +237,7 @@ def collect_before_gate(ctx: Any, state: Dict[str, Any]) -> Dict[str, Any]:
         state_root, task_id = _planning_state_location(ctx)
         run_plan_coroutine(collect_open_wave(ctx, state_root=state_root, task_id=task_id, wave=current))
         return load_plan_review_state(state_root, task_id)
-    except (OSError, ValueError, TimeoutError) as exc:
+    except (OSError, ValueError, TimeoutError, StoreError) as exc:
         log.warning("plan wave %s could not be collected before the gate: %s",
                     str(current.get("request_fingerprint") or "")[:8], exc)
         return state

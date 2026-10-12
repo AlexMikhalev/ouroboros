@@ -33,14 +33,13 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
-import time
 from typing import Any, Dict, List, Optional
 
 from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY
 from ouroboros.dialogue_provenance import is_presence_task, presence_caller_binding
 from ouroboros.focus import compact_focus, focus_fingerprint
 from ouroboros.task_status import SETTLED_STATUSES, _load_queue_snapshot, queue_snapshot_observation
-from ouroboros.utils import read_json_dict
+from ouroboros.queue_observation import load_queue_document
 
 log = logging.getLogger(__name__)
 
@@ -52,24 +51,6 @@ ROSTER_NOTE_CAP = 40
 ROSTER_NOTE_HEADER = "[System task message]\n[INDEPENDENT_ROOTS]"
 ROSTER_SNAPSHOT_NAME = "ouroboros_roster_snapshot"
 ROSTER_UPDATE_NAME = "ouroboros_roster_update"
-
-
-def _projection_observation(payload: Dict[str, Any], source: str) -> Dict[str, Any]:
-    raw_ts = payload.get("ts")
-    try:
-        # ISO timestamps are used by the supervisor projections.  Keep parsing
-        # local so a malformed host timestamp is disclosed as unknown.
-        from datetime import datetime, timezone
-        parsed = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
-        stamp = (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
-        age = max(0.0, time.time() - stamp)
-        fresh = age <= 10.0
-    except (TypeError, ValueError, OverflowError, OSError):
-        age = None
-        fresh = False
-    return {"source": source, "ts": str(raw_ts or ""), "age_sec": age,
-            "freshness": "fresh" if fresh else ("unknown" if age is None else "stale"),
-            "fresh": fresh}
 
 
 def iso_from_epoch(value: Any) -> str:
@@ -348,8 +329,8 @@ def independent_roots(drive_root: pathlib.Path) -> Dict[str, Any]:
                     continue
                 seen.add(task_id)
                 rows.append(_compact_root(task_id, task, status=status_key, canonical_root=root, queue_row=row))
-    fragment = read_json_dict(root / DIRECT_ROOTS_FRAGMENT) or {}
-    direct_observation = _projection_observation(fragment, "state/direct_roots.json")
+    fragment = load_queue_document(root, DIRECT_ROOTS_FRAGMENT.name)
+    direct_observation = {**queue_snapshot_observation(fragment), "source": "state/direct_roots.json"}
     for row in fragment.get("roots") or []:
         if not isinstance(row, dict):
             continue

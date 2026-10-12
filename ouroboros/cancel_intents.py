@@ -1155,7 +1155,8 @@ def settle_intent(
             # Transfer before retiring the active intent, under this same cancel
             # lock. Natural completion keeps its status, answer, cost and custody.
             # A failed transfer leaves the intent active for watchdog recovery.
-            from ouroboros.task_results import task_result_path, require_writable_task_result_schema
+            from ouroboros.task_results import require_writable_task_result_schema
+            from ouroboros.task_store import patch_document
             def retain_stop(result):
                 if not result:
                     if outcome == SETTLED_NOT_FOUND:
@@ -1163,8 +1164,7 @@ def settle_intent(
                     raise ValueError("followup_stop_result_missing")
                 require_writable_task_result_schema(result)
                 return {**result, "followup_stop": copy.deepcopy(row["followup_stop"])}
-            update_json_locked(task_result_path(pathlib.Path(drive_root), tid), retain_stop,
-                               strict_existing_dict=True)
+            patch_document(pathlib.Path(drive_root), tid, retain_stop)
         intents.pop(tid, None)
         settled.update(row)
         return {"schema_version": _SCHEMA_VERSION, "intents": intents}
@@ -1303,8 +1303,8 @@ def migrate_legacy_cancel_latches(drive_root: Any, *, records=None) -> List[str]
     from ouroboros.task_result_schema import task_result_schema_refusal
     from ouroboros.task_results import STATUS_CANCEL_REQUESTED, write_task_result
     if records is None:
-        from ouroboros.startup_migrations import _result_records
-        records = list(_result_records(drive_root))
+        from ouroboros.task_store import list_documents
+        records = [(str(row.get("task_id") or ""), row, "") for row in list_documents(drive_root)]
     admitted, migrated, failed = [], [], []
     for tid, row, error in records:
         if error or not isinstance(row, dict) or row.get("status") != STATUS_CANCEL_REQUESTED:
@@ -1328,11 +1328,15 @@ def migrate_legacy_cancel_latches(drive_root: Any, *, records=None) -> List[str]
         append_jsonl(pathlib.Path(drive_root) / "logs/events.jsonl", {
             "ts": utc_now_iso(), "type": "task_result_cancel_latch_admitted",
             "count": len(admitted), "task_ids": admitted, "reason": "unstamped_pre_7_0"})
-    if failed:
-        from ouroboros.obligations import add
-        for tid in failed:
-            add(drive_root, "unknowns", f"task:{tid}",
-                {"task_id": tid, "reason": "cancel_latch_migration_failed"})
+    from ouroboros.obligations import add, members, remove
+    for tid in failed:
+        add(drive_root, "unknowns", f"task:{tid}",
+            {"task_id": tid, "reason": "cancel_latch_migration_failed"})
+    if migrated:  # a rerun (the explicit rebuild) that succeeds retires the gap it recorded
+        gaps = members(drive_root, "unknowns")
+        for tid in migrated:
+            if gaps.get(f"task:{tid}", {}).get("reason") == "cancel_latch_migration_failed":
+                remove(drive_root, "unknowns", f"task:{tid}")
     return migrated
 
 

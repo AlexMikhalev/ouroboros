@@ -52,7 +52,7 @@ def policy_turn(tmp_path, monkeypatch):
                                    binding_id=binding, global_max_rounds=config.get_max_rounds())
     h = SimpleNamespace(data=data, repo=repo, admission=admission, script=[], calls=0, reviews=[], ctx=None,
                         inputs=[], progress=[], contract=True, before_loop=lambda _ctx: None,
-                        release=threading.Event(), settled=threading.Event(), executions=PresenceTurnExecutions(),
+                        release=threading.Event(), dispatched=threading.Event(), settled=threading.Event(), executions=PresenceTurnExecutions(),
                         gate=PresenceTurnGate(1, state_root=data / "state"), running=[])
     slots = [ReviewSlot(slot_id="policy-reviewer", model="fixture/reviewer", effort="high", timeout_sec=30)]
     monkeypatch.setattr(review_substrate, "triad_delivery_slots", lambda **_kw: slots)
@@ -91,6 +91,7 @@ def policy_turn(tmp_path, monkeypatch):
 
             invoke_review_paid_stamp(self.assignment.dispatch_stamp)
             h.reviews.append(self.assignment.request)
+            h.dispatched.set()
             assert h.release.wait(30), "test did not release its reviewer"
             vocabulary = acceptance_evidence_ref_vocabulary(self.assignment.request.evidence)
             reference = next(key for key, kind in vocabulary.items() if kind in {"tool_record", "packet_section"})
@@ -230,6 +231,7 @@ def test_last_default_review_cycle_still_allows_the_author_response(policy_turn)
     execution = h.start()
     initial = execution.initial.result(timeout=30)
     assert initial.status == "continuing" and h.calls == 2
+    assert h.dispatched.wait(30)  # lending the conversation can precede the physical paid stamp
     assert len(load_task_acceptance_review_state(h.data, initial.task_id)["claims_by_binding"]) == 2
     h.release.set()
     final = execution.result.result(timeout=30)

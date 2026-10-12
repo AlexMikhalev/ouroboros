@@ -8,6 +8,8 @@ export async function apiFetch(url, init = {}) {
     return fetch(url, init);
 }
 
+export const isStoreMigrating = error => error?.status === 503 && error?.body?.reason_code === 'migrating';
+
 /**
  * Read an owner-visible sentence out of a gateway error body. Several routes
  * answer with a STRUCTURED error (`{error: {code, message, ...}}`), and
@@ -274,7 +276,10 @@ export async function fetchTaskDetailStrict(taskId) {
         if (resp.ok !== false) return resp.json();
         if (resp.status === 404) return null;
     }
-    throw new Error(`task detail read failed (HTTP ${resp?.status ?? 'no response'})`);
+    const error = new Error(`task detail read failed (HTTP ${resp?.status ?? 'no response'})`);
+    error.status = resp?.status;
+    try { error.body = await resp.json(); } catch { /* Retain the HTTP failure without a readable body. */ }
+    throw error;
 }
 
 export function cleanExtensionRoute(value) {
@@ -335,7 +340,7 @@ export const apiClient = {
     responseLimitPreview: ({ model, local = false, account = '' }) => fetchJson(
         `/api/settings?${new URLSearchParams({ response_limit_preview: '1', model, local: String(Boolean(local)), account })}`,
         { cache: 'no-store' }),
-    /** @param {{key: string}|{mcp_server_id: string}} selector @returns {Promise<{value: string}>} */
+    /** @param {{key: string}|{mcp_server_id: string, header_name?: string}} selector @returns {Promise<{value: string}>} */
     revealSettingsSecret: (selector) => jsonPost('/api/settings/secret', selector),
     /** @returns {Promise<import('./api_types.js').UiPreferencesResponse>} */
     uiPreferences: (init = {}) => fetchJson('/api/ui/preferences', { cache: 'no-store', ...init }),
@@ -431,6 +436,16 @@ export const apiClient = {
     projectDelete: (projectId) => jsonPost(`/api/projects/${encodeURIComponent(projectId)}/delete`, {}),
     /** @returns {Promise<import('./api_types.js').FsDirsResponse>} */
     fsDirs: (path = '') => fetchJson(`/api/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ''}`, { cache: 'no-store' }),
+    /**
+     * Dashboard storage: the server's last measurement, read passively (no walk, no write).
+     * @returns {Promise<import('./storage_types.js').StorageResponse>}
+     */
+    storage: (init = {}) => fetchJson('/api/storage', { cache: 'no-store', ...init }),
+    /**
+     * Start one bounded measurement, or join the running one (202 either way).
+     * @returns {Promise<import('./storage_types.js').StorageResponse>}
+     */
+    measureStorage: () => jsonPost('/api/storage/measure', {}),
     updateStatus: () => fetchJson('/api/update/status', { cache: 'no-store' }),
     updateCheck: () => jsonPost('/api/update/check', {}),
     /** @returns {Promise<import('./api_types.js').UpdatePreflightResponse>} */
@@ -443,3 +458,15 @@ export const apiClient = {
         ...(confirmRecovery ? { confirm_recovery: true } : {}),
     }),
 };
+
+/** Read-only import preview. Values return only to this Settings draft; this never saves or connects.
+ * @param {import('./mcp_import_types.js').MCPImportPreviewRequest} payload
+ * @param {AbortSignal=} signal
+ * @returns {Promise<import('./mcp_import_types.js').MCPImportPreviewResponse>}
+ */
+export function previewMcpImport(payload, signal) {
+    return fetchJson('/api/mcp/import/preview', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload), signal,
+    });
+}

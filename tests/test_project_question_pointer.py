@@ -3,7 +3,6 @@ import ast
 import pathlib
 import re
 import json
-import os
 
 import pytest
 
@@ -145,10 +144,11 @@ def test_an_optional_question_projects_into_main_with_its_assumption_and_never_r
     assert "owner_wait_state" not in room[optional["quiz_id"]]
 
 
-@pytest.mark.parametrize("same_timestamp", [False, True])
-def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path, monkeypatch, same_timestamp):
+def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path, monkeypatch):
+    """The census memo is keyed by the row's write signature: one body read per change, none
+    while the row is unchanged, and a wait transition is seen on the next census."""
     from ouroboros.gateway import state as gs
-    from ouroboros import utils
+    from ouroboros import task_store
     from supervisor import queue
 
     project = create_project(tmp_path, "waiting-project", name="Waiting Project")
@@ -160,9 +160,10 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     monkeypatch.setattr(queue, "PENDING", [])
     monkeypatch.setattr(queue, "RUNNING", {"t1": {"task": {"id": "t1", "project_id": project["id"], "chat_id": project["chat_id"]}}})
     gs._FINALIZING_MEMO.clear()
+    asked_at = quiz_states(tmp_path, "t1")["q1"]["asked_at"]
     reads = []
-    real = utils.read_json_dict
-    monkeypatch.setattr(utils, "read_json_dict", lambda path: (reads.append(str(path)), real(path))[1])
+    real = task_store.read_document
+    monkeypatch.setattr(task_store, "read_document", lambda root, tid: (reads.append(str(tid)), real(root, tid))[1])
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert rows[0]["required_question"]["quiz_state"] == "open"
     assert rows[0]["required_question"]["text"] == "Waiting for your answer in Waiting Project"
@@ -176,27 +177,18 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     # pointer carries it as `ts`. Losing that stamp does not fail loudly — it silently
     # stops every fold (web/modules/chat_decision.js::appendActivityQuestion), so the
     # cross-boundary contract is pinned on the producer side too.
-    assert rows[0]["required_question"]["ts"] == quiz_states(tmp_path, "t1")["q1"]["asked_at"]
-    assert reads.count(str(tmp_path / "task_results/t1.json")) == 1
+    assert rows[0]["required_question"]["ts"] == asked_at
+    assert reads.count("t1") == 1
     gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
-    assert reads.count(str(tmp_path / "task_results/t1.json")) == 1
-    path = tmp_path / "task_results/t1.json"
-    before = path.stat()
+    assert reads.count("t1") == 1  # unchanged signature: the memo answers
     set_owner_wait(tmp_path, "t1", {"quiz_id": "q1", "wait_id": "w1", "state": "resumed"}, "w1")
-    if same_timestamp:
-        # Atomic replacement within one filesystem timestamp tick can retain
-        # both mtime and size: waiting/resumed have the same serialized length.
-        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
-        after = path.stat()
-        assert after.st_ino != before.st_ino
-        assert (after.st_mtime_ns, after.st_size) == (before.st_mtime_ns, before.st_size)
-    previous_reads = reads.count(str(path))
+    previous_reads = reads.count("t1")
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert rows[0]["required_question"]["owner_wait_state"] == "resumed"
     assert rows[0]["required_question"]["text"] == "Unanswered · the task continued; an answer is still accepted in Waiting Project"
-    assert reads.count(str(path)) == previous_reads + 1
+    assert reads.count("t1") == previous_reads + 1
     gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
-    assert reads.count(str(path)) == previous_reads + 1
+    assert reads.count("t1") == previous_reads + 1
     assert quiz_states(tmp_path, "t1")["q1"]["state"] == "open"
     # A wait that ended on its OWN bound resumed without an answer, so the
     # question is still wanted: no new wait state, just the additive reason.

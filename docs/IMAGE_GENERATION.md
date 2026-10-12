@@ -1,34 +1,32 @@
 # Image creation and editing
 
-`list_image_models` exposes source-qualified capability evidence; the model chooses a
-connected route for the task within its budget. An explicit source/model request stays
-on that route. There is no image settings slot, inheritance from the conversational
-model, deterministic ranking, automatic retry, or fallback from subscription to API.
-A configured credential and documented/catalog capability are discoverability facts,
-not proof of account access, billing eligibility, or remaining quota. An unfamiliar
-explicitly requested model stays unknown and may be submitted to its selected source.
+`list_image_models` exposes source-qualified evidence; the model chooses a connected
+route within the task budget. Explicit source/model choices stay on that route.
+There is no image settings slot, conversational-model inheritance, deterministic
+ranking, automatic retry or subscription-to-API fallback. Credentials and capability
+docs/catalogs prove neither access, billing eligibility nor quota. Unfamiliar
+explicit models remain unknown and may be submitted to their selected source.
 
 `generate_image(prompt, model, images?, options?, credential_profile_id?)` writes
 ordinary immutable task artifacts. `model` is `openai::<id>`, `openrouter::<id>`,
 `zai::<id>`, or the subscription route spelling `claudexor::<source>=<id>`.
 Each edit input is `{root, path}` using the existing file-resource roots; originals
 are read with the same access and protected-file policy as ordinary reads. Inputs
-are bounded to 16 PNG/JPEG/WebP files, 32 MiB each and 64 MiB together. The provider
+allow 16 PNG/JPEG/WebP files, 32 MiB each and 64 MiB together. The provider
 may impose narrower limits. Unspecified native options are omitted. Direct-API
 options pass through unchanged except for tool-owned prompt/input and buffered-result
-fields; the provider validates model-specific or newly introduced parameters.
+fields; the provider validates model-specific and new parameters.
 
-The response includes paths, MIME types, byte lengths and SHA-256 digests, without
-inline base64. The received API envelope is retained as an `image_response` artifact,
-so a failed download or decode can be inspected/recovered without another paid
-submission. Images are `generated_image` artifacts, collected at ordinary task
-finalization and copied to the parent by the existing child-result consumer.
-The artifact store belongs to the execution drive; accounting belongs to the task's
-canonical budget drive. No private photo-send helper runs inside image generation.
-Use `view_image` to inspect, then `send_photo` or `send_file` when delivery is wanted.
+Responses list paths, MIME, size and SHA-256, never inline base64. The API envelope is
+an `image_response` artifact: download/decode recovery needs no paid resubmission.
+Images are `generated_image` artifacts, collected at task finalization and copied to
+the parent by the existing child-result consumer. Artifacts use the execution drive;
+accounting uses the canonical budget drive. Generation calls no private photo-send
+helper. Use `view_image` to inspect, then `send_photo` or `send_file` for wanted delivery.
 
 An ordinary acting child can call discovery, generation and its own recovery. A readonly child can
-only discover. Presence requires an exact tool grant and each edit input's resource
+only discover. Observe also blocks generation/recovery but keeps discovery.
+Presence requires an exact tool grant and each edit input's resource
 grant; generation grants no delivery tool. Network-disabled tasks cannot use the
 image tools. Edit inputs use original file references from the existing attachment
 or artifact flow; vision preprocessing is owned separately.
@@ -37,27 +35,40 @@ Direct routes resolve their base URL, credential and headers through the shared
 LLM target resolver, and use the shared proxy/trust-aware transport.
 Each submission uses `execute_physical_attempt` once. Provider-reported USD cost is
 recorded when present; other image usage is retained as evidence, with cost unknown.
+Unsettled API accounting adds a warning to retained outputs: use `recover_image`
+with the original request id, without another generation.
 Image tokens are never passed through text-model pricing. Existing task-tree budget
 fences apply, including their existing treatment of unknown prices; no exact price
 or upper-bound guarantee is invented. Timeouts and uncertain server failures produce
 `IMAGE_OUTCOME_UNKNOWN` and a durable event. A 429 is `IMAGE_RATE_LIMITED`, with the
 provider code and retry fact; this client never alters text-lane quota state.
-Successful generation followed by an output/download/storage failure is
-`IMAGE_RESULT_INCOMPLETE`, with any retained files still available. The model decides
-what to do next.
+Output/download/storage failure is `IMAGE_RESULT_INCOMPLETE`; retained files stay
+available. The model decides the next step.
 
-`recover_image(request_id)` reads only the calling task's recorded image attempt.
-Direct APIs recover the retained envelope and reattempt decoding/download/storage.
-Subscription recovery calls the existing model recovery consumer: exact operation GET
-and result/ACK only, no create, upload or reservation. It reconciles the original
-ledger revision, including a late receipt after administrative abandonment. Terminal
-maintenance uses the same subscription receipt for accounting and leaves image ACK
-to the artifact consumer. A lost create reply with no recorded
-operation id remains unknown; it is never guessed by scanning history.
+`recover_image(request_id)` reads only this task's recorded attempt. Direct recovery
+uses the retained envelope for decoding/download/storage and original accounting.
+Subscription recovery uses the existing consumer: exact operation GET and result/ACK,
+no create, upload or reservation. It reconciles the original ledger revision, even
+after administrative abandonment. Terminal maintenance uses the same receipt for
+accounting and leaves image ACK to the artifact consumer. A lost create reply without
+a recorded operation id stays unknown; no history scan guesses it.
+After a bare `TOOL_TIMEOUT` or any call without a request_id, both tool schemas direct
+`recover_image()` (no arguments) before any new generation. It lists the current task's
+image attempts from the ledger only (`usage_store.Txn.task_attempt_page`: the task index,
+newest first by first record, 20 per page; `next_after_request_id` continues with older
+ones). The reservation precedes any possible dispatch, and the timed-out worker may still
+retain, settle and ACK its response later. Earlier tasks are not listed and another task's
+request_id grants nothing. Listing sends, settles and acknowledges nothing and picks no
+attempt; an empty page says nothing about a still-running call, and an unreadable store
+raises instead of listing nothing. An explicit request_id whose direct response is not
+retained yet answers that the call may still be in flight; nothing is resent.
 Both paths retain partial outputs and warnings. Registered artifacts count as durable
 effects even when their enclosing tool result reports incomplete output. Public cost
 fields distinguish `actual_cost_usd` from `estimated_cost_usd`; missing evidence is null.
-Budget and pause/stop exceptions propagate through the registry and loop executor.
+Uncaught builtin `UsageAccountingError`s cross registry/executor boundaries: `BudgetExceeded`
+uses `loop.py`'s budget rail; other accounting errors re-raise from
+`loop_round_limits._loop_exit_after_exception` with loop evidence. Pause/Stop controls
+retain their rails.
 
 ## Direct API contracts
 
@@ -86,6 +97,8 @@ that replace tool-owned inputs or buffered result custody are refused locally.
 capability descriptor remains unknown. The general chat `/models` image modality
 alone does not prove support for this dedicated endpoint. Output bytes may be PNG,
 JPEG, WebP, GIF or SVG; file delivery and viewing retain their own format support.
+A task file opened as SVG gets a `sandbox` CSP and `nosniff`: exact bytes and static
+view stay, script and the application origin do not.
 Sources: [image API and discovery](https://openrouter.ai/docs/guides/overview/multimodal/image-generation),
 [editing example](https://openrouter.ai/blog/tutorials/nano-banana/),
 [error envelope](https://openrouter.ai/docs/api_reference/errors-and-debugging).
@@ -130,9 +143,9 @@ Status and result reads, cancellation and ACK use the existing model-operation
 verbs. A failed control read after acceptance is unknown, including ConnectError;
 only a terminal `dispatch.state=not_started` or the engine's pre-admission
 `model_request_invalid` refusal releases the physical attempt. Lost replies never
-create another generation. The retained identity permits same-operation recovery.
-Existing task controls interrupt waiting and request cancellation without claiming
-remote completion. Local wait expiry leaves the operation available for observation.
+create another generation. Task Stop/deadline requests cancel without claiming remote
+completion. Tool-local expiry returns unknown with the original request_id; the task
+can continue with recover_image.
 
 Results carry `images[]`, `requestedModel`, `route`, usage and cost evidence. The
 observed `route.model` stays null when the engine cannot observe it. Every ready
@@ -174,5 +187,7 @@ Presence grants, and the normal acting-child-to-parent artifact flow.
 `tests/test_imagegen_subscription.py` exercises the real gateway with synthetic
 engine HTTP: digest-bound uploads, exact edit options, null observed model, ledger
 settlement, one-operation unknown outcomes, cancellation and whole-result ACK.
+`tests/test_imagegen_read_bounds.py` blocks real loopback engine, provider and URL reads
+until the real executor times out, then finds each attempt with `recover_image()`.
 Use the repository's `scripts/safe_test.py` launcher for these and related
 registry, settings, artifact and vision suites. No live backend PASS is implied.

@@ -102,7 +102,7 @@ def test_pause_during_a_running_editor_keeps_custody_and_refuses_the_next_launch
     release, entered = threading.Event(), threading.Event()
     registry.override_handler("edit_text", _held_edit_text(release, entered))
     logs = tmp_path / "logs"
-    logs.mkdir()
+    logs.mkdir(exist_ok=True)
     results = []
     first = _call("first", "edit_text", {"path": "a.txt", "old_str": "one", "new_str": "ONE"})
     thread = threading.Thread(target=lambda: results.append(
@@ -164,7 +164,7 @@ def hung_editor(tmp_path, monkeypatch):
     _unused, queue, workers = _registry(tmp_path, monkeypatch)
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")  # inherited by the spawned worker
     (tmp_path / "repo").mkdir()
-    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs").mkdir(exist_ok=True)
     target = tmp_path / "repo" / "target.txt"
     target.write_text("before\n")
     write_task_result(tmp_path, "root", "running", root_task_id="root", chat_id=0)
@@ -175,7 +175,7 @@ def hung_editor(tmp_path, monkeypatch):
     try:
         slot = workers.Worker(0, child, stdqueue.Queue(), busy_task_id="root")
         monkeypatch.setattr(workers, "WORKERS", {0: slot})
-        worker_pool_lifecycle._record_worker_pids()
+        worker_pool_lifecycle._record_worker_processes()
         end = time.monotonic() + 30
         while not (tmp_path / "inside").exists() and child.is_alive() and time.monotonic() < end:
             time.sleep(0.02)

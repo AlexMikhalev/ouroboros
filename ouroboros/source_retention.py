@@ -4,12 +4,16 @@ The existing call-id file is a marked accounting projection. Historical manifest
 versions are exact UTF-8 objects in the existing CAS, addressed by their original
 digest. Captured sources keep their bytes; readers resolve placement separately.
 The worklist owns only references and file identities, never decoded history.
+Immutable files share hardlinks where supported; repairs replace their names,
+never write into a published inode. Every link failure keeps the copy path.
 """
 from __future__ import annotations
 
 import contextvars
+import gzip
 import hashlib
 import json
+import os
 import pathlib
 import shutil
 import uuid
@@ -17,6 +21,8 @@ import zlib
 from collections import deque
 from contextlib import contextmanager
 from typing import Any
+
+from ouroboros import evidence_packs as packs
 
 _WALK = contextvars.ContextVar("immutable_source_retention", default=None)
 # Negative observations belong only to this maintenance process/generation.
@@ -45,9 +51,10 @@ def retained_child_root(canonical: pathlib.Path, child: pathlib.Path, task_id: s
             return True
         # A timeout successor may occupy the original drive. Its own durable
         # result binds that occupant; a directory name alone does not.
-        row = json.loads((child / "task_results" / f"{task_id}.json").read_text(encoding="utf-8"))
+        from ouroboros.task_store import read_document
+        row = read_document(child, task_id)
         return isinstance(row, dict) and row.get("task_id") == task_id
-    except (OSError, ValueError, TypeError):
+    except Exception:
         return False
 
 
@@ -56,10 +63,11 @@ def retained_task_roots(canonical: pathlib.Path, task_id: str) -> list[pathlib.P
     root = pathlib.Path(canonical).resolve()
     candidates = [root / "state" / "headless_tasks" / task_id / "data", root / "task_drives" / task_id]
     try:
-        row = json.loads((root / "task_results" / f"{task_id}.json").read_text(encoding="utf-8"))
+        from ouroboros.task_store import read_document
+        row = read_document(root, task_id) or {}
         candidates.extend(pathlib.Path(row[key]) for key in ("child_drive_root", "headless_child_drive_root")
                           if isinstance(row.get(key), str) and row[key])
-    except (OSError, ValueError, TypeError):
+    except Exception:
         pass
     return list(dict.fromkeys(path for path in candidates if retained_child_root(root, path, task_id)))
 
@@ -67,12 +75,12 @@ def retained_task_roots(canonical: pathlib.Path, task_id: str) -> list[pathlib.P
 def read_retained_task_source(root, task_id, ref):
     """Resolve retained execution or retry-predecessor bytes with the same verifier."""
     from ouroboros.artifacts import read_actor_source_bytes
-    from ouroboros.artifacts import task_artifact_dir_path
 
     for source_root, owner in _source_locations(root, task_id):
-        path = task_artifact_dir_path(source_root, owner, create=False) / ref["path"]
-        if path.exists() or path.is_symlink():
-            return read_actor_source_bytes(source_root, owner, ref)
+        try:  # loose or packed at this placement; damage is explicit, absence tries the next one
+            return read_actor_source_bytes(source_root, owner, ref, retained=False)
+        except FileNotFoundError:
+            continue
     raise FileNotFoundError(f"actor source unavailable: {ref['path']}")
 
 
@@ -111,11 +119,12 @@ def retained_actor_source_read_target(root, task_id, relative):
         return None
     for source_root, owner in _source_locations(root, task_id):
         path = task_artifact_dir_path(source_root, owner, create=False) / relative
-        if path.exists() or path.is_symlink():
-            ref = {"kind": "task_source", "root": "artifact_store", "path": relative,
-                   "size": path.stat().st_size, "sha256": match[1]}
-            read_actor_source_bytes(source_root, owner, ref)
-            return path.resolve(strict=True)
+        if not (path.exists() or path.is_symlink()) and packs.materialize_handle(source_root, owner, relative) is None:
+            continue  # a packed handle is written back beside its name first
+        ref = {"kind": "task_source", "root": "artifact_store", "path": relative,
+               "size": path.stat().st_size, "sha256": match[1]}
+        read_actor_source_bytes(source_root, owner, ref)
+        return path.resolve(strict=True)
     return None
 
 
@@ -130,14 +139,7 @@ def manifest_version_ref(root: pathlib.Path, digest: str) -> dict:
 
 
 def read_manifest_version(root: pathlib.Path, digest: str) -> bytes:
-    import gzip
-
-    ref = manifest_version_ref(root, digest)
-    with gzip.open(ref["path"], "rb") as stream:
-        raw = stream.read()
-    if hashlib.sha256(raw).hexdigest() != digest:
-        raise ValueError("observability call manifest ref failed sha256 verification")
-    return raw
+    return packs.blob_bytes(root, manifest_version_ref(root, digest))  # loose or packed, sha-verified
 
 
 def _check_open():
@@ -166,6 +168,19 @@ def forget_retention_retry(parent, child, task_id):
     _RETENTION_LOG_FACTS.pop((key[0], key[2]), None)
 
 
+def _result_facts(parent, child, task_id):
+    """The two result rows' write signatures as observations (the role their files' stats played)."""
+    from ouroboros.task_store import signature
+
+    facts = []
+    for root in (parent, child):
+        try:
+            facts.append((f"task:{task_id}@{root}", signature(root, task_id) or ("FileNotFoundError",)))
+        except Exception as exc:
+            facts.append((f"task:{task_id}@{root}", (type(exc).__name__,)))
+    return tuple(facts)
+
+
 def _path_fact(path):
     """Cheap repair evidence includes in-place writes, not only directory changes."""
     try:
@@ -189,8 +204,7 @@ def _unavailable_basis(parent, child, task_id, result):
     unavailable, pending = promotion.get("unavailable_refs") or [], promotion.get("pending_refs") or []
     if not pending:
         return None
-    watched = {parent / "task_results" / f"{task_id}.json", child / "task_results" / f"{task_id}.json",
-               child / "observability" / "calls" / task_id}
+    watched = {child / "observability" / "calls" / task_id}
     for row in pending:
         if not isinstance(row, dict):
             return None
@@ -240,7 +254,7 @@ def _unavailable_basis(parent, child, task_id, result):
             directory = root / "observability" / "calls" / task_id
             watched.add(directory)
             watched.update(directory.glob("*.json"))
-        facts = tuple((str(path), _path_fact(path)) for path in sorted(watched))
+        facts = tuple((str(path), _path_fact(path)) for path in sorted(watched)) + _result_facts(parent, child, task_id)
     except OSError:
         return None
     if any(isinstance(fact[0], str) and fact[0] not in {"FileNotFoundError", "NotADirectoryError"}
@@ -318,8 +332,12 @@ class RetentionWalk:
             self.queue.append(node)
         if self.current_node is not None:
             self.current_node["dependencies"].add(node["key"])
-        if self.discovering:
-            return dict(ref)  # Captured JSON is NEVER a placement projection.
+        if self.discovering or kind == "source":
+            # Captured JSON is NEVER a placement projection, and a task_source carrier
+            # keeps its own reference: one node per file reads, verifies and copies the
+            # bytes, a failure stays a promotion fact, and no carrier receives another
+            # carrier's shape or a placeholder.
+            return dict(ref)
         return dict(node.get("result", ref))
 
     def _read_source(self, node):
@@ -332,8 +350,8 @@ class RetentionWalk:
         for root in dict.fromkeys((self.parent, self.child)):
             try:
                 if kind == "source":
-                    if not obs._task_source_contract_valid(ref):
-                        raise ValueError("invalid actor source read contract")
+                    # The byte reader owns identity (kind, root, placement, size, sha256);
+                    # a carrier's ``read`` is presentation for the model, never checked here.
                     return artifacts.read_actor_source_bytes(root, task, ref), root
                 if kind == "manifest":
                     manifest = obs.read_call_manifest_ref(root, ref, task_id=task)
@@ -345,16 +363,15 @@ class RetentionWalk:
                     except (OSError, ValueError):
                         raw = read_manifest_version(root, ref["sha256"])
                     return (raw, manifest), root
-                path = obs._blob_ref_path(root, ref)
-                import gzip
-                with gzip.open(path, "rb") as stream:
-                    raw = stream.read()
-                if len(raw) != int(ref["size"]) or hashlib.sha256(raw).hexdigest() != ref["sha256"]:
-                    raise ValueError("observability blob ref failed size or sha256 verification")
-                return (raw, path), root
+                try:  # this root's loose copy, else the exact locator inside a retained root
+                    path = obs._blob_ref_path(root, ref)
+                except FileNotFoundError:  # nothing loose: the member may sit in one of this root's packs
+                    path = root / "observability" / "blobs" / f"{ref['sha256']}.{ref['kind']}.gz"
+                # Bytes and placement come from the SAME root, so a corrupt canonical copy is
+                # repaired from the child placement instead of being read through it.
+                return (packs.blob_bytes(pathlib.Path(*path.parts[:-3]), {**ref, "path": ""}), path), root
             except (OSError, ValueError, KeyError, TypeError, EOFError, zlib.error) as exc:
                 failures.append(exc)
-        import gzip
 
         # A missing fallback cannot prove an earlier eligible source absent.
         # In particular, transient I/O may recover without a metadata change.
@@ -394,6 +411,18 @@ class RetentionWalk:
             raise ValueError("immutable source retention changed captured bytes")
         _check_open()
         try:
+            destination = artifacts.task_artifact_dir_path(self.parent, task) / ref["path"]
+            if not destination.exists():
+                source = artifacts.task_artifact_dir_path(self.child, task) / ref["path"]
+                try:
+                    if artifacts.read_actor_source_bytes(self.child, task, ref) == raw:
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        _check_open()
+                        os.link(source, destination)
+                except PublicationClosed:
+                    raise
+                except (OSError, ValueError):
+                    pass  # Copy the verified bytes below if no direct immutable file can be linked.
             stored = artifacts.store_actor_source_bytes(self.parent, task, category=rel.parts[1],
                 source_id=source_id, data=raw, extension=extension)
         except PublicationClosed:
@@ -421,7 +450,6 @@ class RetentionWalk:
         target = self.parent / "observability" / "blobs" / source_path.name
         _check_open()
         def verified_destination():
-            import gzip
             from ouroboros.task_custody import PublicationClosed
 
             digest, size = hashlib.sha256(), 0
@@ -434,7 +462,10 @@ class RetentionWalk:
             except PublicationClosed:
                 raise
             except (OSError, EOFError, zlib.error):
-                return False
+                try:  # the parent itself may hold these bytes as a pack member (never a child placement)
+                    return packs.blob_bytes(self.parent, {**ref, "path": ""}) == raw
+                except (OSError, ValueError, EOFError, zlib.error):
+                    return False
             return digest.hexdigest() == ref["sha256"] and size == int(ref["size"])
 
         if source_path.resolve() != target.resolve():
@@ -442,7 +473,14 @@ class RetentionWalk:
             if not verified_destination():
                 temporary = target.with_name(f".{target.name}.tmp.{uuid.uuid4().hex}")
                 try:
-                    shutil.copyfile(source_path, temporary)
+                    try:
+                        os.link(source_path, temporary)
+                    except OSError:
+                        if source_path.is_file():
+                            shutil.copyfile(source_path, temporary)
+                        else:  # the child's copy is a pack member: write the verified bytes as a loose blob
+                            with gzip.open(temporary, "wb", compresslevel=1) as stream:
+                                stream.write(raw)
                     obs._chmod_private(temporary)
                     _check_open()
                     replace_atomic(temporary, target)
@@ -451,7 +489,7 @@ class RetentionWalk:
             if not verified_destination():
                 raise OSError("retained blob destination failed verification")
         self.state["promoted_ref_count"] += 1
-        return {**ref, "path": str(target), "compressed_size": target.stat().st_size}
+        return {**ref, "path": str(target), "compressed_size": target.stat().st_size if target.is_file() else 0}
 
     def _manifest(self, node, data):
         from ouroboros import observability as obs

@@ -477,26 +477,23 @@ def test_durable_truncation_is_disclosed_never_a_bare_slice(tmp_path):
 
 
 def test_an_unresolved_containment_fault_cannot_age_out_of_the_health_view(tmp_path):
-    """P34R.3: `open_containment_faults` scanned only the last 4 MB of the canonical
-    event log, so an UNRESOLVED containment fault — an overpowered run that may still
-    be live — silently vanished from the health invariants once later unrelated
-    traffic buried its row, despite the stated contract that it stays CRITICAL until
-    a terminal receipt resolves it. Incidents now live in their own compact durable
-    projection that is read WHOLE; the event-log tail remains as the fallback surface
-    for a fault whose compact write failed."""
+    """P34R.3 (store era): an UNRESOLVED containment fault — an overpowered run that may
+    still be live — is a fact on its held run's row in the store, so no amount of later
+    unrelated chain traffic can bury it: the health view reads rows, not a log tail. A
+    resolution clears the row fact durably; the chain remains the forensic record."""
     import ouroboros.delegate_custody as dc
 
     entry = dc.RunCustody(run_id="run-fault", task_id="t-a", route_id="r")
     dc.record_containment_fault(tmp_path, entry, "cancel_unverified", "engine went dark")
 
-    # Bury the fault under MORE than the tail window of later unrelated custody rows.
+    # Bury the fault under megabytes of later unrelated custody rows in the chain.
     noise = json.dumps({"type": "delegate_run_reconciled", "run_id": "run-noise",
                         "task_id": "t-b", "pad": "x" * 1500})
     events = dc.event_log_path(tmp_path)
     with events.open("a", encoding="utf-8") as fh:
         for _ in range(3000):
             fh.write(noise + "\n")
-    assert events.stat().st_size > dc._FAULT_SCAN_TAIL_BYTES, "the fault is outside the tail"
+    assert events.stat().st_size > 4_000_000, "the fault is far outside any tail window"
 
     open_faults = dc.open_containment_faults(tmp_path)
     assert [f["run_id"] for f in open_faults] == ["run-fault"], \
@@ -510,14 +507,8 @@ def test_an_unresolved_containment_fault_cannot_age_out_of_the_health_view(tmp_p
         for _ in range(200):
             fh.write(noise + "\n")
     assert dc.open_containment_faults(tmp_path) == []
-
-    # Fallback surface: a fault whose COMPACT write failed is still visible through
-    # the event-log tail — either landing alone keeps the incident visible.
-    other = tmp_path / "other-drive"
-    (other / "logs").mkdir(parents=True)
-    dc._faults_path(other).mkdir()          # the compact append will fail loudly
-    dc.record_containment_fault(other, entry, "cancel_unreachable", "")
-    assert [f["run_id"] for f in dc.open_containment_faults(other)] == ["run-fault"]
+    # No separate projection file exists any more: the row IS the projection.
+    assert not (tmp_path / "logs" / "containment_faults.jsonl").exists()
 
 
 def test_every_pre_custody_exit_names_the_registration_it_created(tmp_path, monkeypatch):
@@ -722,14 +713,15 @@ def test_a_start_whose_custody_row_did_not_land_does_not_claim_to_be_custodied(t
     _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _LiveRunStub())
-    real_append = dc.append_jsonl
+    from ouroboros import delegate_custody_current as current
+    real_publish = current.publish
 
-    def _started_row_lost(path, obj):
-        if obj.get("type") in ("delegate_run_started", "delegate_run_settled"):
-            return False
-        return real_append(path, obj)
+    def _started_row_lost(root, event):
+        if event.get("type") in ("delegate_run_started", "delegate_run_settled"):
+            return False  # the store refused the reducing transaction: the row never landed
+        return real_publish(root, event)
 
-    monkeypatch.setattr(dc, "append_jsonl", _started_row_lost)
+    monkeypatch.setattr(current, "publish", _started_row_lost)
     delegate._CUSTODY.clear()
     out = json.loads(delegate._delegate_start(_nanny_ctx(tmp_path), "review the diff").text)
     delegate._CUSTODY.clear()

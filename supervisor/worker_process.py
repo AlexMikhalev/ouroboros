@@ -414,17 +414,20 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
             task_drive_root = str(task.get("drive_root") or drive_root)
             if extensions_owned:
                 _adopt_published_extensions(drive_root)
+            runner = agent
             if task_drive_root != str(drive_root):
-                task_agent = make_agent(
+                runner = make_agent(
                     repo_dir=repo_dir,
                     drive_root=task_drive_root,
                     event_queue=out_q,
                     budget_drive_root=str(task.get("budget_drive_root") or drive_root),
                 )
-                task_agent.owner_wait_callback = agent.owner_wait_callback
-                events = task_agent.handle_task(task)
-            else:
-                events = agent.handle_task(task)
+                runner.owner_wait_callback = agent.owner_wait_callback
+            try:
+                events = runner.handle_task(task)
+            except Exception as task_error:
+                _record_task_exception(runner, task, task_error, drive_root)
+                raise
             for e in events:
                 e2 = dict(e)
                 e2["worker_id"] = wid
@@ -449,6 +452,38 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
         except Exception as _e:
             _log_worker_crash(wid, _drive, "handle_task", _e, _tb.format_exc())
             return
+
+
+def _record_task_exception(runner: Any, task: dict, exc: Exception, pool_drive_root: Any) -> None:
+    """An exception from ``handle_task`` is that task's own terminal (owner decision 1A, 11.10.2026).
+
+    Written through the env of the agent that ran the task, so a forked task's
+    terminal lands on its own drive where copy-back reads it, and never over a
+    row that is already terminal. Called inside the ``except`` so the recorded
+    traceback is the real one. It never raises: a terminal that could not be
+    written leaves today's crash policy (one retry) in charge.
+
+    A live exact pause of this attempt (``budget_pause.death_returns_to_pause``)
+    is left to the recovery that parks the same id again (#1196, F4), and so is
+    pause evidence that cannot be read. Its row lives in the budget root, which
+    is the pool drive unless the task names its own, never a forked task's drive.
+    """
+    try:
+        from ouroboros.budget_pause import budget_pause_row, death_returns_to_pause
+
+        pause = budget_pause_row(task.get("budget_drive_root") or pool_drive_root, str(task.get("id") or ""))
+        if death_returns_to_pause(pause, int(task.get("_attempt") or 1)):
+            return
+    except Exception:
+        log.warning("Pause evidence of task %s is unreadable; recovery decides its exception",
+                    task.get("id"), exc_info=True)
+        return
+    try:
+        from ouroboros.agent import _task_exception_terminal
+
+        _task_exception_terminal(runner.env, task, exc, runner.env.drive_path("logs"), keep_terminal=True)
+    except Exception:
+        log.warning("Exception terminal of task %s was not recorded", task.get("id"), exc_info=True)
 
 
 def _log_worker_crash(wid: int, drive_root: pathlib.Path, phase: str, exc: Exception, tb: str) -> None:

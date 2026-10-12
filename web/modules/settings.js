@@ -5,7 +5,7 @@ import { mountDesktopShell } from './desktop_shell.js';
 import { bindEffortSegments, syncEffortSegments, readCustomSecretDraft, collectCustomSecretDraft, paintSettingsFieldErrors, settingsWriteFailure } from './settings_controls.js';
 import { bindLocalModelControls } from './settings_local_model.js';
 import { bindAutostartControl } from './settings_autostart.js';
-import { applyMcpSettings, collectMcpSettings, initMcpSettings, validateMcpSettings } from './mcp_settings.js';
+import { applyMcpSettings, collectMcpSettings, initMcpSettings, mcpDraftSnapshot, validateMcpSettings } from './mcp_settings.js';
 import {
     applySubagentsSettings,
     availableSubagentsPreviewPayload,
@@ -592,6 +592,8 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             controls: Array.from(page.querySelectorAll('input[id^="s-"], select[id^="s-"], textarea[id^="s-"], [data-secret-setting], [data-model-role-context]'),
                 (input) => [input.id, input.value, input.checked, input.validity?.badInput || false, input.dataset.forceClear || '']),
             customSecrets: readCustomSecretDraft(page),
+            // MCP header rows, including exact duplicates the saved map would collapse.
+            mcpHeaderRows: mcpDraftSnapshot(),
         });
     }
 

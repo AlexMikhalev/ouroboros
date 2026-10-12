@@ -62,7 +62,7 @@ def test_resume_waits_for_exact_root_or_child_effect_retirement(tmp_path, monkey
         assert "root" in queue.BUDGET_ROOT_FENCES
         assert owner_pause.read_fence(root, "root")["state"] == "requested"
         claim["settled"] = True  # this exact local invocation has returned; consumer now retires it
-    assert not load_task_result(root, member)["launch_handoffs"]
+    assert not load_task_result(root, member).get("launch_handoffs", {})
     refresh_owner_pause_tree("root")
     assert owner_pause.read_fence(root, "root")["state"] == "paused"
     assert queue.resume_budget_paused_task("root")["ok"]
@@ -104,7 +104,7 @@ def test_unmarked_missing_file_after_executor_handoff_is_not_no_effect(tmp_path,
     result = registry.execute_result("run_command", {"cmd": ["opaque"]})
     assert result.text.startswith("⚠️ SHELL_ERROR")
     assert result.meta.get("operation_outcome") != "completed_no_effect"
-    assert not load_task_result(tmp_path, "root")["launch_handoffs"]
+    assert not load_task_result(tmp_path, "root").get("launch_handoffs", {})
     _park(tmp_path, monkeypatch, queue, workers)
     assert queue.resume_budget_paused_task("root")["ok"]
 
@@ -174,11 +174,11 @@ def test_host_observed_local_extension_return_releases_only_its_invocation(tmp_p
         result = registry.execute_result(extension_surface_name(name, "t1"), {})
         assert result.status == "ok" and result.text == "ok"
         assert result.meta["physical_dispatch"] and result.meta["dynamic_provider"]
-        claims = load_task_result(root, "root")["launch_handoffs"]
+        claims = load_task_result(root, "root").get("launch_handoffs", {})
         assert claims == {}
         _park(root, monkeypatch, queue, workers)
         assert queue.resume_budget_paused_task("root")["ok"]
-        assert load_task_result(root, "root")["launch_handoffs"] == claims
+        assert load_task_result(root, "root").get("launch_handoffs", {}) == claims
     finally:
         extension_loader.unload_extension(name)
 

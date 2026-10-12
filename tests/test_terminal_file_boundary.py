@@ -12,6 +12,7 @@ from ouroboros.task_results import load_task_result, write_task_result
 from ouroboros.utils import append_jsonl
 from supervisor import worker_process
 from supervisor.terminal_delivery import cleanup_settled_owner_mailbox
+from tests._store_shared import result_signature
 
 
 @pytest.fixture
@@ -355,7 +356,7 @@ def test_canonical_write_outage_recovers_saved_child_without_model_replay(file_r
     write_task_result(child, "prepared", "completed", result="Saved child answer", artifact_status="ready")
     write_task_result(ctx.DRIVE_ROOT, "prepared", "completed",
                       root_phase_checkpoint={"post_task_synthesis": "completed"})
-    source = (child / "task_results" / "prepared.json").read_bytes()
+    source = result_signature(child, "prepared")
     event = {"type": "task_done", "task_id": "prepared", "worker_id": 7,
              "status": "completed", "_files_prepared_attempt": 3}
     with monkeypatch.context() as fault:
@@ -366,7 +367,7 @@ def test_canonical_write_outage_recovers_saved_child_without_model_replay(file_r
         assert jobs.qsize() == 1 and pushed == []
         task_reaper._recover_terminal_files(jobs.get_nowait())
         assert returned.empty() and pushed == [] and worker.busy_task_id == "prepared"
-        assert (child / "task_results" / "prepared.json").read_bytes() == source
+        assert result_signature(child, "prepared") == source
     task_reaper.retry_terminal_file_recoveries()
     assert jobs.qsize() == 1
     task_reaper._recover_terminal_files(jobs.get_nowait())

@@ -23,6 +23,7 @@ import pathlib
 from typing import Any, Dict, List, Mapping, Optional
 
 from ouroboros.utils import utc_now_iso
+from ouroboros.store import StoreError
 
 log = logging.getLogger(__name__)
 
@@ -316,7 +317,7 @@ def plan_review_reflection_slice(root: Any, task_id: str, *, task: Optional[Mapp
 
     try:
         state = load_plan_review_state(drive, str(task_id))
-    except (PlanReviewSourceUnavailable, OSError, ValueError) as exc:
+    except (PlanReviewSourceUnavailable, OSError, ValueError, StoreError) as exc:
         return unavailable(exc)
     if not (state.get("waves") or []):
         return None

@@ -1,5 +1,4 @@
 """Engine registration lifetime follows the host's continuation authority."""
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +6,7 @@ import pytest
 from ouroboros import delegate_custody as custody
 from ouroboros.delegate_continuation import bind_continuation
 from ouroboros.owner_continue import binding_sha
+from tests._store_shared import seed_result, unreadable_result
 
 
 class Gateway:
@@ -26,8 +26,8 @@ class Gateway:
 def result(root, tid, **fields):
     path = root / 'task_results' / f'{tid}.json'
     path.parent.mkdir(exist_ok=True)
-    path.write_text(json.dumps({'_schema_version': 1, 'task_id': tid,
-                               'status': 'completed', **fields}), encoding='utf-8')
+    seed_result(root, tid, {'_schema_version': 1, 'task_id': tid,
+                               'status': 'completed', **fields})
 
 
 def seed(root, *, task_id='owner', root_task_id='', source='', project='project'):
@@ -168,13 +168,13 @@ def test_technically_broken_continue_successor_keeps_its_offer(tmp_path, broken)
 
 
 @pytest.mark.parametrize('authority', ['missing', 'unreadable', 'unknown_live', 'reserved'])
-def test_unknown_authority_or_reserved_owner_keeps_registration(tmp_path, authority):
+def test_unknown_authority_or_reserved_owner_keeps_registration(tmp_path, monkeypatch, authority):
     gateway = Gateway()
     row = seed(tmp_path)
     if authority != 'missing':
         result(tmp_path, 'owner')
     if authority == 'unreadable':
-        (tmp_path / 'task_results/owner.json').write_text('{', encoding='utf-8')
+        unreadable_result(monkeypatch, 'owner')
     settle(tmp_path, gateway, row)
     custody.reconcile_orphaned_runs(tmp_path, None if authority == 'unknown_live' else set(),
         gateway_factory=lambda: gateway,
@@ -191,33 +191,36 @@ def test_review_settlement_keeps_immediate_retirement(tmp_path):
 
 
 def _counting_full_reads(monkeypatch):
+    """The project's sharers are ONE indexed store read per retire-eligible project and tick;
+    the chain is never folded on the sweep."""
+    from ouroboros import delegate_custody_current as current
+
     calls = []
-    original = custody._project_runs
+    original = current.runs
 
     def counted(*args, **kwargs):
-        calls.append(1)
+        if len(args) > 1 and args[1] == "project_id=?":
+            calls.append(1)
         return original(*args, **kwargs)
-    monkeypatch.setattr(custody, '_project_runs', counted)
+    monkeypatch.setattr(current, 'runs', counted)
+    monkeypatch.setattr(custody, '_iter_rows', lambda *a, **kw: pytest.fail('chain fold on the sweep'))
     return calls
 
 
 def test_continuable_owned_project_never_pays_the_full_chain_read(tmp_path, monkeypatch):
-    from ouroboros.delegate_custody_current import current_reads
     gateway = Gateway()
     row = seed(tmp_path)
     result(tmp_path, 'owner', status='failed', reason_code='worker_crash_signal')
     settle(tmp_path, gateway, row)
     calls = _counting_full_reads(monkeypatch)
-    with current_reads(tmp_path):
-        sweep(tmp_path, gateway, set())
-        sweep(tmp_path, gateway, set())
+    sweep(tmp_path, gateway, set())
+    sweep(tmp_path, gateway, set())
     assert gateway.removed == [] and calls == []
 
 
 def test_shared_project_kept_by_a_settled_sharer_reads_the_full_chain_once(tmp_path, monkeypatch):
-    # The production sweep reads the current projection, which drops a settled
-    # sharer that does not own the registration; the keeper it found stands in.
-    from ouroboros.delegate_custody_current import current_reads
+    # The production sweep reads the held rows; a settled sharer that does not
+    # own the registration is reached by one indexed read of the project's runs.
     gateway = Gateway()
     owner = seed(tmp_path, task_id='a')
     sharer = custody.RunCustody(run_id='run-b', task_id='b', route_id='route', model='model',
@@ -228,13 +231,11 @@ def test_shared_project_kept_by_a_settled_sharer_reads_the_full_chain_once(tmp_p
     settle(tmp_path, gateway, owner)
     settle(tmp_path, gateway, sharer)
     calls = _counting_full_reads(monkeypatch)
-    with current_reads(tmp_path):
-        sweep(tmp_path, gateway, set())
-        first = len(calls)
-        sweep(tmp_path, gateway, set())
+    sweep(tmp_path, gateway, set())
+    first = len(calls)
+    sweep(tmp_path, gateway, set())
     assert gateway.removed == []
-    assert first == 1 and len(calls) == 1
+    assert first == 1 and len(calls) == 2  # one indexed read per tick while the sharer keeps the project
     result(tmp_path, 'b')  # an ordinary finish closes the sharer's offer
-    with current_reads(tmp_path):
-        sweep(tmp_path, gateway, set())
+    sweep(tmp_path, gateway, set())
     assert gateway.removed == ['project']

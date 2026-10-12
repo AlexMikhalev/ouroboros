@@ -152,12 +152,13 @@ def presence_target_record(drive_root: Any, task_id: str, *,
     live row (the supervisor), else the persisted snapshot.
     """
 
+    from ouroboros.store import StoreError
     from ouroboros.task_results import load_task_result
 
     target = str(task_id or "").strip()
     try:
         stored = load_task_result(Path(drive_root), target) if target else None
-    except (OSError, ValueError):
+    except (OSError, ValueError, StoreError):
         stored = None  # an unreadable or invalid id is no evidence of relation
     record = stored if isinstance(stored, Mapping) and stored else None
     contract = record.get("task_contract") if isinstance(record, Mapping) else None
@@ -520,11 +521,12 @@ def task_lineage_lookup(drive_root: Any):
     def lookup(task_id: Any) -> dict[str, Any] | None:
         tid = _text(task_id)
         if tid and tid not in cache:
+            from ouroboros.store import StoreError
             from ouroboros.task_results import load_task_result, resolve_task_lineage  # D15->D17 lazy-only
 
             try:
                 result = load_task_result(Path(drive_root), tid, strict=True)
-            except (OSError, ValueError):
+            except (OSError, ValueError, StoreError):
                 result = None
             cache[tid] = resolve_task_lineage(tid, metadata=result) if isinstance(result, dict) and result else None
         return cache.get(tid)

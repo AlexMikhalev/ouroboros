@@ -314,7 +314,7 @@ class ToolRegistry:
         "health", "imagegen", "join_ledger", "knowledge", "media", "memory_tools", "plan_review", "preflight_review",
         "project_journal", "presence",
         "recent_tasks",
-        "query_code", "review", "review_change", "search", "services", "shell", "skill_exec", "skill_publish",
+        "query_code", "query_data", "review", "review_change", "search", "services", "shell", "skill_exec", "skill_publish",
         "skill_preflight", "subagent_integration", "task_tree", "tool_discovery", "verify", "vision",
     ]
 
@@ -504,7 +504,7 @@ class ToolRegistry:
                 if "contract_kind" in parameters["properties"]:
                     parameters["properties"]["contract_kind"]["enum"] = ["delegation_zero_run"]
                 parameters["required"] = ["contract_kind", "zero_run_decision", "zero_run_basis"]
-            elif entry.name in {"read_file", "list_files", "search_code", "query_code"}:
+            elif entry.name in {"read_file", "list_files", "search_code", "query_code", "query_data"}:
                 # The advertised roots are the matrix's answer for this profile and
                 # operation (the same SSOT the dispatcher enforces), never a second list.
                 schema = self._schema_with_matrix_roots(entry)
@@ -553,7 +553,7 @@ class ToolRegistry:
                     props.pop(field, None)
             elif (entry.name in tool_resolution._ROOT_ARG_REPO_WRITE_TOOLS
                   or entry.name in _GENERIC_VCS_TARGET_TOOLS
-                  or entry.name in {"read_file", "list_files", "search_code", "query_code"}):
+                  or entry.name in {"read_file", "list_files", "search_code", "query_code", "query_data"}):
                 schema = self._schema_with_matrix_roots(entry)
         return {"type": "function", "function": schema}
 

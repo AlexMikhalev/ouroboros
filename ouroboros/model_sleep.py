@@ -234,7 +234,7 @@ def cold_blockers(ctx: Any, *, chosen: Dict[str, Any] | None = None) -> List[Dic
     # Sleeping releases the root's project lease, so every member's retained
     # custody matters, including paused and terminal children.
     from ouroboros.owner_pause import tree_member_results, current_tool_operation
-    from ouroboros.delegate_custody_memo import custody_rows_with_integrity
+    from ouroboros.delegate_custody_current import tree_task_ids
     from ouroboros import process_custody as pc
     from ouroboros.platform_layer import pid_is_alive
 
@@ -244,12 +244,7 @@ def cold_blockers(ctx: Any, *, chosen: Dict[str, Any] | None = None) -> List[Dic
     dependencies = set(chosen.get("tasks", []) + chosen.get("senders", []))
     members = {str(ctx.task_id)}
     try:
-        rows, malformed = custody_rows_with_integrity(root, tree_id)
-        if malformed is None or malformed:
-            raise OSError("tree_custody_unreadable")
-        for row in rows:
-            if str(row.get("root_task_id") or row.get("task_id") or "") == tree_id:
-                members.add(str(row.get("task_id") or tree_id))
+        members.update(tree_task_ids(root, tree_id))  # the store answers or raises: unreadable is a blocker
         for task_id, row in tree_member_results(root, tree_id).items():
             members.add(task_id)
             own = task_id == str(ctx.task_id)

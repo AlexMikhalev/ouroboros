@@ -229,7 +229,8 @@ def acceptance_retrieving_work_order(
         receipts = artifacts_dir / "verification_receipts.jsonl"
     pointer_rows = (
         f"- task workspace — the active tree the task worked in (your root): {session_root}",
-        f"- task result record (contract, status, children): {root / 'task_results' / (task_id + '.json')}",
+        f"- task result record (contract, status, children): get_task_result(task_id='{task_id}') "
+        f"(a row of the current-facts store, not a file)",
         f"- task artifacts named by the packet's `artifacts` manifest: {artifacts_dir}/",
         f"- host-attested verification receipts: {receipts}",
         f"- tool trajectory log (rows with task_id={task_id}; one call's start / settlement / wait-ended rows "

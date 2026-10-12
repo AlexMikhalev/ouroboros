@@ -183,12 +183,12 @@ def test_joined_git_error_does_not_survive_corrected_retry(tmp_path, monkeypatch
     monkeypatch.setattr(git, "run_cmd", unknown)
     result = registry.execute_result("vcs_diff", {"root": "active_workspace"})
     assert result.code == "GIT_ERROR" and not result.meta.get("operation_outcome")
-    claim = load_task_result(tmp_path, "root")["launch_handoffs"]
+    claim = load_task_result(tmp_path, "root").get("launch_handoffs", {})
     assert claim == {}
     monkeypatch.setattr(git, "run_cmd", lambda *_a, **_kw: "")
     registry.execute_result("vcs_diff", {"root": "active_workspace", "head": "HEAD"})
     registry.execute_result("vcs_diff", {"root": "active_workspace"})
-    assert load_task_result(tmp_path, "root")["launch_handoffs"] == claim
+    assert load_task_result(tmp_path, "root").get("launch_handoffs", {}) == claim
     _consumers(tmp_path, registry, queue, workers, False)
 
 

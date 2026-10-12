@@ -34,6 +34,7 @@ from tests._delegated_transport_shared import (  # noqa: F401 -- autouse transpo
     _owned_gateway_uses_each_test_transport,
     _select_transport_access,
 )
+from tests._store_shared import seed_result
 
 ROUTE = "some-route"
 ACTOR = "actor-1"
@@ -86,8 +87,7 @@ def _gate(tmp_path, run_id, *, task_id="t-a", actor=ACTOR, route=ROUTE, access="
 def _write_result(tmp_path, task_id, **row):
     directory = tmp_path / "task_results"
     directory.mkdir(exist_ok=True)
-    (directory / f"{task_id}.json").write_text(
-        json.dumps({"_schema_version": 1, "task_id": task_id, "status": "cancelled", **row}), encoding="utf-8")
+    seed_result(tmp_path, task_id, {"_schema_version": 1, "task_id": task_id, "status": "cancelled", **row})
 
 
 def _continued_by(predecessor, successor, *, tamper=False):

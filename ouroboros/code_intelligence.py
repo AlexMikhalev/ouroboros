@@ -123,7 +123,7 @@ class CodeInventory:
     schema_version: int
     repo_root: str
     git_head: str
-    created_at: str
+    created_at: str = field(compare=False)  # Build time is not inventory content.
     files: List[FileFact]
     coverage: Dict[str, int]
     nested_roots: List[str] = field(default_factory=list)
@@ -883,7 +883,7 @@ def build_code_inventory(
         enumeration_limits=enumeration_limits,
     )
     # A caller-scoped view must not replace the shared full-source cache.
-    if persist and drive_root is not None and not filtered:
+    if persist and drive_root is not None and not filtered and inventory != cached:
         path = inventory_cache_path(root, pathlib.Path(drive_root))
         atomic_write_json(path, inventory.to_json(), trailing_newline=True)
     return inventory

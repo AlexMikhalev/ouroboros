@@ -718,12 +718,43 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 351 -> 353 (#1563 saved work): the rolling per-attempt working checkpoint,
 # ``task_results/artifacts/<task>/source_handles/working`` and its ``*.json`` file
 # (``ouroboros/working_checkpoint.py``; one row beside the source-handle rows).
+# 353 -> 354 (storage on SQLite, S0): the dormant current-facts store ``state/current.sqlite``
+# (``ouroboros/store.py``; one section-3 row covers it with its siblings and locks).
+# 354 -> 356 (storage on SQLite, S0): the store's name-tier lock ``state/current.lock``
+# (``ouroboros/store_import.py``; the same section-3 row) and the reconciliation's copy of a row
+# whose file an older body deleted, ``task_results/quarantine/<id>.deleted-<UTC>.json`` (the
+# quarantine row).
+# 356 -> 359 (storage on SQLite, S0): the dormant authority switch's intent, receipt and
+# progress files ``state/switch_intent.json``, ``state/switch_receipt.json``,
+# ``state/switch_progress.json`` (``ouroboros/store_switch.py``; three section-2 rows).
+# 359 -> 360 (storage on SQLite, S1): the queue liveness stamp ``state/queue.alive`` published after the
+# structural queue files (``supervisor/queue_snapshot.py``; the queue-snapshot row).
+# 360 -> 358 (storage on SQLite, S3): the obligation sets' lock ``state/obligations.lock`` and rebuild
+# mark ``state/obligations/rebuild.owed`` are gone (flag columns of ``state/current.sqlite``); the
+# result bodies ``task_results/*.json`` are the importer's and exporter's alone, so the scan now names
+# the launch lock and the quarantine files specifically (same rows).
+# 358 -> 356 (storage on SQLite, S3 custody rows): the settled-terminal refresh cursor
+# ``state/delegate_terminal_refresh_cursor.json`` (the closing receipts in ``delegated_runs`` rows
+# replace the chain offset) and the ``logs/containment_faults.jsonl`` projection (the fault lives on
+# the run's ``custody_runs`` row) are gone.
+# 356 -> 359 (storage on SQLite, S5): the evidence-pack directory, its per-task packs
+# and sidecars and the index cache ``observability/packs``, ``observability/packs/*``,
+# ``observability/packs/index.sqlite`` (``ouroboros/evidence_packs.py``; one section-2 row).
+# 359 -> 360 (S5 FIX): the settlement census now names the existing state/obligations
+# directory itself, in addition to its already documented members; no new durable plane.
+# INT1: the integrated scan was actually 362 (the inherited 360 pin was stale).
+# Store-backed packing removes state/obligations, state/obligations/* and
+# state/obligations/rebuild.owed. The remaining 359 are S3's 356 plus the three
+# documented evidence-pack paths above; no new durable plane or exemption.
 # 353 -> 364 (Sprint 4 review pool): per-operation reviewer checking
 # areas/markers/evidence generations, retained frozen folder views and staging
 # names (review_checking.py), plus investigation named evidence
 # (tools/subagent_integration_delegated.py). The two section-4 checking rows and
 # section-7 delegated evidence row in PERSISTENCE.md cover the measured additions.
-EXPECTED_SCAN_PATHS = 364
+# merge of the storage PR (353 -> 359, above) and Sprint 4 (353 -> 364): 353 + 6 + 11.
+# 370 -> 371 (FIXB): observability/packs/.publications, the disposable per-pass
+# reference journal documented in the existing evidence-pack row.
+EXPECTED_SCAN_PATHS = 371
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
@@ -746,7 +777,6 @@ SENTINELS = frozenset({
     "uploads",
     # stage-2: names that live in constants, helper returns or f-strings
     "state/claudexor_rotation_provisioning.json",
-    "state/delegate_terminal_refresh_cursor.json",
     "state/extension_generation.json",
     "state/post_task_evolution_counter.json",
     "state/post_task_evolution_request.json",
@@ -1009,7 +1039,6 @@ def test_constant_named_durable_files_are_visible_to_the_scan():
     paths = scan_data_paths()
     hidden = sorted(p for p in (
         "state/claudexor_rotation_provisioning.json",
-        "state/delegate_terminal_refresh_cursor.json",
         "state/extension_generation.json",
         "state/post_task_evolution_counter.json",
         "state/post_task_evolution_request.json",

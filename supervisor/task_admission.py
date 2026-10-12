@@ -23,6 +23,7 @@ from ouroboros.task_results import (
     write_task_result,
 )
 from ouroboros.utils import utc_now_iso
+from ouroboros.store import StoreError
 
 log = logging.getLogger(__name__)
 
@@ -854,7 +855,7 @@ def subagent_schedule_preflight(
         return False
     try:
         return subagent_schedule_owned(ctx, tid)
-    except (OSError, ValueError):
+    except (OSError, ValueError, StoreError):
         from supervisor.events import _reject_schedule_task
 
         label = "Subagent" if delegation_role == "subagent" else "Task"
@@ -910,7 +911,7 @@ def enqueue_subagent_with_scheduled_result(
             already_owned = subagent_schedule_owned(
                 ctx, tid, pending_ref=pending_ref,
             )
-        except (OSError, ValueError):
+        except (OSError, ValueError, StoreError):
             log.warning(
                 "Subagent schedule authority is unreadable for %s", tid,
                 exc_info=True,
@@ -957,7 +958,7 @@ def enqueue_subagent_with_scheduled_result(
             log.warning("Scheduled subagent receipt write raised for %s; reading its token", tid, exc_info=True)
         try:
             current = load_task_result(ctx.DRIVE_ROOT, tid, strict=True) or {}
-        except (OSError, ValueError):
+        except (OSError, ValueError, StoreError):
             # A committed receipt may exist. Preserve queue/resource custody and
             # never quarantine unreadable bytes or infer permission to resend.
             admitted["_admission_uncertain"] = "Subagent admission receipt could not be checked; resources retained."

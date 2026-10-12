@@ -187,6 +187,47 @@ def test_a_delivered_task_authored_steer_is_confirmed_under_its_own_id(tmp_path,
     )
 
 
+def test_an_unconfirmed_act_is_kept_by_its_exact_ids_and_a_settled_one_is_not(tmp_path):
+    """A steer whose receipt the wait did not see may still land, or already has: the turn
+    keeps its exact identity, so a later acting round reports the recorded outcome
+    (``loop_model_call._append_routing_receipts``), and the text says so instead of inviting
+    a second delivery. A refused act is settled and kept nowhere."""
+    from ouroboros.tools.control import _steer_task
+
+    ctx = _tool_ctx(tmp_path, metadata={}, unconfirmed_routing_acts=[])
+    out = _steer_task(ctx, "t-target", "keep the PR small")
+    assert out.startswith("⚠️ STEER_UNCONFIRMED: mailbox delivery to task t-target was not durably confirmed")
+    assert "Do not report the message as delivered." in out
+    assert "[ROUTING_RECEIPTS]" in out and "second delivery" in out
+    [event] = ctx.pending_events
+    assert ctx.unconfirmed_routing_acts == [{
+        "action": "steer_task", "client_message_id": event["client_message_id"],
+        "routing_token": event["routing_token"], "target": "t-target"}]
+    notices, emitted = [], []
+    live = _live_tool_ctx(tmp_path, _supervisor_ctx(tmp_path, notices), emitted, metadata={})
+    live.unconfirmed_routing_acts = []
+    assert _steer_task(live, "t-gone", "pick the smaller PR").startswith("⚠️ STEER_REJECTED")
+    assert live.unconfirmed_routing_acts == []
+
+
+def test_a_resumed_turn_keeps_its_own_unconfirmed_acts(tmp_path):
+    """A cold continuation (an owner wait across a restart) restores the exact ids, so the
+    resumed turn still reports a late outcome; a state saved before the key restores none."""
+    import json
+
+    from ouroboros.owner_wait import continuation_state, restore_continuation_state
+
+    act = {"action": "steer_task", "client_message_id": "agent-steer:tok", "routing_token": "tok", "target": "t-1"}
+    state = json.loads(json.dumps(continuation_state(
+        types.SimpleNamespace(task_id="turn-1", unconfirmed_routing_acts=[act]), [], {}, {}, 1, [], set())))
+    restored = types.SimpleNamespace(unconfirmed_routing_acts=[])
+    restore_continuation_state(types.SimpleNamespace(_ctx=restored), state, [], {}, {}, set())
+    assert restored.unconfirmed_routing_acts == [act]
+    state.pop("unconfirmed_routing_acts")
+    restore_continuation_state(types.SimpleNamespace(_ctx=restored), state, [], {}, {}, set())
+    assert restored.unconfirmed_routing_acts == []
+
+
 # --- (c) a routing refusal is a recorded failure, not a successful call -------
 
 def _produced_refusals(tmp_path, monkeypatch):

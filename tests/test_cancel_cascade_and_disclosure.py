@@ -25,6 +25,7 @@ from tests._cancel_intents_shared import (  # noqa: F401  (autouse fixture appli
 )
 
 from tests._cancel_intents_shared import qenv as _qenv
+from tests._shared import write_queue_document
 
 # The fixture is requested by name as a test parameter, so it is re-bound through a
 # module attribute: a direct import of a name that reappears as a parameter is an F811
@@ -44,10 +45,7 @@ def test_cancel_tool_reports_a_settled_task_instead_of_requesting(tmp_path, monk
     write_task_result(tmp_path, "settled-child", STATUS_COMPLETED, result="done")
     snap = tmp_path / "state" / "queue_snapshot.json"
     snap.parent.mkdir(parents=True, exist_ok=True)
-    snap.write_text(
-        json.dumps({"ts": utc_now_iso(), "running": [], "pending": []}),
-        encoding="utf-8",
-    )
+    write_queue_document(snap, {"ts": utc_now_iso(), "running": [], "pending": []})
     ctx = types.SimpleNamespace(
         task_depth=0, pending_events=[], event_queue=_CaptureQueue(),
         drive_root=tmp_path, task_id="parent1",

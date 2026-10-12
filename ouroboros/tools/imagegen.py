@@ -206,14 +206,54 @@ def _retain_call(ctx: ToolContext, request_id: str, model: str, stage: str, payl
         manifest={"invocation_id": request_id, "request_kind": "image", "model": model, **facts})
 
 
-def _recover_image(ctx: ToolContext, request_id: str) -> str:
-    """Observe one recorded request; never upload, create, reserve or generate."""
+_ATTEMPT_PAGE = 20
+
+
+def _list_image_attempts(ctx: ToolContext, after_request_id: str) -> str:
+    """Name the current task's recorded image attempts from the ledger alone; choose none.
+
+    No engine or provider request, reservation, settlement, ACK or artifact write.
+    The ledger row is reserved before any possible dispatch, so a call that ended
+    without its request_id is listed once it reserved; a worker still running may
+    record or change rows later, so an empty page is not proof that none exist.
+    """
+    from ouroboros import usage_store
+
+    root = pathlib.Path(getattr(ctx, "budget_drive_root", None) or ctx.drive_root)
+    with usage_store.read(root) as txn:
+        rows = txn.task_attempt_page(task_id_for_artifacts(ctx), "image_generation",
+                                     after=after_request_id, limit=_ATTEMPT_PAGE + 1)
+    if rows is None:
+        return _result(ctx, "TOOL_ARG_ERROR", "after_request_id must be next_after_request_id from a previous "
+                       "listing of this task; another task's request_id grants nothing.")
+    page = [{"request_id": row["attempt_id"], "model": row["model"], "provider": row["provider"],
+             "ledger_state": row["state"], "settle_reason": row["settle_reason"],
+             "reserved_at": row["ts_reserved"], "dispatched_at": row["ts_dispatched"],
+             "final_at": row["ts_final"], "last_change_at": row["ts_last"]} for row in rows[:_ATTEMPT_PAGE]]
+    more = len(rows) > _ATTEMPT_PAGE
+    return _result(ctx, "OK", f"OK: {len(page)} recorded image attempt(s) of the current task, newest first, read "
+                   "from the ledger only; nothing was sent, settled or acknowledged. Recover one with "
+                   "recover_image(request_id); never generate again to find out.", details={
+                       "attempts": page, "has_more": more,
+                       "next_after_request_id": page[-1]["request_id"] if more else None,
+                       "scope": "Only the current task: earlier tasks' attempts are not listed.",
+                       "order": "Newest first. next_after_request_id continues with older attempts; one "
+                                "recorded after this read appears on a new list.",
+                       "empty_means": "No attempt was recorded when read; a still-running call may record one later."})
+
+
+def _recover_image(ctx: ToolContext, request_id: str = "", after_request_id: str = "") -> str:
+    """Observe one recorded request, or list them without one; never upload, create, reserve or generate."""
     from ouroboros import usage_accounting as usage, usage_store
     from ouroboros.llm_claudexor import recover_model_attempt
     from ouroboros.observability import read_call_payload
     from ouroboros.transport_custody import ProviderNotDispatched, release_pre_dispatch_attempt
     from ouroboros.usage_ledger import is_abandoned_settlement
 
+    if not request_id:
+        return _list_image_attempts(ctx, str(after_request_id or ""))
+    if after_request_id:
+        return _result(ctx, "TOOL_ARG_ERROR", "after_request_id pages the attempt list; omit request_id with it.")
     root = pathlib.Path(getattr(ctx, "budget_drive_root", None) or ctx.drive_root)
     task = task_id_for_artifacts(ctx)
     with usage_store.read(root) as txn:
@@ -262,6 +302,9 @@ def _recover_image(ctx: ToolContext, request_id: str) -> str:
                 acknowledge=(lambda: _acknowledge_image(manifest["operation_id"], manifest["response_ref"])) if accounted else None)
         return _retain_images(ctx, result, model=model, request_id=request_id, facts={"recovered": True})
     except (ClaudexorUnavailable, FileNotFoundError, ValueError, KeyError) as exc:
+        if isinstance(exc, FileNotFoundError) and row["state"] in {"reserved", "dispatched"}:
+            return _result(ctx, "IMAGE_OUTCOME_UNKNOWN", "No response is retained for this request yet; its original call may still be in flight. Nothing was resent; ask recover_image again later.",
+                           details={"request_id": request_id, "ledger_state": row["state"], "automatic_retry": False})
         return _result(ctx, "IMAGE_OUTCOME_UNKNOWN", f"Image observation unavailable ({type(exc).__name__}); no generation was submitted.",
                        details={"request_id": request_id, "automatic_retry": False})
 
@@ -377,7 +420,14 @@ def _generate_image(ctx: ToolContext, prompt: str, model: str, images: list[dict
         return _result(ctx, exc.code, str(exc), details={"request_id": request_id, "model": model,
                        "provider_code": exc.provider_code, "retry_after": exc.retry_after,
                        "automatic_retry": False})
-    return _retain_images(ctx, result, model=model, request_id=request_id)
+    from ouroboros.usage_accounting import last_physical_attempt_capture
+    capture = last_physical_attempt_capture()
+    facts = {}
+    if capture is not None and capture.attempt_id == request_id and capture.state != "settled":
+        warnings = result.get("warnings") or []
+        facts["warnings"] = (warnings if isinstance(warnings, list) else [warnings]) + [
+            "Original accounting is pending; use recover_image with this request_id."]
+    return _retain_images(ctx, result, model=model, request_id=request_id, facts=facts)
 
 
 def _acknowledge_image(operation_id: str, response_ref: dict, gateway=None) -> dict:
@@ -477,6 +527,10 @@ def _generate_subscription_image(ctx: ToolContext, model: str, payload: dict) ->
         def control():
             waiter = current_model_wait()
             reason = waiter.control_reason() if waiter else None
+            if reason == "execution_deadline":
+                # The tool's private wait bound must not end its owning task.
+                raise image_api.ImageBackendError(
+                    "IMAGE_OUTCOME_UNKNOWN", "Image wait expired; use recover_image for this request_id.")
             if reason:
                 if operation_id:
                     try:
@@ -578,20 +632,22 @@ def get_tools() -> list[ToolEntry]:
         "required": ["root", "path"], "additionalProperties": False}
     return [
         ToolEntry(name="recover_image", schema={"name": "recover_image",
-            "description": "Recover a previous image attempt owned by this task by its request_id. Reads retained response bytes or observes its recorded engine operation and reconciles the original accounting attempt. Recreates ordinary image artifacts after a failed download/storage step. Never sends a generation, uploads inputs, changes billing source or reserves another attempt. A lost create reply with no recorded operation id remains unknown.",
-            "parameters": {"type": "object", "properties": {"request_id": {"type": "string"}},
-                           "required": ["request_id"]}}, handler=_recover_image, is_code_tool=False),
+            "description": "Recover a previous image attempt owned by this task by its request_id. Reads retained response bytes or observes its recorded engine operation and reconciles the original accounting attempt. Recreates ordinary image artifacts after a failed download/storage step. Never sends a generation, uploads inputs, changes billing source or reserves another attempt. A lost create reply with no recorded operation id remains unknown. After a bare TOOL_TIMEOUT or any image call that returned no request_id, call recover_image() without arguments BEFORE any new generation: it lists the current task's recorded image attempts, newest first (request_id, model, provider, ledger state, times), from the ledger only, one page at a time. Earlier tasks' attempts are not listed and another task's request_id grants nothing. Listing sends, settles and acknowledges nothing and chooses no attempt; an empty list means none was recorded when read.",
+            "parameters": {"type": "object", "properties": {
+                "request_id": {"type": "string", "description": "The original attempt to recover; omit to list this task's attempts."},
+                "after_request_id": {"type": "string", "description": "Listing only: next_after_request_id of the previous page (older attempts)."}},
+                "required": []}}, handler=_recover_image, is_code_tool=False),
         ToolEntry(name="list_image_models", schema={"name": "list_image_models",
             "description": "Discover connected image sources with source-qualified generation/edit evidence, billing and provider-reported pricing. Configured is not account-live verification. Choose for the task within budget, honoring explicit source/model requests. No default image slot or automatic chooser. Unknown model support is not a denial.",
             "parameters": {"type": "object", "properties": {"model": {"type": "string", "description": "Optional exact source-qualified model to inspect, including unfamiliar names."}}, "required": []}},
             handler=_list_image_models, is_code_tool=False),
         ToolEntry(name="generate_image", schema={"name": "generate_image",
-            "description": "Create or edit images through an explicitly selected connected route from list_image_models, independent of the conversational model. With images, edit their original file bytes; without them, generate from text. Saves ordinary task artifacts accessible to the parent. Generation does not view or send: call view_image/send_photo/send_file separately when needed and authorized. Exactly one request; never retry or change billing source automatically after timeout, partial output, download, storage or delivery failure. Unknown costs remain unknown within the existing task budget fence.",
+            "description": "Create or edit images through an explicitly selected connected route from list_image_models, independent of the conversational model. With images, edit their original file bytes; without them, generate from text. Saves ordinary task artifacts accessible to the parent. Generation does not view or send: call view_image/send_photo/send_file separately when needed and authorized. Exactly one request; never retry or change billing source automatically after timeout, partial output, download, storage or delivery failure. After a bare TOOL_TIMEOUT or any call that returned no request_id, the attempt may still be running or billed: call recover_image() without arguments BEFORE any new generation. Unknown costs remain unknown within the existing task budget fence.",
             "parameters": {"type": "object", "properties": {
                 "prompt": {"type": "string"},
                 "model": {"type": "string", "description": "Explicit route: openai::<id>, openrouter::<id>, zai::<id>, or claudexor::<source>=<id>."},
                 "images": {"type": "array", "items": image_ref, "maxItems": 16, "description": "Optional original PNG/JPEG/WebP files to edit. Z.ai is text-only."},
                 "options": {"type": "object", "description": "Optional native image parameters for this source/model; omit unspecified defaults. OpenAI: n, size, quality, background, output_format, output_compression, moderation, input_fidelity. Z.ai: size, quality (hd|standard). Subscription: size, quality (low|medium|high|auto), background, n. OpenRouter: the endpoint's own supported_parameters from list_image_models (e.g. resolution, aspect_ratio, size, quality, output_format, background, seed, provider); provider validation and billing follow its own contract."},
-                "credential_profile_id": {"type": "string", "description": "Optional exact subscription account pin; never used for an API source."}},
+                "credential_profile_id": {"type": "string", "description": "Optional exact subscription account pin; an API source refuses it."}},
                 "required": ["prompt", "model"]}}, handler=_generate_image, is_code_tool=False),
     ]

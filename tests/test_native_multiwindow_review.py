@@ -114,7 +114,8 @@ def test_native_review_reads_beyond_one_window_and_computes_cross_file_finding(t
     reader = "FROM_WIRE = " + repr(table) + "\ndef decode(message): return message['ttl'] / FROM_WIRE[message['route']]\n"
     (repo / "writer.py").write_text(writer)
     (repo / "reader.py").write_text(reader)
-    bound = 120_000
+    # Include the expanded inspection schemas; the corpus still needs two views.
+    bound = 140_000
     assert len(writer) + len(reader) > bound
     monkeypatch.setattr(native, "review_native_transcript_bound", lambda *a, **k: bound)
     monkeypatch.setattr(native, "_EPISODE_TOOL_RESULT_CHAR_CAP", 8000)

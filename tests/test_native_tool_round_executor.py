@@ -152,7 +152,7 @@ def _first_send_chars(subject_repo):
     llm = _ScriptedLLM([{"content": _VERDICT}])
     executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
     usage = executor.execute().usage
-    return usage["native_transcript_chars"] - len(_VERDICT)
+    return usage["native_transcript_chars"]  # the answer is output, not part of the first send
 
 
 def test_landing_notice_is_posted_once_at_the_landing_fraction(subject_repo, monkeypatch):
@@ -386,11 +386,16 @@ def test_multi_call_round_withholds_reads_once_the_room_is_spent(subject_repo, m
     """The room below the bound is enforced across the calls of ONE round: the
     whole returned message (marker included) fits the room, and a call with no
     room left is WITHHELD — not executed — with a typed marker."""
-    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
-    # Sized with ~2k chars of margin after the measured first send (brief plus
-    # inspection tool schemas), so a schema description edit cannot flip the scenario.
+    import ouroboros.review_native_episode as native_episode
+
+    bound = 50_000
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", str(bound))
+    first_send = _first_send_chars(subject_repo)
+    # Leave ~2k chars beyond the first send and landing reserve for tool envelopes
+    # and the second read, even when the inspection tool schemas change.
+    read_chars = bound - first_send - native_episode._LANDING_RESERVE_CHARS - 2_000
     for name in ("a", "b", "c"):
-        (subject_repo / f"{name}.txt").write_text(name * 28_000, encoding="utf-8")
+        (subject_repo / f"{name}.txt").write_text(name * read_chars, encoding="utf-8")
     llm = _ScriptedLLM([
         {"tool_calls": [
             _tool_call("read_file", {"path": "a.txt"}, "c1"),
@@ -403,7 +408,7 @@ def test_multi_call_round_withholds_reads_once_the_room_is_spent(subject_repo, m
     result = executor.execute()
     assert result.raw_text == _VERDICT
     usage = result.usage
-    assert usage["native_transcript_chars"] <= usage["native_transcript_bound"] == 50_000
+    assert usage["native_transcript_chars"] <= usage["native_transcript_bound"] == bound
     outcomes = [r["outcome"] for r in usage["native_tool_receipts"]]
     assert outcomes[0] == "executed" and "withheld" in outcomes
     tool_msgs = [m for m in llm.calls[1]["messages"] if m.get("role") == "tool"]
@@ -1022,10 +1027,10 @@ def test_data_root_is_opt_in_and_never_removed(subject_repo, tmp_path, monkeypat
     # Opt-in: the real root is READABLE through the same tools and survives a
     # FAILED episode.
     data_root = tmp_path / "data"
-    (data_root / "task_results").mkdir(parents=True)
-    (data_root / "task_results" / "t.json").write_text('{"ok": true}', encoding="utf-8")
+    (data_root / "probe").mkdir(parents=True)  # not a task result: those live in the store, not in files
+    (data_root / "probe" / "t.json").write_text('{"ok": true}', encoding="utf-8")
     llm = _ScriptedLLM([
-        {"tool_calls": [_tool_call("read_file", {"path": "task_results/t.json", "root": "runtime_data"}, "c1")]},
+        {"tool_calls": [_tool_call("read_file", {"path": "probe/t.json", "root": "runtime_data"}, "c1")]},
         {"content": _VERDICT},
     ])
     assignment = _assignment(subject_repo, llm)
@@ -1042,7 +1047,7 @@ def test_data_root_is_opt_in_and_never_removed(subject_repo, tmp_path, monkeypat
         NativeToolRoundReviewExecutor(assignment, llm=llm).execute()
     assert seen_roots[-1] == str(data_root)
     assert str(data_root) not in removed
-    assert (data_root / "task_results" / "t.json").read_text(encoding="utf-8") == '{"ok": true}'
+    assert (data_root / "probe" / "t.json").read_text(encoding="utf-8") == '{"ok": true}'
     assert any("ouro-native-review-" in path for path in removed[1:])  # the scratch still went
 
 
