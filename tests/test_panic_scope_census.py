@@ -583,6 +583,46 @@ def test_known_identities_survive_a_failed_census_on_the_pending_record(tmp_path
     assert not pending.exists()
 
 
+def test_panic_reads_the_known_members_task_cleanups_still_owe_and_carries_them_until_resolved(tmp_path, monkeypatch):
+    """Astra delta2 3: a hidden escaped child a task cleanup saved by pid and birth is Panic's
+    to end as well; while it stays unresolved, Panic's pending record carries it instead of
+    retiring, and the completion ends it once its identity reads."""
+    from ouroboros.task_results import write_task_result
+
+    ps.installation_marker(tmp_path)
+    marker = ps.task_scope_marker(tmp_path, "t-owed")
+    child = _sleeper({marker: "1"})  # an escaped child (no recorded group) the task's cleanup could not verify
+    try:
+        birth = ps.measure_birth(child.pid)
+        monkeypatch.setattr(ps, "note_task_terminal_transition", lambda *a, **k: None)
+        write_task_result(tmp_path, "t-owed", "completed", result="done")
+        real_read = ps.read_identities
+        monkeypatch.setattr(ps, "read_identities", lambda pids: {
+            **real_read(pids), **({child.pid: ps._Identity(ps.IDENTITY_UNREADABLE)} if child.pid in set(pids) else {})})
+        assert ps.settle_task_scope(tmp_path, "t-owed")["settled"] is False
+        assert ps.task_scope_record(tmp_path, "t-owed")["known_members"] == [{"pid": child.pid, "birth": birth}]
+        real_census = ps.census
+
+        def hidden(markers=()):  # it exec'd a platform binary: no marker, same pid and birth
+            rows = real_census(markers)
+            if rows and child.pid in rows:
+                row = rows[child.pid]
+                rows[child.pid] = ps._Row(row.pid, row.ppid, row.pgid, row.birth, row.epoch, row.state, set())
+            return rows
+
+        monkeypatch.setattr(ps, "census", hidden)
+        outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
+        assert outcome["task_known"] == 1 and outcome["pending_retired"] is False and child.poll() is None
+        assert [item["pid"] for item in outcome["unverified"]] == [child.pid], "owed and still unverified: Panic does not retire"
+        pending = json.loads(ps.panic_sweep_pending_path(tmp_path).read_text(encoding="utf-8"))
+        assert pending["known_members"] == [{"pid": child.pid, "birth": birth}]
+        monkeypatch.setattr(ps, "read_identities", real_read)
+        completed = ps.complete_pending_panic_sweep(tmp_path, exclude={os.getpid(), 1})
+        assert completed["ended"] == [child.pid] and _gone(child.pid) and completed["pending_retired"] is True
+    finally:
+        _end(child)
+
+
 def test_a_denied_signal_is_disclosed_as_final_and_the_panic_record_retires(tmp_path, monkeypatch):
     marker = ps.installation_marker(tmp_path)
     member = _sleeper({marker: "1"})

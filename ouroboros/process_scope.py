@@ -847,20 +847,23 @@ def _installation_census(data_dir: Any, *, exclude: Iterable[int], rescans: int,
     marker = installation_marker(data_dir, create=False)
     task_markers: List[str] = []
     groups: List[Dict[str, Any]] = []
+    task_known: List[Dict[str, Any]] = []  # identities task cleanups still owe: Panic's to end too
     for record in task_scope_records(data_dir):
         task_markers.extend(_record_markers(record))
         groups.extend(record.get("groups") or [])
+        task_known.extend(_saved_members(record))
     engine_entries, engine = engine_scope_index(data_dir)
     engine_markers, engine_groups, captured = _engine_scope_targets(engine_entries)
     known = list(known)
     outcome = end_scope(marker=marker, markers=[*task_markers, *engine_markers], groups=[*groups, *engine_groups],
-                        captured=[*captured, *known], exclude=exclude, grace_sec=0.0, term_first=False, rescans=rescans)
+                        captured=[*captured, *known, *task_known], exclude=exclude, grace_sec=0.0, term_first=False,
+                        rescans=rescans)
     # The index decides completion: a pass whose index was unreadable, invalid or of a newer
     # schema may have missed recorded members, so it is not settled whatever the census said.
     outcome["settled"] = bool(outcome["settled"]) and engine.get("status") in _INDEX_COMPLETE_STATUSES
     outcome.update(marker_role="installation", recorded_groups=len(groups), engine_index=engine,
                    engine_groups=len(engine_groups), engine_captured=len(captured), known_members=len(known),
-                   residual=PANIC_CENSUS_RESIDUAL)
+                   task_known=len(task_known), residual=PANIC_CENSUS_RESIDUAL)
     return outcome
 
 
@@ -910,8 +913,9 @@ def _settle_pending_record(data_dir: Any, outcome: Dict[str, Any], *, phase: str
 
 def panic_scope_census(data_dir: Any, *, exclude: Optional[Iterable[int]] = None) -> Dict[str, Any]:
     """Panic's one more bounded request attempt: SIGKILL every live member of the
-    installation scope (marker ∪ recorded task groups ∪ the engine's recorded runs) by
-    re-measured identity, excluding the server, its launcher and pid 1. The durable
+    installation scope (marker ∪ recorded task groups and the identities their cleanups still
+    owe ∪ the engine's recorded runs) by re-measured identity, excluding the server, its
+    launcher and pid 1. The durable
     ``panic_sweep_pending`` record is written FIRST, with those exclusions, so whatever
     this process cannot finish before its Panic exit is completed by the launcher or by
     the next start before any child; it is retired only after a settled, recorded
