@@ -54,8 +54,8 @@ def published_dispatch(drive_root, *, attempts=None, pause_sec=0.05, deadline=No
     if deadline is None:
         deadline = _monotonic() + DISPATCH_PUBLICATION_WAIT_SEC
     for attempt in range(attempts):
-        if check is not None:
-            check()
+        if attempt and check is not None:
+            check()  # controls are honoured while waiting, never before the first read
         document = load_queue_document(drive_root, "queue_dispatch.json")
         if not document.get("generation"):
             return None  # Only an uncertified publication can be in flight.

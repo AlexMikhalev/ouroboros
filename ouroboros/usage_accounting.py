@@ -706,16 +706,16 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
     """Atomically check global/root/group limits and record a ``reserved`` attempt whose row carries the applied global limit, its source and revision."""
     request, scope = _merge_scope(request)
     root = _drive_root(scope.drive_root)
-    from ouroboros._usage_wait import reservation_acquisition
+    from ouroboros._usage_wait import publication_acquisition
 
     _check_dispatch_fences(scope, root)
-    acquire = reservation_acquisition(root, lambda **kw: _check_dispatch_fences(scope, root, **kw))
+    acquire = publication_acquisition(root, lambda **kw: _check_dispatch_fences(scope, root, **kw))
     # Pricing I/O stays outside the monetary transaction.
     bound = _reservation_cost(request)
     pricing_known = bound is not None
     attempt_id = uuid.uuid4().hex
 
-    with acquire as view:
+    with acquire as (view, _):
         global_limit = _global_limit(request)
         if view.exceeds_limit(global_limit):
             raise BudgetExceeded(
@@ -965,25 +965,66 @@ def _transition(reservation: AttemptReservation, state: str, **fields: Any) -> D
     below, the dispatch recheck of known spend and the fences, then the UPDATE
     with its summary deltas. ``_expected_seq``/``_expected_revision`` make a
     recovery that raced a settlement a no-op returning the current row."""
-    from ouroboros._usage_wait import transition_acquisition
+    from ouroboros._usage_wait import publication_acquisition
     from ouroboros.usage_ledger import is_abandoned_settlement
 
-    def check_fences():
-        _check_dispatch_fences(reservation.scope or current_usage_scope() or UsageScope(), reservation.drive_root)
+    def check_fences(**kwargs):
+        _check_dispatch_fences(reservation.scope or current_usage_scope() or UsageScope(), reservation.drive_root, **kwargs)
     if state == "dispatched":
         check_fences()
-    acquire = transition_acquisition(state, check_fences)
-    with (acquire(reservation.drive_root) if acquire else _locked(reservation.drive_root)) as view:
+    expected_seq = fields.pop("_expected_seq", None)
+    expected_revision = fields.pop("_expected_revision", None)
+    abandon_reason = fields.pop("_abandon_reason", "")
+
+    def read(view):
         current = view.attempt(reservation.attempt_id)
-        expected_seq = fields.pop("_expected_seq", None)
-        expected_revision = fields.pop("_expected_revision", None)
-        abandon_reason = fields.pop("_abandon_reason", "")
+        unchanged = current is not None and (
+            (expected_seq is not None and current.get("seq") != expected_seq)
+            or (expected_revision is not None and current.get("revision") != expected_revision))
+        if state != "dispatched" or current is None or unchanged:
+            return current, None, {}, unchanged
+        scope = UsageScope(drive_root=reservation.drive_root,
+            non_task_operation=current.get("non_task_operation") is True, **{key: current.get(key) for key in
+            ("task_id", "root_task_id", "parent_task_id", "root_limit_usd", "root_limit_source", "root_limit_revision", "billing_group_id",
+             "billing_group_limit_usd", "billing_group_limit_source", "billing_group_limit_revision")})
+        from ouroboros.owner_pause import member_fence
+        if fence := member_fence(scope):
+            from ouroboros.llm_attempt import _PhysicalSendNotStarted
+            raise _PhysicalSendNotStarted(str(fence.get("reason") or "owner_pause"))
+        from ouroboros.usage_admission import effective_billing_fields
+        effective = effective_billing_fields(reservation.drive_root, scope.root_task_id, {
+            key: getattr(scope, key) for key in ("root_limit_usd", "root_limit_source", "root_limit_revision",
+                "billing_group_id", "billing_group_limit_usd", "billing_group_limit_source", "billing_group_limit_revision")},
+            non_task_operation=scope.non_task_operation)
+        if scope.root_limit_source == "attempt_request":
+            effective.update(root_limit_usd=scope.root_limit_usd, root_limit_source=scope.root_limit_source,
+                             root_limit_revision=scope.root_limit_revision)
+        scope = replace(scope, **effective)
+        _check_dispatch_fences(scope, reservation.drive_root, retry=False)
+        limit_request = AttemptRequest(model=reservation.model, provider=reservation.provider,
+            global_limit_usd=(current.get("global_limit_usd") if current.get("global_limit_source")
+                              not in {"", "settings_budget_resolver"} else None))
+        for axis, limit, identity in (
+            ("global", _global_limit(limit_request), None),
+            ("root", scope.root_limit_usd, scope.root_task_id),
+        ):
+            # The reservation's own predicate: known spend reached the limit
+            # since this attempt was reserved, so nothing is sent.
+            if limit is not None and view.exceeds_limit(limit, root_task_id=identity):
+                raise BudgetExceeded(f"{axis} model budget changed before dispatch", limit_scope=axis,
+                                     root_task_id=scope.root_task_id)
+        from ouroboros.usage_admission import raise_group_refusal
+
+        raise_group_refusal(view, scope)
+        return current, scope, effective, False
+
+    with publication_acquisition(reservation.drive_root, check_fences if state == "dispatched" else None, read) as (view, result):
+        current, scope, effective, unchanged = result
         if current is None:
             if abandon_reason:
                 return {"state": "unknown"}
             raise UsageAccountingError(f"unknown usage attempt {reservation.attempt_id}")
-        if ((expected_seq is not None and current.get("seq") != expected_seq)
-                or (expected_revision is not None and current.get("revision") != expected_revision)):
+        if unchanged:
             return copy.deepcopy(current)
         if state == "released" and current["state"] == "released":
             return copy.deepcopy(current)
@@ -1010,41 +1051,7 @@ def _transition(reservation: AttemptReservation, state: str, **fields: Any) -> D
         allow_release = bool(fields.pop("_allow_dispatched_release", False))
         if state == "released" and current.get("state") == "dispatched" and not allow_release:
             raise UsageAccountingError("dispatched attempts require a typed pre-dispatch release")
-        if state == "dispatched":
-            scope = UsageScope(drive_root=reservation.drive_root,
-                non_task_operation=current.get("non_task_operation") is True, **{key: current.get(key) for key in
-                ("task_id", "root_task_id", "parent_task_id", "root_limit_usd", "root_limit_source", "root_limit_revision", "billing_group_id",
-                 "billing_group_limit_usd", "billing_group_limit_source", "billing_group_limit_revision")})
-            from ouroboros.owner_pause import member_fence
-            if fence := member_fence(scope):
-                from ouroboros.llm_attempt import _PhysicalSendNotStarted
-                raise _PhysicalSendNotStarted(str(fence.get("reason") or "owner_pause"))
-            from ouroboros.usage_admission import effective_billing_fields
-            effective = effective_billing_fields(reservation.drive_root, scope.root_task_id, {
-                key: getattr(scope, key) for key in ("root_limit_usd", "root_limit_source", "root_limit_revision",
-                    "billing_group_id", "billing_group_limit_usd", "billing_group_limit_source", "billing_group_limit_revision")},
-                non_task_operation=scope.non_task_operation)
-            if scope.root_limit_source == "attempt_request":
-                effective.update(root_limit_usd=scope.root_limit_usd, root_limit_source=scope.root_limit_source,
-                                 root_limit_revision=scope.root_limit_revision)
-            scope = replace(scope, **effective)
-            fields.update(effective)
-            _check_dispatch_fences(scope, reservation.drive_root, retry=False)
-            limit_request = AttemptRequest(model=reservation.model, provider=reservation.provider,
-                global_limit_usd=(current.get("global_limit_usd") if current.get("global_limit_source")
-                                  not in {"", "settings_budget_resolver"} else None))
-            for axis, limit, identity in (
-                ("global", _global_limit(limit_request), None),
-                ("root", scope.root_limit_usd, scope.root_task_id),
-            ):
-                # The reservation's own predicate: known spend reached the limit
-                # since this attempt was reserved, so nothing is sent.
-                if limit is not None and view.exceeds_limit(limit, root_task_id=identity):
-                    raise BudgetExceeded(f"{axis} model budget changed before dispatch", limit_scope=axis,
-                                         root_task_id=scope.root_task_id)
-            from ouroboros.usage_admission import raise_group_refusal
-
-            raise_group_refusal(view, scope)
+        fields.update(effective)
         replaced = {"seq", "ts", "revision", "pre_compaction_seq", "settle_reason", "reason"}
         if state == "settled":
             replaced.update(("effort", "effort_resolution", "processing", "speed", "service_tier", "cost_basis", "cost_evidence"))

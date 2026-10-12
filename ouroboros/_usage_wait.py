@@ -109,29 +109,35 @@ class DispatchAuthorityUnavailable(UsageAccountingError):
 
 
 @contextlib.contextmanager
-def reservation_acquisition(root, check):
-    """Retry only the fence read BEFORE yielding to the reservation's mutator.
+def publication_acquisition(root, check, read=None):
+    """Retry only pre-write reads BEFORE yielding the money view and their result.
 
     A publisher can revoke its certificate while money is being acquired. Drop
     money before the bounded publication wait; exceptions from the yielded body
-    (including writes and commit) must escape without replay.
+    (including writes and commit) must escape without replay. Dispatch supplies
+    read(view) to refresh its attempt, fences and limits on every acquisition;
+    reservation checks only its fence. Cleanup never waits for publication.
     """
+    from ouroboros import usage_accounting as ua
     from ouroboros.queue_observation import DISPATCH_PUBLICATION_WAIT_SEC
 
     deadline = None
-    acquire = send_acquisition(lambda: check(deadline=deadline))
+    acquire = (cleanup_acquisition if _CLEANUP.get() else
+               send_acquisition(lambda: check(deadline=deadline)) if check else ua._locked)
     while True:
         with acquire(root) as view:
             try:
-                check(retry=False)
+                result = read(view) if read else check(retry=False)
             except DispatchAuthorityUnavailable:
+                if not check or _CLEANUP.get():
+                    raise
                 now = time.monotonic()
                 if deadline is None:
                     deadline = now + DISPATCH_PUBLICATION_WAIT_SEC
                 elif now >= deadline:
                     raise
             else:
-                yield view
+                yield view, result
                 return
         _check()
         check(deadline=deadline)
@@ -144,10 +150,6 @@ def bounded_cleanup():
         yield
     finally:
         _CLEANUP.reset(token)
-
-
-def transition_acquisition(state, check=None):
-    return cleanup_acquisition if _CLEANUP.get() else send_acquisition(check) if state == "dispatched" else None
 
 
 def cleanup_acquisition(root):

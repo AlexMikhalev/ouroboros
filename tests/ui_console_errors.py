@@ -14,6 +14,17 @@ from urllib.parse import urlsplit
 ENGINE_READS = frozenset({"/api/claudexor/maintenance/harnesses"})
 
 
+def record_console_errors(page, *, page_errors: bool = True) -> list[tuple[str, str]]:
+    """Every console error as (text, source path); an uncaught page error has no source."""
+    errors: list[tuple[str, str]] = []
+    page.on("console", lambda message: errors.append(
+        (message.text, urlsplit((message.location or {}).get("url") or "").path))
+        if message.type == "error" else None)
+    if page_errors:
+        page.on("pageerror", lambda error: errors.append((str(error), "")))
+    return errors
+
+
 def record_failed_loads(page) -> list[tuple[str, int]]:
     """Every response the page receives with an HTTP error status, as (path, status)."""
     failed: list[tuple[str, int]] = []
@@ -23,13 +34,14 @@ def record_failed_loads(page) -> list[tuple[str, int]]:
 
 
 def unexpected_console_errors(console_errors, failed_loads) -> list[str]:
-    """The console errors left once each refused engine read's own load line is set aside."""
+    """The console errors left once each refused engine read's own load line is set aside: only
+    a network line whose source is that engine read, at most once per recorded 503 of it."""
     left = list(console_errors)
     for path, status in failed_loads:
         if path not in ENGINE_READS or status != 503:
             continue
         line = f"Failed to load resource: the server responded with a status of {status} "
-        match = next((text for text in left if text.startswith(line)), None)
+        match = next((entry for entry in left if entry[1] == path and entry[0].startswith(line)), None)
         if match is not None:
             left.remove(match)
-    return left
+    return [text for text, _source in left]
