@@ -226,6 +226,54 @@ def test_late_remote_receipt_refreshes_own_and_root_cost_without_another_charge(
     assert (ledger_rows(env.root), _events(env)) == before
 
 
+def test_terminal_received_chat_receipt_without_result_bytes_reads_them_once(env, monkeypatch):
+    """A terminal ``response_received`` chat receipt that kept only operation detail reads the
+    exact ready result once, retains it, ACKs it (a chat row has no artifact consumer) and
+    settles the original attempt; the next pass needs no daemon."""
+    from ouroboros import claudexor_daemon
+    from ouroboros.observability import read_call_payload
+
+    _terminal(env)
+    reservation = _attempt(env, provider="claudexor")
+    _remote_request(env, reservation, "operation")
+    raw = json.dumps({"outcome": "completed", "usage": {}, "cost": {"knowledge": "exact", "cashUsd": 0.4}}).encode()
+    ref = {"resourceId": "result", "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(), "sizeBytes": len(raw)}
+    persist_call(env.root, task_id="child", call_id=f"{reservation.attempt_id}_model_response",
+                 call_type="llm_claudexor_response", payload={"operation": {"id": "operation"}}, keep_raw=True,
+                 manifest={"invocation_id": reservation.attempt_id, "operation_id": "operation",
+                           "operation_state": "succeeded", "dispatch_state": "response_received"})
+    calls = []
+
+    class Gateway:
+        def get_model_operation(self, operation_id, **_kw):
+            calls.append(("read", operation_id))
+            return {"id": operation_id, "state": "succeeded", "dispatch": {"state": "response_received"},
+                    "response": {"state": "ready", "ref": ref}}
+
+        def get_model_result(self, operation_id, *, expected_ref, raw_bytes, **_kw):
+            assert expected_ref == ref and raw_bytes is True
+            calls.append(("result", operation_id))
+            return raw
+
+        def acknowledge_model_result(self, operation_id, digest):
+            calls.append(("ack", operation_id, digest))
+
+        def close(self):
+            calls.append(("closed",))
+
+    monkeypatch.setattr(claudexor_daemon, "read_owned_gateway", Gateway)
+    maintenance._reconcile_abandoned_usage(env.root)
+    row = _final(env, reservation)
+    assert row["state"] == "settled" and row["cost_usd"] == 0.4 and not is_abandoned_settlement(row)
+    assert calls == [("read", "operation"), ("result", "operation"), ("ack", "operation", ref["sha256"]), ("closed",)]
+    _manifest, payload, _ref = read_call_payload(env.root, task_id="child",
+                                                 call_id=f"{reservation.attempt_id}_model_response")
+    assert payload["result_json_utf8"].encode() == raw
+    monkeypatch.setattr(claudexor_daemon, "read_owned_gateway", lambda: pytest.fail("the result is retained"))
+    maintenance._reconcile_abandoned_usage(env.root)
+    assert len(calls) == 4 and _final(env, reservation)["state"] == "settled"
+
+
 def test_daemon_failure_stops_remote_reads_for_one_pass_but_native_work_continues(env, monkeypatch):
     from ouroboros import claudexor_daemon
     from ouroboros.gateways.claudexor import ClaudexorUnavailable

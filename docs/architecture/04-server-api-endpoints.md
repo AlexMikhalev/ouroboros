@@ -1,12 +1,12 @@
 # 4. Server API Endpoints
 
-Registry of the browser, CLI and Host Service routes, with non-loopback authentication, file confinement and the WebSocket protocol. `ouroboros/gateway/router.py` owns the executable Route objects; the table below mirrors them one row per route, and tests check that nothing mounted is undocumented and nothing documented is unmounted.
+Registry of the browser, CLI and Host Service routes, with non-loopback authentication, file confinement and the WebSocket protocol. `ouroboros/gateway/router.py` owns the executable Route objects; the table mirrors them one row per route; tests check that nothing mounted is undocumented and nothing documented is unmounted.
 
 With `OUROBOROS_NETWORK_PASSWORD` configured, non-loopback HTTP and WebSocket access requires authentication; loopback clients bypass the gate, and `/api/health` plus the middleware-owned login/logout paths stay reachable. Browser sessions use a server-keyed, expiring HttpOnly HMAC cookie, `Secure` only under TLS, so a plain-HTTP LAN session does not enter a login loop. An unauthenticated WebSocket is closed with code 4401 before `ws_endpoint` accepts it. Without a password, non-loopback access stays open by explicit operator choice.
 
 File-browser routes are contributed by `gateway/files.py::file_browser_routes()`; envelopes and their parity: §11. The loopback Host Service is a separate token-authenticated app assembled by `gateway/host_service.py::create_host_service_app`, not a second public owner API (§12).
 
-Every path-addressed `/api/files/*` operation resolves its requested `path` and refuses when the resolution leaves the configured file root. In-root symlinks stay usable; out-of-root symlinks may be listed with `is_symlink: true` but cannot be read, written, downloaded, deleted or traversed. A chat attachment (`/api/files/download?upload=<id>`) names no path: a separate confined authority opens it by stored upload id through `chat_uploads.open_upload` inside `data/uploads`, independent of the Files root.
+Every path-addressed `/api/files/*` operation resolves its requested `path` and refuses when the resolution leaves the configured file root. In-root symlinks stay usable; out-of-root symlinks may be listed with `is_symlink: true` but cannot be read, written, downloaded, deleted or traversed. A chat attachment (`/api/files/download?upload=<id>`) names no path: a separate confined authority opens it by stored id via `chat_uploads.open_upload` inside `data/uploads`, independent of the Files root.
 
 | Method | Path | Note |
 |---|---|---|
@@ -103,7 +103,7 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | GET | `/api/tasks/{task_id}` | |
 | GET | `/api/tasks/{task_id}/events` | integer rank |
 | POST | `/api/tasks/{task_id}/events` | read-only v2 cursor (§3 History reads and the SSE v2 transport) |
-| GET | `/api/tasks/{task_id}/artifacts/{name}` | bare name, `?relpath=`, `?archive=<dir>` ZIP, delegated `?source=`; digest drift 409, failed capture 404; 503 without confined-open support (`gateway/task_archive.py`) |
+| GET | `/api/tasks/{task_id}/artifacts/{name}` | bare name, `?relpath=`, `?archive=<dir>` ZIP, delegated `?source=`; digest drift 409, failed capture 404, no confined opens 503; SVG: `sandbox` CSP, `nosniff` (`gateway/task_archive.py`) |
 | POST | `/api/tasks/{task_id}/cancel` | body `cascade`, `stop_policy`, `stop_action_id` (§5 Stop policy and hurry) |
 | POST | `/api/tasks/{task_id}/hurry` | (§5 Stop policy and hurry) |
 | POST | `/api/tasks/{task_id}/pause` | `{request_id}` (§6 Owner Pause of a whole tree) |

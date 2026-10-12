@@ -816,6 +816,65 @@ def test_ordinary_readers_do_not_grow_with_unrelated_history(tmp_path, monkeypat
         assert large <= small * 1.25 + 4, (name, small, large)
 
 
+def test_task_attempt_page_seeks_the_task_index_not_the_ledger(tmp_path, monkeypatch):
+    """recover_image()'s page: the task index under many decoys, newest first, history-free steps."""
+    measured = {}
+    for size in (100, 4_000):
+        root = tmp_path / f"page-{size}"
+        (root / "state").mkdir(parents=True)
+        monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
+        monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(root / "settings.json"))
+        rows, mine = [], []
+        for index in range(size + 70):
+            if index < size:  # other tasks' images and text calls
+                task, category = f"other-{index % 400}", "image_generation" if index % 2 else "task"
+            else:  # this task's 45 images interleaved with its own text calls
+                task, category = "image-task", "image_generation" if index % 3 and len(mine) < 45 else "task"
+            base = dict(kind="attempt", attempt_id=f"{'z' if index % 3 else 'a'}-{index:05d}", task_id=task,
+                        root_task_id="image-root", model="m", provider="openai", category=category,
+                        source="history", reservation_upper_bound_usd="0.01", pricing_known=True,
+                        ts="2026-01-01T00:00:00+00:00")
+            rows += [{**base, "state": "reserved"}, {**base, "state": "dispatched"}]
+            if index % 2:
+                rows.append({**base, "state": "settled", "cost_usd": "0.001", "cost_final": True})
+            if (task, category) == ("image-task", "image_generation"):
+                mine.append(base["attempt_id"])
+        write_journal(root, rows)
+        usage_store.migrate_from_journal(root)
+        with usage_store.read(root) as txn:
+            plans = [[row["detail"] for row in txn.conn.execute("EXPLAIN QUERY PLAN " + sql, params)]
+                     for sql, params in ((usage_store._TASK_PAGE_SQL, ("image-task", "image_generation", 2 ** 62, 21)),
+                                         (usage_store._TASK_CURSOR_SQL, (mine[0], "image-task", "image_generation")))]
+            pages, after = [], ""
+            while not pages or len(pages[-1]) == 21:
+                pages.append(txn.task_attempt_page("image-task", "image_generation", after=after, limit=21))
+                after = pages[-1][19]["attempt_id"] if len(pages[-1]) == 21 else ""
+            # A cursor must be this task's attempt in this category: others name nothing.
+            assert txn.task_attempt_page("other-1", "image_generation", after=mine[0], limit=21) is None
+            assert txn.task_attempt_page("image-task", "image_generation", after="a-00000", limit=21) is None
+        # The task index addresses the task; sorting by first record touches only its matching rows.
+        page_plan, cursor_plan = plans
+        assert any("USING INDEX attempts_task (task_id=?)" in step for step in page_plan), page_plan
+        assert not any(step.startswith("SCAN") for step in page_plan + cursor_plan), plans
+        assert "USE TEMP B-TREE FOR ORDER BY" in page_plan and len(mine) == 45, page_plan
+        assert any("(attempt_id=?)" in step for step in cursor_plan), cursor_plan
+        listed = [row["attempt_id"] for page in pages for row in page[:20]]
+        assert listed == mine[::-1] and [len(page) for page in pages] == [21, 21, 5]
+        assert set(pages[0][0]) == {"attempt_id", "state", "settle_reason", "model", "provider", "ts_reserved",
+                                    "ts_dispatched", "ts_final", "ts_last"}
+        with monkeypatch.context() as patch:
+            steps = _Steps(patch)
+
+            def first_page():
+                with usage_store.read(root) as txn:
+                    txn.task_attempt_page("image-task", "image_generation", limit=21)
+            first_page()  # warm the process (imports, first open)
+            measured[size] = steps.measure(first_page)
+        usage_store.forget(root)
+    (tmp_path / "page_steps.json").write_text(json.dumps(measured), encoding="utf-8")  # evidence
+    assert measured[4_000] <= measured[100] * 1.25 + 4, measured
+
+
 def test_a_fresh_process_answers_without_importing(root):
     held = ua.reserve_attempt(request(root, root_task_id="active", task_id="active-task"))
     ua.mark_dispatched(held)

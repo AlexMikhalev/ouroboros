@@ -95,6 +95,9 @@ def _park(h):
 def test_complete_empty_snapshot_replaces_old_queue_and_get_is_passive(host):
     h = host
     ref = _park(h)
+    # The independent reviewer may still be publishing its paid-attempt claim
+    # after the author parks. Wait for that writer before testing GET passivity.
+    wait_for(h.entered.is_set, what="review accounting before the passive snapshot")
     first, empty = snapshot(), snapshot((), second=1)
     assert refresh(h, ref, first).json()["status"] == "recorded"
     assert refresh(h, ref, first).json()["status"] == "duplicate"

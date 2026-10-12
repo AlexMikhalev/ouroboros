@@ -478,7 +478,8 @@ def reviewable_effect_projection(llm_trace: Dict[str, Any]) -> List[Dict[str, An
     Reviewable effects are a successful repo commit; a successful write_file/
     edit_text/apply_patch/edit_batch to any non-scratch root; a successful
     run_command/run_script/start_service that declared deliverable outputs; or any
-    successful tool that registered a canonical artifact (artifact_registered — a
+    tool that registered a canonical artifact (including partial output on error;
+    artifact_registered — a
     stopped service's outputs or a user_files write). Pure scratch (root=task_drive)
     write_file/edit_text does NOT count. Cognitive-memory updates go through
     update_identity/update_scratchpad/knowledge_write (not write tools) and are
@@ -488,16 +489,18 @@ def reviewable_effect_projection(llm_trace: Dict[str, Any]) -> List[Dict[str, An
     """
     effects: List[Dict[str, Any]] = []
     for index, call in enumerate(llm_trace.get("tool_calls") or []):
-        if not isinstance(call, dict) or call.get("is_error"):
+        if not isinstance(call, dict):
             continue
-        if str(call.get("status") or "ok") not in _OK_TOOL_STATUSES:
+        artifact = call.get("artifact_registered") is True
+        succeeded = not call.get("is_error") and str(call.get("status") or "ok") in _OK_TOOL_STATUSES
+        if not (succeeded or artifact):
             continue
         tool = str(call.get("tool") or "")
         args = call.get("args") if isinstance(call.get("args"), dict) else {}
-        is_effect = tool in _EFFECT_COMMIT_TOOLS or tool in _EFFECT_CODING_TOOLS or tool in _EFFECT_INTEGRATION_TOOLS
-        if tool in _ROOT_WRITE_TOOLS and str(args.get("root") or "active_workspace") not in _SCRATCH_ROOTS:
+        is_effect = succeeded and (tool in _EFFECT_COMMIT_TOOLS or tool in _EFFECT_CODING_TOOLS or tool in _EFFECT_INTEGRATION_TOOLS)
+        if succeeded and tool in _ROOT_WRITE_TOOLS and str(args.get("root") or "active_workspace") not in _SCRATCH_ROOTS:
             is_effect = True
-        if tool in _EFFECT_PROCESS_TOOLS:
+        if succeeded and tool in _EFFECT_PROCESS_TOOLS:
             outputs = args.get("outputs")
             if isinstance(outputs, list) and any(str(item or "").strip() for item in outputs):
                 is_effect = True

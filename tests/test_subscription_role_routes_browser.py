@@ -272,3 +272,21 @@ def test_catalog_failure_recovery_and_empty_read_keep_real_editor_nodes_and_draf
         assert saved["OUROBOROS_SUBAGENTS"]["items"][0]["route"]["target_id"] == "claudexor::opaque-source=gpt-owner-unsaved"
         assert saved["OUROBOROS_SUBAGENTS"]["items"][0]["route"]["credential_profile_id"] == "personal"
         assert saved["OUROBOROS_SUBAGENTS"]["items"][0]["review_eligible"] is True
+
+
+def test_image_generation_has_no_settings_default(role_ui):
+    """Real Settings render/save keeps generation separate from chat model roles."""
+    ui = role_ui
+    configure_mixed(ui)
+    page = open_agents(ui)
+    page.locator('[data-settings-tab="models"]').click()
+    assert page.locator('[data-model-role-group="image"]').count() == 0
+    assert page.locator('[data-model-role-group="vision"]').count() == 1
+    capture(page, "image-settings-model-selected-desktop")
+    page.set_viewport_size({"width": 390, "height": 844})
+    assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+    capture(page, "image-settings-model-selected-narrow")
+    with page.expect_response('**/api/settings'):
+        page.locator('#btn-save-settings').click()
+    saved = [body for path, body in ui['posts'] if path == '/api/settings'][-1]
+    assert 'OUROBOROS_MODEL_IMAGE' not in saved
