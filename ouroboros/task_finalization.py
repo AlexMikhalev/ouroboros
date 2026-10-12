@@ -105,8 +105,9 @@ def terminal_notice_text(result: Dict[str, Any]) -> str:
 def send_provider_death_notice(
     ctx: Any, chat_id: int, task_id: Any, final_result: Dict[str, Any],
 ) -> bool:
-    """Send the secondary incident, unless the primary is already the receipt."""
-    if str(final_result.get("terminal_origin") or "") == TERMINAL_ORIGIN_HOST_SALVAGE:
+    """Send the secondary incident, unless the primary is already the receipt
+    (any host-authored primary carries this notice itself: a second row would repeat it)."""
+    if str(final_result.get("terminal_origin") or "") in HOST_AUTHORED_TERMINAL_ORIGINS:
         return False
     plan_note = (
         f"\n\n{TERMINAL_PLAN_REVIEW_NOTE}"

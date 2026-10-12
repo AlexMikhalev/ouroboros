@@ -248,9 +248,10 @@ def _provider_unavailable_result(
     llm_trace = llm_trace if isinstance(llm_trace, dict) else {}
 
     def with_terminal_notice(text, usage, trace):
-        # Host presentation is separate from the byte-exact model/salvage result.
-        # Use the final usage facts: a forced call can itself end unresolved.
+        # Host presentation stays beside the byte-exact result; final usage facts (a forced call can end unresolved).
         if str(usage.get("reason_code") or "") not in {"", "deadline_local"}:
+            if usage.get("terminal_origin") in (None, TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE):  # model_final stays
+                usage["terminal_origin"] = TERMINAL_ORIGIN_HOST_NOTICE if not salvaged and text == fallback else TERMINAL_ORIGIN_HOST_SALVAGE  # host words vs model output
             usage["terminal_provider_notice"] = _provider_terminal_fallback_text(
                 usage, is_context_overflow=is_context_overflow, is_transport_wait=is_transport_wait,
                 waited_sec=waited_sec, interactive=interactive,
@@ -272,8 +273,7 @@ def _provider_unavailable_result(
         fallback = _provider_terminal_fallback_text(
             ctx.accumulated_usage, is_context_overflow=is_context_overflow,
             is_transport_wait=is_transport_wait, waited_sec=waited_sec,
-            interactive=interactive,
-            is_deadline_exhausted=is_deadline_exhausted,
+            interactive=interactive, is_deadline_exhausted=is_deadline_exhausted,
             control_reason=control_reason, wait_cause=wait_cause,
         )
     if is_context_overflow:
