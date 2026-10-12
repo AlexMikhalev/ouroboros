@@ -152,7 +152,7 @@ def reconcile_orphaned_runs(
     drive_root: Any,
     running_task_ids: Optional[Any] = None,
     *,
-    gateway_factory: Callable[[], Any],
+    gateway_factory: Optional[Callable[[], Any]] = None,
     recoverable_task_ids: Optional[set] = None,
     replay_pending: Optional[Callable[[], bool]] = None,
 ) -> List[Dict[str, Any]]:
@@ -164,8 +164,9 @@ def reconcile_orphaned_runs(
     is that set, or a zero-arg callable producing it; None means UNKNOWN and reconciles
     nothing — never mass-cancel on missing info.
 
-    ``gateway_factory`` is named by every caller: the admitted startup/periodic sweep
-    ensures, a stop or the owner's Restart attaches. ``replay_pending`` is the admission
+    ``gateway_factory`` is named by every production caller: the admitted startup/periodic
+    sweep ensures, a stop or the owner's Restart attaches; a caller that names none gets
+    the attach-only transport (a bare sweep can only attach). ``replay_pending`` is the admission
     predicate for re-POSTing an orphaned pending invocation (``_recover_pending_invocation``);
     it is re-asked immediately before each replay, so a stop that lands mid-pass defers
     the rest. ``None`` (the release and Restart surfaces) never replays: the rows stay
@@ -191,8 +192,8 @@ def reconcile_orphaned_runs(
     orphans = [c for c in candidates if c.task_id and c.task_id not in live_or_reserved]
     stray = [record for record in unbound
              if record["task_id"] and record["task_id"] not in live_or_reserved]
-    return _reconcile_each(drive_root, orphans, gateway_factory, pending=stray, live_task_ids=live_or_reserved,
-                           replay_pending=replay_pending)
+    return _reconcile_each(drive_root, orphans, gateway_factory or attach_only_gateway, pending=stray,
+                           live_task_ids=live_or_reserved, replay_pending=replay_pending)
 
 
 def _reconcile_each(drive_root: Any, runs: List[RunCustody],

@@ -459,10 +459,18 @@ def test_the_admitted_sweep_names_the_ensure_transport_and_nothing_defaults(tmp_
     sm._reconcile_delegated_runs(lambda: set())
     assert ensured, "the admitted sweep's gateway factory must go through ensure_owned_gateway"
 
-    with pytest.raises(TypeError):
-        dc.reconcile_orphaned_runs(tmp_path, set())  # no factory: refused, never defaulted
+    # A bare sweep call names no factory: it ATTACHES (never ensures) and replays nothing.
+    dc.record_started(tmp_path, dc.RunCustody(
+        run_id="run-orphan-2", task_id="t-gone-2", route_id="r", model="m", ledger_root=str(tmp_path)))
+    dc._CUSTODY.clear()
+    attached = []
+    monkeypatch.setattr("ouroboros.claudexor_daemon.read_owned_gateway",
+                        lambda **_kw: attached.append(True) or _EnsuredGateway())
+    ensured.clear()
+    dc.reconcile_orphaned_runs(tmp_path, set())
+    assert attached and not ensured
     with pytest.raises(ValueError):
-        dc._reconcile_each(tmp_path, [], None)
+        dc._reconcile_each(tmp_path, [], None)  # the core still refuses a missing factory
 
     # And with NOTHING to reconcile the daemon is never started at all: the empty
     # early-return keeps the ordinary idle restart free of a daemon spawn.
