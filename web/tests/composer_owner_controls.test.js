@@ -614,7 +614,7 @@ test('destroy removes the element, its document listeners and its timers', async
 });
 
 /* Both capsules in one composer row, as chat.js builds it: the pills, then the context anchor. */
-function mountPair({ hover = false, reply } = {}) {
+function mountPair({ hover = false, reply, win } = {}) {
     const doc = stubDocument();
     const row = doc.createElement('div');
     row.className = 'chat-toolbar-row';
@@ -631,7 +631,7 @@ function mountPair({ hover = false, reply } = {}) {
     const refreshes = [];
     const answer = { value: reply || { ok: true } };
     const controls = createComposerOwnerControls({
-        row, doc, win: hoverWindow(hover), byId: (suffix) => (suffix === 'context-mode' ? contextEl : null),
+        row, doc, win: win || hoverWindow(hover), byId: (suffix) => (suffix === 'context-mode' ? contextEl : null),
         apiFetch: async (url, init) => { posts.push([url, JSON.parse(init.body)]); return answer.value; },
         saveEffortRange: async (triple) => ({ effort_range: triple }),
         showToast: (message, tone) => toasts.push([message, tone]),
@@ -802,4 +802,45 @@ test('closed, the capsules keep their names while the line holds them; a narrowe
     m.controls.syncState({});
     assert.equal(m.row.dataset.ownerCompact, undefined, 'never decided while a strip is open');
     m.controls.destroy();
+});
+
+test('resize delivery defers geometry writes, coalesces work and cancels it on destroy', () => {
+    const observers = [], frames = new Map();
+    let nextFrame = 0;
+    const win = {
+        ...hoverWindow(false),
+        ResizeObserver: class {
+            constructor(callback) { this.callback = callback; observers.push(this); }
+            observe() {}
+            disconnect() { this.disconnected = true; }
+        },
+        requestAnimationFrame(callback) { frames.set(++nextFrame, callback); return nextFrame; },
+        cancelAnimationFrame(id) { frames.delete(id); },
+    };
+    const deliver = () => observers.forEach((observer) => observer.callback());
+    const paint = () => { const pending = [...frames.values()]; frames.clear(); pending.forEach((callback) => callback()); };
+    const m = mountPair({ win });
+    const thumb = m.contextEl.querySelector('.chat-context-thumb');
+    const chosen = m.seg('max');
+    Object.assign(chosen, { offsetLeft: 80, offsetWidth: 40 });
+    m.controls.syncState({ context_mode: 'max' });
+    chosen.offsetLeft = 120;
+    m.effortEl.getBoundingClientRect = () => ({ top: 40, bottom: 72, width: 130 });
+    deliver();
+    deliver();
+    assert.equal(thumb.style.left, '80px', 'resize delivery cannot write the observed layout');
+    assert.equal(m.row.dataset.ownerCompact, undefined, 'the row cannot wrap and unwrap during delivery');
+    assert.equal(frames.size, observers.length, 'duplicate deliveries share each pending frame');
+    paint();
+    assert.equal(thumb.style.left, '120px', 'the next frame aligns the mark with the resized word');
+    assert.equal(m.row.dataset.ownerCompact, 'true', 'the next frame fits the closed names');
+    m.effortEl.getBoundingClientRect = () => ({ top: 0, bottom: 32, width: 130 });
+    deliver();
+    paint();
+    assert.equal(m.row.dataset.ownerCompact, undefined, 'names return when room returns');
+    deliver();
+    assert.ok(frames.size > 0);
+    m.controls.destroy();
+    assert.equal(frames.size, 0, 'destroy cancels every pending layout');
+    assert.ok(observers.every((observer) => observer.disconnected));
 });

@@ -39,6 +39,22 @@ const widthOf = (node) => {
     return Number.isFinite(width) && width > 0 ? width : Number(node?.offsetWidth) || 0;
 };
 
+// Refitting changes the observed row/strip. Leave ResizeObserver delivery before writing
+// layout, coalesce notifications, and release pending work with the composer's lifetime.
+function observeLayout(win, nodes, layout) {
+    if (!nodes[0] || typeof win?.ResizeObserver !== 'function') return () => {};
+    let frame = 0;
+    const observer = new win.ResizeObserver(() => {
+        if (!frame) frame = win.requestAnimationFrame(() => { frame = 0; layout(); });
+    });
+    nodes.forEach((node) => observer.observe(node));
+    return () => {
+        observer.disconnect();
+        if (frame) win.cancelAnimationFrame(frame);
+        frame = 0;
+    };
+}
+
 /** Each handle pushes the ones it meets: min and max carry the recommended level along, and
  *  the recommended level carries a bracket past which it moves; min and max never cross. */
 export function applyHandle(base, which, value) {
@@ -458,11 +474,7 @@ function createCapsule({
         onStripScroll();
     });
     const onResize = () => { if (state.open) relayout(); };
-    const observer = typeof win?.ResizeObserver === 'function' ? new win.ResizeObserver(() => {
-        if (!state.destroyed) relayout();
-    }) : null;
-    observer?.observe(row);
-    observer?.observe(strip);
+    const stopObserving = observeLayout(win, [row, strip], () => { if (!state.destroyed) relayout(); });
 
     head.addEventListener('click', onHeadClick);
     body.addEventListener('transitionend', onBodyTransitionEnd);
@@ -488,7 +500,7 @@ function createCapsule({
             head.removeEventListener('click', onHeadClick);
             strip.removeEventListener('scroll', onStripScroll);
             win?.removeEventListener?.('resize', onResize);
-            observer?.disconnect();
+            stopObserving();
             stopTracking();
             if (row.dataset?.ownerSolo === kind) delete row.dataset.ownerSolo;
             el.removeEventListener('pointerenter', onEnter);
@@ -953,8 +965,7 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
     if (effort) capsules.push(effort.capsule);
     // One capsule is open at a time.
     if (context && effort) { context.capsule.peer = effort.capsule; effort.capsule.peer = context.capsule; }
-    const observer = row && typeof win?.ResizeObserver === 'function' ? new win.ResizeObserver(fitNames) : null;
-    observer?.observe(row);
+    const stopObserving = observeLayout(win, [row], fitNames);
 
     return {
         context,
@@ -964,7 +975,7 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
         pendingSave: () => (effort ? effort.pendingSave() : Promise.resolve(true)),
         destroy() {
             destroyed = true;
-            observer?.disconnect();
+            stopObserving();
             context?.destroy();
             effort?.destroy();
             if (row?.dataset) delete row.dataset.ownerCompact;
