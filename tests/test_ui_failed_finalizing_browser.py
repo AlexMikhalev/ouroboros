@@ -143,6 +143,9 @@ def _holding(page, task_id, stage):
     # The name stays the task's own; the outcome is never smuggled into it.
     assert state["title"] == TITLE, (stage, state)
     assert page.locator(CARD.format(task_id) + " [data-live-phase-secondary]").is_visible(), stage
+    # The header names the wrap-up of ended work, never "Working" (12.10: ~19 min of "Working").
+    page.wait_for_function("() => document.querySelector('#chat-status')?.textContent === 'Finalizing…'",
+                           timeout=60000)
     return state
 
 
