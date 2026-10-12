@@ -182,9 +182,12 @@ def scope_members(rows: Mapping[int, _Row], *, marker: str = "", markers: Iterab
             gone.append(pgid)  # an emptied group is simply gone
             continue
         leader_birth = str(group.get("leader_birth") or "")
-        # No member of a recorded group predates its leader (the scope's start at the
-        # latest); lstart has one-second resolution, hence the one-second tolerance.
-        floor = (birth_epoch(leader_birth) or float(scope_start_epoch or 0.0)) - 1.0
+        # No member of a recorded group predates its leader, else the group's own recorded
+        # floor (the engine's scope_start), else the scope's start; lstart has one-second
+        # resolution, hence the tolerance. A floor bounds the members' age; it is never the
+        # leader's identity.
+        floor = (birth_epoch(leader_birth) or birth_epoch(str(group.get("floor") or ""))
+                 or float(scope_start_epoch or 0.0)) - 1.0
         leader = rows.get(pgid)
         # A live pid == G must carry the recorded leader birth. An unrecorded leader birth
         # (the spawn-time read found the leader already reaped) cannot vouch for a live
@@ -787,7 +790,10 @@ def _engine_scope_targets(entries: Iterable[Mapping[str, Any]]) -> Tuple[List[st
     """``(markers, groups, captured)`` the engine recorded: every entry's marker through
     the census; its root groups and the groups its captured pids lead (a captured pid
     that is its own group id vouches for that group's leader birth) under rule 2; and
-    each captured pid by its recorded birth."""
+    each captured pid by its recorded birth. A null ``leader_birth`` stays empty — the
+    host cannot verify a live ``pid == pgid`` for it, so rule 2 skips that group — while
+    the entry's ``scope_start`` rides as the group's ``floor``, an age bound for the
+    members a leaderless group still holds."""
     markers: List[str] = []
     groups: List[Dict[str, Any]] = []
     captured: List[Dict[str, Any]] = []
@@ -799,7 +805,7 @@ def _engine_scope_targets(entries: Iterable[Mapping[str, Any]]) -> Tuple[List[st
         for group in entry.get("root_groups") or []:
             if isinstance(group, dict) and int(group.get("pgid") or 0) > 1:
                 groups.append({"pgid": int(group["pgid"]), "leader_pid": int(group.get("leader_pid") or 0),
-                               "leader_birth": str(group.get("leader_birth") or floor)})
+                               "leader_birth": str(group.get("leader_birth") or ""), "floor": floor})
         leaders = {int(item.get("pid") or 0): str(item.get("birth") or "")
                    for item in entry.get("captured") or [] if isinstance(item, dict)}
         for item in entry.get("captured") or []:
@@ -809,7 +815,7 @@ def _engine_scope_targets(entries: Iterable[Mapping[str, Any]]) -> Tuple[List[st
             if pid > 1 and birth:
                 captured.append({"pid": pid, "birth": birth})
             if pgid > 1 and all(group["pgid"] != pgid for group in groups):
-                groups.append({"pgid": pgid, "leader_pid": pgid, "leader_birth": leaders.get(pgid, "") or floor})
+                groups.append({"pgid": pgid, "leader_pid": pgid, "leader_birth": leaders.get(pgid, ""), "floor": floor})
     return markers, groups, captured
 
 

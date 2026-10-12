@@ -466,7 +466,7 @@ def test_a_malformed_index_row_is_disclosed_the_valid_rows_are_acted_on_and_the_
     try:
         birth = ps.birth_text(member.pid)
         good = {"run_id": "good", "marker": ps.mint_marker(ps.RUN_SCOPE_PREFIX), "state": "running", "scope_start": birth,
-                "root_groups": [{"pgid": member.pid, "leader_pid": member.pid, "leader_birth": None,
+                "root_groups": [{"pgid": member.pid, "leader_pid": member.pid, "leader_birth": birth,
                                  "leader_identity": {"ignored": True}}], "captured": []}
         bad = {"run_id": "bad", "marker": ps.mint_marker(ps.RUN_SCOPE_PREFIX), "state": "running", "scope_start": birth,
                "root_groups": [], "captured": [{"pid": 4242, "pgid": "not-a-number", "birth": birth}]}
@@ -476,10 +476,50 @@ def test_a_malformed_index_row_is_disclosed_the_valid_rows_are_acted_on_and_the_
         assert [(row["index"], row["run_id"], row["reason"]) for row in disclosure["malformed"]] == [
             (0, "bad", "captured.pgid malformed"), (2, "", "entry is not an object")]
         outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
-        assert outcome["ended"] == [member.pid] and _gone(member.pid), "the valid row is acted on (null leader_birth: floor)"
+        assert outcome["ended"] == [member.pid] and _gone(member.pid), "the valid row is acted on"
         assert outcome["settled"] is False and ps.panic_sweep_pending_path(tmp_path).exists(), "invalid cannot complete"
     finally:
         _end(member)
+
+
+def test_a_null_engine_leader_birth_never_vouches_for_a_live_leader_while_the_floor_still_names_the_orphans(tmp_path):
+    """Astra delta2 2 / Fable delta2 NIT 1: for an engine root group whose ``leader_birth``
+    is null, the floor (``scope_start``) bounds the members' age and is never the leader's
+    identity: a live ``pid == pgid`` cannot be verified by the host, so the group is skipped
+    (the engine's contract) even when that leader was born in the floor's second; with no
+    live leader, the members at or after the floor belong to the scope."""
+    ps.installation_marker(tmp_path)
+    leader = _sleeper(argv=["/bin/sleep", "120"])  # a live root born in the very second the floor names
+    shell = subprocess.Popen(["/bin/sh", "-c", "/bin/sleep 120 >/dev/null 2>&1 & echo $!"], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+    orphan = int(shell.stdout.read().strip().splitlines()[-1])
+    index = ps.engine_run_scopes_path(tmp_path)
+    index.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        leader_birth, shell_birth = ps.birth_text(leader.pid), ps.birth_text(shell.pid)
+        assert leader_birth and shell_birth
+        shell.wait(timeout=5)  # reaped: the group it led keeps its & child and no live pid == pgid
+
+        def entry(run_id, pgid, floor):
+            return {"run_id": run_id, "marker": ps.mint_marker(ps.RUN_SCOPE_PREFIX), "state": "running",
+                    "scope_start": floor, "root_groups": [{"pgid": pgid, "leader_pid": pgid, "leader_birth": None}],
+                    "captured": []}
+
+        index.write_text(json.dumps({"schema_version": 1, "entries": [
+            entry("live-leader", leader.pid, leader_birth), entry("leaderless", shell.pid, shell_birth)]}), encoding="utf-8")
+        groups = ps._engine_scope_targets(ps.engine_scope_index(tmp_path)[0])[1]
+        assert [(group["leader_birth"], group["floor"]) for group in groups] == [("", leader_birth), ("", shell_birth)], \
+            "null stays null; the floor rides separately"
+        outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
+        assert leader.poll() is None and leader.pid not in outcome["ended"] and leader.pid in outcome["groups_reused"], \
+            "a live pid == pgid the host cannot verify: skipped and disclosed, never signalled on the floor"
+        assert outcome["ended"] == [orphan] and _gone(orphan), "the leaderless group's child at or after the floor is the scope's"
+    finally:
+        _end(leader)
+        try:
+            os.kill(orphan, 9)
+        except ProcessLookupError:
+            pass
 
 
 def test_a_known_member_rides_the_pending_record_into_the_completion(tmp_path, monkeypatch):
