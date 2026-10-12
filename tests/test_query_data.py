@@ -8,6 +8,7 @@ import json
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 
 import pytest
 
@@ -321,7 +322,7 @@ def test_pack_index_sql_recovers_from_sidecars(ctx, cache):
     if cache == "missing":
         path.unlink()
     elif cache == "old_version":
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn, conn:
             conn.executescript("""
                 ALTER TABLE members RENAME TO previous_members;
                 CREATE TABLE members (sha256 TEXT, task_id TEXT, generation INTEGER, offset INTEGER,
@@ -332,7 +333,7 @@ def test_pack_index_sql_recovers_from_sidecars(ctx, cache):
             """)
             assert conn.execute("SELECT count(*) FROM members").fetchone() == (1,)
     elif cache == "quick_check":
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn, conn:
             conn.executescript("""
                 CREATE TABLE damaged(value INTEGER CHECK(value=0));
                 PRAGMA ignore_check_constraints=ON;
@@ -345,7 +346,7 @@ def test_pack_index_sql_recovers_from_sidecars(ctx, cache):
     assert result["status"] == "ok", result
     assert result["data"]["rows"] == [["checkpoint", len(raw)], ["json", len(raw)]], result
     assert authority == {p: p.read_bytes() for p in authority}
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn:
         assert conn.execute("PRAGMA quick_check").fetchall() == [("ok",)]
         assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() == (str(packs.INDEX_SCHEMA_VERSION),)
 

@@ -989,7 +989,8 @@ def archive_usage_segments(root: Any) -> Dict[str, int]:
                     digest.update(chunk)
                     size += len(chunk)
                     writer.write(chunk)
-            with open(tmp, "rb") as handle:
+            # Windows FlushFileBuffers requires a handle opened for writing.
+            with open(tmp, "rb+") as handle:
                 os.fsync(handle.fileno())
         _atomic_overwrite(target, compress)
         atomic_write_json(meta, {"name": source.name, "size": size, "sha256": digest.hexdigest()}, fsync=True)

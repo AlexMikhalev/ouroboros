@@ -144,7 +144,7 @@ def run_sql(ctx, root, *, db, query, max_rows, max_bytes, snapshot, timeout_sec)
 
     repo = Path(__file__).resolve().parents[1]
     env = {key: value for key, value in os.environ.items()
-           if key in {"PATH", "HOME", "USERPROFILE", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR",
+           if key.upper() in {"PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR",
                       "LANG", "LC_ALL", "OUROBOROS_SETTINGS_PATH"}
            or key.startswith(CONTAINMENT_ENV_PREFIX)}
     env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(repo),
