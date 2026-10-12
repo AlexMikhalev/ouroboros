@@ -755,7 +755,12 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 370 -> 371 (FIXB): observability/packs/.publications, the disposable per-pass
 # reference journal documented in the existing evidence-pack row.
 # 371 -> 372: the fixed DATA server-lifetime admission lock (state/server.lock).
-EXPECTED_SCAN_PATHS = 372
+# 372 -> 377 (#1772, work scopes): the installation scope marker ``state/installation_scope.json``,
+# the per-task scope records ``state/task_scopes`` + ``state/task_scopes/*.json``, the unfinished
+# Panic sweep ``state/panic_sweep_pending.json`` (``ouroboros/process_scope.py``; two section-2
+# rows and one section-4 row) and the engine's own index ``claudexor/daemon/run-scopes.json``,
+# read at Panic and covered by the existing ``claudexor/**`` row.
+EXPECTED_SCAN_PATHS = 377
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
