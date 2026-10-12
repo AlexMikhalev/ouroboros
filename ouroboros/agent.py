@@ -141,6 +141,16 @@ def _task_exception_terminal(env: Any, task: Dict[str, Any], exc: Exception, dri
     return text, usage, llm_trace
 
 
+def _settle_start_origin(task: Dict[str, Any]) -> float:
+    """This start's clock origin: a continuation's preserved original start, else now; the
+    carried pre-origin offset follows the same decision assignment made (#939)."""
+    from ouroboros.model_wait import settle_execution_carry
+
+    continuation = task.get("_owner_wait_resume") or task.get("_budget_pause_resume") or task.get("_working_recovery") or {}
+    settle_execution_carry(task, origin_preserved=bool(continuation.get("started_at")))
+    return float(continuation.get("started_at") or time.time())
+
+
 def _restore_saved_clocks(ctx: Any, task: Dict[str, Any]) -> None:
     """Bind this start's continuation carriers and restore the clocks they saved.
 
@@ -156,14 +166,20 @@ def _restore_saved_clocks(ctx: Any, task: Dict[str, Any]) -> None:
     if not saved_wait and ctx.budget_pause_resume:
         from ouroboros.budget_pause import load_budget_pause
         saved_wait = load_budget_pause(ctx)  # same-ID budget continuation (#1196)
+    recovered = False
     if not saved_wait and isinstance(ctx.working_recovery, dict):
         from ouroboros.working_checkpoint import load_recovery
         try:
             saved_wait = load_recovery(ctx)  # same/new-ID recovery continues its clocks
+            recovered = True
         except Exception:
             saved_wait = {}  # the loop discloses the unreadable source itself
     if saved_wait and ctx.model_wait_context is not None:
+        from ouroboros.model_wait import adopt_handoff_clock
+
         model_state = saved_wait.get("model_wait") or {}
+        if recovered:  # confirmed after the checkpoint, folded by the supervisor (#939)
+            model_state = adopt_handoff_clock(model_state, ctx.working_recovery)
         if (saved_wait.get("_working_handoff") or {}).get("source_task_id", ctx.task_id) != ctx.task_id:
             # A new execution keeps the cumulative clock, without importing
             # the old task owner's model-choice/control overrides.
@@ -358,9 +374,21 @@ class OuroborosAgent:
         elif self._event_queue is None:
             raise RuntimeError("acceptance fence requires a supervisor event queue")
         else:
+            if request["action"] == "begin":  # #1183: only the current RUNNING attempt may open a fence
+                ctx = getattr(getattr(self, "tools", None), "_ctx", None)
+                request["pooled_owner"] = {"task_attempt": int(getattr(ctx, "task_attempt", None) or 1),
+                                           "pid": os.getpid()}
             event = {"type": "acceptance_fence", "req": uuid.uuid4().hex, **request}
             ack = self._send_fence_event(event) or (request["action"] != "inspect" and self._send_fence_event(event)) or {}
             if not ack:
+                if request["action"] == "begin":
+                    # An unanswered begin may still apply late. FIFO puts this release of its
+                    # own token after both sends; it never seals, and no review was admitted on it.
+                    try:
+                        self._event_queue.put({**event, "action": "end", "outcome": "revision",
+                                               "req": uuid.uuid4().hex, "ts": utc_now_iso()})
+                    except Exception:
+                        log.warning("Could not release an unconfirmed acceptance fence", exc_info=True)
                 raise TimeoutError(f"supervisor did not acknowledge acceptance fence {request['action']}")
         status = str(ack.get("status") or "")
         if not ack.get("ok", True) or status not in accept:  # the row's typed state is the reason; only a malformed request keeps its error text
@@ -599,6 +627,9 @@ class OuroborosAgent:
         _record_executor_resolution(drive_logs, task, dispatch)
         sanitized_task = sanitize_task_for_event(task, drive_logs)
         append_jsonl(drive_logs / "events.jsonl", {"ts": utc_now_iso(), "type": "task_received", "task": sanitized_task,
+                     # #1578: the task's own ids at top level beside its (content) task body.
+                     "task_id": str(task.get("id") or ""),
+                     **{key: str(task[key]) for key in ("root_task_id", "parent_task_id") if task.get(key)},
                      "activity_emitted_at": getattr(self, "_activity_emitted_at", None)})
         self._persist_running_record(task)
         # Durable record first, live mirror second: the supervisor's RUNNING copy
@@ -646,7 +677,7 @@ class OuroborosAgent:
             "executor_ref",
             "original_task_id",
             "timeout_retry_from",
-            "timeout_retry_at",
+            "timeout_retry_at", "execution_timeout_sec", "_execution_consumed_sec",
             # v6.73.0: the ingress-captured origin rides BY VALUE into the tool
             # context, so a pooled promoted task that itself promotes/routes still
             # passes the start-message identity to the next binding.
@@ -953,9 +984,7 @@ class OuroborosAgent:
 
     def _handle_task_scoped(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
         self._busy = True
-        _continuation = task.get("_owner_wait_resume") or task.get("_budget_pause_resume") or task.get("_working_recovery") or {}
-        start_time = float(_continuation.get("started_at") or time.time())
-        self._task_started_ts = start_time
+        start_time = self._task_started_ts = _settle_start_origin(task)
         self._last_progress_ts = time.time()  # this worker is newly active; lifetime keeps its original start
         self._pending_events = []
         # Preserve chat_id=0; it is a real session, not missing.

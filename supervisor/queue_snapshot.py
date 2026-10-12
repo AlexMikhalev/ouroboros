@@ -150,7 +150,9 @@ def persist_queue_snapshot(reason: str = "") -> bool:
                 "attempt": t.get("_attempt"), "queued_at": t.get("queued_at"),
                 "queue_seq": t.get("_queue_seq"),
                 "task": {**{key: t.get(key) for key in _PENDING_FIELDS}, **subagent_intent_fields(t),
-                         **{key: t[key] for key in ('_project_admission', 'admitted_dispatch', '_project_scope_none', '_working_recovery') if key in t}},
+                         **{key: t[key] for key in ('_project_admission', 'admitted_dispatch', '_project_scope_none', '_working_recovery',
+                                                    # #939: the execution budget and its carried clock offset travel with the row.
+                                                    'execution_timeout_sec', '_execution_consumed_sec', '_execution_handoff_sec') if key in t}},
             })
         running_rows = []
         for task_id, meta in running_items:
@@ -308,7 +310,7 @@ def _exact_pause_row(task: Any) -> bool:
 
 
 def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stale: bool,
-                             direct_caught: "list[str]" = ()) -> tuple:
+                             direct_caught: "list[str]" = (), handoffs: Optional[dict] = None) -> tuple:
     """Which snapshot rows survive the restore, and the RUNNING rows parked beside them.
 
     A grant that never reached a worker before this restart is not carried into
@@ -341,6 +343,8 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
     Returns retained rows, unseen pause ids, consumed task ids, and the roots'
     pre-park rows. Unseen pauses use those transient rows to apply the ordinary
     latch generation rule before parking erased their prior selection.
+    ``handoffs`` (when given) receives ``{task_id: from_attempt}`` for each saved RUNNING row of
+    the stopped generation that recovery turned into its successor (#1183).
     """
     from ouroboros.budget_pause import budget_pause_restore_refusal, budget_pause_row
     from ouroboros.owner_wait import restore_owner_wait_allowed, saved_sleep_checkpoint
@@ -411,15 +415,27 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
     taken = {str(task.get("id") or "") for task in list(snapshot_pending) + parked}
     # Interrupted work whose state was saved returns (or waits) under its own id
     # instead of the shutdown fence's cancellation (#1563).
-    parked += recover_saved_running(
+    recovered = recover_saved_running(
         [row for row in list(running_rows) + direct_saved if isinstance(row, dict)
          and str((row.get("task") or {}).get("id") or "") not in taken],
         _queue().DRIVE_ROOT, transaction=transaction, cause=stop_cause)
+    if handoffs is not None:
+        handoffs.update({str(task["id"]): source["from_attempt"] for task in recovered
+                         if isinstance(source := task.get("_working_recovery"), dict)
+                         and source.get("source_task_id") == task["id"] and source.get("from_attempt")})
+    parked += recovered
     unseen.update(str(task.get("id") or "") for task in parked
                   if unseen_pause(task, before_park.get(str(task.get("id") or ""), ("", ""))))
     retained = []
     consumed: list = []
     for task in list(snapshot_pending) + parked:
+        retry = task.get("_terminalization_retry")
+        if (isinstance(retry, dict) and retry.get("trigger") == "deadline"
+                and isinstance(retry.get("unsubmitted_launch"), dict)):
+            # Already non-dispatchable: its reaper validates the caller's exact
+            # non-put claim. A generic unknown-dispatch hold would strand it.
+            retained.append(task)
+            continue
         # Import opaque owner/cap carriers even for an exact saved Pause. Its
         # single-use Resume is a separate authority from ordinary queue replay.
         schedule_replay = restore_allowed(task)
@@ -780,6 +796,28 @@ def _record_queue_restore(
     )
 
 
+def _release_successor_fences(raw_fences: Any, raw_budget: Any, pending: list, handoffs: dict) -> Any:
+    """#1183: only a validated stopped-generation handoff releases a fence. ``handoffs``
+    names the RUNNING rows of the previous generation that recovery turned into their
+    successors (``recover_saved_running``: exact source task and attempt); that ended
+    attempt's own active fence must not cancel the retained successor continuing its
+    work. An attempt number alone proves nothing; malformed lists stay for the typed refusal."""
+    if not isinstance(raw_fences, list) or not all(isinstance(row, dict) for row in raw_fences):
+        return raw_fences
+    from supervisor.queue_transitions import release_ended_attempt_fences_locked
+
+    paused = ({str(row.get("root_task_id") or "") for row in raw_budget if isinstance(row, dict)}
+              if isinstance(raw_budget, list) else set())
+    fences = dict(enumerate(raw_fences))
+    for task in pending:
+        source = task.get("_working_recovery") if isinstance(task, dict) else None
+        task_id = str(task.get("id") or "") if isinstance(task, dict) else ""
+        if isinstance(source, dict) and task_id in handoffs and source.get("from_attempt") == handoffs[task_id]:
+            release_ended_attempt_fences_locked(fences, task_id, task_attempt=int(handoffs[task_id]),
+                                                paused_roots=paused)
+    return list(fences.values())
+
+
 def restore_pending_from_snapshot(
     max_age_sec: int = 900, *, terminalized: Optional[list] = None,
 ) -> int:
@@ -839,8 +877,8 @@ def restore_pending_from_snapshot(
         pending_ids = {str(task.get("id") or "") for task in snapshot_pending}
         direct_caught = [task_id for task_id in direct_roots.get("task_ids") or []
                          if task_id not in live_direct and task_id not in pending_ids]
-        snapshot_pending, unseen_pauses, consumed_rows, prior_roots = _retain_snapshot_pending(
-            snapshot_pending, running_rows, stale=stale, direct_caught=direct_caught)
+        snapshot_pending, unseen_pauses, consumed_rows, prior_roots = _retain_snapshot_pending(  # #1183 handoffs
+            snapshot_pending, running_rows, stale=stale, direct_caught=direct_caught, handoffs=(handoffs := {}))
         from supervisor.restart_retention import consume_return_transaction, fresh_return_transaction
 
         # This boot decided the returns; a later stop can never reuse the transaction.
@@ -859,6 +897,7 @@ def restore_pending_from_snapshot(
             snapshot_pending, pending=_queue().PENDING, running=_queue().RUNNING,
             queue_seq_counter_ref=_queue().QUEUE_SEQ_COUNTER_REF, sort_pending=_queue().sort_pending,
         )
+        raw_fences = _release_successor_fences(raw_fences, raw_budget_fences, snapshot_pending, handoffs)
         fenced_roots, malformed_fences, malformed_budget_fences = restore_queue_fences(raw_fences, raw_budget_fences)
         if not malformed_budget_fences:
             _raise_parked_root_fences(snapshot_pending, unseen_pauses, prior_roots)

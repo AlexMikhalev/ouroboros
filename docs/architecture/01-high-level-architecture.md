@@ -27,7 +27,7 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
     settings_ui.js, settings_catalog.js, settings_controls.js, settings_secrets.js, settings_local_model.js, settings_autostart.js, mcp_settings.js, mcp_header_fields.js, mcp_import_dialog.js — Settings page leaves: catalog refresh, control binders, secret Show/Hide, local-model form, host sign-in toggle, MCP cards and import (§3 Settings)
     model_roles.js, model_chooser.js — the Models editor and editable chooser shared by Settings, onboarding and route editors; catalog arrival never assigns a value (§3 Navigation)
     subagents_settings.js, subagent_status_primitives.js, route_editor_primitives.js, harness_accounts.js, account_resources.js, harness_login_cards.js, claudexor_status_store.js — Agents editors; account/resource/login views share one status/action store (§3 Agent accounts)
-    onboarding_agents_step.js, onboarding_overlay.js, project_create.js, utils.js — first-run accounts step; the wizard frame's sandbox policy, kept in one place because it is a security boundary; New Project dialog; shared utilities (§2; §3 Project rooms)
+    onboarding_agents_step.js, onboarding_overlay.js, project_create.js, utils.js — first-run accounts step; the wizard frame's sandbox policy, kept in one place as a security boundary; New Project dialog; shared utilities (§2; §3 Project rooms)
     review_command.js — `/review` chooser and send (§3 Chat and Projects)
     review_presentation.js, review_record_card.js, review_dom_patch.js, harness_presentation.js — read-side Review Checkpoint grouping, one review record's panel and reviewer lines (`formatReviewProjection`), keyed DOM patching, the sole owner of harness identity markup (§3 Child cards and executor presentation)
     acceptance_incident_presentation.js — local evidence-preparation warning; no reviewer authority (§6 Task acceptance)
@@ -36,7 +36,7 @@ supervisor/ — background thread inside server.py (§5)
   active_activity.py — process-local direct actors and current call observations behind `/api/state`; typing receipts remain separate, with no queue records (§3 Direct turns and the activity block)
   message_bus.py — local message bus for the Web UI and transport skills; re-exports the ingress names
   message_ingress.py — one accepted row per message id before dispatch, through a process-local chat-chain index
-  workers.py — worker pool: forkserver on Linux, spawn elsewhere, never fork, because a child forked from the multi-threaded supervisor inherits a held import lock and wedges
+  workers.py — worker pool: forkserver on Linux, spawn elsewhere, never fork: a child forked from the multi-threaded supervisor inherits a held import lock and wedges
   worker_assignment.py, worker_chat_lane.py, worker_health.py, worker_pool_lifecycle.py, worker_process.py, worker_promotion.py — pool leaves: assignment, chat-lane admission, crash recovery, lifecycle and tree kill, the worker child, promotion (§5; §6 Owner routing verbs)
   worker_owner_wait.py — a required owner wait hands the active slot to another worker; the task stays RUNNING and custodied (§5)
   state.py, state_initialization.py — `state/state.json` updates with typed read quality; init witness
@@ -105,6 +105,7 @@ ouroboros/ — agent core and shared runtime (§6)
   dialogue_provenance.py — exact transport-provenance rendering for history, memory and consolidation
   extension_companion.py, extension_reconcile_queue.py — host-supervised companion processes for transport skills; durable worker→server reconcile markers (§12; §13)
   event_bus.py — typed in-process event bus for skill subscriptions
+  event_usage.py, event_token_totals.py — event token counters, offline totals (§11.4)
   evolution_checkpoints.py, evolution_fingerprint.py — append-only campaign checkpoint ledger; canonical objective fingerprint for repeat gating
   improvement_backlog.py — durable improvement backlog: recurrence-counted dedup that never drops an item, ranked, locked writer
   loop.py — the LLM tool loop, finalization nudges and the FINAL ANSWER candidate (§6 Task lifecycle)
@@ -131,7 +132,7 @@ ouroboros/ — agent core and shared runtime (§6)
   process_logging.py — per-process logging bootstrap; the server is the sole `server.log` writer; the launcher copies the server pipe, byte-capped, into `agent_stdout.log`
   model_send_seal.py — the invariant `model-visible ⟺ logged` for `model_send`: a mismatch is a typed durable fact, not a blocked call (docs/MODEL_SEND_OBSERVABILITY.md)
   cancel_intents.py — durable cancel-intent projection with claim-generation fencing; the one ingress `request_cancel`; fail-closed reads (§5; §10 invariants 14–15)
-  owner_hurry.py — owner "hurry": a typed task-local latch, never a chat message, written on its own keys because `write_task_result`'s status-regression guard could drop concurrent terminal fields (§5)
+  owner_hurry.py — owner "hurry": a typed task-local latch, never a chat message, written on its own keys, as `write_task_result`'s status-regression guard could drop concurrent terminal fields (§5)
   owner_quiz.py — owner-quiz lifecycle: asked, first-answer-wins answered, terminal reconcile closing the paired `owner_wait` (§11.1)
   owner_wait.py — cognition serialization, native waits, acknowledged restart handoffs (§5, §6)
   model_sleep.py — the model's own warm/cold sleep (§6 The model's own sleep)
@@ -144,12 +145,12 @@ ouroboros/ — agent core and shared runtime (§6)
   owner_continue.py — owner Continue data half: identity, eligibility, exact owner sources (§6 Owner Continue)
   routing_wait.py — receipt waits and the one act projection that the picker, routing tools and observer share
   outcomes.py — typed task-outcome and acceptance-decision authority with separate lifecycle, execution, objective, review, artifact and verification axes; a policy denial never masquerades as a tool failure (§6 Task lifecycle; §10.1)
-  outcome_receipt_store.py — verification-receipt append/read authority; a zero-run receipt writes `incomplete`/`unknown` only, because a zero-run "complete" is unverifiable self-report
+  outcome_receipt_store.py — verification-receipt append/read authority; a zero-run receipt writes `incomplete`/`unknown` only: a zero-run "complete" is unverifiable self-report
   depth_evidence.py — pure `requested_depth`/permitted/attempted/achieved projection; a missing admitted permission stays unknown, never reconstructed from live config
   _outcome_receipts.py, _outcome_tool_errors.py — receipt parsing and the one canonical receipt identity (`receipt_canonical_identity`; §10 invariant 16); tool-trace status vocabularies, re-exported by `outcomes.py`
   code_intelligence.py, code_intelligence_architecture.py — internal code inventory (file facts, outlines, bounded imports and calls) in a derived cache without source bodies; architecture facts over the pinned domain/contract carriers (`owner_of`) (Code navigation below)
   code_navigation.py, code_occurrences.py, code_import_candidates.py, code_search_rg.py — `query_code` views, request-local token/import evidence, import candidates with explicit ambiguity, optional ripgrep for `search_code` behind the protected/secret gates (Code navigation below)
-  pricing.py — exact-route provider-catalog lookup with nullable estimates; no static tariffs, because they go stale (§6 Budget tracking)
+  pricing.py — exact-route provider-catalog lookup with nullable estimates; no static tariffs (they go stale) (§6 Budget tracking)
   usage_accounting.py, usage_admission.py, _usage_wait.py — physical attempts (reserved → dispatched → settled or unresolved) with global/root/group admission; group binding and review-wave admission; pre-send lock slices (§6 Budget tracking)
   _usage_rows.py, _usage_money.py, _usage_response.py, usage_ledger.py, skill_review_usage.py — the one reducer, exact Decimal cash, the accounting usage normalizer, shared row rules and the money lock, the read-only Skill Review projection (§6 Usage ledger substrate vs. accounting policy)
   _usage_cache_splits.py — process-local cache split by task/provider/route/review; a missing entry prices a full cache write (§6)
@@ -212,14 +213,14 @@ ouroboros/ — agent core and shared runtime (§6)
   reference_books.py — the ordered Architecture/Development reader and validator; free worktree book balance against the cached official development merge-base (an unavailable base is unknown, never paid; no fetch or local block; DEVELOPMENT "Documentation contract")
   local_model_server.py — read-only local formatter measurement and serving-process probe
   context_compaction.py — atomic-unit compaction with provenance capsules and transactional apply (§6 Context fitting)
-  context_health.py — health invariants snapshotted once per attempt; delegated-run obligations stay globally visible, because a preserved-and-invisible result is how work rots on disk (§6 Context fitting)
+  context_health.py — health invariants snapshotted once per attempt; delegated-run obligations stay globally visible: a preserved-and-invisible result is how work rots on disk (§6 Context fitting)
   context_runtime_facts.py — the runtime section's fact builders
   headless.py, history_retention.py — child-drive isolation, answer/file adoption, workspace patches, memory export; typed `sensitive_blocked` exclusions (§6 Headless finalization; §10)
   task_custody.py — the one child-drive deletion owner (`settle_child_drive`) and per-task custody lock (§6 Headless finalization)
   headless_status.py — lifecycle vocabulary shared by the headless owners
   workspace_patch_rules.py, workspace_patch_capture.py — patch-exclusion rules (env/cache, junk, lockfiles, credential-shaped names); the patch artifact and its manifest
   workspace_copies.py — git-copy source/baseline identity and own-body policy (§6 Delegated subagents)
-  coop_checkpoint.py — quiescent checkpoint commits of cooperative trees from a mutative child's `write_root`; a root mid merge/rebase/cherry-pick/revert is skipped, because staging it would commit a half-resolved tree (§5)
+  coop_checkpoint.py — quiescent checkpoint commits of cooperative trees from a mutative child's `write_root`; a root mid merge/rebase/cherry-pick/revert is skipped: staging it would commit a half-resolved tree (§5)
   delegate_output.py, delegate_directory.py, workspace_file_outputs.py — retained terminal JSON, its physical-task read, directory-result apply/discard through the artifact owner, ordinary-folder file results with exact before/after identities (§6 Terminal products and their reader)
   delegate_activity.py — typed executor activity JSONL with an emission-committed cursor (§6 Delegated activity)
   delegate_containment.py — engine-derived isolation facts; absence is reported unproven (§6 Delegated subagents)
@@ -342,7 +343,7 @@ ouroboros/ — agent core and shared runtime (§6)
   git_shell_policy.py — Shell Git argv checks
   protected_artifacts.py — Execute-only black-box policy for protected artifacts
   shell_parse.py — Shared command/argv normalization and POSIX wrapper grammar; observed targets, not permission judgments (§6 Safety and runtime mode)
-  argv_budget.py — Argv admission counts encoded bytes of argv plus environment, because ARG_MAX charges both; asked by skill_exec before exec
+  argv_budget.py — Argv admission counts encoded bytes of argv plus environment (ARG_MAX charges both); asked by skill_exec before exec
   workspace_executor.py, docker_process_observer.py — `local` and network-none `docker_exec`; Docker liveness needs `sh`, `cat`, readable `/proc` (§9)
   deliverables_paths.py — Lexical and case-folded deliverables path views
   tool_capabilities.py — SSOT for the core, parallel-safe, untruncated and stateful-browser tool sets and the cognitive-memory tool class every Presence ceiling carries
@@ -387,7 +388,7 @@ ouroboros/ — agent core and shared runtime (§6)
     tasks.py — Headless task create/list/get/cancel/events; cancel accepts `stop_policy` (`finalize_then_cancel` → supervisor/owner_stop.py) (CLI / Headless Boundary below)
     task_archive.py — Confined single-file and directory-ZIP reads of a task's own stores
     task_events.py — Task-event SSE endpoint: GET ranks plus read-only POST v2 physical-chain cursors (§3 History reads and the SSE v2 transport)
-    task_hurry.py — POST hurry ingress: a one-field `{request_id}` body, extra fields refused, because hurry carries no text by design and a smuggled field must not become a side channel (owner_hurry.py)
+    task_hurry.py — POST hurry ingress: a one-field `{request_id}` body, extra fields refused: hurry carries no text by design and a smuggled field must not become a side channel (owner_hurry.py)
     task_pause.py — POST owner Pause `{request_id}`; answers after the durable root fence (owner_pause.py; §6 Owner Pause)
     task_continue.py — POST owner Continue `{action_nonce}`; one nonce answers one admission (owner_continue.py; §6 Owner Continue)
     task_decision.py — The one `POST /api/decisions` ingress with family-parsed ids (`quiz:` here, `routing:` → routing_decision.py, `interaction:` reserved); writes `KIND_QUIZ_ANSWER` (owner_quiz.py; §11.1)
@@ -502,7 +503,7 @@ ouroboros/ — agent core and shared runtime (§6)
     services.py — Service mini-manager with process-group cleanup
     skill_exec.py — list_skills/skill_review/toggle_skill/skill_owner_action/skill_exec over a fixed interpreter allowlist; gated by enablement, fresh review and hash
     skill_publish.py — Thin publish transaction over the four leaves; success is PR-receipt-gated
-    skill_preflight.py — Read-only skill preflight; a module widget's `render.entry` is containment-checked and parsed as a classic script, because the widget frame runs it inline
+    skill_preflight.py — Read-only skill preflight; a module widget's `render.entry` is containment-checked and parsed as a classic script: the widget frame runs it inline
     project_journal.py — journal_write/read, workpad_read/write, `update_focus`, journal_tail_digest; foreign project reads honoured for roots, foreign writes refused; owns `mirror_tree_coordination_to_journal`
     presence.py — configure_presence, initiate_presence, typed completion/cancel
     task_tree.py — tree_note/tree_read (storage SSOT: task_tree_ledger.py)
@@ -566,7 +567,7 @@ Same-install reaper (`launcher_server_reaper.py`): under the PID lock, each gene
 
 Durable process custody (`ouroboros/process_custody.py`): `spawn_supervised()` ledgers each long-lived child in `data/state/process_ledger.jsonl` (scope `task|session|daemon`). The reaper (startup, `server_maintenance` sweep) kills only entries whose generation or task owner died, by strict `(pid, start_time, cmd_sha256)` fingerprint, never command-line class, so dev and packaged installs coexist. Daemon rows stay; skill companions are reaped on owner uninstall or foreign generation (log-only default: `process_would_reap`). Worker tree-kills (`worker_pool_lifecycle.kill_worker_tree`) spare retained daemon subtrees; the ledger complements, not replaces, the panic layers. `start_parent_lifeline()` group-suicides a Python entrypoint on spawner death; multiprocessing children await the parent sentinel (a forkserver ppid outlives the supervisor). PID 1 adopts orphans too: ppid 1 at start is live only for a spawn/fork child of PID 1 or a plain child still under its `OUROBOROS_PARENT_PID`.
 
-Launcher lifecycle: each generation resolves its predecessor, re-checks the automatic Panic gate and starts the server; ready is the endpoint this child published, proven against its handle, answering health. `RESTART_EXIT_CODE` requests a managed restart that refreshes bundle metadata and dependencies (§2); `MAX_CRASH_RESTARTS` crashes within `CRASH_WINDOW_SEC` stop automatic restart, and a panic exit fully cleans up and terminates the outer process. Presentation: the Linux browser fallback checks `DISPLAY`/`WAYLAND_DISPLAY` before touching pywebview; GTK needs a live default display, Qt is trusted on env alone because probing it constructs a `QGuiApplication` that can itself abort. On probe failure the same launcher supervises the same server, prints the authoritative URL and opens the system browser best-effort; the browser is the owner's application, outside process custody by design.
+Launcher lifecycle: each generation resolves its predecessor, re-checks the automatic Panic gate and starts the server; ready is the endpoint this child published, proven against its handle, answering health. `RESTART_EXIT_CODE` requests a managed restart that refreshes bundle metadata and dependencies (§2); `MAX_CRASH_RESTARTS` crashes within `CRASH_WINDOW_SEC` stop automatic restart, and a panic exit fully cleans up and terminates the outer process. Presentation: the Linux browser fallback checks `DISPLAY`/`WAYLAND_DISPLAY` before touching pywebview; GTK needs a live default display, Qt is trusted on env alone: probing it constructs a `QGuiApplication` that can itself abort. On probe failure the same launcher supervises the same server, prints the authoritative URL and opens the system browser best-effort; the browser is the owner's application, outside process custody by design.
 
 #### Android host (experimental)
 

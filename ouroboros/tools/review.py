@@ -741,11 +741,13 @@ def _collect_review_findings(ctx: ToolContext, model_results: list, row_plan: Op
     packet seat, contract B for a seat asked ``coupling``) and sort the FAIL
     items into critical/advisory findings. Returns ``(critical_fails,
     advisory_warns, errored_models, triad_raw_results)``."""
-    from ouroboros.triad_review import parse_seat_answers
+    from ouroboros.triad_review import emit_review_model_error_events, parse_seat_answers
 
     plan = row_plan or {}
     row_parts = {str(slot): tuple(parts) for slot, parts in zip(plan.get("slot_ids") or [], plan.get("parts") or [])}
     parsed = parse_seat_answers({"results": model_results}, row_parts)
+    # #1578: the one canonical owner; a run-level failure already logged is skipped.
+    emit_review_model_error_events(ctx, parsed, source="multi_model_review")
     critical_fails: List[str] = []
     advisory_warns: List[str] = []
     structured_critical: List[dict] = []
@@ -768,15 +770,6 @@ def _collect_review_findings(ctx: ToolContext, model_results: list, row_plan: Op
                 ),
                 model=record.model_id,
             ))
-            try:
-                append_jsonl(ctx.drive_logs() / "events.jsonl", {
-                    "ts": utc_now_iso(),
-                    "type": "review_model_error",
-                    "model": record.model_id,
-                    "error_note": "Full raw response preserved in triad_raw_results.",
-                })
-            except Exception:
-                pass
             continue
         if record.status == "parse_failure":
             advisory_warns.append(

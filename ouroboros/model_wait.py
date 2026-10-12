@@ -11,6 +11,20 @@ and only then the owner. A round whose later route exists returns its refusal
 instead of waiting (``ResourceDeferral``); the owner question is then opened
 from that retained refusal, never from another generation, and nothing sleeps
 to a reset. An inline Presence turn never waits for a resource or the owner.
+
+It also owns the one execution clock (#939) every finite execution bound reads:
+the narrower of the global ceiling and a task's API/CLI ``execution_timeout_sec``
+(``config.resolve_task_execution_timeout_sec``). Queue before the first dispatch,
+the confirmed quota-wait union, budget/owner Pause and model sleep are excluded
+(warm sleep live via ``TaskModelWait.sleep_started_monotonic``; a cold sleep and a
+bounded task's exact Resume from grant to consumption via ``sleep_exclusion_since``);
+tools and their result waits count, and calendar deadlines never move. A
+continuation that preserves the original start already spans earlier attempts;
+only a fresh-start successor carries their total as ``_execution_consumed_sec``,
+decided once where assignment and the worker choose the origin
+(``settle_execution_carry``). Recovery keeps confirmed quota facts newer than
+its checkpoint (``fold_running_clock``), and only the author's own wait owner
+moves the supervisor's RUNNING clock.
 """
 
 from __future__ import annotations
@@ -155,19 +169,146 @@ def budget_paused_seconds(meta: dict) -> float:
 
 
 def execution_elapsed_seconds(meta: dict, now: float) -> float:
-    """Execution time of one task: wall clock minus the quota-wait union minus
-    the separate budget-paused interval. ``started_at`` is never moved, so every
-    finite-lifetime consumer (supervisor timeouts, owner stop, the exact-pause
-    grant, the live wait controls) subtracts the same two carriers."""
+    """Execution time of one task: the carried pre-origin offset plus wall clock
+    minus the quota-wait union minus the separate budget-paused interval.
+    ``started_at`` is never moved, so every finite-lifetime consumer (supervisor
+    timeouts, owner stop, the exact-pause grant, the live wait controls)
+    subtracts the same carriers and adds the same offset."""
+    offset = execution_consumed_seconds(meta)
     try:
         started = float(meta.get("started_at") or 0.0)
     except (TypeError, ValueError):
-        return 0.0
+        return offset
     if started <= 0 or not math.isfinite(started):
-        return 0.0
+        return offset
     sleeping = meta.get("sleep_parked_at")  # a warm sleep or owner Pause (worker_owner_wait)
-    return max(0.0, now - started - quota_waited_seconds(meta, now) - budget_paused_seconds(meta)
-               - (max(0.0, now - float(sleeping)) if isinstance(sleeping, (int, float)) else 0.0))
+    return offset + max(0.0, now - started - quota_waited_seconds(meta, now) - budget_paused_seconds(meta)
+                        - (max(0.0, now - float(sleeping)) if isinstance(sleeping, (int, float)) else 0.0))
+
+
+def execution_consumed_seconds(meta: dict) -> float:
+    """Execution spent BEFORE this clock's origin (#939), never queue time.
+
+    Only a fresh-origin successor of an explicitly bounded task carries one
+    (``settle_execution_carry``); a preserved original start already spans
+    every earlier attempt, so its offset never grows. Reads a RUNNING row's
+    ``task`` or a task row itself.
+    """
+    task = meta.get("task") if isinstance(meta.get("task"), dict) else meta
+    try:
+        value = float(task.get("_execution_consumed_sec") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, value) if math.isfinite(value) else 0.0
+
+
+def stamp_execution_handoff(successor: dict, meta: dict | None, now: float | None = None) -> None:
+    """Record an ended attempt's total execution on its successor (#939).
+
+    At assignment, ``settle_execution_carry`` keeps this total: a preserved
+    origin excludes the intervening queue via the existing paused carrier;
+    a fresh origin carries the total as an offset. A quota wait
+    still open at the last observation stops there, never extended further:
+    the raw clock facts are read, never a reader's derived ``execution_sec``.
+    """
+    from ouroboros.runtime_limits import explicit_execution_timeout_sec
+
+    successor.pop("_execution_handoff_sec", None)
+    if explicit_execution_timeout_sec(successor) is None or not isinstance(meta, dict) or not meta:
+        return
+    clock = meta.get("model_wait_quota_clock")
+    closed = {**meta, "model_wait_quota_clock": {**clock, "active": False}} if isinstance(clock, dict) else meta
+    successor["_execution_handoff_sec"] = execution_elapsed_seconds(closed, time.time() if now is None else now)
+
+
+def settle_execution_carry(task: dict, *, origin_preserved: bool) -> float:
+    """Settle the ended total once at handoff, excluding queued time for #939."""
+    handoff = task.pop("_execution_handoff_sec", None)
+    if handoff is not None:
+        total = execution_consumed_seconds({"_execution_consumed_sec": handoff})
+        if not origin_preserved:
+            task["_execution_consumed_sec"] = total
+        else:
+            from ouroboros.runtime_limits import explicit_execution_timeout_sec
+
+            if explicit_execution_timeout_sec(task) is not None:
+                key = next(key for key in ("_owner_wait_resume", "_budget_pause_resume", "_working_recovery")
+                           if task.get(key))
+                resume = dict(task[key])
+                queued = max(0.0, execution_elapsed_seconds({**resume, "task": task}, time.time()) - total)
+                resume["budget_paused_sec"] = budget_paused_seconds(resume) + queued
+                task[key] = resume
+    return execution_consumed_seconds(task)
+
+
+def fold_running_clock(task: dict, meta: dict) -> None:
+    """Keep exclusions confirmed after the saved checkpoint (#939).
+
+    A working-recovery handoff carries the cognition checkpoint's clock; the
+    supervisor's RUNNING row may hold a newer confirmed quota revision or paused
+    carrier of the SAME clock (same attempt, or the same preserved origin).
+    The newer fact wins, closed at its own observation; nothing is inferred.
+    """
+    handoff = task.get("_working_recovery")
+    if not isinstance(handoff, dict) or not isinstance(meta, dict):
+        return
+    attempt = int(meta.get("attempt") or (meta.get("task") or {}).get("_attempt") or 1)
+    try:
+        same_origin = float(handoff.get("started_at") or 0.0) == float(meta.get("started_at") or -1.0)
+    except (TypeError, ValueError):
+        same_origin = False
+    if int(handoff.get("from_attempt") or 0) != attempt and not same_origin:
+        return
+    clock, saved = meta.get("model_wait_quota_clock"), handoff.get("model_wait_quota_clock") or {}
+    if isinstance(clock, dict) and int(clock.get("revision") or 0) > int(saved.get("revision") or 0):
+        handoff["model_wait_quota_clock"] = {**clock, "active": False}
+    if budget_paused_seconds({"budget_paused_sec": meta.get("budget_paused_sec")}) > budget_paused_seconds(handoff):
+        handoff["budget_paused_sec"] = budget_paused_seconds({"budget_paused_sec": meta.get("budget_paused_sec")})
+
+
+def adopt_handoff_clock(model_state: dict, handoff: Any) -> dict:
+    """The worker side of ``fold_running_clock``: on a preserved origin, the handoff's newer
+    folded facts outrank the checkpoint's own; a fresh origin keeps the checkpoint reset."""
+    if not isinstance(handoff, dict) or not handoff.get("started_at"):
+        return model_state
+    state, newer = dict(model_state), handoff.get("model_wait_quota_clock")
+    if isinstance(newer, dict) and int(newer.get("revision") or 0) > int((state.get("quota_clock") or {}).get("revision") or 0):
+        state["quota_clock"] = dict(newer)
+    if budget_paused_seconds(handoff) > budget_paused_seconds({"budget_paused_sec": state.get("budget_paused_sec")}):
+        state["budget_paused_sec"] = budget_paused_seconds(handoff)
+    return state
+
+
+def explicit_execution_window_remaining(ctx: Any) -> float | None:
+    """The remaining window only when the task carries an explicit execution budget, so
+    pacing, finalize and tool clamps never invent one from the global ceiling alone."""
+    from ouroboros.config import explicit_execution_timeout_sec
+
+    meta = getattr(ctx, "task_metadata", None)
+    if not isinstance(meta, dict) or explicit_execution_timeout_sec(meta) is None:
+        return None
+    return execution_window_remaining_for_context(ctx)
+
+
+def execution_window_remaining_for_context(ctx: Any) -> float | None:
+    """Remaining execution window: the bound live owner's clock, else the same
+    arithmetic over the context's original start and carriers. ``None`` = no bound."""
+    owner = getattr(ctx, "model_wait_context", None) or current_model_wait()
+    if owner is not None and owner.task_id == str(getattr(ctx, "task_id", "") or ""):
+        return owner.execution_window_remaining()
+    from ouroboros.config import resolve_task_execution_timeout_sec
+
+    meta = getattr(ctx, "task_metadata", None)
+    meta = meta if isinstance(meta, dict) else {}
+    ceiling = resolve_task_execution_timeout_sec(meta)
+    if ceiling is None:
+        return None
+    paused = getattr(ctx, "_budget_paused_sec", None)
+    if paused is None:
+        paused = budget_paused_seconds(getattr(ctx, "budget_pause_resume", None) or {})
+    elapsed = execution_elapsed_seconds({**meta, "started_at": getattr(ctx, "task_started_at", None),
+                                         "budget_paused_sec": paused}, time.time())
+    return max(0.0, ceiling - elapsed)
 
 
 _CURRENT: contextvars.ContextVar[TaskModelWait | None] = contextvars.ContextVar(
@@ -382,21 +523,23 @@ class TaskModelWait:
                 for key, row in self.waits.items()}}
 
     def executed_seconds(self, *, now: float | None = None) -> float:
-        """Live execution time: elapsed minus the quota union minus budget pause,
-        minus a warm sleep or owner Pause (``model_sleep`` folds it into the paused
-        carrier when the task runs again, so it is never subtracted twice)."""
+        """Live execution time: the carried pre-origin offset plus elapsed minus the
+        quota union minus budget pause, minus a warm sleep or owner Pause
+        (``model_sleep`` folds it into the paused carrier when the task runs again,
+        so it is never subtracted twice)."""
         stamp = time.monotonic() if now is None else now
         sleeping = self.sleep_started_monotonic
-        return max(0.0, stamp - self.started_monotonic - self.paused_seconds(now=stamp) - self.budget_paused_sec
-                   - (max(0.0, stamp - sleeping) if sleeping is not None else 0.0))
+        return execution_consumed_seconds(self.task) + max(
+            0.0, stamp - self.started_monotonic - self.paused_seconds(now=stamp) - self.budget_paused_sec
+            - (max(0.0, stamp - sleeping) if sleeping is not None else 0.0))
 
     def execution_window_remaining(self) -> float | None:
-        """A custom live owner supplies its own clock and a task without an absolute
-        lifetime has none; None invents no deadline, and 0.0 means the window is spent."""
+        """A custom live owner supplies its own clock and a task without an execution
+        bound has none; None invents no deadline, and 0.0 means the window is spent."""
         if self.owner_control is not None:
             return None
-        from ouroboros.config import get_task_abs_ceiling_sec
-        ceiling = get_task_abs_ceiling_sec()
+        from ouroboros.config import resolve_task_execution_timeout_sec
+        ceiling = resolve_task_execution_timeout_sec(self.task)
         if ceiling is None:
             return None
         return max(0.0, ceiling - self.executed_seconds())
@@ -506,7 +649,7 @@ class TaskModelWait:
     def control_reason(self) -> str | None:
         """Existing task controls and explicit calendar bounds, never model prose."""
         from ouroboros.cancel_intents import cancel_pending, resolve_owner_stop_intent
-        from ouroboros.config import get_task_abs_ceiling_sec
+        from ouroboros.config import resolve_task_execution_timeout_sec
         from ouroboros.deadline_utils import seconds_until
         from ouroboros.owner_mailbox import KIND_FINALIZE_NOW, drain_owner_entries
 
@@ -527,7 +670,7 @@ class TaskModelWait:
             return "execution_deadline"
         if self.owner_control is not None:
             return self.owner_control()
-        ceiling = get_task_abs_ceiling_sec()  # None = unlimited; 0 = exhausted, never unlimited
+        ceiling = resolve_task_execution_timeout_sec(self.task)  # None = unlimited; 0 = exhausted
         if ceiling is not None and self.executed_seconds() >= ceiling:
             return "absolute_ceiling"
         # The loop owns delivery. A private seen copy leaves that ownership

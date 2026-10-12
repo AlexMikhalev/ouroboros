@@ -54,7 +54,7 @@ from ouroboros.review_custody import (
 # Reviewer-output JSON extraction lives in ONE place beside the array
 # extractor it falls back to (the fenced-object and verdict parsers were
 # split across two modules for no reason).
-from ouroboros.triad_review import parse_review_findings
+from ouroboros.triad_review import emit_review_run_errors, parse_review_findings
 from ouroboros.usage_accounting import (
     PhysicalAttemptLimitExceeded,
     UsageAccountingError,
@@ -376,6 +376,8 @@ class ReviewCoordinator:
             criteria_shape_valid=_criteria_shape_valid,
             advisory_hardness=HARDNESS_ADVISORY_VISIBLE,
         )
+        # #1578: every surface's reviewer failures reach the canonical log once.
+        emit_review_run_errors(self.usage_ctx, request, actors, drive_root=self.drive_root)
         return ReviewRunResult(
             request=asdict(request),
             actors=[asdict(actor) for actor in actors],
@@ -757,9 +759,12 @@ class ReviewCoordinator:
         try:
             from ouroboros.tools.review_helpers import emit_review_usage
 
+            session = bool(usage.get("delegated_run_started") or usage.get("delegated_run_id"))
             emit_review_usage(
                 self.usage_ctx,
-                model=str(usage.get("resolved_model") or slot.model),
+                # A session row names its OBSERVED model or none: the seat's requested route
+                # label rides the ``claudexor`` receipt, never this field (#1578).
+                model=str(usage.get("resolved_model") or ("" if session else slot.model)),
                 provider=str(usage.get("provider") or ""), usage=usage,
                 source=f"review_substrate:{request.surface}",
                 prompt_chars=prompt_chars,

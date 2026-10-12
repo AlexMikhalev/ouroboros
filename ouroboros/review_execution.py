@@ -61,10 +61,8 @@ from ouroboros.review_session_custody import (
     review_recovery_facts,
 )
 from ouroboros.review_session_preparation import prepare_review_session_request, render_review_session_prompt
-from ouroboros.review_session_usage import (
-    session_custody_attribution,
-    session_invocation_fields,
-)
+from ouroboros.review_session_usage import (review_event_identity, session_custody_attribution,
+                                             session_failure_identity, session_invocation_fields, session_usage_facts)
 if TYPE_CHECKING:  # annotations only — importing the substrate here would cycle
     from ouroboros.review_substrate import ReviewRequest, ReviewSlot
 
@@ -829,6 +827,7 @@ def run_delegated_review_session(
             "the exact delegated review invocation is no longer available for "
             "reconciliation; refusing to start a second paid run", code="review_custody_lost")
     gateway = ensure_owned_gateway()
+    observed, summary = {}, {}  # a failure after start still names what it observed
     try:
         if use_thread and shape.investigation and not run_id:
             from ouroboros.review_thread_continuity import require_delegated_review_threads
@@ -1018,6 +1017,7 @@ def run_delegated_review_session(
             # One final attempt, never the requested pool or a mixed summary route.
             "effective_route_ids": [observed["harness_id"]] if observed.get("harness_id") else [],
             "observed_attempt": observed, "model": observed.get("model", ""),
+            "usage": session_usage_facts(run_id, requested_route=str(entry.route_id), observed_attempt=observed, summary=summary),
             "spend": spend, "spend_estimated": estimated,
             # D22/D29 applied facts are verbatim telemetry, never inferred.
             "applied_profile": observed.get("profile_id", ""),
@@ -1032,6 +1032,8 @@ def run_delegated_review_session(
                 custody_drive, task_id, str(invocation.operation_id or ""), getattr(exc, "checking_terminal_detail", None))
         if run_id:
             exc.delegated_run_started, exc.delegated_run_id = True, run_id
+            exc.delegated_usage = session_usage_facts(run_id, requested_route=str(getattr(route, "route_id", "") or ""),
+                                                      observed_attempt=observed, summary=summary)  # #1578
         if checking.get("evidence"):
             exc.checking_evidence = checking["evidence"]
         raise
@@ -1301,11 +1303,10 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         except BaseException as exc:
             self._run_id = self._run_id or str(getattr(exc, "delegated_run_id", "") or "")
             started = bool(self._run_id or getattr(exc, "delegated_run_started", False))
+            if started:
+                self._session_usage = dict(getattr(exc, "delegated_usage", None) or session_usage_facts(self._run_id))
             if started and not self._session_usage_observed and session_usage_once(self._run_id):
-                self._observe_usage({
-                    "provider": "claudexor", "resolved_model": "",
-                    "delegated_run_started": True, "delegated_run_id": self._run_id, "cost": None,
-                })
+                self._observe_usage({**self._session_usage, "cost": None})
                 self._session_usage_observed = True
             if not self._retry_state.get("pending_invocation_id"):
                 self._settled_failure = exc
@@ -1323,7 +1324,8 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         run_id = self._run_id or str(getattr(failure, "delegated_run_id", "") or "")
         pending = str(self._retry_state.get("pending_invocation_id") or "")
         evidence = getattr(failure, "checking_evidence", None)
-        return {"delegated_run_started": bool(run_id), "delegated_run_id": run_id,
+        return {**(session_failure_identity(self._session_usage) if run_id else {}),
+                "delegated_run_started": bool(run_id), "delegated_run_id": run_id,
                 "pending_invocation_id": pending, **({"checking_evidence": evidence} if evidence else {})}
 
     def restore_custody(self, state: Dict[str, Any]) -> None:
@@ -1413,16 +1415,13 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
                 "effective": f"outputConformance={conformance or 'absent'}",
                 "reason": "schema_not_conformed_on_effective_route",
             })
-        effective_routes = facts.get("effective_route_ids") or []
         self._deltas.extend(session_identity_deltas(slot, facts))
         spend, estimated = facts["spend"], facts["spend_estimated"]
         self._session_usage = {
-            "provider": "claudexor",
-            "resolved_model": facts["model"],
-            "delegated_run_id": facts["run_id"],
-            "delegated_route": effective_routes[0] if len(effective_routes) == 1 else "",
-            "requested_route": facts["route_id"],
-            "observed_attempt": facts.get("observed_attempt") or {},
+            # provider, resolved model, run, requested/delegated route, final observed attempt,
+            # the ``claudexor`` receipt and the run summary's disclosed counters (#1578).
+            **(facts.get("usage") or session_usage_facts(facts["run_id"], requested_route=facts["route_id"],
+                                                         observed_attempt=facts.get("observed_attempt"))),
             **({"effort_resolution": facts["observed_attempt"]["effort_resolution"]}
                if isinstance((facts.get("observed_attempt") or {}).get("effort_resolution"), dict) else {}),
             "review_thread_id": str(facts.get("thread_id") or ""),
@@ -1542,9 +1541,8 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             from ouroboros import delegate_custody as custody
 
             custody.emit(self._custody_drive(), "review_slot_capability_delta", {
-                "run_id": self._run_id,
-                "surface": self.assignment.request.surface,
-                "slot_id": self.assignment.slot.slot_id,
+                "run_id": self._run_id, **review_event_identity(self.assignment.request),
+                "surface": self.assignment.request.surface, "slot_id": self.assignment.slot.slot_id,
                 "verdict_method": method,
                 "deltas": deltas,
             })

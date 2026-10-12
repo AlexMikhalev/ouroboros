@@ -602,7 +602,8 @@ def test_internal_reviewer_transport_attempts_each_get_one_usage_row(tmp_path):
 
     rows = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
     assert [row["ledger_attempt_ids"] for row in rows] == [["wire-a1"], ["wire-a2"]]
-    assert [row["usage"]["prompt_tokens"] for row in rows] == [0, 4]
+    # #1578: the failed attempt reported no counters, so they are unknown (null), never 0.
+    assert [row["usage"]["prompt_tokens"] for row in rows] == [None, 4]
 
 
 def test_the_single_usage_row_carries_the_reviewer_attribution(tmp_path):

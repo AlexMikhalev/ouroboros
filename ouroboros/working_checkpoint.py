@@ -443,6 +443,7 @@ def complete_pause_from_working(root: Any, task_id: str, row: Dict[str, Any], at
 def load_recovery(ctx: Any, handoff: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The loop side: the frozen source named by this start's ``_working_recovery``."""
     from ouroboros.artifacts import read_actor_source_bytes
+    from ouroboros.runtime_limits import explicit_execution_timeout_sec
 
     handoff = handoff or getattr(ctx, "working_recovery", None)
     if not isinstance(handoff, dict) or not handoff.get("source_ref"):
@@ -466,6 +467,11 @@ def load_recovery(ctx: Any, handoff: Optional[Dict[str, Any]] = None) -> Dict[st
         # that new clock (including when the loop next saves/parks this state).
         state["model_wait"] = {**(state.get("model_wait") or {}),
                                "quota_clock": {}, "budget_paused_sec": 0.0}
+    elif explicit_execution_timeout_sec(getattr(ctx, "task_metadata", {}) or {}) is not None:
+        from ouroboros.model_wait import adopt_handoff_clock
+
+        # The loop's next Pause must keep the same queue exclusion as agent start.
+        state["model_wait"] = adopt_handoff_clock(state.get("model_wait") or {}, handoff)
     return {**state, "_working_handoff": dict(handoff)}
 
 

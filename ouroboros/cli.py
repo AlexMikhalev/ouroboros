@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import pathlib
 import subprocess
@@ -207,6 +208,9 @@ def _run_command(args: argparse.Namespace) -> int:
     if str(args.delegation_role or "root").strip().lower() != "root":
         raise CLIError("delegation_role=subagent is only allowed through the internal schedule_subagent tool")
     effort = _effort_field(args)
+    execution_timeout = float(getattr(args, "execution_timeout", 0) or 0)
+    if not math.isfinite(execution_timeout) or execution_timeout < 0:
+        raise CLIError("--execution-timeout must be finite and non-negative (0 adds no limit)")
     user_metadata: Dict[str, Any] = {}
     raw_metadata = str(getattr(args, "task_metadata_json", "") or "").strip()
     if raw_metadata:
@@ -241,6 +245,8 @@ def _run_command(args: argparse.Namespace) -> int:
         body["disabled_tools"] = list(dict.fromkeys(disabled_tools))
     if float(args.timeout or 0) > 0:
         body["timeout_sec"] = float(args.timeout or 0)
+    if execution_timeout > 0:
+        body["execution_timeout_sec"] = execution_timeout
     created = client.request("POST", "/api/tasks", body)
     task_id = str(created.get("task_id") or "")
     if not task_id:
@@ -542,7 +548,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--quiet", action="store_true")
     run.add_argument("--no-stream", action="store_true")
     run.add_argument("--detach", action="store_true", help="create the task and print its task id without waiting")
-    run.add_argument("--timeout", type=float, default=0.0, help="maximum seconds to wait for task completion (0 = no limit)")
+    run.add_argument("--timeout", type=float, default=0.0,
+                     help="calendar seconds from submission, queue included; also bounds this wait (0 = no limit)")
+    run.add_argument("--execution-timeout", type=float, default=0.0,
+                     help="execution seconds excluding queue and confirmed quota/Pause/sleep; tools count (0 = no limit)")
     run.add_argument("--patch", action="store_true", help="print workspace patch instead of final answer")
     run.add_argument("--patch-out", default="", help="write workspace patch to this path")
     run.add_argument("--result-json-out", default="", help="write final task result JSON to this path")

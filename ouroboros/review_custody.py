@@ -500,10 +500,11 @@ def _frozen_actor(row: Dict[str, Any], slot: Any) -> Any:
         quorum_contribution=bool(row.get("quorum_contribution")),
         operation_state=operation_state,
         recovery_binding=dict(row.get("recovery_binding") or {}),
+        error_event_logged=row.get("error_event_logged") is True,
         **{key: str(row.get(key) or "") for key in (
             "error", "operation_id", "transport_status", "failure_code", "reset_at",
             "reported_cause", "parse_status", "semantic_verdict", "provider",
-            "actor_role", "reason", "enforcement_impact",
+            "actor_role", "reason", "enforcement_impact", "review_wave_id",
         )},
     )
 

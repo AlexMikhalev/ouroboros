@@ -1383,10 +1383,14 @@ def resume_paused_loop(tools: Any, state: Dict[str, Any], messages: list, trace:
         refresh = _refresh_planning_threshold(ctx, budget_remaining_usd, usage)
     waiter = getattr(ctx, "model_wait_context", None)
     restored, published = len(messages), ""
+    # Grant to consumption is still the sleep, or the bounded task's Pause (the grant's
+    # live exclusion, #939): folded once below. Otherwise the legacy clock runs on.
+    excluded = row.get("reason") == REASON_SLEEP or bool((getattr(ctx, "budget_pause_resume", None) or {})
+                                                         .get("sleep_exclusion_since"))
     while True:
         grant["consumed_at"] = time.time()
         paused_sec = float(grant.get("paused_duration_sec") or row.get("paused_duration_sec") or 0.0)
-        if row.get("reason") == REASON_SLEEP:
+        if excluded:
             paused_sec += max(0.0, grant["consumed_at"] - float(grant.get("granted_at_ts") or grant["consumed_at"]))
         consumed = {**row, "state": STATE_RESUMED, "grant": grant,
                     "resumed_at": grant["consumed_at"], "paused_duration_sec": paused_sec}
@@ -1461,14 +1465,14 @@ def resume_paused_loop(tools: Any, state: Dict[str, Any], messages: list, trace:
     if str(row.get("reason") or "") == REASON_OWNER or grant.get("owner_pause_fence_id"):
         _reopen_owner_fence(ctx, usage, fence_id=str(grant.get("owner_pause_fence_id") or ""),
                             grant_id=str(grant.get("grant_id") or ""))
-    if row.get("reason") == REASON_SLEEP and getattr(ctx, "event_queue", None) is not None:
+    if excluded and getattr(ctx, "event_queue", None) is not None:
         # The existing worker event channel, with durable identity revalidation.
         try:
             ctx.event_queue.put({"type": "budget_pause", "phase": "consumed",
                 "task_id": str(ctx.task_id), "task_attempt": int(ctx.task_attempt or 1),
                 "pause_id": row.get("pause_id"), "grant_id": grant.get("grant_id")})
         except Exception:
-            log.warning("Sleep consumption event unavailable; supervisor rereads the durable grant", exc_info=True)
+            log.warning("Resume consumption event unavailable; supervisor rereads the durable grant", exc_info=True)
     ctx.budget_pause_resume = None
     setattr(ctx, "_budget_pause_generation", int(row.get("pause_generation") or 0))
     end_dispatch_fence(str(ctx.task_id))

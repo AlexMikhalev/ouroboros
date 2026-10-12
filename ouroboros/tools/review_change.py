@@ -850,7 +850,7 @@ def run_system_review(ctx: ToolContext, *, reviewer: str = "", effort: str = "",
         report, usage = run_deep_self_review(
             system, pathlib.Path(ctx.drive_root), llm,
             emit_progress or getattr(ctx, "emit_progress_fn", None) or (lambda _text: None),
-            task_id=task_id, deadline_at=deadline_at, slot=row, ask=ask)
+            task_id=task_id, deadline_at=deadline_at, slot=row, ask=ask, usage_ctx=ctx)
     usage = dict(usage or {})
     failed = str(usage.get("execution_status") or "") == "infra_failed"
     refused = failed and str(usage.get("reason_code") or "") == "deep_self_review_unavailable"
