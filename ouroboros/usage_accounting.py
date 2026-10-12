@@ -978,11 +978,11 @@ def _transition(reservation: AttemptReservation, state: str, **fields: Any) -> D
 
     def read(view):
         current = view.attempt(reservation.attempt_id)
-        unchanged = current is not None and (
+        moved_on = current is not None and (
             (expected_seq is not None and current.get("seq") != expected_seq)
             or (expected_revision is not None and current.get("revision") != expected_revision))
-        if state != "dispatched" or current is None or unchanged:
-            return current, None, {}, unchanged
+        if state != "dispatched" or current is None or moved_on:
+            return current, None, {}, moved_on
         scope = UsageScope(drive_root=reservation.drive_root,
             non_task_operation=current.get("non_task_operation") is True, **{key: current.get(key) for key in
             ("task_id", "root_task_id", "parent_task_id", "root_limit_usd", "root_limit_source", "root_limit_revision", "billing_group_id",
@@ -1019,12 +1019,12 @@ def _transition(reservation: AttemptReservation, state: str, **fields: Any) -> D
         return current, scope, effective, False
 
     with publication_acquisition(reservation.drive_root, check_fences if state == "dispatched" else None, read) as (view, result):
-        current, scope, effective, unchanged = result
+        current, scope, effective, moved_on = result
         if current is None:
             if abandon_reason:
                 return {"state": "unknown"}
             raise UsageAccountingError(f"unknown usage attempt {reservation.attempt_id}")
-        if unchanged:
+        if moved_on:
             return copy.deepcopy(current)
         if state == "released" and current["state"] == "released":
             return copy.deepcopy(current)

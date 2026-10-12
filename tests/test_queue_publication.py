@@ -192,6 +192,24 @@ def test_missing_or_mismatched_stamp_is_unknown_for_all_documents(published, sta
         usage._check_dispatch_fences(usage.UsageScope(task_id="child", root_task_id="root"), root)
 
 
+
+def test_controls_are_checked_while_waiting_and_never_before_the_first_read(published):
+    root, _now = published
+    assert queue.persist_queue_snapshot()
+
+    def refuse():
+        raise RuntimeError("controls checked")
+
+    # A certified publication answers on its first read: the caller's controls are not consulted.
+    assert queue_observation.published_dispatch(root, check=refuse)["generation"]
+    # A publication in flight is re-read, and every re-read honours the caller's controls.
+    stamp = root / "state/queue.alive"
+    saved = stamp.read_bytes()
+    stamp.unlink()
+    with pytest.raises(RuntimeError, match="controls checked"):
+        queue_observation.published_dispatch(root, check=refuse)
+    stamp.write_bytes(saved)
+
 @pytest.mark.parametrize("structural_age,stamp_age,matching,stale", [
     (2000, 1, True, False), (1, 901, True, True), (1, 1, False, True),
 ])
