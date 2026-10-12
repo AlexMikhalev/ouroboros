@@ -21,8 +21,8 @@ pytestmark = pytest.mark.serial
 
 @pytest.mark.parametrize("owner_stop", [False, True], ids=["natural-completion", "owner-stop"])
 def test_saved_parent_boot_retains_then_settles_original_run(tmp_path, monkeypatch, owner_stop):
-    from ouroboros import claudexor_daemon, delegate_custody as custody
-    from ouroboros import post_task_checkpoint, process_custody, server_maintenance
+    from ouroboros import claudexor_daemon, post_task_checkpoint, process_custody, server_maintenance
+    from ouroboros import delegate_custody as custody
     from ouroboros.gateways.claudexor import ClaudexorGateway, discover_daemon_at
     from supervisor import active_activity
 
