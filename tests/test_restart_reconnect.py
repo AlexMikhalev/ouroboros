@@ -448,7 +448,7 @@ def test_owner_restart_cleanup_disables_second_custody_reconcile(monkeypatch):
         for restarting in (False, True):
             restart.set() if restarting else restart.clear()
             calls.clear()
-            server._emergency_process_cleanup(port_sweep=False)
+            server._emergency_process_cleanup()
             expected = {"force": True, "archive_service_logs": False, "retain_saved_work": True}  # #1563
             if owner_requested:
                 expected["reconcile_delegate_custody"] = False

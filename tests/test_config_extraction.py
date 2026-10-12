@@ -24,6 +24,8 @@ _LEAVES = (settings_defaults, settings_scales, model_slots, review_model_routes,
 # the historical extraction's facade and need not add compatibility re-exports.
 _ADDED_OWNERS = {
     "WORKER_READY_CEILING_SEC": runtime_limits,
+    # A spawned direct-Restart successor's bounded wait for its exiting parent's data-root admission.
+    "SERVER_ADMISSION_WAIT_SEC": runtime_limits,
     # The supervisor loop's bounded events pass and the budget-projection retry interval.
     "SUPERVISOR_EVENT_BATCH_MAX_EVENTS": runtime_limits,
     "SUPERVISOR_EVENT_BATCH_MAX_SEC": runtime_limits,
@@ -71,6 +73,8 @@ _ADDED_OWNERS = {
     "task_model_binding": model_slots,
     "route_binding": model_slots,
     "apply_model_role_override": model_slots,
+    "_persisted_role": model_slots,
+    "model_role_setting_keys": model_slots,
     # A slot's model as it routes (its USE_LOCAL_* flag), for image candidate choice.
     "_SLOT_LOCAL_FLAGS": model_slots,
     "local_lane_label": model_slots,

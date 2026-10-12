@@ -1,5 +1,6 @@
 // The composer's controls that write GLOBAL owner settings (docs/DESIGN.md "Composer
-// owner controls"): the Nano/Low/Max context mode and the effort range. Both save
+// owner controls"): the Nano/Low/Max context mode and the effort range, two labelled
+// capsules (ring · name · value) that each open inline into their strip. Both save
 // through their audited owner endpoint, show the server's refusal as a toast, and
 // resync every open composer from the next `/api/state` snapshot. Swarm is not one of
 // them: it is a per-message flag that never leaves the frame it rides.
@@ -10,17 +11,26 @@ import {
 
 const N = OWNER_TIERS.length - 1;
 const HANDLES = ['min', 'rec', 'max'];
+const CONTEXT_MODES = ['nano', 'low', 'max'];
+const CONTEXT_LABELS = Object.freeze({ nano: 'Nano', low: 'Low', max: 'Max' });
+const CONTEXT_TITLE = 'Context mode (owner setting). Nano is the compact owner window, Low fits ~250K / local models, Max is full. Saves immediately; lowering requires Ouroboros to be idle.';
+const contextModeOf = (mode) => (['nano', 'low', 'max'].includes(mode) ? mode : 'max');
 const HOVER_OPEN_MS = 160;
 // After the mouse leaves, the open strip waits this long before it closes, and a margin
 // around it counts as still being there (a forgiving hover zone, like a menu's).
 const HOVER_CLOSE_MS = 1000;
 const HOVER_ZONE_PX = 32;
 const HOVER_MEDIA = '(hover: hover) and (pointer: fine)';
-// The segments' side padding (`--effort-seg-pad`, px): var(--space-2) when there is room, never
-// below var(--space-1) beside the pills, down to 3 px when the strip stands alone (from 4 px down
-// the pill's corners tighten with the padding, so the word's box stays inside it: `data-tight`).
-// Below that the strip scrolls inside itself.
+// An inline strip collapses in 0.4 s (style.css); the closed capsule's width has settled by then.
+const COLLAPSE_MS = 450;
+// The segments' side padding (`--capsule-seg-pad`, px): up to var(--space-2) when there is room
+// (Context's three words take a little more air), never below var(--space-1) beside the other
+// controls, down to 3 px when the strip stands alone (from 4 px down the pill's corners tighten
+// with the padding, so the word's box stays inside it: `data-tight`). Below that the strip
+// scrolls inside itself.
 const SEG_PAD = Object.freeze({ max: 8, beside: 4, alone: 3 });
+// The fade at a scrolling strip's edge (var(--space-3)): what the owner moved stays clear of it.
+const REVEAL_MARGIN_PX = 12;
 const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
 const px = (value) => Number.parseFloat(value) || 0;
 // Fractional widths: whole-pixel offsets lose up to a pixel per element, enough to wrap the row.
@@ -57,8 +67,11 @@ const indicesOf = (range) => ({
 });
 const sameIndices = (a, b) => Boolean(a && b) && HANDLES.every((key) => a[key] === b[key]);
 
-/* The ring glyph: the range in miniature (a 300° arc; the band is min..max, the dot the recommended level). */
+/* The ring glyph: the range in miniature (a 300° arc; the band is min..max, the dot the recommended
+   level). Context's ring is the same frame cut into three arcs, the chosen mode's arc lit: a
+   position among three modes, never a fill level or a capacity. */
 const RING = { cx: 92, cy: 92, r: 70, a0: 120, sweep: 300 };
+const CONTEXT_ARCS = { nano: [120, 200], low: [230, 310], max: [340, 420] };
 const ringPoint = (angle) => ({
     x: RING.cx + RING.r * Math.cos((angle * Math.PI) / 180), y: RING.cy + RING.r * Math.sin((angle * Math.PI) / 180),
 });
@@ -70,11 +83,18 @@ function ringArc(a0, a1) {
     return `M${p0.x.toFixed(2)} ${p0.y.toFixed(2)} A${RING.r} ${RING.r} 0 ${hi - a0 > 180 ? 1 : 0} 1 ${p1.x.toFixed(2)} ${p1.y.toFixed(2)}`;
 }
 
+/* A capsule's head: the ring, the setting's name and its value (the value gives way to the strip). */
+const capsuleHead = (glyph, name, headClass, valueAttrs = '') => `<button type="button" class="chat-capsule-head ${headClass}" aria-expanded="false">`
+    + `<span class="chat-capsule-glyph" aria-hidden="true"><svg viewBox="0 0 184 184">${glyph}</svg></span>`
+    + `<span class="chat-capsule-name">${name}</span><span class="chat-capsule-value"${valueAttrs}></span></button>`;
+
 function effortRangeMarkup() {
     const segments = EFFORT_OPTIONS.map((option) =>
         `<span class="chat-effort-seg" data-effort-seg="${option.value}"><span class="chat-effort-seg-text">${option.label}</span></span>`).join('');
-    return `<button type="button" class="chat-effort-head" aria-expanded="false" aria-label="Effort"><span class="chat-effort-glyph" aria-hidden="true"><svg viewBox="0 0 184 184"><path class="chat-effort-glyph-rail" data-ring-rail d="${ringArc(RING.a0, RING.a0 + RING.sweep)}" fill="none" stroke-width="22" stroke-linecap="round"></path><path class="chat-effort-glyph-band" data-ring-band fill="none" stroke-width="26" stroke-linecap="round"></path><circle class="chat-effort-glyph-dot" data-ring-rec r="22"></circle></svg></span></button>`
-        + '<div class="chat-effort-body">'
+    const ring = `<path class="chat-effort-glyph-rail" data-ring-rail d="${ringArc(RING.a0, RING.a0 + RING.sweep)}" fill="none" stroke-width="22" stroke-linecap="round"></path><path class="chat-effort-glyph-band" data-ring-band fill="none" stroke-width="26" stroke-linecap="round"></path><circle class="chat-effort-glyph-dot" data-ring-rec r="22"></circle>`;
+    // The value is a tier word read through the catalog seam (effortText): the overlay leaves it alone.
+    return capsuleHead(ring, 'Effort', 'chat-effort-head', ' data-i18n-skip')
+        + '<div class="chat-capsule-body">'
         + '<div class="chat-effort-strip" data-effort-strip data-scroll="none"><div class="chat-effort-band" data-effort-band aria-hidden="true"></div>'
         + '<div class="chat-effort-handle chat-effort-rec" data-handle="rec" role="slider" tabindex="-1" aria-label="Recommended effort"></div>'
         + segments
@@ -83,67 +103,460 @@ function effortRangeMarkup() {
         + '</div>';
 }
 
+function contextModeMarkup() {
+    const arcs = CONTEXT_MODES.map((mode) => `<path class="chat-context-arc" data-arc="${mode}" d="${ringArc(...CONTEXT_ARCS[mode])}" fill="none" stroke-width="24" stroke-linecap="round"></path>`).join('');
+    const modes = CONTEXT_MODES.map((mode) =>
+        `<button class="chat-seg" type="button" role="radio" tabindex="-1" aria-checked="false" data-mode="${mode}"><span class="chat-seg-text">${CONTEXT_LABELS[mode]}</span></button>`).join('');
+    return capsuleHead(arcs, 'Context', 'chat-context-head')
+        + `<div class="chat-capsule-body"><div class="chat-context-strip" role="radiogroup" aria-label="Context size mode" data-scroll="none"><span class="chat-context-thumb" aria-hidden="true"></span>${modes}</div></div>`;
+}
+
 /**
- * The effort range control (variant D): a round button with the ring glyph that opens
- * inline into the seven-level strip with min/max brackets and the recommended pill. The
- * open strip stays on the composer's line: beside the pills when it fits, alone (the pills
- * step aside) when it does not, scrolling inside itself only when nothing else fits.
+ * What both capsules share: the open/pin state machine and the fit. A capsule opens INLINE
+ * into its strip, never as a dropdown, and the strip stays on the composer's line: beside the
+ * other controls when it fits there, alone (they step aside, its own name too if need be) when
+ * it does not, scrolling inside itself only when nothing else fits. The fit is measured, no
+ * breakpoint (a translation or another font needs none). One capsule is open at a time: opening
+ * one closes the other at once (`peer`), so the fit measures it as it stands closed.
  *
- * Hover is an accelerator only (`(hover: hover) and (pointer: fine)`): a press pins the
- * strip open and unpins it; touch and keyboard use the press. Saves happen on gesture
- * end through the owner endpoint, serialized (last wins); a failed save shows the
- * server's sentence and returns the control to the server's value. A stored tier
- * outside the seven owner tiers (`minimal`) is shown at the nearest owner tier and is
- * rewritten only when the owner moves that handle.
+ * Hover is an accelerator only (`(hover: hover) and (pointer: fine)`): a press pins the strip
+ * open and unpins it; touch and keyboard use the press. Hover never opens a capsule while the
+ * other one is open, since closing it would move this one under a still pointer.
+ */
+function createCapsule({
+    el, row, kind, strip, segs, render, focusTarget, padMax = SEG_PAD.max,
+    busy = () => false, onClosed = () => {}, afterOpen = () => {}, afterOverflow = afterOpen,
+    onLayout = () => {}, onSettled = () => {}, win, doc,
+}) {
+    const q = (selector) => el.querySelector(selector);
+    const head = q('.chat-capsule-head');
+    const glyph = q('.chat-capsule-glyph');
+    const name = q('.chat-capsule-name');
+    const value = q('.chat-capsule-value');
+    const body = q('.chat-capsule-body');
+    // `hover` exists only with a mouse; the chat unit-test DOM carries no matchMedia at all.
+    const hoverCapable = typeof win?.matchMedia === 'function' && win.matchMedia(HOVER_MEDIA)?.matches === true;
+    const state = { open: false, pinned: false, collapsing: false, destroyed: false };
+    const api = {
+        el, kind, hoverCapable, peer: null, isOpen: () => state.open, isPinned: () => state.pinned,
+        isSettled: () => !state.open && !state.collapsing,
+    };
+    el.dataset.open = 'false';
+    head.setAttribute('aria-expanded', 'false');
+    let hoverTimer = 0;
+    let leaveTimer = 0;
+    let lastPointer = null;
+
+    // Focus keeps a hover-opened strip open only when the keyboard put it there: browsers report
+    // a handle focused after a mouse press as :focus-visible, so the last input decides instead.
+    let keyboardFocus = false;
+    const stillHere = () => {
+        try { return Boolean(el.matches(':hover') || (keyboardFocus && el.contains(doc.activeElement))); } catch { return false; }
+    };
+    // The open strip forgives a mouse that drifts a little: inside the zone (the control plus a
+    // margin) it stays; outside, it closes after the delay unless the mouse comes back first. A
+    // pinned strip, a drag and keyboard focus keep it open regardless.
+    function inZone(point) {
+        const r = point && typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+        return Boolean(r) && point.x >= r.left - HOVER_ZONE_PX && point.x <= r.right + HOVER_ZONE_PX
+            && point.y >= r.top - HOVER_ZONE_PX && point.y <= r.bottom + HOVER_ZONE_PX;
+    }
+    function closeSoon() {
+        clearTimeout(leaveTimer);
+        startTracking();
+        leaveTimer = setTimeout(() => {
+            leaveTimer = 0;
+            if (state.open && !state.pinned && !busy() && !stillHere() && !inZone(lastPointer)) setOpen(false);
+        }, HOVER_CLOSE_MS);
+    }
+    let tracking = false;
+    const onDocMove = (event) => {
+        if (event.pointerType && event.pointerType !== 'mouse') return;
+        lastPointer = { x: event.clientX, y: event.clientY };
+        if (!state.open || state.pinned) { stopTracking(); return; }
+        if (inZone(lastPointer)) { clearTimeout(leaveTimer); leaveTimer = 0; }
+        else if (!leaveTimer) closeSoon();
+    };
+    const onDocLeave = () => { lastPointer = null; if (state.open && !state.pinned) closeSoon(); };
+    function startTracking() {
+        if (tracking || !hoverCapable) return;
+        tracking = true;
+        doc.addEventListener('pointermove', onDocMove);
+        doc.documentElement?.addEventListener?.('pointerleave', onDocLeave);
+    }
+    function stopTracking() {
+        if (!tracking) return;
+        tracking = false;
+        doc.removeEventListener('pointermove', onDocMove);
+        doc.documentElement?.removeEventListener?.('pointerleave', onDocLeave);
+    }
+
+    /* --- fit: beside the other controls, alone, or scrolling --- */
+    const styleOf = (node, pseudo) => { try { return win?.getComputedStyle?.(node, pseudo) || null; } catch { return null; } };
+    // Right to left (the rendered direction) the strip starts at its right end: its levels run
+    // leftwards to negative offsets and its scrollLeft runs from 0 down.
+    const isRtl = () => styleOf(strip)?.direction === 'rtl';
+    // What stays on the line beside the open strip: the pills' own children (their wrapper
+    // stretches on a phone) and the other capsule, closed, each with its row gap. Alone, they
+    // are hidden and measure 0: the width seen before they stepped aside stays.
+    let peers = { width: 0, count: 0 };
+    function measurePeers(gap) {
+        if (row.dataset?.ownerSolo) return peers;
+        let width = 0;
+        let count = 0;
+        for (const node of Array.from(row.children || [])) {
+            if (node === el || node.hidden) continue;
+            const kids = node.classList?.contains('chat-composer-pills') ? Array.from(node.children || []).filter((kid) => !kid.hidden) : [node];
+            const own = kids.reduce((sum, kid) => sum + widthOf(kid), 0) + px(styleOf(node)?.columnGap) * Math.max(0, kids.length - 1);
+            if (own > 0) { width += own + gap; count += 1; }
+        }
+        peers = { width, count };
+        return peers;
+    }
+    // The head as it stands open: the ring, then the name and the divider before the levels
+    // unless the strip needs their room (the name is cached: a name that gave way measures 0).
+    let nameWidth = 0;
+    const measureName = () => { const shown = widthOf(name); if (shown > 0) nameWidth = shown; };
+    function headWidths() {
+        measureName();
+        const headStyle = styleOf(head);
+        const nameStyle = styleOf(name);
+        const divider = styleOf(body, '::before');
+        const bare = px(headStyle?.paddingLeft) + widthOf(glyph) + px(headStyle?.paddingRight);
+        return {
+            bare,
+            label: bare + px(nameStyle?.marginLeft) + nameWidth + px(nameStyle?.marginRight)
+                + px(divider?.marginLeft) + px(divider?.width) + px(divider?.marginRight),
+        };
+    }
+    // Every input is independent of the padding it decides (words, head, borders, the row), so
+    // a resize that follows a new padding finds the same answer.
+    function measure() {
+        const rowStyle = styleOf(row);
+        const room = widthOf(row) - px(rowStyle?.paddingLeft) - px(rowStyle?.paddingRight) - 1;  // 1 px of slack
+        if (!(room > 0)) return null;  // not laid out: a hidden pane, the unit-test DOM
+        const words = segs.reduce((sum, seg) => sum + widthOf(seg.firstElementChild), 0);
+        const elStyle = styleOf(el);
+        const stripStyle = styleOf(strip);
+        // Besides the head and the words: the borders and the strip's end gutter (its optical
+        // clearance from the rounded end).
+        const frame = px(elStyle?.borderLeftWidth) + px(elStyle?.borderRightWidth)
+            + px(stripStyle?.marginLeft) + px(stripStyle?.marginRight);
+        const heads = headWidths();
+        const padFor = (width, headWidth) => Math.floor((width - headWidth - frame - words) / (2 * segs.length));
+        const fitted = (mode, pad, label) => ({ mode, pad: Math.min(padMax, pad), label });
+        const beside = measurePeers(px(rowStyle?.columnGap));
+        let pad = padFor(room - beside.width, heads.label);
+        if (pad >= (beside.count ? SEG_PAD.beside : SEG_PAD.alone)) return fitted('inline', pad, true);
+        const alone = beside.count ? 'solo' : 'inline';
+        pad = padFor(room, heads.label);
+        if (pad >= SEG_PAD.alone) return fitted(alone, pad, true);
+        pad = padFor(room, heads.bare);
+        if (pad >= SEG_PAD.alone) return fitted(alone, pad, false);
+        return fitted('overflow', SEG_PAD.alone, false);
+    }
+    function fit() {
+        const fitted = state.open ? measure() : null;
+        if (!fitted) return;
+        el.style.setProperty('--capsule-seg-pad', `${fitted.pad}px`);
+        el.dataset.fit = fitted.mode;
+        el.dataset.tight = String(fitted.pad <= SEG_PAD.beside);
+        el.dataset.label = String(fitted.label);
+        if (fitted.mode !== 'inline') row.dataset.ownerSolo = kind;
+        else if (row.dataset.ownerSolo === kind) delete row.dataset.ownerSolo;
+        if (held) holdBody();
+    }
+    // A strip that scrolls fades on the side that hides levels (`start`/`end`: how far along its
+    // own direction it is scrolled).
+    function onStripScroll() {
+        // The levels' own end, not scrollWidth: a bracket's hit area may reach past the last level.
+        const last = segs[segs.length - 1];
+        const rtl = isRtl();
+        const width = Number(strip.clientWidth) || 0;
+        const end = rtl ? width - Number(last?.offsetLeft) : Number(last?.offsetLeft) + Number(last?.offsetWidth);
+        const scrollable = (Number.isFinite(end) && end > 0 ? end : Number(strip.scrollWidth) || 0) - width;
+        const at = (rtl ? -1 : 1) * (Number(strip.scrollLeft) || 0);
+        strip.dataset.scroll = scrollable <= 1 ? 'none' : at <= 1 ? 'start' : at >= scrollable - 1 ? 'end' : 'middle';
+    }
+    // ...and keeps what the owner moved (a handle, a mode; `left..right` in the strip) in view. The
+    // view is `scrollLeft..scrollLeft + clientWidth` in offsetLeft's terms either way; it never
+    // scrolls back past its start (0).
+    function reveal(left, right) {
+        if (el.dataset.fit !== 'overflow') return;
+        const width = Number(strip.clientWidth) || 0;
+        let to = null;
+        if (left - REVEAL_MARGIN_PX < strip.scrollLeft) to = left - REVEAL_MARGIN_PX;
+        else if (right + REVEAL_MARGIN_PX > strip.scrollLeft + width) to = right + REVEAL_MARGIN_PX - width;
+        if (to !== null) strip.scrollLeft = isRtl() ? Math.min(0, to) : Math.max(0, to);
+        onStripScroll();
+    }
+    // The value gives way while the strip grows, on its curve and from both real widths (style.css):
+    // the capsule's width moves straight between its closed and open widths, so a line that holds
+    // both never wraps in between. The widths are held while that runs, then follow the words again.
+    let held = false;
+    const heldWidth = (width) => `${Math.ceil(width * 64 + 1) / 64}px`;  // a hair over: layout rounds to 1/64 px
+    function valueWidth() {
+        try {  // the text keeps its whole width while the value gives way
+            const range = doc.createRange();
+            range.selectNodeContents(value);
+            const width = range.getBoundingClientRect().width;
+            if (width > 0) return width;
+        } catch { /* no layout */ }
+        return Number(value.scrollWidth) || 0;
+    }
+    function holdBody() {
+        const stripStyle = styleOf(strip);
+        const divider = el.dataset.label === 'false' ? null : styleOf(body, '::before');
+        el.style.setProperty('--capsule-body-width', heldWidth(widthOf(strip) + px(stripStyle?.marginLeft) + px(stripStyle?.marginRight)
+            + px(divider?.marginLeft) + px(divider?.width) + px(divider?.marginRight)));
+    }
+    function holdWidths() {
+        if (!(widthOf(row) > 0)) return;  // not laid out: nothing moves
+        held = true;
+        el.style.setProperty('--capsule-value-width', heldWidth(valueWidth()));
+        holdBody();
+        void el.offsetWidth;  // the change starts from these widths
+    }
+    function releaseWidths() {
+        if (!held) return;
+        held = false;
+        el.style.setProperty('--capsule-value-width', '');
+        el.style.setProperty('--capsule-body-width', '');
+    }
+    // Alone, the strip appears and disappears at once (no width animation), so the other
+    // controls never come back beside a strip that is still collapsing: the instant close is
+    // flushed before the solo flag goes. The padding stays as fitted: beside them the strip is
+    // still collapsing, and a wider padding now would push it onto a second line for those
+    // frames (the next open fits again).
+    function settleClosed() {
+        if (el.dataset.fit && el.dataset.fit !== 'inline') void body.offsetWidth;
+        delete el.dataset.fit;
+        if (row.dataset?.ownerSolo === kind) delete row.dataset.ownerSolo;
+    }
+    // A layout change (opening, a resize, a new padding) moves the marks with the words at once;
+    // only an owner's gesture animates them.
+    function settle(update) {
+        el.dataset.settling = 'true';
+        update();
+        void strip.offsetWidth;
+        delete el.dataset.settling;
+    }
+    // An inline strip collapses with a transition; the closed capsule's width settles when it
+    // ends (at once alone, scrolling, or snapped).
+    let settleTimer = 0;
+    function settled() {
+        clearTimeout(settleTimer);
+        settleTimer = 0;
+        state.collapsing = false;
+        releaseWidths();
+        if (!state.destroyed) onSettled();
+    }
+    const onBodyTransitionEnd = (event) => {
+        if (event.target !== body || event.propertyName !== 'max-width') return;
+        if (state.collapsing) settled();
+        else if (state.open) releaseWidths();
+    };
+    function setOpen(open, { focus = false } = {}) {
+        if (state.open === open && !focus) return;
+        if (open && !state.open) api.peer?.snapClosed();
+        const flips = state.open !== open;
+        const collapses = !open && state.open && el.dataset.fit === 'inline' && el.dataset.snap !== 'true';
+        state.open = open;
+        clearTimeout(settleTimer);
+        state.collapsing = collapses;
+        if (open) el.dataset.settling = 'true';
+        if (open) fit();
+        if (flips) holdWidths();
+        el.dataset.open = String(open);
+        head.setAttribute('aria-expanded', String(open));
+        if (!open) {
+            state.pinned = false;
+            clearTimeout(hoverTimer);
+            clearTimeout(leaveTimer);
+            leaveTimer = 0;
+            stopTracking();
+            onClosed();
+            settleClosed();
+            if (collapses) settleTimer = setTimeout(settled, COLLAPSE_MS);
+        }
+        render();
+        if (open) {
+            void strip.offsetWidth;  // the opening frame lands without the marks' transitions
+            delete el.dataset.settling;
+            afterOpen();
+        }
+        if (open && focus) focusTarget()?.focus({ preventScroll: true });
+        onLayout();
+        if (!open && !collapses) settled();
+    }
+    // Closed at once, a running collapse included: the other capsule is opening and measures this one.
+    function snapClosed() {
+        el.dataset.snap = 'true';
+        setOpen(false);
+        void el.offsetWidth;
+        delete el.dataset.snap;
+        if (state.collapsing) settled();
+    }
+    const onHeadClick = (event) => {
+        const viaKeyboard = event.detail === 0;
+        if (hoverCapable) {
+            if (!state.open) { state.pinned = true; setOpen(true, { focus: viaKeyboard }); }
+            else if (!state.pinned) state.pinned = true;
+            else { state.pinned = false; setOpen(false); }
+        } else {
+            setOpen(!state.open, { focus: viaKeyboard && !state.open });
+        }
+    };
+    // A press on the other capsule is its own to answer: opening it closes this one at once,
+    // before anything moves under the pointer.
+    const onDocPointerDown = (event) => {
+        keyboardFocus = false;
+        if (state.open && !el.contains(event.target) && !api.peer?.el.contains(event.target)) { state.pinned = false; setOpen(false); }
+    };
+    const onDocKeyDown = (event) => {
+        keyboardFocus = true;
+        if (event.key !== 'Escape' || !state.open) return;
+        state.pinned = false;
+        setOpen(false);
+        head.focus({ preventScroll: true });
+    };
+    const onEnter = (event) => {
+        if (event.pointerType !== 'mouse') return;
+        clearTimeout(leaveTimer);
+        leaveTimer = 0;
+        stopTracking();
+        if (!state.open) {
+            clearTimeout(hoverTimer);
+            hoverTimer = setTimeout(() => {
+                if (state.destroyed || api.peer?.isOpen()) return;
+                // Hover opens only where the head stays under the mouse. Alone or scrolling, the
+                // other controls step aside and the strip moves under a still pointer, so a click
+                // meant to pin would land on a level: there the press opens it, as on touch.
+                const fitted = measure();
+                if (fitted && fitted.mode !== 'inline') return;
+                setOpen(true);
+            }, HOVER_OPEN_MS);
+        }
+    };
+    const onLeave = (event) => {
+        if (event.pointerType !== 'mouse') return;
+        clearTimeout(hoverTimer);
+        lastPointer = { x: event.clientX, y: event.clientY };
+        if (!state.open || state.pinned) return;
+        startTracking();
+        if (!inZone(lastPointer)) closeSoon();
+    };
+
+    // The row and the strip change size without a window resize (a Project pane's divider, a
+    // font that loads): measure again then, so the fit and the marks follow. A strip that starts
+    // to scroll reveals the active target; one that already scrolls stays where the owner put it.
+    const relayout = () => settle(() => {
+        const scrolled = el.dataset.fit === 'overflow';
+        if (state.open) fit();
+        render();
+        if (!scrolled && el.dataset.fit === 'overflow') afterOverflow();
+        onStripScroll();
+    });
+    const onResize = () => { if (state.open) relayout(); };
+    const observer = typeof win?.ResizeObserver === 'function' ? new win.ResizeObserver(() => {
+        if (!state.destroyed) relayout();
+    }) : null;
+    observer?.observe(row);
+    observer?.observe(strip);
+
+    head.addEventListener('click', onHeadClick);
+    body.addEventListener('transitionend', onBodyTransitionEnd);
+    strip.addEventListener('scroll', onStripScroll, { passive: true });
+    win?.addEventListener?.('resize', onResize);
+    doc.addEventListener('pointerdown', onDocPointerDown, true);
+    doc.addEventListener('keydown', onDocKeyDown);
+    if (hoverCapable) {
+        el.addEventListener('pointerenter', onEnter);
+        el.addEventListener('pointerleave', onLeave);
+    }
+
+    return Object.assign(api, {
+        setOpen, snapClosed, closeSoon, onStripScroll, reveal, measureName, isRtl,
+        destroy() {
+            state.destroyed = true;
+            clearTimeout(hoverTimer);
+            clearTimeout(leaveTimer);
+            clearTimeout(settleTimer);
+            body.removeEventListener('transitionend', onBodyTransitionEnd);
+            doc.removeEventListener('pointerdown', onDocPointerDown, true);
+            doc.removeEventListener('keydown', onDocKeyDown);
+            head.removeEventListener('click', onHeadClick);
+            strip.removeEventListener('scroll', onStripScroll);
+            win?.removeEventListener?.('resize', onResize);
+            observer?.disconnect();
+            stopTracking();
+            if (row.dataset?.ownerSolo === kind) delete row.dataset.ownerSolo;
+            el.removeEventListener('pointerenter', onEnter);
+            el.removeEventListener('pointerleave', onLeave);
+        },
+    });
+}
+
+/**
+ * The effort range: the capsule `Effort X-High` (closed, only the recommended level; the ring
+ * still draws the range and the button's name says it) that opens inline into the seven-level
+ * strip with min/max brackets and the recommended pill.
+ *
+ * Saves happen on gesture end through the owner endpoint, serialized (last wins); a failed save
+ * shows the server's sentence and returns the control to the server's value. A stored tier
+ * outside the seven owner tiers (`minimal`) is shown at the nearest owner tier and is rewritten
+ * only when the owner moves that handle.
  */
 export function createEffortRangeControl({
-    row, saveEffortRange, showToast, refreshState = () => {}, onLayout = () => {},
+    row, saveEffortRange, showToast, refreshState = () => {}, onLayout = () => {}, onSettled = () => {},
     win = globalThis.window, doc = globalThis.document,
 }) {
     const el = doc.createElement('div');
-    el.className = 'chat-effort-range';
+    el.className = 'chat-capsule chat-effort-range';
     el.setAttribute('data-effort-range', '');
     el.setAttribute('role', 'group');
     el.setAttribute('aria-label', 'Effort range');
-    el.dataset.open = 'false';
     el.dataset.known = 'false';
     el.innerHTML = effortRangeMarkup();
     const q = (selector) => el.querySelector(selector);
     const head = q('.chat-effort-head');
-    const body = q('.chat-effort-body');
+    const value = q('.chat-capsule-value');
     const strip = q('[data-effort-strip]');
     const band = q('[data-effort-band]');
     const ring = { band: q('[data-ring-band]'), rec: q('[data-ring-rec]') };
     const segs = Array.from(el.querySelectorAll('.chat-effort-seg'));
     const handles = { min: q('.chat-effort-min'), rec: q('.chat-effort-rec'), max: q('.chat-effort-max') };
-    const pills = row.querySelector('.chat-composer-pills');
-    if (pills && typeof pills.insertAdjacentElement === 'function') pills.insertAdjacentElement('afterend', el);
+    // After the pills and the context capsule.
+    const before = row.querySelector('.chat-context-mode') || row.querySelector('.chat-composer-pills');
+    if (before && typeof before.insertAdjacentElement === 'function') before.insertAdjacentElement('afterend', el);
     else row.appendChild(el);
 
-    // `hover` exists only with a mouse; the chat unit-test DOM carries no matchMedia at all.
-    const hoverCapable = typeof win?.matchMedia === 'function' && win.matchMedia(HOVER_MEDIA)?.matches === true;
     // `stored` is the server's value; `draft` the tiers the server will hold once every queued
     // save landed (equal to `stored` when nothing is pending); `shown` the owner-tier indices.
     const state = {
         stored: { ...EFFORT_RANGE_DEFAULT }, draft: { ...EFFORT_RANGE_DEFAULT }, shown: indicesOf(EFFORT_RANGE_DEFAULT),
-        view: null, drag: null, open: false, pinned: false, saving: null, queued: null, lastOk: true, destroyed: false,
+        view: null, drag: null, saving: null, queued: null, lastOk: true, destroyed: false,
     };
-    head.setAttribute('aria-expanded', 'false');
     for (const which of HANDLES) { handles[which].setAttribute('role', 'slider'); handles[which].tabIndex = -1; }
-    let hoverTimer = 0;
-    let leaveTimer = 0;
-    let lastPointer = null;
+    let capsule = null;
 
-    /* --- geometry: segment edges in px, measured from the DOM (labels differ in width) --- */
-    function edges() {
-        const e = segs.map((seg) => Number(seg.offsetLeft));
-        e.push(Number(segs[N].offsetLeft) + Number(segs[N].offsetWidth));
+    /* --- geometry: segment edges in px along the scale, measured from the DOM (labels differ in
+       width). Right to left the levels run leftwards: a position along the scale is the strip's x
+       times `dir` (-1), and the same product turns it back. --- */
+    const scaleDir = () => (capsule?.isRtl() ? -1 : 1);
+    function edges(dir = scaleDir()) {
+        // Each level's start, then the last level's end. The levels meet, so right to left a level
+        // starts where the one before it ends: one whole-pixel offset per edge, as left to right.
+        const left = segs.map((seg) => Number(seg.offsetLeft));
+        const e = dir > 0 ? [...left, left[N] + Number(segs[N].offsetWidth)]
+            : [-(left[0] + Number(segs[0].offsetWidth)), ...left.map((x) => -x)];
         return e.every(Number.isFinite) && e[N + 1] > e[0] ? e : null;
     }
     function boundaryAt(event) {
-        const e = edges();
+        const dir = scaleDir();
+        const e = edges(dir);
         if (!e) return null;
-        const x = clamp(event.clientX - strip.getBoundingClientRect().left + (Number(strip.scrollLeft) || 0), e[0], e[N + 1]);
+        const x = clamp(dir * (event.clientX - strip.getBoundingClientRect().left + (Number(strip.scrollLeft) || 0)), e[0], e[N + 1]);
         let i = 0;
         while (i < N && x >= e[i + 1]) i += 1;
         return i + (x - e[i]) / (e[i + 1] - e[i]);
@@ -163,14 +576,18 @@ export function createEffortRangeControl({
        the word it names, and a pushed bracket moves with it, never behind it) --- */
     function render() {
         const s = snapRange(state.view || state.shown);
-        const e = edges();
+        const dir = scaleDir();
+        const e = edges(dir);
         if (e) {
-            band.style.left = `${e[s.min]}px`;
-            band.style.width = `${e[s.max + 1] - e[s.min]}px`;
-            handles.rec.style.left = `${e[s.rec]}px`;
-            handles.rec.style.width = `${e[s.rec + 1] - e[s.rec]}px`;
-            handles.min.style.left = `${e[s.min]}px`;
-            handles.max.style.left = `${e[s.max + 1]}px`;  // the bracket draws to the left of its edge
+            // A span along the scale stands at its left side in the strip.
+            const span = (node, from, to) => {
+                node.style.left = `${Math.min(dir * from, dir * to)}px`;
+                node.style.width = `${to - from}px`;
+            };
+            span(band, e[s.min], e[s.max + 1]);
+            span(handles.rec, e[s.rec], e[s.rec + 1]);
+            handles.min.style.left = `${dir * e[s.min]}px`;
+            handles.max.style.left = `${dir * e[s.max + 1]}px`;  // each bracket draws toward the range (style.css)
         }
         segs.forEach((seg, i) => { seg.dataset.in = String(i >= s.min && i <= s.max); seg.dataset.rec = String(i === s.rec); });
         el.dataset.dragging = String(Boolean(state.drag?.moved));
@@ -180,13 +597,18 @@ export function createEffortRangeControl({
         ring.rec.setAttribute('cy', dot.y.toFixed(2));
         // The recommended level may go anywhere (it pushes the brackets); a bracket stops at the other one.
         const bounds = { min: [0, s.max], rec: [0, N], max: [s.min, N] };
+        const open = Boolean(capsule?.isOpen());
         for (const which of HANDLES) {
             handles[which].setAttribute('aria-valuemin', String(bounds[which][0]));
             handles[which].setAttribute('aria-valuemax', String(bounds[which][1]));
             handles[which].setAttribute('aria-valuenow', String(s[which]));
             handles[which].setAttribute('aria-valuetext', effortText(OWNER_TIERS[s[which]]));
             handles[which].dataset.dragging = String(state.drag?.which === which);
+            handles[which].tabIndex = open ? 0 : -1;
         }
+        // Closed, the capsule names only the recommended level; the ring and the name say the range.
+        const word = effortText(state.draft.recommended);
+        if (value.textContent !== word) value.textContent = word;
         const stored = state.stored;
         head.title = fmt('Effort: {level}, range {min}–{max}. Applies to new work.', {
             level: effortText(stored.recommended), min: effortText(stored.min), max: effortText(stored.max),
@@ -208,7 +630,7 @@ export function createEffortRangeControl({
         state.view = null;
         commit(next);
         revealHandle(which);
-        if (state.open && !state.pinned && hoverCapable) closeSoon();
+        if (capsule.isOpen() && !capsule.isPinned() && capsule.hoverCapable) capsule.closeSoon();
     }
     // A handle the owner did not move keeps its tier (`minimal` shown at Low stays `minimal`).
     function tripleFor(next) {
@@ -269,210 +691,24 @@ export function createEffortRangeControl({
         return ok;
     }
 
-    /* --- open / pin state machine --- */
-    // Focus keeps a hover-opened strip open only when the keyboard put it there: browsers report
-    // a handle focused after a mouse press as :focus-visible, so the last input decides instead.
-    let keyboardFocus = false;
-    const stillHere = () => {
-        try { return Boolean(el.matches(':hover') || (keyboardFocus && el.contains(doc.activeElement))); } catch { return false; }
-    };
-    // The open strip forgives a mouse that drifts a little: inside the zone (the control plus a
-    // margin) it stays; outside, it closes after the delay unless the mouse comes back first. A
-    // pinned strip, a drag and keyboard focus keep it open regardless.
-    function inZone(point) {
-        const r = point && typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
-        return Boolean(r) && point.x >= r.left - HOVER_ZONE_PX && point.x <= r.right + HOVER_ZONE_PX
-            && point.y >= r.top - HOVER_ZONE_PX && point.y <= r.bottom + HOVER_ZONE_PX;
-    }
-    function closeSoon() {
-        clearTimeout(leaveTimer);
-        startTracking();
-        leaveTimer = setTimeout(() => {
-            leaveTimer = 0;
-            if (state.open && !state.pinned && !state.drag && !stillHere() && !inZone(lastPointer)) setOpen(false);
-        }, HOVER_CLOSE_MS);
-    }
-    let tracking = false;
-    const onDocMove = (event) => {
-        if (event.pointerType && event.pointerType !== 'mouse') return;
-        lastPointer = { x: event.clientX, y: event.clientY };
-        if (!state.open || state.pinned) { stopTracking(); return; }
-        if (inZone(lastPointer)) { clearTimeout(leaveTimer); leaveTimer = 0; }
-        else if (!leaveTimer) closeSoon();
-    };
-    const onDocLeave = () => { lastPointer = null; if (state.open && !state.pinned) closeSoon(); };
-    function startTracking() {
-        if (tracking || !hoverCapable) return;
-        tracking = true;
-        doc.addEventListener('pointermove', onDocMove);
-        doc.documentElement?.addEventListener?.('pointerleave', onDocLeave);
-    }
-    function stopTracking() {
-        if (!tracking) return;
-        tracking = false;
-        doc.removeEventListener('pointermove', onDocMove);
-        doc.documentElement?.removeEventListener?.('pointerleave', onDocLeave);
-    }
-
-    /* --- fit: beside the pills, alone, or scrolling — measured, no breakpoint (a translation
-       or another font needs none) --- */
-    const styleOf = (node) => { try { return win?.getComputedStyle?.(node) || null; } catch { return null; } };
-    let pillsWidth = 0;
-    function measurePills() {
-        // The wrapper stretches on a phone; its children are what has to fit.
-        if (!pills || row.dataset?.effortSolo === 'true') return pillsWidth;
-        const kids = Array.from(pills.children || []).filter((kid) => !kid.hidden);
-        const gap = px(styleOf(pills)?.columnGap);
-        pillsWidth = kids.reduce((sum, kid) => sum + widthOf(kid), 0) + gap * Math.max(0, kids.length - 1);
-        return pillsWidth;
-    }
-    // Every input is independent of the padding it decides (words, button, borders, the row),
-    // so a resize that follows a new padding finds the same answer.
-    function measure() {
-        const rowStyle = styleOf(row);
-        const room = widthOf(row) - px(rowStyle?.paddingLeft) - px(rowStyle?.paddingRight) - 1;  // 1 px of slack
-        if (!(room > 0)) return null;  // not laid out: a hidden pane, the unit-test DOM
-        const words = segs.reduce((sum, seg) => sum + widthOf(seg.firstElementChild), 0);
-        const elStyle = styleOf(el);
-        const chrome = widthOf(head) + px(elStyle?.borderLeftWidth) + px(elStyle?.borderRightWidth)
-            + px(styleOf(strip)?.marginRight);
-        const padFor = (width) => Math.floor((width - chrome - words) / (2 * segs.length));
-        const beside = pills ? padFor(room - measurePills() - px(rowStyle?.columnGap)) : padFor(room);
-        let mode = 'inline';
-        let pad = Math.min(SEG_PAD.max, beside);
-        if (pills && beside < SEG_PAD.beside) {
-            const alone = padFor(room);
-            mode = alone < SEG_PAD.alone ? 'overflow' : 'solo';
-            pad = clamp(alone, SEG_PAD.alone, SEG_PAD.max);
-        } else if (!pills && beside < SEG_PAD.alone) {
-            mode = 'overflow';
-            pad = SEG_PAD.alone;
-        }
-        return { mode, pad };
-    }
-    function fit() {
-        const fitted = state.open ? measure() : null;
-        if (!fitted) return;
-        el.style.setProperty('--effort-seg-pad', `${fitted.pad}px`);
-        el.dataset.fit = fitted.mode;
-        el.dataset.tight = String(fitted.pad <= SEG_PAD.beside);
-        if (fitted.mode === 'inline') delete row.dataset.effortSolo;
-        else row.dataset.effortSolo = 'true';
-    }
     // A strip that scrolls shows where it continues and keeps the moved handle in view.
-    // The fade at a scrolling strip's edge (var(--space-3)): a revealed handle stays clear of it.
-    const REVEAL_MARGIN_PX = 12;
     function revealHandle(which = 'rec') {
         if (el.dataset.fit !== 'overflow') return;
-        const e = edges();
+        const dir = scaleDir();
+        const e = edges(dir);
         if (!e) return;
         const s = snapRange(state.view || state.shown);
         const cap = widthOf(handles.min);
-        const [left, right] = which === 'min' ? [e[s.min], e[s.min] + cap]
+        const [from, to] = which === 'min' ? [e[s.min], e[s.min] + cap]
             : which === 'max' ? [e[s.max + 1] - cap, e[s.max + 1]] : [e[s.rec], e[s.rec + 1]];
-        const width = Number(strip.clientWidth) || 0;
-        if (left - REVEAL_MARGIN_PX < strip.scrollLeft) strip.scrollLeft = Math.max(0, left - REVEAL_MARGIN_PX);
-        else if (right + REVEAL_MARGIN_PX > strip.scrollLeft + width) strip.scrollLeft = right + REVEAL_MARGIN_PX - width;
-        onStripScroll();
+        capsule.reveal(Math.min(dir * from, dir * to), Math.max(dir * from, dir * to));
     }
-    function onStripScroll() {
-        // The levels' own end, not scrollWidth: a bracket's hit area may reach past the last level.
-        const e = edges();
-        const scrollable = (e ? e[N + 1] : Number(strip.scrollWidth) || 0) - (Number(strip.clientWidth) || 0);
-        const at = Number(strip.scrollLeft) || 0;
-        strip.dataset.scroll = scrollable <= 1 ? 'none' : at <= 1 ? 'start' : at >= scrollable - 1 ? 'end' : 'middle';
-    }
-    // Alone, the strip appears and disappears at once (no width animation), so the pills never
-    // come back beside a strip that is still collapsing: the instant close is flushed before the
-    // solo flag goes. The padding stays as fitted: beside the pills the strip is still collapsing,
-    // and a wider padding now would push it onto a second line for those frames (the next open
-    // fits again).
-    function settleClosed() {
-        if (el.dataset.fit && el.dataset.fit !== 'inline') void body.offsetWidth;
-        delete el.dataset.fit;
-        if (row?.dataset) delete row.dataset.effortSolo;
-    }
-    // A layout change (opening, a resize, a new padding) moves the marks with the words at once;
-    // only an owner's gesture animates them.
-    function settle(update) {
-        el.dataset.settling = 'true';
-        update();
-        void strip.offsetWidth;
-        delete el.dataset.settling;
-    }
-    function setOpen(open, { focus = false } = {}) {
-        if (state.open === open && !focus) return;
-        state.open = open;
-        if (open) el.dataset.settling = 'true';
-        if (open) fit();
-        el.dataset.open = String(open);
-        head.setAttribute('aria-expanded', String(open));
-        for (const which of HANDLES) handles[which].tabIndex = open ? 0 : -1;
-        if (!open) {
-            state.pinned = false;
-            clearTimeout(hoverTimer);
-            clearTimeout(leaveTimer);
-            leaveTimer = 0;
-            stopTracking();
-            if (state.drag) cancelDrag();
-            settleClosed();
-        }
-        render();
-        if (open) {
-            void strip.offsetWidth;  // the opening frame lands without the marks' transitions
-            delete el.dataset.settling;
-            revealHandle('rec');
-        }
-        if (open && focus) handles.rec.focus({ preventScroll: true });
-        onLayout();
-    }
-    const onHeadClick = (event) => {
-        const viaKeyboard = event.detail === 0;
-        if (hoverCapable) {
-            if (!state.open) { state.pinned = true; setOpen(true, { focus: viaKeyboard }); }
-            else if (!state.pinned) state.pinned = true;
-            else { state.pinned = false; setOpen(false); }
-        } else {
-            setOpen(!state.open, { focus: viaKeyboard && !state.open });
-        }
-    };
-    const onDocPointerDown = (event) => {
-        keyboardFocus = false;
-        if (state.open && !el.contains(event.target)) { state.pinned = false; setOpen(false); }
-    };
-    const onDocKeyDown = (event) => {
-        keyboardFocus = true;
-        if (event.key !== 'Escape' || !state.open) return;
-        state.pinned = false;
-        setOpen(false);
-        head.focus({ preventScroll: true });
-    };
-    const onEnter = (event) => {
-        if (event.pointerType !== 'mouse') return;
-        clearTimeout(leaveTimer);
-        leaveTimer = 0;
-        stopTracking();
-        if (!state.open) {
-            clearTimeout(hoverTimer);
-            hoverTimer = setTimeout(() => {
-                if (state.destroyed) return;
-                // Hover opens only where the round button stays under the mouse. Alone or
-                // scrolling, the pills step aside and the strip moves under a still pointer, so a
-                // click meant to pin would land on a level: there the press opens it, as on touch.
-                const fitted = measure();
-                if (fitted && fitted.mode !== 'inline') return;
-                setOpen(true);
-            }, HOVER_OPEN_MS);
-        }
-    };
-    const onLeave = (event) => {
-        if (event.pointerType !== 'mouse') return;
-        clearTimeout(hoverTimer);
-        lastPointer = { x: event.clientX, y: event.clientY };
-        if (!state.open || state.pinned) return;
-        startTracking();
-        if (!inZone(lastPointer)) closeSoon();
-    };
+
+    capsule = createCapsule({
+        el, row, kind: 'effort', strip, segs, render, focusTarget: () => handles.rec, onLayout, onSettled, win, doc,
+        busy: () => Boolean(state.drag), onClosed: () => { if (state.drag) cancelDrag(); }, afterOpen: () => revealHandle('rec'),
+        afterOverflow: () => revealHandle(HANDLES.find((which) => handles[which] === doc.activeElement) || 'rec'),
+    });
 
     /* --- pointer: a press on the strip grabs a handle (or picks one) and keeps the grab offset --- */
     const onDown = (event) => {
@@ -495,7 +731,6 @@ export function createEffortRangeControl({
         };
         const release = (ev) => {
             if (ev.pointerId !== event.pointerId) return;
-            if (ev.pointerType === 'mouse' && Number.isFinite(ev.clientX)) lastPointer = { x: ev.clientX, y: ev.clientY };
             strip.removeEventListener('pointermove', move);
             strip.removeEventListener('pointerup', up);
             strip.removeEventListener('pointercancel', cancel);
@@ -516,39 +751,20 @@ export function createEffortRangeControl({
         else if (event.key === 'End') target = N;
         else return;
         event.preventDefault?.();
-        keyboardFocus = true;
         commit(snapRange(applyHandle(state.shown, which, clamp(target, 0, N))));
         revealHandle(which);
     };
 
-    // The row and the strip change size without a window resize (a Project pane's divider, a
-    // font that loads): measure again then, so the fit and the marks follow.
-    const relayout = () => settle(() => { if (state.open) fit(); render(); onStripScroll(); });
-    const onResize = () => { if (state.open) relayout(); };
-    const observer = typeof win?.ResizeObserver === 'function' ? new win.ResizeObserver(() => {
-        if (!state.destroyed) relayout();
-    }) : null;
-    observer?.observe(row);
-    observer?.observe(strip);
-
-    head.addEventListener('click', onHeadClick);
     strip.addEventListener('pointerdown', onDown);
-    strip.addEventListener('scroll', onStripScroll, { passive: true });
-    win?.addEventListener?.('resize', onResize);
     for (const which of HANDLES) handles[which].addEventListener('keydown', onHandleKey);
-    doc.addEventListener('pointerdown', onDocPointerDown, true);
-    doc.addEventListener('keydown', onDocKeyDown);
-    if (hoverCapable) {
-        el.addEventListener('pointerenter', onEnter);
-        el.addEventListener('pointerleave', onLeave);
-    }
     render();
 
     return {
         el,
-        hoverCapable,
-        isOpen: () => state.open,
-        isPinned: () => state.pinned,
+        capsule,
+        hoverCapable: capsule.hoverCapable,
+        isOpen: () => capsule.isOpen(),
+        isPinned: () => capsule.isPinned(),
         shown: () => ({ ...state.shown }),
         stored: () => ({ ...state.stored }),
         /** Every composer shows the one global value: the `/api/state` snapshot's `effort_range`. */
@@ -563,21 +779,121 @@ export function createEffortRangeControl({
         pendingSave: () => (state.saving ? state.saving : Promise.resolve(state.lastOk)),
         destroy() {
             state.destroyed = true;
-            clearTimeout(hoverTimer);
-            clearTimeout(leaveTimer);
-            doc.removeEventListener('pointerdown', onDocPointerDown, true);
-            doc.removeEventListener('keydown', onDocKeyDown);
-            head.removeEventListener('click', onHeadClick);
+            capsule.destroy();
             strip.removeEventListener('pointerdown', onDown);
-            strip.removeEventListener('scroll', onStripScroll);
-            win?.removeEventListener?.('resize', onResize);
-            observer?.disconnect();
-            stopTracking();
-            if (row?.dataset) delete row.dataset.effortSolo;
             for (const which of HANDLES) handles[which].removeEventListener('keydown', onHandleKey);
-            el.removeEventListener('pointerenter', onEnter);
-            el.removeEventListener('pointerleave', onLeave);
             el.remove();
+        },
+    };
+}
+
+/**
+ * The context mode: the capsule `Context Max` that opens inline into exactly three modes, the
+ * chosen one under a glass thumb. A choice (a press, a tap, Enter/Space, an arrow) posts the
+ * owner endpoint at once, which hot-applies it without a restart; outside Cyber Pro a lower mode
+ * is accepted only while Ouroboros is idle. The strip waits for the answer; a refusal leaves the
+ * saved mode and says why, and every answer re-reads /api/state.
+ */
+function createContextModeControl({ el, row, apiFetch, showToast, refreshState, onLayout, onSettled, win, doc }) {
+    el.classList.add('chat-capsule');
+    el.setAttribute('role', 'group');
+    el.setAttribute('aria-label', 'Context size mode');
+    el.innerHTML = contextModeMarkup();
+    const head = el.querySelector('.chat-context-head');
+    head.title = CONTEXT_TITLE;
+    const value = el.querySelector('.chat-capsule-value');
+    const strip = el.querySelector('.chat-context-strip');
+    const thumb = el.querySelector('.chat-context-thumb');
+    const segs = Array.from(el.querySelectorAll('.chat-seg'));
+    const current = () => contextModeOf(el.dataset.contextMode);
+    const chosen = () => segs.find((seg) => seg.dataset.mode === current());
+    let capsule = null;
+    let named = '';  // the mode the value names (an overlay may have translated the word)
+
+    function render() {
+        const mode = current();
+        const open = Boolean(capsule?.isOpen());
+        if (named !== mode) { named = mode; value.textContent = CONTEXT_LABELS[mode]; }
+        for (const seg of segs) {
+            seg.setAttribute('aria-checked', String(seg.dataset.mode === mode));
+            seg.tabIndex = open && seg.dataset.mode === mode ? 0 : -1;  // one tab stop; arrows move within
+        }
+        const seg = chosen();
+        if (Number(seg?.offsetWidth) > 0) {
+            thumb.style.left = `${seg.offsetLeft}px`;
+            thumb.style.width = `${seg.offsetWidth}px`;
+        }
+    }
+    const postMode = (mode) => apiFetch('/api/owner/context-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+    });
+    async function choose(mode) {
+        const next = ['nano', 'low', 'max'].includes(mode) ? mode : 'max';
+        if (el.dataset.disabled === 'true' || next === current()) return;
+        el.dataset.disabled = 'true';
+        try {
+            const resp = await postMode(next);
+            if (resp.ok) {
+                el.dataset.contextMode = next;
+            } else {
+                let message = 'Could not change context mode.';
+                try { const p = await resp.json(); if (p?.error) message = p.error; } catch {}
+                showToast(message, 'error');
+            }
+        } catch (e) {
+            showToast(`Could not change context mode: ${e.message || e}`, 'error');
+            /* leave the current value; /api/state refresh will resync */
+        } finally {
+            el.dataset.disabled = 'false';
+            render();
+            refreshState(true);
+        }
+    }
+    const onChoose = (event) => {
+        const seg = event.target?.closest?.('.chat-seg');
+        return seg ? choose(seg.dataset.mode) : undefined;
+    };
+    // A strip that scrolls (long translated words on a phone) keeps the chosen or focused mode whole.
+    const revealMode = (seg) => { if (seg) capsule.reveal(Number(seg.offsetLeft), Number(seg.offsetLeft) + Number(seg.offsetWidth)); };
+    const onKey = (event) => {
+        const at = segs.indexOf(event.target?.closest?.('.chat-seg'));
+        const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+        let to;
+        if (at < 0) return;
+        if (step) to = clamp(at + step, 0, segs.length - 1);
+        else if (event.key === 'Home') to = 0;
+        else if (event.key === 'End') to = segs.length - 1;
+        else return;
+        event.preventDefault?.();
+        segs[to].focus({ preventScroll: true });
+        revealMode(segs[to]);
+        return choose(segs[to].dataset.mode);
+    };
+
+    capsule = createCapsule({
+        el, row, kind: 'context', strip, segs, render, focusTarget: chosen, padMax: SEG_PAD.max + 3, onLayout, onSettled, win, doc,
+        afterOpen: () => revealMode(chosen()),
+        afterOverflow: () => revealMode(segs.find((seg) => seg === doc.activeElement) || chosen()),
+    });
+    el.addEventListener('click', onChoose);
+    strip.addEventListener('keydown', onKey);
+    render();
+
+    return {
+        el,
+        capsule,
+        /** The one global value: the `/api/state` snapshot's `context_mode`; a save in flight answers for itself. */
+        syncState(data) {
+            if (typeof data?.context_mode !== 'string' || el.dataset.disabled === 'true') return;
+            el.dataset.contextMode = contextModeOf(data.context_mode);
+            render();
+        },
+        destroy() {
+            capsule.destroy();
+            el.removeEventListener('click', onChoose);
+            strip.removeEventListener('keydown', onKey);
         },
     };
 }
@@ -590,52 +906,69 @@ export function createEffortRangeControl({
  * @param {(body: object) => Promise<object>} deps.saveEffortRange  `apiClient.ownerEffortRange`
  * @param {(message: string, tone?: string) => void} deps.showToast
  * @param {(force?: boolean) => Promise<void>|void} deps.refreshState  a forced `/api/state` re-read
- * @param {() => void} [deps.onLayout]  the strip opened or closed on its own line
+ * @param {() => void} [deps.onLayout]  a strip opened or closed on its own line
  */
-export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRange, showToast, refreshState, onLayout, win, doc }) {
-    // Context-mode quick toggle: the owner endpoint hot-applies the setting
-    // without a restart; Max -> Low is accepted only while Ouroboros is idle.
-    const contextModeBtn = byId('context-mode');
-    const onContextMode = async (event) => {
-        const seg = event.target.closest('.chat-seg');
-        if (!seg || contextModeBtn.dataset.disabled === 'true') return;
-        const next = ['nano', 'low', 'max'].includes(seg.dataset.mode) ? seg.dataset.mode : 'max';
-        const current = ['nano', 'low', 'max'].includes(contextModeBtn.dataset.contextMode) ? contextModeBtn.dataset.contextMode : 'max';
-        if (next === current) return;
-        contextModeBtn.dataset.disabled = 'true';
-        const postMode = (mode) => apiFetch('/api/owner/context-mode', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode }),
-        });
-        try {
-            const resp = await postMode(next);
-            if (resp.ok) {
-                contextModeBtn.dataset.contextMode = next;
-            } else {
-                let message = 'Could not change context mode.';
-                try { const p = await resp.json(); if (p?.error) message = p.error; } catch {}
-                showToast(message, 'error');
-            }
-        } catch (e) {
-            showToast(`Could not change context mode: ${e.message || e}`, 'error');
-            /* leave the current value; /api/state refresh will resync */
-        } finally {
-            contextModeBtn.dataset.disabled = 'false';
-            refreshState(true);
+export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRange, showToast, refreshState, onLayout, win = globalThis.window, doc = globalThis.document }) {
+    let destroyed = false;
+    const capsules = [];
+    // Closed, a capsule names its setting while the line holds every control; a narrower line (a
+    // 360 px phone, a longer translation) keeps the rings and values and lets the names go, and
+    // where even that wraps, the longest values give way to one measured width (an ellipsis; the
+    // button's accessible name and the open strip keep the whole word). Probed on the settled,
+    // closed row in one task, so a name never flickers and the row never wraps.
+    const shownKids = () => Array.from(row.children || []).filter((kid) => widthOf(kid) > 0);
+    function wraps() {
+        const kids = shownKids();
+        const first = kids[0]?.getBoundingClientRect?.();
+        return Boolean(first) && kids.some((kid) => kid.getBoundingClientRect().top >= first.bottom);
+    }
+    function fitNames() {
+        if (destroyed || !row?.dataset || capsules.some((capsule) => !capsule.isSettled())) return;
+        delete row.dataset.ownerCompact;
+        row.style.setProperty('--capsule-value-cap', '');
+        capsules.forEach((capsule) => capsule.measureName());
+        if (!wraps()) return;
+        row.dataset.ownerCompact = 'true';
+        const rowStyle = win?.getComputedStyle?.(row);
+        const room = widthOf(row) - px(rowStyle?.paddingLeft) - px(rowStyle?.paddingRight);
+        if (!(room > 0) || !wraps()) return;  // not laid out (the unit-test DOM), or the line holds
+        const kids = shownKids();
+        const over = kids.reduce((sum, kid) => sum + widthOf(kid), 0) + px(rowStyle?.columnGap) * (kids.length - 1) - room + 1;  // 1 px of slack
+        // The cap that takes `over` off the widest values, each cut to it (a water level).
+        const values = capsules.map((capsule) => widthOf(capsule.el.querySelector('.chat-capsule-value'))).sort((a, b) => b - a);
+        let cap = 0;
+        for (let k = 1, sum = 0; k <= values.length; k += 1) {
+            sum += values[k - 1];
+            cap = (sum - over) / k;
+            if (k === values.length || cap >= values[k]) break;
         }
-    };
-    contextModeBtn?.addEventListener('click', onContextMode);
-    const effort = row ? createEffortRangeControl({ row, saveEffortRange, showToast, refreshState, onLayout, win, doc }) : null;
+        row.style.setProperty('--capsule-value-cap', `${Math.max(0, Math.floor(cap))}px`);
+        row.dataset.ownerCompact = 'values';
+    }
+    const shared = { showToast, refreshState, onLayout, onSettled: fitNames, win, doc };
+    const contextEl = byId('context-mode');
+    const context = contextEl ? createContextModeControl({ el: contextEl, row: row || contextEl.parentElement, apiFetch, ...shared }) : null;
+    const effort = row ? createEffortRangeControl({ row, saveEffortRange, ...shared }) : null;
+    if (context) capsules.push(context.capsule);
+    if (effort) capsules.push(effort.capsule);
+    // One capsule is open at a time.
+    if (context && effort) { context.capsule.peer = effort.capsule; effort.capsule.peer = context.capsule; }
+    const observer = row && typeof win?.ResizeObserver === 'function' ? new win.ResizeObserver(fitNames) : null;
+    observer?.observe(row);
 
     return {
+        context,
         effort,
-        syncState(data) { effort?.syncState(data); },
+        syncState(data) { context?.syncState(data); effort?.syncState(data); fitNames(); },
         hasPendingSave: () => Boolean(effort?.hasPendingSave()),
         pendingSave: () => (effort ? effort.pendingSave() : Promise.resolve(true)),
         destroy() {
-            contextModeBtn?.removeEventListener('click', onContextMode);
+            destroyed = true;
+            observer?.disconnect();
+            context?.destroy();
             effort?.destroy();
+            if (row?.dataset) delete row.dataset.ownerCompact;
+            row?.style?.setProperty?.('--capsule-value-cap', '');
         },
     };
 }

@@ -13,7 +13,10 @@ boundary instead of the whole line of thought:
   by the task's own Stop/Panic/deadline); no unrecorded effect starts;
 - ``post_batch`` — the completed batch and its results;
 - ``candidate`` — a no-tool answer published as the delivery candidate, before
-  acceptance, review or delivery.
+  acceptance, review or delivery;
+- ``resumed`` — an exact Resume's restored continuation and its budget tail,
+  written before the grant is consumed (``save_resumed``): the pause retired
+  this file, and consumption ends the pause's own recovery ownership.
 
 The file (``task_results/artifacts/<task>/source_handles/working/working_checkpoint-a<attempt>.json``,
 never a deliverable: every artifact/evidence scanner skips ``source_handles``)
@@ -54,6 +57,7 @@ FILE_PREFIX = "working_checkpoint-a"
 SOURCE_WORKING = "working"
 SOURCE_OWNER_WAIT = "owner_wait"
 BOUNDARIES = ("ready", "pre_effect", "post_batch", "candidate")
+RESUMED = "resumed"
 HOLD_UNWRITABLE = "working_checkpoint_unwritable"
 _TRANSIENT_USAGE = ("execution_status", "reason_code", "_best_effort_extracted", "budget_pause_hold",
                     "_llm_round_started", "working_checkpoint")
@@ -95,19 +99,40 @@ def save_round(limit_ctx: Any, boundary: str) -> bool:
     write failure; the caller decides whether that holds (``pre_effect``) or is
     retried at the next boundary.
     """
-    from ouroboros.budget_pause import pending_tool_call_ids
-    from ouroboros.owner_wait import continuation_state
-    from ouroboros.utils import utc_now_iso, write_bytes_atomic
-
     if boundary not in BOUNDARIES:
         raise ValueError(f"unknown working checkpoint boundary: {boundary!r}")
     ctx = getattr(getattr(limit_ctx, "tools", None), "_ctx", None)
     if ctx is None or not str(getattr(ctx, "task_id", "") or "") or not (
             getattr(ctx, "budget_drive_root", None) or getattr(ctx, "drive_root", None)) or not _root(ctx).is_dir():
         return False  # no durable task root: nothing here could be recovered from it
-    signature = _signature(limit_ctx)
-    if boundary == "ready" and getattr(ctx, "_working_checkpoint_signature", None) == signature:
+    if boundary == "ready" and getattr(ctx, "_working_checkpoint_signature", None) == _signature(limit_ctx):
         return False
+    _write(ctx, limit_ctx, boundary)
+    return True
+
+
+def save_resumed(tools: Any, state: Dict[str, Any], messages: list, trace: dict, usage: dict, seen: set) -> None:
+    """An exact Resume's restored continuation, before ``resume_paused_loop`` consumes the grant.
+
+    It never skips: it returns once the replace landed and raises otherwise, so
+    the caller holds the unconsumed grant. It acknowledges no mail. It runs before
+    the route rebinds, so it keeps the source's model role, not the new worker's.
+    """
+    from types import SimpleNamespace
+
+    _write(tools._ctx, SimpleNamespace(
+        tools=tools, messages=messages, llm_trace=trace, accumulated_usage=usage, owner_msg_seen=seen,
+        round_idx=int(state["round_idx"]), tool_schemas=state["tool_schemas"],
+        budget_tail=str((state.get("resume_point") or {}).get("budget_tail") or "tool"),
+        context_model_role=str(state.get("context_model_role") or "")), RESUMED)
+
+
+def _write(ctx: Any, limit_ctx: Any, boundary: str) -> None:
+    from ouroboros.budget_pause import pending_tool_call_ids
+    from ouroboros.owner_wait import continuation_state
+    from ouroboros.utils import utc_now_iso, write_bytes_atomic
+
+    signature = _signature(limit_ctx)
     started = time.perf_counter()
     usage = limit_ctx.accumulated_usage
     seq = int(getattr(ctx, "_working_checkpoint_seq", 0) or 0) + 1
@@ -115,6 +140,8 @@ def save_round(limit_ctx: Any, boundary: str) -> bool:
         ctx, limit_ctx.messages, limit_ctx.llm_trace if isinstance(limit_ctx.llm_trace, dict) else {},
         {key: value for key, value in usage.items() if key not in _TRANSIENT_USAGE},
         int(limit_ctx.round_idx), list(limit_ctx.tool_schemas or []), set(limit_ctx.owner_msg_seen or ()))
+    if boundary == RESUMED:  # written before the rebind: the plan is still the new worker's
+        state["context_model_role"] = limit_ctx.context_model_role
     state["working"] = {"boundary": boundary, "seq": seq, "saved_at": utc_now_iso(),
                         "budget_tail": getattr(limit_ctx, "budget_tail", "tool"),
                         "pending_tool_call_ids": pending_tool_call_ids(limit_ctx.messages)}
@@ -139,7 +166,6 @@ def save_round(limit_ctx: Any, boundary: str) -> bool:
     stats.update(saves=stats["saves"] + 1, last_bytes=len(data), max_bytes=max(stats["max_bytes"], len(data)),
                  last_boundary=boundary, encode_ms=round(stats["encode_ms"] + (encoded - started) * 1000, 3),
                  write_ms=round(stats["write_ms"] + (written - encoded) * 1000, 3))
-    return True
 
 
 def save_or_log(limit_ctx: Any, boundary: str) -> bool:
@@ -600,5 +626,11 @@ def resume_from_working(tools: Any, state: Dict[str, Any], messages: list, trace
         "termination: never start a second writer over such a run; the host never continues one by itself.")})
     # A batch rejoins its tool tail; ready state repeats its logical round.
     # A saved candidate rejoins finalization before another author call.
+    # A Resume handover rejoins its pause's tail, under the last-fit permission
+    # that Resume already spent (its receipt rides a same-ID usage).
+    resumed = boundary == RESUMED
+    if resumed:
+        ctx._budget_resume_last_fit_relaxed = bool((usage.get("budget_pause_resume") or {}).get("last_fit_relaxed"))
     return (ctx.active_model, ctx.active_effort, ctx.active_use_local, mode, int(state["round_idx"]), plan,
-            boundary in {"pre_effect", "post_batch"})
+            boundary in {"pre_effect", "post_batch"}
+            or resumed and (state.get("working") or {}).get("budget_tail") == "tool")

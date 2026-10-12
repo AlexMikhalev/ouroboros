@@ -200,14 +200,8 @@ def main(root, generation, mode, scenario="incoming"):
 
     async def panic(_request):
         from ouroboros.server_control import execute_panic_stop, PanicIngress
-        from ouroboros import platform_layer
-        # Panic's installation-wide port sweep is deliberately excluded. All other
-        # owners see only this isolated child's roots; its real hard exit remains.
-        def own_port_only(requested):
-            assert requested == port
-        patch.setattr(platform_layer, "kill_process_on_port", own_port_only)
         ingress = PanicIngress(lambda: execute_panic_stop(None, lambda: None, data_dir=h.data,
-            panic_exit_code=73, log=logging.getLogger("isolated-panic"), bound_port=port))
+            panic_exit_code=73, log=logging.getLogger("isolated-panic")))
         assert ingress.request("/panic", source="web")
         return JSONResponse({"requested": True})
 

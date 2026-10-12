@@ -97,8 +97,6 @@ _SERVER_OWNED = (
     "PANIC_EXIT_CODE",
     "_LAUNCHER_MANAGED",
     "_BIND_HOST",
-    "_ACTUAL_BOUND_PORT",
-    "_actual_bound_port",
     "_event_loop",
     "_supervisor_ready",
     "_supervisor_error",

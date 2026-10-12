@@ -494,29 +494,29 @@ def _startup_review_pool_notice(settings: dict) -> None:
     """Tell the OWNER once about every review-lane -> review-pool migration recorded for this
     data root, from the DURABLE receipts — never from this process's memory alone.
 
-    The migration itself is pure and runs at the read seam (``config.normalize_settings_raw``
-    -> ``review_pool_migration.apply_at_read_seam``) in whichever process reads an old document;
+    The migration itself is pure and runs at the read seam (``review_pool_migration.apply_at_read_seam``; an old
+    document in ``config.normalize_settings_raw``, a never-configured one over the effective input) in any reader;
     the process that SAVES the migrated document writes its receipts before that write
     (``review_pool_receipts.persist_write_receipts`` from the persistence prologue and the Colab
     writer): the snapshot ``state/review_migrations/<ts>-slots-to-pool.json`` and the
     ``state.json`` record. This boot step first gives receipts, by the writer's rule, only to
-    the migrations deciding the document on disk now (``persist_boot_receipts``: the N-1 document
-    the boot read before any save; with no file, the defaults ``settings`` carries; never the
-    factory rows of defaults read before the wizard saved its own catalog), then reconciles a
-    record for every snapshot another process left without one (a Colab kernel, the launcher
-    menu, the UI before this supervisor generation), and sends ONE English owner-chat message
-    (``review_pool_migration.owner_message``) per record whose ``reported`` is still unset,
-    once an owner chat is bound. A migration that could not finish is reported the same way
-    (its snapshot carries the error; the lane keys stay in the document for the owner's catalog
-    save). A no-op outcome (the catalog was already a pool) leaves no receipt: nothing changed.
-    Each unreported record is judged against the document AS READ (``review_pool_receipts.document_as_read``: the
-    file as the seam leaves it, no environment); ``settings`` is what RUNS (the environment merged over it). A record
+    the migrations deciding the document on disk now (``persist_boot_receipts``: the N-1 document the boot read before
+    any save; with no file or a never-configured one, what ``settings`` runs; never the factory rows of defaults read
+    before the wizard saved its own catalog), then reconciles a record for every snapshot another process left without
+    one (a Colab kernel, the launcher menu, the UI before this supervisor generation), and sends ONE English
+    owner-chat message (``review_pool_migration.owner_message``) per record whose ``reported`` is still unset, once an
+    owner chat is bound. A migration that could not finish is reported the same way (its snapshot carries the error;
+    the lane keys stay in the document for the owner's catalog save). A no-op outcome (the catalog was already a pool)
+    leaves no receipt: nothing changed. Each unreported record is judged against the document AS READ
+    (``review_pool_receipts.document_as_read``: the file as the seam leaves it, no environment; no file or a
+    never-configured one reads as ``settings``); ``settings`` is what RUNS (the environment merged over it). A record
     whose outcome no longer decides that document (the factory rows receipted at a file-less start before the wizard
     saved its own catalog) is closed as history without a message (``review_pool_receipts.close_as_history``), never
     delivered as if the owner's catalog were the environment's. Where the environment's catalog overrides the rows the
-    seam minted for a document without review settings of its own (``environment_overridable_keys``), the message names
-    THAT pool — loudly empty when none of its rows is marked. A never-configured document whose process environment
-    still carries the retired review keys is told those keys are no longer read (``environment_retired_review_keys``).
+    raw stage minted for an old document without review settings of its own (``environment_overridable_keys``), the
+    message names THAT pool — loudly empty when none of its rows is marked. A never-configured document whose process
+    environment still carries the retired review keys is told those keys are no longer read
+    (``environment_retired_review_keys``).
     """
     try:
         from ouroboros import config, review_pool_receipts as receipts

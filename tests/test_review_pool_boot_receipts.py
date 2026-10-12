@@ -31,7 +31,7 @@ from tests.test_onboarding_complete_endpoint import (
     LIVE_SNAPSHOT,
     onboarding as onboarding,  # explicit fixture re-export: the real wizard endpoint over a tmp settings file
 )
-from tests.test_review_pool_migration import N1_DOC, SLOTS, SUBAGENTS, anton_document, catalog, session_row
+from tests.test_review_pool_migration import N1_DOC, SLOTS, SUBAGENTS, anton_document, api_row, catalog, session_row
 
 MAIN = "claudexor::codex=default"
 MODEL_CATALOG = [{"value": MAIN, "is_default": True, "input_modalities": ["text", "image"]}]
@@ -82,7 +82,7 @@ def test_a_wizard_install_hears_nothing_about_the_factory_rows_minted_before_its
                         lambda _request, settings: started.append(dict(settings)) or True)
     cfg.load_settings()  # the server's start: no settings file yet
     assert [o.trigger for o in cfg.review_pool_migrations_seen()] == [m.TRIGGER_NEVER_CONFIGURED]
-    cfg.normalize_settings_raw({"OUROBOROS_MODEL": MAIN})  # a wizard draft this process normalized at the seam
+    cfg.normalize_settings_raw({"OUROBOROS_MODEL": MAIN, SLOTS: ""})  # a draft this process normalized at the seam
     onboarding.calls["snapshot_payload"] = {**LIVE_SNAPSHOT, "model_catalog": MODEL_CATALOG}
     completed = onboarding.client.post("/api/onboarding/complete", json={"subscriptionsConnected": True})
     assert completed.status_code == 200, completed.text
@@ -128,7 +128,7 @@ def test_without_a_settings_file_the_boot_receipts_the_defaults_the_install_runs
     root, sent = boot
     monkeypatch.setattr(cfg, "SETTINGS_PATH", root / "absent" / "settings.json")
     monkeypatch.delenv(SUBAGENTS, raising=False)
-    cfg.normalize_settings_raw({"OPENAI_API_KEY": "present"})  # a draft minting rows of its own: the OpenAI panel
+    cfg.normalize_settings_raw({"OPENAI_API_KEY": "present", SLOTS: ""})  # a draft minting its own: the OpenAI panel
     settings = cfg.load_settings()  # the server's read: no file, so the factory rows of the defaults run
     draft, defaults = cfg.review_pool_migrations_seen()
     assert draft.catalog_after != defaults.catalog_after == settings[SUBAGENTS]
@@ -203,3 +203,74 @@ def test_a_receipt_deferred_past_the_wizard_never_calls_the_saved_catalog_the_en
     else:
         assert settings[SUBAGENTS] == defaults.catalog_after
         assert _notices(sent) == [m.owner_message(defaults, record["snapshot"])]
+
+
+def test_a_never_configured_document_beside_an_environment_catalog_mints_and_reports_nothing(boot, monkeypatch):
+    """The never-configured cell is a default minted over the configuration that runs, so an
+    environment catalog leaves nothing to mint: no snapshot and no message claim rows that were
+    never prepared. Without it the same document's factory rows run and the owner is told once."""
+    root, sent = boot
+    path = root / "settings.json"
+    path.write_text(json.dumps({"OUROBOROS_MODEL": "x/y", "OPENROUTER_API_KEY": "present"}), encoding="utf-8")
+    monkeypatch.setattr(cfg, "SETTINGS_PATH", path)
+    for key in m._SHA_PRESENCE_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    env_pool = catalog(api_row("mine", "env/model", "high", review_eligible=True))
+    monkeypatch.setenv(SUBAGENTS, env_pool)
+    settings = cfg.load_settings_lock_held(_settings_lock_held=False)
+    assert settings[SUBAGENTS] == env_pool and cfg.review_pool_migrations_seen() == ()
+    server_maintenance._startup_review_pool_notice(settings)
+    assert _snapshots(root) == [] and sent == []
+
+    monkeypatch.delenv(SUBAGENTS)
+    settings = cfg.load_settings_lock_held(_settings_lock_held=False)
+    server_maintenance._startup_review_pool_notice(settings)
+    (snapshot_file,) = _snapshots(root)
+    assert len(sent) == 1 and sent[0][1].startswith("⚙️ Review pool initialized.") and snapshot_file.name in sent[0][1]
+
+
+# The previous release's shipped triad (the N-1 panel these receipts were written under).
+PREVIOUS_TRIAD = ("google/gemini-3.8-flash", "openai/gpt-5.6-terra", "anthropic/claude-opus-5")
+
+
+def test_a_retained_n1_receipt_stays_byte_historical_after_the_triad_refresh(boot, monkeypatch):
+    """The N-1 document (lanes ``""``) read and receipted under the previous release, no save since.
+    After the upgrade the same document is read again: its retained snapshot and record are replayed
+    as they are — never rewritten, never given today's models, no second owner message — while the
+    rows that run follow the shipped factory triad (contract rule 6: one factory source)."""
+    from ouroboros import settings_defaults
+
+    root, sent = boot
+    path = root / "settings.json"
+    path.write_text(json.dumps(N1_DOC), encoding="utf-8")
+    monkeypatch.setattr(cfg, "SETTINGS_PATH", path)
+    with monkeypatch.context() as previous_release:
+        previous_release.setitem(settings_defaults.OPENROUTER_REVIEW_DEFAULTS, "triad", PREVIOUS_TRIAD)
+        server_maintenance._startup_review_pool_notice(cfg.load_settings_lock_held(_settings_lock_held=False))
+    (snapshot_file,) = _snapshots(root)
+    retained, records = snapshot_file.read_bytes(), server_maintenance.review_pool_migration_records()
+    assert len(_notices(sent)) == 1 and all(model.encode() in retained for model in PREVIOUS_TRIAD)
+
+    m._MIGRATIONS_SEEN.clear()  # the upgraded process reads the same document
+    settings = cfg.load_settings_lock_held(_settings_lock_held=False)
+    server_maintenance._startup_review_pool_notice(settings)
+    assert _snapshots(root) == [snapshot_file] and snapshot_file.read_bytes() == retained
+    assert server_maintenance.review_pool_migration_records() == records and len(_notices(sent)) == 1
+    current = set(settings_defaults.OPENROUTER_REVIEW_DEFAULTS["triad"]) - set(PREVIOUS_TRIAD)
+    assert current and not any(model.encode() in retained for model in current)
+    assert json.loads(path.read_text(encoding="utf-8")) == N1_DOC, "a read writes nothing"
+
+
+@pytest.mark.parametrize("main, extra", [
+    ({}, {"LOCAL_MODEL_SOURCE": "/models/m.gguf"}),
+    ({"OUROBOROS_MODEL": "claudexor::codex=gpt-5.6-sol"}, {"OUROBOROS_MODEL_ACCOUNTS": {"main": "account-a"}}),
+], ids=["local-source", "main-account"])
+def test_an_authored_lanes_documents_receipt_key_ignores_facts_only_the_factory_reads(main, extra):
+    """A document with lanes of its own never reads the factory, so the facts the factory follows
+    Main by do not re-key its migration: the receipt the previous release retained for it still
+    replays by digest instead of a second snapshot and owner message for the same lanes. A document
+    without lanes of its own does read them (its factory rows follow Main's whole route)."""
+    document = {**anton_document(), **main}
+    assert m.input_sha256({**document, **extra}) == m.input_sha256(document)
+    lanes_less = {**document, SLOTS: ""}
+    assert m.input_sha256({**lanes_less, **extra}) != m.input_sha256(lanes_less)

@@ -456,7 +456,7 @@ class Memory:
             try:
                 from ouroboros.world_profiler import generate_world_profile
 
-                generate_world_profile(str(self.world_path()))
+                generate_world_profile(str(self.world_path()), str(self.repo_dir or ""), str(self.drive_root))
             except Exception:
                 log.debug("Failed to generate WORLD.md during memory bootstrap", exc_info=True)
         for path in (self.journal_path(), self.identity_journal_path()):

@@ -108,7 +108,6 @@ def test_actual_main_captures_source_after_binding(applied_host, tmp_path, monke
     monkeypatch.setattr(server, "DATA_DIR", tmp_path)
     monkeypatch.setattr(server, "DEFAULT_PORT", 0)
     monkeypatch.setattr(server, "_LAUNCHER_MANAGED", managed)
-    monkeypatch.setattr(server, "_ACTUAL_BOUND_PORT", None)
     monkeypatch.setattr(server, "get_network_auth_startup_warning", lambda _host: "")
     monkeypatch.setattr(server, "validate_network_auth_configuration", lambda _host: "")
     monkeypatch.setattr(server, "_event_loop", None)

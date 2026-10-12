@@ -102,7 +102,7 @@ def test_cached_stop_after_late_registration_cannot_arm_adoption(tmp_path, monke
         monkeypatch.setattr(workers, 'kill_workers', lambda **kw: None)
         monkeypatch.setattr(workers, 'last_worker_exit_census', lambda: EXITED)
         monkeypatch.setattr(multiprocessing, 'active_children', lambda: [])
-        server._emergency_process_cleanup(port_sweep=False)
+        server._emergency_process_cleanup()
         assert body_adoption.read(scene.data)['phase'] == 'authorized'
         assert not scene.pointer().exists()
         assert owned_shutdown.finish_unconfirmed_stops(scene.data)['confirmed'] == 1

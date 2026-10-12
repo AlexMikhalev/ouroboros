@@ -97,9 +97,7 @@ from ouroboros.runtime_limits import (
     NETWORK_WAIT_NOTE_INTERVAL_SEC,  # noqa: F401
     NETWORK_WAIT_BACKOFF_START_SEC,  # noqa: F401
     NETWORK_WAIT_BACKOFF_MAX_SEC,  # noqa: F401
-    TCP_KEEPALIVE_IDLE_SEC,  # noqa: F401
-    TCP_KEEPALIVE_INTERVAL_SEC,  # noqa: F401
-    TCP_KEEPALIVE_PROBE_COUNT,  # noqa: F401
+    TCP_KEEPALIVE_IDLE_SEC, TCP_KEEPALIVE_INTERVAL_SEC, TCP_KEEPALIVE_PROBE_COUNT,  # noqa: F401
     EXTENSION_STREAM_METADATA_BYTES,  # noqa: F401
     WS_RELAY_BURST,  # noqa: F401
     WS_RELAY_REFILL_PER_SEC,  # noqa: F401
@@ -150,14 +148,9 @@ from ouroboros.runtime_limits import (
 )
 from ouroboros.update_channels import UPDATE_SETTINGS_DEFAULTS, normalize_update_channel  # noqa: F401
 
-# Paths
-#
-# The resolve_*() trio is the per-call form of the constants below (same env
-# precedence). The constants freeze the env of the moment this module was first
-# imported; a writer that must follow isolation applied AFTER its import (an
-# isolated test or a spawned child whose OUROBOROS_* env landed late) resolves
-# per call through these instead of caching a root at import time (the
-# hermeticity class of issue #455).
+# Paths. resolve_*() is the per-call form of the constants below, which freeze the env at first
+# import: a writer that must follow isolation applied AFTER its import (an isolated test, a child
+# whose OUROBOROS_* env landed late) resolves per call (the hermeticity class of issue #455).
 
 
 def resolve_app_root() -> pathlib.Path:
@@ -172,13 +165,25 @@ def resolve_data_dir() -> pathlib.Path:
     return pathlib.Path(os.environ.get("OUROBOROS_DATA_DIR", resolve_app_root() / "data"))
 
 
+def resolve_port_file(data_dir=None, *, hosting_data_dir=None) -> pathlib.Path:
+    """The main-server port file of ``data_dir`` (default: the hosting root). ``OUROBOROS_PORT_FILE``
+    relocates only the root this process hosts (``hosting_data_dir``, default ``resolve_data_dir()``),
+    so an inspected foreign root (a task drive, another installation) keeps its ``state/server_port``."""
+    hosting = pathlib.Path(hosting_data_dir if hosting_data_dir is not None else resolve_data_dir())
+    root = hosting if data_dir is None else pathlib.Path(data_dir)
+    override = os.environ.get("OUROBOROS_PORT_FILE", "").strip()
+    if override and (root == hosting or os.path.realpath(root) == os.path.realpath(hosting)):
+        return pathlib.Path(override)
+    return root / "state" / "server_port"
+
+
 HOME = pathlib.Path.home()
 APP_ROOT = resolve_app_root()
 REPO_DIR = resolve_repo_dir()
 DATA_DIR = resolve_data_dir()
 SETTINGS_PATH = pathlib.Path(os.environ.get("OUROBOROS_SETTINGS_PATH", DATA_DIR / "settings.json"))
 PID_FILE = pathlib.Path(os.environ.get("OUROBOROS_PID_FILE", APP_ROOT / "ouroboros.pid"))
-PORT_FILE = pathlib.Path(os.environ.get("OUROBOROS_PORT_FILE", DATA_DIR / "state" / "server_port"))
+PORT_FILE = resolve_port_file(DATA_DIR)
 
 # Settings pin + write guards: SSOT settings_integrity; re-exported for config.X imports.
 from ouroboros import settings_integrity as _settings_integrity  # noqa: E402
@@ -243,9 +248,7 @@ BOOT_RUNTIME_MODE_ENV_KEY = "OUROBOROS_BOOT_RUNTIME_MODE"
 def _resolve_baseline_from_env() -> Optional[str]:
     """Return the parent-pinned runtime-mode baseline inherited via env."""
     raw = os.environ.get(BOOT_RUNTIME_MODE_ENV_KEY, "")
-    if not raw:
-        return None
-    return normalize_runtime_mode(raw)
+    return normalize_runtime_mode(raw) if raw else None
 
 
 def initialize_runtime_mode_baseline(mode: Optional[str] = None) -> None:
@@ -254,13 +257,8 @@ def initialize_runtime_mode_baseline(mode: Optional[str] = None) -> None:
     global _BOOT_RUNTIME_MODE
     if _BOOT_RUNTIME_MODE is not None:
         return
-    if mode is None:
-        # Prefer the parent-exported BOOT key; RUNTIME_MODE is mutable app state.
-        inherited = _resolve_baseline_from_env()
-        if inherited is not None:
-            mode = inherited
-        else:
-            mode = os.environ.get("OUROBOROS_RUNTIME_MODE", "advanced") or "advanced"
+    if mode is None:  # prefer the parent-exported BOOT key; RUNTIME_MODE is mutable app state
+        mode = _resolve_baseline_from_env() or os.environ.get("OUROBOROS_RUNTIME_MODE", "advanced") or "advanced"
     _BOOT_RUNTIME_MODE = normalize_runtime_mode(mode)
     # Propagate the pin to subprocesses.
     os.environ[BOOT_RUNTIME_MODE_ENV_KEY] = _BOOT_RUNTIME_MODE
@@ -347,13 +345,15 @@ def get_allow_mutative_subagents(write_surface: str = "", *, source_is_system_re
             or (surface == "self_worktree" and not source_is_system_repo))
 
 
+def _work_root(key: str, leaf: str) -> str:
+    """A work root: the saved setting, else the environment (``runtime_setting``), else ``~/Ouroboros/<leaf>``."""
+    raw = str(runtime_setting(key, "") or SETTINGS_DEFAULTS.get(key, "")).strip()
+    return raw or os.path.expanduser(os.path.join("~", "Ouroboros", leaf))
+
+
 def get_subagent_worktree_root() -> str:
     """Filesystem root for acting self_worktree checkouts (outside repo/ and data/)."""
-    raw = str(
-        runtime_setting("OUROBOROS_SUBAGENT_WORKTREE_ROOT", "")
-        or SETTINGS_DEFAULTS.get("OUROBOROS_SUBAGENT_WORKTREE_ROOT", "")
-    ).strip()
-    return raw or os.path.expanduser(os.path.join("~", "Ouroboros", "subagent_worktrees"))
+    return _work_root("OUROBOROS_SUBAGENT_WORKTREE_ROOT", "subagent_worktrees")
 
 
 def get_subagent_projects_root() -> str:
@@ -361,11 +361,7 @@ def get_subagent_projects_root() -> str:
 
     Outside repo/ and data/. Unlike self_worktree checkouts, genesis projects are
     durable deliverables and are never age-pruned by the GC retention sweep."""
-    raw = str(
-        runtime_setting("OUROBOROS_SUBAGENT_PROJECTS_ROOT", "")
-        or SETTINGS_DEFAULTS.get("OUROBOROS_SUBAGENT_PROJECTS_ROOT", "")
-    ).strip()
-    return raw or os.path.expanduser(os.path.join("~", "Ouroboros", "projects"))
+    return _work_root("OUROBOROS_SUBAGENT_PROJECTS_ROOT", "projects")
 
 
 def get_deliverables_root() -> str:
@@ -373,11 +369,7 @@ def get_deliverables_root() -> str:
     instead of cluttering the home root. Sibling of the genesis projects root under ~/Ouroboros,
     outside data/, and never GC-pruned. An explicit placement (Desktop/..., Downloads/..., or any
     path WITH a directory) is always honored as given. Override with OUROBOROS_DELIVERABLES_ROOT."""
-    raw = str(
-        runtime_setting("OUROBOROS_DELIVERABLES_ROOT", "")
-        or SETTINGS_DEFAULTS.get("OUROBOROS_DELIVERABLES_ROOT", "")
-    ).strip()
-    return raw or os.path.expanduser(os.path.join("~", "Ouroboros", "Deliverables"))
+    return _work_root("OUROBOROS_DELIVERABLES_ROOT", "Deliverables")
 
 
 def get_task_review_mode() -> str:
@@ -826,6 +818,7 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
     compatibility migration is persisted only while that lock is held; the write contains
     the raw mapping plus the normalized pair, never a defaults-merged settings document."""
     from ouroboros.review_pool_migration import apply_at_read_seam, environment_overridable_keys
+    from ouroboros.server_runtime import MODEL_SLOT_KEYS, authored_model_slots, propose_unauthored_model_slots
     loaded: dict = {}
     try:
         raw = _settings_integrity.read_settings_json_verified(SETTINGS_PATH)
@@ -845,10 +838,13 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
     settings = defaults_for_settings_document(raw is not None or SETTINGS_PATH.exists())
     settings.update(loaded)
     env_wins = environment_overridable_keys(raw)  # a seam default for an ABSENT key is not the owner's value
+    env_authored, echo = set(), _settings_integrity.projected_proposals(os.environ)
     for key in SETTINGS_DEFAULTS:
         raw_env = os.environ.get(key)
         if raw_env is None or key in _DISK_AUTHORED_SETTINGS or key in ENDPOINT_AUTHORED_SETTINGS:  # DISK-authored
             continue
+        if raw_env == echo.get(key) or (key in MODEL_SLOT_KEYS and key in loaded):
+            continue  # this tree's own projection of a proposal is no choice; a saved slot (blank too) is the owner's
         if key == "OUROBOROS_RETURN_REASONING" and raw_env == "":
             settings[key] = ""
             continue
@@ -857,9 +853,10 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
         if key in loaded and key not in env_wins and settings.get(key) not in {None, ""}:
             continue
         settings[key] = _coerce_setting_value(key, raw_env)
-    if not isinstance(raw, dict):
-        # No document went through the read seam: the never-configured install (§1.5) takes its factory rows here.
-        apply_at_read_seam(settings)
+        env_authored.add(key)
+    # Unauthored model slots follow the configured access; a never-configured install (§1.5) mints its factory catalog here.
+    propose_unauthored_model_slots(settings, authored_model_slots(loaded) | env_authored)
+    apply_at_read_seam(settings, merged=True)
     return settings
 
 
@@ -967,13 +964,14 @@ def apply_settings_to_env(settings: dict, *, environ=None) -> None:
         # "settings.json over env" clobber). Silence stays silent. ONE fail-closed exception: env may not author
         # the explicit-false owner-Low provenance claim, which would switch the BIBLE P3 scope gate off.
         unauthored = {k for k in _DISK_AUTHORED_SETTINGS if not _settings_file_value(k, "")}
+        before = dict(environ)
         for k in env_keys:
             val = settings.get(k)
             if k in unauthored and not owner_declared_low(
                     environ.get(k) if k == "OUROBOROS_CONTEXT_MODE_AUTO_LOW" else ""):
                 continue
-            if k == "OUROBOROS_RETURN_REASONING" and val == "":
-                environ[k] = ""
+            if k in {"OUROBOROS_RETURN_REASONING", "OUROBOROS_MODEL_FALLBACKS"} and val == "":
+                environ[k] = ""  # a blank that means something (no reasoning, no fallback chain) stays present
                 continue
             if val is None or val == "":
                 environ.pop(k, None)
@@ -983,6 +981,7 @@ def apply_settings_to_env(settings: dict, *, environ=None) -> None:
                 elif isinstance(val, (dict, list)):
                     val = json.dumps(val, ensure_ascii=False, separators=(",", ":"))
                 environ[k] = str(val)
+        _settings_integrity.note_proposal_projection(environ, before)
         if not environ.get("OUROBOROS_REVIEW_ENFORCEMENT"):
             environ["OUROBOROS_REVIEW_ENFORCEMENT"] = str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_ENFORCEMENT"])
         if not environ.get("OUROBOROS_TASK_REVIEW_MODE"):
@@ -992,7 +991,8 @@ def apply_settings_to_env(settings: dict, *, environ=None) -> None:
 # PID lock: platform_layer uses OS-released locks on Unix and Windows.
 
 def acquire_pid_lock() -> bool:
-    APP_ROOT.mkdir(parents=True, exist_ok=True)
+    for root in (APP_ROOT, PID_FILE.parent):  # an overridden PID_FILE may live elsewhere (a data volume)
+        root.mkdir(parents=True, exist_ok=True)
     return _compat_pid_lock_acquire(str(PID_FILE))
 
 

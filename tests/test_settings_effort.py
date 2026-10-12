@@ -116,8 +116,8 @@ def test_review_models_default_in_config():
     assert "OUROBOROS_REVIEW_MODELS" in RETIRED_SETTING_KEYS
     assert list(OPENROUTER_REVIEW_DEFAULTS["triad"]) == [
         "google/gemini-3.8-flash",
-        "openai/gpt-5.6-terra",
-        "anthropic/claude-opus-5",
+        "openai/gpt-6.1-sol",
+        "anthropic/claude-opus-5.5",
     ]
 
 
@@ -238,11 +238,11 @@ def test_from_zero_local_only_review_slots_inherit_main_and_stay_local(monkeypat
         "openai/gpt-5.6-luna,google/gemini-3.6-flash,anthropic/claude-sonnet-5",
     )
 
-    # The factory pool is the shipped panel's three seats on the local Main (three
-    # independent runs, quorum 2 of 3); every review slot built from it runs on the
-    # local lane.
+    # The factory pool is the shipped panel's three seats on the local Main in its full
+    # route identity (three independent runs, quorum 2 of 3); every review slot built
+    # from it runs on the local lane, and delegation reads the same label.
     assert _factory_pool_models({"USE_LOCAL_MAIN": "true", "LOCAL_MODEL_SOURCE": "owner/local.gguf",
-                                 "OUROBOROS_MODEL": "owner/local-main"}) == ["owner/local-main"] * 3
+                                 "OUROBOROS_MODEL": "owner/local-main"}) == ["owner/local-main (local)"] * 3
     assert review_model_uses_local("owner/local-main") is True
 
     from ouroboros.reviewer_slot_config import review_pool_slots
@@ -251,7 +251,7 @@ def test_from_zero_local_only_review_slots_inherit_main_and_stay_local(monkeypat
     rows = factory_review_rows({"USE_LOCAL_MAIN": "true", "LOCAL_MODEL_SOURCE": "owner/local.gguf",
                                 "OUROBOROS_MODEL": "owner/local-main"})
     slots = review_pool_slots({"OUROBOROS_SUBAGENTS": json.dumps({"enabled": True, "items": rows})})
-    assert [slot.model for slot in slots] == ["owner/local-main"] * 3  # three runs of Main, quorum 2 of 3
+    assert [slot.model for slot in slots] == ["owner/local-main (local)"] * 3  # three runs of Main, quorum 2 of 3
     assert all(slot.use_local for slot in slots)
 
 

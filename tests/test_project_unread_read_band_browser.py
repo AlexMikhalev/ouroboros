@@ -2,12 +2,12 @@
 
 Real server, real retained chat history, real history endpoint and read cursor:
 a late answer keeps the time it was written, so it sorts into the middle of the
-room while it is the message that arrived last. The composer is drawn over the
-bottom of the feed; the answer beneath it intersects the feed's viewport but is
-not visible, so the room stays unread until the answer clears the composer. A
-newest reply in its ordinary place is read the same way: the owner's own later
-messages and a task card below it are not conversation messages, and being at
-the bottom past them is not reading it. An ordinary room is read on landing; a
+room while it is the message that arrived last. Opening the unread room lands on
+it (owner decision 2026-10-11); one arriving while the room is open moves no one,
+and beneath the composer drawn over the feed's bottom it is not read until it
+clears it. A newest reply above the owner's own later messages and a task card is
+landed on the same way: they are not conversation messages, and the bottom past
+them is not reading it. An ordinary room is read on landing; a
 question delivered live is read once the next read names it and its card is on
 screen; a late answer written before the whole recent window is read only after
 `Load older` shows it. Clients share one read cursor: a room read on one clears
@@ -28,6 +28,7 @@ from tests._store_shared import seed_result
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 PANEL = "#project-panel .chat-messages"
 LATE = "Late final answer"
+LATER = "Later late answer"
 NEWEST = "Newest reply in its place"
 QUESTION = "Merge the release branch now?"
 DRAFT = "Yes, after the tag"
@@ -62,7 +63,11 @@ _BOX_OF = """(messages, text) => {
 
 
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
-def test_a_late_answer_under_the_composer_is_not_read_until_it_clears_it(direct_server_with_data, engine):
+def test_an_opened_room_lands_on_its_late_answer_and_a_later_one_is_read_only_clear_of_the_composer(
+        direct_server_with_data, engine):
+    """Opening the unread room lands on the answer that arrived last and reads it (owner decision
+    2026-10-11). A second late answer arriving while the room is open moves no one: beneath the
+    composer it is not read, clear of it it is."""
     from playwright.sync_api import sync_playwright
 
     from ouroboros.projects_registry import create_project, increment_project_visible_revision
@@ -76,7 +81,8 @@ def test_a_late_answer_under_the_composer_is_not_read_until_it_clears_it(direct_
     rows.append({"ts": "2026-09-28T10:05:30Z", "direction": "out", "chat_id": chat_id,
                  "text": f"{LATE}\nwith its details"})
     (data / "logs").mkdir(parents=True, exist_ok=True)
-    (data / "logs" / "chat.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    chat_log = data / "logs" / "chat.jsonl"
+    chat_log.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     revision = increment_project_visible_revision(data, chat_id=chat_id)["visible_revision"]
     evidence = Path(os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", data.parent))
     evidence.mkdir(parents=True, exist_ok=True)
@@ -96,36 +102,55 @@ def test_a_late_answer_under_the_composer_is_not_read_until_it_clears_it(direct_
             messages = page.locator(PANEL)
             messages.locator(".chat-bubble").filter(has_text=LATE).wait_for(state="attached")
             page.evaluate(_SETTLE_RESTORE_FRAMES)
-            seen = lambda: [ack for ack in acks if "late-room" in (ack.get("project_seen_revision") or {})]  # noqa: E731
-            assert seen() == [], "landing at the bottom is not reading an answer placed above it"
+            seen = lambda: [ack["project_seen_revision"]["late-room"] for ack in acks  # noqa: E731
+                            if "late-room" in (ack.get("project_seen_revision") or {})]
+            landed = messages.evaluate(_BOX_OF, LATE)
+            page.screenshot(path=str(evidence / f"read-band-{engine}-late-landing.png"))
+            assert _wait_for(page, lambda: seen() == [revision]), ("the opening lands on the late answer", landed, acks)
+            assert landed["top"] >= landed["feedTop"], ("it is on screen", landed)
+            row.locator(".nav-unread-dot").wait_for(state="detached")
 
-            under = messages.evaluate(_PLACE, [LATE, 12])
+            # Arrived last again, written at 10:15:30: it sorts between Reply 15 and Reply 16.
+            with chat_log.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"ts": "2026-09-28T10:15:30Z", "direction": "out", "chat_id": chat_id,
+                                         "text": f"{LATER}\nwith its details"}) + "\n")
+            second = increment_project_visible_revision(data, chat_id=chat_id)["visible_revision"]
+            _emit_ws_frame(page, {"type": "projects_changed"})
+            messages.locator(".chat-bubble").filter(has_text=LATER).wait_for(state="attached")
+            page.evaluate(_SETTLE_RESTORE_FRAMES)
+            page.wait_for_timeout(300)
+            kept = messages.evaluate(_BOX_OF, LATE)
+            assert abs(kept["top"] - landed["top"]) <= 2, ("a later arrival moves no one", landed, kept)
+            assert seen() == [revision], "the later answer is not on screen yet"
+
+            under = messages.evaluate(_PLACE, [LATER, 12])
             page.evaluate(_SETTLE_RESTORE_FRAMES)
             page.screenshot(path=str(evidence / f"read-band-{engine}-under-composer.png"))
             assert under["node"]["top"] < under["feed"]["bottom"], under  # it intersects the feed's viewport
             assert under["node"]["top"] >= under["composer"]["top"], under  # ...but only beneath the composer
             page.wait_for_timeout(300)
-            assert seen() == [], ("an answer beneath the composer is not read", under)
+            assert seen() == [revision], ("an answer beneath the composer is not read", under)
             assert row.locator(".nav-unread-dot").count() == 1
 
-            clear = messages.evaluate(_PLACE, [LATE, -160])
+            clear = messages.evaluate(_PLACE, [LATER, -160])
             page.evaluate(_SETTLE_RESTORE_FRAMES)
             assert clear["node"]["bottom"] <= clear["composer"]["top"], clear
-            for _ in range(50):
-                if seen():
-                    break
-                page.wait_for_timeout(100)
+            read = _wait_for(page, lambda: seen() == [revision, second])
             page.screenshot(path=str(evidence / f"read-band-{engine}-clear.png"))
-            assert seen() == [{"project_seen_revision": {"late-room": revision}}], clear
-            row.locator(".nav-unread-dot").wait_for(state="detached")
             (evidence / f"read-band-{engine}.json").write_text(
-                json.dumps({"under": under, "clear": clear, "acks": acks}, indent=2), encoding="utf-8")
+                json.dumps({"landed": landed, "kept": kept, "under": under, "clear": clear, "acks": acks}, indent=2),
+                encoding="utf-8")
+            assert read, ("the answer clear of the composer is read", clear, acks)
+            row.locator(".nav-unread-dot").wait_for(state="detached")
         finally:
             browser.close()
 
 
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
-def test_an_in_place_newest_reply_below_the_fold_is_not_read_at_the_bottom(direct_server_with_data, engine):
+def test_an_opened_room_lands_on_its_newest_reply_above_later_rows_and_a_read_room_reopens_at_the_bottom(
+        direct_server_with_data, engine):
+    """The owner's later notes and a card below the newest reply push it above the bottom: the unread
+    room opens on it and reads it (owner decision 2026-10-11); reopened once read, it opens at its bottom."""
     from playwright.sync_api import sync_playwright
 
     from ouroboros.projects_registry import create_project, increment_project_visible_revision
@@ -169,27 +194,23 @@ def test_an_in_place_newest_reply_below_the_fold_is_not_read_at_the_bottom(direc
             messages.locator(".chat-bubble").filter(has_text="Owner follow-up 5").wait_for(state="attached")
             page.evaluate(_SETTLE_RESTORE_FRAMES)
             seen = lambda: [ack for ack in acks if "tail-room" in (ack.get("project_seen_revision") or {})]  # noqa: E731
+            landed = messages.evaluate(_BOX_OF, NEWEST)
+            gap = messages.evaluate("n => n.scrollHeight - n.scrollTop - n.clientHeight")
+            page.screenshot(path=str(evidence / f"read-band-{engine}-tail-landing.png"))
+            assert _wait_for(page, lambda: seen() == [{"project_seen_revision": {"tail-room": revision}}]), \
+                ("the opening lands on the newest reply and reads it", landed, gap, acks)
+            assert landed["top"] >= landed["feedTop"] and gap > 1, ("on screen, above the bottom", landed, gap)
+            row.locator(".nav-unread-dot").wait_for(state="detached")
 
-            gap = messages.evaluate(_AT_BOTTOM)
+            page.locator("#project-panel-close").evaluate("el => el.click()")
+            row.evaluate("el => el.click()")
+            messages.locator(".chat-bubble").filter(has_text="Owner follow-up 5").wait_for(state="attached")
             page.evaluate(_SETTLE_RESTORE_FRAMES)
             page.wait_for_timeout(300)
-            bottom = messages.evaluate(_BOX_OF, NEWEST)
-            page.screenshot(path=str(evidence / f"read-band-{engine}-tail-bottom.png"))
-            assert gap <= 1 and bottom["bottom"] <= bottom["feedTop"], ("at the bottom, the reply is above the fold",
-                                                                        gap, bottom)
-            assert seen() == [], "the bottom of the conversation is not the newest reply"
-            assert row.locator(".nav-unread-dot").count() == 1
-
-            clear = messages.evaluate(_PLACE, [NEWEST, -160])
-            page.evaluate(_SETTLE_RESTORE_FRAMES)
-            assert clear["node"]["bottom"] <= clear["composer"]["top"], clear
-            for _ in range(50):
-                if seen():
-                    break
-                page.wait_for_timeout(100)
-            page.screenshot(path=str(evidence / f"read-band-{engine}-tail-clear.png"))
-            assert seen() == [{"project_seen_revision": {"tail-room": revision}}], clear
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            reopened = messages.evaluate("n => n.scrollHeight - n.scrollTop - n.clientHeight")
+            page.screenshot(path=str(evidence / f"read-band-{engine}-tail-reopened.png"))
+            assert reopened <= 1, ("a read room reopens at its bottom, as before", reopened)
+            assert len(seen()) == 1, "and reads nothing again"
         finally:
             browser.close()
 

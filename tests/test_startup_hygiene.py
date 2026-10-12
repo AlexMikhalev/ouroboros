@@ -97,8 +97,8 @@ def test_check_version_sync_flags_malformed_rc_badge_url(tmp_path, monkeypatch):
 def test_memory_ensure_files_generates_world_profile(tmp_path, monkeypatch):
     calls = []
 
-    def fake_generate(output_path: str):
-        calls.append(output_path)
+    def fake_generate(output_path: str, repo_dir: str = "", data_dir: str = ""):
+        calls.append((output_path, repo_dir, data_dir))
         pathlib.Path(output_path).write_text("# WORLD\n", encoding="utf-8")
 
     monkeypatch.setattr(world_profiler, "generate_world_profile", fake_generate)
@@ -107,7 +107,7 @@ def test_memory_ensure_files_generates_world_profile(tmp_path, monkeypatch):
     memory.ensure_files()
     memory.ensure_files()
 
-    assert calls == [str(memory.world_path())]
+    assert calls == [(str(memory.world_path()), str(tmp_path), str(tmp_path))]  # the roots in use
     assert memory.world_path().read_text(encoding="utf-8") == "# WORLD\n"
 
 

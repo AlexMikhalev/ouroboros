@@ -220,9 +220,11 @@ def test_legacy_compatible_pair_survives_single_field_draft(
 
 
 @pytest.mark.parametrize("legacy_key", ["", "stale-legacy-key"])
-def test_compatible_discovery_and_probe_share_effective_mixed_pair(
+def test_compatible_discovery_and_probe_share_the_legacy_pair_never_a_mixed_one(
     monkeypatch, legacy_key,
 ):
+    """Without a dedicated base URL the legacy endpoint travels with its own key only: the
+    dedicated key never rides it (owner decision D), and discovery and probe agree."""
     saved = {
         "OPENAI_COMPATIBLE_API_KEY": "dedicated-key",
         "OPENAI_COMPATIBLE_BASE_URL": "",
@@ -247,7 +249,7 @@ def test_compatible_discovery_and_probe_share_effective_mixed_pair(
     status, body = _post({"provider_id": "openai-compatible"})
 
     assert status == 200 and body == {"ok": True}
-    expected = ("dedicated-key", "https://legacy.example/v1")
+    expected = (legacy_key, "https://legacy.example/v1")
     assert calls == [("catalog", *expected), ("probe", *expected)]
 
 

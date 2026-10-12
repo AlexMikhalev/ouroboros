@@ -158,6 +158,7 @@ def test_declared_receipt_records_sources_without_prescribing_collaboration_orde
 
     receipt = input_source_selection_receipt({"task_contract": {"input_sources": "declared"}})
     assert receipt["included"] and receipt["omitted_automatic"]
+    assert any("own-body DESIGN navigation or source-gap disclosure" in item for item in receipt["included"])
     assert "Entire task" in receipt["lifetime"]
     assert "no collaboration order" in receipt["collaboration"]
     for key in ("collaboration", "later_inputs"):

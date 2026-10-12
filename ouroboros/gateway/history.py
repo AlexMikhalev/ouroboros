@@ -35,7 +35,7 @@ from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.history_retention import retention_summary
 from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
-from ouroboros.project_dialogue import historical_terminal_projection
+from ouroboros.project_dialogue import ORIGIN_ADDRESSED_NOTICE_TYPES, historical_terminal_projection
 from ouroboros.store import StoreMigrating
 from ouroboros.subagent_messages import SUBAGENT_MESSAGE_FIELDS, delegated_activity_meta, executor_observation_meta, initiator_meta, subagent_message_meta
 from ouroboros.task_results import TASK_COST_META_FIELDS as _TASK_COST_META_FIELDS
@@ -424,7 +424,7 @@ def _annotate_terminal_task_truth(
         carriers = {}
         for message in combined:
             task_id = str(message.get("task_id") or "")
-            if not task_id or message.get("system_type") == "project_question_pointer":
+            if not task_id or message.get("system_type") in ("project_question_pointer", *ORIGIN_ADDRESSED_NOTICE_TYPES):
                 continue
             # A room may show a row its task does not live in (Main pins a Project's
             # notice and lifecycle rows); tool evidence follows the task's own route.
@@ -564,7 +564,7 @@ def _annotate_terminal_task_truth(
         anchored = anchored_children or set()
         for message in combined:
             task_id = str(message.get("task_id") or "")
-            if not task_id or message.get("system_type") == "project_question_pointer":
+            if not task_id or message.get("system_type") in ("project_question_pointer", *ORIGIN_ADDRESSED_NOTICE_TYPES):
                 continue
             if message.get("system_type") in {"project_started", "project_handoff"} and not message.get("task_name"):
                 # Legacy rows reuse this request's result read, never split the prose label.

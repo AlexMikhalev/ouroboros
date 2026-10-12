@@ -851,13 +851,11 @@ def test_forced_finalization_stops_services_before_model_and_binds_evidence(
             "artifact_outputs": "report.html is missing: " + ("x" * 9000),
         }]
 
+    captured = []
+
     def forced_model(_llm, messages, *_args, **_kwargs):
         order.append("model")
-        rendered = str(messages)
-        assert "SERVICE_FINALIZATION_EVIDENCE" in rendered
-        assert "artifact_output_failed" in rendered
-        assert "report.html is missing" in rendered
-        assert "OMISSION NOTE: truncated at 8000 chars" in rendered
+        captured.append(str(messages))
         return {"role": "assistant", "content": "Answer disclosing the missing report."}, 0.0
 
     monkeypatch.setattr(services_mod, "stop_task_services", stop_services)
@@ -871,6 +869,11 @@ def test_forced_finalization_stops_services_before_model_and_binds_evidence(
     )
 
     assert order == ["services", "model"]
+    assert "SERVICE_FINALIZATION_EVIDENCE" in captured[0]
+    assert "artifact_output_failed" in captured[0]
+    assert "report.html is missing: " + ("x" * 9000) in captured[0]
+    assert text == "Answer disclosing the missing report."
+    assert returned_trace["forced_finalization"]["source"] == "model"
     assert text == registry._ctx._delivery_candidate.full_text
     assert returned_trace["verification_events"][0]["kind"] == "services_stopped"
     assert len(returned_trace["verification_events"][0]["services"][0]["artifact_outputs"]) > 8000

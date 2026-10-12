@@ -18,7 +18,7 @@ from ouroboros.config import (
     DATA_DIR,
     SETTINGS_DEFAULTS as _SETTINGS_DEFAULTS,
     apply_settings_to_env as _apply_settings_to_env,
-    load_settings,
+    load_settings, resolve_port_file,
 )
 from ouroboros.config import ENDPOINT_AUTHORED_SETTINGS as _ENDPOINT_AUTHORED_SETTINGS
 from ouroboros.config import ENDPOINT_WRITTEN_SETTINGS as _ENDPOINT_WRITTEN_SETTINGS, ENDPOINT_WRITERS as _ENDPOINT_WRITERS
@@ -30,6 +30,7 @@ from ouroboros.gateway.owner_settings import (
     _CONTEXT_MODE_KEYS,
     _owner_audit,
     _owner_read_settings_raw,
+    _owner_settings_document,
     _owner_update_settings,
     _owner_write_settings,
     settings_document_mutation,
@@ -54,9 +55,8 @@ from ouroboros.secret_masking import (
     mask_settings_secret,
 )
 from ouroboros.server_runtime import (
-    apply_runtime_provider_defaults,
-    classify_runtime_provider_change,
-    has_startup_ready_provider,
+    apply_runtime_provider_defaults, automatic_catalog, classify_runtime_provider_change, has_startup_ready_provider,
+    repropose_unedited_catalog, repropose_unedited_slots, settings_read_catalog,
 )
 from ouroboros.settings_setup_contract import (
     BUDGET_SETTING_KEYS,
@@ -382,7 +382,7 @@ def _current_bind_host(request: Request) -> str:
 
 def _port_file(request: Request) -> pathlib.Path:
     configured = getattr(getattr(request.app, "state", None), "port_file", None)
-    return pathlib.Path(configured) if configured is not None else pathlib.Path(DATA_DIR) / "state" / "server_port"
+    return pathlib.Path(configured) if configured is not None else resolve_port_file(DATA_DIR)
 
 
 def _default_port(request: Request) -> int:
@@ -657,26 +657,14 @@ def _candidate_pool_api_models(settings: Dict[str, Any]) -> list:
 
 def review_pool_save_judgement(raw: Any, stored: Dict[str, Any], *, allow_empty: bool) -> str:
     """The empty-pool rule of a catalog save ('' = acceptable). It judges only a save that
-    CHANGES the catalog a Settings read showed — the stored one, else the unsaved candidate
-    offered in its place, whose pool was already the install's — or retires stored review
+    CHANGES the catalog a Settings read showed (``settings_read_catalog``: the stored one, else
+    the unsaved candidate, whose pool was already the install's) or retires stored review
     lanes, so no pool empties silently; ``allow_empty_review_pool`` confirms one."""
-    from ouroboros.configured_subagents import (
-        SUBAGENTS_SETTING, configured_subagents_dict, normalize_configured_subagents,
-        resolve_settings_subagent_candidate,
-    )
+    from ouroboros.configured_subagents import canonical_subagents
 
-    def canonical(value: Any) -> str:
-        try:
-            return normalize_configured_subagents(value)[1]
-        except ValueError:
-            return ""  # nothing readable: this save authors the catalog
-
-    shown = stored.get(SUBAGENTS_SETTING)
-    if shown in (None, ""):
-        config = resolve_settings_subagent_candidate(apply_runtime_provider_defaults(dict(stored))[0])[0].config
-        shown = configured_subagents_dict(config) if config is not None else None
-    posted = canonical(raw)
-    if allow_empty or (posted == canonical(shown) and not str(stored.get(REVIEW_LANES_KEY) or "").strip()):
+    posted = canonical_subagents(raw)
+    if allow_empty or (posted == canonical_subagents(settings_read_catalog(stored))
+                       and not str(stored.get(REVIEW_LANES_KEY) or "").strip()):
         return ""
     from ouroboros.reviewer_slot_config import review_pool_save_error
 
@@ -1032,6 +1020,7 @@ async def api_settings_get(request: Request) -> JSONResponse:
         "candidate": (
             configured_subagents_dict(subagents.config) if subagents.config is not None else None
         ),
+        "automatic": automatic_catalog(_owner_settings_document()),
     }
     safe["_meta"] = meta
     return JSONResponse(safe)
@@ -1369,6 +1358,9 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
         network_error = _network_settings_error(request, current, old_settings)
         if network_error is not None:
             return network_error
+        document, shown = _owner_settings_document(), apply_runtime_provider_defaults(dict(old_effective_settings))[0]
+        unauthored = (repropose_unedited_slots(current, document, body, shown)
+                      | repropose_unedited_catalog(current, document, body, shown))
         current, provider_defaults_changed, provider_default_keys = apply_runtime_provider_defaults(current)
         if str(current.get("LOCAL_MODEL_SOURCE", "") or "").strip() and not has_startup_ready_provider(current):
             return unsaved_error("Local-only setups must route at least one model to the local runtime.", 400)
@@ -1395,7 +1387,7 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
         # Linearizing properly would need a settings-generation handshake —
         # machinery a warning string does not justify.
         started_before_save = _has_started_agent_tasks()
-        settings_to_save = dict(current)
+        settings_to_save = {key: value for key, value in current.items() if key not in unauthored}
         settings_to_save["OUROBOROS_RUNTIME_MODE"] = pending_runtime_mode
         # Only an explicit Cyber context choice authors the pair; an unrelated save
         # preserves omission and cannot change a running task's captured settings.
@@ -1503,7 +1495,7 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
             resp["immediate_changed"] = True
         if next_task_changed:
             resp["next_task_changed"] = True
-        if subagents_key in all_changed:
+        if subagents_key in all_changed and subagents_key not in unauthored:  # only a saved edit carries a typo
             _unknown = _unrecognised_review_models(_candidate_pool_api_models(current))
             if _unknown:
                 warnings.append(

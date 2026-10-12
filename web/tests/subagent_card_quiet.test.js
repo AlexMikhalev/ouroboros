@@ -114,6 +114,26 @@ for (const baseline of ['saved', 'generated']) {
     });
 }
 
+test('the intent word is the read\'s fact: Automatic, Generated draft, Saved, and none before a load', () => {
+    const dom = fakeEditorDom();
+    const editor = createAvailableSubagentsEditor({ doc: dom.doc, win: null, hasPageDirtyIndicator: true });
+    const intent = () => dom.toolbar('[data-subagents-intent]').textContent;
+    editor.paint();
+    assert.equal(intent(), '', 'still loading: no word');
+    const factory = { enabled: true, items: [api({ review_eligible: true, minted_from: 'factory_default' })] };
+    for (const [options, word] of [
+        [{ source: 'configured', automatic: true }, 'Automatic'], // the read's own catalog, following Main
+        [{ source: 'undecided', automatic: true }, 'Generated draft'], // a candidate nothing runs yet
+        [{ source: 'configured' }, 'Saved'], // saved, even row for row the factory's: actual intent, never rows
+    ]) {
+        editor.load(factory, options);
+        assert.equal(intent(), word);
+    }
+    editor.load('{malformed', { source: 'invalid' });
+    assert.equal(intent(), '', 'an unreadable catalog claims no intent');
+    editor.destroy();
+});
+
 test('fields are labelled Source and wide Model, then Account, Effort and Access; Description, meta, Processing, Details follow', () => {
     const html = availableSubagentRowMarkup(session({ route: { kind: ROUTE_KIND_AGENT_SESSION, target_id: 'codex=gpt-test', credential_profile_id: 'koshak' } }), QUIET, 0);
     const grid = html.slice(html.indexOf('class="available-subagent-route"'), html.indexOf('available-subagent-purpose'));

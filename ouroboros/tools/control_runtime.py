@@ -15,7 +15,6 @@ import logging
 import os
 from hashlib import sha256
 
-from ouroboros.config import apply_settings_to_env, load_settings, save_settings
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.utils import append_jsonl, run_cmd, utc_now_iso, write_text
 
@@ -201,7 +200,7 @@ def self_change_tool_entries() -> list:
 
 
 def _set_tool_timeout(ctx: ToolContext, seconds: int) -> str:
-    """Persist timeout while pinning owner-only runtime mode to the live env."""
+    """Persist the tool timeout, one field under the settings lock, and apply it at once."""
     try:
         timeout_sec = int(seconds)
     except (TypeError, ValueError):
@@ -209,11 +208,19 @@ def _set_tool_timeout(ctx: ToolContext, seconds: int) -> str:
     if timeout_sec < 1:
         return "⚠️ TOOL_ARG_ERROR (set_tool_timeout): seconds must be >= 1"
 
-    settings = load_settings()
-    settings["OUROBOROS_TOOL_TIMEOUT_SEC"] = timeout_sec
-    settings["OUROBOROS_RUNTIME_MODE"] = os.environ.get("OUROBOROS_RUNTIME_MODE", "advanced")
-    save_settings(settings)
-    apply_settings_to_env(settings)
+    # Only this field is written: the runtime mode and every other saved value stay as they are on
+    # disk (an owner's pending next-boot mode included), so the agent cannot change its Access or
+    # lower a ratcheted mode here, and the process environment takes the field alone.
+    from ouroboros.gateway.owner_settings import (
+        _owner_update_settings,
+        fields_on_saved_document,
+        settings_document_mutation,
+    )
+
+    key = "OUROBOROS_TOOL_TIMEOUT_SEC"
+    with settings_document_mutation():
+        _owner_update_settings(fields_on_saved_document({key: timeout_sec}))
+        os.environ[key] = str(timeout_sec)  # under the same lock as the commit
     return f"OK: OUROBOROS_TOOL_TIMEOUT_SEC set to {timeout_sec}s and applied immediately."
 
 

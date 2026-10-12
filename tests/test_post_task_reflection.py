@@ -5,7 +5,8 @@ by theme; every moved block is verbatim. Covers `_run_reflection` entry
 generation, `_update_improvement_backlog`, the project-scoped channel
 split (project memory stays project-local while backlog promotion goes to the
 global drive through `_run_global_backlog_promotion_only`) and the reflection
-stage's nested paid Pattern Register write under the post-task stage protocol.
+stage's nested paid Pattern Register write under the post-task stage protocol,
+including a register reply cut at the output ceiling (#1605).
 """
 
 import json
@@ -244,3 +245,95 @@ def test_nested_pattern_register_follows_the_post_task_stage_protocol(phase, mon
         assert len(canonical) == 1 and canonical[0]["task_id"] == f.task["id"]
     patterns = f.root / "memory" / "knowledge" / "patterns.md"
     assert patterns.exists() == (outcome == "pattern_ok")
+
+
+_REGISTER = ("# Pattern Register\n\n| Error class | Count | Root cause | Structural fix | Status |\n"
+             "|---|---|---|---|---|\n| old_class | 3 | earlier | kept | open |\n")
+_REGISTER_REPLY = ("| Error class | Count | Root cause | Structural fix | Status |\n|---|---|---|---|---|\n"
+                   "| old_class | 3 | earlier | kept | open |\n| run_command | 1 | boom | typed | open |")
+
+
+def _knowledge_files(root):
+    knowledge = root / "memory" / "knowledge"
+    return {path.relative_to(knowledge).as_posix(): path.read_bytes()
+            for path in sorted(knowledge.rglob("*")) if path.is_file()}
+
+
+@pytest.mark.parametrize("resumed", [False, True])
+@pytest.mark.parametrize("usage_fact,message_fact,cut", [
+    ({"response_finish_reason": "length"}, {}, "length"),
+    ({}, {"stop_reason": "max_tokens"}, "max_tokens"),
+    ({}, {"finish_reason": "length"}, "length"),
+    ({"response_finish_reason": None}, {"finish_reason": "length"}, ""),  # an explicit null outranks lower fields
+    ({"response_finish_reason": "stop"}, {}, ""),
+    ({}, {"stop_reason": "end_turn"}, ""),
+    ({}, {}, ""),  # no finish fact is not a cutoff
+])
+def test_a_register_reply_cut_at_the_output_ceiling_keeps_the_previous_register(
+        phase, monkeypatch, resumed, usage_fact, message_fact, cut):
+    """#1605: a Pattern Register reply the provider marks as cut at its output ceiling
+    replaced the whole register with a prefix. Through the REAL post-task coordinator —
+    the ordinary reflection stage and a Pause-resumed published reflection
+    (``finish_published_reflection``) — with only the provider dispatch substituted:
+    the paid call is sent once and accounted, the register, its history and its index
+    stay byte-identical, the existing failure owner records ``pattern_register_failed``
+    and the stage reads degraded while promotion still runs. A complete, unknown or
+    absent finish fact publishes exactly as before."""
+    from ouroboros import consolidator, context_fit, llm_observability, post_task_synthesis
+    from ouroboros.capability_evidence import CapabilityEvidence
+
+    f = phase
+    knowledge = f.root / "memory" / "knowledge"
+    knowledge.mkdir(parents=True, exist_ok=True)
+    (knowledge / "patterns.md").write_text(_REGISTER, encoding="utf-8")
+    (knowledge / "patterns_history.jsonl").write_text('{"task_id": "earlier"}\n', encoding="utf-8")
+    consolidator._rebuild_knowledge_index(knowledge)
+    before = _knowledge_files(f.root)
+    monkeypatch.setattr(consolidator, "_consolidation_route", lambda: ("test/model", False))
+    monkeypatch.setattr(context_fit, "resolve_context_fit_route", lambda task, *, allow_fetch: (
+        {"model": task["model"], "provider": "openrouter"},
+        CapabilityEvidence(100_000, "confirmed", "test", "route-test", model=task["model"], provider="openrouter")))
+    monkeypatch.setattr(context_fit, "_route_calibration_ratio", lambda *_: 1.0)
+    monkeypatch.setattr(pipeline, "_run_reflection", post_task_synthesis._run_reflection)
+    pattern_usage = {"prompt_tokens": 7, "completion_tokens": 16384, "total_tokens": 16391, "cost": 0.0, **usage_fact}
+    sends, accounted = [], []
+
+    def dispatch(*_args, call_type="", **_kwargs):
+        sends.append(call_type)
+        if call_type == "pattern_register_update":
+            return {"content": _REGISTER_REPLY, **message_fact}, dict(pattern_usage)
+        return {"content": "Lesson: typed."}, {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "cost": 0.0}
+
+    monkeypatch.setattr(llm_observability, "chat_observed", dispatch)
+    monkeypatch.setattr("supervisor.state.update_budget_from_usage", accounted.append)
+    resume = None
+    if resumed:
+        published = {"task_id": f.task["id"], "reflection": "Lesson: typed.", "key_markers": ["run_command"],
+                     "error_count": 1}
+        resume = {"stage": "reflection", "completed_stages": ["memory_fallback_draft", "scratchpad_consolidation"],
+                  "result": {"reflection_entry": published}, "usage_snapshot": {"rounds": 3}}
+    entries = []
+    trace = {"tool_calls": [{"tool": "run_command", "status": "error", "is_error": True, "result": "boom"}]}
+    pipeline._run_post_task_processing_async(
+        f.env, f.task, {"rounds": 3}, trace, {}, f.root / "logs", event_queue=f.events,
+        on_reflection=lambda entry, _llm: entries.append(entry), resume=resume)
+    assert f.done.wait(5)
+
+    checkpoint = load_task_result(f.root, f.task["id"])["root_phase_checkpoint"]
+    [entry] = entries
+    errors = entry.get("memory_operation_errors") or []
+    assert sends == ([] if resumed else ["task_reflection"]) + ["pattern_register_update"], "one paid send, no retry"
+    assert [row for row in accounted if row.get("prompt_tokens") == 7] == [pattern_usage], "the paid call is accounted"
+    assert f.stages[-1] == "backlog", "promotion still runs after the register stage"
+    assert not checkpoint.get("post_task_stop_reason")
+    if cut:
+        assert checkpoint["post_task_synthesis"] == "degraded"
+        assert [row["kind"] for row in errors] == ["pattern_register_failed"]
+        assert f"finish_reason={cut}" in errors[0]["message"]
+        assert "previous register was kept" in errors[0]["message"]
+        assert _knowledge_files(f.root) == before, "register, history and index stay byte-identical"
+    else:
+        assert checkpoint["post_task_synthesis"] == "completed" and errors == []
+        assert (knowledge / "patterns.md").read_text(encoding="utf-8") == "# Pattern Register\n\n" + _REGISTER_REPLY + "\n"
+        history = (knowledge / "patterns_history.jsonl").read_text(encoding="utf-8").splitlines()
+        assert len(history) == 2 and json.loads(history[-1])["old_content"] == _REGISTER

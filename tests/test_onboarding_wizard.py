@@ -385,10 +385,12 @@ def test_reopened_wizard_shows_the_saved_vision_choice_and_defaults_only_a_missi
     """PR #1560 owner decision: an existing install's Vision choice, empty included,
     survives a reopened wizard. A loaded document carries every slot, so its blank is
     saved "inherit Main"; only a slot the document lacks takes the profile default."""
-    from ouroboros.server_runtime import apply_runtime_provider_defaults
+    from ouroboros.server_runtime import apply_runtime_provider_defaults, propose_unauthored_model_slots
     from ouroboros.settings_defaults import SETTINGS_DEFAULTS
 
-    saved, _changed, _keys = apply_runtime_provider_defaults({**SETTINGS_DEFAULTS, "ZAI_API_KEY": "sk-zai-test-value"})
+    # What the loader reads for a document holding only the key: its unauthored slots on Z.ai's proposals.
+    loaded = propose_unauthored_model_slots({**SETTINGS_DEFAULTS, "ZAI_API_KEY": "sk-zai-test-value"}, authored=())
+    saved, _changed, _keys = apply_runtime_provider_defaults(loaded)
     initial = build_setup_bootstrap(saved, "web")["initialState"]
     assert (initial["providerProfile"], initial["mainModel"], initial["visionModel"]) == ("zai", "zai::glm-5.3", "")
     custom = build_setup_bootstrap({**saved, "OUROBOROS_MODEL_VISION": "zai::glm-ocr"}, "web")["initialState"]

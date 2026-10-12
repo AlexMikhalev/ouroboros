@@ -307,7 +307,7 @@ def test_task_snapshot_does_not_become_explicit_probe_settings(monkeypatch):
     with config.task_settings_scope(snapshot):
         assert [client._resolve_remote_target(model) for model in models] == before
         assert before[0]["base_url"] == "https://api.openai.com/v1"
-        assert before[1]["api_key"] == "legacy"
+        assert before[1]["api_key"] == ""  # one compatible pair: a dedicated URL never borrows the legacy key
         explicit = client._resolve_remote_target("openai-compatible::model", settings=env)
         assert explicit["api_key"] == ""  # Request-local probe pair semantics unchanged.
         explicit = client._resolve_remote_target("openrouter::model", settings=env)
@@ -386,7 +386,9 @@ def test_simultaneous_admission_cannot_capture_half_projected_credentials(monkey
     with config.task_settings_scope(snapshot):
         assert config.runtime_setting("OPENAI_API_KEY") == "test-key-old"
         assert config.runtime_setting("OPENROUTER_API_KEY") == "test-router-old"
-        assert config.runtime_setting("OUROBOROS_MODEL") == "openai::old"
+        # Main is absent on disk: the publisher's projected Main is its own echo, not a choice (owner 2A),
+        # so the task captures the proposal for the access it captured — the credentials above say which.
+        assert config.runtime_setting("OUROBOROS_MODEL") == config.SETTINGS_DEFAULTS["OUROBOROS_MODEL"]
 
 
 def test_real_immediate_consumers_remain_live():

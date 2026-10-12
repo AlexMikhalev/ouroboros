@@ -187,6 +187,20 @@ def task_processing_preference(task: dict, *, model_role: str = "",
     return resolve_processing_preference(role)
 
 
+def _persisted_role(role: str) -> tuple[str, str]:
+    """``role`` as a wait card persists it: ``(family, identity)``. ``/review`` runs on the direct
+    Main row when the call names no reviewer (deep_self_review.main_review_row, decision 3A): there
+    is no catalog row behind ``reviewer:main``, so its card persists as Main's own role."""
+    family, _, identity = role.partition(":")
+    return ("main", "") if (family, identity) == ("reviewer", "main") else (family, identity)
+
+
+def model_role_setting_keys(role: str) -> tuple[str, ...]:
+    """The settings key a wait card's persistence of ``role`` authors (none for a catalog row's role)."""
+    key = MODEL_ROLE_SETTINGS.get(_persisted_role(role)[0], "")
+    return (key,) if key else ()
+
+
 def apply_model_role_override(settings: dict, *, role: str, model: str,
                               credential_profile_id: str, use_local: bool) -> dict:
     """Apply explicit wait-card persistence to one role; never infer it from a model.
@@ -209,12 +223,7 @@ def apply_model_role_override(settings: dict, *, role: str, model: str,
     if pin and not subscription:
         raise ValueError("An account pin requires a managed model source")
     result = copy.deepcopy(settings)
-    family, _, identity = role.partition(":")
-    if family == "reviewer" and identity == "main":
-        # ``/review`` runs on the direct Main row when the call names no reviewer
-        # (deep_self_review.main_review_row, decision 3A): there is no catalog row
-        # behind that seat, so its wait card persists as Main's own role.
-        family, identity = "main", ""
+    family, identity = _persisted_role(role)
     if family in MODEL_ROLE_SETTINGS:
         key = MODEL_ROLE_SETTINGS[family]
         accounts, _ = normalize_model_role_options(MODEL_ACCOUNTS_KEY, result.get(MODEL_ACCOUNTS_KEY))
@@ -349,14 +358,13 @@ def parse_fallback_chain() -> list[str]:
     """Parse the raw ordered cross-model fallback chain — SSOT for every consumer
     (resilience walk, pricing categorization, credentialed-model resolution).
 
-    Reads OUROBOROS_MODEL_FALLBACKS, then the legacy singular OUROBOROS_MODEL_FALLBACK
-    (env-only back-compat). No dedup, no active-model drop, and NO SETTINGS_DEFAULTS
-    injection: an EXPLICITLY empty Fallbacks slot means "no cross-model fallback". The
-    shipped default reaches a default install through apply_settings_to_env."""
-    raw = (
-        str(runtime_setting("OUROBOROS_MODEL_FALLBACKS", "") or "").strip()
-        or str(runtime_setting("OUROBOROS_MODEL_FALLBACK", "") or "").strip()
-    )
+    Reads OUROBOROS_MODEL_FALLBACKS; only a process where it is absent (never projected)
+    reads the legacy singular OUROBOROS_MODEL_FALLBACK (env-only back-compat, never a
+    settings value). No dedup, no active-model drop, and NO SETTINGS_DEFAULTS injection:
+    an EXPLICITLY empty Fallbacks slot means "no cross-model fallback" and stays projected
+    as blank (``config.apply_settings_to_env``), so the alias cannot revive behind it."""
+    modern = runtime_setting("OUROBOROS_MODEL_FALLBACKS")
+    raw = str((runtime_setting("OUROBOROS_MODEL_FALLBACK", "") if modern is None else modern) or "").strip()
     return [m.strip() for m in _parse_model_list(raw) if str(m or "").strip()]
 
 

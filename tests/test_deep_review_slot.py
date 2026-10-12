@@ -79,7 +79,9 @@ _REPORT = "Read: BIBLE.md in full; memory inline.\n\n# Deep self-review\n\nCRITI
 
 
 @pytest.fixture()
-def review_repo(tmp_path):
+def review_repo(tmp_path, monkeypatch):
+    from ouroboros.tools import review_helpers
+
     repo = tmp_path / "repo"
     (repo / "docs").mkdir(parents=True)
     (repo / "BIBLE.md").write_text(_BIBLE, encoding="utf-8")
@@ -88,6 +90,7 @@ def review_repo(tmp_path):
     (repo / "docs" / "CHECKLISTS.md").write_text("# Checks\n\n## Change Review Checklist\n\ny\n", encoding="utf-8")
     (repo / "ouroboros").mkdir()
     (repo / "ouroboros" / "loop.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    monkeypatch.setattr(review_helpers, "REPO_ROOT", repo)
     return repo
 
 
@@ -609,7 +612,7 @@ def test_native_read_extent_rides_the_receipts_and_drives_coverage(review_repo, 
     (review_repo / "inspection.md").write_text(_BIBLE, encoding="utf-8")
 
     def required():
-        return [{"root": "system_repo", "path": "inspection.md",
+        return [{"root": "active_workspace", "path": "inspection.md",
                  **source_text_identity((review_repo / "inspection.md").read_bytes())}]
     total = len(_BIBLE.splitlines())
     half = total // 2
@@ -673,7 +676,7 @@ def test_a_registry_refused_read_never_inherits_the_previous_reads_extent(review
     (review_repo / "inspection.md").write_text(_BIBLE, encoding="utf-8")
 
     def required():
-        return [{"root": "system_repo", "path": "inspection.md",
+        return [{"root": "active_workspace", "path": "inspection.md",
                  **source_text_identity((review_repo / "inspection.md").read_bytes())}]
     # ONE traversal shape at the coverage level; the refusal trio itself is the
     # executor suite's receipt-level pin (test_read_file_receipts_carry_the_delivered_extent).

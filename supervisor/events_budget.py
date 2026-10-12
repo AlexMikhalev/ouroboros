@@ -812,7 +812,7 @@ def _held_selection_authority(q: Any, task: Dict[str, Any]) -> Dict[str, Any]:
     """Local selection identity under the queue lock; no transport or ledger I/O."""
     from types import SimpleNamespace
     from ouroboros.cancel_intents import cancel_pending
-    from ouroboros.owner_pause import member_fence
+    from ouroboros.owner_pause import consumed_member_resume, member_fence
 
     task_id = str(task.get("id") or "")
     root_id = str(task.get("root_task_id") or task_id)
@@ -828,6 +828,8 @@ def _held_selection_authority(q: Any, task: Dict[str, Any]) -> Dict[str, Any]:
         "root_grant": live_root_resume_grant(q, root_id, result_root) if root_id != task_id else {},
         "owner_fence": member_fence(SimpleNamespace(task_id=task_id, root_task_id=root_id,
                                                      drive_root=result_root)),
+        "consumed_resume": consumed_member_resume(result_root, root_id, task_id, attempt=int(
+            task["_working_recovery"].get("from_attempt") or 0)) if task.get("_working_recovery") else {},
         "cancel_pending": any(cancel_pending(result_root, tid, strict=True) for tid in {task_id, root_id}),
         "stop_flags": [name for name in ("owner_restart_no_resume.flag", "panic_stop.flag")
                        if (pathlib.Path(q.DRIVE_ROOT) / "state" / name).exists()],
@@ -885,7 +887,8 @@ def select_held_budget_row(q: Any, task: Dict[str, Any], hold: Dict[str, Any],
             or current != observation.get("authority")
             or budget_hold_fact(task) != hold):
         return {"ok": False, "error": "selection_authority_changed"}
-    if current["cancel_pending"] or current["owner_fence"] or current["stop_flags"]:
+    completing = {} if selected_by else current["consumed_resume"]  # completed below, after every refusal
+    if current["cancel_pending"] or current["owner_fence"] and not completing or current["stop_flags"]:
         return {"ok": False, "error": "selection_owner_held"}
     continuation = ((task.get("metadata") or {}).get("continuation") or {}) if isinstance(
         task.get("metadata"), dict) else {}
@@ -909,6 +912,9 @@ def select_held_budget_row(q: Any, task: Dict[str, Any], hold: Dict[str, Any],
         return {"ok": False, "error": unsafe_error, "action": "cancel_or_new_run"}
     selection = {**hold, "selected": True, "selected_at": utc_now_iso(),
                  "selected_by": str(selected_by or "owner")}
+    latch = q.BUDGET_ROOT_FENCES.get(root_task_id) if task_id != root_task_id else None
+    if isinstance(latch, dict) and latch.get("cause") == "owner_pause" and not hold.get("fence_id"):
+        selection["fence_id"] = latch["fence_id"]  # it passed the owner fence: the selection names that latch
     if task_id == root_task_id:
         selection.update(root_grant_id=uuid.uuid4().hex, root_resume_generation=1)
     elif root_grant:
@@ -917,12 +923,25 @@ def select_held_budget_row(q: Any, task: Dict[str, Any], hold: Dict[str, Any],
         selection.update(root_grant_id=root_grant["grant_id"],
                          root_resume_generation=int(root_grant["generation"]))
     prior_pause = task.pop("_budget_pause", None)
-    task[BUDGET_HOLD_KEY] = selection
-    if not q.persist_queue_snapshot(reason="budget_hold_selected"):
+
+    def withdraw(persist: bool = True) -> None:  # the row keeps its hold for the next explicit Resume
         task[BUDGET_HOLD_KEY] = dict(hold)
         if prior_pause is not None:
             task["_budget_pause"] = prior_pause
-        return {"ok": False, "error": "snapshot_not_persisted"}
+        if persist:
+            q.persist_queue_snapshot(reason="budget_hold_selection_withdrawn")
+
+    def publish() -> bool:
+        task[BUDGET_HOLD_KEY] = selection
+        return bool(q.persist_queue_snapshot(reason="budget_hold_selected"))
+
+    from ouroboros.owner_pause import complete_consumed_member_resume
+    refused = (complete_consumed_member_resume(result_root, root_task_id, task_id, completing, publish, withdraw)
+               if completing else "" if publish() else "snapshot_not_persisted")
+    if refused:
+        withdraw(persist=False)
+        return {"ok": False, "error": "snapshot_not_persisted" if refused == "snapshot_not_persisted"
+                else "selection_owner_held", **({"detail": refused} if completing else {})}
     try:
         write_task_result(result_root, task_id, STATUS_SCHEDULED, reason_code="",
                           resource_limit={"status": "resumed", "auto_resume": False,

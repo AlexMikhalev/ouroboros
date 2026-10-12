@@ -1050,7 +1050,7 @@ export function summarizeLogEvent(evt) {
     }
 
     if (t === 'task_checkpoint' || t === 'context_reclaim') {
-        return view(evt.checkpoint_kind === 'context_fit_low_retry' ? 'warn' : 'thinking', taskCheckpointLabel(evt), {
+        return view(['context_fit_low_retry', 'service_finalization_error'].includes(evt.checkpoint_kind) ? 'warn' : 'thinking', taskCheckpointLabel(evt), {
             meta: taskMeta(evt.model ? compactModel(evt.model) : '', evt.round ? `r${evt.round}` : '',
                 evt.checkpoint_kind === 'context_fit_low_retry' ? 'same-model retry' : '', evt.context_tokens ? `~${evt.context_tokens} tok` : '',
                 formatLogMoney(evt.task_cost)),
@@ -1432,7 +1432,7 @@ function summarizeChatLiveEventView(evt) {
         // Visible in the expanded timeline, with no narration/title promotion.
         const lowRetry = evt.checkpoint_kind === 'context_fit_low_retry';
         return chatView({
-            phase: lowRetry ? 'warn' : 'thinking',
+            phase: lowRetry || evt.checkpoint_kind === 'service_finalization_error' ? 'warn' : 'thinking',
             headline: taskCheckpointLabel(evt) + (lowRetry ? ' — retrying the same model once' : ''),
             visible: !checkpointHasProgressRow(evt),
             dedupeKey: key(evt.checkpoint_kind || '', evt.checkpoint_kind === 'usage_lock_wait'

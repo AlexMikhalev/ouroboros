@@ -32,7 +32,7 @@ from ouroboros.outcomes import ACCEPTANCE_FINALIZED_UNACCEPTED, REASON_DELIVERY_
 from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL, set_terminal_host_notice
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.usage_accounting import BudgetExceeded, PhysicalAttemptPreconditionFailed
-from ouroboros.utils import sanitize_tool_result_for_log, truncate_review_artifact
+from ouroboros.utils import sanitize_tool_result_for_log
 
 
 from typing import TYPE_CHECKING
@@ -687,30 +687,55 @@ def _finalize_forced_services(
         llm_trace=llm_trace,
     ))
     _loop()._delivery_evidence_state(tools, ctx, llm_trace)
+    _loop()._disclose_service_finalization(ctx, llm_trace)
+
+
+def _service_finalization_projection(
+    llm_trace: Dict[str, Any], *, drive_root: Any = None, task_id: str = "",
+) -> List[Dict[str, Any]]:
+    """Complete redacted task-local service facts, shared by author and panel.
+
+    Per-field summaries remain marked, but no whole service row may disappear.
+    A complete log becomes this task's readable text source (``source_ref``) and
+    replaces its tail. Existing context/packet delivery owns fitting.
+    """
+    projection = _loop()._service_finalization_evidence(llm_trace)
+    if not projection:
+        return []
+    from ouroboros.observability import redact_projection
+    from ouroboros.tools.services import retained_log_display
+
+    shown = [{**row, "services": [retained_log_display(service, drive_root=drive_root, task_id=task_id)
+                                  for service in row["services"]]} for row in projection]
+    return redact_projection(shown).value
+
+
+def _service_finalization_text(llm_trace: Dict[str, Any], *, drive_root: Any = None, task_id: str = "") -> str:
+    shown = _service_finalization_projection(llm_trace, drive_root=drive_root, task_id=task_id)
+    return json.dumps(shown, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str) if shown else ""
+
+
+def _disclose_service_finalization(ctx: _RoundLimitContext, llm_trace: Dict[str, Any]) -> None:
+    """Show the author that projection once per change, on forced and ordinary rails.
+
+    cleanup_pending/stop_error facts become readable; disclosure only, no veto.
+    """
+    # Identity belongs to the full stable projection, not its display: two
+    # changes hidden by a compact tail can have identical visible bytes.
     projection = _loop()._service_finalization_evidence(llm_trace)
     if not projection:
         return
-    payload = json.dumps(
-        projection,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
+    payload = json.dumps(projection, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     if ctx.forced_service_evidence_fingerprint == fingerprint:
         return
-    from ouroboros.observability import redact_projection
-
     ctx.forced_service_evidence_fingerprint = fingerprint
-    safe_payload = truncate_review_artifact(
-        str(redact_projection(payload).value),
-        limit=8000,
-    )
+    safe_payload = _service_finalization_text(
+        llm_trace, drive_root=getattr(ctx, "drive_root", None), task_id=str(getattr(ctx, "task_id", "") or ""))
     _loop()._append_or_merge_user_message(
         ctx.messages,
         "[SERVICE_FINALIZATION_EVIDENCE]\n"
-        "Task services were finalized before forced synthesis. Incorporate this "
+        "Task services were finalized before completion. Incorporate this "
         f"evidence and disclose any failure honestly:\n{safe_payload}",
     )
 

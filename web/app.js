@@ -412,8 +412,11 @@ async function openProjectPanel(project, { closeDrawer = true, openOnly = false,
         if (closeDrawer) navState.mobileDrawerOpen = false;
         syncNavigationState();
         // Reopened at the newest message; after the panel is shown, so the column
-        // has real geometry. A question opened from Main is revealed below instead.
-        if (!(taskId && quizId)) void inst.showLatest?.();
+        // has real geometry. An unread room lands on the message that arrived last
+        // (DESIGN "Project unread dot"). A question opened from Main is revealed below instead.
+        const unread = Math.max(0, Number(freshProjectRow(project).visible_revision) || 0)
+            > Math.max(0, Number(state.projectSeenRevision?.[project.id]) || 0);
+        if (!(taskId && quizId)) void inst.showLatest?.({ arrive: unread });
         // ACK only the exact revision whose history was fetched and painted. chat.js
         // owns the paint receipt; an already-painted instance skips the forced
         // refetch — the server clamps the ACK, so no repaint is needed.

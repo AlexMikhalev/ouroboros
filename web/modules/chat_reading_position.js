@@ -9,7 +9,7 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
     // Every room opens following its newest message (owner decision 2026-10-05).
     let intent = null;
     // dragging: 'held'/'released' feed scrollbar, or 'owed' to a downward gesture's animation.
-    let approximate = false, dragging = '', claimed = null, scrolls = 0;
+    let approximate = false, dragging = '', claimed = null, scrolls = 0, arriving = null;
     const state = {
         top: 0,
         stick: true,
@@ -80,9 +80,10 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
         },
         /** An explicit navigation (↓) that awaits history before it moves: the
          * reader's own later gesture supersedes it, even one a bounded box absorbs. */
-        claim() {
+        claim(arrive = false) {
             state.cancel();
             const token = claimed = generation;
+            arriving = arrive ? token : null;
             return () => token === generation;
         },
         bindGestures(navigate) {
@@ -196,6 +197,20 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
             dragging = '';
             if (!intent) intent = { scrollTop: state.top, stick: state.stick, historyAnchor: anchors.serialize() };
             state.position();
+        },
+        /** An unread room opened (`claim(true)`) lands once on its newest message, `measure()`
+         * px from the bottom, unless the reader moved first. Nothing to move (on screen there,
+         * unknown, not on this page) leaves the claim's own navigation in charge. */
+        land(measure) {
+            if (arriving !== generation) return;
+            arriving = null;
+            if (!visible()) return;
+            feed.scrollTop = feed.scrollHeight;
+            const offset = measure();
+            if (!offset) return;
+            state.cancel();
+            feed.scrollTop += offset;
+            state.top = feed.scrollTop; state.stick = false; state.remember(true); updateButton();
         },
         followAfterLayout() {
             const token = generation;

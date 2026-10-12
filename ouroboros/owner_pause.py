@@ -336,6 +336,59 @@ def select_member_resume(root_drive: Any, root_task_id: str, task_id: str, *,
                     selected_members=selected)
 
 
+def consumed_member_resume(root_drive: Any, root_task_id: str, task_id: str, *, attempt: int) -> Dict[str, str]:
+    """A child's consumed Resume whose worker stopped before ``reopen_for_resume``; ``{}`` otherwise.
+
+    Read only (#1716): the member's own consumed, unrevoked grant naming this
+    still-closed fence, from the ``attempt`` whose saved work is resumed. A root
+    (whose own Resume door lifts its fence), another attempt, a newer Pause or an
+    unreadable row answers ``{}``. Only the owner's held-row selection completes
+    it, after every refusal check (``complete_consumed_member_resume``).
+    """
+    from ouroboros.budget_pause import STATE_RESUMED, budget_pause_row
+
+    try:
+        row = budget_pause_row(pathlib.Path(root_drive), task_id)
+        grant, fence = row.get("grant") or {}, read_fence(root_drive, root_task_id)
+    except Exception:
+        return {}
+    fence_id = str(grant.get("owner_pause_fence_id") or "")
+    if (task_id == root_task_id or row.get("state") != STATE_RESUMED or not grant.get("consumed_at")
+            or grant.get("revoked_at") or int(row.get("task_attempt") or 0) != int(attempt)
+            or not fence_id or fence.get("fence_id") != fence_id or not fence_closed(fence)
+            or task_id in (fence.get("selected_members") or {})):
+        return {}
+    return {"fence_id": fence_id, "grant_id": str(grant.get("grant_id") or "")}
+
+
+def complete_consumed_member_resume(root_drive: Any, root_task_id: str, task_id: str, consumed: Dict[str, str],
+                                    publish: Any, withdraw: Any) -> str:
+    """Release one owner-selected member on its consumed Resume's fence; ``""`` or why not.
+
+    The caller holds the queue lock, so the launch lock is never awaited: a busy
+    tree refuses. Under it the queue selection is published first (``publish``),
+    while this member's launch is still fenced, so a failed snapshot leaves the
+    fence untouched; then ``select_member_resume`` re-checks the grant and fence and
+    releases the member. A failed release withdraws the selection; a process lost
+    in between leaves the member fenced, so nothing starts, and restore treats the
+    row like any other selected, undispatched one.
+    """
+    try:
+        with launch_lock(root_drive, root_task_id, wait=False):
+            if not publish():
+                return "snapshot_not_persisted"
+            try:
+                select_member_resume(root_drive, root_task_id, task_id, fence_id=consumed["fence_id"],
+                                     grant_id=consumed["grant_id"])
+            except Exception:
+                withdraw()
+                raise
+    except Exception as exc:
+        log.warning("Consumed Resume of %s was not completed; its fence stays closed", task_id, exc_info=True)
+        return f"{type(exc).__name__}: {str(exc)[:200]}"
+    return ""
+
+
 # --- member side: the gate every launch family shares ----------------------------------
 
 def admit_delegated_start(drive_root: Any, payload: Dict[str, Any]) -> bool:

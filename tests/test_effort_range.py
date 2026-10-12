@@ -707,7 +707,7 @@ def test_presets_mint_auto_actors_and_keep_reviewer_seats_pinned():
                                                            "OUROBOROS_MODEL_LIGHT": "openai/gpt-5.6-luna"})
     assert preset.ok, preset.refusal
     items = {row["subagent_id"]: row for row in json.loads(preset.available_subagents)["items"]}
-    assert "effort" not in items["primary-builder"] and items["primary-builder"]["route"]["target_id"] == "claude=claude-opus-5"
+    assert "effort" not in items["primary-builder"] and items["primary-builder"]["route"]["target_id"] == "claude=claude-opus-5-5"
     assert items["independent-perspective"]["route"]["target_id"] == "cursor=cursor-grok-4.6-high"
     assert items["independent-perspective"]["effort"] == "high"  # the level rides in the model id
     assert "effort" not in items["fast-scout"]

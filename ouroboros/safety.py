@@ -641,6 +641,7 @@ _REMOTE_PROVIDER_KEYS = (
     "DEEPSEEK_API_KEY",
     "ZAI_API_KEY",
     "OPENAI_COMPATIBLE_API_KEY",
+    "OPENAI_COMPATIBLE_BASE_URL",  # an endpoint without auth is configured access too
     "CLOUDRU_FOUNDATION_MODELS_API_KEY",
     "GIGACHAT_CREDENTIALS",
     "GIGACHAT_PASSWORD",
@@ -693,19 +694,14 @@ def _light_model_has_reachable_provider(light_model: str) -> bool:
             str(runtime_setting("GIGACHAT_PASSWORD", "") or "").strip()
         )
         return has_creds or has_basic
+    if key_type == "openai-compatible":  # the lane's one endpoint/key pair, blank key = no auth
+        from ouroboros.provider_models import provider_has_credentials
+
+        return provider_has_credentials("openai-compatible")
     env_key = _PROVIDER_KEY_ENV.get(key_type)
     if env_key is None:
         return True
-    if not str(runtime_setting(env_key, "") or "").strip():
-        return False
-    if key_type == "openai-compatible":
-        base_url = (
-            str(runtime_setting("OPENAI_COMPATIBLE_BASE_URL", "") or "").strip()
-            or str(runtime_setting("OPENAI_BASE_URL", "") or "").strip()
-        )
-        if not base_url:
-            return False
-    return True
+    return bool(str(runtime_setting(env_key, "") or "").strip())
 
 
 def _safety_deadline_epoch(ctx: Optional[Any]) -> Optional[float]:

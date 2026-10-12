@@ -93,6 +93,8 @@ def _install_task_detail_gate(page):
 _CLICK_CONTEXT_MODE = """() => {
     const control = document.querySelector('#chat-context-mode');
     const next = control.dataset.contextMode === 'low' ? 'max' : 'low';
+    // The owner's path: the capsule opens into its modes, then one is chosen.
+    if (control.dataset.open !== 'true') control.querySelector('.chat-capsule-head').click();
     control.querySelector(`[data-mode="${next}"]`).click();
 }"""
 

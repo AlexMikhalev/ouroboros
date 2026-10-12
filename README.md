@@ -320,7 +320,7 @@ To change Ouroboros itself, follow [CONTRIBUTING.md](CONTRIBUTING.md): read [doc
 
 The first-run wizard and **Settings** configure model access, cognitive roles, local models, review policy, runtime mode, budget, skills, and optional integrations. Ouroboros supports configurable remote providers, compatible endpoints, and local GGUF inference; every key and its shipped default lives in [`ouroboros/settings_defaults.py`](ouroboros/settings_defaults.py) — with the clamped scales, model slots, reviewer routes and numeric limits in its sibling leaves, all re-exported through the [`ouroboros/config.py`](ouroboros/config.py) facade — and the same vocabulary is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-The server binds to `127.0.0.1:8765` by default. Read [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) before exposing it beyond loopback; non-local binds need `OUROBOROS_NETWORK_PASSWORD` or an explicitly trusted external access layer.
+The server binds to `127.0.0.1:8765` by default. Read [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) before exposing it beyond loopback or placing its code, data and work roots elsewhere; non-local binds need `OUROBOROS_NETWORK_PASSWORD` or an explicitly trusted external access layer.
 
 #### Run Tests
 
@@ -359,8 +359,9 @@ docker run --rm -p 8765:8765 \
 ```
 
 Docker runs the web runtime, not the native desktop shell. The image bundles Chromium and WebKit for the locked
-Playwright version and needs Docker's default BuildKit builder; use [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for network
-and container policy, including how to trust an extra CA (`OUROBOROS_EXTRA_CA_BUNDLE`).
+Playwright version and needs Docker's default BuildKit builder. Persistent volumes, the managed image whose body updates
+itself, restart policy and Panic, network exposure and extra CAs: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md); the
+executable recipes are [`packaging/docker/compose.yaml`](packaging/docker/compose.yaml).
 
 ### Release tag prerequisite
 

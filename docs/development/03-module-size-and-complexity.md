@@ -168,17 +168,17 @@ contract requires `predecessor_task_id` (`""` = fresh; omission or `null` is a t
 refusal before any lookup, enqueue or provider spend), and Main receives only a
 defensive projection of the predecessor authority, never a raw head/tail slice, an
 invented summary or a mutation of the canonical result (ARCHITECTURE §1 "CLI /
-Headless Boundary"); an exact read goes to `get_task_result(include_authority=True)`.
+Headless Boundary"); the optional exact read, never a forced reread, is
+`get_task_result(include_authority=True)`.
 
-The root startup injection is a bounded envelope, not a body copy, minted by the one
-producer `contracts.task_contract.bounded_continuation_envelope`: every field is
-whole-or-pointer against a per-field serialized budget (a preview carries `full_chars` and a
-`source_ref`; `previous_task_id` keeps the chain walkable), durable `task_results`
-bodies stay the untouched SSOT, and no hop cap exists: depth belongs to the mind, the
-floor only keeps bodies off the wire. Children and external work orders receive the
-pure, idempotent brief `main_context_authority.project_helper_predecessor_authority`;
-a brief never stands in for the omitted evidence. Enforcement:
-`tests/test_continuation_context_authority.py`.
+The root startup injection is a bounded envelope, not a body copy, from the one producer
+`contracts.task_contract.bounded_continuation_envelope`: each field is whole-or-pointer
+under its serialized budget (previews carry `full_chars` and a `source_ref`;
+`previous_task_id` keeps the chain walkable), durable `task_results` bodies stay the SSOT,
+and no hop cap exists: depth belongs to the mind, the floor only keeps bodies off the wire.
+Children and external work orders receive the pure, idempotent brief
+`main_context_authority.project_helper_predecessor_authority`; a brief never stands in
+for the omitted evidence. Enforcement: `tests/test_continuation_context_authority.py`.
 
 ### Invariant: notifications ring for live events only
 

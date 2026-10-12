@@ -155,7 +155,7 @@ test('an unloaded or malformed view cannot replace the owner setting', () => {
     });
 });
 
-test('only an omitted draft may stay out of an unrelated Settings save', () => {
+test('only an omitted or untouched generated draft stays out of an unrelated Settings save', () => {
     const editor = createAvailableSubagentsEditor({
         doc: null,
         win: null,
@@ -310,6 +310,7 @@ test('a clean undecided Settings draft is enriched from connected status through
     assert.deepEqual(requests, [{ subscriptionsConnected: true }]);
     assert.equal(editor.setting.items[0].subagent_id, 'codex_builder');
     assert.equal(editor.dirty, false);
+    assert.deepEqual(editor.collect(), {}, 'an untouched preview is no owner choice: Save leaves it unsaved');
 });
 
 test('Settings status reload does not await preview and late preview obeys the whole-draft gate', async () => {
@@ -1263,10 +1264,10 @@ test('the row switch is a draft the common Save writes, never an instant save', 
     const dom = accessEditorDom();
     const changes = [];
     const editor = createAvailableSubagentsEditor({ doc: dom.doc, win: null, onChange: (value) => changes.push(value) });
-    editor.load(setting([apiRow(), sessionRow()]));
+    editor.load(setting([apiRow(), sessionRow()]), { source: 'undecided' });
     const control = (name, index = 0) => dom.row(index).querySelector(`[data-subagent-field="${name}"]`);
     assert.equal(editor.dirty, false);
-
+    assert.deepEqual(editor.collect(), {}, 'a generated draft becomes the owner\'s only by an edit here');
     control('enabled').toggle(false);
     assert.equal(editor.dirty, true);
     // Held in the draft only: `collect()` is the one writer, and the payload

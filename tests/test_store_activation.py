@@ -346,7 +346,7 @@ def test_restart_census_refuses_a_packer_exit_until_confirmed(tmp_path, monkeypa
     monkeypatch.setattr("multiprocessing.active_children", lambda: [])
     monkeypatch.setattr("ouroboros.extension_companion.panic_kill_all", lambda: None)
     server._restart_requested.clear()
-    cleanup = server._emergency_process_cleanup(port_sweep=False)
+    cleanup = server._emergency_process_cleanup()
     assert bool(cleanup["live_children"]) is alive
     assert packer._stopped.is_set() and signals == ["kill"]
     monkeypatch.setattr(store_switch, "switch_needs", lambda *a: {"handles": False, "money": False, "facts": False})

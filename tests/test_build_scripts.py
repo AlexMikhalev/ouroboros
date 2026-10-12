@@ -1036,7 +1036,7 @@ def test_launcher_retains_cross_platform_runtime_hooks():
     assert "_prepare_windows_webview_runtime" in launcher_source
     assert "git_install_hint()" in launcher_source
     assert "create_kill_on_close_job" in launcher_source
-    assert "kill_process_on_port(port)" in launcher_source
+    assert "kill_process_on_port(int(companion_port))" in launcher_source
     assert "force_kill_pid(child.pid)" in launcher_source
 
 
@@ -1046,7 +1046,6 @@ def test_launcher_preserves_macos_git_setup_path():
     assert 'subprocess.Popen(["xcode-select", "--install"])' in launcher_source
     assert "Install Git (Xcode CLI Tools)" in launcher_source
     assert "Installing... A system dialog may appear." in launcher_source
-    assert '["lsof", "-nP", "-ti", f"tcp:{port}", "-sTCP:LISTEN"]' in launcher_source
 
 
 def test_cross_platform_build_scripts_are_present():

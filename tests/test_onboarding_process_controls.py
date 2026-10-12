@@ -188,7 +188,6 @@ def test_onboarding_panic_runs_real_panic_marker_and_exit_99(startup_without_con
     obj = startup_without_consumer
     exits, stops = [], []
     from ouroboros import server_control
-    from ouroboros.gateway.host_service import host_service_port
     from ouroboros.startup_historical_audit import audit
     monkeypatch.setattr(audit, 'stop', lambda: None)
     monkeypatch.setattr('ouroboros.tools.shell.kill_all_tracked_subprocesses', lambda **kw: [])
@@ -208,7 +207,6 @@ def test_onboarding_panic_runs_real_panic_marker_and_exit_99(startup_without_con
                             panic_stop=lambda *, request_only: stops.append(('daemon_request', request_only)) or [],
                             stop_outcome=lambda: stops.append(('daemon',))))
     monkeypatch.setattr('supervisor.workers.kill_workers', lambda **kw: stops.append(('workers', kw)))
-    monkeypatch.setattr(obj.server, '_ACTUAL_BOUND_PORT', 19876)
     monkeypatch.setattr(server_control.os, '_exit', lambda code: exits.append(code))
     before = set(threading.enumerate())
     try:
@@ -227,8 +225,7 @@ def test_onboarding_panic_runs_real_panic_marker_and_exit_99(startup_without_con
     assert stops.count(('daemon',)) == 1
     assert [event for event in stops if event[0] == 'native_worker'] == [('native_worker', 4321)]
     assert not [event for event in stops if event[0] == 'workers']
-    assert stops.index(('native_worker', 4321)) < next(i for i, event in enumerate(stops) if event[0] == 'port')
-    assert sorted(event[1] for event in stops if event[0] == 'port') == sorted([19876, host_service_port()])
+    assert not [event for event in stops if event[0] == 'port']  # the exiting server's listeners close with it
     assert not (obj.data / 'settings.json').exists()
     from supervisor import state
     # Before onboarding there is no state to write: Panic never mints one (#1307). The flag is

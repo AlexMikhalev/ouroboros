@@ -744,8 +744,8 @@ def fresh_return_transaction(drive_root: Any) -> Dict[str, Any]:
         dr._ack_direct_exec_successor(drive_root)
         active = _json.loads(dr._active_restart_transaction_path(drive_root).read_text(encoding="utf-8"))
         row = dr._read_restart_transaction(drive_root, str(active.get("transaction_id") or ""))
-        if row.get("ack_source") == "direct_spawn_successor" and (
-            not dr.direct_spawn_successor_matches(row)
+        if row.get("ack_source") in {"direct_spawn_successor", dr.WINDOWS_PARENT_ACK} and (
+            not dr.spawned_successor_is_current(row)
             or any(active.get(key) != row.get(key) for key in ("transaction_id", "supervisor_pid", "prepared_at"))
         ):
             return {}

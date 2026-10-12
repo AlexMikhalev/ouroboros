@@ -1071,19 +1071,15 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
                            answers: List[Dict[str, Any]]) -> Dict[str, Any]:
         """POST /v2/runs/:id/interactions/:iid/answer — deliver one answer set.
 
-        ``answers`` rows are already in the wire shape (``questionId`` /
-        ``selectedLabels`` / ``freeText`` — the strict ``ControlInteractionAnswerRequest``);
-        this method is transport, not translation.
-
-        The engine's reply is TYPED at every HTTP status it owns: 200 carries
-        ``{accepted, status: "delivered"}``, and a 404/409 refusal carries the SAME
-        ``ControlInteractionAnswerResponse`` shape with ``status`` ``not_found`` /
-        ``already_resolved`` / ``rejected`` (daemon-server answers the route with the
-        parsed response at 200/404/409). Any body carrying one of those statuses is
-        returned as the ANSWER it is — an engine's ``already_resolved`` is a fact,
-        not an outage. What still raises ``ClaudexorUnavailable``: transport
-        failures, a bodyless 404 (``no such run``), the 501 of an engine build with
-        no answer service, and any other refusal without a typed status.
+        Transport, not translation: ``answers`` rows are already the strict
+        ``ControlInteractionAnswerRequest`` wire shape (``questionId`` / ``selectedLabels`` /
+        ``freeText``). The engine returns ``ControlInteractionAnswerResponse`` directly on
+        success; at 404/409 its error serializer moves ``accepted`` and the refusal status
+        into the ``context`` of a generic ``http_<status>`` ControlProblem and keeps
+        ``message`` on top. That envelope and a legacy top-level reply both return the typed
+        answer: ``already_resolved`` is an answer fact, not an outage. Transport failures, an
+        untyped 404 (``no such run``), 501 (no answer service) and every other problem raise
+        ``ClaudexorUnavailable``.
         """
         path = (f"/v2/runs/{quote(str(run_id), safe='')}"
                 f"/interactions/{quote(str(interaction_id), safe='')}/answer")
@@ -1095,15 +1091,19 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
                 "daemon_unreachable",
                 f"Claudexor daemon unreachable: {type(exc).__name__}: {exc}",
             ) from exc
-        body: Any = None
-        if response.content:
-            try:
-                body = response.json()
-            except ValueError:
-                body = None
-        if isinstance(body, dict) and str(body.get("status") or "") in (
-                "delivered", "not_found", "already_resolved", "rejected"):
-            return body
+        try:
+            body = response.json() if response.content else None
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            context = body.get("context")
+            if (response.headers.get("content-type", "").split(";", 1)[0].strip() == "application/problem+json"
+                    and body.get("code") == f"http_{response.status_code}"
+                    and isinstance(context, dict) and context.get("accepted") is False
+                    and context.get("status") in ("not_found", "already_resolved", "rejected")):
+                body = {**context, "message": body.get("message", "")}
+            if str(body.get("status") or "") in ("delivered", "not_found", "already_resolved", "rejected"):
+                return body
         if response.status_code >= 400:
             raise self._problem(response)
         raise ClaudexorUnavailable(

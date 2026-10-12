@@ -29,7 +29,9 @@ def _bare_row(target: str = "openai/fake-deep", **fields) -> ConfiguredReviewerS
 
 
 @pytest.fixture()
-def repo(tmp_path):
+def repo(tmp_path, monkeypatch):
+    from ouroboros.tools import review_helpers
+
     root = tmp_path / "repo"
     (root / "docs").mkdir(parents=True)
     (root / "BIBLE.md").write_text(_BIBLE, encoding="utf-8")
@@ -38,6 +40,7 @@ def repo(tmp_path):
     (root / "docs" / "CHECKLISTS.md").write_text("# Checks\n\n## Change Review Checklist\n\ny\n", encoding="utf-8")
     (root / "ouroboros").mkdir()
     (root / "ouroboros" / "loop.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    monkeypatch.setattr(review_helpers, "REPO_ROOT", root)
     return root
 
 

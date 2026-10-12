@@ -3384,7 +3384,7 @@ textarea.chat-input[data-sizing="fit"] { overflow-y: hidden; }
 #chat-input::placeholder,
 textarea.chat-input::placeholder { color: var(--text-muted); }
 
-/* Composer pills (Swarm + Low|Max), left of the absolute send button. */
+/* Composer pills (Swarm), left of the owner capsules. */
 .chat-composer-pills {
     display: flex;
     align-items: center;
@@ -3421,57 +3421,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     border-color: var(--accent-45);
     background: var(--accent-dim);
     box-shadow: inset 0 1px 0 rgba(var(--neutral-rgb), 0.06), 0 0 0 3px var(--accent-10);
-}
-
-/* Low|Max segmented control: both options visible, the active one highlighted. */
-.chat-context-mode {
-    display: inline-flex;
-    align-items: center;
-    height: var(--composer-control-height);
-    border: 1px solid rgba(var(--neutral-rgb), 0.12);
-    border-radius: 999px;
-    overflow: hidden;
-    background: rgba(var(--composer-rgb), 0.38);
-    backdrop-filter: blur(18px);
-    -webkit-backdrop-filter: blur(18px);
-    box-shadow: var(--composer-control-shadow);
-    font-size: var(--composer-control-font-size);
-    font-weight: 700;
-    letter-spacing: 0;
-}
-.chat-context-mode[data-disabled="true"] {
-    opacity: 0.5;
-    pointer-events: none;
-}
-.chat-context-mode .chat-seg {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    height: var(--composer-control-height);
-    padding: 0 12px;
-    border: none;
-    background: transparent;
-    color: var(--text-secondary);
-    font: inherit;
-    cursor: pointer;
-    transition: color 0.15s, background 0.15s;
-}
-.chat-context-mode .chat-seg:hover {
-    color: var(--text-primary);
-}
-/* Active segment: Max glows accent (full context); Low glows amber (reduced). */
-.chat-context-mode[data-context-mode="max"] .chat-seg[data-mode="max"] {
-    background: var(--accent-dim);
-    color: var(--accent);
-}
-.chat-context-mode[data-context-mode="low"] .chat-seg[data-mode="low"] {
-    background: rgba(245, 158, 11, 0.16);
-    color: var(--status-warn-fg);
-}
-.chat-context-mode[data-context-mode="nano"] .chat-seg[data-mode="nano"] {
-    background: var(--project-18);
-    color: var(--project);
 }
 
 .chat-send-group {
@@ -3517,17 +3466,19 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     opacity: 1;
 }
 
-/* Effort range (variant D): a round glass button with the ring glyph (band = min..max,
-   dot = recommended) that opens inline into the strip. A sibling of the pills,
-   never inside the phone swipe scroller; the same vocabulary as Swarm and Nano/Low/Max.
-   The open strip never takes a second line: beside the pills when it fits, alone while
-   the pills step aside, scrolling inside itself only when nothing else fits
-   (composer_owner_controls.js sets data-fit, data-tight and --effort-seg-pad from measurement). */
-.chat-effort-range {
-    --effort-cap-width: var(--space-2);
-    --effort-band-inset: var(--space-1);
-    --effort-seg-pad: var(--space-2);
-    --effort-glyph-size: 22px;
+/* Owner capsules (DESIGN "Composer owner controls"): Context and Effort, each a glass capsule of
+   the pills' height (ring glyph · name · value) that opens inline into its strip. Siblings of the
+   pills; the same vocabulary as Swarm. The open strip never takes a second line: beside the other
+   controls when it fits, alone while they step aside, scrolling inside itself only when nothing
+   else fits (composer_owner_controls.js sets data-fit, data-tight, data-label and
+   --capsule-seg-pad from measurement, and holds --capsule-value-width and --capsule-body-width
+   while a capsule opens or closes). */
+.chat-capsule {
+    --capsule-band-inset: var(--space-1);
+    --capsule-seg-pad: var(--space-2);
+    /* The strip's end gutter: a pill-shaped mark is concentric with the rounded end, so the band
+       inset is its clearance on every side (Effort's square bracket needs more, below). */
+    --capsule-end-gutter: var(--capsule-band-inset);
     position: relative;
     display: inline-flex;
     align-items: center;
@@ -3549,50 +3500,79 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     white-space: nowrap;
     transition: border-color 0.18s, background 0.18s, box-shadow 0.18s;
 }
-.chat-effort-range[data-open="true"] {
+.chat-capsule[data-open="true"] {
     border-color: var(--accent-35);
 }
-.chat-effort-range[data-known="false"] {
+.chat-capsule[data-known="false"] {
     opacity: 0.6;
 }
-.chat-effort-range[data-saving="true"] {
+.chat-capsule:is([data-saving="true"], [data-disabled="true"]) {
     box-shadow: var(--composer-control-shadow), 0 0 0 3px var(--accent-10);
 }
-.chat-effort-head {
+/* The head: ring, name, value. Closed it is the whole capsule; open, the value gives way to the
+   strip and the name stays unless the strip needs its room. */
+.chat-capsule-head {
     flex: 0 0 auto;
-    display: grid;
-    place-items: center;
-    width: calc(var(--composer-control-height) - 2px);
-    height: calc(var(--composer-control-height) - 2px);
+    display: flex;
+    align-items: center;
+    align-self: stretch;
     padding: 0;
     border: 0;
-    border-radius: 50%;
+    border-radius: 999px;
     background: transparent;
-    color: var(--text-meta);
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
     cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
     transition: background 0.18s;
 }
-.chat-effort-head:focus-visible {
+.chat-capsule-head:focus-visible {
     outline: 2px solid var(--focus-accent-border);
     outline-offset: -2px;
 }
 @media (hover: hover) {
-    .chat-effort-head:hover {
+    .chat-capsule-head:hover {
         background: var(--accent-10);
     }
 }
-.chat-effort-glyph {
-    display: inline-flex;
-    width: var(--effort-glyph-size);
-    height: var(--effort-glyph-size);
-}
-.chat-effort-glyph svg {
-    display: block;
-    width: 100%;
+.chat-capsule-glyph {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: calc(var(--composer-control-height) - 2px);
     height: 100%;
+}
+.chat-capsule-glyph svg {
+    display: block;
+    width: 22px;
+    height: 22px;
     overflow: visible;
 }
-.chat-effort-glyph-rail {
+.chat-capsule-name {
+    margin: 0;
+    margin-inline: -2px var(--space-2);
+}
+.chat-capsule-value {
+    max-width: var(--capsule-value-width, none);
+    margin: 0;
+    margin-inline: -2px var(--space-3);
+    overflow: hidden;
+    color: var(--accent-light);
+    /* The strip's curve and duration: the value gives way exactly as the strip grows, so the
+       capsule never stands wider than closed or open (the fit measures only those). */
+    transition: max-width 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), margin 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.2s;
+}
+.chat-capsule[data-open="true"] .chat-capsule-value {
+    max-width: 0;
+    margin: 0;
+    opacity: 0;
+}
+.chat-capsule[data-open="true"][data-label="false"] .chat-capsule-name {
+    display: none;
+}
+.chat-effort-glyph-rail,
+.chat-context-arc {
     stroke: rgba(var(--neutral-rgb), 0.28);
 }
 .chat-effort-glyph-band {
@@ -3601,7 +3581,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .chat-effort-glyph-dot {
     fill: var(--accent);
 }
-.chat-effort-body {
+.chat-capsule-body {
     display: flex;
     align-items: center;
     align-self: stretch;
@@ -3610,33 +3590,148 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     opacity: 0;
     transition: max-width 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.22s;
 }
-.chat-effort-range[data-open="true"] .chat-effort-body {
-    max-width: 640px;
-    opacity: 1;
+/* The divider between the name and the levels; without the name the ring delimits them. */
+.chat-capsule-body::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 1px;
+    height: 16px;
+    margin-inline-end: var(--capsule-band-inset);
+    background: rgba(var(--neutral-rgb), 0.16);
 }
-/* Alone, the strip appears and disappears at once, together with the pills it replaces. */
-.chat-effort-range[data-fit="solo"] .chat-effort-body,
-.chat-effort-range[data-fit="overflow"] .chat-effort-body {
-    transition: none;
-}
-.chat-toolbar-row[data-effort-solo="true"] .chat-composer-pills {
+.chat-capsule[data-label="false"] .chat-capsule-body::before {
     display: none;
 }
-/* The strip: one segment per level, as wide as its word plus the padding; the band and the
-   three handles sit over it and share one vertical inset, so their edges meet exactly. */
+.chat-capsule[data-open="true"] .chat-capsule-body {
+    max-width: var(--capsule-body-width, none);
+    opacity: 1;
+}
+/* Alone, the strip appears and disappears at once, together with the controls it replaces; a
+   capsule the other one closes collapses at once too (data-snap). */
+.chat-capsule:is([data-fit="solo"], [data-fit="overflow"], [data-snap="true"]) :is(.chat-capsule-body, .chat-capsule-value) {
+    transition: none;
+}
+.chat-toolbar-row[data-owner-solo] .chat-composer-pills,
+.chat-toolbar-row[data-owner-solo="effort"] .chat-context-mode,
+.chat-toolbar-row[data-owner-solo="context"] .chat-effort-range {
+    display: none;
+}
+/* A line too narrow for every name (a 360 px phone, a longer translation) keeps the closed
+   capsules' rings and values; composer_owner_controls.js measures it on the settled row, and
+   where that still wraps it cuts the longest values to one measured width. */
+.chat-toolbar-row[data-owner-compact] .chat-capsule:not([data-open="true"]) .chat-capsule-name {
+    display: none;
+}
+.chat-toolbar-row[data-owner-compact="values"] .chat-capsule:not([data-open="true"]) .chat-capsule-value {
+    max-width: var(--capsule-value-cap);
+    text-overflow: ellipsis;
+}
+/* While a drag runs, and when the layout itself changes (opening, a resize, a new padding),
+   the marks land with the words at once, so a pill never trails behind the word it names. */
+.chat-capsule:is([data-dragging="true"], [data-settling="true"]) :is(.chat-effort-band, .chat-effort-handle, .chat-effort-seg, .chat-context-thumb) {
+    transition: none;
+}
+/* At var(--space-1) of padding and below, a full capsule would cut the corners of the word's box. */
+.chat-capsule[data-tight="true"] :is(.chat-effort-rec, .chat-context-thumb) {
+    border-radius: calc(var(--capsule-seg-pad) + var(--space-1));
+}
+
+/* Context: exactly three modes, the chosen one under a glass thumb, in its mode's colour (Max the
+   accent, full context; Low amber, reduced; Nano the project fuchsia). */
+.chat-context-mode {
+    --context-ink: var(--accent-light);
+    --context-fill: var(--accent-dim);
+}
+.chat-context-mode[data-context-mode="low"] {
+    --context-ink: var(--status-warn-fg);
+    --context-fill: var(--status-warn-bg);
+}
+.chat-context-mode[data-context-mode="nano"] {
+    --context-ink: var(--project);
+    --context-fill: var(--project-18);
+}
+.chat-context-mode .chat-capsule-value,
+.chat-context-mode .chat-seg[aria-checked="true"] {
+    color: var(--context-ink);
+}
+.chat-context-mode[data-context-mode="nano"] .chat-context-arc[data-arc="nano"],
+.chat-context-mode[data-context-mode="low"] .chat-context-arc[data-arc="low"],
+.chat-context-mode[data-context-mode="max"] .chat-context-arc[data-arc="max"] {
+    stroke: var(--context-ink);
+}
+.chat-context-strip {
+    position: relative;
+    flex: 0 0 auto;
+    display: flex;
+    align-self: stretch;
+    margin-inline-end: var(--capsule-end-gutter);
+}
+.chat-context-mode[data-disabled="true"] .chat-context-strip {
+    opacity: 0.5;
+    pointer-events: none;
+}
+.chat-context-thumb {
+    position: absolute;
+    top: var(--capsule-band-inset);
+    bottom: var(--capsule-band-inset);
+    left: 0;
+    width: 0;
+    border-radius: 999px;
+    background: var(--context-fill);
+    box-shadow: inset 0 1px 0 rgba(var(--neutral-rgb), 0.06);
+    pointer-events: none;
+    transition: left 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), width 0.2s, background 0.2s;
+}
+.chat-context-mode .chat-seg {
+    position: relative;
+    display: flex;
+    align-items: center;
+    padding: 0 var(--capsule-seg-pad);
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    letter-spacing: inherit;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 0.15s;
+}
+.chat-seg-text {
+    display: block;
+}
+.chat-context-mode .chat-seg:focus-visible {
+    outline: 2px solid var(--focus-accent-border);
+    outline-offset: -2px;
+}
+@media (hover: hover) {
+    .chat-context-mode .chat-seg[aria-checked="false"]:hover {
+        color: var(--text-primary);
+    }
+}
+
+/* Effort: one segment per level, as wide as its word plus the padding; the band and the three
+   handles sit over it and share one vertical inset, so their edges meet exactly. The max bracket
+   is square: at the last level its corners would graze the rounded end, so the end gutter adds
+   what the curve takes back at the bracket's height (about a sixth of the control's height) and
+   the bracket keeps the band inset from the shell, as the concentric pill does. */
+.chat-effort-range {
+    --effort-cap-width: var(--space-2);
+    --capsule-end-gutter: calc(var(--capsule-band-inset) + var(--composer-control-height) / 6);
+}
 .chat-effort-strip {
     position: relative;
     flex: 0 0 auto;
     display: flex;
     align-self: stretch;
-    margin-right: var(--space-1);
+    margin-inline-end: var(--capsule-end-gutter);
     touch-action: none;
     cursor: pointer;
 }
 .chat-effort-band {
     position: absolute;
-    top: var(--effort-band-inset);
-    bottom: var(--effort-band-inset);
+    top: var(--capsule-band-inset);
+    bottom: var(--capsule-band-inset);
     border-radius: 4px;
     background: var(--accent-10);
     pointer-events: none;
@@ -3649,7 +3744,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 0 var(--effort-seg-pad);
+    padding: 0 var(--capsule-seg-pad);
     color: var(--text-secondary);
     pointer-events: none;
     transition: color 0.15s;
@@ -3667,8 +3762,8 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
    moves every handle with the same short transition, so a pushed bracket keeps pace. */
 .chat-effort-handle {
     position: absolute;
-    top: var(--effort-band-inset);
-    bottom: var(--effort-band-inset);
+    top: var(--capsule-band-inset);
+    bottom: var(--capsule-band-inset);
     box-sizing: border-box;
     padding: 0;
     border: 0;
@@ -3692,11 +3787,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     cursor: grabbing;
     z-index: 4;
 }
-/* While a drag runs, and when the layout itself changes (opening, a resize, a new padding),
-   the marks land with the words at once, so the pill never trails behind the word it names. */
-.chat-effort-range:is([data-dragging="true"], [data-settling="true"]) :is(.chat-effort-band, .chat-effort-handle, .chat-effort-seg) {
-    transition: none;
-}
 /* The pill covers its whole segment; the word sits centred inside it. */
 .chat-effort-rec {
     z-index: 1;
@@ -3707,16 +3797,12 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .chat-effort-rec[data-dragging="true"] {
     box-shadow: 0 0 0 4px var(--accent-18);
 }
-/* At var(--space-1) of padding and below, a full capsule would cut the corners of the word's box. */
-.chat-effort-range[data-tight="true"] .chat-effort-rec {
-    border-radius: calc(var(--effort-seg-pad) + var(--space-1));
-}
 .chat-effort-cap {
     width: var(--effort-cap-width);
     border: 2px solid var(--accent);
     background: transparent;
 }
-/* A finger-sized hit area that grows outward, never over the pill or the round button. */
+/* A finger-sized hit area that grows outward, never over the pill or the head. */
 .chat-effort-min {
     border-right: 0;
     border-radius: 4px 0 0 4px;
@@ -3732,6 +3818,25 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .chat-effort-max::before {
     inset: -10px -12px -10px 0;
 }
+/* Right to left the scale runs leftwards: each bracket faces the range from the other side. */
+.chat-effort-strip:dir(rtl) .chat-effort-min {
+    border: 2px solid var(--accent);
+    border-left: 0;
+    border-radius: 0 4px 4px 0;
+    transform: translateX(-100%);
+}
+.chat-effort-strip:dir(rtl) .chat-effort-min::before {
+    inset: -10px -12px -10px 0;
+}
+.chat-effort-strip:dir(rtl) .chat-effort-max {
+    border: 2px solid var(--accent);
+    border-right: 0;
+    border-radius: 4px 0 0 4px;
+    transform: none;
+}
+.chat-effort-strip:dir(rtl) .chat-effort-max::before {
+    inset: -10px 0 -10px -12px;
+}
 .chat-effort-cap[data-dragging="true"] {
     box-shadow: 0 0 0 4px var(--accent-22);
 }
@@ -3744,17 +3849,17 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     }
 }
 /* Nothing fits even at the tightest padding (a 320 px phone, a pane dragged very narrow):
-   the strip scrolls inside the control and fades on the side that hides levels. A swipe on
-   a word scrolls, a handle still drags, the round button stays put. */
-.chat-effort-range[data-fit="overflow"] {
+   the strip scrolls inside the capsule and fades on the side that hides levels. A swipe on
+   a word scrolls, a handle still drags, the ring stays put. */
+.chat-capsule[data-fit="overflow"] {
     flex: 1 1 auto;
 }
-.chat-effort-range[data-fit="overflow"][data-open="true"] .chat-effort-body {
+.chat-capsule[data-fit="overflow"][data-open="true"] .chat-capsule-body {
     flex: 1 1 auto;
     min-width: 0;
     max-width: none;
 }
-.chat-effort-range[data-fit="overflow"] .chat-effort-strip {
+.chat-capsule[data-fit="overflow"] :is(.chat-effort-strip, .chat-context-strip) {
     flex: 1 1 auto;
     min-width: 0;
     overflow-x: auto;
@@ -3762,21 +3867,31 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     overscroll-behavior-x: contain;
     scrollbar-width: none;
     touch-action: pan-x;
+    --capsule-fade-to: right;  /* toward the strip's end */
 }
-.chat-effort-range[data-fit="overflow"] .chat-effort-strip::-webkit-scrollbar {
+.chat-capsule[data-fit="overflow"] :is(.chat-effort-strip, .chat-context-strip):dir(rtl) {
+    --capsule-fade-to: left;
+}
+.chat-capsule[data-fit="overflow"] :is(.chat-effort-strip, .chat-context-strip)::-webkit-scrollbar {
     display: none;
 }
-.chat-effort-range[data-fit="overflow"] .chat-effort-strip[data-scroll="start"] {
-    -webkit-mask-image: linear-gradient(to right, black calc(100% - var(--space-3)), transparent);
-    mask-image: linear-gradient(to right, black calc(100% - var(--space-3)), transparent);
+.chat-capsule[data-fit="overflow"] [data-scroll="start"] {
+    -webkit-mask-image: linear-gradient(to var(--capsule-fade-to), black calc(100% - var(--space-3)), transparent);
+    mask-image: linear-gradient(to var(--capsule-fade-to), black calc(100% - var(--space-3)), transparent);
 }
-.chat-effort-range[data-fit="overflow"] .chat-effort-strip[data-scroll="middle"] {
-    -webkit-mask-image: linear-gradient(to right, transparent, black var(--space-3), black calc(100% - var(--space-3)), transparent);
-    mask-image: linear-gradient(to right, transparent, black var(--space-3), black calc(100% - var(--space-3)), transparent);
+.chat-capsule[data-fit="overflow"] [data-scroll="middle"] {
+    -webkit-mask-image: linear-gradient(to var(--capsule-fade-to), transparent, black var(--space-3), black calc(100% - var(--space-3)), transparent);
+    mask-image: linear-gradient(to var(--capsule-fade-to), transparent, black var(--space-3), black calc(100% - var(--space-3)), transparent);
 }
-.chat-effort-range[data-fit="overflow"] .chat-effort-strip[data-scroll="end"] {
-    -webkit-mask-image: linear-gradient(to right, transparent, black var(--space-3));
-    mask-image: linear-gradient(to right, transparent, black var(--space-3));
+.chat-capsule[data-fit="overflow"] [data-scroll="end"] {
+    -webkit-mask-image: linear-gradient(to var(--capsule-fade-to), transparent, black var(--space-3));
+    mask-image: linear-gradient(to var(--capsule-fade-to), transparent, black var(--space-3));
+}
+@media (prefers-reduced-motion: reduce) {
+    .chat-toolbar-row .chat-capsule,
+    .chat-toolbar-row .chat-capsule * {
+        transition: none;
+    }
 }
 
 /* === design-system:migrated-end === */
@@ -6346,22 +6461,11 @@ textarea.chat-input {
         bottom: auto;
         z-index: auto;
         justify-content: flex-start;
-        gap: 8px;
+        gap: 6px;
         padding: 0 6px;
     }
 
-    .chat-composer-pills {
-        flex: 1;
-        overflow-x: auto;
-        scrollbar-width: none;
-    }
-
-    .chat-composer-pills::-webkit-scrollbar {
-        display: none;
-    }
-
-    .chat-swarm,
-    .chat-context-mode .chat-seg {
+    .chat-swarm {
         padding-left: 10px;
         padding-right: 10px;
     }

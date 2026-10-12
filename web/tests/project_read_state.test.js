@@ -254,6 +254,90 @@ test('a late answer sorted above earlier arrivals is read on screen, not at the 
     assert.equal((await r.instance.refreshHistory({ revision: 3 })).read, true);
 });
 
+// Opening an unread room lands on the message that arrived last (owner decision
+// 2026-10-11): once, for that opening, and never over the reader's own move.
+const wheel = (r, deltaY) => {
+    for (const handler of r.messages.listeners.get('wheel') || []) handler({ type: 'wheel', deltaY, target: r.messages, timeStamp: 0 });
+};
+
+test('an unread room opened lands on the message that arrived last above later rows, and reads it', async (t) => {
+    const r = room(t);
+    placeAtTop(t, r, 'chat:9');
+    r.server.rows = [late(9), row(1), row(2)];
+    r.server.window = { complete: true, truncated_by: [], latest_message: { history_id: 'chat:9', out_of_order: true } };
+    void r.instance.showLatest({ arrive: true });
+    r.instance.cancelHistoryPaint();  // as app.js's acknowledgement does before its read
+    const landed = await r.instance.refreshHistory({ revision: 3 });
+    assert.deepEqual([landed.painted, landed.read], [true, true], 'the opening lands on it and reads it');
+    assert.equal(r.messages.scrollTop, 0, 'it is at the top of the read band, what came after it below');
+
+    r.server.rows = [late(9), row(1), row(2), row(3)];
+    r.server.window = { complete: true, truncated_by: [], latest_message: { history_id: 'chat:3', out_of_order: false } };
+    r.readLatest();
+    const top = r.messages.scrollTop;
+    const later = await r.instance.refreshHistory({ revision: 4 });
+    assert.equal(r.messages.scrollTop, top, 'a later read moves no one: the landing belongs to the opening');
+    assert.equal(later.read, true);
+});
+
+test('a reader who moves before the opening read keeps their place', async (t) => {
+    const r = room(t);
+    placeAtTop(t, r, 'chat:9');
+    r.server.rows = [late(9), row(1), row(2)];
+    r.server.window = { complete: true, truncated_by: [], latest_message: { history_id: 'chat:9', out_of_order: true } };
+    void r.instance.showLatest({ arrive: true });
+    r.scroll(40);
+    wheel(r, 1);
+    const moved = await r.instance.refreshHistory({ revision: 3 });
+    assert.equal(r.messages.scrollTop, 40, 'the reader\'s own gesture superseded the landing');
+    assert.equal(moved.read, false);
+});
+
+test('an opening whose newest message is unknown lands nowhere', async (t) => {
+    const r = room(t);
+    r.server.rows = [row(1)];
+    r.server.window = { complete: false, truncated_by: ['chat_malformed_jsonl'], latest_message: null };
+    void r.instance.showLatest({ arrive: true });
+    const unknown = await r.instance.refreshHistory({ revision: 1 });
+    assert.deepEqual([unknown.painted, Boolean(unknown.read)], [false, false], 'an honest gap, as before');
+});
+
+test('an unknown opening cannot later jump to a newly arrived answer', async (t) => {
+    const r = room(t);
+    placeAtTop(t, r, 'chat:9');
+    r.server.rows = [row(1), row(2)];
+    r.server.window = { complete: false, truncated_by: ['chat_malformed_jsonl'], latest_message: null };
+    await r.instance.showLatest({ arrive: true });
+    await r.instance.refreshHistory({ revision: 2 });
+    assert.ok(r.messages.scrollTop > 0, 'the unknown opening stayed at the bottom');
+    r.server.rows = [late(9), row(1), row(2)];
+    r.server.window = { complete: true, truncated_by: [], latest_message: { history_id: 'chat:9', out_of_order: true } };
+    const later = await r.instance.refreshHistory({ revision: 3 });
+    assert.equal(r.messages.scrollTop, r.messages.scrollHeight,
+        'ordinary bottom-follow may account for added height, but cannot jump to the late answer');
+    assert.equal(later.read, false, 'the newly arrived answer remains unread above the viewport');
+});
+
+test('a room reopened without unread keeps its bottom', async (t) => {
+    const r = room(t);
+    placeAtTop(t, r, 'chat:9');
+    r.server.rows = [late(9), row(1), row(2)];
+    r.server.window = { complete: true, truncated_by: [], latest_message: { history_id: 'chat:9', out_of_order: true } };
+    void r.instance.showLatest();
+    const plain = await r.instance.refreshHistory({ revision: 3 });
+    assert.equal(plain.read, false, 'reopened at its bottom, as before');
+    assert.notEqual(r.messages.scrollTop, 0);
+});
+
+test('an unread opening whose newest message is on screen at the bottom moves nothing', async (t) => {
+    const r = room(t);
+    r.server.rows = [row(1), row(2)];
+    r.server.window = { complete: true, truncated_by: [], latest_message: { history_id: 'chat:2', out_of_order: false } };
+    void r.instance.showLatest({ arrive: true });
+    const bottom = await r.instance.refreshHistory({ revision: 2 });
+    assert.deepEqual([bottom.read, r.messages.scrollTop], [true, r.messages.scrollHeight]);
+});
+
 test('a read that cannot tell which message arrived last reads nothing', async (t) => {
     const r = room(t);
     r.server.rows = [row(1)];

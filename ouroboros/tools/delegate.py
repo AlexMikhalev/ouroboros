@@ -47,6 +47,7 @@ from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import ToolResult, _replace_tool_result
 from ouroboros.subagent_work_order import (  # noqa: F401 - compatibility re-export
     assignment_instructions as _assignment_instructions,
+    session_design_navigation,
 )
 from ouroboros.delegate_source_coverage import (
     add_terminal_source_verification,  # noqa: F401  (leaf reads it through _delegate() at call time)
@@ -570,6 +571,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             if authority.access == "full":
                 gateway.ensure_full_access(scope_root)
             seconds = bound.seconds
+            instructions += session_design_navigation(ctx, target_root=record_auth["target_root"], source_root=root)
             request_body = _start_request(ctx, route, authority, scope_root, continuation.prompt or text,
                                           seconds, instructions, execution_root, continuation=continuation.request, ephemeral=ephemeral,
                                           **({"directory_options": directory_options} if directory_options else {}))
@@ -1168,8 +1170,8 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
                     payload["result_not_collected"] = (
                         "THIS RESULT IS NOT COLLECTED YET: the run is settled and its "
                         "full output is staged, but nothing has read it to EOF. Read the "
-                        "artifact named in output_delivery with read_file "
-                        "root='task_drive' until it is covered end to end — a result you "
+                        "artifact with the read_file arguments in "
+                        "output_delivery.read_next until it is covered end to end — a result you "
                         "have not read is not a result you may report."
                     )
                 # The containment disclosure is read off what the PARENT was told, so the

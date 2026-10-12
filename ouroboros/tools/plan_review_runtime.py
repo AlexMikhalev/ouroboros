@@ -116,7 +116,7 @@ def _session_task_text(system_prompt: str, user_content: str, session_root: str)
         "when your seat holds write access). The evidence below is the host's REDACTED "
         "snapshot — the same bytes every reviewer sees — so do NOT re-read the raw evidence "
         "locators (a session reading originals would leak what the api route redacts, 4e133c8a); "
-        "the ONE exception is the governance pack — BIBLE.md and docs/ARCHITECTURE.md are public "
+        "the ONE exception is the governance pack — its named sources are public "
         "repository documents you MAY read raw, and MUST read in full when the pack marks them "
         "MANDATORY FULL READS (a self-modification plan), even if the agent also declared them as "
         "evidence. Retrieve any OTHER repository context with your own tools.\n\n"
@@ -132,7 +132,7 @@ def build_plan_review_packet(
     enforcement: str, previous: Optional[dict], state: Optional[dict] = None,
 ) -> tuple[str, str, str]:
     """Build the api packet and route-owned retrieving-session task."""
-    from ouroboros.context_layout import generate_doc_nav_map
+    from ouroboros.context_layout import design_navigation, generate_doc_nav_map
     from ouroboros.tools import plan_spec
     from ouroboros.tools.plan_packet import (
         build_plan_review_system_prompt, build_plan_review_user_content,
@@ -147,6 +147,33 @@ def build_plan_review_packet(
         checklist = ""
     bible_text = _governance_text(system_root, "BIBLE.md")
     architecture_text = _governance_text(system_root, "docs/ARCHITECTURE.md")
+    # A candidate can be the body without satisfying the historical plan gate's
+    # installed-path predicate. Navigation follows that source identity without
+    # changing constitutional classification or requiring another full book.
+    from ouroboros.review_body_fact import BODY_TRUE, body_fact
+
+    body_work = constitutional or (
+        active_root != system_root and plan_spec.resolve_constitutional(
+            active_root=active_root, system_repo_root=active_root,
+            affected_paths=spec.get("affected_paths") or [], evidence=(),
+        )[0]
+        and body_fact(active_root, system_repo=system_root, data_dir=ctx.drive_root).body == BODY_TRUE
+    )
+    if not body_work and not spec.get("affected_paths"):
+        from ouroboros.context_input_selection import _explicit_self_body_docs_flag
+        from ouroboros.context_layout import task_design_source
+
+        metadata = getattr(ctx, "task_metadata", {})
+        task = dict(metadata) if isinstance(metadata, Mapping) else {}
+        task["task_contract"] = getattr(ctx, "task_contract", {})
+        # Research can concern the body without proposing file changes. Require
+        # its declared subject AND the author/session source identity; Main's
+        # default cwd or an empty path list alone says nothing about that subject.
+        body_work = (_explicit_self_body_docs_flag(task) is True
+                     and task_design_source(ctx, task) is not None)
+    design_nav_map = (design_navigation(
+        _governance_text(system_root, "docs/DESIGN.md") or None,
+        source=str(system_root / "docs/DESIGN.md")) if body_work else None)
     bible_nav_map = architecture_nav_map = ""
     if not constitutional:
         if bible_text.strip():
@@ -169,6 +196,7 @@ def build_plan_review_packet(
                 architecture_locator=str(system_root / "docs" / "ARCHITECTURE.md"),
                 architecture_nav_map=architecture_nav_map or None,
                 governance_by_retrieval=by_retrieval,
+                design_nav_map=design_nav_map,
             ),
         )
 

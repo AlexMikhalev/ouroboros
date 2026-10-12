@@ -46,6 +46,7 @@ from ouroboros.tools.tool_result import (
 )
 from ouroboros.tools.verify import check_exit_masking
 from ouroboros.workspace_executor import (
+    BackendPathNoMatch,
     executor_ref_from_ctx,
     map_backend_path,
     map_backend_path_lexical,
@@ -265,7 +266,7 @@ def _mentioned_user_file_outputs_without_declaration(
                     try:
                         path = map_backend_path(executor_ref, candidate_text)
                         lexical_path = map_backend_path_lexical(executor_ref, candidate_text)
-                    except ValueError:
+                    except BackendPathNoMatch:  # A matched invalid spelling is no finding.
                         path = raw_candidate.resolve(strict=False)
                         lexical_path = raw_candidate
                 elif raw_candidate.is_absolute() or candidate_text.startswith("~"):

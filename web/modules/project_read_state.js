@@ -3,8 +3,9 @@
 // A revision is read only when a history read covering it has crossed a real
 // browser paint while the room stayed shown AND the reader is at the newest
 // message — the one that arrived last, on screen (`isAtNewestMessage`), normally
-// near the bottom of the conversation. Opening or refreshing a room while its
-// reader is elsewhere is not reading; the chat instance reports each arrival at
+// near the bottom of the conversation. Opening an unread room lands the reader on
+// that message once a read names it (`newestMessageOffset`); refreshing a room
+// while its reader is elsewhere is not reading; the chat instance reports each arrival at
 // the newest message (a scroll, a page shown again, an older page applied) so the
 // withheld acknowledgement is retried then, and app.js's existing state snapshots
 // offer it again — no timer of this module's own. This module owns the paint
@@ -21,9 +22,10 @@ import { historyNodeOnScreen } from './chat_history_replay.js';
  *   isShown: () => boolean,
  *   isReadingLatest: (latest: undefined|null|object) => boolean,  // the reader is at `latest`
  *   onReadingLatest?: () => void,
+ *   land?: (latest: undefined|object) => void,  // shown each read's named newest message first
  * }} facts
  */
-export function createProjectReadReceipt({ read, isShown, isReadingLatest, onReadingLatest = () => {} }) {
+export function createProjectReadReceipt({ read, isShown, isReadingLatest, onReadingLatest = () => {}, land = () => {} }) {
     let generation = 0;
     let coveredRevision = 0;
     let readingLatest = false;
@@ -63,12 +65,16 @@ export function createProjectReadReceipt({ read, isShown, isReadingLatest, onRea
         // receipt is still taken after this call's own paint either way. A read
         // that cannot name the newest message covers nothing, so the same revision
         // is read again: a repaired source can name it without a new revision.
+        // The current opening read consumes its landing even on a gap: a later
+        // arrival must not inherit that navigation. Unknown/hidden content never lands.
         async refresh({ revision = 0 } = {}) {
             const own = ++generation;
             const target = Math.max(0, Number(revision) || 0);
             const covered = await read(target > coveredRevision) && newest() !== null;
             if (covered && target > coveredRevision) coveredRevision = target;
-            if (!covered || own !== generation || !isShown()) return { painted: false, revision: target };
+            if (own !== generation) return { painted: false, revision: target };
+            land(covered && isShown() ? newest() : null);
+            if (!covered || !isShown()) return { painted: false, revision: target };
             // Two frames cover layout followed by paint/composite.
             await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             const painted = own === generation && isShown();
@@ -116,6 +122,24 @@ function shownBy(node) {
         if (shown.getClientRects?.().length) return shown;
     }
     return node;
+}
+
+/**
+ * How far the feed moves to show the newest message when an unread room is opened
+ * (DESIGN "Project unread dot"): it lands at the top of the read band, so what came
+ * after it shows below. 0 when it is already on screen or no node of this page can
+ * show it: absent (the bottom decides), unknown, or not loaded (the pager reaches it).
+ *
+ * @param {undefined|null|{history_id: string}} latest
+ * @param {{ delivered: (id: string) => boolean, nodes: (id: string) => Array<Element>,
+ *   viewport: Element, header?: Element|null, composer?: Element|null }} facts
+ */
+export function newestMessageOffset(latest, { delivered, nodes, viewport, header, composer }) {
+    if (!latest?.history_id || !delivered(latest.history_id)) return 0;
+    const band = readBand(viewport, header, composer);
+    const node = nodes(latest.history_id).map(shownBy).find((shown) => shown.getClientRects?.().length);
+    if (!node || band.bottom <= band.top || historyNodeOnScreen(node, viewport, band)) return 0;
+    return node.getBoundingClientRect().top - band.top;
 }
 
 /**
