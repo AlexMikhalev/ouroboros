@@ -522,6 +522,57 @@ def test_a_null_engine_leader_birth_never_vouches_for_a_live_leader_while_the_fl
             pass
 
 
+def test_a_null_scope_start_falls_back_to_the_entrys_opened_at_as_the_members_age_floor(tmp_path):
+    """Astra delta3 2: schema 1 allows ``scope_start: null``; the engine's contract then names
+    the ISO ``opened_at`` as the floor. For two leaderless groups (reaped shells, ``&``
+    children) with ``leader_birth`` and ``scope_start`` null: a member born before the
+    entry opened is spared and disclosed; one born at or after the floor is the scope's and
+    is ended. Both ISO spellings the engine may write (``Z``, ``+00:00``) convert."""
+    import datetime as dt
+
+    ps.installation_marker(tmp_path)
+
+    def leaderless():
+        shell = subprocess.Popen(["/bin/sh", "-c", "/bin/sleep 120 >/dev/null 2>&1 & echo $!"], stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+        child = int(shell.stdout.read().strip().splitlines()[-1])
+        birth = ps.birth_text(shell.pid)
+        assert birth
+        shell.wait(timeout=5)  # reaped: no live pid == pgid remains
+        return shell.pid, child, ps.birth_epoch(birth)
+
+    older_group, older, older_epoch = leaderless()
+    member_group, member, member_epoch = leaderless()
+    iso = lambda epoch: dt.datetime.fromtimestamp(epoch, dt.timezone.utc).isoformat(timespec="milliseconds")
+    index = ps.engine_run_scopes_path(tmp_path)
+    index.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        def entry(run_id, pgid, opened_at):
+            return {"run_id": run_id, "marker": ps.mint_marker(ps.RUN_SCOPE_PREFIX), "state": "running",
+                    "opened_at": opened_at, "scope_start": None,
+                    "root_groups": [{"pgid": pgid, "leader_pid": pgid, "leader_birth": None}], "captured": []}
+
+        opened_late = iso(older_epoch + 3600).replace("+00:00", "Z")  # the entry opened an hour after that child was born
+        opened_at_birth = iso(member_epoch)                            # opened in the second the shell was born
+        index.write_text(json.dumps({"schema_version": 1, "entries": [
+            entry("older", older_group, opened_late), entry("member", member_group, opened_at_birth)]}), encoding="utf-8")
+        groups = ps._engine_scope_targets(ps.engine_scope_index(tmp_path)[0])[1]
+        assert [(group["leader_birth"], group["floor"]) for group in groups] == [
+            ("", ps.lstart_text(older_epoch + 3600)), ("", ps.lstart_text(member_epoch))], \
+            "leader_birth stays empty; opened_at becomes the lstart-form floor"
+        outcome = ps.panic_scope_census(tmp_path, exclude={os.getpid(), 1})
+        assert outcome["groups_reused"] == [older_group] and older not in outcome["ended"] and ps.measure_birth(older), \
+            "born before the entry opened: not the scope's, skipped and disclosed"
+        assert outcome["ended"] == [member] and _gone(member), "at or after the opened_at floor: ended"
+        assert outcome["settled"] is True
+    finally:
+        for pid in (older, member):
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+
+
 def test_a_known_member_rides_the_pending_record_into_the_completion(tmp_path, monkeypatch):
     """Astra delta 2 (Panic): a member whose identity could not be read at Panic is carried by
     pid and birth; the completion reaches it once its marker is no longer visible."""

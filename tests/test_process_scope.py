@@ -457,6 +457,21 @@ def test_each_birth_recorded_for_one_pid_is_judged_on_its_own(monkeypatch):
     assert outcome["settled"] is True and signalled == [4242]
 
 
+def test_an_entrys_iso_opened_at_converts_to_the_lstart_floor_and_junk_to_no_floor():
+    """The engine writes ``opened_at`` as ISO 8601 (JS ``toISOString``: milliseconds, ``Z``);
+    the floor is that instant in the lstart spelling the census compares, whole seconds, a
+    naive time read as UTC; anything else is no floor."""
+    epoch = ps.birth_epoch("Mon Oct 12 12:00:07 2026")
+    import datetime as dt
+
+    utc = dt.datetime.fromtimestamp(epoch, dt.timezone.utc)
+    assert ps._iso_floor(utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")) == "Mon Oct 12 12:00:07 2026"
+    assert ps._iso_floor(utc.isoformat()) == "Mon Oct 12 12:00:07 2026"
+    assert ps._iso_floor(utc.replace(tzinfo=None).isoformat()) == "Mon Oct 12 12:00:07 2026"
+    assert ps._iso_floor(utc.astimezone(dt.timezone(dt.timedelta(hours=2))).isoformat()) == "Mon Oct 12 12:00:07 2026"
+    assert ps._iso_floor("") == ps._iso_floor(None) == ps._iso_floor("not a time") == ps._iso_floor(12) == ""
+
+
 def test_a_proc_stat_read_failure_other_than_absence_is_unreadable(monkeypatch):
     def controlled(path, *args, **kwargs):
         if str(path) == "/proc/4242/stat":

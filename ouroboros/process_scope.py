@@ -31,6 +31,7 @@ stay the truth.
 
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
 import json
 import logging
@@ -739,9 +740,10 @@ def engine_run_scopes_path(data_dir: Any) -> pathlib.Path:
 
 def engine_scope_index(data_dir: Any) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """The managed engine's durable run-scope index (``daemon/run-scopes.json``,
-    ``schema_version`` 1): per entry ``run_id``, ``marker``, ``state``, ``scope_start``,
-    ``root_groups[{pgid, leader_pid, leader_birth}]``, ``captured[{pid, pgid, birth}]``,
-    births as C-locale ``ps -o lstart=`` text. Returns ``(valid entries, disclosure)``: a
+    ``schema_version`` 1): per entry ``run_id``, ``marker``, ``state``, ``opened_at`` (ISO
+    time: the members' age floor while no lstart birth exists), ``scope_start`` (lstart or
+    null), ``root_groups[{pgid, leader_pid, leader_birth | null}]``, ``captured[{pid, pgid,
+    birth}]``, births as C-locale ``ps -o lstart=`` text. Returns ``(valid entries, disclosure)``: a
     missing, unreadable (I/O, torn JSON, not an object) or newer-schema file yields no
     entries and a typed status; a schema-1 file without a top-level ``entries`` list is
     ``invalid``; a malformed row is disclosed under ``malformed`` (status ``invalid``) while
@@ -790,8 +792,8 @@ def _entry_defect(entry: Any) -> str:
     """Why ``entry`` falls outside the schema-1 contract (``""`` when it fits): a
     grammar-shaped ``marker``; ``scope_start`` a string or null; ``root_groups`` and
     ``captured`` lists of objects with integer pids/pgids, string births and a string or
-    null ``leader_birth`` (null keeps the ``scope_start`` floor); the optional
-    ``leader_identity`` is ignored."""
+    null ``leader_birth`` (null keeps the entry's floor: ``scope_start``, else
+    ``opened_at``); the optional ``leader_identity`` is ignored."""
     if not isinstance(entry, dict):
         return "entry is not an object"
     if not is_scope_name(str(entry.get("marker") or "")):
@@ -822,8 +824,9 @@ def _engine_scope_targets(entries: Iterable[Mapping[str, Any]]) -> Tuple[List[st
     that is its own group id vouches for that group's leader birth) under rule 2; and
     each captured pid by its recorded birth. A null ``leader_birth`` stays empty — the
     host cannot verify a live ``pid == pgid`` for it, so rule 2 skips that group — while
-    the entry's ``scope_start`` rides as the group's ``floor``, an age bound for the
-    members a leaderless group still holds."""
+    the entry's ``scope_start``, else its ISO ``opened_at`` in lstart form (the engine's
+    contract: the floor while no lstart birth exists), rides as the group's ``floor``, an
+    age bound for the members a leaderless group still holds."""
     markers: List[str] = []
     groups: List[Dict[str, Any]] = []
     captured: List[Dict[str, Any]] = []
@@ -831,7 +834,7 @@ def _engine_scope_targets(entries: Iterable[Mapping[str, Any]]) -> Tuple[List[st
         marker = str(entry.get("marker") or "")
         if is_scope_name(marker):
             markers.append(marker)
-        floor = str(entry.get("scope_start") or "")
+        floor = str(entry.get("scope_start") or "") or _iso_floor(entry.get("opened_at"))
         for group in entry.get("root_groups") or []:
             if isinstance(group, dict) and int(group.get("pgid") or 0) > 1:
                 groups.append({"pgid": int(group["pgid"]), "leader_pid": int(group.get("leader_pid") or 0),
@@ -847,6 +850,19 @@ def _engine_scope_targets(entries: Iterable[Mapping[str, Any]]) -> Tuple[List[st
             if pgid > 1 and all(group["pgid"] != pgid for group in groups):
                 groups.append({"pgid": pgid, "leader_pid": pgid, "leader_birth": leaders.get(pgid, ""), "floor": floor})
     return markers, groups, captured
+
+
+def _iso_floor(opened_at: Any) -> str:
+    """An entry's ISO ``opened_at`` as the lstart text the membership floor compares (whole
+    seconds; a naive time is UTC); ``""`` when absent or not ISO 8601."""
+    text = str(opened_at or "").strip()
+    try:
+        when = _dt.datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+    except ValueError:
+        return ""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=_dt.timezone.utc)
+    return lstart_text(when.timestamp())
 
 
 # --------------------------------------------------------------------------- Panic
