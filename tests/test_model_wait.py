@@ -5,7 +5,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 import asyncio
 import json
 import queue
-import threading
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
