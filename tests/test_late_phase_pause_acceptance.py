@@ -185,6 +185,7 @@ def _end_preparer(proc, log):
     log.close()
 
 
+@pytest.mark.serial  # starts the real preparer process
 def test_paused_preparation_survives_dead_controller_and_resumes_same_debt_once(late, tmp_path, monkeypatch):  # noqa: F811
     from ouroboros.owner_pause import read_fence
     from tests._budget_pause_exact_helpers import _install_queue
@@ -229,6 +230,7 @@ def test_paused_preparation_survives_dead_controller_and_resumes_same_debt_once(
     assert len(late.calls) == 3
 
 
+@pytest.mark.serial  # starts the real preparer process
 @pytest.mark.parametrize('read', ['admission', 'unstarted'])
 def test_resume_opening_the_fence_inside_a_restored_control_read_still_runs_the_debt_once(
         late, tmp_path, monkeypatch, read):  # noqa: F811
