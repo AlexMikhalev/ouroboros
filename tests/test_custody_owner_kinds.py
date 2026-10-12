@@ -135,7 +135,7 @@ def test_only_the_tasks_own_delegation_is_its_delegation(
                 pytest.fail("a review panel rejoins its own invocation")
 
         outcomes = dc.reconcile_orphaned_runs(
-            tmp_path, set(), gateway_factory=_NeverStarts)
+            tmp_path, set(), gateway_factory=_NeverStarts, replay_pending=lambda: True)
         assert [row for row in outcomes if row.get("invocation_id")] == [{
             "invocation_id": "inv-review", "task_id": TASK,
             "action": "invocation_retained",

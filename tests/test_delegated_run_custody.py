@@ -647,7 +647,8 @@ def test_reconciliation_recovers_a_pending_invocation_whose_worker_died(tmp_path
         def remove_project(self, pid): _TerminalRecovery.removed.append(pid)
         def close(self): pass
 
-    outcomes = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=lambda: _TerminalRecovery())
+    outcomes = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=lambda: _TerminalRecovery(),
+                                          replay_pending=lambda: True)  # the admitted sweep's shape
     assert [o["action"] for o in outcomes] == ["settle_attempted"] and outcomes[0]["settled"] is True
     key, body = posted[-1]
     assert key == token, "recovery must present the invocation's own wire key"
@@ -660,7 +661,8 @@ def test_reconciliation_recovers_a_pending_invocation_whose_worker_died(tmp_path
     assert started["route"] == "some-route" and started["model"] == "weak-model"
     assert started["idempotency_key"], "the stored lookup key rides the recovered row"
     assert dc.pending_invocations(tmp_path) == [], "a recovered invocation is bound, not pending"
-    again = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=lambda: _TerminalRecovery())
+    again = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=lambda: _TerminalRecovery(),
+                                       replay_pending=lambda: True)
     assert again == [], "a settled recovery does not repeat"
 
     # 3. A DEFINITE refusal at recovery retires the invocation and the registration
@@ -687,12 +689,14 @@ def test_reconciliation_recovers_a_pending_invocation_whose_worker_died(tmp_path
         def close(self): pass
 
     for status in (0, 503):  # a dead socket and a busy engine are both unknown outcomes
-        down = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=lambda: _Unreachable(status))
+        down = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=lambda: _Unreachable(status),
+                                          replay_pending=lambda: True)
         assert [o["action"] for o in down] == ["recovery_unreachable"]
         assert [r["invocation_id"] for r in dc.pending_invocations(tmp_path)] == [token2], \
             "an unknown outcome never destroys the invocation"
     refusing = _Refusing()
-    gone = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=lambda: refusing)
+    gone = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=lambda: refusing,
+                                      replay_pending=lambda: True)
     assert [o["action"] for o in gone] == ["invocation_retired"]
     assert refusing.removed == ["prj-owned"], "the ORIGINAL attempt's owned registration is discharged"
     assert dc.pending_invocations(tmp_path) == []

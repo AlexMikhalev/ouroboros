@@ -178,7 +178,7 @@ def _stop_owned_work(ctx: Any) -> list:
         if confirmed is False:
             log.critical("Owner restart: worker shutdown is unconfirmed; the restart proceeds and "
                          "the next generation reconciles the remainder")
-    try:
+    try:  # attach only; no replay_pending: a Restart re-POSTs nothing, the next generation's sweep does
         reconcile_orphaned_runs(DATA_DIR, running_task_ids=set(), gateway_factory=read_owned_gateway)
     except Exception:
         log.warning("Owner restart: delegated-run cancellation did not complete; custody retained",

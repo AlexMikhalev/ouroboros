@@ -584,11 +584,14 @@ def _audit_delegated_runs_on_kill(
     from supervisor.terminal_delivery import RUN_STATE_UNKNOWN_PREFIX
 
     try:
+        from ouroboros.delegate_custody_reconcile import attach_only_gateway
         from ouroboros.delegate_terminal import terminal_reconcile_task
 
+        # A kill boundary attaches and settles; it never starts a daemon or
+        # replays a pending invocation (the admitted sweep recovers those).
         audit = terminal_reconcile_task(
             pathlib.Path(q.DRIVE_ROOT), task_id, trigger=trigger,
-            deliberate_terminal=deliberate_terminal,
+            deliberate_terminal=deliberate_terminal, gateway_factory=attach_only_gateway,
         )
     except Exception:
         log.warning(

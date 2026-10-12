@@ -293,9 +293,11 @@ def reconcile_unrecoverable_task(drive_root: Any, task_id: str) -> None:
 
     try:
         from ouroboros import delegate_terminal
+        from ouroboros.delegate_custody_reconcile import attach_only_gateway
 
-        result = delegate_terminal.terminal_reconcile_task(
+        result = delegate_terminal.terminal_reconcile_task(  # a release: attach only, no replay
             drive_root, str(task_id or ""), trigger="unrecoverable_successor",
+            gateway_factory=attach_only_gateway,
         )
         delegate_terminal.record_terminal_reconciliation(
             drive_root, str(task_id or ""), result,
@@ -360,6 +362,14 @@ def _holder_value(holder: Any, name: str, *, pending: bool) -> str:
         str(holder.get(name) or "")
         if pending else str(getattr(holder, name, "") or "")
     )
+
+
+def _attach_only():
+    """The fail-soft settlement after a vetoed or unwritable handoff is a release:
+    it attaches to a serving daemon and never starts one or replays a pending start."""
+    from ouroboros.delegate_custody_reconcile import attach_only_gateway
+
+    return attach_only_gateway
 
 
 def _run_probe_error(run_id: str) -> str:
@@ -862,7 +872,7 @@ def pre_adopt_planned_handoffs(
             _write(drive_root, row)
         except Exception:
             try:
-                custody.reconcile_task_runs(drive_root, task_id)
+                custody.reconcile_task_runs(drive_root, task_id, gateway_factory=_attach_only())
             except Exception:
                 pass
             continue
@@ -890,7 +900,7 @@ def veto_handoff(drive_root: Any, task_id: str, reason: str) -> dict[str, Any]:
     row.update({"status": "vetoed", "veto_reason": str(reason or "recovery_mismatch")})
     _write(drive_root, row)
     try:
-        custody.reconcile_task_runs(drive_root, task_id)
+        custody.reconcile_task_runs(drive_root, task_id, gateway_factory=_attach_only())
     except Exception:
         pass
     return row
@@ -1058,7 +1068,7 @@ def adopt_handoff(ctx: Any, task: Mapping[str, Any]) -> dict[str, Any]:
         _restore_wait_checkpoint(drive, {**row, "run_id": run_id})
     except Exception:
         try:
-            custody.reconcile_task_runs(drive, task_id)
+            custody.reconcile_task_runs(drive, task_id, gateway_factory=_attach_only())
         except Exception:
             pass
         return {"status": "recovery_required", "reason": "checkpoint_restore_failed"}
@@ -1067,7 +1077,7 @@ def adopt_handoff(ctx: Any, task: Mapping[str, Any]) -> dict[str, Any]:
         _write(drive, row)
     except Exception:
         try:
-            custody.reconcile_task_runs(drive, task_id)
+            custody.reconcile_task_runs(drive, task_id, gateway_factory=_attach_only())
         except Exception:
             pass
         return {"status": "recovery_required", "reason": "adoption_record_unwritable"}
