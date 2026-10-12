@@ -58,6 +58,7 @@ from ouroboros.skill_loader import (
 from ouroboros.skill_readiness import skill_readiness_for_execution
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.skill_preflight import _handle_skill_preflight
+from tests.review_pool_rosters import pool_roster, pool_seat, set_review_pool
 
 pytestmark = pytest.mark.skill_smoke
 
@@ -582,10 +583,14 @@ def review_secret():
 
 @pytest.fixture()
 def review_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", _REVIEW_MODEL)
-    # Cheap + fast verdicts: one reviewer slot (the production-supported
-    # single_reviewer_no_diversity degraded mode) at low reasoning effort.
-    monkeypatch.setenv("OUROBOROS_EFFORT_REVIEW", "low")
+    # Cheap + fast verdicts: one reviewer (the production-supported
+    # single_reviewer_no_diversity degraded mode) at low reasoning effort. Since
+    # the review pool (#1639) a reviewer is a marked row of the subagent catalog,
+    # and the retired OUROBOROS_REVIEW_MODELS / OUROBOROS_EFFORT_REVIEW are not
+    # read from the environment (docs/architecture/11-frozen-contracts-v1.md);
+    # native is the delivery the lane-era slot ran.
+    set_review_pool(monkeypatch, pool_roster(pool_seat(
+        "skill-smoke-reviewer", _REVIEW_MODEL, delivery="native", effort="low")))
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
     monkeypatch.setenv("OUROBOROS_REVIEW_MODEL_TIMEOUT_SEC", "300")
     monkeypatch.setenv("OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS", "true")

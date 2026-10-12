@@ -47,8 +47,7 @@ class InertProcess:
 def restart_case(tmp_path, monkeypatch):
     from supervisor import task_lifecycle, update_merge
 
-    pending, running, events = [], {}, stdqueue.Queue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: events)
+    pending, running = [], {}
     for module in (workers, queue):
         monkeypatch.setattr(module, "DRIVE_ROOT", tmp_path)
         monkeypatch.setattr(module, "PENDING", pending)
@@ -91,9 +90,13 @@ def restart_case(tmp_path, monkeypatch):
     monkeypatch.setattr(workers, "WORKERS", {
         0: workers.Worker(0, process, SimpleNamespace(), busy_task_id=task_id, active_capacity=False),
     })
-    return SimpleNamespace(root=tmp_path, task_id=task_id, attempt=attempt, started=started,
-                           task=task, ctx=ctx, wait=wait, process=process, events=events,
-                           transaction_id="native-restart-tx")
+    # Each case owns its event frames. The process-lifetime bus is a SyncManager child that an
+    # earlier test's real stop path can leave dead in this worker; a terminal frame that cannot
+    # publish keeps its task in custody by design, which then reads as a stop that did not happen.
+    events = stdqueue.Queue()
+    monkeypatch.setattr(workers, "get_event_q", lambda: events)
+    return SimpleNamespace(root=tmp_path, task_id=task_id, attempt=attempt, started=started, task=task,
+                           ctx=ctx, wait=wait, process=process, transaction_id="native-restart-tx", events=events)
 
 
 def first_cleanup(case):
@@ -216,10 +219,11 @@ def test_preserved_question_parent_keeps_its_saved_running_child(restart_case, m
     assert set(workers.RUNNING) == (set() if control == "stop_child" else {"saved-child"})
     if control == "stop_child":
         assert load_task_result(case.root, "saved-child")["status"] == "cancelled"
-        done = [event for event in case.events.queue if event.get("type") == "task_done"]
-        assert [(event["task_id"], event["status"]) for event in done] == [("saved-child", "cancelled")]
     else:
         assert load_task_result(case.root, "saved-child")["status"] == "running"
+    terminal = [frame["status"] for frame in list(case.events.queue)
+                if frame.get("type") == "task_done" and frame.get("task_id") == "saved-child"]
+    assert terminal == (["cancelled"] if control == "stop_child" else [])
     # The lifespan's second cleanup sees the parent already queued and the child
     # still carried in RUNNING for recovery from its last working checkpoint.
     assert workers.kill_workers(

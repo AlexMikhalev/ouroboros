@@ -180,7 +180,7 @@ def held_name_lock(root, timeout=5):
 
 @pytest.mark.parametrize("stage", ["reserve", "dispatch"])
 @pytest.mark.parametrize("interactive", [False, True])
-def test_same_chain_preparation_stamp_claim_and_one_send(root, short_acquisitions, stage, interactive):
+def test_same_chain_preparation_stamp_claim_and_one_send(root, short_acquisitions, monkeypatch, stage, interactive):
     calls, prepared, stamps = [], [], []
     with contextlib.ExitStack() as stack:
         events = stack.enter_context(owner(root, task={"_is_direct_chat": interactive, "_presence_turn": interactive}))
@@ -188,10 +188,29 @@ def test_same_chain_preparation_stamp_claim_and_one_send(root, short_acquisition
         stack.enter_context(bind_api_review_paid_stamp(ReviewPaidStamp(lambda: stamps.append(1), fail_closed=True)))
 
         def start_hold():
-            release = stack.enter_context(held_lock(root))
-            timer = threading.Timer(.18, release.set)
-            timer.start()
-            stack.callback(timer.join, 2)
+            # Only the attempt's first contended slice (or the cleanup watchdog) releases the
+            # hold: a fixed 0.18 s timer raced it, and on a throttled host one 25 ms busy wait
+            # (SQLite counts its planned sleeps) outlasted the timer, so no wait was disclosed.
+            release = stack.enter_context(held_lock(root, timeout=None))
+            shortened = ua._locked
+
+            @contextlib.contextmanager
+            def observed_lock(*args, **kwargs):
+                held = contextlib.ExitStack()
+                try:
+                    heartbeat = held.enter_context(shortened(*args, **kwargs))
+                except ledger.UsageLockUnavailable as exc:
+                    if exc.reason == "contention":
+                        release.set()
+                    raise
+                with held:
+                    yield heartbeat
+
+            monkeypatch.setattr(ua, "_locked", observed_lock)
+            watchdog = threading.Timer(5, release.set)
+            watchdog.start()
+            stack.callback(watchdog.join, 2)
+            stack.callback(watchdog.cancel)
 
         def before(held):
             prepared.append(held.attempt_id)
