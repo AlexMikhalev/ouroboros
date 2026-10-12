@@ -288,8 +288,9 @@ def test_the_allowlisted_service_env_and_mcp_stdio_env_keep_the_installation_mar
 
 
 def test_markers_are_names_only_and_never_logged_or_persisted_with_environment_bytes(tmp_path, caplog):
-    source = (REPO / "ouroboros" / "process_scope.py").read_text(encoding="utf-8")
-    assert not re.search(r"log\.\w+\([^)]*(?:rest|words|entries|environ)", source), "no environment bytes in logs"
+    for module in ("process_scope.py", "process_census.py"):
+        source = (REPO / "ouroboros" / module).read_text(encoding="utf-8")
+        assert not re.search(r"log\.\w+\([^)]*(?:rest|words|entries|environ)", source), f"no environment bytes in logs: {module}"
     marker = ps.installation_marker(tmp_path)
     member = _sleeper({marker: "1"})
     try:

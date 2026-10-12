@@ -1,70 +1,55 @@
-"""Work-scoped process lifetime: scope markers, recorded groups, one census, one reap.
+"""Work-scoped process lifetime: membership, one reap, task scopes, Panic, the engine index.
 
-Every process that exists because of work has one custodian that can see it and end
-it by measured identity (DEVELOPMENT "Process Custody Rule"). The custodian's view of
-its scope on POSIX is the union of three sources, read from live kernel state and
-never from what a command line looks like:
+The custodian's view of a scope on POSIX is the union of three sources, each read from
+live kernel state by ``process_census``: the scope MARKER (an environment entry inherited
+by every descendant, invisible for macOS platform binaries under SIP); the scope's
+RECORDED process groups — every own command, executor foreground command and task-scoped
+service is its own group leader (``start_new_session``), recorded at spawn with the
+leader's measured birth (zombie-visible: the shell may have exited before its row is
+written), so a ``cmd &`` or ``nohup`` child stays reachable after its shell exits; a
+recorded group is signalled MEMBER BY MEMBER, never ``killpg`` on a bare number, and only
+under the pgid-reuse rule (every candidate born at or after the recorded leader, a live
+``pid == G`` carrying the recorded leader birth; otherwise the id was reused and the group
+is skipped entirely; disclosed residual: a group that emptied and whose id was recycled as
+a new, leaderless group born after the recorded leader passes both rules); and
+individually recorded descendants — the engine's captured pids, and every KNOWN member an
+earlier pass left unverified or surviving, each checked by pid AND birth.
 
-* the scope MARKER, an environment entry ``NAME=1`` whose name carries a random
-  128-bit hex id (``OURO_INSTALL_SCOPE_<hex>`` for the installation,
-  ``OURO_TASK_SCOPE_<hex>`` for a task; the engine's ``CLAUDEXOR_RUN_SCOPE_<hex>`` is
-  recognised for shedding and read from the engine's own index at Panic). Inherited by
-  every descendant; on Linux readable for every process of this user, on macOS only for
-  non-platform binaries — ``ps -E`` shows no environment for Apple's own ``/bin/sh``,
-  ``/bin/sleep``, ``/usr/bin/find`` under SIP, so the marker alone is blind to exactly
-  a ``find`` orphaned under a killed shell;
-* the scope's RECORDED process groups: every own command, executor foreground
-  command and task-scoped service is its own group leader (``start_new_session``), so
-  the group id with the leader's measured birth is recorded at spawn (zombie-visible:
-  the shell may have exited before its row is written) and a ``cmd &`` or ``nohup``
-  child stays in that group after the shell exits. A recorded group is signalled MEMBER
-  BY MEMBER, never ``killpg`` on a bare number, and only under the pgid-reuse rule:
-  every candidate with that pgid was born at or after the recorded leader, and a live
-  process whose pid IS the group id carries the recorded leader birth; otherwise the id
-  was reused and the group is skipped entirely. Disclosed residual: a group that
-  emptied and whose id was recycled as a new, leaderless group born after the recorded
-  leader passes both rules;
-* individually recorded descendants (the engine's captured pids; the ledger and
-  executor records keep theirs).
-
-Every answer about one process is typed: confirmed absent or reused (ESRCH, or a
-measured birth that differs), ended by our signal, a survivor, or UNVERIFIED (identity
-unreadable, a stalled reader, a denied or failed signal). Unverified is never ended or
-gone; it is recorded with pid, birth and reason, and a scope with survivors or
-unverified members is NOT settled: its record stays for the sweep, the launcher or the
-next start. Inheritance is not a lifetime transfer: a process handed to a longer-lived
-custodian sheds every shorter-lived marker at its spawn env (``shed_scopes``).
-Environment bytes are never logged or persisted (pid, birth, reason only). Windows has
-no environment census: ``end_scope`` reports ``unsupported`` there as a final
-disclosure and the existing Job/TerminateProcess paths stay the truth.
+Every answer about one process is typed: confirmed absent or reused (ESRCH, a corpse, or
+a measured birth that differs), ended by our signal, a survivor, or UNVERIFIED (identity
+unreadable, a stalled reader, a denied or failed signal); unverified is never ended or
+gone. A pending obligation (a task scope record, ``panic_sweep_pending``) retires only when
+its outcome is SETTLED — census readable, the engine index absent or read, no survivor, no
+unverified member — or when no later pass can change the answer: an unsupported platform,
+or a denied signal (EPERM), disclosed as final. Everything still unknown stays recorded
+with pid and birth and is an input of the next pass. Inheritance is not a lifetime
+transfer: a process handed to a longer-lived custodian sheds every shorter-lived marker at
+its spawn env (``shed_scopes``). Environment bytes are never logged or persisted. Windows:
+``end_scope`` reports ``unsupported`` as a final disclosure; the Job/TerminateProcess paths
+stay the truth.
 """
 
 from __future__ import annotations
 
-import datetime as _dt
 import hashlib
 import json
 import logging
 import os
 import pathlib
-import re
-import secrets
-import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ouroboros import platform_layer as _pl
+from ouroboros.process_census import (
+    IDENTITY_ALIVE, IDENTITY_UNREADABLE, INSTALL_SCOPE_PREFIX, RUN_SCOPE_PREFIX, SCOPE_NAME_RE, SCOPE_VALUE,
+    TASK_SCOPE_PREFIX, _Identity, _Row, birth_epoch, birth_text, census, installation_scope_entries, is_scope_name,
+    leader_facts, lstart_text, measure_birth, mint_marker, parse_proc_stat, read_identities, scope_entries, shed_scopes,
+)
 from ouroboros.utils import append_jsonl, atomic_write_json, read_json_dict, update_json_locked, utc_now_iso
 
 log = logging.getLogger(__name__)
 
-SCOPE_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*_SCOPE_[0-9a-f]{32}$")
-SCOPE_VALUE = "1"
-INSTALL_SCOPE_PREFIX = "OURO_INSTALL_SCOPE_"
-TASK_SCOPE_PREFIX = "OURO_TASK_SCOPE_"
-RUN_SCOPE_PREFIX = "CLAUDEXOR_RUN_SCOPE_"
 
 INSTALLATION_SCOPE_FILE = "installation_scope.json"
 PANIC_SWEEP_PENDING_FILE = "panic_sweep_pending.json"
@@ -79,18 +64,12 @@ ENGINE_RUN_SCOPES_SCHEMA = 1
 TASK_END_GRACE_SEC = 2.0
 _KILL_CONFIRM_SEC = 1.0
 _RESCAN_SETTLE_SEC = 0.1
-_CENSUS_TIMEOUT_SEC = 20
-_BIRTH_TIMEOUT_SEC = 5
 _CLEANUP_RUNNING_STALE_SEC = 60.0
 
 COVERAGE_POSIX = "marker+groups"
 COVERAGE_UNSUPPORTED = "unsupported"
 
-# Typed per-member answers.
-IDENTITY_ALIVE = "alive"
-IDENTITY_ZOMBIE = "zombie"
-IDENTITY_ABSENT = "absent"
-IDENTITY_UNREADABLE = "unreadable"
+# Why a member is unverified (``process_census`` types the identity answers themselves).
 UNVERIFIED_IDENTITY = "identity_unreadable"
 UNVERIFIED_DENIED = "signal_denied"
 UNVERIFIED_FAILED = "signal_failed"
@@ -104,42 +83,6 @@ PANIC_CENSUS_RESIDUAL = ("macOS: a system binary started with & by a shell that 
                         "shows no environment and is not reached; engine harness leftovers are reached "
                         "through the engine's run-scope index when it is readable")
 
-
-# --------------------------------------------------------------------------- markers
-
-def mint_marker(prefix: str) -> str:
-    """A fresh grammar-shaped scope name: ``<PREFIX><32 random hex digits>``."""
-    name = f"{prefix}{secrets.token_hex(16)}"
-    if not SCOPE_NAME_RE.match(name):
-        raise ValueError(f"scope prefix {prefix!r} does not fit the marker grammar")
-    return name
-
-
-def is_scope_name(name: str) -> bool:
-    return bool(SCOPE_NAME_RE.match(str(name or "")))
-
-
-def scope_entries(env: Mapping[str, str], *, prefix: str = "") -> Dict[str, str]:
-    """The grammar-shaped ``NAME=1`` entries of ``env`` (optionally one role's)."""
-    return {key: SCOPE_VALUE for key, value in env.items()
-            if is_scope_name(key) and str(value) == SCOPE_VALUE and key.startswith(prefix)}
-
-
-def shed_scopes(env: Mapping[str, str], *, keep_prefixes: Iterable[str] = (INSTALL_SCOPE_PREFIX,)) -> Dict[str, str]:
-    """``env`` without the scope markers a longer-lived custodian must not inherit.
-
-    The managed daemon and a keep/session service keep the installation marker and
-    drop task and engine-run markers: inheriting one would end them with the first
-    task or run that happened to start them.
-    """
-    kept = tuple(keep_prefixes)
-    return {key: value for key, value in env.items()
-            if not is_scope_name(key) or (bool(kept) and key.startswith(kept))}
-
-
-def installation_scope_entries(env: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
-    """The installation marker entries present in ``env`` (default: this process)."""
-    return scope_entries(os.environ if env is None else env, prefix=INSTALL_SCOPE_PREFIX)
 
 
 # --------------------------------------------------------------------------- installation scope
@@ -209,219 +152,6 @@ def initialize_installation_scope(data_dir: Any) -> str:
     return plant_installation_scope(data_dir)
 
 
-# --------------------------------------------------------------------------- identity and census
-
-@dataclass
-class _Row:
-    pid: int
-    ppid: int
-    pgid: int
-    birth: str          # the C-locale ``ps -o lstart`` text, compared for equality
-    epoch: float        # the same instant as seconds, for "born after the recorded leader"
-    state: str = IDENTITY_ALIVE
-    markers: Optional[set] = field(default_factory=set)  # None: environment unreadable
-
-
-@dataclass
-class _Identity:
-    state: str          # alive | zombie | absent | unreadable
-    birth: str = ""
-    pgid: int = 0
-
-
-_MONTHS = {name: index for index, name in enumerate(
-    ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), start=1)}
-_LSTART = r"[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} \d\d:\d\d:\d\d \d{4}"
-_LSTART_RE = re.compile(r"^[A-Za-z]{3} ([A-Za-z]{3}) +(\d{1,2}) (\d\d):(\d\d):(\d\d) (\d{4})$")
-_CENSUS_ROW_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+(" + _LSTART + r")\s+(\S+)\s*(.*)$")
-_IDENTITY_ROW_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(" + _LSTART + r")\s+(\S+)\s*$")
-
-
-def _ps_env() -> Dict[str, str]:
-    # English month/day names whatever the server's locale (the parser has no locale
-    # tables); the census's own ps child carries NO scope marker, so it never lists itself.
-    return shed_scopes({**os.environ, "LC_ALL": "C", "LANG": "C"}, keep_prefixes=())
-
-
-def birth_epoch(text: str) -> float:
-    """Seconds since the epoch for one ``lstart`` text; 0.0 when it does not parse."""
-    match = _LSTART_RE.match(str(text or "").strip())
-    if not match:
-        return 0.0
-    month, day, hour, minute, second, year = match.groups()
-    try:
-        return _dt.datetime(int(year), _MONTHS[month], int(day), int(hour), int(minute), int(second)).timestamp()
-    except (KeyError, ValueError, OverflowError):
-        return 0.0
-
-
-def lstart_text(epoch: float) -> str:
-    """The C-locale ``ps -o lstart`` spelling of ``epoch`` (procps prints ``ctime`` of
-    ``btime + starttime // CLK_TCK``), so a Linux birth read from ``/proc`` compares
-    equal to the engine's recorded text."""
-    return time.strftime("%a %b %e %H:%M:%S %Y", time.localtime(int(epoch)))
-
-
-def _state_letter(text: str) -> str:
-    return IDENTITY_ZOMBIE if str(text or "").startswith("Z") else IDENTITY_ALIVE
-
-
-# --- Linux: /proc needs no ps (the documented Docker image ships none)
-
-_BOOT_EPOCH: List[float] = []
-
-
-def _boot_epoch() -> float:
-    if _BOOT_EPOCH:
-        return _BOOT_EPOCH[0]
-    try:
-        with open("/proc/stat", "rb") as handle:
-            for line in handle:
-                if line.startswith(b"btime "):
-                    _BOOT_EPOCH.append(float(int(line.split()[1])))
-                    return _BOOT_EPOCH[0]
-    except (OSError, ValueError, IndexError):
-        pass
-    return 0.0
-
-
-def parse_proc_stat(data: bytes, *, boot_epoch: float, hz: int) -> Tuple[str, int, int, float]:
-    """``(state, ppid, pgid, birth_epoch)`` from one ``/proc/<pid>/stat`` body (comm is
-    parenthesised and may hold spaces or ``)``, so fields follow the LAST ``)``)."""
-    fields = data.rpartition(b")")[2].split()
-    state = fields[0].decode("ascii", "replace")
-    ppid, pgid, start_ticks = int(fields[1]), int(fields[2]), int(fields[19])
-    return state, ppid, pgid, float(int(boot_epoch) + start_ticks // max(1, int(hz)))
-
-
-def _proc_identity(pid: int) -> _Identity:
-    try:
-        with open(f"/proc/{int(pid)}/stat", "rb") as handle:
-            data = handle.read()
-    except FileNotFoundError:
-        return _Identity(IDENTITY_ABSENT)
-    except ProcessLookupError:
-        return _Identity(IDENTITY_ABSENT)
-    except OSError:
-        return _Identity(IDENTITY_UNREADABLE)
-    try:
-        state, _ppid, pgid, epoch = parse_proc_stat(data, boot_epoch=_boot_epoch(), hz=os.sysconf("SC_CLK_TCK"))
-    except (ValueError, IndexError, OSError):
-        return _Identity(IDENTITY_UNREADABLE)
-    return _Identity(_state_letter(state), lstart_text(epoch), pgid)
-
-
-def _proc_rows(assignments: set, wanted: set) -> Optional[Dict[int, _Row]]:
-    try:
-        names = os.listdir("/proc")
-    except OSError:
-        return None
-    boot, hz = _boot_epoch(), os.sysconf("SC_CLK_TCK")
-    rows: Dict[int, _Row] = {}
-    for name in names:
-        if not name.isdigit():
-            continue
-        pid = int(name)
-        try:
-            with open(f"/proc/{pid}/stat", "rb") as handle:
-                state, ppid, pgid, epoch = parse_proc_stat(handle.read(), boot_epoch=boot, hz=hz)
-        except (OSError, ValueError, IndexError):
-            continue  # gone between listdir and read, or unreadable: not a row we can name
-        rows[pid] = _Row(pid, ppid, pgid, lstart_text(epoch), epoch, _state_letter(state),
-                         _proc_markers(pid, assignments, wanted))
-    return rows or None
-
-
-def _proc_markers(pid: int, assignments: set, wanted: set) -> Optional[set]:
-    if not assignments:
-        return set()
-    try:
-        with open(f"/proc/{pid}/environ", "rb") as handle:
-            entries = set(handle.read().split(b"\0"))
-    except OSError:
-        return None  # gone, nondumpable or another user's: unknown, not "no"
-    present = {entry.decode("utf-8", "replace") for entry in entries}
-    return {marker for marker in wanted if f"{marker}={SCOPE_VALUE}" in present}
-
-
-# --- macOS/BSD: ps is the only kernel-state reader
-
-def _ps_identities(pids: List[int]) -> Dict[int, _Identity]:
-    try:
-        out = subprocess.run(["ps", "-o", "pid=,pgid=,lstart=,state=", "-p", ",".join(str(pid) for pid in pids)],
-                             capture_output=True, text=True, errors="replace", timeout=_BIRTH_TIMEOUT_SEC,
-                             env=_ps_env())
-    except Exception:
-        return {pid: _Identity(IDENTITY_UNREADABLE) for pid in pids}
-    if out.returncode not in (0, 1):  # 1 = none of the pids exists; anything else is no answer
-        return {pid: _Identity(IDENTITY_UNREADABLE) for pid in pids}
-    found: Dict[int, _Identity] = {}
-    for line in (out.stdout or "").splitlines():
-        match = _IDENTITY_ROW_RE.match(line)
-        if match:
-            pid, pgid, birth, state = match.groups()
-            found[int(pid)] = _Identity(_state_letter(state), birth.strip(), int(pgid))
-    return {pid: found.get(pid, _Identity(IDENTITY_ABSENT)) for pid in pids}
-
-
-def read_identities(pids: Iterable[int]) -> Dict[int, _Identity]:
-    """One batched identity read (``alive``/``zombie`` with birth and pgid, ``absent`` or
-    ``unreadable``) for ``pids``: Linux from ``/proc``, macOS from ONE ``ps -p a,b,c``."""
-    wanted = sorted({int(pid) for pid in pids if int(pid) > 0})
-    if not wanted:
-        return {}
-    if _pl.IS_WINDOWS:
-        return {pid: _Identity(IDENTITY_UNREADABLE) for pid in wanted}
-    if os.path.isdir("/proc"):
-        return {pid: _proc_identity(pid) for pid in wanted}
-    return _ps_identities(wanted)
-
-
-def measure_birth(pid: int) -> str:
-    """The LIVE birth text of ``pid``: ``""`` when gone, a zombie, or unmeasurable (a
-    liveness answer for callers that only need "is this exact process still running")."""
-    identity = read_identities([pid]).get(int(pid))
-    return identity.birth if identity is not None and identity.state == IDENTITY_ALIVE else ""
-
-
-def birth_text(pid: int) -> str:
-    """The birth text as the table still shows it, a zombie's included (``""`` when gone
-    or unmeasurable): the identity a group RECORD needs for a leader that already exited."""
-    identity = read_identities([pid]).get(int(pid))
-    return identity.birth if identity is not None and identity.state in (IDENTITY_ALIVE, IDENTITY_ZOMBIE) else ""
-
-
-def census(markers: Iterable[str] = ()) -> Optional[Dict[int, _Row]]:
-    """One snapshot of the live process table: pid, ppid, pgid, birth, state and which
-    of ``markers`` each process visibly carries. ``None`` when the table could not be
-    read (unknown, never empty). Linux reads ``/proc`` (no ``ps`` needed); macOS reads
-    the environment column of one ``ps -E``."""
-    if _pl.IS_WINDOWS:
-        return None
-    wanted = {str(marker) for marker in markers if marker}
-    assignments = {f"{marker}={SCOPE_VALUE}" for marker in wanted}
-    if os.path.isdir("/proc"):
-        return _proc_rows(assignments, wanted)
-    try:
-        out = subprocess.run(["ps", "-E", "-ww", "-A", "-o", "pid=,ppid=,pgid=,lstart=,state=,command="],
-                             capture_output=True, text=True, errors="replace",
-                             timeout=_CENSUS_TIMEOUT_SEC, env=_ps_env())
-    except Exception:
-        return None
-    if out.returncode != 0:
-        return None
-    rows: Dict[int, _Row] = {}
-    for line in (out.stdout or "").splitlines():
-        match = _CENSUS_ROW_RE.match(line)
-        if not match:
-            continue
-        pid, ppid, pgid, birth, state, rest = match.groups()
-        words = set(rest.split())
-        rows[int(pid)] = _Row(int(pid), int(ppid), int(pgid), birth.strip(), birth_epoch(birth),
-                              _state_letter(state), {marker for marker in wanted if f"{marker}={SCOPE_VALUE}" in words})
-    return rows or None
-
-
 # --------------------------------------------------------------------------- membership
 
 def scope_members(rows: Mapping[int, _Row], *, marker: str = "", markers: Iterable[str] = (),
@@ -452,9 +182,13 @@ def scope_members(rows: Mapping[int, _Row], *, marker: str = "", markers: Iterab
         # latest); lstart has one-second resolution, hence the one-second tolerance.
         floor = (birth_epoch(leader_birth) or float(scope_start_epoch or 0.0)) - 1.0
         leader = rows.get(pgid)
-        # A live pid == G must carry the recorded leader birth; an unrecorded leader birth
-        # cannot vouch for a live leader, so the group is skipped (disclosed) rather than
-        # signalled on a guess.
+        # A live pid == G must carry the recorded leader birth. An unrecorded leader birth
+        # (the spawn-time read found the leader already reaped) cannot vouch for a live
+        # leader: the kernel never hands out a pid that is still a live process-group id,
+        # so a live pid == G after our leader was reaped means our group had emptied first
+        # and the id was recycled — skipped, disclosed, never signalled on a guess. The
+        # miss this leaves (a spawn-time identity read that failed for a leader still ours)
+        # is the disclosed residual.
         if (leader is not None and (not leader_birth or leader.birth != leader_birth)) or any(
                 row.epoch and row.epoch < floor for row in candidates):
             reused.append(pgid)  # the id names another group now: skipped entirely
@@ -716,18 +450,6 @@ def scoped_child_env(env: Mapping[str, str], target: Optional[tuple]) -> Dict[st
     if target is None:
         return shed_scopes(env)
     return {**env, **task_scope_env(*target)}
-
-
-def leader_facts(pid: int) -> Tuple[int, str]:
-    """``(pgid, birth)`` of a just-spawned session leader, zombie-visible: the shell may
-    have exited before its row is written, and ``os.getpgid`` refuses a corpse (ESRCH on
-    macOS). Every seam spawns with ``start_new_session``, so a leader the table no longer
-    shows at all still led the group that bears its pid (structural); its birth is then
-    unrecorded, which rule 2 treats as "cannot vouch for a live leader"."""
-    identity = read_identities([pid]).get(int(pid))
-    if identity is not None and identity.state in (IDENTITY_ALIVE, IDENTITY_ZOMBIE):
-        return (identity.pgid or int(pid)), identity.birth
-    return int(pid), ""
 
 
 def record_task_group(drive_root: Any, task_id: str, pid: int) -> Optional[Dict[str, Any]]:

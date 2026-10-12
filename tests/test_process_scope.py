@@ -16,6 +16,7 @@ import time
 import pytest
 
 from ouroboros import platform_layer as _pl
+from ouroboros import process_census as pc
 from ouroboros import process_scope as ps
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="the environment census is POSIX-only")
@@ -351,7 +352,7 @@ def test_the_census_reader_carries_no_scope_marker_and_pins_the_c_locale(monkeyp
     install, task = ps.mint_marker(ps.INSTALL_SCOPE_PREFIX), ps.mint_marker(ps.TASK_SCOPE_PREFIX)
     monkeypatch.setenv(install, "1")
     monkeypatch.setenv(task, "1")
-    env = ps._ps_env()
+    env = pc._ps_env()
     assert not ps.scope_entries(env), "the ps child never lists itself as a member"
     assert env["LC_ALL"] == "C" and env["LANG"] == "C"
 
@@ -359,8 +360,30 @@ def test_the_census_reader_carries_no_scope_marker_and_pins_the_c_locale(monkeyp
 def test_proc_stat_rows_need_no_ps_and_spell_births_like_lstart():
     data = (b"1234 (a comm) with) parens) S 1 1234 1234 0 -1 4194560 100 0 0 0 5 3 0 0 20 0 1 0 98765 1000000 50 "
             b"18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0")
-    state, ppid, pgid, epoch = ps.parse_proc_stat(data, boot_epoch=1_700_000_000, hz=100)
+    state, ppid, pgid, epoch = pc.parse_proc_stat(data, boot_epoch=1_700_000_000, hz=100)
     assert (state, ppid, pgid, epoch) == ("S", 1, 1234, 1_700_000_987.0), "btime + starttime // CLK_TCK, as procps prints it"
-    text = ps.lstart_text(epoch)
-    assert ps._LSTART_RE.match(text) and ps.birth_epoch(text) == epoch
-    assert ps._state_letter("Z") == ps.IDENTITY_ZOMBIE and ps._state_letter("Ss") == ps.IDENTITY_ALIVE
+    text = pc.lstart_text(epoch)
+    assert pc._LSTART_RE.match(text) and pc.birth_epoch(text) == epoch
+    assert pc._state_letter("Z") == pc.IDENTITY_ZOMBIE and pc._state_letter("Ss") == pc.IDENTITY_ALIVE
+
+
+def test_the_lstart_spelling_is_english_under_a_non_english_lc_time():
+    """grok 3: the engine writes the C-locale spelling; a server whose LC_TIME is German
+    must still spell (and compare) a ``/proc`` birth the same way."""
+    import locale
+
+    saved = locale.setlocale(locale.LC_TIME)
+    epoch = 1_700_000_987.0
+    try:
+        try:
+            locale.setlocale(locale.LC_TIME, "de_DE.UTF-8")
+        except locale.Error:
+            pytest.skip("no non-English LC_TIME locale on this host")
+        if time.strftime("%a", time.localtime(epoch)) in pc._WEEKDAYS:
+            pytest.skip("this host's de_DE spelling is indistinguishable from English")
+        text = pc.lstart_text(epoch)
+        weekday, month = text.split()[:2]
+        assert weekday in pc._WEEKDAYS and month in pc._MONTH_NAMES, text
+        assert pc._LSTART_RE.match(text) and pc.birth_epoch(text) == epoch
+    finally:
+        locale.setlocale(locale.LC_TIME, saved)
