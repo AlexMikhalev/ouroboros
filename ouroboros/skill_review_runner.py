@@ -721,6 +721,7 @@ def _call_review_with_lifecycle_guard(
         "_skill_review_snapshot_revised": getattr(ctx, "_skill_review_snapshot_revised", sentinel),
         "_skill_review_resolved_binding": getattr(ctx, "_skill_review_resolved_binding", sentinel),
         "_skill_review_resume": getattr(ctx, "_skill_review_resume", sentinel),
+        "_skill_review_logged_errors": getattr(ctx, "_skill_review_logged_errors", sentinel),
         "_skill_review_wave_binding": getattr(ctx, "_skill_review_wave_binding", sentinel),
     }
     state_root = pathlib.Path(drive_root or ctx.drive_root)

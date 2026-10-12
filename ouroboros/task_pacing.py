@@ -91,10 +91,8 @@ class PacingNote:
 
 @dataclass(frozen=True)
 class BudgetSnapshot:
-    """The task's time-budget facts at one moment (all seconds).
-
-    ``has_deadline=False`` disables the time axis entirely: gates then bound
-    improvement passes by COUNT only (default 1 = the historical behavior)."""
+    """Time-budget facts in seconds: the narrower explicit calendar deadline or execution
+    budget. ``has_deadline=False`` (neither) leaves only pass-COUNT gates (default 1)."""
 
     has_deadline: bool
     total_sec: float = 0.0
@@ -165,35 +163,25 @@ def _reserve_sec(total_sec: float, profile: Dict[str, Any]) -> float:
 
 
 def effective_finalization_reserve_sec(ctx: Any) -> float:
-    """The EMIT window before a real deadline (v6.55.0): the plain finalization
-    grace — the time needed to emit one best-effort answer / let a network tool
-    return cleanly. Consumed by the local deadline-finalize trigger and the
-    network-tool deadline clamp.
-
-    This is deliberately the small GRACE window, NOT the percentage reserve
-    (``BudgetSnapshot.reserve_sec`` = max(grace, pct×total)). The pct reserve is
-    an acceptance-REVIEW gate concept (don't START a review you cannot finish);
-    applying it to the finalize trigger amputated the tail of every long task —
-    a 6h ProgramBench task force-finalized ~54 min early on the 15% profile
-    (adversarial review r1). The finalize path fires just before the kill, so it
-    needs only the emit window; the review gates keep the pct reserve via the
-    snapshot. Restores the pre-sprint deadline-local behavior (monotonicity)."""
+    """The EMIT window before a real deadline (v6.55.0): the plain finalization grace to
+    emit one best-effort answer or let a network tool return; read by the local
+    deadline-finalize trigger and the network-tool clamp. NOT the percentage reserve
+    (``BudgetSnapshot.reserve_sec`` = max(grace, pct×total)): that is a review-admission
+    gate (don't START a review you cannot finish), and applying it here force-finalized
+    a 6h task ~54 min early on the 15% profile (adversarial review r1)."""
     return float(get_finalization_grace_sec())
 
 
 def build_budget_snapshot(ctx: Any, *, profile: Optional[Dict[str, Any]] = None) -> BudgetSnapshot:
-    """Snapshot the task's time budget from task_metadata deadline facts."""
+    """Snapshot the task's time budget from its explicit calendar/execution facts."""
     return _budget_snapshot(ctx, profile=profile, latch=True)
 
 
 def observe_budget_snapshot(ctx: Any, *, profile: Dict[str, Any]) -> BudgetSnapshot:
-    """The same snapshot WITHOUT the fallback-anchor latch (owner R49).
-
-    A metadata-poor task (no ``created_at``/``started_at`` and no anchor latched
-    yet) has no usable window facts a read-only observer could obtain without
-    WRITING one, so it is reported as having no deadline axis — which its one
-    caller, ``delegate_supervision._time_fact``, reports as ``not_set``.
-    ``profile`` is required: an observer never falls back to the emitting resolver."""
+    """The same snapshot WITHOUT the fallback-anchor latch (owner R49): a metadata-poor
+    task has no calendar axis a read-only observer could get without WRITING an anchor
+    (``delegate_supervision._time_fact`` reports ``not_set``). ``profile`` is required:
+    an observer never falls back to the emitting resolver."""
     return _budget_snapshot(ctx, profile=profile, latch=False)
 
 
@@ -203,15 +191,24 @@ def _budget_snapshot(
     meta = getattr(ctx, "task_metadata", {})
     if not isinstance(meta, dict):
         return BudgetSnapshot(has_deadline=False)
+    from ouroboros.config import resolve_task_execution_timeout_sec
+    from ouroboros.model_wait import explicit_execution_window_remaining
+
+    execution = None  # #939: an explicit execution budget is a time axis on the shared clock
+    left = explicit_execution_window_remaining(ctx)
+    total = resolve_task_execution_timeout_sec(meta) if left is not None else None
+    if total is not None and left is not None:
+        execution = BudgetSnapshot(True, total, max(0.0, total - left), left, _reserve_sec(
+            total, profile if profile is not None else resolve_budget_profile(ctx)))
     deadline = parse_deadline_ts(meta.get("deadline_at"))
     if deadline is None:
-        return BudgetSnapshot(has_deadline=False)
+        return execution or BudgetSnapshot(has_deadline=False)
     created = parse_deadline_ts(meta.get("created_at") or meta.get("started_at"))
     if created is None:
         created = getattr(ctx, "_time_budget_started_at", None)
         if created is None:
             if not latch:
-                return BudgetSnapshot(has_deadline=False)
+                return execution or BudgetSnapshot(has_deadline=False)
             # Latch the fallback anchor exactly like the note path does (fable-5
             # cumulative review F4): without the latch every metadata-poor
             # snapshot re-anchors total to "now" and the pct reserve silently
@@ -226,13 +223,14 @@ def _budget_snapshot(
     elapsed = max(0.0, (now - created).total_seconds())
     remaining = (deadline - now).total_seconds()
     reserve = _reserve_sec(total, profile if profile is not None else resolve_budget_profile(ctx))
-    return BudgetSnapshot(
-        has_deadline=True,
-        total_sec=total,
-        elapsed_sec=elapsed,
-        remaining_sec=remaining,
-        reserve_sec=reserve,
-    )
+    calendar = BudgetSnapshot(has_deadline=True, total_sec=total, elapsed_sec=elapsed,
+                              remaining_sec=remaining, reserve_sec=reserve)
+    if execution is None:
+        return calendar
+    # The earlier cutoff owns remaining time; either bound's proportional reserve can
+    # still close review/author admission first, so both gates survive.
+    nearest = execution if execution.remaining_sec < calendar.remaining_sec else calendar
+    return replace(nearest, reserve_sec=nearest.remaining_sec - min(execution.spendable_sec, calendar.spendable_sec))
 
 
 def review_launch_allowed(snapshot: BudgetSnapshot) -> Tuple[bool, str]:
@@ -1355,12 +1353,9 @@ def build_time_budget_note(
     accumulated_usage: Optional[Dict[str, Any]] = None,
     tree_cost_provider: Optional[Any] = None,
 ) -> Optional[PacingNote]:
-    """Deadline-aware milestone note at 50/25/10% remaining, never per-round.
-
-    With no deadline_at (headless/benchmark runs), falls back to intrinsic
-    self-pacing. Both are ADVISORY — the model judges when to finalize; neither
-    is a deterministic stop gate (P5). Milestone state rides ctx attributes so a
-    note fires at most once per threshold."""
+    """Advisory 50/25/10% time milestones, each latched once on ctx, never per-round.
+    Without an explicit calendar or execution budget (headless/benchmark runs), intrinsic
+    self-pacing. Both leave finalization to the model; neither is a stop gate (P5)."""
     meta = getattr(ctx, "task_metadata", {})
     if not isinstance(meta, dict):
         return None
@@ -1372,13 +1367,13 @@ def build_time_budget_note(
             ctx._time_budget_started_at = created
     now = utc_now()
     deadline = parse_deadline_ts(meta.get("deadline_at"))
-    if deadline is None:
+    snapshot = build_budget_snapshot(ctx)
+    if not snapshot.has_deadline:
         return build_intrinsic_pacing_note(
             ctx, created=created, now=now, round_idx=round_idx, accumulated_usage=accumulated_usage,
             tree_cost_provider=tree_cost_provider,
         )
-    total = max(1.0, (deadline - created).total_seconds())
-    remaining = (deadline - now).total_seconds()
+    total, remaining = max(1.0, snapshot.total_sec), snapshot.remaining_sec
     fraction_remaining = 0.0 if remaining <= 0 else remaining / total
     seen = getattr(ctx, "_time_budget_milestones_seen", None)
     if not isinstance(seen, set):
@@ -1393,9 +1388,11 @@ def build_time_budget_note(
     selected_label = unseen_crossed[-1][1]  # thresholds are coarse→fine
     for _value, label in crossed:
         seen.add(label)
-    elapsed = max(0.0, (now - created).total_seconds())
-    remaining_clamped = max(0.0, remaining)
-    deadline_text = deadline.isoformat().replace("+00:00", "Z")
+    elapsed, remaining_clamped = snapshot.elapsed_sec, max(0.0, remaining)
+    deadline_text = deadline.isoformat().replace("+00:00", "Z") if deadline is not None else ""
+    from ouroboros.config import explicit_execution_timeout_sec
+    time_axis = "; ".join(part for part in (f"Deadline: {deadline_text}" if deadline_text else "", (
+        "Execution budget: queue and confirmed pauses excluded" if explicit_execution_timeout_sec(meta) else "")) if part)
     # M4 deadline-flush at the tightest milestone: prompt for a salvageable,
     # grounded deliverable before the hard cutoff. Prompt-only; forced
     # finalization is untouched.
@@ -1417,7 +1414,7 @@ def build_time_budget_note(
     text = (
         f"[TIME BUDGET — {selected_label} remaining crossed]\n"
         f"Elapsed: ~{elapsed/60:.1f} min | Remaining: ~{remaining_clamped/60:.1f} min | "
-        f"Deadline: {deadline_text}\n"
+        f"{time_axis}\n"
         "Use this as planning context, not as a command to stop. If a passing artifact "
         "or service already exists, prefer preserving and verifying it over speculative "
         "improvements. If not, focus on the shortest path to a verifiable result."

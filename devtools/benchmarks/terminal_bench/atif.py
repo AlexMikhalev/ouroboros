@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import math
+import runpy
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -401,6 +402,7 @@ def build_trajectory(
     )
 
     physical = _physical_metrics(agent_dir)
+    token_evidence = None
     if physical is not None:
         prompt_tokens = int(physical["prompt_tokens"])
         completion_tokens = int(physical["completion_tokens"])
@@ -408,17 +410,17 @@ def build_trajectory(
         saw_usage = True
         total_cost = physical.get("cost_usd")
     else:
-        prompt_tokens = 0
-        completion_tokens = 0
-        cached_tokens = 0
-        saw_usage = False
-        for row in events:
-            if row.get("type") != "llm_usage":
-                continue
-            saw_usage = True
-            prompt_tokens += int(row.get("prompt_tokens") or 0)
-            completion_tokens += int(row.get("completion_tokens") or 0)
-            cached_tokens += int(row.get("cached_tokens") or 0)
+        # Load the pure shared reader without importing the application package:
+        # this script also runs directly in uploaded source trees, stdlib-only.
+        summarize_tokens = runpy.run_path(str(
+            Path(__file__).resolve().parents[3] / "ouroboros" / "event_token_totals.py"
+        ))["event_token_totals"]
+        usage_rows = [row for row in events if row.get("type") == "llm_usage"]
+        token_evidence = summarize_tokens(usage_rows)
+        saw_usage = bool(usage_rows)
+        prompt_tokens = token_evidence["prompt_tokens"]["total"]
+        completion_tokens = token_evidence["completion_tokens"]["total"]
+        cached_tokens = token_evidence["cached_tokens"]["total"]
 
         total_cost: float | None = None
         summary = _read_json(agent_dir / "ouroboros-run-summary.json")
@@ -431,6 +433,10 @@ def build_trajectory(
         final_metrics["total_prompt_tokens"] = prompt_tokens
         final_metrics["total_completion_tokens"] = completion_tokens
         final_metrics["total_cached_tokens"] = cached_tokens
+        if token_evidence is not None:
+            # ATIF's declared extra field carries partial lower bounds and the
+            # fourth counter; unknown totals stay null in its standard fields.
+            final_metrics["extra"] = {"event_token_evidence": token_evidence}
     if total_cost is not None:
         final_metrics["total_cost_usd"] = total_cost
 

@@ -9,11 +9,12 @@ the same truncation / parse-failure bugs.
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from ouroboros.utils import append_jsonl, utc_now_iso
+from ouroboros.utils import append_jsonl, truncate_review_artifact, utc_now_iso
 
 
 @dataclass
@@ -46,6 +47,10 @@ class ReviewActorRecord:
     answers: Dict[str, Any] = field(default_factory=dict)
     coverage: str = ""  # observed read coverage of the required-source manifest ("" = not a retrieving seat)
     context_manifest: Dict[str, Any] = field(default_factory=dict)
+    # A durable ``review_model_error`` append already succeeded for this actor (#1578):
+    # a positive receipt, never inferred from the status. The wave it ran in.
+    error_event_logged: bool = False
+    review_wave_id: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         # The durable id is the one the review substrate actually ran this row
@@ -85,6 +90,8 @@ class ReviewActorRecord:
             **({"parts": list(self.parts), "answers": dict(self.answers)} if self.parts else {}),
             **({"coverage": self.coverage} if self.coverage else {}),
             **({"context_manifest": dict(self.context_manifest)} if self.context_manifest else {}),
+            "error_event_logged": self.error_event_logged,
+            **({"review_wave_id": self.review_wave_id} if self.review_wave_id else {}),
         }
 
 
@@ -144,6 +151,8 @@ def _actor_record(
         pending_invocation_id=str(actor.get("pending_invocation_id") or ""),
         delegated_run_id=str(actor.get("delegated_run_id") or ""),
         recovery_binding=dict(actor.get("recovery_binding") or {}),
+        error_event_logged=actor.get("error_event_logged") is True,
+        review_wave_id=str(actor.get("review_wave_id") or ""),
     )
 
 
@@ -756,33 +765,137 @@ def parse_model_review_results(
 
 
 def emit_review_model_error_events(ctx: Any, parsed: ParsedTriadReview, *, source: str, skill_name: str = "") -> None:
-    """Persist model error / parse-failure events for observability."""
-    try:
-        log_path = ctx.drive_logs() / "events.jsonl"
-    except Exception:
-        return
+    """Parser-level failures (error, parse_failure, partial) through the one durable owner.
+
+    An actor whose run-level failure already has a successful append is skipped.
+    """
     for record in parsed.actor_records:
-        if record.status not in {"error", "parse_failure", "partial"}:
+        if record.status not in {"error", "parse_failure", "partial"} or record.error_event_logged:
             continue
-        if source == "skill_review":
-            note = (
-                "Full raw response preserved in review.json raw_actor_records "
-                "when quorum succeeds; otherwise in review_history.jsonl."
-            )
-        else:
-            note = "Full raw response preserved in triad_raw_results."
-        try:
-            append_jsonl(log_path, {
-                "ts": utc_now_iso(),
-                "type": "review_model_error",
-                "source": source,
-                "skill": skill_name,
-                "model": record.model_id,
-                "status": record.status,
-                "error_note": note,
-            })
-        except Exception:
-            pass
+        row = asdict(record)
+        row["error"] = (record.raw_text if record.status == "error" else
+                        "Reviewer response omitted required checklist items." if record.status == "partial"
+                        else "Reviewer response did not contain a valid findings array.")
+        row["error_note"] = ("Full raw response preserved in review.json raw_actor_records when quorum "
+                             "succeeds; otherwise in review_history.jsonl." if source == "skill_review" else
+                             "Full raw response preserved in triad_raw_results.")
+        record.error_event_logged = _append_review_model_error(ctx, row, source=source, skill_name=skill_name)
+
+
+def emit_review_run_errors(ctx: Any, request: Any, actors: Sequence[Any], *, drive_root: Any = None) -> None:
+    """Run- and collection-level reviewer failures of one review wave (every surface).
+
+    The positive append receipt lands on the actor and rides its run result, and
+    reaches this process's custody copies of the same operation, so the downstream
+    parser and a later collection or replay of that settlement do not append it
+    again; a failed append leaves it unlogged for a later collection. An awaited
+    slot is not a failure. No history is read here.
+    """
+    for actor in actors:
+        actor.review_wave_id = str(getattr(actor, "review_wave_id", "") or getattr(request, "resolved_wave_id", "") or "")
+        if actor.error_event_logged or actor.parse_status == "awaiting" or actor.late_result_pending:
+            continue
+        if actor.status not in {"error", "not_dispatched", "empty"} and (
+                actor.parse_status != "malformed" or REVIEW_OUTPUT_SHAPES.get(request.surface) == "report"):
+            continue
+        row = asdict(actor)
+        row["task_id"] = str(getattr(request, "task_id", "") or "")
+        row["status"] = actor.status if actor.status in {"error", "not_dispatched"} else "parse_failure"
+        row["error"] = actor.error or actor.reason or "Reviewer response was malformed or absent."
+        meta = getattr(request, "usage_attribution", {}) or {}
+        actor.error_event_logged = _append_review_model_error(
+            ctx, row, source=str(request.surface or ""), skill_name=str(meta.get("review_skill") or ""),
+            drive_root=drive_root)
+        if actor.error_event_logged:
+            _keep_error_receipt(ctx, actor)
+
+
+def _keep_error_receipt(ctx: Any, actor: Any) -> None:
+    """Carry a successful append to this process's custody copies of the SAME operation
+    (#1578): the settled replay copy and a still-registered live entry were taken before
+    the coordinator logged. Another operation of the slot never inherits the receipt."""
+    from ouroboros.review_custody import _ACTIVE, _ACTIVE_LOCK
+
+    identity = (str(actor.slot_id or ""), str(actor.operation_id or ""))
+    settled = getattr(ctx, "_review_settled_attempts", None)
+    with _ACTIVE_LOCK:
+        for held in [*(settled.values() if isinstance(settled, dict) else ()),
+                     *(entry.actor for entry in _ACTIVE.values() if entry.actor is not None)]:
+            if identity[1] and (str(getattr(held, "slot_id", "") or ""),
+                                str(getattr(held, "operation_id", "") or "")) == identity:
+                held.error_event_logged = True
+
+
+def emit_review_execution_error(ctx: Any, assignment: Any, error: Any, *, usage: Dict[str, Any],
+                                prompt_ref: Optional[Dict[str, Any]] = None) -> bool:
+    """A direct (report) executor's failure, through the same one durable owner as a panel."""
+    request, slot = assignment.request, assignment.slot
+    row = {
+        "task_id": str(request.task_id or ""), "review_wave_id": str(request.resolved_wave_id or ""),
+        "model": str(usage.get("resolved_model") or slot.model or ""), "slot_id": slot.slot_id,
+        "operation_id": assignment.call_id, "operation_state": str(usage.get("operation_state") or "settled"),
+        "usage": usage, "status": "error", "error": str(error),
+        "failure_code": str(getattr(error, "code", "") or usage.get("failure_code") or ""),
+        "reported_cause": str(getattr(error, "reported_cause", "") or ""),
+        "http_status": getattr(error, "status_code", None), "reset_at": str(getattr(error, "reset_at", "") or ""),
+        "prompt_ref": prompt_ref or {},
+    }
+    return _append_review_model_error(ctx, row, source=str(request.surface or ""), drive_root=assignment.custody_root)
+
+
+def _review_event_log(ctx: Any, drive_root: Any = None) -> pathlib.Path:
+    """The CANONICAL events log: the task's budget (canonical) root first; a headless or
+    task-drive child drive anchors on the data root that owns it (#1578)."""
+    from ouroboros.task_custody import canonical_owner_root
+
+    metadata = getattr(ctx, "task_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    root = next((str(value) for value in (metadata.get("budget_drive_root"), getattr(ctx, "budget_drive_root", ""),
+                                          drive_root, getattr(ctx, "drive_root", "")) if str(value or "").strip()), "")
+    if not root:  # a context that only exposes its log directory
+        root = str(pathlib.Path(ctx.drive_logs()).parent)
+    return canonical_owner_root(root) / "logs" / "events.jsonl"
+
+
+def _append_review_model_error(ctx: Any, row: Dict[str, Any], *, source: str,
+                               skill_name: str = "", drive_root: Any = None) -> bool:
+    """The one durable ``review_model_error`` owner; True only for a successful append.
+
+    ``append_jsonl``'s log sink owns the one live frame. Known task/root/parent/wave
+    identities come from the row, its recovery binding, the task metadata, the bound
+    usage scope or the context; the actual failure cause and refs ride as recorded.
+    """
+    try:
+        from ouroboros.usage_accounting import current_usage_scope
+
+        binding, usage = row.get("recovery_binding") or {}, row.get("usage") or {}
+        receipt = usage.get("claudexor") if isinstance(usage.get("claudexor"), dict) else {}
+        metadata = getattr(ctx, "task_metadata", None)
+        metadata = metadata if isinstance(metadata, dict) else {}
+        scope = current_usage_scope()
+        identity = {key: str(row.get(key) or binding.get(key) or metadata.get(key) or getattr(scope, key, "")
+                             or getattr(ctx, key, "") or "")
+                    for key in ("task_id", "root_task_id", "parent_task_id", "review_wave_id")}
+        payload = {
+            "ts": utc_now_iso(), "type": "review_model_error", "source": source, "skill": skill_name,
+            **{key: value for key, value in identity.items() if value},
+            "model": str(row.get("model_id") or row.get("model") or ""),
+            "provider": str(usage.get("provider") or row.get("provider") or ""),
+            # A preview with a disclosed cut; the full response stays behind response_ref/the actor record.
+            "status": str(row.get("status") or ""), "error": truncate_review_artifact(str(row.get("error") or "")),
+            **{key: str(row.get(key) or "") for key in (
+                "reported_cause", "failure_code", "transport_status", "reset_at", "slot_id",
+                "operation_id", "operation_state")},
+            "http_status": row.get("http_status") if isinstance(row.get("http_status"), int) else None,
+            "delegated_run_id": str(row.get("delegated_run_id") or usage.get("delegated_run_id")
+                                    or receipt.get("run_id") or ""),
+            "pending_invocation_id": str(row.get("pending_invocation_id") or usage.get("pending_invocation_id") or ""),
+            "prompt_ref": dict(row.get("prompt_ref") or {}), "response_ref": dict(row.get("response_ref") or {}),
+            "error_note": str(row.get("error_note") or "See response_ref and the raw actor record for the full response."),
+        }
+        return append_jsonl(_review_event_log(ctx, drive_root), payload) is True
+    except Exception:
+        return False
 
 
 # ── Reviewer prompt rule texts (byte-stable governance, cache-marked) ─────────

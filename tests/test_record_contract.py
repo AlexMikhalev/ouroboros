@@ -16,6 +16,7 @@ import time
 import pytest
 
 from ouroboros.contracts import record_contract as rc
+from ouroboros.event_usage import event_token_counts
 from ouroboros.tools.tool_result import ToolResult
 from tests.test_tool_call_log import _Registry, _call, _rows
 
@@ -60,6 +61,11 @@ _VERSION_1_GUARANTEED = {
     "supervisor_loop_stall": "ts type stalled_sec",
     "supervisor_loop_stall_end": "ts type stalled_sec phase",
 }
+_VERSION_2_GUARANTEED = {
+    **_VERSION_1_GUARANTEED,
+    **{name: _VERSION_1_GUARANTEED[name] + " record_contract_version"
+       for name in ("llm_round", "llm_usage")},
+}
 _TOOL_ROWS = {"tool_call_started", "tool_call", "tool_call_timeout"}
 
 
@@ -68,13 +74,23 @@ def _literal_keys(source: str, type_value: str) -> list[set[str]]:
     spread resolves to a dict literal assigned to ``name`` in the same function."""
     tree = ast.parse(source)
 
-    def keys_of(node: ast.Dict, assigns: dict) -> set[str]:
+    def keys_of(node: ast.AST, assigns: dict) -> set[str]:
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id == "event_token_counts":
+                # The shared normalizer guarantees all four keys even with no
+                # evidence. Its nullable behavior is exercised below/at runtime.
+                return set(event_token_counts({}))
+            return set()
+        if not isinstance(node, ast.Dict):
+            return set()
         keys: set[str] = set()
         for key, value in zip(node.keys, node.values):
             if key is None:
                 if isinstance(value, ast.Name) and value.id in assigns:
                     keys |= keys_of(assigns[value.id], assigns)
                 elif isinstance(value, ast.Dict):
+                    keys |= keys_of(value, assigns)
+                elif isinstance(value, ast.Call):
                     keys |= keys_of(value, assigns)
             elif isinstance(key, ast.Constant) and isinstance(key.value, str):
                 keys.add(key.value)
@@ -84,7 +100,7 @@ def _literal_keys(source: str, type_value: str) -> list[set[str]]:
     for scope in [tree, *[n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]]:
         assigns = {node.targets[0].id: node.value for node in ast.walk(scope)
                    if isinstance(node, ast.Assign) and len(node.targets) == 1
-                   and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Dict)}
+                   and isinstance(node.targets[0], ast.Name) and isinstance(node.value, (ast.Dict, ast.Call))}
         for node in ast.walk(scope):
             if isinstance(node, ast.Dict) and any(
                     isinstance(k, ast.Constant) and k.value == "type" and isinstance(v, ast.Constant)
@@ -94,7 +110,7 @@ def _literal_keys(source: str, type_value: str) -> list[set[str]]:
 
 
 def test_the_passport_is_well_formed():
-    assert rc.RECORD_CONTRACT_VERSION == 1
+    assert rc.RECORD_CONTRACT_VERSION == 2
     types = [row.type for row in rc.ANCHOR_ROWS]
     assert len(types) == len(set(types)) and set(rc.ANCHOR_BY_TYPE) == set(types)
     used = set()
@@ -112,11 +128,21 @@ def test_the_passport_is_well_formed():
 
 
 def test_the_guaranteed_fields_are_fixed_within_a_version():
-    assert rc.RECORD_CONTRACT_VERSION == 1, "a new version needs its own snapshot here"
-    assert set(_VERSION_1_GUARANTEED) == set(rc.ANCHOR_BY_TYPE), "an anchor came or went within version 1"
-    for type_value, names in _VERSION_1_GUARANTEED.items():
+    assert rc.RECORD_CONTRACT_VERSION == 2, "a new version needs its own snapshot here"
+    assert set(_VERSION_2_GUARANTEED) == set(rc.ANCHOR_BY_TYPE), "an anchor came or went within version 2"
+    for type_value, names in _VERSION_2_GUARANTEED.items():
         assert rc.ANCHOR_BY_TYPE[type_value].guaranteed == frozenset(names.split()), (
-            f"{type_value}: guaranteed fields changed within version 1; a new field is optional")
+            f"{type_value}: guaranteed fields changed within version 2; a new field is optional")
+
+
+def test_v2_declares_each_token_counter_nullable_and_legacy_zeros_ambiguous():
+    counters = {"prompt_tokens", "completion_tokens", "cached_tokens", "cache_write_tokens"}
+    for name in ("llm_round", "llm_usage"):
+        assert counters <= rc.ANCHOR_BY_TYPE[name].nullable
+        assert "record_contract_version" in rc.ANCHOR_BY_TYPE[name].guaranteed
+    assert "version-1 zero" in rc.LEGACY_RULE and "ambiguous" in rc.LEGACY_RULE
+    assert "Never relabel or rewrite" in rc.LEGACY_RULE
+    assert "lower bound" in rc.LEGACY_RULE
 
 
 @pytest.mark.parametrize("row", [row for row in rc.ANCHOR_ROWS if row.type not in _TOOL_ROWS], ids=lambda r: r.type)

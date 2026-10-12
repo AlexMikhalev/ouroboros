@@ -34,7 +34,9 @@ from ouroboros.send_clock import main_send_scope
 from ouroboros.task_pacing import main_loop_wire_options
 from ouroboros.transport_custody import attempt_custody_event_fields, is_pre_dispatch_transport_failure, is_retryable_transport_death, outcome_unknown_on_chain
 from ouroboros._usage_response import OUTPUT_LIMIT_FINISH_REASONS, output_exhaustion_facts, provider_cost_value as _provider_cost_value, response_finish_reason
-from ouroboros.usage_accounting import PhysicalAttemptContext, UsageAccountingError, bind_physical_attempt_context, last_physical_attempt_capture
+from ouroboros.usage_accounting import PhysicalAttemptContext, UsageAccountingError, bind_physical_attempt_context, current_usage_scope, last_physical_attempt_capture
+from ouroboros.contracts.record_contract import RECORD_CONTRACT_VERSION
+from ouroboros.event_usage import event_token_counts
 from ouroboros.utils import (
     append_jsonl,
     emit_cognitive_operation_event,
@@ -1148,21 +1150,21 @@ def _record_round_cache_facts(
     round from its first started frame (retries, fallbacks and waits included) and
     settles it: a later call on the same round id (a wrap-up) measures only itself.
     """
-    prompt_tokens = int(usage.get("prompt_tokens") or 0)
-    cached_tokens = int(usage.get("cached_tokens") or 0)
-    cache_write_tokens = int(usage.get("cache_write_tokens") or 0)
-    prompt_cache_ttl = str(usage.get("prompt_cache_ttl") or "")
-    cache_hit_rate = (cached_tokens / prompt_tokens) if prompt_tokens > 0 else 0.0
+    reported = event_token_counts(usage)  # #1578: REPORTED counters; an unreported one makes these null
+    prompt_tokens, cached_tokens = reported["prompt_tokens"], reported["cached_tokens"]
+    cache_write_tokens, prompt_cache_ttl = reported["cache_write_tokens"], str(usage.get("prompt_cache_ttl") or "")
+    known = None not in (prompt_tokens, cached_tokens)
+    cache_hit_rate = (cached_tokens / prompt_tokens if prompt_tokens else 0.0) if known else None
     now, prev_finished = time.monotonic(), accumulated_usage.get("_last_llm_round_finished_monotonic")
     gap_since_prev_round_sec = round(max(0.0, now - float(prev_finished)), 1) if isinstance(prev_finished, (int, float)) else None
     started = accumulated_usage.pop(ROUND_STARTED_KEY, None)
     duration_ms = round(max(0.0, now - float(started["at"])) * 1000) if isinstance(started, dict) and started.get("round_id") == round_id else None
-    cache_cold_restart = bool(
-        round_idx > 1
-        and prompt_tokens > 0
-        and cached_tokens < 0.2 * prompt_tokens
-        and cache_write_tokens > 0.5 * prompt_tokens
-    )
+    if round_idx <= 1 or prompt_tokens == 0:
+        cache_cold_restart = False  # a first round always writes; an empty prompt re-wrote nothing
+    else:
+        low = None if None in (prompt_tokens, cached_tokens) else cached_tokens < 0.2 * prompt_tokens
+        high = None if None in (prompt_tokens, cache_write_tokens) else cache_write_tokens > 0.5 * prompt_tokens
+        cache_cold_restart = False if False in (low, high) else None if None in (low, high) else True
     accumulated_usage["_last_llm_round_finished_monotonic"] = now
     accumulated_usage["_last_prompt_cache_ttl"] = prompt_cache_ttl
     accumulated_usage["_last_round_cache_usage"] = {
@@ -1530,23 +1532,21 @@ def call_llm_with_retry(
             for stale in ("execution_status", "result_status", "reason_code", RETRY_WALL_EXHAUSTED_KEY, RETRY_ATTEMPTS_SPENT_KEY, TRANSPORT_DEATHS_KEY, "_pending_transport_outcome"):
                 accumulated_usage.pop(stale, None)  # a USABLE response closes the round's repeat record
             accumulated_usage["rounds"] = accumulated_usage.get("rounds", 0) + 1
-            cached_tokens = int(usage.get("cached_tokens") or 0)
             prompt_cache_ttl, cache_hit_rate, cache_cold_restart, gap_since_prev_round_sec, duration_ms = (
                 _record_round_cache_facts(accumulated_usage, usage, round_idx=round_idx, round_id=round_id,
                                           model=display_model, provider=provider))
             ledger_ids = list(usage.get("ledger_attempt_ids") or [])  # the last one carried this response (#807)
+            scope = current_usage_scope()  # #1578: the producer's own known lineage, never a history walk
             _round_event = {
-                "ts": utc_now_iso(), "type": "llm_round",
+                "ts": utc_now_iso(), "type": "llm_round", "record_contract_version": RECORD_CONTRACT_VERSION,
                 **{key: accumulated_usage[key] for key in ("first_request_at", "first_answer_at")},
-                "task_id": task_id, "execution_id": execution_id,
+                "task_id": task_id, "execution_id": execution_id, **{key: str(getattr(scope, key)) for key in (
+                    "root_task_id", "parent_task_id") if getattr(scope, key, "")},
                 "round_id": round_id, "llm_call_id": llm_call_id, "round": round_idx, "model": display_model,
                 "reasoning_effort": effort,
                 **{key: usage[key] for key in ("effort", "effort_resolution", "request_wire", "claudexor") if key in usage},
                 "provider": provider, "source": "loop", "model_category": infer_model_category(display_model),
-                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-                "completion_tokens": int(usage.get("completion_tokens") or 0),
-                "cached_tokens": (cached_tokens if usage.get("cached_tokens") is not None else None),
-                "cache_write_tokens": int(usage.get("cache_write_tokens") or 0),
+                **event_token_counts(usage),  # each counter reported, a reported 0, or null (#1578)
                 "prompt_cache_ttl": prompt_cache_ttl, "cache_hit_rate": cache_hit_rate,
                 "cache_cold_restart": cache_cold_restart, "gap_since_prev_round_sec": gap_since_prev_round_sec,
                 "duration_ms": duration_ms, "cost_usd": cost, **context_fit_event_fields,
@@ -1559,7 +1559,7 @@ def call_llm_with_retry(
                 "round_id": round_id, "llm_call_id": llm_call_id, "round": round_idx, "task_attempt": task_attempt,
                 "attempt": attempt + 1, "model": display_model,
                 **{key: _round_event[key] for key in (
-                    "reasoning_effort", "cost_usd", "prompt_tokens", "completion_tokens", "cached_tokens", "cache_write_tokens",
+                    "record_contract_version", "reasoning_effort", "cost_usd", "prompt_tokens", "completion_tokens", "cached_tokens", "cache_write_tokens",
                     "prompt_cache_ttl", "effort", "effort_resolution", "request_wire", "claudexor", "duration_ms") if key in _round_event},
                 "response_kind": "tool_calls" if tool_calls else "message",
                 "tool_call_count": len(tool_calls),

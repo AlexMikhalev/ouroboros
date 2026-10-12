@@ -16,6 +16,8 @@ def review_operation_fields(actor: dict) -> dict:
         "operation_state": actor.get("operation_state") or "settled",
         "late_result_pending": bool(actor.get("late_result_pending")),
         "recovery_binding": dict(actor.get("recovery_binding") or {}),
+        "error_event_logged": actor.get("error_event_logged") is True,  # #1578 append receipt
+        "review_wave_id": str(actor.get("review_wave_id") or ""),
         "pending_invocation_id": str(usage.get("pending_invocation_id") or ""),
         "delegated_run_id": str(usage.get("delegated_run_id") or ""),
     }

@@ -612,12 +612,19 @@ def revalidate_project_holds() -> None:
             if tid in queue.RUNNING or tid in queue.ADMISSION_RESERVATIONS or counts[tid] != 1:
                 raise ValueError("Another queue owner holds this task id; recovery remains closed.")
             deadline = queue._task_deadline_ts(task)
-            if deadline and time.time() >= deadline:
-                raise ProjectAdmissionError("deadline", "The task deadline elapsed while waiting for its Project.")
-            owner_resume = restore_owner_wait_allowed(queue.DRIVE_ROOT, task, strict=True)
+            expired = bool(deadline and time.time() >= deadline)
+            # An owner-wait continuation is judged on its exact authority apart from that
+            # deadline (#939): unreadable keeps custody (raises), refused takes the shutdown custody.
+            owner_resume = restore_owner_wait_allowed(queue.DRIVE_ROOT, task, strict=True, expiring=expired)
             if task.get("_owner_wait_resume") and not owner_resume:
                 _fence_snapshot_running_rows([{"id": tid}], restored_ids=set())
                 continue  # the same shutdown custody as an unresumable restore
+            if expired:
+                from supervisor.queue_timeouts import pending_deadline_expirable
+
+                if not pending_deadline_expirable(task):
+                    continue  # Pause and unconfirmed dispatch keep their own custody.
+                raise ProjectAdmissionError("deadline", "The task deadline elapsed while waiting for its Project.")
             if any(task is child for child in children):
                 if _descends_from(task, interrupted, pending_by_id):
                     task["_terminalization_retry"] = {

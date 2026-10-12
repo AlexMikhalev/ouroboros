@@ -116,8 +116,12 @@ def _save_state(ctx: Any, state: dict[str, Any]) -> None:
 
 
 def _emit(ctx: Any, kind: str, payload: dict[str, Any]) -> bool:
+    metadata = getattr(ctx, "task_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    # #1578: the lineage this context already knows; an unknown id stays absent.
+    lineage = {key: str(metadata.get(key) or getattr(ctx, key, "") or "") for key in ("root_task_id", "parent_task_id")}
     return custody.emit(custody.custody_root(ctx), kind, {
-        "task_id": str(getattr(ctx, "task_id", "") or ""), **payload,
+        "task_id": str(getattr(ctx, "task_id", "") or ""), **{k: v for k, v in lineage.items() if v}, **payload,
     })
 
 

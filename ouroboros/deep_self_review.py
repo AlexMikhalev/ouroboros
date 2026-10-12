@@ -611,6 +611,7 @@ def _run_retrieving_review(
     required_sources: Optional[list] = None,
     required_sources_ref: Optional[dict] = None,
     ask: Optional[SystemReviewAsk] = None,
+    usage_ctx: Any = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """The row's delivery (native episode or delegated session): hand-built
     request, slot and assignment; the product is the
@@ -705,8 +706,9 @@ def _run_retrieving_review(
         f"Deep self-review via {delivery} on {sendable}: {_memory_line(task_facts['memory'])}, "
         f"BIBLE.md ({task_facts['bible_chars']:,} chars) delivered inline; window {window:.0f}s..."
     )
+    prompt_ref: Dict[str, Any] = {}
     try:
-        persist_call(
+        prompt_ref = persist_call(
             pathlib.Path(drive_root), task_id=task_id or "deep_self_review",
             call_id=f"{assignment.call_id}_prompt", call_type="deep_self_review_prompt",
             payload={"request": asdict(request), "slot": asdict(slot), **executor.prompt_payload()},
@@ -727,6 +729,9 @@ def _run_retrieving_review(
         # to the agent's budget rail like every other budget refusal.
         custody = {**executor.failure_custody(), "deep_review_memory": memory}
         _record_execution(slot, custody, status="error", error=f"{type(exc).__name__}: {exc}")
+        from ouroboros.triad_review import emit_review_execution_error
+
+        emit_review_execution_error(usage_ctx, assignment, exc, usage=custody, prompt_ref=prompt_ref)  # #1578
         from ouroboros.llm_claudexor import propagate_model_error
         propagate_model_error(exc)
         if isinstance(exc, BudgetExceeded):
@@ -749,6 +754,9 @@ def _run_retrieving_review(
         # An empty product is an ERROR row in «Выполняется как» — never
         # recorded as a responded review.
         _record_execution(slot, usage, status="error", error="empty response")
+        from ouroboros.triad_review import emit_review_execution_error
+
+        emit_review_execution_error(usage_ctx, assignment, "empty response", usage=usage, prompt_ref=prompt_ref)
         return _failed("⚠️ Model returned an empty response for the deep self-review.",
                        reason_code="deep_self_review_error", usage=usage)
     if delivery == "native_tool_rounds":
@@ -831,6 +839,7 @@ def run_deep_self_review(
     required_sources: Optional[list] = None,
     required_sources_ref: Optional[dict] = None,
     ask: Optional[SystemReviewAsk] = None,
+    usage_ctx: Any = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """Execute the deep self-review on ``slot`` (default: the direct Main row).
 
@@ -850,6 +859,7 @@ def run_deep_self_review(
     ``required_sources`` and its exact source handle may come from the caller's
     immutable review assembler. Without one, coverage names only the
     constitution actually delivered inline, never an inferred whole-tree scope.
+    A failed delivery also writes its one ``review_model_error`` (``usage_ctx`` lineage).
     """
     try:
         row = slot or main_review_row()
@@ -867,6 +877,7 @@ def run_deep_self_review(
             repo_dir, drive_root, llm, emit_progress, row, task_id=task_id, deadline_at=deadline_at,
             model=row.target_id if row.is_session else str(model or row.target_id),
             required_sources=required_sources, required_sources_ref=required_sources_ref, ask=ask,
+            usage_ctx=usage_ctx,
         )
     except BudgetExceeded:
         # The paid ledger's refusal is BUDGET vocabulary, not a review error:

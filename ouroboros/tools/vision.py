@@ -615,12 +615,14 @@ def _emit_usage(ctx: ToolContext, usage: Dict[str, Any], model: str) -> None:
     if ctx.event_queue is None:
         return
     try:
+        from ouroboros.event_usage import event_token_counts
+
         event = {
             "type": "llm_usage",
             "model": (usage.get("model_role_route") or {}).get("model") or model,
-            "prompt_tokens": usage.get("prompt_tokens", 0),
-            "completion_tokens": usage.get("completion_tokens", 0),
-            "cached_tokens": usage.get("cached_tokens", 0),
+            **event_token_counts(usage),  # #1578: unreported stays null, a reported 0 stays 0
+            "usage": usage,
+            **({"provider": str(usage["provider"])} if usage.get("provider") else {}),
             "cost": usage.get("cost"),
             "task_id": ctx.task_id,
             "task_type": ctx.current_task_type or "task",

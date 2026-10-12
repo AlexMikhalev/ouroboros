@@ -46,7 +46,7 @@ def task_execution_clock_fact(task: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
     import datetime
     import math
     import time
-    from ouroboros.config import get_task_abs_ceiling_sec
+    from ouroboros.config import explicit_execution_timeout_sec, resolve_task_execution_timeout_sec
     from ouroboros.deadline_utils import parse_deadline_ts
     from ouroboros.model_wait import current_model_wait, execution_elapsed_seconds
 
@@ -56,7 +56,7 @@ def task_execution_clock_fact(task: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
     except (TypeError, ValueError):
         parsed = parse_deadline_ts(raw)
         start = parsed.timestamp() if parsed is not None else 0.0
-    ceiling = get_task_abs_ceiling_sec()
+    ceiling = resolve_task_execution_timeout_sec(task)  # the narrower of explicit budget and global ceiling
     started = datetime.datetime.fromtimestamp(start, datetime.timezone.utc).isoformat() if start > 0 and math.isfinite(start) else None
     projected = None
     if started and ceiling is not None:
@@ -64,10 +64,16 @@ def task_execution_clock_fact(task: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
         owner = current_model_wait()
         elapsed = (owner.executed_seconds() if owner is not None and owner.task_id == str(task.get("id") or "")
                    else execution_elapsed_seconds({**task, "started_at": start}, now))
-        projected = datetime.datetime.fromtimestamp(now + max(0.0, ceiling - elapsed),
-                                                    datetime.timezone.utc).isoformat()
+        try:
+            projected = datetime.datetime.fromtimestamp(now + max(0.0, ceiling - elapsed),
+                                                        datetime.timezone.utc).isoformat()
+        except (OverflowError, ValueError, OSError):
+            pass  # a finite duration need not fit the platform's calendar range: stays not_set
+    # The same absolute_ceiling rail either way; the basis names which bound it is (#939).
+    bound = "task execution budget" if ceiling is not None and ceiling == explicit_execution_timeout_sec(task) else "global ceiling"
     return {"started_at": started, "absolute_ceiling_at": projected,
-            "absolute_ceiling_at_basis": "current estimate; quota or budget pauses may move it" if projected else "not_set"}
+            "absolute_ceiling_at_basis": (f"current estimate of the {bound}; quota or budget pauses may move it"
+                                          if projected else "not_set")}
 
 
 def _context_clock_note(task: Dict[str, Any]) -> str:
