@@ -8,6 +8,7 @@ falls back to the shipped value instead of disabling a rail.
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 from ouroboros.settings_defaults import (
@@ -143,6 +144,34 @@ def get_task_abs_ceiling_sec() -> Optional[int]:
     and a productively-waiting orchestrator is never killed by a flat wall-clock timer. A set
     value is floored at 300 s so a typo cannot end every task at birth."""
     return _optional_bound_setting("OUROBOROS_TASK_ABS_CEILING_SEC", low=300)
+
+
+_CURRENT_TASK_CEILING = object()
+
+
+def explicit_execution_timeout_sec(task: dict) -> Optional[float]:
+    """A task's additive API/CLI execution budget; absent, zero or invalid adds no bound."""
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    raw = task.get("execution_timeout_sec")
+    if raw is None:
+        raw = metadata.get("execution_timeout_sec")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return value if not isinstance(raw, bool) and math.isfinite(value) and value > 0 else None
+
+
+def resolve_task_execution_timeout_sec(task: dict, *, global_ceiling=_CURRENT_TASK_CEILING) -> Optional[float]:
+    """One pause-excluded execution bound: the narrower of the task budget and the global ceiling.
+
+    Calendar ``deadline_at`` and the submit-relative ``timeout_sec`` stay separate axes.
+    A caller holding a settings snapshot passes its ceiling instead of rereading it.
+    """
+    if global_ceiling is _CURRENT_TASK_CEILING:
+        global_ceiling = get_task_abs_ceiling_sec()
+    bounds = [float(value) for value in (explicit_execution_timeout_sec(task), global_ceiling) if value is not None]
+    return min(bounds) if bounds else None
 
 
 # The finite window ONE physical operation that inherits the task lifetime keeps when the task

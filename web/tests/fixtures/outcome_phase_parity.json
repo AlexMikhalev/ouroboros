@@ -204,7 +204,7 @@
       },
       "phase": "error",
       "headline": "Failed",
-      "acceptance_clause": "The model provider stopped answering, so the task could not finish · Some delegated work was never reconciled."
+      "acceptance_clause": "The task could not get a usable model answer, so it could not finish · Some delegated work was never reconciled."
     },
     {
       "name": "a healed custody debt names the current execution cause alone",
@@ -216,7 +216,7 @@
       },
       "phase": "error",
       "headline": "Failed",
-      "acceptance_clause": "The model provider stopped answering, so the task could not finish."
+      "acceptance_clause": "The task could not get a usable model answer, so it could not finish."
     },
     {
       "name": "a record carrying no debt list states nothing about the debt",
@@ -227,7 +227,7 @@
       },
       "phase": "error",
       "headline": "Failed",
-      "acceptance_clause": "The model provider stopped answering, so the task could not finish."
+      "acceptance_clause": "The task could not get a usable model answer, so it could not finish."
     },
     {
       "name": "acceptance reason author_finish says its own sentence",

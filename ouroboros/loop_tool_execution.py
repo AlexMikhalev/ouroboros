@@ -302,25 +302,27 @@ _DEADLINE_CLAMPED_TOOLS = frozenset({
 def _deadline_clamped_timeout(tools: ToolRegistry, tool_name: str, base_timeout: int) -> int:
     """min(tool timeout, remaining − finalization reserve) for network/long tools.
 
-    Without ``deadline_at`` (remaining reads 0.0) the behavior is byte-identical.
-    An already-elapsed deadline is also left unclamped — the loop's forced
-    finalization owns that path. The clamp never floors PAST the reserve: inside
-    or near the finalization window the tool gets a near-immediate (1s) timeout —
-    a fast, cleanly-messaged failure — rather than a grace-period-eating floor
-    (review round 1: a 30s floor let one web call consume the reserve the clamp
-    exists to protect)."""
+    ``remaining`` is the nearer explicit bound: ``deadline_at`` or the execution
+    window (#939). With neither the behavior is byte-identical. An already-elapsed
+    bound is also left unclamped — the loop's forced finalization owns that path.
+    The clamp never floors PAST the reserve: inside or near the finalization window
+    the tool gets a near-immediate (1s) timeout — a fast, cleanly-messaged failure —
+    rather than a grace-period-eating floor (review round 1: a 30s floor let one web
+    call consume the reserve the clamp exists to protect)."""
     if tool_name not in _DEADLINE_CLAMPED_TOOLS:
         return base_timeout
     try:
         remaining = deadline_remaining_sec(getattr(tools, "_ctx", None))
+        from ouroboros.model_wait import explicit_execution_window_remaining
+        execution_left = explicit_execution_window_remaining(getattr(tools, "_ctx", None))  # #939
+        if execution_left is not None:
+            remaining = min(remaining, execution_left) if remaining > 0 else execution_left
     except Exception:
         return base_timeout
     if remaining <= 0:
         return base_timeout
-    # v6.55.0: the plain finalization GRACE emit-window (task_pacing SSOT) — the
-    # tool must return before the deadline leaves no time to emit a final answer.
-    # NOT the pct reserve (an acceptance-review gate concept): clamping a tool out
-    # of the last pct-of-total would strand long tasks with idle time.
+    # v6.55.0: the plain finalization GRACE emit-window (task_pacing SSOT), NOT the pct
+    # reserve (a review gate): clamping out the last pct-of-total strands long tasks idle.
     try:
         from ouroboros.task_pacing import effective_finalization_reserve_sec
 

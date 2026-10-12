@@ -456,6 +456,43 @@ def _rewrite_ledger(
         forget_ledgered_pids(drive_root, dropped)  # the ledger's close path is the set's too
 
 
+# A spawner names itself to the Python entrypoints it launches, in the child's
+# own env and never in its os.environ. A bare container server is PID 1, and
+# PID 1 also adopts orphans, so a child's parent PID alone cannot tell a live
+# spawner from an adoption.
+PARENT_PID_ENV = "OUROBOROS_PARENT_PID"
+
+
+def lifeline_parent_env() -> Dict[str, str]:
+    """Overlay this LAST onto a child env so no manifest or leftover names another parent."""
+    return {PARENT_PID_ENV: str(os.getpid())}
+
+
+def _orphaned_at_start(ppid: int) -> bool:
+    """True when the spawner was gone before the lifeline started.
+
+    A ``multiprocessing`` child ignores the env: PID 1 is its live spawner only
+    as its own multiprocessing parent under spawn/fork. A forkserver child's
+    ppid is the forkserver, so PID 1 there is always an adoption. A plain child
+    whose spawner named itself must still have that parent (an import-delay
+    reparent to a subreaper included); a legacy spawner names nobody and keeps
+    the old ``ppid <= 1`` refusal. Anything unreadable keeps that refusal too.
+    """
+    try:
+        import multiprocessing
+
+        parent = multiprocessing.parent_process()
+        if parent is not None:
+            if ppid != 1:
+                return ppid <= 0
+            method = getattr(type(multiprocessing.current_process()), "_start_method", None)
+            return not (parent.pid == 1 and method in ("spawn", "fork"))
+        named = os.environ.get(PARENT_PID_ENV)
+        return (ppid <= 0 or ppid != int(named)) if named else ppid <= 1
+    except Exception:
+        return ppid <= 1
+
+
 def _multiprocessing_parent_sentinel() -> Optional[int]:
     """The spawner's sentinel fd inside a ``multiprocessing`` child, else None.
 
@@ -519,14 +556,15 @@ def start_parent_lifeline(*, poll_sec: float = 5.0, label: str = "", stop_socket
                 os._exit(1)
 
     initial_ppid = os.getppid()
+    orphaned = _orphaned_at_start(initial_ppid)
     sentinel = _multiprocessing_parent_sentinel()
     watched = ([sentinel] if sentinel is not None else []) + ([stop_socket] if stop_socket is not None else [])
     ready = []
     try:
         ready = _mp_wait(watched, timeout=0) if watched else []
-        died_early = initial_ppid <= 1 or bool(ready)
+        died_early = orphaned or bool(ready)
     except Exception:
-        sentinel, died_early = None, initial_ppid <= 1
+        sentinel, died_early = None, orphaned
     if died_early:
         # The parent died before we even got here (import-delay race after an
         # abrupt supervisor kill). These entrypoints are always spawned by a

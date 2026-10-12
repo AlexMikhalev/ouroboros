@@ -347,7 +347,8 @@ class _ProviderRoutingMixin:
             return {
                 "provider": provider, "source": source, "resolved_model": native_model,
                 "usage_model": usage_model, "api_key": "", "default_headers": {},
-                # A locality fact only; real daemon discovery never uses this URL.
+                # The daemon's address as route identity only; discovery never uses it, and each
+                # attempt states the model's real (remote) locality (llm_claudexor._accounted_request).
                 "base_url": "http://127.0.0.1", "supports_openrouter_extensions": False,
                 "supports_generation_cost": False,
             }

@@ -1011,8 +1011,11 @@ def _forced_fallback_result(
     retained_control: str = "",
     candidate_reason: str = "",
     provider_terminal: bool = False,
+    host_words: Optional[bool] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Compose fallback."""
+    """Compose fallback. ``host_words`` is the caller's fact about ``fallback_text`` on the
+    provider-death rail: the host's own notice (``host_notice``) or retained model bytes
+    (``host_salvage``); ``None`` keeps the rail's previous provenance."""
     tool_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
     plan_suffix = (
         _loop()._force_plan_disclosure(tool_ctx, llm_trace, forced_reason=reason_code)
@@ -1083,7 +1086,7 @@ def _forced_fallback_result(
             if candidate_reason:
                 candidate.degraded_reason = candidate_reason
                 _loop()._publish_delivery_candidate(ctx.tools, candidate, llm_trace)
-            if provider_terminal:
+            if provider_terminal or host_words is not None:  # stale retained text is model bytes
                 ctx.accumulated_usage["terminal_origin"] = TERMINAL_ORIGIN_HOST_SALVAGE
             ctx.accumulated_usage["_best_effort_extracted"] = True
             _loop()._record_forced_finalization(
@@ -1101,8 +1104,9 @@ def _forced_fallback_result(
     )
     if fallback_is_retained_model_text:
         ctx.accumulated_usage["_best_effort_extracted"] = True
-    if provider_terminal:
-        ctx.accumulated_usage["terminal_origin"] = TERMINAL_ORIGIN_HOST_SALVAGE
+    if provider_terminal or host_words is not None:
+        ctx.accumulated_usage["terminal_origin"] = (
+            TERMINAL_ORIGIN_HOST_NOTICE if host_words else TERMINAL_ORIGIN_HOST_SALVAGE)
     _loop()._record_forced_finalization(
         ctx,
         llm_trace,
@@ -1228,6 +1232,7 @@ def _forced_final_answer(
     reason_code: str,
     single_semantic_turn: bool = False,
     provider_terminal: bool = False,
+    fallback_host_words: Optional[bool] = None,
     _prompt_prepared: bool = False,
     _initial_messages: Any = None,
     _admitted_request: Any = None,
@@ -1243,7 +1248,7 @@ def _forced_final_answer(
         ctx.accumulated_usage.update(execution_status="failed", reason_code=reason_code)
         return _loop()._forced_fallback_result(
             ctx, llm_trace, fallback_text, reason_code,
-            source=f"{reason_code}_window_elapsed",
+            source=f"{reason_code}_window_elapsed", host_words=fallback_host_words,
         )
     tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
     _loop()._append_or_merge_user_message(ctx.messages, prompt)
@@ -1275,7 +1280,7 @@ def _forced_final_answer(
             ctx.accumulated_usage.update(execution_status="failed", reason_code=reason_code)
             return _loop()._forced_fallback_result(
                 ctx, llm_trace, fallback_text, reason_code, source="budget_wrapup_unaffordable",
-                provider_terminal=provider_terminal)
+                provider_terminal=provider_terminal, host_words=fallback_host_words)
         except Exception:
             log.warning("Failed to get final response after %s", reason_code, exc_info=True)
             extracted = ""
@@ -1289,7 +1294,7 @@ def _forced_final_answer(
                 ctx, llm_trace,
                 "⚠️ Provider outcome unknown; directive retained. Resume the task without a blind resend.",
                 reason_code,
-                source="provider_outcome_unknown_no_resend",
+                source="provider_outcome_unknown_no_resend", host_words=True,
             )
         if single_semantic_turn or attempt == 1:
             return _loop()._forced_fallback_result(
@@ -1298,7 +1303,7 @@ def _forced_final_answer(
                 "⚠️ Another directive arrived. Resume the task for a current answer.",
                 reason_code,
                 source="late_owner_directive_requires_resume",
-                provider_terminal=provider_terminal,
+                provider_terminal=provider_terminal, host_words=True,
             )
         _loop()._finalize_forced_services(ctx, llm_trace)
         _loop()._append_or_merge_user_message(
@@ -1330,7 +1335,7 @@ def _forced_final_answer(
         return _loop()._forced_fallback_result(
             ctx, llm_trace, extracted or fallback_text, reason_code,
             source="forced_model_incomplete", candidate_reason=control_degraded,
-            provider_terminal=provider_terminal,
+            provider_terminal=provider_terminal, host_words=None if extracted else fallback_host_words,
         )
     if extracted:
         ctx.accumulated_usage["_best_effort_extracted"] = True
@@ -1371,5 +1376,5 @@ def _forced_final_answer(
         llm_trace,
         fallback_text,
         reason_code,
-        provider_terminal=provider_terminal,
+        provider_terminal=provider_terminal, host_words=fallback_host_words,
     )

@@ -12,8 +12,8 @@ the live queue, and synthesis receives the delivered outcome as ground truth
 Terminal provenance extends the same custody rule. A provider outage is an
 infrastructure failure even when useful text survived. A complete current
 model candidate remains Ouroboros's byte-exact answer and host outage facts
-become a separate System incident; stale/last-response/deterministic fallback
-bytes are host salvage, preserved durably but never promoted to speech. The
+become a separate System incident; stale/last-response model bytes are host
+salvage and a notice the host wrote alone is a host notice, neither speech. The
 provider rail may recover a compacted transcript from persisted LLM output,
 and forced finalization still retains its original semantics: owner-stop gets
 one logical model call because steering is fenced, while the generic rail may
@@ -105,8 +105,9 @@ def terminal_notice_text(result: Dict[str, Any]) -> str:
 def send_provider_death_notice(
     ctx: Any, chat_id: int, task_id: Any, final_result: Dict[str, Any],
 ) -> bool:
-    """Send the secondary incident, unless the primary is already the receipt."""
-    if str(final_result.get("terminal_origin") or "") == TERMINAL_ORIGIN_HOST_SALVAGE:
+    """Send the secondary incident, unless the primary is already the receipt
+    (any host-authored primary carries this notice itself: a second row would repeat it)."""
+    if str(final_result.get("terminal_origin") or "") in HOST_AUTHORED_TERMINAL_ORIGINS:
         return False
     plan_note = (
         f"\n\n{TERMINAL_PLAN_REVIEW_NOTE}"

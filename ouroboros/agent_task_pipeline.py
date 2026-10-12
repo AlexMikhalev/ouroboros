@@ -835,9 +835,9 @@ def emit_task_results(
     artifact_bundle = stored_result.get("artifact_bundle") if isinstance(stored_result.get("artifact_bundle"), dict) else {}
     review_projection = stored_result.get("review_projection") or {}
     pending_events.append({
-        "type": "task_done",
-        "task_id": task.get("id"),
-        "task_type": task.get("type"),
+        "type": "task_done", "task_id": task.get("id"), "task_type": task.get("type"),
+        **{key: task.get(key) or stored_result[key] for key in ("root_task_id", "parent_task_id")
+           if task.get(key) or stored_result.get(key)},  # #1578: producer-known lineage only
         # GR2-3c: the DURABLE status rides the event for honesty — the
         # supervisor validates every task_done against the durable row;
         # a stamped status makes the event self-describing.

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
+import copy
 import json
 import logging
 import os
@@ -208,20 +209,21 @@ def emit_review_usage(
     prompt_chars: int = 0,
     extra: dict | None = None,
 ) -> None:
-    """Emit a normalized llm_usage event for every review surface."""
+    """Emit a normalized llm_usage event for every review surface.
+
+    #1578: each token counter is the reported value, a reported 0, or null; an
+    agent session that disclosed none stays unknown, never zero. A session's
+    ``claudexor`` receipt (run, requested/delegated route, observed attempt) rides
+    the row; an extraction call reports its own usage, never the session's.
+    """
     try:
+        from ouroboros.event_usage import event_token_counts
         from ouroboros.pricing import infer_api_key_type, infer_model_category, infer_provider_from_model
 
         usage_data = dict(usage or {})
-        prompt_tokens = int(usage_data.get("prompt_tokens", usage_data.get("input_tokens", 0)) or 0)
-        completion_tokens = int(usage_data.get("completion_tokens", usage_data.get("output_tokens", 0)) or 0)
-        cached_tokens = int(usage_data.get("cached_tokens", usage_data.get("cache_read_input_tokens", 0)) or 0)
-        cache_write_tokens = int(
-            usage_data.get("cache_write_tokens", usage_data.get("cache_creation_input_tokens", 0)) or 0
-        )
         prompt_cache_ttl = str(usage_data.get("prompt_cache_ttl") or "")
         ledger_attempt_ids = [str(value) for value in (usage_data.get("ledger_attempt_ids") or []) if value]
-        routed_provider = provider or infer_provider_from_model(model)
+        routed_provider = provider or str(usage_data.get("provider") or "") or infer_provider_from_model(model)
         cost = cost_usd if cost_usd is not None else usage_data.get("cost", usage_data.get("total_cost"))
         # Task-tree attribution from the bound usage scope (the supervisor
         # additionally backfills delegation/lane fields from RUNNING).
@@ -251,14 +253,13 @@ def emit_review_usage(
             "api_key_type": infer_api_key_type(model, routed_provider),
             "model_category": infer_model_category(model),
             "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "cached_tokens": cached_tokens,
-                "cache_write_tokens": cache_write_tokens,
+                **event_token_counts(usage_data),
                 "prompt_cache_ttl": prompt_cache_ttl,
                 "cost": cost,
                 "cost_known": cost is not None,
                 "ledger_attempt_ids": ledger_attempt_ids,
+                **{key: copy.deepcopy(usage_data[key]) for key in ("claudexor", "effort", "effort_resolution",
+                                                                   "request_wire") if isinstance(usage_data.get(key), dict)},
             },
             "provider": routed_provider,
             "source": source,
@@ -267,8 +268,8 @@ def emit_review_usage(
             "ledger_attempt_ids": ledger_attempt_ids,
             **{key: value for key, value in attribution.items() if value},
         }
-        if session_id:
-            event["session_id"] = session_id
+        if session_id or usage_data.get("session_id"):
+            event["session_id"] = str(session_id or usage_data["session_id"])
         if prompt_chars:
             event["prompt_chars"] = int(prompt_chars)
         if extra:

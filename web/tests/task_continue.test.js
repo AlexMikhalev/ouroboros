@@ -127,7 +127,7 @@ test('a canonical hard-bound refusal remains one readable fact beside the existi
         const detail = { status: 'failed', reason_code: 'provider_unavailable',
             continuation_offer: { eligible: false, refusal: 'hard_limit_reached', cause: 'deadline' } };
         const terminalReason = taskReasonDetail(detail);
-        assert.match(terminalReason, /provider/);
+        assert.match(terminalReason, /usable model answer/);
         assert.deepEqual(continueOfferView(detail), { kind: 'refusal', cause: 'deadline' });
         syncContinueAction(card, detail);
         const note = card.root.querySelector('[data-continue-refusal]');

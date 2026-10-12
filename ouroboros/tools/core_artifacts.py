@@ -313,7 +313,7 @@ class QuizValidationError(ValueError):
 
 def validate_quiz_payload(
     question: Any, options: Any, stake: Any, assumption: Any,
-    *, wait_for_answer: bool = False, max_wait_minutes: Any = None,
+    *, wait_for_answer: bool = False, max_wait_minutes: Any = None, task: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Return one cleaned quiz payload, or refuse the entire card.
 
@@ -321,9 +321,9 @@ def validate_quiz_payload(
     callers — the LinksOutbound pattern). Optional questions name an
     assumption; required waiting has no implied default answer.
 
-    ``max_wait_minutes`` bounds a required wait only, and never past the task's
-    absolute wall-clock ceiling: beyond it the ceiling would end the task
-    first, so a larger bound would be a promise the runtime cannot keep.
+    ``max_wait_minutes`` bounds a required wait only, and never past ``task``'s
+    execution time limit (a wait counts as execution): beyond it that limit would
+    end the task first, so a larger bound would be a promise the runtime cannot keep.
 
     The authored text (question, option details, stake, assumption) is kept
     whole: the card may be the only explanation its reader gets, so there is no
@@ -379,7 +379,7 @@ def validate_quiz_payload(
             "state the assumption you continue under until the owner answers "
             "(what you do meanwhile, for example your recommended option).",
         )
-    bound = _validate_wait_bound(max_wait_minutes, wait_for_answer=wait_for_answer)
+    bound = _validate_wait_bound(max_wait_minutes, wait_for_answer=wait_for_answer, task=task)
     return {
         "question": q_text,
         "options": cleaned,
@@ -455,8 +455,8 @@ ESCALATE_TOOL_SCHEMA: Dict[str, Any] = {
 }
 
 
-def _validate_wait_bound(max_wait_minutes: Any, *, wait_for_answer: bool) -> Optional[int]:
-    """The optional wait bound in whole minutes, capped by the task ceiling."""
+def _validate_wait_bound(max_wait_minutes: Any, *, wait_for_answer: bool, task: Optional[dict] = None) -> Optional[int]:
+    """The optional wait bound in whole minutes, capped by the task's execution time limit."""
     if max_wait_minutes is None or not wait_for_answer:
         # On an optional question a bound only spells out the documented default (no wait):
         # it takes the omitted path, and the asker's receipt says so.
@@ -467,17 +467,24 @@ def _validate_wait_bound(max_wait_minutes: Any, *, wait_for_answer: bool) -> Opt
             "QUIZ_WAIT_BOUND_INVALID",
             "max_wait_minutes must be a positive integer; omit it for an unbounded wait.",
         )
-    from ouroboros.config import get_task_abs_ceiling_sec
+    from ouroboros.config import resolve_task_execution_timeout_sec
 
-    ceiling_sec = get_task_abs_ceiling_sec()
+    # The bound the supervisor enforces: an explicit task budget narrows the global ceiling.
+    ceiling_sec = resolve_task_execution_timeout_sec(task if isinstance(task, dict) else {})
     if ceiling_sec is None:  # no task lifetime: any positive bound is within it
         return int(max_wait_minutes)
-    ceiling_minutes = max(1, int(ceiling_sec) // 60)
+    ceiling_minutes = int(ceiling_sec) // 60
+    if ceiling_minutes == 0:
+        raise QuizValidationError(
+            "QUIZ_WAIT_BOUND_INVALID",
+            "The task's execution time limit is shorter than one minute; "
+            "omit max_wait_minutes (the execution limit still applies).",
+        )
     if max_wait_minutes > ceiling_minutes:
         raise QuizValidationError(
             "QUIZ_WAIT_BOUND_INVALID",
             f"max_wait_minutes must be at most {ceiling_minutes} "
-            "(the task's absolute wall-clock ceiling); omit it for an unbounded wait.",
+            "(the task's execution time limit); omit it for an unbounded wait.",
         )
     return int(max_wait_minutes)
 
@@ -602,7 +609,7 @@ def _escalate(
     try:
         payload = validate_quiz_payload(question, options, stake, assumption,
                                         wait_for_answer=wait_for_answer,
-                                        max_wait_minutes=max_wait_minutes)
+                                        max_wait_minutes=max_wait_minutes, task=meta)
     except QuizValidationError as exc:
         # Typed, and it says what did NOT happen: a refusal that only restates the rule is retried unchanged.
         return argument_refusal(ctx, exc.code, [str(exc)], effect="The quiz was not sent.")

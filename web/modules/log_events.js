@@ -307,11 +307,7 @@ function subagentHeadline(sid = '', role = '', label = '', model = '', { full = 
     return `${cleanRole}${modelPart}${shortId && full ? ` (${shortId})` : ''}${suffix}`;
 }
 
-const SUBAGENT_CARD_LABEL = {
-    scheduled: 'Working',
-    running: 'Working',
-    interrupted: 'Working',
-};
+const SUBAGENT_CARD_LABEL = { scheduled: 'Working', running: 'Working', interrupted: 'Working' };
 
 export function formatLogMoney(value) {
     return formatUsd4(value);
@@ -320,11 +316,7 @@ export function formatLogMoney(value) {
 export function formatLogDuration(sec) {
     const num = Number(sec);
     if (!Number.isFinite(num) || num < 0) return '';
-    if (num >= 60) {
-        const mins = Math.floor(num / 60);
-        const rem = Math.round(num % 60);
-        return `${mins}m ${rem}s`;
-    }
+    if (num >= 60) return `${Math.floor(num / 60)}m ${Math.round(num % 60)}s`;
     return `${num < 10 ? num.toFixed(1) : Math.round(num)}s`;
 }
 
@@ -333,6 +325,14 @@ function formatLogTokens(evt) {
     const completion = Number(evt.completion_tokens || 0);
     if (!prompt && !completion) return '';
     return `${prompt}\u2192${completion} tok`;
+}
+
+// Usage rows only (#1578): v2 null = not reported, 0 = a reported zero; an unstamped/v1 zero stays ambiguous (LEGACY_RULE).
+function formatUsageTokens(evt) {
+    const count = (n) => (!Number.isSafeInteger(n) || n < 0 ? '?' : n === 0 && evt.record_contract_version !== 2 ? '0?' : String(n));
+    const prompt = count(evt.prompt_tokens), completion = count(evt.completion_tokens);
+    if (prompt === '?' && completion === '?') return 'tokens not reported';
+    return `${prompt}\u2192${completion} tok${[prompt, completion].includes('0?') ? ' (legacy 0 may be unreported)' : ''}`;
 }
 
 function compactJson(value, maxLen = 220) {
@@ -477,7 +477,7 @@ const TASK_CAUSE_PHRASES = {
     deep_self_review_unavailable: "The deep self-review could not run",
     deep_self_review_error: "The deep self-review stopped on an error",
     // #869: the provider-death rail's terminal words (twin of project_dialogue.TASK_CAUSE_PHRASES).
-    provider_unavailable: "The model provider stopped answering, so the task could not finish",
+    provider_unavailable: "The task could not get a usable model answer, so it could not finish",
     accounting_wait_expired: "Accounting access did not recover within this turn’s wait window",
     delivery_control_degraded: "Ouroboros's final delivery instruction could not be applied, so the answer stands as delivered.",
     authoring_handover_incomplete: "The replacement model stopped before resuming tool work.",
@@ -832,7 +832,7 @@ export function summarizeLogEvent(evt) {
             body: effortEvidenceText(evt),
             meta: taskMeta(
                 evt.model || '',
-                formatLogTokens(evt),
+                formatUsageTokens(evt),
                 // Backfill uses accounted upper bounds; live frames may carry cost.
                 formatLogMoney(accountedUpperBound(evt) ?? evt.cost),
                 evt.response_kind === 'tool_calls' ? `${evt.tool_call_count || 0} tool calls` : evt.response_kind || '',
@@ -858,7 +858,7 @@ export function summarizeLogEvent(evt) {
             body: effortEvidenceText(evt),
             meta: taskMeta(
                 evt.model || '',
-                formatLogTokens(evt),
+                formatUsageTokens(evt),
                 formatLogMoney(accountedUpperBound(evt) ?? evt.cost),
                 evt.category || '',
             ),
