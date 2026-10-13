@@ -722,6 +722,7 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any, preparation: Any = None
                 recheck_child_admission=recheck_child_admission,
                 # The readonly resolver is pure; no copy/side effect preceded this interlock.
                 defer_contention=preparation is None and not workspace_preparation._requests_preparation(evt),
+                transition_id=evt.setdefault("_scheduled_transition_id", uuid.uuid4().hex),
             )
         else:
             admitted = ctx.enqueue_task(task)
