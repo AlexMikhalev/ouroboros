@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple  # noqa:
 from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
 from ouroboros.delegate_custody_usage import (
     disclosed_spend,
-    disclosed_tokens,
+    disclosed_tokens,  # noqa: F401 -- public custody vocabulary used by collection
     project_retirement_lock,
     summary_of,
 )
@@ -37,6 +37,8 @@ SUCCEEDED_STATES = frozenset({"succeeded"})
 START_REQUESTED = "delegate_run_start_requested"
 STARTED = "delegate_run_started"
 START_FAILED = "delegate_run_start_failed"
+TERMINAL_OBSERVED = "delegate_run_terminal_observed"
+INTERACTIONS_OBSERVED = "delegate_run_interactions_observed"
 LEDGER_RECORDED = "delegate_run_ledger_recorded"
 SETTLED = "delegate_run_settled"
 SETTLE_FAILED = "delegate_run_settle_failed"
@@ -144,7 +146,11 @@ class RunCustody:
     authority_fingerprint: str = ""
     ledger_recorded: bool = False
     settled: bool = False
-    terminal_state: str = ""  # SETTLED row's state, replayed (empty pre-existing/CLOSED_ABSENT)
+    terminal_state: str = ""  # Engine terminal observation; independent of monetary settlement.
+    terminal_source: Dict[str, Any] = field(default_factory=dict)
+    observation_seq: int = -1
+    interaction_source: Dict[str, Any] = field(default_factory=dict)
+    pending_interaction_ids: List[str] = field(default_factory=list)
     terminal_reason: str = ""  # #1196: engine ``outcomeFacts.reason`` replayed from SETTLED ("" = none)
     settled_at: str = ""  # the SETTLED row's own timestamp
     # #1573: SETTLED's engine locators (runDir, primary kind/path/bytes/truncated, no text); None = legacy.
@@ -167,6 +173,7 @@ class RunCustody:
     output_artifact: str = ""
     output_complete: bool = False
     output_sha: str = ""
+    output_terminal_sha: str = ""  # Exact terminal source this retained output materializes.
     output_consumed: bool = False
     # #1573: canonical ``task_source`` ref + ACTUAL staging task (a retry reader's own); {} = legacy task drive.
     output_source: Dict[str, Any] = field(default_factory=dict)
@@ -454,6 +461,8 @@ def _merge_started_into(entry: RunCustody, previous: RunCustody) -> None:
         setattr(entry, attr, getattr(previous, attr))
     if previous.containment_fault:
         entry.containment_fault = dict(previous.containment_fault)
+    for attr in ("terminal_source", "observation_seq", "interaction_source", "pending_interaction_ids", "output_terminal_sha"):
+        setattr(entry, attr, copy.deepcopy(getattr(previous, attr)))
     entry.output_reader_receipts = previous.output_reader_receipts
     entry.patch_apply_key = previous.patch_apply_key
     entry.project_owned = previous.project_owned and entry.project_owned
@@ -526,13 +535,34 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
     custody = state.get(run_id)
     # A terminal/incident row may outlive STARTED or follow a refused start;
     # preserve the event's own identity and source in live and import paths.
-    if custody is None and kind in (SETTLED, CONTAINMENT_FAULT):
+    if custody is None and kind in (SETTLED, CONTAINMENT_FAULT, TERMINAL_OBSERVED):
         custody = state[run_id] = RunCustody(
             run_id=run_id, task_id=str(row.get("task_id") or ""), route_id=str(row.get("route") or ""),
+            root_task_id=str(row.get("root_task_id") or ""), parent_task_id=str(row.get("parent_task_id") or ""),
+            invocation_id=str(row.get("invocation_id") or ""),
             project_id=str(row.get("project_id") or ""), source=str(row.get("source") or ""))
     if custody is None:
         return
-    if kind == LEDGER_RECORDED:
+    if kind in (TERMINAL_OBSERVED, INTERACTIONS_OBSERVED):
+        seq = row.get("observation_seq")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < custody.observation_seq:
+            return
+        source = row.get("source_ref")
+        if not isinstance(source, dict) or not source.get("sha256"):
+            return
+        if kind == TERMINAL_OBSERVED:
+            terminal = str(row.get("state") or "")
+            if terminal not in TERMINAL_STATES or (custody.terminal_state and custody.terminal_state != terminal):
+                return  # No arrival-order resurrection or undocumented correction.
+            custody.terminal_state = terminal
+            custody.terminal_reason = str(row.get("reason") or "")
+            custody.terminal_source = dict(source)
+            custody.pending_interaction_ids = []
+        elif not custody.terminal_state:
+            custody.interaction_source = dict(source)
+            custody.pending_interaction_ids = [str(value) for value in row.get("interaction_ids", [])]
+        custody.observation_seq = seq
+    elif kind == LEDGER_RECORDED:
         custody.ledger_recorded = True
     elif kind == UNCONFINED:
         # The unconfined finding is written once per RUN, not once per process. Replaying
@@ -561,6 +591,7 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
                 # named other bytes and does not transfer to content never read.
                 custody.output_consumed = False
             custody.output_sha = sha
+            custody.output_terminal_sha = str(row.get("terminal_sha") or custody.output_terminal_sha)
     elif kind == OUTPUT_CONSUMED:
         ack_sha = str(row.get("sha256") or "")
         # The ack is HASH-BOUND: it marks consumed only the content it actually names.
@@ -605,7 +636,8 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
             custody.cost_usd = float(row["cost_usd"]) if custody.spend_disclosed else None
         except (TypeError, ValueError):
             custody.cost_usd, custody.spend_disclosed = None, False
-        custody.containment_fault = {}
+        if not row.get("preserve_containment"):
+            custody.containment_fault = {}
     elif kind == TERMINAL_ACKNOWLEDGED:
         if str(row.get("task_id") or "") == custody.task_id:  # only the owner's own transcript
             custody.terminal_ack_attempt = str(row.get("attempt_key") or "")
@@ -656,13 +688,14 @@ def replay(drive_root: Any,
 def lookup(drive_root: Any, task_id: str, run_id: str) -> Tuple[str, Optional[RunCustody]]:
     """Answer OWNED / FOREIGN / UNKNOWN for ``run_id`` as seen by ``task_id``."""
     rid = str(run_id or "").strip()
-    custody = _CUSTODY.get(rid)
-    if custody is None:
-        from ouroboros.delegate_custody_current import run
+    from ouroboros.delegate_custody_current import run
 
-        custody = run(drive_root, rid) if rid else None
-        if custody is not None:
-            _CUSTODY[rid] = custody
+    # Fresh durable facts outrank the process memo (the body can collect elsewhere).
+    # A proven absent row may still name our own unrecorded physical start, whose
+    # in-process custody must retain the ability to cancel; read failure never does.
+    custody = (run(drive_root, rid) if rid else None) or _CUSTODY.get(rid)
+    if custody is not None:
+        _CUSTODY[rid] = custody
     if custody is None:
         return UNKNOWN, None
     custody.run_id = custody.run_id or rid
@@ -1153,134 +1186,21 @@ def close_absent_run(drive_root: Any, gateway: Any, custody: RunCustody, reason:
 
 
 def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[str, Any]) -> Dict[str, Any]:
-    """Settle a TERMINAL run: the claim follows the DURABLE FACT, not the call.
-    Ledger row and registration are independent idempotent duties; unfinished
-    settlement is retried; ``settled`` means the durable fact exists."""
+    """Compatibility settlement for the panel/control owners; collection separates cleanup."""
+    from ouroboros.delegate_collection import record_terminal_money
+
     if custody.settled:
-        return {"settled": True, "ledger_recorded": True,
+        return {"settled": True, "ledger_recorded": custody.ledger_recorded,
                 "project_retired": not custody.project_owned and not custody.project_persistent,
                 "project_persistent": custody.project_persistent, "retried": False}
-    from ouroboros.delegate_output import engine_locator
-    from ouroboros.gateways.claudexor import final_attempt_facts, run_failure_cause
-
-    summary = summary_of(detail)
-    observed = final_attempt_facts(detail, custody.run_id)
-    # A run that did not succeed says WHY on its settlement row: the model asked for, the
-    # ENGINE's own code ("" = it gave none) and the words it reported (opaque, never
-    # branched on). A succeeded row carries none of these failure facts.
-    failure = summary.get("failure") if isinstance(summary.get("failure"), dict) else {}
-    outcome_facts = summary.get("outcomeFacts") if isinstance(summary.get("outcomeFacts"), dict) else {}
-    failure_facts = {} if str(summary.get("state") or "") in SUCCEEDED_STATES else {
-        "requested_model": custody.model, "failure_code": str(failure.get("code") or ""),
-        "reported_cause": run_failure_cause(failure),
-        # Engine TYPED reason (e.g. ``wall_clock_exceeded`` = maxSeconds expiry): a continuation's cause fact.
-        "outcome_reason": str(outcome_facts.get("reason") or "")}
-    # Claudexor reports CASH in `spendUsd`, EXACTNESS in `spendEstimated`. A run
-    # is only free when the amount is really zero AND really settled: expired
-    # sessions, bill-by-construction routes and auth fallbacks all charge, and
-    # writing 0.0/cost_final=True over them hides money from every budget fence.
-    spend, estimated = disclosed_spend(summary, attempt_execution=detail.get("attemptExecution"))
-    # Model and credential profile belong to one final attempt. The run-level
-    # authRoute can borrow an earlier account; missing final facts stay unknown.
-    applied_profile = observed.get("profile_id", "")
-    # Only `effectiveAccess` testifies. The daemon computes `access` as
-    # `effectiveAccess ?? the client's own parsed request`, so falling back to it wrote
-    # our own ASK into the durable row under a column that promises applied facts.
-    applied_access = str(summary.get("effectiveAccess") or "")
-    if not custody.ledger_recorded:
-        try:
-            from ouroboros.usage_accounting import record_subscription_session
-
-            record_subscription_session(
-                custody.run_id,
-                drive_root=pathlib.Path(custody.ledger_root or drive_root),
-                route=custody.route_id,
-                model=observed.get("model", ""),
-                task_id=custody.task_id,
-                root_task_id=custody.root_task_id,
-                parent_task_id=custody.parent_task_id,
-                category=custody.category,
-                source=custody.source,
-                prompt_tokens=disclosed_tokens(summary.get("inputTokens")),
-                completion_tokens=disclosed_tokens(summary.get("outputTokens")),
-                cached_tokens=disclosed_tokens(summary.get("cachedInputTokens")),
-                # The harness's own normalized input split when it reports one.
-                # An engine that reports none leaves the row exactly as before,
-                # and the ledger writer decides what is usable.
-                input_token_usage=summary.get("inputTokenUsage"),
-                attempt_execution=detail.get("attemptExecution"),
-                effort_resolution=observed.get("effort_resolution"),
-                spend_usd=spend,
-                spend_estimated=estimated,
-                credential_profile_id=applied_profile,
-                access_profile=applied_access,
-                **{key: getattr(custody, key) for key in REVIEW_ATTRIBUTION_KEYS},
-            )
-        except Exception:
-            log.exception("Failed to record delegated subscription session %s", custody.run_id)
-            emit(drive_root, SETTLE_FAILED, {"run_id": custody.run_id, "task_id": custody.task_id,
-                                             "route": custody.route_id, "step": "ledger_write"})
-        else:
-            custody.ledger_recorded = True
-            emit(drive_root, LEDGER_RECORDED, {"run_id": custody.run_id, "task_id": custody.task_id,
-                                               "root_task_id": custody.root_task_id, "parent_task_id": custody.parent_task_id,
-                                               "route": custody.route_id})
-    if not custody.ledger_recorded:
-        if custody.review_owned or custody.project_persistent:
-            retire_project(drive_root, gateway, custody)
-    else:
-        with project_retirement_lock(drive_root, custody.project_id):
-            custody.settled = emit(drive_root, SETTLED, {
-                "run_id": custody.run_id,
-                "task_id": custody.task_id,
-                "root_task_id": custody.root_task_id, "parent_task_id": custody.parent_task_id,
-                "route": custody.route_id,
-                # The OWNER kind rides the terminal too: after rotation this may be
-                # the only surviving row (issue #1006; replay stays first-wins).
-                "source": custody.source, "category": custody.category,
-                # Route above remains custody authority. Fresh observations
-                # may differ from a replayed historical ledger row's model;
-                # they never rewrite that row, ownership, bounds or spend.
-                "model": observed.get("model", ""),
-                "observed_attempt": observed,
-                "state": str(summary.get("state") or ""),
-                **failure_facts,
-                # The SAME facts the ledger row just recorded. An undisclosed spend was emitted
-                # here as `0.0` beside a flag — the render-unknown-as-zero shape the ledger row
-                # itself stopped doing — and finality ignored the estimated half exactly as the
-                # ledger write did. One envelope, one story.
-                "cost_usd": spend,
-                "cost_final": spend is not None and not estimated,
-                "spend_disclosed": spend is not None,
-                "spend_estimated": estimated,
-                # The final attempt's account rides the settlement event too;
-                # a replayed ledger can retain its older observation unchanged.
-                "credential_profile_id": applied_profile,
-                "access_profile": applied_access,
-                "engine_locator": engine_locator(detail),
-            })
-            if custody.settled:
-                custody.engine_locator = engine_locator(detail)
-                if custody.review_owned or custody.project_persistent:
-                    _retire_project_locked(drive_root, gateway, custody)
+    result = record_terminal_money(drive_root, custody, detail)
+    if custody.review_owned or custody.project_persistent:
+        retire_project(drive_root, gateway, custody)
     if custody.settled:
-        from ouroboros.subagent_history import record_session_execution
-        try:
-            record_session_execution(drive_root, custody, detail, observed)
-        except Exception:
-            log.debug("Session history unavailable", exc_info=True)
         resolve_containment_fault(drive_root, custody, "settled_terminal")
-    # CONSUMPTION BEFORE SETTLEMENT is a fact, not a gate; asking before staging
-    # now would answer "no omission" for every first settlement (the render-
-    # unknown-as-a-fact shape this module refuses). ``record_settled_unread``
-    # records it where staging IS known: the wait path and reconciliation.
-    return {
-        "settled": custody.settled,
-        "ledger_recorded": custody.ledger_recorded,
-        "project_retired": not custody.project_owned and not custody.project_persistent,
-        "project_persistent": custody.project_persistent,
-        "retried": True,
-    }
+    result.update(project_retired=not custody.project_owned and not custody.project_persistent,
+                  project_persistent=custody.project_persistent)
+    return result
 
 
 # -- cancellation --------------------------------------------------------------

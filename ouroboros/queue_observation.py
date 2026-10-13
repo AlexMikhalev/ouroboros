@@ -40,9 +40,24 @@ def load_queue_document(drive_root, name="queue_snapshot.json") -> dict:
 
 
 DISPATCH_PUBLICATION_WAIT_SEC = 30.0  # the wait budget for an in-flight queue publication on a loaded host
+DISPATCH_PUBLICATION_POLL_SEC = 0.05
 
 
-def published_dispatch(drive_root, *, attempts=None, pause_sec=0.05):
+class DispatchPublicationPending(RuntimeError):
+    """A generated dispatch document is not certified yet; never permissive authority."""
+
+
+def dispatch_probe(drive_root):
+    """One read, with no sleep: a publication gap is distinct from a malformed document."""
+    document = load_queue_document(drive_root, "queue_dispatch.json")
+    if not document.get("generation"):
+        return None
+    if not queue_stamp(document):
+        raise DispatchPublicationPending(f"root budget fence authority unavailable: {drive_root}/state/queue_dispatch.json")
+    return document
+
+
+def published_dispatch(drive_root, *, attempts=None, pause_sec=DISPATCH_PUBLICATION_POLL_SEC):
     """The dispatch document of the last successful publication: its generation certified by
     queue.alive, whatever its age (a stalled tick never stops a send). A publication in flight
     (the stamp is unlinked first) is re-read for up to DISPATCH_PUBLICATION_WAIT_SEC; None when

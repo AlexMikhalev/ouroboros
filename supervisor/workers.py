@@ -102,19 +102,23 @@ _EVENT_Q_SHUTDOWN = False
 _WORKER_POOL_DISABLED_REASON = ""
 
 
-def get_event_q():
+def get_event_q(*, create: bool = True):
     """Return the process-lifetime supervisor event bus, creating it lazily.
 
     Worker-pool generations are replaceable; the producers that publish onto
     this bus (direct chat, active turns, and workers) are not.
     Rotating the queue during a pool respawn strands those producers on an
     undrained queue, so only a new server process creates a new bus.
+    Producers without an injected endpoint may read the existing server bus
+    with ``create=False``; they never create an undrained child-local bus.
     """
     global _EVENT_Q, _EVENT_Q_MANAGER, _EVENT_Q_GENERATION
     with _EVENT_Q_LOCK:
         if _EVENT_Q_SHUTDOWN:
             raise RuntimeError("supervisor event bus is shutting down")
         if _EVENT_Q is None:
+            if not create:
+                raise RuntimeError("supervisor event bus is not attached")
             # A raw multiprocessing.Queue has an asynchronous feeder and its
             # pipe can be corrupted when a worker is force-killed mid-frame.
             # A manager-backed queue serializes synchronously in the producer

@@ -395,6 +395,10 @@ def install_exact_budget_pause(ctx: Any, task_id: str, checkpoint: Dict[str, Any
         if (row.get("pause_id") != pause_id or row.get("state") not in {STATE_PAUSING, STATE_PAUSED}
                 or int(row.get("task_attempt") or 0) != attempt or not row.get("source_ref")):
             raise ValueError(f"exact budget pause {pause_id} has no live durable row for attempt {attempt}")
+        if row.get("external_custody"):
+            from ouroboros.sleep_custody import accepted_receipt
+            if not accepted_receipt(task_id, row):
+                raise ValueError("cold external custody has no exact body acceptance")
         marker = exact_pause_marker(row, default_root=str(task.get("root_task_id") or task_id))
         # Bind this exact park to its physical owner's fence: the parking pooled attempt/PID, or
         # the direct turn's own in-process fence (no pooled owner). On the in-memory fence it survives

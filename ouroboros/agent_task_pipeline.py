@@ -158,7 +158,7 @@ def _run_post_task_processing_async(
             if post_task_key in _POST_TASK_SYNTHESIS_INFLIGHT:
                 return None
             _POST_TASK_SYNTHESIS_INFLIGHT[post_task_key] = None
-        _set_root_post_task_checkpoint(env, task_snapshot, "running")
+        _set_root_post_task_checkpoint(env, task_snapshot, "running", event_queue=event_queue)
 
     # Freeze one honest subtree view synchronously at the pre-synthesis
     # boundary. No scoped worker or consolidation/model call may start first;
@@ -335,6 +335,7 @@ def _run_post_task_processing_async(
                 _set_root_post_task_checkpoint(
                     env, task_snapshot, checkpoint_status,
                     stop_reason=(f"{interrupted}:skipped={','.join(skipped)}" if interrupted else ""),
+                    event_queue=event_queue,
                 )
             reset_late_phase_run(late_token)
             if post_task_key is not None:
@@ -390,7 +391,7 @@ def _run_post_task_processing_async(
         copy_task_settings_context(settings_context)
         threading.Thread(target=settings_context.run, args=(_run,), daemon=True).start()
     except Exception:
-        _set_root_post_task_checkpoint(env, task_snapshot, "degraded")
+        _set_root_post_task_checkpoint(env, task_snapshot, "degraded", event_queue=event_queue)
         if post_task_key is not None:
             with _POST_TASK_SYNTHESIS_LOCK:
                 _POST_TASK_SYNTHESIS_INFLIGHT.pop(post_task_key, None)

@@ -78,14 +78,15 @@ def retry_terminal_result(ctx: ToolContext, run_id: str, *, gateway: Any = None)
         authority = DelegatedRunShape(access=entry.access, mode=entry.mode,
                                       isolation=entry.isolation, delegated=entry.delegated,
                                       investigation=entry.authority_source == INVESTIGATION_AUTHORITY)
-        payload = _delivered_terminal_payload(ctx, run_id, detail, authority, entry, gateway)
-        capture = _delegate()._capture_terminal_patch(ctx, entry, gateway=gateway)
-        if capture is not None:
-            payload["workspace_capture"] = capture
+        payload = collect_and_deliver_terminal(ctx, run_id, detail, authority, entry, gateway)
         return delegate_result({**payload, "owner_task_id": predecessor,
                                 "result_reader_task_id": str(getattr(ctx, "task_id", "") or ""),
                                 "terminal_result_only": True})
     except ClaudexorUnavailable as exc:
+        retained = retained_terminal_after_gap(ctx, run_id, str(exc.code))
+        if retained is not None:
+            return delegate_result({**retained, "owner_task_id": predecessor,
+                "result_reader_task_id": str(getattr(ctx, "task_id", "") or ""), "terminal_result_only": True})
         return _fail("delegate_wait", exc.code, str(exc), run_id=run_id)
     finally:
         if gateway is not None and not borrowed:
@@ -395,22 +396,52 @@ def _reported_cost(summary: Dict[str, Any], *, attempt_execution: Any = None) ->
     }
 
 
-def _delivered_terminal_payload(ctx: ToolContext, run_id: str, detail: Dict[str, Any],
-                                authority: "DelegatedRunShape",
-                                entry: Optional[_RunCustody] = None,
-                                gateway: Any = None) -> Dict[str, Any]:
-    """The terminal payload, delivered whole or declared partial — never head-cut.
+def _retained_terminal_payload(ctx: ToolContext, entry: _RunCustody) -> Optional[Dict[str, Any]]:
+    """Present body-retained bytes; only the later delivery seam credits this reader."""
+    from ouroboros.delegate_collection import retained_payload
+    from ouroboros.delegate_output import staged_source_path, output_consumed_by_reader
 
-    ``final_summary``/``primary_output`` carry the run's real work product, and Claudexor
-    returns a preview of up to 256 KiB. Outer truncation would head-cut that at the tool
-    result limit and sever the JSON mid-string, which destroys the document rather than
-    shortening it. So the payload bounds ITSELF against the same limit the truncator
-    applies, and the remainder becomes a readable artifact — after the engine's bounded
-    preview has been resolved to the verified full artifact, because a payload built on
-    a truncated preview delivers 256 KiB wearing the whole result's name.
-    """
-    from ouroboros.delegate_output import output_consumed_by_reader
+    root = _delegate().custody.custody_root(ctx)
+    full = retained_payload(root, entry, require_complete=False)
+    if full is None:
+        return None
+    changed = bool(entry.superseded_by and full.get("superseded_by") != entry.superseded_by)
+    if changed:
+        full["superseded_by"] = entry.superseded_by
+    text = json.dumps(full, ensure_ascii=False, indent=2)
+    reader = str(getattr(ctx, "task_id", "") or "")
+    if reader and (changed or entry.output_source.get("task_id") != reader):
+        # Preserve the existing retry-reader source custody: identical bytes,
+        # independently readable by this successor, never an inherited EOF.
+        from ouroboros.delegate_output import retain_terminal_bytes
+        retained = retain_terminal_bytes(root, reader, entry.run_id, text, text.encode("utf-8"))
+        if retained is None:
+            return None
+        published = _delegate().custody.emit(root, _delegate().custody.OUTPUT_SPILLED, {
+                "run_id": entry.run_id, "task_id": entry.task_id, "source": retained["source"],
+                "artifact": retained["source"]["path"], "sha256": retained["sha256"],
+                "terminal_sha": entry.output_terminal_sha, "bytes": retained["bytes"],
+                "staged": True, "full_content": entry.output_complete, "total_chars": len(text)})
+        if retained["sha256"] != entry.output_sha or not published:
+            entry.output_consumed = False
+        entry.output_sha = retained["sha256"]
+        entry.output_source, entry.output_artifact = retained["source"], retained["source"]["path"]
+    path = str(staged_source_path(root, entry.output_source))
+    artifact = {"root": "artifact_store", "path": path, "abs_path": path, "source": entry.output_source,
+                "sha256": entry.output_sha, "chars": len(text), "lines": text.count("\n") + 1,
+                "bytes": entry.output_source.get("size")}
+    budget = _delegate().tool_result_limit("delegate_wait")
+    if entry.output_complete and len(text) <= budget - _delegate()._PAYLOAD_ENVELOPE_HEADROOM:
+        full["output_delivery"] = {"complete": True, "consumed": True, "inline_is_preview": False,
+            "total_chars": len(text), "artifact": None, "retained_sha256": entry.output_sha, "read_next": None,
+            "note": "The retained full terminal payload is inline; receipt follows actual full delivery."}
+        return full
+    return _delegate()._preview_payload(full, text, artifact, budget, full_ok=entry.output_complete,
+        full_note=full.get("primary_output_full"), consumed=output_consumed_by_reader(entry, str(getattr(ctx, "task_id", "") or "")))
 
+
+def resolved_terminal_payload(run_id, detail, authority, entry=None, gateway=None):
+    """Canonical terminal material, independent of retention and delivery."""
     full = _terminal_payload(run_id, detail, authority)
     if entry is not None:
         _delegate().add_terminal_source_verification(full, entry)
@@ -432,6 +463,30 @@ def _delivered_terminal_payload(ctx: ToolContext, run_id: str, detail: Dict[str,
     primary, full_ok, full_note = _delegate()._resolve_full_primary_output(
         gateway, run_id, full.get("primary_output"))
     full["primary_output"] = primary
+    return full, full_ok, full_note
+
+
+def _delivered_terminal_payload(ctx: ToolContext, run_id: str, detail: Dict[str, Any],
+                                authority: "DelegatedRunShape",
+                                entry: Optional[_RunCustody] = None,
+                                gateway: Any = None) -> Dict[str, Any]:
+    """The terminal payload, delivered whole or declared partial — never head-cut.
+
+    ``final_summary``/``primary_output`` carry the run's real work product, and Claudexor
+    returns a preview of up to 256 KiB. Outer truncation would head-cut that at the tool
+    result limit and sever the JSON mid-string, which destroys the document rather than
+    shortening it. So the payload bounds ITSELF against the same limit the truncator
+    applies, and the remainder becomes a readable artifact — after the engine's bounded
+    preview has been resolved to the verified full artifact, because a payload built on
+    a truncated preview delivers 256 KiB wearing the whole result's name.
+    """
+    from ouroboros.delegate_output import output_consumed_by_reader
+
+    if entry is not None and entry.output_source:
+        retained = _retained_terminal_payload(ctx, entry)
+        if retained is not None:
+            return retained
+    full, full_ok, full_note = resolved_terminal_payload(run_id, detail, authority, entry, gateway)
     budget = _delegate().tool_result_limit("delegate_wait")
     text = json.dumps(full, ensure_ascii=False, indent=2)
     if len(text) <= budget - _delegate()._PAYLOAD_ENVELOPE_HEADROOM:
@@ -475,3 +530,77 @@ def _delivered_terminal_payload(ctx: ToolContext, run_id: str, detail: Dict[str,
                                 and artifact["sha256"] == entry.output_sha
                                 and output_consumed_by_reader(entry, str(getattr(ctx, "task_id", "") or ""))),
                             full_ok=full_ok, full_note=full_note)
+
+
+def collect_and_deliver_terminal(ctx, rid, detail, authority, entry, gateway):
+    """Join the body collection; deliver retained output independently of other duties."""
+    from ouroboros import delegate_custody as custody
+    from ouroboros.delegate_collection import collect_terminal, observe_run, retained_payload, body_runtime, capture_projection
+    from ouroboros.delegate_custody_current import run
+
+    root = custody.custody_root(ctx)
+    observe_run(root, entry, detail)
+    fresh = run(root, rid) or entry
+    if retained_payload(root, fresh) is None:
+        collection = collect_terminal(root, rid, gateway=gateway,
+                                      staging_task_id=str(getattr(ctx, "task_id", "") or ""))
+    else:
+        runtime = body_runtime(root)
+        if runtime is not None:
+            runtime.request(rid)
+        collection = {"status": "pending" if not fresh.settled else "retained",
+                      "reason": "available_output"}
+    entry = run(root, rid) or fresh
+    if retained_payload(root, entry, require_complete=False) is None:
+        retained = collection.get("output_retention") or {}
+        artifact = retained.get("artifact")
+        if artifact:
+            from ouroboros.artifacts import read_actor_source_bytes
+            source = artifact["source"]
+            text = read_actor_source_bytes(root, source["task_id"], source).decode("utf-8")
+            full = json.loads(text)
+            payload = _delegate()._preview_payload(full, text, artifact,
+                _delegate().tool_result_limit("delegate_wait"), consumed=False,
+                full_ok=retained.get("complete") is True, full_note=full.get("primary_output_full"))
+            payload["collection"] = {"status": "pending", "reason": "output_publication_unconfirmed"}
+            return payload
+        return {"status": "observation_pending", "reason": "collection_in_progress", "run_id": rid,
+                "state": str(custody.summary_of(detail).get("state") or ""), "collection": collection,
+                "answered": True, "last_seq": int(detail.get("lastSeq") or 0)}
+    payload = _delivered_terminal_payload(ctx, rid, detail, authority, entry, gateway)
+    payload["settlement"] = {"settled": entry.settled, "ledger_recorded": entry.ledger_recorded}
+    payload["collection"] = {key: value for key, value in collection.items() if key != "output_retention"}
+    capture = collection.get("workspace_capture") or capture_projection(
+        root, entry, reader_task_id=str(getattr(ctx, "task_id", "") or ""))
+    if capture is not None:
+        payload["workspace_capture"] = capture
+    if (not (payload.get("output_delivery") or {}).get("complete")
+            and custody.record_settled_unread(root, entry)):
+        payload["result_not_collected"] = (
+            "THIS RESULT IS NOT COLLECTED YET: the retained full output has not been read to EOF. "
+            "Use output_delivery.read_next until the exact source has been covered end to end.")
+    _record_containment(ctx, entry, payload)
+    return payload
+
+
+def retained_terminal_after_gap(ctx, run_id, reason):
+    """A retained exact result survives engine loss; observation failure is disclosed."""
+    from ouroboros.delegate_custody_current import run
+    from ouroboros.delegate_collection import capture_projection
+    from ouroboros.delegate_shared import retry_result_status
+    root = _delegate().custody.custody_root(ctx)
+    entry = run(root, run_id)
+    if entry is None or entry.terminal_state not in _delegate().custody.TERMINAL_STATES:
+        return None
+    if entry.task_id != str(getattr(ctx, "task_id", "") or ""):
+        if retry_result_status(ctx, root, run_id)[0] != _delegate().custody.OWNED:
+            return None
+    payload = _retained_terminal_payload(ctx, entry)
+    if payload is not None:
+        payload["current_observation"] = {"status": "unavailable", "reason": reason,
+                                          "basis": "retained_terminal_source"}
+        payload["settlement"] = {"settled": entry.settled, "ledger_recorded": entry.ledger_recorded}
+        capture = capture_projection(root, entry, reader_task_id=str(getattr(ctx, "task_id", "") or ""))
+        if capture is not None:
+            payload["workspace_capture"] = capture
+    return payload

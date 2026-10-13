@@ -146,7 +146,9 @@ def _consumed_acceptance_handoff(q: Any, fence: dict, task_id: str, owner: Any) 
             or parked.get("task_attempt") != owner["task_attempt"]):
         return False
     try:
-        result = load_task_result(pathlib.Path(task.get("budget_drive_root") or q.DRIVE_ROOT), task_id, strict=True) or {}
+        from ouroboros.store import acquisition_budget
+        with acquisition_budget(0):
+            result = load_task_result(pathlib.Path(task.get("budget_drive_root") or q.DRIVE_ROOT), task_id, strict=True) or {}
     except Exception:
         return False
     row = result.get("budget_pause") or {}

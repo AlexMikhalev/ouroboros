@@ -261,6 +261,10 @@ def _unread_output_line(custody_root: Any, run: Any, task_id: str) -> str:
             "covered end to end, or say plainly that the result was not "
             "collected."
         )
+    if getattr(run, "terminal_source", None) and not run.unread_disclosed:
+        return (f"INFO: DELEGATED RESULT AVAILABLE — run {run.run_id or '?'} has retained full output at "
+                f"{address.get('path') or run.output_artifact}, not yet read by its owner. "
+                "Body collection proves availability, not acceptance. " + action)
     return (f"WARNING: DELEGATED RESULT NEVER READ — run {run.run_id or '?'} settled "
             f"with its full output staged at {address.get('path') or run.output_artifact} and never read to "
             f"EOF (owner task {run.task_id or '?'}). {action}")

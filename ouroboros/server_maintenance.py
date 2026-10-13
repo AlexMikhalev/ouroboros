@@ -38,8 +38,77 @@ def _installed_skill_names():
 
 _LAST_CANCEL_INTENT_SWEEP = [0.0]
 _CANCEL_INTENT_SWEEP_LOCK = threading.Lock()
+_DELIVERY_SWEEP_LOCK = threading.Lock()
+_PAUSE_NOTICE_SWEEP_LOCK = threading.Lock()
+_USAGE_SWEEP_LOCK = threading.Lock()
+_OWNER_PAUSE_SWEEP_LOCK = threading.Lock()
+_COLD_CUSTODY_SWEEP_LOCK = threading.Lock()
 _CUSTODY_SWEEP_LOCK = threading.Lock()
 _RECONCILE_SWEEP_LOCK = threading.Lock()
+
+
+def bind_body_lifespan(drive_root: Any, stop_event: Any):
+    """Return this lifespan's idempotent post-publication starter.
+
+    A previous lifespan keeps its physical jobs until they return. Only that
+    actual completion admits a successor; neither a timeout nor a loop revival
+    replaces its ownership. Waiting happens off the startup/control path.
+    """
+    from ouroboros.delegate_collection import start_body_runtime
+
+    lock, handover = threading.Lock(), []
+
+    def start():
+        with lock:
+            if stop_event.is_set() or handover:
+                return
+            runtime = start_body_runtime(drive_root, stop_event=stop_event)
+            if runtime.active:
+                return
+
+            def after_close():
+                runtime.close(wait=True)
+                with lock:
+                    handover.clear()
+                    if not stop_event.is_set():
+                        start_body_runtime(drive_root, stop_event=stop_event)
+
+            thread = threading.Thread(target=after_close, name="body-lifespan-handover", daemon=True)
+            handover.append(thread)
+            try:
+                thread.start()
+            except BaseException:
+                handover.clear()
+                raise
+
+    return start
+
+
+def _reconcile_cold_custody(drive_root: Any, stop_event: Any = None, *, saved=()) -> set[str]:
+    """Current identities only; requests remain discoverable without an event."""
+    from ouroboros.sleep_custody import reconcile
+    from supervisor import queue
+    from supervisor.active_activity import get_direct_activity_registry
+
+    # Direct turns do not occupy RUNNING. Their registry identity is sufficient
+    # to read the canonical exact pause, including while the actor is pausing.
+    direct = []
+    for activity in get_direct_activity_registry().actors():
+        ctx = getattr(getattr(activity.actor, "tools", None), "_ctx", None)
+        root = getattr(ctx, "budget_drive_root", None) or getattr(ctx, "drive_root", None) or drive_root
+        direct.append({"id": activity.activity_id, "project_id": activity.project_id,
+                       "budget_drive_root": str(root)})
+    return reconcile(queue, direct=[*direct, *saved], stop_requested=lambda: _stop_requested(stop_event))
+
+
+def _run_cold_custody(stop_event: Any, latch: Any) -> None:
+    try:
+        if not _stop_requested(stop_event):
+            _reconcile_cold_custody(DATA_DIR, stop_event)
+    except Exception:
+        log.warning("Cold custody pass unavailable; existing ownership retained", exc_info=True)
+    finally:
+        latch.release()
 
 
 @contextmanager
@@ -69,36 +138,35 @@ def _live_task_ids() -> set:
     return _startup_live_task_ids(DATA_DIR)
 
 
-def _run_cancel_delivery_ref_sweep(drive_root: pathlib.Path, stop_event: Any = None) -> None:
-    """20 s cancel/delivery/usage pass; history-sized work rides the 300 s reconcile pass."""
+def _run_terminal_duty(drive_root: pathlib.Path, step: str, latch: Any,
+                       stop_event: Any = None) -> None:
+    """Run one existing duty; unrelated recovery never waits for its completion."""
     try:
-        try:
+        if _stop_requested(stop_event):
+            return
+        if step == "cancel_intent_sweep":
             from supervisor.task_lifecycle import sweep_cancel_intents
             outcomes = sweep_cancel_intents()
             if outcomes:
                 log.info("Cancel-intent watchdog settled: %s", outcomes)
-            _step_recovered("cancel_intent_sweep")
-        except Exception:
-            _step_failed("cancel_intent_sweep")
-        try:
+        elif step == "terminal_delivery_replay":
             from supervisor.terminal_delivery import replay_pending_deliveries
             replay_pending_deliveries(drive_root)
-            _step_recovered("terminal_delivery_replay")
-        except Exception:
-            _step_failed("terminal_delivery_replay")
-        try:
+        elif step == "pause_notice_replay":
             from ouroboros.pause_notices import reconcile_pause_notices
-            reconcile_pause_notices(drive_root, stop_requested=stop_event.is_set if stop_event is not None else None)
-            _step_recovered("pause_notice_replay")
-        except Exception:
-            _step_failed("pause_notice_replay")
-        try:
+            reconcile_pause_notices(drive_root, stop_requested=lambda: _stop_requested(stop_event))
+        elif step == "abandoned_usage_reconciliation":
             _reconcile_abandoned_usage(drive_root)
-            _step_recovered("abandoned_usage_reconciliation")
-        except Exception:
-            _step_failed("abandoned_usage_reconciliation")
+        elif step == "owner_pause_settlement":
+            from supervisor.owner_pause_control import settle_requested_owner_pauses
+            settle_requested_owner_pauses(stop_requested=lambda: _stop_requested(stop_event))
+        else:
+            raise ValueError(f"unknown terminal duty: {step}")
+        _step_recovered(step)
+    except Exception:
+        _step_failed(step)
     finally:
-        _CANCEL_INTENT_SWEEP_LOCK.release()
+        latch.release()
 
 
 def _reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
@@ -204,23 +272,46 @@ def _periodic_supervisor_maintenance(
     last_custody_reap: list, last_review_reconcile: list, *, on_orphans_healed: Any = None,
     stop_event: Any = None,
 ) -> None:
-    """Throttled upkeep on the supervisor tick: three cadences, each a non-blocking
-    latch plus a last-run marker, nothing history-sized inline (INV-24). Every 20 s the
-    cancel-intent watchdog, terminal delivery replay and abandoned usage; every 600 s
+    """Throttled upkeep on the supervisor tick, nothing history-sized inline (INV-24).
+    The 20 s cadence independently starts cancel, delivery, notice and usage duties; every 600 s
     the custody block; every 300 s the reconcile block (zombie heal, then pending
     child-ref promotion retry). The first two stamp here before handing off; the
     reconcile pass stamps when it ENDS (issue #1230). A due cadence whose latch is still
     held journals the duty's stall once, with its thread's stack (``_duty_busy``).
     ``stop_event`` is the loop's per-generation token: both long passes stop mutating
     once it closes. ``on_orphans_healed(count)`` fires off-loop when orphaned RUNNING rows healed."""
+    if _stop_requested(stop_event):
+        return
     now = time.time()
     if now - _LAST_CANCEL_INTENT_SWEEP[0] > 20:
-        if _CANCEL_INTENT_SWEEP_LOCK.acquire(blocking=False):
-            _LAST_CANCEL_INTENT_SWEEP[0] = now
-            _start_maintenance_thread(_CANCEL_INTENT_SWEEP_LOCK, "terminal-maintenance",
-                                      _run_cancel_delivery_ref_sweep, (pathlib.Path(DATA_DIR), stop_event))
-        else:
-            _duty_busy(_CANCEL_INTENT_SWEEP_LOCK, 20)
+        # One existing cadence, independent single-flight operations: its stamp
+        # advances on dispatch, never on a slow duty's completion.
+        _LAST_CANCEL_INTENT_SWEEP[0] = now
+        for step, latch in (
+            ("cancel_intent_sweep", _CANCEL_INTENT_SWEEP_LOCK),
+            ("terminal_delivery_replay", _DELIVERY_SWEEP_LOCK),
+            ("pause_notice_replay", _PAUSE_NOTICE_SWEEP_LOCK),
+            ("abandoned_usage_reconciliation", _USAGE_SWEEP_LOCK),
+        ):
+            if latch.acquire(blocking=False):
+                _start_maintenance_thread(latch, step, _run_terminal_duty,
+                                          (pathlib.Path(DATA_DIR), step, latch, stop_event))
+            else:
+                _duty_busy(latch, 20)
+    from supervisor import queue
+    # The host accepts a saved cold request while its actor is still RUNNING;
+    # waiting for the park event would make release and acceptance wait on each other.
+    from supervisor.active_activity import get_direct_activity_registry
+    has_actors = bool(queue.RUNNING or queue.PENDING or get_direct_activity_registry().actors())
+    if has_actors and _COLD_CUSTODY_SWEEP_LOCK.acquire(blocking=False):
+        _start_maintenance_thread(_COLD_CUSTODY_SWEEP_LOCK, "cold-custody", _run_cold_custody,
+                                  (stop_event, _COLD_CUSTODY_SWEEP_LOCK))
+    # Presence is only a cheap scheduling hint. The off-loop owner re-reads
+    # the exact fences; a network stop must never run on the assignment tick.
+    if queue.BUDGET_ROOT_FENCES and _OWNER_PAUSE_SWEEP_LOCK.acquire(blocking=False):
+        latch = _OWNER_PAUSE_SWEEP_LOCK
+        _start_maintenance_thread(latch, "owner_pause_settlement", _run_terminal_duty,
+                                  (pathlib.Path(DATA_DIR), "owner_pause_settlement", latch, stop_event))
     latch = _CUSTODY_SWEEP_LOCK  # a pass releases THIS object, never a later generation's
     if now - last_custody_reap[0] > 600:
         if latch.acquire(blocking=False):
@@ -1029,6 +1120,7 @@ def _startup_live_task_ids(drive_root: pathlib.Path, *, include_pending: bool = 
     from ouroboros.post_task_checkpoint import POST_TASK_SYNTHESIS_INFLIGHT, POST_TASK_SYNTHESIS_LOCK
     from supervisor import queue, workers
     from supervisor.active_activity import get_direct_activity_registry
+    from ouroboros.sleep_custody import accepted_owner_ids
 
     with queue._queue_lock:
         ids = set(queue.RUNNING)
@@ -1036,6 +1128,7 @@ def _startup_live_task_ids(drive_root: pathlib.Path, *, include_pending: bool = 
             ids.update(str(task.get("id") or "") for task in queue.PENDING)
         ids.update(w.busy_task_id for w in workers.WORKERS.values() if w.busy_task_id)
     ids.update(row["activity_id"] for row in get_direct_activity_registry().snapshot())
+    ids.update(accepted_owner_ids(queue))
     root = str(pathlib.Path(drive_root).resolve(strict=False))
     with POST_TASK_SYNTHESIS_LOCK:
         ids.update(task_id for (path, task_id) in POST_TASK_SYNTHESIS_INFLIGHT if path == root)
@@ -1049,6 +1142,9 @@ def _startup_live_task_ids(drive_root: pathlib.Path, *, include_pending: bool = 
         ids.update(str(row["task"].get("id") or "") for row in snapshot.get("pending", [])
                    if isinstance(row, dict) and isinstance(row.get("task"), dict)
                    and row["task"].get("_owner_wait_resume"))
+        saved = [row["task"] for row in snapshot.get("pending", [])
+                 if isinstance(row, dict) and isinstance(row.get("task"), dict)]
+        ids.update(accepted_owner_ids(queue, direct=saved))
     return ids - {""}
 
 
@@ -1104,6 +1200,13 @@ def _run_startup_task_recovery(
         log.warning("Startup file/task recovery deferred: prior worker ownership is unconfirmed")
         return report
     try:
+        # Reattach logical receipts before any orphan or cleanup decision. On a
+        # providerless boot the queue has not restored its saved carriers yet.
+        from ouroboros.task_status import _load_queue_snapshot
+        snapshot = _load_queue_snapshot(pathlib.Path(drive_root))
+        saved = [row["task"] for row in snapshot.get("pending", [])
+                 if isinstance(row, dict) and isinstance(row.get("task"), dict)]
+        _reconcile_cold_custody(drive_root, saved=saved)
         protected = _startup_live_task_ids(drive_root, include_pending=True)
     except Exception as exc:
         report["errors"].append(f"startup_ownership_unconfirmed: {type(exc).__name__}")

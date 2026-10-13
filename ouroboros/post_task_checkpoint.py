@@ -490,6 +490,7 @@ def set_root_post_task_checkpoint(
     *,
     stop_reason: str = "",
     pause: Dict[str, Any] | None = None,
+    event_queue: Any = None,
 ) -> Dict[str, Any] | None:
     """Merge the phase marker and return the record actually stored, if any."""
     if not is_root_post_task(task):
@@ -633,7 +634,7 @@ def set_root_post_task_checkpoint(
                     bridge.push_log(address_handler_push(authority_root, dict(finalized_event)))
             except Exception:
                 log.debug("Live push of finalized task cost skipped for %s", task_id, exc_info=True)
-    settle_terminal_projection(authority_root, task_id, task=task)
+    settle_terminal_projection(authority_root, task_id, task=task, event_queue=event_queue)
     if stored is None:
         # The write failed: nothing was stored, and the contract is "the record
         # actually stored, if any" — a pre-existing row must not impersonate a
