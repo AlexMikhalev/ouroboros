@@ -8,8 +8,10 @@ commits the durable ``workspace_preparation`` marker on that row; one FIFO
 thread per supervisor generation then runs the existing schedule owner with the
 claim (``events_schedule_task._handle_schedule_task(..., preparation=claim)``).
 Command and event draining never wait on a copy, and physical preparations stay
-serialized in arrival order as they were on the loop. A host that never opened
+serialized in acceptance order. A host that never opened
 a generation (a direct caller of the handler) keeps the historical inline path.
+Positive entry contention keeps the unaccepted event on its original transport;
+after marker acceptance, acquisition waits retain the same FIFO stack off Q.
 
 The marker carries the token, the owning process (pid and birth) and
 generation, the phase and, once the copy returned, the owned resource handle.
@@ -27,8 +29,8 @@ only once the recorded owner positively ended; ``admitting`` or unreadable
 authority stays unresolved on the existing ``unknowns`` carrier, never inferred
 unsent from an absent queue row. Disposal is exact: only the recorded handle of
 this token, only after its refusal receipt and the copy's return; anything else
-stays registered residue for the existing worktree retention. Nothing here
-re-copies, retries or dispatches.
+stays registered residue for the existing worktree retention. Recovery never
+re-copies or dispatches.
 """
 
 from __future__ import annotations
@@ -46,6 +48,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, Optional
 
 from ouroboros.task_results import STATUS_REQUESTED, load_task_result, write_task_result
+from ouroboros.store import StoreBusy
 from ouroboros.tool_capabilities import ACTING_SUBAGENT_MODE
 from ouroboros.utils import append_jsonl, utc_now_iso
 from supervisor.task_admission import WORKSPACE_PREPARATION_FIELD as MARKER
@@ -61,6 +64,7 @@ INTERRUPTED_BY_GENERATION_EXIT = "preparation_interrupted_by_generation_exit"
 EXECUTOR_UNAVAILABLE = "preparation_executor_unavailable"
 ADMISSION_UNCERTAIN = "workspace_preparation_admission_uncertain"
 _RESOURCE_KEYS = ("surface", "path", "branch", "created_at", "base_sha")
+_RETRY_TOKEN = "_workspace_preparation_token"
 _DETAILS = {
     MARKER_UNWRITABLE: ("Subagent not scheduled: its workspace preparation could not record its progress "
                         "durably; it was never admitted and is not retried automatically."),
@@ -79,6 +83,40 @@ _STATE_LOCK = threading.Lock()
 _CURRENT: list = [None]  # the open generation's owner; None keeps the historical inline path
 _LIVE: Dict[str, "PreparationClaim"] = {}  # token -> claim, from its claim until its job ends
 _OWNER: Dict[str, Any] = {}
+
+
+def store_contention(error: BaseException) -> bool:
+    """A temporary acquisition gap, not unreadable authority or an unknown commit."""
+    return (isinstance(error, StoreBusy) and error.reason == "contention"
+            and getattr(error, "rollback_confirmed", None) is not False)
+
+
+class PreparationStopped(Exception):
+    def __init__(self, refusal: Dict[str, Any]):
+        self.refusal = refusal
+        super().__init__(refusal["detail"])
+
+
+def defer_schedule_event(ctx: Any, event: Dict[str, Any]) -> bool:
+    """Retain an unaccepted schedule on its existing transport, before any effect."""
+    try:
+        from supervisor.workers import get_event_q
+        endpoint = getattr(ctx, "event_queue", None)
+        if endpoint is None:
+            endpoint = get_event_q(create=False)
+        endpoint.put(event)
+        return True
+    except Exception:
+        log.warning("Schedule request %s could not retain its event transport", event.get("task_id"), exc_info=True)
+        from supervisor.events_schedule_task import _reject_schedule_task
+        _reject_schedule_task(
+            ctx, tid=str(event.get("task_id") or ""), chat_id=event.get("chat_id"),
+            delegation_role=str(event.get("delegation_role") or "subagent"), parent_id=event.get("parent_task_id"),
+            root_task_id=str(event.get("root_task_id") or event.get("task_id") or ""),
+            role=str(event.get("role") or ""), result_fields={}, persist_result=False,
+            reason_code="scheduled_result_authority_unknown",
+            detail="Subagent not scheduled: its event transport is unavailable; the request remains unconfirmed.")
+        return False
 
 
 def _process_owner() -> Dict[str, Any]:
@@ -192,45 +230,55 @@ def accept(evt: Dict[str, Any], ctx: Any, route: Dict[str, Any]) -> bool:
 
     Event-loop work only, all without a storage wait: the short reservation
     under Q, the durable ``queued`` marker before FIFO entry, a nonblocking
-    submit. A duplicate arrival finds the first claim and is ignored. Unreadable
-    or busy authority is the typed ``scheduled_result_authority_unknown``
-    disclosure and an unwritable marker the typed ``preparation_marker_unwritable``
-    refusal; neither starts any preparation.
+    submit. Positive contention retains this same request on the existing event
+    transport; it has not entered the preparation FIFO. A duplicate coalesces
+    with its live claim. Hard unreadability retains the existing typed refusal.
     """
     generation = _CURRENT[0]
     if (generation is None or str(route.get("delegation_role") or "") != "subagent"
             or not str(evt.get("task_id") or "").strip() or not _requests_preparation(evt)):
         return False
-    claim = PreparationClaim.live(generation, evt, ctx, route)
+    with _STATE_LOCK:
+        retry = str(evt.get(_RETRY_TOKEN) or "")
+        claim = _LIVE.get(retry) if retry else None
+        if retry and (claim is None or claim.task_id != str(evt.get("task_id") or "")
+                      or {key: value for key, value in evt.items() if key != _RETRY_TOKEN} != claim.event):
+            return True  # an ended generation's frame cannot mint a new owner
+        if claim is None:
+            if any(value.task_id == str(evt["task_id"]) for value in _LIVE.values()):
+                return True
+            claim = PreparationClaim.live(generation, evt, ctx, route)
+            _LIVE[claim.token] = claim
+        elif claim.submitted:
+            return True
     from supervisor.task_admission import claim_requested_child
 
+    submitted = deferred = False
     with _no_store_wait():
         try:
-            claimed = claim_requested_child(ctx, claim.task_id, claim.token)
-        except Exception:
-            log.warning("Preparation claim of %s found unreadable authority", claim.task_id, exc_info=True)
-            claim.disclose_unknown()
-            return True
-        if not claimed:
-            log.info("Ignoring replayed schedule event for task %s", claim.task_id)
-            return True
-        with _STATE_LOCK:
-            _LIVE[claim.token] = claim
-        submitted = False
-        try:
-            if generation.closed():
+            if not claim_requested_child(claim.ctx, claim.task_id, claim.token):
+                log.info("Ignoring replayed schedule event for task %s", claim.task_id)
+                return True
+            if claim.generation.closed():
                 claim.refuse(_DETAILS[INTERRUPTED_BY_GENERATION_EXIT], INTERRUPTED_BY_GENERATION_EXIT)
                 return True
-            landed = _transition(ctx.DRIVE_ROOT, claim.task_id, claim.token, claim.marker(QUEUED), expected=None)
+            landed = _transition(claim.ctx.DRIVE_ROOT, claim.task_id, claim.token, claim.queued_marker, expected=None)
             if landed is not True:
                 claim.unrecorded(landed)
                 return True
-            submitted = generation.submit(functools.partial(_run, claim))
+            submitted = claim.submitted = claim.generation.submit(functools.partial(_run, claim))
             if not submitted:
                 claim.refuse(_DETAILS[EXECUTOR_UNAVAILABLE], EXECUTOR_UNAVAILABLE)
             return True
+        except Exception as exc:
+            if store_contention(exc):
+                deferred = defer_schedule_event(claim.ctx, {**claim.event, _RETRY_TOKEN: claim.token})
+            else:
+                log.warning("Preparation claim of %s found unreadable authority", claim.task_id, exc_info=True)
+                claim.disclose_unknown()
+            return True
         finally:
-            if not submitted:
+            if not submitted and not deferred:
                 claim.release()
                 _finish(claim)
 
@@ -241,6 +289,12 @@ def _run(claim: "PreparationClaim") -> None:
         from supervisor.events_schedule_task import _handle_schedule_task
 
         _handle_schedule_task(claim.event, claim.ctx, preparation=claim)
+    except PreparationStopped as exc:
+        # Raised only by a proven-unsent store gate, never around enqueue or copy.
+        try:
+            claim.refuse(**exc.refusal)
+        except Exception:
+            log.warning("Stopped preparation %s retains its recovery marker", claim.task_id, exc_info=True)
     except Exception as exc:
         log.warning("Workspace preparation of %s failed", claim.task_id, exc_info=True)
         if not claim.crossed:  # past the boundary the admission path owns the outcome
@@ -275,6 +329,43 @@ class PreparationClaim:
         self.claimed_at = claimed_at or utc_now_iso()
         self.unidentified_residue = unidentified_residue
         self.crossed = False
+        self.submitted = False
+        self.queued_marker = self.marker(QUEUED)
+        self.refusal_receipt = uuid.uuid4().hex
+
+    def store_gate(self, operation: Callable[[], Any], *, controls: bool = True,
+                   retryable: Optional[Callable[[], bool]] = None) -> Any:
+        """Keep this FIFO stack across a known-unsent acquisition, outside every Q scope.
+
+        Callers wrap one read/CAS/interlock, never a copy or arbitrary handler.
+        ``retryable`` closes the gate before any possible queue handoff.
+        """
+        from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
+        from supervisor import queue
+
+        while True:
+            try:
+                return operation()
+            except StoreBusy as exc:
+                if (not store_contention(exc) or self.generation is None or not self.generation.on_executor()
+                        or retryable is not None and not retryable()):
+                    raise
+                if queue._queue_lock._is_owned():
+                    raise RuntimeError("Preparation acquisition wait still owns Q") from exc
+                if controls:
+                    try:
+                        refusal = self._control_refusal()
+                    except StoreBusy as control_gap:
+                        if not store_contention(control_gap):
+                            raise
+                    else:
+                        if refusal is not None:
+                            raise PreparationStopped(refusal) from exc
+                    self.generation._closed.wait(ACQUISITION_SLICE_SEC)
+                else:
+                    # Closing forbids new execution, not finishing this same
+                    # refusal receipt. The closed event would spin here.
+                    threading.Event().wait(ACQUISITION_SLICE_SEC)
 
     @classmethod
     def live(cls, generation: PreparationGeneration, evt: Dict[str, Any], ctx: Any,
@@ -312,7 +403,8 @@ class PreparationClaim:
     def refusal_fields(self) -> Dict[str, Any]:
         disposition = ("after_refusal_receipt" if self.resource
                        else "unidentified_residue_retained" if self.unidentified_residue else "none")
-        return {MARKER: self.marker(REFUSED, resource_disposition=disposition)}
+        return {MARKER: self.marker(REFUSED, resource_disposition=disposition),
+                "_admission_refusal_token": self.refusal_receipt}
 
     def refuse(self, detail: str, reason_code: str, *, extra_fields: Optional[Dict[str, Any]] = None,
                persist_result: bool = True) -> bool:
@@ -321,14 +413,14 @@ class PreparationClaim:
 
         route = self.route
         root_task_id = str(route.get("root_task_id") or self.task_id)
-        return bool(_reject_schedule_task(
+        return bool(self.store_gate(functools.partial(_reject_schedule_task,
             self.ctx, tid=self.task_id, chat_id=route.get("chat_id"),
             delegation_role=str(route.get("delegation_role") or "subagent"), parent_id=route.get("parent_id"),
             root_task_id=root_task_id, role=str(route.get("role") or ""),
             result_fields={"parent_task_id": route.get("parent_id"), "root_task_id": root_task_id,
                            "delegation_role": "subagent", "role": str(route.get("role") or "")},
             detail=detail, reason_code=reason_code, extra_fields=extra_fields,
-            persist_result=persist_result, preparation=self))
+            persist_result=persist_result, preparation=self), controls=False))
 
     def disclose_unknown(self) -> None:
         """Unreadable authority before any claim: the existing notice only, nothing reserved or written."""
@@ -380,8 +472,8 @@ class PreparationClaim:
         """
         if not self._may_proceed():
             return None
-        landed = _transition(self.ctx.DRIVE_ROOT, self.task_id, self.token, self.marker(COPYING),
-                             expected=(QUEUED,))
+        landed = self.store_gate(functools.partial(
+            _transition, self.ctx.DRIVE_ROOT, self.task_id, self.token, self.marker(COPYING), expected=(QUEUED,)))
         if landed is not True:
             self.unrecorded(landed)
             return None
@@ -390,8 +482,8 @@ class PreparationClaim:
             resolved = resolve(handle)
         finally:
             self.resource = {key: handle[key] for key in _RESOURCE_KEYS if key in handle}
-        landed = _transition(self.ctx.DRIVE_ROOT, self.task_id, self.token, self.marker(READY),
-                             expected=(COPYING,))
+        landed = self.store_gate(functools.partial(
+            _transition, self.ctx.DRIVE_ROOT, self.task_id, self.token, self.marker(READY), expected=(COPYING,)))
         if landed is not True:
             self.unrecorded(landed)
             return None
@@ -399,8 +491,8 @@ class PreparationClaim:
 
     def enter_admission(self) -> Optional[bool]:
         """Commit ``admitting`` before the admission path: True crossed, False lost, None unknown."""
-        landed = _transition(self.ctx.DRIVE_ROOT, self.task_id, self.token, self.marker(ADMITTING),
-                             expected=(READY,))
+        landed = self.store_gate(functools.partial(
+            _transition, self.ctx.DRIVE_ROOT, self.task_id, self.token, self.marker(ADMITTING), expected=(READY,)))
         self.crossed = landed is not False
         return landed
 
@@ -447,14 +539,14 @@ class PreparationClaim:
         return outcome
 
     def _may_proceed(self) -> bool:
-        owned = self._owned()
+        owned = self.store_gate(self._owned)
         if owned is None:
             self.refuse(_AUTHORITY_UNKNOWN, "scheduled_result_authority_unknown", persist_result=False)
             return False
         if not owned:
             self.abandon()
             return False
-        refusal = self._control_refusal()
+        refusal = self.store_gate(self._control_refusal)
         if refusal is not None:
             self.refuse(refusal["detail"], refusal["reason_code"], extra_fields=refusal.get("extra_fields"))
             return False
@@ -470,7 +562,9 @@ class PreparationClaim:
             return False
         try:
             current = load_task_result(self.ctx.DRIVE_ROOT, self.task_id, strict=True) or {}
-        except Exception:
+        except Exception as exc:
+            if store_contention(exc):
+                raise
             return None
         return own_requested_child(current, self.token, reserved)
 
@@ -484,7 +578,7 @@ class PreparationClaim:
 
         root = str(self.route.get("root_task_id") or self.task_id)
         probe = {"id": self.task_id, "root_task_id": root, "parent_task_id": str(self.route.get("parent_id") or "")}
-        with queue._queue_lock:
+        with _no_store_wait(), queue._queue_lock:
             closed = queue.apply_budget_root_admission_fence(probe, root)
             fence = queue.ACCEPTANCE_FENCES.get(root)
             if not closed and isinstance(fence, dict) and str(fence.get("status") or "") in {"active", "sealed"}:
@@ -517,14 +611,19 @@ def _transition(drive_root: Any, task_id: str, token: str, marker: Dict[str, Any
             return None
         return {**incoming, MARKER: marker, "status": STATUS_REQUESTED}
 
+    write_error = None
     try:
         write_task_result(drive_root, task_id, STATUS_REQUESTED, _field_projector=project,
                           strict_existing_dict=True)
-    except Exception:
-        log.warning("Preparation marker write for %s raised; reading it back", task_id, exc_info=True)
+    except Exception as exc:
+        write_error = exc
+        if not store_contention(exc):
+            log.warning("Preparation marker write for %s raised; reading it back", task_id, exc_info=True)
     try:
         stored = load_task_result(drive_root, task_id, strict=True) or {}
-    except Exception:
+    except Exception as exc:
+        if store_contention(exc):
+            raise
         log.warning("Preparation marker for %s is unreadable", task_id, exc_info=True)
         return None
     held = stored.get(MARKER) if isinstance(stored.get(MARKER), dict) else None
@@ -534,6 +633,8 @@ def _transition(drive_root: Any, task_id: str, token: str, marker: Dict[str, Any
                    or held is not None and held.get("token") != token
                    or expected is None and held is not None):
         return False
+    if store_contention(write_error):
+        raise write_error
     return None
 
 

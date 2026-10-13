@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from typing import Any, Dict
 
 from ouroboros.server_process import DATA_DIR, _restart_requested, _supervisor_stop, log
+from ouroboros.config import BODY_MAINTENANCE_INTERVAL_SEC
 from ouroboros.utils import utc_now_iso
 
 
@@ -44,6 +45,7 @@ _USAGE_SWEEP_LOCK = threading.Lock()
 _SYNTHESIS_SWEEP_LOCK = threading.Lock()
 _OWNER_PAUSE_SWEEP_LOCK = threading.Lock()
 _COLD_CUSTODY_SWEEP_LOCK = threading.Lock()
+_LAST_COLD_CUSTODY_SWEEP = [0.0]
 _CUSTODY_SWEEP_LOCK = threading.Lock()
 _RECONCILE_SWEEP_LOCK = threading.Lock()
 
@@ -293,7 +295,7 @@ def _periodic_supervisor_maintenance(
     if _stop_requested(stop_event):
         return
     now = time.time()
-    if now - _LAST_CANCEL_INTENT_SWEEP[0] > 20:
+    if now - _LAST_CANCEL_INTENT_SWEEP[0] > BODY_MAINTENANCE_INTERVAL_SEC:
         # One existing cadence, independent single-flight operations: its stamp
         # advances on dispatch, never on a slow duty's completion.
         _LAST_CANCEL_INTENT_SWEEP[0] = now
@@ -308,13 +310,16 @@ def _periodic_supervisor_maintenance(
                 _start_maintenance_thread(latch, step, _run_terminal_duty,
                                           (pathlib.Path(DATA_DIR), step, latch, stop_event))
             else:
-                _duty_busy(latch, 20)
+                _duty_busy(latch, BODY_MAINTENANCE_INTERVAL_SEC)
     from supervisor import queue
     # The host accepts a saved cold request while its actor is still RUNNING;
     # waiting for the park event would make release and acceptance wait on each other.
     from supervisor.active_activity import get_direct_activity_registry
     has_actors = bool(queue.RUNNING or queue.PENDING or get_direct_activity_registry().actors())
-    if has_actors and _COLD_CUSTODY_SWEEP_LOCK.acquire(blocking=False):
+    from ouroboros.delegate_supervision import _TICK_SEC
+    if (has_actors and now - _LAST_COLD_CUSTODY_SWEEP[0] >= _TICK_SEC
+            and _COLD_CUSTODY_SWEEP_LOCK.acquire(blocking=False)):
+        _LAST_COLD_CUSTODY_SWEEP[0] = now
         _start_maintenance_thread(_COLD_CUSTODY_SWEEP_LOCK, "cold-custody", _run_cold_custody,
                                   (stop_event, _COLD_CUSTODY_SWEEP_LOCK))
     # Presence is only a cheap scheduling hint. The off-loop owner re-reads

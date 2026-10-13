@@ -106,6 +106,7 @@ class StoreBusy(StoreError):
 
 
 _WAIT_BUDGET = contextvars.ContextVar("current_store_wait_budget", default=None)
+_ADMISSION_NO_WAIT = contextvars.ContextVar("current_store_admission_no_wait", default=False)
 
 
 @contextlib.contextmanager
@@ -117,6 +118,30 @@ def acquisition_budget(seconds: float):
         yield
     finally:
         _WAIT_BUDGET.reset(token)
+
+
+@contextlib.contextmanager
+def admission_acquisition():
+    """Probe/claim without waiting; this temporary guard is not the body's IO policy."""
+    token = _ADMISSION_NO_WAIT.set(True)
+    try:
+        yield
+    finally:
+        _ADMISSION_NO_WAIT.reset(token)
+
+
+@contextlib.contextmanager
+def physical_acquisition():
+    """At accepted handoff, copy only the caller's physical budget into its body.
+
+    Other ContextVars and explicit acquisition_budget scopes remain unchanged;
+    a nested physical start must acquire its own fresh admission guard.
+    """
+    token = _ADMISSION_NO_WAIT.set(False)
+    try:
+        yield
+    finally:
+        _ADMISSION_NO_WAIT.reset(token)
 
 
 _PROCESS_LOCKS: Dict[str, threading.RLock] = {}
@@ -653,7 +678,9 @@ def open_store(root: Any, *, write: bool, wait_sec: float = STORE_WAIT_SEC, serv
     import owner thread's, ``service_thread``): their transactions pass both checks. A ``barrier``
     holds the write lock and the gate without writing (the evidence packer's phase gate) and ends
     in ROLLBACK, so its release never waits for readers to drain as a COMMIT would."""
-    if _WAIT_BUDGET.get() is not None:
+    if _ADMISSION_NO_WAIT.get():
+        wait_sec = 0.0
+    elif _WAIT_BUDGET.get() is not None:
         wait_sec = min(wait_sec, _WAIT_BUDGET.get())
     root = pathlib.Path(root)
     service = service or bool(getattr(_SERVICE, "active", False))

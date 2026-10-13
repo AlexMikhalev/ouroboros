@@ -280,8 +280,10 @@ def test_body_output_remains_readable_when_engine_is_gone(tmp_path, monkeypatch,
     from ouroboros.tools.registry import ToolContext
     entry = started(tmp_path)
     body.collect_terminal(tmp_path, entry.run_id, detail=terminal())
+    contacted = []
     class Gone:
         def handshake(self, **kwargs):
+            contacted.append(True)
             raise gateway.ClaudexorUnavailable("daemon_unreachable", "offline")
         def close(self):
             pass
@@ -290,7 +292,7 @@ def test_body_output_remains_readable_when_engine_is_gone(tmp_path, monkeypatch,
     payload = json.loads(delegate._delegate_wait(ctx, entry.run_id, wait_sec=1))
     assert payload["status"] == "terminal"
     assert payload["primary_output"]["text"] == "complete answer"
-    assert payload["current_observation"]["status"] == "unavailable"
+    assert payload["current_observation"]["status"] == "retained" and not contacted
     assert not current.run(tmp_path, entry.run_id).output_consumed
 
 

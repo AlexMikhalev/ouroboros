@@ -161,19 +161,21 @@ def test_prepared_child_sql_contention_releases_q_and_keeps_exact_marker(env, mo
             with pytest.raises(store.StoreBusy):
                 task_admission.subagent_schedule_owned(env.ctx, "busy", admission_token=claim.token)
         elif seam == "depth":
-            assert task_admission.parse_schedule_task_depth(
-                env.ctx, event, tid="busy", chat_id=7, delegation_role="subagent", parent_id="parent",
-                root_task_id="root", role="builder", desc="change busy", expected_output="patch",
-                constraints="", task_context="", preparation=claim,
-            )[1] is True
+            with pytest.raises(store.StoreBusy):
+                task_admission.parse_schedule_task_depth(
+                    env.ctx, event, tid="busy", chat_id=7, delegation_role="subagent", parent_id="parent",
+                    root_task_id="root", role="builder", desc="change busy", expected_output="patch",
+                    constraints="", task_context="", preparation=claim,
+                )
         elif seam == "final":
-            answer = task_admission.enqueue_subagent_with_scheduled_result(
-                env.ctx, {"id": "busy"}, result_fields={}, admitted_task_contract={},
-                admitted_depth_provenance={}, direct_child_count=0, pending_ref=queue.PENDING, preparation=claim,
-            )
-            assert answer[1] == "scheduled_result_authority_unknown" and answer[3] is False
+            with pytest.raises(store.StoreBusy):
+                task_admission.enqueue_subagent_with_scheduled_result(
+                    env.ctx, {"id": "busy"}, result_fields={}, admitted_task_contract={},
+                    admitted_depth_provenance={}, direct_child_count=0, pending_ref=queue.PENDING, preparation=claim,
+                )
         else:
-            assert claim.refuse("preparation ended", prep.INTERRUPTED_BY_GENERATION_EXIT) is False
+            with pytest.raises(store.StoreBusy):
+                claim.refuse("preparation ended", prep.INTERRUPTED_BY_GENERATION_EXIT)
 
     probed, controlled = threading.Event(), threading.Event()
     waits = []

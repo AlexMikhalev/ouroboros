@@ -12,11 +12,13 @@ import logging
 import os
 import pathlib
 import threading
+import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 
 from ouroboros import delegate_custody as c
 from ouroboros import delegate_custody_current as current
+from ouroboros.delegate_custody_current import collection_pending
 from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
 
 log = logging.getLogger(__name__)
@@ -86,7 +88,19 @@ def observe_run(root, entry, detail: dict) -> bool:
         "source_ref": source, "interaction_ids": ids})
 
 
-def record_terminal_money(root, entry, detail: dict) -> dict:
+def _collection_failure(entry, step, exc, failures) -> bool:
+    """A changed physical failure is loud; unchanged retries keep the same known debt."""
+    signature = (entry.terminal_source.get("sha256"), type(exc).__name__,
+                 getattr(exc, "code", None), getattr(exc, "errno", None), getattr(exc, "reason", None), str(exc))
+    changed = failures is None or failures.get(step) != signature
+    if failures is not None:
+        failures[step] = signature
+    log.log(logging.WARNING if changed else logging.DEBUG,
+            "Delegated %s remains owed for %s: %s", step, entry.run_id, exc, exc_info=True)
+    return changed
+
+
+def record_terminal_money(root, entry, detail: dict, *, failures=None) -> dict:
     """The old exact session accounting, without project retirement or output ACK."""
     if entry.settled:
         return {"settled": True, "ledger_recorded": entry.ledger_recorded, "retried": False}
@@ -113,11 +127,13 @@ def record_terminal_money(root, entry, detail: dict) -> dict:
                 effort_resolution=observed.get("effort_resolution"), spend_usd=spend, spend_estimated=estimated,
                 credential_profile_id=profile, access_profile=access,
                 **{key: getattr(entry, key) for key in REVIEW_ATTRIBUTION_KEYS})
-        except Exception:
-            log.exception("Failed to record delegated session %s", entry.run_id)
-            c.emit(root, c.SETTLE_FAILED, {"run_id": entry.run_id, "task_id": entry.task_id,
-                                         "route": entry.route_id, "step": "ledger_write"})
+        except Exception as exc:
+            if _collection_failure(entry, "money", exc, failures):
+                c.emit(root, c.SETTLE_FAILED, {"run_id": entry.run_id, "task_id": entry.task_id,
+                                             "route": entry.route_id, "step": "ledger_write"})
         else:
+            if failures is not None:
+                failures.pop("money", None)
             entry.ledger_recorded = True
             c.emit(root, c.LEDGER_RECORDED, {"run_id": entry.run_id, "task_id": entry.task_id,
                 "root_task_id": entry.root_task_id, "parent_task_id": entry.parent_task_id, "route": entry.route_id})
@@ -146,16 +162,6 @@ def record_terminal_money(root, entry, detail: dict) -> dict:
     return {"settled": entry.settled, "ledger_recorded": entry.ledger_recorded, "retried": True}
 
 
-def collection_pending(entry) -> bool:
-    if entry is None:
-        return False
-    capture = bool(entry.execution_root or entry.resource_ref.get("workspace_kind") == "directory")
-    return bool(entry.terminal_source and (not entry.ledger_recorded or not entry.settled
-        or not entry.output_source or not entry.output_complete
-        or entry.output_terminal_sha != entry.terminal_source.get("sha256")
-        or (capture and not entry.patch_captured and not entry.patch_disposed and not entry.superseded_by)))
-
-
 def _retain_output(root, entry, detail, gateway, staging_task_id=""):
     from ouroboros.delegate_output import retain_terminal_bytes
     from ouroboros.tools.delegate_terminal_evidence import resolved_terminal_payload
@@ -167,6 +173,10 @@ def _retain_output(root, entry, detail, gateway, staging_task_id=""):
     artifact = retain_terminal_bytes(root, staging_task_id or entry.task_id, entry.run_id, text, text.encode("utf-8"))
     if artifact is None:
         return {}
+    if (entry.output_sha == artifact["sha256"] and entry.output_source == artifact["source"]
+            and entry.output_complete == complete
+            and entry.output_terminal_sha == entry.terminal_source.get("sha256")):
+        return {"artifact": artifact, "complete": complete, "published": True}
     published = c.emit(root, c.OUTPUT_SPILLED, {"run_id": entry.run_id, "task_id": entry.task_id,
         "artifact": artifact["source"]["path"], "source": artifact["source"], "bytes": artifact["bytes"],
         "sha256": artifact["sha256"], "terminal_sha": entry.terminal_source.get("sha256", ""),
@@ -175,7 +185,7 @@ def _retain_output(root, entry, detail, gateway, staging_task_id=""):
 
 
 def collect_terminal(root, run_id: str, *, gateway=None, detail: dict | None = None,
-                     allow_review: bool = False, staging_task_id: str = "", stopped=None) -> dict:
+                     allow_review: bool = False, staging_task_id: str = "", stopped=None, failures=None) -> dict:
     """One nonblocking result-owner entry for foreground, runtime and orphan recovery.
 
     A contending caller reads committed facts; it never times out an integration
@@ -216,7 +226,10 @@ def collect_terminal(root, run_id: str, *, gateway=None, detail: dict | None = N
                 retention = _retain_output(root, entry, detail, gateway, staging_task_id)
             except Exception as exc:
                 errors.append(f"output:{type(exc).__name__}")
-                log.warning("Delegated output retention failed for %s", run_id, exc_info=True)
+                _collection_failure(entry, "output", exc, failures)
+            else:
+                if failures is not None:
+                    failures.pop("output", None)
         entry = current.run(root, run_id)
         # This lock is shared with continue/apply. A possibly-started successor
         # owns the mutable snapshot, even before it has a bound run id.
@@ -226,12 +239,15 @@ def collect_terminal(root, run_id: str, *, gateway=None, detail: dict | None = N
                 capture = capture_terminal_patch_for_drive(root, entry, gateway=gateway, retain_investigation=False)
             except Exception as exc:
                 errors.append(f"capture:{type(exc).__name__}")
-                log.warning("Delegated capture failed for %s", run_id, exc_info=True)
+                _collection_failure(entry, "capture", exc, failures)
+            else:
+                if failures is not None:
+                    failures.pop("capture", None)
         entry = current.run(root, run_id)
         if entry is not None:
             closing = stopped is not None and stopped()
             money = ({"settled": entry.settled, "ledger_recorded": entry.ledger_recorded}
-                     if closing else record_terminal_money(root, entry, detail))
+                     if closing else record_terminal_money(root, entry, detail, failures=failures))
             # Existing evidence-only cleanup is explicit and comes AFTER full
             # output retention. Mutating results remain the author's decision.
             if not closing and capture and entry.output_complete and entry.output_source:
@@ -284,6 +300,12 @@ _RUNTIMES: dict[str, "BodyRuntime"] = {}
 _RUNTIME_LOCK = threading.RLock()
 
 
+def _collection_facts(entry):
+    return (entry.terminal_source.get("sha256"), entry.output_sha, entry.output_complete,
+            entry.output_terminal_sha, entry.patch_captured, entry.patch_disposed, entry.superseded_by,
+            entry.ledger_recorded, entry.settled)
+
+
 class BodyRuntime:
     """One generation's owned physical jobs. No background job grants actor authority."""
     def __init__(self, root, *, stop_event=None, gateway_factory=None, max_workers=None):
@@ -304,6 +326,9 @@ class BodyRuntime:
         self.reads: dict[str, Future] = {}
         self.collections: dict[str, Future] = {}
         self.requested: set[str] = set()
+        self.retry_requested: set[str] = set()
+        self.collection_attempts: dict[str, tuple] = {}
+        self.collection_failures: dict[str, dict] = {}
         self.thread = threading.Thread(target=self._drive, name="delegated-body", daemon=True)
         try:
             self.thread.start()
@@ -343,6 +368,7 @@ class BodyRuntime:
         with self.lock:
             if self.active:
                 self.requested.add(str(run_id))
+                self.retry_requested.add(str(run_id))
                 self.changed.set()
 
     def _gateway(self):
@@ -367,12 +393,16 @@ class BodyRuntime:
         except Exception:
             gateway = None  # Local retained output, Git capture and money still work.
         try:
-            return collect_terminal(self.root, run_id, gateway=gateway, stopped=lambda: not self.active)
+            with self.lock:
+                failures = self.collection_failures.setdefault(run_id, {})
+            return collect_terminal(self.root, run_id, gateway=gateway, stopped=lambda: not self.active,
+                                    failures=failures)
         finally:
             if gateway is not None:
                 gateway.close()
 
     def tick(self):
+        from ouroboros.config import BODY_MAINTENANCE_INTERVAL_SEC
         if not self.active:
             return
         entries = current.runs(self.root, "state=?", (current.HELD,))
@@ -383,11 +413,23 @@ class BodyRuntime:
                         if not future.cancelled() and future.exception() is not None:
                             log.debug("Body operation for %s remains owed: %s", rid, future.exception())
                         del jobs[rid]  # Completed history is not an in-flight registry.
+                        if jobs is self.collections and rid in self.collection_attempts:
+                            facts, _when = self.collection_attempts[rid]
+                            self.collection_attempts[rid] = (facts, time.monotonic())
             requested, self.requested = self.requested, set()
         for rid in requested - entries.keys():
             entry = current.run(self.root, rid)
             if entry is not None:
                 entries[rid] = entry
+        with self.lock:
+            self.retry_requested.intersection_update(
+                rid for rid in self.retry_requested
+                if rid in self.collections or collection_pending(entries.get(rid)))
+            for rid in list(self.collection_attempts):
+                if rid not in self.collections and not collection_pending(entries.get(rid)):
+                    self.collection_attempts.pop(rid, None)
+                    self.collection_failures.pop(rid, None)
+                    self.retry_requested.discard(rid)
         for entry in entries.values():
             if entry.review_owned or not self.active:
                 continue
@@ -398,7 +440,13 @@ class BodyRuntime:
                         self.reads[entry.run_id] = self.observers.submit(self._observe, entry)
                 if collection_pending(entry):
                     previous = self.collections.get(entry.run_id)
-                    if previous is None or previous.done():
+                    facts, now = _collection_facts(entry), time.monotonic()
+                    old, ended = self.collection_attempts.get(entry.run_id, (None, 0.0))
+                    due = (old != facts or entry.run_id in self.retry_requested
+                           or now - ended >= BODY_MAINTENANCE_INTERVAL_SEC)
+                    if (previous is None or previous.done()) and due:
+                        self.retry_requested.discard(entry.run_id)
+                        self.collection_attempts[entry.run_id] = (facts, now)
                         self.collections[entry.run_id] = self.collectors.submit(self._collect, entry.run_id)
 
     def _drive(self):

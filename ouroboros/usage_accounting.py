@@ -1071,9 +1071,9 @@ def _transition_once(reservation: AttemptReservation, state: str, **fields: Any)
                 with launch_admission(scope, wait=False):
                     appended = view.write(row, current)
                     view.commit(wait_sec=0)
-            except LaunchBusy:
-                raise
             except OwnerPauseRefused as exc:
+                if isinstance(exc, LaunchBusy) and exc.reason == "contention":
+                    raise
                 from ouroboros.llm_attempt import _PhysicalSendNotStarted
                 raise _PhysicalSendNotStarted(str(exc) or "owner_pause") from exc
         else:

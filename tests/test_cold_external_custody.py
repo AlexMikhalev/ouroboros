@@ -312,3 +312,18 @@ def test_cold_rebind_reads_only_active_and_accepted_pending_carriers(tmp_path, m
     monkeypatch.setattr(bp, "budget_pause_row", exact)
     assert sc.reconcile(env.q, runtime=env.runtime) == {"sleeper"}
     assert read == ["sleeper"]
+
+
+def test_body_acceptance_keeps_a_late_local_writer_as_its_actual_hold(tmp_path, monkeypatch):
+    from ouroboros import budget_pause as bp, sleep_custody as sc
+    from ouroboros.task_results import write_task_result
+
+    env = _setup(tmp_path, monkeypatch)
+    pause = _park(env, tmp_path, monkeypatch)
+    write_task_result(tmp_path, "child", "scheduled", root_task_id="sleeper",
+                      launch_handoffs={"local": {"tool": "opaque"}})
+    with pytest.raises(bp.ColdSleepWritersUnsettled, match="local custody"):
+        sc.confirm_release(env.ctx, pause, pause, control=lambda _ctx: "")
+    assert sc.accepted_receipt("sleeper", bp.budget_pause_row(tmp_path, "sleeper"))
+    write_task_result(tmp_path, "child", "scheduled", launch_handoffs={})
+    assert sc.confirm_release(env.ctx, pause, pause, control=lambda _ctx: "") == pause

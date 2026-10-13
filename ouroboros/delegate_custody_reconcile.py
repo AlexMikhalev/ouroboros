@@ -107,10 +107,11 @@ def reconcile_task_runs(drive_root: Any, task_id: str, *,
     mine = str(task_id or "")
     if not mine:
         return []
-    from ouroboros.delegate_custody_current import runs as current_runs, task_snapshot
+    from ouroboros.delegate_custody_current import collection_pending, runs as current_runs, task_snapshot
 
     view = task_snapshot(drive_root, mine)  # the task's rows and pending starts, one read
-    held = [c for c in view["runs"].values() if not c.settled]
+    held = [c for c in view["runs"].values()
+            if not c.settled or (not c.review_owned and collection_pending(c))]
     stray = view["pending"]
     # Also the registration retry lane for the task's OWN settled-but-owned
     # runs in retire-eligible projects (a one-shot process may never see a
@@ -147,7 +148,9 @@ def reconcile_orphaned_runs(
     # replaying the custody log takes seconds, and a candidate exists ⇒ its owner was
     # registered earlier (admission takes ``_queue_lock`` before any spawn), so an owner
     # absent from the LATER snapshot is really gone rather than merely not yet admitted.
-    candidates = _custody().open_runs(drive_root)
+    from ouroboros.delegate_custody_current import collection_pending, runs as current_runs
+    candidates = [c for c in current_runs(drive_root, "state=?", ("held",)).values()
+                  if not c.settled or (not c.review_owned and collection_pending(c))]
     # The class ONE STEP EARLIER (P34R.2): an invocation whose POST the daemon may have
     # accepted but whose worker died before record_started has no run row for the sweep
     # above to find — a live mutating run nobody could ever collect. Recovered here on

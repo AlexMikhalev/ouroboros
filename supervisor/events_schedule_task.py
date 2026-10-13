@@ -144,7 +144,10 @@ def _reject_schedule_task(
                 accounted_upper_bound_usd=0.0,
             )
             refusal_confirmed = True
-        except Exception:
+        except Exception as exc:
+            from supervisor.workspace_preparation import store_contention
+            if preparation is not None and store_contention(exc):
+                raise  # the same claim retains its refusal receipt and waits off Q
             log.warning("Failed to persist schedule rejection for %s", tid, exc_info=True)
             if preparation is not None:
                 detail += (" Another owner now holds this request; nothing was overwritten."
@@ -252,9 +255,8 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any, preparation: Any = None
     session_id = str(evt.get("session_id") or "")
     actor_id = str(evt.get("actor_id") or "ouroboros")
     delegation_role = str(evt.get("delegation_role") or "subagent")
+    from supervisor import workspace_preparation
     if preparation is None:
-        from supervisor import workspace_preparation
-
         if workspace_preparation.accept(evt, ctx, {
                 "tid": tid, "chat_id": chat_id, "delegation_role": delegation_role,
                 "parent_id": parent_id, "root_task_id": root_task_id, "role": role}):
@@ -265,28 +267,37 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any, preparation: Any = None
     # events still reach the typed depth rejection below before provisioning or
     # enqueue; events without an explicit id use the normal fresh-id path.
     from supervisor.task_admission import subagent_schedule_preflight
-    if subagent_schedule_preflight(
-        ctx, evt, chat_id, delegation_role=delegation_role,
-        admission_token=getattr(preparation, "token", ""),
-    ):
-        return
-    from supervisor.task_admission import parse_schedule_task_depth
+    try:
+        preflight = functools.partial(subagent_schedule_preflight,
+            ctx, evt, chat_id, delegation_role=delegation_role,
+            admission_token=getattr(preparation, "token", ""), defer_contention=True,
+        )
+        preflight_result = preflight() if preparation is None else preparation.store_gate(preflight)
+        if preflight_result:
+            return
+        from supervisor.task_admission import parse_schedule_task_depth
 
-    depth, depth_rejected = parse_schedule_task_depth(
-        ctx,
-        evt,
-        tid=tid,
-        chat_id=chat_id,
-        delegation_role=delegation_role,
-        parent_id=parent_id,
-        root_task_id=root_task_id,
-        role=role,
-        desc=desc,
-        expected_output=expected_output,
-        constraints=constraints,
-        task_context=task_context,
-        preparation=preparation,
-    )
+        parse_depth = functools.partial(parse_schedule_task_depth,
+            ctx,
+            evt,
+            tid=tid,
+            chat_id=chat_id,
+            delegation_role=delegation_role,
+            parent_id=parent_id,
+            root_task_id=root_task_id,
+            role=role,
+            desc=desc,
+            expected_output=expected_output,
+            constraints=constraints,
+            task_context=task_context,
+            preparation=preparation, defer_contention=True,
+        )
+        depth, depth_rejected = parse_depth() if preparation is None else preparation.store_gate(parse_depth)
+    except Exception as exc:
+        if preparation is None and workspace_preparation.store_contention(exc):
+            workspace_preparation.defer_schedule_event(ctx, {**evt, "task_id": tid})
+            return
+        raise
     if depth_rejected:
         return
     memory_mode = str(evt.get("memory_mode") or "").strip()
@@ -706,6 +717,8 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any, preparation: Any = None
                 pending_ref=pending_ref,
                 preparation=preparation,
                 recheck_child_admission=recheck_child_admission,
+                # The readonly resolver is pure; no copy/side effect preceded this interlock.
+                defer_contention=preparation is None and not workspace_preparation._requests_preparation(evt),
             )
         else:
             admitted = ctx.enqueue_task(task)
@@ -729,6 +742,9 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any, preparation: Any = None
         if isinstance(admitted, dict) and admitted.get("_admission_uncertain"):
             ctx.persist_queue_snapshot(reason="schedule_subagent_receipt_unconfirmed")
             log.warning("%s: %s", tid, admitted["_admission_uncertain"])
+            return
+        if scheduled_failure_reason == "schedule_observation_pending":
+            workspace_preparation.defer_schedule_event(ctx, {**evt, "task_id": tid})
             return
         if scheduled_failure_reason:
             if scheduled_failure_reason == "scheduled_event_replay":

@@ -143,7 +143,8 @@ def confirm_release(ctx: Any, prepared: dict, seed: dict, *, control: Any) -> di
             blockers = cold_blockers(ctx, transferred=current["external_custody"]["runs"])
             if blockers:
                 # Acceptance cannot certify a newly appeared local/unknown writer.
-                raise ValueError(f"cold release still has local custody: {blockers}")
+                from ouroboros.budget_pause import ColdSleepWritersUnsettled
+                raise ColdSleepWritersUnsettled(f"cold release still has local custody: {blockers}")
             return current
         transfer = current.get("external_custody") or {}
         if transfer.get("state") == "refused" or time.monotonic() >= deadline:

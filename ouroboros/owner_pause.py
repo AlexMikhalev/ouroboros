@@ -45,7 +45,7 @@ import time
 import uuid
 from typing import Any, Dict, Optional, Tuple
 
-from ouroboros.store import StoreBusy, StoreError, acquisition_budget
+from ouroboros.store import StoreBusy, StoreError, acquisition_budget, admission_acquisition, physical_acquisition
 
 log = logging.getLogger(__name__)
 
@@ -315,6 +315,7 @@ def reopen_for_resume(root_drive: Any, root_task_id: str, task_id: str, *,
     Resume is superseded, releases nothing, and the member parks at its next
     safe boundary. Any other identity change refuses.
     """
+    publication_gap = None
     with launch_lock(root_drive, root_task_id), acquisition_budget(0):
         current = read_fence(root_drive, root_task_id) if fence_id else {}
         if fence_id and current.get("fence_id") != fence_id:
@@ -326,9 +327,60 @@ def reopen_for_resume(root_drive: Any, root_task_id: str, task_id: str, *,
                 # their shared fence, including acceptance beside post-task work.
                 from ouroboros.acceptance_late import resume_paused_acceptance_preparations
                 resume_paused_acceptance_preparations(root_drive, root_task_id, current)
-            release_fence(root_drive, root_task_id, reason="owner_resume_consumed")
+            try:
+                release_fence(root_drive, root_task_id, reason="owner_resume_consumed")
+            except StoreBusy as exc:
+                publication_gap = exc
         else:
             select_member_resume(root_drive, root_task_id, task_id, fence_id=fence_id, grant_id=grant_id)
+    if publication_gap is not None:
+        _finish_resume_publication(root_drive, root_task_id, fence_id, grant_id, publication_gap)
+
+
+def _finish_resume_publication(root_drive: Any, task_id: str, fence_id: str, grant_id: str,
+                               error: StoreBusy | LaunchBusy) -> None:
+    """Retry only the root fence write after preparation handoff, outside its lock.
+
+    The preparation is already owned and must never restart here. Each try
+    rechecks this same explicit grant and current Stop/Pause authority; unknown
+    rollback or the existing STORE_WAIT_SEC physical acquisition bound leaves
+    the caller's hold intact; no task/review lifetime is extended.
+    """
+    from ouroboros.store import STORE_WAIT_SEC
+    from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
+    from ouroboros.cancel_intents import cancel_pending
+    from ouroboros.post_task_checkpoint import late_phase_pause_record
+    from ouroboros.task_results import load_task_result
+
+    started = time.monotonic()
+    needs_rollback = True  # The first error came from the publication writer.
+    while True:
+        remaining = STORE_WAIT_SEC - (time.monotonic() - started)
+        if (error.reason != "contention" or remaining <= 0
+                or needs_rollback and isinstance(error, StoreBusy) and not getattr(error, "rollback_confirmed", False)):
+            raise error
+        time.sleep(min(ACQUISITION_SLICE_SEC, remaining))
+        needs_rollback = False  # Lock/authority probes below have not attempted a write.
+        try:
+            with launch_lock(root_drive, task_id, wait=False), acquisition_budget(0):
+                current = read_fence(root_drive, task_id)
+                if current.get("fence_id") != fence_id:
+                    if fence_closed(current) and current.get("supersedes_fence_id") == fence_id:
+                        return  # The newer Pause keeps the original resumed work held.
+                    raise OwnerPauseRefused("owner_pause_fence_changed")
+                row = load_task_result(root_drive, task_id, strict=True) or {}
+                grants = (((row.get("budget_pause") or {}).get("grant") or {}, "owner_pause_fence_id"),
+                          (late_phase_pause_record(row).get("grant") or {}, "fence_id"))
+                if not grant_id or not any(grant.get("grant_id") == grant_id and grant.get(key) == fence_id
+                                            and not grant.get("revoked_at") for grant, key in grants):
+                    raise OwnerPauseRefused("root_resume_authority_changed")
+                if cancel_pending(root_drive, task_id, strict=True) or row.get("status") == "cancelled":
+                    raise OwnerPauseRefused("cancelled")
+                needs_rollback = True
+                release_fence(root_drive, task_id, reason="owner_resume_consumed")
+                return
+        except (StoreBusy, LaunchBusy) as exc:
+            error = exc
 
 
 @acquisition_budget(0)
@@ -650,7 +702,7 @@ def launch_admission(source: Any, *, root_resume: Optional[Dict[str, Any]] = Non
         review_admission = None
         try:
             stack.enter_context(launch_lock(root_drive, root_id, wait=False))
-            with acquisition_budget(0):
+            with admission_acquisition():
                 _validate_launch(source, root_resume)
                 marker = _REVIEW_EPISODE.get()
                 if (isinstance(marker, dict) and not episode_armed(marker)
@@ -662,7 +714,7 @@ def launch_admission(source: Any, *, root_resume: Optional[Dict[str, Any]] = Non
             raise
         return stack, review_admission
     stack, admitted = retry_presend(enter, check=False) if wait else enter()
-    with stack, acquisition_budget(0):
+    with stack, admission_acquisition():
         token = _REVIEW_ADMISSION.set(admitted)
         try:
             yield
@@ -813,9 +865,10 @@ def operation_start(source: Any = None):
 def submit_tool(source: Any, name: str, submit: Any, function: Any, *args: Any):
     """Hand one invocation to its existing sticky executor under Pause exclusion."""
     with launch_admission(source):
-        context = copy_context()
-        context.run(_HANDED_TOOL.set, {"invocation": (id(source), name), "claimed": False})
-        handed = submit(context.run, function, *args)
+        with physical_acquisition():
+            context = copy_context()
+            context.run(_HANDED_TOOL.set, {"invocation": (id(source), name), "claimed": False})
+            handed = submit(context.run, function, *args)
         arm_review_episode(source)
         return handed
 
@@ -833,8 +886,9 @@ def run_operation(source: Any, function: Any, /, *args: Any, **kwargs: Any):
 
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="operation") as executor:
         with operation_start(source):
-            context = copy_context()
-            future = executor.submit(context.run, function, *args, **kwargs)
+            with physical_acquisition():
+                context = copy_context()
+                future = executor.submit(context.run, function, *args, **kwargs)
         return future.result()
 
 
@@ -867,7 +921,8 @@ def submit_async_operation(source: Any, function: Any, /, *args: Any, **kwargs: 
         return await function(*args, **kwargs)
 
     with operation_start(source):
-        return asyncio.create_task(invoke())
+        with physical_acquisition():
+            return asyncio.create_task(invoke())
 
 
 def submit_async_preparation(function: Any, *args: Any, source: Any = None, **kwargs: Any):
@@ -888,7 +943,8 @@ def submit_async_preparation(function: Any, *args: Any, source: Any = None, **kw
         return await function(*args, **kwargs)
 
     with launch_admission(source if source is not None else active[0] if active else None):
-        return asyncio.create_task(invoke())
+        with physical_acquisition():
+            return asyncio.create_task(invoke())
 
 
 def model_handed_off(attempt_id: str = "") -> bool:
@@ -906,12 +962,13 @@ def submit_model(reservation: Any, submit: Any, function: Any):
     try:
         with launch_admission(reservation.scope, wait=False):
             require_physical_dispatch_window()
-            context = copy_context()
-            context.run(_HANDED_MODEL.set, reservation.attempt_id)
-            handed = submit(context.run, function)
+            with physical_acquisition():
+                context = copy_context()
+                context.run(_HANDED_MODEL.set, reservation.attempt_id)
+                handed = submit(context.run, function)
             arm_review_episode(reservation.scope)  # the exact sender now owns these bytes
             return handed
-    except LaunchBusy:
-        raise
     except OwnerPauseRefused as exc:
+        if isinstance(exc, LaunchBusy) and exc.reason == "contention":
+            raise
         raise _PhysicalSendNotStarted(str(exc)) from exc

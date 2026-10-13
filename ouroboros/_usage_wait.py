@@ -44,7 +44,7 @@ class _PresendWait:
         self.entered = False
 
     def delay(self, error):
-        from ouroboros.store import StoreBusy, acquisition_budget
+        from ouroboros.store import StoreBusy, admission_acquisition
         from ouroboros.owner_pause import LaunchBusy
         from ouroboros.queue_observation import (
             DispatchPublicationPending, DISPATCH_PUBLICATION_WAIT_SEC, DISPATCH_PUBLICATION_POLL_SEC,
@@ -60,7 +60,7 @@ class _PresendWait:
         # Controls must be checked even while the storage they usually inspect is busy.
         # A positive local control wins; a transient probe gap retains this same wait.
         try:
-            with acquisition_budget(0):
+            with admission_acquisition():
                 if self.check:
                     _check()
                 elif self.owner is not None:
@@ -99,14 +99,14 @@ def retry_presend(function, *, check=True):
     this helper once it has submitted an executor. In particular, never wrap send(),
     mark_dispatched's physical claim, or an arbitrary tool handler.
     """
-    from ouroboros.store import acquisition_budget
+    from ouroboros.store import admission_acquisition
     from ouroboros import queue_observation
 
     episode = _PresendWait(check)
     try:
         while True:
             try:
-                with acquisition_budget(0):
+                with admission_acquisition():
                     if check:
                         _check()
                     return function()
@@ -119,13 +119,13 @@ def retry_presend(function, *, check=True):
 
 async def retry_presend_async(function, *, check=True):
     """A nonblocking local submission on THIS loop; only its outside wait yields."""
-    from ouroboros.store import acquisition_budget
+    from ouroboros.store import admission_acquisition
 
     episode = _PresendWait(check)
     try:
         while True:
             try:
-                with acquisition_budget(0):
+                with admission_acquisition():
                     if check:
                         _check()
                     return function()

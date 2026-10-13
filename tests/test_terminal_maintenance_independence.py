@@ -99,3 +99,41 @@ def test_failed_duty_releases_latch_without_clearing_another_failure(tmp_path, m
     sm._run_terminal_duty(tmp_path, "abandoned_usage_reconciliation", latch)
     assert not latch.locked()
     assert sm._STEP_FAILURES == {"terminal_delivery_replay": 3, "abandoned_usage_reconciliation": 1}
+
+
+def test_cold_transfer_observation_uses_body_cadence_without_running_each_tick(tmp_path, monkeypatch):
+    from ouroboros import server_maintenance as sm
+    from ouroboros.delegate_supervision import _TICK_SEC
+    from supervisor import active_activity, queue
+
+    clock, started = [1000.0], []
+    monkeypatch.setattr(sm, "time", SimpleNamespace(time=lambda: clock[0]))
+    monkeypatch.setattr(sm, "_stop_requested", lambda _stop=None: False)
+    monkeypatch.setattr(sm, "_LAST_CANCEL_INTENT_SWEEP", [clock[0]])
+    monkeypatch.setattr(sm, "_LAST_COLD_CUSTODY_SWEEP", [0.0])
+    monkeypatch.setattr(sm, "_COLD_CUSTODY_SWEEP_LOCK", threading.Lock())
+    monkeypatch.setattr(queue, "RUNNING", {"current": {}})
+    monkeypatch.setattr(queue, "PENDING", [])
+    monkeypatch.setattr(queue, "BUDGET_ROOT_FENCES", {})
+    monkeypatch.setattr(active_activity, "get_direct_activity_registry", lambda: SimpleNamespace(actors=lambda: []))
+
+    def start(latch, name, target, args):
+        started.append(name)
+        latch.release()
+        return True
+
+    monkeypatch.setattr(sm, "_start_maintenance_thread", start)
+    def tick():
+        sm._periodic_supervisor_maintenance([clock[0]], [clock[0]])
+    tick()
+    assert started == ["cold-custody"]
+    clock[0] += _TICK_SEC / 2
+    tick()
+    assert started == ["cold-custody"]
+    clock[0] += _TICK_SEC / 2
+    tick()
+    assert started == ["cold-custody", "cold-custody"]
+    queue.RUNNING.clear()
+    clock[0] += _TICK_SEC
+    tick()
+    assert len(started) == 2

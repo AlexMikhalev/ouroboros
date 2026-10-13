@@ -62,8 +62,8 @@ def test_child_writer_sleep_hold_is_typed_and_retries_after_settlement(tmp_path,
     ctx, limit = _loop_ctx(tmp_path, "root")
     ctx._model_sleep = {"sleep_id": "s", "mode": "cold", **model_sleep.selectors(ctx, wake_after_sec=3600)}
     original, census, holds = model_sleep.cold_blockers, [], []
-    def initial_census(source):
-        blockers = original(source)
+    def initial_census(source, **kwargs):
+        blockers = original(source, **kwargs)
         census.append(blockers)
         if len(census) == 1:
             write_task_result(tmp_path, "child", "scheduled", launch_handoffs={"external": {"tool": "opaque"}})
