@@ -221,7 +221,7 @@ ouroboros/ — agent core and shared runtime (§6)
   workspace_patch_rules.py, workspace_patch_capture.py — patch-exclusion rules (env/cache, junk, lockfiles, credential-shaped names); the patch artifact and its manifest
   workspace_copies.py — git-copy source/baseline identity and own-body policy (§6 Delegated subagents)
   coop_checkpoint.py — quiescent checkpoint commits of cooperative trees from a mutative child's `write_root`; a root mid merge/rebase/cherry-pick/revert is skipped: staging it would commit a half-resolved tree (§5)
-  delegate_output.py, delegate_directory.py, workspace_file_outputs.py — retained terminal JSON, its physical-task read, directory-result apply/discard through the artifact owner, ordinary-folder file results with exact before/after identities (§6 Terminal products and their reader)
+  delegate_output.py, delegate_directory.py, workspace_file_outputs.py — retained terminal JSON with physical-task reads; artifact-owned directory apply/discard and ordinary-folder results with exact before/after identities (§6 Terminal products)
   delegate_activity.py — typed executor activity JSONL with an emission-committed cursor (§6 Delegated activity)
   delegate_containment.py — engine-derived isolation facts; absence is reported unproven (§6 Delegated subagents)
   delegate_progress.py — poll-bound transport retry and event-local executor observations (§6 Delegated subagents)

@@ -47,6 +47,9 @@ _POPEN_ALLOWLIST = {
     "ouroboros/cli.py",                   # dev CLI (foreground)
     "ouroboros/server_control.py",        # restart exec path
     "ouroboros/workspace_patch_capture.py",  # waited synchronous child
+    # One raw-blob fast-import per staging call: reaped before the call returns,
+    # killed on any early exit (stage_raw_payload_inventory).
+    "ouroboros/subagent_worktrees.py",
     "ouroboros/preflight_runner.py",      # waited hermetic pytest child
     "ouroboros/tools/shell_process.py",   # bounded foreground commands (waited + tracked)
     "ouroboros/tools/skill_exec.py",      # bounded skill run (waited + tracked)
