@@ -183,7 +183,8 @@ def test_inspect_reports_previous_request_not_accumulated_or_cache_added_input(t
     assert "free_tokens" not in facts and "current_input_tokens" not in facts
 
 
-@pytest.mark.parametrize("usage", [{}, {"prompt_tokens": None}, {"prompt_tokens": -1}, {"prompt_tokens": "12"}])
+@pytest.mark.parametrize("usage", [{}, {"prompt_tokens": None}, {"prompt_tokens": -1},
+                                   {"prompt_tokens": 12, "reported_tokens": {"prompt_tokens": None}}, {"prompt_tokens": True}])
 def test_missing_usage_and_unknown_window_are_unknown_not_zero(tmp_path, monkeypatch, usage):
     from ouroboros import reviewer_window
 
@@ -200,6 +201,44 @@ def test_missing_usage_and_unknown_window_are_unknown_not_zero(tmp_path, monkeyp
     assert facts["window"]["window_tokens"] is None and facts["window"]["asserted_window_tokens"] is None
     assert facts["previous_request"]["prompt_tokens"] is None
     assert result.usage["native_context"]["previous_request"]["prompt_tokens"] is None
+
+
+@pytest.mark.parametrize("raw_usage, expected", [
+    (None, None),
+    ({"input_tokens": 77, "output_tokens": 1}, None),
+    ({"input_tokens": 0, "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0, "output_tokens": 1}, 0),
+    ({"input_tokens": 7, "cache_read_input_tokens": 100,
+      "cache_creation_input_tokens": 20, "output_tokens": 1}, 127),
+    ({"input_tokens": "9", "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0, "output_tokens": 1}, 9),
+])
+def test_native_inspection_respects_reported_anthropic_input(tmp_path, monkeypatch, raw_usage, expected):
+    """Billing zero/partial totals cannot replace missing diagnostic evidence."""
+    from ouroboros import pricing, reviewer_window
+    from ouroboros.llm import LLMClient
+
+    monkeypatch.setattr(pricing, "estimate_cost_optional", lambda *a, **k: None)
+    monkeypatch.setattr(reviewer_window, "resolve_reviewer_window", lambda *a, **k: ReviewerWindow())
+    response = {"content": [{"type": "tool_use", "id": "inspect", "name": "compact_context",
+                             "input": {"inspect": True}}]}
+    if raw_usage is not None:
+        response["usage"] = raw_usage
+    model = "anthropic::claude-fixture"
+    message, usage = LLMClient(api_key="fixture-not-live")._normalize_anthropic_response(
+        response, {"provider": "anthropic", "resolved_model": "claude-fixture", "usage_model": model})
+    before = copy.deepcopy(usage)
+    llm = UsageReviewer([message, {"content": _VERDICT}], [usage, {}])
+    executor = _executor(tmp_path, llm, sources=False)
+    executor.assignment = dataclasses.replace(executor.assignment,
+        slot=dataclasses.replace(executor.assignment.slot, model=model))
+    executor.execute()
+    fact = json.loads(_tool_result(llm.calls[1], "inspect"))["context"]["previous_request"]
+    assert fact["prompt_tokens"] == expected
+    assert fact["provider"] == "anthropic" and fact["model"] == model
+    assert usage == before  # diagnostics never rewrite the billing counters
+    if expected is None:
+        assert usage["prompt_tokens"] in (0, 77)
 
 
 def test_authored_note_without_inspect_applies_even_when_view_still_exceeds_old_limit(tmp_path, monkeypatch):

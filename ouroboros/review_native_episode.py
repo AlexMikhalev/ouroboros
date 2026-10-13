@@ -44,6 +44,7 @@ from typing import Any, Dict, List, Optional
 
 from ouroboros.config import get_finalization_grace_sec
 from ouroboros.deadline_utils import caller_deadline_arguments, owner_deadline_exhausted, review_transport_timeout
+from ouroboros.event_usage import event_token_counts
 from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_paid_stamp
 from ouroboros.review_verdict_extraction import canonicalize_session_verdict
 from ouroboros.triad_review import review_output_shape
@@ -777,11 +778,10 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     self._refresh_window(route_fact)
                 # One returned request, before accumulation. Cached input is
                 # already part of normalized prompt_tokens, never added again.
-                tokens = usage.get("prompt_tokens")
                 self._previous_request = {
                     "round": round_idx,
                     "view_revision": self._inspection_ctx._last_context_observation["revision"],
-                    "prompt_tokens": tokens if type(tokens) is int and tokens >= 0 else None,
+                    "prompt_tokens": event_token_counts(usage)["prompt_tokens"],
                     "model": str(usage.get("resolved_model") or ""),
                     "provider": str(usage.get("provider") or ""),
                     "requested_model": slot.model, "requested_profile": slot.session_profile,

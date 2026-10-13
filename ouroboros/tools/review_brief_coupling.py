@@ -305,8 +305,8 @@ def _paged_diff_pointer(brief: BriefInputs, body: str, source: Dict[str, Any]) -
         )
     return (
         f"The COMPLETE {noun} is stored as one exact source instead of being "
-        "inlined here: the whole first send would not have fit this reviewer's "
-        f"window. It is complete and untruncated — {len(body):,} chars, "
+        "inlined here: the whole first send exceeds the initial inline sizing "
+        f"hint. It is complete and untruncated — {len(body):,} chars, "
         f"sha256 `{source.get('sha256', 'unavailable')}`.\n"
         f"{address}\n"
         "It is the complete change evidence: every added and removed line of this "
