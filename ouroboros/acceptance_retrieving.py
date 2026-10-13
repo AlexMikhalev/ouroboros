@@ -115,7 +115,7 @@ def _session_address(path: str) -> str:
 
 
 def _first_send_fits(request: Any, slot: Any, text: str, *, session: bool) -> tuple[bool, int, int]:
-    """Measure the wrapper; session preparation is preliminary, dispatch rechecks."""
+    """Measure initial layout; only a session bound can refuse dispatch."""
     from ouroboros.review_native_episode import (
         native_episode_transcript_bound,
         native_first_send_chars,
@@ -297,8 +297,9 @@ def acceptance_retrieving_work_order(
         if fits and not overflow:
             request.slot_source_delivery[slot.slot_id] = delivery
             continue
-        why = ("the packet overflowed the shared evidence budget" if overflow
-               else "the whole first send does not fit this row")
+        why = ("the packet overflowed the shared evidence budget" if overflow else
+               "the whole first send does not fit this row" if session else
+               "the whole first send exceeds this row's initial layout hint")
         address: Dict[str, Any] = {"error": stored.get("error", "")}
         if not stored.get("error"):
             address = ({"address": _session_address(_source_path(root, task_id, stored["ref"])),
@@ -317,9 +318,12 @@ def acceptance_retrieving_work_order(
             continue
         compact_fits, compact_chars, _ceiling = measured_fit
         ref = stored["ref"]
+        # Native sizing selects inline versus paged delivery, never source
+        # availability: the exact packet is still readable above that hint.
+        available = compact_fits or not session
         request.slot_source_delivery[slot.slot_id] = {
-            **delivery, "status": "paged" if compact_fits else "unavailable",
-            "reason": why if compact_fits else "complete compact first send exceeds this row's bound",
+            **delivery, "status": "paged" if available else "unavailable",
+            "reason": why if available else "complete compact first send exceeds this row's bound",
             "first_send_chars": compact_chars, "inline_first_send_chars": measured, "source": dict(ref),
             **({"source_path": address["source_path"]} if session else {})}
 

@@ -96,7 +96,7 @@ A registry of `config.SETTINGS_DEFAULTS` (defaults canonical in `settings_defaul
 | OUROBOROS_FALLBACK_COOLDOWN_ENABLED | true | 429-aware per-process model cooldown |
 | OUROBOROS_FALLBACK_COOLDOWN_SEC | 120 | Cooldown window |
 | OUROBOROS_FALLBACK_ATTEMPTS_PER_MODEL | 1 | Attempts per model in the fallback walk |
-| OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS | 900000 | Ceiling (chars) on one working view of the native review episode, within the calibrated route capacity (§6 Native tool-round episode) |
+| OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS | (retired) | Every stored value is removed with the retired-key notice; no successor cap. Native serialized size is diagnostic (§6). |
 | OUROBOROS_MODEL_DEEP_SELF_REVIEW | (migrated) | Retired with the review lanes: a stored value becomes the deep-review helper row of `OUROBOROS_SUBAGENTS` (no Reviewer mark) at load; env inert (`/review` reviewer: §6 Deep self-review) |
 | OUROBOROS_MAX_WORKERS | 10 | Active worker dispatch capacity |
 | OUROBOROS_MAX_ACTIVE_SUBAGENTS_PER_ROOT | 6 | Live-subagent cap per root (hard caps in `runtime_limits.py`) |

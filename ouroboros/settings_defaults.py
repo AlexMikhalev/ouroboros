@@ -231,10 +231,6 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_ONBOARDING_COMPLETED_AT": "",
     # Pre-commit review enforcement: advisory | blocking
     "OUROBOROS_REVIEW_ENFORCEMENT": "advisory",
-    # Native tool-round reviewer episode transcript CEILING (chars); the effective
-    # bound is derived from the reviewer window (review_native_episode.py); a
-    # surface's declared mandatory reading may lift it up to the window. No round cap.
-    "OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS": "900000",
     # Auto-grant reviewed-skill requests by default; grants stay bound to the
     # reviewed content hash and editing a skill still invalidates them.
     "OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS": "true",
@@ -386,7 +382,10 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     # window deletes it rather than carrying the ghost another minor.
     "OUROBOROS_SOFT_TIMEOUT_SEC",
     "OUROBOROS_HARD_TIMEOUT_SEC",
-    "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS",  # a ceiling on rounds; bounds are transcript/deadline/ledger
+    "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS",  # execution retains deadline and ledger limits
+    # Serialized characters are diagnostic, never a native-review admission limit.
+    # Retire every stored value without inferring whether it was owner-selected.
+    "OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS",
     "OUROBOROS_BG_MAX_ROUNDS",  # a wake is an ordinary Main turn: the per-task cost cap (+ any OUROBOROS_MAX_ROUNDS) bounds it
     # The effort range: evolution tasks and consciousness wakes start at its top (EFFORT_RANGE_RETIRED_SETTING_KEYS).
     "OUROBOROS_EFFORT_EVOLUTION", "OUROBOROS_EFFORT_CONSCIOUSNESS",

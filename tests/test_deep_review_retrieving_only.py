@@ -18,6 +18,9 @@ from ouroboros.deep_self_review import deep_review_route, run_deep_self_review
 from ouroboros.provider_models import OPENAI_DIRECT_DEFAULTS
 from ouroboros.reviewer_slot_config import ConfiguredReviewerSlot, reviewer_slot_last_executions
 from tests.test_deep_review_slot import _DEEP_SLOT_ID, _ScriptedLLM, _tool_call
+from tests.test_plan_review_engine import _user_text
+
+pytestmark = pytest.mark.usefixtures("provider_catalog_offline")
 
 _BIBLE = "# BIBLE\n\n## Principle 0: Agency\n\nOuroboros is a becoming personality.\n" * 3
 _REPORT = "Read: BIBLE.md in full; memory inline.\n\n# Deep self-review\n\nCRITICAL: loop.py finalization race.\n"
@@ -77,7 +80,7 @@ def test_a_bare_api_row_runs_the_native_inspection_episode(repo, drive, monkeypa
     assert "execution_status" not in usage
     # The first send is the retrieving task (tools to read WITH), never a pack.
     first = llm.calls[0]
-    task = next(m["content"] for m in first["messages"] if m["role"] == "user")
+    task = _user_text(next(m["content"] for m in first["messages"] if m["role"] == "user"))
     assert "delivered IN FULL below" in task and "read_file" in task
     assert "## FILE: drive/memory/identity.md\nI am Ouroboros.\n" in task
     # The map arrives as navigation with the read instruction, never whole.
