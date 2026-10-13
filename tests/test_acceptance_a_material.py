@@ -27,6 +27,7 @@ from ouroboros.outcomes import (
     ACCEPTANCE_FINALIZED_UNACCEPTED,
     ACCEPTANCE_REVISION_REQUESTED,
     OBJECTIVE_FAIL,
+    OBJECTIVE_PASS,
     OUTCOME_TIER_BLOCKED,
     REASON_IDENTICAL_ACCEPTANCE_REFUSED,
     derive_loop_outcome,
@@ -156,6 +157,109 @@ def test_persistently_optimistic_reviewer_without_material_cannot_buy_a_second_p
     # The capsule was NOT re-entered: no second improvement note reached the agent.
     assert messages == messages_after_panel_1
     assert ctx.tools._ctx._task_acceptance_reviewed is True
+
+
+def _advisory_no_fence(monkeypatch):
+    """The lane split's advisory side: same fence silences, advisory enforcement."""
+    _no_fence(monkeypatch)
+    monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: "advisory")
+
+
+def test_advisory_identical_resubmit_after_pass_terminates_through_the_author_lane(
+    monkeypatch, tmp_path,
+):
+    """A parseable PASS with partial criterion evidence is not a clean PASS.
+    After actual feedback delivery, an Advisory author may re-deliver the same
+    answer without another panel; the missing evidence remains critic history,
+    never a manufactured clean reviewer verdict or blocked objective."""
+    _advisory_no_fence(monkeypatch)
+    trace: dict = {"tool_calls": [], "review_runs": [], "review_decision": {}}
+    ctx = _ctx(tmp_path, trace=trace)
+    ctx.review_binding = {"binding_hash": "bh-live"}
+    result = ReviewRunResult(
+        request={"surface": "task_acceptance", "policy": {"min_successful_slots": 1}},
+        actors=[_actor("s0", "PASS", {"verdict": "PASS", "outcome_tier": "solved",
+                                       "dialogue_status": DIALOGUE_CONTINUE,
+                                       "criteria_used": [{"criterion": "delivery", "status": "partial"}]})],
+        parsed_findings=[],
+        aggregate_signal="PASS",
+    )
+    from ouroboros.review_verdict import task_acceptance_is_clean
+    assert not task_acceptance_is_clean(result)  # parseable PASS, but no supported evidence
+    setattr(result, "feedback_delivered", True)
+    runs_before = list(trace["review_runs"])
+    assert _apply_task_acceptance_result(ctx, result, record_run=False, reused=True) is False
+    decision = trace["acceptance_decision"]
+    assert decision["reason"] == "author_finish"
+    assert decision["status"] == ACCEPTANCE_FINALIZED_UNACCEPTED
+    assert decision["reason"] != REASON_IDENTICAL_ACCEPTANCE_REFUSED
+    author = decision["author_disposition"]
+    assert author["action"] == "finish" and author["enforcement"] == "advisory"
+    # The recorded verdict is untouched; no new panel was bought for the replay.
+    assert trace["review_runs"] == runs_before
+    # The recorded PASS and its aggregate survive the author-finish terminal
+    # unchanged (reviewer evidence is never rewritten by the author lane).
+    assert str(result.aggregate_signal).upper() == "PASS"
+    # The derived objective grades through the author lane, not as blocked.
+    derived = derive_loop_outcome("the deliverable", {}, trace)
+    objective = derived["outcome_axes"]["objective"]
+    assert objective["status"] == OBJECTIVE_PASS
+    assert objective["reason"] == "author_finish"
+
+
+def test_advisory_identical_pass_without_delivered_feedback_does_not_invent_author_finish(
+    monkeypatch, tmp_path,
+):
+    """A stored applied decision is not evidence Main read the critic's reply."""
+    _advisory_no_fence(monkeypatch)
+    trace = {"tool_calls": [], "review_runs": [], "review_decision": {}}
+    ctx = _ctx(tmp_path, trace=trace)
+    ctx.review_binding = {"binding_hash": "bh-live"}
+    result = ReviewRunResult(
+        request={"surface": "task_acceptance", "policy": {"min_successful_slots": 1}},
+        actors=[_actor("s0", "PASS", {"verdict": "PASS", "outcome_tier": "solved",
+                                       "criteria_used": [{"criterion": "delivery", "status": "partial"}]})],
+        parsed_findings=[],
+        aggregate_signal="PASS",
+    )
+    assert _apply_task_acceptance_result(ctx, result, record_run=False, reused=True) is False
+    assert trace["acceptance_decision"]["reason"] == REASON_IDENTICAL_ACCEPTANCE_REFUSED
+    assert "author_disposition" not in trace["acceptance_decision"]
+
+
+def test_advisory_identical_resubmit_after_fail_signal_still_refuses(monkeypatch, tmp_path):
+    """FAIL/DEGRADED retain the typed refusal even when Advisory is selected;
+    only exposed PASS feedback may reach the author lane on identical reuse."""
+    _advisory_no_fence(monkeypatch)
+    trace: dict = {"tool_calls": [], "review_runs": [], "review_decision": {}}
+    ctx = _ctx(tmp_path, trace=trace)
+    ctx.review_binding = {"binding_hash": "bh-live"}
+    result = _fail_result()  # FAIL signal, dialogue continue_actionable
+    assert _apply_task_acceptance_result(ctx, result, record_run=False, reused=True) is False
+    decision = trace["acceptance_decision"]
+    assert decision["reason"] == REASON_IDENTICAL_ACCEPTANCE_REFUSED
+    assert decision["status"] == ACCEPTANCE_FINALIZED_UNACCEPTED
+
+
+def test_advisory_superseded_replay_still_refuses_never_reaccepts(monkeypatch, tmp_path):
+    """The lane split changes only the NON-superseded reuse branch. A verdict
+    superseded by an evidence revision predates the current material, so its
+    replay stays the typed refusal in BOTH lanes (conservative semantics locked
+    by the blocking twin above)."""
+    _advisory_no_fence(monkeypatch)
+    result = ReviewRunResult(
+        request={"surface": "task_acceptance", "policy": {"min_successful_slots": 1}},
+        actors=[_actor("s0", "PASS", {"verdict": "PASS", "outcome_tier": "solved",
+                                       "dialogue_status": DIALOGUE_UNREACHABLE})],
+        parsed_findings=[],
+        aggregate_signal="PASS",
+    )
+    setattr(result, "replayed_from_superseded", True)
+    trace: dict = {"tool_calls": [], "review_runs": []}
+    ctx = _ctx(tmp_path, trace=trace)
+    assert _apply_task_acceptance_result(ctx, result, record_run=False, reused=True) is False
+    decision = trace["acceptance_decision"]
+    assert decision["reason"] == REASON_IDENTICAL_ACCEPTANCE_REFUSED
 
 
 def test_identical_refusal_terminal_is_a_blocked_objective_not_a_green_one():
@@ -415,22 +519,35 @@ def test_reviewer_rebuttal_response_reaches_the_next_panels_obligation_catalog()
 def test_advisory_lane_collects_no_obligations_and_gains_no_counters(monkeypatch, tmp_path):
     """Obligations are a Required+Blocking construct. On the advisory lane the new
     branches must add nothing: no obligation rows, no new trace keys, and the
-    ordinary capsule path still runs."""
+    ordinary capsule path still runs.
+
+    Contract change (2026-10-10, evidence: tasks 8ac3c1fb / 5f38043c /
+    7871a109): the identical resubmit on this lane is the author's ANSWER to the
+    delivered feedback — an author finish over the recorded verdict, never the
+    blocking-shaped `identical_acceptance_refused` terminal that graded
+    review-passed work as a blocked objective. Blocking keeps the refusal
+    (pinned above); advisory keeps the author lane."""
     _no_fence(monkeypatch)
     monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: "advisory")
-    trace: dict = {"tool_calls": [], "review_runs": []}
+    trace: dict = {"tool_calls": [], "review_runs": [], "review_decision": {}}
     ctx = _ctx(tmp_path, trace=trace, mode="auto")
     assert _apply_task_acceptance_result(ctx, _fail_result(), record_run=False) is True
     assert "acceptance_obligations" not in trace
     assert trace["acceptance_decision"]["reason"] == "improvement_capsule"
-    assert set(trace) == {"tool_calls", "review_runs", "acceptance_decision"}
-    # And the identical-resubmit refusal still terminalizes on this lane.
+    assert set(trace) == {"tool_calls", "review_runs", "acceptance_decision", "review_decision"}
+    # The identical resubmit over a recorded FAIL keeps the typed refusal
+    # (softening is bounded by a recorded PASS); no obligations on advisory.
     ctx.tools._ctx._task_acceptance_reviewed = False
+    ctx.review_binding = {"binding_hash": "bh-live"}
     assert _apply_task_acceptance_result(
         ctx, _fail_result(), record_run=False, reused=True,
     ) is False
-    assert trace["acceptance_decision"]["reason"] == REASON_IDENTICAL_ACCEPTANCE_REFUSED
-    assert trace["acceptance_decision"]["open_obligations"] == []
+    decision = trace["acceptance_decision"]
+    assert decision["reason"] == REASON_IDENTICAL_ACCEPTANCE_REFUSED
+    assert decision["status"] == ACCEPTANCE_FINALIZED_UNACCEPTED
+    # Advisory collects no obligation rows; the refusal's own audit key stays empty.
+    assert decision.get("open_obligations", []) == []
+    assert "acceptance_obligations" not in trace
 
 
 # ---------------------------------------------------------------------------

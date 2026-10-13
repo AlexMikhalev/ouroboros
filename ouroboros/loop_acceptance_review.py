@@ -787,6 +787,14 @@ def _apply_task_acceptance_result(
         return False
 
     if reused:
+        # Identical material buys no panel. A non-clean PASS may still have
+        # missing criterion evidence: preserve that critic finding. Only an
+        # Advisory author who has actually received feedback can re-deliver
+        # the same answer through the author lane; Blocking, FAIL/DEGRADED
+        # and unexposed feedback retain the typed refusal.
+        if (not blocking_lane and str(result.aggregate_signal or "").upper() == "PASS"
+                and bool(getattr(result, "feedback_delivered", False))):
+            return _finish_cyber_acceptance(ctx, result)
         return _refuse_identical_acceptance(
             ctx, result,
             dialogue=dialogue, dissent=bool(dissent), open_obligations=open_obligations,
