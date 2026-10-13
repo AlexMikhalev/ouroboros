@@ -556,11 +556,24 @@ def collect_and_deliver_terminal(ctx, rid, detail, authority, entry, gateway):
             payload["settlement"] = {"settled": False, "ledger_recorded": False}
             payload["collection"] = {"status": "pending", "reason": "custody_publication_unconfirmed"}
             return payload
-    observe_run(root, entry, detail)
+    try:
+        observe_run(root, entry, detail)
+    except (OSError, RuntimeError) as exc:
+        # The engine answer is already here. Preserve its existing honest
+        # whole/partial delivery even when its durable observation cannot land.
+        from dataclasses import replace
+        payload = _delivered_terminal_payload(ctx, rid, detail, authority,
+                                               replace(entry, output_source={}), gateway)
+        payload["settlement"] = _settlement_projection(entry)
+        payload["collection"] = {"status": "pending", "reason": "terminal_source_unavailable",
+                                 "error": type(exc).__name__}
+        _record_containment(ctx, entry, payload)
+        return payload
     fresh = run(root, rid) or entry
     if retained_payload(root, fresh) is None:
         collection = collect_terminal(root, rid, gateway=gateway,
-                                      staging_task_id=str(getattr(ctx, "task_id", "") or ""))
+                                      staging_task_id=str(getattr(ctx, "task_id", "") or ""),
+                                      output_authority=authority)
     else:
         runtime = body_runtime(root)
         if runtime is not None:
@@ -585,14 +598,24 @@ def collect_and_deliver_terminal(ctx, rid, detail, authority, entry, gateway):
                 "state": str(custody.summary_of(detail).get("state") or ""), "collection": collection,
                 "answered": True, "last_seq": int(detail.get("lastSeq") or 0)}
     payload = _delivered_terminal_payload(ctx, rid, detail, authority, entry, gateway)
-    payload["settlement"] = {"settled": entry.settled, "ledger_recorded": entry.ledger_recorded}
+    payload["settlement"] = _settlement_projection(entry, collection.get("settlement"))
     payload["collection"] = {key: value for key, value in collection.items() if key != "output_retention"}
     capture = collection.get("workspace_capture") or capture_projection(
         root, entry, reader_task_id=str(getattr(ctx, "task_id", "") or ""))
+    if capture and entry.patch_captured and str(getattr(ctx, "task_id", "") or "") != entry.task_id:
+        capture = capture_projection(root, entry, reader_task_id=str(ctx.task_id))
     if capture is not None:
         payload["workspace_capture"] = capture
     _record_terminal_delivery(ctx, entry, payload)
     return payload
+
+
+def _settlement_projection(entry, result=None):
+    """Accounting and registration remain separately disclosed current facts."""
+    return {"retried": False, **(result or {}), "settled": entry.settled,
+            "ledger_recorded": entry.ledger_recorded,
+            "project_retired": not entry.project_owned and not entry.project_persistent,
+            "project_persistent": entry.project_persistent}
 
 
 def _record_terminal_delivery(ctx, entry, payload):
@@ -601,9 +624,15 @@ def _record_terminal_delivery(ctx, entry, payload):
     if (not (payload.get("output_delivery") or {}).get("complete")
             and custody.record_settled_unread(custody.custody_root(ctx), entry)):
         payload["result_not_collected"] = (
-            "THIS RESULT IS NOT COLLECTED YET: the retained full output has not been read to EOF. "
-            "Use output_delivery.read_next until the exact source has been covered end to end.")
+            "THIS RESULT IS NOT COLLECTED YET: the run is settled and its "
+            "full output is staged, but nothing has read it to EOF. Read the "
+            "artifact with the read_file arguments in "
+            "output_delivery.read_next until it is covered end to end — a result you "
+            "have not read is not a result you may report.")
     _record_containment(ctx, entry, payload)
+    if entry.task_id == str(getattr(ctx, "task_id", "") or ""):
+        from ouroboros.delegate_progress import emit_retained
+        emit_retained(ctx, entry.run_id)
 
 
 def retained_terminal_result(ctx, run_id, *, complete_only=True):
@@ -628,7 +657,7 @@ def retained_terminal_result(ctx, run_id, *, complete_only=True):
         if runtime is not None:
             runtime.request(run_id)
         payload["current_observation"] = {"status": "retained", "basis": "retained_terminal_source"}
-        payload["settlement"] = {"settled": entry.settled, "ledger_recorded": entry.ledger_recorded}
+        payload["settlement"] = _settlement_projection(entry)
         payload["collection"] = {"status": "pending" if pending else "retained"}
         capture = capture_projection(root, entry, reader_task_id=str(getattr(ctx, "task_id", "") or ""))
         if capture is not None:

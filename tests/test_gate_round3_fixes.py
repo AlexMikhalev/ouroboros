@@ -100,7 +100,7 @@ def test_cascade_replay_after_crash_delivers_exactly_one_summary(qenv, monkeypat
     from supervisor import workers
 
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
     # The crash shape: every task of the tree is already durably settled, but
     # the root's cascade intent is still open (crash before summary + settle).
@@ -448,7 +448,7 @@ def test_reaper_already_terminal_recovery_registers_the_answer_owed(qenv, monkey
     from supervisor import workers
 
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(services_mod, "archive_task_service_logs", lambda *a, **k: None)
     qenv.workers.WORKERS[0] = types.SimpleNamespace(
         wid=0, proc=_DeadProc(), busy_task_id=None, reaping=True,

@@ -127,7 +127,7 @@ def test_project_started_row_rides_outbox_pins_main_and_dedupes_durably(tmp_path
     )
     queued = []
     monkeypatch.setattr(
-        workers, "get_event_q", lambda: SimpleNamespace(put=queued.append),
+        workers, "get_event_q", lambda *, create=True: SimpleNamespace(put=queued.append),
     )
     events._DELIVERED_MESSAGE_IDS.clear()
     task = {"id": "root-project", "project_id": "launch", "title": "Ship release"}

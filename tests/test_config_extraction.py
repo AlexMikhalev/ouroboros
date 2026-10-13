@@ -204,6 +204,7 @@ _MOVED_OWNERS = {
     "resolved_review_model_target": review_model_routes,
     "DELEGATE_WAIT_CEILING_SEC": runtime_limits,
     "DELEGATE_WAIT_WINDOW_MAX_SEC": runtime_limits,
+    "BODY_MAINTENANCE_INTERVAL_SEC": runtime_limits,
     "MAX_ACTIVE_SUBAGENTS_HARD_CAP": runtime_limits,
     # Upstream reshaped the hard-cap assignment into a tuple that also binds the
     # nesting ceiling (`MAX_ACTIVE_..., MAX_SUBAGENT_DEPTH_... = 500, 10`), so the
