@@ -162,11 +162,22 @@ def record_terminal_money(root, entry, detail: dict, *, failures=None) -> dict:
     return {"settled": entry.settled, "ledger_recorded": entry.ledger_recorded, "retried": True}
 
 
-def _retain_output(root, entry, detail, gateway, staging_task_id=""):
-    from ouroboros.delegate_output import retain_terminal_bytes
+def _retain_output(root, entry, detail, gateway, staging_task_id="", output_authority=None):
+    from ouroboros.delegate_output import retain_terminal_bytes, _resolve_full_primary_output
     from ouroboros.tools.delegate_terminal_evidence import resolved_terminal_payload
 
-    full, complete, disclosure = resolved_terminal_payload(entry.run_id, detail, _shape(entry), entry, gateway)
+    full = retained_payload(root, entry, require_complete=False)
+    if full is None:
+        # A legacy row has no captured grant. Its existing foreground owner
+        # supplies its known shape; body-only work keeps the recorded unknown.
+        authority = _shape(entry) if entry.access or output_authority is None else output_authority
+        full, complete, disclosure = resolved_terminal_payload(entry.run_id, detail, authority, entry, gateway)
+    else:
+        # The same observed terminal already has an exact presentation source.
+        # Retrying its missing output does not re-derive its grant/containment.
+        full["primary_output"], complete, disclosure = _resolve_full_primary_output(
+            gateway, entry.run_id, full.get("primary_output"))
+        full.pop("primary_output_full", None)
     if disclosure is not None:
         full["primary_output_full"] = disclosure
     text = json.dumps(full, ensure_ascii=False, indent=2)
@@ -185,7 +196,8 @@ def _retain_output(root, entry, detail, gateway, staging_task_id=""):
 
 
 def collect_terminal(root, run_id: str, *, gateway=None, detail: dict | None = None,
-                     allow_review: bool = False, staging_task_id: str = "", stopped=None, failures=None) -> dict:
+                     allow_review: bool = False, staging_task_id: str = "", stopped=None, failures=None,
+                     output_authority=None) -> dict:
     """One nonblocking result-owner entry for foreground, runtime and orphan recovery.
 
     A contending caller reads committed facts; it never times out an integration
@@ -223,7 +235,7 @@ def collect_terminal(root, run_id: str, *, gateway=None, detail: dict | None = N
         if (not entry.output_source or not entry.output_complete
                 or entry.output_terminal_sha != entry.terminal_source.get("sha256")):
             try:
-                retention = _retain_output(root, entry, detail, gateway, staging_task_id)
+                retention = _retain_output(root, entry, detail, gateway, staging_task_id, output_authority)
             except Exception as exc:
                 errors.append(f"output:{type(exc).__name__}")
                 _collection_failure(entry, "output", exc, failures)

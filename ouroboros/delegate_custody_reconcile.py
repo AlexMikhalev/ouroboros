@@ -440,6 +440,7 @@ def _reconcile_collection(drive_root: Any, gateway: Any, custody: RunCustody, *,
     """Collect from the exact terminal source; record reconciliation only on change."""
     from ouroboros.delegate_collection import collect_terminal
     from ouroboros.delegate_custody_current import run
+    from ouroboros.tools.delegate_integration import captured_patch_result
 
     before = run(drive_root, custody.run_id) or custody
     collected = collect_terminal(drive_root, custody.run_id, gateway=gateway, detail=detail)
@@ -447,7 +448,8 @@ def _reconcile_collection(drive_root: Any, gateway: Any, custody: RunCustody, *,
     _custody().record_settled_unread(drive_root, after)
     result = {"run_id": after.run_id, "task_id": after.task_id,
               "action": "settle_attempted", "settled": after.settled,
-              "collection": collected, **_custody().output_disposition(after)}
+              "collection": collected, **_custody().output_disposition(after),
+              **captured_patch_result(collected.get("workspace_capture"))}
     if after != before:
         _custody().emit(drive_root, _custody().RECONCILED, result)
     return result

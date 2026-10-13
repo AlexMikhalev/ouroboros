@@ -84,6 +84,8 @@ EXEMPT = {
     "answered_option", "claimed_option",
     # internal wait/transport outcomes that never reach an owner surface
     "client_message_id_missing", "event_serialization_failed", "handler_returned_no_outcome",
+    # StoreBusy's acquisition cause; the same unsent owner retries it off-lock.
+    "contention",
 }
 
 

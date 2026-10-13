@@ -706,6 +706,11 @@ def test_a_restaged_different_artifact_does_not_inherit_the_old_acknowledgement(
 
     # DIFFERENT content re-staged at the same path: the old ack must not transfer.
     stub.payload = "B" * 30_000 + "\n" + ("y\n" * 300)
+    # The body publishes the newer exact observation independently of an
+    # immediate retained-result read; waiting itself no longer polls the engine.
+    from ouroboros.delegate_collection import observe_run
+    assert observe_run(tmp_path, dc.replay(tmp_path)["run-1"],
+                       {**stub.get_run("run-1"), "lastSeq": 10})
     changed = json.loads(delegate._delegate_wait(ctx, "run-1", wait_sec=1))
     artifact2 = changed["output_delivery"]["artifact"]
     assert artifact2["sha256"] != artifact["sha256"]

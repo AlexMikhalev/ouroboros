@@ -691,6 +691,13 @@ def capture_stranded_patch(drive_root: Any, run: _RunCustody) -> Dict[str, Any]:
     except Exception:
         log.warning("Reconcile patch capture failed for %s", run.run_id, exc_info=True)
         return {"patch_capture": "failed", "patch_disposition": "pending"}
+    return captured_patch_result(block)
+
+
+def captured_patch_result(block: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The existing reconciliation fields, projected without another capture."""
+    if not block:
+        return {}
     return {
         "patch_capture": str(block.get("status") or ""),
         "patch_artifact": block.get("patch_artifact"),

@@ -217,7 +217,7 @@ class TestAliasProducerFanOutSweep:
         ("ouroboros/evolution_checkpoints.py", "cost_usd", "build_solve_capability_digest"): ("evolution capability digest", 1),
         ("ouroboros/evolution_checkpoints.py", "cost_usd", "append_evolution_checkpoint"): ("evolution checkpoint records", 1),
         # custody settlement events
-        ("ouroboros/delegate_custody.py", "cost_usd", "settle_run"): ("custody SETTLED event row", 1),
+        ("ouroboros/delegate_collection.py", "cost_usd", "record_terminal_money"): ("custody SETTLED event row", 1),
         # reflection records
         ("ouroboros/reflection.py", "cost_usd", "generate_reflection"): ("task reflection record", 1),
     }

@@ -787,25 +787,46 @@ def tool_handoff(source: Any, name: str):
             outcome["handed"] = bool(handed and handed["invocation"] == (id(source), name) and not handed["claimed"])
             if outcome["handed"]:
                 handed["claimed"] = True  # Shared by copied contexts: exactly one consumer.
-        from ouroboros.model_wait import current_model_wait
-        owner = current_model_wait()
-        if owner is not None and owner.task_id == task_id and owner.closed:
-            raise OwnerPauseRefused("operation_already_returned")
-        with (launch_lock(root_drive, root_id) if outcome["handed"] else launch_admission(source)):
-            # A standalone tool context is not a lifecycle producer. Never
-            # manufacture a status-less result that the next strict read must
-            # refuse. A not-yet-published member uses its existing root owner.
-            if not exists(root_drive, holder):
-                holder = root_id
-                outcome["claim_task"] = holder
-            if exists(root_drive, holder):
-                try:
-                    patch_handoff(root_drive, holder, "launch_handoffs", op_id, claim)
-                except LookupError as exc:  # a row without a lifecycle status is no authority
-                    raise OwnerPauseRefused("owner_pause_authority_unreadable") from exc
-                claimed = True
-            elif getattr(source, "task_lifecycle_bound", None) is not False:
-                raise OwnerPauseRefused("owner_pause_authority_unreadable")
+        from ouroboros._usage_wait import retry_presend
+        retrying = False
+
+        def claim_once():
+            nonlocal holder, claimed, retrying
+            # A contended child read must not pin a previous root fallback.
+            # The invocation/ticket/local owner are frozen outside this retry.
+            holder = task_id
+            outcome["claim_task"] = holder
+            owner = current_model_wait()
+            if owner is not None and owner.task_id == task_id and owner.closed:
+                raise OwnerPauseRefused("operation_already_returned")
+            if retrying and owner is not None:
+                # A control may arrive during the outside wait. This is the
+                # same reader as retry_presend; handed work still survives Pause.
+                reason = owner.control_reason()
+                if reason:
+                    from ouroboros.llm_attempt import PhysicalDispatchInterrupted
+                    raise PhysicalDispatchInterrupted(reason)
+            retrying = True
+            with (launch_lock(root_drive, root_id, wait=False) if outcome["handed"]
+                  else launch_admission(source, wait=False)):
+                # A standalone tool context is not a lifecycle producer. Never
+                # manufacture a status-less result; use its existing root owner
+                # only while the member still has no published lifecycle row.
+                if not exists(root_drive, holder):
+                    holder = root_id
+                    outcome["claim_task"] = holder
+                if exists(root_drive, holder):
+                    try:
+                        patch_handoff(root_drive, holder, "launch_handoffs", op_id, claim)
+                    except LookupError as exc:
+                        raise OwnerPauseRefused("owner_pause_authority_unreadable") from exc
+                    claimed = True
+                elif getattr(source, "task_lifecycle_bound", None) is not False:
+                    raise OwnerPauseRefused("owner_pause_authority_unreadable")
+
+        # Only this unsent claim retries, after both the launch hold and store
+        # transaction unwind. The handler and its settlement are never replayed.
+        retry_presend(claim_once, check=False)
         yield outcome
     finally:
         _TOOL_OPERATION.reset(token)

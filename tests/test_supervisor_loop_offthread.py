@@ -153,30 +153,32 @@ def test_the_reaper_reads_its_candidates_before_it_reads_liveness(tmp_path, monk
 def test_the_delegated_reconciler_reads_its_candidates_before_it_reads_liveness(
     tmp_path, monkeypatch,
 ):
-    """The same rule on the delegated surface: `open_runs` replays the custody log
-    for seconds, and a run whose owner was admitted during that replay is not an
+    """The same rule on the delegated surface: current custody reads may wait,
+    and a run whose owner was admitted during that read is not an
     orphan. A set still means the same thing; None still means touch nothing."""
     from ouroboros import delegate_custody as dc
+    from ouroboros import delegate_custody_current as current
     from ouroboros import delegate_custody_reconcile as dcr
 
     live: set[str] = set()
     run = SimpleNamespace(task_id="late-task", run_id="run-1", settled=False)
     seen: list = []
 
-    def replaying_the_log(root, state=None):
-        live.add("late-task")  # admitted while the custody log is replayed
-        return [run]
+    def reading_candidates(root, where="", params=()):
+        assert (where, params) == ("state=?", ("held",))
+        live.add("late-task")  # admitted while current candidates are read
+        return {run.run_id: run}
 
     monkeypatch.setattr(dc, "pending_invocations", lambda root, rows=None: [])
     monkeypatch.setattr(dcr, "_reconcile_each", lambda root, runs, factory, **kwargs:
                         seen.append([c.run_id for c in runs]) or [])
 
-    monkeypatch.setattr(dc, "open_runs", replaying_the_log)
+    monkeypatch.setattr(current, "runs", reading_candidates)
     dc.reconcile_orphaned_runs(tmp_path, running_task_ids=lambda: set(live))
-    assert seen == [[]], "a run whose owner was admitted during the replay is spared"
+    assert seen == [[]], "a run whose owner was admitted during the read is spared"
 
     live.clear()
-    monkeypatch.setattr(dc, "open_runs", lambda root, state=None: [run])
+    monkeypatch.setattr(current, "runs", lambda root, where="", params=(): {run.run_id: run})
     dc.reconcile_orphaned_runs(tmp_path, running_task_ids=lambda: set(live))
     assert seen[-1] == ["run-1"], "a genuinely orphaned run is still reconciled"
 
