@@ -672,6 +672,11 @@ def _stamp_presence_terminal_facts(
         task["metadata"] = {**metadata, "presence_unknown_outcome": unknown}
 
 
+def _wake_silent_terminal(ctx: Any, failed_or_forced: bool) -> bool:
+    """Only a successful wake-own-turn silent finish omits its final chat row."""
+    return bool(getattr(ctx, "_wake_silent_completion", False)) and not failed_or_forced
+
+
 @finalization_child_scope()
 def emit_task_results(
     env: Any, memory: Any, llm: Any,
@@ -725,10 +730,11 @@ def emit_task_results(
         # on a nearby progress row that may age out independently.
         send_event["progress_meta"] = dict(_message_meta)
     send_event = prepare_terminal_send_event(env.drive_root, task, text, usage, send_event, presence=_presence)
-    pending_events.append(build_presence_result_event(
-        task, text, ctx, terminal_origin=str(usage.get("terminal_origin") or ""),
-        retain_scheduled_handoff=failed_or_forced,
-    ) if _presence else send_event)
+    if not _wake_silent_terminal(ctx, failed_or_forced):
+        pending_events.append(build_presence_result_event(
+            task, text, ctx, terminal_origin=str(usage.get("terminal_origin") or ""),
+            retain_scheduled_handoff=failed_or_forced,
+        ) if _presence else send_event)
     duration_sec = round(time.time() - start_time, 3)
     try:
         from supervisor.state import reconstruct_task_cost
@@ -811,7 +817,7 @@ def emit_task_results(
     # boot replays the owed row without scanning task_results; reversing these
     # writes could strand a terminal result with no delivery. Registration and
     # deduplication share ouroboros/task_finalization.py.
-    if _root_outbox and not _presence:
+    if _root_outbox and not _presence and not _wake_silent_terminal(ctx, failed_or_forced):
         send_event.setdefault("progress_meta", {}).update(outcome_axes=outcome_axes, reason_code=reason_code)
         stamp_root_final_phase(  # the stamp names the SAME word the durable row below settles to
             send_event, task, terminal_status=_durable_terminal_status(env, task, execution_status),

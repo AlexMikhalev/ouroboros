@@ -836,6 +836,7 @@ def consume_completion_request(tools: ToolRegistry, ctx: Any, trace: dict, conte
             _loop()._arm_delivery_control(tools, ctx, trace)
         _void_presence_completion(tool_ctx, ctx.messages)
         return False
+    tool_ctx._wake_silent_completion = bool(request.get("wake_silent"))
     trace.pop("task_completion", None)
     tool_ctx._completion_selected = request
     if isinstance(getattr(tool_ctx, "_presence_completion", None), dict):
@@ -1219,7 +1220,13 @@ def _prepare_delivery_candidate(content: Any, tools: ToolRegistry, limit_ctx: An
     if control == "retry":
         return False, content
     _loop()._project_child_result_dispositions(limit_ctx, llm_trace)
-    fresh = control == "fresh" and (explicit or str(content or "").strip())
+    supersedes_silence = (control == "fresh" and not explicit
+                          and bool(getattr(tools._ctx, "_wake_silent_completion", False)))
+    fresh = control == "fresh" and (explicit or str(content or "").strip() or supersedes_silence)
+    if supersedes_silence:
+        # Even an empty new response must REPLACE the held silent candidate:
+        # merely clearing its flag would publish previously hidden answer text.
+        tools._ctx._wake_silent_completion = False
     candidate = (_loop()._replace_delivery_candidate(tools, limit_ctx, llm_trace, str(content or ""), control="candidate")
                  if fresh else getattr(tools._ctx, "_delivery_candidate", None))
     if isinstance(candidate, DeliveryCandidate):

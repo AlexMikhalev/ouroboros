@@ -1140,17 +1140,10 @@ class OuroborosAgent:
                     except Exception:
                         log.debug("Failed to persist review continuation after task exception", exc_info=True)
 
-            intentional_empty = (
-                getattr(ctx, "_presence_completion_accepted", False)
-                and (getattr(ctx, "_presence_completion", None) or {}).get("outcome") in {"silent", "tool_delivered"}
-                and str(usage.get("execution_status") or usage.get("result_status") or "") not in {"failed", "infra_failed"}
-            )
-            if not isinstance(text, str) or (not text.strip() and not intentional_empty):
-                text = "⚠️ Model returned an empty response. Try rephrasing your request."
+            replaced, _, text = _resolve_intentional_empty(ctx, usage, text)
+            if replaced:
                 usage["terminal_origin"] = TERMINAL_ORIGIN_HOST_NOTICE
                 usage.pop("presence_completion_outcome", None)
-                if ctx is not None:
-                    ctx._presence_completion_accepted = False
 
             # A task that scoped ITSELF mid-run (ensure_project_scope) set the scope on
             # ctx, but persistence/finalization read the task dict — sync it back so the
@@ -1448,6 +1441,24 @@ class OuroborosAgent:
 
         threading.Thread(target=_loop, daemon=True).start()
         return stop
+
+
+def _resolve_intentional_empty(ctx: Any, usage: Dict[str, Any], text: Any) -> tuple[bool, bool, Any]:
+    """Resolve empty finals before outcome derivation, stamping deliberate wake silence."""
+    ok_status = str(usage.get("execution_status") or usage.get("result_status") or "") not in {"failed", "infra_failed"}
+    wake_silent = bool(getattr(ctx, "_wake_silent_completion", False)) and ok_status
+    presence = (getattr(ctx, "_presence_completion_accepted", False)
+                and (getattr(ctx, "_presence_completion", None) or {}).get("outcome") in {"silent", "tool_delivered"}
+                and ok_status)
+    intentional_empty = presence or wake_silent
+    if not isinstance(text, str) or (not text.strip() and not intentional_empty):
+        if ctx is not None:
+            ctx._presence_completion_accepted = False
+            ctx._wake_silent_completion = False
+        return True, False, "⚠️ Model returned an empty response. Try rephrasing your request."
+    if wake_silent:
+        usage["wake_silent"] = True
+    return False, intentional_empty, text
 
 
 def make_agent(

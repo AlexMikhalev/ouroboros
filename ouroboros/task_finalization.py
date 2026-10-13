@@ -246,6 +246,8 @@ def terminal_result_fields(usage: Dict[str, Any]) -> Dict[str, Any]:
     path = str(usage.get("terminal_salvage_path") or "")
     if path:
         fields["terminal_salvage_path"] = path
+    if usage.get("wake_silent") is True:
+        fields["wake_silent"] = True
     if usage.get("terminal_plan_review_open") is True:
         fields["terminal_plan_review_open"] = True
     for key in ("terminal_provider_notice", "terminal_host_notice"):

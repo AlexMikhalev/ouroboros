@@ -187,7 +187,7 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("finish_task", {"name": "finish_task",
             "description": "Select the complete answer and request completion of your current task. "
                 "Use finish after considering the observed work, or stop with a rationale naming unfinished work. "
-                "Select exactly one of answer or a host-offered answer_sha256. This grants no success, cancels no children, and retains all configured review and owner controls.",
+                "Select exactly one of answer or a host-offered answer_sha256. On a consciousness wake's own turn, silent=true finishes with no owner-facing line (answer may be empty; the durable result records wake_silent). This grants no success, cancels no children, and retains all configured review and owner controls.",
             "parameters": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["finish", "stop"]}, "answer": {"type": "string", "description": "The complete answer, including a short correction."},
                 "answer_sha256": {"type": "string", "description": "Exact offered retained or whole held response hash."},
@@ -195,6 +195,7 @@ def get_tools() -> List[ToolEntry]:
                     "effective_criteria": {"type": "string"}, "material_tool_indices": {"type": "array", "items": {"type": "integer"}},
                 }, "required": ["owner_source_sha256"]},
                 "pending_review": {"type": "string", "enum": ["wait", "finish"], "default": "wait"},
+                "silent": {"type": "boolean", "default": False, "description": "Finish with no owner-facing line; the durable result records wake_silent. Only a consciousness wake's own turn; refused elsewhere."},
             }, "required": ["action"]}}, _finish_task),
         ToolEntry("set_tool_timeout", {
             "name": "set_tool_timeout",
