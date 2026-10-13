@@ -124,7 +124,10 @@ def get_event_q(*, create: bool = True):
             # A manager-backed queue serializes synchronously in the producer
             # and isolates each producer connection, so replacing/killing a
             # worker generation cannot wedge the process-lifetime bus.
-            _EVENT_Q_MANAGER = _get_ctx().Manager()
+            from supervisor.event_observation import EventQueueManager
+
+            _EVENT_Q_MANAGER = EventQueueManager(ctx=_get_ctx())
+            _EVENT_Q_MANAGER.start()
             _EVENT_Q = _EVENT_Q_MANAGER.Queue()
             _EVENT_Q_GENERATION = f"{os.getpid()}:{uuid.uuid4().hex[:12]}"
             try:

@@ -104,6 +104,7 @@ from ouroboros.server_maintenance import (  # noqa: F401
 )
 from ouroboros.ui_translation import start_background as _start_ui_translation
 from supervisor.workspace_preparation import start_generation as _start_preparation_generation
+from supervisor.event_observation import pending_idle_observations
 from ouroboros.server_restart import (  # noqa: F401
     _live_running_task_ids, _managed_update_pending_kwargs,
     _perform_owner_restart, _safe_restart_serialized,
@@ -860,7 +861,7 @@ def _run_supervisor(settings: dict) -> None:
             flush_budget_projection(_event_ctx)
 
             _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "maintenance"), time.monotonic()
-            enforce_task_timeouts()
+            enforce_task_timeouts(pending_events=pending_idle_observations(get_event_q()))
             try:
                 from supervisor.queue import check_scheduled_tasks
                 check_scheduled_tasks()

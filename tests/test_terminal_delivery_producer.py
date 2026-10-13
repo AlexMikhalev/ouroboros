@@ -14,7 +14,7 @@ pytestmark = pytest.mark.serial
 
 def _finish_in_worker(root_text, task, event_queue, report_queue, attach):
     from ouroboros.agent_task_pipeline import _run_post_task_processing_async
-    from supervisor import terminal_delivery, workers
+    from supervisor import event_observation, terminal_delivery, workers
 
     manager_calls = []
 
@@ -23,9 +23,14 @@ def _finish_in_worker(root_text, task, event_queue, report_queue, attach):
             manager_calls.append("create")
             raise AssertionError("a producer tried to create the supervisor bus")
 
+    def no_event_manager(*args, **kwargs):
+        manager_calls.append("create-event-manager")
+        raise AssertionError("a producer tried to create the observed supervisor bus")
+
     workers._EVENT_Q = None
     workers._EVENT_Q_MANAGER = None
     workers._get_ctx = lambda: NoManager()
+    event_observation.EventQueueManager = no_event_manager
     root = pathlib.Path(root_text)
     env = SimpleNamespace(drive_root=root, repo_dir=pathlib.Path(__file__).parents[1],
                           drive_path=lambda rel: root / rel)

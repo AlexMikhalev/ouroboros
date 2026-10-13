@@ -858,7 +858,7 @@ def test_periodic_maintenance_invokes_pending_ref_promotion_sweep(
 
     for thread in threads:
         thread.join(5)
-    assert [thread.name for thread in threads if thread.name != "cold-custody"] == ["cancel_intent_sweep", "terminal_delivery_replay", "pause_notice_replay", "abandoned_usage_reconciliation", "reconcile-maintenance"]
+    assert [thread.name for thread in threads if thread.name != "cold-custody"] == ["cancel_intent_sweep", "terminal_delivery_replay", "pause_notice_replay", "abandoned_usage_reconciliation", "post_task_synthesis_recovery", "reconcile-maintenance"]
     assert calls == [(tmp_path, "reconcile-maintenance")]
     assert server_maintenance._RECONCILE_SWEEP_LOCK.acquire(timeout=2)
     server_maintenance._RECONCILE_SWEEP_LOCK.release()

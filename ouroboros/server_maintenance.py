@@ -41,6 +41,7 @@ _CANCEL_INTENT_SWEEP_LOCK = threading.Lock()
 _DELIVERY_SWEEP_LOCK = threading.Lock()
 _PAUSE_NOTICE_SWEEP_LOCK = threading.Lock()
 _USAGE_SWEEP_LOCK = threading.Lock()
+_SYNTHESIS_SWEEP_LOCK = threading.Lock()
 _OWNER_PAUSE_SWEEP_LOCK = threading.Lock()
 _COLD_CUSTODY_SWEEP_LOCK = threading.Lock()
 _CUSTODY_SWEEP_LOCK = threading.Lock()
@@ -161,6 +162,14 @@ def _run_terminal_duty(drive_root: pathlib.Path, step: str, latch: Any,
         elif step == "owner_pause_settlement":
             from supervisor.owner_pause_control import settle_requested_owner_pauses
             settle_requested_owner_pauses(stop_requested=lambda: _stop_requested(stop_event))
+        elif step == "post_task_synthesis_recovery":
+            from ouroboros.agent_task_pipeline import recover_pending_root_post_task_synthesis
+            from ouroboros.config import REPO_DIR
+            from supervisor import queue, workers
+            recover_pending_root_post_task_synthesis(
+                drive_root, REPO_DIR, startup=False, owner_liveness=queue.task_settlement_liveness,
+                claim_guard=queue.task_settlement_interlock, stop_requested=lambda: _stop_requested(stop_event),
+                event_queue=workers.get_event_q(create=False))
         else:
             raise ValueError(f"unknown terminal duty: {step}")
         _step_recovered(step)
@@ -274,7 +283,7 @@ def _periodic_supervisor_maintenance(
     stop_event: Any = None,
 ) -> None:
     """Throttled upkeep on the supervisor tick, nothing history-sized inline (INV-24).
-    The 20 s cadence independently starts cancel, delivery, notice and usage duties; every 600 s
+    The 20 s cadence independently starts cancel, delivery, notice, usage and synthesis duties; every 600 s
     the custody block; every 300 s the reconcile block (zombie heal, then pending
     child-ref promotion retry). The first two stamp here before handing off; the
     reconcile pass stamps when it ENDS (issue #1230). A due cadence whose latch is still
@@ -293,6 +302,7 @@ def _periodic_supervisor_maintenance(
             ("terminal_delivery_replay", _DELIVERY_SWEEP_LOCK),
             ("pause_notice_replay", _PAUSE_NOTICE_SWEEP_LOCK),
             ("abandoned_usage_reconciliation", _USAGE_SWEEP_LOCK),
+            ("post_task_synthesis_recovery", _SYNTHESIS_SWEEP_LOCK),
         ):
             if latch.acquire(blocking=False):
                 _start_maintenance_thread(latch, step, _run_terminal_duty,
