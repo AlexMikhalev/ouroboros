@@ -488,7 +488,7 @@ function createCapsule({
     }
 
     return Object.assign(api, {
-        setOpen, snapClosed, closeSoon, onStripScroll, reveal, measureName, isRtl,
+        setOpen, snapClosed, closeSoon, onStripScroll, reveal, measureName, isRtl, relayout,
         destroy() {
             state.destroyed = true;
             clearTimeout(hoverTimer);
@@ -919,15 +919,14 @@ function createContextModeControl({ el, row, apiFetch, showToast, refreshState, 
  * @param {(message: string, tone?: string) => void} deps.showToast
  * @param {(force?: boolean) => Promise<void>|void} deps.refreshState  a forced `/api/state` re-read
  * @param {() => void} [deps.onLayout]  a strip opened or closed on its own line
+ * @param {HTMLElement} [deps.box]  independently sized page the composer docks inside
  */
-export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRange, showToast, refreshState, onLayout, win = globalThis.window, doc = globalThis.document }) {
+export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRange, showToast, refreshState, onLayout, box = null, win = globalThis.window, doc = globalThis.document }) {
     let destroyed = false;
     const capsules = [];
-    // Closed, a capsule names its setting while the line holds every control; a narrower line (a
-    // 360 px phone, a longer translation) keeps the rings and values and lets the names go, and
-    // where even that wraps, the longest values give way to one measured width (an ellipsis; the
-    // button's accessible name and the open strip keep the whole word). Probed on the settled,
-    // closed row in one task, so a name never flickers and the row never wraps.
+    // Measure the settled, closed row synchronously: keep names while it fits, else rings and
+    // values. If long translated values still wrap, cap the widest with an ellipsis; accessible
+    // names and open strips keep full words. The closed names never flicker between fits.
     const shownKids = () => Array.from(row.children || []).filter((kid) => widthOf(kid) > 0);
     function wraps() {
         const kids = shownKids();
@@ -961,11 +960,24 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
     const contextEl = byId('context-mode');
     const context = contextEl ? createContextModeControl({ el: contextEl, row: row || contextEl.parentElement, apiFetch, ...shared }) : null;
     const effort = row ? createEffortRangeControl({ row, saveEffortRange, ...shared }) : null;
-    if (context) capsules.push(context.capsule);
-    if (effort) capsules.push(effort.capsule);
+    for (const control of [context, effort]) if (control) capsules.push(control.capsule);
     // One capsule is open at a time.
     if (context && effort) { context.capsule.peer = effort.capsule; effort.capsule.peer = context.capsule; }
     const stopObserving = observeLayout(win, [row], fitNames);
+    const relayout = () => { if (!destroyed) { fitNames(); capsules.forEach((capsule) => capsule.relayout()); } };
+    // Descendant fitting cannot resize this docking box, so mount/show/resize settle before paint.
+    // Text is observed at the microtask boundary, not our geometry attributes; unchanged words stay.
+    const boxObserver = box && typeof win?.ResizeObserver === 'function' ? new win.ResizeObserver(relayout) : null;
+    boxObserver?.observe(box);
+    // Own values yield to an open strip; refitting that strip would cancel the gesture's transition.
+    // They only need the closed line fitted. Other translated words still realign the whole strip.
+    const ownValue = (record) => {
+        const node = record.target.nodeType === 1 ? record.target : record.target.parentNode;
+        return Boolean(node?.closest?.('.chat-capsule-value'));
+    };
+    const onText = (records) => { if (records?.length && records.every(ownValue)) fitNames(); else relayout(); };
+    const textObserver = row && typeof win?.MutationObserver === 'function' ? new win.MutationObserver(onText) : null;
+    textObserver?.observe(row, { childList: true, characterData: true, subtree: true });
 
     return {
         context,
@@ -976,6 +988,8 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
         destroy() {
             destroyed = true;
             stopObserving();
+            boxObserver?.disconnect();
+            textObserver?.disconnect();
             context?.destroy();
             effort?.destroy();
             if (row?.dataset) delete row.dataset.ownerCompact;

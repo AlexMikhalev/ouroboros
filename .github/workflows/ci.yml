@@ -588,10 +588,10 @@ jobs:
   # result. Branch pushes are deliberately NOT matched here:
   # `provider-canary-push.yml` owns that trigger and shares the job, so a
   # provider outage on a landed commit never reddens this workflow.
-  # Confirmed provider-contract failures block release-preflight. A
-  # quota/rate-limit/5xx/timeout outcome is a typed inconclusive skip: a manual
-  # run on a branch reports it, and on a `v*` tag in the official repository the shared
-  # job's release floor fails unless every required canary passed.
+  # Required failures block release-preflight; optional qualification is a separate
+  # strict job outside that dependency graph, never a forgiven mixed producer exit.
+  # Required inconclusive skips fail the official tag floor. Before tagging a branch
+  # qualified by dispatch, inspect every required canary, not aggregate workflow status.
   # ──────────────────────────────────────────────────────────────────
   integration-test:
     # A scheduled run is neither a manual run nor a tag. The leading guard keeps
@@ -602,6 +602,30 @@ jobs:
       && (github.event_name == 'workflow_dispatch'
       || startsWith(github.ref, 'refs/tags/v'))
     uses: ./.github/workflows/provider-canary.yml
+    with:
+      scope: required
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      CLOUDRU_FOUNDATION_MODELS_API_KEY: ${{ secrets.CLOUDRU_FOUNDATION_MODELS_API_KEY }}
+      CLOUDRU_FOUNDATION_MODELS_BASE_URL: ${{ secrets.CLOUDRU_FOUNDATION_MODELS_BASE_URL }}
+      GIGACHAT_CREDENTIALS: ${{ secrets.GIGACHAT_CREDENTIALS }}
+    permissions:
+      contents: read
+
+  # Same paid matrix, disjoint subset. Its real failures stay visible and may make
+  # this workflow red; never add this job to release-preflight/release dependencies.
+  integration-optional:
+    if: |
+      github.event_name != 'schedule'
+      && (github.event_name == 'workflow_dispatch'
+      || startsWith(github.ref, 'refs/tags/v'))
+    uses: ./.github/workflows/provider-canary.yml
+    with:
+      scope: optional
     secrets:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

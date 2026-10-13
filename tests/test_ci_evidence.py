@@ -485,7 +485,8 @@ def test_journal_holds_only_redacted_identity_enums_and_exception_types(tmp_path
     assert [row["event"] for row in rows] == ["start", "report", "report", "report", "finish"] * 2
     assert {tuple(row) for row in rows} == {
         ("event", "nodeid", "elapsed_seconds"),
-        ("event", "nodeid", "elapsed_seconds", "phase", "outcome", "error_type", "duration_seconds")}
+        ("event", "nodeid", "elapsed_seconds", "phase", "outcome", "error_type", "duration_seconds", "is_subtest")}
+    assert all(row["is_subtest"] is False for row in rows if row["event"] == "report")
     elapsed = [row["elapsed_seconds"] for row in rows]
     assert elapsed == sorted(elapsed) and elapsed[0] >= 0
     assert [row["duration_seconds"] for row in rows if row["event"] == "report"] == [

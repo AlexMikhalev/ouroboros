@@ -27,6 +27,6 @@ def test_chat_control_ids_match_instance_wiring_and_nano_has_active_style():
     assert re.search(r'</div>\s*<div class="chat-context-mode" id="chat-context-mode" data-context-mode="max"></div>', chat)
     assert "const swarmBtn = byId('swarm');" in chat
     assert "const contextEl = byId('context-mode');" in controls
-    assert "ownerControls = createComposerOwnerControls({ row: page.querySelector('.chat-toolbar-row'), byId, apiFetch, showToast," in chat
+    assert "ownerControls = createComposerOwnerControls({ row: page.querySelector('.chat-toolbar-row'), box: page, byId, apiFetch, showToast," in chat
     assert '.chat-context-mode[data-context-mode="nano"] {' in styles
     assert 'justify-content: center;' in styles

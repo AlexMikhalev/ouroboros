@@ -74,7 +74,8 @@ def _valid(row) -> bool:
     return (isinstance(row, dict)
             and all(isinstance(row.get(key), str) for key in ("nodeid", "phase", "outcome"))
             and (row["phase"] in _PHASES or row["phase"] == "crash")
-            and row["outcome"] in {"passed", "failed", "skipped"})
+            and row["outcome"] in {"passed", "failed", "skipped"}
+            and ("is_subtest" not in row or type(row["is_subtest"]) is bool))
 
 
 def _final(root: Path) -> tuple[dict, str]:
@@ -330,7 +331,7 @@ def _lane_proofs(root: Path, *, sha: str, run_id: str, gaps: list, others: list 
             proofs.append({"name": name, "attempt": int(attempt), "lane": lane, "executed": executed,
                            "duplicates": [node for node, seen in Counter(
                                row["nodeid"] for row in data["reports"]
-                               if row["phase"] == "call").items() if seen > 1],
+                               if row["phase"] == "call" and not row.get("is_subtest", False)).items() if seen > 1],
                            "exit": data.get("session_exit_code")})
     return proofs
 
@@ -523,6 +524,12 @@ if __name__ == "__main__":
 # pytest is intentionally below the stdlib-only CLI entrypoint and loaded only
 # through conftest's post-isolation plugin registration.
 import pytest
+try:
+    from _pytest.subtests import SubtestReport
+except ModuleNotFoundError as error:
+    if error.name != "_pytest.subtests":
+        raise
+    SubtestReport = ()  # pytest <9 has no built-in subtest reports; ordinary calls still count.
 
 
 def pytest_addoption(parser):
@@ -614,6 +621,8 @@ class _Results:
         crashed = report.when not in _PHASES
         row = {
             "nodeid": report.nodeid, "phase": "crash" if crashed else report.when,
+            # Preserve the report's kind, never its potentially private subtest context.
+            "is_subtest": isinstance(report, SubtestReport),
             "outcome": report.outcome,
             "duration_seconds": duration if math.isfinite(duration) else None,
             "error_type": "WorkerCrash" if crashed else getattr(report, "ci_error_type", ""),
@@ -621,7 +630,8 @@ class _Results:
         }
         self.reports.append(row)
         self._event("report", row["nodeid"], phase=row["phase"], outcome=row["outcome"],
-                    error_type=row["error_type"], duration_seconds=row["duration_seconds"])
+                    error_type=row["error_type"], duration_seconds=row["duration_seconds"],
+                    is_subtest=row["is_subtest"])
 
     def pytest_collectreport(self, report):
         if report.failed:

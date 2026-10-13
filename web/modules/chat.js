@@ -3004,7 +3004,7 @@ export function createChatInstance({
     swarmBtn?.addEventListener('click', () => setSwarm(!swarmArmed()));
 
     // Nano/Low/Max and the effort range write global owner settings; one module owns them.
-    ownerControls = createComposerOwnerControls({ row: page.querySelector('.chat-toolbar-row'), byId, apiFetch, showToast,
+    ownerControls = createComposerOwnerControls({ row: page.querySelector('.chat-toolbar-row'), box: page, byId, apiFetch, showToast,
         saveEffortRange: apiClient.ownerEffortRange, refreshState: refreshHeaderControlState, onLayout: () => updateMessagesPadding() });
 
     // Arrow wrappers avoid MouseEvent leaking into sendMessage(planMode).

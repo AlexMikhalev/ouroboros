@@ -93,6 +93,7 @@ def test_async_first_generation_real_writer_contention_keeps_loop_and_custody(ro
     from tests.test_openrouter_transport_evidence import Wire, frame, target
 
     acquired, release, entered, expired = (threading.Event() for _ in range(4))
+    send_or_finish = asyncio.Event()
     original, bindings, threads = ua.bind_provider_generation, [], []
 
     def observe(generation, **kwargs):
@@ -109,6 +110,7 @@ def test_async_first_generation_real_writer_contention_keeps_loop_and_custody(ro
     monkeypatch.setattr(ua, "bind_provider_generation", observe)
 
     async def send():
+        send_or_finish.set()
         holder = threading.Thread(target=hold)
         threads.append(holder)
         holder.start()
@@ -121,7 +123,12 @@ def test_async_first_generation_real_writer_contention_keeps_loop_and_custody(ro
         req = ua.AttemptRequest(model="vendor/fixture", provider="openrouter", reservation_usd=2,
                                 drive_root=root, provider_receipt_binding=binding_for_target(target()))
         task = asyncio.create_task(ua.execute_physical_attempt_async(req, send))
+        task.add_done_callback(lambda done: send_or_finish.set())
         try:
+            # Preparation is outside the contended-binder responsiveness oracle.
+            await asyncio.wait_for(send_or_finish.wait(), 10)
+            if task.done():
+                await task  # Surface an early preparation failure, not an entered timeout.
             for _ in range(200):
                 if entered.is_set():
                     break

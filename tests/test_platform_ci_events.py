@@ -110,7 +110,7 @@ def test_the_paid_live_stand_runs_only_on_a_dispatch_that_opts_in(event, ref, sc
 
 
 @pytest.mark.parametrize("name", [
-    "integration-test", "skill-smoke", "system-e2e-mock", "e2e-live",
+    "integration-test", "integration-optional", "skill-smoke", "system-e2e-mock", "e2e-live",
     "marker-guards", "docker-ui-smoke", "docker-portable-test",
     "release-preflight", "build", "release", "vendor-package-smoke",
 ])
@@ -132,9 +132,13 @@ def test_desktop_pr_coverage_does_not_admit_provider_or_release_jobs(name):
 def test_provider_canaries_join_this_workflow_only_for_manual_runs_and_tags(event, ref, schedule, called):
     """Branch pushes reach the canaries through provider-canary-push.yml, so a
     provider outage on a landed commit leaves this workflow's result to the code."""
-    job = WORKFLOW["jobs"]["integration-test"]
-    assert job["uses"] == "./.github/workflows/provider-canary.yml"
-    assert bool(_value(job["if"], event=event, ref=ref, base="ouroboros", schedule=schedule)) is called
+    for name, scope in (("integration-test", "required"), ("integration-optional", "optional")):
+        job = WORKFLOW["jobs"][name]
+        assert job["uses"] == "./.github/workflows/provider-canary.yml"
+        assert job["with"] == {"scope": scope}
+        for repository in ("razzant/ouroboros", "someone/private-copy"):
+            assert bool(_value(job["if"], event=event, ref=ref, base="ouroboros",
+                               schedule=schedule, repository=repository)) is called
 
 
 @pytest.mark.parametrize(("event", "cancelled", "expected"), [
