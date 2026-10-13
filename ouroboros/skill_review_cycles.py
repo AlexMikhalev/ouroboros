@@ -663,6 +663,7 @@ def select_skill_review_resume(ctx, skill, drive_root, binding):
     Selection grants CAS reconciliation, not a verdict or physical dispatch.
     """
     ctx._skill_review_resume = None
+    ctx._skill_review_logged_errors = frozenset()
     ctx._skill_review_wave_binding = binding
     job_id = str(getattr(ctx, "_skill_review_lifecycle_job_id", "") or "")
     if not job_id:
@@ -697,8 +698,12 @@ def select_skill_review_resume(ctx, skill, drive_root, binding):
     current = update_json_locked(review_job_state_path(drive_root, skill.name), bind,
                                  strict_existing_dict=True)
     if current.get("job_id") == job_id and current.get("review_resume_of") == wave["wave_id"]:
+        from ouroboros.skill_review_collect import logged_error_operations
+
         ctx._skill_review_resume = wave
         ctx._skill_review_wave_binding = recorded
+        # The selected row's own append receipts, so collection never logs them twice (#1578).
+        ctx._skill_review_logged_errors = logged_error_operations(previous)
         return True
     return False
 

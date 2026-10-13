@@ -236,6 +236,7 @@ def test_task_result_and_task_done_mirror_authoritative_review_status(tmp_path, 
     assert stored["review_status"]["status"] == "pass"
     done = next(row for row in pending_events if row["type"] == "task_done")
     assert done["review_status"] == stored["review_status"]
+    assert done["root_task_id"] == "review-mirror"
 
 
 

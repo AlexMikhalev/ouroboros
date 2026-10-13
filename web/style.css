@@ -446,9 +446,9 @@ body.resizing-panels { user-select: none; }
     font-size: var(--type-meta);
 }
 
-/* A Project door that is a row or a capsule carries the glyph on a tile of the
-   Project hue; the question head keeps its compact pill (docs/DESIGN.md
-   "References and actions"). */
+/* A Project door that is a row or a capsule carries the glyph on a light tile of
+   the Project tint, the glyph in project ink: a mark, never a second button
+   (docs/DESIGN.md "Visual intent"); the question head keeps its compact pill. */
 .project-handoff .chat-live-project-icon,
 .chat-live-bound-pointer .chat-live-project-icon,
 .system-message-actions .chat-quiz-project .chat-live-project-icon {
@@ -458,8 +458,8 @@ body.resizing-panels { user-select: none; }
     width: var(--space-5);
     height: var(--space-5);
     border-radius: var(--radius-sm);
-    background: var(--project);
-    color: var(--bg-primary);
+    background: var(--project-18);
+    color: var(--project);
     font-size: var(--type-body);
 }
 

@@ -5,7 +5,22 @@ from __future__ import annotations
 from dataclasses import asdict
 
 
-def _recorded_assignment(root, wave, chunk, slot_id, operation_id):
+def logged_error_operations(row):
+    """``(slot_id, operation_id)`` whose failure the selected wave row already logged (#1578).
+
+    Only a positive ``error_event_logged`` on that exact operation's terminal record
+    counts: a failed append is no receipt, and an awaited seat's event does not cover
+    the terminal outcome its operation settles later.
+    """
+    return frozenset(
+        (actor["slot_id"], actor["operation_id"]) for actor in row.get("raw_actor_records") or []
+        if isinstance(actor, dict) and actor.get("error_event_logged") is True
+        and not actor.get("late_result_pending") and actor.get("operation_state") in {"settled", "late_settled"}
+        and isinstance(actor.get("slot_id"), str) and actor["slot_id"]
+        and isinstance(actor.get("operation_id"), str) and actor["operation_id"])
+
+
+def _recorded_assignment(root, wave, chunk, slot_id, operation_id, logged=False):
     from ouroboros.delegate_custody import invocation_record
     from ouroboros.review_dispatch import review_operation_binding
     from ouroboros.review_execution import ReviewRouteKind
@@ -31,9 +46,11 @@ def _recorded_assignment(root, wave, chunk, slot_id, operation_id):
                 for key in ("task_id", "root_task_id", "surface", "slot_id", "operation_id")):
             raise ValueError("original Skill Review invocation binding missing or inconsistent")
     request.reconcile_only = True
+    # The selected row's receipt rides this exact operation's frozen row, as a plan wave's row does (#1578).
     return request, slot, {**row, "model": slot.model,
         "recovery_binding": {**expected, **({"pending_invocation_id": token} if token else {})},
-        **({"pending_invocation_id": token, "usage": {"pending_invocation_id": token}} if token else {})}
+        **({"pending_invocation_id": token, "usage": {"pending_invocation_id": token}} if token else {}),
+        **({"error_event_logged": True} if logged else {})}
 
 
 def _collect_original_actor(root, ctx, request, slot, row):
@@ -66,7 +83,9 @@ def _collect_seat(root, ctx, wave, chunk, slot_id, operation_id):
     from ouroboros.tools.review_response import parse_model_response, review_operation_fields
 
     try:
-        request, slot, row = _recorded_assignment(root, wave, chunk, slot_id, operation_id)
+        request, slot, row = _recorded_assignment(
+            root, wave, chunk, slot_id, operation_id,
+            logged=(slot_id, operation_id) in getattr(ctx, "_skill_review_logged_errors", ()))
         actor = _collect_original_actor(root, ctx, request, slot, row)
         record = asdict(actor)
         payload = {**record, **review_operation_fields(record)}

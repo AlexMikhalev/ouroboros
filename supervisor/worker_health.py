@@ -597,6 +597,10 @@ def _recover_crashed_task_without_terminal(job: dict, queue: Any) -> None:
         from ouroboros.working_checkpoint import attach_recovery
         attach_recovery(pathlib.Path(task.get("budget_drive_root") or root), task,
                         source_task_id=task_id, from_attempt=attempt, cause="worker_crash", prior_task=prior_task)
+        from ouroboros.model_wait import fold_running_clock, stamp_execution_handoff
+
+        fold_running_clock(task, meta)  # confirmed waits newer than the checkpoint (#939)
+        stamp_execution_handoff(task, meta)
         from ouroboros.delegate_recovery import prepare_worker_crash_handoff
         recovery_handoff = prepare_worker_crash_handoff(
             root, task, old_attempt=attempt, new_attempt=attempt + 1,
@@ -625,6 +629,11 @@ def _recover_crashed_task_without_terminal(job: dict, queue: Any) -> None:
         with queue.prepared_root_billing(task), _queue_lock:  # the ledger read happens before the lock
             if not _dead_job_is_current(job):
                 return
+            # #1183: the dead attempt's own active fence must not refuse its retry
+            # (an unknown pid proves no exact owner, so its fence stays).
+            from supervisor.queue_transitions import clear_acceptance_fence_for_attempt
+            if isinstance(getattr(w.proc, "pid", None), int):
+                clear_acceptance_fence_for_attempt(task_id, task_attempt=attempt, pid=w.proc.pid)
             _pool().RUNNING.pop(task_id)
             try:
                 admitted = queue.enqueue_task(task, front=True)

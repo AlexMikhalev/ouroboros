@@ -204,6 +204,18 @@ test('a delegated frame yields a small harness chip; an ordinary frame yields no
     assert.equal(chip.label, 'Codex');
     assert.equal(chip.hasEvidence, false);
     assert.match(chip.title, /Dispatched to Codex/);
+    for (const status of ['completed', 'failed', 'cancelled', 'rejected_duplicate']) {
+        const terminal = executorChip({ executor_route: 'codex', status });
+        assert.equal(terminal.label, 'Codex · run outcome unknown');
+        assert.equal(terminal.hasEvidence, false);
+        assert.match(terminal.title, /terminal record has no delegated-run evidence/);
+        assert.doesNotMatch(terminal.title, /arrives with the terminal receipt/);
+    }
+    assert.equal(executorChip({ executor_route: 'codex', subagent_event: 'completed' }).label,
+        'Codex · run outcome unknown');
+    assert.equal(executorChip({ executor_route: 'codex', task_terminal_status: 'failed', status: 'running' }).label,
+        'Codex · run outcome unknown');
+    assert.equal(executorChip({ executor_route: 'codex', status: 'interrupted' }).label, 'Codex');
     assert.equal('icon' in chip, false, 'mark geometry belongs to harness_presentation');
     assert.match(chip.title, /Codex/);
     // WHERE it ran is all the chip can see. It has no access to the run's spend, so

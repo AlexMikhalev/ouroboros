@@ -1,4 +1,4 @@
-import { escapeHtml } from './utils.js';
+import { escapeHtml, escapeHtmlAttr } from './utils.js';
 import { apiFetch } from './api_client.js';
 import { setInlineStatus } from './ui_helpers.js';
 import { harnessIdentityMarkup } from './harness_presentation.js';
@@ -184,7 +184,7 @@ export function initLogs({ ws, state, mount }) {
                 phase: view.phase || 'info',
                 headline: view.headline || 'Event',
             })}
-            ${execution ? `<div class="harness-chip log-executor-chip" title="${escapeHtml(execution.title || '')}">${harnessIdentityMarkup(execution.harness, {
+            ${execution ? `<div class="harness-chip log-executor-chip" title="${escapeHtmlAttr(execution.title || '')}">${harnessIdentityMarkup(execution.harness, {
                 label: execution.label || '',
                 className: 'log-executor-identity',
             })}</div>` : ''}

@@ -39,6 +39,7 @@ from ouroboros.request_wire_recovery import (
 from ouroboros.utils import sanitize_tool_result_for_log
 from ouroboros.config import runtime_setting
 from ouroboros._usage_response import observed_processing_mode, provider_cost_value
+from ouroboros.event_usage import REPORTED_TOKENS_KEY
 
 
 # The moved warnings keep the logger identity they were emitted under.
@@ -427,6 +428,7 @@ class _OpenAICompatibleLaneMixin:
             usage.pop("reasoning_effort_clamped", None)
             usage.pop("provider_error", None)
             usage.pop("wire_layout", None)
+            usage.pop(REPORTED_TOKENS_KEY, None)
             # The projected wire shape of THIS call's candidate (per-call target, never a
             # thread-local): the request blob keeps the canonical messages, the sealed
             # physical candidate keeps the exact wire, this fact says which one was sent.

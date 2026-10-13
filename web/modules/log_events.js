@@ -188,6 +188,11 @@ export function executorChip(evt) {
         return chip(true, 'blocked', `Pinned to ${name}, but the route could not run — the task was NOT run (no metered API spend, no delegated run)`);
     }
     if (!evidence) {
+        const record = normalizeTaskTerminalRecord(evt);
+        const status = String(record.outcome_axes?.lifecycle?.status || record.status || evt?.subagent_event || '').toLowerCase();
+        if (OBSERVED_OUTCOME_STATUSES.has(status)) {
+            return chip(false, 'run outcome unknown', `The ${name} route was assigned, but this terminal record has no delegated-run evidence; the run outcome is unknown`);
+        }
         // Evidence rides TERMINAL frames only, so a live frame proves nothing
         // either way, and under the pre-start charter the leaf usually IS running
         // by now: an evidence-grade negative ("no run yet") would be false for most
@@ -243,7 +248,7 @@ export function executorChip(evt) {
     const unresolved = Number(evidence.delegated_runs_source_unresolved || 0);
     const notOk = Math.max(failed, unresolved);
     const ok = Math.max(0, settled - notOk);
-    // Coverage can be incomplete on an already-failed run; equal aggregate counts
+    // Coverage can be incomplete on a non-successful run; equal aggregate counts
     // cannot erase that terminal fact. Legacy frames without states stay count-based.
     const terminalFailure = Array.isArray(evidence.delegated_run_failure_states)
         && evidence.delegated_run_failure_states.some(state => typeof state === 'string' && state && state !== 'source_incomplete');
@@ -286,11 +291,7 @@ function subagentHeadline(sid = '', role = '', label = '', model = '', { full = 
     return `${cleanRole}${modelPart}${shortId && full ? ` (${shortId})` : ''}${suffix}`;
 }
 
-const SUBAGENT_CARD_LABEL = {
-    scheduled: 'Working',
-    running: 'Working',
-    interrupted: 'Working',
-};
+const SUBAGENT_CARD_LABEL = { scheduled: 'Working', running: 'Working', interrupted: 'Working' };
 
 export function formatLogMoney(value) {
     return formatUsd4(value);
@@ -299,11 +300,7 @@ export function formatLogMoney(value) {
 export function formatLogDuration(sec) {
     const num = Number(sec);
     if (!Number.isFinite(num) || num < 0) return '';
-    if (num >= 60) {
-        const mins = Math.floor(num / 60);
-        const rem = Math.round(num % 60);
-        return `${mins}m ${rem}s`;
-    }
+    if (num >= 60) return `${Math.floor(num / 60)}m ${Math.round(num % 60)}s`;
     return `${num < 10 ? num.toFixed(1) : Math.round(num)}s`;
 }
 
@@ -312,6 +309,14 @@ function formatLogTokens(evt) {
     const completion = Number(evt.completion_tokens || 0);
     if (!prompt && !completion) return '';
     return `${prompt}\u2192${completion} tok`;
+}
+
+// Usage rows only (#1578): v2 null = not reported, 0 = a reported zero; an unstamped/v1 zero stays ambiguous (LEGACY_RULE).
+function formatUsageTokens(evt) {
+    const count = (n) => (!Number.isSafeInteger(n) || n < 0 ? '?' : n === 0 && evt.record_contract_version !== 2 ? '0?' : String(n));
+    const prompt = count(evt.prompt_tokens), completion = count(evt.completion_tokens);
+    if (prompt === '?' && completion === '?') return 'tokens not reported';
+    return `${prompt}\u2192${completion} tok${[prompt, completion].includes('0?') ? ' (legacy 0 may be unreported)' : ''}`;
 }
 
 function compactJson(value, maxLen = 220) {
@@ -811,7 +816,7 @@ export function summarizeLogEvent(evt) {
             body: effortEvidenceText(evt),
             meta: taskMeta(
                 evt.model || '',
-                formatLogTokens(evt),
+                formatUsageTokens(evt),
                 // Backfill uses accounted upper bounds; live frames may carry cost.
                 formatLogMoney(accountedUpperBound(evt) ?? evt.cost),
                 evt.response_kind === 'tool_calls' ? `${evt.tool_call_count || 0} tool calls` : evt.response_kind || '',
@@ -837,7 +842,7 @@ export function summarizeLogEvent(evt) {
             body: effortEvidenceText(evt),
             meta: taskMeta(
                 evt.model || '',
-                formatLogTokens(evt),
+                formatUsageTokens(evt),
                 formatLogMoney(accountedUpperBound(evt) ?? evt.cost),
                 evt.category || '',
             ),

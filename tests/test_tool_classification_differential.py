@@ -448,6 +448,11 @@ CURRENT_PRODUCER_CONTRACTS = {
     "PREFLIGHT_UNAVAILABLE": (True, "unavailable"),
     # Peer admission adds current producers; the historical fixture stays intact.
     "TASK_CANCEL_STATE_UNAVAILABLE": (True, "unavailable"),
+    # #939: the new marker alone is a legacy warning. The actual scheduling
+    # refusal publishes TOOL_ERROR with reason=task_lifetime_exhausted; pin both
+    # answers without inventing a retired-golden entry or changing the producer.
+    "TASK_LIFETIME_EXHAUSTED": (False, "ok"),
+    "native:TOOL_ERROR:TASK_LIFETIME_EXHAUSTED": (True, "error"),
     # #1262: an enabled MCP server with no current listing makes a name's existence
     # unknown — the provider's unavailability, never the caller's unknown tool.
     "MCP_CATALOG_UNAVAILABLE": (True, "unavailable"),
@@ -484,6 +489,33 @@ def test_current_producer_contracts_have_explicit_live_answers(subject, detail):
     identifier = subject.rsplit(":", 1)[-1]
     case = Case("current:" + subject, subject, "read_file", "⚠️ " + identifier + detail, code)
     assert _live_answer(case) == CURRENT_PRODUCER_CONTRACTS[subject]
+
+
+def test_spent_execution_budget_publishes_the_actual_scheduling_refusal(tmp_path, monkeypatch):
+    from queue import Queue
+    from ouroboros.tools import control_scheduling
+    from ouroboros.tools.registry import ToolContext
+    from tests.test_control_native_results import _published
+
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="bounded-parent")
+    ctx.event_queue = Queue()
+    monkeypatch.setattr(control_scheduling, "_inherited_execution_allowance", lambda _ctx: 0)
+    monkeypatch.setattr(control_scheduling, "select_subagent_snapshot",
+                        lambda *a, **kw: pytest.fail("spent allowance must refuse before child selection"))
+    result = _published(ctx, "schedule_subagent", lambda: control_scheduling._schedule_task(
+        ctx, subagent_id="unused", objective="Inspect", expected_output="Findings"),
+        owner_delta="the exhausted execution allowance is a typed refusal")
+    assert result.text == (
+        "⚠️ TASK_LIFETIME_EXHAUSTED (schedule_subagent): this task's execution budget is spent; "
+        "no child was scheduled. Finalize with what you have.")
+    assert (result.status, result.code, dict(result.meta)) == (
+        "error", "TOOL_ERROR", {"reason": "task_lifetime_exhausted"})
+    is_error = _typed_execution_failure(True, result)
+    assert (is_error, _typed_result_metadata("schedule_subagent", result.text, is_error, result)["status"]) == (
+        CURRENT_PRODUCER_CONTRACTS["native:TOOL_ERROR:TASK_LIFETIME_EXHAUSTED"])
+    from ouroboros import store
+
+    assert ctx.event_queue.empty() and not store.store_path(tmp_path).exists()  # no child row was written
 
 
 @pytest.mark.parametrize("tool", ["write_file", "edit_text", "apply_patch", "edit_batch"])

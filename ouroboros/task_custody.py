@@ -151,6 +151,11 @@ def custody_anchor(drive_root: Any, task_id: str) -> pathlib.Path:
     drive), so every writer of one mailbox takes the same lock.
     """
     validate_task_id(task_id)
+    return canonical_owner_root(drive_root)
+
+
+def canonical_owner_root(drive_root: Any) -> pathlib.Path:
+    """``custody_anchor``'s layout rule alone, for writers without a task id."""
     root = pathlib.Path(drive_root).resolve(strict=False)
     if root.name == "data" and len(root.parents) > 3 and root.parents[1].name == "headless_tasks" \
             and root.parents[2].name == "state":

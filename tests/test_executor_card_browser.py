@@ -158,6 +158,8 @@ MATRIX = (  # task, frame, visible label, a fragment of the detail sentence
      'Codex · not settled', 'started, none settled'),
     ('m-legacy', child('m-legacy', 'legacy', 'completed', runs(1, 1), executor_route='codex'),
      'Codex · run outcome unknown', '1 run settled, subscription spend undisclosed'),
+    ('m-missing', child('m-missing', 'missing evidence', 'completed', executor_route='codex'),
+     'Codex · run outcome unknown', 'terminal record has no delegated-run evidence'),
     ('m-no-run', child('m-no-run', 'no run', 'completed', runs(0, 0), executor_route='claude'),
      'Claude Code · no run yet', 'no durable record of a delegated run'),
     ('m-unreadable', child('m-unreadable', 'unreadable', 'completed', runs(0, 0, evidence_read_failed=True),
@@ -304,3 +306,20 @@ def test_logs_print_the_executor_detail_beside_the_quiet_chip(engine_ui, theme):
         assert detail.inner_text().strip() == chip.get_attribute('title'), task
     page.locator('.log-task-card[data-task-group="m-mixed"]').scroll_into_view_if_needed()
     capture(page, f'executor-logs-{page.context.browser.browser_type.name}-{theme}')
+    # Standalone Logs owns an attribute sink as well as the new text detail.
+    # Quotes in a valid producer-shaped value must remain text, not new attributes.
+    assert page.evaluate('''async () => {
+        const {initLogs} = await import('/static/modules/logs.js');
+        const mount = document.createElement('section'); document.body.append(mount);
+        const handlers = new Map(); const ws = {on(type, fn) { handlers.set(type, fn); return () => {}; }};
+        initLogs({ws, state: {activePage: 'dashboard', dashboardActiveSubtab: 'logs'}, mount});
+        handlers.get('log')({data: {type: 'executor_note', task_id: 'quote-child', executor_route: 'codex',
+            ts: '2026-10-13T06:00:00Z', executor_observation: {task_id: 'quote-child', run_id: 'run-quote',
+                attempt_id: 'a01', harness_id: 'codex', revision: 1, model_source: 'requested',
+                model: 'probe" data-g5-boundary="escaped'}}});
+        const chip = mount.querySelector('.log-executor-chip');
+        const valid = !chip.hasAttribute('data-g5-boundary')
+            && chip.title === mount.querySelector('.log-executor-detail').textContent;
+        // This page-scoped Logs mount ends with the fixture's page/context teardown.
+        return valid;
+    }''')
