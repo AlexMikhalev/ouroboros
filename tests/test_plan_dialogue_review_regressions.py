@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.test_plan_review_engine import harness as _harness, _call, _state, CLEAN, _finding
+from tests.test_plan_review_engine import harness as _harness, _call, _state, CLEAN, _finding, _user_text
 from tests.test_plan_review_reconciliation import _collect, _install_barrier_substrate
 from ouroboros.utils import append_jsonl
 
@@ -164,5 +164,6 @@ def test_native_first_send_carries_no_required_source_manifest_for_the_room(harn
     assert request.policy['observed_sources'][0]['root'] == 'artifact_store' and 'native_required_sources' not in request.policy
     executor = NativeToolRoundReviewExecutor(ReviewAssignment(request=request, slot=slot, call_id='native-observed'))
     _registry, _schemas, messages, _size = executor._open_episode(str(harness.workspace), harness.drive)
-    assert 'Required source manifest' not in messages[-1]['content']
-    assert 'Discussion and tradeoffs.' in messages[-1]['content']
+    text = _user_text(messages[-1]['content'])
+    assert 'Required source manifest' not in text
+    assert 'Discussion and tradeoffs.' in text

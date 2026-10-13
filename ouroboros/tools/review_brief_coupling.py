@@ -26,13 +26,12 @@ The brief carries
 * the governance tiers from the ONE SSOT every review surface asks
   (``governance_context``): the rules this change activates inline, the map as
   navigation the reviewer reads on demand;
-* the staged change itself — inlined when the whole first send lands under the
-  seat's own bound, and otherwise stored as ONE exact durable source the reviewer
+* the staged change itself — inlined when the whole first send meets the
+  seat's layout hint, and otherwise stored as ONE exact durable source the reviewer
   pages by address.
 
-No size terminal lives here. The builder never refuses a diff for its size, and
-a brief a window cannot hold at all is the native executor's typed row refusal
-(``native_bound_below_first_send``), never a downgraded finding.
+No size terminal lives here. Native serialized size guides initial layout only;
+it never refuses the brief or predicts a provider overflow.
 """
 
 from __future__ import annotations
@@ -76,7 +75,7 @@ COUPLING_CHECKLIST_SECTION = "Coupling questions"
 SESSION_INLINE_DIFF_CEILING_CHARS = 400_000
 
 # Chars per estimated token — the `utils.estimate_tokens` heuristic inverted, so
-# the episode's char bound and the governance tiers' token budget meet on one
+# the initial layout hint and the governance tiers' token budget meet on one
 # scale (the same conversion the deep self-review row uses).
 _CHARS_PER_ESTIMATED_TOKEN = 4
 
@@ -160,20 +159,16 @@ class BriefInputs:
 
 
 # ---------------------------------------------------------------------------
-# The seat's bounds: what the first send must land under, and the window share
-# the governance tiers are taken against.
+# Initial layout: inline versus paged delivery and the governance tiers' share.
 # ---------------------------------------------------------------------------
 
 
 def first_send_bound(brief: BriefInputs) -> int:
-    """The seat's SEND bound in chars — the one resolver the episode applies.
+    """Initial layout hint in chars, never native dispatch authority.
 
-    ``review_native_transcript_bound`` derives it from the reviewer's window,
-    the seat's output reserve and the owner transcript ceiling; a route with no
-    evidenced window resolves the ceiling, which is the one bound that holds for
-    every route (a delegated harness included). The governance tiers take their
-    inline share against this same number, converted to tokens, so the brief's
-    rules and the brief's diff are sized by one fact.
+    ``review_native_transcript_bound`` derives it from the reviewer's window
+    and output reserve, using a sizing fallback for an unknown window. The
+    governance tiers take their inline share against the same hint.
     """
     from ouroboros.review_native_episode import review_native_transcript_bound
     from ouroboros.reviewer_window import window_scaled_reserves
@@ -194,8 +189,8 @@ def _first_send_chars(repo_dir: pathlib.Path, brief: BriefInputs, brief_text: st
 
     A native row is measured by the same builder the paid ledger reserves
     against (``native_first_send_chars``: work order, message objects and the
-    inspection schemas that ride every call), so the fit decision and the money
-    admission cannot disagree. A route whose schemas cannot be projected here is
+    inspection schemas that ride every call). This canonical serialization is
+    a layout measure, not physical token usage. A route whose schemas cannot be projected here is
     measured as the brief plus this build's send overhead rather than left
     unmeasured.
     """
@@ -310,8 +305,8 @@ def _paged_diff_pointer(brief: BriefInputs, body: str, source: Dict[str, Any]) -
         )
     return (
         f"The COMPLETE {noun} is stored as one exact source instead of being "
-        "inlined here: the whole first send would not have fit this reviewer's "
-        f"window. It is complete and untruncated — {len(body):,} chars, "
+        "inlined here: the whole first send exceeds the initial inline sizing "
+        f"hint. It is complete and untruncated — {len(body):,} chars, "
         f"sha256 `{source.get('sha256', 'unavailable')}`.\n"
         f"{address}\n"
         "It is the complete change evidence: every added and removed line of this "
@@ -609,10 +604,8 @@ def build_retrieving_brief(
     else:
         diff_slot = _diff_slot(brief, header, body, "")
         measured = _first_send_chars(repo_dir, brief, _assemble(diff_slot)[0])
-        # The first-send size the inlined diff must stay under: a native episode
-        # must land BEFORE its landing notice (or the host would open the review
-        # by announcing that the window is nearly full); a delegated session has
-        # no host-enforced transcript and takes the conservative inline ceiling.
+        # Choose inline versus paged delivery using the initial layout hint;
+        # a delegated session keeps its own conservative inline ceiling.
         from ouroboros.review_native_episode import native_landing_at
 
         ceiling = SESSION_INLINE_DIFF_CEILING_CHARS if brief.delegated else native_landing_at(bound)
@@ -630,8 +623,7 @@ def build_retrieving_brief(
                 diff_slot = _diff_slot(brief, header, body, _paged_diff_pointer(brief, body, source))
                 delivery.update(diff_delivery="paged", diff_source=source)
             else:
-                # An unreachable store is disclosed, never a refusal: the diff
-                # stays inline and the episode's own bound decides the send.
+                # An unreachable store is disclosed; the complete diff stays inline.
                 delivery.update(diff_paging="unavailable",
                                 diff_paging_reason=str(source.get("error") or "no_source_root"))
     task_text, part1, part2 = _assemble(diff_slot)

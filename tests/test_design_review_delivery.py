@@ -66,7 +66,7 @@ def test_deep_review_separates_installed_governance_from_candidate_sources(
         assert request.session_root == str(candidate)
         assert request.policy["native_required_sources"] == required
     else:
-        brief = next(m["content"] for m in llm.calls[0]["messages"] if m["role"] == "user")
+        brief = _user_text(next(m["content"] for m in llm.calls[0]["messages"] if m["role"] == "user"))
         installed, subject = usage["native_tool_receipts"]
         assert installed["opened_root"] == "system_repo"
         assert subject["opened_root"] == "active_workspace"

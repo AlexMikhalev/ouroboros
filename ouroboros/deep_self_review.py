@@ -17,8 +17,7 @@ two shapes:
   reads not host-observed (disclosed as ``unobserved``).
 
 Both deliveries ride the shared review executor seam: the product
-is free markdown (``triad_review`` shape ``report``), a bound landing before
-the final answer delivers the collected draft marked INCOMPLETE, and the host
+is free markdown (``triad_review`` shape ``report``), and the host
 prepends a provenance header naming the delivery, model, rounds, receipts,
 coverage and completeness so consecutive reports stay comparable. A mandatory
 read left partial, missing or unobserved is recorded as a ``capability_delta``
@@ -454,10 +453,29 @@ def _provenance_header(delivery: str, model: str, usage: Dict[str, Any], memory:
             "rounds": usage.get("native_rounds", 0), "tool_calls": usage.get("native_tool_calls", 0),
             "receipts": len(usage.get("native_tool_receipts") or []),
             "end_reason": usage.get("native_end_reason", ""),
-            "transcript": f"{usage.get('native_transcript_chars', 0)}/{usage.get('native_transcript_bound', 0)}",
-            "landing": f"{usage.get('native_landing_notified', False)}/{usage.get('native_landing_sent', False)}",
             "coverage_basis": usage.get("deep_review_coverage_basis", "legacy_lines"),
         })
+        context = usage.get("native_context") or {}
+        serialized = context.get("serialized_chars", usage.get("native_transcript_chars"))
+        facts["serialized_chars_diagnostic"] = serialized if serialized is not None else "unknown"
+        # Older reports retain their actual bound/landing facts; absence is not 0.
+        bound = usage.get("native_transcript_bound")
+        if type(bound) is int and bound > 0:
+            facts["transcript"] = f"{serialized if serialized is not None else 'unknown'}/{bound}"
+        if "native_landing_notified" in usage or "native_landing_sent" in usage:
+            facts["landing"] = f"{usage.get('native_landing_notified', 'unknown')}/{usage.get('native_landing_sent', 'unknown')}"
+        if context:
+            facts["context_view_revision"] = context.get("view_revision") or "unknown"
+            window = context.get("window") or {}
+            facts["window_tokens"] = window.get("window_tokens") or "unknown"
+            for key in ("status", "stale", "observed_at", "model", "asserted_window_tokens", "model_route"):
+                facts[f"window_{key}"] = window.get(key) if window.get(key) is not None else "unknown"
+            previous = context.get("previous_request") or {}
+            facts["previous_prompt_tokens"] = previous.get("prompt_tokens") if previous.get("prompt_tokens") is not None else "unknown"
+            for key, value in previous.items():
+                if key != "prompt_tokens":
+                    facts[f"previous_request_{key}"] = value if value is not None else "unknown"
+            facts["output_allowance_tokens"] = context.get("output_allowance_tokens") if context.get("output_allowance_tokens") is not None else "unknown"
     else:
         facts["attestation"] = "unobserved"
     facts.update(extra or {})
@@ -629,12 +647,10 @@ def _run_retrieving_review(
     from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
     sendable = str(model or row.target_id)
-    # The governance tiers take their inline share against the window this row
-    # is sent in: the transcript bound derived from the row's window, its
-    # output reserve and the owner ceiling (chars), on the
-    # `utils.estimate_tokens` scale the tiering budgets with (4 chars a token).
-    # A session row's harness model carries no evidenced window, so it resolves
-    # the owner ceiling — the one bound that holds for every route.
+    # Governance tiers use a layout hint derived from the route's window and
+    # output reserve, converted to the tier builder's 4-chars/token scale.
+    # Unknown windows use sizing fallback only; the hint never admits or stops
+    # a native episode, whose source remains readable through its tools.
     ask = ask or SystemReviewAsk()
     task_text, task_facts = _retrieving_task(
         repo_dir, drive_root, required_sources=required_sources, required_sources_ref=required_sources_ref,
