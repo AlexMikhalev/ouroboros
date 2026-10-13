@@ -189,7 +189,10 @@ def _remote_receipt(env, reservation, operation_id):
                            "response_ref": {"sha256": "sha256:" + hashlib.sha256(raw.encode()).hexdigest(), "sizeBytes": len(raw.encode())}})
 
 
-def test_late_remote_receipt_refreshes_own_and_root_cost_without_another_charge(env, monkeypatch):
+def test_late_remote_receipt_after_ended_custody_is_not_searched_but_settles_once(env, monkeypatch):
+    """Once the engine said the call is over, maintenance stops looking for its price; the
+    attempt keeps its ONE late receipt for an explicit writer, which refreshes own and root
+    cost without another charge."""
     from ouroboros import claudexor_daemon
 
     _terminal(env)
@@ -209,12 +212,19 @@ def test_late_remote_receipt_refreshes_own_and_root_cost_without_another_charge(
 
     monkeypatch.setattr(claudexor_daemon, "read_owned_gateway", Gateway)
     maintenance._reconcile_abandoned_usage(env.root)
-    assert is_abandoned_settlement(_final(env, reservation))
+    ended = _final(env, reservation)
+    assert is_abandoned_settlement(ended) and ended["recovery"]["outcome"] == "terminal"
     assert calls == ["operation", "closed"]
     _remote_receipt(env, reservation, "operation")
     maintenance._reconcile_abandoned_usage(env.root)
+    assert calls == ["operation", "closed"] and _final(env, reservation) == ended
+    assert load_task_result(env.root, "child")["accounted_upper_bound_usd"] == 1.25 and not usage.usage_projection(
+        env.root)["confirmed_usd"]
 
-    assert calls == ["operation", "closed"], "the retained exact receipt requires no daemon"
+    usage.settle_attempt(reservation, {}, cost_usd=0.4, cost_final=True)
+    assert _final(env, reservation)["settle_reason"] == "late_receipt"
+    maintenance._reconcile_abandoned_usage(env.root)
+    assert calls == ["operation", "closed"]
     projection = usage.usage_projection(env.root)
     assert projection["accounted_usd"] == projection["confirmed_usd"] == 0.4
     assert load_task_result(env.root, "child")["accounted_upper_bound_usd"] == 0.4

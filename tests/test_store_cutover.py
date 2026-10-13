@@ -228,7 +228,8 @@ def test_the_body_marker_sweep_is_the_one_declared_scan(populated):
 
 
 def test_select_lineage_matches_the_python_prefilter(populated):
-    """The WHERE and the retired Python prefilter select the same rows."""
+    """Without retry lineage the closure selects exactly the retired Python prefilter's rows; with it,
+    ``test_child_lineage_closure`` holds the full-projection oracle (unrelated lineage is never read)."""
     def may_match(item, parent, root_id, direct_only):
         if str(item.get("superseded_by") or item.get("retry_task_id") or "").strip():
             return True

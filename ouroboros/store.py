@@ -749,9 +749,10 @@ class Txn:
     def task_ids(self) -> List[str]:
         return [record["task_id"] for record in self.conn.execute("SELECT task_id FROM tasks ORDER BY task_id")]
 
-    def write_seqs(self) -> Dict[str, int]:
-        """Every task's write sequence: one narrow scan that tells which rows changed since a census."""
-        return {record["task_id"]: record["write_seq"] for record in self.conn.execute("SELECT task_id, write_seq FROM tasks")}
+    def write_seqs(self) -> Dict[str, Tuple[int, Any]]:
+        """Every task's ``(write_seq, updated_at)`` (``task_store.signature``): one narrow scan of which rows changed."""
+        return {record["task_id"]: (record["write_seq"], record["updated_at"])
+                for record in self.conn.execute("SELECT task_id, write_seq, updated_at FROM tasks")}
 
     def body_text(self, task_id: str) -> Optional[str]:
         record = self.conn.execute("SELECT body FROM task_bodies WHERE task_id=?", (task_id,)).fetchone()
