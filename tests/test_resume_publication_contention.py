@@ -14,7 +14,7 @@ from tests.test_review_operation_collection import fresh_sends as fresh_sends
 pytestmark = pytest.mark.serial
 
 
-def _contend_publication(monkeypatch, *, outside=None):
+def _contend_publication(monkeypatch, *, outside=None, acquire_wait_sec=0.0):
     actual, prepare = owner_pause.release_fence, acceptance_late.resume_paused_acceptance_preparations
     calls, publications, waits = [], [], []
 
@@ -26,7 +26,7 @@ def _contend_publication(monkeypatch, *, outside=None):
     def release(root, task_id, **kwargs):
         if not publications:
             publications.append((root, task_id))
-            with database_reader(root, exclusive=True):
+            with database_reader(root, exclusive=True, acquire_wait_sec=acquire_wait_sec):
                 return actual(root, task_id, **kwargs)
         return actual(root, task_id, **kwargs)
 
@@ -49,7 +49,7 @@ def _contend_publication(monkeypatch, *, outside=None):
 def test_combined_resume_hands_the_real_preparer_once_while_publication_retries(late, tmp_path, monkeypatch):
     from tests.test_combined_late_resume import test_one_resume_restores_post_task_and_dead_acceptance_preparation
 
-    calls, publications, waits = _contend_publication(monkeypatch)
+    calls, publications, waits = _contend_publication(monkeypatch, acquire_wait_sec=1.0)
     test_one_resume_restores_post_task_and_dead_acceptance_preparation(late, tmp_path, monkeypatch, False)
     assert calls == [1] and len(publications) == 1 and waits
     assert len(late.calls) == 3

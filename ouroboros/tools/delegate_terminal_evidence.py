@@ -591,13 +591,19 @@ def collect_and_deliver_terminal(ctx, rid, detail, authority, entry, gateway):
         root, entry, reader_task_id=str(getattr(ctx, "task_id", "") or ""))
     if capture is not None:
         payload["workspace_capture"] = capture
+    _record_terminal_delivery(ctx, entry, payload)
+    return payload
+
+
+def _record_terminal_delivery(ctx, entry, payload):
+    """Both terminal delivery paths disclose the same outstanding reader duties."""
+    custody = _delegate().custody
     if (not (payload.get("output_delivery") or {}).get("complete")
-            and custody.record_settled_unread(root, entry)):
+            and custody.record_settled_unread(custody.custody_root(ctx), entry)):
         payload["result_not_collected"] = (
             "THIS RESULT IS NOT COLLECTED YET: the retained full output has not been read to EOF. "
             "Use output_delivery.read_next until the exact source has been covered end to end.")
     _record_containment(ctx, entry, payload)
-    return payload
 
 
 def retained_terminal_result(ctx, run_id, *, complete_only=True):
@@ -627,7 +633,7 @@ def retained_terminal_result(ctx, run_id, *, complete_only=True):
         capture = capture_projection(root, entry, reader_task_id=str(getattr(ctx, "task_id", "") or ""))
         if capture is not None:
             payload["workspace_capture"] = capture
-        _record_containment(ctx, entry, payload)
+        _record_terminal_delivery(ctx, entry, payload)
     return payload
 
 

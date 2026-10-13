@@ -213,8 +213,9 @@ def _gate_view(ctx: Any, preparation: Any) -> Any:
         )
 
 
-def _direct_child_count(roots: list, parent_id: Any, tid: str) -> Optional[int]:
-    counts = [durable_direct_child_count(root, parent_id, exclude_task_id=tid) for root in roots]
+def _direct_child_count(roots: list, parent_id: Any, tid: str, *, propagate_contention: bool = False) -> Optional[int]:
+    counts = [durable_direct_child_count(root, parent_id, exclude_task_id=tid,
+                                        propagate_contention=propagate_contention) for root in roots]
     return max(counts) if counts and all(count is not None for count in counts) else None
 
 
@@ -687,7 +688,9 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any, preparation: Any = None
                 # The declared rights/constraints stay the same; current counts
                 # cannot be borrowed from the pre-preparation queue snapshot.
                 nonlocal direct_child_count, queued_behind_active_cap
-                direct_child_count = _direct_child_count(count_roots, parent_id, tid)
+                direct_child_count = _direct_child_count(
+                    count_roots, parent_id, tid,
+                    propagate_contention=preparation is not None or not workspace_preparation._requests_preparation(evt))
                 rights = check_delegation_admission(parent_budget, direct_child_count=direct_child_count)
                 if not rights.ok:
                     return rights.reason_code, f"Subagent rejected: {rights.reason_code}: {rights.detail}", direct_child_count

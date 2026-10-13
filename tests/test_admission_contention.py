@@ -33,14 +33,14 @@ def publish(root, *, generation="new", fences=()):
 
 
 @contextlib.contextmanager
-def database_reader(root, *, exclusive=False, money=False):
+def database_reader(root, *, exclusive=False, money=False, acquire_wait_sec=0.0):
     """A real independent connection; release is controlled by the waiting consumer."""
     entered, release = threading.Event(), threading.Event()
     errors = []
     path = root / "state" / ("usage.sqlite" if money else "current.sqlite")
     def run():
         try:
-            with contextlib.closing(store.connect(path, store.TIER_ENFORCED)) as conn:
+            with contextlib.closing(store.connect(path, store.TIER_ENFORCED, wait_sec=acquire_wait_sec)) as conn:
                 conn.execute("BEGIN EXCLUSIVE" if exclusive else "BEGIN")
                 conn.execute("SELECT 1 FROM meta LIMIT 1").fetchone()
                 entered.set()
