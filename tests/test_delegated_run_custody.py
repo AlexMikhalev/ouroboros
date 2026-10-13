@@ -716,10 +716,10 @@ def test_a_start_whose_custody_row_did_not_land_does_not_claim_to_be_custodied(t
     from ouroboros import delegate_custody_current as current
     real_publish = current.publish
 
-    def _started_row_lost(root, event):
+    def _started_row_lost(root, event, **kwargs):
         if event.get("type") in ("delegate_run_started", "delegate_run_settled"):
             return False  # the store refused the reducing transaction: the row never landed
-        return real_publish(root, event)
+        return real_publish(root, event, **kwargs)
 
     monkeypatch.setattr(current, "publish", _started_row_lost)
     delegate._CUSTODY.clear()

@@ -596,10 +596,10 @@ def test_no_post_fires_when_the_start_request_row_did_not_land(tmp_path, monkeyp
 
     real_publish = current.publish
 
-    def broken_publish(root, event):
+    def broken_publish(root, event, **kwargs):
         if event.get("type") == "delegate_run_start_requested":
             return False               # the reducing transaction's own "did not land" signal
-        return real_publish(root, event)
+        return real_publish(root, event, **kwargs)
 
     monkeypatch.setattr(current, "publish", broken_publish)
     delegate._CUSTODY.clear()

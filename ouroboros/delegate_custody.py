@@ -255,8 +255,8 @@ def custody_root(ctx: Any) -> pathlib.Path:
 
     return canonical_data_root(ctx)
 
-def emit(drive_root: Any, kind: str, payload: Dict[str, Any]) -> bool:
-    """Record one custody event and REPORT whether it landed. Never raises.
+def emit(drive_root: Any, kind: str, payload: Dict[str, Any], *, propagate_contention: bool = False) -> bool:
+    """Record one custody event and REPORT whether it landed; normally never raises.
 
     The store is the authority: the event is reduced onto the run's row and parked in
     the custody outbox in ONE transaction (``delegate_custody_current.publish``), then
@@ -265,13 +265,17 @@ def emit(drive_root: Any, kind: str, payload: Dict[str, Any]) -> bool:
     the outbox row, which the next publication (or the boot door) appends; the chain
     fold dedups by ``event_id``. Discarding the fate is how a run could be reported as
     started, waited on and settled while the rows that ARE its custody never landed.
+    An unsent start owner may opt into proven pre-COMMIT contention, never flush replay.
     """
     try:
         from ouroboros.delegate_custody_current import publish
 
         event = {"ts": utc_now_iso(), "type": kind, "event_id": uuid.uuid4().hex, **payload}
-        written = publish(drive_root, event)
-    except Exception:
+        written = (publish(drive_root, event, propagate_contention=True) if propagate_contention
+                   else publish(drive_root, event))
+    except Exception as exc:
+        if propagate_contention and getattr(exc, "custody_not_committed", False):
+            raise
         log.warning("delegate custody row could not be written (%s)", kind, exc_info=True)
         return False
     if not written:

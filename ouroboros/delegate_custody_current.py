@@ -294,7 +294,7 @@ def _loaded(txn, event: Dict[str, Any]) -> Dict[str, Any]:
     return state
 
 
-def publish(root, event: Dict[str, Any]) -> bool:
+def publish(root, event: Dict[str, Any], *, propagate_contention: bool = False) -> bool:
     """Returns whether custody + outbox COMMITTED; append failure does not undo custody.
     A failed append keeps the outbox for the next flush, so the chain never leads the store.
     Transaction/append ordering: module docstring."""
@@ -303,6 +303,10 @@ def publish(root, event: Dict[str, Any]) -> bool:
             owed = _reduce(txn, event, _loaded(txn, event), {})
             txn.outbox_put(event)
     except store.StoreError as exc:
+        if (propagate_contention and isinstance(exc, store.StoreBusy) and exc.reason == "contention"
+                and getattr(exc, "rollback_confirmed", None) is not False):
+            exc.custody_not_committed = True  # Only this pre-COMMIT boundary grants retry.
+            raise
         log.warning("Custody %s not recorded under %s (%s)", event.get("type"), root, type(exc).__name__)
         return False
     flush_outbox(root)
