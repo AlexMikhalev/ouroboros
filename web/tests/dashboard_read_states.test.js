@@ -710,6 +710,30 @@ test('Logs files a wake-up group under Consciousness with its label, from the or
     assert.equal(card('turn-2').querySelector('[data-task-kind]').textContent, 'task turn-2');
 });
 
+test('Logs keeps the executor chip quiet and prints its detail sentence as text (#360 A)', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    for (const name of ['events', 'tools', 'progress', 'supervisor']) routes.set(logUrl(name), response({ entries: [] }));
+    initLogs({ mount, ws, state: { activePage: 'dashboard', dashboardActiveSubtab: 'logs' } });
+    const evidence = { delegated_runs_started: 2, delegated_runs_settled: 2, delegated_runs_succeeded: 1,
+        delegated_runs_failed: 1, subscription_cost_usd: null, harness_models: [] };
+    ws.emit('log', { data: { type: 'send_message', is_progress: true, task_id: 'child-x', ts: '2026-09-16T12:00:00Z',
+        content: 'done', executor_route: 'codex', execution_evidence: evidence } });
+    // An ungrouped row keeps the same pair: a quiet chip and its sentence beside it.
+    ws.emit('log', { data: { type: 'executor_note', executor_route: 'claude', ts: '2026-09-16T12:00:01Z' } });
+    await settle();
+    const entries = mount.querySelector('#log-entries');
+    const card = entries.children.find((node) => node.dataset.taskGroup === 'child-x');
+    const chip = card.querySelector('[data-task-executor]');
+    assert.equal(chip.hidden, false);
+    assert.match(chip.textContent, /Codex · 1 of 2 runs failed$/);
+    const detail = card.querySelector('[data-task-executor-detail]');
+    assert.equal(detail.hidden, false, 'the detail is visible text, not a hover-only title');
+    assert.equal(detail.textContent, chip.title);
+    assert.match(detail.textContent, /2 runs settled \(1 ok, 1 failed\)/);
+    const standalone = entries.children.find((node) => !node.dataset.taskGroup);
+    assert.match(standalone.querySelector('.log-executor-chip').textContent, /Claude Code$/);
+    assert.match(standalone.querySelector('.log-executor-detail').textContent, /^Dispatched to Claude Code/);
+});
 
 test('Activity names the typed no-change refusals and never calls a suppression "deleted"', async (t) => {
     const { mount, routes, ws, toasts } = setup(t);

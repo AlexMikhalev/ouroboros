@@ -2,8 +2,8 @@
 
 A nested child is subordinate to its root: collapsed, it is an identity row
 (status chip · role identity · notes and chevron, no `Show details` label) in
-quieter ink over its metadata row (agent model, harness chip with the run count,
-cost, last update, docked `Reviews N`). One useful narration line stays visible;
+quieter ink over its metadata row (agent model, the quiet harness chip, cost,
+last update, docked `Reviews N`). One useful narration line stays visible;
 the complete narration waits for expansion. The card's
 summary outranks its details: a body-size activity line over meta-size timeline
 rows, an expanded row back at body size. Twins (same parent and displayed role)
@@ -136,10 +136,10 @@ def test_ui_smoke_nested_cards_are_one_identity_row_and_text_selects(direct_serv
                     # Quieter than the root: weight 400 and the secondary ink.
                     assert facts["titleWeight"] in ("400", "normal"), facts
                     assert facts["titleColor"] != root["titleColor"], (facts, root)
-                # The owner's first fact on a subagent — where it ran and how many runs settled —
-                # is rendered in the collapsed row: the harness chip with the run count.
+                # The owner's first fact on a subagent — which helper ran — is the collapsed
+                # row's harness chip; every settled run ok keeps it the bare name (#360 A).
                 for facts in (twin_a, twin_b):
-                    assert facts["chipText"] == "Cursor · 1 ok" and facts["chipHeight"] > 0, facts
+                    assert facts["chipText"] == "Cursor" and facts["chipHeight"] > 0, facts
                 assert lone["chipText"] == "", lone
                 assert root["titleWeight"] == "500", root
                 # Root history uses the same text for its title and latest event;
