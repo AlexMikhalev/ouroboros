@@ -97,7 +97,7 @@ export function room(t, { onReadingLatest, projectId, fetchHistory } = {}) {
     const setHidden = (hidden) => {
         globalThis.document.hidden = hidden;
         globalThis.document.visibilityState = hidden ? 'hidden' : 'visible';
-        if (!hidden) for (const fn of documentListeners.get('visibilitychange') || []) fn({ type: 'visibilitychange' });
+        for (const fn of documentListeners.get('visibilitychange') || []) fn({ type: 'visibilitychange' });
     };
     return { instance, server, reads, pageReads, messages, gate, shown, readUp, readLatest, scroll, setHidden, chrome, box, reconnect, emit };
 }

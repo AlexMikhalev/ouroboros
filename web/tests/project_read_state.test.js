@@ -719,6 +719,22 @@ for (const [name, close] of [['closed', (r) => r.instance.destroy()], ['hidden',
     });
 }
 
+test('a window hidden during the reach ends it as a hidden room does: shown again, no page, jump or read', async (t) => {
+    const { r, open, hold, arrivals } = deepRoom(t, chain(3));
+    const release = hold(2);
+    await open();
+    await until(() => r.pageReads.length === 2);
+    r.setHidden(true);
+    release();
+    await quiet();
+    assert.deepEqual(r.pageReads, [1, 2], 'the page already asked for is drawn; nothing more is asked');
+    r.setHidden(false);
+    const later = await r.instance.refreshHistory({ revision: 4 });
+    await quiet();
+    assert.deepEqual([r.pageReads, r.messages.scrollTop, later.read, arrivals()], [[1, 2], r.messages.scrollHeight, false, 0],
+        'the spent opening neither pages nor lands; the dot stays');
+});
+
 test('a failed page ends the reach at the bottom; its repair later moves no one', async (t) => {
     const { r, open, arrivals } = deepRoom(t, chain(3));
     r.server.pageFails = 2;
@@ -851,6 +867,31 @@ for (const hidden of [true, false]) {
     });
 }
 
+// Its newest message on the opening read's own page, an unread reopening has nothing to
+// reach: the read re-anchors the outgrown chain as a plain reopening's does. One older
+// than that page is reached on the re-anchored chain, with no second return to the present.
+for (const reopened of ['read', 'unread', 'unread, newest older']) {
+    test(`a kept room grown past its chain is re-anchored when reopened ${reopened}`, async (t) => {
+        const deep = reopened.endsWith('older');
+        const r = room(t, { projectId: 'kept' });
+        placeAtTop(t, r, 'chat:9');
+        const newest = (n) => ({ ...named, latest_message: { history_id: `chat:${n}`, out_of_order: false } });
+        Object.assign(r.server, { rows: [row(300), row(301)], coverage: coverage(100, 20), window: newest(301),
+            pages: [{ rows: [row(200)], window: {}, coverage: coverage(100, 10) }] });
+        await r.instance.refreshHistory({ revision: 1 });
+        await quiet();
+        const reads = r.reads.length;
+        Object.assign(r.server, { rows: [row(400), row(401)], coverage: coverage(300, 200), window: newest(deep ? 9 : 401) });
+        if (deep) r.server.pages = [{ rows: [row(350)], window: {} }, { rows: [late(9)], window: {} }];
+        void r.instance.showLatest({ arrive: reopened !== 'read' });
+        r.instance.cancelHistoryPaint();
+        const paint = await r.instance.refreshHistory({ revision: 2 });
+        await quiet();
+        assert.deepEqual([r.reads.length - reads, r.pageReads, paint.read, r.messages.scrollTop === 0], [2, deep ? [1, 2] : [], !deep, deep],
+            'the read, then the chain re-anchored at it; only a newest message older than its page is walked to and landed on');
+    });
+}
+
 test('a broken quiet chain ends the search: no guess at what lies below', async (t) => {
     const { r, open } = searchedOpening(t, { rows: [late(9)], window: { latest_message: { history_id: 'chat:9' } } });
     r.server.pages[0].window = { latest_message: null };  // unreadable: this page cannot carry the search on
@@ -858,6 +899,60 @@ test('a broken quiet chain ends the search: no guess at what lies below', async 
     await quiet();
     assert.deepEqual(r.pageReads, [1]);
     assert.equal(r.messages.scrollTop, r.messages.scrollHeight);
+});
+
+test('only an older page can unsay what the quiet chain found, not the recent page read again', async (t) => {
+    const raf = globalThis.requestAnimationFrame;
+    globalThis.requestAnimationFrame = (fn) => setImmediate(fn);
+    t.after(() => { globalThis.requestAnimationFrame = raf; });
+    const receipt = createProjectReadReceipt({ read: async () => true, isShown: () => true,
+        isReadingLatest: (latest) => latest?.history_id === 'chat:9' });
+    receipt.recent({ window: search, coverage: coverage(100, 20) });
+    receipt.page({ index: 1, window: { latest_message: { history_id: 'chat:9', out_of_order: true } }, coverage: coverage(100, 5) });
+    assert.equal((await receipt.refresh({ revision: 4 })).read, true);
+    receipt.page({ index: 0, window: { latest_message: null }, coverage: coverage(100, 20) });
+    assert.equal((await receipt.refresh({ revision: 4 })).read, true, 'frozen at its boundary, it cannot tell');
+    receipt.page({ index: 1, window: { latest_message: null }, coverage: coverage(100, 5) });
+    assert.equal((await receipt.refresh({ revision: 4 })).painted, false, 'an unreadable older page ends what it carried');
+});
+
+// A reader paging older past the pages kept, then down, reads the recent page again
+// (`newer` to index 0). history_paging.latest_arrival names nothing there.
+test('the recent page read again keeps the newest message an older page found readable on screen', async (t) => {
+    const pages = [
+        { messages: [notes(900)], coverage: coverage(1000, 800), window: { ...search, latest_before: 500 } },
+        { messages: [late(100), notes(110)], coverage: coverage(1000, 100),
+            window: { latest_message: { history_id: 'chat:100', out_of_order: true } } },
+        { messages: [notes(90)], coverage: coverage(1000, 90), window: {} },
+        { messages: [notes(80)], coverage: coverage(1000, 0), window: {} },
+    ];
+    const cursors = [];
+    let landed = false;
+    const r = room(t, { fetchHistory: async (url) => {
+        const cursor = new URL(url, 'http://local').searchParams.get('cursor'), k = cursor ? Number(cursor.slice(1)) : 0;
+        cursors.push(cursor ?? 'recent');
+        return { ok: true, json: async () => ({ ...pages[k], window: cursor === 'p0' ? { latest_message: null } : pages[k].window,
+            page_cursor: `p${k}`, next_cursor: k < 3 ? `p${k + 1}` : null, has_more: k < 3 }) };
+    } });
+    const rect = ElementStub.prototype.getBoundingClientRect;
+    ElementStub.prototype.getBoundingClientRect = function () {
+        const id = this.dataset?.historyId;
+        if (id === 'chat:100') return landed ? r.box(0, 20) : r.box(-100, -80);
+        if (id === 'chat:110') return r.box(0, 20);  // on screen: its page stays
+        return id ? r.box(-500, -480) : rect.call(this);
+    };
+    t.after(() => { ElementStub.prototype.getBoundingClientRect = rect; });
+    void r.instance.showLatest();
+    await r.instance.refreshHistory({ revision: 4 });
+    const older = r.messages.querySelector('.chat-load-older').querySelector('.chat-load-older-btn');
+    for (let i = 0; i < 3; i += 1) for (const click of older.listeners.get('click') || []) await click({ target: older });
+    assert.equal((await r.instance.refreshHistory({ revision: 4 })).read, false, 'found, but not on screen');
+    wheel(r, 1);
+    await quiet();
+    assert.deepEqual(cursors, ['recent', 'p1', 'p2', 'p3', 'recent', 'p0'], 'page zero went and was read again');
+    landed = true;
+    r.scroll(0);
+    assert.equal((await r.instance.refreshHistory({ revision: 4 })).read, true);
 });
 
 test('an unknown newest message is never searched', async (t) => {

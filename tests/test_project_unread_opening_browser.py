@@ -193,11 +193,23 @@ def _wheel(room, box):
     room.page.mouse.wheel(0, 120 if box else -400)
 
 
-@pytest.mark.parametrize("move", ["wheel", "box", "close"])
+# Another tab shown: the document reports itself hidden and says so; shown again, the same in reverse.
+_WINDOW = """hidden => {
+    if (hidden) for (const [key, value] of [['hidden', true], ['visibilityState', 'hidden']]) {
+        Object.defineProperty(document, key, {configurable: true, get: () => value});
+    } else { delete document.hidden; delete document.visibilityState; }
+    document.dispatchEvent(new Event('visibilitychange'));
+}"""
+# Leaving the room: its own close, or another page (showPage closes the open Project).
+_LEAVE = {"close": "#project-panel-close", "settings": '[data-nav-page="settings"]'}
+
+
+@pytest.mark.parametrize("move", ["wheel", "box", "close", "settings", "window"])
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
 def test_the_readers_own_move_ends_the_reach(direct_server_with_data, monkeypatch, engine, move):
-    """While the second older page is in flight the reader wheels the feed, scrolls a bounded box or
-    closes the room: that page may still be drawn, but nothing more is asked or landed, and the dot
+    """While the second older page is in flight the reader wheels the feed, scrolls a bounded box,
+    closes the room, goes to Settings or switches to another tab: that page may still be drawn, but
+    nothing more is asked or landed, even once Chat or the tab is shown again and read, and the dot
     stays until the reply is shown."""
     from playwright.sync_api import sync_playwright
 
@@ -210,15 +222,24 @@ def test_the_readers_own_move_ends_the_reach(direct_server_with_data, monkeypatc
             room.open()
             assert _wait_for(room.page, lambda: len(room.held) == 1, attempts=200), room.older
             room.settled(200)
-            if move == "close":
-                room.page.locator("#project-panel-close").evaluate("el => el.click()")
+            if move in _LEAVE:
+                room.page.locator(_LEAVE[move]).evaluate("el => el.click()")
+            elif move == "window":
+                room.page.evaluate(_WINDOW, True)
             else:
                 _wheel(room, move == "box")
                 room.page.evaluate(_SETTLE_RESTORE_FRAMES)
-            before = room.messages.evaluate("n => n.scrollTop") if move != "close" else None
+            before = None if move in _LEAVE else room.messages.evaluate("n => n.scrollTop")
             room.release()
             room.settled()
-            landed = room.shown() if move != "close" else None
+            if move in ("settings", "window"):
+                if move == "window":
+                    room.page.evaluate(_WINDOW, False)
+                else:
+                    room.page.locator('[data-nav-page="chat"]').evaluate("el => el.click()")
+                _emit_ws_frame(room.page, {"type": "projects_changed"})
+                room.settled(800)
+            landed = None if move in _LEAVE else room.shown()
             name = f"unread-opening-{engine}-moved-{move}"
             evidence = _evidence(data, name, landed=landed, older=room.older, acks=room.acks, before=before)
             room.page.screenshot(path=str(evidence / f"{name}.png"))

@@ -171,6 +171,21 @@ test('quiet growth whose search joins the frozen quiet chain keeps walking it', 
     assert.equal((await f.r.instance.refreshHistory({ revision: 5 })).read, true);
 });
 
+test('growth admitted while the first walked page is in flight restarts nothing: the walk goes on', async t => {
+    const f = raceRoom(t);
+    f.snapshots.poll = snapshot('poll', 1500, 9);
+    const release = f.holdPage('old:1');
+    await f.open();
+    await until(() => f.server.pages.includes('old:1'));
+    await f.newer(f.snapshots.poll);
+    release();
+    await landedOn(f, 'chat:9');
+    t.diagnostic(JSON.stringify(f.trace()));
+    assert.deepEqual(f.server.reads, ['old', 'poll'], 'the newest page is still drawn, yet the chain is not re-anchored mid-walk');
+    assert.deepEqual(f.server.pages, chain('old', 6));
+    assert.equal(f.arrivals(), 1);
+});
+
 test('quiet growth searched only above the frozen chain rebases: the bytes between are unsearched', async t => {
     const f = raceRoom(t, { old: snapshot('old', 1000, 9, { before: 500 }), fresh: snapshot('fresh', 2000, 1100, { before: 1500 }) });
     await admitDuringWalk(f, f.snapshots.fresh);

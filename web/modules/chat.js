@@ -1588,10 +1588,13 @@ export function createChatInstance({
     }
 
     // Returning to the Chat page reopens the room at its newest message; a window
-    // shown again keeps the same reading intent (data readiness positions it).
+    // shown again keeps the same reading intent (data readiness positions it);
+    // hidden, it ends an unread opening still owed.
     const handlePageShown = (event) => {
         if (event?.detail?.page === 'chat') void showLatest();
-        else if (event?.type === 'visibilitychange' && !document.hidden) reading.request();
+        else if (event?.type !== 'visibilitychange') return;
+        else if (document.hidden) reading.land(() => 0, reading.arriving);
+        else reading.request();
     };
     window.addEventListener('ouro:page-shown', handlePageShown);
     document.addEventListener('visibilitychange', handlePageShown);
@@ -2725,7 +2728,7 @@ export function createChatInstance({
                 // from, and the rows the newest read let go stay below them; a shifted
                 // window re-anchors only a reader following the newest message.
                 const reader = readingHistory();
-                const rechainRecent = admitted && reading.arriving === null && !reader && !data.reason_code && pagerBeforeRecent.initialized
+                const rechainRecent = admitted && !reader && !data.reason_code && pagerBeforeRecent.initialized
                     && !pagerBeforeRecent.canNewer && [...oldRecentIds].some(id => !recentHistoryIds.has(id));
                 const result = historyPager.acceptRecent(data);
                 if (result.status !== 'applied') applyHistoryMessages(messages, { fromReconnect });

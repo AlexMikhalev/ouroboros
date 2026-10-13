@@ -161,10 +161,12 @@ export function createProjectReadReceipt({ read, isShown, isReadingLatest, onRea
             if (newest() === null) coveredRevision = 0;
         },
         // An older page, once drawn, can show the newest message or, on a quiet
-        // chain, name it, prove there is none or end the search unknown.
-        page({ window, coverage }) {
+        // chain, name it, prove there is none or end the search unknown. The recent
+        // page read again (index 0) cannot see past its frozen boundary: its unknown
+        // says nothing of what the chain found.
+        page({ index, window, coverage }) {
             const absent = window?.latest_absent === true, named = window?.latest_message;
-            if ((absent || named !== undefined) && Number.isSafeInteger(coverage?.upper?.chat)) {
+            if (index !== 0 && (absent || named !== undefined) && Number.isSafeInteger(coverage?.upper?.chat)) {
                 found = { message: absent ? undefined : named?.history_id ? named : null, coverage };
             }
             requestAnimationFrame(() => { settle(); note(); });

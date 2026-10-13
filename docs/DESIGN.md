@@ -564,8 +564,8 @@ revision; this counter is not a guarantee of delivery durability.
   an unread room therefore lands on that standalone message wherever it lies:
   until a loaded page holds it, the opening reads older pages (the page limit
   bounds what stays loaded, not this reach); a read room opens at the bottom.
-  This is one opening intent, ended by a gesture (in a bounded box too), a
-  question, closing the room or a failed page (bottom and Retry), never a jump
+  One opening intent, ended by a gesture (in a bounded box too), a question,
+  leaving room or window or a failed page (bottom and Retry), never a jump
   on later reads or new arrivals. A question opened from its Main mirror has
   priority; showing it does not read newer messages elsewhere. Collapsed cards
   need not open. The newest message is the one that arrived last: a late answer
