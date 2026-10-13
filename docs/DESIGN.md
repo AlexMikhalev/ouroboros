@@ -823,11 +823,18 @@ preference when it opens and on every reconnect; there is no file watcher.
   The root keeps primary title ink at weight 500, children secondary ink at
   400. Nested frames preserve real ancestry; their opaque secondary surface
   avoids accumulating translucent white tints at greater depth.
-- **An executor label states its evidence.** A progress actor is labelled
-  `last update`, with requested model or `model unconfirmed`; it is not proof
-  of current computation. Settled observed models are separate historical
-  facts, not a claim that their union is the current actor. Missing identity
-  stays unconfirmed; marks and configured routes never manufacture execution.
+- **An executor label names the helper and states only exceptions.** The
+  ordinary case is the bare name — an assigned route beside the card's own
+  `Working` chip, or every settled run ok; it names the selected helper and is
+  not proof of current computation. A progress actor adds `last update`; a
+  refused pin, no run, runs not settled, failed or unverified runs, unreadable
+  evidence and an undisclosed outcome split qualify it. One priority phrase
+  stays visible; the detail names the other exceptions. Counts, the model and
+  its source (requested, observed or `model unconfirmed`), spend
+  and access form one detail sentence that the expanded card prints as text,
+  never only a title. Settled observed models are separate historical facts,
+  not a claim that their union is the current actor. Missing identity stays
+  unconfirmed; marks and configured routes never manufacture execution.
 
 A completion notice distinguishes the task's recorded end from the time the
 notification was added. Both dates are absolute local dates outside the answer's

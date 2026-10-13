@@ -188,6 +188,7 @@ export function initLogs({ ws, state, mount }) {
                 label: execution.label || '',
                 className: 'log-executor-identity',
             })}</div>` : ''}
+            ${execution?.title ? `<div class="log-body log-executor-detail">${escapeHtml(execution.title)}</div>` : ''}
             ${metaPills(view.meta)}
             ${bodyHtml}
             <div class="log-actions">
@@ -228,6 +229,7 @@ export function initLogs({ ws, state, mount }) {
             })}
             <div class="log-task-summary" data-task-summary></div>
             <div class="harness-chip log-executor-chip" data-task-executor hidden></div>
+            <div class="log-body log-executor-detail" data-task-executor-detail hidden></div>
             <div class="log-body log-task-review" data-task-review hidden></div>
             <details class="log-task-details">
                 <summary>Timeline</summary>
@@ -243,6 +245,7 @@ export function initLogs({ ws, state, mount }) {
             count: entry.querySelector('[data-task-count]'),
             summary: entry.querySelector('[data-task-summary]'),
             executor: entry.querySelector('[data-task-executor]'),
+            executorDetail: entry.querySelector('[data-task-executor-detail]'),
             review: entry.querySelector('[data-task-review]'),
             timeline: entry.querySelector('[data-task-timeline]'),
             events: 0,
@@ -322,6 +325,9 @@ export function initLogs({ ws, state, mount }) {
                 className: 'log-executor-identity',
             });
             record.executor.hidden = false;
+            // The chip stays quiet; its detail sentence is text, never only a title.
+            record.executorDetail.textContent = execution.title || '';
+            record.executorDetail.hidden = !execution.title;
         }
         const reviewDetails = formatReviewProjection(evt.review_projection);
         if (reviewDetails && record.review) {

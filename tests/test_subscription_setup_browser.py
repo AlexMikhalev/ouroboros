@@ -166,8 +166,10 @@ def subscription_ui():
                 headless=True, executable_path=os.environ.get("OUROBOROS_UI_BROWSER_EXECUTABLE") or None)
             try:
                 def new_page(**options):
-                    page = browser.new_page(viewport={"width": 1360, "height": 900},
-                                            has_touch=os.environ.get("OUROBOROS_UI_HAS_TOUCH") == "1", **options)
+                    # A caller may ask for its own viewport or a touch context.
+                    page = browser.new_page(**{"viewport": {"width": 1360, "height": 900},
+                                               "has_touch": os.environ.get("OUROBOROS_UI_HAS_TOUCH") == "1",
+                                               **options})
                     page.route_web_socket('**/ws', lambda ws: ws.send(json.dumps({"type": "heartbeat"})))
                     page.route("**/api/**", respond)
                     page.on("pageerror", lambda error: page_errors.append(str(error)))
