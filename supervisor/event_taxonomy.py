@@ -55,10 +55,11 @@ class EventDisposition:
     answered_by: str
     producers: Tuple[str, ...]
     note: str = ""
+    idle_input: bool = False  # its handler can change an existing task-idle input
 
 
-def _handled(answered_by: str, *producers: str, note: str = "") -> EventDisposition:
-    return EventDisposition(WORKER_HANDLER, answered_by, tuple(producers), note)
+def _handled(answered_by: str, *producers: str, note: str = "", idle_input: bool = False) -> EventDisposition:
+    return EventDisposition(WORKER_HANDLER, answered_by, tuple(producers), note, idle_input)
 
 
 def _telemetry(*producers: str, note: str = "") -> EventDisposition:
@@ -70,38 +71,38 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
     "acceptance_fence": _handled(
         "supervisor.events_worker_reports", "ouroboros/agent.py"),
     "budget_pause": _handled(
-        "supervisor.events_budget", "ouroboros/agent.py"),
+        "supervisor.events_budget", "ouroboros/agent.py", idle_input=True),
     "budget_resume_child": _handled(
         # #1196 (owner Q9): the resumed root's model selects one paused child.
-        "supervisor.events_budget", "ouroboros/tools/join_ledger.py"),
+        "supervisor.events_budget", "ouroboros/tools/join_ledger.py", idle_input=True),
     "budget_root_fence": _handled(
         # v7 L-B split: the loop's fence emitter lives in the budget leaf.
         "supervisor.events_budget", "ouroboros/agent.py", "ouroboros/loop_budget.py"),
     "cancel_task": _handled(
         "supervisor.events_runtime_controls", "ouroboros/tools/join_ledger.py"),
     "cognitive_operation": _handled(
-        "supervisor.cognitive_operations", "ouroboros/utils.py"),
+        "supervisor.cognitive_operations", "ouroboros/utils.py", idle_input=True),
     "deep_self_review_request": _handled(
         "supervisor.events_runtime_controls", "ouroboros/tools/control_runtime.py"),
     "ensure_project_scope": _handled(
         "supervisor.events_project_routing", "ouroboros/tools/control_delegation.py"),
     "external_wait_lease": _handled(
-        "supervisor.events_worker_reports", "ouroboros/delegate_progress.py"),
+        "supervisor.events_worker_reports", "ouroboros/delegate_progress.py", idle_input=True),
     "llm_usage": _handled(
         "supervisor.events_budget", "ouroboros/agent.py",
         "ouroboros/pricing.py", "ouroboros/tools/search.py", "ouroboros/tools/vision.py",
-        "ouroboros/tools/skill_publish.py"),
+        "ouroboros/tools/skill_publish.py", idle_input=True),
     "log_event": _handled(
         "supervisor.events_worker_reports", "ouroboros/utils.py",
         note="the envelope every worker log line rides; the payload types that "
              "need their own answer are the nested_log_event rows below"),
     "main_llm_call_state": _handled(
         "supervisor.events", "ouroboros/loop_llm_call.py",
-        note="the last handler still resolving on the facade itself"),
+        note="the last handler still resolving on the facade itself", idle_input=True),
     "owner_message_injected": _handled(
         # v7 L-B split: the drain that emits the receipt lives in the round-limits leaf.
         "supervisor.events_runtime_controls", "ouroboros/loop_round_limits.py"),
-    "owner_wait": _handled("supervisor.worker_owner_wait", "ouroboros/owner_wait.py"),
+    "owner_wait": _handled("supervisor.worker_owner_wait", "ouroboros/owner_wait.py", idle_input=True),
     "project_digest": _handled(
         "supervisor.events_project_routing", "ouroboros/agent_task_pipeline.py"),
     "promote_chat_to_task": _handled(
@@ -115,7 +116,7 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         "supervisor.events_project_routing", "ouroboros/tools/control_routing.py"),
     "schedule_subagent": _handled(
         "supervisor.events_schedule_task", "ouroboros/tools/control_scheduling.py",
-        note="the only producer of the schedule handler; the schedule_task key "
+        idle_input=True, note="the only producer of the schedule handler; the schedule_task key "
              "retired beside this row had none"),
     "send_document": _handled(
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),
@@ -123,7 +124,7 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),
     "send_message": _handled(
         "supervisor.events_chat_delivery", "ouroboros/agent.py",
-        "supervisor/task_reaper.py", "supervisor/terminal_delivery.py"),
+        "supervisor/task_reaper.py", "supervisor/terminal_delivery.py", idle_input=True),
     "send_photo": _handled(
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),
     "send_quiz": _handled(
@@ -143,11 +144,11 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         "supervisor.events_worker_reports", "ouroboros/tools/project_journal.py"),
     "task_done": _handled(
         "supervisor.events_task_done", "ouroboros/agent_task_pipeline.py",
-        "supervisor/queue.py", "supervisor/task_reaper.py", "supervisor/worker_health.py"),
+        "supervisor/queue.py", "supervisor/task_reaper.py", "supervisor/worker_health.py", idle_input=True),
     "task_heartbeat": _handled(
         "supervisor.events_worker_reports", "ouroboros/agent.py"),
     "task_model_wait": _handled(
-        "supervisor.task_model_wait", "ouroboros/model_wait.py"),
+        "supervisor.task_model_wait", "ouroboros/model_wait.py", idle_input=True),
     "task_metrics": _handled(
         "supervisor.events_worker_reports", "ouroboros/agent_task_pipeline.py"),
     "toggle_consciousness": _handled(

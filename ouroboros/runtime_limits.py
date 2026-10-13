@@ -82,6 +82,9 @@ WORKER_READY_CEILING_SEC = 300.0
 # turn and a turn that hit its bound skips the idle sleep, so a backlog still drains at full speed.
 SUPERVISOR_EVENT_BATCH_MAX_EVENTS = 100
 SUPERVISOR_EVENT_BATCH_MAX_SEC = 2.0
+# Existing body bookkeeping cadence; unchanged technical debt waits for the next
+# pass while current observation and explicit requests remain independent.
+BODY_MAINTENANCE_INTERVAL_SEC = 20.0
 # After a compatibility budget-projection write returned False or raised (unknown or stale ledger
 # marker, corrupt ledger), the loop keeps the projection dirty and retries no more often than this,
 # so a frozen-marker install cannot render the ledger every turn forever.

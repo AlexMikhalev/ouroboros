@@ -345,7 +345,7 @@ def test_finalize_on_miss_completion_wins_delivers_the_completed_result(qenv, mo
     from supervisor import workers as workers_mod
 
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers_mod, "get_event_q", lambda: queue)
+    monkeypatch.setattr(workers_mod, "get_event_q", lambda *, create=True: queue)
     child_drive = qenv.drive / "child-of-misswin"
     write_task_result(child_drive, "miss-win", STATUS_COMPLETED,
                       result="the finished answer", chat_id=6)
@@ -475,7 +475,7 @@ def test_cascade_receipt_dedups_the_actual_destination_and_preserves_main(qenv, 
     from supervisor import events_chat_delivery as delivery
 
     queue = _CaptureQueue()
-    monkeypatch.setattr(qenv.workers, "get_event_q", lambda: queue)
+    monkeypatch.setattr(qenv.workers, "get_event_q", lambda *, create=True: queue)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *_a, **_k: None)
     monkeypatch.setattr(delivery, "_DELIVERED_MESSAGE_IDS", deque(maxlen=256))
     text = "Rewrote the atlas builder and reran the suite."

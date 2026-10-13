@@ -163,6 +163,7 @@ BAND_PATHS = {
     "ouroboros/tools/browser.py": None,
     "ouroboros/tools/chronicle.py": "Account and selection writers and exact revision reads extend the existing chronicle tool surface and its actor provenance rules.",
     "ouroboros/tools/commit_gate.py": "Grew INTO the band by the review-wave fix binding the actor reference (delivery class) into the commit review contract fingerprint \u2014 same-module contract identity, splitting it would separate the fingerprint from its gate.",
+    "ouroboros/tools/control_delegation.py": "Keeps delegation rights and durable child-count semantics in their existing owner; explicit contention propagation preserves the same unsent scheduler operation and parent limits.",
     "ouroboros/tools/control_routing.py": "One owner for promote, route, and steer receipts; this change shares objective provenance instead of duplicating per-route logic.",
     "ouroboros/tools/control_scheduling.py": "The existing subagent scheduling transaction owns validation, source-policy inheritance, preparation, rollback and emission. The declared-source field is carried through those existing phases without a second scheduler; the module remains one admission owner.",
     "ouroboros/tools/control_task_results.py": "serial addressed turns: await_messages (the mailbox wait, its window bounds and catalog entry) lives beside wait_task/wait_tasks, whose transport-wait peek and cache-horizon note it shares; splitting the three waits would separate one reader from its consumers",

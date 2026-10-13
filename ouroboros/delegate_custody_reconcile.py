@@ -107,10 +107,11 @@ def reconcile_task_runs(drive_root: Any, task_id: str, *,
     mine = str(task_id or "")
     if not mine:
         return []
-    from ouroboros.delegate_custody_current import runs as current_runs, task_snapshot
+    from ouroboros.delegate_custody_current import collection_pending, runs as current_runs, task_snapshot
 
     view = task_snapshot(drive_root, mine)  # the task's rows and pending starts, one read
-    held = [c for c in view["runs"].values() if not c.settled]
+    held = [c for c in view["runs"].values()
+            if not c.settled or (not c.review_owned and collection_pending(c))]
     stray = view["pending"]
     # Also the registration retry lane for the task's OWN settled-but-owned
     # runs in retire-eligible projects (a one-shot process may never see a
@@ -147,7 +148,9 @@ def reconcile_orphaned_runs(
     # replaying the custody log takes seconds, and a candidate exists ⇒ its owner was
     # registered earlier (admission takes ``_queue_lock`` before any spawn), so an owner
     # absent from the LATER snapshot is really gone rather than merely not yet admitted.
-    candidates = _custody().open_runs(drive_root)
+    from ouroboros.delegate_custody_current import collection_pending, runs as current_runs
+    candidates = [c for c in current_runs(drive_root, "state=?", ("held",)).values()
+                  if not c.settled or (not c.review_owned and collection_pending(c))]
     # The class ONE STEP EARLIER (P34R.2): an invocation whose POST the daemon may have
     # accepted but whose worker died before record_started has no run row for the sweep
     # above to find — a live mutating run nobody could ever collect. Recovered here on
@@ -182,7 +185,7 @@ def _reconcile_each(drive_root: Any, runs: List[RunCustody],
     # a deferred one must not spin the daemon up.
     from ouroboros.delegate_continuation import still_continuable
 
-    from ouroboros.delegate_custody_current import runs as current_runs
+    from ouroboros.delegate_custody_current import collection_pending, runs as current_runs
 
     # Owned registrations and unsettled runs are HELD rows: one indexed read.
     snapshot = list(current_runs(drive_root, "state=?", ("held",)).values())
@@ -209,14 +212,18 @@ def _reconcile_each(drive_root: Any, runs: List[RunCustody],
         from ouroboros.claudexor_daemon import ensure_owned_gateway
 
         gateway_factory = ensure_owned_gateway
-    try:
-        gateway = gateway_factory()
-        gateway.handshake()
-    except ClaudexorUnavailable:
-        log.debug("delegated-run reconciliation skipped: transport unavailable", exc_info=True)
-        return []
+    gateway = None
     outcomes: List[Dict[str, Any]] = []
     try:
+        try:
+            gateway = gateway_factory()
+            gateway.handshake()
+        except ClaudexorUnavailable:
+            # Existing terminal sources still own local collection work. A
+            # transport gap proves nothing about unsettled or review-owned runs.
+            log.debug("delegated-run reconciliation: transport unavailable", exc_info=True)
+            return [_reconcile_collection(drive_root, None, row) for row in runs
+                    if row.settled and not row.review_owned and collection_pending(row)]
         for custody in runs:
             outcomes.append(_custody()._reconcile_one(
                 drive_root, gateway, custody,
@@ -232,7 +239,8 @@ def _reconcile_each(drive_root: Any, runs: List[RunCustody],
             _custody().retire_settled_registrations(drive_root, gateway, live_task_ids=live_task_ids)
     finally:
         try:
-            gateway.close()
+            if gateway is not None:
+                gateway.close()
         except Exception:
             log.debug("delegated-run reconciliation close failed", exc_info=True)
     return outcomes
@@ -427,14 +435,37 @@ def _owner_terminal_is_deliberate(drive_root: Any, task_id: str, *,
                          EXECUTION_FAILED, EXECUTION_CANCELLED}
 
 
+def _reconcile_collection(drive_root: Any, gateway: Any, custody: RunCustody, *,
+                          detail=None) -> Dict[str, Any]:
+    """Collect from the exact terminal source; record reconciliation only on change."""
+    from ouroboros.delegate_collection import collect_terminal
+    from ouroboros.delegate_custody_current import run
+
+    before = run(drive_root, custody.run_id) or custody
+    collected = collect_terminal(drive_root, custody.run_id, gateway=gateway, detail=detail)
+    after = run(drive_root, custody.run_id) or before
+    _custody().record_settled_unread(drive_root, after)
+    result = {"run_id": after.run_id, "task_id": after.task_id,
+              "action": "settle_attempted", "settled": after.settled,
+              "collection": collected, **_custody().output_disposition(after)}
+    if after != before:
+        _custody().emit(drive_root, _custody().RECONCILED, result)
+    return result
+
+
 @timed_phase("custody_run", within="release_task_runs")
 def _reconcile_one(drive_root: Any, gateway: Any, custody: RunCustody, *,
                    deliberate_terminal: str = "") -> Dict[str, Any]:
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
     from ouroboros.task_results import STATUS_CANCELLED
     from ouroboros.tools.delegate_integration import capture_stranded_patch
+    from ouroboros.delegate_custody_current import collection_pending
 
     review_owned = custody.review_owned
+    if custody.settled and not review_owned and collection_pending(custody):
+        # This row was selected for bookkeeping debt, not execution discovery.
+        # A daemon's 404 cannot replace its already-retained terminal evidence.
+        return _reconcile_collection(drive_root, gateway, custody)
     # The caller's claimed verdict speaks for a review panel's run only when it is
     # the cancellation itself. `STATUS_CANCELLED` is the exact literal the two kill
     # boundaries pass here (supervisor/cancel_publication.py and
@@ -461,22 +492,14 @@ def _reconcile_one(drive_root: Any, gateway: Any, custody: RunCustody, *,
         _custody().emit(drive_root, _custody().RECONCILED, result)
         return result
     if _custody().is_terminal(detail):
-        settled = _custody().settle_run(drive_root, gateway, custody, detail)
-        # Sweep custody REPLAYS with staged fields, so unlike the wait path
-        # the omission is already knowable here - and an ownerless run is the
-        # one nobody will come back to read (the D7 launched-never-collected
-        # half becomes durable in this row instead of inferred).
-        _custody().record_settled_unread(drive_root, custody)
-        # The action names the ATTEMPT; the facts ride separately (the old
-        # shape wrote action="settled" even when the returned flag was false).
-        result = {"run_id": custody.run_id, "task_id": custody.task_id,
-                  "action": "settle_attempted",
-                  "settled": settled["settled"],
-                  "project_retired": settled.get("project_retired"),
-                  **_custody().output_disposition(custody)}
-        # The C1 half: a TERMINAL DETAIL proves the run is over, so the sweep — its
-        # last terminal observer — captures the diff eagerly here.
-        result.update(capture_stranded_patch(drive_root, custody))
+        if review_owned:
+            settled = _custody().settle_run(drive_root, gateway, custody, detail)
+            _custody().record_settled_unread(drive_root, custody)
+            result = {"run_id": custody.run_id, "task_id": custody.task_id,
+                      "action": "settle_attempted", **settled, **_custody().output_disposition(custody)}
+            result.update(capture_stranded_patch(drive_root, custody))
+        else:
+            return _reconcile_collection(drive_root, gateway, custody, detail=detail)
     elif not (claimed_verdict_cancels
               or _owner_terminal_is_deliberate(drive_root, custody.task_id,
                                                review_owned=review_owned)):

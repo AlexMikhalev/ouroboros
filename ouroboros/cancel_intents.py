@@ -867,7 +867,7 @@ def active_intent(
 
 
 def resolve_owner_stop_intent(
-    drive_root: Any, task_id: str,
+    drive_root: Any, task_id: str, *, propagate_busy: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     """Return the durable owner-stop key/row for a physical retry task.
 
@@ -884,6 +884,9 @@ def resolve_owner_stop_intent(
     exact = active_intent(drive_root, tid)
     if isinstance(exact, dict) and stop_policy(exact) == STOP_POLICY_FINALIZE:
         return tid, exact
+    if exact is not None:
+        return tid, {}  # A known immediate intent needs no lineage read.
+    from ouroboros.store import StoreBusy
     try:
         from ouroboros.task_results import load_task_result
 
@@ -900,6 +903,10 @@ def resolve_owner_stop_intent(
         ):
             return tid, {}
         return logical_root, logical
+    except StoreBusy:
+        if propagate_busy:
+            raise
+        return tid, {}
     except Exception:
         log.debug(
             "owner-stop intent resolution failed for physical task %s",
@@ -1356,7 +1363,7 @@ def cancel_state_fields(drive_root: Any, task_id: str) -> Dict[str, Any]:
     return fields
 
 
-def cancel_pending(drive_root: Any, task_id: str, *, strict: bool = False) -> bool:
+def cancel_pending(drive_root: Any, task_id: str, *, strict: bool = False, propagate_busy: bool = False) -> bool:
     """Both cancel-pending carriers in ONE predicate — fail-soft.
 
     The durable intent projection is the live authority; the legacy
@@ -1365,6 +1372,8 @@ def cancel_pending(drive_root: Any, task_id: str, *, strict: bool = False) -> bo
     both, or a task wedged in the old shape still accepts new owner messages
     while the supervisor is tearing it down.
     """
+    from ouroboros.store import StoreBusy
+
     try:
         if has_active_intent(drive_root, task_id, strict=strict):
             return True
@@ -1379,6 +1388,10 @@ def cancel_pending(drive_root: Any, task_id: str, *, strict: bool = False) -> bo
             (load_task_result(drive_root, task_id, strict=strict) or {}).get("status") or ""
         )
         return status == STATUS_CANCEL_REQUESTED
+    except StoreBusy:
+        if strict or propagate_busy:
+            raise
+        return False
     except Exception:
         if strict:
             raise

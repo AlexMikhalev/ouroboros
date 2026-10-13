@@ -119,11 +119,17 @@ def _retain_terminal_output(ctx: ToolContext, run_id: str, text: str,
     the execution drive's cleanup nor the engine's GC reaches it. The read
     address is the absolute canonical path under ``artifact_store``.
     """
-    from ouroboros.artifacts import store_actor_source_bytes, task_id_for_artifacts
+    from ouroboros.artifacts import task_id_for_artifacts
+
+    return retain_terminal_bytes(custody.custody_root(ctx), task_id_for_artifacts(ctx), run_id, text, staged_bytes)
+
+
+def retain_terminal_bytes(drive: Any, task_id: str, run_id: str, text: str,
+                          staged_bytes: bytes) -> Optional[Dict[str, Any]]:
+    """Canonical retention without a reader or any consumption/acceptance claim."""
+    from ouroboros.artifacts import store_actor_source_bytes
 
     try:
-        drive = custody.custody_root(ctx)
-        task_id = task_id_for_artifacts(ctx)
         ref = store_actor_source_bytes(
             drive, task_id, category=_STAGED_SOURCE_CATEGORY,
             source_id=f"{_STAGED_SOURCE_PREFIX}{_safe_run_filename(run_id)}",
@@ -373,7 +379,44 @@ def acknowledge_staged_output_delivery(ctx: ToolContext, exec_result: Dict[str, 
 
     typed = exec_result.get("tool_result")
     read_view = typed.meta.get("read_view") if isinstance(typed, ToolResult) else None
+    if not read_view:
+        _acknowledge_inline_terminal(ctx, projected)
     _acknowledge_staged_output(ctx, read_view, exec_result.get("result", ""), projected, shown_ranges)
+
+
+def _acknowledge_inline_terminal(ctx: ToolContext, projected: Dict[str, Any]) -> None:
+    """Credit body-retained bytes only in a complete actual tool-result view."""
+    if projected.get("result_partial"):
+        return
+    try:
+        payload = json.loads(projected.get("result") or "")
+        delivery = payload.get("output_delivery") or {}
+        if payload.get("status") != "terminal" or not delivery.get("complete") or delivery.get("inline_is_preview"):
+            return
+        from ouroboros.delegate_custody_current import run
+        from ouroboros.artifacts import read_actor_source_bytes
+        from ouroboros.delegate_shared import retry_result_status
+
+        root, reader = custody.custody_root(ctx), str(getattr(ctx, "task_id", "") or "")
+        entry = run(root, str(payload.get("run_id") or ""))
+        if entry is None or not entry.output_complete or not entry.output_source:
+            return
+        if reader != entry.task_id and retry_result_status(ctx, root, entry.run_id)[0] != custody.OWNED:
+            return
+        ref = entry.output_source
+        delivered_sha = delivery.get("retained_sha256") or (delivery.get("artifact") or {}).get("sha256")
+        if delivered_sha != entry.output_sha:
+            return
+        raw = read_actor_source_bytes(root, str(ref.get("task_id") or entry.task_id), ref)
+        full = json.loads(raw)
+        if any(payload.get(key) != value for key, value in full.items()):
+            return
+        text = raw.decode("utf-8")
+        record_output_consumed(root, entry, artifact=entry.output_artifact, byte_length=len(raw),
+            sha256=entry.output_sha, chars=len(text), lines=text.count("\n") + 1, reader_task_id=reader)
+    except Exception:
+        log.debug("Inline delegated output acknowledgement unavailable", exc_info=True)
+        return  # A partial/malformed/unavailable projection never earns an EOF receipt.
 
 
 def _staged_source_candidate(resolved: pathlib.Path) -> bool:

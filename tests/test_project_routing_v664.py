@@ -1170,7 +1170,7 @@ def test_project_completion_duplicate_outbox_events_deliver_one_main_row(tmp_pat
     )
     queued = []
     monkeypatch.setattr(
-        workers, "get_event_q", lambda: types.SimpleNamespace(put=queued.append),
+        workers, "get_event_q", lambda **_kw: types.SimpleNamespace(put=queued.append),
     )
     events._DELIVERED_MESSAGE_IDS.clear()
     task = {"id": "stable-root", "project_id": project["id"], "title": "Finish"}

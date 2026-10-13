@@ -160,11 +160,12 @@ def request_owner_pause(task_id: str, *, request_id: str) -> Dict[str, Any]:
         OwnerPauseRefused, fence_closed, install_fence, launch_lock, read_fence,
     )
     from ouroboros.task_results import resolve_task_lineage
+    from ouroboros.store import acquisition_budget, StoreBusy
 
     from supervisor import queue as q
     task_id = str(task_id or "").strip()
     late_row, late_review = _late_work(q, task_id)  # durable reads stay outside the queue lock
-    with q._queue_lock:
+    with acquisition_budget(0), q._queue_lock:
         task, lane = _locate_root_locked(q, task_id)
         if task is None and late_row is not None:
             task, lane = late_row, "late"
@@ -207,7 +208,7 @@ def request_owner_pause(task_id: str, *, request_id: str) -> Dict[str, Any]:
     released = {**answer, "duplicate": True, "state": "released"}
     if not fence_closed(fence):
         return released  # a replay of an action already resumed: no queue effect
-    with q._queue_lock:
+    with acquisition_budget(0), q._queue_lock:
         try:
             # Resume consumption can run outside the queue lock. Revalidate
             # the exact accepted generation before publishing its queue latch.
@@ -221,6 +222,12 @@ def request_owner_pause(task_id: str, *, request_id: str) -> Dict[str, Any]:
                     "paused_at": str(fence.get("requested_at") or utc_now_iso())})
                 members = _running_members_locked(q, task_id)
                 persisted = q.persist_queue_snapshot(reason="owner_pause_requested")
+        except StoreBusy as exc:
+            if exc.reason != "contention":
+                return {"ok": False, "error": "pause_record_unwritable", "detail": str(exc)[:200]}
+            # The fence was committed before Q. A busy projection probe cannot
+            # erase that acceptance or wait while holding the global queue.
+            return {**answer, "latch_pending": True}
         except OwnerPauseRefused:
             # Only the busy launch lock refuses here, after the fence landed:
             # every launch gate already reads it. Not a refusal of the Pause.
@@ -496,7 +503,13 @@ def _record_settled_member(q: Any, item: Dict[str, Any]) -> None:
     task_id = str(item.get("id") or "")
     result_root = pathlib.Path(item.get("budget_drive_root") or q.DRIVE_ROOT)
     row = budget_pause_row(result_root, task_id)
-    if str(row.get("settlement") or "") != SETTLEMENT_EXTERNAL_RUNNING:
+    from ouroboros.sleep_custody import accepted_receipt
+    from ouroboros.owner_pause import member_fence, fence_closed
+    from types import SimpleNamespace
+    cold_receipt = accepted_receipt(task_id, row)
+    cold_fence = member_fence(SimpleNamespace(task_id=task_id,
+        root_task_id=item.get("root_task_id") or task_id, budget_drive_root=result_root)) if cold_receipt else {}
+    if str(row.get("settlement") or "") != SETTLEMENT_EXTERNAL_RUNNING and not fence_closed(cold_fence):
         return
     # The stops this pause already issued are re-READ, never issued again.
     observed = observe_task_runs(result_root, task_id, reason="owner_pause_settlement_check",
@@ -517,7 +530,8 @@ def _record_settled_member(q: Any, item: Dict[str, Any]) -> None:
             log.debug("Owner pause observation of %s superseded by a newer pause row", task_id, exc_info=True)
         return
     try:
-        set_budget_pause(result_root, task_id, {**row, "settlement": SETTLEMENT_SETTLED,
+        set_budget_pause(result_root, task_id, {**row, "external_runs": observed,
+                                                **({} if cold_receipt else {"settlement": SETTLEMENT_SETTLED}),
                                                 "settlement_observed_at": utc_now_iso()},
                          expected_pause_id=str(row.get("pause_id") or ""),
                          expected_state=str(row.get("state") or ""),
@@ -563,7 +577,8 @@ def _reread_warm_member(q: Any, task_id: str, meta: Dict[str, Any]) -> None:
                                                              "external_runs": observed}}
 
 
-def settle_requested_owner_pauses(q: Any = None, *, now: Optional[float] = None) -> List[str]:
+def settle_requested_owner_pauses(q: Any = None, *, now: Optional[float] = None,
+                                 stop_requested: Any = None) -> List[str]:
     """The assignment tick's re-check of owner Pauses still ``requested``.
 
     A tree stays ``pausing`` while a parked member's own sent work is not yet
@@ -589,6 +604,8 @@ def settle_requested_owner_pauses(q: Any = None, *, now: Optional[float] = None)
         _LAST_SETTLE_CHECK.pop(stale, None)
     settled: List[str] = []
     for root_id in roots:
+        if stop_requested is not None and stop_requested():
+            break
         if now - _LAST_SETTLE_CHECK.get(root_id, float("-inf")) < _SETTLE_RECHECK_SEC:
             continue
         _LAST_SETTLE_CHECK[root_id] = now
@@ -605,12 +622,16 @@ def settle_requested_owner_pauses(q: Any = None, *, now: Optional[float] = None)
             log.warning("Warm Pause of direct root %s unreadable; it stays pausing", root_id, exc_info=True)
         # One member's failure never skips its siblings or the tree's own census.
         for item in parked:
+            if stop_requested is not None and stop_requested():
+                return settled
             try:
                 _record_settled_member(q, item)
             except Exception:
                 log.warning("Owner pause settlement re-check of %s (tree %s) failed; it stays pausing",
                             item.get("id"), root_id, exc_info=True)
         for task_id, meta in warm:
+            if stop_requested is not None and stop_requested():
+                return settled
             try:
                 _reread_warm_member(q, task_id, meta)
             except Exception:

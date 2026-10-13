@@ -158,11 +158,13 @@ def _service_wake(pin: Dict[str, Any]) -> str:
 
 def _owned_runs(ctx: Any) -> List[Tuple[str, bool]]:
     from ouroboros import delegate_custody as custody
+    from ouroboros.delegate_custody_current import runs
 
     root = custody.custody_root(ctx)
     task_id = str(ctx.task_id)
-    return [(str(getattr(run, "run_id", "") or ""), bool(getattr(run, "settled", False)))
-            for run in custody.replay(pathlib.Path(root)).values()
+    return [(str(getattr(run, "run_id", "") or ""), bool(getattr(run, "terminal_state", "") in custody.TERMINAL_STATES
+                                                            or getattr(run, "settled", False)))
+            for run in runs(pathlib.Path(root), "task_id=?", (task_id,)).values()
             if str(getattr(run, "task_id", "") or "") == task_id]
 
 
@@ -195,6 +197,17 @@ def wake_reason(ctx: Any, chosen: Dict[str, Any]) -> str:
         for run_id in chosen["runs"]:
             if run_id in settled:
                 return f"run:{run_id}"
+    # A transferred executor may need its absent author's answer before it can
+    # finish. This is a source fact, never an automatic answer or owner command.
+    if chosen.get("body_runs"):
+        from ouroboros.delegate_custody_current import run as current_run
+        for run_id, invocation_id in chosen["body_runs"]:
+            run = current_run(_canonical_root(ctx), run_id)
+            if (run is not None and run.task_id == str(ctx.task_id) and run.invocation_id == invocation_id
+                    and set(getattr(run, "pending_interaction_ids", None) or ())
+                        - set((chosen.get("interaction_seen") or {}).get(run_id) or ())
+                    and getattr(run, "interaction_source", None)):
+                return f"run_question:{run_id}"
     for pin in chosen.get("services") or ():
         observed = _service_wake(pin)
         if observed:
@@ -205,14 +218,13 @@ def wake_reason(ctx: Any, chosen: Dict[str, Any]) -> str:
     return ""
 
 
-def cold_blockers(ctx: Any, *, chosen: Dict[str, Any] | None = None) -> List[Dict[str, str]]:
+def cold_blockers(ctx: Any, *, chosen: Dict[str, Any] | None = None,
+                  allow_transfer: bool = False, transferred: Any = ()) -> List[Dict[str, str]]:
     """What this task still runs that a COLD sleep would leave unwatched.
 
-    A cold sleep ends the process: its own delegated runs and live services
-    would keep writing with nobody holding them. They are not stopped for it —
-    the request is refused with these facts, and the model chooses a warm
-    sleep, waits for them, or stops them itself. An unreadable custody store
-    is a blocker too (unknown is never settled).
+    Only exact bound ordinary external runs can be handed to the body. Local
+    producers, services, other actors and unknown starts still keep the actor.
+    Arming may propose a transfer; release needs its exact accepted pairs.
     """
     from ouroboros.budget_pause import observe_task_runs
     from ouroboros import delegate_custody as custody
@@ -222,24 +234,33 @@ def cold_blockers(ctx: Any, *, chosen: Dict[str, Any] | None = None) -> List[Dic
                                  request_stop=False)
     if observed.get("custody_read") != "ok":
         blockers.append({"kind": "custody_unreadable", "detail": str(observed.get("error") or "")})
+    allowed = {tuple(pair) for pair in transferred}
+    if allow_transfer:
+        try:
+            from ouroboros.sleep_custody import transferable_pairs
+            pairs, _writer = transferable_pairs(custody.custody_root(ctx), str(ctx.task_id))
+            allowed.update(tuple(pair) for pair in pairs)
+        except Exception:
+            pass  # the authoritative census below keeps unknown/untransferable work
     blockers.extend({"kind": "delegated_run", "run_id": str(run.get("run_id") or ""),
                      "invocation_id": str(run.get("invocation_id") or "")}
-                    for run in observed.get("runs") or [] if isinstance(run, dict))
+                    for run in observed.get("runs") or [] if isinstance(run, dict)
+                    and (str(run.get("run_id") or ""), str(run.get("invocation_id") or "")) not in allowed)
     from ouroboros.tools import services
 
     with services._LOCK:
         records = [record for record in services._SERVICES.values() if record.task_id == str(ctx.task_id)]
     blockers.extend({"kind": "service", "name": record.name} for record in records
                     if record.proc.poll() is None)
-    # Sleeping releases the root's project lease, so every member's retained
-    # custody matters, including paused and terminal children.
-    from ouroboros.owner_pause import tree_member_results, current_tool_operation
+    # Only this actor's accepted external obligations transfer. Every member's
+    # other retained custody matters, including paused and terminal children.
+    from ouroboros.owner_pause import tree_member_results, current_tool_operation, _member_coordinates
     from ouroboros.delegate_custody_current import tree_task_ids
     from ouroboros import process_custody as pc
     from ouroboros.platform_layer import pid_is_alive
 
     root = _canonical_root(ctx)
-    tree_id = str(getattr(ctx, "root_task_id", "") or ctx.task_id)
+    tree_id = _member_coordinates(ctx)[1]
     chosen = chosen if chosen is not None else (getattr(ctx, "_model_sleep", None) or {})
     dependencies = set(chosen.get("tasks", []) + chosen.get("senders", []))
     members = {str(ctx.task_id)}
@@ -282,27 +303,36 @@ def request_sleep(ctx: Any, chosen: Dict[str, Any], mode: str) -> Dict[str, Any]
 
     Already ready (selected mail unread, a selected terminal reached, the time
     passed, owner input waiting): answered at once, nothing parks. A cold
-    request over live writers of this task is refused with the blockers, and one
-    selecting services is refused outright: the process that holds them ends.
+    request proposes transfer of exact bound external work; other live writers
+    and services refuse it because their process-local owner would end.
     """
     if mode == MODE_COLD and chosen.get("services"):
         raise ValueError("services wake only a warm sleep: a cold sleep ends the process that holds them")
     ready = wake_reason(ctx, chosen)
     if ready:
         return {"reason": "ready", "woke_by": ready, "slept": False, "mode": mode}
-    if mode == MODE_WARM:
+    from ouroboros.sleep_custody import transferable_pairs
+    retains_lane = mode == MODE_WARM
+    if mode == MODE_COLD:
+        try:
+            _pairs, retains_lane = transferable_pairs(_canonical_root(ctx), str(ctx.task_id))
+        except Exception:
+            retains_lane = False  # cold_blockers reports the actual unavailable custody
+    if retains_lane:
         from ouroboros.task_results import load_task_result
 
         project_id = str(getattr(ctx, "project_id", "") or (getattr(ctx, "task_metadata", None) or {}).get("project_id") or "")
-        tree_id = str(getattr(ctx, "root_task_id", "") or ctx.task_id)
+        from ouroboros.owner_pause import _member_coordinates
+        tree_id = _member_coordinates(ctx)[1]
         for selected in set(chosen.get("tasks", []) + chosen.get("senders", [])):
             row = load_task_result(_canonical_root(ctx), selected, strict=True) or {}
             if (project_id and row.get("project_id") == project_id
                     and str(row.get("root_task_id") or selected) != tree_id
                     and row.get("status") in {"requested", "scheduled"}):
-                raise ValueError("warm sleep keeps the project lease needed by the selected queued root; choose cold sleep")
+                raise ValueError("this sleep retains the project lane needed by the selected queued root; "
+                                 "choose another source or finish the external writer before releasing its lane")
     if mode == MODE_COLD:
-        blockers = cold_blockers(ctx, chosen=chosen)
+        blockers = cold_blockers(ctx, chosen=chosen, allow_transfer=True)
         if blockers:
             raise ValueError("a cold sleep would leave this task's own work unwatched: "
                              + "; ".join(f"{b['kind']} {b.get('run_id') or b.get('name') or b.get('detail') or ''}"
@@ -350,7 +380,9 @@ def wake_notice(chosen: Dict[str, Any], outcome: str, slept: float) -> Dict[str,
             _prefix, task_id, status = (outcome.split(":", 2) + ["", ""])[:3]
             what = f"task {task_id} reaching {status} — read its result; settled is not success"
         elif outcome.startswith("run:"):
-            what = f"delegated run {outcome[4:]} settling — inspect its outcome before building on it"
+            what = f"delegated run {outcome[4:]} reaching an engine terminal state — inspect its outcome; collection may remain owed"
+        elif outcome.startswith("run_question:"):
+            what = f"delegated run {outcome[13:]} requesting input — inspect its retained question and decide how to answer"
         elif outcome.startswith("service:"):
             _prefix, name, state, code = (outcome.split(":", 3) + ["", "", ""])[:4]
             code = f"return code {code}" if code != "unknown" else "a return code this backend does not observe"

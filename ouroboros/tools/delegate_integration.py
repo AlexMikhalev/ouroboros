@@ -552,7 +552,8 @@ def _capture_terminal_patch(ctx: ToolContext, entry: Optional[_RunCustody], *, g
     return block
 
 
-def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody, *, gateway=None) -> Optional[Dict[str, Any]]:
+def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody, *, gateway=None,
+                                     retain_investigation: bool = True) -> Optional[Dict[str, Any]]:
     """The drive-rooted core of the terminal capture — same contract, no ToolContext.
 
     One capture author for both the nanny flow and the RECONCILIATION path (orphan sweep, kill-path
@@ -566,6 +567,9 @@ def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody, *, gateway=
     from ouroboros.delegate_directory import is_directory_run, capture_directory_result, directory_capture_block
     from ouroboros.tools.subagent_integration_delegated import retain_investigation_evidence
 
+    def finish(block, transport=None):
+        return retain_investigation_evidence(drive, entry, block, transport) if retain_investigation else block
+
     if is_directory_run(entry):
         owned_gateway = None
         try:
@@ -573,7 +577,7 @@ def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody, *, gateway=
                 from ouroboros.claudexor_daemon import read_owned_gateway
                 owned_gateway = gateway = read_owned_gateway()
             block = directory_capture_block(drive, entry, capture_directory_result(drive, entry, gateway))
-            return retain_investigation_evidence(drive, entry, block, gateway)
+            return finish(block, gateway)
         except Exception as exc:
             return {"status": "failed", "capture_kind": "engine_directory", "authority_target_root": entry.target_root,
                     "note": f"Directory capture unavailable: {type(exc).__name__}: {exc}. The engine result is retained; no new run was started."}
@@ -604,7 +608,7 @@ def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody, *, gateway=
         if entry.patch_captured and str(manifest.get("status") or "") in ready:
             stored_drift = manifest.get("authority_drift")
             evidence = stored_drift if isinstance(stored_drift, dict) else _target_drift_evidence(entry)
-            return retain_investigation_evidence(drive, entry, _capture_block(entry, cap_dir, manifest, evidence))
+            return finish(_capture_block(entry, cap_dir, manifest, evidence))
     exec_root = pathlib.Path(entry.execution_root)
     if not exec_root.exists():
         return {
@@ -673,7 +677,7 @@ def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody, *, gateway=
             patch_size=manifest.get("patch_size"),
             capture_dir=str(cap_dir),
         )
-    return retain_investigation_evidence(drive, entry, _capture_block(entry, cap_dir, manifest, drift_evidence))
+    return finish(_capture_block(entry, cap_dir, manifest, drift_evidence))
 
 
 def capture_stranded_patch(drive_root: Any, run: _RunCustody) -> Dict[str, Any]:

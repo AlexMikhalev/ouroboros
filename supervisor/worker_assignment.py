@@ -74,12 +74,8 @@ def _tick_parked_work(queue: Any) -> None:
         wake_ready_sleepers(queue)
     except Exception:
         log.warning("Sleep-wake pass failed; sleepers keep sleeping", exc_info=True)
-    try:
-        from supervisor.owner_pause_control import settle_requested_owner_pauses
-
-        settle_requested_owner_pauses(queue)
-    except Exception:
-        log.warning("Owner pause settlement pass failed; those trees stay pausing", exc_info=True)
+    # External stop/readback belongs to the generation's off-loop maintenance
+    # owner. Assignment only advances source-backed sleep readiness here.
 
 
 def _evolution_assignment_error(task: Dict[str, Any]) -> str:
@@ -278,7 +274,7 @@ def _claim_worker_launch(queue, candidate, worker):
             with launch_admission(SimpleNamespace(
                     task_id=candidate.get("id"), root_task_id=candidate.get("root_task_id"),
                     budget_drive_root=candidate.get("budget_drive_root") or queue.DRIVE_ROOT),
-                    root_resume=resume if not latch or selected_child else None):
+                    root_resume=resume if not latch or selected_child else None, wait=False):
                 unsubmitted = None
                 if (queue._task_deadline_ts(candidate) and _pending_continuation(candidate) == "_working_recovery"
                         and pending_deadline_expirable(candidate)):
@@ -474,7 +470,7 @@ def assign_tasks() -> None:
                 _pool().send_with_budget(int(st["owner_chat_id"]), evo_block, role="system", system_type="evolution_notice")
             queue.persist_queue_snapshot(reason="evolution_blocked_light")
 
-        from ouroboros.project_lease import candidate_is_leasable, running_project_ids
+        from ouroboros.project_lease import candidate_is_leasable, running_project_ids, cold_project_holders
         from ouroboros.config import get_max_active_subagents_per_root
 
         refused_this_pass = set()  # one attempt per row per Q-held pass; retry next tick
@@ -484,6 +480,7 @@ def assign_tasks() -> None:
                 # One-writer-per-project lease: recompute per assignment so a
                 # task assigned in THIS loop pass immediately occupies its lane.
                 leased = running_project_ids(_pool().RUNNING.values())
+                cold_holders = cold_project_holders(_pool().PENDING)
                 # Find first suitable task (skip over-budget evolution tasks
                 # and project-leased candidates)
                 chosen_idx = None
@@ -545,7 +542,7 @@ def assign_tasks() -> None:
                         continue
                     if str(candidate.get("type") or "") == "evolution" and remaining < EVOLUTION_BUDGET_RESERVE:
                         continue
-                    if not candidate_is_leasable(candidate, leased):
+                    if not candidate_is_leasable(candidate, leased, cold_holders=cold_holders):
                         continue
                     if str(candidate.get("delegation_role") or "") == "subagent":
                         root_task_id = str(candidate.get("root_task_id") or "")

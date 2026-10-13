@@ -55,7 +55,13 @@ class TaskOwnershipRead:
         return self.rows[task_id]
 
     def unchanged(self, task_ids):
-        return all(self.stamps[tid] == self._stamp(tid) for tid in task_ids)
+        from ouroboros.store import StoreBusy, acquisition_budget
+        try:
+            with acquisition_budget(0):
+                return all(self.stamps[tid] == self._stamp(tid) for tid in task_ids)
+        except StoreBusy:
+            return False  # A busy signature cannot prove unchanged ownership, and never waits under Q.
+
 
 
 def prepare_retry_chain(q, task_id, read):
