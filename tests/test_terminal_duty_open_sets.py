@@ -184,7 +184,7 @@ def test_completed_history_does_not_add_duty_reads(env, monkeypatch, history):
     monkeypatch.setattr('ouroboros.llm_claudexor.recover_model_attempt', lambda *a, **k: None)
     counts = Counter()
     load, decode = task_results.load_task_result, usage_store._decode
-    body, bucket, owners = store.Txn.load, usage_store._bucket_of, usage_store.Txn.dirty_owners
+    body, bucket, owners = store.Txn.body_text, usage_store._bucket_of, usage_store.Txn.dirty_owners
     def read(root, tid, **kw):
         assert not queue._queue_lock._is_owned()
         counts['ownership_loads'] += 1
@@ -203,7 +203,7 @@ def test_completed_history_does_not_add_duty_reads(env, monkeypatch, history):
         rows = owners(txn)
         counts['dirty_rows'] += len(rows)
         return rows
-    monkeypatch.setattr(store.Txn, 'load', read_body)
+    monkeypatch.setattr(store.Txn, 'body_text', read_body)
     monkeypatch.setattr(task_results, 'load_task_result', read)
     monkeypatch.setattr(usage_store, '_decode', decoded)
     monkeypatch.setattr(usage_store, '_bucket_of', summary)

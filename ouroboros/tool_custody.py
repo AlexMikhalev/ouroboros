@@ -7,7 +7,14 @@ Untracked descendants/remote effects remain the same disclosed gap as exit zero.
 """
 from __future__ import annotations
 
+from contextvars import copy_context
+import logging
+import os
+import threading
+import uuid
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 
 def invocation_binding() -> dict:
@@ -21,19 +28,169 @@ def invocation_binding() -> dict:
             "launch_operation_id": active[2].get("operation_id", "")}
 
 
+def invocation_outcome(source: Any, name: str, operation_id: str = "", *, future_owned: bool = False) -> dict:
+    """One invocation, shared by its real worker and settlement owners."""
+    from ouroboros.owner_pause import _member_coordinates
+    from ouroboros.model_wait import current_model_wait
+    from ouroboros.utils import utc_now_iso
+
+    root, tree, task = _member_coordinates(source)
+    owner = current_model_wait()
+    bound = owner is not None and owner.task_id == task and not owner.closed
+    return {"not_started": True, "operation_id": operation_id or uuid.uuid4().hex,
+            "claim_root": root, "claim_task": task, "task_id": task, "root_task_id": tree,
+            "tool": name, "claimed_at": utc_now_iso(), "source": source,
+            "local_owner": ({"pid": os.getpid(), "process_birth": owner.answer_owner_birth,
+                             "task_attempt": owner.attempt} if bound else {}),
+            "memory_owned": future_owned and bound, "lock": threading.RLock(),
+            "admission_context": copy_context()}
+
+
+def submit_tool_future(ctx: Any, operation_id: str, tool: str, submit: Any, function: Any, *args: Any):
+    """The existing invocation owner is bound before its executor can enter."""
+    from ouroboros.owner_pause import _TOOL_OPERATION
+    from ouroboros.budget_pause import _new_tool_row, _tool_owner_release, _bind_tool_future
+    outcome = invocation_outcome(ctx, tool, operation_id, future_owned=True)
+    row = _new_tool_row(ctx, operation_id, tool, outcome=outcome)
+    outcome["future_row"] = row
+    release = _tool_owner_release(row)
+    def invoke(*values):
+        token = _TOOL_OPERATION.set((ctx, tool, outcome))
+        try:
+            return function(*values)
+        finally:
+            _TOOL_OPERATION.reset(token)
+    try:
+        future = submit(invoke, *args)
+    except BaseException:
+        row["done"] = True  # positive no executor entry
+        release()
+        raise
+    _bind_tool_future(row, future)
+    return future, release
+
+
+def _claim(outcome: dict) -> dict:
+    return {key: outcome[key] for key in
+            ("tool", "task_id", "root_task_id", "claimed_at", "local_owner")} | {"state": "claimed"}
+
+
+def retain_invocation(outcome: dict, update=None) -> None:
+    """Publish the SAME existing custody row; its lock coordinates late completion."""
+    from ouroboros.task_store import exists, patch_handoff
+    from ouroboros.owner_pause import OwnerPauseRefused
+
+    with outcome["lock"]:
+        root = outcome["claim_root"]
+        if not root or not outcome["task_id"]:
+            return
+        if not outcome.get("durable_attempted"):
+            holder = outcome["task_id"]
+            if not exists(root, holder):
+                holder = outcome["root_task_id"]
+            outcome["claim_task"] = holder
+            if not exists(root, holder):
+                if getattr(outcome["source"], "task_lifecycle_bound", None) is not False:
+                    raise OwnerPauseRefused("owner_pause_authority_unreadable")
+                return
+        outcome["durable_attempted"] = True  # an unknown COMMIT still needs settlement
+        def mutate(current):
+            claim = dict(current) if current is not None else _claim(outcome)
+            return update(claim) if update is not None else claim
+        patch_handoff(root, outcome["claim_task"], "launch_handoffs", outcome["operation_id"], mutate)
+
+
+def settle_invocation(outcome: dict) -> None:
+    """Local completion cannot retire independent pending effects."""
+    from ouroboros.task_store import DELETE_ROW, patch_handoff
+    from ouroboros.utils import utc_now_iso
+
+    with outcome["lock"]:
+        if not outcome.get("durable_attempted") or outcome.get("local_holds", 0):
+            return
+        if not any(outcome.get(key) is True for key in
+                   ("not_started", "settled", "local_extension_returned", "mcp_call_returned")):
+            return
+        def settle(claim):
+            if claim is None:
+                return None
+            pending = {key: value for key, value in (claim.get("external_pending") or {}).items()
+                       if key not in outcome.get("confirmed_external", set())}
+            claim = {**claim, "state": "returned", "returned_at": utc_now_iso(), "external_pending": pending}
+            return claim if claim_still_owns_effect(outcome["claim_root"], claim) else DELETE_ROW
+        try:
+            patch_handoff(outcome["claim_root"], outcome["claim_task"], "launch_handoffs",
+                          outcome["operation_id"], settle)
+        except Exception:
+            log.warning("Invocation custody settlement retained for %s", outcome["operation_id"], exc_info=True)
+
+
 def _update_active_claim(update) -> None:
     from ouroboros.owner_pause import _TOOL_OPERATION
-    from ouroboros.task_store import patch_handoff
 
     active = _TOOL_OPERATION.get()
-    if not active or not active[2].get("claim_task"):
-        return
+    if active:
+        retain_invocation(active[2], update)
+
+
+def external_handoff(kind: str):
+    """Retain duty BEFORE an opaque/process effect; discharge only its exact receipt.
+
+    The local handler returning is not evidence for this duty. No new ledger:
+    these facts live on its existing launch_handoffs row.
+    """
+    from ouroboros._usage_wait import retry_presend
+    from ouroboros.owner_pause import _TOOL_OPERATION
+
+    active = _TOOL_OPERATION.get()
+    if not active:
+        return lambda: None
+    outcome, token = active[2], uuid.uuid4().hex
+    def add(claim):
+        return {**claim, "external_pending": {**(claim.get("external_pending") or {}), token: kind}}
+    discharged = False
+    def confirmed():
+        nonlocal discharged
+        with outcome["lock"]:
+            outcome.setdefault("confirmed_external", set()).add(token)
+            if discharged:
+                return
+            def remove(claim):
+                pending = dict(claim.get("external_pending") or {})
+                pending.pop(token, None)
+                return {**claim, "external_pending": pending}
+            try:
+                retain_invocation(outcome, remove)
+                discharged = True
+            except Exception:
+                log.warning("External custody confirmation retained for %s", token, exc_info=True)
+    try:
+        retry_presend(lambda: retain_invocation(outcome, add), check=False)
+    except BaseException:
+        confirmed()  # no caller acquired this external start
+        raise
+    return confirmed
+
+
+def hold_invocation():
+    """An actual nested local runner joins this invocation's existing lifetime."""
+    from ouroboros.owner_pause import _TOOL_OPERATION
+    from ouroboros import budget_pause
+
+    active = _TOOL_OPERATION.get()
+    if not active:
+        return lambda: None
     outcome = active[2]
-    try:  # one `launch_handoffs` row; a standalone/unbound tool has no durable task claim (no row: no write)
-        patch_handoff(outcome["claim_root"], outcome["claim_task"], "launch_handoffs", outcome["operation_id"],
-                      lambda claim: None if claim is None else update(dict(claim)))
-    except LookupError:
-        return
+    if outcome.get("future_row") is not None:
+        return budget_pause._hold_tool_row(outcome["future_row"])
+    with outcome["lock"]:
+        outcome["local_holds"] = outcome.get("local_holds", 0) + 1
+    def release():
+        with outcome["lock"]:
+            outcome["local_holds"] -= 1
+            if outcome.get("closed"):
+                settle_invocation(outcome)
+    return release
 
 
 def retain_unconfirmed_host_operation(reason: str) -> None:
@@ -56,7 +213,7 @@ def forget_unemitted_control(event: dict) -> None:
 
 
 def claim_still_owns_effect(root: Any, claim: dict) -> bool:
-    if claim.get("host_unconfirmed"):
+    if claim.get("host_unconfirmed") or claim.get("external_pending"):
         return True
     from pathlib import Path
     from ouroboros.routing_wait import wait_for_promotion_admission, wait_for_routing_annotation

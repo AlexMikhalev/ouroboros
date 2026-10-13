@@ -198,15 +198,26 @@ def _run_skill_subprocess(
     popen_kwargs.update(subprocess_new_group_kwargs())
     popen_kwargs = merge_hidden_kwargs(popen_kwargs)
     _child_started_ts = time.monotonic()
+    from ouroboros.tool_custody import external_handoff
+    from ouroboros.owner_pause import operation_start
+    confirmed = external_handoff("skill_process")
+    proc = None
     try:
-        proc = Popen(cmd, **popen_kwargs)  # noqa: S603 — cmd is a vetted list, not shell
+        with operation_start():
+            proc = Popen(cmd, **popen_kwargs)  # noqa: S603 — cmd is a vetted list, not shell
     except OSError as exc:
+        if proc is None:
+            confirmed()
         # Pre-exec: no child ever existed (a runtime binary that vanished
         # between resolution and spawn). The platform's exception class is the
         # typed cause; there is no exit code to invent for it.
         _publish_process_facts(
             started_ts=_child_started_ts, pre_exec_failure=type(exc).__name__,
         )
+        raise
+    except BaseException:
+        if proc is None:
+            confirmed()  # the final gate refused before Popen returned
         raise
     with _subprocess_lock:
         _active_subprocesses.add(proc)
@@ -221,6 +232,8 @@ def _run_skill_subprocess(
             proc.wait(timeout=2)
         except Exception:
             pass
+        if proc.poll() is not None:
+            confirmed()
         with _subprocess_lock:
             _active_subprocesses.discard(proc)
         for pipe in (proc.stdout, proc.stderr):
@@ -272,6 +285,8 @@ def _run_skill_subprocess(
         stdout_thread.join(timeout=2)
         stderr_thread.join(timeout=2)
     finally:
+        if proc.poll() is not None:
+            confirmed()
         with _subprocess_lock:
             _active_subprocesses.discard(proc)
         try:

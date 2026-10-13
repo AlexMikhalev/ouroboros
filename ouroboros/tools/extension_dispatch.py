@@ -322,10 +322,10 @@ def _dispatch_extension_tool_untagged(
     except Exception as exc:
         text = f"⚠️ TOOL_ERROR ({name}): extension tool failed: {type(exc).__name__}: {exc}"
         return _extension_result("error", "EXTENSION_ERROR", text)
-    from ouroboros.owner_pause import run_operation, submit_async_operation, OwnerPauseRefused
+    from ouroboros.owner_pause import run_tool_handler, submit_async_operation, OwnerPauseRefused
 
     try:
-        result = run_operation(ctx, handler, *((ctx,) if _wants else ()), **call_args)
+        result = run_tool_handler(ctx, handler, *((ctx,) if _wants else ()), **call_args)
     except OwnerPauseRefused:
         raise
     except Exception as exc:
@@ -333,6 +333,10 @@ def _dispatch_extension_tool_untagged(
         return _extension_result("error", "EXTENSION_ERROR", text, dispatched=True)
 
     if inspect.iscoroutine(result):
+        from ouroboros.tool_custody import hold_invocation
+        if handoff is not None:
+            handoff["settled"] = False  # constructing a coroutine did not execute it
+        release_runner = hold_invocation()
         box: Dict[str, Any] = {}
         timeout = max(1, int(ext_tool.get("timeout_sec") or 60))
 
@@ -358,6 +362,10 @@ def _dispatch_extension_tool_untagged(
                     box["host_timeout"] = True
             except BaseException as exc:
                 box["error"] = exc
+            finally:
+                if handoff is not None:
+                    handoff["settled"] = True
+                release_runner()
 
         # Preserve the admitted task settings snapshot across the async handler
         # thread while keeping live immediate controls live in the API reader.
@@ -367,7 +375,14 @@ def _dispatch_extension_tool_untagged(
             name=f"ext-tool-{name}-async",
             daemon=True,
         )
-        thread.start()
+        try:
+            thread.start()
+        except BaseException:
+            result.close()
+            if handoff is not None:
+                handoff["settled"] = True
+            release_runner()
+            raise
         thread.join(timeout=timeout + 2)
         if thread.is_alive():
             text = f"⚠️ TOOL_ERROR ({name}): extension async handler failed: TimeoutError: handler exceeded timeout"

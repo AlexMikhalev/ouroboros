@@ -611,9 +611,8 @@ def _cleanup_loop_resources(
     """Release attempt-scoped executors, services, and delegated runs."""
     if ctx.trace_ctx is not None:
         ctx.trace_ctx._execution_trace = ctx.previous_execution_trace
-    # This attempt's tool-future quiescence rows end with it (#1196): a pause
-    # only got here after they settled, and any other exit is on the task's own
-    # control rail; the registry prunes nothing across attempts by itself.
+    # Caller release has already transferred any physical tail before this
+    # logical exit. Prune only joined observations; old-attempt tails stay owned.
     try:
         budget_pause.forget_tool_scope(ctx.tools._ctx)
     except Exception:

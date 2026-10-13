@@ -965,8 +965,15 @@ class TaskModelWait:
     def close(self) -> None:
         with self.lock:
             self.closed = True
-            if not self.answer_consumer_bound:
-                return
+            bound = self.answer_consumer_bound
+        from types import SimpleNamespace
+        from ouroboros.budget_pause import forget_tool_scope
+        # Native review scopes may never enter loop cleanup. Use THIS frozen
+        # owner even when close is called under a different current context.
+        forget_tool_scope(SimpleNamespace(drive_root=self.canonical_root, task_id=self.task_id),
+                          attempt=self.attempt)
+        if not bound:
+            return
         # Positive retirement of THIS consumer, not terminal task status, PID
         # absence or the pool's current assignment. Cash and remote custody stay.
         try:

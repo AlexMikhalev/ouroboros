@@ -22,11 +22,19 @@ _NEWEST_ORDER = "ORDER BY ts DESC, task_id DESC"  # NULL ts sorts last: a row wi
 
 
 def read_document(root: Any, task_id: str, *, txn: Optional[Txn] = None) -> Optional[Dict[str, Any]]:
-    """The whole current document, ``None`` when the store holds no such task."""
+    """One coherent document; implicit reads decode only after releasing the store.
+
+    A supplied transaction keeps its own read/modify/write snapshot and lifetime.
+    """
     if txn is not None:
         return txn.load(str(task_id))
+    task_id = str(task_id)
     with open_store(root, write=False) as txn:
-        return txn.load(str(task_id))
+        body = txn.body_text(task_id)
+        rows = txn.handoff_records([task_id]) if body is not None else []
+    if body is None:
+        return None
+    return store.project_handoffs(json.loads(body), store.decode_handoffs([task_id], rows)[task_id])
 
 
 def exists(root: Any, task_id: str) -> bool:
