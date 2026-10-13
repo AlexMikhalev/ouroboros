@@ -298,3 +298,17 @@ def test_accepted_owner_projection_is_passive_and_does_not_protect_all_pending(t
     monkeypatch.setattr(bp, "budget_pause_row", lambda *_a: pytest.fail("passive census opened a document"))
     monkeypatch.setattr(sc, "_runtime", lambda *_a: pytest.fail("passive census touched runtime"))
     assert sc.accepted_owner_ids(env.q) == {"sleeper"}
+
+
+def test_cold_rebind_reads_only_active_and_accepted_pending_carriers(tmp_path, monkeypatch):
+    from ouroboros import budget_pause as bp, sleep_custody as sc
+    env = _setup(tmp_path, monkeypatch)
+    _park(env, tmp_path, monkeypatch)
+    env.workers.PENDING.extend({"id": f"queued-{i}"} for i in range(100))
+    original, read = bp.budget_pause_row, []
+    def exact(root, task_id):
+        read.append(task_id)
+        return original(root, task_id)
+    monkeypatch.setattr(bp, "budget_pause_row", exact)
+    assert sc.reconcile(env.q, runtime=env.runtime) == {"sleeper"}
+    assert read == ["sleeper"]

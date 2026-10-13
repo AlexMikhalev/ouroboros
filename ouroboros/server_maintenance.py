@@ -86,7 +86,7 @@ def bind_body_lifespan(drive_root: Any, stop_event: Any):
 
 def _reconcile_cold_custody(drive_root: Any, stop_event: Any = None, *, saved=()) -> set[str]:
     """Current identities only; requests remain discoverable without an event."""
-    from ouroboros.sleep_custody import reconcile
+    from ouroboros.sleep_custody import carrier_receipt, reconcile
     from supervisor import queue
     from supervisor.active_activity import get_direct_activity_registry
 
@@ -98,7 +98,8 @@ def _reconcile_cold_custody(drive_root: Any, stop_event: Any = None, *, saved=()
         root = getattr(ctx, "budget_drive_root", None) or getattr(ctx, "drive_root", None) or drive_root
         direct.append({"id": activity.activity_id, "project_id": activity.project_id,
                        "budget_drive_root": str(root)})
-    return reconcile(queue, direct=[*direct, *saved], stop_requested=lambda: _stop_requested(stop_event))
+    return reconcile(queue, direct=[*direct, *(task for task in saved if carrier_receipt(task))],
+                     stop_requested=lambda: _stop_requested(stop_event))
 
 
 def _run_cold_custody(stop_event: Any, latch: Any) -> None:
@@ -959,6 +960,9 @@ def _run_periodic_reconcile_sweep(marker: list, stop_event: Any = None, latch: A
     mutation owners, again before each publication commits."""
     try:
         _periodic_zombie_reconcile(on_orphans_healed=on_orphans_healed, stop_event=stop_event)
+        if not _stop_requested(stop_event):
+            from supervisor.workspace_preparation import recover_interrupted_preparations
+            recover_interrupted_preparations(DATA_DIR, stop=lambda: _stop_requested(stop_event))
         if not _stop_requested(stop_event) and (
                 _STARTUP_PRUNES_OWED[0] or _STARTUP_TREES_OWED[0] or _STARTUP_SOURCE_PRUNES_OWED[0]):
             try:
@@ -1207,12 +1211,16 @@ def _run_startup_task_recovery(
         saved = [row["task"] for row in snapshot.get("pending", [])
                  if isinstance(row, dict) and isinstance(row.get("task"), dict)]
         _reconcile_cold_custody(drive_root, saved=saved)
+        from supervisor.workspace_preparation import recover_interrupted_preparations
+        preparations = recover_interrupted_preparations(drive_root, stop=_stop_requested)
         protected = _startup_live_task_ids(drive_root, include_pending=True)
     except Exception as exc:
         report["errors"].append(f"startup_ownership_unconfirmed: {type(exc).__name__}")
         log.warning("Startup task recovery deferred: live/pending ownership is unreadable", exc_info=True)
         return report
     report = _recover_terminal_task_files(drive_root, protected)
+    report["unresolved"].extend(preparations["retained"] + preparations["uncertain"])
+    report["errors"].extend(f"preparation:{item}" for item in preparations["errors"])
     excluded = protected | set(report["unresolved"])
     if report["errors"]:
         log.warning("Startup task file recovery has gaps: %s", report)

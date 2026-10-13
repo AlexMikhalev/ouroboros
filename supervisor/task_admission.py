@@ -23,9 +23,14 @@ from ouroboros.task_results import (
     write_task_result,
 )
 from ouroboros.utils import utc_now_iso
-from ouroboros.store import StoreError
+from ouroboros.store import StoreError, acquisition_budget
 
 log = logging.getLogger(__name__)
+
+# The requested row's preparation claim (``supervisor/workspace_preparation.py``):
+# its token, owner, phase and owned resource handle. A row carrying another
+# token's claim is owned by that preparation, never by a new arrival.
+WORKSPACE_PREPARATION_FIELD = "workspace_preparation"
 
 
 def coerce_queue_order(value: Any, default: int = 0) -> int:
@@ -134,6 +139,7 @@ def parse_schedule_task_depth(
     expected_output: str,
     constraints: str,
     task_context: str,
+    preparation: Any = None,
 ) -> tuple[int, bool]:
     """Parse depth after an atomic final freshness check.
 
@@ -141,13 +147,15 @@ def parse_schedule_task_depth(
     concurrent reservation or queue assignment can arrive before parsing.  The
     final check below shares the queue lock with those writers and keeps the
     malformed-result write under that lock, so an invalid replay cannot steal
-    custody between the probe and rejection.
+    custody between the probe and rejection. A preparation claim reads its own
+    reservation and marker as its own, never as a replay.
     """
     from supervisor import queue
 
-    with queue._queue_lock:
+    with acquisition_budget(0), queue._queue_lock:
         if tid and subagent_schedule_preflight(
             ctx, evt, chat_id, delegation_role=delegation_role,
+            admission_token=getattr(preparation, "token", ""),
         ):
             return 0, True
         try:
@@ -157,6 +165,7 @@ def parse_schedule_task_depth(
 
             _reject_schedule_task(
                 ctx,
+                preparation=preparation,
                 tid=tid,
                 chat_id=chat_id,
                 delegation_role=delegation_role,
@@ -738,26 +747,37 @@ def revalidate_project_holds() -> None:
 
 
 def persist_never_admitted_refusal(
-    drive_root: Any, task_id: str, *, admission_token: str = "", **fields: Any,
+    drive_root: Any, task_id: str, /, *, admission_token: str = "", **fields: Any,
 ) -> Dict[str, Any]:
     """Publish a proved refusal before cleanup, without taking another id owner.
+
+    The root and id are positional-only: a subagent's result fields carry their
+    own ``drive_root`` (its child drive), which must reach the row, not collide.
 
     Queue refusal can release its reservation before the producer resumes. Check
     custody again under Q and establish a durable id owner before freeing drives.
     A strict exact receipt is required even if a writer raises after replacement.
+    A token's own requested row is its emitted promote stub, or, for a
+    preparation refusal carrying that token's marker, the requested child the
+    claim marks (or, before that marker, its reservation holds); any other row
+    keeps its owner.
     """
     from supervisor import queue
     from ouroboros.routing_wait import is_own_admission_stub
 
     receipt = uuid.uuid4().hex
-    with queue._queue_lock:
+    with acquisition_budget(0), queue._queue_lock:
         reservation = queue.ADMISSION_RESERVATIONS.get(task_id)
         if ((reservation and reservation != admission_token) or task_id in queue.RUNNING
                 or any(row.get("id") == task_id for row in queue.PENDING if isinstance(row, dict))):
             raise RuntimeError("Refusal settlement lost task-id ownership; resources retained")
         current = load_task_result(pathlib.Path(drive_root), task_id, strict=True) or {}
         own_stub = bool(admission_token and is_own_admission_stub(current, admission_token))
-        if current and not own_stub and not (not admission_token and current.get("status") == STATUS_REQUESTED):
+        claim = fields.get(WORKSPACE_PREPARATION_FIELD)
+        own_claim = bool(admission_token and isinstance(claim, dict) and claim.get("token") == admission_token
+                         and own_requested_child(current, admission_token, reservation))
+        if current and not own_stub and not own_claim and not (
+                not admission_token and current.get("status") == STATUS_REQUESTED):
             raise RuntimeError("Refusal settlement found an existing result owner; resources retained")
         try:
             write_task_result(pathlib.Path(drive_root), task_id, STATUS_FAILED,
@@ -770,6 +790,41 @@ def persist_never_admitted_refusal(
             raise RuntimeError("Refusal persistence unconfirmed; resources retained")
         queue.release_task_admission(task_id, admission_token)
         return stored
+
+
+def own_requested_child(current: Dict[str, Any], token: str, reservation: Any = None) -> bool:
+    """Whether ``current`` is still the requested child this preparation token claimed."""
+    if not token or str(current.get("status") or "") != STATUS_REQUESTED:
+        return False
+    claim = current.get(WORKSPACE_PREPARATION_FIELD)
+    if isinstance(claim, dict):
+        return str(claim.get("token") or "") == token
+    return reservation == token
+
+
+def claim_requested_child(ctx: Any, task_id: str, token: str) -> bool:
+    """Reserve the producer's REQUESTED child for one preparation token, before any effect.
+
+    The existing reservation map is the claim: a reserved, queued, progressed or
+    already-claimed id is not claimable, so a duplicate arrival coalesces into
+    the first preparation. Raises on unreadable authority; nothing is reserved.
+    """
+    from supervisor import queue
+
+    tid = str(task_id or "")
+    with acquisition_budget(0), queue._queue_lock:
+        if not tid or not token or queue.ADMISSION_RESERVATIONS.get(tid):
+            return False
+        pending = getattr(ctx, "PENDING", queue.PENDING)
+        if tid in getattr(ctx, "RUNNING", queue.RUNNING) or any(
+                isinstance(row, dict) and str(row.get("id") or "") == tid for row in pending):
+            return False
+        current = load_task_result(ctx.DRIVE_ROOT, tid, strict=True) or {}
+        if current and (str(current.get("status") or "") != STATUS_REQUESTED
+                        or WORKSPACE_PREPARATION_FIELD in current):
+            return False
+        queue.ADMISSION_RESERVATIONS[tid] = token
+        return True
 
 
 def scheduled_admission_rejection(
@@ -848,22 +903,29 @@ def scheduled_admission_rejection(
 
 
 def subagent_schedule_owned(
-    ctx: Any, task_id: str, *, pending_ref: Any = None,
+    ctx: Any, task_id: str, *, pending_ref: Any = None, admission_token: str = "",
 ) -> bool:
-    """Return whether an exact child id already has queue/lifecycle custody."""
+    """Return whether an exact child id already has queue/lifecycle custody.
+
+    ``admission_token`` is a preparation claim's own token: its reservation and
+    marker are not another owner, while its lost marker or reservation is.
+    """
     from supervisor import queue
 
     tid = str(task_id or "")
-    with queue._queue_lock:
+    with acquisition_budget(0), queue._queue_lock:
         pending = pending_ref if isinstance(pending_ref, list) else getattr(
             ctx, "PENDING", queue.PENDING,
         )
         running = getattr(ctx, "RUNNING", queue.RUNNING)
-        if queue.ADMISSION_RESERVATIONS.get(tid):
+        reserved = queue.ADMISSION_RESERVATIONS.get(tid)
+        if reserved and reserved != admission_token:
             return True
-        status = str((load_task_result(
-            ctx.DRIVE_ROOT, tid, strict=True,
-        ) or {}).get("status") or "")
+        current = load_task_result(ctx.DRIVE_ROOT, tid, strict=True) or {}
+        status = str(current.get("status") or "")
+        claim = current.get(WORKSPACE_PREPARATION_FIELD)
+        foreign_claim = (str((claim or {}).get("token") or "") != admission_token
+                         if isinstance(claim, dict) else bool(admission_token))
         return (
             tid in running
             or any(
@@ -871,6 +933,7 @@ def subagent_schedule_owned(
                 for row in pending
             )
             or status not in {"", STATUS_REQUESTED}
+            or foreign_claim
         )
 
 
@@ -880,6 +943,7 @@ def subagent_schedule_preflight(
     chat_id: int,
     *,
     delegation_role: str = "subagent",
+    admission_token: str = "",
 ) -> bool:
     """Stop an owned or unreadable exact task id before parsing or side effects.
 
@@ -892,7 +956,9 @@ def subagent_schedule_preflight(
     if not tid:
         return False
     try:
-        return subagent_schedule_owned(ctx, tid)
+        # A claim names its token; the historical call shape stays for every other caller.
+        return subagent_schedule_owned(
+            ctx, tid, **({"admission_token": admission_token} if admission_token else {}))
     except (OSError, ValueError, StoreError):
         from supervisor.events import _reject_schedule_task
 
@@ -920,6 +986,8 @@ def enqueue_subagent_with_scheduled_result(
     admitted_depth_provenance: Dict[str, Any],
     direct_child_count: Any,
     pending_ref: list[Any],
+    preparation: Any = None,
+    recheck_child_admission: Optional[Callable[[], tuple[str, str, Any]]] = None,
 ) -> tuple[Any, str, str, bool]:
     """Enqueue a child only together with its first durable authority row.
 
@@ -927,11 +995,31 @@ def enqueue_subagent_with_scheduled_result(
     therefore remove this exact still-pending object before a worker observes
     it.  A late observer exception after atomic file replacement keeps the
     already-authoritative admission instead of compensating a committed row.
+
+    A prepared child first commits its ``admitting`` phase, the positive
+    boundary recovery reads: an earlier retained phase proves this interlock
+    was never entered. Only the token still owning the claim, in its still-open
+    generation, consumes the reservation; the receipt closes the marker.
+    The schedule owner's count-dependent rights/caps recheck shares this same
+    interlock, so an independently admitted readonly sibling cannot spend the
+    last slot between validation and append. Storage contention never waits on Q.
     """
     from supervisor import queue
 
     tid = str(task.get("id") or "")
     transition_id = uuid.uuid4().hex
+    token = ""
+    if preparation is not None:
+        crossed = preparation.enter_admission()
+        if crossed is False:
+            return (task, "scheduled_event_replay",
+                    "Subagent schedule ignored: its prepared request no longer belongs to this preparation.", False)
+        if crossed is None:  # this token never entered the queue below
+            return (task, "preparation_marker_unwritable",
+                    "Subagent not scheduled: its admission boundary could not be recorded durably, "
+                    "so it was never admitted.", True)
+        token = preparation.token
+        task = {**task, "_admission_token": token}
 
     def _committed(record: Any) -> bool:
         admission = record.get("delegation_admission") if isinstance(record, dict) else None
@@ -943,11 +1031,11 @@ def enqueue_subagent_with_scheduled_result(
             and str(admission.get("transition_id") or "") == transition_id
         )
 
-    with queue._queue_lock:
+    with acquisition_budget(0), queue._queue_lock:
         try:
             previous = load_task_result(ctx.DRIVE_ROOT, tid, strict=True) or {}
             already_owned = subagent_schedule_owned(
-                ctx, tid, pending_ref=pending_ref,
+                ctx, tid, pending_ref=pending_ref, **({"admission_token": token} if token else {}),
             )
         except (OSError, ValueError, StoreError):
             log.warning(
@@ -971,6 +1059,15 @@ def enqueue_subagent_with_scheduled_result(
                 "an existing queue or durable lifecycle row.",
                 False,
             )
+        if preparation is not None and preparation.generation.closed():
+            # A closed generation's callback never enqueues into its successor.
+            return (task, "preparation_interrupted_by_generation_exit",
+                    "Subagent not scheduled: the supervisor generation that prepared its workspace "
+                    "ended before admission; it was never admitted.", True)
+        if recheck_child_admission is not None:
+            reason, detail, direct_child_count = recheck_child_admission()
+            if reason:
+                return task, reason, detail, True
         admitted = ctx.enqueue_task(task)
         if isinstance(admitted, dict) and admitted.get("_admission_blocked"):
             if admitted.get("_admission_blocked") == "task_id_lookup_failed":
@@ -989,6 +1086,8 @@ def enqueue_subagent_with_scheduled_result(
             "direct_child_count": direct_child_count,
             "transition_id": transition_id,
         }
+        if preparation is not None:
+            result_fields[WORKSPACE_PREPARATION_FIELD] = preparation.marker("admitted")
         try:
             write_task_result(ctx.DRIVE_ROOT, tid, STATUS_SCHEDULED, **result_fields,
                               result="Subagent accepted and scheduled.")

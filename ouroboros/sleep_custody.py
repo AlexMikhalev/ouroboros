@@ -195,7 +195,8 @@ def reconcile(q: Any = None, *, direct: Any = (), runtime: Any = None, stop_requ
     if q is None:
         from supervisor import queue as q
     with q._queue_lock:
-        tasks = [dict(meta.get("task") or {}) for meta in q.RUNNING.values()] + [dict(t) for t in q.PENDING]
+        tasks = [dict(meta.get("task") or {}) for meta in q.RUNNING.values()]
+        tasks.extend(dict(t) for t in q.PENDING if carrier_receipt(t))
     tasks.extend(dict(t) for t in direct if isinstance(t, dict))
     # An unreadable current row must not turn an accepted parked owner into an
     # orphan. The canonical read still gates acceptance and every return grant.

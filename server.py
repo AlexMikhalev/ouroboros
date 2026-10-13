@@ -103,6 +103,7 @@ from ouroboros.server_maintenance import (  # noqa: F401
     _startup_worktree_prune,
 )
 from ouroboros.ui_translation import start_background as _start_ui_translation
+from supervisor.workspace_preparation import start_generation as _start_preparation_generation
 from ouroboros.server_restart import (  # noqa: F401
     _live_running_task_ids, _managed_update_pending_kwargs,
     _perform_owner_restart, _safe_restart_serialized,
@@ -704,6 +705,7 @@ def _run_supervisor(settings: dict) -> None:
         prior_worker_pids = _startup_worker_pids(DATA_DIR)
         interrupted_running: list = []
         restored_pending = restore_pending_from_snapshot(terminalized=interrupted_running)
+        _start_preparation_generation(stop=lambda stop=_watchdog_stop: any(e.is_set() for e in (stop, _supervisor_stop, _restart_requested, _exit_signalled)))
         kill_workers(preserve_pending=True)
         spawn_workers(max_workers)
         from ouroboros.server_process import record_applied_restart_settings
@@ -1420,10 +1422,10 @@ async def lifespan(app):
     # RUNNING results and resolve an indeterminate post-task synthesis phase.
     # The periodic zombie sweep intentionally does not perform this recovery.
     if not startup_provider_ready:  # after the store's publication: the recovery writes, then readiness (P1)
-        store_switch.when_ready(lifespan_drive_root, start_body, lambda: _run_startup_task_recovery(
+        store_switch.when_ready(lifespan_drive_root, start_body, lambda: not body_stop.is_set() and _run_startup_task_recovery(
             lifespan_drive_root, REPO_DIR, skip_live_data=pytest_default_real_data_dir,
             prior_worker_pids=None if pytest_default_real_data_dir else _startup_worker_pids(lifespan_drive_root),
-        ), _supervisor_ready.set)
+        ), lambda: not body_stop.is_set() and _supervisor_ready.set())
 
     # Reload enabled+reviewed extensions across restarts.
     try:
@@ -1440,7 +1442,7 @@ async def lifespan(app):
     if not pytest_default_real_data_dir: _start_ui_translation(lifespan_drive_root, _supervisor_stop)  # after the skills registered their tables; fail-soft, no model call; no batch starts once teardown began  # noqa: E701
     # Only now: the first tick may consume an overdue note; a bus subscriber attached later never sees it.
     if startup_provider_ready:
-        store_switch.when_ready(lifespan_drive_root, start_body, lambda: _start_supervisor_if_needed(settings))
+        store_switch.when_ready(lifespan_drive_root, start_body, lambda: not body_stop.is_set() and _start_supervisor_if_needed(settings))
 
     try:
         from ouroboros.mcp_client import (
