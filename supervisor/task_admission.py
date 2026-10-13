@@ -1008,6 +1008,7 @@ def enqueue_subagent_with_scheduled_result(
     preparation: Any = None,
     recheck_child_admission: Optional[Callable[[], tuple[str, str, Any]]] = None,
     defer_contention: bool = False,
+    transition_id: str = "",
 ) -> tuple[Any, str, str, bool]:
     """Enqueue a child only together with its first durable authority row.
 
@@ -1027,7 +1028,7 @@ def enqueue_subagent_with_scheduled_result(
     from supervisor import queue
 
     tid = str(task.get("id") or "")
-    transition_id = uuid.uuid4().hex
+    transition_id = str(transition_id or uuid.uuid4().hex)
     token = ""
     if preparation is not None:
         crossed = preparation.enter_admission()
@@ -1133,10 +1134,12 @@ def enqueue_subagent_with_scheduled_result(
             }
             if preparation is not None:
                 result_fields[WORKSPACE_PREPARATION_FIELD] = preparation.marker("admitted")
+            receipt_error = None
             try:
                 write_task_result(ctx.DRIVE_ROOT, tid, STATUS_SCHEDULED, **result_fields,
                                   result="Subagent accepted and scheduled.")
-            except Exception:
+            except Exception as exc:
+                receipt_error = exc
                 log.warning("Scheduled subagent receipt write raised for %s; reading its token", tid, exc_info=True)
             try:
                 current = load_task_result(ctx.DRIVE_ROOT, tid, strict=True) or {}
@@ -1149,9 +1152,11 @@ def enqueue_subagent_with_scheduled_result(
                 return admitted, "", "", False
             # Q has remained held since append: no worker observed this refused
             # scheduled-result transition, and strict readback established absence.
+            removed = False
             for index, row in enumerate(pending_ref):
                 if row is admitted:
                     pending_ref.pop(index)
+                    removed = True
                     break
             prior_status = str(previous.get("status") or "")
             current_status = str(current.get("status") or "")
@@ -1167,6 +1172,19 @@ def enqueue_subagent_with_scheduled_result(
                     "overwriting that result.",
                     False,
                 )
+            from supervisor.workspace_preparation import store_contention
+            if (preparation is not None or defer_contention) and store_contention(receipt_error):
+                if (removed and tid not in queue.RUNNING and not any(
+                        isinstance(row, dict) and str(row.get("id") or "") == tid for row in pending_ref)
+                        and queue.ADMISSION_RESERVATIONS.get(tid) in (None, token)):
+                    if preparation is not None:
+                        queue.ADMISSION_RESERVATIONS[tid] = token
+                    # Exact compensation under the same Q hold proves this
+                    # request still unsent. Its existing owner waits off-lock.
+                    handoff_started = False
+                    raise receipt_error
+                admitted["_admission_uncertain"] = "Subagent receipt rollback could not prove absent queue ownership; custody retained."
+                return admitted, "", "", False
             return (
                 admitted,
                 "scheduled_result_persist_failed",
