@@ -188,8 +188,8 @@ def _open_questions_line(wave: dict, enforcement: str) -> str:
 def _answer_route(fp: str, *, at_cap: bool, cycles_paid: int, cap: Optional[int]) -> str:
     """The route an answer takes, as facts: recorded at $0 and merged by id; beside the
     unchanged envelope it asks again only the seats it names (one paid cycle, the rest kept at
-    $0); beside a changed one every seat reviews with the answers in view. Whether to buy that
-    cycle is the mind's; at the cap the answer stays recorded evidence."""
+    $0); beside a changed one, confirm_fresh_panel=true must explicitly order every seat.
+    Without that boolean the changed envelope refuses at $0; at the cap answers remain evidence."""
     recorded = (f"An answer is recorded at $0 by plan_task(review_disposition={{review_fingerprint: '{fp}', "
                 "items: [...]}) (accept = answered, the rationale is the answer; reject; defer = deferred "
                 "openly) and merged by finding_id")
@@ -199,9 +199,10 @@ def _answer_route(fp: str, *, at_cap: bool, cycles_paid: int, cap: Optional[int]
     return recorded + (
         ". The same call beside the unchanged goal/plan/spec asks only the slots its items name — one paid "
         f"cycle {cycles_paid + 1}{'' if cap is None else f' of {cap}'}; every other slot keeps its recorded "
-        "answer at $0 — and a slot that no longer raises its finding retires it; beside a changed "
-        "goal/plan/spec every slot reviews the new envelope with the answers in view. Whether to buy that "
-        "cycle is yours. An envelope sent without items supersedes this wave (its recorded answers stay); "
+        "answer at $0 — and a slot that no longer raises its finding retires it. Beside a changed "
+        "goal/plan/spec, confirm_fresh_panel=true explicitly orders a full new panel with answers in view; "
+        "without it PLAN_REVIEW_ENVELOPE_DIVERGED refuses at $0. Whether to buy that cycle is yours. "
+        "An envelope sent without review_disposition supersedes this wave (recorded answers stay); "
         "the identical one replays free. ")
 
 

@@ -221,9 +221,8 @@ def test_a_store_failure_in_the_validate_first_prepare_is_typed_and_records_noth
 
 
 def test_changed_envelope_with_items_records_the_answers_then_reviews_every_slot(harness, monkeypatch):  # noqa: F811
-    """A CHANGED envelope with items is an ordinary full wave: the answers are stored on the
-    answered wave first, every slot reviews the new envelope, and the packet's PRIOR CYCLES
-    section carries the rationale."""
+    """A CHANGED envelope with an explicit fresh-panel confirmation reviews every slot;
+    answers land first and the packet's PRIOR CYCLES section carries their rationale."""
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "5")
     harness.install({"s1": json.dumps([_finding("f1", "blocking", breaks="claim_1")]), "s2": CLEAN, "s3": CLEAN})
     ctx = harness.make_ctx()
@@ -231,7 +230,8 @@ def test_changed_envelope_with_items_records_the_answers_then_reviews_every_slot
     old_fp = _state(harness)["waves"][-1]["request_fingerprint"]
     sub2 = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
     result = _call(ctx, plan="A revised outline with the budget line fixed.", review_disposition={
-        "review_fingerprint": old_fp, "items": [_item("s1:f1", "reject", "the budget line is already approved")]})
+        "review_fingerprint": old_fp, "confirm_fresh_panel": True,
+        "items": [_item("s1:f1", "reject", "the budget line is already approved")]})
     assert _control(result) == {"outcome": "GREEN", "closed": True}
     assert [s.slot_id for s in sub2.calls[0]["slots"]] == ["s1", "s2", "s3"]
     assert "no slot was asked again by the answers (envelope_changed)" in result, "the typed note rides the full dispatch too"
@@ -241,6 +241,99 @@ def test_changed_envelope_with_items_records_the_answers_then_reviews_every_slot
     old = next(w for w in state["waves"] if w["request_fingerprint"] == old_fp)
     assert _ids(old) == [("s1:f1", "reject")]
     assert state["cycles_paid"] == 2 and state["waves"][-1]["request_fingerprint"] != old_fp
+
+
+def test_changed_envelope_beside_answers_refuses_a_fresh_paid_panel(harness, monkeypatch):  # noqa: F811
+    """An OPEN wave's answers survive, but re-typed plan bytes cannot mint a panel by accident."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "5")
+    harness.install({"s1": json.dumps([_finding("f1", "blocking", breaks="claim_1")]),
+                     "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    _call(ctx)
+    old_fp = _state(harness)["waves"][-1]["request_fingerprint"]
+    transport = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    before = load_plan_review_state(harness.drive, ctx.task_id)
+    refused = _call(ctx, plan="A revised outline with the budget line fixed.", review_disposition={
+        "review_fingerprint": old_fp,
+        "items": [_item("s1:f1", "reject", "the budget line is already approved")]})
+    assert "PLAN_REVIEW_ENVELOPE_DIVERGED" in refused and old_fp[:12] in refused
+    assert not transport.calls
+    after = load_plan_review_state(harness.drive, ctx.task_id)
+    assert after["cycles_paid"] == before["cycles_paid"] == 1
+    assert [w["request_fingerprint"] for w in after["waves"]] == [
+        w["request_fingerprint"] for w in before["waves"]]
+    assert after["current_attempt"]["fingerprint"] == old_fp
+    assert _ids(after["waves"][-1]) == [("s1:f1", "reject")]
+
+
+def test_diverged_envelope_with_empty_items_is_guarded(harness, monkeypatch):  # noqa: F811
+    """A collect-like call with a re-typed plan is not consent for a new paid panel."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "5")
+    harness.install({"s1": json.dumps([_question("q1")]), "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    _call(ctx)
+    fp = _state(harness)["waves"][-1]["request_fingerprint"]
+    transport = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    refused = _call(ctx, plan="Same outline, one word changed.", review_disposition={
+        "review_fingerprint": fp, "items": []})
+    assert "PLAN_REVIEW_ENVELOPE_DIVERGED" in refused and not transport.calls
+    assert _state(harness)["current_attempt"]["fingerprint"] == fp
+
+
+def test_pending_open_wave_that_closes_during_collection_still_guards_retyped_envelope(harness, monkeypatch):  # noqa: F811
+    """The user's decision predates $0 collection, which may close the wave."""
+    from tests.test_plan_review_reconciliation import _install_barrier_substrate
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "5")
+    calls: list = []
+    _install_barrier_substrate(monkeypatch, calls, texts={"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    assert _control(_call(ctx)) == {"outcome": "DEGRADED", "closed": False}
+    fp = _state(harness)["waves"][-1]["request_fingerprint"]
+    assert _state(harness)["waves"][-1]["custody_pending"]
+
+    refused = _call(ctx, plan="Changed after first review, without fresh-panel consent.",
+        review_disposition={"review_fingerprint": fp, "items": []})
+    assert "PLAN_REVIEW_ENVELOPE_DIVERGED" in refused
+    assert "closed by collection" in refused
+    assert len(calls) == 2 and calls[1]["reconcile_only"] is True
+    state = _state(harness)
+    assert state["cycles_paid"] == 1 and state["current_attempt"]["fingerprint"] == fp
+    assert state["waves"][-1]["closed"] is True
+
+    deliberate = _call(ctx, plan="Changed after first review, with consent.",
+        review_disposition={"review_fingerprint": fp, "items": [], "confirm_fresh_panel": True})
+    assert "PLAN_REVIEW_ENVELOPE_DIVERGED" not in deliberate
+    assert len(calls) > 2 and calls[-1]["reconcile_only"] is False
+    new_state = _state(harness)
+    assert new_state["current_attempt"]["fingerprint"] != fp
+    assert new_state["waves"][-1]["custody_pending"]  # the new paid cycle counts at collection
+
+
+def test_non_boolean_fresh_panel_confirmation_cannot_buy_a_wave(harness, monkeypatch):  # noqa: F811
+    """A direct caller's truthy string is not the explicit boolean decision."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "5")
+    harness.install({"s1": json.dumps([_question("q1")]), "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    _call(ctx)
+    fp = _state(harness)["waves"][-1]["request_fingerprint"]
+    transport = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    refused = _call(ctx, plan="Changed plan with a false string.", review_disposition={
+        "review_fingerprint": fp, "items": [], "confirm_fresh_panel": "false"})
+    assert "confirm_fresh_panel must be a boolean" in refused
+    assert not transport.calls and _state(harness)["cycles_paid"] == 1
+
+
+def test_plain_changed_plan_without_disposition_still_reviews_every_slot(harness, monkeypatch):  # noqa: F811
+    """A deliberate standalone revision has no named answered wave and needs no confirm."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "5")
+    harness.install({"s1": json.dumps([_question("q1")]), "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    _call(ctx)
+    transport = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    result = _call(ctx, plan="Revised plan with an actual change.")
+    assert _control(result) == {"outcome": "GREEN", "closed": True}
+    assert [s.slot_id for s in transport.calls[0]["slots"]] == ["s1", "s2", "s3"]
 
 
 # ------------------------------------ item 3: the addressed answer re-asks only the named seats
@@ -402,10 +495,9 @@ def test_unaddressable_waves_follow_their_ordinary_rule(harness, monkeypatch):  
 
 
 def test_an_envelope_beside_answers_to_a_closed_wave_is_still_reviewed(harness, monkeypatch):  # noqa: F811
-    """A closed, immutable wave takes no answers, but the envelope beside them is reviewed: the
-    IDENTICAL envelope replays the closed wave free with `wave_closed`; a CHANGED envelope goes to
-    every seat as an ordinary wave (the old wave untouched, the typed note names why nothing was
-    addressed) — never the old closure returned for new bytes."""
+    """A closed wave remains immutable; a changed envelope beside its disposition
+    also needs explicit fresh-panel confirmation, including when items=[]. The
+    identical one replays free and a standalone changed plan stays reviewable."""
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "5")
     harness.install({"s1": json.dumps([_question("q1")]), "s2": CLEAN, "s3": CLEAN})
     ctx = harness.make_ctx()
@@ -418,9 +510,15 @@ def test_an_envelope_beside_answers_to_a_closed_wave_is_still_reviewed(harness, 
     assert "no slot was asked again by the answers (wave_closed)" in identical and "already_closed" not in identical
     assert _ids(_state(harness)["waves"][-1]) == [("s1:q1", "accept")], "the immutable wave took no answer"
     sub2 = harness.install({"s1": json.dumps([_finding("f1", "blocking", breaks="claim_1")]), "s2": CLEAN, "s3": CLEAN})
-    changed = _call(ctx, plan="A revised outline with a new budget line.",
-                    review_disposition={"review_fingerprint": fp, "items": [_item("s1:q1", "defer", "later")]})
-    assert _control(changed) == {"outcome": "REVIEW_REQUIRED", "closed": False}, "the new bytes got their own review"
+    revised = "A revised outline with a new budget line."
+    for items in ([], [_item("s1:q1", "defer", "later")]):
+        refused = _call(ctx, plan=revised, review_disposition={"review_fingerprint": fp, "items": items})
+        assert "PLAN_REVIEW_ENVELOPE_DIVERGED" in refused and not sub2.calls
+        assert _state(harness)["current_attempt"]["fingerprint"] == fp
+    changed = _call(ctx, plan=revised, review_disposition={
+        "review_fingerprint": fp, "items": [_item("s1:q1", "defer", "later")],
+        "confirm_fresh_panel": True})
+    assert _control(changed) == {"outcome": "REVIEW_REQUIRED", "closed": False}, "confirmed new bytes got their own review"
     assert [s.slot_id for s in sub2.calls[0]["slots"]] == ["s1", "s2", "s3"] and "already_closed" not in changed
     assert "no slot was asked again by the answers (envelope_changed)" in changed
     state = _state(harness)

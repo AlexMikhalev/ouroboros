@@ -95,8 +95,8 @@ def test_advisory_author_can_select_current_plan_after_no_dispatch_outcome(harne
 
 
 def test_full_plan_needs_explicit_action_even_with_a_prior_wave(harness, monkeypatch):  # noqa: F811
-    """A changed plan beside a stance (no author_action) is REVIEWED — the stance lands on the
-    critic wave, the envelope goes to the panel — and is never SELECTED as the author plan."""
+    """A changed plan beside a stance (no author_action) needs explicit confirmation to
+    reach a fresh panel; it is never SELECTED as the author plan."""
     h = harness
     h.state["enforcement"] = "advisory"
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
@@ -106,8 +106,13 @@ def test_full_plan_needs_explicit_action_even_with_a_prior_wave(harness, monkeyp
     _call(ctx)
     before = load_plan_review_state(h.drive, ctx.task_id)
     critic_fp = before["waves"][-1]["request_fingerprint"]
-    result = _call(ctx, plan="Changed plan without a finish action.", review_disposition={
+    refused = _call(ctx, plan="Changed plan without a finish action.", review_disposition={
         "review_fingerprint": critic_fp, "items": [],
+        "author_disposition": {"disposition": "partial", "rationale": "This is a stance, not a finish choice."}})
+    assert "PLAN_REVIEW_ENVELOPE_DIVERGED" in refused
+    assert len(transport.calls) == 1 and load_plan_review_state(h.drive, ctx.task_id)["cycles_paid"] == 1
+    result = _call(ctx, plan="Changed plan without a finish action.", review_disposition={
+        "review_fingerprint": critic_fp, "items": [], "confirm_fresh_panel": True,
         "author_disposition": {"disposition": "partial", "rationale": "This is a stance, not a finish choice."}})
     assert "Current author plan saved" not in result and "ERROR:" not in result
     after = load_plan_review_state(h.drive, ctx.task_id)

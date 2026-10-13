@@ -49,7 +49,10 @@ def test_next_step_states_the_answer_route_in_every_open_branch(monkeypatch):
         assert f"plan_task(review_disposition={{review_fingerprint: '{FP}', items: [...]}})" in text
         assert "asks only the slots its items name — one paid cycle 2 of 5" in text
         assert "every other slot keeps its recorded answer at $0" in text and "Whether to buy that cycle is yours" in text
-        assert "supersedes this wave (its recorded answers stay); the identical one replays free" in text
+        assert "confirm_fresh_panel=true explicitly orders a full new panel" in text
+        assert "without it PLAN_REVIEW_ENVELOPE_DIVERGED refuses at $0" in text
+        assert "without review_disposition supersedes this wave (recorded answers stay)" in text
+        assert "the identical one replays free" in text
         for stale in ("reaches reviewers on the next paid cycle", "rides into the next paid delta cycle",
                       "can no longer be dispositioned", "Swarm", "accept ⇒ change the spec"):
             assert stale not in text, stale
@@ -104,6 +107,7 @@ def test_blocking_reminder_states_the_answer_route():
     assert "do not rerun reviewers" not in held and "Implementation stays held" in held
     revise = plan_review_reminder({"outcome": "REVISE_PLAN", "status": "open", "cycles_paid": 1})
     assert "asks only the slots those items name" in revise and "a new envelope every slot reviews" in revise
+    assert "beside a disposition with confirm_fresh_panel=true" in revise
     assert "a task-wide rail releases finalization, never implementation" in revise
     assert "rail fires" not in revise and "rail fires" not in plan_review_reminder({"outcome": "", "status": "open"})
 

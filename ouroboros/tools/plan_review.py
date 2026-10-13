@@ -23,7 +23,10 @@ finding), under blocking it stays open until a changed spec is reviewed or the
 reviewer retires it; a REVIEW_REQUIRED whose open set empties is recorded GREEN.
 REVISE_PLAN never closes by disposition. Answers merge by ``finding_id`` across
 calls; an envelope sent with ``review_disposition`` items records them first and
-is then reviewed; no host path buys a panel the mind did not send. Under
+is then reviewed — an envelope whose composed fingerprint diverged from the
+answered wave is refused at $0 (PLAN_REVIEW_ENVELOPE_DIVERGED) unless
+confirm_fresh_panel=true orders the fresh panel; no host path buys a panel the
+mind did not send. Under
 blocking enforcement an open wave HOLDS
 finalization (``owner_hurry.force_plan_decision``); at the cap the typed
 ``plan_review_cycles_exhausted`` result + event leave the honest exits: owner
@@ -237,7 +240,9 @@ _DISPOSITION_SCHEMA = {
         "every other answer stays). Beside goal/plan/spec the answers are recorded first and the envelope "
         "is then reviewed: the unchanged envelope asks again ONLY the slots whose findings the items name, "
         "in one paid cycle, and every other slot keeps its recorded answer at $0; a changed envelope is "
-        "reviewed by every slot with the answers in view. With author_action=finish|stop the items are "
+        "reviewed by every slot with the answers in view only when confirm_fresh_panel=true orders it; "
+        "without the confirm a diverged envelope beside answers is refused at $0 "
+        "(PLAN_REVIEW_ENVELOPE_DIVERGED). With author_action=finish|stop the items are "
         "recorded and the current goal/plan/spec may be selected without a new reviewer. While the wave "
         "still has reviewer slots in flight this call first COLLECTS what has settled at $0 without "
         "waiting (items may be []); to wait longer, re-submit the same envelope. A note or need_evidence "
@@ -250,6 +255,11 @@ _DISPOSITION_SCHEMA = {
     ),
     "properties": {
         "review_fingerprint": {"type": "string"},
+        "confirm_fresh_panel": {"type": "boolean", "default": False,
+            "description": ("Required true when the goal/plan/spec sent beside these answers genuinely differ "
+                             "from the answered wave. Without it, a re-typed envelope whose composed fingerprint "
+                             "diverges is refused at $0 (PLAN_REVIEW_ENVELOPE_DIVERGED) instead of silently "
+                             "dispatching a fresh paid panel; the answers stay recorded on the named wave.")},
         "author_disposition": plan_spec.AUTHOR_DISPOSITION_SCHEMA,
         "author_action": {"type": "string", "enum": ["none", "finish", "stop"], "default": "none",
                           "description": "Default none means no author action, even if author_disposition is filled; collect or answer findings only. finish/stop explicitly select the current plan. stop permits unfinished finalization only; finish never overrides Blocking review."},
@@ -286,7 +296,9 @@ def get_tools():
                     "element they break. The host aggregates: GREEN means no blocking finding and no open "
                     "need_evidence; notes never change the verdict. REVISE_PLAN needs a changed spec "
                     "or your answer re-judged by the originating slot. See review_disposition for free "
-                    "answers, closure rules and paid re-asks. Paid cycles obey the owner's Max review "
+                    "answers, closure rules and paid re-asks. A changed envelope beside answers is refused "
+                    "at $0 with PLAN_REVIEW_ENVELOPE_DIVERGED unless confirm_fresh_panel=true explicitly "
+                    "orders a new full panel. Paid cycles obey the owner's Max review "
                     "cycles. An unchanged envelope replays free; host-attached need_evidence makes it "
                     "new, and changed reviewer_effort re-dispatches an OPEN panel (a CLOSED review "
                     "stands for its envelope). Blocking holds implementation while review is open; "
@@ -371,7 +383,7 @@ def _handle_plan_task(ctx: ToolContext, **params) -> str:
     # refused beside that plan on every turn (seen live).
     disposition_vacuous = False
     if (isinstance(raw_disposition, dict)
-            and not set(raw_disposition) - {"review_fingerprint", "items", "author_disposition", "author_action"}
+            and not set(raw_disposition) - {"review_fingerprint", "items", "author_disposition", "author_action", "confirm_fresh_panel"}
             and raw_disposition.get("author_action", "none") == "none"):
         author = raw_disposition.get("author_disposition")
         author_vacuous = author is None or (
@@ -402,9 +414,15 @@ def _handle_plan_task(ctx: ToolContext, **params) -> str:
         if prepared.get("error"):
             return _typed_refusal(ctx, str(prepared.get("code") or "TOOL_ARG_ERROR"), prepared["error"])
         fp = str(raw_disposition.get("review_fingerprint") or "").strip()
+        if ("confirm_fresh_panel" in raw_disposition
+                and not isinstance(raw_disposition["confirm_fresh_panel"], bool)):
+            return _typed_refusal(ctx, "TOOL_ARG_ERROR",
+                "ERROR: PLAN_REVIEW_DISPOSITION_INVALID: confirm_fresh_panel must be a boolean")
+        confirm = raw_disposition.get("confirm_fresh_panel") is True
         return _apply_disposition(ctx, raw_disposition, then_review=lambda items, *, was_open: _review(
             ctx, request, address={"review_fingerprint": fp, "was_open": was_open,
-                                   "finding_ids": [i["finding_id"] for i in items]} if items else None))
+                                   "finding_ids": [i["finding_id"] for i in items]} if items else None,
+            answered={"fingerprint": fp, "was_open": was_open, "confirm_fresh_panel": confirm}))
     if "review_disposition" in params and not envelope_fields:
         return _typed_refusal(
             ctx, "TOOL_ARG_ERROR",
@@ -421,9 +439,10 @@ def _request_of(params: dict) -> "_PlanRequest":
     )
 
 
-def _review(ctx: ToolContext, request: "_PlanRequest", address: Optional[dict] = None) -> str:
+def _review(ctx: ToolContext, request: "_PlanRequest", address: Optional[dict] = None,
+            answered: Optional[dict] = None) -> str:
     try:  # the ToolEntry envelope is the outer settlement bound (plan_review_collect.run_plan_coroutine)
-        coroutine = (_run_plan_review_async(ctx, request, address=address) if address is not None
+        coroutine = (_run_plan_review_async(ctx, request, address=address, answered=answered) if answered is not None
                      else _run_plan_review_async(ctx, request))  # a plain review keeps its two-argument shape
         return _collect.run_plan_coroutine(coroutine)
     except Exception as e:
@@ -691,10 +710,37 @@ def _plan_slots_for_wave(ctx: ToolContext, slots_fn: Any, existing: dict, resume
     return slots, ""
 
 
+def _envelope_divergence_refusal(
+    ctx: ToolContext, *, answered: dict, fingerprint: str, state: dict, spec: dict,
+) -> Optional[str]:
+    """Refuse an accidental panel over a current named wave, open or closed."""
+    answered_fp = str(answered.get("fingerprint") or "")
+    if (answered.get("confirm_fresh_panel") or not answered_fp or answered_fp == fingerprint):
+        return None
+    named_wave = plan_review_wave(state, answered_fp)
+    attempt = state.get("current_attempt") if isinstance(state.get("current_attempt"), dict) else {}
+    if named_wave is None or str(attempt.get("fingerprint") or "") != answered_fp:
+        return None  # superseded/unknown waves follow the ordinary stale rule
+    recorded_hash = str(named_wave.get("spec_hash") or "")
+    what = ("the spec changed" if recorded_hash and recorded_hash != plan_spec.spec_hash(spec)
+            else "goal, plan or evidence identity moved")
+    wave_state = "closed by collection" if named_wave.get("closed") else "open"
+    return _typed_refusal(ctx, "TOOL_ARG_ERROR",
+        "ERROR: PLAN_REVIEW_ENVELOPE_DIVERGED: the disposition targeted wave "
+        f"{answered_fp[:12]}, but the envelope beside it composes a different "
+        f"fingerprint {fingerprint[:12]} ({what}) — that would dispatch a fresh paid "
+        "panel without explicit confirmation. Any answers recorded on the named wave "
+        f"remain there; it is still current ({wave_state}). To review a genuinely changed plan, re-send it with "
+        "confirm_fresh_panel=true (every slot reviews the new envelope with the answers in "
+        "view); to answer or collect the recorded wave alone, send review_disposition "
+        "without goal/plan/spec.")
+
+
 async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest, *, collect: Optional[dict] = None,
-                                 address: Optional[dict] = None) -> str:
+                                 address: Optional[dict] = None, answered: Optional[dict] = None) -> str:
     """``collect`` = the recorded inputs of an open wave being collected at $0 (window 0);
-    ``address`` = the answers just recorded beside this envelope (the addressed re-ask)."""
+    ``address`` = answers just recorded beside this envelope (the addressed re-ask);
+    ``answered`` = the named wave and explicit fresh-panel choice, even with empty items."""
     try:
         state_root, task_id = _planning_state_location(ctx)
     except ValueError as exc:
@@ -720,7 +766,12 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest, *, col
         state = load_plan_review_state(state_root, task_id)
     except (OSError, TimeoutError, ValueError, StoreError) as exc:
         return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_INVALID: {exc}")
-    if collect is None:  # I3 reconcile-before-supersede: collect an in-flight wave at $0 first
+    if collect is None:
+        refusal = _envelope_divergence_refusal(
+            ctx, answered=answered or {}, fingerprint=fingerprint, state=state, spec=spec)
+        if refusal is not None:
+            return refusal
+        # I3 reconcile-before-supersede: collect an in-flight wave at $0 first.
         state = await _collect.collect_before_supersede(ctx, state_root=state_root, task_id=task_id, state=state, fingerprint=fingerprint)
     enforcement = get_review_enforcement()
     cap = review_max_cycles()
@@ -1146,9 +1197,9 @@ def _apply_author_subject(ctx: ToolContext, disposition: dict, envelope: Optiona
 
     items: List[dict] = []
     try:
-        if set(disposition) - {"review_fingerprint", "items", "author_disposition", "author_action"}:
+        if set(disposition) - {"review_fingerprint", "items", "author_disposition", "author_action", "confirm_fresh_panel"}:
             raise ValueError("unknown disposition fields: " + _argument_values(disposition,
-                sorted(set(disposition) - {"review_fingerprint", "items", "author_disposition", "author_action"})))
+                sorted(set(disposition) - {"review_fingerprint", "items", "author_disposition", "author_action", "confirm_fresh_panel"})))
         action = disposition.get("author_action", "finish")
         if action not in ("finish", "stop"):
             raise ValueError("author_action must be none, finish or stop; none uses collection mode")
@@ -1294,7 +1345,7 @@ def _apply_disposition(ctx: ToolContext, disposition: dict, *, then_review=None)
     def _bad(text: str) -> str:  # every refusal below is an argument-shape refusal
         return _typed_refusal(ctx, "TOOL_ARG_ERROR", text)
 
-    unknown = sorted(str(k) for k in disposition if k not in {"review_fingerprint", "items", "author_disposition"})
+    unknown = sorted(str(k) for k in disposition if k not in {"review_fingerprint", "items", "author_disposition", "confirm_fresh_panel"})
     if unknown:
         return _bad("ERROR: PLAN_REVIEW_DISPOSITION_INVALID: unknown fields: " + ", ".join(unknown))
     fingerprint = str(disposition.get("review_fingerprint") or "").strip()
@@ -1327,15 +1378,16 @@ def _apply_disposition(ctx: ToolContext, disposition: dict, *, then_review=None)
             f"claimed={fingerprint}). Re-call plan_task with the spec you want reviewed. "
             "No plan attempt was recorded.",
         )
+    was_open_at_entry = not wave.get("closed")  # collection may close it before the envelope is judged
     if wave.get("custody_pending"):  # collection = the $0 custody reconcile of the addressed wave (window 0)
         try:
             text, state, wave = _collect.collect_wave_sync(ctx, state_root=root, task_id=task_id, wave=wave)
         except PlanReviewSourceUnavailable as exc:
             return _plan_unavailable(ctx, str(exc), "plan_review_exact_artifact_unavailable")
         if not disposition.get("items") and not disposition.get("author_disposition"):
-            return then_review([], was_open=not wave.get("closed")) if then_review is not None else text
+            return then_review([], was_open=was_open_at_entry) if then_review is not None else text
         cycles_paid = int(state.get("cycles_paid") or 0)
-    was_open = not wave.get("closed")  # a closure this call causes never cancels its requested exchange
+    was_open = was_open_at_entry  # collection or these answers cannot erase the request's starting intent
     if wave.get("closed") and not plan_review_notes_are_annotatable(wave):
         if then_review is not None:
             # The already-closed exit applies only when no envelope is present: a closed, immutable
@@ -1343,7 +1395,7 @@ def _apply_disposition(ctx: ToolContext, disposition: dict, *, then_review=None)
             # an ordinary wave, the identical one as the free replay with its typed note).
             ctx.emit_progress_fn("📐 Plan review: the named wave is closed and takes no answers; reviewing the envelope.")
             named = [{"finding_id": str(i.get("finding_id") or "")} for i in disposition.get("items") or [] if isinstance(i, dict)]
-            return then_review(named, was_open=False)  # the unrecorded answers still name what was not addressed
+            return then_review(named, was_open=was_open_at_entry)  # collection may have just closed this wave
         return _publish_rendered_wave(ctx, wave, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
                                       cached=True,
                                       notes=["already_closed: this wave is closed; the disposition is not re-applied"])
