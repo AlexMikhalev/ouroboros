@@ -479,15 +479,32 @@ def admit_delegated_start(drive_root: Any, payload: Dict[str, Any]) -> bool:
     claim must be reconciled using its existing idempotency key.
     """
     from types import SimpleNamespace
+    from ouroboros._usage_wait import retry_presend
     from ouroboros.delegate_custody import emit, START_REQUESTED
+    from ouroboros.model_wait import current_model_wait
     from ouroboros.usage_admission import task_billing_fields
+    from ouroboros.utils import utc_now_iso
 
     source = SimpleNamespace(drive_root=drive_root, task_id=str(payload.get("task_id") or ""),
                              root_task_id=str(payload.get("root_task_id") or payload.get("task_id") or ""))
     binding = task_billing_fields({"id": source.task_id}, source.root_task_id, None, drive_root)
+    payload = {"ts": utc_now_iso(), "event_id": uuid.uuid4().hex, **payload}
     payload["billing_group"] = {k: v for k, v in binding.items() if k.startswith("billing_group_")}
-    with launch_admission(source):
-        return emit(drive_root, START_REQUESTED, payload)
+    retrying = False
+
+    def claim_once():
+        nonlocal retrying
+        owner = current_model_wait()
+        if retrying and owner is not None:
+            reason = owner.control_reason()
+            if reason:
+                from ouroboros.llm_attempt import PhysicalDispatchInterrupted
+                raise PhysicalDispatchInterrupted(reason)
+        retrying = True
+        with launch_admission(source, wait=False):
+            return emit(drive_root, START_REQUESTED, payload, propagate_contention=True)
+
+    return retry_presend(claim_once, check=False)  # The POST remains outside this unsent claim.
 
 
 def _member_coordinates(source: Any) -> Tuple[str, str, str]:

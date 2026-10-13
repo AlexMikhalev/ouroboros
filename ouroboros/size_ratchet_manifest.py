@@ -136,6 +136,7 @@ BAND_PATHS = {
     "ouroboros/memory_view.py": "Selected accounts and records told through them share the existing story and room capture; account-block rendering is already isolated in memory_view_account.",
     "ouroboros/model_wait.py": "The existing task wait owner coordinates confirmed resource waits, owner controls and warm/cold sleep through shared clocks and custody; keeping their wake and interruption rules together preserves one authority path.",
     "ouroboros/observability.py": "Owns forensic call and blob storage, exact-version readers and result-reference custody; graph traversal is independently owned by source_retention.",
+    "ouroboros/owner_pause.py": "The existing launch-admission owner keeps ordinary tool and delegated-start claims under the same Pause boundary, with positive pre-effect contention retried outside its holds and no replay of handed work.",
     "ouroboros/preflight_runner.py": None,
     "ouroboros/presence_runner.py": "Presence turn admission, durable retry identity and transport custody remain one owner; separating them now would duplicate the gate and receipt seam.",
     "ouroboros/project_dialogue.py": "Shrank INTO the band from 1587 lines: the dead authored_root_summary writer was removed with the old dialogue memory writer; no new content.",
