@@ -40,6 +40,16 @@ def test_auth_block_and_origin_rejection_share_status_not_disposition(tmp_path):
     assert json.loads(origin.body)["code"] == "presence_origin_mismatch"
 
 
+def test_general_binding_never_admits_a_topic_event(tmp_path):
+    app, binding, _ctx = _presence_app(tmp_path, _answer)
+    event = _event("topic-in-general")
+    event["thread_id"] = "42"
+    response = asyncio.run(host_service._api_presence_turn(
+        _request(app, {"binding_id": binding, "event": event})))
+    assert response.status_code == 403
+    assert json.loads(response.body)["code"] == "presence_origin_mismatch"
+
+
 @pytest.mark.parametrize("code,disposition", [
     ("chat_log_unwritable", "retry"),
     ("presence_result_missing", "retry"),
