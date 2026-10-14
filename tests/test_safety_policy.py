@@ -158,6 +158,30 @@ def test_declared_policy_fills_only_unlisted_names(monkeypatch, tool_name, decla
     assert len(stub.calls) == llm_calls
 
 
+def test_registry_passes_the_entry_declaration(tmp_path, monkeypatch):
+    """First-party dispatch hands the real router its entry's declaration: the
+    declared twin reaches no Supervisor call, the undeclared one reaches one."""
+    import ouroboros.safety as safety
+    from ouroboros.tools.registry import ToolEntry, ToolRegistry
+
+    supervised = []
+
+    def supervisor(name, *_args, **_kwargs):
+        supervised.append(name)
+        return True, ""
+
+    monkeypatch.setattr(safety, "_run_llm_check", supervisor)
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    for name, declared in (("declared_fixture", "skip"), ("plain_fixture", "")):
+        registry.register(ToolEntry(name, {
+            "name": name, "description": "fixture",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        }, lambda _ctx: "ok", safety_policy=declared))
+        assert registry.execute_result(name, {}).status == "ok"
+
+    assert supervised == ["plain_fixture"]
+
+
 def test_run_shell_conditional_safe_subject_skips_llm(monkeypatch):
     """run_shell with a whitelisted subject (e.g. pytest) must not hit the LLM."""
     from ouroboros.safety import check_safety
