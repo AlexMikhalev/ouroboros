@@ -966,7 +966,8 @@ def test_the_sweep_retry_runs_on_its_own_thread_and_never_blocks_the_tick(monkey
         sm._periodic_supervisor_maintenance([0.0], [time.time()])  # returns while the ensure is held
         assert entered.wait(5), "the retry thread reached the ensure"
         assert [thread.name for thread in threads if thread.name != "schedule-admission"] == ["custody-maintenance", "owned-daemon-latch-retry"]
-        assert threads[1].daemon and threads[1].is_alive(), "exactly one retry thread, still in the ensure"
+        retry = next(thread for thread in threads if thread.name == "owned-daemon-latch-retry")
+        assert retry.daemon and retry.is_alive(), "exactly one retry thread, still in the ensure"
     finally:
         release.set()
         for thread in threads:
