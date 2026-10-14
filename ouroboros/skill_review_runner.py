@@ -948,6 +948,8 @@ def _outcome_payload(
         "extension_load_error": getattr(outcome, "extension_load_error", None),
         "extension_live_loaded": getattr(outcome, "extension_live_loaded", None),
     }
+    if getattr(outcome, "dispatch_refusal_code", ""):
+        payload["dispatch_refusal_code"] = outcome.dispatch_refusal_code
     if getattr(outcome, "convergence_hint", ""):
         payload["convergence_hint"] = outcome.convergence_hint
     if job is not None:

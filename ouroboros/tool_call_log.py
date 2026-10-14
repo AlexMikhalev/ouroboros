@@ -29,7 +29,7 @@ import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
-from ouroboros.utils import append_jsonl
+from ouroboros.utils import append_jsonl, truncate_for_log
 
 CALL_STARTED = "tool_call_started"
 CALL_SETTLED = "tool_call"
@@ -221,8 +221,28 @@ def replay_evidence(drive_root: pathlib.Path, task_id: str, want: int = 200, *, 
                 observations.append({**base, "fact": fact, "live": False,
                     "receipt": base["receipt"] or row.get("completion_control") is True,
                     "status": ("error" if row.get("is_error") else "ok") if slot == "settled" else "unknown",
-                    "hostError": row.get("status") == "host_error"})
+                    "hostError": row.get("status") == "host_error",
+                    # The row's own recorded host time, as written; a row without one stays without
+                    # (never reconstructed), so a reader can order a call by its first observation.
+                    **({"ts": row["ts"]} if isinstance(row.get("ts"), str) and row["ts"] else {}),
+                    **(_check_verdict(row) if slot == "settled" else {})})
     return {"observations": observations, "legacy": legacy, "coverage": coverage}
+
+
+def _check_verdict(row: Dict[str, Any]) -> Dict[str, Any]:
+    """A settled check's recorded criterion verdict, so replay can draw the same
+    failed-check row as the live card (#1585): the producer's typed fact, its
+    process facts, and the live frame's bounded preview for a failure only."""
+    meta = row.get("tool_result_meta")
+    verification = meta.get("verification") if isinstance(meta, dict) else None
+    if not isinstance(verification, dict):
+        return {}
+    out = {"verification": verification,
+           **{key: row[key] for key in ("exit_code", "signal", "timed_out") if key in row}}
+    if verification.get("status") == "fail":
+        # Head+tail of the stored 2000-char preview at 500 is the live frame's own preview.
+        out["result_preview"] = truncate_for_log(str(row.get("result_preview") or ""), 500)
+    return out
 
 
 def replay_evidence_for_tasks(drive_root: pathlib.Path, task_ids: Iterable[str]) -> Dict[str, dict]:

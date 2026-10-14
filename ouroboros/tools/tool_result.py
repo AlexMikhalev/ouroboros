@@ -938,6 +938,26 @@ _EXACT_IDENTIFIER_CODES = MappingProxyType(
         "RUN_SCRIPT_BLOCKED": "RUN_SCRIPT_BLOCKED",
         "REVIEW_BLOCKED": "REVIEW_BLOCKED",
         "GIT_ERROR": "GIT_ERROR",
+        # #1657: source-confirmed refusals/failures with invariant meanings.
+        # These reuse existing codes; no suffix rule or custody/completion fact
+        # is inferred from text. In particular, conflict/partial/overflow and
+        # interrupted publication can follow effects that must be retained.
+        "SEND_LINKS_NO_CHAT": "LEGACY_UNAVAILABLE",
+        "SEND_LINKS_TOO_MANY": "TOOL_ARG_ERROR",
+        "ESCALATE_PARENT_SETTLED": "LEGACY_UNAVAILABLE",
+        "ESCALATE_UNWRITTEN": "TOOL_ERROR",
+        "FILE_TOO_LARGE": "TOOL_ARG_ERROR",
+        "SKILL_EXEC_EXTENSION": "TOOL_ARG_ERROR",
+        "SKILL_EXEC_GRANT_REQUIRED": "LEGACY_BLOCKED",
+        "SKILL_EXEC_ARGV_TOO_LARGE": "TOOL_ARG_ERROR",
+        "SKILL_EXEC_OVERFLOW": "TOOL_ERROR",
+        "SKILL_REPAIR_STALE": "LEGACY_BLOCKED",
+        "SERVICE_ALREADY_RUNNING": "LEGACY_BLOCKED",
+        "CHERRY_PICK_CONFLICT": "TOOL_ERROR",
+        "RESTORE_PARTIAL": "TOOL_ERROR",
+        "EVOLUTION_AUTHORITY_REVOKED": "LEGACY_BLOCKED",
+        "EVOLUTION_COMMIT_ORPHANED": "TOOL_ERROR",
+        "EVOLUTION_PUBLICATION_STOPPED": "LEGACY_BLOCKED",
     }
 )
 

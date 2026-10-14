@@ -182,6 +182,8 @@ def _handle_task_acceptance_review(
     reviewer_slot_id: str = "",
     late_review: Optional[dict] = None,
 ) -> str:
+    from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+
     if late_review is not None:
         from ouroboros.acceptance_late import owner_historical_acceptance
         from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
@@ -422,20 +424,23 @@ def _handle_task_acceptance_review(
     try:
         slots = triad_delivery_slots(role_hint="task acceptance")
     except ValueError as exc:
-        return json.dumps({
-            "status": "not_dispatched",
-            "error": f"invalid review pool configuration blocks task acceptance: {exc}",
-        }, ensure_ascii=False)
+        return _publish_tool_result(ctx, ToolResult(status="unavailable", code="LEGACY_UNAVAILABLE",
+            text=json.dumps({
+                "status": "not_dispatched",
+                "error": f"invalid review pool configuration blocks task acceptance: {exc}",
+            }, ensure_ascii=False)))
     if not is_root_task:
         from ouroboros.reviewer_slot_config import child_acceptance_slots
 
         slots, refusal = child_acceptance_slots(slots, reviewer_slot_id)
         if refusal:
-            return json.dumps(refusal, ensure_ascii=False)
+            return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
+                text=json.dumps(refusal, ensure_ascii=False)))
     if not slots:
-        return json.dumps({"status": "not_dispatched", "reason": "no_review_slots",
+        return _publish_tool_result(ctx, ToolResult(status="unavailable", code="LEGACY_UNAVAILABLE",
+            text=json.dumps({"status": "not_dispatched", "reason": "no_review_slots",
                            "detail": "no triad reviewer row is configured; no reviewer was called"},
-                          ensure_ascii=False)
+                          ensure_ascii=False)))
     retrieving = [slot for slot in slots if slot.retrieves]
     if retrieving:
         from ouroboros.acceptance_retrieving import acceptance_retrieving_work_order
@@ -1442,7 +1447,9 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
             "Review enforcement=Advisory: review is pending; collect its outcome before choosing an author continuation. ",
         )
         if pending_block is not None:
-            return pending_block
+            from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+            return _publish_tool_result(ctx, ToolResult(status="ok", code="OK",
+                text=pending_block, meta={"review_pending": True}))
     failed_actors = [_review_actor_label(r) for r in triad_raw
                      if r.get("status") not in ("responded", "not_dispatched")]
     quorum = verdict["quorum"]

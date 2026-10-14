@@ -241,17 +241,20 @@ def test_facts_line_names_room_money_and_tariff_as_known_or_unknown(tmp_path, mo
     context.messages.extend(_tool("one"))
     before = [dict(m) for m in context.messages]
     monkeypatch.setattr(loop, "_measure_round_main_fit", _measure_cycle([_fit(profile="owner_low", mode="low")]))
-    assert append_context_facts(context, money={"budget_remaining_usd": 12.5, "quota": "3 of 10 this hour"}) is True
+    assert append_context_facts(context, money={"wallet": {"status": "known", "remaining_usd": 12.5},
+                                                "quota": "3 of 10 this hour"}) is True
     assert context.messages[:-1] == before  # appended as a new tail row, nothing before it rewritten
     line = context.messages[-1]["content"]
     assert context.messages[-1]["role"] == "user" and context.messages[-1][HOST_CONTEXT_KIND_KEY] == CONTEXT_FACTS_NAME
-    assert line.startswith(f"{CONTEXT_FACTS_HEADER} round 1 |")
+    assert line.startswith(f"{CONTEXT_FACTS_HEADER} round 1 ")
     assert "model same-model" in line and "mode low" in line
     usage = context.accumulated_usage
     free = 250_000 - usage["_context_prompt_estimate"] - usage["_context_reply_allowance_tokens"]
     for part in ("window 500,000", "target 250,000", "input ~120,000 before this line (cold_estimate)",
-                 f"free {free:,}", "largest unit:2:3:", "cost unknown", "budget left $12.50",
-                 "quota 3 of 10 this hour", "tariff unknown"):
+                 f"free {free:,}", "largest unit:2:3:", "own cost unknown",
+                 "shared wallet $12.50 known headroom (unreserved; shared with other tasks)",
+                 "quota 3 of 10 this hour", "tariff unknown", "elapsed unknown (no recorded start)",
+                 "no execution limit", "observed tool results 0 (0 errored)"):
         assert part in line, part
     assert "should" not in line and "compact" not in line.lower()  # facts, no advice
     assert append_context_facts(context) is False and len(context.messages) == len(before) + 1  # identical round/route/body/schema
@@ -260,10 +263,15 @@ def test_facts_line_names_room_money_and_tariff_as_known_or_unknown(tmp_path, mo
     context.context_fit_plan.provider = "openai"
     monkeypatch.setattr(pricing, "get_pricing",
                         lambda *, provider, allow_live_fetch, model="": {"same-model": (2.0, 0, 0, 10.0)})
-    assert append_context_facts(context, money={"ceiling_usd": 40, "tree_line": "tree $3.00 of $40.00"}) is True
+    from ouroboros.task_pacing import CostCeiling
+
+    assert append_context_facts(context, money={
+        "cost_ceiling": CostCeiling(state="disabled", root_cap_usd=40.0),
+        "tree": {"settled_usd": 3.0, "accounted_usd": 3.0, "root_limit_usd": 40.0}}) is True
     second = context.messages[-1]["content"]
-    assert "round 2" in second and "recorded cost $1.23 (total not final)" in second
-    assert "ceiling $40.00" in second and "tree $3.00 of $40.00" in second
+    assert "round 2" in second and "own recorded cost $1.23 (total not final)" in second
+    assert "Task tree spend: ~$3.00 of $40.00 hard tree cap" in second
+    assert "shared wallet unknown (not observed)" in second
     assert "tariff $2.00/M in, $10.00/M out" in second and "quota unknown" in second
     unbound = _ctx(tmp_path)
     unbound.context_fit_plan = None

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+from ouroboros.tools.tool_result import (
+    ToolResult, _publish_tool_result, _published_tool_result, _replace_tool_result,
+)
 
 import copy
 import json
@@ -1165,6 +1167,9 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
                 duration_sec=0.0,
                 phase="preflight",
             )
+            if block_reason == "overlap_guard":
+                return _publish_tool_result(ctx, ToolResult(
+                    status="blocked", code="LEGACY_BLOCKED", text=error))
             return error
     if not bool(getattr(ctx, "_review_resume_pending", False)):
         _record_commit_attempt(ctx, commit_message, "reviewing")
@@ -1306,7 +1311,11 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
                 _, authority_error = _check_evolution_commit_stage(ctx, commit_message, _commit_start, phase="pre_tag_authority", commit_sha=commit_sha)
                 if authority_error:
                     containment = _preserve_evolution_orphan(ctx, commit_sha)
-                    return f"{authority_error}\n\n{containment}"
+                    message = f"{authority_error}\n\n{containment}"
+                    containment_result = _published_tool_result(ctx, None)
+                    if isinstance(containment_result, ToolResult) and containment_result.text == containment:
+                        return _publish_tool_result(ctx, _replace_tool_result(containment_result, text=message))
+                    return message
             reviewed_tag = str(reviewed_binding.get("expected_tag") or "")
             try:
                 tag_info = run_operation(

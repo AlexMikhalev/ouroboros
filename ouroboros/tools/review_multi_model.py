@@ -182,10 +182,16 @@ def _handle_multi_model_review(ctx: ToolContext, content: str = "",
                                                            routes, session_task, session_root, row_plan,
                                                            surface, session_policy, usage_attribution,
                                                            retry_key, task_evidence, layer=layer, checking_source=checking_source))
-        return json.dumps(result, ensure_ascii=False)
+        text = json.dumps(result, ensure_ascii=False)
+        if "error" in result:
+            from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+            return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=text))
+        return text
     except Exception as e:
         log.error("Multi-model review failed: %s", e, exc_info=True)
-        return json.dumps({"error": f"Review failed: {e}"}, ensure_ascii=False)
+        from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
+            text=json.dumps({"error": f"Review failed: {e}"}, ensure_ascii=False)))
 
 
 async def _query_model(
@@ -324,6 +330,9 @@ async def _multi_model_review_async(content: str, prompt: str,
                                      layer: str = "body", checking_source: dict = None):
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.reviewer_slot_config import row_plan_retrieves
+
+    if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
+        return {"error": "models must be a list of strings"}
 
     row_routes = list(routes or []) + [ReviewRouteKind.API_CHAT] * max(0, len(models) - len(routes or []))
     # Per-row strength/target/identity vectors (6.1). Absent tails keep the

@@ -103,6 +103,7 @@ import {
     updateLiveTimelineItem,
     upsertToolFoldRow,
 } from './chat_render_batch.js';
+import { placeCheckRow, placeReplayedEvidence } from './verification_presentation.js';
 import {
     COLLAPSED_ACTIVITY_MAX,
     boundActivityPreview,
@@ -787,8 +788,8 @@ export function createChatInstance({
             const summary = noteToolHostMetrics(record, { calls, errors, routing, completion, counts: metrics.tool_call_counts, evidence: metrics.tool_evidence });
             record.toolCalls = summary.calls;
             record.toolErrors = summary.errors;
-            const { timelineUpdate } = upsertToolFoldRow(record, summary, normalizeLogTs(rawTs), rawTs);
-            const changed = !['none', 'duplicate-skip'].includes(timelineUpdate) && renderLiveCardTimeline(record);
+            const changed = placeReplayedEvidence(record, summary, metrics.tool_evidence, rawTs, normalizeLogTs)
+                && renderLiveCardTimeline(record);
             updateLiveCardCount(record);
             renderLiveCardMeta(record);
             reanchorTaskCard(record, rawTs, { suppressDomInsert });
@@ -804,24 +805,20 @@ export function createChatInstance({
     const cancelableTaskIds = new Set();
 
     function queueTaskLiveUpdate(summary, taskId, ts, dedupeKey = '', rawTs = '') {
-        return withStableViewport(() => queueTaskLiveUpdateMutation(
-            summary, taskId, ts, dedupeKey, rawTs,
-        ));
-    }
-
-    function queueTaskLiveUpdateMutation(summary, taskId, ts, dedupeKey = '', rawTs = '') {
-        // Explicit task/review identity owns a card; viewport position never does.
-        if (!taskId) return false;
-        let changed = false;
-        const record = liveCardRecords.get(taskId);
-        // Only reusable slots replace finished cards; other late frames update
-        // cost/model facts in applyLiveCardState without reviving the phase.
-        if (!_historyRow && record?.finished && REUSABLE_TASK_IDS.has(taskId)
-                && !isTerminalTaskPhase(summary.phase || '', summary.terminal)) {
-            changed = Boolean(record.root?.isConnected);
-            disposeLiveCard(taskId);
-        }
-        return Boolean(applyLiveCardState(summary, taskId, ts, dedupeKey, { rawTs }) || changed);
+        return withStableViewport(() => {
+            // Explicit task/review identity owns a card; viewport position never does.
+            if (!taskId) return false;
+            let changed = false;
+            const record = liveCardRecords.get(taskId);
+            // Only reusable slots replace finished cards; other late frames update
+            // cost/model facts in applyLiveCardState without reviving the phase.
+            if (!_historyRow && record?.finished && REUSABLE_TASK_IDS.has(taskId)
+                    && !isTerminalTaskPhase(summary.phase || '', summary.terminal)) {
+                changed = Boolean(record.root?.isConnected);
+                disposeLiveCard(taskId);
+            }
+            return Boolean(applyLiveCardState(summary, taskId, ts, dedupeKey, { rawTs }) || changed);
+        });
     }
 
     async function turnTaskIntoProject(record) {
@@ -1673,6 +1670,7 @@ export function createChatInstance({
         if (closedPhase && !initialContent) {
             if (foldView) {
                 upsertToolFoldRow(record, foldView, ts, rawTs);
+                if (summary.dedupeKey?.endsWith(':check')) placeCheckRow(record, summary, ts, rawTs);
                 renderLiveCardTimeline(record);
                 updateLiveCardCount(record);
             }
