@@ -272,7 +272,7 @@ ouroboros/ — agent core and shared runtime (§6)
   review_records.py, review_verdict.py, review_projection.py, review_evidence_sections.py, repo_diff_capture.py — Panel records, verdict reducers, redacted projections, acceptance evidence and the single tree capture shared by preview and exact source (§6 Task acceptance; Review ledger record)
   review_ledger.py — Durable per-wave review records (`state/review_ledger/<record_id>.json`; §6 Review ledger record)
   review_body_fact.py — Own-body identity and the checklist layer it selects (§6 Change review on any root)
-  review_cycles.py — Shared paid-cycle cap SSOT (`OUROBOROS_REVIEW_MAX_CYCLES`); the four per-gate meanings: §6 Review stack (§10 invariant 17)
+  review_cycles.py — Shared paid-cycle cap SSOT (`OUROBOROS_REVIEW_MAX_CYCLES`); the three per-gate meanings: §6 Review stack (§10 invariant 17)
   review_dispatch.py — Review row identities and write-ahead paid stamps (§6 Paid stamp and owner custody)
   reviewer_window.py — Typed per-route window resolution and reserves, used only for sizing; an unknown route keeps a disclosed assumption, never a review-authority floor (§6 Prompt size, density and windows)
   triad_review.py — Shared review primitives: JSON-array extraction, per-actor records, quorum/degraded accounting; `REVIEW_JSON_ARRAY_CONTRACT` (clean is exactly `[]`: structure cannot distinguish refusal from preamble); `review_output_shape(surface)` is the one form fact (`array`/`object`/`report`/`two_part`)
@@ -454,7 +454,7 @@ ouroboros/ — agent core and shared runtime (§6)
     arg_feedback.py — What a tool says about an argument it did not obey: the one-line ignored disclosure and the typed refusal naming field, value and repair (DEVELOPMENT "LLM-first affordances")
     review_response.py — Response-envelope projection for multi-model review rows
     shell_process.py, shell_effects.py, shell_outputs.py — The command-running substrate: process execution, working-tree effects and their throwaway share, declared process outputs and per-path export eligibility
-    plan_review_artifacts.py — Exact plan-review waves and author subjects in existing source handles; bounded successor index; reviewer-continuation inputs
+    plan_review_artifacts.py, plan_author_history.py — Per-participant reviewer-continuation inputs and attachment hashing; earlier-schema plan waves and author lineage stay readable for history and the upgrade importer
     evolution_stats.py — evolution.json metrics from sampled git history
     owner_delivery.py — Owner event delivery: live queue or the `pending_events` fallback with sticky deferral
     deliverables_shell.py — cp/mv/ln into deliverables with symlink checks
@@ -463,7 +463,7 @@ ouroboros/ — agent core and shared runtime (§6)
     write_shape.py — Interpreter/non-interpreter write-shape predicates behind shell_parse.py and shell_guards.py; process permission is owned by the task/resource and Supervisor contract (§6 Safety and runtime mode)
     extension_dispatch.py — Extension tool dispatch; discovery stays in registry.py
     release_sync.py — `sync_release_metadata` (version carriers) for commit-admission preflight; the carrier-span SSOT `VERSION_CARRIER_SPANS` shared by the managed-update resolver and the commit packet's carrier cut (§10 invariant 2)
-    review_synthesis.py — Shared synthesis helpers; the parser/aggregator lives in plan_spec.py
+    review_synthesis.py — Shared synthesis helpers
     preflight_review.py — `preflight_review` (`advisory_review` alias): one-row early worktree review; `deterministic_only=True, source=...` returns free release metadata plus separately labelled worktree `book_balance`; `review_status` reads attempts, obligations and readiness debt (§6 Commit preflight)
     recent_tasks.py — Read-only context recovery
     commit_gate.py — Commit gate: LLM claim synthesis, block classification, the free identical-verdict refusal, paid review-cycle counting and ceiling, the review-contract fingerprint
@@ -473,13 +473,13 @@ ouroboros/ — agent core and shared runtime (§6)
     github_checks.py — The reader behind `get_github_checks`: one commit's workflow runs, jobs, failure annotations and pull request rollup, as facts and named unavailable sources under one deadline
     parallel_review.py — Prepares and admits every seat before the review wave sends (§6 Surfaces and money admission)
     plan_review_references.py — Reference projection that writes its own provenance rows (`logs/progress.jsonl`), never a second plan authority
-    plan_review.py — `plan_task` engine: evidence, packet, review-substrate fan-out, `plan_review_state` v2, the shared paid-cycle cap and free identical replay (§6 Plan construction and review)
-    plan_review_runtime.py — Plan-review timing, slot preparation, standing findings and wave synthesis (§6 Plan construction and review)
-    plan_review_collect.py — Open-wave settlement notices and $0 collection, the sole plan-wave writer (§6 Plan construction and review)
-    plan_spec.py — Pure plan-spec parsing, the open-set aggregate and the one closure table (`closure_after_disposition`; `resolve_constitutional`); no I/O
+    plan_review.py — `plan_task` entry: the free write and read, the paid ask, typed refusals of invalid and old-form calls (§6 Plan construction and review)
+    plan_review_runtime.py — Ask dispatch and timing, the body-plan predicate, the constitutional pack, the per-ask `intention` ledger record (§6 Plan construction and review)
+    plan_review_collect.py — Settlement notices that wake the mind's mailbox when an ask's answers land (§6 Plan construction and review)
+    plan_spec.py — Pure plan path rules: `affected_paths` normalization and `resolve_constitutional`; no I/O
     plan_evidence.py — Bounded plan-evidence manifest; the runtime data plane is denied
-    plan_packet.py — Reviewer packet and its governance pack
-    plan_render.py — Wave view and the `PLAN_REVIEW_CONTROL_JSON` footer
+    plan_packet.py — Per-participant delivery: stable part with the body plan's governance pack, plan diff, council exchange, own objections
+    plan_render.py — Plan record view: current revision, open objections, asks
     review.py — Acceptance review and multi-review adapters
     review_multi_model.py, review_file_pack.py, review_prompt_text.py — Commit-wave packet fan-out, working-tree file packs and prompt vocabulary; `span_only_release_carriers` is the packet's carrier cut, `triad_pack_exclusions` avoids inline governance duplicates (§6 Guaranteed-fit ladder)
     review_checklist.py — The layered change-review checklist as the review surfaces read it: one `## Header` section of docs/CHECKLISTS.md, the layers a subject is judged by, `checklist_fingerprint` on every review ledger record (§6 Change review on any root)
