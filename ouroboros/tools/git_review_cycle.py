@@ -533,6 +533,7 @@ def _reset_commit_review_state(ctx):
     ctx._commit_review_status = "unknown"
     ctx._commit_preflight = None
     ctx._commit_review_panel = None
+    ctx._preflight_execution = None
 
 
 from ouroboros.tools.commit_gate import _return_commit_feedback, settle_commit_review_ledger  # noqa: E402
@@ -710,6 +711,8 @@ def _reviewed_stage_cycle(
     ctx._commit_review_evidence = (
         pending_commit_review_evidence(ctx) if getattr(ctx, "_review_reconcile_only", False)
         else capture_commit_review_evidence(ctx) if advisory_replay is None else {})
+    if getattr(ctx, "_review_reconcile_only", False):  # the seats' frozen exhibit, never this call's tests
+        ctx._preflight_execution = pending_commit_review_evidence(ctx, "preflight_execution") or {"status": "unobserved"}
     preflight_gate_outcome = None
     if not bool(getattr(ctx, "_review_reconcile_only", False)):
         preflight_gate_outcome = _git()._preflight_and_tests_gate(

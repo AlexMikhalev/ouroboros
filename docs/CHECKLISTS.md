@@ -41,8 +41,9 @@ explicit work-order review obligations.
   (size headroom as information and warnings, release metadata of the staged
   index, syntax of staged `.py` files), the tests preflight under its own policy
   (`skip_tests` is the one exemption, a documentation-only diff included; a
-  managed resolution always pays the suite), then the named row's look, then ONE review
-  wave in which every pool seat answers both parts of the brief. The commit
+  managed resolution always runs it; a matching unsigned receipt of a complete run
+  counts), then the named row's look, then ONE review wave in which every pool seat,
+  shown the same test execution fact, answers both parts of the brief. The commit
   records its preflight fact: `performed` with the record id, `skipped` for an
   explicit `skip_advisory_review=True`, `not_performed` when no row was named.
   `preflight_reviewer` and `skip_advisory_review=True` are opposite choices

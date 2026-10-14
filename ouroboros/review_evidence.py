@@ -598,18 +598,29 @@ def capture_commit_review_evidence(ctx: Any) -> dict:
             "original_refs": copy.deepcopy(refs)}
 
 
-def pending_commit_review_evidence(ctx: Any) -> dict:
-    """Read the frozen request's evidence on reconciliation, never current trace."""
+def pending_commit_review_evidence(ctx: Any, key: str = "task_execution") -> dict:
+    """Read the frozen request's evidence on reconciliation, never current trace (``key``:
+    this browser/vision exhibit, or ``preflight_execution``, the test execution fact)."""
+    from ouroboros.tools.review_change_custody import recorded_commit_assignment
+
     attempt = getattr(ctx, "_pending_review_attempt", None)
     scope = getattr(attempt, "scope_raw_result", {}) or {}
-    rows = [*(getattr(attempt, "triad_raw_results", []) or []), *(scope.get("raw_results") or [scope])]
-    for row in rows:
+    rows = [(surface, row) for surface, values in (
+        ("multi_model_review", getattr(attempt, "triad_raw_results", []) or []),
+        ("scope_review", scope.get("raw_results") or [scope])) for row in values]
+    for surface, row in rows:
         try:
-            payload = _commit_source_payload(ctx, (row.get("prompt_ref") or {}).get("redacted_projection_ref") or {})
-            request = payload.get("request") or {}
-            if request.get("task_id") != ctx.task_id:
-                continue
-            evidence = (request.get("evidence") or {}).get("task_execution")
+            if row.get("operation_id"):
+                # The write-ahead roster survives a crash before result prompt_refs.
+                # Validate its original request against this operation's full custody.
+                request, _slot = recorded_commit_assignment(ctx, surface, row)
+                evidence = (request.evidence or {}).get(key)
+            else:  # Older rows retain only their exact selected prompt source.
+                payload = _commit_source_payload(ctx, (row.get("prompt_ref") or {}).get("redacted_projection_ref") or {})
+                request = payload.get("request") or {}
+                if request.get("task_id") != ctx.task_id:
+                    continue
+                evidence = (request.get("evidence") or {}).get(key)
             if isinstance(evidence, dict) and evidence:
                 return evidence
         except (OSError, ValueError, TypeError, KeyError, AttributeError):
