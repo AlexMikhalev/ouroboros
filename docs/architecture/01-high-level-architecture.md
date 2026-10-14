@@ -159,7 +159,7 @@ ouroboros/ — agent core and shared runtime (§6)
   cost_projection.py — the one task-cost projection for every producer: `accounted_upper_bound_usd`, null as None and never $0.00 (§6 Budget tracking)
   storage.py — Dashboard Storage: one bounded, link-safe metadata walk at a time, kept in memory (§3 Dashboard)
   delegate_custody.py, delegate_custody_reconcile.py, delegate_collection.py, delegate_state_sweep.py, delegate_custody_usage.py — run custody, observation, collection and usage; OWNED/FOREIGN/UNKNOWN (§6 Nanny, transport and custody)
-  delegate_hold.py — unknown-provider hold in supervised_wait until the leaf wakes; never resends (§6 Context fitting)
+  delegate_hold.py — unknown-provider nanny hold (§6 Context fitting)
   delegate_source_coverage.py — oversized work-order source custody; incomplete source cannot authorize a passing terminal verdict or an apply
   delegate_evidence.py — read-side execution evidence over custody rows; an unreadable log is `evidence_read_failed`, never clean (§6 Delegated subagents; §11.1)
   synthesis_cost_text.py — synthesis-prompt cost/outcome renderers over `cost_display`
@@ -213,7 +213,7 @@ ouroboros/ — agent core and shared runtime (§6)
   reference_books.py — the ordered Architecture/Development reader and validator; free worktree book balance against the cached official development merge-base (an unavailable base is unknown, never paid; no fetch or local block; DEVELOPMENT "Documentation contract")
   local_model_server.py — read-only local formatter measurement and serving-process probe
   context_compaction.py — atomic-unit compaction with provenance capsules and transactional apply (§6 Context fitting)
-  context_health.py — health invariants snapshotted once per attempt; delegated-run obligations stay globally visible: a preserved-and-invisible result is how work rots on disk (§6 Context fitting)
+  context_health.py — health invariants; delegated-run obligations stay globally visible: a preserved-and-invisible result is how work rots on disk (§6 Context fitting)
   context_runtime_facts.py — the runtime section's fact builders
   headless.py, history_retention.py — child-drive isolation, answer/file adoption, workspace patches, memory export; typed `sensitive_blocked` exclusions (§6 Headless finalization; §10)
   task_custody.py — the one child-drive deletion owner (`settle_child_drive`) and per-task custody lock (§6 Headless finalization)
@@ -223,18 +223,18 @@ ouroboros/ — agent core and shared runtime (§6)
   coop_checkpoint.py — quiescent checkpoint commits of cooperative trees from a mutative child's `write_root`; a root mid merge/rebase/cherry-pick/revert is skipped: staging it would commit a half-resolved tree (§5)
   delegate_output.py, delegate_directory.py, workspace_file_outputs.py — retained terminal JSON with physical-task reads; artifact-owned directory apply/discard and ordinary-folder results with exact before/after identities (§6 Terminal products)
   delegate_activity.py — typed executor activity JSONL with an emission-committed cursor (§6 Delegated activity)
-  delegate_containment.py — engine-derived isolation facts; absence is reported unproven (§6 Delegated subagents)
+  delegate_containment.py — engine-derived isolation facts (§6 Access disclosure)
   delegate_progress.py — poll-bound transport retry and event-local executor observations (§6 Delegated subagents)
-  nanny_pacing.py — metered-silence pacing: only `BASELINE_RESET_TOOLS` reset the burn, so coordination never buys metered silence
+  nanny_pacing.py — metered-silence pacing (§6 Supervision, activity and recovery)
   delegate_interactions.py — nanny input into a live session: typed `waiting_on_user`, validated `_delegate_answer`, capability-gated `_delegate_message` (§6 Delegated subagents)
   delegate_shared.py — `_owned_run` keeps live control with the starter; confirmed successors can read and dispose of settled products (§6 Delegated subagents)
   route_spec.py — neutral route primitive: kind/target/pin normalization and effort validation
   configured_subagents.py, subagent_runtime.py — canonical `OUROBOROS_SUBAGENTS` parser/serializer (owner free text is never host-parsed); immutable task-start snapshots and exact `subagent_id` selection (§6 Delegated subagents)
   subagent_route_health.py — the one manifest reader behind every delegated dispatch (§6 Route health)
   subagent_work_order.py, subagent_bootstrap.py, delegate_start_instructions.py — Complete owner-word-preserving work orders, host pre-start and stable instructions with a separately hashed coordination appendix (§6 Delegated subagents)
-  delegate_supervision.py — event-only sleeping-nanny loop: quiet windows renew without a model call (§6 Delegated subagents)
+  delegate_supervision.py — event-only sleeping-nanny loop (§6 Supervision, activity and recovery)
   delegate_target_drift.py — read-only authority-tree drift evidence, never attributed to the child (§6 Delegated subagents)
-  delegate_recovery.py, delegate_continuation.py, delegate_pending.py — exact-leaf recovery for a proven crash or planned restart; `continue_from` after any stop; durable pending-invocation replay with the original idempotency key (§6 Delegated subagents)
+  delegate_recovery.py, delegate_continuation.py, delegate_pending.py — exact-leaf recovery; `continue_from` after any stop; pending-invocation replay with the original key (§6 Delegated subagents)
   delegate_registration_policy.py, delegate_readonly_inputs.py — `resolve_registration` and STARTED-row field tables; readonly lineage inputs
   delegate_terminal.py — terminal reconciliation and custody-audit persistence, audit-only in both directions; the typed `terminal_custody_notice` card row (§6 Delegated subagents)
   subagent_dispatch_notes.py — executor-note exports shared with `agent.py`; the note/blocked-outcome pair is implemented in `agent_dispatch.py`

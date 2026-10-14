@@ -582,13 +582,17 @@ def test_unknown_engine_facts_stay_absent_and_the_line_stays_bounded(tmp_path):
     assert custody.replay(tmp_path)["run-00"].engine_locator == {}
 
 
-def test_one_custody_replay_serves_every_delegated_line(tmp_path, monkeypatch):
+def test_one_custody_read_serves_every_delegated_line(tmp_path, monkeypatch):
+    from ouroboros import delegate_custody_current as current
+
     _settle(tmp_path)
-    calls = []
-    real = custody.replay
-    monkeypatch.setattr(custody, "replay", lambda *a, **k: calls.append(1) or real(*a, **k))
+    calls, replays = [], []
+    real, real_replay = current.health_runs, custody.replay
+    monkeypatch.setattr(current, "health_runs", lambda *a, **k: calls.append(1) or real(*a, **k))
+    monkeypatch.setattr(custody, "replay", lambda *a, **k: replays.append(1) or real_replay(*a, **k))
     assert "OWN DELEGATED RUN ENDED" in _health(tmp_path)
     assert calls == [1]
+    assert replays == []
 
 
 def test_the_context_builder_passes_the_actual_attempt(tmp_path, monkeypatch):

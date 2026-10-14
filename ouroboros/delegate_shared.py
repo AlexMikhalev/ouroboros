@@ -295,10 +295,12 @@ def retry_result_status(ctx: ToolContext, drive: Any, run_id: str, *,
     a failed/cancelled terminal result does.
     Existing tool/file profile guards and materializer target guards still apply.
     """
+    from ouroboros.delegate_custody_current import run
+
     reader = str(getattr(ctx, "task_id", "") or "")
     if custody.custody_log_unreadable(drive):
         return custody.UNKNOWN, None, ""
-    entry = (state if state is not None else custody.replay(drive)).get(str(run_id or ""))
+    entry = state.get(str(run_id or "")) if state is not None else run(drive, str(run_id or ""))
     if entry is None:
         return custody.UNKNOWN, None, ""
     if reader and reader == entry.task_id:
@@ -338,7 +340,10 @@ def orphan_disposition_status(
     if custody.custody_log_unreadable(drive):
         return custody.UNKNOWN, None, ""
     if state is None:
-        state = custody.replay(drive)
+        from ouroboros.delegate_custody_current import run
+
+        found = run(drive, str(run_id or ""))  # the one row this call names, as a state mapping
+        state = {} if found is None else {str(run_id or ""): found}
     durable = state.get(str(run_id or ""))
     if durable is not None:
         custody._CUSTODY[str(run_id)] = durable
@@ -422,9 +427,9 @@ def orphan_capture_read_target(
     Resolution is by PATH SHAPE first: a candidate must sit under
     ``<canonical data root>/task_results/artifacts/<owner_tid>/delegated_runs/
     <capture>/``. Everything else returns before custody is touched, so a plain
-    refusal never pays for an event-log replay. The custody row is read from a
-    SHARED ``delegate_terminal.custody_audit_snapshot`` when the caller has one,
-    and only without one does this replay -- exactly once.
+    refusal never pays for a custody read. Candidate rows come from a SHARED
+    ``delegate_terminal.custody_audit_snapshot``, or one owner-task selection.
+    The later ownership lookup still refreshes the matching named row.
     """
     from ouroboros.artifacts import DELEGATED_CAPTURE_PREFIX
     from ouroboros.headless import ARTIFACTS_DIR
@@ -446,7 +451,9 @@ def orphan_capture_read_target(
     # Successor evidence remains readable after disposition; the ordinary
     # orphan door still requires an undisposed patch through its own predicate.
     if state is None:
-        state = custody.replay(drive)
+        from ouroboros.delegate_custody_current import runs as current_runs
+
+        state = current_runs(drive, "task_id=?", (owner_tid,))
     rows = state.values()
     for row in rows:
         if str(row.task_id or "") != owner_tid:
@@ -457,9 +464,8 @@ def orphan_capture_read_target(
         retry_status, _entry, predecessor = retry_result_status(ctx, drive, str(row.run_id), state=state)
         if retry_status == custody.OWNED and predecessor:
             return resolved
-        # The rows we just read ARE the durable authority; seeding the memo the
-        # ownership lookup consults keeps this read at the traversal budget
-        # above instead of replaying the same log a second time.
+        # Keep the established memo seed; lookup still gives a fresh durable
+        # row priority. Passing state avoids another owner-wide selection.
         custody._CUSTODY.setdefault(str(row.run_id), row)
         status, _entry, orphan_of = orphan_disposition_status(ctx, drive, str(row.run_id), state=state)
         if status == custody.OWNED and orphan_of:
