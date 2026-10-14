@@ -465,7 +465,9 @@ export const apiClient = {
      * @returns {Promise<import('./storage_types.js').StorageResponse>}
      */
     measureStorage: () => jsonPost('/api/storage/measure', {}),
+    /** @returns {Promise<import('./management_contract_types.js').UpdateStatusResponse>} */
     updateStatus: () => fetchJson('/api/update/status', { cache: 'no-store' }),
+    /** @returns {Promise<import('./management_contract_types.js').UpdateStatusResponse>} */
     updateCheck: () => jsonPost('/api/update/check', {}),
     /** @returns {Promise<import('./api_types.js').UpdatePreflightResponse>} */
     updatePreflight: () => jsonPost('/api/update/preflight', {}),

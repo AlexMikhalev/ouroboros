@@ -1358,10 +1358,10 @@ def _resume_disclosure(ctx: Any, row: Dict[str, Any], state: Dict[str, Any], gra
     pending = pending_tool_call_ids(messages)
     abandoned = [str(item) for item in ((row.get("resume_point") or {}).get("abandoned_model_attempts") or [])]
     if str(row.get("reason") or "") == REASON_SLEEP and not pending:
-        from ouroboros.model_sleep import wake_notice
+        from ouroboros import model_sleep
 
         slept = max(0.0, float(grant["consumed_at"]) - float(row.get("paused_at") or grant["consumed_at"]))
-        messages.append(wake_notice({**(row.get("sleep") or {}), "mode": "cold"},
+        messages.append(model_sleep.wake_notice({**(row.get("sleep") or {}), "mode": "cold"},
                                     str((row.get("sleep_ready") or {}).get("reason") or ""), slept))
         if row.get("external_custody"):
             messages.append({"role": "user", "content": (
@@ -1369,8 +1369,8 @@ def _resume_disclosure(ctx: Any, row: Dict[str, Any], state: Dict[str, Any], gra
                 "You remain their author and may inspect, answer, message or cancel them. "
                 "Retained output is not consumed or accepted. Current observations: "
                 + json.dumps(external, ensure_ascii=False))})
-            from ouroboros.sleep_custody import record_question_notice
-            record_question_notice(ctx, row, external)
+        model_sleep.append_question_notice(ctx, str((row.get("sleep_ready") or {}).get("reason") or ""), messages,
+                                           shown=external if row.get("external_custody") else ())
         return
     kind = "owner Pause" if str(row.get("reason") or "") == REASON_OWNER else "budget pause"
     held = ""
@@ -1435,7 +1435,7 @@ def resume_paused_loop(tools: Any, state: Dict[str, Any], messages: list, trace:
     if graceful:
         refresh = _refresh_planning_threshold(ctx, budget_remaining_usd, usage)
     waiter = getattr(ctx, "model_wait_context", None)
-    restored, published = len(messages), ""
+    restored, published, exposure = len(messages), "", getattr(ctx, "_sleep_interaction_seen", None)
     # Grant to consumption is still the sleep, or the bounded task's Pause (the grant's
     # live exclusion, #939): folded once below. Otherwise the legacy clock runs on.
     excluded = row.get("reason") == REASON_SLEEP or bool((getattr(ctx, "budget_pause_resume", None) or {})
@@ -1475,7 +1475,7 @@ def resume_paused_loop(tools: Any, state: Dict[str, Any], messages: list, trace:
                              expected_grant_id=str(grant.get("grant_id") or ""))
             break
         except Exception as exc:
-            ctx._budget_paused_sec = live[0]
+            ctx._budget_paused_sec, ctx._sleep_interaction_seen = live[0], exposure  # unshown with its disclosure
             if waiter is not None:
                 with waiter.lock:
                     waiter.budget_paused_sec, waiter.sleep_started_monotonic = live[1:]

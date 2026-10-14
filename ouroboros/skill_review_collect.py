@@ -107,10 +107,14 @@ def _collect_seat(root, ctx, wave, chunk, slot_id, operation_id):
 
 
 def collect_skill_review_wave(ctx, drive_root, file_packs, *, required_items):
-    """Read every recorded seat; never build a prompt or dispatch a replacement."""
+    """Read every recorded seat; never build a prompt or dispatch a replacement.
+
+    The first chunk's roster is the wave's; a later chunk may record only its packet
+    seats, because a retrieving seat reviewed the whole payload in the first chunk —
+    its answer there counts toward every chunk's quorum over the whole roster."""
     from ouroboros.config import adaptive_quorum
     from ouroboros.delegate_custody import custody_root
-    from ouroboros.skill_review_passes import _skill_review_retry_key
+    from ouroboros.skill_review_passes import _responded_slots, _skill_review_retry_key
     from ouroboros.triad_review import parse_model_review_results
 
     wave = ctx._skill_review_resume
@@ -118,7 +122,7 @@ def collect_skill_review_wave(ctx, drive_root, file_packs, *, required_items):
     if len(chunks) != len(file_packs):
         return {"error": "Original Skill Review chunk roster is incomplete"}
     root = custody_root(ctx) if getattr(ctx, "drive_root", None) else drive_root
-    results, models, pending, roster = [], [], False, None
+    results, models, pending, roster, later, whole = [], [], False, None, None, set()
     for index, (chunk, pack) in enumerate(zip(chunks, file_packs)):
         retry_key = _skill_review_retry_key(
             skill_name=owner["skill"], wave_id=wave["wave_id"], content_hash=owner["content_hash"],
@@ -128,16 +132,23 @@ def collect_skill_review_wave(ctx, drive_root, file_packs, *, required_items):
         if (chunk.get("retry_key") != retry_key or not isinstance(operations, dict) or not operations
                 or any(not slot or not operation for slot, operation in operations.items())
                 or len(set(operations.values())) != len(operations)
-                or (roster is not None and set(operations) != roster)):
+                or (roster is not None and not set(operations) <= roster)
+                or (later is not None and set(operations) != later)):
             return {"error": "Original Skill Review chunk identity or roster mismatch"}
-        roster = set(operations)
+        if roster is None:
+            roster = set(operations)
+        elif later is None:
+            later = set(operations)
         collected = [_collect_seat(root, ctx, wave, chunk, slot, operation)
                      for slot, operation in operations.items()]
         if index == 0:
             models = [model for model, _row in collected]
         rows = [row for _model, row in collected]
         parsed = parse_model_review_results({"results": rows}, required_items=required_items)
-        pending = pending or len(parsed.responsive_models) < adaptive_quorum(len(operations)) or any(
+        if index == 0:
+            whole = _responded_slots(parsed)
+        answered = len(parsed.responsive_models) + (len(whole - set(operations)) if index else 0)
+        pending = pending or answered < adaptive_quorum(len(roster)) or any(
             row.get("late_result_pending") or row.get("operation_state") in {"in_flight", "custody_lost"}
             for row in rows)
         results.extend(rows)

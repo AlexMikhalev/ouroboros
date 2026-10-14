@@ -755,7 +755,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 370 -> 371 (FIXB): observability/packs/.publications, the disposable per-pass
 # reference journal documented in the existing evidence-pack row.
 # 371 -> 372: the fixed DATA server-lifetime admission lock (state/server.lock).
-EXPECTED_SCAN_PATHS = 373
+# 373 -> 374: review_checking quarantines an invalid cached reader view under
+# state/review_checkouts/views/.discarded-*.* before removing it (PERSISTENCE views row).
+EXPECTED_SCAN_PATHS = 374
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

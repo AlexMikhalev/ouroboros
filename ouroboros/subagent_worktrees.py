@@ -1140,20 +1140,27 @@ def _reproduce_confined_link(target_root: Path, src_link: Path, dest_link: Path)
     return True
 
 
-def _copy_payload_inventory(target: Path, dest: Path) -> int:
+def _copy_payload_inventory(target: Path, dest: Path, *, manifest_entry: str = "",
+                            manifest_scripts: Optional[List[Dict[str, Any]]] = None,
+                            preserve_links: bool = True) -> int:
     """Copy the exact skill-loader-visible inventory of ``target`` into ``dest``.
 
     The loader inventory is the SSOT walk (cache/control-dir exclusions, symlink
     escape exclusion, credential-shape refusal) — no second filesystem walk is
-    invented. A file reached through a symlinked ancestor directory reproduces
-    the ancestor LINK once instead of materializing a second copy under it.
+    invented; a declared manifest entry or script joins it even under an excluded
+    folder, exactly as it joins the content hash. A file reached through a
+    symlinked ancestor directory reproduces the ancestor LINK once instead of
+    materializing a second copy under it. Read-only review views set
+    ``preserve_links=False`` to retain each inventory path's bytes even when a
+    link points into an excluded dependency folder; they copy no extra files.
     """
     from ouroboros.skill_loader import _iter_payload_files
 
     resolved_target = target.resolve()
     dest.mkdir(parents=True, exist_ok=False)
     copied = 0
-    for path in _iter_payload_files(resolved_target):
+    for path in _iter_payload_files(resolved_target, manifest_entry=manifest_entry,
+                                    manifest_scripts=manifest_scripts):
         rel = path.relative_to(resolved_target)
         # A symlinked ANCESTOR directory is reproduced as the link itself; the
         # linked content is copied at its real (confined) location by its own
@@ -1162,7 +1169,7 @@ def _copy_payload_inventory(target: Path, dest: Path) -> int:
         via_link = False
         for part in rel.parts[:-1]:
             ancestor = ancestor / part
-            if ancestor.is_symlink():
+            if preserve_links and ancestor.is_symlink():
                 link_rel = ancestor.relative_to(resolved_target)
                 if _reproduce_confined_link(resolved_target, ancestor, dest / link_rel):
                     copied += 1
@@ -1172,7 +1179,7 @@ def _copy_payload_inventory(target: Path, dest: Path) -> int:
             continue
         out = dest / rel
         out.parent.mkdir(parents=True, exist_ok=True)
-        if path.is_symlink():
+        if preserve_links and path.is_symlink():
             if _reproduce_confined_link(resolved_target, path, out):
                 copied += 1
             continue
