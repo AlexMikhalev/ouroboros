@@ -961,7 +961,7 @@ def settled_status_of(row: Any) -> str:
 
 
 def task_subtree_is_live(task_id: str, *, ignore_intents: bool = False) -> bool:
-    """Cheap liveness pre-check for the HTTP cascade-cancel path (v6.82).
+    """Cheap liveness check the HTTP Stop asks only for a settled or row-less cascade target.
 
     True when the task itself is queued/running, when it still has live
     descendants in the queue, when THIS process still runs its paid post-task

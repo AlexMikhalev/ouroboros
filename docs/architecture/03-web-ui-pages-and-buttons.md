@@ -115,7 +115,7 @@ A card's cost is one scope's accounting facts (amount, finality, subtree, reserv
 
 #### Stop and cancel controls
 
-Cancel appears only on unfinished, unconverted root cards whose host attests `cancelable=true`; card shape grants no control, and native direct tasks follow §5 custody. The shared dropdown sends `cascade:true`: hard stop waits for teardown or refusal, Wrap up records durable finalize intent and returns 202 pending. Completion wins, a missing live task reconciles from durable state, and unproven death stays a visible refusal. Reason lines: `log_events.taskReasonDetail` over `cancel_origin` (§3 Task cards, errors and reason lines).
+Cancel appears only on unfinished, unconverted root cards whose host attests `cancelable=true`; card shape grants no control, and native direct tasks follow §5 custody. The shared dropdown sends `cascade:true`: Stop now records the stop and answers after driving the teardown — settled, nothing to stop (404), or 202 pending while the teardown is unconfirmed, the card staying «Cancelling…» until the watchdog settles it — and Wrap up records durable finalize intent and returns 202 pending. Completion wins, a missing live task reconciles from durable state, and only a Stop that recorded nothing is a visible refusal. Reason lines: `log_events.taskReasonDetail` over `cancel_origin` (§3 Task cards, errors and reason lines).
 
 #### Turning a card into a Project
 

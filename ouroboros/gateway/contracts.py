@@ -1306,10 +1306,13 @@ class TaskCancelResponse(TypedDict, total=False):
     task_id: str
     # Cascade echoes subtree scope; immediate success follows teardown.
     cascade: bool
-    # Soft 202 keeps custody pending and echoes EFFECTIVE policy, never softening
-    # an immediate intent. Legacy immediate replies omit these additive fields.
+    # Every 202 keeps the recorded intent pending and echoes the EFFECTIVE policy,
+    # never softening an immediate intent: a soft stop, or an immediate teardown not
+    # yet confirmed (request_id, reason_code "teardown_unconfirmed"). 200 omits them.
     cancel_state: str
     stop_policy: str
+    request_id: str
+    reason_code: str
     error: str
 
 

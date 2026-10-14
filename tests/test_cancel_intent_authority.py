@@ -182,39 +182,6 @@ def test_a2_retry_transfer_mints_no_successor_authority_after_an_empty_claim(qen
     assert load_task_result(qenv.drive, "new-root")["status"] == STATUS_CANCELLED
 
 
-def test_a2_http_single_stop_admitted_after_liveness_probe_cannot_tear_down_without_an_intent(tmp_path, monkeypatch):
-    """The product Stop path: the HTTP single cancel probes liveness, mints an intent only
-    when the probe says live, then calls custody. A task admitted between the probe and
-    custody reaches custody with NO durable intent; custody refuses (404, task untouched)."""
-    from starlette.applications import Starlette
-    from starlette.routing import Route
-    from starlette.testclient import TestClient
-
-    from ouroboros.gateway.tasks import api_task_cancel
-    from supervisor import queue, workers
-
-    monkeypatch.setattr(queue, "DRIVE_ROOT", tmp_path)
-    monkeypatch.setattr(queue, "PENDING", [{"id": "late", "chat_id": 1, "root_task_id": "late"}])
-    monkeypatch.setattr(queue, "RUNNING", {})
-    monkeypatch.setattr(workers, "WORKERS", {}, raising=False)
-    monkeypatch.setattr(queue, "persist_queue_snapshot", lambda reason="": None)
-    monkeypatch.setattr(queue, "task_has_live_ownership", lambda *_a, **_k: False)
-    monkeypatch.setattr(queue, "task_subtree_is_live", lambda *_a, **_k: False)
-    write_task_result(tmp_path, "late", "scheduled")
-    monkeypatch.setattr(queue, "_emit_cancel_task_done", lambda *_a, **_k: None)
-    minted = []
-    real_request = ci.request_cancel
-    monkeypatch.setattr(ci, "request_cancel", lambda *a, **k: minted.append(a[1]) or real_request(*a, **k))
-    app = Starlette(routes=[Route("/api/tasks/{task_id}/cancel", api_task_cancel, methods=["POST"])])
-    app.state.drive_root = tmp_path
-    with TestClient(app) as client:
-        response = client.post("/api/tasks/late/cancel")
-    assert minted == []
-    assert response.status_code == 404
-    assert load_task_result(tmp_path, "late")["status"] == "scheduled"
-    assert [t["id"] for t in queue.PENDING] == ["late"]
-
-
 # ---------------------------------------------------------------- A3 -------------------------
 
 def _signature_busy_at_zero_budget(monkeypatch):
