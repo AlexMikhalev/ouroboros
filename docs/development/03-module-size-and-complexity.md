@@ -42,8 +42,9 @@ CHECKLISTS item 27 `size_cap_paydown`, advisory when applicable.
 
 ### Pragmatic SOLID
 
-SOLID is a direction for making changes legible to future agents, not a demand for
-classes or framework surface:
+SOLID serves the body's health, not minimalism for its own sake: fewer moving parts and
+one owner per fact leave fewer places for bugs and a body Ouroboros can still
+understand. It is a direction, not a demand for classes or framework surface:
 
 - **SRP — Single Responsibility Principle:** one coherent reason and one authority for
   a unit to change.
@@ -57,10 +58,8 @@ classes or framework surface:
   contracts, not provider-specific or concrete details.
 
 No class hierarchy, DI container, numeric score, AST analyzer or new review pass
-follows. A SOLID or minimalism finding names the exact symbol or authority, the
-concrete duplication or coupling, and a smaller alternative that still satisfies the
-contract. Diff size, line count, and file count alone are not findings. Enforcement:
-review-only; CHECKLISTS item 11(d).
+follows. Diff size, line count and file count alone are not findings; CHECKLISTS item
+11(d) says what a finding names (review-only).
 
 ### Shared behavior and data-flow changes
 
@@ -71,7 +70,7 @@ semantics across live and recovery paths at comparable freshness, and make legit
 differences explicit. Verify with falsifiable checks at real consumer boundaries, not
 helper outputs or matching field names, choosing the paths from the change and its
 dependencies rather than a fixed inventory. Enforcement: review-only, through the
-scope-review `implicit_contracts` item.
+coupling `implicit_contracts` item.
 
 ### Invariant: Projection over replay (hot readers of growing stores)
 
