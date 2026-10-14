@@ -323,10 +323,13 @@ def _dispatch_extension_tool_untagged(
         text = f"⚠️ TOOL_ERROR ({name}): extension tool failed: {type(exc).__name__}: {exc}"
         return _extension_result("error", "EXTENSION_ERROR", text)
     from ouroboros.owner_pause import run_tool_handler, submit_async_operation, OwnerPauseRefused
+    from ouroboros.model_wait import ModelWaitInterrupted
+    from ouroboros.usage_accounting import UsageAccountingError
+    controls = (OwnerPauseRefused, ModelWaitInterrupted, UsageAccountingError)
 
     try:
         result = run_tool_handler(ctx, handler, *((ctx,) if _wants else ()), **call_args)
-    except OwnerPauseRefused:
+    except controls:
         raise
     except Exception as exc:
         text = f"⚠️ TOOL_ERROR ({name}): extension tool failed: {type(exc).__name__}: {exc}"
@@ -345,7 +348,7 @@ def _dispatch_extension_tool_untagged(
                 async def _bounded():
                     try:
                         task = submit_async_operation(ctx, lambda: result)
-                    except OwnerPauseRefused:
+                    except controls:
                         result.close()
                         raise
                     done, _pending = await asyncio.wait({task}, timeout=timeout)
@@ -404,6 +407,8 @@ def _dispatch_extension_tool_untagged(
             )
         if "error" in box:
             exc = box["error"]
+            if isinstance(exc, controls):
+                raise exc
             text = f"⚠️ TOOL_ERROR ({name}): extension async handler failed: {type(exc).__name__}: {exc}"
             return _extension_result("error", "EXTENSION_ERROR", text, dispatched=True)
         if "value" not in box:

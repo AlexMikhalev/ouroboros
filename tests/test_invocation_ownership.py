@@ -212,7 +212,7 @@ def test_failed_publication_holds_direct_caller_through_real_cleanup(tmp_path, m
     with ThreadPoolExecutor(1) as executor:
         future = executor.submit(call)
         try:
-            assert entered.wait(3) and body_done.is_set() and failed.wait(3)
+            assert entered.wait(3) and body_done.wait(3) and failed.wait(3)
             controls[0] = "cancelled"  # direct Stop cannot kill a Python thread
             assert not future.done() and not holders[0].closed
             with queue._queue_lock, owner_pause.launch_lock(tmp_path, "root", wait=False):

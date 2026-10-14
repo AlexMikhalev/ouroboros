@@ -167,14 +167,14 @@ _TOOL_FUTURES: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 
 def tool_scope_key(ctx: Any, *, attempt: Optional[int] = None) -> str:
-    """One canonical data root and task ATTEMPT, never a reusable worker slot."""
+    """Canonical task ATTEMPT; an unbound call has no shared registry scope."""
     from ouroboros.owner_pause import _member_coordinates
     from ouroboros.model_wait import current_model_wait
     root, _tree, task = _member_coordinates(ctx)
     owner = current_model_wait()
     if attempt is None:
         attempt = owner.attempt if owner is not None and owner.task_id == task else getattr(ctx, "task_attempt", 1)
-    return f"{pathlib.Path(root).resolve() if root else ''}|{task}|{int(attempt or 1)}"
+    return f"{pathlib.Path(root).resolve() if root else ''}|{task}|{int(attempt or 1)}" if task else ""
 
 
 def _row_settled_locked(row: Dict[str, Any]) -> bool:
@@ -225,7 +225,7 @@ def _new_tool_row(ctx: Any, operation_id: str, tool: str, *, outcome=None) -> di
            "settled": threading.Event(), "holds": 0, "done": False,
            "scope": scope, "outcome": outcome}
     with _TOOL_LOCK:
-        rows = _TOOL_FUTURES.setdefault(scope, {})
+        rows = _TOOL_FUTURES.setdefault(scope, {}) if scope else {}
         for op in [op for op, prior in rows.items() if prior["settled"].is_set()]:
             rows.pop(op, None)
         rows[operation_id] = row
@@ -250,24 +250,26 @@ def _tool_owner_release(row: dict) -> Callable[[], None]:
         if released:
             return
         released = True
-        outcome = row.get("outcome")
         with _TOOL_LOCK:
             future = row.get("future")
             joined = (row.get("done") or future is not None and future.done()) and row["holds"] == 1
-        publication_failed = False
         try:
-            if not joined and outcome is not None:
+            if not joined and row.get("outcome") is not None:
                 from ouroboros.tool_custody import retain_invocation
-                retain_invocation(outcome)
+                retain_invocation(row["outcome"])
         except Exception:
-            publication_failed = True
             log.warning("Tool tail could not transfer; its caller remains live until physical join", exc_info=True)
-        finally:
             release()
-        if publication_failed:
             # No logical timeout/control wait here: it would abandon this tail
             # again. Direct Stop remains cooperative; Panic/process exit is independent.
-            row["settled"].wait()
+            try:
+                future.exception()  # physical join, without adopting its result or exception
+            except Exception:  # a cancelled-before-entry Future has also finished
+                pass
+            _finish_tool_row(row)  # passive done callbacks need not have run
+            row["settled"].wait()  # only actual callback/runner holds may remain
+        finally:
+            release()
     return finish
 
 
