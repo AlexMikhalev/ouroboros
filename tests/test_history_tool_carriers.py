@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros.gateway import history
+from ouroboros.gateway.state import _chat_activities_snapshot_safe as _real_census  # before the autouse stub
 from ouroboros.store_import import ensure_current_store
 from ouroboros.tool_call_log import replay_evidence_for_tasks
 
@@ -466,3 +467,18 @@ def test_the_history_cursor_survives_child_admission_and_changes_on_conversion(t
     other = create_project(tmp_path, "other", name="Other room")
     bind_task_to_project(tmp_path, "kid", other["id"], origin={"absent": "system"})
     assert view() != before, "a conversion changes what Main shows"
+
+
+def test_census_rows_carry_started_at_and_never_ts(tmp_path, monkeypatch):
+    """The carrier rule tells a parent anchor (its child's ts) from a census anchor by the ts alone:
+    the real census producer stamps ``started_at`` on every row and never a ``ts``."""
+    from supervisor import queue
+
+    monkeypatch.setattr(queue, "PENDING", [{"id": "queued-root", "chat_id": 1, "root_task_id": "queued-root",
+                                            "ts": TS, "queued_at": TS}])
+    monkeypatch.setattr(queue, "RUNNING", {"running-root": {"task": {"id": "running-root", "chat_id": 1,
+                                                                     "root_task_id": "running-root", "ts": TS},
+                                                            "started_at": 1_700_000_000.0}})
+    rows = _real_census(tmp_path, {}, direct_turns=[])
+    assert {row["activity_id"] for row in rows} == {"queued-root", "running-root"}
+    assert all("ts" not in row and "started_at" in row for row in rows), rows

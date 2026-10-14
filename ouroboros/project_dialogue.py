@@ -303,7 +303,10 @@ def room_membership(chat_id: int, project_chat_ids: set, source_refs: list,
         bound = 0 if row.get("type") in ORIGIN_ADDRESSED_NOTICE_TYPES else bound_room_chat(rooms, row)
         lifecycle = row.get("type") in MAIN_PINNED_ROW_TYPES
         if chat_id in project_chat_ids:
-            return not lifecycle and (bound == chat_id or entry_chat == chat_id
+            # A task's resolved room is authoritative over the address its row was
+            # written with: a later conversion moves the subtree's earlier rows too,
+            # out of the old room (live delivery already went to the new one).
+            return not lifecycle and ((bound == chat_id if bound else entry_chat == chat_id)
                                       or entry_matches_source_ref(row, source_refs))
         if chat_id != 1:
             return entry_chat == chat_id and not bound

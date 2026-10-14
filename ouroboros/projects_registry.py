@@ -342,25 +342,10 @@ def project_task_bindings(drive_root: Any) -> Dict[str, Dict[str, Any]]:
 
 
 def all_task_bindings(drive_root: Any) -> Dict[str, int]:
-    """Map task_id -> project chat_id for ALL post-hoc 'Turn into project' bindings.
-
-    Cognition/history isolation consults this so a bound task's rows (which keep
-    their ORIGINAL main chat_id) are still treated as project-owned. One bounded
-    read; no per-row lock (atomic writes guarantee complete reads)."""
-    out: Dict[str, int] = {}
-    try:
-        for tid, row in _load_bindings(drive_root).get("bindings", {}).items():
-            if not isinstance(row, dict):
-                continue
-            try:
-                cid = int(row.get("project_chat_id") or 0)
-            except (TypeError, ValueError):
-                continue
-            if cid:
-                out[str(tid)] = cid
-    except Exception:
-        log.debug("all_task_bindings failed", exc_info=True)
-    return out
+    """Map task_id -> project chat_id for ALL post-hoc 'Turn into project' bindings:
+    the explicit roots (cursor fingerprints, the census). One bounded read; no
+    per-row lock (atomic writes guarantee complete reads)."""
+    return {tid: int(row["chat_id"]) for tid, row in all_task_project_bindings(drive_root).items()}
 
 
 def all_task_project_bindings(drive_root: Any, *, strict: bool = False) -> Dict[str, Dict[str, Any]]:
@@ -668,52 +653,49 @@ def _bindings_lens(drive_root: Any) -> Dict[str, Any]:
 _TASK_LINEAGE: Dict[tuple, Dict[str, Any]] = {}
 _TASK_LINEAGE_LIMIT = 50_000  # a memory bound, not a policy: the facts are re-read on the next sight
 _ROOM_ANSWERS: Dict[str, tuple] = {}
-_LINEAGE_SELECT = ("SELECT t.task_id, t.parent_task_id, t.root_task_id, t.delegation_role, json_extract(b.body, '$.chat_id') "
-                   "FROM tasks t LEFT JOIN task_bodies b ON b.task_id = t.task_id WHERE t.task_id")
+_LINEAGE_SELECT = ("SELECT t.task_id, t.parent_task_id, t.root_task_id, t.delegation_role, "
+                   "json_extract(b.body, '$.chat_id') FROM tasks t LEFT JOIN task_bodies b ON b.task_id = t.task_id "
+                   "WHERE t.task_id IN (SELECT value FROM json_each(?))")
 
 
-def _remember_lineage(drive_root: Any, record: Any) -> Dict[str, Any]:
-    try:
-        chat = int(record[4]) if record[4] not in (None, "") else None
-    except (TypeError, ValueError):
-        chat = None
-    facts = {"parent_task_id": str(record[1] or ""), "root_task_id": str(record[2] or ""),
-             "delegation_role": str(record[3] or ""), "chat_id": chat}
-    if len(_TASK_LINEAGE) >= _TASK_LINEAGE_LIMIT:
-        _TASK_LINEAGE.clear()
-    _TASK_LINEAGE[(str(drive_root), str(record[0]))] = facts
-    return facts
-
-
-def task_lineage(drive_root: Any, task_id: Any) -> Dict[str, Any]:
-    """A task's immutable lineage facts (``parent_task_id``, ``root_task_id``,
-    ``delegation_role``: indexed columns) and the ``chat_id`` it was admitted with,
-    read ONCE per task id per process (an existing task's lineage never changes).
-    ``{}`` for an id the store does not hold yet (admission creates it later, so a
-    miss is never remembered) or cannot answer right now."""
-    tid = str(task_id or "").strip()
-    facts = _TASK_LINEAGE.get((str(drive_root), tid)) if tid else {}
-    if facts is not None:
-        return facts
+def _read_lineage(drive_root: Any, task_ids: Any) -> Optional[Dict[str, Dict[str, Any]]]:
+    """ONE indexed read of the lineage facts of ``task_ids`` (parent, root, role and the
+    admitted ``chat_id``), remembered per task id for the process (an existing task's
+    lineage never changes); an id the store does not hold is absent from the answer
+    (admission creates it later); ``None`` when the store cannot answer right now."""
     try:
         with open_store(drive_root, write=False) as txn:
-            record = txn.conn.execute(f"{_LINEAGE_SELECT} = ?", (tid,)).fetchone()
+            records = txn.conn.execute(_LINEAGE_SELECT, (json.dumps(sorted(task_ids)),)).fetchall()
     except Exception:
-        log.debug("task lineage read failed for %s", tid, exc_info=True)
-        return {}
-    return _remember_lineage(drive_root, record) if record is not None else {}
+        log.debug("task lineage read failed", exc_info=True)
+        return None
+    if len(_TASK_LINEAGE) >= _TASK_LINEAGE_LIMIT:
+        _TASK_LINEAGE.clear()
+    facts = {}
+    for record in records:
+        try:
+            chat = int(record[4]) if record[4] not in (None, "") else None
+        except (TypeError, ValueError):
+            chat = None
+        facts[str(record[0])] = {"parent_task_id": str(record[1] or ""), "root_task_id": str(record[2] or ""),
+                                 "delegation_role": str(record[3] or ""), "chat_id": chat}
+    for tid, row in facts.items():
+        _TASK_LINEAGE[(str(drive_root), tid)] = row
+    return facts
 
 
 class RoomResolver:
     """``room(task)``, the one rule live routing, history and cognition share: the
     nearest explicit «Turn into project» binding on task → parent → … (the root
     only after the parent chain: converting a sub-task moves its own subtree);
-    else the task's own admitted chat when it is a registered Project chat (a
-    task born in a Project; never ``project_id``, which a Main direct turn can
-    carry too); else 0 and the caller keeps its address. Lineage is the caller's or
-    ``task_lineage``; answers hold per task id for one bindings snapshot (a conversion invalidates, a commit does not)."""
+    else the task's own admitted chat when it is a registered Project chat (never
+    ``project_id``, which a Main direct turn can carry too); else 0 and the caller
+    keeps its address. Lineage is the caller's or the store's. Answers hold per
+    task id for one bindings snapshot (a conversion invalidates them, a commit does
+    not), never one reached while an ancestor's read was unavailable (retried next
+    call); an id the store has no row for is read once per resolver (request, frame)."""
 
-    __slots__ = ("root", "bindings", "answers", "_projects")
+    __slots__ = ("root", "bindings", "answers", "misses", "_projects")
 
     def __init__(self, drive_root: Any) -> None:
         self.root = drive_root
@@ -723,11 +705,25 @@ class RoomResolver:
         if cached is None or cached[0] is not self.bindings:
             cached = _ROOM_ANSWERS[key] = (self.bindings, {})
         self.answers: Dict[str, int] = cached[1]
+        self.misses: set = set()
         self._projects: Optional[frozenset] = None
 
+    def _facts(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Cached or read facts; ``{}`` for a known miss; ``None`` when unavailable now."""
+        facts = _TASK_LINEAGE.get((str(self.root), task_id))
+        if facts is None and task_id not in self.misses:
+            read = _read_lineage(self.root, [task_id])
+            if read is None:
+                return None
+            facts = read.get(task_id)
+            if facts is None:
+                self.misses.add(task_id)
+        return facts or {}
+
     def lineage(self, task_id: Any) -> Dict[str, Any]:
-        """``task_lineage`` of this root: the facts a reader anchors by."""
-        return task_lineage(self.root, task_id)
+        """The task's facts (``{}`` when unknown or unavailable now): what a reader anchors by."""
+        tid = str(task_id or "").strip()
+        return (self._facts(tid) if tid else None) or {}
 
     def _bound(self, task_id: str) -> int:
         row = self.bindings.get(task_id)
@@ -743,14 +739,20 @@ class RoomResolver:
         answer = self.answers.get(tid)
         if answer is not None:
             return answer
+        reads: List[Optional[Dict[str, Any]]] = []  # ``None``: an ancestor the store could not answer
         chain: List[str] = []
         cur, parent, chat = tid, str(parent_task_id or "").strip(), 0
         while cur and cur not in chain:
             chain.append(cur)
             if chat := self._bound(cur):
                 break
-            cur, parent = parent or task_lineage(self.root, cur).get("parent_task_id", ""), ""
-        own = {} if chat else task_lineage(self.root, tid)
+            if not parent:
+                reads.append(self._facts(cur))
+                parent = (reads[-1] or {}).get("parent_task_id", "")
+            cur, parent = parent, ""
+        own = {} if chat else self._facts(tid)
+        reads.append(own)
+        own = own or {}
         if not chat:
             root = str(root_task_id or "").strip() or own.get("root_task_id", "")
             chat = self._bound(root) if root and root not in chain else 0
@@ -758,24 +760,16 @@ class RoomResolver:
                 if self._projects is None:
                     self._projects = project_thread_chat_ids(self.root)
                 chat = own["chat_id"] if own["chat_id"] in self._projects else 0
-        if chat or own:
+        if (chat or own) and None not in reads:  # an incomplete ancestry read is never memoized
             self.answers[tid] = chat
         return chat
 
     def warm(self, task_ids: Any) -> None:
         """Read every unseen id's lineage in ONE transaction (an archive summary names hundreds)."""
-        unseen = sorted({tid for tid in map(str, task_ids) if tid and (str(self.root), tid) not in _TASK_LINEAGE})
-        if not unseen:
-            return
-        try:
-            with open_store(self.root, write=False) as txn:
-                records = txn.conn.execute(f"{_LINEAGE_SELECT} IN (SELECT value FROM json_each(?))",
-                                           (json.dumps(unseen),)).fetchall()
-        except Exception:
-            log.debug("task lineage batch read failed", exc_info=True)
-            return
-        for record in records:
-            _remember_lineage(self.root, record)
+        unseen = {tid for tid in map(str, task_ids) if tid and (str(self.root), tid) not in _TASK_LINEAGE}
+        read = _read_lineage(self.root, unseen - self.misses) if unseen - self.misses else {}
+        if read is not None:
+            self.misses.update(unseen - read.keys())
 
 
 def project_chat_for_task_tree(
@@ -1554,7 +1548,6 @@ __all__ = [
     "project_thread_note_for_task",
     "project_chat_for_task_tree",
     "RoomResolver",
-    "task_lineage",
     "project_id_for_origin",
     "project_task_bindings",
     "task_presentation_snapshot",

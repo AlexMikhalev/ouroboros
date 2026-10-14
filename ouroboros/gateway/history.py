@@ -164,13 +164,10 @@ def _project_history_context(
         annotations = latest_chat_annotations(data_dir)
     except Exception:
         annotations = {}
-    try:
-        from ouroboros.projects_registry import all_task_bindings, RoomResolver
+    from ouroboros.projects_registry import RoomResolver, all_task_bindings
 
-        bindings_by_task, rooms = all_task_bindings(data_dir), RoomResolver(data_dir)
-    except Exception:
-        bindings_by_task, rooms = {}, RoomResolver(data_dir)
-    return project_chat_ids, source_refs, annotations, bindings_by_task, rooms, classified
+    # Neither raises: an unreadable bindings store reads as no bindings in both.
+    return project_chat_ids, source_refs, annotations, all_task_bindings(data_dir), RoomResolver(data_dir), classified
 
 
 def _user_annotation(
@@ -441,7 +438,8 @@ def _annotate_terminal_task_truth(
                 result_task_ids.add(task_id)
             if progress or summary:
                 carriers[task_id] = message
-        for task_id, ts in (evidence_anchors or {}).items():  # a parent anchored by its child's row has that row's ts; a census anchor has none
+        # A parent anchored by its child's row carries that row's ts; a census anchor has none.
+        for task_id, ts in (evidence_anchors or {}).items():
             represented.setdefault(task_id, ts)
         tool_evidence_by_task = replay_evidence_for_tasks(data_dir, represented)
         for task_id, evidence in tool_evidence_by_task.items():
@@ -1517,7 +1515,8 @@ def _assemble_history_response(
         historical_terminals=historical_terminals,
         deferred_lineage=deferred_lineage,
         evidence_anchors=evidence_anchors,
-        evidence_scope=lambda task_id: row_matches_thread.evidence_matches(rooms(task_id) or thread_id, {"task_id": task_id}),
+        evidence_scope=lambda task_id: row_matches_thread.evidence_matches(
+            rooms(task_id) or thread_id, {"task_id": task_id}),
     )
     for source in ("chat", "progress"):
         before[source] = max([before[source], *(entry["_history_end"] for entry in selections[source][0] or ()
