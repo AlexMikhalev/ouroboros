@@ -186,7 +186,7 @@ def test_cold_unselected_question_keeps_pause_veto_then_returns_and_carries_expo
     messages, usage = [], {}
     bp.resume_paused_loop(SimpleNamespace(_ctx=fresh), saved, messages, {}, usage, set(), budget_remaining_usd=5)
     assert any("interaction_source" in m["content"] for m in messages)
-    assert not any("no longer readable" in m["content"] for m in messages), "the census shows it pending"
+    assert not any("could not be re-read" in m["content"] for m in messages), "the census shows it pending"
     assert bp.budget_pause_row(tmp_path, "sleeper")["grant"]["consumed_at"]
     assert wake_reason(fresh, {"any_mail": False}) == ""
     retained = owner_wait.continuation_state(fresh, messages, {}, usage, 4, [], set())
@@ -271,7 +271,7 @@ def test_unavailable_question_source_does_not_suppress_later_ready_question(tmp_
                       lambda *_a, **_k: (_ for _ in ()).throw(OSError("read unavailable")))
         messages = []
         model_sleep.append_question_notice(ctx, "run_question:run-one", messages)
-        assert "no longer readable" in messages[-1]["content"] and not getattr(ctx, "_sleep_interaction_seen", {})
+        assert "could not be re-read" in messages[-1]["content"] and not getattr(ctx, "_sleep_interaction_seen", {})
     assert original(tmp_path, "run-one").pending_interaction_ids == ["q1"]
     assert model_sleep.wake_reason(ctx, {"any_mail": False}) == "run_question:run-one"
 
@@ -426,7 +426,7 @@ def test_cold_notice_marks_all_sources_it_actually_shows(tmp_path, monkeypatch, 
         budget_pause._resume_disclosure(ctx, row, {}, {"consumed_at": 100}, {}, messages)
     text = "\n".join(m["content"] for m in messages)
     assert "run-a" in text and "run-b" in text
-    assert "no longer readable" not in text, "the census itself delivered the waking question"
+    assert "could not be re-read" not in text, "the census itself delivered the waking question"
     shown_late = late and fresh == "readable"
     assert ("run-late" in text) is shown_late
     assert ctx._sleep_interaction_seen == {"run-a": ["q1"], "run-b": ["q1"],
@@ -473,3 +473,48 @@ def test_supervision_id_without_delivered_question_cannot_mark_sleep_exposure(tm
     assert sup.acknowledge_pending_wake(ctx, {"supervision_wake_id": "wake"})
     assert sleep_custody.seen_interactions(ctx).get("run-a") == []
     assert sup._load_state(ctx, "")["interaction_acknowledged_ids"] == ["q1"], "old ACK is not sleep exposure"
+
+
+def test_restart_retained_warm_sleep_keeps_delivered_question_exposure(tmp_path):
+    from ouroboros import model_sleep, owner_wait
+    from ouroboros.artifacts import read_actor_source_bytes
+    from supervisor.restart_retention import retain_sleep_checkpoint
+    from supervisor.sleep_wake import _readiness
+
+    _result(tmp_path, "sleeper")
+    _result(tmp_path, "other")
+    ctx = _ctx(tmp_path)
+    run = _question(tmp_path, _run(tmp_path))
+    messages = [{"role": "user", "content": "original intent"}]
+    model_sleep.append_question_notice(ctx, "run_question:run-one", messages)
+    assert ctx._sleep_interaction_seen == {"run-one": ["q1"]}
+    chosen = model_sleep.selectors(ctx, senders=["other"])
+    assert model_sleep.request_sleep(ctx, chosen, "warm")["reason"] == "sleep_armed"
+    checkpoint = owner_wait.checkpoint_owner_wait(ctx, messages, {}, {}, 1, [], set())
+    owner_wait.set_owner_wait(tmp_path, "sleeper", {**checkpoint, "state": "waiting"})
+    retained = retain_sleep_checkpoint(tmp_path, "sleeper", 1)
+    task = {"id": "sleeper", "_attempt": 1, "drive_root": str(tmp_path)}
+    queue = SimpleNamespace(DRIVE_ROOT=tmp_path)
+    assert _readiness(queue, task, retained) == "", "an already-shown question cannot mint readiness"
+    source = json.loads(read_actor_source_bytes(tmp_path, "sleeper", retained["source_ref"]))
+    assert source["messages"] == messages and source["sleep_interaction_seen"] == {"run-one": ["q1"]}
+    assert retained["auto_resume"] is False and not retained.get("grant")
+    _question(tmp_path, run, "q2", 3)
+    assert _readiness(queue, task, retained) == "run_question:run-one", "a new question still wakes"
+
+
+@pytest.mark.parametrize("control", ["owner_pause", "finalize_now", "hurry"])
+def test_control_returns_do_not_read_or_ack_opportunistic_questions(tmp_path, monkeypatch, control):
+    from ouroboros import model_sleep
+    from tests.test_model_sleep import _mail
+
+    _result(tmp_path, "sleeper")
+    ctx = _ctx(tmp_path)
+    _question(tmp_path, _run(tmp_path))
+    _mail(tmp_path, "sleeper", control, kind=control)
+    monkeypatch.setattr(model_sleep, "_question_runs", lambda *_a: pytest.fail("control must not read questions"))
+    ready = model_sleep.request_sleep(ctx, {"any_mail": False}, "warm")
+    assert ready["woke_by"] == "control:" + control and "questions" not in ready
+    messages = []
+    model_sleep.append_question_notice(ctx, ready["woke_by"], messages)
+    assert not messages and not getattr(ctx, "_sleep_interaction_seen", {})

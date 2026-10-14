@@ -208,7 +208,7 @@ def append_question_notice(ctx: Any, reason: str, messages: list, shown: Any = (
 
     ``shown`` rows already reached this transcript (the cold custody census): their refs
     count as delivered, so only questions beyond them are repeated, and the question
-    that woke the author is called unreadable only when neither they nor a fresh read
+    that woke the author could not be re-read when neither they nor a fresh read
     show it pending. A failed fresh read marks nothing it did not show.
     """
     import json
@@ -228,8 +228,8 @@ def append_question_notice(ctx: Any, reason: str, messages: list, shown: Any = (
                          + "\nRead the retained source or use delegate_wait; nothing answered the question."})
         record_question_notice(ctx, questions)
     elif waking and waking not in delivered and not _pending_question(runs.get(waking)):
-        messages.append({"role": "user", "content": "[SYSTEM NOTICE]\nThe question that woke you is no longer "
-                         "readable as pending. Nothing was acknowledged; inspect " + waking + "."})
+        messages.append({"role": "user", "content": "[SYSTEM NOTICE]\nThe question that woke you could not "
+                         "be re-read now. Nothing was acknowledged; inspect " + waking + "."})
 
 
 def acknowledge_question_delivery(ctx: Any, text: str) -> None:
