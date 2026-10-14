@@ -454,7 +454,7 @@ ouroboros/ — agent core and shared runtime (§6)
     arg_feedback.py — What a tool says about an argument it did not obey: the one-line ignored disclosure and the typed refusal naming field, value and repair (DEVELOPMENT "LLM-first affordances")
     review_response.py — Response-envelope projection for multi-model review rows
     shell_process.py, shell_effects.py, shell_outputs.py — The command-running substrate: process execution, working-tree effects and their throwaway share, declared process outputs and per-path export eligibility
-    plan_review_artifacts.py, plan_author_history.py — Per-participant reviewer-continuation inputs and attachment hashing; earlier-schema plan waves and author lineage stay readable for history and the upgrade importer
+    plan_review_artifacts.py, plan_author_history.py — Per-participant continuation inputs and attachment hashing; earlier-schema waves and author lineage, read for history and the upgrade importer
     evolution_stats.py — evolution.json metrics from sampled git history
     owner_delivery.py — Owner event delivery: live queue or the `pending_events` fallback with sticky deferral
     deliverables_shell.py — cp/mv/ln into deliverables with symlink checks
