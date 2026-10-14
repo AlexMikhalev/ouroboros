@@ -403,19 +403,42 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
         from ouroboros.utils import append_jsonl as _append_jsonl
         from ouroboros.utils import get_git_info as _get_git_info
         from ouroboros.utils import utc_now_iso as _utc_now_iso
+        from ouroboros.platform_layer import process_start_time
 
         _branch, _sha = _get_git_info(_pathlib.Path(repo_dir))
+        birth = process_start_time(_os.getpid())
         _append_jsonl(_drive / "logs" / "events.jsonl", {
             "ts": _utc_now_iso(), "type": "worker_ready", "worker_id": wid,
-            "pid": _os.getpid(), "git_branch": _branch, "git_sha": _sha,
+            "pid": _os.getpid(), "process_birth": birth, "git_branch": _branch, "git_sha": _sha,
         })
     except Exception as _e:
         _log_worker_crash(wid, _drive, "worker_ready", _e, _tb.format_exc())
+    import queue as _queue
+    from ouroboros.budget_pause import _HOLD_POLL_SEC
+    from ouroboros.review_operation import local_reviews_settled
+    from ouroboros.tool_custody import local_producers_settled
+
+    probe = None  # an idle-retirement token, answered only once no local producer is owed
     while True:
         try:
-            task = in_q.get()
+            try:
+                # Only an outstanding probe is rechecked, at the hold cadence: never an idle timer.
+                task = in_q.get(timeout=_HOLD_POLL_SEC) if probe else in_q.get()
+            except _queue.Empty:
+                task = probe
             if task is None or task.get("type") == "shutdown":
                 break
+            if task.get("type") == "worker_quiescence":
+                try:
+                    probe = None if local_reviews_settled() and local_producers_settled() else task
+                except Exception:
+                    probe = task  # unknown defers; the bounded recheck retries, never a crash
+                    log.warning("Idle probe could not prove local quiescence", exc_info=True)
+                if probe is None:
+                    out_q.put({"type": "worker_quiescent", "worker_id": wid, "pid": _os.getpid(),
+                               "process_birth": birth, "token": str(task.get("token") or "")})
+                continue
+            probe = None
             task_drive_root = str(task.get("drive_root") or drive_root)
             if extensions_owned:
                 _adopt_published_extensions(drive_root)

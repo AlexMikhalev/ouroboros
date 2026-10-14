@@ -486,7 +486,8 @@ def test_real_supervisor_orders_custody_recovery_before_prune(roots, monkeypatch
     monkeypatch.setattr(queue, "restore_pending_from_snapshot",
                         lambda **_kw: order.append("restore") or 0)
     monkeypatch.setattr(workers, "kill_workers", lambda **k: order.append("kill"))
-    monkeypatch.setattr(workers, "spawn_workers", lambda n: order.append("spawn"))
+    # The boot starts ONE ready worker (no count); an explicit count would not match.
+    monkeypatch.setattr(workers, "spawn_workers", lambda *n: order.append(("spawn", *n) if n else "spawn"))
     monkeypatch.setattr(server, "_startup_custody_sweep", lambda: order.append("custody"))
     def recover(root, repo, **kw):
         assert kw["prior_worker_pids"] == {777}

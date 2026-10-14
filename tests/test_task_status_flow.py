@@ -5,6 +5,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+from tests.worker_pool_support import affirm_ready
+
 import pytest
 from tests._store_shared import read_result, result_exists
 
@@ -2806,7 +2808,7 @@ def test_assign_tasks_mirrors_running_subagent_status_to_parent_drive(tmp_path, 
     monkeypatch.setattr(workers_module, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(workers_module, "PENDING", [task])
     monkeypatch.setattr(workers_module, "RUNNING", {})
-    monkeypatch.setattr(workers_module, "WORKERS", {1: SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue())})
+    monkeypatch.setattr(workers_module, "WORKERS", {1: affirm_ready(SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue()))})
     monkeypatch.setattr(workers_module, "load_state", lambda: {})
     monkeypatch.setattr(state_module, "budget_remaining", lambda _state, **_kwargs: 100.0)
     monkeypatch.setattr(queue_module, "persist_queue_snapshot", lambda reason="": True)
@@ -2853,7 +2855,7 @@ def test_assign_tasks_leaves_subagent_pending_when_running_cap_full(tmp_path, mo
     monkeypatch.setattr(workers_module, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(workers_module, "PENDING", pending)
     monkeypatch.setattr(workers_module, "RUNNING", running)
-    monkeypatch.setattr(workers_module, "WORKERS", {1: SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue())})
+    monkeypatch.setattr(workers_module, "WORKERS", {1: affirm_ready(SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue()))})
     monkeypatch.setattr(workers_module, "load_state", lambda: {})
     monkeypatch.setattr(state_module, "budget_remaining", lambda _state, **_kwargs: 100.0)
     monkeypatch.setattr(queue_module, "persist_queue_snapshot", lambda reason="": None)
@@ -2898,7 +2900,7 @@ def test_assign_tasks_honors_depth_reservation_for_first_grandchild(tmp_path, mo
     monkeypatch.setattr(workers_module, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(workers_module, "PENDING", pending)
     monkeypatch.setattr(workers_module, "RUNNING", running)
-    monkeypatch.setattr(workers_module, "WORKERS", {1: SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue())})
+    monkeypatch.setattr(workers_module, "WORKERS", {1: affirm_ready(SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue()))})
     monkeypatch.setattr(workers_module, "load_state", lambda: {})
     monkeypatch.setattr(state_module, "budget_remaining", lambda _state, **_kwargs: 100.0)
     monkeypatch.setattr(queue_module, "persist_queue_snapshot", lambda reason="": True)
@@ -2957,7 +2959,7 @@ def test_assignment_depth_fact_reaches_worker_and_survives_child_copyback(tmp_pa
     monkeypatch.setattr(
         workers_module,
         "WORKERS",
-        {1: SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue())},
+        {1: affirm_ready(SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue()))},
     )
     monkeypatch.setattr(workers_module, "load_state", lambda: {})
     monkeypatch.setattr(state_module, "budget_remaining", lambda _state, **_kwargs: 100.0)

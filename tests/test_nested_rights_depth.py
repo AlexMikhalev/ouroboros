@@ -3,6 +3,8 @@
 import json
 from types import SimpleNamespace
 
+from tests.worker_pool_support import affirm_ready
+
 import pytest
 
 from ouroboros.contracts.task_contract import build_task_contract
@@ -814,10 +816,11 @@ def test_replayed_schedule_event_keeps_one_physical_task_and_transition(
 
     class FakeWorkerQueue:
         def put(self, task):
-            delivered.append(dict(task))
+            if task.get("type") != "worker_quiescence":
+                delivered.append(dict(task))
 
     worker_map = {
-        wid: SimpleNamespace(wid=wid, busy_task_id=None, in_q=FakeWorkerQueue())
+        wid: affirm_ready(SimpleNamespace(wid=wid, busy_task_id=None, in_q=FakeWorkerQueue()))
         for wid in (1, 2)
     }
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
@@ -848,7 +851,7 @@ def test_assignment_quarantines_bypassed_invalid_depth_and_normalizes_legacy_row
         def put(self, task):
             delivered.append(dict(task))
 
-    worker = SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue())
+    worker = affirm_ready(SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue()))
     pending = [{
         "id": "invalid-pending-depth",
         "type": "task",
@@ -903,11 +906,11 @@ def test_assignment_quarantines_invalid_depth_before_budget_pause(tmp_path, monk
     from ouroboros.task_results import load_task_result
 
     delivered = []
-    worker = SimpleNamespace(
+    worker = affirm_ready(SimpleNamespace(
         wid=1,
         busy_task_id=None,
         in_q=SimpleNamespace(put=lambda task: delivered.append(dict(task))),
-    )
+    ))
     pending = [{
         "id": "invalid-before-budget",
         "type": "task",
@@ -1070,7 +1073,7 @@ def test_budget_pause_leaves_unresolved_invalid_depth_in_retry_custody(
             "budget_drive_root": str(tmp_path),
         },
     ]
-    worker = SimpleNamespace(wid=1, busy_task_id=None, reaping=False, in_q=SimpleNamespace(put=lambda _task: None))
+    worker = affirm_ready(SimpleNamespace(wid=1, busy_task_id=None, reaping=False, in_q=SimpleNamespace(put=lambda _task: None)))
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(workers, "PENDING", pending)
     monkeypatch.setattr(workers, "RUNNING", {})

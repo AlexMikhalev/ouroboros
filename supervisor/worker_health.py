@@ -141,8 +141,16 @@ def ensure_workers_healthy() -> None:
     if (time.time() - _pool()._LAST_SPAWN_TIME) < _pool()._SPAWN_GRACE_SEC:
         return
     queue._ensure_reaper_started()
-    with _queue_lock:
-        _pool()._ensure_workers_healthy_locked(queue)
+    # Do not capture a storm membership halfway through a serialized spawn/retire.
+    # Health intake retries next tick rather than waiting behind native teardown.
+    from supervisor.worker_pool_lifecycle import _WORKER_LIFECYCLE_LOCK
+    if not _WORKER_LIFECYCLE_LOCK.acquire(blocking=False):
+        return
+    try:
+        with _queue_lock:
+            _pool()._ensure_workers_healthy_locked(queue)
+    finally:
+        _WORKER_LIFECYCLE_LOCK.release()
 
 
 def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
@@ -189,16 +197,24 @@ def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
     for job in jobs:
         job["skip_respawn"] = disable_pool
     if disable_pool:
+        # Freeze the exact captured membership for its stop: under this latch no slot
+        # starts or is forgotten (``respawn_worker``), so only a generation change,
+        # whose own stop or start then owns the fence, can make the stop a no-op.
+        _pool()._WORKER_POOL_DISABLED_REASON = "worker_crash_storm"
         jobs.append({"kind": "worker_crash_storm", "workers": tuple(_pool().WORKERS.items()),
                      "drive_root": str(_pool().DRIVE_ROOT)})
-    for job in jobs:
+    for index, job in enumerate(jobs):
         try:
             queue._reap_queue.put(job)
         except Exception:
             # No handoff happened. Keep RUNNING intact for the next health tick.
-            worker = job.get("worker")
-            if worker is not None and _pool().WORKERS.get(job["worker_id"]) is worker:
-                worker.reaping = False
+            for unsent in jobs[index:]:
+                worker = unsent.get("worker")
+                if worker is not None and _pool().WORKERS.get(unsent["worker_id"]) is worker:
+                    worker.reaping = False
+            if disable_pool:
+                # The latch never outlives its stop: an unsent stop waits with the reaper's retries.
+                _reaper()._deferred_reap_jobs.append(jobs[-1])
             raise
     # Kept for private callers; all replacements/storm stops are queued now.
     return [], disable_pool

@@ -2,7 +2,8 @@
 
 An invocation that unwound cannot launch again. Its known executor or supervisor
 receipt can still be pending. These readers preserve that distinction for Pause,
-Continue and cold sleep without a second ledger or business-status classification.
+Continue, cold sleep and idle-worker retirement without a second ledger or
+business-status classification.
 Untracked descendants/remote effects remain the same disclosed gap as exit zero.
 """
 from __future__ import annotations
@@ -191,6 +192,24 @@ def hold_invocation():
             if outcome.get("closed"):
                 settle_invocation(outcome)
     return release
+
+
+def local_producers_settled() -> bool:
+    """The idle-retirement probe's non-review half, process-wide and O(live rows).
+
+    Every registered tool future, including one its finished attempt forgot, has
+    reached its final ``settled`` event: callback/runner holds released and its
+    durable invocation settled (``budget_pause._finish_tool_row`` sets the event
+    only after ``settle_invocation``, outside the lock). No sender an owner Pause
+    abandoned still settles its paid answer. A returned task is not proof of either.
+    """
+    from ouroboros import budget_pause
+    from ouroboros._usage_wait import _ABANDONED_SENDS
+
+    with budget_pause._TOOL_LOCK:
+        unsettled = any(not row["settled"].is_set()
+                        for rows in budget_pause._TOOL_FUTURES.values() for row in rows.values())
+    return not unsettled and not _ABANDONED_SENDS
 
 
 def retain_unconfirmed_host_operation(reason: str) -> None:

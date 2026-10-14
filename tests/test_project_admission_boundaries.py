@@ -11,6 +11,7 @@ from tests.test_project_hold_recovery import accepted, restore_unreadable, resum
 from tests.test_project_semantic_admission import room, task  # noqa: F401
 from tests.test_schedule_occurrence import q  # noqa: F401
 from tests.test_swarm_host_admission import host  # noqa: F401
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -123,8 +124,8 @@ def test_failed_head_proof_keeps_custody_without_starving_other_work(host, tmp_p
         queue.enqueue_task({"id": f"main-{i}", "type": "task", "chat_id": 1, "text": "Independent work"})
     sent = worker(host, monkeypatch)
     for i in range(1, worker_count):
-        workers.WORKERS[i] = SimpleNamespace(wid=i, busy_task_id=None, reaping=False,
-            in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row))))
+        workers.WORKERS[i] = affirm_ready(SimpleNamespace(wid=i, busy_task_id=None, reaping=False,
+            in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row)) if row.get("type") != "worker_quiescence" else None)))
     attempts = []
     persist, write, read = queue.persist_queue_snapshot, task_admission.write_task_result, task_admission.load_task_result
 

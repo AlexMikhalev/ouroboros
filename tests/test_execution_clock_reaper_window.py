@@ -58,7 +58,8 @@ def test_reaper_window_after_an_idle_decision_over_a_held_resume(host, monkeypat
     pause = _working_then_paused(host, monkeypatch, clock, budget, fresh)
     resumed = _granted_after_capacity(host, monkeypatch, clock, pause)
     process = _DeadProcess()
-    workers.WORKERS[0].proc = process
+    # A new handle's birth is unknown, never the prior affirmed process's.
+    workers.WORKERS[0].proc, workers.WORKERS[0].process_birth = process, ""
     jobs = stdqueue.Queue()
     monkeypatch.setattr(queue, "_reap_queue", jobs)
     monkeypatch.setattr(queue, "_ensure_reaper_started", lambda: None)

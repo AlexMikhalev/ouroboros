@@ -825,7 +825,9 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any, preparation: Any = None
         else:
             progress_meta["task_event"] = "scheduled"
         workers = getattr(view, "WORKERS", {}) or {}
-        if workers and not any(not getattr(worker, "busy_task_id", None) for worker in workers.values()):
+        from supervisor import workers as pool
+        active = [w for w in workers.values() if getattr(w, "active_capacity", True)]
+        if len(active) >= pool.MAX_WORKERS and all(getattr(w, "busy_task_id", None) for w in active):
             progress_meta["worker_saturation_warning"] = True
             suffix = " (all workers are currently busy; it will start when one is free)"
         else:

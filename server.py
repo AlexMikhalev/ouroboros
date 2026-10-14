@@ -706,7 +706,7 @@ def _run_supervisor(settings: dict) -> None:
         restored_pending = restore_pending_from_snapshot(terminalized=interrupted_running)
         _start_preparation_generation(stop=lambda stop=_watchdog_stop: any(e.is_set() for e in (stop, _supervisor_stop, _restart_requested, _exit_signalled)))
         kill_workers(preserve_pending=True)
-        spawn_workers(max_workers)
+        spawn_workers()
         from ouroboros.server_process import record_applied_restart_settings
         record_applied_restart_settings({"OUROBOROS_MAX_WORKERS": max_workers,
                                         "OUROBOROS_SKILLS_REPO_PATH": settings.get("OUROBOROS_SKILLS_REPO_PATH", "")})

@@ -1,11 +1,8 @@
-"""Variant A: off-loop worker reaper (extracted from supervisor/queue.py for module size).
+"""Off-loop worker custody keeps supervisor ticks responsive (<100ms).
 
-The supervisor loop must stay responsive (<100ms ticks), so a timed-out task's heaviest
-teardown — process kill + join (up to ~5s) + service-log archive + worker respawn (process
-spawn) — runs on a single-owner background reaper thread instead of inline under the queue
-lock. The loop only marks the worker ``reaping`` (so assign_tasks/crash-detector skip the
-slot) and hands a fully-decided job here; ``supervisor.queue`` re-exports the thin names
-(``_reap_queue`` / ``_ensure_reaper_started`` / ``_reap_timed_out_task``).
+One background reaper owns kill/join (up to ~5s), service-log archive and respawn outside Q.
+The loop marks ``reaping`` to exclude assignment/crash detection and hands over a decided job. ``supervisor.queue`` re-exports ``_reap_queue``,
+``_ensure_reaper_started`` and ``_reap_timed_out_task``.
 """
 
 from __future__ import annotations
@@ -62,16 +59,15 @@ def _retry_deferred_reap_jobs() -> None:
 
     with q._queue_lock:
         deferred, _deferred_reap_jobs = _deferred_reap_jobs, []
-    if deferred:
-        try:
+    try:
+        while deferred:  # a job leaves the retained list only once it is handed off
             q._ensure_reaper_started()
-        except Exception:
-            with q._queue_lock:
-                _deferred_reap_jobs.extend(deferred)
-            log.warning("Deferred reaper work remains pending", exc_info=True)
-        else:
-            for job in deferred:
-                q._reap_queue.put(job)
+            q._reap_queue.put(deferred[0])
+            deferred.pop(0)
+    except Exception:
+        with q._queue_lock:
+            _deferred_reap_jobs.extend(deferred)
+        log.warning("Deferred reaper work remains pending", exc_info=True)
 
 
 def reaper_loop() -> None:
@@ -91,17 +87,21 @@ def reaper_loop() -> None:
                 recover_confirmed_dead_worker(job)
             elif job.get("kind") == "worker_crash_storm":
                 _stop_crashed_worker_pool(job)
+            elif job.get("kind") in ("idle_worker_retirement", "unready_worker_teardown"):
+                from supervisor import worker_pool_lifecycle as lifecycle
+                (lifecycle.reap_idle_worker if job["kind"] == "idle_worker_retirement" else lifecycle.finish_unready_teardown)(job)
             else:
                 reap_timed_out_task(job)
-        except TerminalFileRecoveryPending:
-            from supervisor.queue import _queue_lock
-
-            # The same reaper retains its existing job and physical reservation.
-            # The ordinary health tick retries it once, without a busy retry loop.
-            with _queue_lock:
-                _deferred_reap_jobs.append(job)
-            log.warning("Reaper file custody remains pending for %s", job.get("task_id"))
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, TerminalFileRecoveryPending) or (job or {}).get("kind") in (
+                    "idle_worker_retirement", "unready_worker_teardown"):
+                from supervisor.queue import _queue_lock
+                # Unknown custody keeps job/reservation for the next health tick, never a busy loop or a crash.
+                with _queue_lock:
+                    _deferred_reap_jobs.append(job)
+                log.warning("Reaper custody pending for task %s, worker %s: %s", job.get("task_id"), job.get("worker_id"), exc,
+                            exc_info=not isinstance(exc, TerminalFileRecoveryPending))  # expected waits carry no traceback
+                continue
             log.error("Reaper failed for task %s", (job or {}).get("task_id"), exc_info=True)
             # Self-heal: an escape BEFORE the guarded teardown (top-of-function imports/extraction)
             # must not strand the slot at reaping=True (the crash detector skips reaping slots, so it

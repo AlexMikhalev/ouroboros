@@ -123,6 +123,7 @@ def persist_queue_snapshot(reason: str = "") -> bool:
         # count so the context queue digest never falsely advertises a free worker slot.
         try:
             from supervisor import workers as _workers_mod
+            from supervisor.worker_pool_lifecycle import worker_ready
 
             _ws = list(_workers_mod.WORKERS.values())
             worker_total = len(_ws)
@@ -134,8 +135,8 @@ def persist_queue_snapshot(reason: str = "") -> bool:
             reaping_count = sum(1 for _w in _ws if getattr(_w, "reaping", False))
             assignable_idle_workers = sum(
                 1 for _w in _ws
-                if (getattr(_w, "busy_task_id", None) is None and not getattr(_w, "reaping", False)
-                    and getattr(_w, "active_capacity", True))
+                if (getattr(_w, "busy_task_id", None) is None and worker_ready(_w)
+                    and getattr(_w, "active_capacity", True) and not getattr(_w, "resume_hold", ""))
             )
         except Exception:
             worker_total = 0
