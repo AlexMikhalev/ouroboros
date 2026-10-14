@@ -549,6 +549,8 @@ class UpdateApplyErrorResponse(TypedDict):
     error: str
     reason: NotRequired[str]
     abandoned: NotRequired[bool]
+    status: NotRequired[Dict[str, Any]]  # preparation observations, not the success discriminator
+    update_intent: NotRequired[Dict[str, Any]]
     rescue: NotRequired[Dict[str, Any]]
     keep_branch: NotRequired[str]
     blockers: NotRequired[List[str]]

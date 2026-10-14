@@ -1523,6 +1523,8 @@
  * @property {string} error
  * @property {string=} reason
  * @property {boolean=} abandoned
+ * @property {Object=} status Preparation observations, not the success discriminator.
+ * @property {Object=} update_intent
  * @property {Object=} rescue
  * @property {string=} keep_branch
  * @property {string[]=} blockers

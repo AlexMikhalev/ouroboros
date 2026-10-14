@@ -438,7 +438,7 @@ def _noticed_bootstrap(safe_restart_fn):
 
                 owner_chat = notification_chat_route(load_state().get("owner_chat_id"))
                 if owner_chat is not None:
-                    send_with_budget(owner_chat, f"⚠️ Startup bootstrap failed: {msg}",
+                    send_with_budget(owner_chat, f"Startup bootstrap failed: {msg}",
                                      role="system", system_type="startup_notice")
             except Exception:
                 log.warning("Bootstrap failure notice was not delivered", exc_info=True)

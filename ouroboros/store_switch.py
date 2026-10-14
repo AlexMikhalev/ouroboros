@@ -200,11 +200,11 @@ def switching_owner(door: str) -> Owner:
         return rollback
     if door == "update_replace":
         from supervisor import git_ops
-        from supervisor.git_ops_reset import checkout_and_reset
+        from supervisor.git_ops_reset import _checkout_outcome
 
         def replace(intent: Dict[str, Any]) -> Tuple[bool, str]:
             recorded = str((git_ops._read_update_intent() or {}).get("target_sha") or "")
-            return _unbound(recorded, intent, "the managed update intent targets") or checkout_and_reset(
+            return _unbound(recorded, intent, "the managed update intent targets") or _checkout_outcome(
                 git_ops.BRANCH_DEV, reason="ui_update_apply", unsynced_policy="rescue_and_reset")
 
         return replace

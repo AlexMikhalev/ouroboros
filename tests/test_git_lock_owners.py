@@ -480,6 +480,7 @@ def test_a_failed_bootstrap_is_told_once_in_the_owner_chat_and_a_deliberate_defe
     chat, text, kw = sent[0]
     assert (chat, kw) == (owner_chat, {"role": "system", "system_type": "startup_notice"})
     assert message in text and "index.lock" in text
+    assert text.startswith("Startup bootstrap failed: ")  # no decorative glyph to strip at render
 
     sent.clear()
     lock.unlink()
@@ -538,3 +539,32 @@ def test_landed_update_keeps_its_own_boot_authority_after_refused_bootstrap(mana
     assert adoption == [{"supervisor_ready": False}]
     assert lock.read_bytes() == b"left by a crashed process\n"
     assert not _rows(boot.data, "managed_update_rollback")
+
+
+def test_deferred_replace_records_git_refusal_after_export_and_retirement(replace_scene, monkeypatch):
+    """The store-less target defers checkout until exit; its real owner still owes Git's cause."""
+    from ouroboros import store, store_switch
+    from ouroboros.store_import import ensure_current_store
+    from supervisor import message_bus
+
+    scene = replace_scene
+    ensure_current_store(scene.data)
+    assert store.store_ready(scene.data)
+    lock = _orphan_lock(scene.repo)
+    status, body = scene.apply(scene.storeless)
+    assert status == 200 and body["status"] == "ok"
+    outcome = store_switch.run_switch_seam(scene.data, repo_dir=scene.repo)
+    assert outcome["status"] == "switch_failed" and "index.lock" in outcome["message"]
+    receipt = json.loads((scene.data / store_switch.RECEIPT_REL).read_text(encoding="utf-8"))
+    assert receipt["export"]["status"] == "completed" and receipt["retired"]
+    assert receipt["switched"]["ok"] is False and "index.lock" in receipt["switched"]["message"]
+    assert store_switch.read_switch_intent(scene.data) is None
+    assert lock.exists() and _git(scene.repo, "rev-parse", "HEAD") == scene.base
+    # The current generation re-imports its completed export; the old intent is not replayed.
+    assert store_switch.resume_pending_switch(scene.data, repo_dir=scene.repo)["status"] == "nothing_pending"
+    ensure_current_store(scene.data)
+    sent = []
+    monkeypatch.setattr(message_bus, "send_with_budget", lambda chat, text, **kw: sent.append((chat, text, kw)))
+    store_switch.report_outcomes(scene.data, 42)
+    assert len(sent) == 1 and "index.lock" in sent[0][1]
+    assert sent[0][2]["system_type"] == "storage_switch_notice"
