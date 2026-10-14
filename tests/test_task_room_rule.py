@@ -176,9 +176,67 @@ def test_a_conversion_invalidates_room_answers_and_a_store_commit_does_not(tmp_p
 
 def test_an_unadmitted_id_is_answered_but_a_miss_is_never_remembered(tmp_path):
     rooms = _world(tmp_path)
-    assert pr.project_chat_for_task_tree(tmp_path, "later-1") == 0 and pr.task_lineage(tmp_path, "later-1") == {}
+    assert pr.project_chat_for_task_tree(tmp_path, "later-1") == 0 and pr.RoomResolver(tmp_path).lineage("later-1") == {}
     assert pr.project_chat_for_task_tree(tmp_path, "later-2", "root-1", "root-1") == rooms["a"], "supplied lineage routes an unseen id"
     for task_id in ("later-1", "later-2"):
         write_task_result(tmp_path, task_id, "scheduled", delegation_role="subagent", parent_task_id="root-1",
                           root_task_id="root-1", chat_id=1)
         assert pr.project_chat_for_task_tree(tmp_path, task_id) == rooms["a"], "admission creates the facts"
+
+
+def _busy_store(monkeypatch, busy):
+    """``open_store`` raises StoreBusy while ``busy["on"]``: the store under contention."""
+    from ouroboros import store
+
+    real_open = store.open_store
+
+    def _open(*a, **k):
+        if busy["on"]:
+            raise store.StoreBusy("database is locked")
+        return real_open(*a, **k)
+
+    monkeypatch.setattr(pr, "open_store", _open)
+    return _open
+
+
+def test_an_unavailable_ancestor_read_is_never_memoized(tmp_path, monkeypatch):
+    """Astra's counterexample: leaf -> middle -> mid (bound to B) -> root (bound to A); the leaf's
+    facts are warm, the middle's read hits a busy store. The fallback answer of that call may
+    be wrong, but it is not remembered: once the store answers again the leaf resolves to B."""
+    a, b = (pr.create_project(tmp_path, pid, name=pid) for pid in ("room-a", "room-b"))
+    write_task_result(tmp_path, "root", "running", root_task_id="root", chat_id=1)
+    pr.bind_task_to_project(tmp_path, "root", a["id"], origin={"absent": "system"})
+    write_task_result(tmp_path, "mid", "running", delegation_role="subagent", parent_task_id="root", root_task_id="root", chat_id=1)
+    pr.bind_task_to_project(tmp_path, "mid", b["id"], origin={"absent": "system"})
+    write_task_result(tmp_path, "middle", "running", delegation_role="subagent", parent_task_id="mid", root_task_id="root", chat_id=1)
+    write_task_result(tmp_path, "leaf", "running", delegation_role="subagent", parent_task_id="middle", root_task_id="root", chat_id=1)
+    assert pr.RoomResolver(tmp_path).lineage("leaf")["parent_task_id"] == "middle"  # warm leaf facts, cold middle
+    busy = {"on": True}
+    _busy_store(monkeypatch, busy)
+    contended = pr.project_chat_for_task_tree(tmp_path, "leaf")
+    assert contended in (0, a["chat_id"]), "a best-effort answer while the middle is unreadable"
+    assert "leaf" not in pr.RoomResolver(tmp_path).answers, "an incomplete ancestry read is not memoized"
+    busy["on"] = False
+    assert pr.project_chat_for_task_tree(tmp_path, "leaf") == b["chat_id"], "the retried read finds the nearer conversion"
+    assert pr.RoomResolver(tmp_path).answers["leaf"] == b["chat_id"], "a complete read is memoized"
+
+
+def test_a_healthy_warm_frame_still_opens_no_store(tmp_path, monkeypatch):
+    rooms = _world(tmp_path)
+    assert pr.project_chat_for_task_tree(tmp_path, "grand-1") == rooms["b"]
+    counts = _count_store_work(monkeypatch)
+    for _ in range(10):
+        assert pr.project_chat_for_task_tree(tmp_path, "grand-1") == rooms["b"]
+    assert counts["open_store"] == 0
+
+
+def test_an_absent_id_is_read_once_per_resolver(tmp_path, monkeypatch):
+    _world(tmp_path)
+    counts = _count_store_work(monkeypatch)
+    rooms = pr.RoomResolver(tmp_path)
+    for _ in range(5):
+        assert rooms("ghost-1") == 0 and rooms.lineage("ghost-1") == {}
+    assert counts["open_store"] == 1, "one read per resolver for an id the store holds no row for"
+    rooms.warm(["ghost-1", "ghost-2"])
+    assert counts["open_store"] == 2 and rooms("ghost-2") == 0 and counts["open_store"] == 2
+    assert pr.RoomResolver(tmp_path)("ghost-1") == 0 and counts["open_store"] == 3, "a fresh resolver (a new frame) asks again"
