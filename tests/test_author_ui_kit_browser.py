@@ -106,6 +106,8 @@ def author_kit_server(tmp_path, monkeypatch):
 
     def configured(app, **kwargs):
         app.router.routes.extend([
+            # The product mounts: the core's builtin tree under /onboarding/static, the interface at /static.
+            Mount("/onboarding/static", NoCacheStaticFiles(directory=installed / "web")),
             Mount("/static", NoCacheStaticFiles(directory=installed / "web")),
             Route("/style-spa", lambda request: HTMLResponse(_style_document(installed, "index.html"))),
             Route("/style-wizard", lambda request: HTMLResponse(_style_document(installed, "onboarding_template.html"))),

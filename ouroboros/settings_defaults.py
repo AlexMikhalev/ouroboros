@@ -83,6 +83,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_NETWORK_PASSWORD": "",
     "OUROBOROS_SERVER_HOST": "127.0.0.1",
     "OUROBOROS_HOST_SERVICE_PORT": 8767,
+    # Main interface at / and /static: "" builtin, "none", or a trusted directory (server_web.select_ui).
+    "OUROBOROS_UI_DIR": "",
     "OUROBOROS_DESKTOP_KEEP_RUNNING": "false",  # desktop window close keeps running (launcher_background.py)
     "OUROBOROS_MODEL": OPENROUTER_DEFAULTS["main"],
     # Role-owned choices; empty account and zero window mean Auto, not healthy/known.
@@ -529,7 +531,24 @@ SETTINGS_KEYS_NOT_EXPORTED_TO_ENV = frozenset({
     # which no owner authored — back over that environment, so the operator's LAN-reachable server silently became
     # loopback at the first self-restart. A default standing in for an absent key is not a decision.
     "OUROBOROS_SERVER_HOST",
+    # Read once per server generation (server_web.ServedUI.apply). An exported copy outlives the choice it
+    # copied: the desktop launcher keeps its environment across Restart, so clearing a saved directory or
+    # `none` would come back from that stale copy. The environment stays an operator's input for an ABSENT key.
+    "OUROBOROS_UI_DIR",
 }) | ENDPOINT_AUTHORED_SETTINGS  # disk-only in BOTH directions (never read from env, never exported to it)
+
+# A SAVED value of these keys, blank included, is the owner's choice and wins over the environment; an
+# ABSENT key leaves the choice to the environment (a deployment's OUROBOROS_UI_DIR=none). A merged write
+# carries every key the read produced, so it must not author an absent key with the value the environment
+# or the default gave it: one unrelated Settings save would otherwise freeze the operator's choice on disk.
+SAVED_CHOICE_SETTINGS = frozenset({"OUROBOROS_UI_DIR"})
+
+
+def unauthored_saved_choices(prepared, stored, authored=()) -> frozenset:
+    """Only the writer's explicit authorship can create a saved choice. Merged reads may contain defaults
+    or environment values; equality with either is not evidence of intent. Existing saved values survive."""
+    stored = stored if isinstance(stored, dict) else {}
+    return frozenset(key for key in SAVED_CHOICE_SETTINGS - set(authored) if key in prepared and key not in stored)
 
 
 def settings_env_keys() -> list:

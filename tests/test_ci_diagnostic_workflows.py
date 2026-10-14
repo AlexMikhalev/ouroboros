@@ -1,6 +1,8 @@
 """Public CI exports preserve producer exits, secret boundaries and full UI proof."""
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -8,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 from types import SimpleNamespace
 
 import pytest
@@ -459,6 +462,62 @@ def test_full_lane_runs_as_four_guarded_shards_under_step_ceilings(tmp_path):
     # Browser tools keep their manual/tag condition, independent of the host lane's outcome, on one shard.
     assert "matrix.shard == 1" in tools["if"] and "steps.ui_tests" not in tools["if"]
     assert "github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')" in tools["if"]
+
+
+# The GitHub-published SHA-256 of caddy_2.11.7_linux_amd64.tar.gz; that archive's SHA-512 is the
+# line in the release's sigstore-signed caddy_2.11.7_checksums.txt.
+CADDY_SHA256 = "727b91701a392de6ebc5027509f548bf39979e5216340d0faed8fa5e69c84f8b"
+
+
+@pytest.mark.parametrize("pinned", [True, False], ids=["pinned-bytes", "foreign-bytes"])
+def test_every_shard_installs_the_digest_pinned_official_caddy_its_lane_needs(tmp_path, pinned):
+    """tests/test_separate_ui_browser.py needs a real Caddy. Its skip without one is no reviewed
+    platform gate (the required lane fails it), so every shard installs the official release asset
+    by the digest GitHub publishes for it and hands that binary to the lane."""
+    from tests.browser_lane import permitted_skip
+    from tests.separate_ui_support import CADDY_ENV
+
+    job = _workflow("ui-browser.yml")["jobs"]["ui-shard"]
+    steps = _steps("ui-browser.yml", "ui-shard")
+    install, lane = steps["install_caddy"], steps["ui_tests"]
+    order = [step.get("id") for step in job["steps"]]
+    assert order.index("setup_python") < order.index("install_caddy") < order.index("ui_tests")
+    assert install["env"] == {"CADDY_VERSION": "2.11.7", "CADDY_SHA256": CADDY_SHA256}
+    assert "if" not in install and "continue-on-error" not in install
+    assert ("https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION/"
+            "caddy_${CADDY_VERSION}_linux_amd64.tar.gz") in install["run"]
+    assert lane["env"][CADDY_ENV] == "${{ steps.install_caddy.outputs.path }}"
+    assert sum(step.get("timeout-minutes", 0) for step in job["steps"]) < job["timeout-minutes"]
+    assert not permitted_skip("tests/test_separate_ui_browser.py::test_one_tls_origin_routes_each_prefix_to_its_owner"
+                              "_and_keeps_the_password_gate", f"set {CADDY_ENV} to an absolute Caddy v2 binary")
+
+    # The step's own shell over a stand-in release: only the pinned bytes give the lane a binary.
+    bash, tar = shutil.which("bash"), shutil.which("tar")
+    if bash is None or tar is None:
+        pytest.skip("workflow shell unavailable on this host")
+    release = tmp_path / "release.tar.gz"
+    with tarfile.open(release, "w:gz") as archive:
+        for name, data, mode in (("caddy", b"#!/bin/sh\necho 'v2.11.7 h1:stand-in'\n", 0o755),
+                                 ("LICENSE", b"stand-in", 0o644)):
+            member = tarfile.TarInfo(name)
+            member.size, member.mode = len(data), mode
+            archive.addfile(member, io.BytesIO(data))
+    runner, output = tmp_path / "runner", tmp_path / "github-output"
+    runner.mkdir()
+    stub = 'curl() { cp "$STAND_IN_RELEASE" "${@: -1}"; }\npython() { "$PYTHON_BIN" "$@"; }\n'
+    env = {**os.environ, "RUNNER_TEMP": str(runner), "GITHUB_OUTPUT": str(output), "CADDY_VERSION": "2.11.7",
+           "CADDY_SHA256": hashlib.sha256(release.read_bytes()).hexdigest() if pinned else CADDY_SHA256,
+           "STAND_IN_RELEASE": str(release), "PYTHON_BIN": sys.executable}
+    done = subprocess.run([bash, "-e", "-o", "pipefail", "-c", stub + install["run"]], env=env,
+                          capture_output=True, text=True, encoding="utf-8", timeout=30)
+    binary = runner / "caddy-2.11.7" / "caddy"
+    if pinned:
+        assert done.returncode == 0, done.stderr
+        assert output.read_text(encoding="utf-8") == f"path={binary}\n"
+        assert [path.name for path in binary.parent.iterdir()] == ["caddy"]
+    else:
+        assert done.returncode != 0 and "Caddy digest mismatch" in done.stderr, done.stderr
+        assert not output.exists() and not binary.exists()
 
 
 @pytest.mark.serial

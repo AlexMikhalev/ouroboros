@@ -16,7 +16,7 @@ from ouroboros.utils import read_json_dict, utc_now_iso  # noqa: E402
 from typing import Any, Dict, Optional
 
 from starlette.applications import Starlette
-from starlette.routing import Route, Mount
+from starlette.routing import Route
 import uvicorn
 from ouroboros.server_control import (PanicIngress, execute_panic_stop as _execute_panic_stop_impl, exit_after_restart,
                                       restart_current_process as _restart_current_process_impl)
@@ -31,7 +31,7 @@ from ouroboros.server_entrypoint import (ServerAdmissionRefused, admit_data_root
                                          find_free_port, parse_server_args, reserved_service_ports, write_port_file)
 from ouroboros.launcher_bootstrap import automatic_launch_allowed
 from ouroboros import body_adoption, store_switch
-from ouroboros.server_web import NoCacheStaticFiles, make_index_page, resolve_web_dir
+from ouroboros.server_web import ServedUI
 from ouroboros.config import resolve_port_file
 from ouroboros.process_logging import configure_process_logging
 from ouroboros.task_finalization import host_operation_reply_kwargs
@@ -1251,9 +1251,8 @@ async def api_settings_post(request):
     _sync_gateway_settings_module()
     return await _gateway_settings.api_settings_post(request)
 
-web_dir = resolve_web_dir(REPO_DIR)
-web_dir.mkdir(parents=True, exist_ok=True)
-index_page = make_index_page(web_dir)
+served_ui = ServedUI(REPO_DIR)  # `/` and `/static`; the lifespan applies OUROBOROS_UI_DIR per generation
+index_page = served_ui.index_page
 
 routes = [
     Route("/", endpoint=index_page),
@@ -1265,7 +1264,7 @@ routes = [
             "api_settings_post": api_settings_post,
         },
     ),
-    Mount("/static", app=NoCacheStaticFiles(directory=str(web_dir)), name="static"),
+    *served_ui.mounts(),  # builtin /onboarding/static, then the selected /static (kept last)
 ]
 
 from contextlib import ExitStack, asynccontextmanager, suppress
@@ -1300,6 +1299,7 @@ async def lifespan(app):
     # settings.json with no reader that needs it.
     settings, _provider_defaults_changed, _provider_default_keys = apply_runtime_provider_defaults(load_settings())
     _apply_settings_to_env(settings)
+    served_ui.apply(app, settings)  # this generation's main interface, before any request is served
     # Pin boot-time runtime-mode after env apply; save_settings compares to this owner baseline.
     from ouroboros.config import initialize_runtime_mode_baseline
     initialize_runtime_mode_baseline()

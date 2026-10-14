@@ -94,6 +94,26 @@ export function storedOrFallback(value, fallback) {
     return fallback && (value === undefined || value === null || value === '') ? fallback : value;
 }
 
+// What the core serves at its own address right now (`served_ui` on /api/state),
+// beside the saved choice that applies at the next restart; a refused choice
+// carries the core's own sentence naming it and why. A core older than the choice
+// reports nothing, and nothing is shown.
+export function servedUiStatus(servedUi) {
+    const label = { builtin: 'the built-in interface', directory: 'the interface directory', none: 'no main page' }[servedUi?.source];
+    if (!label) return null;
+    return servedUi.error
+        ? { text: `Serving now: ${label}. ${servedUi.error}`, tone: 'warn' }
+        : { text: `Serving now: ${label}.`, tone: 'muted' };
+}
+
+// The interface choice travels only when edited: an untouched field must not turn
+// an environment choice or the default into a saved one, and a cleared field saves
+// the blank that selects built-in over the environment.
+export function uiDirChange(edited, loaded) {
+    const value = String(edited ?? '').trim();
+    return value === String(loaded ?? '').trim() ? {} : { OUROBOROS_UI_DIR: value };
+}
+
 function applyInputValue(id, value) {
     const el = byId(id);
     el.value = value === undefined || value === null ? '' : value;
@@ -491,6 +511,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     let draftRevision = 0;
     let loadSequence = 0;
     let restartReadSequence = 0;
+    let servedUiReadSequence = 0;
     let restartState = { restart_required: false };
     let settingsSaving = false;
     let saveOutcomeUnknown = false;
@@ -534,6 +555,18 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         const target = byId('settings-restart-status');
         target.hidden = !text;
         setInlineStatus(target, text, restartAvailable || value.local_model?.pending_keys?.length ? 'warn' : 'muted');
+    }
+
+    async function refreshServedUi() {
+        const sequence = ++servedUiReadSequence;
+        let shown;
+        try {
+            shown = servedUiStatus((await apiClient.state())?.served_ui);
+        } catch { return; /* An unavailable read keeps the last known fact. */ }
+        const target = byId('s-ui-dir-applied');
+        if (sequence !== servedUiReadSequence || !target) return;
+        target.hidden = !shown;
+        setInlineStatus(target, shown?.text || '', shown?.tone || 'muted');
     }
 
     async function refreshRestartState() {
@@ -677,6 +710,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         page.querySelectorAll('[data-provider-test-status]').forEach((el) => setInlineStatus(el, '', 'muted'));
         applySecretInputs(page, s);
         INPUT_FIELDS.forEach(([id, key, fallback = '']) => applyInputValue(id, storedOrFallback(s[key], fallback)));
+        applyInputValue('s-ui-dir', s.OUROBOROS_UI_DIR);
         searchSelectionEdited = false;
         VALUE_FIELDS.forEach(([id, key, fallback]) => { byId(id).value = s[key] || fallback; });
         modelRoles.load(s, { ...setupContract, modelSlots: setupModelSlots().map((slot) => ({
@@ -824,6 +858,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         setSettingsCleanBaseline();
         armCleanBaselineOnStatusSettle(revision);
         _renderNetworkHint(data._meta);
+        void refreshServedUi();
         syncSettingsLoadState();
         // The skill-requested rows and the extension settings forms (which read
         // their stored values before rendering) are optional enrichment: it must
@@ -939,6 +974,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             const value = fieldValue(id).trim();
             body[key] = key === 'OUROBOROS_SERVER_HOST' ? value || fallback : value || '';
         });
+        Object.assign(body, uiDirChange(fieldValue('s-ui-dir'), currentSettings?.OUROBOROS_UI_DIR));
         body.OUROBOROS_WEBSEARCH_MODEL = collectSearchSelection().model;
         VALUE_FIELDS
             // Owner-only keys travel through their audited owner endpoints, never
@@ -1222,6 +1258,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     const accountModelCatalog = watchAccountModelCatalog();
     const disposeRestartReconnect = ws?.on?.('open', () => {
         refreshRestartState();
+        void refreshServedUi();
         if (settingsLoaded) void refreshModelCatalog();
     });
 

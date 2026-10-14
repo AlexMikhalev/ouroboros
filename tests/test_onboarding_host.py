@@ -502,8 +502,8 @@ def test_onboarding_page_is_served_without_a_provider_or_a_supervisor(monkeypatc
         response = client.get("/onboarding")
 
     assert response.status_code == 200
-    assert 'src="/static/modules/onboarding_wizard.js"' in response.text
-    assert 'href="/static/onboarding.css"' in response.text
+    assert 'src="/onboarding/static/modules/onboarding_wizard.js"' in response.text
+    assert 'href="/onboarding/static/onboarding.css"' in response.text
     assert "__OURO_ONBOARDING_BOOTSTRAP__" in response.text
     assert response.headers["cache-control"] == "no-store"
     # Side-effect-free: serving the page authors nothing.

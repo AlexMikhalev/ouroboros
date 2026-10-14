@@ -192,8 +192,9 @@ def test_effort_choice_mirrors_track_the_python_scale() -> None:
 def test_every_status_tone_the_card_emits_has_a_shared_rule_in_both_documents() -> None:
     # The emitted tone resolves in the one shared source actually loaded by both hosts.
     assert '.settings-inline-status[data-tone="neutral"]' in _read(ROOT / "web" / "ui.css")
-    for document in ("index.html", "onboarding_template.html"):
-        assert 'href="/static/ui.css"' in _read(ROOT / "web" / document), document
+    # The SPA links the selected /static tree; the wizard the core's builtin /onboarding/static.
+    for document, prefix in (("index.html", "/static"), ("onboarding_template.html", "/onboarding/static")):
+        assert f'href="{prefix}/ui.css"' in _read(ROOT / "web" / document), document
 
 
 def test_the_per_row_switch_is_one_shared_checkbox_saved_by_the_common_save() -> None:
