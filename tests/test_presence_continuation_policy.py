@@ -176,21 +176,21 @@ def test_presence_eligibility_keeps_auto_required_and_off(policy_turn, monkeypat
     h = policy_turn
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", mode)
     h.contract = contract
+    # A tool-less nomination of a prose answer buys no extra round even with an expected
+    # output: the A3 "nothing attempted" re-loop is gone (#1748); there are no reviewable
+    # effects, so the verify-before-done notice does not apply either.
     h.script = [finish("nominate", message=ANSWER)]
-    if contract:
-        # The production one-shot verify-before-done reminder remains enabled.
-        h.script.append(lambda _messages: finish("after-reminder", answer_sha256=h.ctx._delivery_candidate.content_sha256))
     if reviewed:
         h.script.append(lambda _messages: finish("select", answer_sha256=h.ctx._delivery_candidate.content_sha256))
     execution = h.start()
     initial = execution.initial.result(timeout=30)
     if reviewed:
         assert initial.status == "continuing" and initial.text == ""
-        assert not execution.result.done() and h.calls == 2
+        assert not execution.result.done() and h.calls == 1
         h.release.set()
     final = execution.result.result(timeout=30)
     assert final.text == ANSWER and final.outcome == "message"
-    assert h.calls == 1 + int(contract) + int(reviewed) and len(h.reviews) == int(reviewed)
+    assert h.calls == 1 + int(reviewed) and len(h.reviews) == int(reviewed)
     assert bool(load_task_result(h.data, final.task_id).get("presence_continuation")) is reviewed
     assert not h.script
 
@@ -226,16 +226,15 @@ def test_last_default_review_cycle_still_allows_the_author_response(policy_turn)
     assert review_max_cycles() == 2
     h.before_loop = lambda ctx: _spend_review_cycles(h, ctx, 1)
     h.script = [finish("nominate", message=ANSWER),
-                lambda _messages: finish("after-reminder", answer_sha256=h.ctx._delivery_candidate.content_sha256),
                 lambda messages: finish("select", answer_sha256=h.ctx._delivery_candidate.content_sha256)]
     execution = h.start()
     initial = execution.initial.result(timeout=30)
-    assert initial.status == "continuing" and h.calls == 2
+    assert initial.status == "continuing" and h.calls == 1
     assert h.dispatched.wait(30)  # lending the conversation can precede the physical paid stamp
     assert len(load_task_acceptance_review_state(h.data, initial.task_id)["claims_by_binding"]) == 2
     h.release.set()
     final = execution.result.result(timeout=30)
-    assert final.text == ANSWER and h.calls == 3 and len(h.reviews) == 1
+    assert final.text == ANSWER and h.calls == 2 and len(h.reviews) == 1
     assert "[PRESENCE CONVERSATION RESUMED]" in str(h.inputs[-1])
     assert len(load_task_acceptance_review_state(h.data, final.task_id)["claims_by_binding"]) == 2
 

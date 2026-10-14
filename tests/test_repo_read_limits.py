@@ -150,16 +150,6 @@ def test_data_read_sentinel_narrower_for_non_memory_paths(tmp_path):
     assert "not guaranteed" in non_mem_result
 
 
-def test_self_check_returns_bool_and_interval_15():
-    from ouroboros.loop import _maybe_inject_self_check
-    messages = []
-    usage = {"cost": 0}
-    progress_calls = []
-    assert _maybe_inject_self_check(14, 200, messages, usage, progress_calls.append) is False
-    assert _maybe_inject_self_check(15, 200, messages, usage, progress_calls.append) is True
-    assert "CHECKPOINT" in messages[0]["content"]
-
-
 # ---------------------------------------------------------------------------
 # Core governance artifact invariants
 # ---------------------------------------------------------------------------

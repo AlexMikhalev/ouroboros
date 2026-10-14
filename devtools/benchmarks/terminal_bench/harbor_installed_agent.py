@@ -1059,7 +1059,7 @@ PY
         Harbor's AgentContext does not currently expose the task.toml timeout
         (verified against harbor docs 2026-06: tokens/cost/rollout/metadata
         only), so this probe usually returns None today. If a future harbor
-        adds a timeout field, the deadline pass-through (milestone nudges +
+        adds a timeout field, the deadline pass-through (factual thresholds +
         run_command cap inside Ouroboros) lights up without an adapter change.
         """
         for attr in ("agent_timeout_sec", "task_timeout_sec", "timeout_sec", "max_agent_timeout_sec"):

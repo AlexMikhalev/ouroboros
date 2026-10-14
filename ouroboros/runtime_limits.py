@@ -13,7 +13,6 @@ from typing import Optional
 
 from ouroboros.settings_defaults import (
     FINALIZATION_GRACE_DEFAULT_SEC,
-    PACING_INTERVAL_DEFAULT_SEC,
     SETTINGS_DEFAULTS,
     SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC,
 )
@@ -315,18 +314,6 @@ def get_routing_manifest_result_rows() -> int:
 
 def get_vision_caption_timeout_sec() -> int:
     return _clamped_number_setting("OUROBOROS_VISION_CAPTION_TIMEOUT_SEC", low=1, cast=int)
-
-
-def get_pacing_interval_sec(settings: Optional[dict] = None) -> int:
-    """Intrinsic self-pacing checkpoint cadence in seconds (0 disables)."""
-    raw = runtime_setting("OUROBOROS_PACING_INTERVAL_SEC")
-    if raw is None and isinstance(settings, dict):
-        raw = settings.get("OUROBOROS_PACING_INTERVAL_SEC")
-    try:
-        parsed = int(raw)
-    except (TypeError, ValueError):
-        parsed = int(PACING_INTERVAL_DEFAULT_SEC)
-    return max(0, parsed)
 
 
 def get_supervisor_liveness_deadline_sec(settings: Optional[dict] = None) -> int:

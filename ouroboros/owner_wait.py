@@ -164,6 +164,9 @@ def continuation_state(ctx: Any, messages: list, trace: dict, usage: dict,
         "usage": without_finalization_timing(usage),
         "cost_ceiling": asdict(cost_ceiling) if cost_ceiling is not None else None,
         "model_wait": model_state,
+        "nanny_activity": {key: getattr(ctx, key, None) for key in (
+            "_nanny_metered_progress", "_nanny_delegate_baseline",
+        )},
         "context_model_role": getattr(getattr(ctx, "context_fit_plan", None), "model_role", ""),
         # Exposure facts gate automatic compaction; a resumed task keeps them.
         "context_observations": {key: getattr(ctx, key) for key in (
@@ -823,6 +826,10 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
     from ouroboros.model_wait import budget_paused_seconds
 
     ctx = tools._ctx
+    # Missing old observations are unknown, not this new process's startup seed.
+    # None is the known fresh state; an empty mark has no historical anchor.
+    for key in ("_nanny_metered_progress", "_nanny_delegate_baseline"):
+        setattr(ctx, key, (state.get("nanny_activity") or {}).get(key, {}))
     for key, value in (state.get("context_observations") or {}).items():
         if key in {"_last_context_observation", "_inspected_context_view", "_pending_compaction", "_historical_author_inputs", "_pending_owner_dialogue"}:
             setattr(ctx, key, value)

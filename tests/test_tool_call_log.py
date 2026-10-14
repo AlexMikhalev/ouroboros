@@ -418,3 +418,41 @@ def test_completion_receipts_replay_host_facts_without_hiding_errors(tmp_path):
     evidence = replay_evidence(tmp_path, "t")
     assert [(row["receipt"], row["status"]) for row in evidence["observations"]] == [
         (True, "unknown"), (True, "ok"), (True, "error"), (False, "ok")]
+
+
+def test_replayed_observations_keep_each_rows_own_host_time_and_invent_none(tmp_path):
+    """The evidence row stands at its call's first observation, so replay carries every
+    observation's own recorded ``ts`` (started, wait end, settlement) and never builds one."""
+    from ouroboros.tool_call_log import replay_evidence
+
+    rows = [
+        _log_row("tool_call_started", "timed", ts="2026-10-13T01:00:05+00:00"),
+        _log_row("tool_call_timeout", "timed", ts="2026-10-13T01:00:20+00:00"),
+        _log_row("tool_call", "timed", ts="2026-10-13T01:01:30+00:00", is_error=False),
+        # A call whose rows carry no usable time: absent stays absent, whatever the type of the value.
+        _log_row("tool_call_started", "bare"),
+        _log_row("tool_call", "bare", ts="", is_error=False),
+        _log_row("tool_call_started", "odd", ts=12345),
+        _log_row("tool_call", "odd", ts=None, is_error=False),
+        # A settled verdict keeps its time through the same single path.
+        _log_row("tool_call_started", "check", ts="2026-10-13T01:02:00+00:00"),
+        {**_log_row("tool_call", "check", ts="2026-10-13T01:02:09+00:00", is_error=False),
+         "tool_result_meta": {"verification": {"status": "fail"}}},
+        # A pre-identity row is a separate legacy count, never an observation with a time.
+        {**_log_row("tool_call"), "ts": "2026-10-13T00:00:00+00:00"},
+    ]
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "tools.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    evidence = replay_evidence(tmp_path, "t")
+    seen = {(o["key"].rsplit(":", 1)[1], o["fact"]): o.get("ts", "<absent>") for o in evidence["observations"]}
+    assert seen == {
+        ("timed", "started"): "2026-10-13T01:00:05+00:00",
+        ("timed", "wait_ended"): "2026-10-13T01:00:20+00:00",
+        ("timed", "settled"): "2026-10-13T01:01:30+00:00",
+        ("bare", "started"): "<absent>", ("bare", "settled"): "<absent>",
+        ("odd", "started"): "<absent>", ("odd", "settled"): "<absent>",
+        ("check", "started"): "2026-10-13T01:02:00+00:00", ("check", "settled"): "2026-10-13T01:02:09+00:00",
+    }
+    assert evidence["legacy"]["calls"] == 1
+    check = next(o for o in evidence["observations"] if o["key"].endswith(":check") and o["fact"] == "settled")
+    assert check["verification"] == {"status": "fail"}

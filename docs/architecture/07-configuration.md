@@ -182,7 +182,6 @@ A registry of `config.SETTINGS_DEFAULTS` (defaults canonical in `settings_defaul
 | OUROBOROS_TASK_IDLE_TIMEOUT_SEC | 900 | Idle timeout; requires absence of real task/subtree progress (§6 Task lifecycle) |
 | OUROBOROS_TASK_ABS_CEILING_SEC | unlimited | Optional absolute task lifetime in seconds (floor 300), activity-independent; deadline and budget stay separate axes |
 | OUROBOROS_SUPERVISOR_LIVENESS_DEADLINE_SEC | 90 | Liveness watchdog; alerts and recommends `/restart`, never frees a lock held by a wedged turn |
-| OUROBOROS_PACING_INTERVAL_SEC | 600 | Pacing reminder interval |
 | LOCAL_MODEL_SOURCE | "" | Local-model source (HF repo or path) |
 | LOCAL_MODEL_FILENAME | "" | Local-model GGUF filename (split first shard expanded) |
 | LOCAL_MODEL_CONTEXT_LENGTH | 16384 | Local-model context window |

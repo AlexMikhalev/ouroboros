@@ -1272,8 +1272,16 @@ patched in place; Expand shows the per-tool counts (`read_file ×3 ·
 web_search`); its phase is `calling` while a tracked call is still running,
 `warn` once a call failed, `result` otherwise, and the row says that phase in
 ink rather than in extra words. A failed or timed-out call keeps
-its own diagnostic row and counts once. Wait end and operation settlement are
-independent facts: late success retires the provisional timeout notice but keeps
+its own diagnostic row and counts once. A completed check command whose recorded criterion
+did not pass keeps a separate expandable warning, “Check did not pass: …”. Its
+first sentence distinguishes the check process from its criterion; the details
+name the check and criterion and disclose bounded output. It adds no call error
+or task failure. Live, post-terminal and replay use the same invocation-bound
+row; a later passing check does not erase the earlier failure. A comparison without
+a verdict is unconfirmed, not a proven mismatch. On replay, recorded call times
+place the evidence row before its diagnostics; a missing start permits only an
+observed-time or legacy carrier fallback, not a reconstructed first call. Wait end and
+operation settlement are independent facts: late success retires the provisional timeout notice but keeps
 “wait ended” in the evidence row; late failure keeps its operation error. Either
 arrival order produces the same outcome. A historical start alone means outcome
 unknown, never Running or Failed.
@@ -1292,7 +1300,9 @@ progress or references choose their presentation. Block
 presence is consistent across reload and reconnect. A turn moved into a Project
 with `ensure_project_scope` lives there; Main retains its compact Project work entry.
 `N notes` in the collapsed header counts timeline items, the evidence row
-among them.
+among them. A threshold crossing names its bound and threshold without strategic
+advice; distinct bounds and thresholds have distinct rows. Historical producers
+without a named bound keep their old label.
 
 Delegated executor activity keeps its own attributed voice in the root or child
 timeline. Messages lead; thinking stays folded in its own details, and routine

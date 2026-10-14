@@ -53,7 +53,6 @@
  * @property {string} detail  // one honest owner-readable line (e.g. "Sleeping until 14:05.")
  * @property {string} level  // observe | act | full
  * @property {string} next_wake_at  // ISO instant; "" when unknown
- * @property {string} pending_reason  // the event that will wake it early, "" when none
  * @property {string} last_wake_at  // ISO instant; "" before the first wake of this process
  * @property {string} last_wake_task_id
  * @property {string} last_wake_outcome  // running | done | paused | pausing | unknown | failed | rejected:<reason> | skipped:<reason>
@@ -69,6 +68,7 @@
  */
 /** @typedef {import('./task_activity_types.js').ActiveDirectTurn} ActiveDirectTurn */
 /** @typedef {import('./task_activity_types.js').ActiveChatActivity} ActiveChatActivity */
+/** @typedef {import('./task_activity_types.js').ToolVerificationFact} ToolVerificationFact */
 /**
  * @typedef {Object} EvolutionDataResponse
  * @property {Object[]} points

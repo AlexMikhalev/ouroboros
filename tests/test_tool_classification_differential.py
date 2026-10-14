@@ -55,6 +55,23 @@ class Delta(NamedTuple):
 # Every entry traces to a numbered item of the delta list the owner approved
 # (batch #3 answer 1=A, batch #4 answers 1-3). Nothing else may differ.
 APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
+    # G2 lane C / owner issue #1657: source-backed effective-outcome repairs.
+    # Historical golden answers stay intact; only these live answers move.
+    "SEND_LINKS_NO_CHAT": Delta(False, "ok", True, "unavailable", "A.1657", "no active chat exists for the requested delivery"),
+    "ESCALATE_PARENT_SETTLED": Delta(False, "ok", True, "unavailable", "A.1657", "no live ancestor can receive the escalation"),
+    "ESCALATE_UNWRITTEN": Delta(False, "ok", True, "error", "A.1657", "the attempted parent mailbox write did not persist"),
+    "FILE_TOO_LARGE": Delta(False, "ok", True, "argument_error", "A.1657", "media input exceeds the admitted file limit before extraction"),
+    "SKILL_EXEC_EXTENSION": Delta(False, "ok", True, "argument_error", "A.1657", "an extension cannot run through the skill subprocess interface"),
+    "SKILL_EXEC_GRANT_REQUIRED": Delta(False, "ok", True, "blocked", "A.1657", "required skill grants are absent before process submission"),
+    "SKILL_EXEC_ARGV_TOO_LARGE": Delta(False, "ok", True, "argument_error", "A.1657", "oversized argv is refused before process submission"),
+    "SKILL_EXEC_OVERFLOW": Delta(False, "ok", True, "error", "A.1657", "the process exceeded output limits and was killed; earlier effects remain"),
+    "SKILL_REPAIR_STALE": Delta(False, "ok", True, "blocked", "A.1657", "the repair admission no longer authorizes writes to these bytes"),
+    "SERVICE_ALREADY_RUNNING": Delta(False, "ok", True, "blocked", "A.1657", "the requested start is refused; the existing process keeps its custody"),
+    "CHERRY_PICK_CONFLICT": Delta(False, "ok", True, "error", "A.1657", "a requested cherry-pick failed; earlier applied commits remain"),
+    "RESTORE_PARTIAL": Delta(False, "ok", True, "error", "A.1657", "checkout succeeded but cleanup failed; tracked changes remain discarded"),
+    "EVOLUTION_AUTHORITY_REVOKED": Delta(False, "ok", True, "blocked", "A.1657", "campaign authority no longer permits the next commit stage"),
+    "EVOLUTION_COMMIT_ORPHANED": Delta(False, "ok", True, "error", "A.1657", "the local commit exists but its authority receipt could not be recorded"),
+    "EVOLUTION_PUBLICATION_STOPPED": Delta(False, "ok", True, "blocked", "A.1657", "authority revoked publication after a retained local commit; containment failure is separately typed"),
     # v7next F3.1 note: the reference table also carried rows for producers this
     # lane did NOT cut over (the in-place core.py rows 2083-2086 — room writes,
     # forward_to_worker, memory REJECTED — and the control_routing/control_runtime
@@ -340,6 +357,15 @@ def _golden() -> dict[str, dict]:
 # unavailable. Keep the historical corpus intact and assert the new observed
 # outcome explicitly rather than manufacture old evidence (04-AGENCY S1/S3).
 CURRENT_PRODUCER_CONTRACTS = {
+    # #1657: only missing logs are unavailable; status/stop retain warnings.
+    "SERVICE_NOT_FOUND": (False, "ok"),
+    "native:LEGACY_UNAVAILABLE:SERVICE_NOT_FOUND": (True, "unavailable"),
+    # #1657: containment failure is already an error through the legacy adapter
+    # (LEGACY_TOOL_ERROR). Its new native TOOL_ERROR publication preserves that
+    # outcome when wrapped by an authority-refusal message after a local commit.
+    # Only the native producer is new; retain the historical text golden intact.
+    "EVOLUTION_ORPHAN_CONTAINMENT_FAILED": (True, "error"),
+    "native:TOOL_ERROR:EVOLUTION_ORPHAN_CONTAINMENT_FAILED": (True, "error"),
     # Body-candidate admission adds these two markers after the retired golden
     # source. Pin what the live classifier actually answers; do not backfill a
     # historical answer from a checkout that never emitted these strings.

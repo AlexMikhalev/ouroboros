@@ -34,7 +34,6 @@ from ouroboros.settings_defaults import (
     OPENROUTER_DEFAULTS,  # noqa: F401
     OPENROUTER_REVIEW_DEFAULTS,  # noqa: F401
     OWNER_STOP_OUTER_CAP_SEC,  # noqa: F401
-    PACING_INTERVAL_DEFAULT_SEC,  # noqa: F401
     RETIRED_COMMA_LIST_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_SUCCESSORS, REVIEW_POOL_MIGRATED_SETTING_KEYS, REVIEW_POOL_MIGRATION_CLASS_LINE,  # noqa: F401
@@ -122,7 +121,6 @@ from ouroboros.runtime_limits import (
     get_max_subagent_depth,  # noqa: F401
     get_max_workers,  # noqa: F401
     get_onboarding_snapshot_timeout_sec,  # noqa: F401
-    get_pacing_interval_sec,  # noqa: F401
     get_per_call_timeout_ceiling_sec,  # noqa: F401
     get_plan_task_deadline_min_sec,  # noqa: F401
     get_post_task_evolution_budget_usd,  # noqa: F401

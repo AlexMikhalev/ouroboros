@@ -91,8 +91,17 @@ def persist_result_source(
     return ref
 
 
+def compact_verification(fact: Any) -> Dict[str, Any]:
+    """A check's recorded criterion verdict, compact: pass/fail, kind, match mode, the
+    evaluated match (absent when no comparison ran) and the claim it supports (#1585)."""
+    if not isinstance(fact, Mapping):
+        return {}
+    return {key: fact[key] for key in ("status", "contract_kind", "expected_match", "matched", "criterion_id")
+            if key in fact}
+
+
 def typed_result_facts(row: Mapping[str, Any]) -> Dict[str, Any]:
-    """Status, code and process facts the producer published; nothing read from the text."""
+    """Status, code, process facts and any check verdict the producer published; nothing read from the text."""
     from ouroboros.tools.process_facts import PROCESS_FACT_KEYS
 
     meta = row.get("result_meta") if isinstance(row.get("result_meta"), Mapping) else {}
@@ -105,6 +114,8 @@ def typed_result_facts(row: Mapping[str, Any]) -> Dict[str, Any]:
     if code:
         facts["code"] = str(code)
     facts.update({key: meta[key] for key in PROCESS_FACT_KEYS if key in meta})
+    if verification := compact_verification(meta.get("verification")):
+        facts["verification"] = verification
     return facts
 
 

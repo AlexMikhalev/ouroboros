@@ -281,8 +281,7 @@ def _start_maintenance_thread(latch: Any, name: str, target: Any, args: tuple) -
 
 
 def _periodic_supervisor_maintenance(
-    last_custody_reap: list, last_review_reconcile: list, *, on_orphans_healed: Any = None,
-    stop_event: Any = None,
+    last_custody_reap: list, last_review_reconcile: list, *, stop_event: Any = None,
 ) -> None:
     """Throttled upkeep on the supervisor tick, nothing history-sized inline (INV-24).
     The 20 s cadence independently starts cancel, delivery, notice, usage and synthesis duties; every 600 s
@@ -291,7 +290,7 @@ def _periodic_supervisor_maintenance(
     reconcile pass stamps when it ENDS (issue #1230). A due cadence whose latch is still
     held journals the duty's stall once, with its thread's stack (``_duty_busy``).
     ``stop_event`` is the loop's per-generation token: both long passes stop mutating
-    once it closes. ``on_orphans_healed(count)`` fires off-loop when orphaned RUNNING rows healed."""
+    once it closes."""
     if _stop_requested(stop_event):
         return
     now = time.time()
@@ -341,7 +340,7 @@ def _periodic_supervisor_maintenance(
         if not latch.acquire(blocking=False):
             _duty_busy(latch, 300)
         elif not _start_maintenance_thread(latch, "reconcile-maintenance", _run_periodic_reconcile_sweep,
-                                           (last_review_reconcile, stop_event, latch, on_orphans_healed)):
+                                           (last_review_reconcile, stop_event, latch)):
             last_review_reconcile[0] = time.time()  # a start that failed still waits out a cadence
 
 
@@ -966,15 +965,14 @@ _DRIVE_PRUNE_CURSOR = {"headless": "", "direct": ""}
 _STARTUP_TEMP_SWEEP_OWED = [False]
 
 
-def _run_periodic_reconcile_sweep(marker: list, stop_event: Any = None, latch: Any = None,
-                                  on_orphans_healed: Any = None) -> None:
+def _run_periodic_reconcile_sweep(marker: list, stop_event: Any = None, latch: Any = None) -> None:
     """Off-loop 300 s history-sized heal, then the drive-custody pass (the ONE pending
     child-ref promotion retry, then bounded settlement). The marker is stamped when the pass ENDS, before
     its latch opens; the 20 s cancel cadence never waits on any walk and a slow pass never
     restarts (issue #1230). The generation token is asked before every step and, by the
     mutation owners, again before each publication commits."""
     try:
-        _periodic_zombie_reconcile(on_orphans_healed=on_orphans_healed, stop_event=stop_event)
+        _periodic_zombie_reconcile(stop_event=stop_event)
         if not _stop_requested(stop_event):
             from supervisor.workspace_preparation import recover_interrupted_preparations
             recover_interrupted_preparations(DATA_DIR, stop=lambda: _stop_requested(stop_event))
@@ -1051,7 +1049,7 @@ def _run_drive_custody_pass(stop_event: Any = None) -> None:
                  report=reports["headless"], task_drives=reports["direct"], mailboxes=mailboxes)
 
 
-def _periodic_zombie_reconcile(*, on_orphans_healed: Any = None, stop_event: Any = None) -> None:
+def _periodic_zombie_reconcile(*, stop_event: Any = None) -> None:
     """Heal zombie 'running' records on a supervisor cadence. A worker that died
     mid-review (crash / SIGKILL / manual stop) leaves ``review_job.json`` at running
     until the next boot reconcile (``GET /api/extensions`` is a passive read and
@@ -1072,13 +1070,11 @@ def _periodic_zombie_reconcile(*, on_orphans_healed: Any = None, stop_event: Any
         from ouroboros.task_status import reconcile_orphaned_running_tasks
 
         expired_quizzes: list = []
-        healed = reconcile_orphaned_running_tasks(
+        reconcile_orphaned_running_tasks(
             DATA_DIR, expired_quizzes=expired_quizzes, boot=False,
             write_guard=lambda task_id: orphan_reconcile_write_guard(task_id, stop_event=stop_event),
         )
         _publish_expired_quiz_frames(expired_quizzes)
-        if healed and callable(on_orphans_healed):
-            on_orphans_healed(int(healed))
     except Exception:
         log.debug("Periodic orphaned running-task reconcile failed", exc_info=True)
     if _stop_requested(stop_event):

@@ -469,6 +469,8 @@ def _typed_result_metadata(
                     tool_result_meta=dict(tool_result.meta))
         if tool_result.meta.get("artifact_registered") is True:
             meta["artifact_registered"] = True
+        if isinstance(tool_result.meta.get("verification"), dict):  # the criterion verdict beside this status (#1585)
+            meta["verification"] = dict(tool_result.meta["verification"])
     # Legacy non-process deliverable fallback reads the FULL result before trace
     # truncation. Process producers must supply the typed fact below.
     if (
@@ -511,11 +513,8 @@ def _typed_result_metadata(
         # undeclared outputs) keeps that code; only an otherwise-plain success is
         # relabelled, which is what the retired text scan did for every shape.
         meta["status"] = "ok_autocorrected"
-    if fn_name == "run_command" and not is_error and meta.get("exit_code") == 0:
-        if meta["status"] == "ok_autocorrected":
-            meta["status"] = "ok_autocorrected"
-        else:
-            meta["status"] = "ok"
+    if fn_name == "run_command" and not is_error and meta.get("exit_code") == 0 and meta["status"] != "ok_autocorrected":
+        meta["status"] = "ok"
     if fn_name == "submit_skill_to_hub":
         from ouroboros.skill_publish_result import extract_skill_publish_result_metadata
 
@@ -952,6 +951,7 @@ def _emit_finished(tools: ToolRegistry, live: Dict[str, Any], result: Dict[str, 
         "is_error": bool(result.get("is_error")),
         "status": result_meta.get("status"),
         **_process_fact_fields(result_meta),
+        **({"verification": result_meta["verification"]} if "verification" in result_meta else {}),
         "result_preview": sanitize_tool_result_for_log(truncate_for_log(result.get("result", ""), 500)),
         **extra,
     })

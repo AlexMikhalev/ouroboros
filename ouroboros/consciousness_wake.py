@@ -104,57 +104,15 @@ def _clip_preview(value: Any, limit: int = 100) -> str:
     return text[: max(0, limit - 18)].rstrip() + f" …[{len(text) - (limit - 18)} chars omitted]"
 
 
-def _trigger_line(
-    projects: Dict[str, str], reason: str, rows: List[Dict[str, Any]], *, now: float,
-) -> tuple[str, str]:
-    """Return ``(human line, task id pinned by the trigger)`` without inventing state."""
-    from ouroboros.task_status import SETTLED_STATUSES
-
+def _trigger_line(reason: str) -> str:
+    """The wake's cause line. The schedule alone starts a wake (#1603), so the
+    heartbeat is the cause; what happened since is in the observed events."""
     raw = str(reason or "").strip()
     if not raw:
-        return "", ""
-    if raw.startswith("project_digest:"):
-        parts = raw.split(":", 2)
-        project_id = parts[1].strip() if len(parts) > 1 else ""
-        trigger_task_id = parts[2].strip() if len(parts) > 2 else ""
-        matches = [
-            row for row in rows
-            if str(row.get("project_id") or "").strip() == project_id
-            and str(row.get("status") or "") in SETTLED_STATUSES
-            and not row.get("_is_direct_chat")
-            and str((row.get("metadata") or {}).get("initiator") or "") != "consciousness"
-        ]
-        if trigger_task_id:
-            exact = [row for row in matches if str(row.get("task_id") or "") == trigger_task_id]
-            if exact:
-                matches = exact
-        matches.sort(key=lambda row: str(row.get("updated_at") or row.get("ts") or ""), reverse=True)
-        if matches:
-            row = matches[0]
-            task_id = str(row.get("task_id") or "")
-            status = str(row.get("status") or "settled")
-            title = _clip_preview(row.get("description") or row.get("text") or row.get("result"), 120)
-            cost = row.get("accounted_upper_bound_usd", row.get("cost_usd"))
-            cost_text = f", ${float(cost):.2f}" if isinstance(cost, (int, float)) else ""
-            project = projects.get(project_id, project_id)
-            stamp = _parse_iso(row.get("updated_at") or row.get("ts"))
-            age_text = f", {_ago(now - stamp)}" if stamp is not None else ""
-            detail = f"; {title}" if title else ""
-            qualifier = "settled task" if trigger_task_id else "latest settled task"
-            return f"- wake cause: project {project} {qualifier} {task_id} ({status}){cost_text}{age_text}{detail}", task_id
-        return f"- wake cause: project {projects.get(project_id, project_id)} reported a settled task (details unavailable)", ""
-    if raw.startswith("task_finished:"):
-        parts = raw.split(":", 2)
-        task_id, status = (parts[1:] + ["", ""])[:2]
-        row = next((row for row in rows if str(row.get("task_id") or "") == task_id), None)
-        title = _clip_preview((row or {}).get("description") or (row or {}).get("text") or (row or {}).get("result"), 120)
-        detail = f"; {title}" if title else ""
-        return f"- wake cause: task {task_id} finished ({status or 'settled'}){detail}", task_id
-    if raw.startswith("orphans_healed:"):
-        return f"- wake cause: {raw.replace('_', ' ')}", ""
+        return ""
     if raw == "heartbeat":
-        return "- wake cause: scheduled heartbeat; no event reason is recorded for this wake", ""
-    return f"- wake cause: {raw or 'unknown event'}", ""
+        return "- wake cause: the scheduled wake time; events never move it, they are listed as observed"
+    return f"- wake cause: {raw}"
 
 
 def _card_line(task_id: str, quiz_id: str, block: Dict[str, Any], *, now: float, owner_wait: Any = None) -> str:
@@ -736,7 +694,7 @@ def observe_wake(drive_root: Any, *, boundary: Any, since: float, now: float, re
                     STATE_OPEN, STATE_EXPIRED_TERMINAL):
                 cards.append((str(block.get("asked_at") or ""), _card_line(
                     task_id, str(quiz_id), block, now=now, owner_wait=row.get("owner_wait"))))
-    trigger, _trigger_task = _trigger_line(projects, reason, rows, now=now)
+    trigger = _trigger_line(reason)
     chat_boundary = window.get("boundary") or {key: accepted[key] for key in _CHAT_BOUNDARY_KEYS if key in accepted}
     state_to_accept = {**chat_boundary, **({"transitions": state} if isinstance(state, dict) else {}),
                        **({"memory": memory_boundary} if memory_boundary is not None else {})}

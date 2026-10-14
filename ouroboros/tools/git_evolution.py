@@ -15,6 +15,9 @@ from typing import Any, Dict, Optional
 
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.git_plumbing import _sanitize_git_error
+from ouroboros.tools.tool_result import (
+    ToolResult, _publish_tool_result, _published_tool_result, _replace_tool_result,
+)
 
 log = logging.getLogger("ouroboros.tools.git")
 
@@ -305,10 +308,10 @@ def _preserve_evolution_orphan(
             "The index and worktree were left untouched for lossless recovery."
         )
     except Exception as exc:
-        return (
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR", text=(
             "⚠️ EVOLUTION_ORPHAN_CONTAINMENT_FAILED: normal publication remains blocked, "
             f"but the active ref could not be reset safely ({_sanitize_git_error(str(exc))})."
-        )
+        )))
 
 
 def _record_evolution_commit_receipt(
@@ -386,4 +389,9 @@ def _evolution_publication_stopped_result(
         scope_raw_result=getattr(ctx, "_last_scope_raw_result", {}),
         degraded_reasons=list(getattr(ctx, "_review_degraded_reasons", []) or []),
     )
+    # Preserve the containment producer's native fault through the publication
+    # wrapper; an authority refusal alone remains blocked after partial effects.
+    containment_result = _published_tool_result(ctx, None)
+    if isinstance(containment_result, ToolResult) and containment_result.text == containment:
+        return _publish_tool_result(ctx, _replace_tool_result(containment_result, text=message))
     return message
