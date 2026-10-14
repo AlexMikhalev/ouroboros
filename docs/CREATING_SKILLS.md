@@ -750,16 +750,21 @@ A turn's source identity is its binding, source event ID, provider/account,
 conversation/thread, actor ID and text. Keep those facts stable on retry;
 `staged_files` paths and delivery-reporting negotiation may change. A collision
 returns HTTP 409 `presence_event_identity_conflict` with `disposition: rejected`,
-not another room's answer. HTTP 409 `presence_attempt_outcome_unknown` and
-`presence_resources_unavailable` carry `disposition: retry` and no external
-text: retain the original event in the transport. A refusal may carry a
-previously admitted child's `work_ref`; poll it through `/presence/work`,
-not as a completed reply to the original event. A failed durable start is
-also retryable; no agent effect began unless its start was recorded. A quota
-refusal after a terminal task does not itself prove safe regeneration on the
-same ID; if prior effects remain unproven the conversation may need explicit
-owner recovery. Never treat these refusals as `completed/silent` or resend a
-confirmed provider effect merely because a Host receipt failed.
+not another room's answer. Admitted attempts with an unknown outcome, lost local
+stack or cancellation return `disposition: retained`, `turn_ref` for the original,
+optional `work_ref` for a real admitted child, and `delivery_reporting_version`.
+Persist the full receipt and source event, release the input FIFO, and observe
+both references independently through `/presence/work`; never resubmit the event
+as new work. An unresolved work view has `status: unresolved`, the retained code
+and references, no authored outcome/text, and any already released continuation
+outputs. Keep observing for canonical late evidence without erasing the retained
+receipt when a child finishes. Deduplicate output by its original source identity.
+`retry` preserves temporary failures and quota refusals with a source-bound
+pre-dispatch retry certificate; `blocked` needs configuration repair, whereas
+`rejected` is an event-specific permanent refusal. HTTP status alone decides none
+of these. Missing or unknown dispositions remain retryable for compatibility.
+Older Host/consumer pairs may still hold input queues until both are upgraded.
+Never project a retained refusal as `completed/silent` or as a successful handoff.
 
 #### Presence continuation
 
