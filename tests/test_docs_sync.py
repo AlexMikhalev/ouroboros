@@ -307,9 +307,10 @@ def test_architecture_documents_skill_schedule_lifecycle_and_evolution_light_blo
     # retention, DST contract, and the evolution light-mode hard block.
     assert "resync_skill_schedules()" in arch
     assert "skill_readiness_for_execution()" in arch
-    # Experience Review memory write-back data flow is documented.
-    assert "MEMORY_ACTIONS_JSON" in arch
-    assert "apply_memory_actions" in arch
+    # The automatic experience-review write-back is retired; lessons, the Pattern Register
+    # and the backlog are authored through knowledge_write.
+    assert "MEMORY_ACTIONS_JSON" not in arch and "apply_memory_actions" not in arch
+    assert "Lessons, the Pattern Register and the improvement backlog are authored, never host-generated" in arch
 
 
 def test_chat_id_addressing_docs_match_the_code_that_routes_it():

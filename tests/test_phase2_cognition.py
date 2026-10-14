@@ -70,9 +70,6 @@ def test_root_checkpoint_prevents_a_second_facts_row_and_buys_no_summary(tmp_pat
     monkeypatch.setattr(llm_mod, "LLMClient", lambda: llm)
     monkeypatch.setattr(memory_mod, "Memory", lambda **_kwargs: object())
     monkeypatch.setattr(pipeline, "_run_scratchpad_consolidation", lambda *_a, **_k: None)
-    monkeypatch.setattr(pipeline, "_run_reflection", lambda *_a, **_k: None)
-    monkeypatch.setattr(pipeline, "_update_improvement_backlog", lambda *_a, **_k: 0)
-    monkeypatch.setattr(pipeline, "_apply_reflection_memory_actions", lambda *_a, **_k: 0)
     monkeypatch.setattr(evolution, "maybe_promote", lambda *_a, **_k: None)
     env = SimpleNamespace(
         repo_dir=tmp_path / "repo", drive_root=tmp_path,
@@ -87,7 +84,7 @@ def test_root_checkpoint_prevents_a_second_facts_row_and_buys_no_summary(tmp_pat
     )
     args = (
         env, task, {"rounds": 2, "cost": 0},
-        {"tool_calls": [{"tool": "read_file"}]}, {}, tmp_path / "logs",
+        {"tool_calls": [{"tool": "read_file"}]}, tmp_path / "logs",
     )
     pipeline._run_post_task_processing_async(*args, blocking=True)
     # Raw dialogue may rotate/compact after the checkpoint settles. Its absence

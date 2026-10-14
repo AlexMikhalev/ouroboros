@@ -1,12 +1,12 @@
-"""Host-recorded plan-review facts for the learning surfaces (reflection, late settlement).
+"""Host-recorded plan-review facts for a review panel that settled after its task ended.
 
-The post-task reflection asks the mind to account for every review finding, yet its
-evidence held only the commit/advisory ledger and the acceptance panels: what the PLAN
-review found, how the author answered, whether the element survived in the plan the
-author finally selected, and which reviewers never answered all vanished at task end.
-This leaf reads the recorded plan-review state and projects those facts, bounded and
-with a source pointer. It scores nothing and decides nothing: which advice mattered is
-the mind's judgement (BIBLE P5/P13); the host only keeps the facts in front of it.
+What the PLAN review found, how the author answered, whether the element survived in
+the plan the author finally selected, and which reviewers never answered would vanish
+at task end. This leaf reads the recorded plan-review state and projects those facts,
+bounded and with a source pointer, into the one host row a late acceptance settlement
+appends to the reflection log. It scores nothing and decides nothing: which advice
+mattered is the mind's judgement (BIBLE P5/P13); the host only keeps the facts in front
+of it.
 
 One builder for the whole slice (``plan_review_reflection_slice``), one pure core over
 an already-loaded state (``facts_from_state``) so tests need no drive, and one bounded
@@ -27,7 +27,7 @@ from ouroboros.store import StoreError
 
 log = logging.getLogger(__name__)
 
-# Fit limits for a Light-route prompt section and a context row, not judgements.
+# Fit limits for the projected facts and the context row, not judgements.
 PLAN_REVIEW_REFLECTION_CHARS = 6_000
 LATE_SETTLEMENT_ROW_CHARS = 1_500
 _TEXT_CHARS = 200
@@ -296,7 +296,7 @@ def _render(facts: Mapping[str, Any]) -> str:
 
 
 def render_plan_review_section(facts: Mapping[str, Any]) -> str:
-    """The prompt section the reflection reads first: facts, with the judgement left to the reader."""
+    """The rendered facts the fit bounds, with the judgement left to the reader."""
     return _SECTION_HEADING + _render(facts)
 
 
@@ -369,12 +369,12 @@ def _late_panel(result: Mapping[str, Any], retry_key: str) -> Optional[Dict[str,
 def late_settlement_reflection_entry(root: Any, task_id: str, retry_key: str) -> Optional[Dict[str, Any]]:
     """One bounded reflection row for a panel that settled after its task ended.
 
-    The reflection that already ran was written over a still-running panel; this row
-    puts the settled verdict (the host's own sentence), each reviewer's output and the
-    plan findings of the touched elements into the same log, so the next tasks read it
-    through the ordinary recent-reflections window. No model call, no marker: the
-    Pattern Register stays closed (``_admits_pattern_register`` reads error evidence).
-    The source pointer comes right after the verdict, so a bounded row never loses it.
+    The task ended over a still-running panel; this row puts the settled verdict (the
+    host's own sentence), each reviewer's output and the plan findings of the touched
+    elements into the reflection log, whose host rows integrating contexts render whole
+    (``context.build_recent_sections``). No model call and no lesson: what it means is
+    the mind's to judge. The source pointer comes right after the verdict, so a bounded
+    row never loses it.
     """
     from ouroboros.task_results import load_task_result
     from ouroboros.utils import truncate_within_limit
@@ -415,7 +415,7 @@ def late_settlement_reflection_entry(root: Any, task_id: str, retry_key: str) ->
 
 
 def learn_from_late_settlement(root: Any, result: Mapping[str, Any], retry_key: str) -> bool:
-    """Append the late-settlement row through the ordinary routed writer; failures only log."""
+    """Append the late-settlement row through the routed reflection-log store; failures only log."""
     from types import SimpleNamespace
 
     from ouroboros.reflection import append_reflection_routed

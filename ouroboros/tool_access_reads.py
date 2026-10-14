@@ -1,9 +1,9 @@
-"""Inherited physical read bindings, derived from existing task provenance.
+"""Shared runtime and inherited workspace bindings for read operations.
 
-The policy is parent-equivalent reading, not a path grant list. Each delegation
-edge records where its parent actually worked; exact parent links recover earlier
-bindings even when every child selects a different starting folder. Writes never
-consult this projection.
+Ordinary foci can address canonical runtime data independently of their execution
+drive. Only children inherit ancestor workspaces, through exact parent links.
+Dispatch still enforces task and Presence restrictions; writes never consult
+this projection.
 """
 from __future__ import annotations
 
@@ -70,9 +70,13 @@ def _parent_records(ctx: Any):
 def inherited_read_roots(ctx: Any) -> list[tuple[str, pathlib.Path]]:
     """Physical aliases of existing logical roots, for READ operations alone."""
     access = _access()
-    if access.active_tool_profile(ctx) not in {"local_readonly_subagent", "acting_subagent"}:
-        return []
     roots = [("runtime_data", access.canonical_data_root(ctx))]
+    if access.active_tool_profile(ctx) not in {"local_readonly_subagent", "acting_subagent"}:
+        from ouroboros.presence_authority import presence_ceiling_from_context
+
+        # A Presence grant addresses its existing physical roots; ordinary
+        # read parity must not expand a selected runtime_data='.' ceiling.
+        return roots if presence_ceiling_from_context(ctx) is None else []
     for record in _parent_records(ctx):
         edge = _value(record, "parent_workspace")
         candidates = [("active_workspace", edge.get("root"))] if isinstance(edge, dict) else []
