@@ -662,7 +662,7 @@ def _startup_review_pool_notice(settings: dict) -> None:
 def _environment_pool_message(snapshot_path: str, catalog_text: str) -> str:
     """The ONE owner-chat message when the catalog the environment carries, not the factory
     rows the migration prepared, is the review pool: it names what runs, and says loudly
-    when that is nothing (``pool_empty`` — a configured fact, never a default panel)."""
+    when no row is marked (``pool_empty``: the Main model reviews alone)."""
     from ouroboros import reviewer_slot_config as rs
     from ouroboros.review_pool_migration import ROLLBACK_SENTENCE
 
@@ -676,8 +676,8 @@ def _environment_pool_message(snapshot_path: str, catalog_text: str) -> str:
     if state["state"] == "error":
         body = f"That catalog cannot be read ({state['error']}): no review runs until it is repaired."
     elif state["state"] == "empty":
-        body = ("None of its rows is marked “Reviewer”, so the review pool is empty (pool_empty): reviews will not "
-                "run and will report not performed.")
+        body = ("None of its rows is marked “Reviewer”, so the review pool is empty (pool_empty): the Main model "
+                "reviews alone, one model with no second opinion.")
     else:
         rows = rs.review_pool_rows({"OUROBOROS_SUBAGENTS": catalog_text})
         body = (f"{len(rows)} reviewer rows, {len({row.target_id for row in rows})} distinct models: "

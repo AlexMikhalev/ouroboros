@@ -348,9 +348,9 @@ function reviewPoolSummary(state) {
     const items = state.setting?.items || [];
     const pool = reviewPoolRows(state.setting).length;
     const marked = items.filter((row) => row?.review_eligible === true).length;
-    let empty = '';
-    if (items.length && !marked) empty = 'No row is marked Reviewer, so reviews will not run and will report “not performed”.';
-    else if (marked && !pool) empty = 'Every row marked Reviewer is switched off, so reviews will not run and will report “not performed”.';
+    // An empty pool, no rows at all included, reviews on the main model alone (`review_pool_slots`).
+    const why = marked ? 'Every row marked Reviewer is switched off' : 'No row is marked Reviewer';
+    const empty = state.loaded && !pool ? `${why}, so the main model reviews alone: one model, no second opinion.` : '';
     const payload = state.reviewPool || {};
     const migration = migrationNote(payload.migration);
     let note = payload.load_error || '';
@@ -1014,7 +1014,7 @@ export function createAvailableSubagentsEditor({
             <div class="available-subagents-list">
                 ${state.loaded
                     ? state.setting.items.map((row, index) => availableSubagentRowMarkup(row, state, index)).join('')
-                        || '<div class="available-subagents-empty">No subagents configured. Add one, or leave the list empty to make no actors available.</div>'
+                        || '<div class="available-subagents-empty">No subagents configured, so the main model is the one agent. Add one to choose others.</div>'
                     : '<div class="available-subagents-empty">The saved configuration could not be loaded, so this editor will not replace it.</div>'}
             </div>
             <div class="available-subagents-review-empty" data-review-pool-empty data-tone="warn" ${pool.empty ? '' : 'hidden'}>
