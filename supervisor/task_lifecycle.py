@@ -428,8 +428,11 @@ def drive_cancel_intent_scope(task_id: str, *, deliver: bool = True) -> str:
     Ingress may widen a previously-single request to ``cascade`` and Stop-now
     may harden an already-graceful cascade.  Every in-band consumer therefore
     reads the durable row immediately before teardown instead of replaying the
-    raw request shape.  Absence keeps the legacy direct-custody behavior;
-    unreadable authority fails closed.
+    raw request shape.  No open intent is a typed no-op that touches nothing
+    (invariant 14: the durable row is the only authority; a stale wake drained
+    after the watchdog settled it has none): ``already_settled`` for a task
+    whose result settled, ``not_found`` otherwise.  Unreadable authority fails
+    closed.
     """
     q = _queue_module()
     task_id = str(task_id or "").strip()
@@ -449,23 +452,24 @@ def drive_cancel_intent_scope(task_id: str, *, deliver: bool = True) -> str:
             exc_info=True,
         )
         return CANCEL_FAILED
-    if isinstance(intent, dict):
-        try:
-            from supervisor.owner_stop import revoke_hardened_owner_stop_control
+    if not isinstance(intent, dict):
+        return CANCEL_ALREADY_SETTLED if _settled_status(q.DRIVE_ROOT, task_id) else CANCEL_NOT_FOUND
+    try:
+        from supervisor.owner_stop import revoke_hardened_owner_stop_control
 
-            revoke_hardened_owner_stop_control(q, task_id, intent)
-        except Exception:
-            log.debug(
-                "Hardened owner-stop cleanup failed for %s",
-                task_id,
-                exc_info=True,
-            )
-        if str(intent.get("scope") or "") == SCOPE_CASCADE:
-            return (
-                CANCEL_CANCELLED
-                if q.cancel_task_by_id(task_id, cascade=True)
-                else CANCEL_FAILED
-            )
+        revoke_hardened_owner_stop_control(q, task_id, intent)
+    except Exception:
+        log.debug(
+            "Hardened owner-stop cleanup failed for %s",
+            task_id,
+            exc_info=True,
+        )
+    if str(intent.get("scope") or "") == SCOPE_CASCADE:
+        return (
+            CANCEL_CANCELLED
+            if q.cancel_task_by_id(task_id, cascade=True)
+            else CANCEL_FAILED
+        )
     return q.cancel_task_custody(task_id, deliver=deliver)
 
 
