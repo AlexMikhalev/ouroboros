@@ -793,11 +793,14 @@ def _root_post_task_blocking(
     return blocking
 
 
-def _deliver_answer_first(env: Any, task: Dict[str, Any], event_queue: Any, pending_events: List[Dict[str, Any]]) -> bool:
+def _deliver_answer_first(env: Any, task: Dict[str, Any], event_queue: Any, pending_events: List[Dict[str, Any]],
+                          *, register: bool = False) -> bool:
     """Owner 1A(1): the owed answer leaves on the live bus BEFORE cost reconstruction,
     review-evidence/input capture and ``_store_task_result``; ``task_done`` stays
     buffered after the store. The lane is the one whose post-task would run inline
     (``_root_post_task_blocking``) — the nonblocking lane returns its buffered copy.
+    ``register`` is for the lane that did not owe the frame itself (a presence root,
+    whose result event is its own); every other root registered just before.
     True only when the live ``put`` actually succeeded (never a queue refusal)."""
     if event_queue is None or _root_post_task_already_completed(env, task):
         return False
@@ -814,7 +817,7 @@ def _deliver_answer_first(env: Any, task: Dict[str, Any], event_queue: Any, pend
     # Owed just before (register_final_answer_owed): the live put registers nothing twice.
     return deliver_final_message_live(
         event_queue, pending_events, str(task.get("id") or ""),
-        drive_root=budget_drive_root or env.drive_root, register=False,
+        drive_root=budget_drive_root or env.drive_root, register=register,
     )
 
 
@@ -942,7 +945,7 @@ def emit_task_results(
         register_final_answer_owed(task, send_event, env_drive_root=env.drive_root)
     # Answer first (owner 1A(1)): the owner's answer is on the live bus before
     # the heavy tail below (cost ledger, evidence capture, the result store).
-    _live_delivered = _root_outbox and _deliver_answer_first(env, task, event_queue, pending_events)
+    _live_delivered = _root_outbox and _deliver_answer_first(env, task, event_queue, pending_events, register=_presence)
     duration_sec = round(time.time() - start_time, 3)
     task_cost_fields = _task_cost_fields(env, task)
     try:
