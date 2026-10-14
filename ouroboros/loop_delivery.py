@@ -289,17 +289,14 @@ def delivery_evidence_fingerprint(
             if isinstance(call, dict) and index in getattr(tool_ctx, "_delivery_material_tool_indices", ())
         ],
         "tool_effects": reviewable_effect_projection(llm_trace),
-        # The typed plan-review control is not a filesystem effect, but it
+        # A plan_task call is not a filesystem effect, but what it wrote and asked
         # changes whether a pre-plan answer is grounded.
         "plan_review_receipts": [
-            {
-                "index": index,
-                "outcome": call.get("plan_review_outcome"),
-                "closed": call.get("plan_review_closed"),
-                "result": call.get("result"),
-            }
+            {"index": index, "result": call.get("result"),
+             **{key.removeprefix("plan_"): call.get(key) for key in (
+                 "plan_effect", "plan_revision", "plan_open_objections", "plan_holding", "plan_pending_asks")}}
             for index, call in enumerate(llm_trace.get("tool_calls") or [])
-            if isinstance(call, dict) and call.get("plan_review_outcome")
+            if isinstance(call, dict) and call.get("plan_effect")
         ],
         "children": children,
         "verification_receipts": read_context_verification_receipts(
