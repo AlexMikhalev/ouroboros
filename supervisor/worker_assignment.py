@@ -547,9 +547,9 @@ def assign_tasks() -> None:
 
     from supervisor.worker_pool_lifecycle import _WORKER_LIFECYCLE_LOCK, reconcile_worker_capacity, worker_ready
 
-    # The loop never waits behind an off-loop teardown or respawn holding the lifecycle
-    # serializer: the whole turn defers to the next tick, so fresh work cannot overtake
-    # a Resume, and growth (below) is recomputed next tick the same way.
+    # The loop never waits behind an off-loop respawn or generation stop holding the lifecycle
+    # serializer (teardowns kill and join outside it): the whole turn defers to the next tick, so
+    # fresh work cannot overtake a Resume, and growth (below) is recomputed next tick the same way.
     if not _WORKER_LIFECYCLE_LOCK.acquire(blocking=False):
         return
     try:
