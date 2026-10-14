@@ -406,15 +406,23 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
     except Exception as _e:
         _log_worker_crash(wid, _drive, "make_agent", _e, _tb.format_exc())
         return
+    # The birth is measured first, in its own try: a failing checkout read must
+    # neither leave it unbound for the idle probe nor suppress readiness. An empty
+    # birth is honest; the parent then matches this child by its own Process pid.
+    birth = ""
+    try:
+        from ouroboros.platform_layer import process_start_time
+
+        birth = str(process_start_time(_os.getpid()) or "")
+    except Exception:
+        log.warning("Worker %s could not measure its own process birth", wid, exc_info=True)
     try:
         _prepare_worker_task_runtime()
         from ouroboros.utils import append_jsonl as _append_jsonl
         from ouroboros.utils import get_git_info as _get_git_info
         from ouroboros.utils import utc_now_iso as _utc_now_iso
-        from ouroboros.platform_layer import process_start_time
 
-        _branch, _sha = _get_git_info(_pathlib.Path(repo_dir))
-        birth = process_start_time(_os.getpid())
+        _branch, _sha = _get_git_info(_pathlib.Path(repo_dir))  # best-effort, diagnostic only
         _append_jsonl(_drive / "logs" / "events.jsonl", {
             "ts": _utc_now_iso(), "type": "worker_ready", "worker_id": wid,
             "pid": _os.getpid(), "process_birth": birth, "git_branch": _branch, "git_sha": _sha,

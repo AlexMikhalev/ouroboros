@@ -247,10 +247,23 @@ def _slot_pid(slot: Any) -> int:
         return 0
 
 
+def _births_agree(slot_birth: Any, reported_birth: Any) -> bool:
+    """Births are compared only when both sides measured one; otherwise the slot's own pid decides.
+
+    The owner's rule (14 Oct): bind readiness to the process birth, falling back to the pid.
+    """
+    ours, theirs = str(slot_birth or ""), str(reported_birth or "")
+    return not (ours and theirs) or ours == theirs
+
+
 def worker_ready(slot: Any) -> bool:
-    """Affirmative readiness belongs to this process birth, and requires liveness."""
-    birth = getattr(slot, "process_birth", "")
-    return bool(birth and _slot_pid(slot) > 0 and getattr(slot, "ready_identity", None) == (_slot_pid(slot), birth)
+    """Affirmative readiness belongs to the identity its own row opened, and requires liveness.
+
+    That identity is ``(pid, birth)``; its birth is empty only when neither the parent nor
+    the child could measure one, and the slot's own live ``Process`` then carries it.
+    """
+    pid, birth = _slot_pid(slot), str(getattr(slot, "process_birth", "") or "")
+    return bool(pid > 0 and getattr(slot, "ready_identity", None) == (pid, birth)
                 and not slot.reaping and not getattr(slot, "readiness_exhausted", False)
                 and slot.proc.is_alive())
 
@@ -286,6 +299,9 @@ def _verify_worker_sha_after_spawn(
     """
     pending = dict(slots)
     started = float(spawned_at or 0.0) or time.time()
+    # This spawn's own thread pays the custody ledger (three ``ps`` per child on macOS),
+    # never the supervisor loop; its slots stay unassignable until this thread opens them.
+    _record_worker_processes(slots)
     try:
         _watch_booting_slots(pending, events_cursor, attempt, started)
     except Exception as exc:
@@ -317,14 +333,14 @@ def _watch_booting_slots(
     ceiling = started + max(float(WORKER_READY_CEILING_SEC), float(WORKER_READY_WINDOW_SEC), 1.0)
     extended = False
     while pending:
-        ready_rows: Dict[tuple, Dict[str, Any]] = {}
+        rows_by_pid: Dict[int, List[Dict[str, Any]]] = {}
         for row in _worker_events_since(events_cursor, "worker_ready"):
             try:
-                ready_rows.setdefault((int(row.get("pid") or 0), row.get("process_birth")), row)
+                rows_by_pid.setdefault(int(row.get("pid") or 0), []).append(row)
             except (TypeError, ValueError):
                 continue
         for wid, slot in list(pending.items()):
-            row = ready_rows.get((_slot_pid(slot), slot.process_birth))
+            row = _own_ready_row(slot, rows_by_pid.get(_slot_pid(slot), ()))
             if row is not None and _open_ready_slot(
                     wid, slot, row, expected_sha, owner_chat_id, started, attempt):
                 pending.pop(wid)
@@ -361,6 +377,20 @@ def _watch_booting_slots(
         _replace_unready_slot(wid, slot, owner_chat_id, started, attempt,
                               window_sec=float(WORKER_READY_CEILING_SEC if extended else WORKER_READY_WINDOW_SEC))
         pending.pop(wid)
+
+
+def _own_ready_row(slot: Any, rows: Any) -> Optional[Dict[str, Any]]:
+    """The child's own ``worker_ready`` row among the rows naming its pid, or None.
+
+    A row whose measured birth differs from the slot's belongs to another process that held
+    the pid (a stale or reused pid): never this child's. An exact birth wins over a row
+    without one. Without a slot birth the newest row is taken: an earlier holder of a reused
+    pid died, and so wrote its row, before this child received the pid.
+    """
+    birth = str(getattr(slot, "process_birth", "") or "")
+    agreeing = [row for row in rows if _births_agree(birth, row.get("process_birth"))]
+    exact = [row for row in agreeing if birth and str(row.get("process_birth") or "") == birth]
+    return (exact or agreeing or [None])[-1]
 
 
 def _worker_sha_relation(expected_sha: str, observed_sha: str) -> Dict[str, Any]:
@@ -411,15 +441,17 @@ def _open_ready_slot(
     check also warns the owner chat; no baseline skips the comparison.
     """
     with _queue_lock:
+        pid = _slot_pid(slot)
         owned = (_pool().WORKERS.get(wid) is slot
                  and slot.booting and not slot.retiring
                  and not getattr(slot, "readiness_exhausted", False)
-                 and bool(slot.process_birth)
-                 and row.get("pid") == _slot_pid(slot)
-                 and row.get("process_birth") == slot.process_birth
+                 and pid > 0 and row.get("pid") == pid
+                 and _births_agree(slot.process_birth, row.get("process_birth"))
                  and slot.proc.is_alive())
         if owned:
-            slot.ready_identity = (_slot_pid(slot), slot.process_birth)
+            # A birth the parent could not measure is adopted from the child, which measured it alive.
+            slot.process_birth = str(slot.process_birth or row.get("process_birth") or "")
+            slot.ready_identity = (pid, slot.process_birth)
             slot.booting = False
             slot.reaping = False
     if not owned:
@@ -616,16 +648,18 @@ def _replace_or_park_unready_slot(wid: int, slot: Any, owner_chat_id: int, start
     _pool().disable_exhausted_worker_pool()
 
 
-def _record_worker_processes() -> None:
+def _record_worker_processes(slots: Optional[Dict[int, Any]] = None) -> None:
     """Record worker identity in the process ledger for restart custody.
 
     A captured birth means the row exists: a spawn records only its fresh child,
     never every survivor again (linear in spawns, not pool size times churn).
+    A spawn's readiness thread passes its own ``slots``; without them the whole
+    pool is visited. The birth is written under Q, beside the readiness owner.
     """
     try:
         from ouroboros.process_custody import record_process
 
-        for w in _pool().WORKERS.values():
+        for w in list((_pool().WORKERS if slots is None else slots).values()):
             if w.proc.pid and not getattr(w, "process_birth", ""):
                 was_alive = w.proc.is_alive()
                 record = record_process(
@@ -637,9 +671,11 @@ def _record_worker_processes() -> None:
                 )
                 if was_alive and w.proc.is_alive():
                     fingerprint = record["fingerprint"]
-                    w.process_birth = fingerprint.get("start_time_boot") or fingerprint.get("start_time") or ""
+                    with _queue_lock:
+                        w.process_birth = (w.process_birth or fingerprint.get("start_time_boot")
+                                           or fingerprint.get("start_time") or "")
     except Exception:
-        log.warning("Failed to ledger worker pids; readiness binds to the captured birth", exc_info=True)
+        log.warning("Failed to ledger worker pids; readiness falls back to the child's birth or pid", exc_info=True)
 
 
 @_serialized_worker_lifecycle
@@ -777,7 +813,7 @@ def handle_worker_quiescent(event: dict, ctx: Any) -> None:
         slot = ctx.WORKERS.get(event.get("worker_id"))
         if (slot is not None and slot.busy_task_id is None and worker_ready(slot)
                 and event.get("pid") == _slot_pid(slot)
-                and event.get("process_birth") == slot.process_birth
+                and _births_agree(slot.process_birth, event.get("process_birth"))
                 and event.get("token") == slot.quiescence_token and slot.quiescence_token):
             slot.quiescence_confirmed = True
 
@@ -931,7 +967,7 @@ def _spawn_worker_slot(wid: int, old: Any = None, *, ready_attempt: int = 1) -> 
             old.in_q.cancel_join_thread()
         except Exception:
             log.debug("Failed to close old worker queue on respawn", exc_info=True)
-    _record_worker_processes()
+    # The readiness thread ledgers the child first (``_verify_worker_sha_after_spawn``).
     threading.Thread(
         target=_pool()._verify_worker_sha_after_spawn,
         args=({wid: fresh}, events_cursor, int(ready_attempt), spawned_at), daemon=True,

@@ -1,6 +1,7 @@
 """Elasticity through actual assignment, readiness, snapshot and reaper consumers."""
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -589,20 +590,28 @@ def test_a_storm_latch_keeps_its_captured_membership_through_every_own_door(assi
                                            "drive_root": str(assigning.root)})
     assert stopped == [{"disable_reason": "worker_crash_storm"}]
 
-def test_growth_ledgers_each_fresh_child_once_and_retirement_ledgers_nothing(assigning, monkeypatch):
-    """Reviewer measurement (A1): each spawn re-ledgered every worker, each retirement every survivor."""
+def test_growth_ledgers_each_fresh_child_once_off_the_loop_and_retirement_ledgers_nothing(assigning, monkeypatch):
+    """Reviewer measurements: each spawn re-ledgered every worker, each retirement every survivor (A1);
+    the loop thread paid the three ``ps`` per demanded child (Opus R1 D7.3). Each child is now ledgered
+    once, by its own readiness thread, before that thread watches for its row."""
     from ouroboros import process_custody
     monkeypatch.setattr(lifecycle, "_record_worker_processes", _REAL_RECORD)
-    recorded = []
+    recorded, readiness = [], []
 
     def record(root, *, pid, **_kw):
         recorded.append(pid)
         return {"fingerprint": {"start_time": f"birth-{pid}"}}
 
     monkeypatch.setattr(process_custody, "record_process", record)
+    monkeypatch.setattr(lifecycle.threading, "Thread", lambda target, args, **_kw: SimpleNamespace(
+        start=lambda: readiness.append((target, args))))
+    monkeypatch.setattr(lifecycle, "_watch_booting_slots", lambda *_args: None)  # the ledger half only
     monkeypatch.setattr(workers, "MAX_WORKERS", 10)
     workers.PENDING.extend(task(str(i)) for i in range(12))
     workers.assign_tasks()  # the busy parent grows the pool to its cap
+    assert recorded == [] and len(readiness) == 9, "the assignment (loop) thread ledgers nothing"
+    for target, args in readiness:
+        target(*args)
     assert sorted(recorded) == sorted(proc.pid for proc in assigning.created) and len(recorded) == 9
     assert all(slot.process_birth == f"birth-{slot.proc.pid}" for wid, slot in workers.WORKERS.items() if wid)
     workers.RUNNING.clear()

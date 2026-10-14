@@ -190,6 +190,10 @@ def _wait_for(event):
         time.sleep(0.05)
 
 
+def _injected_readiness_fault():
+    raise RuntimeError("injected readiness-row fault")
+
+
 def _probe_worker(in_q, out_q, data_root, repo_root, release, mode="clean", settle_entered=None, settle_go=None):
     """The real worker loop; its one task returns while a timed-out tool still runs."""
     from ouroboros import review_operation
@@ -249,7 +253,8 @@ def _probe_worker(in_q, out_q, data_root, repo_root, release, mode="clean", sett
     replacements = {
         "ouroboros.agent.make_agent": lambda **kwargs: Agent(),
         "ouroboros.extension_loader.reload_all": lambda *args, **kwargs: None,
-        "supervisor.worker_process._prepare_worker_task_runtime": lambda: None,
+        "supervisor.worker_process._prepare_worker_task_runtime": (
+            _injected_readiness_fault if mode == "readiness_fault" else lambda: None),
         "supervisor.worker_process._adopt_published_extensions": lambda *_: None,
     }
     with ExitStack() as stack:
@@ -337,3 +342,17 @@ def test_real_worker_loop_waits_for_the_owner_settlement_after_the_last_hold(tmp
         answer = worker.receive(_quiescent, 15)
         assert answer is not None and answer["token"] == "probe-1" and answer["pid"] == worker.proc.pid
         assert answer["process_birth"]
+
+
+def test_a_failed_readiness_row_never_unbinds_the_birth_the_probe_answer_carries(tmp_path, monkeypatch):
+    """Owner 14 Oct 21:09 #1: the child measures its birth first, in its own try.
+
+    Before, a raise in the readiness block left the birth unbound, and the first idle
+    probe answer then ended the worker loop instead of answering.
+    """
+    with _probe_worker_process(tmp_path, monkeypatch, "readiness_fault") as worker:
+        worker.release.set()
+        worker.in_q.put({"type": "worker_quiescence", "token": "probe-1"})
+        answer = worker.receive(_quiescent, 15)
+        assert answer is not None and answer["token"] == "probe-1" and answer["pid"] == worker.proc.pid
+        assert answer["process_birth"], "measured before the failing readiness row"
