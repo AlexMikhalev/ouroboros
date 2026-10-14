@@ -342,6 +342,13 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
         display["outcome_axes"] = normalize_outcome_axes(data)
     if synthesis:
         display["root_phase_checkpoint"] = {"post_task_synthesis": synthesis}
+        # An answered root whose late phase remains (D10) names its work where no
+        # card does: Activity shows it beside the saved remainder's controls.
+        from ouroboros.projects_registry import task_presentation_name
+
+        terminal = data.get("terminal_time") if isinstance(data.get("terminal_time"), dict) else {}
+        display["late_work"] = {"title": task_presentation_name(data),
+                                "answered_at": str(terminal.get("occurred_at") or data.get("ts") or "")}
     facts = {"finalizing": post_task_synthesis_is_open(synthesis), "late_phase": synthesis,
              "display": display,
              # An answered root's census row (D10) carries only its own routing identity.
@@ -651,6 +658,19 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
             # real, its detail is not; disclose rather than animate.
             activity["required_question_unavailable"] = True
     return activities
+
+
+def current_work_in_room(drive_root: Any, task_bindings: Any, matches: Callable[[Any, dict], bool]) -> list:
+    """Census roots a recent history page addresses as current work of its room.
+
+    An answered root whose late phase alone remains (D10: the answer stays, the owner
+    paused only its post-task work) is not current conversation: its card stays beside
+    its delivered answer and Activity offers the saved remainder, so it is never
+    re-addressed at the end of a page that no longer holds its own rows."""
+    return [str(row["activity_id"]) for row in _chat_activities_snapshot_safe(drive_root, task_bindings)
+            if row.get("activity_id") and row.get("chat_id") is not None
+            and not (row.get("root_phase_checkpoint") or {}).get("post_task_synthesis")
+            and matches(row["chat_id"], {**row, "task_id": row["activity_id"]})]
 
 
 async def api_state(request: Request) -> JSONResponse:

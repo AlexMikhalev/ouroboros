@@ -1491,12 +1491,10 @@ def _assemble_history_response(
     # Annotate only emitted rows; an absent summary must not strand a card.
     deferred_lineage: set = set()
     evidence_anchors = {}
-    if recent:
-        from ouroboros.gateway.state import _chat_activities_snapshot_safe
-        evidence_anchors = {str(row["activity_id"]): str(row.get("ts") or "")
-                            for row in _chat_activities_snapshot_safe(data_dir, bindings_by_task)
-                            if row.get("activity_id") and row.get("chat_id") is not None
-                            and row_matches_thread.evidence_matches(row["chat_id"], {**row, "task_id": row["activity_id"]})}
+    if recent:  # current work has no history position: its evidence lands at the page end
+        from ouroboros.gateway.state import current_work_in_room
+        evidence_anchors = dict.fromkeys(current_work_in_room(
+            data_dir, bindings_by_task, row_matches_thread.evidence_matches), "")
     represented = {str(row.get("task_id") or "") for row in messages} | evidence_anchors.keys()
     for row in messages:
         parent = str(row.get("parent_task_id") or "")
