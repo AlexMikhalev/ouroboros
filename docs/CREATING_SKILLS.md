@@ -609,7 +609,11 @@ Some settings keys are protected: `OPENROUTER_API_KEY`,
 `GITHUB_TOKEN`, `OUROBOROS_NETWORK_PASSWORD`. These keys are NEVER
 forwarded to a skill by default, even when listed in
 `env_from_settings`. Custom secret keys stored in Settings → Secrets
-are treated the same way. Host permissions such as `inject_chat`, `presence`,
+are treated the same way. A granted key is read as currently saved: each
+`api.get_settings` call, script run, out-of-process call and companion start sees a
+value the owner saved, rotated or deleted during a running task, while that task keeps
+its own model, account and review settings; a value your code already copied or cached,
+a running companion's environment included, is not refreshed for you. Host permissions such as `inject_chat`, `presence`,
 `notify_owner` and chat event subscriptions also require explicit, content-hash-bound owner
 consent. The desktop launcher's owner-grant bridge records these grants.
 

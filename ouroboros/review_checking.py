@@ -179,24 +179,53 @@ def frozen_checking_source(frozen: Any, *, data_root: Any) -> Dict[str, Any]:
                                for name in _IGNORED_EVIDENCE_DIRS if (reading_root / name).is_dir()}}
 
 
-def _retained_view(folder: pathlib.Path, data_root: Any, *, payload: bool = False) -> pathlib.Path:
-    """One retained copy of a folder as it is now, under the install's data root
-    beside the isolated review checkouts (named by its stat digest; no GC)."""
+class _ViewRejected(CheckingAreaUnavailable):
+    """A copy that does not carry the identity its view name binds."""
+
+
+def _accepts(accept: Any, view: pathlib.Path) -> bool:
+    try:
+        return bool(accept(view))
+    except Exception:  # an unreadable published view proves nothing its name binds
+        return False
+
+
+def _retained_view(folder: pathlib.Path, data_root: Any, *, payload: bool = False, name: str = "",
+                   copy: Any = None, accept: Any = None) -> pathlib.Path:
+    """One retained copy of a folder under the install's data root beside the
+    isolated review checkouts (no GC): the whole folder as it is now, named by its
+    stat digest, or what ``copy(folder, destination)`` writes, named by the caller's
+    ``name``. ``accept`` checks the staged copy before it is published and a reused
+    view again, replacing one that fails, so a name never keeps bytes it does not
+    bind. A failed copy removes only its own staging."""
     views = pathlib.Path(data_root) / "state" / "review_checkouts" / "views"
-    container = views / (_stat_digest(folder) + ("-payload" if payload else ""))
+    container = views / ((name or _stat_digest(folder)) + ("-payload" if payload else ""))
     # Skill inventory semantics include the physical bucket: a native lifecycle
     # marker is exempt only there, never in an arbitrary folder by the same name.
     relative = pathlib.Path(folder.parent.name) / folder.name if payload else pathlib.Path(".")
     view = container / relative
+    if accept is not None and view.is_dir() and not _accepts(accept, view):
+        discarded = views / f".discarded-{container.name}.{uuid.uuid4().hex[:8]}"
+        try:
+            container.rename(discarded)
+        except FileNotFoundError:
+            pass  # a concurrent freeze replaced it first
+        shutil.rmtree(discarded, ignore_errors=True)
     if not view.is_dir():
         staging = views / f".{container.name}.{uuid.uuid4().hex[:8]}"
-        shutil.copytree(folder, staging / relative, symlinks=True)
         try:
+            if copy is None:
+                shutil.copytree(folder, staging / relative, symlinks=True)
+            else:
+                copy(folder, staging / relative)
+            if accept is not None and not accept(staging / relative):
+                raise _ViewRejected(f"the copy of {folder} does not carry the identity of {container.name}")
             staging.rename(container)
         except OSError:
-            shutil.rmtree(staging, ignore_errors=True)  # a concurrent freeze landed it first
-            if not view.is_dir():
+            if not view.is_dir():  # else a concurrent freeze landed it first
                 raise
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
     return view
 
 
@@ -261,19 +290,40 @@ def _frozen_evidence_views(source: Mapping[str, Any]) -> List[tuple]:
     return views
 
 
-def bound_directory_source(folder: Any, *, data_root: Any, expected_hash: str, content_hash_of: Any) -> Dict[str, Any]:
+def bound_directory_source(folder: Any, *, data_root: Any, expected_hash: str, content_hash_of: Any,
+                           copy: Any = None) -> Dict[str, Any]:
     """A retained folder view whose content hash is the one the review packs were
     built from (a skill payload at loader hash H): a payload that moved to H2
-    meanwhile is never handed to a seat that reviews H."""
+    meanwhile is never handed to a seat that reviews H.
+
+    Without ``copy`` the view is the whole folder — dependencies, links, modes and
+    empty folders — named by its stat digest: a writable seat's checking baseline.
+    With ``copy`` (a skill's loader inventory, for read-only seats) it is named by the
+    folder and H and checked before it is published, so metadata or dependency-cache
+    churn that leaves H unchanged reuses the same view instead of copying again."""
+    moved = {"unavailable": "the payload changed after its review packs were built"}
     try:
         folder = pathlib.Path(folder).resolve()
-        source = {"kind": "directory", "root": str(folder),
-                  "view": str(_retained_view(folder, data_root, payload=True))}
-        if content_hash_of(pathlib.Path(source["view"])) != expected_hash:
-            return {"unavailable": "the payload changed after its review packs were built"}
+
+        def matches(view: pathlib.Path) -> bool:
+            return content_hash_of(pathlib.Path(view)) == expected_hash
+
+        if copy is None:
+            view = _retained_view(folder, data_root, payload=True)
+            if not matches(view):
+                return moved
+        else:
+            identity = hashlib.sha256(f"{folder}\0{expected_hash}".encode("utf-8", "surrogateescape")).hexdigest()
+            view = _retained_view(folder, data_root, payload=True, name=f"inventory-{identity[:24]}",
+                                  copy=copy, accept=matches)
+    except _ViewRejected:
+        # A folder still at H means the copier could not reproduce it (a link to a
+        # file the loader skips is not copied), not that the payload moved.
+        return {"unavailable": "a copy of the payload's loader inventory does not reproduce its "
+                               "reviewed hash"} if _accepts(matches, folder) else moved
     except Exception as exc:  # an unreadable payload is the loader's typed fact, not a crash here
         return {"unavailable": f"{type(exc).__name__}: {exc}"}
-    return {**source, "content_hash": str(expected_hash)}
+    return {"kind": "directory", "root": str(folder), "view": str(view), "content_hash": str(expected_hash)}
 
 
 def checking_instructions(area: str, source: Mapping[str, Any], root: str = "") -> str:

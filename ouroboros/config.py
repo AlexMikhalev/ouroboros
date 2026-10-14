@@ -836,9 +836,9 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
     settings = defaults_for_settings_document(raw is not None or SETTINGS_PATH.exists())
     settings.update(loaded)
     env_wins = environment_overridable_keys(raw)  # a seam default for an ABSENT key is not the owner's value
-    env_authored, echo = set(), _settings_integrity.projected_proposals(os.environ)
+    env_authored, echo = set(), _settings_integrity.projected_proposals(environ := _settings_integrity.read_environ())
     for key in SETTINGS_DEFAULTS:
-        raw_env = os.environ.get(key)
+        raw_env = environ.get(key)
         if raw_env is None or key in _DISK_AUTHORED_SETTINGS or key in ENDPOINT_AUTHORED_SETTINGS:  # DISK-authored
             continue
         if raw_env == echo.get(key) or (key in loaded and (key in MODEL_SLOT_KEYS or key in SAVED_CHOICE_SETTINGS)):
