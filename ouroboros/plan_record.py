@@ -478,7 +478,11 @@ def import_legacy_v2(state: Any, *, author_plan: Optional[Mapping[str, Any]] = N
     legacy_v1 = state.get("legacy_v1_projection") if isinstance(state.get("legacy_v1_projection"), dict) else {}
     engaged_fact = bool(waves or attempt or legacy_v1.get("status") not in (None, "", "absent"))
     fingerprint = str(attempt.get("fingerprint") or "")
-    current = next((w for w in waves if str(w.get("request_fingerprint") or "") == fingerprint), None) if fingerprint else (waves[-1] if waves else None)
+    matched = next((w for w in waves if str(w.get("request_fingerprint") or "") == fingerprint), None) if fingerprint else None
+    # Claims come only from the wave the attempt still points at; objections and owed answers come
+    # from the LATEST wave even when the author moved on (a changed spec at the cap, an author plan):
+    # a reviewer's standing objection is withdrawn by its raiser, never by a revision (DESIGN §8).
+    current = matched if matched is not None else (waves[-1] if waves else None)
     objections: List[Dict[str, Any]] = []
     done_when: List[Dict[str, Any]] = []
     source = ""
@@ -487,7 +491,7 @@ def import_legacy_v2(state: Any, *, author_plan: Optional[Mapping[str, Any]] = N
         actors = [a for a in current.get("actors") or [] if isinstance(a, dict)]
         if current.get("custody_pending") or any(
                 a.get("late_result_pending") or str(a.get("operation_state") or "") == "pending_dispatch" for a in actors):
-            pending.append(f"legacy wave {(fingerprint or str(current.get('request_fingerprint') or ''))[:12] or '?'}")
+            pending.append(f"legacy wave {str(current.get('request_fingerprint') or fingerprint)[:12] or '?'}")
         for finding in current.get("findings") or []:
             if not isinstance(finding, dict) or str(finding.get("class") or "") != "blocking":
                 continue
@@ -495,14 +499,14 @@ def import_legacy_v2(state: Any, *, author_plan: Optional[Mapping[str, Any]] = N
             fid = str(finding.get("finding_id") or finding.get("id") or "")
             if seat and fid:
                 objections.append({"seat_id": seat, "id": fid, "owner_marked": True,
-                                   "text": str(finding.get("summary") or ""), "fingerprint": fingerprint})
+                                   "text": str(finding.get("summary") or ""), "fingerprint": str(current.get("request_fingerprint") or fingerprint)})
     author = (author_plan or {}).get("author_disposition") if isinstance(author_plan, Mapping) else None
     if isinstance(author, Mapping) and str(author.get("action") or "finish") == "finish" and str(author.get("enforcement") or "") == "advisory":
         spec = author_plan.get("spec") if isinstance(author_plan.get("spec"), Mapping) else {}
         done_when, source = normalize_done_when(spec.get("acceptance_claims")), "legacy_author_plan"
-    elif isinstance(current, dict) and current.get("closed"):
-        spec = current.get("spec") if isinstance(current.get("spec"), Mapping) else {}
-        done_when, source = normalize_done_when(spec.get("acceptance_claims") or current.get("acceptance_claims")), "legacy_closed_wave"
+    elif isinstance(matched, dict) and matched.get("closed"):
+        spec = matched.get("spec") if isinstance(matched.get("spec"), Mapping) else {}
+        done_when, source = normalize_done_when(spec.get("acceptance_claims") or matched.get("acceptance_claims")), "legacy_closed_wave"
     elif legacy_v1.get("status") == "closed":
         done_when, source = normalize_done_when(legacy_v1.get("acceptance_claims")), "legacy_closed_wave"
     return {"engaged": engaged_fact, "open_objections": objections, "done_when": done_when, "done_when_source": source,

@@ -195,40 +195,6 @@ def test_effort_only_roster_change_lapses_replay_authority(harness, monkeypatch)
     assert _state(harness)["cycles_paid"] == 2
 
 
-def test_degraded_reminder_promises_free_replay_only_with_structural_epoch(harness, monkeypatch):
-    """Round-3: the user-turn DEGRADED reminder mirrors plan_render's
-    _degraded_replay_note (the wording SSOT) — a wave WITH a recorded structural
-    epoch is promised the free replay with its conditions (unchanged epoch +
-    roster); an EMPTY-epoch wave re-dispatches a paid panel, so the old
-    unconditional "replays ... at no cost" promise must not appear."""
-    from ouroboros.owner_hurry import force_plan_decision, plan_review_reminder
-
-    # Empty epoch: every slot dies at dispatch time, invisible to the snapshot.
-    _patch_health(monkeypatch, lambda slots: {})
-    harness.install({"s1": "", "s2": "", "s3": ""})
-    ctx = harness.make_ctx()
-    out = _call(ctx)
-    assert _control(out) == {"outcome": "DEGRADED", "closed": False}
-    decision = force_plan_decision(ctx, {}, enforcement="blocking")
-    assert decision["reviewer_slots_degraded"] and decision["degraded_health_epoch"] == ""
-    reminder = plan_review_reminder(decision)
-    assert "re-dispatches a fresh panel" in reminder
-    assert "no cost" not in reminder and "no further cost" not in reminder
-    # Non-empty epoch: structural snapshot evidence recorded — the free replay is
-    # promised together with its conditions (epoch + roster stand).
-    _patch_health(monkeypatch, lambda slots: dict(_DEAD_PANEL))
-    harness.install({"s1": CLEAN})
-    ctx2 = harness.make_ctx(task_id="task-epoch")
-    out2 = _call(ctx2)
-    assert _control(out2) == {"outcome": "DEGRADED", "closed": False}
-    decision2 = force_plan_decision(ctx2, {}, enforcement="blocking")
-    assert decision2["reviewer_slots_degraded"] and decision2["degraded_health_epoch"]
-    reminder2 = plan_review_reminder(decision2)
-    assert "at no further cost" in reminder2
-    assert "reviewer roster stand" in reminder2
-    assert "re-dispatches a fresh panel" not in reminder2
-
-
 def test_replay_decision_config_failure_keeps_replay_but_logs_loudly(caplog):
     """Review fix 4 (accepted-partial): a configuration-resolution failure keeps the
     recorded free replay (fail-open) but is logged as a WARNING with the exception

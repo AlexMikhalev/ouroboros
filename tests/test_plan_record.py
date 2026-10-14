@@ -279,6 +279,22 @@ def test_legacy_in_flight_wave_is_one_pending_ask_that_discloses_and_never_holds
     held = _gate(pr.empty_record(), legacy=pr.import_legacy_v2(held_state))
     assert held["status"] == "held" and held["pending_asks"] == ["legacy wave " + "f" * 12]
 
+def test_legacy_objections_stand_when_the_author_moved_on_but_claims_do_not_follow():
+    """A changed spec at the cap or an author plan moves the attempt's fingerprint to a wave that
+    never ran: the latest wave's open blocking findings still hold (a Blocking hold is not dropped
+    by deployment), while a closed wave the author left behind binds no claims."""
+    moved = _v2_state(closed=False, blocking_findings=("triad_old",))
+    moved["current_attempt"] = {"fingerprint": "e" * 64, "status": "cycles_exhausted", "reason": "spent"}
+    legacy = pr.import_legacy_v2(moved)
+    assert [o["seat_id"] for o in legacy["open_objections"]] == ["triad_old"] and legacy["open_objections"][0]["fingerprint"] == "f" * 64
+    assert _gate(pr.empty_record(), legacy=legacy)["status"] == "held"
+    left_behind = _v2_state(closed=True)
+    left_behind["current_attempt"] = {"fingerprint": "e" * 64, "status": "open", "reason": "author_current_plan"}
+    stale = pr.import_legacy_v2(left_behind)
+    assert stale["open_objections"] == [] and stale["done_when"] == [] and stale["done_when_source"] == ""
+    assert pr.acceptance_view(pr.empty_record(), [], legacy=stale)[2]["binding"] == "none"
+
+
 # ---------------------------------------------------------------- durable index
 
 def test_durable_record_round_trips_revisions_asks_and_replies(tmp_path):

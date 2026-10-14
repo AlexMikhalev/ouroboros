@@ -41,16 +41,17 @@ def test_last_critic_correction_retains_current_source(harness, monkeypatch, enf
     assert gate["closed"] is False
     assert gate["allow"] is True  # at cap: terminalization, never a clean verdict
     assert gate["status"] == ("author_stopped" if action == "stop" else "advisory_open" if enforcement == "advisory" else "cycles_exhausted")
-    # The live gate and binder read this legacy state through the read-only importer: the
-    # author plan superseded the critic wave, so no objection is open and the cap is history
-    # (owner batch 2, Q3=A); the outcome axis names no plan failure.
+    # The live gate and binder read this legacy state through the read-only importer: the critic
+    # wave's blocking findings stand as objections of their seats whatever the author decided
+    # (only their raisers withdraw them; the cap is history, Q3=A) — held under Blocking, disclosed
+    # under Advisory — and the outcome axis names them without failing the objective.
     from ouroboros.outcomes import derive_loop_outcome
     from ouroboros.owner_hurry import force_plan_decision
-    from ouroboros.project_dialogue import outcome_phase
     decision = force_plan_decision(ctx, {}, enforcement=enforcement)
-    assert decision["allow"] is True and decision["status"] == "clear" and decision["source"] == "legacy_v2"
-    outcome = derive_loop_outcome("Saved current plan; no implementation.", {}, {"force_plan_decision": decision})
-    assert outcome_phase({"status": "completed", "outcome_axes": outcome["outcome_axes"]}, {}) == "done"
+    assert decision["source"] == "legacy_v2" and {o["seat_id"] for o in decision["open_objections"]} == {"s1", "s2", "s3"}
+    assert decision["status"] == ("held" if enforcement == "blocking" else "objections_open")
+    axes = derive_loop_outcome("Saved current plan; no implementation.", {}, {"force_plan_decision": decision})["outcome_axes"]
+    assert axes["execution"]["plan_review"] == "objections_open" and axes["objective"]["status"] != "fail"
     from ouroboros.review_evidence_sections import _accept_effective_claims
     claims, source, exhibit = _accept_effective_claims(ctx, {}, h.drive, ctx.task_id)
     selected = enforcement == "advisory" and action == "finish"  # the one legacy selection the binder honours
