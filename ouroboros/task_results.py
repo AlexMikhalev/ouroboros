@@ -658,6 +658,19 @@ def _is_status_regression(existing_status: str, new_status: str) -> bool:
     return False
 
 
+def lifecycle_named(axes: Any, status: str) -> Any:
+    """``axes`` whose lifecycle states ``status``, as a copy; the caller's dict stays as given.
+
+    The lifecycle axis is the row's own status (``normalize_outcome_axes`` reads it so), yet a
+    loop that ended derives ``completed`` before the writer settles ``failed`` or loses a
+    terminal race. Every other axis is evidence and stays; absent or malformed lifecycle data
+    stays as written."""
+    lifecycle = axes.get("lifecycle") if isinstance(axes, dict) else None
+    if not isinstance(lifecycle, dict) or lifecycle.get("status") == status:
+        return axes
+    return {**axes, "lifecycle": {**lifecycle, "status": status}}
+
+
 def is_reconciled_presence_placeholder(row: Dict[str, Any]) -> bool:
     """The orphan reconciler's failed mark on a lost presence turn: no terminal of its own ever ran."""
     meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
@@ -870,6 +883,15 @@ def write_task_result(
             log.debug("Blocked status regression %s -> %s for task %s",
                       existing.get("status"), projected_status, task_id)
             return None
+        # The lifecycle axis names the status this accepted write lands: in the axes it carries,
+        # or in the current axes it keeps across a status change. Same-status enrichment leaves
+        # stored axes alone, so untouched history is never migrated.
+        carried = "outcome_axes" in projected_fields
+        if carried or projected_status != existing_status:
+            axes = projected_fields["outcome_axes"] if carried else existing.get("outcome_axes")
+            named = lifecycle_named(axes, projected_status)
+            if named is not axes:
+                projected_fields["outcome_axes"] = named
         if isinstance(projected_fields.get("delegate_terminal_reconciliation"), dict):
             # #1573: no writer, a wholesale terminal one included, unpublishes a retained output.
             from ouroboros.delegate_terminal import keep_published_receipts

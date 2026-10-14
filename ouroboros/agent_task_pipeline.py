@@ -33,6 +33,7 @@ from ouroboros.cost_projection import cost_projection, resolve_cost_pair
 from ouroboros.task_results import (
     STATUS_COMPLETED,
     STATUS_FAILED,
+    lifecycle_named,
     load_task_result,
     write_task_result,
 )
@@ -710,6 +711,9 @@ def emit_task_results(
     )
     outcome_axes = normalize_outcome_axes({"outcome_axes": loop_outcome.get("outcome_axes")})
     execution_status = str((outcome_axes.get("execution") or {}).get("status") or "")
+    # Pre-store carriers state the status observed now, as the outbox stamp does (a later race may differ).
+    terminal_status = _durable_terminal_status(env, task, execution_status)
+    outcome_axes = lifecycle_named(outcome_axes, terminal_status)
     failed_or_forced = (
         execution_status in {EXECUTION_FAILED, EXECUTION_INFRA_FAILED, EXECUTION_BEST_EFFORT}
         or str(usage.get("execution_status") or usage.get("result_status") or "") in {EXECUTION_FAILED, EXECUTION_INFRA_FAILED}
@@ -829,8 +833,8 @@ def emit_task_results(
     # deduplication share ouroboros/task_finalization.py.
     if _root_outbox and not _presence:
         send_event.setdefault("progress_meta", {}).update(outcome_axes=outcome_axes, reason_code=reason_code)
-        stamp_root_final_phase(  # the stamp names the SAME word the durable row below settles to
-            send_event, task, terminal_status=_durable_terminal_status(env, task, execution_status),
+        stamp_root_final_phase(  # shares the pre-store observation, not a later racing write
+            send_event, task, terminal_status=terminal_status,
             post_task_open=not task.get("_skip_post_task_synthesis") and not _root_post_task_already_completed(env, task),
         )
         register_final_answer_owed(task, send_event, env_drive_root=env.drive_root)
@@ -839,6 +843,8 @@ def emit_task_results(
                            loop_outcome=loop_outcome, cost_fields=task_cost_fields,
                            final_delivery=send_event)
     stored_result = load_task_result(env.drive_root, str(task.get("id") or "")) or {}
+    if stored_result.get("status"):  # post-store carriers state the stored row's word
+        outcome_axes = lifecycle_named(outcome_axes, str(stored_result["status"]))
     if _root_outbox and task.get("_skip_post_task_synthesis"):
         # Stop before post-task dispatch forbids paid synthesis, not the free
         # factual row. Record it after durable result write; the structural

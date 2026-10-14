@@ -4729,6 +4729,14 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     text-overflow: ellipsis;
 }
 
+/* A known outcome's shared chip and its quieter second fact lead the meta line. */
+.activity-phase {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    vertical-align: middle;
+}
+
 .activity-row-actions {
     display: flex;
     align-items: center;
