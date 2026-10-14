@@ -5,7 +5,7 @@ import { PAGE_ICONS } from './page_icons.js';
 import { showToast } from './toast.js';
 import { tx } from './i18n.js';
 import { hostRowDisplayText } from './host_notice_text.js';
-import { childRowPlacement, replayConcludesTask } from './chat_row_placement.js';
+import { ORIGIN_ADDRESSED_NOTICE_TYPES, childRowPlacement, replayConcludesTask } from './chat_row_placement.js';
 import { decorateProjectRow, syncSavedProjectContext } from './project_answer.js';
 import { createProjectHandoffs, receiptNotice } from './project_handoff.js';
 import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
@@ -1226,9 +1226,11 @@ export function createChatInstance({
         // Carrier facts precede presentation returns.
         if (row.tool_evidence && row.task_id) noteToolMetrics(row.task_id, row, row.ts || row.timestamp || '');
         if (row.system_type === 'task_evidence') {
-            const record = liveCardRecords.get(row.task_id);
-            if (!record) return false;
+            // The task's own evidence: mints the card its children nest under (zero tools
+            // included) at the carrier's row; the terminal pass finishes it (A5).
+            const record = getLiveCardRecord(row.task_id);
             const activity = activeDirectActivities.get(row.task_id);
+            if (row.ts) reanchorTaskCard(record, row.ts);
             if (row.suggested_name) applySuggestedName(row.task_id, row.suggested_name);
             noteDirectTurn(record, activity ? activity.kind !== 'managed_task' : row._is_direct_chat);
             if (row.task_phase === 'finalizing') markLiveCardFinalizing(row.task_id, row);
@@ -1391,6 +1393,10 @@ export function createChatInstance({
         // P5: the cancelable marker may have arrived (scheduled progress frame /
         // history replay) before this card was minted.
         syncCancelRunButton(record);
+        // Children that arrived before their parent's evidence nest under it now.
+        for (const [childId, info] of subagentChildParents) {
+            if (info.parentId === normalizedGroupId) ensureLiveCardVisible(liveCardRecords.get(childId));
+        }
         return record;
     }
 
@@ -1436,8 +1442,12 @@ export function createChatInstance({
         return Boolean(changed && record.root?.isConnected);
     }
 
+    // A parent card comes only from the parent's OWN evidence in this room (its record,
+    // a census activity, its replayed rows), never from a child's bare parent_task_id
+    // (A5): null leaves the child visible on its own until that evidence nests it.
     function ensureSubagentContainer(parentId = '', depth = 0) {
-        if (!parentId) return null;
+        if (!parentId || !(liveCardRecords.has(parentId) || activeDirectActivities.has(parentId)
+                || evidencedTaskIds.has(parentId))) return null;
         // A lineage-known parent is minted as the nested card ITS parent owns,
         // never as a root-shaped shell (#636); depth bounds a lineage cycle.
         const lineage = depth < 32 ? subagentChildParents.get(parentId) : null;
@@ -1458,7 +1468,9 @@ export function createChatInstance({
         return container;
     }
 
-    function getSubagentCardRecord(childId = '', parentId = '', role = '') {
+    // A child's frame reanchors its parent's card (when this room has one) at the frame's time.
+    function getSubagentCardRecord(childId = '', parentId = '', role = '', rawTs = '') {
+        if (rawTs) reanchorTaskCard(liveCardRecords.get(parentId), rawTs);
         const existing = liveCardRecords.get(childId);
         const childBefore = captureLiveCardProjection(existing);
         const parentBefore = captureLiveCardProjection(liveCardRecords.get(parentId));
@@ -1540,13 +1552,11 @@ export function createChatInstance({
         { suppressDomInsert = false, reorderExisting = false } = {},
     ) {
         if (!record || suppressDomInsert || _syncPass1Active) return;
-        if (record.isSubagent && record.parentGroupId) {
-            // The container mints a lineage-known parent nested (#636); the
-            // recursion carries the chain up to the inserted root.
-            const container = ensureSubagentContainer(record.parentGroupId);
-            if (container && record.root.parentNode !== container) {
-                container.appendChild(record.root);
-            }
+        const container = record.isSubagent && record.parentGroupId ? ensureSubagentContainer(record.parentGroupId) : null;
+        if (container) {
+            // The container nests a lineage-known parent (#636); the recursion
+            // carries the chain up to the inserted root.
+            if (record.root.parentNode !== container) container.appendChild(record.root);
             const parentRecord = liveCardRecords.get(record.parentGroupId);
             ensureLiveCardVisible(parentRecord);
             updateLiveCardCount(parentRecord);
@@ -1880,6 +1890,8 @@ export function createChatInstance({
 
     // Child lineage retains model-less updates; child finality is independent.
     const subagentChildParents = new Map();
+    // Tasks whose own rows this room replayed: a parent card's evidence (A5).
+    const evidencedTaskIds = new Set();
     // Late progress must not revive a terminal child.
     const subagentTerminalChildren = new Set();
 
@@ -2029,8 +2041,7 @@ export function createChatInstance({
         // Interrupted is retryable and therefore non-terminal; the canonical
         // projector owns that distinction for both live and replay paths.
         if (summary.terminal) subagentTerminalChildren.add(childId);
-        reanchorTaskCard(getLiveCardRecord(parentId), rawTs);
-        stampNodeTimestamp(getSubagentCardRecord(childId, parentId, role)?.root, rawTs, { anchor: true });
+        stampNodeTimestamp(getSubagentCardRecord(childId, parentId, role, rawTs)?.root, rawTs, { anchor: true });
         const reviewsChanged = attachTaskDetailReviews(childId, evt);
         const updated = queueTaskLiveUpdate(
             summary,
@@ -2050,8 +2061,7 @@ export function createChatInstance({
         const content = String(msg?.content || msg?.text || '').trim();
         if (!content) return false;
         const rawTs = msg?.ts || new Date().toISOString();
-        reanchorTaskCard(getLiveCardRecord(parentId), rawTs);
-        const record = getSubagentCardRecord(childId, parentId, role);
+        const record = getSubagentCardRecord(childId, parentId, role, rawTs);
         const preserveTerminal = Boolean(record?.finished && (ownLine || subagentTerminalChildren.has(childId)));
         const summary = summarizeSubagentCardFrame(msg, childId, {
             content,
@@ -2079,8 +2089,7 @@ export function createChatInstance({
         const { parentId, role } = info;
         const text = String(msg?.content || msg?.text || '').trim();
         const rawTs = msg?.ts || new Date().toISOString();
-        reanchorTaskCard(getLiveCardRecord(parentId), rawTs);
-        const record = getSubagentCardRecord(childId, parentId, role);
+        const record = getSubagentCardRecord(childId, parentId, role, rawTs);
         const priorTerminalPhase = record?.finished ? String(record.phaseEl?.dataset?.phase || '') : '';
         const summary = summarizeSubagentCardFrame(msg, childId, {
             content: '',
@@ -2450,7 +2459,12 @@ export function createChatInstance({
                 for (const entry of localEcho.confirmed) {
                     localEchoJournal.delete(entry.clientMessageId);
                 }
-                for (const msg of messages) learnSubagentLineage(msg);
+                for (const msg of messages) {
+                    learnSubagentLineage(msg);
+                    // A notice names its target, never a speaker: it is no evidence of that task here.
+                    if (msg.task_id && !ORIGIN_ADDRESSED_NOTICE_TYPES.has(msg.system_type)
+                            && msg.system_type !== 'project_question_pointer') evidencedTaskIds.add(msg.task_id);
+                }
 
                 const historicalTerminalProjections = new Set();
                 for (const msg of messages) if (msg.historical_terminal && msg.task_id) {
