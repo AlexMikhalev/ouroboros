@@ -6,8 +6,7 @@ What is pinned, on fake process objects (no child is ever forked here):
 * respawn installs its fresh slot the same way, through the same seam, carrying its attempt count;
 * the seam opens a slot only on the child's OWN ``worker_ready`` row (matched by pid); its checkout
   SHA comparison is diagnostic and never changes admission; a foreign pid's row does not open it;
-* births are compared only when both sides measured one, else the pid decides and a birthless
-  parent adopts the child's; a stale row of a reused pid never names a slot with a measured birth;
+* which process a row names (births, else the pid): tests/test_worker_readiness_identity.py;
 * no ``worker_ready`` inside the window -> the child is torn down (process tree), the slot is
   replaced through ``respawn_worker`` and a typed ``worker_ready_timeout`` row names slot, pid,
   wait and reason; its own entry progress permits one extension to the birth-relative ceiling;
@@ -946,96 +945,3 @@ def test_assignment_mirrors_the_running_status_for_a_root_not_only_a_subagent(tm
     workers.PENDING[:] = []
     workers.RUNNING.clear()
     workers.WORKERS.clear()
-
-
-# ---------------------------------------------------------------------------
-# (d) identity: births are compared only when both sides measured one, else the pid decides
-#     (owner, 14 Oct 21:09 #1); the parent's own ledger/birth read runs on the readiness thread
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def unmeasured_parent(monkeypatch):
-    """The parent's own birth read fails (its ledger write raises): the slot keeps no birth."""
-    from ouroboros import process_custody
-
-    attempted = []
-
-    def fail(_root, *, pid, **_kwargs):
-        attempted.append(pid)
-        raise OSError("ps unavailable")
-
-    monkeypatch.setattr(process_custody, "record_process", fail)
-    return attempted
-
-
-@pytest.mark.parametrize("parent,child", [
-    ("", "child-birth"), ("test-birth", ""), ("", ""), ("test-birth", "test-birth"),
-], ids=["absent_parent_birth", "absent_child_birth", "both_absent", "matching"])
-def test_readiness_compares_births_only_when_both_sides_measured_one(pool, seam, unmeasured_parent, parent, child):
-    slot = _booting_slot(pool, 0, 5001)
-    slot.process_birth = parent
-    append_jsonl(seam.events, {**_READY_ROW, "process_birth": child})
-
-    seam.run({0: slot}, seam.cursor, 1)
-
-    assert seam.killed == [] and seam.respawned == []
-    assert pool.lifecycle.worker_ready(slot), "the child's own row opened the slot"
-    assert slot.process_birth == (parent or child), "a parent without a birth adopts the child's own"
-    assert slot.ready_identity == (5001, parent or child)
-    assert unmeasured_parent == ([] if parent else [5001]), "only a birthless slot is ledgered, by its seam"
-
-
-def test_mismatching_births_never_open_the_slot(pool, seam, unmeasured_parent):
-    slot = _booting_slot(pool, 0, 5001)
-    append_jsonl(seam.events, {**_READY_ROW, "process_birth": "another-process"})
-
-    seam.run({0: slot}, seam.cursor, 1)
-
-    assert not pool.lifecycle.worker_ready(slot) and slot.reaping and slot.process_birth == "test-birth"
-    assert seam.killed == [5001] and seam.respawned == [(0, {"ready_attempt": 2})]
-
-
-@pytest.mark.parametrize("order", ["stale_first", "own_first"])
-def test_a_stale_row_of_a_reused_pid_never_names_a_slot_whose_birth_was_measured(pool, seam, order):
-    slot = _booting_slot(pool, 0, 5001)
-    stale = {**_READY_ROW, "process_birth": "earlier-holder"}
-    for row in ([stale, _READY_ROW] if order == "stale_first" else [_READY_ROW, stale]):
-        append_jsonl(seam.events, row)
-
-    seam.run({0: slot}, seam.cursor, 1)
-
-    assert pool.lifecycle.worker_ready(slot) and slot.ready_identity == (5001, "test-birth")
-    assert seam.killed == []
-
-
-def test_pid_reuse_without_a_parent_birth_adopts_the_newest_row_for_the_pid(pool, seam, unmeasured_parent):
-    """An earlier holder of a reused pid died, and so wrote its row, before this child received it."""
-    slot = _booting_slot(pool, 0, 5001)
-    slot.process_birth = ""
-    append_jsonl(seam.events, {**_READY_ROW, "process_birth": "earlier-holder"})
-    append_jsonl(seam.events, {**_READY_ROW, "process_birth": "child-birth"})
-
-    seam.run({0: slot}, seam.cursor, 1)
-
-    assert slot.process_birth == "child-birth" and slot.ready_identity == (5001, "child-birth")
-    assert pool.lifecycle.worker_ready(slot)
-
-
-@pytest.mark.parametrize("slot_birth,event_pid,event_birth,confirmed", [
-    ("test-birth", 5001, "test-birth", True),
-    ("test-birth", 5001, "", True),
-    ("", 5001, "", True),
-    ("test-birth", 5001, "another-process", False),
-    ("test-birth", 4999, "test-birth", False),
-], ids=["matching", "absent_child_birth", "both_absent", "mismatching", "foreign_pid"])
-def test_the_idle_probe_answer_compares_births_only_when_both_are_known(
-        pool, slot_birth, event_pid, event_birth, confirmed):
-    lifecycle, workers = pool.lifecycle, pool.workers
-    slot = workers.Worker(wid=0, proc=_FakeProc(5001), in_q=MagicMock(), busy_task_id=None,
-                          process_birth=slot_birth, ready_identity=(5001, slot_birth), quiescence_token="probe")
-    workers.WORKERS[0] = slot
-
-    lifecycle.handle_worker_quiescent(
-        {"worker_id": 0, "pid": event_pid, "process_birth": event_birth, "token": "probe"}, workers)
-
-    assert slot.quiescence_confirmed is confirmed
