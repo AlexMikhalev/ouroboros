@@ -138,11 +138,11 @@ def _stored_chat_id(value: Any, default: int = 1) -> int:
 def _project_history_context(
     data_dir: pathlib.Path,
     thread_id: int,
-) -> tuple[set[int], list[dict], Dict[str, Any], Dict[str, int], bool]:
+) -> tuple[set[int], list[dict], Dict[str, Any], Dict[str, int], Any, bool]:
     """Read-only Project lenses and registry completeness, in the assembly worker.
 
-    Preload bindings once per request to avoid per-row task/parent/root reads
-    of state/project_task_bindings.json; no extra event-loop thread hops.
+    Preload bindings (the cursor fingerprint's explicit roots) and the room rule
+    once per request; no per-row registry reads, no extra event-loop thread hops.
     """
     from ouroboros.projects_registry import reserved_project_chat_ids
 
@@ -165,12 +165,12 @@ def _project_history_context(
     except Exception:
         annotations = {}
     try:
-        from ouroboros.projects_registry import all_task_bindings
+        from ouroboros.projects_registry import all_task_bindings, RoomResolver
 
-        bindings_by_task = all_task_bindings(data_dir)
+        bindings_by_task, rooms = all_task_bindings(data_dir), RoomResolver(data_dir)
     except Exception:
-        bindings_by_task = {}
-    return project_chat_ids, source_refs, annotations, bindings_by_task, classified
+        bindings_by_task, rooms = {}, RoomResolver(data_dir)
+    return project_chat_ids, source_refs, annotations, bindings_by_task, rooms, classified
 
 
 def _user_annotation(
@@ -441,7 +441,7 @@ def _annotate_terminal_task_truth(
                 result_task_ids.add(task_id)
             if progress or summary:
                 carriers[task_id] = message
-        for task_id, ts in (evidence_anchors or {}).items():
+        for task_id, ts in (evidence_anchors or {}).items():  # a parent anchored by its child's row has that row's ts; a census anchor has none
             represented.setdefault(task_id, ts)
         tool_evidence_by_task = replay_evidence_for_tasks(data_dir, represented)
         for task_id, evidence in tool_evidence_by_task.items():
@@ -454,10 +454,11 @@ def _annotate_terminal_task_truth(
                                   if isinstance(row, dict) and type(row.get("calls")) is int and row["calls"] > 0))
             known_calls = max((n for n in counts if type(n) is int and n > 0), default=0)
             coverage = evidence.get("coverage") or {}
-            # Global byte/archive bounds do not establish missing calls for
-            # this task. Positive task counts and actual read gaps do.
+            # Global byte/archive bounds do not establish missing calls for this task; positive counts and read gaps
+            # do. A parent anchored by its child's row is always carried (zero tools included): never a bare shell (A5).
             incomplete = (coverage.get("gaps") or max(known_calls, coverage.get("matched", 0)) > coverage.get("shown", 0))
-            if task_id not in carriers and (evidence.get("observations") or evidence.get("legacy", {}).get("calls") or incomplete):
+            if task_id not in carriers and (evidence.get("observations") or evidence.get("legacy", {}).get("calls")
+                                            or incomplete or (evidence_anchors or {}).get(task_id)):
                 carrier = {"task_id": task_id, "ts": represented[task_id], "role": "system",
                            "system_type": "task_evidence", "text": "", "is_progress": False, "narration": False}
                 combined.append(carrier)
@@ -668,13 +669,13 @@ def _make_thread_filter(
     thread_id: int,
     project_chat_ids: set,
     project_source_refs: list,
-    bindings_by_task: Dict[str, int],
+    rooms: Any,
 ):
     """One per-request room predicate shared by durable stream and evidence readers."""
-    from ouroboros.project_dialogue import bound_room_chat, matching_project_origin, room_membership
+    from ouroboros.project_dialogue import matching_project_origin, room_membership
 
     belongs = room_membership(thread_id if thread_id in project_chat_ids else 1,
-                              project_chat_ids, project_source_refs, bindings_by_task)
+                              project_chat_ids, project_source_refs, rooms)
 
     def _row_matches_thread(entry_chat: int, entry: Optional[dict] = None) -> bool:
         if _question_project_chat(entry):
@@ -691,7 +692,7 @@ def _make_thread_filter(
         quiz = entry.get("quiz")
         if not isinstance(quiz, dict):
             return 0
-        chat = bound_room_chat(bindings_by_task, {"task_id": entry.get("task_id")}) or _stored_chat_id(entry.get("chat_id"), 1)
+        chat = rooms(entry.get("task_id")) or _stored_chat_id(entry.get("chat_id"), 1)
         return chat if chat in project_chat_ids else 0
 
     _row_matches_thread.question_project_chat = _question_project_chat
@@ -1433,11 +1434,11 @@ def _assemble_history_response(
     Room lenses, source reads, projection, terminal truth and JSON encoding all
     stay off the event loop. Both selectors use the same row transformers.
     """
-    project_chat_ids, project_source_refs, chat_annotations, bindings_by_task, classified = (
+    project_chat_ids, project_source_refs, chat_annotations, bindings_by_task, rooms, classified = (
         _project_history_context(data_dir, thread_id)
     )
     row_matches_thread = _make_thread_filter(
-        thread_id, project_chat_ids, project_source_refs, bindings_by_task
+        thread_id, project_chat_ids, project_source_refs, rooms
     )
     chat_path = data_dir / "logs" / "chat.jsonl"
     progress_path = data_dir / "logs" / "progress.jsonl"
@@ -1448,7 +1449,7 @@ def _assemble_history_response(
                                {"chat": _chat_quota_predicate(row_matches_thread),
                                 "progress": progress_quota_predicate(row_matches_thread, _stored_chat_id)},
                                {"human": _MAX_N_HUMAN, "progress": _MAX_N_PROGRESS},
-                               room_segment_lens(thread_id, project_chat_ids, project_source_refs, bindings_by_task))
+                               room_segment_lens(thread_id, project_chat_ids, project_source_refs, rooms))
     selections, before, recent = page["selections"], page["before"], page["recent"]
     n_human, n_progress = page["quotas"]["human"], page["quotas"]["progress"]
     historical_terminals: Dict[str, dict] = {}
@@ -1499,15 +1500,15 @@ def _assemble_history_response(
                             and row_matches_thread.evidence_matches(row["chat_id"], {**row, "task_id": row["activity_id"]})}
     represented = {str(row.get("task_id") or "") for row in messages} | evidence_anchors.keys()
     for row in messages:
-        parent = str(row.get("parent_task_id") or "")
+        # A notice names its target, never a speaker (no parent); a legacy child row's parent is in the facts index.
+        parent = "" if row.get("system_type") in ("project_question_pointer", *ORIGIN_ADDRESSED_NOTICE_TYPES) else str(
+            row.get("parent_task_id") or rooms.lineage(row.get("task_id")).get("parent_task_id") or "")
         if not parent or parent in represented or (floor and str(row.get("ts") or "") < floor
                                                    and row.get("task_id") not in anchored_children):
             continue
-        # A child's room does not address its parent. Unknown parent routes
-        # retain their topology without disclosing unscoped tool evidence.
-        parent_chat = bindings_by_task.get(parent)
-        if parent_chat is None:
-            parent_chat = _load_terminal_result(data_dir, parent, result_cache).get("chat_id")
+        # A child's room does not address its parent: the parent's own room decides (the room rule, else its
+        # admitted chat); an in-room parent is anchored at its child's row, so its carrier carries that row's ts.
+        parent_chat = rooms(parent) or rooms.lineage(parent).get("chat_id")
         if parent_chat is not None and row_matches_thread.evidence_matches(parent_chat, {"task_id": parent}):
             evidence_anchors.setdefault(parent, str(row.get("ts") or ""))
     _annotate_terminal_task_truth(
@@ -1516,8 +1517,7 @@ def _assemble_history_response(
         historical_terminals=historical_terminals,
         deferred_lineage=deferred_lineage,
         evidence_anchors=evidence_anchors,
-        evidence_scope=lambda task_id: task_id not in bindings_by_task or row_matches_thread.evidence_matches(
-            bindings_by_task[task_id], {"task_id": task_id}),
+        evidence_scope=lambda task_id: row_matches_thread.evidence_matches(rooms(task_id) or thread_id, {"task_id": task_id}),
     )
     for source in ("chat", "progress"):
         before[source] = max([before[source], *(entry["_history_end"] for entry in selections[source][0] or ()

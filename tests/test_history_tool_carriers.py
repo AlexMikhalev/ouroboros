@@ -371,3 +371,98 @@ def test_a_main_rooted_tasks_own_main_notice_still_carries_its_tools(tmp_path):
     _write(tmp_path / "logs/tools.jsonl", [_tool("root")])
     rows = _room_read(tmp_path, 1)["messages"]
     assert [(row["task_id"], row["system_type"]) for row in rows] == [("root", "main_notice"), ("root", "task_evidence")]
+
+
+# --- A4 read seam and A5 G2: the room rule in history, and the in-room parent's carrier ------------
+
+def _converted_root_with_child(root, *, child_status="cancelled", parent_status="completed", row_chat=1, lineage=False):
+    """A root converted by «Turn into project», its child, and the child's progress row as the
+    supervisor recorded it (Main, task id only) unless ``lineage``/``row_chat`` say otherwise."""
+    from ouroboros.projects_registry import bind_task_to_project, create_project
+    from ouroboros.task_results import write_task_result
+
+    project = create_project(root, "room", name="Project room")
+    write_task_result(root, "par", parent_status, root_task_id="par", chat_id=1)
+    bind_task_to_project(root, "par", project["id"], origin={"absent": "system"})
+    write_task_result(root, "kid", child_status, delegation_role="subagent", parent_task_id="par",
+                      root_task_id="par", chat_id=1)
+    row = {"ts": "2026-10-14T12:10:20Z", "type": "send_message", "task_id": "kid", "is_progress": True,
+           "direction": "out", "chat_id": row_chat, "text": "Stopped", "content": "Stopped", "role": "system",
+           "system_type": "subagent_terminal_notice", "subagent_event": child_status, "narration": False,
+           **({"delegation_role": "subagent", "parent_task_id": "par", "root_task_id": "par"} if lineage else {})}
+    _write(root / "logs/progress.jsonl", [row])
+    return project
+
+
+def test_a_recorded_phantom_row_leaves_main_and_appears_in_its_project(tmp_path):
+    project = _converted_root_with_child(tmp_path)
+    assert [row["task_id"] for row in _room_read(tmp_path, 1)["messages"]] == [], "Main keeps no Project child"
+    rows = _room_read(tmp_path, project["chat_id"])["messages"]
+    child = next(row for row in rows if row["task_id"] == "kid")
+    assert (child["parent_task_id"], child["delegation_role"]) == ("par", "subagent"), "replay recovers the lineage"
+
+
+@pytest.mark.parametrize("parent_status, terminal", [("completed", "completed"), ("cancelled", "cancelled"), ("scheduled", None)])
+def test_a_zero_tool_in_room_parent_is_carried_at_its_childs_row_with_only_a_real_terminal(tmp_path, parent_status, terminal):
+    project = _converted_root_with_child(tmp_path, parent_status=parent_status)
+    rows = _room_read(tmp_path, project["chat_id"])["messages"]
+    [carrier] = [row for row in rows if row["task_id"] == "par"]
+    assert carrier["system_type"] == "task_evidence" and carrier["ts"] == "2026-10-14T12:10:20Z"
+    assert carrier["tool_evidence"]["observations"] == [] and "tool_calls" not in carrier
+    assert carrier.get("task_terminal_status") == terminal, "a scheduled parent is never finished as Done"
+    if terminal:
+        assert carrier["outcome_phase"] == ("cancelled" if terminal == "cancelled" else "done")
+    else:
+        assert carrier["task_phase"] == "unfinished"
+
+
+def test_a_main_parent_with_zero_tools_is_carried_for_its_child_in_main(tmp_path):
+    from ouroboros.task_results import write_task_result
+
+    write_task_result(tmp_path, "mpar", "completed", root_task_id="mpar", chat_id=1)
+    write_task_result(tmp_path, "mkid", "completed", delegation_role="subagent", parent_task_id="mpar",
+                      root_task_id="mpar", chat_id=1)
+    _write(tmp_path / "logs/progress.jsonl", [{"ts": TS, "type": "send_message", "task_id": "mkid", "is_progress": True,
+        "chat_id": 1, "content": "Child finished", "role": "system", "system_type": "subagent_terminal_notice",
+        "subagent_event": "completed", "delegation_role": "subagent", "parent_task_id": "mpar", "root_task_id": "mpar"}])
+    [carrier] = [row for row in _room_read(tmp_path, 1)["messages"] if row["task_id"] == "mpar"]
+    assert (carrier["system_type"], carrier["ts"], carrier["task_terminal_status"]) == ("task_evidence", TS, "completed")
+
+
+def test_a_notice_naming_a_child_anchors_no_parent(tmp_path):
+    from ouroboros.task_results import write_task_result
+
+    write_task_result(tmp_path, "npar", "completed", root_task_id="npar", chat_id=1)
+    write_task_result(tmp_path, "nkid", "running", delegation_role="subagent", parent_task_id="npar",
+                      root_task_id="npar", chat_id=1)
+    _write(tmp_path / "logs/chat.jsonl", [{"direction": "system", "type": "steer_not_delivered", "task_id": "nkid",
+                                           "text": "Not delivered", "ts": TS, "chat_id": 1}])
+    assert [row["task_id"] for row in _room_read(tmp_path, 1)["messages"]] == ["nkid"]
+
+
+def test_an_empty_ts_census_anchor_with_zero_tools_gets_no_carrier(tmp_path, monkeypatch):
+    from ouroboros.task_results import write_task_result
+
+    write_task_result(tmp_path, "live", "running", root_task_id="live", chat_id=1)
+    monkeypatch.setattr("ouroboros.gateway.state._chat_activities_snapshot_safe", lambda *_: [
+        {"activity_id": "live", "chat_id": 1, "kind": "managed_task", "phase": "working"}])
+    _write(tmp_path / "logs/chat.jsonl", [{"direction": "in", "text": "Latest question", "ts": TS, "chat_id": 1}])
+    assert [row["text"] for row in _read(tmp_path)["messages"]] == ["Latest question"]
+
+
+def test_the_history_cursor_survives_child_admission_and_changes_on_conversion(tmp_path):
+    from ouroboros.gateway.history_paging import room_view_fingerprint
+    from ouroboros.projects_registry import all_task_bindings, bind_task_to_project, create_project
+    from ouroboros.task_results import write_task_result
+
+    project = create_project(tmp_path, "room", name="Project room")
+    write_task_result(tmp_path, "root", "running", root_task_id="root", chat_id=1)
+    bind_task_to_project(tmp_path, "root", project["id"], origin={"absent": "system"})
+    view = lambda: room_view_fingerprint(1, {project["chat_id"]}, [], all_task_bindings(tmp_path))  # noqa: E731
+    before = view()
+    write_task_result(tmp_path, "kid", "running", delegation_role="subagent", parent_task_id="root",
+                      root_task_id="root", chat_id=1)
+    assert view() == before, "a child's admission keeps every open Main cursor"
+    other = create_project(tmp_path, "other", name="Other room")
+    bind_task_to_project(tmp_path, "kid", other["id"], origin={"absent": "system"})
+    assert view() != before, "a conversion changes what Main shows"

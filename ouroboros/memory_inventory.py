@@ -99,10 +99,12 @@ def row_meta(row: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 class MembershipFacts(NamedTuple):
-    """The registry facts room membership reads, taken once per call."""
+    """The registry facts room membership reads, taken once per call; ``rooms`` is
+    the room rule over the ``bindings`` snapshot the fingerprint names."""
     project_chat_ids: FrozenSet[int]
     bindings: Dict[str, int]
     projects_by_source_key: Dict[Tuple[Any, ...], FrozenSet[int]]
+    rooms: Any
 
     def fingerprint(self) -> str:
         payload = json.dumps([sorted(self.project_chat_ids), sorted(self.bindings.items()),
@@ -114,7 +116,7 @@ class MembershipFacts(NamedTuple):
 def membership_facts(root: Any) -> MembershipFacts:
     """Reserved Project rooms, task bindings and the bound owner messages, as ``iter_room_rows`` reads them."""
     from ouroboros.project_dialogue import _source_ref_identity  # D15->D17 is lazy-only
-    from ouroboros.projects_registry import all_task_bindings, list_reserved_projects, project_task_bindings
+    from ouroboros.projects_registry import all_task_bindings, list_reserved_projects, project_task_bindings, RoomResolver
 
     projects = frozenset(int(project["chat_id"]) for project in list_reserved_projects(root))
     by_key: Dict[Tuple[Any, ...], set] = {}
@@ -128,7 +130,7 @@ def membership_facts(root: Any) -> MembershipFacts:
         if key is not None:
             by_key.setdefault(key, set()).add(chat)
     return MembershipFacts(projects, dict(all_task_bindings(root)),
-                           {key: frozenset(chats) for key, chats in by_key.items()})
+                           {key: frozenset(chats) for key, chats in by_key.items()}, RoomResolver(root))
 
 
 def rooms_of_row(meta: Mapping[str, Any], facts: MembershipFacts) -> FrozenSet[str]:
@@ -146,7 +148,7 @@ def rooms_of_row(meta: Mapping[str, Any], facts: MembershipFacts) -> FrozenSet[s
     if is_a2a_chat_id(chat):
         return frozenset()
     kind = meta.get("type")
-    bound = 0 if kind in ORIGIN_ADDRESSED_NOTICE_TYPES else bound_room_chat(facts.bindings, meta)
+    bound = 0 if kind in ORIGIN_ADDRESSED_NOTICE_TYPES else bound_room_chat(facts.rooms, meta)
     pinned = kind in MAIN_PINNED_ROW_TYPES
     projects = facts.project_chat_ids
     rooms = set()
