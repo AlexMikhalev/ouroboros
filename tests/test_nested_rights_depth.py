@@ -1224,8 +1224,9 @@ def test_direct_child_count_read_gap_is_typed_unknown(tmp_path, monkeypatch):
 
     unavailable_store(monkeypatch)  # the store cannot answer: the count is unknown, never zero
     assert durable_direct_child_count(tmp_path, "parent") is None
-    refusal = schedule_delegation_refusal(contract, tmp_path, "parent")
-    assert "delegation_rights_child_count_unknown" in refusal
+    # Unknown is not decided at this pre-check; the host's interlocked re-check refuses a hard
+    # unknown (test_supervisor_rejects_count_bounded_child_when_count_scan_fails).
+    assert schedule_delegation_refusal(contract, tmp_path, "parent") == ""
 
 
 def test_schedule_exact_id_preserves_unreadable_result_and_does_not_enqueue(

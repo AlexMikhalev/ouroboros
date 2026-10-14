@@ -452,7 +452,8 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any, preparation: Any = None
             parent_budget,
             direct_child_count=direct_child_count,
         )
-        if not rights.ok:
+        # An unknown count is the interlocked re-check's to decide (it defers contention).
+        if not rights.ok and rights.reason_code != "delegation_rights_child_count_unknown":
             detail = f"Subagent rejected: {rights.reason_code}: {rights.detail}"
             result_fields["delegation_admission"] = {
                 "status": "rejected",
