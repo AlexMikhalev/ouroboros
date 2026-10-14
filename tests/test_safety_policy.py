@@ -5,9 +5,12 @@ Covers:
   - POLICY_CHECK: always LLM call.
   - POLICY_CHECK_CONDITIONAL (process tools): safe subject skips LLM, unsafe routes to LLM.
   - DEFAULT_POLICY: unknown tools fall through to LLM check.
+  - Declared policy: a built-in's ToolEntry.safety_policy routes a name the
+    table omits; the table outranks it; an invalid value is checked.
   - LLM verdict handling: SAFE / SUSPICIOUS / DANGEROUS.
   - LLM failure paths: exception, unparseable response.
-  - Coverage invariant: every built-in tool name has an explicit TOOL_POLICY entry.
+  - Coverage invariant: every built-in tool name has exactly one explicit policy,
+    a TOOL_POLICY entry or its own declaration.
 """
 
 from __future__ import annotations
@@ -349,21 +352,23 @@ def test_llm_api_failure_blocks(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _collect_all_builtin_tool_names() -> set[str]:
-    """Collect every built-in tool name from ``ToolEntry("name", …)`` literals
-    across ``ouroboros/`` via AST scan.
+def _scan_builtin_tool_literals(root: pathlib.Path | None = None) -> tuple[set[str], dict]:
+    """Every built-in tool name from ``ToolEntry("name", …)`` literals under
+    ``root`` (default ``ouroboros/``) via AST scan, plus the constant
+    ``safety_policy=`` each literal declares.
 
     This covers both:
       - modules picked up by ``ToolRegistry._load_modules`` (via ``get_tools()``);
       - tools manually registered through ``registry.register(ToolEntry(…))``
         outside ``get_tools()`` (e.g. ``ouroboros/consciousness.py``'s
         ``set_next_wakeup``), which would otherwise slip past a registry-only
-        scan.
+        scan. A non-constant declaration is read from the live registry instead.
     """
     import ast
 
-    root = pathlib.Path(__file__).resolve().parent.parent / "ouroboros"
+    root = root or pathlib.Path(__file__).resolve().parent.parent / "ouroboros"
     names: set[str] = set()
+    declared: dict = {}
     for py in root.rglob("*.py"):
         if py.name == "safety.py":
             # TOOL_POLICY itself constructs ToolEntry-looking literals nowhere,
@@ -395,13 +400,30 @@ def _collect_all_builtin_tool_names() -> set[str]:
                         break
             if isinstance(cand, ast.Constant) and isinstance(cand.value, str):
                 names.add(cand.value)
-    return names
+                for kw in node.keywords:
+                    if kw.arg == "safety_policy" and isinstance(kw.value, ast.Constant) and kw.value.value != "":
+                        declared[cand.value] = kw.value.value
+    return names, declared
+
+
+def _policy_coverage_problems(names, declared: dict, table) -> dict:
+    """Why ``names`` do not each carry exactly one explicit, known policy."""
+    from ouroboros.safety import POLICY_VALUES
+
+    return {
+        "missing": sorted(set(names) - set(table) - set(declared)),
+        "declared_and_listed": sorted(set(declared) & set(table)),
+        "invalid": {name: value for name, value in sorted(declared.items())
+                    if not (isinstance(value, str) and value in POLICY_VALUES)},
+    }
 
 
 def test_tool_policy_covers_all_builtin_tools():
     """Every built-in tool — whether exported via ``get_tools()`` or registered
-    manually via ``registry.register(ToolEntry(…))`` — MUST have an explicit
-    entry in ``TOOL_POLICY``.
+    manually via ``registry.register(ToolEntry(…))`` — MUST carry exactly one
+    explicit, known safety policy: its own ``ToolEntry.safety_policy`` OR an
+    entry in the protected ``TOOL_POLICY`` table, never both (the table would
+    silently outrank the declaration).
 
     Without this invariant, a new built-in tool would silently fall through to
     ``DEFAULT_POLICY = POLICY_CHECK`` and pay an LLM call per invocation, which
@@ -414,8 +436,10 @@ def test_tool_policy_covers_all_builtin_tools():
         tmp_path = pathlib.Path(tmp)
         registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
         discovered = set(registry.available_tools())
+        live_declared = {name: entry.safety_policy for name, entry in registry._entries.items()
+                         if entry.safety_policy}
 
-    ast_scanned = _collect_all_builtin_tool_names()
+    ast_scanned, ast_declared = _scan_builtin_tool_literals()
     builtin_names = discovered | ast_scanned
 
     # Sanity: the AST scan must at least include the auto-loaded set.
@@ -425,11 +449,41 @@ def test_tool_policy_covers_all_builtin_tools():
         f"{sorted(discovered - ast_scanned)}"
     )
 
-    missing = builtin_names - set(TOOL_POLICY.keys())
-    assert missing == set(), (
-        "Built-in tools without explicit TOOL_POLICY entry (would hit LLM by "
-        f"default): {sorted(missing)}"
+    problems = _policy_coverage_problems(builtin_names, {**ast_declared, **live_declared}, TOOL_POLICY)
+    assert problems == {"missing": [], "declared_and_listed": [], "invalid": {}}, (
+        "Each built-in needs one explicit safety policy: ToolEntry.safety_policy "
+        "or a TOOL_POLICY entry, not both, with a known value (a missing one "
+        f"would hit the LLM by default): {problems}"
     )
+
+
+def test_policy_coverage_accepts_one_declared_home_and_refuses_the_rest(tmp_path):
+    """The coverage gate in both directions, on literals it scans itself: a
+    declaration alone covers a tool; no policy, a second home or an unknown
+    value is refused."""
+    from ouroboros.safety import POLICY_CHECK
+
+    (tmp_path / "probe_tools.py").write_text(
+        "from ouroboros.tools.registry import ToolEntry\n"
+        "def get_tools():\n"
+        "    return [\n"
+        "        ToolEntry('declared_tool', {}, print, safety_policy='skip'),\n"
+        "        ToolEntry('silent_tool', {}, print),\n"
+        "        ToolEntry('typo_tool', {}, print, safety_policy='skp'),\n"
+        "        ToolEntry('twice_tool', {}, print, safety_policy='skip'),\n"
+        "    ]\n",
+        encoding="utf-8",
+    )
+
+    names, declared = _scan_builtin_tool_literals(tmp_path)
+
+    assert names == {"declared_tool", "silent_tool", "typo_tool", "twice_tool"}
+    assert declared == {"declared_tool": "skip", "typo_tool": "skp", "twice_tool": "skip"}
+    assert _policy_coverage_problems(names, declared, {"twice_tool": POLICY_CHECK}) == {
+        "missing": ["silent_tool"],
+        "declared_and_listed": ["twice_tool"],
+        "invalid": {"typo_tool": "skp"},
+    }
 
 
 def test_tool_policy_values_are_valid():
