@@ -10,6 +10,23 @@ from ouroboros import delegate_custody as custody
 
 
 _PAYLOAD_CLAIM_LOCK = threading.Lock()
+PAYLOAD_CUSTODY_UNREADABLE = "custody_log_unreadable"
+
+
+def payload_busy_detail(holder: str) -> str:
+    """Explain the same payload refusal at the early check and either claim check."""
+    if holder == PAYLOAD_CUSTODY_UNREADABLE:
+        return (
+            "Custody for the selected payload could not be read. No holder or free "
+            "payload is established; nothing was started. Retry when custody is readable."
+        )
+    return (
+        "Another delegated run holds this exact payload open: its custody is "
+        "not yet settled AND disposed, and its owner task is still live (or its "
+        "terminality cannot be proven from task results). Wait for that task to "
+        "finish, or pick another skill: a non-owner can neither delegate_wait "
+        "that run nor integrate its capture."
+    )
 
 
 def claimed_start_request(
@@ -61,10 +78,7 @@ def _claimed(drive: pathlib.Path, claim_target: str, payload_busy: Callable[[pat
                 if holder:
                     return False, {
                         "reason": "payload_delegation_busy", "holder": holder,
-                        "detail": (
-                            "Another delegated run claimed this exact payload first. "
-                            "Finish it before starting another assignment against the skill."
-                        ),
+                        "detail": payload_busy_detail(holder),
                     }
                 return custody.record_start_requested(drive, **request_row), {}
             finally:
@@ -92,10 +106,7 @@ def _claimed(drive: pathlib.Path, claim_target: str, payload_busy: Callable[[pat
                         return False, {
                             "reason": "payload_delegation_busy",
                             "holder": holder,
-                            "detail": (
-                                "Another delegated run claimed this exact payload first. "
-                                "Finish it before starting another assignment against the skill."
-                            ),
+                            "detail": payload_busy_detail(holder),
                         }
                 live_ids = [
                     str(v) for key in (

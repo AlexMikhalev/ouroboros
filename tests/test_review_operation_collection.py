@@ -94,7 +94,7 @@ def test_terminal_handoff_collects_mailbox_only_settlement(tmp_path, monkeypatch
         settlement._LATE_UNPUBLISHED.discard((TASK, request.retry_key))
         ctx._execution_trace = None
         write_task_result(tmp_path, TASK, 'completed', chat_id=3, result='answer B')
-        monkeypatch.setattr('supervisor.workers.get_event_q', lambda: ctx.event_queue)
+        monkeypatch.setattr('supervisor.workers.get_event_q', lambda *, create=True: ctx.event_queue)
         monkeypatch.setattr('ouroboros.review_substrate.ReviewCoordinator.run',
                             lambda *a, **kw: pytest.fail('maintenance started another review'))
         report = review_operation.recover_orphaned_acceptance_operations(tmp_path)
@@ -187,7 +187,7 @@ def test_settlement_publication_holds_operation_until_retry_duty_is_durable(tmp_
         before = load_task_result(tmp_path, TASK)['review_projection']['panels'][0]['late_settlement']
         ctx.event_queue = queue.Queue()
         settlement._LATE_UNPUBLISHED.discard((TASK, request.retry_key))
-        monkeypatch.setattr('supervisor.workers.get_event_q', lambda: ctx.event_queue)
+        monkeypatch.setattr('supervisor.workers.get_event_q', lambda *, create=True: ctx.event_queue)
         report = review_operation.recover_orphaned_acceptance_operations(tmp_path)
         assert report['settled'][0]['status'] == 'announced', report
         stored = load_task_result(tmp_path, TASK)
@@ -534,7 +534,7 @@ def test_maintenance_collects_a_dead_controllers_operation_once(tmp_path, monkey
         monkeypatch.setattr(review_operation, "_write_operation_pointer", legacy_writer)
 
     delivered = queue.Queue()
-    monkeypatch.setattr("supervisor.workers.get_event_q", lambda: delivered)
+    monkeypatch.setattr("supervisor.workers.get_event_q", lambda *, create=True: delivered)
     class StampedModel(_HeldModel):
         def chat(self, **kwargs):
             from ouroboros.review_dispatch import invoke_bound_api_review_paid_stamp
@@ -832,7 +832,7 @@ def test_a_late_settlement_that_did_not_land_is_never_announced_and_maintenance_
     from ouroboros.review_projection import publish_acceptance_checkpoint
 
     delivered = queue.Queue()
-    monkeypatch.setattr("supervisor.workers.get_event_q", lambda: delivered)
+    monkeypatch.setattr("supervisor.workers.get_event_q", lambda *, create=True: delivered)
     model = _HeldModel()
     write_task_result(tmp_path, TASK, "running", chat_id=3)
     ctx = _ctx(tmp_path)
@@ -939,7 +939,7 @@ def test_notice_registration_and_live_enqueue_failure_retain_retry_duty(tmp_path
             raise OSError("live queue unavailable")
 
     delivered, model = queue.Queue(), _HeldModel()
-    monkeypatch.setattr("supervisor.workers.get_event_q", lambda: delivered)
+    monkeypatch.setattr("supervisor.workers.get_event_q", lambda *, create=True: delivered)
     write_task_result(tmp_path, TASK, "running", chat_id=3)
     ctx = _ctx(tmp_path)
     with model_wait.task_model_wait_scope(task={"id": TASK, "chat_id": 3, "_attempt": 1}, drive_root=tmp_path,

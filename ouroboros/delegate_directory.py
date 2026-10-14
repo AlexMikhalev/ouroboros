@@ -182,9 +182,9 @@ def _download(gateway, run_id, source, destination, expected=None):
 
 
 def capture_directory_result(drive, entry, gateway):
-    """Capture only a settled run; retain source/actual execution addresses separately."""
-    if not entry.settled:
-        raise ValueError("the directory run has not settled")
+    """Capture observed terminal work independently of its pending money record."""
+    if not entry.settled and entry.terminal_state not in custody.TERMINAL_STATES:
+        raise ValueError("the directory run has not completed")
     cap_dir = custody.delegated_capture_dir(drive, entry.task_id, entry.run_id)
     manifest_path = cap_dir / "workspace_patch.json"
     if entry.patch_captured and manifest_path.is_file():

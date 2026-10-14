@@ -532,8 +532,9 @@ def _integrate_delegated_patch(
         return "⚠️ INTEGRATE_LOCK_TIMEOUT: another disposition holds this captured result; retry after it completes."
     try:
         from ouroboros.delegate_continuation import disposition_refusal
+        from ouroboros.delegate_custody_current import run
 
-        if handover := disposition_refusal(drive, custody.replay(drive).get(rid)):
+        if handover := disposition_refusal(drive, run(drive, rid)):
             return handover
         result = _integrate_delegated_patch_locked(ctx, rid, decision, reason, acknowledge_ambiguous, paths)
         from ouroboros.delegate_terminal import refresh_disposed_reconciliation

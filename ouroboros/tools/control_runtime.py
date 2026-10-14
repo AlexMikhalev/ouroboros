@@ -636,9 +636,9 @@ def _consciousness_status_facts(ctx: ToolContext) -> str:
                                       "source": "owner settings, not the state file"}
     facts["notes"] = [
         "stored_next_wake_at is the last time the clock persisted and fires only while enabled; the running "
-        "clock keeps it no sooner than MIN after boot, and an event can pull it earlier.",
-        "Not in this read (held in the supervisor's memory): a pending early-wake reason, the last wake "
-        "outcome and error, failure backoff, the allowance window and a live wake task."]
+        "clock keeps it no sooner than MIN after boot, and no event moves it.",
+        "Not in this read (held in the supervisor's memory): the last wake outcome and error, failure "
+        "backoff, the allowance window and a live wake task."]
     return json.dumps(facts, ensure_ascii=False, indent=2)
 
 

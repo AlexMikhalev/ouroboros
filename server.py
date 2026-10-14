@@ -16,7 +16,7 @@ from ouroboros.utils import read_json_dict, utc_now_iso  # noqa: E402
 from typing import Any, Dict, Optional
 
 from starlette.applications import Starlette
-from starlette.routing import Route, Mount
+from starlette.routing import Route
 import uvicorn
 from ouroboros.server_control import (PanicIngress, execute_panic_stop as _execute_panic_stop_impl, exit_after_restart,
                                       restart_current_process as _restart_current_process_impl)
@@ -31,7 +31,7 @@ from ouroboros.server_entrypoint import (ServerAdmissionRefused, admit_data_root
                                          find_free_port, parse_server_args, reserved_service_ports, write_port_file)
 from ouroboros.launcher_bootstrap import automatic_launch_allowed
 from ouroboros import body_adoption, store_switch
-from ouroboros.server_web import NoCacheStaticFiles, make_index_page, resolve_web_dir
+from ouroboros.server_web import ServedUI
 from ouroboros.config import resolve_port_file
 from ouroboros.process_logging import configure_process_logging
 from ouroboros.task_finalization import host_operation_reply_kwargs
@@ -84,6 +84,7 @@ from ouroboros.server_liveness import (  # noqa: F401
     drain_worker_events, flush_budget_projection,
 )
 from ouroboros.server_maintenance import (  # noqa: F401
+    bind_body_lifespan,
     _LAST_CANCEL_INTENT_SWEEP,
     _migrate_startup_cancel_latches,
     _startup_worker_pids,
@@ -102,6 +103,8 @@ from ouroboros.server_maintenance import (  # noqa: F401
     _startup_worktree_prune,
 )
 from ouroboros.ui_translation import start_background as _start_ui_translation
+from supervisor.workspace_preparation import start_generation as _start_preparation_generation
+from supervisor.event_observation import pending_idle_observations
 from ouroboros.server_restart import (  # noqa: F401
     _live_running_task_ids, _managed_update_pending_kwargs,
     _perform_owner_restart, _safe_restart_serialized,
@@ -260,8 +263,6 @@ def _describe_bg_consciousness_state(requested_enabled: bool | None) -> dict:
         status, detail = "wake_failed", f"The last wake-up failed ({snapshot.get('last_error') or 'runner error'}); next attempt at {next_at}, backing off."
     else:
         status, detail = "sleeping", f"Sleeping until {next_at}."
-        if snapshot.get("pending_reason"):
-            detail += f" Early wake pending: {snapshot['pending_reason']}."
     return {**snapshot, "enabled": requested_enabled, "status": status, "detail": detail}
 
 
@@ -703,6 +704,7 @@ def _run_supervisor(settings: dict) -> None:
         prior_worker_pids = _startup_worker_pids(DATA_DIR)
         interrupted_running: list = []
         restored_pending = restore_pending_from_snapshot(terminalized=interrupted_running)
+        _start_preparation_generation(stop=lambda stop=_watchdog_stop: any(e.is_set() for e in (stop, _supervisor_stop, _restart_requested, _exit_signalled)))
         kill_workers(preserve_pending=True)
         spawn_workers(max_workers)
         from ouroboros.server_process import record_applied_restart_settings
@@ -857,7 +859,7 @@ def _run_supervisor(settings: dict) -> None:
             flush_budget_projection(_event_ctx)
 
             _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "maintenance"), time.monotonic()
-            enforce_task_timeouts()
+            enforce_task_timeouts(pending_events=pending_idle_observations(get_event_q()))
             try:
                 from supervisor.queue import check_scheduled_tasks
                 check_scheduled_tasks()
@@ -865,7 +867,6 @@ def _run_supervisor(settings: dict) -> None:
                 log.warning("Scheduled task check failed", exc_info=True)
             _periodic_supervisor_maintenance(
                 _last_custody_reap, _last_review_job_reconcile, stop_event=_watchdog_stop,
-                on_orphans_healed=lambda count: _consciousness and _consciousness.notify(f"orphans_healed:{count}"),
             )
             _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "assign"), time.monotonic()
             # Loop-tick restart drain (no sleep, events keep flowing): while
@@ -1247,9 +1248,8 @@ async def api_settings_post(request):
     _sync_gateway_settings_module()
     return await _gateway_settings.api_settings_post(request)
 
-web_dir = resolve_web_dir(REPO_DIR)
-web_dir.mkdir(parents=True, exist_ok=True)
-index_page = make_index_page(web_dir)
+served_ui = ServedUI(REPO_DIR)  # `/` and `/static`; the lifespan applies OUROBOROS_UI_DIR per generation
+index_page = served_ui.index_page
 
 routes = [
     Route("/", endpoint=index_page),
@@ -1261,7 +1261,7 @@ routes = [
             "api_settings_post": api_settings_post,
         },
     ),
-    Mount("/static", app=NoCacheStaticFiles(directory=str(web_dir)), name="static"),
+    *served_ui.mounts(),  # builtin /onboarding/static, then the selected /static (kept last)
 ]
 
 from contextlib import ExitStack, asynccontextmanager, suppress
@@ -1270,11 +1270,7 @@ from contextlib import ExitStack, asynccontextmanager, suppress
 @asynccontextmanager
 async def lifespan(app):
     global _event_loop
-    lifespan_drive_root = pathlib.Path(
-        app.state.drive_root
-        if hasattr(app, "state") and hasattr(app.state, "drive_root")
-        else DATA_DIR
-    )
+    lifespan_drive_root = pathlib.Path(getattr(getattr(app, "state", None), "drive_root", DATA_DIR))
     default_real_data_dir = pathlib.Path.home() / "Ouroboros" / "data"
     pytest_default_real_data_dir = (
         (bool(os.environ.get("PYTEST_CURRENT_TEST")) or "pytest" in sys.modules)
@@ -1300,6 +1296,7 @@ async def lifespan(app):
     # settings.json with no reader that needs it.
     settings, _provider_defaults_changed, _provider_default_keys = apply_runtime_provider_defaults(load_settings())
     _apply_settings_to_env(settings)
+    served_ui.apply(app, settings)  # this generation's main interface, before any request is served
     # Pin boot-time runtime-mode after env apply; save_settings compares to this owner baseline.
     from ouroboros.config import initialize_runtime_mode_baseline
     initialize_runtime_mode_baseline()
@@ -1339,6 +1336,8 @@ async def lifespan(app):
 
     if not _exit_signalled.is_set():
         _supervisor_stop.clear()  # a fresh lifespan owns a fresh generation (symmetric with the teardown set)
+    body_stop = threading.Event()  # lifespan ownership survives a cognitive supervisor revival
+    start_body = (lambda: None) if pytest_default_real_data_dir else bind_body_lifespan(lifespan_drive_root, body_stop)
     # A provider-ready boot starts the supervisor after the extension reload below.
     startup_provider_ready = has_startup_ready_provider(settings)
     if not startup_provider_ready:  # readiness follows the store's publication (store_switch.when_ready below)
@@ -1421,17 +1420,14 @@ async def lifespan(app):
     # RUNNING results and resolve an indeterminate post-task synthesis phase.
     # The periodic zombie sweep intentionally does not perform this recovery.
     if not startup_provider_ready:  # after the store's publication: the recovery writes, then readiness (P1)
-        store_switch.when_ready(lifespan_drive_root, lambda: _run_startup_task_recovery(
+        store_switch.when_ready(lifespan_drive_root, start_body, lambda: not body_stop.is_set() and _run_startup_task_recovery(
             lifespan_drive_root, REPO_DIR, skip_live_data=pytest_default_real_data_dir,
             prior_worker_pids=None if pytest_default_real_data_dir else _startup_worker_pids(lifespan_drive_root),
-        ), _supervisor_ready.set)
+        ), lambda: not body_stop.is_set() and _supervisor_ready.set())
 
     # Reload enabled+reviewed extensions across restarts.
     try:
-        from ouroboros.config import (
-            get_skills_repo_path,
-            load_settings as _load_settings,
-        )
+        from ouroboros.config import get_skills_repo_path, load_settings as _load_settings
         from ouroboros.extension_loader import reload_all as _reload_extensions, set_ws_broadcaster as _set_extension_ws_broadcaster
         _set_extension_ws_broadcaster(broadcast_ws_sync)
         repo_path = get_skills_repo_path()
@@ -1444,7 +1440,7 @@ async def lifespan(app):
     if not pytest_default_real_data_dir: _start_ui_translation(lifespan_drive_root, _supervisor_stop)  # after the skills registered their tables; fail-soft, no model call; no batch starts once teardown began  # noqa: E701
     # Only now: the first tick may consume an overdue note; a bus subscriber attached later never sees it.
     if startup_provider_ready:
-        _start_supervisor_if_needed(settings)
+        store_switch.when_ready(lifespan_drive_root, start_body, lambda: not body_stop.is_set() and _start_supervisor_if_needed(settings))
 
     try:
         from ouroboros.mcp_client import (
@@ -1478,6 +1474,9 @@ async def lifespan(app):
         yield
     finally:
         _supervisor_stop.set()  # first: the loop must know a teardown owns what follows
+        body_stop.set()
+        from ouroboros.delegate_collection import stop_body_runtime
+        stop_body_runtime(lifespan_drive_root, wait=False)
         begin_owned_stop(lifespan_drive_root)  # the grace starts here; pending stops are recorded before any wait
         log.info("Server shutting down...")
         # Let the loop leave its current tick BEFORE workers are killed and the

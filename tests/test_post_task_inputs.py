@@ -63,10 +63,15 @@ def test_real_completion_persists_receipt_union_before_cleanup_and_recovery(tmp_
     # Recovery reads the exact existing durable package, not the vanished ctx.
     pipeline._set_root_post_task_checkpoint(SimpleNamespace(drive_root=local), task, "pending_once")
     seen = []
+    def dispatch(env, task, usage, trace, evidence, logs, **kw):
+        seen.append(evidence)
+        pipeline._set_root_post_task_checkpoint(env, task, "completed")
     monkeypatch.setattr(pipeline, "_run_post_task_processing_async",
-                        lambda env, task, usage, trace, evidence, logs, **kw: seen.append(evidence))
+                        dispatch)
     assert pipeline.recover_pending_root_post_task_synthesis(local, tmp_path) == 1
     assert seen == [saved]
+    assert pipeline.recover_pending_root_post_task_synthesis(local, tmp_path) == 0
+    assert seen == [saved], "a stale child obligation never repeats its canonical completed synthesis"
 
 
 def test_reflection_packet_receives_complete_frozen_task_inputs_and_facts_row_buys_none(tmp_path, monkeypatch):

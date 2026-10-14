@@ -15,6 +15,7 @@ and the PUBLISHED phase; ``service`` for the importer/exporter/seam).
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import errno
 import json
 import os
@@ -98,6 +99,49 @@ class StoreLost(StoreError):
 
 class StoreBusy(StoreError):
     """Contention or exhausted process resources: retry; never a new store."""
+
+    def __init__(self, message: str, *, reason: str = "unknown") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+_WAIT_BUDGET = contextvars.ContextVar("current_store_wait_budget", default=None)
+_ADMISSION_NO_WAIT = contextvars.ContextVar("current_store_admission_no_wait", default=False)
+
+
+@contextlib.contextmanager
+def acquisition_budget(seconds: float):
+    """Narrow nested store acquisitions; zero makes an interlocked probe nonblocking."""
+    prior = _WAIT_BUDGET.get()
+    token = _WAIT_BUDGET.set(min(prior, seconds) if prior is not None else seconds)
+    try:
+        yield
+    finally:
+        _WAIT_BUDGET.reset(token)
+
+
+@contextlib.contextmanager
+def admission_acquisition():
+    """Probe/claim without waiting; this temporary guard is not the body's IO policy."""
+    token = _ADMISSION_NO_WAIT.set(True)
+    try:
+        yield
+    finally:
+        _ADMISSION_NO_WAIT.reset(token)
+
+
+@contextlib.contextmanager
+def physical_acquisition():
+    """At accepted handoff, copy only the caller's physical budget into its body.
+
+    Other ContextVars and explicit acquisition_budget scopes remain unchanged;
+    a nested physical start must acquire its own fresh admission guard.
+    """
+    token = _ADMISSION_NO_WAIT.set(False)
+    try:
+        yield
+    finally:
+        _ADMISSION_NO_WAIT.reset(token)
 
 
 _PROCESS_LOCKS: Dict[str, threading.RLock] = {}
@@ -368,9 +412,13 @@ def commit(conn: sqlite3.Connection) -> None:
     """COMMIT, rolling back on failure; the ``sqlite3.OperationalError`` is the caller's to type."""
     try:
         conn.execute("COMMIT")
-    except sqlite3.OperationalError:
-        with contextlib.suppress(sqlite3.Error):
+    except sqlite3.OperationalError as exc:
+        exc.rollback_confirmed = False
+        try:
             conn.execute("ROLLBACK")
+            exc.rollback_confirmed = not conn.in_transaction
+        except sqlite3.Error:
+            pass
         raise
 
 
@@ -395,17 +443,25 @@ def transaction(conn: sqlite3.Connection, *, write: bool, commit_wait_sec: Optio
     """One transaction: a write takes the lock at ``BEGIN IMMEDIATE``, a read's only wait is
     here; any exception rolls back and propagates; ``finish`` (default ``commit``) runs at the
     end; ``commit_wait_sec`` is the busy wait a COMMIT spends on readers draining."""
+    began = False
     try:
         conn.execute("PRAGMA synchronous = FULL")
         conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+        began = True
         if not write:  # take the read lock now
             conn.execute("SELECT 1 FROM meta LIMIT 1").fetchone()
         if commit_wait_sec is not None:
             conn.execute(f"PRAGMA busy_timeout = {int(commit_wait_sec * 1000)}")
         yield conn
-    except BaseException:
-        with contextlib.suppress(sqlite3.Error):
-            conn.execute("ROLLBACK")
+    except BaseException as exc:
+        if not began:
+            exc.rollback_confirmed = not conn.in_transaction
+        elif not (getattr(exc, "rollback_confirmed", False) and not conn.in_transaction):
+            try:
+                conn.execute("ROLLBACK")
+                exc.rollback_confirmed = not conn.in_transaction
+            except sqlite3.Error:
+                exc.rollback_confirmed = False
         raise
     (finish or (lambda: commit(conn)))()
 
@@ -437,7 +493,7 @@ def probe(root: Any) -> Tuple[str, Optional[str]]:
         return "absent", None
     except OSError as exc:
         name = errno.errorcode.get(exc.errno, str(exc.errno))
-        raise StoreBusy(f"current store not inspectable ({name}): {path}") from exc
+        raise StoreBusy(f"current store not inspectable ({name}): {path}", reason="uninspectable") from exc
     if tier is None:
         raise StoreLost(f"current store unreadable or foreign, never replaced: {path}")
     return "present", tier
@@ -455,7 +511,10 @@ def retired_sibling(root: Any) -> Optional[pathlib.Path]:
 
 def _typed(exc: sqlite3.Error) -> StoreError:
     if isinstance(exc, sqlite3.OperationalError) and busy(exc):
-        return StoreBusy(f"current store busy: {exc}")
+        error = StoreBusy(f"current store busy: {exc}", reason="contention")
+        if hasattr(exc, "rollback_confirmed"):
+            error.rollback_confirmed = exc.rollback_confirmed
+        return error
     if isinstance(exc, sqlite3.DatabaseError) and not isinstance(
             exc, (sqlite3.OperationalError, sqlite3.IntegrityError, sqlite3.ProgrammingError)):
         return StoreLost(f"current store unreadable: {exc}")
@@ -469,9 +528,13 @@ def name_lock(root: Any, filename: str, *, timeout_sec: float, stale_sec: float 
 
     path = pathlib.Path(root) / "state" / filename
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = acquire_exclusive_file_lock(path, timeout_sec=timeout_sec, stale_sec=stale_sec, owner_aware_stale=True)
+    outcome = {}
+    fd = acquire_exclusive_file_lock(path, timeout_sec=timeout_sec, stale_sec=stale_sec,
+                                     owner_aware_stale=True, outcome=outcome)
     if fd is None:
-        raise StoreBusy(f"current store lock unavailable: {path}")
+        error = StoreBusy(f"current store lock unavailable: {path}", reason=outcome.get("reason", "unknown"))
+        error.rollback_confirmed = True  # No connection/transaction opened behind this name lock.
+        raise error
     try:
         yield
     finally:
@@ -615,6 +678,10 @@ def open_store(root: Any, *, write: bool, wait_sec: float = STORE_WAIT_SEC, serv
     import owner thread's, ``service_thread``): their transactions pass both checks. A ``barrier``
     holds the write lock and the gate without writing (the evidence packer's phase gate) and ends
     in ROLLBACK, so its release never waits for readers to drain as a COMMIT would."""
+    if _ADMISSION_NO_WAIT.get():
+        wait_sec = 0.0
+    elif _WAIT_BUDGET.get() is not None:
+        wait_sec = min(wait_sec, _WAIT_BUDGET.get())
     root = pathlib.Path(root)
     service = service or bool(getattr(_SERVICE, "active", False))
     if write and not service and _in_window(root):
@@ -749,9 +816,10 @@ class Txn:
     def task_ids(self) -> List[str]:
         return [record["task_id"] for record in self.conn.execute("SELECT task_id FROM tasks ORDER BY task_id")]
 
-    def write_seqs(self) -> Dict[str, int]:
-        """Every task's write sequence: one narrow scan that tells which rows changed since a census."""
-        return {record["task_id"]: record["write_seq"] for record in self.conn.execute("SELECT task_id, write_seq FROM tasks")}
+    def write_seqs(self) -> Dict[str, Tuple[int, Any]]:
+        """Every task's ``(write_seq, updated_at)`` (``task_store.signature``): one narrow scan of which rows changed."""
+        return {record["task_id"]: (record["write_seq"], record["updated_at"])
+                for record in self.conn.execute("SELECT task_id, write_seq, updated_at FROM tasks")}
 
     def body_text(self, task_id: str) -> Optional[str]:
         record = self.conn.execute("SELECT body FROM task_bodies WHERE task_id=?", (task_id,)).fetchone()
@@ -875,8 +943,12 @@ class Txn:
     # -- custody rows: one row per delegated run, the reducer's output, indexed by task / project /
     #    invocation; ``state`` is the custody hold (``held`` while the run owes work, ``closed`` after).
     def custody_rows(self, where: str = "", params: Tuple[Any, ...] = ()) -> Dict[str, Dict[str, Any]]:
+        return {key: json.loads(raw) for key, raw in self.custody_raw_rows(where, params).items()}
+
+    def custody_raw_rows(self, where: str = "", params: Tuple[Any, ...] = ()) -> Dict[str, str]:
+        """Fetch one consistent selection; callers can decode after releasing the read transaction."""
         clause = f" WHERE {where}" if where else ""
-        return {record["run_id"]: json.loads(record["facts"]) for record in
+        return {record["run_id"]: record["facts"] for record in
                 self.conn.execute(f"SELECT run_id, facts FROM custody_runs{clause} ORDER BY run_id", params)}
 
     def custody_row(self, run_id: str) -> Optional[Dict[str, Any]]:

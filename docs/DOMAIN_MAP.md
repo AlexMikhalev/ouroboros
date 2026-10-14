@@ -8,17 +8,17 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 
 | domain | name | modules | proposed |
 |---|---|---:|---:|
-| D01 | Agent core & main loop | 48 | 0 |
+| D01 | Agent core & main loop | 49 | 0 |
 | D02 | LLM client, routing & providers | 43 | 0 |
 | D03 | Context assembly, fit & compaction | 20 | 0 |
 | D04 | Tool execution: registry, access & typed results | 22 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 38 | 0 |
-| D06 | Review stack | 81 | 0 |
-| D07 | Delegation, subagents & Claudexor | 65 | 0 |
-| D08 | Supervisor: queue, workers, events & runtime control | 60 | 0 |
+| D06 | Review stack | 82 | 0 |
+| D07 | Delegation, subagents & Claudexor | 66 | 0 |
+| D08 | Supervisor: queue, workers, events & runtime control | 62 | 0 |
 | D09 | Cancellation, owner control & process custody | 16 | 0 |
 | D10 | Git, update & release machinery | 33 | 0 |
-| D11 | Gateway, server & Web UI | 78 | 0 |
+| D11 | Gateway, server & Web UI | 80 | 0 |
 | D12 | Settings & configuration | 20 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
 | D14 | Skills & extensions | 58 | 0 |
@@ -27,8 +27,8 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D17 | Projects, workspaces & task results | 33 | 0 |
 | D18 | Launcher, packaging, platform & shared substrate | 25 | 0 |
 | D19 | Frozen contracts (ABI) | 11 | 0 |
-| D20 | Presence | 12 | 0 |
-| **total** | | **721** | **0** |
+| D20 | Presence | 13 | 0 |
+| **total** | | **729** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -239,6 +239,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/post_task_checkpoint.py`
 - `ouroboros/post_task_synthesis.py`
 - `ouroboros/primary_route_observation.py`
+- `ouroboros/sleep_custody.py`
 - `ouroboros/synthesis_cost_text.py`
 - `ouroboros/task_finalization.py`
 - `ouroboros/task_pacing.py`
@@ -390,6 +391,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/dialogue_evidence.py`
 - `ouroboros/plan_review_facts.py`
 - `ouroboros/preflight_node.py`
+- `ouroboros/preflight_receipts.py`
 - `ouroboros/preflight_runner.py`
 - `ouroboros/review.py`
 - `ouroboros/review_actor_aggregation.py`
@@ -476,6 +478,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/claudexor_startup_failure.py`
 - `ouroboros/configured_subagents.py`
 - `ouroboros/delegate_activity.py`
+- `ouroboros/delegate_collection.py`
 - `ouroboros/delegate_containment.py`
 - `ouroboros/delegate_continuation.py`
 - `ouroboros/delegate_custody.py`
@@ -552,6 +555,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `supervisor/cognitive_operations.py`
 - `supervisor/continuation_admission.py`
 - `supervisor/direct_roots.py`
+- `supervisor/event_observation.py`
 - `supervisor/event_taxonomy.py`
 - `supervisor/events.py`
 - `supervisor/events_budget.py`
@@ -597,6 +601,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `supervisor/worker_process.py`
 - `supervisor/worker_promotion.py`
 - `supervisor/workers.py`
+- `supervisor/workspace_preparation.py`
 
 ### D09 — Cancellation, owner control & process custody
 
@@ -663,6 +668,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/gateway/claudexor_contracts.py`
 - `ouroboros/gateway/claudexor_passive.py`
 - `ouroboros/gateway/claudexor_quota.py`
+- `ouroboros/gateway/client_contracts.py`
 - `ouroboros/gateway/contracts.py`
 - `ouroboros/gateway/control.py`
 - `ouroboros/gateway/cost_breakdown.py`
@@ -680,6 +686,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/gateway/host_notify.py`
 - `ouroboros/gateway/host_service.py`
 - `ouroboros/gateway/logs.py`
+- `ouroboros/gateway/management_contracts.py`
 - `ouroboros/gateway/marketplace.py`
 - `ouroboros/gateway/mcp.py`
 - `ouroboros/gateway/mcp_import_contracts.py`
@@ -974,6 +981,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/presence_delivery.py`
 - `ouroboros/presence_observations.py`
 - `ouroboros/presence_profile.py`
+- `ouroboros/presence_recovery.py`
 - `ouroboros/presence_runner.py`
 - `ouroboros/presence_runtime.py`
 - `ouroboros/tools/presence.py`

@@ -181,6 +181,64 @@ def test_requested_head_tail_spends_free_room_while_unsolicited_shares_the_eight
     assert "MIDDLE" not in messages[1]["content"]
 
 
+@pytest.mark.parametrize("window,target,reserve,part,multiple", [
+    (100_000, 85_000, 8_192, 60_000, False),
+    (100_000, 85_000, 8_192, 60_000, True),
+    (None, 85_000, 8_192, 90_000, True),
+    (300_000, 250_000, 65_536, 160_000, True),
+    (40_000, 85_000, 8_192, 60_000, True),
+], ids=["nano", "multiple-forms", "unknown-beyond-target", "low", "physical-nonfit"])
+def test_only_requested_content_over_the_window_can_shrink_a_chosen_form(
+        tmp_path, window, target, reserve, part, multiple):
+    """Escaped ends and a plain omitted middle misprice the unasked log initially.
+
+    The corrective pass must use the measured request with minimum unasked
+    envelopes for both shrink eligibility and the cost of the bodies it cuts.
+    """
+    ctx = _ctx(tmp_path)
+    owner = {"role": "user", "content": "Keep the API unchanged."}
+    ctx._pending_owner_dialogue = [dict(owner)]
+    text = "\\" * part + "x" * 1_000_000 + "\\" * part
+    rows = [_row("asked", "run_command", text,
+                 args={"cmd": ["tool"], "view_head_chars": part, "view_tail_chars": part}),
+            _row("unasked", "run_command", "z" * 400_000, args={"cmd": ["tool"]}),
+            _row("tiny", "run_command", "ok\r\n", args={"cmd": ["tool"]})]
+    page = "plain page\n" * 600
+    if multiple:
+        rows.append(_row("page", "read_file", page, args={"path": "m.py", "max_lines": 600}))
+        rows.append(_row("tail", "run_command", "x" * 100_000 + '\t"' * 4_000,
+                         args={"cmd": ["tool"], "view_tail_chars": 8_000}))
+    calls = []
+    fit = measured_fit(window=window, target=target, reserve=reserve, calls=calls)
+    messages, trace = _deliver(ctx, rows, fit)
+    receipt = trace["tool_result_delivery"][0]
+    assert len(calls) == receipt["measurements"] <= 13  # same bounded measurement pass
+    assert all(call["response_reserve_tokens"] == reserve for call in calls)
+    by_id = {row.get("tool_call_id"): row for row in messages}
+    chosen_fits = window is None or receipt["chosen_tokens"] + reserve <= window
+    expected = [[0, part], [len(text) - part, len(text)]]
+    assert (_view_json(by_id["asked"]["content"])["shown_ranges"] == expected) == chosen_fits
+    if chosen_fits and multiple:
+        assert by_id["page"]["content"] == page
+        assert _view_json(by_id["tail"]["content"])["shown_ranges"] == [[100_000, 108_000]]
+    assert by_id["tiny"]["content"] == "ok\r\n" and owner in messages
+    assert receipt["reserve_tokens"] == reserve
+    assert receipt["requested_room_tokens"] == (None if window is None else
+                                                  window - reserve - receipt["minimum_tokens"])
+    assert receipt["unsolicited_body_tokens"] <= receipt["unsolicited_allowance_tokens"]
+    if chosen_fits and receipt["chosen_tokens"] + reserve < target:
+        assert receipt["unsolicited_body_tokens"] > 0  # correction still spends the available share
+    if receipt["chosen_tokens"] + reserve > target and chosen_fits:
+        assert receipt["unsolicited_body_tokens"] == 0
+    sent = fit(messages, [])["estimated_input_tokens"] + reserve
+    assert receipt["status"] == ("capacity_unknown" if window is None else "projected")
+    assert window is None or sent <= window
+    for row in trace["tool_calls"]:
+        if row.get("result_partial"):
+            original = next(item["result"] for item in rows if item["tool_call_id"] == row["tool_call_id"])
+            assert artifacts.read_actor_source_bytes(tmp_path, ctx.task_id, row["result_source_ref"]).decode() == original
+
+
 def test_the_boundary_is_the_smallest_known_positive_bound_never_a_borrowed_one(tmp_path):
     ctx = _ctx(tmp_path)
     rows = [_row("r", "run_command", "x" * 400_000, args={"cmd": ["x"]})]

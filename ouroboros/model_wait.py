@@ -313,6 +313,16 @@ def execution_window_remaining_for_context(ctx: Any) -> float | None:
 
 _CURRENT: contextvars.ContextVar[TaskModelWait | None] = contextvars.ContextVar(
     "ouroboros_model_wait", default=None)
+_STRICT_CONTROL_PROBE = contextvars.ContextVar("strict_presend_control_probe", default=None)
+
+
+def control_probe_requires_current() -> bool:
+    """Only an unsent admission needs a temporary control-read gap to reach its wait owner."""
+    return _STRICT_CONTROL_PROBE.get() is True
+
+
+def control_probe_active() -> bool:
+    return _STRICT_CONTROL_PROBE.get() is not None
 _REPREPARE: contextvars.ContextVar[dict[str, tuple[Callable, Callable | None]] | None] = contextvars.ContextVar(
     "ouroboros_model_wait_reprepare", default=None)
 _CALENDAR: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
@@ -646,19 +656,34 @@ class TaskModelWait:
             raise ModelWaitInterrupted("model_wait_reprepare_required", role=role)
         return kwargs
 
-    def control_reason(self) -> str | None:
+    def control_reason(self, *, strict_current: bool = False) -> str | None:
+        from ouroboros.store import acquisition_budget
+        token = _STRICT_CONTROL_PROBE.set(strict_current)
+        try:
+            with acquisition_budget(0):
+                return self._control_reason(strict_current=strict_current)
+        finally:
+            _STRICT_CONTROL_PROBE.reset(token)
+
+    def _control_reason(self, *, strict_current: bool) -> str | None:
         """Existing task controls and explicit calendar bounds, never model prose."""
         from ouroboros.cancel_intents import cancel_pending, resolve_owner_stop_intent
         from ouroboros.config import resolve_task_execution_timeout_sec
         from ouroboros.deadline_utils import seconds_until
         from ouroboros.owner_mailbox import KIND_FINALIZE_NOW, drain_owner_entries
+        from ouroboros.store import StoreBusy
 
         if self.closed:
             return "task_ended"
-        if self.owner_control is None and cancel_pending(pathlib.Path(self.canonical_root), self.task_id):
-            _, graceful = resolve_owner_stop_intent(self.canonical_root, self.task_id)
-            if not graceful:
-                return "cancelled"
+        control_gap = None
+        if self.owner_control is None:
+            try:
+                if cancel_pending(pathlib.Path(self.canonical_root), self.task_id, propagate_busy=True):
+                    _, graceful = resolve_owner_stop_intent(self.canonical_root, self.task_id, propagate_busy=True)
+                    if not graceful:
+                        return "cancelled"
+            except StoreBusy as exc:
+                control_gap = exc  # No wait here; known Stop wins, then clocks, then an admission gap.
         metadata = getattr(self.tool_context, "task_metadata", None)
         if not isinstance(metadata, dict):
             metadata = self.task.get("metadata") or {}
@@ -673,6 +698,8 @@ class TaskModelWait:
         ceiling = resolve_task_execution_timeout_sec(self.task)  # None = unlimited; 0 = exhausted
         if ceiling is not None and self.executed_seconds() >= ceiling:
             return "absolute_ceiling"
+        if strict_current and control_gap is not None:
+            raise control_gap
         # The loop owns delivery. A private seen copy leaves that ownership
         # intact and excludes an already-drained or superseded stop control.
         from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
@@ -938,8 +965,15 @@ class TaskModelWait:
     def close(self) -> None:
         with self.lock:
             self.closed = True
-            if not self.answer_consumer_bound:
-                return
+            bound = self.answer_consumer_bound
+        from types import SimpleNamespace
+        from ouroboros.budget_pause import forget_tool_scope
+        # Native review scopes may never enter loop cleanup. Use THIS frozen
+        # owner even when close is called under a different current context.
+        forget_tool_scope(SimpleNamespace(drive_root=self.canonical_root, task_id=self.task_id),
+                          attempt=self.attempt)
+        if not bound:
+            return
         # Positive retirement of THIS consumer, not terminal task status, PID
         # absence or the pool's current assignment. Cash and remote custody stay.
         try:

@@ -701,6 +701,13 @@ def _clear_server_stop_flags_between_tests():
     import sys
 
     server_process = sys.modules.get("ouroboros.server_process")
+    preparation = sys.modules.get("supervisor.workspace_preparation")
+    if preparation is not None:
+        generation = preparation._CURRENT[0]
+        # A completed TestClient generation is not the next test's supervisor.
+        # In-flight work remains owned and visible to the thread-leak check.
+        if generation is not None and generation.closed() and generation.wait_idle(0):
+            preparation._reset_for_tests()
     if server_process is not None:
         server_process._supervisor_stop.clear()
         server_process._restart_requested.clear()
@@ -850,6 +857,17 @@ def _os_environ_isolation():
     class instead of policing each call site.
     """
     yield from restored_os_environ()
+
+
+@pytest.fixture(autouse=True)
+def _reset_executing_source_baseline_between_tests(monkeypatch):
+    """``preflight_receipts`` pins the executing source once per process: a ``server`` import or a
+    worker entry in one test would turn durable test receipts on for every later test of that
+    xdist worker, so pass counts would depend on test order. Each test starts with no baseline; a
+    test that wants durable receipts captures one itself."""
+    from ouroboros import preflight_receipts
+
+    monkeypatch.setattr(preflight_receipts, "_baseline", None)
 
 
 @pytest.fixture(autouse=True)

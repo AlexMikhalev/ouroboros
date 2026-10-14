@@ -124,7 +124,7 @@ def test_child_cache_isolates_query_roots_modes_and_failed_passes(tmp_path, monk
     from ouroboros import task_status
 
     calls = []
-    def select(root, parent, root_id, *, direct_only):
+    def select(root, parent, root_id, *, direct_only, queue_members=()):
         calls.append(root)
         return []
     monkeypatch.setattr(task_status, "select_lineage", select)

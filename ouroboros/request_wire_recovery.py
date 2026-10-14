@@ -2,6 +2,8 @@
 
 This leaf owns request-shape adaptation, never provider/model/API choice. Learnable
 actions stay pending until exact success; task-local degraded-rung repairs never persist.
+Learned actions apply only to the current step's fields and dialect; inapplicable
+actions are skipped whole, preserving other learned actions and reactive recovery.
 
 Actions are ``set_value``, ``drop_field`` and ``replace_dialect``, at most
 ``_MAX_COMPOSED_ACTIONS`` per call. A positive enum bound to the effort field needs no
@@ -453,7 +455,6 @@ def _prepare_durable_candidate(
         return None
     source = copy.deepcopy(dict(payload))
     applications: list[WireAppliedAction] = []
-    seen = set()
 
     metadata_fields = tuple(
         field for field in _WIRE_CALL_STATE.get().metadata_drop_fields
@@ -466,7 +467,6 @@ def _prepare_durable_candidate(
             "reason_code": "provider_metadata_constraint",
         })
         applications.append(WireAppliedAction.pending(metadata))
-        seen.add((metadata.profile.fingerprint, wire_action_identity(metadata.action)))
 
     for _ in range(_MAX_COMPOSED_ACTIONS - len(applications)):
         candidate = _bind_with_applications(
@@ -477,16 +477,10 @@ def _prepare_durable_candidate(
             applications=applications,
         )
         current = candidate.physical_payload()
-        addition = None
-        for profile, action in _records_for_step(
-            target, current, api_surface, requested,
-        ):
-            identity = (profile.fingerprint, wire_action_identity(action))
-            if identity in seen:
-                continue
-            addition = WireAppliedAction(profile, action, "durable")
-            seen.add(identity)
-            break
+        addition = _first_durable_action(
+            target, current, api_surface, requested, applications,
+            allow_dialect=True,
+        )
         if addition is None:
             return candidate
         applications.append(addition)

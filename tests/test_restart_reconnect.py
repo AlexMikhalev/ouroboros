@@ -551,21 +551,25 @@ def test_owner_restart_proceeds_when_worker_shutdown_fails(tmp_path, monkeypatch
 
 def test_ws_sha_reload_decision_is_single_sourced():
     """Both the post-open refresh and the recovery probe must route through the
-    one exported SHA decision helper (keep / reload_changed / reload_unknown).
+    one exported page decision (keep / reload_changed / reload_unknown /
+    reload_source), which applies the SHA decision exactly where the core owns
+    the page or predates the interface choice.
 
     The behavioral contract — same/changed/missing/empty/malformed SHA, the
-    first-ever connection, the probe-vs-open race bail, the healthy-probe fuse,
-    and outbound-queue survival — is executable in
-    web/tests/ws_recovery.test.js (node --test). These are wiring pins only.
+    first-ever connection, page ownership under old and new cores, the
+    probe-vs-open race bail, the healthy-probe fuse, signed-out handoff and
+    outbound-queue survival — is executable in web/tests/ws_recovery.test.js
+    (node --test). These are wiring pins only.
     """
     source = _read("web/modules/ws.js")
     assert "export function decide(" in source
+    assert "export function decideServedPage(" in source
     assert "RECOVERY_HEALTHY_PROBE_LIMIT = 4" in source
     recovery_body = source.split("_scheduleUiRecovery(reason, delay = 15000) {", 1)[1].split(
         "_startWatchdog(socket) {", 1
     )[0]
-    assert "_applyShaDecision(servedSha, this._wasConnected, false)" in recovery_body, (
-        "the recovery probe must consult the shared SHA decision WITHOUT "
+    assert "_applyServedDecision(served, this._wasConnected, false)" in recovery_body, (
+        "the recovery probe must consult the shared decision WITHOUT "
         "remembering the served SHA (a pre-connect probe adopting a restarted "
         "server's SHA would leave stale assets unhealed)"
     )
@@ -576,15 +580,19 @@ def test_ws_sha_reload_decision_is_single_sourced():
     refresh_body = source.split("\n    _refreshStateAfterOpen(", 1)[1].split(
         "_flushPendingMessages() {", 1
     )[0]
-    assert "_applyShaDecision(servedSha, previouslyConnected, true)" in refresh_body, (
-        "the post-open refresh must consult the shared SHA decision and is the "
+    assert "_applyServedDecision(served, previouslyConnected, true)" in refresh_body, (
+        "the post-open refresh must consult the shared decision and is the "
         "ONLY path that remembers the served SHA"
     )
     apply_body = source.split(
-        "_applyShaDecision(servedSha, previouslyConnected, storeServedSha) {", 1
-    )[1].split("_reloadForShaDecision(decision) {", 1)[0]
-    assert "decide(this._lastSha, servedSha, previouslyConnected)" in apply_body, (
-        "the shared applier must delegate to the exported SSOT decide()"
+        "_applyServedDecision(state, previouslyConnected, storeServedSha) {", 1
+    )[1].split("_reloadForDecision(decision) {", 1)[0]
+    assert "decideServedPage(this._lastSha, state, previouslyConnected, pageOwnedByCore())" in apply_body, (
+        "the shared applier must delegate to the exported decision"
+    )
+    page_body = source.split("export function decideServedPage(", 1)[1].split("\n}\n", 1)[0]
+    assert page_body.count("decide(prevSha,") == 2, (
+        "an old core and the core's own built-in page both keep the exact SSOT decide()"
     )
 
 

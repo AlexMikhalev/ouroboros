@@ -4,7 +4,7 @@ neutral plumbing imports bind their own owner."""
 
 from __future__ import annotations
 
-from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result, append_published_text
 
 import contextlib
 import hashlib
@@ -244,6 +244,14 @@ def _revalidation_outcome(ctx, commit_message, commit_start, before, after, *, w
     }
 
 
+def _publish_pending_review(ctx: ToolContext, message: str, custody_lost: bool) -> str:
+    """Both pending handbacks preserve custody facts beside their returned text."""
+    return _publish_tool_result(ctx, ToolResult(
+        status="unavailable" if custody_lost else "ok",
+        code="LEGACY_UNAVAILABLE" if custody_lost else "OK", text=message,
+        meta={"review_pending": True, "review_custody_lost": custody_lost}))
+
+
 def _finalize_pending_review(
     ctx: ToolContext,
     commit_message: str,
@@ -299,7 +307,7 @@ def _finalize_pending_review(
         return None
     # The index is part of this live wave's identity. Retain it for exact
     # reconciliation; rebuilding it from the worktree could review new bytes.
-    return message
+    return _publish_pending_review(ctx, message, custody_lost)
 
 
 def _finalize_blocked_review(
@@ -525,6 +533,7 @@ def _reset_commit_review_state(ctx):
     ctx._commit_review_status = "unknown"
     ctx._commit_preflight = None
     ctx._commit_review_panel = None
+    ctx._preflight_execution = None
 
 
 from ouroboros.tools.commit_gate import _return_commit_feedback, settle_commit_review_ledger  # noqa: E402
@@ -665,6 +674,8 @@ def _reviewed_stage_cycle(
         if "advisory_replay" in gate_outcome:
             advisory_replay = gate_outcome
         else:
+            gate_outcome["message"] = _publish_tool_result(ctx, ToolResult(
+                status="blocked", code="LEGACY_BLOCKED", text=gate_outcome["message"]))
             return gate_outcome
     binding_error = _git()._review_binding_precondition_error(
         pre_fingerprint, require_release_tag=require_release_tag
@@ -700,6 +711,8 @@ def _reviewed_stage_cycle(
     ctx._commit_review_evidence = (
         pending_commit_review_evidence(ctx) if getattr(ctx, "_review_reconcile_only", False)
         else capture_commit_review_evidence(ctx) if advisory_replay is None else {})
+    if getattr(ctx, "_review_reconcile_only", False):  # the seats' frozen exhibit, never this call's tests
+        ctx._preflight_execution = pending_commit_review_evidence(ctx, "preflight_execution") or {"status": "unobserved"}
     preflight_gate_outcome = None
     if not bool(getattr(ctx, "_review_reconcile_only", False)):
         preflight_gate_outcome = _git()._preflight_and_tests_gate(
@@ -783,7 +796,10 @@ def _reviewed_stage_cycle(
             pre_fingerprint=pre_fingerprint, post_fingerprint=post_fingerprint)):
         from ouroboros.config import get_review_enforcement
         if get_review_enforcement() == "advisory" and review_enforcement_blocks("blocking"):
-            return _return_commit_feedback(ctx, commit_message, commit_start, pre_fingerprint, post_fingerprint, pending=True)
+            feedback = _return_commit_feedback(ctx, commit_message, commit_start, pre_fingerprint, post_fingerprint, pending=True)
+            custody_lost = bool(getattr(ctx, "_review_custody_lost", False))
+            feedback["message"] = _publish_pending_review(ctx, feedback["message"], custody_lost)
+            return feedback
         return {
             "status": "blocked",
             "message": pending_message,
@@ -835,6 +851,9 @@ def _reviewed_stage_cycle(
             pre_fingerprint=pre_fingerprint, post_fingerprint=post_fingerprint,
             block_class=block_class,
         )
+        if block_reason == "owner_stopped":
+            blocked_message = _publish_tool_result(ctx, ToolResult(
+                status="blocked", code="LEGACY_BLOCKED", text=blocked_message))
         if block_reason == "critical_findings":
             blocked_message = _publish_review_blocked(ctx, blocked_message)
         return {
@@ -896,7 +915,8 @@ def _run_non_committing_review_cycle(
         )
         return {
             "status": "blocked",
-            "message": overlap_err,
+            "message": _publish_tool_result(ctx, ToolResult(
+                status="blocked", code="LEGACY_BLOCKED", text=overlap_err)),
             "block_reason": "overlap_guard",
         }
     try:
@@ -966,4 +986,4 @@ def _run_non_committing_review_cycle(
         _git()._release_git_lock(lock)
         if unstage_warning and 'outcome' in locals():
             message = str(outcome.get("message", "") or "")
-            outcome["message"] = f"{message}\n\n---\n{unstage_warning}" if message else unstage_warning
+            outcome["message"] = append_published_text(ctx, message, f"\n\n---\n{unstage_warning}") if message else unstage_warning

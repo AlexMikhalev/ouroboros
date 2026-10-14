@@ -148,7 +148,7 @@ def test_ouroboroshub_uses_shared_fetch_json():
 
 
 def test_onboarding_wizard_is_loaded_as_an_es_module():
-    """The wizard is served from /static as a real ES module.
+    """The wizard is served from /onboarding/static (the builtin tree) as a real ES module.
 
     It used to be inlined into a classic ``<script>`` inside a self-contained
     document, which is why it could never import ordinary ``web/modules/*``
@@ -157,7 +157,7 @@ def test_onboarding_wizard_is_loaded_as_an_es_module():
     against the SCRIPT url, not the document.
     """
     template = (REPO_ROOT / "web" / "onboarding_template.html").read_text(encoding="utf-8")
-    assert '<script type="module" src="/static/modules/onboarding_wizard.js"></script>' in template
+    assert '<script type="module" src="/onboarding/static/modules/onboarding_wizard.js"></script>' in template
 
     src = _read("onboarding_wizard.js")
     for specifier in re.findall(r"^\s*import\s.*?from\s+'([^']+)';", src, re.M):

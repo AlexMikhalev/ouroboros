@@ -261,6 +261,10 @@ def _unread_output_line(custody_root: Any, run: Any, task_id: str) -> str:
             "covered end to end, or say plainly that the result was not "
             "collected."
         )
+    if getattr(run, "terminal_source", None) and not run.unread_disclosed:
+        return (f"INFO: DELEGATED RESULT AVAILABLE — run {run.run_id or '?'} has retained full output at "
+                f"{address.get('path') or run.output_artifact}, not yet read by its owner. "
+                "Body collection proves availability, not acceptance. " + action)
     return (f"WARNING: DELEGATED RESULT NEVER READ — run {run.run_id or '?'} settled "
             f"with its full output staged at {address.get('path') or run.output_artifact} and never read to "
             f"EOF (owner task {run.task_id or '?'}). {action}")
@@ -276,7 +280,7 @@ def _own_run_outcome_lines(custody_root: Any, custody_state: Any, task_id: str,
 
     #1573: a run the sweep settled while its owner was parked (or that it never
     waited on) left no fact in the owner's context. From the ONE custody state the
-    other delegated-run checks already replayed: own (never a foreign or review-owned
+    other delegated-run checks already read: own (never a foreign or review-owned
     run), settled terminal, recorded by a writer that also records the terminal
     acknowledgement (``engine_locator`` is not None — before it, absence proved
     nothing), not acknowledged in THIS attempt, and not already a D7 line. Facts and
@@ -461,17 +465,24 @@ def build_health_invariants(env: Any, task_id: str = "", active_root: str = "",
     plan_note = _plan_review_note(env, task_id)
     if plan_note:
         checks.append(plan_note)
-    # Both delegated-run obligations below read the SAME rotated custody chain,
-    # so one traversal serves both instead of a full replay each (I18). A failed
-    # read leaves the state None and each block replays for itself exactly as
-    # before, under its own fail-soft arm.
+    # The three delegated-run blocks below share ONE custody read of the rows they
+    # can name (``health_runs``: own, held, maybe-unread), so a build decodes neither
+    # every settled run nor each block's own copy (I18); their predicates and order
+    # decide. A failed selection reads every row into the same state, because the
+    # own-run lines have no read of their own; only if that fails too does each
+    # remaining block replay for itself, under its own fail-soft arm.
     custody_root = None
     custody_state = None
     try:
         from ouroboros.delegate_custody import replay as replay_custody
+        from ouroboros.delegate_custody_current import health_runs
 
         custody_root = getattr(env, "drive_root", None) or env.drive_path("state").parent
-        custody_state = replay_custody(custody_root)
+        try:
+            custody_state = health_runs(custody_root, task_id)
+        except Exception:
+            log.debug("Selected custody read failed; reading every row", exc_info=True)
+            custody_state = replay_custody(custody_root)
     except Exception:
         custody_state = None
 

@@ -194,8 +194,16 @@ def spawn_supervised(
         popen_kwargs = merged
     from ouroboros.owner_pause import operation_start
 
-    with operation_start():
-        proc = subprocess.Popen(cmd, **popen_kwargs)  # noqa: S603 — callers pass vetted argv lists
+    from ouroboros.tool_custody import external_handoff
+    confirmed = external_handoff("supervised_process")
+    proc = None
+    try:
+        with operation_start():
+            proc = subprocess.Popen(cmd, **popen_kwargs)  # noqa: S603 — callers pass vetted argv lists
+    except BaseException:
+        if proc is None:
+            confirmed()
+        raise
     try:
         if on_spawn is not None:
             on_spawn(proc)
@@ -214,7 +222,10 @@ def spawn_supervised(
             proc.wait(timeout=5)
         except Exception:
             pass
+        if proc.poll() is not None:
+            confirmed()
         raise RuntimeError("spawned process could not enter durable custody") from exc
+    confirmed()
     return proc
 
 

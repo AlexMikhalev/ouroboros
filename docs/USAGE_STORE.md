@@ -71,8 +71,11 @@ network-bound runs inside it.
   matches it in its WHERE, and zero rows updated leaves the settlement
   authoritative.
 - `Txn.record_recovery` updates only custody metadata and the row revision; money
-  and late-receipt rights stay unchanged. Definitive terminal/gone observations
-  suppress HTTP probes; retained receipts still settle.
+  and late-receipt rights stay unchanged. The abandoned-usage duty selects (through
+  `Txn.attempts`) only open rows it can act on: no imported aggregate, review custody
+  or abandoned non-Claudexor row, and no abandoned row whose terminal/gone outcome is
+  recorded; such a row stays at unknown price and is not polled, while its ONE late
+  receipt stays open to an explicit writer.
 - `Txn.record_evidence` merges only physical-failure and opaque provider-binding
   evidence under a revision check. These additive `extra` fields require no
   column/index migration on an existing database. The original physical failure,
@@ -93,9 +96,9 @@ maintenance takes recovery candidates from the open-set index and projection
 candidates from `Txn.dirty_owners()`. After an addressed projection succeeds or
 is equal, `ack_dirty_owner(owner_id, revision)` removes only that revision; a
 new receipt, failure, missing result or live ownership keeps the debt. A
-missing result is one `stat` before the ownership read: its exact revision
-stays, so a result that lands after the last receipt (child copyback, a body
-restored from quarantine) is projected on a later pass without a new receipt.
+batched task-store query finds missing results before ownership reads. Their
+exact revisions stay, so a result landing after the last receipt (child
+copyback or quarantine restore) is projected later without a new receipt.
 
 ## 5. Lock tiers
 
@@ -288,10 +291,11 @@ restart in another process; that cross-process race remains.
 
 An exact price received before a later read, close, rejection or cancellation
 error settles money without proving
-that the response completed. The existing `stream_incomplete` fact keeps Main's
-unknown-response policy, Presence's configured bounded transport-death retry,
-revoked-control no-resend and diagnostic response outcomes independent of the
-monetary capture state. Timeout, local-route, Stop and deadline exclusions
+that the response completed. The existing `stream_incomplete` fact keeps running
+turns' shared unknown-response recovery (Presence included), revoked-control
+no-resend and diagnostic response outcomes independent of monetary capture state.
+The low-level opt-in transport-death repeat API and old records remain a
+compatibility surface, not production Presence policy. Timeout, local-route, Stop and deadline exclusions
 remain in their existing consumers. Diagnostic events carry `stream_incomplete`
 beside monetary custody state; typed terminal local rejection keeps its existing
 provider-error policy. Async first-generation binding runs in a joined worker;
@@ -315,6 +319,6 @@ operator's separate authorization; installation alone changes no old money.
   name lock is per host).
 - Result-only edits do not dirty money: ordinary receipts maintain projection debt;
   a result-only accounting repair belongs to explicit repair/import.
-- An owner whose result never appears stays in `dirty_owners` and costs one
-  `stat` per maintenance pass; absence is never acknowledged, so only a
-  projection (or that explicit repair) retires it.
+- An owner whose result never appears stays in `dirty_owners` and is re-checked
+  by the pass's one batched presence query; absence is never acknowledged, so only
+  a projection (or that explicit repair) retires it.

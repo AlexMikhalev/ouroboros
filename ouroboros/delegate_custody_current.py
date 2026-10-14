@@ -49,8 +49,19 @@ def _decode(raw):
     return entry
 
 
+def collection_pending(entry) -> bool:
+    """Applicable technical duties on an observed terminal, independent of money or disposition alone."""
+    if entry is None:
+        return False
+    capture = bool(entry.execution_root or entry.resource_ref.get("workspace_kind") == "directory")
+    return bool(entry.terminal_source and (not entry.ledger_recorded or not entry.settled
+        or not entry.output_source or not entry.output_complete
+        or entry.output_terminal_sha != entry.terminal_source.get("sha256")
+        or (capture and not entry.patch_captured and not entry.patch_disposed and not entry.superseded_by)))
+
+
 def _held(entry) -> bool:
-    return (not entry.settled or entry.project_owned
+    return (not entry.settled or entry.project_owned or collection_pending(entry)
             or ((entry.snapshot_id or (entry.resource_ref.get("workspace_kind") == "directory"
                                       and entry.resource_ref.get("strategy") == "copy"))
                 and not entry.patch_disposed))
@@ -60,11 +71,41 @@ def _decode_all(rows: Dict[str, Dict[str, Any]]):
     return {rid: _decode(facts) for rid, facts in rows.items()}
 
 
+# Keep this superset in sync with delegate_custody.settled_output_unread/undisposed_patches,
+# _held here, and tools.delegate_integration._payload_delegation_busy; Python decides eligibility.
+# ``machine_json`` writes NaN/Infinity, which Python reads but ``json_valid`` rejects (and newer
+# SQLite reads NaN as NULL). Non-ordinary JSON passes, including invalid JSON's decode error.
+# Valid JSON with malformed field shapes outside the selection is not globally validated here,
+# nor are duplicate keys (SQLite reads the first, Python the last; writers store dicts).
+# ``_MAYBE_UNREAD`` drops only a falsy ``output_complete`` (absent, null, false, numeric zero) or
+# an ``output_consumed`` of true/numeric one; ``_MAY_HOLD_PAYLOAD`` drops only a payload run whose
+# ``settled`` is true/numeric one AND whose ``patch_disposed`` is a non-empty string. Any other
+# value (text, arrays, 2, ...) passes and Python decides. An absent field reads as its ``_decode``
+# default, so every JSON term is coalesced: a SQL NULL would drop the row, not let Python decide.
+_MAYBE_UNREAD = ("CASE WHEN json_valid(facts) THEN (COALESCE(json_extract(facts, '$.output_complete'), 0)<>0 "
+                 "AND COALESCE(json_extract(facts, '$.output_consumed'), 0)<>1) ELSE 1 END")
+_MAY_HOLD_PAYLOAD = ("CASE WHEN json_valid(facts) THEN "
+                     "(COALESCE(json_extract(facts, '$.authority_source'), '')='skill_payload' "
+                     "AND NOT (COALESCE(json_extract(facts, '$.settled'), 0)=1 "
+                     "AND COALESCE(json_type(facts, '$.patch_disposed'), '')='text' "
+                     "AND COALESCE(json_extract(facts, '$.patch_disposed'), '')<>'')) ELSE 1 END")
+
 
 def runs(root, where: str = "", params: tuple = ()):
     """Custody selected by typed columns (all runs when unfiltered)."""
     with store.open_store(root, write=False) as txn:
-        return _decode_all(txn.custody_rows(where, params))
+        raw = txn.custody_raw_rows(where, params)
+    return _decode_all({rid: json_loads(text) for rid, text in raw.items()})
+
+
+def health_runs(root, task_id: str = ""):
+    """The rows the context's delegated-run lines can name, in ONE read and ``run_id`` order:
+    the reader's own runs, every held run (an undisposed patch is held) and every run whose
+    output may be unread. A superset: the callers' own predicates decide, as over ``runs``."""
+    where, params = f"state=? OR {_MAYBE_UNREAD}", (HELD,)
+    if task_id:
+        where, params = f"task_id=? OR {where}", (str(task_id), HELD)
+    return runs(root, where, params)
 
 
 def run(root, run_id: str):
@@ -138,9 +179,23 @@ def task_snapshot(root, task_id: str):
 
     mine = str(task_id or "")
     with store.open_store(root, write=False) as txn:
-        runs_by_id, requests = txn.custody_rows("task_id=?", (mine,)), _pending_rows(txn)
+        raw, requests = txn.custody_raw_rows("task_id=?", (mine,)), _pending_rows(txn)
+    runs_by_id = {rid: json_loads(text) for rid, text in raw.items()}
     requests = [row for row in requests if str(row.get("task_id") or "") == mine]
     return {"runs": _decode_all(runs_by_id), "pending": pending_invocations(root, rows=requests)}
+
+
+def payload_snapshot(root):
+    """ONE transaction's view of who may hold a skill payload: the payload runs not surely
+    settled and disposed, and every pending invocation (a holder whose REQUESTED becomes
+    STARTED between two reads would be in neither). Target, owner and terminality checks
+    belong to the caller, after this transaction closes."""
+    from ouroboros.delegate_pending import pending_invocations
+
+    with store.open_store(root, write=False) as txn:
+        raw, requests = txn.custody_raw_rows(_MAY_HOLD_PAYLOAD), _pending_rows(txn)
+    held = {rid: json_loads(text) for rid, text in raw.items()}
+    return {"runs": _decode_all(held), "pending": pending_invocations(root, rows=requests)}
 
 
 def invocation(root, invocation_id: str, request_facts: Callable) -> Optional[Dict[str, Any]]:
@@ -236,7 +291,8 @@ def _reduce(txn, event: Dict[str, Any], state: Dict[str, Any], marks_by_task: Di
     if tid and (kind in MARK_TYPES or (not rid and kind in (_NUDGE, *_ATTEMPTS))):
         mark = marks_by_task.setdefault(tid, txn.get_row("custody_marks", tid) or {"task_id": tid})
         _mark(mark, event)
-        txn.put_row("custody_marks", tid, mark)
+        if set(mark) - {"task_id"}:  # a review-owned attempt marks nothing: no empty record row
+            txn.put_row("custody_marks", tid, mark)
     return owed
 
 
@@ -281,7 +337,7 @@ def _loaded(txn, event: Dict[str, Any]) -> Dict[str, Any]:
     return state
 
 
-def publish(root, event: Dict[str, Any]) -> bool:
+def publish(root, event: Dict[str, Any], *, propagate_contention: bool = False) -> bool:
     """Returns whether custody + outbox COMMITTED; append failure does not undo custody.
     A failed append keeps the outbox for the next flush, so the chain never leads the store.
     Transaction/append ordering: module docstring."""
@@ -290,6 +346,10 @@ def publish(root, event: Dict[str, Any]) -> bool:
             owed = _reduce(txn, event, _loaded(txn, event), {})
             txn.outbox_put(event)
     except store.StoreError as exc:
+        if (propagate_contention and isinstance(exc, store.StoreBusy) and exc.reason == "contention"
+                and getattr(exc, "rollback_confirmed", None) is not False):
+            exc.custody_not_committed = True  # Only this pre-COMMIT boundary grants retry.
+            raise
         log.warning("Custody %s not recorded under %s (%s)", event.get("type"), root, type(exc).__name__)
         return False
     flush_outbox(root)
@@ -402,7 +462,7 @@ def fold(rows) -> Dict[str, Any]:
         "runs": {rid: (vars(entry), HELD if _held(entry) else CLOSED) for rid, entry in state.items()},
         "open": {f"invocation:{iid}": {"request": requests[iid]} for iid in pending_ids},
         "refused": refused,
-        "marks": marks_by_task,
+        "marks": {tid: mark for tid, mark in marks_by_task.items() if set(mark) - {"task_id"}},
     }
 
 

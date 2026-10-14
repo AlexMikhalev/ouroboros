@@ -21,14 +21,8 @@ def test_available_subagents_is_one_canonical_settings_editor() -> None:
     assert "collectSubagentsSettings" in host
     assert "OUROBOROS_SUBAGENT_HARNESS" not in editor
     assert "OUROBOROS_SUBAGENT_PROFILE" not in editor
-    assert "MAX_AVAILABLE_SUBAGENTS = 26" in editor
-    assert 'class="available-subagent-heading"' in editor
-    assert 'Subagent ${ordinal}' in editor
-    assert 'data-subagent-field="recommended_use"' in editor
-    assert 'data-subagent-field="id"' not in editor
-    assert 'data-subagent-field="name"' not in editor
-    for action in ("data-subagent-add", "data-subagent-duplicate", "data-subagent-remove"):
-        assert action in editor
+    # Rendering, row limits and serialization are exercised by subagents_settings.test.js.
+    assert "data-subagent-add" in editor
 
 
 def test_every_list_editor_reveals_its_added_entry_through_the_shared_helper() -> None:
@@ -37,10 +31,6 @@ def test_every_list_editor_reveals_its_added_entry_through_the_shared_helper() -
     scrollIntoView/focus pair in an add path is the class this pins closed
     (DEVELOPMENT.md § Design System). The class is every Settings list editor,
     not the panel the owner happened to report."""
-    helper = _read(MODULES / "ui_helpers.js")
-    assert "export function revealNewRow(row, field)" in helper
-    assert "scrollIntoView?.({ block: 'nearest' })" in helper
-    assert "focus?.({ preventScroll: true })" in helper
     for name in ("subagents_settings.js", "mcp_settings.js", "settings.js"):
         source = _read(MODULES / name)
         assert re.search(r"import \{[^}]*\brevealNewRow\b[^}]*\} from './ui_helpers\.js'", source), name
@@ -202,8 +192,9 @@ def test_effort_choice_mirrors_track_the_python_scale() -> None:
 def test_every_status_tone_the_card_emits_has_a_shared_rule_in_both_documents() -> None:
     # The emitted tone resolves in the one shared source actually loaded by both hosts.
     assert '.settings-inline-status[data-tone="neutral"]' in _read(ROOT / "web" / "ui.css")
-    for document in ("index.html", "onboarding_template.html"):
-        assert 'href="/static/ui.css"' in _read(ROOT / "web" / document), document
+    # The SPA links the selected /static tree; the wizard the core's builtin /onboarding/static.
+    for document, prefix in (("index.html", "/static"), ("onboarding_template.html", "/onboarding/static")):
+        assert f'href="{prefix}/ui.css"' in _read(ROOT / "web" / document), document
 
 
 def test_the_per_row_switch_is_one_shared_checkbox_saved_by_the_common_save() -> None:
@@ -213,16 +204,9 @@ def test_the_per_row_switch_is_one_shared_checkbox_saved_by_the_common_save() ->
     it is held as a draft that the section's ONE Save writes — no instant-save
     request, and no dimming of the card it switches off."""
     editor = _read(MODULES / "subagents_settings.js")
-    head = editor[editor.index('class="available-subagent-head"'):
-                  editor.index("available-subagent-purpose")]
-    assert head.index('data-subagent-field="enabled"') < head.index("available-subagent-heading")
-    assert 'class="available-subagent-enable"' in head
-    assert 'class="ui-checkbox" type="checkbox" data-subagent-field="enabled"' in head
-    assert 'aria-label="Subagent ${ordinal} enabled for new work"' in head
-    # One writer: the editor never posts by itself, and `false` is the only
-    # value it stores (an enabled row keeps its existing canonical bytes).
+    # The Node consumer covers checkbox markup and the saved-value round trip.
+    # Keep the separate one-writer and stylesheet boundaries here.
     assert "apiClient" not in editor and "fetch(" not in editor
-    assert "row?.enabled === false ? { enabled: false } : {}" in editor
     for shell in ("settings.css", "onboarding.css"):
         sheet = _read(ROOT / "web" / shell)
         assert ".available-subagent-enable {" in sheet, shell

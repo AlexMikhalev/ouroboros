@@ -182,10 +182,14 @@ def hung_editor(tmp_path, monkeypatch):
         assert (tmp_path / "inside").exists()
         time.sleep(0.3)  # several soft timeouts later the loop still joins the writer
         assert child.is_alive() and not (tmp_path / "returned").exists()
-        claim_id, claim = next(iter(load_task_result(tmp_path, "root")["launch_handoffs"].items()))
-        assert claim["tool"] == "edit_text" and claim["local_owner"]["pid"] == child.pid
+        from ouroboros.tool_call_log import replay_evidence
+        evidence = replay_evidence(tmp_path, "root")
+        [started] = [fact for fact in evidence["observations"] if fact["fact"] == "started"]
+        assert started["tool"] == "edit_text" and started["status"] == "unknown"
+        assert not load_task_result(tmp_path, "root").get("launch_handoffs")
+        assert workers.RUNNING["root"]["worker_id"] == slot.wid
         yield type("HungEditor", (), {"root": tmp_path, "queue": queue, "workers": workers, "child": child,
-                                      "slot": slot, "claim_id": claim_id, "target": target})
+                                      "slot": slot, "call_key": started["key"], "target": target})
     finally:
         if child.is_alive():
             child.kill()
@@ -193,13 +197,15 @@ def hung_editor(tmp_path, monkeypatch):
         child.close()
 
 
-def _assert_unknown_and_never_replayed(root, claim_id):
+def _assert_unknown_and_never_replayed(root, call_key):
     from ouroboros.task_results import load_task_result
+    from ouroboros.tool_call_log import replay_evidence
 
     row = load_task_result(root, "root")
-    assert not row["launch_handoffs"], row
-    retired = row["retired_tool_invocations"][claim_id]
-    assert retired["effect_outcome"] == "unknown" and retired["replay_authorized"] is False
+    assert not row.get("launch_handoffs"), row
+    facts = [fact for fact in replay_evidence(root, "root")["observations"] if fact["key"] == call_key]
+    assert [(fact["fact"], fact["status"]) for fact in facts] == [("started", "unknown")]
+    assert not (root / "returned").exists() and not row.get("retry_task_id")
     return row
 
 
@@ -214,11 +220,10 @@ def test_stop_now_ends_a_hung_editor_only_by_confirmed_death(hung_editor, monkey
     h.child.join(10)
     assert not h.child.is_alive() and not (h.root / "returned").exists()
     assert h.target.read_text() == "before\n"
-    _assert_unknown_and_never_replayed(h.root, h.claim_id)
+    _assert_unknown_and_never_replayed(h.root, h.call_key)
 
 
 def test_deadline_rail_reaps_a_hung_editor_without_false_completion(hung_editor, monkeypatch):
-    from ouroboros.task_results import load_task_result
     from supervisor import task_reaper
 
     h = hung_editor
@@ -238,7 +243,8 @@ def test_deadline_rail_reaps_a_hung_editor_without_false_completion(hung_editor,
     h.queue.enforce_task_timeouts()  # first tick: the real rail only arms finalization
     assert "root" in h.queue.RUNNING and meta.get("finalization_requested_at") and jobs.empty()
     time.sleep(0.2)  # the joined loop cannot read that control; the writer stays owned
-    assert h.child.is_alive() and load_task_result(h.root, "root")["launch_handoffs"]
+    assert h.child.is_alive() and h.slot.busy_task_id == "root"
+    assert "root" in h.queue.RUNNING and not (h.root / "returned").exists()
     # Elapse the unchanged grace by back-dating the armed episode (no grace tightening).
     meta["finalization_requested_at"] -= h.queue.FINALIZATION_GRACE_SEC + 1
     h.queue.enforce_task_timeouts()
@@ -248,7 +254,7 @@ def test_deadline_rail_reaps_a_hung_editor_without_false_completion(hung_editor,
     h.child.join(10)
     assert not h.child.is_alive() and not (h.root / "returned").exists()
     assert h.target.read_text() == "before\n"
-    row = _assert_unknown_and_never_replayed(h.root, h.claim_id)
+    row = _assert_unknown_and_never_replayed(h.root, h.call_key)
     assert row["status"] == "failed" and row["reason_code"] == job["terminal_reason"], row
 
 
@@ -259,7 +265,6 @@ def test_panic_does_not_wait_for_a_hung_editor_and_completes_nothing(hung_editor
 
     from ouroboros import claudexor_daemon, extension_companion, local_model, server_control, startup_historical_audit
     from ouroboros import platform_layer as platform
-    from ouroboros.task_results import load_task_result
 
     h = hung_editor
     # Panic latches process-wide owners; `owners` restores the command/executor/service
@@ -299,9 +304,10 @@ def test_panic_does_not_wait_for_a_hung_editor_and_completes_nothing(hung_editor
     h.child.join(10)
     assert not h.child.is_alive() and not (h.root / "returned").exists()
     assert h.target.read_text() == "before\n"
-    row = load_task_result(h.root, "root")
-    # Panic writes no terminal state: the claim stays unresolved custody for the next boot.
-    assert row["status"] == "running" and h.claim_id in row["launch_handoffs"], row
+    row = _assert_unknown_and_never_replayed(h.root, h.call_key)
+    # Panic writes no terminal state; the real call log remains an unknown,
+    # never a fabricated success or an automatic replay on the next boot.
+    assert row["status"] == "running", row
     assert ports == []  # Panic sweeps no port: the exiting server's own listeners close with it
     assert isolated._panic_requested  # the companion phase ran, against the test-only owner
     assert extension_companion._GLOBAL_SUPERVISOR is earlier and not earlier._panic_requested

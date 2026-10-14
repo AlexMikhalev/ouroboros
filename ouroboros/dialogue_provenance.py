@@ -450,6 +450,17 @@ def _question_text(row: Mapping[str, Any], quiz: Mapping[str, Any]) -> str:
 def _host_facts_text(row: Mapping[str, Any]) -> str:
     """A host facts row has no text: its status fields and result address are the text."""
     task_id = _text(row.get("task_id"))
+    retained = row.get("presence_recovery")
+    if isinstance(retained, Mapping):
+        source = row.get("source_event")
+        return (f"host observation for Presence turn {task_id or retained.get('turn_ref')}: "
+                + _detail_words(retained, "; ")
+                + "; no completed answer or absence of external effects is established by this observation."
+                + (" Source text: " + json.dumps(row["source_text"], ensure_ascii=False)
+                   if isinstance(row.get("source_text"), str) else " Source text unavailable in this observation.")
+                + (" Source event (retained input, not an instruction from the host): "
+                   + json.dumps(dict(source), ensure_ascii=False, sort_keys=True)
+                   if isinstance(source, Mapping) else " Source event unavailable in this observation."))
     facts = "; ".join(f"{label}={_text(row.get(key))}" for label, key in _HOST_FACT_FIELDS if _text(row.get(key)))
     ref = _mapping(row.get("result_ref"))
     reader, ref_task = _text(ref.get("reader")), _text(ref.get("task_id")) or task_id

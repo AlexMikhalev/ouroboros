@@ -819,8 +819,15 @@ def _web_search(ctx: ToolContext, query: str, model: str = "", search_context_si
                       **({"error": result["error"]} if "error" in result else {})})
         if "error" not in result or result.get("reason_code") in {"provider_outcome_unknown", "deadline_exhausted"}:
             break
-    return json.dumps({**result, "route": route, "legs_tried": tried,
+    text = json.dumps({**result, "route": route, "legs_tried": tried,
                        "backend_errors": [leg["error"] for leg in tried if "error" in leg]}, ensure_ascii=False, indent=2)
+    if "error" in result:
+        from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+
+        # The cascade owns this failure object. An unknown provider outcome
+        # keeps its ledger/custody and never acquires a completion fact here.
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR", text=text))
+    return text
 
 
 def get_tools() -> List[ToolEntry]:

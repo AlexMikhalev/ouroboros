@@ -14,10 +14,10 @@ import os
 import pathlib
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import partial
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from ouroboros import budget_pause
+from ouroboros.tool_custody import submit_tool_future
 from ouroboros.config import (
     NESTED_SETTLEMENT_MARGIN_SEC,
     get_finalization_grace_sec,
@@ -124,6 +124,15 @@ def _settle_host_error(tools, drive_logs, live, invocation, outcome):
             "result_preview": f"{type(exc).__name__}: {sanitize_tool_result_for_log(str(exc))[:500]}",
             **start_log_field(invocation),
         })
+
+
+def _settling_tool_worker(function, tools, drive_logs, live, invocation, *args):
+    """All producer effects, including exceptional settlement, precede Future completion."""
+    try:
+        return function(*args)
+    except BaseException as exc:
+        _settle_host_error(tools, drive_logs, live, invocation, exc)
+        raise
 
 
 def _attach_late_tool_settlement(
@@ -469,6 +478,8 @@ def _typed_result_metadata(
                     tool_result_meta=dict(tool_result.meta))
         if tool_result.meta.get("artifact_registered") is True:
             meta["artifact_registered"] = True
+        if isinstance(tool_result.meta.get("verification"), dict):  # the criterion verdict beside this status (#1585)
+            meta["verification"] = dict(tool_result.meta["verification"])
     # Legacy non-process deliverable fallback reads the FULL result before trace
     # truncation. Process producers must supply the typed fact below.
     if (
@@ -511,11 +522,8 @@ def _typed_result_metadata(
         # undeclared outputs) keeps that code; only an otherwise-plain success is
         # relabelled, which is what the retired text scan did for every shape.
         meta["status"] = "ok_autocorrected"
-    if fn_name == "run_command" and not is_error and meta.get("exit_code") == 0:
-        if meta["status"] == "ok_autocorrected":
-            meta["status"] = "ok_autocorrected"
-        else:
-            meta["status"] = "ok"
+    if fn_name == "run_command" and not is_error and meta.get("exit_code") == 0 and meta["status"] != "ok_autocorrected":
+        meta["status"] = "ok"
     if fn_name == "submit_skill_to_hub":
         from ouroboros.skill_publish_result import extract_skill_publish_result_metadata
 
@@ -952,6 +960,7 @@ def _emit_finished(tools: ToolRegistry, live: Dict[str, Any], result: Dict[str, 
         "is_error": bool(result.get("is_error")),
         "status": result_meta.get("status"),
         **_process_fact_fields(result_meta),
+        **({"verification": result_meta["verification"]} if "verification" in result_meta else {}),
         "result_preview": sanitize_tool_result_for_log(truncate_for_log(result.get("result", ""), 500)),
         **extra,
     })
@@ -1007,17 +1016,36 @@ def _execute_with_timeout(
     live.update(start_log_field(invocation))  # the live frames (and the wait-end row built on them) disclose it
     _emit_live_log(tools, live)
     try:
-        if use_stateful:
-            return _await_stateful_tool(tools, tc, drive_logs, timeout_sec, task_id, stateful_executor,
-                                        invocation, live, started_at)
-        with abandoned_on_timeout(timeout_sec, bounded=not is_reviewed_mutative) as submit:
-            future = submit(_execute_single_tool, tools, tc, drive_logs, task_id, invocation)
-            # Registered before the wait, so a call abandoned at its timeout is
-            # already visible to budget-pause quiescence (#1196); ownership is
-            # pinned until the finally below, after any late hold was claimed.
-            invocation["_worker_submitted"] = True
-            future.add_done_callback(partial(_settle_host_error, tools, drive_logs, live, invocation))
-            release_tool_custody = budget_pause.register_tool_future(tool_ctx, invocation["invocation_id"], fn_name, future)
+        with contextlib.ExitStack() as scope:
+            function, arguments = _execute_single_tool, (tools, tc, drive_logs, task_id, invocation)
+            if use_stateful:
+                from ouroboros.owner_pause import submit_tool
+                # Capture the generation in the submitting thread. A timed-out
+                # queued call must never enter its successor's browser state.
+                generation = getattr(tool_ctx, "browser_state", None)
+                function, arguments = _execute_browser_tool_bound, (tools, tc, drive_logs, task_id, generation, invocation)
+                def submit(fn, *values):
+                    # The invocation has captured its caller context before this
+                    # per-tool envelope is added to the sticky worker's copy.
+                    with execution_deadline_scope(monotonic_now() + timeout_sec):
+                        return submit_tool(tool_ctx, fn_name, stateful_executor.submit, fn, *values)
+            else:
+                submit = scope.enter_context(abandoned_on_timeout(timeout_sec, bounded=not is_reviewed_mutative))
+            from ouroboros.owner_pause import OwnerPauseRefused
+            try:
+                future, release_tool_custody = submit_tool_future(
+                    tool_ctx, invocation["invocation_id"], fn_name, submit, _settling_tool_worker,
+                    function, tools, drive_logs, live, invocation, *arguments)
+            except OwnerPauseRefused as exc:
+                if not use_stateful:
+                    raise
+                from ouroboros.tools.tool_result import launch_refusal_result
+                result = _execute_single_tool(tools, tc, drive_logs, task_id, invocation,
+                                              host_refusal=launch_refusal_result(str(exc)))
+                return _emit_finished(tools, live, result, started_at)
+            # Registration pins the caller through the wait and any late-hold
+            # claim. The exact submitted future also identifies no-entry cancellation.
+            invocation["_worker_future"] = future
             try:
                 result = future.result() if is_reviewed_mutative else future_result(future, timeout_sec)
                 return _emit_finished(tools, live, result, started_at)
@@ -1032,107 +1060,72 @@ def _execute_with_timeout(
                     # Foreground mutators own effects that cannot safely be
                     # abandoned in a background thread.
                     return _emit_finished(tools, live, future.result(), started_at, late=True, terminal_wait=True)
+                target, cleanup = (_retire_stateful_tool(stateful_executor, tool_ctx, future)
+                                   if use_stateful else (future, None))
+                def settled():
+                    _settle_host_error(tools, drive_logs, live, invocation, future)
+                    if cleanup is not None:
+                        cleanup()
                 _attach_late_tool_settlement(
-                    tools, future, task_id=task_id, tool_call_id=tool_call_id,
-                    correlation={**correlation, **invocation_fields(invocation), "tool": fn_name},
-                )
+                    tools, target, task_id=task_id, tool_call_id=tool_call_id,
+                    correlation={**correlation, **invocation_fields(invocation), "tool": fn_name}, on_settled=settled)
+                if use_stateful:
+                    # Retire, do not cancel: the queued cleanup still belongs to this worker.
+                    stateful_executor.retire()
                 return _make_timeout_result(
                     fn_name, tool_call_id, is_code_tool, tc, drive_logs, timeout_sec, task_id,
-                    correlation=correlation, tools=tools, invocation=invocation,
+                    "Browser state has been reset. " if use_stateful else "", correlation=correlation,
+                    tools=tools, invocation=invocation,
                     live={**live, "duration_sec": round(time.perf_counter() - started_at, 3)})
             finally:
                 release_tool_custody()
     except (TimeoutError, concurrent.futures.TimeoutError):
         raise
     except BaseException as exc:
-        # A submission failure or a body that raised before its own row (e.g. the
-        # accounting stop) still settles the started call, then propagates unchanged.
-        # A failure AFTER the real settlement (a live emit, the custody release, an
-        # interrupt) writes no second settlement: the call already has its result.
-        if not invocation.get("_worker_submitted"):
-            _settle_host_error(tools, drive_logs, live, invocation, exc)
+        # Submission/no-entry cancellation has no producer to settle it. A live
+        # worker retains its result even when wait-end/release bookkeeping fails;
+        # a failure after real settlement cannot write a second settlement.
+        worker = invocation.get("_worker_future")
+        if worker is None or worker.cancelled():
+            _settle_host_error(tools, drive_logs, live, invocation, exc if worker is None else worker)
         raise
 
 
-def _await_stateful_tool(tools: ToolRegistry, tc: Dict[str, Any], drive_logs: pathlib.Path, timeout_sec: int,
-                         task_id: str, stateful_executor: StatefulToolExecutor, invocation: Dict[str, Any],
-                         live: Dict[str, Any], started_at: float) -> Dict[str, Any]:
-    """The browser branch of ``_execute_with_timeout``: bound to one generation."""
-    fn_name = str(live.get("tool") or "")
-    tool_call_id = tc["id"]
-    tool_ctx = getattr(tools, "_ctx", None)
-    correlation = {key: invocation[key] for key in ("execution_id", "round_id", "llm_call_id") if key in invocation}
-    # The generation this call is bound to, captured by the SUBMITTING
-    # thread: if the call's own timeout retires it before the worker even
-    # reaches the tool body, the wrapper refuses instead of letting the
-    # abandoned call build a session in the NEXT command's state.
-    submit_generation = getattr(tool_ctx, "browser_state", None)
-    from ouroboros.owner_pause import OwnerPauseRefused, submit_tool
-    try:
-        with execution_deadline_scope(monotonic_now() + timeout_sec):
-            future = submit_tool(tool_ctx, fn_name, stateful_executor.submit,
-                _execute_browser_tool_bound, tools, tc, drive_logs, task_id, submit_generation, invocation)
-    except OwnerPauseRefused as exc:
-        from ouroboros.tools.tool_result import launch_refusal_result
-
-        result = _execute_single_tool(tools, tc, drive_logs, task_id, invocation,
-                                      host_refusal=launch_refusal_result(str(exc)))
-        return _emit_finished(tools, live, result, started_at)
-    # The registration PINS settlement ownership until this call's own
-    # handling is over (result in time, or the late hold claimed below):
-    # released in the finally, after either branch (#1196).
-    invocation["_worker_submitted"] = True
-    future.add_done_callback(partial(_settle_host_error, tools, drive_logs, live, invocation))
-    release_tool_custody = budget_pause.register_tool_future(tool_ctx, invocation["invocation_id"], fn_name, future)
-    try:
-        return _emit_finished(tools, live, future_result(future, timeout_sec), started_at)
-    except (TimeoutError, concurrent.futures.TimeoutError):
-        settlement_target = future
-        on_settled: Optional[Callable[[], None]] = None
-        if tool_ctx is not None:  # stateful branch: use_stateful is already true here
-            from ouroboros.tools.browser import (
-                _detach_browser,
-                cleanup_browser_handles,
-            )
-
-            # CROSS-THREAD INVARIANT (#409): Playwright objects are bound
-            # to the worker thread that created them. This main-thread
-            # path may only DETACH (retire) the generation — never call
-            # close()/stop() here (a cross-thread stop() kills the driver
-            # under the hung worker and turns its dispatcher wait into a
-            # CPU busy-loop). The close is QUEUED on the retiring
-            # executor behind the hung call, so it runs on the owning
-            # worker thread whenever that call settles — including the
-            # already-settled race, where the queued task runs at once on
-            # that same thread (a done-callback would have run HERE, on
-            # the main thread, exactly the cross-thread close this path
-            # exists to prevent).
-            retired_generation, _fresh = _detach_browser(tool_ctx)
-            try:
-                settlement_target = stateful_executor.submit(
-                    cleanup_browser_handles, retired_generation,
-                )
-            except Exception:
-                # Degenerate fallback (executor already dead): settle on
-                # the tool future and close best-effort in its callback.
-                log.debug("cleanup submit failed; falling back to done-callback",
-                          exc_info=True)
-                settlement_target = future
-                on_settled = lambda: cleanup_browser_handles(retired_generation)  # noqa: E731
-        _attach_late_tool_settlement(
-            tools, settlement_target, task_id=task_id, tool_call_id=tool_call_id,
-            correlation={**correlation, **invocation_fields(invocation), "tool": fn_name},
-            on_settled=on_settled,
+def _retire_stateful_tool(stateful_executor, tool_ctx, future):
+    """Queue browser cleanup on its owning worker; return its physical settlement target."""
+    settlement_target = future
+    on_settled: Optional[Callable[[], None]] = None
+    if tool_ctx is not None:  # stateful branch: use_stateful is already true here
+        from ouroboros.tools.browser import (
+            _detach_browser,
+            cleanup_browser_handles,
         )
-        # retire(), not reset(): cancel_futures would cancel exactly the
-        # queued cleanup task this path just submitted.
-        stateful_executor.retire()
-        return _make_timeout_result(
-            fn_name, tool_call_id, fn_name in tools.CODE_TOOLS, tc, drive_logs, timeout_sec, task_id,
-            "Browser state has been reset. ", correlation=correlation, tools=tools, invocation=invocation,
-            live={**live, "duration_sec": round(time.perf_counter() - started_at, 3)})
-    finally:
-        release_tool_custody()
+
+        # CROSS-THREAD INVARIANT (#409): Playwright objects are bound
+        # to the worker thread that created them. This main-thread
+        # path may only DETACH (retire) the generation — never call
+        # close()/stop() here (a cross-thread stop() kills the driver
+        # under the hung worker and turns its dispatcher wait into a
+        # CPU busy-loop). The close is QUEUED on the retiring
+        # executor behind the hung call, so it runs on the owning
+        # worker thread whenever that call settles — including the
+        # already-settled race, where the queued task runs at once on
+        # that same thread (a done-callback would have run HERE, on
+        # the main thread, exactly the cross-thread close this path
+        # exists to prevent).
+        retired_generation, _fresh = _detach_browser(tool_ctx)
+        try:
+            settlement_target = stateful_executor.submit(
+                cleanup_browser_handles, retired_generation,
+            )
+        except Exception:
+            # Degenerate fallback (executor already dead): settle on
+            # the tool future and close best-effort in its callback.
+            log.debug("cleanup submit failed; falling back to done-callback",
+                      exc_info=True)
+            settlement_target = future
+            on_settled = lambda: cleanup_browser_handles(retired_generation)  # noqa: E731
+    return settlement_target, on_settled
 
 
 _PARALLEL_SAFE_TOOLS: frozenset[str] = READ_ONLY_PARALLEL_TOOLS | PARALLEL_SAFE_ENQUEUE_TOOLS

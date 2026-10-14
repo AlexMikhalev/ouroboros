@@ -356,7 +356,7 @@ def test_manual_switch_updates_only_waiting_role_and_continues_current_main_call
 def test_main_control_interrupt_is_typed_no_retry_and_keeps_operation_custody(main_call, monkeypatch):
     ctx, gateway, controller, _events, _decide, _observations = main_call
     gateway.pending = True
-    monkeypatch.setattr(controller, "control_reason", lambda: "cancelled" if gateway.accepted_operations else None)
+    monkeypatch.setattr(controller, "control_reason", lambda **_kw: "cancelled" if gateway.accepted_operations else None)
     with pytest.raises(model_wait.ModelWaitInterrupted) as raised:
         _dispatch(ctx)
     error = raised.value
@@ -369,7 +369,7 @@ def test_main_control_interrupt_is_typed_no_retry_and_keeps_operation_custody(ma
 
 def test_cancel_after_result_keeps_settled_usage_and_exact_result(main_call, monkeypatch):
     ctx, gateway, controller, _events, _decide, _observations = main_call
-    monkeypatch.setattr(controller, "control_reason", lambda: "cancelled" if gateway.acks else None)
+    monkeypatch.setattr(controller, "control_reason", lambda **_kw: "cancelled" if gateway.acks else None)
     with pytest.raises(model_wait.ModelWaitInterrupted) as raised:
         _dispatch(ctx)
     assert raised.value.model_result == result()

@@ -68,7 +68,8 @@ def subscription_ui():
                 self.end_headers()
                 self.wfile.write(response.content)
                 return
-            self.path = self.path.removeprefix("/static")
+            # The wizard loads the core's builtin tree from /onboarding/static, the SPA from /static.
+            self.path = self.path.removeprefix("/onboarding").removeprefix("/static")
             super().do_GET()
 
     def respond(route):
@@ -555,7 +556,7 @@ def test_late_catalog_does_not_restore_access_after_the_account_disconnects(subs
     page.wait_for_function("() => document.querySelector('#onboarding-access-note').textContent.includes('Checking model sources')")
     assert held
     ui['fixture']['status']['profiles']['profiles'] = []
-    page.evaluate("async () => (await import('/static/modules/claudexor_status_store.js')).claudexorStatus.refresh()")
+    page.evaluate("async () => (await import('/onboarding/static/modules/claudexor_status_store.js')).claudexorStatus.refresh()")
     page.wait_for_function("() => !document.querySelector('[data-agent-family=codex]').textContent.includes('Connected')")
     for route in held:
         route.fulfill(content_type='application/json', body=json.dumps(ui['fixture']['catalog']))
@@ -729,7 +730,7 @@ def test_review_shortcut_reconciles_local_vision_before_preview(
                      'profiles': [_profile('codex', 'personal')]},
         'model_catalog': ui['fixture']['catalog']['items'],
     }
-    page.evaluate("async () => (await import('/static/modules/claudexor_status_store.js')).claudexorStatus.refresh()")
+    page.evaluate("async () => (await import('/onboarding/static/modules/claudexor_status_store.js')).claudexorStatus.refresh()")
     page.wait_for_selector('#quick-start-btn:not([hidden])')
     page.wait_for_selector('#onboarding-access-retry:not([disabled])')
     page.locator('[data-collapse="local-model"] > summary').click()

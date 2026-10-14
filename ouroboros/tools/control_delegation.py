@@ -139,9 +139,13 @@ def check_delegation_admission(
 
 
 def durable_direct_child_count(
-    drive_root: Any, parent_task_id: Any, *, exclude_task_id: Any = "",
+    drive_root: Any, parent_task_id: Any, *, exclude_task_id: Any = "", propagate_contention: bool = False,
 ) -> int | None:
-    """Count the parent's already admitted direct children from task-result SSOT."""
+    """Count admitted direct children; unavailable authority stays unknown.
+
+    An unsent scheduler with its own retry owner may propagate positive store
+    contention. Other readers keep None, and hard/unknown failures never retry.
+    """
     parent = str(parent_task_id or "").strip()
     excluded = str(exclude_task_id or "").strip()
     if not parent or not str(drive_root or "").strip():
@@ -157,7 +161,12 @@ def durable_direct_child_count(
         admitted = {task_id for task_id, document in documents_by_ids(drive_root, failed).items()
                     if isinstance(document.get("delegation_admission"), dict)
                     and str(document["delegation_admission"].get("status") or "") == "accepted"}
-    except Exception:
+    except Exception as exc:
+        from ouroboros.store import StoreBusy
+
+        if (propagate_contention and isinstance(exc, StoreBusy) and exc.reason == "contention"
+                and getattr(exc, "rollback_confirmed", None) is not False):
+            raise
         return None
     if any(not row["status"] for row in facts.values()):
         return None  # a row the strict reader could not bind: the count is not proven

@@ -97,13 +97,15 @@ def _task_drive_for_task(task: Dict[str, Any], task_id: str) -> pathlib.Path:
     return pathlib.Path(child) if child else pathlib.Path(_queue().DRIVE_ROOT)
 
 
-def enforce_task_timeouts() -> None:
+def enforce_task_timeouts(*, pending_events: set[str] | None = frozenset()) -> None:
     """Expire explicit pending calendar deadlines, then enforce running-task rails.
 
     Holds the queue lock for the whole pass: RUNNING pops and worker respawn
     decisions raced with HTTP cancel handlers (double respawn → orphaned
     worker; wrong-task dequeue). The RLock keeps nested respawn/assign calls
-    re-entrant.
+    re-entrant. The server supplies its pending event snapshot (None means
+    unreadable) from outside Q; synchronous callers with already-current
+    observations retain the empty default. Pending inputs defer only idle.
     """
     # Avoid circular dependency during module load.
     from supervisor import workers
@@ -117,7 +119,8 @@ def enforce_task_timeouts() -> None:
     with _queue()._queue_lock:
         _queue()._expire_pending_deadlines_locked(workers, now)
         if _queue().RUNNING:
-            _queue()._enforce_task_timeouts_locked(workers, now, owner_chat_id, st)
+            _queue()._enforce_task_timeouts_locked(workers, now, owner_chat_id, st,
+                                                 pending_events=pending_events)
 
 
 def _pending_continuation(task: Dict[str, Any]) -> str:
@@ -533,8 +536,19 @@ def _has_pending_descendant(task_id: str) -> bool:
     return False
 
 
+def _idle_observation_pending(task_id: str, pending_events: set[str] | None) -> bool:
+    if pending_events is None or task_id in pending_events:
+        return True
+    # A descendant's progress is already an input to its parent's idle policy.
+    # Its producer need not stamp lineage: the current RUNNING owner has it.
+    return any(tid in pending_events and isinstance(meta, dict)
+               and _queue()._is_descendant_of(meta.get("task") or {}, task_id)
+               for tid, meta in _queue().RUNNING.items())
+
+
 def _enforce_task_timeouts_locked(
-    workers: Any, now: float, owner_chat_id: int, st: Dict[str, Any]
+    workers: Any, now: float, owner_chat_id: int, st: Dict[str, Any], *,
+    pending_events: set[str] | None = frozenset(),
 ) -> None:
     # ONE typed owner-stop predicate before the generic idle/grace consumers (S3
     # §12.2 item 8): an OPEN owner-requested finalization intent suppresses the
@@ -634,6 +648,11 @@ def _enforce_task_timeouts_locked(
             # machinery.  Explicit task deadline and the absolute safety
             # ceiling remain independent hard axes and may never be extended
             # by a later graceful-stop request.
+            continue
+
+        if not ceiling_reached and not deadline_reached and _idle_observation_pending(str(task_id), pending_events):
+            # Missing observation is neither progress nor permission to stop.
+            # Do not create/withdraw an idle control or reap on a stale mirror.
             continue
 
         # Hard axes (deadline_at, abs ceiling) stop the task regardless of activity; the

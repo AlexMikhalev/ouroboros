@@ -557,7 +557,7 @@ def replay_pending_deliveries(drive_root: Any, *, event_queue: Any = None) -> Li
         try:
             from supervisor import workers
 
-            event_queue = workers.get_event_q()
+            event_queue = workers.get_event_q(create=False)
         except Exception:
             log.warning("terminal-delivery replay could not reach the event queue", exc_info=True)
             return []
@@ -809,7 +809,7 @@ def enqueue_terminal_delivery_outcome(
         if event_queue is None:
             from supervisor import workers
 
-            event_queue = workers.get_event_q()
+            event_queue = workers.get_event_q(create=False)
         event_queue.put(dict(event))
     except Exception:
         log.warning("terminal-delivery enqueue failed for %s", tid, exc_info=True)
@@ -1241,15 +1241,10 @@ def lineage_chat_id(drive_root: Any, task: Dict[str, Any], task_id: str) -> int:
 
 
 def _stop_episode_delivery_id(drive_root: Any, task_id: str) -> str:
-    """CF-04: the receipt's identity is the STOP EPISODE — ``cancel:<tid>:<rid>``.
+    """CF-04: retain ``cancel:<tid>:<request_id>`` across settle and delivery.
 
-    Bound to the durable cancel-intent ``request_id``, never to mutable prose,
-    so the id survives wording changes and restart replay. Pre-settle callers
-    (owed registration, miss lane, cascade) read the ACTIVE intent; the
-    publish half rebuilds the event AFTER the settle removed that row, so it
-    re-derives the SAME id from the pending row the pre-settle half already
-    registered. Returns "" when no episode is known (e.g. a reap with no
-    intent) — the content-derived identity remains the fallback.
+    Replay may clear pending before publication; the retained task receipt or
+    outcome keeps that episode. No recorded Stop keeps the ordinary fallback.
     """
     tid = str(task_id or "")
     try:
@@ -1261,9 +1256,7 @@ def _stop_episode_delivery_id(drive_root: Any, task_id: str) -> str:
     except Exception:
         log.debug("stop-episode intent read failed for %s", tid, exc_info=True)
     try:
-        from ouroboros.utils import read_json_dict
-
-        data = read_json_dict(pathlib.Path(drive_root) / "state" / "terminal_deliveries.json") or {}
+        data = _read_registry(drive_root)
         prefix = f"cancel:{tid}:"
         owed = [
             (str(row.get("registered_at") or ""), did)
@@ -1274,6 +1267,20 @@ def _stop_episode_delivery_id(drive_root: Any, task_id: str) -> str:
             return max(owed)[1]
     except Exception:
         log.debug("stop-episode owed-row read failed for %s", tid, exc_info=True)
+    try:
+        from ouroboros.task_results import load_task_result
+
+        stored = load_task_result(pathlib.Path(drive_root), tid, strict=True) or {}
+        receipt = stored.get("cancel_receipt")
+        did = str(receipt.get("delivery_id") or "") if isinstance(receipt, dict) else ""
+        if did.startswith(f"cancel:{tid}:"):
+            return did
+        origin = stored.get("cancel_origin")
+        rid = str(origin.get("request_id") or "") if isinstance(origin, dict) else ""
+        if rid:
+            return f"cancel:{tid}:{rid}"
+    except Exception:
+        log.debug("stop-episode retained identity read failed for %s", tid, exc_info=True)
     return ""
 
 
@@ -1423,16 +1430,11 @@ def build_unreviewed_salvage_event(
     summary dedups per INTENT, not per content, because a replay's rebuilt
     digest can differ while still being the same owed message.
 
-    CF-04 identity: when no explicit id is passed, the receipt binds to the
-    stop episode as ``cancel:<tid>:<request_id>`` (active intent, or the owed
-    row the pre-settle half registered) — stable across wording changes and
-    restart replay. Content-derived ``final:...`` remains the fallback for
-    terminal paths with no cancel episode at all.
+    CF-04: ``_stop_episode_delivery_id`` retains the exact Stop identity across
+    replay/settle; terminal paths without a Stop keep ``final:...`` identities.
 
-    GR7-4: the content-derived fallback digests the STABLE lines only (status
-    framing + salvage body + preview note) — the mutable unreconciled-runs
-    disclosure rides the TEXT but never the id, so a replay whose rebuilt
-    note shrank dedups to one owed message.
+    GR7-4: content-derived ids digest stable framing/salvage/preview only;
+    mutable unreconciled-runs disclosure cannot mint a second identity.
 
     Q4/Q5 presentation: the message is a typed SYSTEM receipt (``role`` +
     ``system_type`` ride the event end to end — Q4 non-mimicry), a raw

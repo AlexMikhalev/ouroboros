@@ -58,7 +58,7 @@ def _legacy_panel(tmp_path, monkeypatch, *, actor_status="completed"):
     monkeypatch.setattr("ouroboros.claudexor_daemon.ensure_owned_gateway",
                         lambda *a, **kw: pytest.fail("catch-up started a daemon"))
     sink = queue.Queue()
-    monkeypatch.setattr("supervisor.workers.get_event_q", lambda: sink)
+    monkeypatch.setattr("supervisor.workers.get_event_q", lambda *, create=True: sink)
     return child, model, sink
 
 

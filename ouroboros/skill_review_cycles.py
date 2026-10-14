@@ -503,6 +503,7 @@ def skill_review_cycles_refusal(
         content_hash=str(content_hash or ""),
         review_contract_fingerprint=str(contract_fingerprint or ""),
         error=message,
+        dispatch_refusal_code="LEGACY_BLOCKED",
     )
 
 

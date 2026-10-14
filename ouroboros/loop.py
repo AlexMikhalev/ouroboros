@@ -184,9 +184,7 @@ def _finalize_loop_candidate(content, limit_ctx, tools, emit_progress, *, after_
 # and `_loop().seal_task_transcript(...)` in loop_model_call.py address it here.
 from ouroboros.context_fit import messages_carry_native_images, seal_task_transcript  # noqa: F401
 from ouroboros.nanny_pacing import (
-    _nanny_burn_phrase,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
     _nanny_metered_since_delegate_activity,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
-    _nanny_reminder_due,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
     _note_nanny_delegate_activity,
 )
 
@@ -553,7 +551,6 @@ def run_llm_loop(
             tools, (saved, saved_pause, saved_working), messages, llm_trace, accumulated_usage, _owner_msg_seen,
             (active_model, active_effort, active_use_local, active_context_mode, round_idx, context_fit_plan),
             cost_ceiling, budget_remaining_usd)
-        pending_tool_calls = None
         pending_candidate = resume_delivery_candidate(tools, saved_working, tool_schemas)
         while True:
             if free_redial or pending_tool_budget:
@@ -620,8 +617,7 @@ def run_llm_loop(
             if pending_tool_budget:
                 pending_tool_budget = False
                 budget_result = _finish_tool_round_budget(
-                    limit_ctx, budget_remaining_usd, cost_ceiling, active_model, active_use_local, active_effort, pending_tool_calls)
-                pending_tool_calls = None
+                    limit_ctx, budget_remaining_usd, cost_ceiling, active_model, active_use_local, active_effort)
                 if budget_result is not None:
                     return budget_result
                 final_result = _finalize_loop_candidate(None, limit_ctx, tools, emit_progress, after_tools=True)
@@ -648,9 +644,9 @@ def run_llm_loop(
                     msg, cost = None, 0.0
                 else:
                     _inject_round_checkpoints(
-                        round_idx=round_idx, max_rounds=MAX_ROUNDS, messages=messages, accumulated_usage=accumulated_usage,
-                        emit_progress=emit_progress, tools=tools, event_queue=event_queue, task_id=task_id,
-                        drive_logs=drive_logs, budget_remaining_usd=budget_remaining_usd, cost_ceiling=cost_ceiling, llm_trace=llm_trace)
+                        round_idx=round_idx, messages=messages, accumulated_usage=accumulated_usage, tools=tools,
+                        event_queue=event_queue, task_id=task_id, drive_logs=drive_logs,
+                        budget_remaining_usd=budget_remaining_usd, cost_ceiling=cost_ceiling, active_use_local=active_use_local)
 
                     messages, _compaction_usage = _run_round_compaction(
                         messages,
@@ -745,8 +741,9 @@ def run_llm_loop(
             tools._ctx._request_wire_custom_receipts = accumulated_usage.pop(CUSTOM_RECEIPTS_USAGE_KEY, ())
             content = msg.get("content")
             _latch_final_answer_marker(llm_trace, content, current_tool_calls=tool_calls)
-            # Every metered response counts as nanny progress.
-            _note_nanny_delegate_activity(tools._ctx, round_idx, accumulated_usage, [])
+            # Every metered response counts as nanny progress; its delegate verb requests
+            # anchor here, before the batch's saves or a park (a cold tail replays none).
+            _note_nanny_delegate_activity(tools._ctx, round_idx, accumulated_usage, tool_calls)
             if not tool_calls:
                 final_result = _finalize_loop_candidate(content, limit_ctx, tools, emit_progress, assistant_message=msg)
                 if final_result is None:
@@ -778,7 +775,7 @@ def run_llm_loop(
             wait_after_tools(ctx, messages, llm_trace, accumulated_usage,
                              round_idx, tool_schemas, _owner_msg_seen)
             # Every completed batch rejoins one control/budget tail, warm or cold.
-            pending_tool_budget, pending_tool_calls = True, tool_calls
+            pending_tool_budget = True
     except BudgetExceeded as exc:
         _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id, detail="budget")
         try:
@@ -889,17 +886,13 @@ from ouroboros.loop_nudges import (  # noqa: E402, F401 -- intentional public re
     _force_plan_decision,
     _force_plan_reminder,
     _force_plan_disclosure,
-    _build_recent_tool_trace,
-    _maybe_inject_self_check,
     _maybe_inject_time_budget_milestone,
     _maybe_inject_cost_budget_milestone,
-    _maybe_inject_nanny_economics_reminder,
     _inject_round_checkpoints,
     _forced_delegation_note,
     _nanny_finalization_message,
     _maybe_inject_finalization_nudges,
     _answer_protocol_active,
-    _contract_expected_output,
 )
 from ouroboros.loop_model_call import (  # noqa: E402, F401 -- intentional public re-exports
     _adopt_fallback_route,

@@ -230,11 +230,11 @@ def test_the_physical_floor_block_appears_exactly_when_a_step_past_f1_ran_or_the
     assert note(mv.FULL_VIEW) == "" and note(only_facts) == ""
     for step in mf.LADDER[2:]:
         text = note(mv.FloorLevel((("F1", ("a",)), (step, ("x", "y")))))
-        assert text.startswith("### Physical floor\nThis window (500000 tokens, Max) does not hold"), step
+        assert text.startswith("### Physical floor\nThis Max view retains memory cuts for the window (500000 tokens)."), step
         assert "1 task fact lines" in text and "memory_read reads each" in text
     lowered = note(mv.FULL_VIEW, mode="low", lowered_from="max")
-    assert lowered == ("### Physical floor\nThis window (500000 tokens) cannot hold Max with even the shortest view "
-                       "of my memory; this task started in Low.")
+    assert lowered == ("### Physical floor\nThe window this view was cut for (500000 tokens) cannot hold Max with even "
+                       "the shortest view of my memory; this task runs in Low.")
     meta = ("compact_context", "list_available_tools", "enable_tools")  # the schemas an owner's Nano sends
     nano = note(mv.FloorLevel((("F7", ("x",)),)), mode="nano", tool_names=meta)
     assert nano.endswith("\n(memory_read is reachable through enable_tools)")
@@ -319,15 +319,15 @@ def test_an_owner_target_takes_only_its_steps_and_names_the_mode_budget():
     assert [name for name, _n in level.steps] == list(mf.MODE_TARGET_STEPS) == ["F1", "F1b", "F3", "F5", "F4"]
     assert level.by_budget == sum(count for _name, count in level.steps)
     text = mf.floor_note(level, window_tokens=1_050_000, mode="low", target_tokens=250_000)
-    assert text.startswith("### Physical floor\nThe Low mode budget (250000 tokens) does not hold") and "window" not in \
-        text.split("\n")[1].split(" does ")[0]
+    assert text.startswith("### Physical floor\nThis Low view retains memory cuts for the Low mode budget (250000 tokens).")
+    assert "window" not in text.split("\n")[1].split(". Shown")[0]
     # The working margins alone take what the budget takes, never my replies; the window minus the reserve
     # takes them too (and, last, people's words).
     windowed = mf.fit_memory_view(snapshot, {"margin": 0, "physical": 10**9, "budget": None})
     assert "F2" not in dict(windowed.steps) and windowed.steps and windowed.by_budget == 0
     assert "F2" in dict(mf.fit_memory_view(snapshot, {"margin": 0, "physical": 0, "budget": None}).steps)
     both = mv.FloorLevel(windowed.addressed, by_budget=1)
-    assert "This window (1050000 tokens, Low) and the Low mode budget (250000 tokens) do not hold" in mf.floor_note(
+    assert "This Low view retains memory cuts for the window (1050000 tokens) and the Low mode budget (250000 tokens)." in mf.floor_note(
         both, window_tokens=1_050_000, mode="low", target_tokens=250_000)
 
 

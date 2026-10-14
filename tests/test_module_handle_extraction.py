@@ -253,7 +253,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/delegate_custody_reconcile.py": ("ouroboros/delegate_custody.py", "_custody", frozenset({
         "RECONCILED", "RunCustody", "START_FAILED", "TERMINAL_STATES", "_reconcile_one",
         "cancel_and_verify", "close_absent_run", "daemon_says_absent", "emit",
-        "is_terminal", "open_runs", "output_disposition", "pending_invocations",
+        "is_terminal", "output_disposition", "pending_invocations",
         "record_containment_fault", "record_settled_unread", "record_started",
         "retire_settled_registrations", "review_owned_source",
         "settle_run", "summary_of",
@@ -277,7 +277,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     # call time goes through `_delegate()` (the reference cut this leaf with
     # plain preamble imports and declared only _emit).
     "ouroboros/tools/delegate_terminal_evidence.py": ("ouroboros/tools/delegate.py", "_delegate", frozenset({
-        "_Breach", "_PAYLOAD_ENVELOPE_HEADROOM", "_capture_terminal_patch", "_emit", "_home_isolation_breach",
+        "_Breach", "_PAYLOAD_ENVELOPE_HEADROOM", "_emit", "_home_isolation_breach",
         "_preview_payload", "_resolve_full_primary_output", "_stage_full_output",
         "_widened_access", "add_terminal_source_verification", "custody",
         "home_nested_under_operator_home", "tool_result_limit",
@@ -326,7 +326,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_force_plan_disclosure", "_forced_fallback_result",
         "_forced_final_answer",
         "_hold_delivery_for_skill_action", "_live_delivery_candidate",
-        "_loop_tree_accounting", "_merge_finalization_trace", "_note_nanny_delegate_activity",
+        "_loop_tree_accounting", "_merge_finalization_trace",
         "_prepare_forced_prompt", "_prepare_post_tool_budget_context",
         "_publish_delivery_candidate",
         "_record_forced_finalization", "_server_web_allowed_by_task",
@@ -370,7 +370,8 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         # context-attention 5A: the per-round facts line measures through the
         # loop's fit wrapper so the measurement is the one the round records.
         "_measure_round_main_fit",
-        "_wrapup_global_remaining",
+        # #1748/#1129: the round's one tree observation and its round limit.
+        "_TREE_ACCOUNTING_MAX_STALE_SEC", "_loop_tree_accounting", "_resolve_loop_max_rounds",
     })),
     "ouroboros/loop_model_call.py": ("ouroboros/loop.py", "_loop", frozenset({
         "_RoundModelCallContext", "_account_compaction_usage", "_append_or_merge_user_message",
@@ -384,7 +385,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     })),
     "ouroboros/loop_nudges.py": ("ouroboros/loop.py", "_loop", frozenset({
         "_TREE_ACCOUNTING_MAX_STALE_SEC", "_append_or_merge_user_message",
-        "_emit_checkpoint_event", "_extract_plain_text_from_content",
+        "_emit_checkpoint_event",
         "_force_plan_decision", "_loop_tree_accounting", "_skill_finalization_message",
         "_skill_names_touched_by_trace", "get_review_enforcement",
     })),

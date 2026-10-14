@@ -22,11 +22,19 @@ _NEWEST_ORDER = "ORDER BY ts DESC, task_id DESC"  # NULL ts sorts last: a row wi
 
 
 def read_document(root: Any, task_id: str, *, txn: Optional[Txn] = None) -> Optional[Dict[str, Any]]:
-    """The whole current document, ``None`` when the store holds no such task."""
+    """One coherent document; implicit reads decode only after releasing the store.
+
+    A supplied transaction keeps its own read/modify/write snapshot and lifetime.
+    """
     if txn is not None:
         return txn.load(str(task_id))
+    task_id = str(task_id)
     with open_store(root, write=False) as txn:
-        return txn.load(str(task_id))
+        body = txn.body_text(task_id)
+        rows = txn.handoff_records([task_id]) if body is not None else []
+    if body is None:
+        return None
+    return store.project_handoffs(json.loads(body), store.decode_handoffs([task_id], rows)[task_id])
 
 
 def exists(root: Any, task_id: str) -> bool:
@@ -152,25 +160,40 @@ def list_documents(root: Any, *, statuses: Optional[Iterable[str]] = None) -> Li
     return _decode(*fetched)
 
 
-def lineage_where(parent: str, root_id: str, *, direct_only: bool) -> Tuple[str, Tuple[str, ...]]:
-    """The ``find_child_tasks`` prefilter as SQL: every row carrying a retry or supersession
-    pointer (lineage any child may hang on), plus every ``subagent`` row naming PARENT as its
-    parent or (subtree scope) ROOT_ID as its root."""
-    selects = ["SELECT task_id FROM tasks WHERE superseded_by IS NOT NULL",
-               "SELECT task_id FROM tasks WHERE retry_task_id IS NOT NULL"]
-    params = []
-    if parent:  # a UNION of indexed selects: each term reads its own index, never the table
-        selects.append("SELECT task_id FROM tasks WHERE parent_task_id=? AND delegation_role='subagent'")
-        params.append(parent)
-    if root_id and not direct_only:
-        selects.append("SELECT task_id FROM tasks WHERE root_task_id=? AND delegation_role='subagent'")
-        params.append(root_id)
-    return f"t.task_id IN ({' UNION '.join(selects)})", tuple(params)
+def lineage_where(parent: str, root_id: str, *, direct_only: bool,
+                  queue_members: Iterable[str] = ()) -> Tuple[str, Tuple[str, ...]]:
+    """The ``find_child_tasks`` prefilter as SQL, starting from this parent's children. Anchors: the
+    rows naming PARENT as their parent or (subtree scope) ROOT_ID as their root, any role, and the
+    QUEUE_MEMBERS (queued items naming either, whose parent or role may live only in the queue),
+    bound as ONE JSON array: the statement's variables never grow with the queue.
+    Their lineage closes over ``superseded_by``/``retry_task_id`` in both directions to a fixed
+    point. Selected from that closure: the rows the projection can fold onto a child (a retry or
+    supersession pointer, or a ``subagent`` row naming the parent/root). The typed pointers are the
+    body's own (``store.typed_columns``), so a predecessor whose chain ends on a child is reached
+    however long the chain, and unrelated retry history is never read."""
+    kin = [(column, value) for column, value in (("parent_task_id", parent),
+                                                ("root_task_id", "" if direct_only else root_id)) if value]
+    if not kin:
+        return "0", ()
+    values = tuple(value for _column, value in kin)
+    members = sorted({str(member) for member in queue_members if str(member or "").strip()})
+    seeds = (json.dumps(members),) if members else ()
+    anchors = " OR ".join([f"{column}=?" for column, _value in kin]
+                          + ["task_id IN (SELECT value FROM json_each(?))"] * len(seeds))
+    reach = (f"WITH RECURSIVE reach(id, successor, retry) AS (SELECT task_id, superseded_by, retry_task_id "
+             f"FROM tasks WHERE {anchors} UNION SELECT tasks.task_id, tasks.superseded_by, tasks.retry_task_id "
+             "FROM reach JOIN tasks ON tasks.superseded_by=reach.id OR tasks.retry_task_id=reach.id "
+             "OR tasks.task_id=reach.successor OR tasks.task_id=reach.retry) SELECT id FROM reach")
+    child = " OR ".join(f"t.{column}=?" for column, _value in kin)
+    return (f"t.task_id IN ({reach}) AND (t.superseded_by IS NOT NULL OR t.retry_task_id IS NOT NULL "
+            f"OR (t.delegation_role='subagent' AND ({child})))", (*values, *seeds, *values))
 
 
-def select_lineage(root: Any, parent: str, root_id: str, *, direct_only: bool = False) -> List[Dict[str, Any]]:
+def select_lineage(root: Any, parent: str, root_id: str, *, direct_only: bool = False,
+                   queue_members: Iterable[str] = ()) -> List[Dict[str, Any]]:
     """The child-lookup candidates in ``task_id`` order (``lineage_where``); the Python projection decides the rest."""
-    where, params = lineage_where(str(parent or ""), str(root_id or ""), direct_only=direct_only)
+    where, params = lineage_where(str(parent or ""), str(root_id or ""), direct_only=direct_only,
+                                  queue_members=queue_members)
     with open_store(root, write=False) as txn:
         fetched = _fetch(txn, where, params)
     return _decode(*fetched)

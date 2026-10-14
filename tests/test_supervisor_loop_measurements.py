@@ -711,7 +711,7 @@ def test_a_reconcile_pass_just_started_after_an_old_end_stamp_is_not_a_stall(mon
     monkeypatch.setattr(sm, "_LAST_CANCEL_INTENT_SWEEP", [time.time()])
     release = threading.Event()
 
-    def _slow_reconcile_pass(marker, stop_event=None, latch=None, on_orphans_healed=None):
+    def _slow_reconcile_pass(marker, stop_event=None, latch=None):
         try:
             release.wait(10)
         finally:

@@ -271,7 +271,7 @@ def clear_terminal_projection_obligation(root: Any, tid: str, expected: dict, di
 
 
 def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | None = None,
-                               event: dict | None = None) -> str:
+                               event: dict | None = None, event_queue: Any = None) -> str:
     from ouroboros import project_dialogue as dialogue
 
     tid = str(task_id or "").strip()
@@ -309,7 +309,8 @@ def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | No
                 return retired
 
             disposition, _queued = dialogue.project_completion_delivery_outcome(
-                drive_root, done, tid, effective, stored, done, _on_owed=retire_owed)
+                drive_root, done, tid, effective, stored, done, _on_owed=retire_owed,
+                event_queue=event_queue)
             if retired or clear_terminal_projection_obligation(drive_root, tid, stored, disposition):
                 return SETTLEMENT_SETTLED
             return SETTLEMENT_DEFERRED

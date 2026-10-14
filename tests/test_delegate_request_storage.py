@@ -53,7 +53,7 @@ def test_canonical_body_and_event_precede_dispatch(tmp_path, monkeypatch, reques
             return ref
         return real_write(root, body, **kwargs)
 
-    def emit(root, kind, payload):
+    def emit(root, kind, payload, **kwargs):
         if kind == custody.START_REQUESTED:
             assert order == ["blob"]
             assert "request" not in payload
@@ -61,7 +61,7 @@ def test_canonical_body_and_event_precede_dispatch(tmp_path, monkeypatch, reques
             if failure == "event":
                 return False
             order.append("event")
-        return real_emit(root, kind, payload)
+        return real_emit(root, kind, payload, **kwargs)
 
     if surface == "review":
         stub_type = request.getfixturevalue("fake_route")

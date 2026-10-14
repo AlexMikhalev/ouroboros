@@ -5,7 +5,8 @@ designed HTML route. Install/review/enable it through the ordinary extension
 lifecycle. If you change its skill name, change the route prefix in widget.js.
 
 The module asks its own `author-kit` route for the installed `web/ui.css` and
-self-contained `web/modules/ui_primitives.js`. `OuroborosWidget.fetch` uses the
+self-contained `web/modules/ui_primitives.js`: the core's builtin files, whatever
+main interface `OUROBOROS_UI_DIR` selects. `OuroborosWidget.fetch` uses the
 existing authenticated parent bridge. The application inserts the CSS as text
 and imports the primitives through a frame-owned Blob URL, revoked after import.
 The module's existing sandbox and CSP remain unchanged.

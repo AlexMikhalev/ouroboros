@@ -28,6 +28,7 @@ from ouroboros.tool_access import active_tool_profile
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import (
     LegacyTextResultAdapter, ToolResult, _compose_execute_result, _publish_tool_result,
+    append_published_text,
 )
 
 log = logging.getLogger(__name__)
@@ -918,10 +919,13 @@ def _extract_page_output(page: Any, output: str, ctx: ToolContext,
         return text[:30000] + ("... [truncated]" if len(text) > 30000 else "")
 
 
-def _wait_for_page_state(page: Any, selector: str, state: str, timeout: int) -> tuple[bool, str]:
+def _wait_for_page_state(page: Any, selector: str, state: str, timeout: int,
+                         *, ctx: ToolContext | None = None) -> tuple[bool, str]:
     """Observe a selector on this page, without navigation or model polling."""
     if not selector or state not in {"attached", "visible", "hidden", "detached"}:
-        return False, "Error: wait requires a selector and state attached/visible/hidden/detached."
+        return False, _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text="Error: wait requires a selector and state attached/visible/hidden/detached."))
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
     reached = True
@@ -983,7 +987,7 @@ def _browse_page(ctx: ToolContext, url: str, output: str = "text",
         if viewport:
             _apply_viewport(page, viewport)
         response = page.goto(url, timeout=timeout, wait_until="domcontentloaded")
-        waited = _wait_for_page_state(page, wait_for, state, timeout) if wait_for else (True, "")
+        waited = _wait_for_page_state(page, wait_for, state, timeout, ctx=ctx) if wait_for else (True, "")
         if reason := _navigation_block_reason(page, entry_generation, ctx, readonly_subagent, response):
             return "⚠️ " + reason
         if not waited[0]:
@@ -1015,7 +1019,7 @@ def _browse_page(ctx: ToolContext, url: str, output: str = "text",
             if viewport:
                 _apply_viewport(page, viewport)
             response = page.goto(url, timeout=timeout, wait_until="domcontentloaded")
-            waited = _wait_for_page_state(page, wait_for, state, timeout) if wait_for else (True, "")
+            waited = _wait_for_page_state(page, wait_for, state, timeout, ctx=ctx) if wait_for else (True, "")
             if reason := _navigation_block_reason(page, entry_generation, ctx, readonly_subagent, response):
                 return "⚠️ " + reason
             if not waited[0]:
@@ -1076,21 +1080,24 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
             return "⚠️ " + reason
 
         if normalized_action == "wait":
-            return _wait_for_page_state(page, selector, state, timeout)[1]
+            return _wait_for_page_state(page, selector, state, timeout, ctx=ctx)[1]
         elif normalized_action == "click":
             if not selector:
-                return "Error: selector required for click"
+                return _publish_tool_result(ctx, ToolResult(
+                    status="error", code="TOOL_ARG_ERROR", text="Error: selector required for click"))
             page.click(selector, timeout=timeout)
             page.wait_for_timeout(500)
             return f"Clicked: {selector}"
         elif normalized_action == "fill":
             if not selector:
-                return "Error: selector required for fill"
+                return _publish_tool_result(ctx, ToolResult(
+                    status="error", code="TOOL_ARG_ERROR", text="Error: selector required for fill"))
             page.fill(selector, value, timeout=timeout)
             return f"Filled {selector} with: {value}"
         elif normalized_action == "select":
             if not selector:
-                return "Error: selector required for select"
+                return _publish_tool_result(ctx, ToolResult(
+                    status="error", code="TOOL_ARG_ERROR", text="Error: selector required for select"))
             page.select_option(selector, value, timeout=timeout)
             return f"Selected {value} in {selector}"
         elif normalized_action == "screenshot":
@@ -1112,7 +1119,8 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
             )
         elif normalized_action == "evaluate":
             if not value:
-                return "Error: value (JS code) required for evaluate"
+                return _publish_tool_result(ctx, ToolResult(
+                    status="error", code="TOOL_ARG_ERROR", text="Error: value (JS code) required for evaluate"))
             result = _evaluate_bounded(page, _evaluate_source(value), effective_default_ms)
             out = str(result)
             observation[0] = True
@@ -1129,13 +1137,16 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
                 _evaluate_bounded(page, "window.scrollTo(0, document.body.scrollHeight)", effective_default_ms)
             return f"Scrolled {direction}"
         else:
-            return f"Unknown action: {action}. Use: click, fill, select, screenshot, evaluate, scroll, wait"
+            return _publish_tool_result(ctx, ToolResult(
+                status="error", code="TOOL_ARG_ERROR",
+                text=f"Unknown action: {action}. Use: click, fill, select, screenshot, evaluate, scroll, wait"))
 
     try:
         result = _do_action()
         if observation[0]:
             return _observed(ctx, generation_cell[0], result)
-        return _compose_execute_result(result, getattr(generation_cell[0], "request_block_reason", ""), "")
+        note = getattr(generation_cell[0], "request_block_reason", "")
+        return append_published_text(ctx, result, f"\n\n{note}" if note else "")
     except Exception as e:
         own = call.generation
         if ctx.browser_state is not own:

@@ -590,8 +590,8 @@ def pending_restore_bytes(root: Any) -> int:
 
 
 def settlement_obligations(root: Any, *, txn: Optional[store.Txn] = None, cache: Optional[dict] = None) -> dict:
-    """Read every non-receipt set once, indexed by all recorded task owners.
-    Reuse for a candidate pass or fresh unlink census; task-local rows form its revision key."""
+    """Read every set once but the declared ``obligations.RECORD_SETS`` (an undeclared stored set owes too), indexed
+    by all recorded task owners. Reuse for a candidate pass or fresh unlink census; task-local rows form its revision key."""
     from ouroboros import obligations
 
     if txn is None:
@@ -601,8 +601,7 @@ def settlement_obligations(root: Any, *, txn: Optional[store.Txn] = None, cache:
     if cache is not None and cache.get("revision") == revision:
         return cache["rows"]
     by_task: dict = {}
-    names = set(obligations.BOOT_SETS) | set(store.FLAG_COLUMNS) | set(txn.set_names())
-    for name in sorted(names - set(obligations.RECEIPT_SETS)):
+    for name in sorted((set(obligations.DUTY_SETS) | set(txn.set_names())) - set(obligations.RECORD_SETS)):
         for identity, entry in obligations.members_in(txn, name).items():
             owners = {str(identity)} | {str(f.get("task_id") or "") for f in
                                       (entry, entry.get("custody") or {}, entry.get("request") or {})}
@@ -789,7 +788,11 @@ def _member_source_bytes(root: pathlib.Path, task_id: str, member: Dict[str, Any
 
 
 def write_pack(root: Any, task_id: str, generation: int, members: List[Dict[str, Any]]) -> Tuple[pathlib.Path, Dict[str, Any]]:
-    """Pack + sidecar to temp names, fsync both, publish the pack, then the sidecar LAST."""
+    """Pack + sidecar to temp names, fsync both, publish the pack, then the sidecar LAST. Checkpoints lead
+    (the sidecar's prefix rule), then blobs smallest first by ``(size, sha256)``: in one stream a small
+    response or error decodes from a short prefix; the sidecar's offsets stay the readers' only map."""
+    members = sorted(members, key=lambda m: (0, 0, "", "") if m["kind"] == CHECKPOINT
+                     else (1, int(m["size"]), m["sha256"], m["kind"]))
     root, directory = pathlib.Path(root), packs_dir(root)
     directory.mkdir(parents=True, exist_ok=True)
     pack_path, sidecar_path = directory / pack_name(task_id, generation), directory / sidecar_name(task_id, generation)
@@ -948,7 +951,8 @@ def pack_task(root: Any, task_id: str, *, keep_shas: set, listing: Optional[list
     already = {_member_key(m) for s in generations for m in s["members"]}
     members = loose_members(root, task_id)
     fresh = [m for m in members if _member_key(m) not in already]
-    report: Dict[str, Any] = {"task_id": str(task_id), "generation": None, "members": 0, "raw": 0, "packed": 0}
+    report: Dict[str, Any] = {"task_id": str(task_id), "generation": None, "members": 0, "raw": 0, "packed": 0,
+                              "verified_bytes": 0}
     if not fresh and not any(m["source"].is_file() for m in members):
         return report  # nothing can be unlinked: do not decompress historical generations
     if fresh:
@@ -965,10 +969,12 @@ def pack_task(root: Any, task_id: str, *, keep_shas: set, listing: Optional[list
         pack_path = packs_dir(root) / pack_name(task_id, sidecar["generation"])
         verify_pack(pack_path, sidecar)  # from disk, EVERY member, before any unlink
         index_upsert(root, pack_path, {**sidecar, "verified_at": utc_now_iso()})
+        report["verified_bytes"] += int(sidecar["raw_total"])
     write_unpacker(root)
     report.update(unlink_loose(root, task_id, generations, keep_shas=keep_shas, revision=revision,
                                sweep=sweep, members=members))
-    record_storage_pack(root, phase="packed", **report)
+    if report["members"] or report["unlinked"]:  # a row records production, never a re-visit
+        record_storage_pack(root, phase="packed", **report)
     return report
 
 

@@ -130,20 +130,16 @@ saying review-only. ARCHITECTURE, CHECKLISTS, BIBLE, DESIGN and `config.py` are 
 to, never restated; the ARCHITECTURE settings and endpoint tables are test-checked
 registries of those owners, not second authorities.
 
-A sentence belongs in a book when Ouroboros, reading the map before touching the code,
-needs it to find the right place, to keep an invariant other code relies on, or to keep
-a decision whose WHY would otherwise be lost. A `§1` module-tree row is one line
-(address, capability, the grep targets of a cross-module contract, a `(§N)` pointer);
-the owning subsection keeps the WHY at its node. How a module works inside (call order,
-locks, field lists, guard order, enumerated edge cases and typed refusals) belongs in
-the module, its docstring or its test. A change replaces the description of the node it
-touched; release history lives in git and the README history table. A limitation is
-stated once, where an owner or maintainer would otherwise act wrongly; other follow-ups
-are issues. Decision codes, chat-batch answers and reviewer-round labels belong to the
-commit or PR; an open limitation may cite its tracker once, as `(issue #NNN)`; probe
-dates and measured numbers live only in "External facts: unknown is not no". The
-introduction under a chapter's H1 is its compact Low/Nano view: correct it whenever the
-chapter changes.
+Prose belongs in a book when needed to locate a mechanism, preserve an invariant
+other code relies on, or recover its WHY. A `§1` module-tree row is one line: address, capability, cross-module grep targets
+and `(§N)` pointer; the owning subsection keeps the rationale. Internal call/guard
+order, locks, fields, edge cases and typed refusals belong in code, docstrings or tests.
+Replace the touched node's description; keep release history in git and README.
+State a limitation once where it prevents a wrong action; other follow-ups are issues.
+Decision codes, chat-batch answers and reviewer-round labels belong in commits or PRs.
+An open limitation may cite `(issue #NNN)` once; probe dates and measurements belong
+only in "External facts: unknown is not no". Keep the chapter's H1 introduction,
+its compact Low/Nano view, correct when the chapter changes.
 
 Track assets with a continuing purpose (product, contributors, verification, legal
 requirements, evidence for public claims). Plans, campaign backlog, review packets and

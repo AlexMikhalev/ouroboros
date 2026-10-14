@@ -121,7 +121,7 @@ def test_launch_authority_wait_rejoins_typed_controls(tmp_path, monkeypatch, rea
         cancel_intents.request_cancel(tmp_path, 'root')
     with model_wait.task_model_wait_scope(task={'id': 'root'}, drive_root=tmp_path,
                                          event_queue=None, worker_slot_held=hard) as owner:
-        monkeypatch.setattr(owner, 'control_reason', lambda: next(controls))
+        monkeypatch.setattr(owner, 'control_reason', lambda **_kw: next(controls))
         if reason == 'deadline':
             monkeypatch.setattr(limits._loop(), '_finalize_forced_services', lambda *_a: None)
             monkeypatch.setattr(limits._loop(), '_forced_fallback_result',

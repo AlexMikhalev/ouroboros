@@ -45,7 +45,7 @@ def clock(host, monkeypatch):  # noqa: F811
     monkeypatch.setattr(time, "time", lambda: now[0])
     monkeypatch.setattr(queue, "load_state", lambda: {})
     monkeypatch.setattr(workers, "load_state", lambda: {})
-    monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=frames.append))
+    monkeypatch.setattr(workers, "get_event_q", lambda **_kw: SimpleNamespace(put=frames.append))
     monkeypatch.setattr("supervisor.state.budget_remaining", lambda *_a, **_kw: 5)
     monkeypatch.setattr("supervisor.worker_owner_wait.maintain_owner_wait_capacity", lambda: None)
     workers.WORKERS.clear()  # no worker capacity: the timeout tick alone settles a pending-only queue

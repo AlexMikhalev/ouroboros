@@ -206,12 +206,13 @@ def _build_next_url(scope: Scope) -> str:
 
 
 def _sanitize_next_url(value: str) -> str:
+    """The same-origin path a login returns to, else ``/``. A separately hosted interface sends
+    its own page here; browsers read a backslash as a slash and drop tabs and newlines, so
+    ``/\\host`` or ``/<TAB>/host`` would otherwise leave the origin once the session exists."""
     text = (value or "").strip()
-    if not text.startswith("/"):
+    if not text.startswith("/") or text.startswith("//") or "\\" in text:
         return "/"
-    if text.startswith("//"):
-        return "/"
-    if any(ch in text for ch in ('"', "'", "<", ">", "\r", "\n", "\x00")):
+    if any(ch in text for ch in ('"', "'", "<", ">")) or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
         return "/"
     return text
 

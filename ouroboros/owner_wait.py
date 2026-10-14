@@ -164,6 +164,9 @@ def continuation_state(ctx: Any, messages: list, trace: dict, usage: dict,
         "usage": without_finalization_timing(usage),
         "cost_ceiling": asdict(cost_ceiling) if cost_ceiling is not None else None,
         "model_wait": model_state,
+        "nanny_activity": {key: getattr(ctx, key, None) for key in (
+            "_nanny_metered_progress", "_nanny_delegate_baseline",
+        )},
         "context_model_role": getattr(getattr(ctx, "context_fit_plan", None), "model_role", ""),
         # Exposure facts gate automatic compaction; a resumed task keeps them.
         "context_observations": {key: getattr(ctx, key) for key in (
@@ -172,6 +175,7 @@ def continuation_state(ctx: Any, messages: list, trace: dict, usage: dict,
         ) if getattr(ctx, key, None) is not None},
         "round_idx": round_idx, "tool_schemas": tool_schemas,
         "seen": sorted(seen), "owner_directives": getattr(ctx, "_owner_directives", []),
+        "sleep_interaction_seen": dict(getattr(ctx, "_sleep_interaction_seen", None) or {}),
         # Own routing acts still unconfirmed: a resumed turn reports their outcomes too.
         "unconfirmed_routing_acts": list(getattr(ctx, "unconfirmed_routing_acts", None) or []),
         "route": {key: getattr(ctx, key, None) for key in (
@@ -822,6 +826,10 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
     from ouroboros.model_wait import budget_paused_seconds
 
     ctx = tools._ctx
+    # Missing old observations are unknown, not this new process's startup seed.
+    # None is the known fresh state; an empty mark has no historical anchor.
+    for key in ("_nanny_metered_progress", "_nanny_delegate_baseline"):
+        setattr(ctx, key, (state.get("nanny_activity") or {}).get(key, {}))
     for key, value in (state.get("context_observations") or {}).items():
         if key in {"_last_context_observation", "_inspected_context_view", "_pending_compaction", "_historical_author_inputs", "_pending_owner_dialogue"}:
             setattr(ctx, key, value)
@@ -830,6 +838,7 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
     usage.update(state["usage"])
     seen.update(state["seen"])
     ctx._loop_mailbox_seen_ids = seen
+    ctx._sleep_interaction_seen = dict(state.get("sleep_interaction_seen") or {})
     ctx._owner_directives = state["owner_directives"]
     ctx.unconfirmed_routing_acts = [dict(act) for act in state.get("unconfirmed_routing_acts") or [] if isinstance(act, dict)]
     # The cumulative budget-paused carrier rides EVERY same-ID continuation
@@ -850,8 +859,12 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
 
 
 def rebind_restored_route(tools: Any, state: dict, messages: list) -> tuple:
-    """Rebind the restored route's context-fit plan; returns ``(plan, mode)``."""
+    """Rebind the restored route's context-fit plan; returns ``(plan, mode)``.
+
+    The new capture starts in the mode the task ran in (restored onto ``ctx``), never above the
+    owner's current one: a restore, like any route, never raises a mode."""
     from ouroboros.loop import _rebind_context_fit_plan, get_context_mode
+    from ouroboros.memory_floor import MODES
     from ouroboros.model_slots import task_model_binding
 
     ctx = tools._ctx
@@ -861,11 +874,13 @@ def rebind_restored_route(tools: Any, state: dict, messages: list) -> tuple:
         context_fit_plan=ctx.context_fit_plan,
         overrides=model_wait.overrides if model_wait is not None else None,
     )
+    owner, ran = get_context_mode(), getattr(ctx, "active_context_mode", None)
     return _rebind_context_fit_plan(
         ctx.context_fit_plan, tools, messages, model=ctx.active_model,
-        use_local=ctx.active_use_local, preferred_mode=get_context_mode(),
+        use_local=ctx.active_use_local, preferred_mode=owner,
         tool_schemas=state["tool_schemas"],
         model_role=role, model_route={}, credential_profile_id=account,
+        start_mode=ran if owner in MODES and ran in MODES[MODES.index(owner):] else None,
     )
 
 

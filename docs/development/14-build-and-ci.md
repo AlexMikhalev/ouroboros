@@ -17,6 +17,12 @@ Default local pytest excludes seven costly or environment-dependent lanes — `i
 
 `skill_smoke` and `size_ratchet` tests never also carry the `serial` marker or join `_SERIAL_TEST_FILES`: the `and not <lane>` markexprs are the lane barrier, and single-lane assignment keeps each test's placement unambiguous. A new opt-in lane registers its marker in `pyproject.toml`, adds a collect-only zero-test guard in CI, and keeps the default local addopts free of network and Docker requirements.
 
+### Retiring test pins
+
+Record the retired proposition and named behaviour-test survivor (or obsolete
+requirement) in PR evidence, not a tracked ledger. Run the survivor and a falsifying
+negative. CHECKLISTS Body item 11(d) owns the preservation rule and review.
+
 ### Parallel CI and the `serial` marker
 
 CI runs the default suite in two passes (`.github/workflows/ci.yml`, jobs `quick-test` / `full-test`): a parallel pass, `-m "not serial and <the seven lane exclusions>"` with `PARALLEL_PASS_FLAGS` (`-n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread`), then a flag-free serial pass, `-m "serial and <the same exclusions>"`. Two rules keep new tests from breaking that:
@@ -57,7 +63,7 @@ Test reports are informational projections (`tests/ci_evidence.py`, published th
 
 - The candidate cannot weaken the pass: `PYTEST_*`, `NODE_OPTIONS` and owner runtime state (`OUROBOROS_*`, secret-suffixed keys and every settings key `config.apply_settings_to_env` projects) are scrubbed, so the verdict cannot depend on the operator's install profile; required plugins are probed outside candidate control; post-commit checks also inspect `HEAD~1`, so suite deletion cannot hide after the commit exists; exit status owns the verdict, rendered diagnostics do not. `OUROBOROS_PREFLIGHT_SERIAL=1` is the explicit temporary rollback lever, never a silent fallback.
 - A red post-commit gate is warning-only for an ordinary commit (the local commit is preserved for forensics); evolution publication refuses to auto-push while the warning stands; inside a managed update the gate blocks boot promotion and routes through rollback, and an incomplete rollback leaves `gate_blocked` so boot retries recovery instead of promoting the rejected merge.
-- The managed mandate is "the full suite provably ran green on the exact committed tree", not "run it twice": the reuse authority is the process-held `ctx._preflight_test_proof`, never the durable `tests_evidence` record or the event log. A new commit or a restart needs a new run, and a skip, no applicable suite or a mocked `None` return mints no proof.
+- The managed mandate is "the full suite provably ran green on the exact committed tree", not "run it twice": reuse is the runner's process-held proof or, once a process loaded the merge, its unsigned receipt of a complete default run — never `tests_evidence` or the event log. A new commit needs a new run; a skip, no applicable suite or a mocked `None` mints neither.
 - Process containment is unconditional, after a green pass too: Windows uses a kill-on-close Job Object; POSIX uses an environment membership token plus a process-group backstop, and promises honest detection with a fail-closed verdict for attributed members, not guaranteed teardown of an arbitrary detached process (`tests/test_preflight_process_containment.py`). A crashed worker, a timeout-killed worker, a missing plugin, containment failure and ordinary test failure keep distinct diagnostics.
 - Mark process, port and global-state tests `serial`; make a merely slow test faster or split it, because the gate's and CI's serial pass has no per-test timeout and a serial test consumes the remaining total gate budget.
 

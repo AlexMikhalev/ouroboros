@@ -271,6 +271,11 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
     # fork-safety guard (no _scproxy/SCDynamicStoreCopyProxies on the child side
     # of fork) and a clean default for spawned workers too.
     _os.environ["OUROBOROS_IN_WORKER"] = "1"
+    # Pin the executing source before this process loads the agent, and so before
+    # worker_ready lets an assisted update land another generation (preflight_receipts).
+    from ouroboros.preflight_receipts import capture_executing_source_baseline
+
+    capture_executing_source_baseline()
     # Before ANY import that resolves the update-tx marker through git_ops (see
     # _bind_worker_repo_root): a spawned child would otherwise gate on the hardcoded default repo.
     _bind_worker_repo_root(repo_dir, drive_root)

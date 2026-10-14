@@ -55,11 +55,25 @@ def running_project_ids(running: Iterable[Any]) -> Set[str]:
     return out
 
 
-def candidate_is_leasable(candidate: Dict[str, Any], running_ids: Set[str]) -> bool:
+def cold_project_holders(pending: Iterable[Any]) -> Dict[str, Set[str]]:
+    """Accepted cold external writers keep their original top-level project lane."""
+    from ouroboros.sleep_custody import carrier_receipt
+
+    holders: Dict[str, Set[str]] = {}
+    for task in pending:
+        if _is_lane_occupant(task) and carrier_receipt(task).get("retains_project_lane"):
+            holders.setdefault(_task_project_id(task), set()).add(str(task.get("id") or ""))
+    return holders
+
+
+def candidate_is_leasable(candidate: Dict[str, Any], running_ids: Set[str], *,
+                         cold_holders: Dict[str, Set[str]] | None = None) -> bool:
     """True when ``candidate`` may be assigned now under the one-writer rule."""
     if not _is_lane_occupant(candidate):
         return True
-    return _task_project_id(candidate) not in running_ids
+    project = _task_project_id(candidate)
+    return project not in running_ids and not ((cold_holders or {}).get(project, set())
+                                               - {str(candidate.get("id") or "")})
 
 
 def task_lane_project_state(running: Any, pending: Any, tid: Any) -> dict:
@@ -156,6 +170,7 @@ def mark_task_project(running: Any, pending: Any, tid: Any, pid: Any, *, authori
 
 __all__ = [
     "candidate_is_leasable",
+    "cold_project_holders",
     "mark_task_project",
     "running_project_ids",
     "task_lane_project_state",
