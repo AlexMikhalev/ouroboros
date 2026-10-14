@@ -135,6 +135,29 @@ def test_unknown_tool_defaults_to_check(monkeypatch):
     assert len(stub.calls) == 1, "Unknown tools must hit the LLM default path"
 
 
+@pytest.mark.parametrize(("tool_name", "declared", "llm_calls"), [
+    # A built-in's own declaration routes a name the table does not list.
+    ("agent_created_tool", "skip", 0),
+    # The protected table outranks a declaration: a listed tool keeps its check.
+    ("pr_merge", "skip", 1),
+    # An invalid declaration (misspelled or not a string) is DEFAULT_POLICY.
+    ("agent_created_tool", "skp", 1),
+    ("agent_created_tool", ["skip"], 1),
+    # No declaration: the unknown-tool default.
+    ("agent_created_tool", "", 1),
+])
+def test_declared_policy_fills_only_unlisted_names(monkeypatch, tool_name, declared, llm_calls):
+    from ouroboros.safety import check_safety
+
+    stub = _StubLLMClient('{"status":"SAFE","reason":"ok"}')
+    _patch_llm_client(monkeypatch, stub)
+
+    ok, msg = check_safety(tool_name, {"arg": 1}, declared_policy=declared)
+
+    assert (ok, msg) == (True, "")
+    assert len(stub.calls) == llm_calls
+
+
 def test_run_shell_conditional_safe_subject_skips_llm(monkeypatch):
     """run_shell with a whitelisted subject (e.g. pytest) must not hit the LLM."""
     from ouroboros.safety import check_safety
@@ -386,15 +409,18 @@ def test_tool_policy_covers_all_builtin_tools():
 
 
 def test_tool_policy_values_are_valid():
-    """Every TOOL_POLICY value must be one of the three known policy constants."""
+    """Every TOOL_POLICY value must be one of the three known policy constants,
+    and they are the whole vocabulary a declaration is validated against."""
     from ouroboros.safety import (
         TOOL_POLICY,
         POLICY_SKIP,
         POLICY_CHECK,
         POLICY_CHECK_CONDITIONAL,
+        POLICY_VALUES,
     )
 
     valid = {POLICY_SKIP, POLICY_CHECK, POLICY_CHECK_CONDITIONAL}
+    assert POLICY_VALUES == valid
     bad = {name: policy for name, policy in TOOL_POLICY.items() if policy not in valid}
     assert bad == {}, f"Invalid policy values: {bad}"
 
