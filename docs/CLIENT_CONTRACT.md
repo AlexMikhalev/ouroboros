@@ -333,11 +333,11 @@ data: {"seq":12,"type":"task_result","task_id":"…","data":{…}}
 ## 8. Stop, pause, continue, resume
 
 **Stop.** `POST /api/tasks/{id}/cancel` takes an optional `TaskCancelRequest`: `cascade`, `stop_policy` and `stop_action_id`.
-- **Safe retries:** `stop_action_id` names one Stop action. While that action is pending, an identical request joins it and reusing the id with different arguments answers 409. An immediate Stop normally answers after teardown; once the task is no longer active, even an identical retry can answer 404. Read task detail to distinguish the recorded outcome.
-- **Graceful stop:** `202` with `cancel_state: "pending"` means a graceful stop is under way.
-- **Already stopped:** `404` for a task that is no longer active also covers repeating a Stop that already finished.
-- **Nothing cancelled:** `503 cancel_intent_write_failed` means nothing was cancelled, so retry.
-- **Still running:** a `503` saying the cancellation "did not settle" means the stop was recorded but the task is still running. Read `GET /api/tasks/{id}` (`cancel_state`) before anything else.
+- **Safe retries:** `stop_action_id` names one Stop action. While that action is pending, an identical request joins it and reusing the id with different arguments answers 409. An immediate Stop records the stop first and answers after it drove the teardown; once the task is no longer active, even an identical retry can answer 404. Read task detail to distinguish the recorded outcome.
+- **Stopped:** `200` means the teardown settled (with `cascade: true` when the whole tree was stopped).
+- **Recorded, still stopping:** `202` with `cancel_state: "pending"` means the stop is recorded and the supervisor finishes it: a graceful stop under way, or an immediate one whose teardown is not confirmed yet (`reason_code: "teardown_unconfirmed"`, with the stop's `request_id`). No retry is needed: read `GET /api/tasks/{id}` (`cancel_state`) until it settles; an immediate Stop still hardens a graceful one.
+- **Nothing to stop:** `404` means the task already finished (completion wins), the id names no task, or a repeated Stop already finished. A task that was created but never started is stopped, not 404.
+- **Nothing recorded:** `503 cancel_intent_write_failed` means nothing was recorded or cancelled, so retry; `503 cancel_intent_projection_corrupt` cannot succeed until the projection file is repaired.
 - **When to offer Stop:** chat frames carry `cancelable` to say when Stop applies. Do not offer it otherwise.
 
 `stop_policy` is `immediate` (also the omitted/empty default) or `finalize_then_cancel`. A graceful request cannot soften a previously recorded immediate Stop. Task detail has `cancel_state:"pending"` while cancellation is owed, otherwise the field is absent; there is no public `cancel_state:"settled"`.
