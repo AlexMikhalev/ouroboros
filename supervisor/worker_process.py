@@ -80,6 +80,23 @@ def _prepare_worker_task_runtime() -> None:
     import supervisor.update_merge  # noqa: F401
 
 
+def local_work_settled() -> bool:
+    """The idle probe's one answer: no tool future, review or paid sender of this process is owed.
+
+    Handoffs register the new owner before the old one settles: a tool that starts a review
+    registers it (``review_operation._LIVE``) during its own execution, and a review's
+    inspection calls are tool futures registered before the review can close. Tools a review
+    started cannot start reviews (their allowlist is read-only), so producers, reviews, then
+    producers again sees every chain: reviews-then-producers misses a tool that hands off to a
+    review between the two reads, producers-then-reviews misses a review that hands off to an
+    inspection tool between them (tests/test_worker_local_quiescence.py pins both).
+    """
+    from ouroboros.review_operation import local_reviews_settled
+    from ouroboros.tool_custody import local_producers_settled
+
+    return local_producers_settled() and local_reviews_settled() and local_producers_settled()
+
+
 def _adopt_published_extensions(pool_drive_root: str) -> None:
     """Catch up with the server's extension generation before the task runs.
 
@@ -431,8 +448,6 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
         _log_worker_crash(wid, _drive, "worker_ready", _e, _tb.format_exc())
     import queue as _queue
     from ouroboros.budget_pause import _HOLD_POLL_SEC
-    from ouroboros.review_operation import local_reviews_settled
-    from ouroboros.tool_custody import local_producers_settled
 
     probe = None  # an idle-retirement token, answered only once no local producer is owed
     while True:
@@ -446,10 +461,7 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
                 break
             if task.get("type") == "worker_quiescence":
                 try:
-                    # Handoffs register the new owner before the old one settles (tool -> review,
-                    # review -> inspection tool), so producers, reviews, producers again sees
-                    # every chain a review-started tool can form: those cannot start reviews.
-                    probe = None if local_producers_settled() and local_reviews_settled() and local_producers_settled() else task
+                    probe = None if local_work_settled() else task  # the handoff invariant lives there
                 except Exception:
                     probe = task  # unknown defers; the bounded recheck retries, never a crash
                     log.warning("Idle probe could not prove local quiescence", exc_info=True)

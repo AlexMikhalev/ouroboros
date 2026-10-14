@@ -19,7 +19,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from ouroboros import _usage_wait, budget_pause, loop_budget, model_wait, owner_pause, tool_custody
+from ouroboros import _usage_wait, budget_pause, loop_budget, model_wait, owner_pause, review_operation, tool_custody
 from ouroboros import loop_tool_execution as execution
 from ouroboros.task_results import load_task_result
 from tests._usage_store_testing import attempt_rows_in_start_order
@@ -356,3 +356,111 @@ def test_a_failed_readiness_row_never_unbinds_the_birth_the_probe_answer_carries
         answer = worker.receive(_quiescent, 15)
         assert answer is not None and answer["token"] == "probe-1" and answer["pid"] == worker.proc.pid
         assert answer["process_birth"], "measured before the failing readiness row"
+
+
+# ---------------------------------------------------------------------------
+# The named predicate (``worker_process.local_work_settled``): producers, reviews, producers.
+# Opus d94's discriminating regressions: a handoff lands BETWEEN two registry reads; the
+# two-read orders each acknowledge falsely in one direction, the predicate in neither.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def handoff_registries(monkeypatch, registries):
+    """This process's tool and review registries, empty; the real readers over them."""
+    from ouroboros import review_custody
+
+    monkeypatch.setattr(review_operation, "_LIVE", {})
+    monkeypatch.setattr(review_custody, "_ACTIVE", {})
+
+
+def _live_tool(operation_id):
+    """A real registered tool future, unsettled until ``settle``."""
+    attempt = SimpleNamespace(task_id="probe-task", task_attempt=1)
+    future = Future()
+    owner = budget_pause.register_tool_future(attempt, operation_id, "inspect", future)
+
+    def settle():
+        future.set_result("done")
+        owner()
+    return SimpleNamespace(settle=settle)
+
+
+def _open_review(owner_id):
+    with review_operation._LOCK:
+        review_operation._LIVE[owner_id] = SimpleNamespace(closed=False)
+
+
+def _close_review(owner_id):
+    with review_operation._LOCK:
+        review_operation._LIVE.pop(owner_id)
+
+
+def _handoff_between_reads(monkeypatch, handoff):
+    """Run ``handoff`` once, right after the first registry read of a probe check."""
+    pending = [handoff]
+    for module, name in ((tool_custody, "local_producers_settled"), (review_operation, "local_reviews_settled")):
+        def read(real=getattr(module, name)):
+            answer = real()
+            if pending:
+                pending.pop()()
+            return answer
+        monkeypatch.setattr(module, name, read)
+
+
+def _probe(order):
+    from supervisor import worker_process
+
+    return {
+        "reviews_then_producers": lambda: review_operation.local_reviews_settled() and tool_custody.local_producers_settled(),
+        "producers_then_reviews": lambda: tool_custody.local_producers_settled() and review_operation.local_reviews_settled(),
+        "named_predicate": worker_process.local_work_settled,
+    }[order]
+
+
+@pytest.mark.parametrize("order,acknowledges_falsely", [
+    ("reviews_then_producers", True), ("producers_then_reviews", False), ("named_predicate", False)])
+def test_a_tool_handing_off_to_a_review_between_reads_never_acknowledges(
+        handoff_registries, monkeypatch, order, acknowledges_falsely):
+    tool = _live_tool("late-tool")
+
+    def handoff():  # the tool registers the review it starts, then its own row settles
+        _open_review("review-x")
+        tool.settle()
+
+    _handoff_between_reads(monkeypatch, handoff)
+    probe = _probe(order)
+    answers = [probe() for _ in range(3)]  # the worker's bounded rechecks while the review lives
+    assert (True in answers) is acknowledges_falsely
+    _close_review("review-x")
+    assert probe(), "settled: the probe answers"
+
+
+@pytest.mark.parametrize("order,acknowledges_falsely", [
+    ("producers_then_reviews", True), ("reviews_then_producers", False), ("named_predicate", False)])
+def test_a_review_handing_off_to_an_inspection_tool_between_reads_never_acknowledges(
+        handoff_registries, monkeypatch, order, acknowledges_falsely):
+    _open_review("review-x")
+    inspection = []
+
+    def handoff():  # the review's inspection call registers its future, then the review closes
+        inspection.append(_live_tool("inspection"))
+        _close_review("review-x")
+
+    _handoff_between_reads(monkeypatch, handoff)
+    probe = _probe(order)
+    answers = [probe() for _ in range(3)]
+    assert (True in answers) is acknowledges_falsely
+    inspection[0].settle()
+    assert probe(), "settled: the probe answers"
+
+
+def test_empty_and_fully_settled_registries_approve(handoff_registries):
+    from supervisor.worker_process import local_work_settled
+
+    assert local_work_settled(), "nothing owed: approve"
+    tool = _live_tool("work")
+    _open_review("review-x")
+    assert not local_work_settled()
+    tool.settle()
+    _close_review("review-x")
+    assert local_work_settled(), "everything settled: approve"
