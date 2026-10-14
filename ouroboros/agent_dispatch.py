@@ -536,13 +536,12 @@ def reset_nanny_economics_marks(ctx: Any, *, route_dispatched: bool, delegate_ac
     DEFENSIVE, not load-bearing: ``_prepare_task_context`` builds a FRESH
     ToolContext per task, so nothing stale can leak today — this states the
     marks' lifecycle in one place and keeps it true even if a refactor ever
-    reuses a context (leaked cursors would mute or misfire the reminder)."""
+    reuses a context (leaked marks would misstate the facts line's nanny burn)."""
     ctx._nanny_route_dispatched = bool(route_dispatched)
     ctx._nanny_finalization_injected = False
     ctx._nanny_metered_progress = None
     ctx._nanny_delegate_baseline = ({"round": 0, "cost": 0.0} if delegate_activity_seed else None)
     ctx._nanny_physical_activity_seed = False
-    ctx._nanny_reminder_mark = None
 
 
 def emit_dispatch_resolution(

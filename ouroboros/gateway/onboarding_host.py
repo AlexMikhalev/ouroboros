@@ -14,26 +14,44 @@ computed for display only and never persisted: on a genuinely fresh install the
 first bytes of ``settings.json`` must be the owner's own onboarding save, which
 is exactly what the fresh-install proofs (safety-coverage authorship, install
 presets) are gated on.
+
+``GET /api/onboarding/bootstrap`` is the same derivation as JSON for a client
+that renders its own setup: the page's embedded bootstrap, byte for byte, plus
+the readiness ``GET /api/onboarding`` answers with its status. Completing setup
+stays ``POST /api/onboarding/complete``, the one atomic writer.
 """
 
 from __future__ import annotations
 
 from starlette.requests import Request
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, JSONResponse
 
 from ouroboros.config import load_settings
-from ouroboros.onboarding_wizard import build_onboarding_html
-from ouroboros.server_runtime import apply_runtime_provider_defaults
+from ouroboros.onboarding_wizard import render_onboarding_html
+from ouroboros.server_runtime import apply_runtime_provider_defaults, has_startup_ready_provider
+from ouroboros.settings_setup_contract import build_setup_bootstrap
+
+_NO_STORE = {"Cache-Control": "no-store"}
 
 
-async def onboarding_page(_request: Request) -> HTMLResponse:
+def _live_setup() -> tuple[dict, dict]:
+    """The install's settings view and the web wizard bootstrap derived from it: the one
+    derivation the page and its JSON projection share, computed and never persisted."""
     from ouroboros.config import SETTINGS_PATH
 
     settings, _changed, _keys = apply_runtime_provider_defaults(load_settings())
-    return HTMLResponse(
-        build_onboarding_html(settings, host_mode="web", fresh_install=not SETTINGS_PATH.exists()),
-        headers={"Cache-Control": "no-store"},
-    )
+    return settings, build_setup_bootstrap(settings, "web", fresh_install=not SETTINGS_PATH.exists())
 
 
-__all__ = ["onboarding_page"]
+async def onboarding_page(_request: Request) -> HTMLResponse:
+    _settings, bootstrap = _live_setup()
+    return HTMLResponse(render_onboarding_html(bootstrap), headers=_NO_STORE)
+
+
+async def api_onboarding_bootstrap(_request: Request) -> JSONResponse:
+    """``OnboardingBootstrapResponse``: readiness plus the wizard's bootstrap, written nowhere."""
+    settings, bootstrap = _live_setup()
+    return JSONResponse({"ready": has_startup_ready_provider(settings), "bootstrap": bootstrap}, headers=_NO_STORE)
+
+
+__all__ = ["api_onboarding_bootstrap", "onboarding_page"]

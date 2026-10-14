@@ -34,13 +34,12 @@ from ouroboros.settings_defaults import (
     OPENROUTER_DEFAULTS,  # noqa: F401
     OPENROUTER_REVIEW_DEFAULTS,  # noqa: F401
     OWNER_STOP_OUTER_CAP_SEC,  # noqa: F401
-    PACING_INTERVAL_DEFAULT_SEC,  # noqa: F401
     RETIRED_COMMA_LIST_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_SUCCESSORS, REVIEW_POOL_MIGRATED_SETTING_KEYS, REVIEW_POOL_MIGRATION_CLASS_LINE,  # noqa: F401
     retired_setting_keys_notice,  # noqa: F401
     SETTINGS_DEFAULTS,  # noqa: F401
-    SETTINGS_KEYS_NOT_EXPORTED_TO_ENV,  # noqa: F401
+    SAVED_CHOICE_SETTINGS, SETTINGS_KEYS_NOT_EXPORTED_TO_ENV, unauthored_saved_choices,  # noqa: F401
     SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC,  # noqa: F401
     _DISK_AUTHORED_SETTINGS,  # noqa: F401
     settings_env_keys,  # noqa: F401
@@ -122,7 +121,6 @@ from ouroboros.runtime_limits import (
     get_max_subagent_depth,  # noqa: F401
     get_max_workers,  # noqa: F401
     get_onboarding_snapshot_timeout_sec,  # noqa: F401
-    get_pacing_interval_sec,  # noqa: F401
     get_per_call_timeout_ceiling_sec,  # noqa: F401
     get_plan_task_deadline_min_sec,  # noqa: F401
     get_post_task_evolution_budget_usd,  # noqa: F401
@@ -482,14 +480,14 @@ def _guard_context_mode_lowering(settings: dict, *, allow_context_lowering: bool
 
 def prepare_settings_for_persist(settings: dict, *, authored_keys: Sequence[str] = (),
         allow_context_lowering: bool = False, allow_safety_lowering: bool = False) -> dict:
-    """Normalize settings writes under existing ratchets. Only the actual writer
-    names authored_keys; a defaults merge preserves absent disk-owned intent,
-    forwarded environment choices and install-time provenance. The review-pool receipts THIS
-    write owes land before it replaces the pre-image (``review_pool_receipts.persist_write_receipts``)."""
+    """Normalize settings writes under existing ratchets. Only the actual writer names authored_keys; a defaults
+    merge preserves absent disk-owned intent, forwarded environment choices (an absent ``SAVED_CHOICE_SETTINGS``
+    key stays absent) and install-time provenance."""
     from ouroboros.review_pool_receipts import persist_write_receipts
-    persist_write_receipts(DATA_DIR, settings, SETTINGS_PATH)
+    persist_write_receipts(DATA_DIR, settings, SETTINGS_PATH)  # the review-pool receipts THIS write owes, before the pre-image goes
     authored = set(authored_keys or ())
-    prepared = {k: v for k, v in settings.items() if not (
+    unauthored = unauthored_saved_choices(settings, _settings_integrity.read_settings_json_verified(SETTINGS_PATH), authored)
+    prepared = {k: v for k, v in settings.items() if k not in unauthored and not (
         k in _DISK_AUTHORED_SETTINGS and k not in authored and not _settings_file_value(k, "")
         and not (
             k == "OUROBOROS_CONTEXT_MODE_AUTO_LOW"
@@ -843,8 +841,8 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
         raw_env = os.environ.get(key)
         if raw_env is None or key in _DISK_AUTHORED_SETTINGS or key in ENDPOINT_AUTHORED_SETTINGS:  # DISK-authored
             continue
-        if raw_env == echo.get(key) or (key in MODEL_SLOT_KEYS and key in loaded):
-            continue  # this tree's own projection of a proposal is no choice; a saved slot (blank too) is the owner's
+        if raw_env == echo.get(key) or (key in loaded and (key in MODEL_SLOT_KEYS or key in SAVED_CHOICE_SETTINGS)):
+            continue  # this tree's own projection of a proposal is no choice; a saved slot or choice (blank too) is the owner's
         if key == "OUROBOROS_RETURN_REASONING" and raw_env == "":
             settings[key] = ""
             continue
@@ -866,14 +864,14 @@ def save_settings(
     allow_elevation: bool = False,
     onboarding_safety_default: bool = False,
 ) -> None:
-    """Persist settings and enforce owner-only mode ratchets.
+    """Persist a view; only an owner writer's authored_keys authors a first saved-choice key.
 
-    Elevation above the boot baseline is refused after initialization (``allow_elevation`` is then
-    inert to agent-reachable subprocesses; production entry points must call
-    ``initialize_runtime_mode_baseline`` before agent code). Context-mode lowering likewise
-    requires the explicit owner path outside Cyber Pro; the retired auto-Low key is an inert false tombstone.
-    ``onboarding_safety_default`` is a NARROW boolean authorizing exactly one transition —
-    a FRESH install (no settings file yet) authoring ``OUROBOROS_SAFETY_MODE="light"``."""
+    Existing SAVED_CHOICE_SETTINGS survive; changed values alone are not authorship.
+    Elevation after initialization is refused (``allow_elevation`` then inert); production calls
+    ``initialize_runtime_mode_baseline`` before agent code. Outside Cyber Pro, context lowering
+    needs the owner path; the retired auto-Low flag stays false.
+    ``onboarding_safety_default`` allows only a fresh install (no settings file) to choose
+    ``OUROBOROS_SAFETY_MODE="light"``."""
     _guard_live_settings_write()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     fd = _acquire_settings_lock()

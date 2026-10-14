@@ -23,6 +23,7 @@ from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS
 from ouroboros.provider_models import (
     DEEPSEEK_BASE_URL,
     compatible_endpoint,
+    compatible_endpoint_configured,
     resolve_zai_base_url,
     PROVIDER_PREFIXES,
     normalize_anthropic_model_id,
@@ -469,13 +470,19 @@ class _ProviderRoutingMixin:
         if provider == "openai-compatible":
             # One pair on every path (request-local mapping and ambient settings alike):
             # a dedicated endpoint never borrows the legacy OpenAI key.
-            api_key, base_url = compatible_endpoint(lambda key: str(configured(key, "") or "").strip())
+            def setting(key: str) -> str:
+                return str(configured(key, "") or "").strip()
+
+            api_key, base_url = compatible_endpoint(setting)
             return {
                 "provider": provider,
                 "resolved_model": resolved_model,
                 "usage_model": usage_model,
                 "api_key": api_key,
                 "base_url": base_url,
+                # A pair configured without a key is the dedicated endpoint's no-auth
+                # setting; its transport sends no credential (net_transport.openai_client_class).
+                "keyless": not api_key and compatible_endpoint_configured(setting),
                 "default_headers": {},
                 "supports_openrouter_extensions": False,
                 "supports_generation_cost": False,
@@ -507,9 +514,7 @@ class _ProviderRoutingMixin:
         # The keepalive transport carries SDK-equivalent pool limits (an
         # explicit transport ignores the Client-level limits); on proxy-routed
         # installs the helper returns None and SDK defaults keep proxy mounts.
-        from openai import OpenAI
-
-        from ouroboros.net_transport import keepalive_http_client
+        from ouroboros.net_transport import keepalive_http_client, openai_client_class
 
         kwargs: Dict[str, Any] = {
             "api_key": str(target.get("api_key") or ""),
@@ -524,7 +529,7 @@ class _ProviderRoutingMixin:
             kwargs["base_url"] = base_url
         if headers:
             kwargs["default_headers"] = headers
-        return OpenAI(**kwargs)
+        return openai_client_class(target)(**kwargs)
 
     def _get_remote_client(self, target: Dict[str, Any]):
         base_url = str(target.get("base_url") or "")
@@ -534,7 +539,8 @@ class _ProviderRoutingMixin:
         ))
         from ouroboros.net_transport import extra_ca_bundle
 
-        cache_key = (str(target.get("provider") or ""), base_url, api_key, headers, extra_ca_bundle())
+        cache_key = (str(target.get("provider") or ""), base_url, api_key, headers, extra_ca_bundle(),
+                     bool(target.get("keyless")))
         if cache_key not in self._remote_clients:
             self._remote_clients[cache_key] = self._new_remote_client(target)
         return self._remote_clients[cache_key]
@@ -581,13 +587,12 @@ class _ProviderRoutingMixin:
         headers = tuple(sorted((str(k), str(v)) for k, v in headers_dict.items()))
         from ouroboros.net_transport import extra_ca_bundle
 
-        cache_key = (str(target.get("provider") or ""), base_url, api_key, headers, extra_ca_bundle())
+        cache_key = (str(target.get("provider") or ""), base_url, api_key, headers, extra_ca_bundle(),
+                     bool(target.get("keyless")))
 
         client = self._async_remote_clients.get(cache_key)
         if client is None:
-            from openai import AsyncOpenAI
-
-            from ouroboros.net_transport import keepalive_http_client
+            from ouroboros.net_transport import keepalive_http_client, openai_client_class
 
             kwargs: Dict[str, Any] = {
                 "api_key": api_key,
@@ -600,7 +605,7 @@ class _ProviderRoutingMixin:
                 kwargs["base_url"] = base_url
             if headers_dict:
                 kwargs["default_headers"] = headers_dict
-            client = AsyncOpenAI(**kwargs)
+            client = openai_client_class(target, async_client=True)(**kwargs)
             self._async_remote_clients[cache_key] = client
         return client
 

@@ -52,6 +52,10 @@ _ADDED_OWNERS = {
     "effort_fact_phrase": settings_scales,
     # The retired role effort keys the range replaced (the RC auditor's note class).
     "EFFORT_RANGE_RETIRED_SETTING_KEYS": settings_defaults,
+    # Replaceable interface: a saved value (blank included) wins over the environment, an absent key
+    # stays the environment's, and a merged write does not author it (config read and persist seams).
+    "SAVED_CHOICE_SETTINGS": settings_defaults,
+    "unauthored_saved_choices": settings_defaults,
     "get_finalization_grace_sec": runtime_limits,
     "PROMOTE_CONFIRM_WAIT_SEC": runtime_limits,
     "get_promote_confirm_wait_sec": runtime_limits,
@@ -147,7 +151,6 @@ _MOVED_OWNERS = {
     "OPENROUTER_REVIEW_DEFAULTS": settings_defaults,
     "FINALIZATION_GRACE_DEFAULT_SEC": settings_defaults,
     "OWNER_STOP_OUTER_CAP_SEC": settings_defaults,
-    "PACING_INTERVAL_DEFAULT_SEC": settings_defaults,
     "RETIRED_SETTING_KEYS": settings_defaults,
     # ABI 7.0 (ABI-7b): the comma-list classification INSIDE the retirement
     # SSOT, born in this leaf (not an extraction) for the RC auditor to snap.
@@ -225,7 +228,6 @@ _MOVED_OWNERS = {
     "get_max_active_subagents_per_root": runtime_limits,
     "get_max_subagent_depth": runtime_limits,
     "get_max_workers": runtime_limits,
-    "get_pacing_interval_sec": runtime_limits,
     "get_per_call_timeout_ceiling_sec": runtime_limits,
     "get_plan_task_deadline_min_sec": runtime_limits,
     "get_post_task_evolution_budget_usd": runtime_limits,
@@ -369,5 +371,7 @@ def test_settings_extraction_size_bounds_have_meaningful_headroom():
     # 521 -> 538: PR-3 (review pool) — the five review-lane keys leave SETTINGS_DEFAULTS
     # for RETIRED_SETTING_KEYS and gain the REVIEW_POOL_MIGRATED_SETTING_KEYS class
     # (+ its shared «migrated» line) the read seam, the RC auditor and the boot notice read.
-    assert counts["ouroboros.settings_defaults"] <= 538
+    # 538 -> 560: the main-interface key (OUROBOROS_UI_DIR) with its export exclusion and the
+    # saved-choice precedence the config read and persist seams share.
+    assert counts["ouroboros.settings_defaults"] <= 560
     assert (PACKAGE / "config.py").is_file()

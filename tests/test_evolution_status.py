@@ -90,10 +90,10 @@ def test_consciousness_status_snapshot_exposes_the_alarm_facts(monkeypatch, tmp_
         "status": "available", "limit_usd": 20.0, "settled_usd": 3.0, "accounted_usd": 3.0, "remaining_usd": 17.0, "resets_at": ""})
     monkeypatch.setattr(BackgroundConsciousness, "_running_roots", staticmethod(lambda: 0))
     clock = BackgroundConsciousness(tmp_path, tmp_path / "repo", lambda: 1, now=1_800_000_000.0)
-    clock.notify("task_finished:t1:completed")
     snapshot = clock.status_snapshot()
 
-    assert snapshot["enabled"] is True and snapshot["pending_reason"] == "task_finished:t1:completed"
+    # #1603: no early-wake reason exists to expose.
+    assert snapshot["enabled"] is True and "pending_reason" not in snapshot
     assert snapshot["next_wake_at"] and snapshot["last_wake_at"] == "" and snapshot["live_wake_task_id"] == ""
     assert snapshot["spent_24h_usd"] == 3.0 and snapshot["daily_usd"] == 20.0
 

@@ -1,11 +1,12 @@
 import { accountedUpperBound, accountedUpperBoundWithChildren, formatUsd4, joinMarkdownHeadings, plainCauseText, savedTerminalRowNote } from './utils.js';
 import { cancelCauseClauses } from './cancel_presentation.js';
-import { taskCheckpointLabel, checkpointHasProgressRow } from './task_checkpoints.js';
+import { taskCheckpointLabel, taskCheckpointIdentity, checkpointHasProgressRow } from './task_checkpoints.js';
 export { taskCheckpointLabel } from './task_checkpoints.js';
 import { harnessPresentation } from './harness_presentation.js';
 import { acceptanceIncidentClauses } from './acceptance_incident_presentation.js';
 import { fmt, tr } from './i18n.js';
 import { historyRetentionView } from './history_retention.js';
+import { checkFailureView } from './verification_presentation.js';
 import { hostRowDisplayText } from './host_notice_text.js';
 import { effortEvidenceText } from './effort_evidence.js';
 import { delegatedActivityView } from './delegated_activity.js';
@@ -1399,15 +1400,14 @@ function summarizeChatLiveEventView(evt) {
     if (t === 'tool_call_started' || (['tool_call_finished', 'tool_call'].includes(t) && !evt.is_error)) {
         // A successful call is execution evidence, not narration: start and finish feed the
         // block's ONE folded row (counts; tools behind Expand), a receipt while every counted
-        // call is a host-stamped routing or completion act. Failures keep their own row. `done` is
-        // the TASK's phase; a finished CALL is `ok`.
+        // call is a host-stamped routing or completion act. Failures keep their own row; so does a
+        // completed check whose criterion failed, while its call still counts once as `ok`. `done`
+        // is the TASK's phase; a finished CALL is `ok`.
         const status = t === 'tool_call_started' ? (evt._live_tool_frame ? 'calling' : 'unknown') : 'ok';
         return chatView({
-            phase: status,
-            headline: '',
-            visible: true,
+            phase: status, headline: '', visible: true, dedupeKey: `tools|${groupId}`,
             receipt: Boolean(evt.routing_action) || evt.completion_control === true,
-            dedupeKey: `tools|${groupId}`,
+            ...checkFailureView(evt, toolCallKey(evt, groupId)),
             toolCall: toolObservation(evt, groupId, status),
         });
     }
@@ -1419,8 +1419,7 @@ function summarizeChatLiveEventView(evt) {
             phase: lowRetry || evt.checkpoint_kind === 'service_finalization_error' ? 'warn' : 'thinking',
             headline: taskCheckpointLabel(evt) + (lowRetry ? ' — retrying the same model once' : ''),
             visible: !checkpointHasProgressRow(evt),
-            dedupeKey: key(evt.checkpoint_kind || '', evt.checkpoint_kind === 'usage_lock_wait'
-                ? `${evt.episode_id || evt.ts || ''}:${evt.phase}` : evt.checkpoint_number || evt.round || ''),
+            dedupeKey: key(evt.checkpoint_kind || '', taskCheckpointIdentity(evt)),
         });
     }
 

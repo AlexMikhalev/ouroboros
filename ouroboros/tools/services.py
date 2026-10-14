@@ -746,9 +746,15 @@ def _service_logs(ctx: ToolContext, name: str = "service", tail: int = 8000) -> 
             return "⚠️ TOOL_ARG_ERROR (service_logs): tail must be an integer."
         payload = executor_service_logs(ctx, service_name, tail_chars)
         if payload is None:
-            return f"⚠️ SERVICE_NOT_FOUND: {name}"
+            return _publish_tool_result(ctx, ToolResult(
+                status="unavailable", code="LEGACY_UNAVAILABLE",
+                text=f"⚠️ SERVICE_NOT_FOUND: {name}"))
         return json.dumps(payload, ensure_ascii=False, indent=2)
-    return f"⚠️ SERVICE_NOT_FOUND: {name}"
+    # Status discovery and idempotent stop use this same marker as a warning.
+    # A logs request has no requested payload to return; type only this branch.
+    return _publish_tool_result(ctx, ToolResult(
+        status="unavailable", code="LEGACY_UNAVAILABLE",
+        text=f"⚠️ SERVICE_NOT_FOUND: {name}"))
 
 
 def _stop_service(ctx: ToolContext, name: str = "service") -> str:

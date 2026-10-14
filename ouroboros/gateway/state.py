@@ -108,6 +108,8 @@ def _evolution_state_public(evolution_state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def api_health(_request: Request) -> JSONResponse:
+    from ouroboros.gateway.schema import GATEWAY_ABI_VERSION
+
     runtime_version = get_version()
     app_version = os.environ.get("OUROBOROS_APP_VERSION", "").strip() or runtime_version
     return JSONResponse({
@@ -116,7 +118,23 @@ async def api_health(_request: Request) -> JSONResponse:
         "version": runtime_version,
         "runtime_version": runtime_version,
         "app_version": app_version,
+        # The wire-contract carrier a client checks before relying on GET /api/contract.
+        "abi_version": GATEWAY_ABI_VERSION,
     })
+
+
+async def api_contract(_request: Request) -> JSONResponse:
+    """``GatewayContractResponse``: the gateway ABI derived from the endpoint and envelope indexes."""
+    from ouroboros.gateway.schema import contract_document
+
+    return JSONResponse(contract_document(), headers={"Cache-Control": "no-store"})
+
+
+def _served_ui_state(request: Request) -> Dict[str, str]:
+    """This generation's applied main interface. The lifespan attaches the server's ServedUI;
+    before that (or in an app assembled without one) the routes still serve the builtin default."""
+    served_ui = _state_attr(request, "served_ui")
+    return served_ui.selection.state() if served_ui is not None else {"source": "builtin"}
 
 
 def _describe_bg(request: Request) -> Callable[[bool], dict[str, Any]] | None:
@@ -748,6 +766,7 @@ async def api_state(request: Request) -> JSONResponse:
             "active_direct_turns": snap.get("active_direct_turns") or [],
             "active_chat_activities": snap.get("active_chat_activities") or [],
             "active_chat_activities_complete": snap.get("active_chat_activities_complete") is True,
+            "served_ui": _served_ui_state(request),
         })
     except Exception as exc:
         return json_exception(exc)
@@ -810,4 +829,4 @@ def _task_bindings_safe(request: Request, *, availability=None) -> dict:
 
 
 
-__all__ = ["api_health", "api_state"]
+__all__ = ["api_contract", "api_health", "api_state"]

@@ -121,7 +121,7 @@ def test_the_boundary_is_the_accepted_position_not_the_alarm_finish(tmp_path):
     assert "before the first wake" not in second.full_text()
     # Nothing new since: an empty window, and the same accepted position again.
     third = _observe(tmp_path, boundary=second.boundary, since=T0)
-    assert third.events == () and third.full_text() == "\n- wake cause: scheduled heartbeat; no event reason is recorded for this wake"
+    assert third.events == () and third.full_text() == "\n- wake cause: the scheduled wake time; events never move it, they are listed as observed"
     assert third.boundary["upper"] == second.boundary["upper"]
 
 
@@ -439,7 +439,7 @@ def test_answered_cards_of_the_window_render_their_whole_answer(tmp_path):
              "options": ["A", "B"], "comment": long_comment, "question": "Which parser?"}
     _chat(tmp_path, {"ts": _iso(since + 2400), "direction": "system", "type": "quiz_answer",
                      "task_id": "asker", "quiz": block})
-    own = _lines(_observe(tmp_path, reason="task_finished:asker:completed"))[0]
+    own = _lines(_observe(tmp_path))[0]
     assert own.startswith("- owner card qown on task asker: answered 20 min ago; asked 59 min ago; "
                           "answered in own words: Keep the old parser.")
     assert long_comment in own and "END-OF-COMMENT; question: Which parser?" in own  # whole, never clipped
@@ -459,42 +459,26 @@ def test_answered_card_line_renders_mixed_answers_and_missing_facts_honestly():
     empty = wake._answered_card_line("t1", "q3", {"answered_at": _iso(now - 60)}, now=now)
     assert "answer text unavailable" in empty
 
-def test_project_digest_pins_human_project_and_related_task_before_cards(tmp_path):
+def test_a_project_task_is_an_observed_event_not_a_wake_cause(tmp_path):
+    """#1603: a project digest no longer names itself as the wake's cause; the settled
+    project task reaches the scheduled wake as an observed transition, the cause line is
+    the schedule, and the outstanding cards still follow the events."""
     since = T0 - 3600
     (tmp_path / "state").mkdir()
     (tmp_path / "state" / "projects.json").write_text(json.dumps({
         "projects": [{"id": "p1", "name": "System audit", "chat_id": 42, "lifecycle": "active"}],
     }), encoding="utf-8")
-    _result(tmp_path, "finished", ts=since - 10, project_id="p1", description="audit completed")
-    _result(tmp_path, "still-running", ts=since + 20, status="running", project_id="p1", description="in progress")
-    _result(tmp_path, "direct-finished", ts=since + 30, direct=True, project_id="p1", description="owner chat")
+    _result(tmp_path, "finished", ts=since + 10, project_id="p1", description="audit completed")
     _result(tmp_path, "card-task", ts=since - 100, status="running",
             quizzes={"q1": {"state": "expired_terminal", "asked_at": _iso(since - 50),
                               "question": "Should the audit continue?"}})
-    observation = _observe(tmp_path, since=since, reason="project_digest:p1:finished")
-    trigger = observation.trigger
-    assert trigger.startswith("- wake cause: project System audit settled task finished (completed), $1.25")
-    assert "audit completed" in trigger and "1 h 0 min ago" in trigger
-    assert "still-running" not in trigger and "direct-finished" not in trigger
+    observation = _observe(tmp_path, since=since)
+    assert observation.trigger == "- wake cause: the scheduled wake time; events never move it, they are listed as observed"
+    assert any("finished" in line and "audit completed" in line for line in _lines(observation))
     card = observation.outstanding[0]
     assert card.startswith("- owner card q1 on task card-task: Unanswered · the task finished")
-    assert "Should the audit continue?" in card
     text = observation.full_text()
-    assert text.index(trigger) < text.index("Outstanding owner cards (1):") < text.index(card)
-
-
-def test_project_digest_task_id_wins_when_multiple_settled_rows_share_a_project(tmp_path):
-    since = T0 - 3600
-    (tmp_path / "state").mkdir()
-    (tmp_path / "state" / "projects.json").write_text(json.dumps({
-        "projects": [{"id": "p1", "name": "System audit", "chat_id": 42, "lifecycle": "active"}],
-    }), encoding="utf-8")
-    _result(tmp_path, "trigger", ts=since - 10, project_id="p1", description="triggered result")
-    _result(tmp_path, "newer", ts=since + 10, project_id="p1", description="newer result")
-    trigger = _observe(tmp_path, since=since, reason="project_digest:p1:trigger").trigger
-    assert "task trigger" in trigger and "triggered result" in trigger
-    assert "latest settled" not in trigger
-    assert "task newer" not in trigger
+    assert text.index(observation.trigger) < text.index("Outstanding owner cards (1):") < text.index(card)
 
 
 def test_trigger_stays_first_when_task_results_are_unreadable(tmp_path, monkeypatch):
@@ -504,11 +488,11 @@ def test_trigger_stays_first_when_task_results_are_unreadable(tmp_path, monkeypa
         raise OSError("broken task store")
 
     monkeypatch.setattr(task_results, "list_task_results", broken)
-    observation = _observe(tmp_path, since=T0 - 1, reason="task_finished:t1:completed")
-    assert observation.trigger == "- wake cause: task t1 finished (completed)"
+    observation = _observe(tmp_path, since=T0 - 1)
+    assert observation.trigger == "- wake cause: the scheduled wake time; events never move it, they are listed as observed"
     assert observation.gaps == ("task_results unreadable: OSError",)
     assert observation.full_text().split("\n")[1:] == [
-        "- wake cause: task t1 finished (completed)",
+        "- wake cause: the scheduled wake time; events never move it, they are listed as observed",
         "Observation coverage: chat log bytes 0–0 (empty chain); task results: unreadable, the accepted "
         "inventory is kept for the next wake; gaps: task_results unreadable: OSError"]
 
@@ -521,9 +505,9 @@ def test_render_substitutes_every_placeholder_and_keeps_every_event(tmp_path, mo
     for index in range(15):
         _result(tmp_path, f"t{index:02d}", ts=T0 - 100 + index)
     _chat(tmp_path, *[_summary(f"t{index:02d}", T0 - 100 + index) for index in range(15)])
-    observation = _observe(tmp_path, since=T0 - 5400, reason="task_finished:t14:completed")
+    observation = _observe(tmp_path, since=T0 - 5400)
     text = wake.render_wake_message(
-        repo, reason="task_finished:t14:completed", last_wake_at=T0 - 5400, now=T0,
+        repo, reason="heartbeat", last_wake_at=T0 - 5400, now=T0,
         level="act", disabled_tools=["toggle_evolution", "request_restart"], spent_usd=4.0, daily_usd=20.0,
         running=1, max_tasks=2, interval=3300, events=observation.full_text())
     for key in wake.PLACEHOLDERS:
@@ -533,13 +517,13 @@ def test_render_substitutes_every_placeholder_and_keeps_every_event(tmp_path, mo
     assert "toggle_evolution, request_restart" in text
     assert "allowance known spend (last 24 h): 4.00 / 20.00 USD" in text and "tasks running: 1/2" in text
     assert "next interval: 3300 s" in text
-    assert "- wake cause: task t14 finished (completed)" in text
-    assert text.count("- task t") == 15 and "more; see" not in text  # the trigger's own terminal stays an event
+    assert "- wake cause: the scheduled wake time; events never move it, they are listed as observed" in text
+    assert text.count("- task t") == 15 and "more; see" not in text  # every terminal stays an event
     quiet = wake.render_wake_message(
         repo, reason="heartbeat", last_wake_at=0.0, now=T0, level="full",
         disabled_tools=[], spent_usd=None, daily_usd=0, running=0, max_tasks=0, interval=900,
         events=_observe(tmp_path / "empty", since=T0 + 1).full_text())
-    assert "no wake since this process started" in quiet and "wake cause: scheduled heartbeat" in quiet
+    assert "no wake since this process started" in quiet and "wake cause: the scheduled wake time" in quiet
     assert "unavailable tools: none" in quiet and "allowance known spend (last 24 h): unknown / 0.00 USD" in quiet
     assert "including evolution" in quiet
 
@@ -578,7 +562,7 @@ def describe(monkeypatch):
     return lambda snapshot, enabled=True: (holder.clear(), holder.update(snapshot), server._describe_bg_consciousness_state(enabled))[2]
 
 
-BASE = {"enabled": True, "level": "act", "next_wake_at": "2027-01-15T12:30:00+00:00", "pending_reason": "",
+BASE = {"enabled": True, "level": "act", "next_wake_at": "2027-01-15T12:30:00+00:00",
         "last_wake_at": "", "last_wake_task_id": "", "last_wake_outcome": "", "last_error": "",
         "spent_24h_usd": 1.0, "daily_usd": 20.0, "allowance_resets_at": "", "tasks_running": 0, "max_tasks": 2,
         "live_wake_task_id": ""}
@@ -592,8 +576,9 @@ def test_projection_names_every_honest_status(describe):
     sleeping = describe(BASE)
     assert sleeping["status"] == "sleeping" and sleeping["detail"] == f"Sleeping until {server._clock_of(BASE['next_wake_at'])}."
     assert sleeping["next_wake_at"] == BASE["next_wake_at"] and sleeping["enabled"] is True
-    pending = describe({**BASE, "pending_reason": "task_finished:a:completed"})
-    assert pending["detail"].endswith(" Early wake pending: task_finished:a:completed.")
+    # #1603: no early wake exists, so even a stale snapshot key is never rendered as one.
+    stale = describe({**BASE, "pending_reason": "task_finished:a:completed"})
+    assert "Early wake" not in stale["detail"] and stale["detail"] == sleeping["detail"]
     thinking = describe({**BASE, "live_wake_task_id": "wake0001"})
     assert thinking["status"] == "thinking" and "wake0001" in thinking["detail"]
     first = describe({**BASE, "last_wake_outcome": "skipped:waiting_for_first_conversation"})

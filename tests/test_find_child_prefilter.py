@@ -197,7 +197,7 @@ def test_compact_child_selection_matches_complete_reader_with_retry_and_subtree(
         _write_result(tmp_path, {"status": "completed", "delegation_role": "subagent", "result": row["task_id"], **row})
     for scope in ("direct", "subtree"):
         expected = find_child_tasks(tmp_path, parent_task_id="owner", root_task_id="owner", scope=scope, materialize_artifacts=False)
-        def complete_reader(root, parent, root_id, *, direct_only=False):
+        def complete_reader(root, parent, root_id, *, direct_only=False, queue_members=()):
             def may_match(item):
                 if str(item.get("superseded_by") or item.get("retry_task_id") or "").strip():
                     return True

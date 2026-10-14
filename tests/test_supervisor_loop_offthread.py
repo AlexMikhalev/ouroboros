@@ -369,13 +369,14 @@ def test_a_slow_reconcile_block_never_holds_the_loop_tick(quiet_tick, monkeypatc
     held the drain, the fence acks and assignment for its whole walk. The tick that
     STARTS it now returns at once; a tick while it is busy SKIPS (one thread, no queue);
     the marker is stamped only when the pass ENDS; the latch opens in ``finally``; and
-    the orphan-heal notification reaches the alarm clock from the maintenance thread."""
+    the orphan heal itself runs on the maintenance thread."""
     sm = quiet_tick
     threads = _track_threads(monkeypatch)
     entered, release = threading.Event(), threading.Event()
     done, healed = [], []
 
     def slow_heal(root, **kwargs):
+        healed.append(threading.current_thread().name)
         entered.set()
         assert release.wait(5), "the test must release the reconcile block"
         return 2
@@ -384,9 +385,7 @@ def test_a_slow_reconcile_block_never_holds_the_loop_tick(quiet_tick, monkeypatc
     marker = [0.0]
     try:
         started = time.monotonic()
-        sm._periodic_supervisor_maintenance(
-            [time.time()], marker,
-            on_orphans_healed=lambda count: healed.append((count, threading.current_thread().name)))
+        sm._periodic_supervisor_maintenance([time.time()], marker)
         tick = time.monotonic() - started
         assert entered.wait(5), "the reconcile block really ran"
         assert tick < 2.0, f"the loop tick waited {tick:.1f}s for the reconcile block"
@@ -399,7 +398,7 @@ def test_a_slow_reconcile_block_never_holds_the_loop_tick(quiet_tick, monkeypatc
         for thread in threads:
             thread.join(5)
     assert all(not thread.is_alive() for thread in threads)
-    assert healed == [(2, "reconcile-maintenance")]
+    assert healed == ["reconcile-maintenance"]
     assert [name for name, _ in done] == ["review_jobs", "projects", "deletions", "child_refs"]
     assert {thread for _, thread in done} == {"reconcile-maintenance"}
     assert marker[0] > 0.0 and not sm._RECONCILE_SWEEP_LOCK.locked(), "stamped, then released"

@@ -56,12 +56,29 @@ def test_active_main_route_honours_use_local_main():
     assert remote["use_local"] is False and remote["provider"] != "local"
 
 
-# --- CW9: the pacing-interval timeout constant lives in the SETTINGS_DEFAULTS SSOT ---
+# --- CW9 -> #1748: the pacing interval timed a periodic note that no longer exists ---
 
-def test_pacing_interval_in_settings_defaults():
-    from ouroboros.config import PACING_INTERVAL_DEFAULT_SEC, SETTINGS_DEFAULTS
+def test_pacing_interval_is_retired_and_a_saved_value_is_dropped_on_load(caplog):
+    """Owner 11 Oct (#1748: facts, no advice) removed the [PACING] note, its only reader;
+    the key is retired through the settings read seam rather than left as a default nothing
+    obeys. A document saved by an older release still loads: the value is dropped, never
+    honored, and the retirement notice names it."""
+    import logging
 
-    assert SETTINGS_DEFAULTS.get("OUROBOROS_PACING_INTERVAL_SEC") == PACING_INTERVAL_DEFAULT_SEC
+    from ouroboros import config, runtime_limits, settings_defaults
+
+    key = "OUROBOROS_PACING_INTERVAL_SEC"
+    assert key not in config.SETTINGS_DEFAULTS and key in config.RETIRED_SETTING_KEYS
+    for module, name in ((settings_defaults, "PACING_INTERVAL_DEFAULT_SEC"), (config, "PACING_INTERVAL_DEFAULT_SEC"),
+                         (runtime_limits, "get_pacing_interval_sec"), (config, "get_pacing_interval_sec")):
+        assert not hasattr(module, name), name
+
+    config._RETIREMENT_NOTICE_SEEN.clear()
+    with caplog.at_level(logging.WARNING, logger="ouroboros.config"):
+        loaded = config.normalize_settings_raw({key: 600, "OUROBOROS_TOOL_TIMEOUT_SEC": 300})
+    assert key not in loaded and loaded["OUROBOROS_TOOL_TIMEOUT_SEC"] == 300
+    notices = [r.getMessage() for r in caplog.records if "retired" in r.getMessage()]
+    assert len(notices) == 1 and key in notices[0] and "NOT honored" in notices[0]
 
 
 # === Triad+scope review-fix regressions (v6.34.0) ===

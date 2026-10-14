@@ -307,8 +307,8 @@ def test_kill_at_each_packer_step_leaves_readable_state_and_rerun_completes(root
     assert read_actor_source_bytes(root, "task-a", handle).startswith(b"# focus")
     stray = [p.name for p in (root / "observability" / "packs").iterdir() if p.name.startswith(".")]
     assert not stray or step != "indexed"
-    report = _run(root)
-    assert (report["packed"], report["faults"]) == (1, 0)
+    report = _run(root)  # ``packed`` counts a new generation; a published one is only re-verified
+    assert (report["examined"], report["packed"], report["faults"]) == (1, int(step == "pack_published"), 0)
     names = sorted(p.name for p in (root / "observability" / "packs").iterdir() if p.name.startswith("task-a"))
     assert names == (["task-a.2.members.json", "task-a.2.xz", "task-a.xz"] if step == "pack_published"
                      else ["task-a.members.json", "task-a.xz"])  # an orphan's generation is never overwritten
@@ -506,8 +506,8 @@ def test_packer_tick_arms_first_spawns_one_supervised_child_then_rests(root, mon
     from ouroboros import process_custody
 
     seen = []
-    report = json.dumps({"status": "completed", "packed": 1, "candidates": 1, "raw": 10, "compressed": 2,
-                         "unlinked": 1, "kept": 0, "busy": 0, "faults": 0, "archived": 0}).encode()
+    report = json.dumps({"status": "completed", **dict.fromkeys(packer._COUNTERS, 0), "packed": 1, "candidates": 1,
+                         "raw": 10, "compressed": 2, "unlinked": 1}).encode()
     gate = threading.Event()
 
     def fake_spawn(cmd, **kwargs):

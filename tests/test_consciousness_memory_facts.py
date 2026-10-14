@@ -21,7 +21,7 @@ from tests import _memory_inventory_shared as shared
 from tests._store_shared import seed_result
 
 NOW = 1_900_000_000.0  # well after the fixture's rows
-NOTHING_NEW = "\n- wake cause: scheduled heartbeat; no event reason is recorded for this wake"
+NOTHING_NEW = "\n- wake cause: the scheduled wake time; events never move it, they are listed as observed"
 HELPER = {"kind": "helper", "writer": "fallback_page", "attribution": "helper draft, not lived"}
 WAKE_MIND = {"kind": "mind", "task_id": "wake-1", "focus": {"role": "consciousness", "task_id": "wake-1"}}
 MEMORY_HEADER = "Recorded in memory after the accepted sequence (source dates do not order publication):"

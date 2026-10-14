@@ -199,15 +199,14 @@ def _publish_routing_ack(
 
 
 def _handle_project_digest(evt: Dict[str, Any], ctx: Any) -> None:
-    """A project task finished: touch the project and wake consciousness early.
+    """A project task finished: touch the project.
 
     Full project awareness (v6.32.0): the one identity already sees the project's
     chat thread in its unified memory and the finished task in ``task_results``,
-    so the digest is a wake REASON, not a message — the next wake-up renders the
-    facts itself (``consciousness_wake``) and the one agent decides what to do
-    with them — backlog, identity, or nothing (BIBLE P5). A digest of a tree
-    consciousness itself started never re-arms the clock (its own finish is not
-    news to it; the chain would never sleep).
+    so the digest is neither a message nor a wake: the next SCHEDULED wake-up
+    renders the facts itself (``consciousness_wake``) and the one agent decides
+    what to do with them — backlog, identity, or nothing (BIBLE P5). Events never
+    move the wake (owner 12 Oct, #1603).
     """
     pid = str(evt.get("project_id") or "").strip()
     if not pid:
@@ -218,16 +217,6 @@ def _handle_project_digest(evt: Dict[str, Any], ctx: Any) -> None:
         touch_project(ctx.DRIVE_ROOT, pid)
     except Exception:
         log.debug("project_digest touch failed", exc_info=True)
-    try:
-        from ouroboros.consciousness_authority import is_consciousness_origin
-
-        consciousness = getattr(ctx, "consciousness", None)
-        if consciousness is not None and not is_consciousness_origin(evt):
-            digest_task_id = str(evt.get("task_id") or "").strip()
-            reason = f"project_digest:{pid}:{digest_task_id}" if digest_task_id else f"project_digest:{pid}"
-            consciousness.notify(reason)
-    except Exception:
-        log.debug("project_digest consciousness notify failed", exc_info=True)
 
 
 def _rollback_promoted_pending(

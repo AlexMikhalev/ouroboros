@@ -126,7 +126,9 @@ test('context Auto uses the exact advertised maximum, while manual values stay a
 test('the same role sheets are loaded by both actual UI hosts', () => {
     for (const file of ['index.html', 'onboarding_template.html']) {
         const html = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
-        assert.ok(html.includes('href="/static/model_roles.css"'), `${file} loads model_roles.css`);
+        // The wizard loads the core's own tree whatever main interface is selected.
+        const sheet = `${file === 'index.html' ? '' : '/onboarding'}/static/model_roles.css`;
+        assert.ok(html.includes(`href="${sheet}"`), `${file} loads ${sheet}`);
         // The review lanes editor is retired: reviewers are rows of the subagent catalog.
         assert.ok(!html.includes('reviewer_slots.css'), `${file} still loads the retired review lanes sheet`);
     }

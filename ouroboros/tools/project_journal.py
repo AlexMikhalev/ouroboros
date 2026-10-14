@@ -152,7 +152,7 @@ def append_journal_milestone(
     short); an automatic milestone MUST be recorded, so when the composed text
     exceeds ``_MAX_TEXT_CHARS`` it is bounded with a VISIBLE pointer instead of
     being silently sliced or dropped (the full text always survives in the task's
-    task_results and the consciousness digest). Centralizing here keeps every
+    task_results). Centralizing here keeps every
     project-journal append on one bounded path (no raw append_jsonl elsewhere)."""
     pid = sanitize_project_id(project_id)
     if not pid:
@@ -173,7 +173,7 @@ def append_journal_milestone(
         return
     if len(body) > _MAX_TEXT_CHARS:
         keep = _MAX_TEXT_CHARS - 80
-        body = body[:keep] + f"… [+{len(body) - keep} chars; full text in this task's task_results / digest]"
+        body = body[:keep] + f"… [+{len(body) - keep} chars; full text in this task's task_results]"
     path = project_journal_path(pid)
     path.parent.mkdir(parents=True, exist_ok=True)
     append_jsonl(path, {

@@ -141,6 +141,8 @@ class SkillReviewOutcome:
     review_contract_fingerprint: str = ""
     rebuttal_sha256: str = ""
     replayed_from_ts: str = ""
+    # Foreground call outcome, not the skill's pending status or recorded history.
+    dispatch_refusal_code: str = ""
 
 
 def _apply_auto_grant_outcome(outcome: SkillReviewOutcome, skill: Any, auto_grant: Any) -> None:
@@ -597,7 +599,7 @@ def review_skill(
     except _SkillFileOverBudget as exc:
         return SkillReviewOutcome(
             skill_name=skill.name,
-            status=STATUS_PENDING,
+            status=STATUS_PENDING, dispatch_refusal_code="LEGACY_BLOCKED",
             content_hash=content_hash,
             error=(
                 f"Skill file {exc.relpath!r} alone is ~{exc.tokens} tokens, over the "

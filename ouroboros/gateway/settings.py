@@ -16,6 +16,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from ouroboros.config import (
     DATA_DIR,
+    SAVED_CHOICE_SETTINGS,
     SETTINGS_DEFAULTS as _SETTINGS_DEFAULTS,
     apply_settings_to_env as _apply_settings_to_env,
     load_settings, resolve_port_file,
@@ -1392,6 +1393,9 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
         # Only an explicit Cyber context choice authors the pair; an unrelated save
         # preserves omission and cannot change a running task's captured settings.
         authored_keys = tuple(key for key in ("OUROBOROS_SAFETY_MODE",) if key in all_changed)
+        # Presence in the request is the explicit choice, even when its value
+        # equals the environment/default. An unrelated merged save is not.
+        authored_keys += tuple(key for key in body if key in SAVED_CHOICE_SETTINGS)
         if runtime_mode_at_least(current_runtime_mode, "cyber_pro") and "OUROBOROS_CONTEXT_MODE" in body:
             authored_keys += tuple(_CONTEXT_MODE_KEYS)
         _owner_write_settings(

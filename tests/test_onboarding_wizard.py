@@ -344,12 +344,14 @@ def test_onboarding_frontend_uses_base_url_first_compatible_validation():
 
 def test_build_onboarding_html_serves_a_real_page_with_linked_modules():
     """ONE onboarding host: the page LINKS its stylesheet and its ES module from
-    /static instead of inlining them, so the wizard's steps can import ordinary
-    web/modules/* code. The bootstrap stays inline (it is per-install state)."""
+    /onboarding/static (the core's builtin tree, whatever main interface is selected)
+    instead of inlining them, so the wizard's steps can import ordinary web/modules/*
+    code. The bootstrap stays inline (it is per-install state)."""
     html = build_onboarding_html({})
 
-    assert '<script type="module" src="/static/modules/onboarding_wizard.js"></script>' in html
-    assert '<link rel="stylesheet" href="/static/onboarding.css">' in html
+    assert '<script type="module" src="/onboarding/static/modules/onboarding_wizard.js"></script>' in html
+    assert '<link rel="stylesheet" href="/onboarding/static/onboarding.css">' in html
+    assert 'src="/static/' not in html and 'href="/static/' not in html and "'/static/" not in html
     assert '"contract": {' in html
     assert '"providerFields": [' in html
     assert "openai::gpt-5.6-terra" in html

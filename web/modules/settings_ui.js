@@ -944,6 +944,19 @@ export function renderSettingsPage() {
                     </div>
 
                     <div class="form-section">
+                        <h3>Main Interface</h3>
+                        <div class="settings-section-copy">The page this Ouroboros serves at its own address. Chats, tasks, files, settings, onboarding, skill widgets and the API keep working with every choice. Applies at the next restart.</div>
+                        <div class="form-row">
+                            <div class="form-field ui-field">
+                                <label for="s-ui-dir">Interface directory</label>
+                                <input id="s-ui-dir" placeholder="Empty for built-in, none, or /path/to/interface" class="ui-control" name="s-ui-dir" type="text" spellcheck="false" aria-describedby="s-ui-dir-help s-ui-dir-applied">
+                                <div class="settings-inline-note ui-field-help" id="s-ui-dir-help">Empty: the built-in interface. <code>none</code>: no main page, for an interface hosted separately behind the same address. Otherwise an absolute or <code>~</code>-prefixed path, on the machine that runs Ouroboros, to a trusted directory with its own <code>index.html</code>; an invalid path or missing entrypoint keeps the built-in interface and says why below. File permissions still need to allow the server to read the selected files. After the restart the built-in page reloads into the new choice; a page from a directory or another host refreshes itself and only reconnects. To return to the built-in interface, clear this field (from any interface, or in <code>settings.json</code> while Ouroboros is stopped), restart, and reopen the Ouroboros address. An <code>OUROBOROS_UI_DIR</code> environment value shows here until a choice is saved; a saved choice, empty included, wins.</div>
+                                <div class="settings-inline-status" id="s-ui-dir-applied" role="status" aria-live="polite" hidden></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-section">
                         <h3>Cleanup</h3>
                         <!-- The two subagent path roots moved to Agents →
                              Delegation → Advanced (D-10). GC Retention stays: it

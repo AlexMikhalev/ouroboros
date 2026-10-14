@@ -82,7 +82,7 @@ def test_wizard_summary_refresh_keeps_focused_action_and_position(subscription_u
     ui["fixture"]["status"]["harnesses"][0]["models"].append({"id": "new-discovery"})
     ui["fixture"]["preview"]["model_settings"]["OUROBOROS_MODEL"] = "claudexor::codex=updated-preview"
     page.evaluate("""async () => {
-        const {claudexorStatus} = await import('/static/modules/claudexor_status_store.js');
+        const {claudexorStatus} = await import('/onboarding/static/modules/claudexor_status_store.js');
         await claudexorStatus.refresh({includeModels: true});
     }""")
     page.wait_for_function("document.querySelector('.summary-card').textContent.includes('updated-preview')")
@@ -104,7 +104,7 @@ def test_wizard_unchanged_preview_preserves_pristine_model_focus(subscription_ui
     ui["fixture"]["status"]["harnesses"][0]["models"].append({"id": "another-discovered-model"})
     with page.expect_response("**/api/model-catalog") as catalog:
         page.evaluate("""async () => {
-            const {claudexorStatus} = await import('/static/modules/claudexor_status_store.js');
+            const {claudexorStatus} = await import('/onboarding/static/modules/claudexor_status_store.js');
             await claudexorStatus.refresh({includeModels: true});
         }""")
     catalog.value.finished()

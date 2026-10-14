@@ -916,17 +916,11 @@ def emit_task_results(
         _is_direct_chat = bool(task.get("_is_direct_chat"))
         _project_task = _project_scoped and not _is_direct_chat
         if _project_task:
-            # Letters home (v6.32.0): record the cycle in the project's own
-            # journal and emit a concise completion digest for consciousness
-            # (project_id + full objective + outcome). Full project awareness:
-            # this is a crisp "task finished" summary, not an isolation boundary —
-            # the one mind already sees the project thread in its unified memory;
-            # only per-cycle RAW internal facts stay in the per-project store.
+            # Record the cycle in its project journal; project_digest only
+            # touches recency. Unified memory already includes the project thread.
             _pid = resolve_project_id(task)
-            # The full objective IS the meaning of the cycle — carry it whole into
-            # the journal milestone and the consciousness digest (BIBLE P1: no
-            # silent/lossy clip of cognitive text). Objectives are concise by
-            # nature; the task and task_results remain the durable record.
+            # The journal bounds long objectives with a pointer to task_results,
+            # which retains the full objective and outcome.
             _objective = str(task.get("objective") or task.get("description") or task.get("text") or "")
             _exec_status = str((outcome_axes.get("execution") or {}).get("status") or "unknown")
             try:
@@ -951,16 +945,10 @@ def emit_task_results(
             except Exception:
                 log.debug("project journal finalization entries failed", exc_info=True)
             try:
-                _task_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
                 pending_events.append({
                     "type": "project_digest",
                     "project_id": _pid,
                     "task_id": str(task.get("id") or ""),
-                    # The alarm clock must not re-arm on a tree consciousness started.
-                    "initiator": str(_task_metadata.get("initiator") or ""),
-                    "objective": _objective,
-                    "execution_status": _exec_status,
-                    "objective_status": str((outcome_axes.get("objective") or {}).get("status") or "not_evaluated"),
                     "ts": utc_now_iso(),
                 })
             except Exception:

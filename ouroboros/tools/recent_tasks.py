@@ -8,7 +8,7 @@ import pathlib
 from typing import Any, Dict, List
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
-from ouroboros.tools.tool_result import completed_local_read
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result, completed_local_read
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.task_status import effective_task_result
 from ouroboros.dialogue_provenance import (
@@ -303,7 +303,13 @@ def _handle_recent_tasks(
     )
     if binding is not None:
         page["presence_scope"] = {"scope": PRESENCE_OWN_WORK_SCOPE, "binding_id": binding}
-    return json.dumps(page, ensure_ascii=False, indent=2)
+    text = json.dumps(page, ensure_ascii=False, indent=2)
+    if page.get("error"):
+        # Snapshot refusal returns no page. Per-row unreadable_tasks/read_gap
+        # disclosures still accompany a successfully returned partial page.
+        return _publish_tool_result(ctx, ToolResult(
+            status="unavailable", code="LEGACY_UNAVAILABLE", text=text))
+    return text
 
 
 def recent_tasks_page(
