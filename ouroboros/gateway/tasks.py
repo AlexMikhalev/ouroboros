@@ -1045,8 +1045,13 @@ def _record_stop(task_id: str, *, cascade: bool, stop_action_id: str) -> Optiona
     def still_owned() -> bool:
         return task_has_live_ownership(task_id) or (cascade and task_subtree_is_live(task_id))
 
-    if cascade and not load_task_result(DRIVE_ROOT, task_id, strict=True) and not still_owned():
-        return None
+    if cascade:
+        from supervisor.cancel_publication import live_presence_row
+
+        row = load_task_result(DRIVE_ROOT, task_id, strict=True)
+        # A live Presence turn is its runner's (as on the single Stop's miss lane).
+        if live_presence_row(row) or (not row and not still_owned()):
+            return None
     source = "http_cascade" if cascade else "http_single"
     record = functools.partial(
         request_cancel, DRIVE_ROOT, task_id, source=source, stop_action_id=stop_action_id,

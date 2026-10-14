@@ -737,6 +737,14 @@ def stop_paused_late_phase_custody(q: Any, task_id: str, *, intent: Optional[Dic
     return True
 
 
+def live_presence_row(row: Any) -> bool:
+    """An unsettled row a live Presence turn owns: its runner settles it, not cancel custody."""
+    from supervisor.queue_transitions import settled_status_of
+
+    owner = row.get("execution_owner") if isinstance(row, dict) else None
+    return isinstance(owner, dict) and owner.get("kind") == "presence" and not settled_status_of(row)
+
+
 def _finalize_cancel_intent_on_miss(
     q: Any, task_id: str, *, intent: Optional[Dict[str, Any]] = None,
 ) -> str:
@@ -753,7 +761,7 @@ def _finalize_cancel_intent_on_miss(
     copied back BEFORE the cancelled write, so a crash of the split-drive
     copy-back window cannot cost a completed answer.
     """
-    from supervisor.queue_transitions import _settled_status, settled_status_of
+    from supervisor.queue_transitions import _settled_status
     from supervisor.task_lifecycle import (
         SETTLED_ALREADY,
         _active_intent,
@@ -782,8 +790,7 @@ def _finalize_cancel_intent_on_miss(
             _settle_intent(q, task_id, outcome="not_found",
                            detail="no durable task result for this id", intent=intent)
             return CANCEL_NOT_FOUND
-        owner = existing.get("execution_owner")
-        if isinstance(owner, dict) and owner.get("kind") == "presence" and not settled_status_of(existing):
+        if live_presence_row(existing):
             # A live Presence turn runs on its own thread outside every supervisor
             # map: nothing here can capture it, and a cancelled write would only
             # strand a turn that keeps spending. The row stays its runner's and

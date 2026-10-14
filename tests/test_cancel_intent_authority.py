@@ -392,3 +392,34 @@ def test_http_stop_on_a_live_presence_turn_answers_404_and_leaves_no_intent(tmp_
     assert response.status_code == 404, response.text
     assert load_task_result(tmp_path, "presence-http")["status"] == "running"
     assert ci.active_intents(tmp_path) == {}
+
+
+def test_http_cascade_stop_on_a_live_presence_turn_answers_404_and_records_nothing(tmp_path, monkeypatch):
+    """The cascade path reads the target row before minting; a live Presence turn's row
+    is its runner's, so the whole-tree Stop answers 404 and records no intent, while an
+    ordinary persisted task in the same shape is still accepted and stopped."""
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from ouroboros.gateway.tasks import api_task_cancel
+    from supervisor import queue, workers
+
+    monkeypatch.setattr(queue, "DRIVE_ROOT", tmp_path)
+    monkeypatch.setattr(queue, "PENDING", [])
+    monkeypatch.setattr(queue, "RUNNING", {})
+    monkeypatch.setattr(workers, "WORKERS", {}, raising=False)
+    monkeypatch.setattr(queue, "persist_queue_snapshot", lambda reason="": None)
+    monkeypatch.setattr(queue, "_emit_cancel_task_done", lambda *_a, **_k: None)
+    _presence_row(tmp_path, "presence-tree")
+    _presence_row(tmp_path, "pooled-tree", kind="pooled")
+    app = Starlette(routes=[Route("/api/tasks/{task_id}/cancel", api_task_cancel, methods=["POST"])])
+    app.state.drive_root = tmp_path
+    with TestClient(app) as client:
+        presence = client.post("/api/tasks/presence-tree/cancel", json={"cascade": True})
+        pooled = client.post("/api/tasks/pooled-tree/cancel", json={"cascade": True})
+    assert presence.status_code == 404, presence.text
+    assert load_task_result(tmp_path, "presence-tree")["status"] == "running"
+    assert "presence-tree" not in ci.active_intents(tmp_path)
+    assert pooled.status_code in (200, 202), pooled.text
+    assert pooled.status_code == 202 or load_task_result(tmp_path, "pooled-tree")["status"] == "cancelled"

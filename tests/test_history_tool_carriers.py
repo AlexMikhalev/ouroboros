@@ -469,6 +469,28 @@ def test_the_history_cursor_survives_child_admission_and_changes_on_conversion(t
     assert view() != before, "a conversion changes what Main shows"
 
 
+def test_a_project_rooms_cursor_changes_when_a_conversion_moves_its_rows_away(tmp_path):
+    """A task's resolved room outranks the room its rows were written to, so binding a
+    task of room A to room B changes what A shows: A's open cursor must not survive."""
+    from ouroboros.gateway.history_paging import room_view_fingerprint
+    from ouroboros.projects_registry import all_task_bindings, bind_task_to_project, create_project
+    from ouroboros.task_results import write_task_result
+
+    room_a = create_project(tmp_path, "room-a", name="Room A")
+    write_task_result(tmp_path, "root-a", "running", root_task_id="root-a", chat_id=room_a["chat_id"])
+    write_task_result(tmp_path, "kid-a", "running", delegation_role="subagent", parent_task_id="root-a",
+                      root_task_id="root-a", chat_id=room_a["chat_id"])
+    view = lambda: room_view_fingerprint(  # noqa: E731
+        room_a["chat_id"], {room_a["chat_id"]}, [], all_task_bindings(tmp_path))
+    before = view()
+    write_task_result(tmp_path, "kid-a2", "running", delegation_role="subagent", parent_task_id="root-a",
+                      root_task_id="root-a", chat_id=room_a["chat_id"])
+    assert view() == before, "a child's admission keeps room A's open cursor"
+    room_b = create_project(tmp_path, "room-b", name="Room B")
+    bind_task_to_project(tmp_path, "kid-a", room_b["id"], origin={"absent": "system"})
+    assert view() != before, "moving kid-a's rows to room B changes what room A shows"
+
+
 def test_census_rows_carry_started_at_and_never_ts(tmp_path, monkeypatch):
     """The carrier rule tells a parent anchor (its child's ts) from a census anchor by the ts alone:
     the real census producer stamps ``started_at`` on every row and never a ``ts``."""
