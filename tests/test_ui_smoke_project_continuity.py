@@ -225,7 +225,7 @@ def test_ui_smoke_stale_history_rebuild_keeps_owner_bubble(direct_server_with_da
                     f'.chat-bubble.user[data-client-message-id="{cmid}"] .msg-routing-annotation'
                 )
                 annotation.wait_for(state="visible", timeout=5_000)
-                assert "Delivered to task" in annotation.inner_text()
+                assert "Message saved for task" in annotation.inner_text()
 
                 # Reconnect-driven full rebuild replays the STALE response.
                 page.evaluate(
@@ -239,7 +239,7 @@ def test_ui_smoke_stale_history_rebuild_keeps_owner_bubble(direct_server_with_da
                 )
                 assert survivor.count() == 1
                 assert "please keep this message visible" in survivor.inner_text()
-                assert "Delivered to task" in survivor.locator(
+                assert "Message saved for task" in survivor.locator(
                     ".msg-routing-annotation"
                 ).inner_text()
             finally:

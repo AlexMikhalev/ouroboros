@@ -21,8 +21,9 @@ the same WS chat and HTTP cancel surfaces the SPA drives.
 DETERMINISM. "Mid-turn" is not a sleep. The loopback model HOLDS the turn's first
 tool-bearing round on a ``ModelGate`` (harness): the request thread blocks until the
 scenario releases it, so the owner's stop provably lands while the turn is inside
-a model round, the endpoint's typed "still live" is the ONLY answer it can give
-(a turn cannot reach its round boundary while its round is held), and the armed
+a model round, the endpoint's typed "stopping the task is not yet confirmed" is
+the ONLY answer it can give (a turn cannot reach its round boundary while its
+round is held), and the armed
 control, the toast and the marker are all read back DURABLY before the release.
 Everything else is durable-event polling over ``ArtifactOracle`` readers.
 
@@ -35,7 +36,8 @@ WHAT S26 ASSERTS, in order:
    ``_is_direct_chat=true`` and the client_message_id link (``task_started`` is a
    session-only live log, never persisted);
 2. STOP-NOW over the UI's ``POST /api/tasks/{id}/cancel`` (empty body = immediate)
-   mid-round is NOT 404: the typed 503 "still live" naming the task; the
+   mid-round is NOT 404: the typed 503 "stopping the task is not yet confirmed"
+   naming the task; the
    cooperative control is ARMED — exactly one ``finalize_now`` row with the
    direct-turn reason in the canonical mailbox; the durable intent is open with
    the forensic trail requested(http_single, single) → claimed → claim_released
@@ -182,7 +184,7 @@ S26_PROBE = (f"[{S26_MARKER}] List the repository root and keep listing it "
 # loop_round_limits._handle_direct_turn_hard_stop's typed no-candidate answer).
 S26_TOAST_TEXT = "The owner stopped chat turn"
 S26_STOP_TEXT = "The owner stopped this chat turn"
-S26_STILL_LIVE = "still live"
+S26_STOP_UNCONFIRMED = "stopping the task is not yet confirmed; the system keeps trying to complete the stop"
 S26_NOT_ACTIVE = "task not found or not active"
 
 
@@ -358,7 +360,7 @@ def test_s26_direct_chat_turn_owner_stop_mid_round_is_typed_and_ends_the_turn(
                 first = server.cancel_task(task_id)
                 assert first.get("status") == 503, first
                 first_body = first.get("body") or {}
-                assert S26_STILL_LIVE in str(first_body.get("error") or ""), first
+                assert S26_STOP_UNCONFIRMED == str(first_body.get("error") or ""), first
                 assert first_body.get("task_id") == task_id, first
                 controls = _mailbox_controls(server.data_root, task_id)
                 assert len(controls) == 1, controls
@@ -366,7 +368,7 @@ def test_s26_direct_chat_turn_owner_stop_mid_round_is_typed_and_ends_the_turn(
                 assert control_reason == REASON_OWNER_STOPPED_DIRECT_TURN, controls
                 # The durable intent: minted by the legacy immediate shape (the
                 # tree's own reader says IMMEDIATE), claim released back to
-                # ``requested`` for the sweep with the typed "still live" error.
+                # ``requested`` for the sweep with the typed stop-unconfirmed error.
                 intent = oracle.cancel_intents().get(task_id) or {}
                 assert intent, oracle.cancel_intents()
                 assert stop_policy(intent) == STOP_POLICY_IMMEDIATE, intent
@@ -398,7 +400,7 @@ def test_s26_direct_chat_turn_owner_stop_mid_round_is_typed_and_ends_the_turn(
                 # 3. A SECOND stop while armed: typed and idempotent.
                 second = server.cancel_task(task_id)
                 assert second.get("status") == 503, second
-                assert S26_STILL_LIVE in str((second.get("body") or {}).get("error") or ""), second
+                assert S26_STOP_UNCONFIRMED == str((second.get("body") or {}).get("error") or ""), second
                 assert len(_mailbox_controls(server.data_root, task_id)) == 1, "the stop was re-armed"
                 assert len(_toast_rows(oracle, task_id)) == 1, "the owner was toasted twice"
                 assert gate.matched == 1 and gate.held == 1, (gate.matched, gate.held)

@@ -1065,12 +1065,12 @@ export function positiveTaskTerminalFact(row) {
 }
 
 /**
- * Whether an unkeyed live row ends the unscoped Main turn, by its typed kind. An
- * incident report, a note Ouroboros left for this moment and a skill's notice arrive
- * in the middle of a conversation and conclude nothing.
+ * Whether an unkeyed live row ends the unscoped Main turn: only a legacy model final does.
+ * Voice confers no finality (DESIGN), so a System row concludes nothing; one answering a
+ * submission names its `client_message_id`, and only that `Sending...` settles.
  */
 export function unkeyedFrameEndsTurn(row) {
-    return !['terminal_incident', 'reminder', 'skill_notice'].includes(String(row?.system_type || ''));
+    return String(row?.role || '') !== 'system';
 }
 
 /**
@@ -1292,7 +1292,7 @@ export function routingAnnotationText(annotation) {
     }
     if (status === 'project_unavailable') return tr('routing.project_unavailable', 'Project is unavailable');
     const labels = {
-        mailbox_delivery: 'Delivered to task',
+        mailbox_delivery: 'Message saved for task',  // a recorded mailbox write, never a read receipt
         steer_task: 'Steered task',
         promote_chat_to_task: 'Started task',
         route_to_project: 'Routed to project',

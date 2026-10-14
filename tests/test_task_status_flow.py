@@ -2253,6 +2253,8 @@ def test_handle_schedule_task_depth_rejection_writes_failed_status(tmp_path, mon
     assert data["status"] == STATUS_FAILED
     assert "depth limit" in data["result"]
     assert sent and "depth limit" in sent[0][1]
+    # The owner's sentence, complete on its own (a later addendum appends after its period).
+    assert sent[0][1].startswith("⚠️ Task rejected: subtask depth limit (") and sent[0][1].endswith(") exceeded.")
     assert sent[0][2]["is_progress"] is True
     assert sent[0][2]["progress_meta"]["delegation_role"] == "subagent"
     assert sent[0][2]["progress_meta"]["status"] == STATUS_FAILED
@@ -2632,6 +2634,31 @@ def test_handle_schedule_task_fails_fast_when_worker_pool_unavailable(tmp_path, 
     data = read_result(tmp_path, "ghost1")
     assert data["status"] == STATUS_FAILED
     assert data.get("reason_code") == "workers_unavailable"
+    # Two readers, two texts (#1403): the parent model's stored result keeps its full
+    # instruction; the owner's card row (text and the error the web card body reads)
+    # carries the producer's owner sentence, with one warning mark.
+    assert "do the work inline yourself, or retry after /restart" in data["result"]
+    assert len(sent) == 1
+    _chat, text, kwargs = sent[0]
+    assert text == "⚠️ Task ghost1 not scheduled: worker pool unavailable."
+    meta = kwargs["progress_meta"]
+    assert meta["error"] == "Task ghost1 not scheduled: worker pool unavailable."
+    assert meta["subagent_event"] == "rejected" and meta["subagent_task_id"] == "ghost1"
+    assert kwargs["system_type"] == "subagent_admission_notice"
+
+
+def test_subagent_rejection_without_owner_sentence_keeps_its_factual_detail(tmp_path):
+    """No producer sentence: the factual detail is shown as written, never filtered."""
+    from supervisor.events_schedule_task import _reject_schedule_task
+
+    sent = []
+    ctx = SimpleNamespace(DRIVE_ROOT=tmp_path, send_with_budget=lambda *a, **k: sent.append((a, k)))
+    detail = "Subagent rejected: schedule_subagent requires objective and expected_output."
+    _reject_schedule_task(ctx, tid="kid1", chat_id=1, delegation_role="subagent", parent_id="root1",
+                          root_task_id="root1", role="", result_fields={}, detail=detail)
+    (_chat, text), kwargs = sent[0]
+    assert text == "⚠️ " + detail and kwargs["progress_meta"]["error"] == detail
+    assert read_result(tmp_path, "kid1")["result"] == detail
 
 
 def test_handle_task_done_skips_workspace_readonly_subagent_artifacts(tmp_path, monkeypatch):

@@ -50,7 +50,8 @@ def _promote_retained_correction(root, data, monkeypatch):
         current_chat_id=1, task_metadata={"main_routing_manifest": {
             "final_results": [_task_result_ground_truth(load_task_result(data, "first"))]}})
     response = control_routing._promote_chat_to_task(
-        router, "Finish the retained correction", predecessor_task_id="first", workspace="none")
+        router, "Finish the retained correction", title="Retained correction",
+        predecessor_task_id="first", workspace="none")
     assert "durably scheduled" in response, response
     assert len(pending) == 1 and "predecessor_task_id" not in pending[0]
     snapshot = json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))

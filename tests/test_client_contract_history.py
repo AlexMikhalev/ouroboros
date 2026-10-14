@@ -63,7 +63,7 @@ def _produce(chat) -> None:
 def _live_key(frame: dict):
     """The identity docs/CLIENT_CONTRACT.md §5 tells a client to merge a live frame by."""
     kind = frame["type"]
-    if kind == "chat" and frame.get("client_message_id"):
+    if kind == "chat" and frame.get("role") == "user" and frame.get("client_message_id"):
         return ("owner", frame["client_message_id"])
     if kind == "quiz":
         return ("quiz", frame["task_id"], frame["quiz_id"])
@@ -75,7 +75,7 @@ def _live_key(frame: dict):
 
 def _row_key(row: dict):
     """The same identity, read from a history row."""
-    if row.get("client_message_id"):
+    if row.get("role") == "user" and row.get("client_message_id"):
         return ("owner", row["client_message_id"])
     if row.get("msg_type") == "quiz":
         return ("quiz", row["task_id"], row["quiz"]["quiz_id"])
@@ -128,6 +128,27 @@ def test_the_same_stored_row_keeps_its_history_id_across_reads(chat):
     after = {row["history_id"]: _row_key(row) for row in second["messages"]}
     assert before.items() <= after.items()
     assert len(after) == len(before) + 1
+
+
+def test_system_submission_correlation_is_not_the_owner_rows_identity(chat):
+    from ouroboros.task_finalization import host_operation_reply_kwargs
+
+    chat.bridge.handle_web_message("/status", client_message_id="cm-status", chat_id=1)
+    message_bus.send_with_budget(
+        1, "Status is available.", role="system", system_type="command_reply",
+        **host_operation_reply_kwargs(None, "", "cm-status"),
+    )
+    frames = [frame for frame in chat.frames if frame["type"] == "chat"]
+    assert [frame["role"] for frame in frames] == ["user", "system"]
+    assert all(frame["client_message_id"] == "cm-status" for frame in frames)
+    assert len({_live_key(frame) for frame in frames}) == 2
+    status, body = _read(chat.root)
+    assert status == 200
+    for frame in frames:
+        matches = [row for row in body["messages"] if _row_key(row) == _live_key(frame)]
+        assert len(matches) == 1 and matches[0]["role"] == frame["role"]
+    system, = [row for row in body["messages"] if row["role"] == "system"]
+    assert not system.get("client_message_id"), "live correlation is not stored owner identity"
 
 
 def test_a_refused_cursor_keeps_the_response_shape_and_echoes_the_cursor(chat):

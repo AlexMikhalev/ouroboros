@@ -172,7 +172,7 @@ test('a timeout-retry root gains Cancel run: the host marker is the truth', () =
     // The shared thread predicate owns Main/Project routing (server project_thread
     // stamp + known project set) — behaviour is node-tested in
     // chat_thread_routing.test.js; here we pin only that Chat routes through it.
-    assert.match(chat, /return chatThreadAccepts\(msg, isMain, chatId, state\.projectChatIds\);/);
+    assert.match(chat, /const isMyThread = msg => chatThreadAccepts\(msg, isMain, chatId, state\.projectChatIds\);/);
     assert.match(chat, /updateLiveCardFromProgressMessage\(msg, \{ grantCancelAuthority: true \}\)/);
     assert.doesNotMatch(chat, /frameRoot === taskId\) *&&[\s\S]{0,80}markTaskCancelable/);
     // ...and the eligibility reducer still refuses subagent/finished/reusable cards,
@@ -229,7 +229,7 @@ test('a failed cancel reconciles through the shared helper before touching the b
     // the button re-enabled.
     const chat = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8')
         .replace(/\r\n/g, '\n');
-    const failure = chat.slice(chat.indexOf('showToast(`Cancel failed:'));
+    const failure = chat.slice(chat.indexOf('showToast(`Stop not confirmed:'));
     const branch = failure.slice(0, 2200);
     // The shared seam runs BEFORE any button re-enable.
     const reconcileAt = branch.indexOf('reconcileCancelCardFromDetail(record, taskId, stored)');

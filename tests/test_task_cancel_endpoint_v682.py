@@ -204,7 +204,7 @@ def test_a_failing_teardown_is_reported_and_recorded_never_swallowed(tmp_path, m
     # ok:true for a cancellation that did not happen) and is also recorded as a
     # durable owner-visible incident. The server does not crash either way.
     assert response.status_code == 503
-    assert "still live" in response.json()["error"]
+    assert "stopping the task is not yet confirmed; the system keeps trying to complete the stop" == response.json()["error"]
     log_path = tmp_path / "logs" / "supervisor.jsonl"
     rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     errors = [row for row in rows if row.get("type") == "task_cancel_cascade_error"]
@@ -348,7 +348,7 @@ def test_cascade_answers_only_after_the_teardown_and_reports_an_unsettled_tree(t
     with _client(tmp_path) as client:
         unsettled = client.post("/api/tasks/root/cancel", json={"cascade": True})
     assert unsettled.status_code == 503
-    assert "still live" in unsettled.json()["error"]
+    assert "stopping the task is not yet confirmed; the system keeps trying to complete the stop" == unsettled.json()["error"]
 
 
 def test_single_task_cancel_reports_a_refusal_instead_of_a_false_404(tmp_path, monkeypatch):
@@ -362,7 +362,7 @@ def test_single_task_cancel_reports_a_refusal_instead_of_a_false_404(tmp_path, m
     with _client(tmp_path) as client:
         refused = client.post("/api/tasks/root/cancel")
     assert refused.status_code == 503
-    assert "still live" in refused.json()["error"]
+    assert "stopping the task is not yet confirmed; the system keeps trying to complete the stop" == refused.json()["error"]
 
     monkeypatch.setattr(q, "cancel_task_custody", lambda tid: q.CANCEL_NOT_FOUND)
     with _client(tmp_path) as client:

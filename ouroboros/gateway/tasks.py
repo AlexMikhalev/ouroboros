@@ -1255,7 +1255,7 @@ async def api_task_cancel(request: Request) -> JSONResponse:
                 )
                 if not settled:
                     return json_error(
-                        "subtree cancellation did not settle; the tree is still live",
+                        "stopping the task is not yet confirmed; the system keeps trying to complete the stop",
                         503,
                         task_id=task_id,
                     )
@@ -1273,8 +1273,9 @@ async def api_task_cancel(request: Request) -> JSONResponse:
         except Exception as exc:
             return json_exception(exc, 503)
         if outcome == CANCEL_FAILED:
+            # Custody failure does not prove the worker is still alive; the intent stays open.
             return json_error(
-                "cancellation did not settle; the task is still live",
+                "stopping the task is not yet confirmed; the system keeps trying to complete the stop",
                 503, task_id=task_id,
             )
         if outcome != CANCEL_CANCELLED:
@@ -1321,7 +1322,7 @@ async def api_task_cancel(request: Request) -> JSONResponse:
             # The teardown refused or failed while the subtree is STILL live: an
             # ok:true here would report a cancellation that did not happen.
             return json_error(
-                "subtree cancellation did not settle; the tree is still live",
+                "stopping the task is not yet confirmed; the system keeps trying to complete the stop",
                 503, task_id=task_id,
             )
     except Exception as exc:

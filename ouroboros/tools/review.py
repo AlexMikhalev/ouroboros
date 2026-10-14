@@ -85,7 +85,7 @@ def get_tools():
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "claim": {"type": "string", "description": "Final claim or task result the agent intends to release."},
+                        "claim": {"type": "string", "description": "Complete result in its final form: these are the bytes submitted for review; if the task finishes with them, a root's owner reads them as your reply and a child's parent as your report."},
                         "goal": {"type": "string", "description": "Original task goal."},
                         "evidence": {"type": "object", "description": "Tool trace, artifacts, tests and observations. tool_trajectory_indices selects zero-based records from the host's complete retained trajectory, materialized with corpus-SHA addresses. Bounded/missing records stay partial/unavailable; your prose stays agent-supplied evidence."},
                         "checklist": {"type": "string", "default": "", "description": "Optional acceptance checklist."},

@@ -467,7 +467,7 @@ def test_project_activity_stays_out_of_main_static_contract():
     assert "mirrorProject" not in fanout
     # Every Chat instance enters through the shared thread gate. Its Main arm
     # still excludes both server-stamped and already-known Project frames.
-    assert "return chatThreadAccepts(msg, isMain, chatId, state.projectChatIds);" in fanout
+    assert "const isMyThread = msg => chatThreadAccepts(msg, isMain, chatId, state.projectChatIds);" in fanout
     activity = (root / "web" / "modules" / "chat_activity.js").read_text(encoding="utf-8")
     main_gate = activity[
         activity.index("export function mainThreadAccepts"):

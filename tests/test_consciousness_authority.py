@@ -391,7 +391,7 @@ def test_promote_from_a_wake_mints_a_consciousness_root_through_the_real_admissi
         event_queue=types.SimpleNamespace(
             put_nowait=lambda event: (captured.update(event), _handle_promote_chat_to_task(event, supervisor))),
     )
-    out = _promote_chat_to_task(ctx, "audit the logs", workspace="none", predecessor_task_id="")
+    out = _promote_chat_to_task(ctx, "audit the logs", title="Log audit", workspace="none", predecessor_task_id="")
     assert out.startswith("OK: task"), out
     # The event carries the origin by value and nothing the wake asked for is stripped.
     assert captured["initiator"] == "consciousness" and captured["consciousness_autonomy"] == "act"
@@ -433,7 +433,7 @@ def test_route_to_project_from_a_wake_mints_a_consciousness_root_too(_promote_ro
         event_queue=types.SimpleNamespace(
             put_nowait=lambda event: (captured.update(event), _handle_promote_chat_to_task(event, supervisor))),
     )
-    out = _route_to_project(ctx, "racer", "audit the logs", predecessor_task_id="")
+    out = _route_to_project(ctx, "racer", "audit the logs", title="Project work", predecessor_task_id="")
     assert "Routed to project" in out, out
     assert captured["initiator"] == "consciousness"
     assert captured["usage_category"] == "consciousness_task"
@@ -458,7 +458,7 @@ def test_route_to_project_from_an_owner_turn_stays_unstamped(_promote_root):
         task_id="owner-turn", is_direct_chat=True, project_id="", task_contract={},
         task_metadata={"client_message_id": "cm-1"},
     )
-    _route_to_project(ctx, "racer", "audit the logs", predecessor_task_id="")
+    _route_to_project(ctx, "racer", "audit the logs", title="Project work", predecessor_task_id="")
     [evt] = ctx.pending_events
     assert "initiator" not in evt and "usage_category" not in evt
 
@@ -922,14 +922,15 @@ def test_a_wake_continues_a_result_its_routing_manifest_makes_addressable(tmp_pa
     facts = {"main_routing_manifest": {"final_results": [preview]}}
 
     routed = _wake_routing_ctx(tmp_path, **facts)
-    out = _route_to_project(routed, "racer", "Continue the racer", predecessor_task_id="racer-old")
+    out = _route_to_project(routed, "racer", "Continue the racer", title="Project work", predecessor_task_id="racer-old")
     assert out.startswith("⚠️ ROUTE_UNCONFIRMED"), out
     [route_evt] = routed.pending_events
     assert route_evt["predecessor_task_id"] == "racer-old"
     assert route_evt["predecessor_authority_source"] == preview["authority_source"]
 
     promoted = _wake_routing_ctx(tmp_path, **facts)
-    _promote_chat_to_task(promoted, "Finish the racer", workspace="none", predecessor_task_id="racer-old")
+    _promote_chat_to_task(promoted, "Finish the racer", title="Racer finish",
+                          workspace="none", predecessor_task_id="racer-old")
     [promote_evt] = promoted.pending_events
     assert promote_evt["predecessor_task_id"] == "racer-old"
     assert promote_evt["predecessor_authority_source"] == preview["authority_source"]
@@ -945,11 +946,11 @@ def test_a_wake_starts_fresh_work_with_no_predecessor_and_needs_no_manifest(tmp_
 
     routed = _wake_routing_ctx(tmp_path)
     assert _route_to_project(routed, "racer", "Start a separate experiment",
-                             predecessor_task_id="").startswith("⚠️ ROUTE_UNCONFIRMED")
+                             title="Project work", predecessor_task_id="").startswith("⚠️ ROUTE_UNCONFIRMED")
     assert "predecessor_authority_source" not in routed.pending_events[0]
 
     promoted = _wake_routing_ctx(tmp_path)
-    _promote_chat_to_task(promoted, "audit the logs", workspace="none", predecessor_task_id="")
+    _promote_chat_to_task(promoted, "audit the logs", title="Log audit", workspace="none", predecessor_task_id="")
     assert "predecessor_task_id" not in promoted.pending_events[0]
 
 
@@ -965,13 +966,14 @@ def test_a_wake_without_the_manifest_continues_a_settled_root_and_still_refuses_
     preview = _addressable_result(tmp_path)
 
     routed = _wake_routing_ctx(tmp_path)
-    out = _route_to_project(routed, "racer", "Continue the racer", predecessor_task_id="racer-old")
+    out = _route_to_project(routed, "racer", "Continue the racer", title="Project work", predecessor_task_id="racer-old")
     assert out.startswith("⚠️ ROUTE_UNCONFIRMED"), out
     [route_evt] = routed.pending_events
     assert route_evt["predecessor_authority_source"] == preview["authority_source"]
 
     promoted = _wake_routing_ctx(tmp_path)
-    _promote_chat_to_task(promoted, "Finish the racer", workspace="none", predecessor_task_id="racer-old")
+    _promote_chat_to_task(promoted, "Finish the racer", title="Racer finish",
+                          workspace="none", predecessor_task_id="racer-old")
     [promote_evt] = promoted.pending_events
     assert promote_evt["predecessor_task_id"] == "racer-old"
     assert promote_evt["initiator"] == "consciousness"

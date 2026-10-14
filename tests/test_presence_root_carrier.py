@@ -102,7 +102,7 @@ def test_a_presence_childs_promote_and_follow_up_stay_its_bindings_work_under_th
             put_nowait=lambda event: emitted.append(event) or _handle_promote_chat_to_task(event, handler_ctx)),
     )
 
-    out = _promote_chat_to_task(child_ctx, "Compile the full audit", project_name="Widened",
+    out = _promote_chat_to_task(child_ctx, "Compile the full audit", title="Full audit", project_name="Widened",
                                 workspace_root=str(tmp_path / "elsewhere"), source="api", predecessor_task_id="")
 
     authority = {"binding_id": BINDING}
@@ -155,7 +155,8 @@ def test_a_presence_childs_promote_and_follow_up_stay_its_bindings_work_under_th
     plain_ctx = types.SimpleNamespace(**{**vars(child_ctx), "task_id": plain["id"], "task_metadata": _worker_metadata(plain),
                                          "task_contract": plain["task_contract"],
                                          "event_queue": types.SimpleNamespace(put_nowait=plain_events.append)})
-    _promote_chat_to_task(plain_ctx, "Owner-side work", project_name="Chosen", predecessor_task_id="")
+    _promote_chat_to_task(plain_ctx, "Owner-side work", title="Owner-side work",
+                          project_name="Chosen", predecessor_task_id="")
     assert not {"presence", "presence_binding_authority"} & set(plain_events[0])
     assert plain_events[0]["project_name"] == "Chosen"
 

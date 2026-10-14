@@ -109,8 +109,8 @@ def test_promote_chat_to_task_receives_its_public_source(tmp_path, probe, monkey
     monkeypatch.setattr(control_routing, "_emit_and_wait_for_routing",
                         lambda _ctx, evt: events.append(dict(evt)) or ("live", {"status": "scheduled"}))
 
-    result = registry.execute_result("promote_chat_to_task", {"objective": "Fix the clone", "source": GIT_URL,
-                                                             "predecessor_task_id": ""})
+    result = registry.execute_result("promote_chat_to_task", {"objective": "Fix the clone", "title": "Clone fix",
+                                                             "source": GIT_URL, "predecessor_task_id": ""})
 
     assert "got multiple values" not in result.text, result.text
     assert "accepted and durably scheduled" in result.text, result.text

@@ -159,8 +159,8 @@ def _drive_cancel_task_event(evt: Dict[str, Any], ctx: Any) -> None:
     A second host acknowledgement here (#624) reached the global owner chat as
     an untyped assistant row with no task identity — duplicate presentation in
     Main Chat, and for a pending-drop race it misstated the causal history.
-    Only the FAILED outcome still speaks: the task is live, the intent stays
-    open, and the owner needs the typed incident."""
+    Only the FAILED outcome still speaks: the stop is unconfirmed and its intent
+    stays open, possibly after worker death while terminal files remain unready."""
     task_id = str(evt.get("task_id") or "").strip()
     requested_task_id = str(evt.get("requested_task_id") or "").strip()
     display_task_id = requested_task_id or task_id
@@ -179,8 +179,9 @@ def _drive_cancel_task_event(evt: Dict[str, Any], ctx: Any) -> None:
         incident_meta["cancel_physical_task_id"] = task_id
     ctx.send_with_budget(
         int(owner_chat_id),
-        f"❌ cancel {display_task_id or '?'} did not settle — the task is still live; "
-        "the durable cancel intent stays open and the supervisor watchdog retries (event)",
+        # Custody failure does not prove the worker is still alive.
+        f"❌ Stopping task {display_task_id or '?'} is not yet confirmed. "
+        "The system keeps trying to complete the stop.",
         is_progress=True,
         task_id=display_task_id,
         progress_meta=incident_meta,

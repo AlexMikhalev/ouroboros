@@ -211,8 +211,9 @@ def test_cancel_failure_is_progress_incident_not_chat_bubble(monkeypatch) -> Non
     assert len(sent) == 1
     args, kwargs = sent[0]
     assert args[0] == 9
-    assert args[1].startswith("❌ cancel cancel-me")
-    assert "watchdog" in args[1]  # the intent stays open and is retried
+    # Failure proves no confirmed stop, not a live worker: publication can still be pending.
+    assert args[1] == ("❌ Stopping task cancel-me is not yet confirmed. "
+                       "The system keeps trying to complete the stop.")
     assert kwargs == {
         "role": "system", "system_type": "cancellation_notice",
         "is_progress": True,
@@ -255,7 +256,7 @@ def test_cancel_event_keeps_requested_retry_id_for_owner_presentation(monkeypatc
 
     assert captured[0] == ("custody", "physical-retry-7f3a")
     args, kwargs = captured[1]
-    assert args[1].startswith("❌ cancel stable-root")
+    assert args[1].startswith("❌ Stopping task stable-root is not yet confirmed.")
     assert "physical-retry-7f3a" not in args[1]
     assert kwargs["task_id"] == "stable-root"
     assert kwargs["progress_meta"] == {

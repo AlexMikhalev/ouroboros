@@ -664,7 +664,7 @@ def _finish_captured_chat_turn(
     arms the cooperative stop and waits its short bound
     (``worker_chat_lane.stop_direct_chat_turn``); custody settles the intent
     against what the turn published, or releases the claim so the sweep
-    retries — the HTTP caller then sees "still live", never a fabricated
+    retries — the HTTP caller then sees "not yet confirmed", never a fabricated
     ``cancelled`` row over a turn that is still running. A turn that ENDED
     without publishing a terminal (the lane's error path writes none) takes
     the same miss finalizer a pooled task does — ``cancelled`` with the
@@ -672,8 +672,8 @@ def _finish_captured_chat_turn(
     row that no control can reach again. A turn that was already gone before
     the stop could be armed is the pooled lane's ``already_settled`` — unless
     its paid post-task synthesis is still billing on the in-process worker
-    (``turn`` is then None): the claim is released with the typed "still
-    live" error so the durable immediate intent stays open for the
+    (``turn`` is then None): the claim is released with the typed "not yet
+    confirmed" error so the durable immediate intent stays open for the
     pipeline's per-stage gate, and the sweep settles ``already_settled``
     once the worker drops its in-flight key."""
     from supervisor.task_lifecycle import (

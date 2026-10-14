@@ -200,7 +200,7 @@ def test_stop_now_finalizes_the_direct_turn_cooperatively_and_answers_ok(tmp_pat
 
 def test_stop_now_on_a_turn_inside_a_long_step_answers_still_live_and_keeps_the_stop_armed(tmp_path, monkeypatch):
     """A turn that has not reached a round boundary within the wait bound:
-    503 "still live", the durable row is NOT rewritten as cancelled (the
+    503 "not yet confirmed", the durable row is NOT rewritten as cancelled (the
     miss finalizer must never run for a live turn), the control stays in
     the mailbox and the intent stays open for the sweep's next custody pass."""
     import ouroboros.config as config
@@ -216,7 +216,7 @@ def test_stop_now_on_a_turn_inside_a_long_step_answers_still_live_and_keeps_the_
         cancel = client.post(f"/api/tasks/{TURN_ID}/cancel", json={"stop_policy": "immediate"})
 
     assert cancel.status_code == 503, cancel.text
-    assert "still live" in cancel.json()["error"]
+    assert "not yet confirmed" in cancel.json()["error"]
     assert load_task_result(tmp_path, TURN_ID)["status"] == "running"
     assert "finalize_now" in _mailbox_kinds(tmp_path)
     from ouroboros.cancel_intents import active_intent
@@ -406,7 +406,7 @@ def test_settled_row_does_not_hide_a_still_busy_direct_turn_from_custody(tmp_pat
     """Scope-review finding: the pipeline persists the terminal BEFORE post-task
     cognition, so a direct turn can be settled on disk and still busy (and
     spending). Custody must not take the settled fast path past a live turn:
-    it arms the stop and answers "still live" until the agent is really done,
+    it arms the stop and answers "not yet confirmed" until the agent is really done,
     then settles already_settled against the stored terminal."""
     import ouroboros.config as config
 
@@ -583,7 +583,7 @@ def test_live_ownership_holds_through_the_inflight_synthesis_and_ends_with_its_c
 def test_stop_now_during_the_inflight_synthesis_is_accepted_and_stops_the_remaining_paid_stages(tmp_path, monkeypatch):
     """The audit-point-4 class, end to end over the UI's endpoint: the turn's
     answer has landed and only its paid synthesis is running. Stop-now is
-    ACCEPTED (typed 503 "still live", the durable immediate intent minted and
+    ACCEPTED (typed 503 "not yet confirmed", the durable immediate intent minted and
     left open by custody — never 404), the pipeline's per-stage gate then
     skips every remaining paid stage and discloses them; the next stop after
     the checkpoint settled answers the honest 404 with the intent drained."""
@@ -600,7 +600,7 @@ def test_stop_now_during_the_inflight_synthesis_is_accepted_and_stops_the_remain
         with _client(tmp_path) as client:
             first = client.post(f"/api/tasks/{TURN_ID}/cancel", json={"stop_policy": "immediate"})
             assert first.status_code == 503, first.text
-            assert "still live" in first.json()["error"], first.text
+            assert "not yet confirmed" in first.json()["error"], first.text
             intent = active_intent(tmp_path, TURN_ID) or {}
             assert intent.get("state") == INTENT_REQUESTED, intent
             assert "post-task synthesis" in str(intent.get("last_error") or ""), intent
@@ -628,7 +628,7 @@ def test_cascade_stop_now_during_the_inflight_synthesis_keeps_the_intent_open_an
     landed (stored ``completed``, no queue row, no busy agent) and only its paid
     synthesis is running. The cascade's PHYSICAL postcondition must see the
     in-flight synthesis as live — the answer is the single lane's typed 503
-    "still live", the cascade-scope immediate intent stays OPEN for the
+    "not yet confirmed", the cascade-scope immediate intent stays OPEN for the
     pipeline's per-stage gate, and the remaining paid stages are skipped.
     (rc.15 review MAJOR 1: the postcondition re-judged custody's refusal
     against the stored ``completed`` alone, settled the intent and answered
@@ -648,7 +648,7 @@ def test_cascade_stop_now_during_the_inflight_synthesis_keeps_the_intent_open_an
         with _client(tmp_path) as client:
             first = client.post(f"/api/tasks/{TURN_ID}/cancel", json=body)
             assert first.status_code == 503, first.text
-            assert "still live" in first.json()["error"], first.text
+            assert "not yet confirmed" in first.json()["error"], first.text
             intent = active_intent(tmp_path, TURN_ID) or {}
             assert intent.get("state") == INTENT_REQUESTED, intent
             assert intent.get("scope") == SCOPE_CASCADE, intent

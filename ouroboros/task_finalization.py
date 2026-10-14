@@ -89,10 +89,11 @@ def terminal_custody_notice_text(result: Dict[str, Any]) -> str:
     Issue #1006: the custody fact is a typed row of the task card, so the live
     send and the outbox replay carry it as its own field instead of folding it
     into the host notice's text. Single-body transports keep the joined text.
+    That row is read by the owner, so it omits empty categories (#1403).
     """
     from ouroboros.delegate_terminal import terminal_custody_notice
 
-    return terminal_custody_notice(result)
+    return terminal_custody_notice(result, owner_row=True)
 
 
 def terminal_notice_text(result: Dict[str, Any]) -> str:
@@ -133,20 +134,25 @@ def provider_terminal_body(text: str, notice: str) -> str:
     return (text + "\n\n" if text else "") + "[Host status]\n" + notice
 
 
-def host_operation_reply_kwargs(source_ref: Any, terminal_status: str = "") -> Dict[str, Any]:
+def host_operation_reply_kwargs(
+    source_ref: Any, terminal_status: str = "", client_message_id: str = "",
+) -> Dict[str, Any]:
     """Correlate a host-accepted reply without inventing a durable task result.
 
     Callers supply the host-captured source, never a transport's arbitrary
     metadata. An empty status marks an acknowledgement, not completion.
+    ``client_message_id`` names the owner submission a System row answers, so the
+    live frame settles that submission's ``Sending...`` and no other; it is not
+    persisted and confers no finality.
     """
     from ouroboros.project_dialogue import owner_message_ref_is_valid
 
-    if not owner_message_ref_is_valid(source_ref):
-        return {}
-    meta = {"origin_message_ref": dict(source_ref)}
-    if terminal_status:
-        meta["task_terminal_status"] = terminal_status
-    return {"progress_meta": meta}
+    meta: Dict[str, Any] = {"client_message_id": str(client_message_id)} if client_message_id else {}
+    if owner_message_ref_is_valid(source_ref):
+        meta["origin_message_ref"] = dict(source_ref)
+        if terminal_status:
+            meta["task_terminal_status"] = terminal_status
+    return {"progress_meta": meta} if meta else {}
 
 
 def stamp_root_final_phase(

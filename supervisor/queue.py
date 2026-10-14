@@ -658,7 +658,8 @@ def _cancel_task_by_id_single(task_id: str) -> bool:
 
 
 def queue_deep_self_review_task(reason: str, model: str = "", force: bool = False, chat_id: Optional[int] = None,
-                                origin: Optional[Dict[str, Any]] = None, reviewer: str = "") -> Optional[str]:
+                                origin: Optional[Dict[str, Any]] = None, reviewer: str = "",
+                                client_message_id: str = "") -> Optional[str]:
     """Queue a deep self-review task.
 
     ``chat_id`` targets a specific chat (e.g. the external transport chat that ran
@@ -669,7 +670,11 @@ def queue_deep_self_review_task(reason: str, model: str = "", force: bool = Fals
     ``reviewer`` is the one enabled catalog row the requester named (id or handle,
     pool member or not); empty runs the Main model (decision 3A). A name that is not
     an enabled row is refused in the requester's chat before any worker is held.
+    ``client_message_id`` is the owner's ``/review`` submission these rows answer.
     """
+    from ouroboros.task_finalization import host_operation_reply_kwargs
+
+    answers = host_operation_reply_kwargs(None, "", client_message_id)
     # Membership, not truthiness: a review asked for from the hidden partition
     # is answered there, not silently re-routed to the owner's main chat.
     target_chat_id = notification_chat_route(chat_id, load_state().get("owner_chat_id"))
@@ -683,7 +688,7 @@ def queue_deep_self_review_task(reason: str, model: str = "", force: bool = Fals
             system_review_row(reviewer)
         except ReviewChangeArgumentError as exc:
             send_with_budget(int(target_chat_id), f"Deep self-review could not be queued: {exc}.",
-                             role="system", system_type="deep_self_review_unavailable")
+                             **answers, role="system", system_type="deep_self_review_unavailable")
             return None
     if (not force) and queue_has_task_type("deep_self_review"):
         return None
@@ -701,17 +706,20 @@ def queue_deep_self_review_task(reason: str, model: str = "", force: bool = Fals
     if admitted.get("_admission_blocked"):
         reason = admitted.get("_worker_pool_disabled_reason") or admitted["_admission_blocked"]
         detail = str(admitted.get("_admission_detail") or "")
-        hint = f" {detail}." if detail else " Use /restart to restore the worker pool."
+        # Restart restores a disabled worker pool and nothing else: a billing,
+        # lookup or fence refusal keeps its own reason without that advice.
+        restart = admitted["_admission_blocked"] == "worker_pool_unavailable"
+        hint = f" {detail}." if detail else " Use /restart to restore the worker pool." if restart else ""
         send_with_budget(
             int(target_chat_id),
             f"Deep self-review could not be queued: {reason}.{hint}",
-            role="system", system_type="deep_self_review_unavailable",
+            **answers, role="system", system_type="deep_self_review_unavailable",
         )
         return None
     persist_queue_snapshot(reason="deep_self_review_enqueued")
     # Typed SYSTEM row: an acknowledgement is never a task's answer, and the bench
     # trajectory reader takes the last UNTYPED outbound row as one.
-    send_with_budget(int(target_chat_id), f"🔎 Deep self-review queued: {tid} ({reason}; reviewer: {reviewer or 'Main'})", role="system", system_type="deep_self_review_queued")
+    send_with_budget(int(target_chat_id), f"🔎 Deep self-review queued: {tid} ({reason}; reviewer: {reviewer or 'Main'})", **answers, role="system", system_type="deep_self_review_queued")
     return tid
 
 

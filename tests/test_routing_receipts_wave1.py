@@ -243,7 +243,7 @@ def _produced_refusals(tmp_path, monkeypatch):
         control_routing, "_promotion_pool_disabled_from_snapshot", lambda _ctx: "crash_storm",
     )
     produced["pool_disabled"] = _promote_chat_to_task(
-        _tool_ctx(tmp_path), "Audit the issue", predecessor_task_id="",
+        _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", predecessor_task_id="",
     )
     monkeypatch.setattr(
         control_routing, "_promotion_pool_disabled_from_snapshot", lambda _ctx: "",
@@ -257,7 +257,7 @@ def _produced_refusals(tmp_path, monkeypatch):
             control_events, "_wait_for_promotion_admission", lambda *_a, _r=admission, **_k: dict(_r),
         )
         produced[key] = _promote_chat_to_task(
-            _tool_ctx(tmp_path), "Audit the issue", project_name="Dinosaurs",
+            _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", project_name="Dinosaurs",
             predecessor_task_id="",
         )
 
@@ -270,7 +270,7 @@ def _produced_refusals(tmp_path, monkeypatch):
         )
         produced[key] = _route_to_project(
             _tool_ctx(tmp_path), project_id="dinosaurs", message="continue there",
-            predecessor_task_id="",
+            title="Project work", predecessor_task_id="",
         )
 
     for key, receipt in (
@@ -364,7 +364,7 @@ def test_an_admitted_promote_names_the_destination_admission_returned(tmp_path, 
     )
 
     out = _promote_chat_to_task(
-        _tool_ctx(tmp_path), "Audit the issue", predecessor_task_id="",
+        _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", predecessor_task_id="",
     )
 
     assert out.startswith("OK: task")
@@ -383,7 +383,7 @@ def test_a_promote_admitted_into_no_project_claims_none(tmp_path, monkeypatch):
     )
 
     out = _promote_chat_to_task(
-        _tool_ctx(tmp_path), "Audit the issue", project_name="Dinosaurs",
+        _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", project_name="Dinosaurs",
         predecessor_task_id="",
     )
 
@@ -403,7 +403,7 @@ def test_an_unconfirmed_promote_names_what_was_requested_as_a_request(tmp_path, 
     )
 
     out = _promote_chat_to_task(
-        _tool_ctx(tmp_path), "Audit the issue", project_name="Dinosaurs",
+        _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", project_name="Dinosaurs",
         predecessor_task_id="",
     )
 
