@@ -30,6 +30,26 @@ _LAST_UNRESOLVED: dict[tuple[str, str], dict] = {}
 ATTEMPTS, COST_PROJECTIONS = "attempt", "cost_projection"
 _ID_FIELDS = {ATTEMPTS: "attempt_ids", COST_PROJECTIONS: "task_ids"}
 _CODE = re.compile(r"[a-z][a-z0-9_.:-]{0,63}")
+# The rows this duty can still act on, ANDed after the verbatim open predicate so SQLite
+# proves the partial index ``attempts_open``: NULL-safe selection before ``_candidate``. Out:
+# other kinds (imported aggregates), rows under a review's custody, abandoned settlements
+# outside the engine (only the explicit OpenRouter command fetches their receipts) and
+# abandoned settlements whose ended engine custody is recorded: once the engine said the
+# call is over, its price is not searched automatically. Their late-receipt right is unchanged.
+_RECOVERABLE = ("COALESCE(kind, 'attempt') = 'attempt' AND COALESCE(review_skill, '') = '' "
+                "AND COALESCE(review_slot_id, '') = '' AND (state IN ('reserved', 'dispatched', 'unresolved') "
+                "OR (COALESCE(provider, '') = 'claudexor' "
+                "AND COALESCE(json_extract(extra, '$.recovery.outcome'), '') NOT IN ('terminal', 'operation_gone')))")
+
+
+def _candidate(row):
+    """The duty's own decision over the selected superset (``REVIEW_CUSTODY_KEYS`` mirrored above)."""
+    from ouroboros._usage_rows import REVIEW_CUSTODY_KEYS
+    from ouroboros.usage_ledger import is_abandoned_settlement
+
+    return (row.get("kind", "attempt") == "attempt" and not any(row.get(key) for key in REVIEW_CUSTODY_KEYS)
+            and (row.get("state") in {"reserved", "dispatched", "unresolved"}
+                 or (row.get("provider") == "claudexor" and is_abandoned_settlement(row))))
 
 
 class _RecoveryGateway:
@@ -213,7 +233,7 @@ def imported_projection_debt(root, buckets, *, degraded=False):
 def _refresh_costs(root: pathlib.Path, reads) -> None:
     from ouroboros import usage_store
     from ouroboros.task_results import validate_task_id
-    from ouroboros.task_store import exists
+    from ouroboros.task_store import task_facts
     from ouroboros.task_status import SETTLED_STATUSES
     from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
     from supervisor.events_task_done import _refresh_terminal_task_cost
@@ -234,21 +254,27 @@ def _refresh_costs(root: pathlib.Path, reads) -> None:
 
     with usage_store.read(root) as txn:
         owners = txn.dirty_owners()
+    ids = {}
+    for owner, _revision in owners:
+        try:
+            ids[owner] = validate_task_id(owner)
+        except ValueError:
+            pass  # System accounting scopes own no task result.
+    try:
+        # Presence precedes the ownership read, for every owner in one statement: an
+        # absent row keeps this exact revision without the fence's authority read, and
+        # the next pass projects a row copied back after the last ledger write.
+        present = set(task_facts(root, where="task_id IN (SELECT value FROM json_each(?))",
+                                 params=(json.dumps(sorted(set(ids.values()))),))) if ids else set()
+    except Exception:
+        present = None  # Only proven absence skips the read; the ownership read reports the rest.
     acknowledged, pending, failures, faults = [], set(), {}, {}
     for owner, revision in owners:
-        try:
-            task_id = validate_task_id(owner)
-        except ValueError:
-            continue  # System accounting scopes own no task result.
+        task_id = ids.get(owner)
+        if task_id is None:
+            continue
         pending.add(task_id)
-        try:
-            # Presence precedes the ownership read: an absent row keeps this exact
-            # revision without the fence's authority read, and the next pass projects
-            # a row copied back after the last ledger write.
-            present = exists(root, task_id)
-        except Exception:
-            present = True  # Only proven absence skips the read; the ownership read reports the rest.
-        if not present:
+        if present is not None and task_id not in present:
             failures[task_id] = "result_absent"
             continue
         try:
@@ -277,7 +303,6 @@ def _refresh_costs(root: pathlib.Path, reads) -> None:
 def reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
     """Close unowned terminal-task attempts; price and remote custody stay separate."""
     from ouroboros import usage_accounting as usage
-    from ouroboros._usage_rows import REVIEW_CUSTODY_KEYS
     from ouroboros.claudexor_daemon import read_owned_gateway
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
     from ouroboros.llm_claudexor import recover_model_attempt
@@ -292,7 +317,7 @@ def reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
 
     root = pathlib.Path(drive_root).resolve()
     with usage_store.read(root) as txn:
-        rows = txn.open_attempts()
+        rows = txn.attempts(f"{usage_store._OPEN_PREDICATE} AND {_RECOVERABLE}")
     reads, eligible, observations, faults = TaskOwnershipRead(root), {}, {}, {}
     # An open attempt keeps its last reason unless this pass observes a new one or
     # proves an outcome: a recovered receipt, a release, a terminal settlement or
@@ -342,18 +367,10 @@ def reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
 
     try:
         for row in rows:
-            kind = row.get("kind", "attempt")
-            if kind not in {"attempt", "usage_baseline_group"} or any(row.get(key) for key in REVIEW_CUSTODY_KEYS):
-                continue
             task_id = str(row.get("task_id") or "")
-            remote = row.get("provider") == "claudexor"
-            abandoned = is_abandoned_settlement(row)
-            if (kind != "attempt"
-                or (row.get("state") not in {"reserved", "dispatched", "unresolved"}
-                    and not (remote and abandoned))):
+            if not _candidate(row) or not eligible_task(task_id):
                 continue
-            if not eligible_task(task_id):
-                continue
+            remote, abandoned = row.get("provider") == "claudexor", is_abandoned_settlement(row)
             probe_key = str(root), row["attempt_id"]
             with _PROBE_LOCK:
                 if probe_key in _PROBING:
@@ -370,8 +387,8 @@ def reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
             try:
                 recovered = None
                 if remote and row.get("state") != "reserved":
-                    # Offline receipts still win, even after a terminal observation
-                    # or during Retry-After. Only the HTTP probe is suppressed.
+                    # Offline receipts still win during Retry-After; only the HTTP probe is
+                    # suppressed. A recorded terminal outcome ends selection (``_RECOVERABLE``).
                     recovered = recover_model_attempt(root, row, gateway_factory=lambda: probe_gateway(row))
                     if recovered is None:
                         _unresolved(observations, row, "receipt_or_terminal_custody_unavailable")

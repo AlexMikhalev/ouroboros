@@ -8,6 +8,7 @@ that owes it. The owner-held sets (``custody_open``, closing custody receipts of
 sets, ``unknowns``, witnesses) are rows of the ``obligations`` table. ``members``
 reads both halves in one transaction; no set is a file any more (the importer
 reads the old set files once, the exporter writes them back for an older body).
+Every set owes work except the declared ``RECORD_SETS``, which are kept facts.
 """
 from __future__ import annotations
 
@@ -20,7 +21,12 @@ from ouroboros.store import StoreError
 BOOT_SETS = ("nonterminal", "synthesis", "terminal_projection", "delegated_runs",
              "promotions", "custody_open", "pending_drives", "upgrade_notices", "unknowns",
              "pause_notices", "pause_notice_receipts")
-RECEIPT_SETS = ("upgrade_notices", "pause_notice_receipts")  # chat receipts: no result derives them
+# Owed work: a task with a row here is not settled (the evidence packer's predicate). A stored set declared
+# in neither tuple owes too (an older or newer body's duty, an imported set file): an unknown duty never packs.
+DUTY_SETS = ("nonterminal", "synthesis", "terminal_projection", "delegated_runs", "promotions", "custody_open",
+             "pending_drives", "unknowns", "pause_notices", "local_custody_witnesses")
+# Kept facts, never owed: chat notice receipts, custody marks, definite start refusals.
+RECORD_SETS = ("upgrade_notices", "pause_notice_receipts", "custody_marks", "custody_refused")
 ObligationsUnavailable = store.StoreError  # the sets are rows: unavailable exactly when the store is
 _FACT_COLUMNS = ("task_id", "headless_child_drive_root", "child_drive_root", "drive_root")
 

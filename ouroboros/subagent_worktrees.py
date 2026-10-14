@@ -1021,6 +1021,13 @@ class _RawBlobWriter:
             raise self._failure(trailing[:200])
 
 
+class RawStagingIncomplete(subprocess.CalledProcessError):
+    """``update-index --index-info`` exited 0, but the index lacks records as sent."""
+
+    def __str__(self) -> str:
+        return self.stderr.decode("utf-8", "replace")
+
+
 def stage_raw_payload_inventory(
     worktree: Path, rel_paths: Any, env: Dict[str, str],
     baseline_modes: Optional[Dict[str, str]] = None,
@@ -1037,6 +1044,9 @@ def stage_raw_payload_inventory(
     with ``baseline_modes`` (capture) regular files pin to the baseline mode for
     existing paths / 100644 for new ones so an executable-bit flip can never
     ride a patch; without it (provisioning/reviewer capture) on-disk modes ride.
+    ``--index-info`` exits 0 even when it skips a path Git refuses (``..``, a
+    ``.git`` component, a Windows device name), so each record is sent in its
+    ``ls-files --stage`` shape and ONE such read must list it back verbatim.
     Returns the paths whose on-disk executable bit diverges from the staged mode.
     """
     root = Path(worktree)
@@ -1058,12 +1068,16 @@ def stage_raw_payload_inventory(
                     if executable != (mode == "100755"):
                         divergent.append(rel)
             sha = writer.write(blob)
-            lines.append(f"{mode} {sha}\t{rel}".encode("utf-8", errors="surrogateescape"))
+            lines.append(f"{mode} {sha} 0\t{rel}".encode("utf-8", errors="surrogateescape"))
         writer.finish()
-    subprocess.run(
-        ["git", "update-index", "-z", "--index-info"],
-        cwd=str(root), capture_output=True, env=env,
-        input=b"\0".join(lines) + b"\0" if lines else b"", check=True)
+    update = subprocess.run(["git", "update-index", "-z", "--index-info"], cwd=str(root), capture_output=True,
+                            env=env, input=b"\0".join(lines) + b"\0" if lines else b"", check=True)
+    listed = set(_git_env(root, "ls-files", "--stage", "-z", env=env).stdout.split(b"\0"))
+    unstaged = [line.partition(b"\t")[2] for line in lines if line not in listed]
+    if unstaged:  # names at most five; Git's own stderr is carried as evidence, never parsed
+        detail = b"update-index exited 0, but the index lacks %d of %d records as sent (%s); git: %s" % (
+            len(unstaged), len(lines), b", ".join(unstaged[:5]), update.stderr.strip()[:300])
+        raise RawStagingIncomplete(update.returncode, update.args, update.stdout, detail)
     return divergent
 
 

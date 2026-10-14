@@ -249,7 +249,8 @@ def _reduce(txn, event: Dict[str, Any], state: Dict[str, Any], marks_by_task: Di
     if tid and (kind in MARK_TYPES or (not rid and kind in (_NUDGE, *_ATTEMPTS))):
         mark = marks_by_task.setdefault(tid, txn.get_row("custody_marks", tid) or {"task_id": tid})
         _mark(mark, event)
-        txn.put_row("custody_marks", tid, mark)
+        if set(mark) - {"task_id"}:  # a review-owned attempt marks nothing: no empty record row
+            txn.put_row("custody_marks", tid, mark)
     return owed
 
 
@@ -419,7 +420,7 @@ def fold(rows) -> Dict[str, Any]:
         "runs": {rid: (vars(entry), HELD if _held(entry) else CLOSED) for rid, entry in state.items()},
         "open": {f"invocation:{iid}": {"request": requests[iid]} for iid in pending_ids},
         "refused": refused,
-        "marks": marks_by_task,
+        "marks": {tid: mark for tid, mark in marks_by_task.items() if set(mark) - {"task_id"}},
     }
 
 

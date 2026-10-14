@@ -4,7 +4,8 @@ The oracle for every staged entry is independent of the writer: the Git blob id
 recomputed from the file's raw bytes (or a symlink's raw target) and the stored
 object's bytes read back. The three real consumers (reviewer capture, skill
 payload provisioning and capture) are driven end to end at a scale where a Git
-process per file would be visible in the process count.
+process per file would be visible in the process count. Git's refusal must
+keep capture copies, or discard a never-started snapshot while preserving its original.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import tracemalloc
 import pytest
 
 from ouroboros import review_checking as rc
-from ouroboros.subagent_worktrees import isolated_git_env, stage_raw_payload_inventory
+from ouroboros.subagent_worktrees import RawStagingIncomplete, isolated_git_env, stage_raw_payload_inventory
 from tests.test_delegated_skill_payload import (  # noqa: F401
     _owned_gateway_uses_each_test_transport,
     _payload_ctx,
@@ -30,6 +31,8 @@ from tests.test_delegated_skill_payload import (  # noqa: F401
 from tests.test_review_checking import _git, author  # noqa: F401
 
 POSIX = os.name != "nt"
+# A loader-visible file on every platform whose path every Git refuses to index (a .git component).
+_REFUSED = "vendored/.Git/info.txt"
 
 
 def _blob_id(data: bytes) -> str:
@@ -105,7 +108,9 @@ def test_raw_staging_ignores_hostile_attributes_filters_and_config(tmp_path):
         subprocess.run(["git", "config", key, value], cwd=root, env=env, check=True)
     files = {
         ".gitattributes": b"* text eol=crlf filter=probe diff=probe\n*.u16 working-tree-encoding=UTF-16\n",
-        "crlf.txt": b"one\r\ntwo\r\n", "lf.txt": b"one\ntwo", "empty": b"", "nul.bin": b"\x00\xff\xfe\r\n",
+        # Not nul.bin: newer Windows creates that file, but Git for Windows refuses a device name as an index
+        # path even with an extension (test_a_windows_device_name_is_staged_or_refused_never_dropped).
+        "crlf.txt": b"one\r\ntwo\r\n", "lf.txt": b"one\ntwo", "empty": b"", "binary.bin": b"\x00\xff\xfe\r\n",
         "text.u16": "héllo\r\n".encode("utf-8"), "big.bin": bytes(range(256)) * 12_289,
         "-dash name.txt": b"leading dash", "ü/naïve.txt": b"precomposed",
         **{f"framing/{i}": payload for i, payload in enumerate(_FRAMING)},
@@ -174,7 +179,8 @@ def test_thousands_of_files_use_one_writer_process_and_never_hold_the_tree(tmp_p
     finally:
         tracemalloc.stop()
 
-    assert [_verb(args) for args in recorder.args] == ["fast-import", "update-index"]
+    # Constant, whatever the count: one writer, one staging call, one index read proving every record landed.
+    assert [_verb(args) for args in recorder.args] == ["fast-import", "update-index", "ls-files"]
     # A whole-tree buffer would hold count*size (48 MiB) at once; one file at a time stays far below.
     assert peak < count * size // 8, peak
     staged = _staged(root, env)
@@ -273,6 +279,43 @@ def test_a_misbehaving_writer_is_never_staged(tmp_path, monkeypatch, fake):
     assert all(proc.returncode is not None for proc in recorder.procs)
 
 
+def test_records_git_refuses_or_replaces_are_never_a_normal_return(tmp_path):
+    root, env = _repo(tmp_path)
+    for rel, data in (("keep.txt", b"old\n"), ("sub/.keep", b""), (_REFUSED, b"inside\n"), ("added.txt", b"added\n")):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(data)
+    assert stage_raw_payload_inventory(root, ["keep.txt"], env) == []
+    (root / "keep.txt").write_bytes(b"new\n")
+    # Real ``update-index --index-info`` exits 0 while skipping each path it refuses: the original helper returned [].
+    with pytest.raises(RawStagingIncomplete) as raised:
+        stage_raw_payload_inventory(root, ["added.txt", "sub/../keep.txt", _REFUSED], env)
+    assert isinstance(raised.value, subprocess.CalledProcessError) and raised.value.returncode == 0
+    assert f"lacks 2 of 3 records as sent (sub/../keep.txt, {_REFUSED})" in str(raised.value), raised.value
+    staged = _staged(root, env)
+    assert staged["keep.txt"] == ("100644", _blob_id(b"old\n"))  # the new bytes never reached the index
+    assert staged["added.txt"] == ("100644", _blob_id(b"added\n")) and _REFUSED not in staged
+    if POSIX:  # a later record replacing an earlier one (file/directory) is no refusal at all; the records show it
+        os.symlink("sub", root / "link")
+        with pytest.raises(RawStagingIncomplete, match=r"lacks 1 of 2 records as sent \(link\)"):
+            stage_raw_payload_inventory(root, ["link", "link/.keep"], env)
+
+
+def test_a_windows_device_name_is_staged_or_refused_never_dropped(tmp_path):
+    root, env = _repo(tmp_path)
+    data = b"\x00\xff\xfe\r\n"
+    (root / "nul.bin").write_bytes(data)
+    if "nul.bin" not in os.listdir(root):
+        assert os.name == "nt"  # only older Windows hands the write to the NUL device
+        pytest.skip("this Windows maps nul.bin to the NUL device: no file exists to stage")
+    try:
+        divergent = stage_raw_payload_inventory(root, ["nul.bin"], env)
+    except RawStagingIncomplete as refused:  # Git for Windows refuses a device name as an index path
+        assert os.name == "nt" and "nul.bin" in str(refused), refused
+        assert "nul.bin" not in _staged(root, env)
+    else:
+        assert divergent == [] and _staged(root, env) == {"nul.bin": ("100644", _blob_id(data))}
+
+
 def _bulk(root: pathlib.Path, count: int, prefix: str) -> dict:
     files = {}
     for i in range(count):
@@ -367,3 +410,73 @@ def test_payload_capture_read_failure_is_a_typed_failed_manifest(tmp_path, monke
     assert note.startswith("staging failed: FileNotFoundError"), note
     assert not (pathlib.Path(capture["manifest_artifact"]).parent / "workspace.patch").exists()
     custody._CUSTODY.clear()
+
+
+def test_reviewer_capture_of_a_path_git_refuses_keeps_the_copy(author, tmp_path, monkeypatch):  # noqa: F811
+    data = tmp_path / "data"
+    source = rc.freeze_checking_source(author, data_root=data, subject=rc.SUBJECT_INDEX)
+    area = pathlib.Path(rc.prepare_seat_area(data, "task", "refused", source))
+    (area / "f.txt").write_bytes(b"reviewed\n")
+    (area / _REFUSED).parent.mkdir(parents=True)
+    (area / _REFUSED).write_bytes(b"reviewer output\n")
+    # Natively a reviewer's nul.bin on Windows. Where core.ignorecase is true, Git's untracked walk skips a .Git
+    # directory before staging (a separate inventory gap), so the request is completed here; the helper and
+    # Git's refusal stay real.
+    monkeypatch.setattr("ouroboros.subagent_worktrees.stage_raw_payload_inventory",
+                        lambda root, paths, env: stage_raw_payload_inventory(root, {*paths, _REFUSED}, env))
+
+    evidence = rc.capture_seat_evidence(data, "task", "refused", release=True)
+
+    assert evidence["status"] == "capture_failed" and "RawStagingIncomplete" in evidence["error"], evidence
+    assert _REFUSED in evidence["error"] and area.is_dir()  # never released over a dropped file
+    assert (area / _REFUSED).read_bytes() == b"reviewer output\n" and (area / "f.txt").read_bytes() == b"reviewed\n"
+
+
+def test_payload_capture_of_a_path_git_refuses_fails_typed_and_keeps_the_snapshot(tmp_path, monkeypatch):
+    from ouroboros import delegate_custody as custody
+    from ouroboros.subagent_worktrees import find_execution_snapshot, provision_payload_snapshot
+    from ouroboros.tools.delegate import _capture_terminal_patch
+    from ouroboros.tools.subagent_integration import _integrate_delegated_patch
+
+    ctx = _payload_ctx(tmp_path, monkeypatch)
+    skill = _seed_skill(tmp_path / "data")
+    handle = provision_payload_snapshot(target_root=skill, task_id="t-payload", snapshot_id="snapP")
+    exec_root = pathlib.Path(handle.path)
+    (exec_root / "notes.txt").write_bytes(b"DONE\n")
+    (exec_root / _REFUSED).parent.mkdir(parents=True)
+    (exec_root / _REFUSED).write_bytes(b"loader-visible\n")
+    custody._CUSTODY.clear()
+    entry = _payload_entry(handle, skill)
+    capture = _capture_terminal_patch(ctx, entry)
+
+    assert capture["status"] == "failed" and entry.patch_captured is False, capture
+    manifest = pathlib.Path(capture["manifest_artifact"])
+    note = json.loads(manifest.read_text(encoding="utf-8"))["note"]
+    assert note.startswith("staging failed: RawStagingIncomplete") and _REFUSED in note, note
+    assert not (manifest.parent / "workspace.patch").exists()
+    assert "INTEGRATE_DELEGATED_CAPTURE_FAILED" in _integrate_delegated_patch(ctx, "run-p1", "apply", "")
+    assert (skill / "notes.txt").read_text(encoding="utf-8") == "PENDING\n" and not (skill / "vendored").exists()
+    assert find_execution_snapshot("snapP") is not None and (exec_root / _REFUSED).is_file()  # snapshot kept
+    custody._CUSTODY.clear()
+
+
+def test_payload_provisioning_of_a_path_git_refuses_never_starts_or_leaves_a_snapshot(tmp_path, monkeypatch):
+    from ouroboros import delegate_custody as custody
+    from ouroboros.delegate_shared import delegate_payload
+    from ouroboros.subagent_worktrees import find_execution_snapshot
+    from ouroboros.tools.delegate_integration import _provision_payload_snapshot
+
+    ctx = _payload_ctx(tmp_path, monkeypatch)
+    skill = _seed_skill(tmp_path / "data")
+    (skill / _REFUSED).parent.mkdir(parents=True)
+    (skill / _REFUSED).write_bytes(b"loader-visible\n")
+
+    record = {"target_root": str(skill), "resource_ref": {}}
+    handle, refusal = _provision_payload_snapshot(ctx, custody.custody_root(ctx), record, "snapR")
+
+    assert handle is None, handle  # a ready snapshot would carry a baseline without the refused file
+    payload = delegate_payload(refusal)
+    assert payload["reason"] == "execution_snapshot_failed" and payload["definitely_unrun"] is True, payload
+    assert "RawStagingIncomplete" in payload["detail"] and _REFUSED in payload["detail"], payload
+    assert list((tmp_path / "snaps").glob("dlgp_*")) == [] and find_execution_snapshot("snapR") is None
+    assert not (skill / ".git").exists() and (skill / _REFUSED).read_bytes() == b"loader-visible\n"

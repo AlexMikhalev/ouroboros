@@ -30,7 +30,7 @@ def test_owner_row_revision_is_task_local_and_ignores_receipts(root):
     second = packer.task_stamps(root, "a")
     assert second != first
     obligations.add(root, "custom_duty", "run:2", {"task_id": "b"})
-    for name in obligations.RECEIPT_SETS:
+    for name in obligations.RECORD_SETS:
         obligations.add(root, name, "a", {})
     assert packer.task_stamps(root, "a") == second
     obligations.remove(root, "custom_duty", "run:1")
