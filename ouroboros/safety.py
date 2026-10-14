@@ -1,9 +1,10 @@
 """
 Policy-based safety check for tool calls.
 
-Built-ins use explicit policy entries; unknown tools default to one light-model
-check. Structured resource admission precedes the assessment; review evidence
-and actual execution remain independent of the Cyber advisory decision.
+Built-ins carry an explicit policy (a ``TOOL_POLICY`` entry, else their own
+``ToolEntry`` declaration); unknown tools default to one light-model check.
+Structured resource admission precedes the assessment; review evidence and
+actual execution remain independent of the Cyber advisory decision.
 """
 
 import ast
@@ -31,11 +32,16 @@ log = logging.getLogger(__name__)
 POLICY_SKIP = "skip"
 POLICY_CHECK = "check"
 POLICY_CHECK_CONDITIONAL = "check_conditional"
+POLICY_VALUES = frozenset({POLICY_SKIP, POLICY_CHECK, POLICY_CHECK_CONDITIONAL})
 
-# Unknown/agent-created tools get one cheap LLM recheck.
+# A tool with neither a table entry nor a valid declaration (every extension
+# and MCP tool among them) gets one cheap LLM recheck.
 DEFAULT_POLICY = POLICY_CHECK
 
-# Must cover every built-in exported from ouroboros/tools; invariant-tested.
+# Protected per-tool policy. It outranks a built-in's own declaration
+# (``ToolEntry.safety_policy``), so editing a tool module never lowers a listed
+# tool. Each built-in has exactly one home, here or its declaration
+# (invariant-tested).
 TOOL_POLICY: Dict[str, str] = {
     # Typed host maintenance enforces existing actor/resource/Pause authority.
     "inspect_harness": POLICY_SKIP,
@@ -1345,12 +1351,17 @@ def check_safety(
     ctx: Optional[Any] = None,
     python_resolution: Optional[Any] = None,
     resolved_binding: Optional[Any] = None,
+    declared_policy: str = "",
 ) -> Tuple[bool, str]:
-    """Return ``(allowed, warning_or_error)`` for one tool call."""
+    """Return ``(allowed, warning_or_error)`` for one tool call.
+
+    ``declared_policy`` is a first-party ``ToolEntry``'s own declaration; a
+    ``TOOL_POLICY`` entry outranks it and an invalid value is ``DEFAULT_POLICY``."""
     # Arguments can be None for no-parameter tool calls.
     tool_name = str(tool_name or "").strip()
     arguments = arguments or {}
-    policy = TOOL_POLICY.get(tool_name, DEFAULT_POLICY)
+    declared = declared_policy if isinstance(declared_policy, str) else ""
+    policy = TOOL_POLICY.get(tool_name) or (declared if declared in POLICY_VALUES else DEFAULT_POLICY)
 
     if policy == POLICY_SKIP:
         return True, ""

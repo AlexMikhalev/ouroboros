@@ -503,7 +503,7 @@ def _load_checklist_section(layer: str = "body") -> str:
         archive = archive_path.read_text(encoding="utf-8").strip()
     except OSError as e:
         # Fail-closed like the checklist itself: the archive is the same
-        # binding reviewer contract (FROZEN_CONTRACT_PATHS) — silently
+        # binding reviewer contract as the checklist — silently
         # reviewing without the standing disclosures would let settled
         # owner-accepted narrowings be re-litigated.
         raise FileNotFoundError(
