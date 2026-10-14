@@ -99,7 +99,9 @@ def _admit(runtime, event):
 
     before = json.loads(json.dumps(event))
     events._handle_schedule_task(event, runtime.supervisor)
-    assert event == before, "Admission mutated the producer's event"
+    transition = event.get("_scheduled_transition_id")
+    assert transition
+    assert event == {**before, "_scheduled_transition_id": transition}, "Admission mutated the producer's intent"
     assert len(runtime.queue.PENDING) == 1, runtime.sent
     task = runtime.queue.PENDING[0]
     assert task["id"] == event["task_id"]
@@ -110,7 +112,7 @@ def _admit(runtime, event):
     row = load_task_result(runtime.drive, task["id"])
     assert row["status"] == "scheduled"
     assert row["delegation_admission"]["status"] == "accepted"
-    assert row["delegation_admission"]["transition_id"]
+    assert row["delegation_admission"]["transition_id"] == transition
     for carrier in (event, task, task["metadata"], row):
         assert not set(_DERIVED).intersection(carrier)
     return task

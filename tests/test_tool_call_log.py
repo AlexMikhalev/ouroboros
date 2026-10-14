@@ -335,18 +335,24 @@ def test_a_failure_after_the_wait_ended_leaves_the_settlement_to_the_worker(tmp_
     from ouroboros import budget_pause
 
     release = threading.Event()
+    real_owner = budget_pause._tool_owner_release
+    def failing_owner(row):
+        finish = real_owner(row)
+        def failing_release():
+            finish()
+            raise RuntimeError("custody release failed")
+        return failing_release
 
-    def failing_release():
-        raise RuntimeError("custody release failed")
-
-    monkeypatch.setattr(budget_pause, "register_tool_future", lambda *_args: failing_release)
+    monkeypatch.setattr(budget_pause, "_tool_owner_release", failing_owner)
     registry = _Registry(tmp_path, lambda *_: release.wait(timeout=10) and ToolResult(status="ok", code="OK", text="late"))
-    with pytest.raises(RuntimeError):
-        _call(registry, tmp_path, timeout=1)
-    release.set()
+    try:
+        with pytest.raises(RuntimeError):
+            _call(registry, tmp_path, timeout=1)
+    finally:
+        release.set()
     logs = tmp_path / "child" / "logs" / "tools.jsonl"
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and len(_rows(logs)) < 3:
+    while time.monotonic() < deadline and not any(row.get("status") == "ok" for row in _rows(logs)):
         time.sleep(0.05)
     assert [(row["type"], row.get("status")) for row in _rows(logs)] == [
         ("tool_call_started", None), ("tool_call_timeout", None), ("tool_call", "ok")]

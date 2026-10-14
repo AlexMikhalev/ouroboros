@@ -999,13 +999,22 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 return registry.execute_result(name, args)
 
         with abandoned_on_timeout(timeout) as submit:
-            future = submit(execute)
+            from ouroboros.tool_custody import submit_tool_future
+            from ouroboros.tool_call_log import new_invocation
+            context = getattr(registry, "_ctx", None)
+            from ouroboros.model_wait import current_model_wait
+            owner = current_model_wait()
+            attempt = owner.attempt if owner is not None else getattr(context, "task_attempt", 1)
+            invocation = new_invocation("", {}, attempt)
+            future, release = submit_tool_future(context, invocation["invocation_id"], name, submit, execute)
             try:
                 return future_result(future, timeout)
             except (TimeoutError, concurrent.futures.TimeoutError):
                 if future.done():
                     raise
                 raise _ToolAbandoned(tool_timeout_text(name, timeout)) from None
+            finally:
+                release()
 
     def _execute_inspection_call(
         self, registry: Any, tc: Dict[str, Any], validation_by_id: Dict[str, Any],

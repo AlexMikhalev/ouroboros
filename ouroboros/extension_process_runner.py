@@ -463,12 +463,17 @@ def _child_process(
     }
     kwargs.update(subprocess_new_group_kwargs())
     kwargs = merge_hidden_kwargs(kwargs)
+    from ouroboros.tool_custody import external_handoff
+    confirmed = lambda: None
+    proc = None
     try:
         from ouroboros.owner_pause import operation_start
-
+        confirmed = external_handoff("extension_process")
         with operation_start():
             proc = subprocess.Popen(cmd, **kwargs)  # noqa: S603 - argv is host-constructed
     except BaseException:
+        if proc is None:
+            confirmed()
         try:
             input_path.unlink(missing_ok=True)
         except OSError:
@@ -487,6 +492,7 @@ def _child_process(
             from ouroboros.process_custody import record_process
             record_process(drive_root, pid=proc.pid, cmd=cmd,
                            purpose=f"extension_route:{payload.get('skill_name')}", scope="session")
+            confirmed()
         if on_spawn is not None:
             # Popen has already dispatched the child.  A failed durable
             # disclosure must stop it rather than leave an untracked external
@@ -505,6 +511,8 @@ def _child_process(
                 proc.wait(timeout=EXTENSION_CHILD_CLEANUP_GRACE_SEC)
             except Exception:
                 pass
+            if proc.poll() is not None:
+                confirmed()
             with _subprocess_lock:
                 _active_subprocesses.discard(proc)
             try:

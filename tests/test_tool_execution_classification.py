@@ -835,24 +835,32 @@ def test_timed_out_stateful_tool_retires_the_generation_and_closes_on_the_worker
     # executor was retired WITHOUT cancelling that queued work.
     (kind, fn, args) = executor.queued[-1]
     assert kind == "cleanup" and executor.retired and not executor.reset_called
-    # The TOOL submit goes through the generation-bound wrapper (a revert to
-    # plain _execute_single_tool would reopen the pre-capture window).
+    # Execute the actual submitted forwarding chain. A queued call bound to
+    # the retired generation must refuse, not enter its replacement's body.
     _, submitted, submitted_args = executor.queued[0]
     assert isinstance(submitted.__self__, Context) and submitted.__name__ == "run"
     assert submitted.__self__.get(marker) == "owning-execution"
-    assert submitted_args[0] is lte._execute_browser_tool_bound
-    assert closed == []
-    # The hung worker creates one more handle AFTER the detach — it lands in
-    # the retired generation and is reaped too.
-    late_page = SimpleNamespace(close=lambda: closed.append("late_page"))
-    bs.page = late_page
-    fn(*args)  # the queued cleanup runs on the worker once the call settles
-    assert closed == ["late_page", "context", "browser", "playwright"]
-    # The cognitive lease closes on the CLEANUP future's settlement —
-    # structurally after the close, never before.
-    assert len(cleanup_future.callbacks) == 1
-    # Idempotence: a second sweep of the retired generation closes nothing.
-    fn(*args)
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    worker_ids = []
+    def on_worker(function, *values):
+        worker_ids.append(threading.get_ident())
+        return function(*values)
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        refused = worker.submit(on_worker, submitted, *submitted_args).result(timeout=5)
+        assert "BROWSER_SESSION_RETIRED" in refused["result"]
+        hung.set_result(refused)
+        assert closed == []
+        # Even a handle created AFTER detach belongs to the retiring worker.
+        late_page = SimpleNamespace(close=lambda: closed.append("late_page"))
+        bs.page = late_page
+        worker.submit(on_worker, fn, *args).result(timeout=5)
+        assert closed == ["late_page", "context", "browser", "playwright"]
+        assert len(cleanup_future.callbacks) == 1
+        for callback in cleanup_future.callbacks:
+            worker.submit(on_worker, callback, cleanup_future).result(timeout=5)
+        worker.submit(on_worker, fn, *args).result(timeout=5)
+    assert len(set(worker_ids)) == 1 and worker_ids[0] != threading.get_ident()
     assert closed == ["late_page", "context", "browser", "playwright"]
 
 
