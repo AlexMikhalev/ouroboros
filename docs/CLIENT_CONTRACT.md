@@ -242,7 +242,7 @@ In a Project response, `window.latest_message` names the latest eligible non-own
 
 ### Merging live frames and history
 
-The core writes each stored row and sends its live frame with the same `ts` string (the same characters, not only the same instant), the same `task_id`, `role`, `system_type` and `is_progress`, and for a text row the same words. So a live frame and a history row are the same row when:
+The core writes each stored row and sends its live frame with an identical `ts` string, the same `task_id`, `role`, `system_type`, `is_progress` and `source` (when provided), and for a text row the same words. So a live frame and a history row are the same row when:
 
 | Live frame | History row | Same row when |
 |---|---|---|

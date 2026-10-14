@@ -46,6 +46,9 @@ def _tracked_subprocess_run(cmd, **kwargs):
         kwargs.setdefault("errors", "replace")
     kwargs.setdefault("stdin", subprocess.DEVNULL)
     kwargs.update(subprocess_new_group_kwargs())
+    from ouroboros.tool_custody import external_handoff
+    confirmed = external_handoff("shell_process")
+    proc = None
     _spawning_subprocesses += 1
     try:
         if _panic_requested:
@@ -66,6 +69,12 @@ def _tracked_subprocess_run(cmd, **kwargs):
             record_path = _register_process(pathlib.Path(binding["drive_root"]), {
                 "record_type": "foreground", "executor_type": "local", "executor_id": "host",
                 "host_pid": proc.pid})
+            if record_path is not None:
+                confirmed()
+    except BaseException:
+        if proc is None:
+            confirmed()
+        raise
     finally:
         _spawning_subprocesses -= 1
     try:
@@ -79,6 +88,7 @@ def _tracked_subprocess_run(cmd, **kwargs):
         raise
     finally:
         if proc.poll() is not None:
+            confirmed()
             from ouroboros.workspace_executor import _forget_process
             _active_subprocesses.discard(proc)
             _forget_process(record_path)

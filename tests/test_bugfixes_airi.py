@@ -108,7 +108,8 @@ def test_reconnect_merges_user_rows_without_clearing_visible_history():
     # Keyed reconciliation replaces the former clear-and-rebuild requirement:
     # physical rows dedupe and an offline/local echo is adopted in place.
     assert "opts.historyId ? `history:${opts.historyId}` : legacyKey" in add
-    assert "if (messageKey && seenMessageKeys.has(messageKey))" in add
+    # A retained DOM row or a remembered key suppresses a late live copy.
+    assert "if (prior || (messageKey && seenMessageKeys.has(messageKey))) return false;" in add
     assert "node.dataset.clientMessageId === clientMessageId" in add
     assert "stampHistoryNode(prior, opts.historyId, opts.historyPosition);" in add
     assert "seenMessageKeys.clear();" not in sync + replay

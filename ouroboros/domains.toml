@@ -391,6 +391,7 @@ D20 = "Presence"
 "ouroboros/post_task_synthesis.py" = "D01"
 "ouroboros/post_task_evolution.py" = "D15"
 "ouroboros/preflight_node.py" = "D06"
+"ouroboros/preflight_receipts.py" = "D06"  # unsigned durable full-gate test receipts + the reviewer execution exhibit
 "ouroboros/preflight_runner.py" = "D06"
 "ouroboros/test_environment.py" = "D06"
 "ouroboros/presence_admission.py" = "D20"

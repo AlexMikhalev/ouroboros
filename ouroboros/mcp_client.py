@@ -839,9 +839,12 @@ async def _call_tool_async(
         raise RuntimeError(
             "MCP client SDK not installed. Add `mcp>=1.10` to the runtime."
         )
-    from ouroboros.owner_pause import submit_async_operation, submit_async_preparation
+    from ouroboros.owner_pause import submit_async_operation, submit_async_preparation, OwnerPauseRefused, _TOOL_OPERATION
+    from ouroboros.model_wait import ModelWaitInterrupted
+    from ouroboros.usage_accounting import UsageAccountingError
 
     async def _do() -> ToolResult:
+        refusal = None
         async with _transport_factory(cfg) as transport_ctx:
             streams = transport_ctx
             if isinstance(streams, tuple):
@@ -850,8 +853,20 @@ async def _call_tool_async(
                 read, write = streams.read, streams.write  # pragma: no cover
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                result = await submit_async_operation(None, session.call_tool, tool_name, arguments)
-                return _tool_result_from_call_result(result)
+                try:
+                    pending = submit_async_operation(None, session.call_tool, tool_name, arguments)
+                except (OwnerPauseRefused, ModelWaitInterrupted, UsageAccountingError) as exc:
+                    refusal = exc  # Unsent; first join both contexts normally.
+                else:
+                    result = await pending
+        if refusal is not None:
+            # Failed/unfinished cleanup never reaches this positive phase fact.
+            active = _TOOL_OPERATION.get()
+            if active:
+                active[2]["settled"] = True
+            refusal.mcp_unsent_joined = True
+            raise refusal
+        return _tool_result_from_call_result(result)
 
     # Launch admission precedes transport entry: a stdio server starts there.
     return await asyncio.wait_for(submit_async_preparation(_do), timeout=timeout_sec)
@@ -1415,6 +1430,8 @@ class MCPManager:
             timeout = self._tool_timeout_sec
         if resolution.status != "callable":
             return resolution.refusal(prefixed_name)
+        from ouroboros.tool_custody import external_handoff
+        confirmed = external_handoff("mcp_transport")
         try:
             result = _run_async(
                 lambda: self._async_call_tool(cfg, tool.raw_name, arguments or {}, timeout),
@@ -1431,6 +1448,11 @@ class MCPManager:
             )
             return ToolResult(status="timeout", code="MCP_TIMEOUT", text=text)
         except BaseException as exc:  # noqa: BLE001 - any failure is reported
+            from ouroboros.owner_pause import OwnerPauseRefused, _TOOL_OPERATION
+            active = _TOOL_OPERATION.get()
+            if getattr(exc, "mcp_unsent_joined", False) or (
+                    isinstance(exc, OwnerPauseRefused) and active and active[2].get("not_started")):
+                confirmed()  # no call, with either no transport entry or joined cleanup
             body = f"⚠️ MCP_TOOL_ERROR: {type(exc).__name__}: {_redact_error_text(exc, cfg)}"
             text = _model_facing_result(cfg, tool.raw_name, body)
             return ToolResult(
@@ -1443,6 +1465,7 @@ class MCPManager:
         from ouroboros.owner_pause import record_mcp_call_returned
 
         record_mcp_call_returned(prefixed_name)
+        confirmed()
         text = _model_facing_result(
             cfg,
             tool.raw_name,

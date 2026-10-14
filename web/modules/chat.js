@@ -2206,19 +2206,16 @@ export function createChatInstance({
             taskId,
         });
         const messageKey = opts.historyId ? `history:${opts.historyId}` : legacyKey;
-        if (opts.historyId || _historyReplayActive) {
-            const prior = opts.historyId
-                ? historyNodes(opts.historyId).find(node => node.classList.contains('chat-bubble'))
-                : Array.from(messagesDiv.querySelectorAll('.chat-bubble')).find(node => node.dataset.messageKey === legacyKey);
-            if (prior) {
-                rememberMessageKey(messageKey);
-                const originChanged = syncSavedProjectContext(prior, opts.originProjected, opts.originId);
-                return chatDecision.renderRoutingDecision(prior, opts.chatAnnotation) || originChanged;
-            }
+        const prior = opts.historyId
+            ? historyNodes(opts.historyId).find(node => node.classList.contains('chat-bubble'))
+            : Array.from(messagesDiv.querySelectorAll('.chat-bubble')).find(node => node.dataset.messageKey === legacyKey);
+        if (prior && (opts.historyId || _historyReplayActive)) {
+            rememberMessageKey(messageKey);
+            const originChanged = syncSavedProjectContext(prior, opts.originProjected, opts.originId);
+            return chatDecision.renderRoutingDecision(prior, opts.chatAnnotation) || originChanged;
         }
-        if (messageKey && seenMessageKeys.has(messageKey)) {
-            return false;
-        }
+        // History may land first; a live copy adds no new facts.
+        if (prior || (messageKey && seenMessageKeys.has(messageKey))) return false;
         if (opts.historyId) {
             const prior = Array.from(messagesDiv.querySelectorAll('.chat-bubble')).find(node =>
                 (clientMessageId && node.dataset.clientMessageId === clientMessageId)

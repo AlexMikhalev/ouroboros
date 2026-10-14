@@ -63,7 +63,7 @@ def test_registry_dispatch_forwards_every_public_keyword_to_the_tool(tmp_path, p
     assert result.text == "probe source={source} function={function} note={note}".format(**expected)
     (call,) = calls
     assert call["ctx"] is registry._ctx and {k: call[k] for k in expected} == expected
-    assert call["thread"] != threading.get_ident()  # the not-handed branch: run_operation's worker
+    assert call["thread"] == threading.get_ident()  # the direct caller owns this prepared body
     assert _claims(tmp_path) == {}  # the invocation settled through the same forwarder
 
 
