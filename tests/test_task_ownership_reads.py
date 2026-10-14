@@ -24,19 +24,13 @@ def env(tmp_path, monkeypatch):
 
 
 def count_reads(monkeypatch):
-    """Every result parse, signed (the ownership reads) or not, counted and kept off the lock."""
     counts = Counter()
-    load, load_signed = task_results.load_task_result, task_results.load_signed_task_result
+    load = task_results.load_task_result
     def read(root, tid, **kw):
         assert not queue._queue_lock._is_owned(), 'result parse under queue lock'
         counts[tid] += 1
         return load(root, tid, **kw)
-    def read_signed(root, tid, **kw):
-        assert not queue._queue_lock._is_owned(), 'result parse under queue lock'
-        counts[tid] += 1
-        return load_signed(root, tid, **kw)
     monkeypatch.setattr(task_results, 'load_task_result', read)
-    monkeypatch.setattr(task_results, 'load_signed_task_result', read_signed)
     return counts
 
 

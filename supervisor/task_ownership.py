@@ -32,7 +32,7 @@ class TaskOwnershipRead:
         return signature(self.root, task_id)
 
     def load(self, task_id):
-        from ouroboros.task_results import load_signed_task_result
+        from ouroboros.task_results import load_task_result
         from supervisor import queue
 
         if task_id in self.errors:
@@ -45,7 +45,7 @@ class TaskOwnershipRead:
         if queue._queue_lock._is_owned():
             raise RuntimeError('prepare durable ownership before taking the queue lock')
         try:
-            row, stamp = load_signed_task_result(self.root, task_id, strict=True)
+            row, stamp = load_task_result(self.root, task_id, strict=True, signed=True)
             self.rows[task_id] = row or {}
             if stamp is None:
                 from ouroboros.owner_pause import read_fence

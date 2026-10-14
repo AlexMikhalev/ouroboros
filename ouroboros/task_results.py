@@ -7,7 +7,7 @@ import json
 import logging
 import pathlib
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros.cost_projection import COST_ALIAS_PAIRS, COST_OPENNESS_FIELDS, normalize_task_result_cost_planes
 from ouroboros.task_store import list_documents, patch_document, read_document
@@ -730,41 +730,32 @@ def _normalize_swarm_efficiency(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load_task_result(
-    drive_root: Any, task_id: str, *, strict: bool = False,
-) -> Optional[Dict[str, Any]]:
+    drive_root: Any, task_id: str, *, strict: bool = False, signed: bool = False,
+) -> Any:
     """Read one exact result through schema admission, tolerating old fan-out names.
 
     Fail-soft refusal quarantines with a batched event and returns None; strict
     refusal raises without moving, so unreadable identities cannot be readmitted.
-    Neither mode materializes deliverables or independent state axes."""
+    Neither mode materializes deliverables or independent state axes. ``signed``
+    returns ``(result, signature)`` from ONE read transaction: an ownership check
+    (``supervisor.task_ownership``) re-checks the stamp of the very body it holds,
+    so a writer landing between two reads is a change and a busy store is unknown,
+    never a false change."""
     try:
         tid = validate_task_id(task_id)
     except ValueError:
         if strict:
             raise
-        return None
-    return _admitted_result(drive_root, tid, read_document(drive_root, tid), strict=strict)
-
-
-def load_signed_task_result(
-    drive_root: Any, task_id: str, *, strict: bool = False,
-) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[int, str]]]:
-    """``load_task_result`` plus the store signature of the very body it returns, from ONE
-    read transaction: an ownership check (``supervisor.task_ownership``) re-checks that
-    stamp later instead of a second read's, so a writer landing between two reads is
-    seen as a change and a busy store as unknown, never as a false change."""
-    tid = validate_task_id(task_id)
-    data, stamp = read_document(drive_root, tid, signed=True)
-    return _admitted_result(drive_root, tid, data, strict=strict), stamp
-
-
-def _admitted_result(drive_root: Any, tid: str, data: Optional[Dict[str, Any]], *, strict: bool) -> Optional[Dict[str, Any]]:
+        return (None, None) if signed else None
+    data, stamp = read_document(drive_root, tid, signed=True) if signed else (read_document(drive_root, tid), None)
     if data is None:
         if strict:
             _refuse_occupied(drive_root, tid, write=False)
-        return None  # This read saw absence even if a writer publishes immediately after it.
-    _admit_stored(data, tid, strict=strict, noun="task result authority")
-    return _normalize_swarm_efficiency(data)
+        result = None  # This read saw absence even if a writer publishes immediately after it.
+    else:
+        _admit_stored(data, tid, strict=strict, noun="task result authority")
+        result = _normalize_swarm_efficiency(data)
+    return (result, stamp) if signed else result
 
 
 def _refuse_occupied(drive_root: Any, task_id: str, *, write: bool) -> None:
