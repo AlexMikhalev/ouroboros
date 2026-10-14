@@ -977,7 +977,7 @@ def test_a_frozen_default_row_dispatches_on_the_lane_it_was_resolved_on(tmp_path
     resolve, pin = _panel_resolver(tmp_path, {
         "USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "owner/local-model.gguf", "OUROBOROS_MODEL": "owner-local"})
     local_panel = resolve(_HOST_TASK_PANEL, **pin)
-    assert local_panel["pool"] == ["owner-local (local)"] * 3  # the local-only factory pool: three runs of Main
+    assert local_panel["pool"] == ["owner-local (local)"]  # the local-only factory pool: Main once (owner Q5=A)
     for name, inherited in (("clean", {}), ("stale-lane-flag", {"USE_LOCAL_MAIN": "0"}),
                             ("remote-credential", {"OPENAI_API_KEY": "isolation-fixture-second-provider-value"})):
         host = resolve(_HOST_TASK_PANEL, **pin, **inherited)

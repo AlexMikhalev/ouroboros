@@ -577,9 +577,10 @@ def _factory(doc):
 def test_factory_review_rows_mint_the_shipped_panel_for_each_install_class():
     from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
 
-    # An OpenRouter key: the three shipped reviewers.
+    # An OpenRouter key: the three shipped reviewers, three different models.
     rows = factory_review_rows({"OPENROUTER_API_KEY": "configured"})
     assert [row["route"]["target_id"] for row in rows] == list(OPENROUTER_REVIEW_DEFAULTS["triad"])
+    assert len({row["route"]["target_id"] for row in rows}) == 3
     assert [row["subagent_id"] for row in rows] == ["review-1", "review-2", "review-3"]
     assert all(row["review_eligible"] is True and row["minted_from"] == "factory_default" for row in rows)
     assert all("delivery" not in row for row in rows)  # the catalog default (native) applies
@@ -593,21 +594,24 @@ def test_factory_review_rows_mint_the_shipped_panel_for_each_install_class():
     # A Main the provider cannot run is named, never replaced by the provider's default (owner 2A/4A).
     assert _factory({"DEEPSEEK_API_KEY": "configured", "OUROBOROS_MODEL": "openai/gpt-5.5"}) == []
     assert all(t.startswith("deepseek::") for t, _e in _factory({"DEEPSEEK_API_KEY": "configured"}))
-    # No router and no single direct provider: the shipped panel's three seats on the
-    # reachable Main in its full route identity (three independent runs; twins are
-    # allowed, the quorum stays 2 of 3) — a compatible route, a local Main (labelled
-    # local, so delegation runs it locally too).
+    # No router and no provider panel (owner Q5=A): ONE row on the reachable Main in its full
+    # route identity, never copies of it (each copy pays a run and adds no second opinion; the
+    # one answer decides, quorum 1 of 1) — a compatible route, a local Main (labelled local, so
+    # delegation runs it locally too), a managed Main with its account pin.
     from ouroboros.review_model_routes import adaptive_quorum
 
     compatible = _factory({"OPENAI_COMPATIBLE_API_KEY": "configured", "OPENAI_COMPATIBLE_BASE_URL": "http://x",
                            "OUROBOROS_MODEL": "openai-compatible::glm-5.3"})
-    assert compatible == [("openai-compatible::glm-5.3", "high")] * 3 and adaptive_quorum(len(compatible)) == 2
+    assert compatible == [("openai-compatible::glm-5.3", "high")] and adaptive_quorum(len(compatible)) == 1
     local = _factory({"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "owner/model.gguf",
                       "OUROBOROS_MODEL": "owner/local-main"})
-    assert local == [("owner/local-main (local)", "high")] * 3 and adaptive_quorum(len(local)) == 2
+    assert local == [("owner/local-main (local)", "high")] and adaptive_quorum(len(local)) == 1
     assert [row["subagent_id"] for row in factory_review_rows({"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "o/m.gguf",
-                                                               "OUROBOROS_MODEL": "owner/local-main"})] == [
-        "review-1", "review-2", "review-3"]
+                                                               "OUROBOROS_MODEL": "owner/local-main"})] == ["review-1"]
+    managed = factory_review_rows({"OUROBOROS_MODEL": "claudexor::codex=gpt-6-astra",
+                                   "OUROBOROS_MODEL_ACCOUNTS": json.dumps({"main": "koshak"})})
+    assert [row["route"] for row in managed] == [
+        {"kind": "api_model", "target_id": "claudexor::codex=gpt-6-astra", "credential_profile_id": "koshak"}]
     # Without a local source the flag routes nowhere: nothing to run. With no configured
     # access at all the shipped (router) panel stands, as the shipped defaults do.
     assert factory_review_rows({"USE_LOCAL_MAIN": True}) == []

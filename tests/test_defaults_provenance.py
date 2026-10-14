@@ -480,7 +480,7 @@ def test_several_direct_providers_without_a_main_get_no_imaginary_router_panel(i
     ({"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "k", "OUROBOROS_MODEL": "anthropic::claude-opus-5"},
      "anthropic::claude-opus-5", ["anthropic::claude-opus-5"] * 3),
     ({"OUROBOROS_MODEL": "claudexor::codex=gpt-5.6-sol"}, "claudexor::codex=gpt-5.6-sol",
-     ["claudexor::codex=gpt-5.6-sol"] * 3),
+     ["claudexor::codex=gpt-5.6-sol"]),  # no provider panel: Main once, never copies of it (owner Q5=A)
     ({"OPENROUTER_API_KEY": "k", "ANTHROPIC_API_KEY": "k"}, SETTINGS_DEFAULTS["OUROBOROS_MODEL"],
      list(OPENROUTER_REVIEW_DEFAULTS["triad"])),
 ], ids=["mixed-direct-chosen-main", "managed-main", "router-plus-direct"])
@@ -501,7 +501,7 @@ def test_a_local_factory_row_runs_locally_for_review_and_delegation(install):
     snapshot = _task_start()
     with task_settings_scope(snapshot):
         settings = dict(snapshot.settings)
-        assert _pool_targets(settings) == ["qwen-local (local)"] * 3
+        assert _pool_targets(settings) == ["qwen-local (local)"]
         assert all(slot.use_local for slot in review_pool_slots(settings))
         row = select_subagent_snapshot(settings, subagent_id="review-1")[0]
         dispatch = resolve_configured_actor_dispatch(
@@ -706,7 +706,7 @@ def test_a_router_key_beside_a_local_main_keeps_the_local_rows_local_for_review_
     snapshot = _task_start()
     with task_settings_scope(snapshot):
         settings = dict(snapshot.settings)
-        assert _pool_targets(settings) == ["qwen-local (local)"] * 3
+        assert _pool_targets(settings) == ["qwen-local (local)"]
         assert all(slot.use_local for slot in review_pool_slots(settings))
         row = select_subagent_snapshot(settings, subagent_id="review-1")[0]
         dispatch = resolve_configured_actor_dispatch(
@@ -720,8 +720,8 @@ def test_a_router_key_beside_a_managed_main_keeps_its_account_pin(install, monke
                      "OUROBOROS_MODEL_ACCOUNTS": {"main": "account-a"}})
     rows = _review_rows(cfg.load_settings())
     assert [row["route"] for row in rows] == [{"kind": "api_model", "target_id": "claudexor::codex=gpt-5.6-sol",
-                                               "credential_profile_id": "account-a"}] * 3
-    assert [row["effort"] for row in rows] == ["high"] * 3
+                                               "credential_profile_id": "account-a"}]
+    assert [row["effort"] for row in rows] == ["high"]
 
 
 def test_a_router_main_keeps_the_diverse_router_panel(install, monkeypatch):

@@ -488,9 +488,10 @@ def factory_review_rows(doc: Mapping[str, Any]) -> List[Dict[str, Any]]:
     reachable direct Main → its provider's ``DIRECT_PROVIDER_REVIEW_ROLES`` panel, each seat in
     its ROLE's whole binding (a Light seat runs Light's, never Main's by a shared model name; a
     blank or another provider's Light leaves the provider's shipped Light standing in, plain); any other
-    reachable Main (compatible, local, managed) → as many twin rows of it, in its whole binding
-    (``role_route_binding``: ``(local)`` label, account pin, processing), as the shipped panel
-    has seats (three runs, quorum 2 of 3). With no configured access at all the shipped
+    reachable Main (compatible, local, managed) → ONE row of it, in its whole binding
+    (``role_route_binding``: ``(local)`` label, account pin, processing): copies of one model would
+    multiply every review's cost without a second opinion, so its one answer decides (quorum 1 of
+    1, recorded as ``single_reviewer_no_diversity``). With no configured access at all the shipped
     OpenRouter Main keeps its panel (the defaults before any provider is chosen). A Main the
     configured access cannot run — several direct keys and none chosen, or an explicit route
     without access — mints nothing rather than a panel derived from another default; the read
@@ -513,8 +514,7 @@ def factory_review_rows(doc: Mapping[str, Any]) -> List[Dict[str, Any]]:
     main = bindings["main"]["route"]["target_id"] if bindings["main"] else main
     router_main = provider_for_model(main) == "openrouter"
     if bindings["main"] and not router_main:
-        seats = (compute_direct_review_seats(provider_for_model(main), main, light)
-                 or [("main", main)] * len(router_panel))
+        seats = compute_direct_review_seats(provider_for_model(main), main, light) or [("main", main)]
     else:  # a router Main reviews on the diverse router panel, never as twins of itself
         reachable = router_main and (bindings["main"] or not has_startup_ready_provider(settings))
         seats = [("", model) for model in router_panel] if reachable else []
