@@ -194,7 +194,7 @@ def presence_provenance_from_task(task: Mapping[str, Any]) -> dict[str, str]:
 
     The host-authored event owns transport identity while the immutable
     capability ceiling owns the reviewed state/selection fingerprints.  Keep
-    this projection small so dialogue and reflection records share one exact
+    this projection small so dialogue and task records share one exact
     provenance shape without copying prompt text or arbitrary actor metadata.
     """
 

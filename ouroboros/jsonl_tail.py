@@ -1,9 +1,9 @@
 """Rotation-aware JSONL reads: captured byte ranges and bounded filtered tails.
 
 ``JsonlChainSnapshot`` shares physical capture/read/segment ownership between
-history pagination, wake observations and the reflection's transport-receipt
-evidence, whose selection policies remain separate. The filtered-tail reader
-below serves context and endpoints.
+history pagination, wake observations, Presence reentry and the swarm rollup,
+whose selection policies remain separate. The filtered-tail reader below serves
+context and endpoints.
 
 Moved here from ``gateway/_helpers.py`` (v6.90.x P2) so that context assembly
 (``memory.py``, razzant/ouroboros#131) can use the same window-doubling
@@ -184,7 +184,7 @@ def read_rotated_jsonl_entries(
     ``coverage``, when given, is filled with ``live_size``, ``live_window``
     (bytes of the live file read; both absent when the live file could not be
     read), ``archives`` (consulted count), ``archives_available`` and
-    ``archives_bounded``.
+    ``archives_bounded`` and the exact consulted ``archive_sources`` paths.
     """
     live = pathlib.Path(live)
     parse = iter_objects or iter_jsonl_objects  # module name resolved at call time (test seam)
@@ -220,6 +220,7 @@ def read_rotated_jsonl_entries(
     collected = sum(1 for entry in live_entries if counts_toward_quota(entry))
     archives = (list_archives or archive_segments)(pathlib.Path(archive_dir), archive_prefix, gaps if collect else None)
     chosen: list = []
+    archive_sources: list[str] = []
     for archive_path in archives:
         if collected >= want or len(chosen) >= max_archives:
             break
@@ -234,6 +235,7 @@ def read_rotated_jsonl_entries(
             gaps.add("unreadable_source")
             continue
         chosen.append(archive_entries)
+        archive_sources.append(str(archive_path))
         collected += sum(1 for entry in archive_entries if counts_toward_quota(entry))
     ordered: list = []
     for archive_entries in reversed(chosen):  # oldest chosen archive first
@@ -241,7 +243,7 @@ def read_rotated_jsonl_entries(
     ordered.extend(live_entries)
     if coverage is not None:
         coverage.update({
-            "archives": len(chosen), "archives_available": len(archives),
+            "archives": len(chosen), "archive_sources": archive_sources, "archives_available": len(archives),
             "archives_bounded": collected < want and len(chosen) < len(archives),
             "matched": collected, "gaps": sorted(gaps),
         })

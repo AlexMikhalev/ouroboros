@@ -92,29 +92,22 @@ def test_a_frozen_record_is_named_from_its_own_facts(record):
     {"processing_preference": "economy"}, {"access": "workspace_write", "pin": "koshak"},
 ], ids=["unset", "explicit-standard", "explicit-economy", "lowered-and-pinned"])
 def test_one_engine_has_one_name_on_every_surface(row, global_processing, tmp_path):
-    """The live catalog, the frozen snapshot, the startup receipt, the dated
-    history fact and the reflection evidence must all carry the SAME handle for
-    one row - including a row that inherits the global processing preference,
-    which the snapshot freezes RESOLVED while the saved row leaves it empty."""
-    from ouroboros import post_task_synthesis
+    """The live catalog, the frozen snapshot, the startup receipt and the dated
+    history fact must all carry the SAME handle for one row - including a row
+    that inherits the global processing preference, which the snapshot freezes
+    RESOLVED while the saved row leaves it empty."""
     from ouroboros.subagent_history import execution_identity, recorded_handle, snapshot_handle
     from ouroboros.subagent_runtime import model_visible_subagent_catalog, select_subagent_snapshot
-    from ouroboros.task_results import write_task_result
 
     settings = {**_settings(_session("primary-builder", target="claude=claude-opus-5", **row)),
                 "OUROBOROS_PROCESSING_PREFERENCE": global_processing}
     catalog_name = model_visible_subagent_catalog(settings)["rows"][0]["subagent_id"]
     snapshot, _ = select_subagent_snapshot(settings, subagent_id=catalog_name)  # the name resolves
-    write_task_result(tmp_path, "kid", "completed", result="ok", configured_subagent=snapshot,
-                      parent_task_id="root", root_task_id="root", delegation_role="subagent")
-    _text, evidence = post_task_synthesis._child_task_evidence(
-        SimpleNamespace(drive_root=tmp_path), {"id": "root"})
 
     assert {
         catalog_name,
         snapshot_handle(snapshot),
         recorded_handle({"identity": execution_identity(snapshot)}),
-        evidence[0]["engine"]["subagent_id"],
     } == {catalog_name}
     assert "standard" not in catalog_name and "full" not in catalog_name
     assert catalog_name.endswith("/fast") == (global_processing == "fast" and "processing_preference" not in row)
@@ -539,34 +532,6 @@ def test_the_startup_receipt_and_the_start_result_name_the_snapshots_own_handle(
         SimpleNamespace(task_id="child", drive_root=tmp_path, budget_drive_root=str(tmp_path), task_metadata={}),
         "brief", {"snapshot": snapshot}).text)
     assert started["selected_subagent_id"] == "codex=gpt-6-astra/xhigh/@koshak"
-
-
-def test_every_childs_engine_survives_the_evidence_cap(tmp_path):
-    """The evidence text is capped at 6000 chars while one verbose row carries up
-    to 1600+800 chars of result and trace, so after about three children the rest
-    - and with them WHO ran each one - used to be truncated away. A compact
-    overview of ALL children leads; the verbose rows follow and may be cut."""
-    from ouroboros import post_task_synthesis
-    from ouroboros.subagent_runtime import select_subagent_snapshot
-    from ouroboros.task_results import write_task_result
-
-    for index in range(12):  # twelve children, each frozen from its own row (a roster holds ten)
-        row = _api(f"stored-key-{index}", target=f"vendor/model-{index}", effort="low")
-        snapshot, _ = select_subagent_snapshot(_settings(row), subagent_id=row["subagent_id"])
-        write_task_result(
-            tmp_path, f"kid-{index:02d}", "completed", result="R" * 3000, trace_summary="T" * 2000,
-            configured_subagent=snapshot, parent_task_id="root", root_task_id="root", delegation_role="subagent",
-            started_at="2026-09-20T10:00:00+00:00", ts="2026-09-20T10:01:00+00:00")
-
-    text, children = post_task_synthesis._child_task_evidence(
-        SimpleNamespace(drive_root=tmp_path), {"id": "root"})
-
-    assert len(children) == 12 and all("engine" in row for row in children), "the typed rows stay whole"
-    assert "OMISSION NOTE" in text, "the fixture really overflows the cap"
-    for index in range(12):
-        assert f'"engine": "vendor/model-{index}/low"' in text, f"child {index} lost its engine to the cap"
-    assert text.index('"children_overview"') < text.index('"children"')
-    assert '"duration_sec": 60.0' in text and "stored-key-" not in text
 
 
 def test_a_processing_only_save_may_create_effective_twins_by_decision(monkeypatch):

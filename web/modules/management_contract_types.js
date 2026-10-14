@@ -624,7 +624,8 @@
  */
 
 /**
- * `GET /api/update/status` and `POST /api/update/check`.
+ * `GET /api/update/status` and `POST /api/update/check`. `local_changes`: the checkout's own content
+ * since the shared base (not authorship or an apply plan), omitted without a comparison.
  * @typedef {Object} UpdateStatusResponse
  * @property {string} running_sha
  * @property {string=} current_version
@@ -647,6 +648,9 @@
  * @property {string=} latest_message
  * @property {number=} ahead
  * @property {number=} behind
+ * @property {('absent'|'present'|'unknown')=} local_changes
+ * @property {string=} local_changes_base
+ * @property {('unresolved_sha'|'shallow_history'|'git_error'|'several_bases'|'no_shared_base')=} local_changes_reason
  * @property {boolean=} dirty
  * @property {number=} dirty_count
  * @property {string[]=} dirty_preview

@@ -1154,7 +1154,7 @@ class OuroborosAgent:
 
             # A task that scoped ITSELF mid-run (ensure_project_scope) set the scope on
             # ctx, but persistence/finalization read the task dict — sync it back so the
-            # stored result and project-task reflection see the project (C4.1 gap). Fill
+            # stored result and the post-task phase see the project (C4.1 gap). Fill
             # only, never overwrite, to preserve the "no re-scope" invariant.
             _sync_task_project_scope(task, ctx)
 

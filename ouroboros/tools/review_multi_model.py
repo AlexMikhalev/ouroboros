@@ -91,6 +91,11 @@ def _review_output_budget() -> int:
     return max(8192, min(raw, 65536))
 
 
+def review_request_task_id(ctx: Any) -> str:
+    """The task a review request runs under; a seat's ``artifact_store`` reads resolve there."""
+    return str(getattr(ctx, "task_id", "") or "multi_model_review") if ctx is not None else "multi_model_review"
+
+
 def review_output_allowance(model: str, window: int = 0, **binding) -> int:
     """The review reservation within the exact route's known maximum response; unknown keeps it.
     A ``window`` from ``reviewer_context_window`` supplies the account it was observed on."""
@@ -247,7 +252,7 @@ async def _query_model(
                 goal="Run independent multi-model review over the supplied evidence.",
                 # 5.2: a retrieving slot never receives the assembled api pack.
                 messages=[] if retrieves else messages,
-                task_id=str(getattr(ctx, "task_id", "") or "multi_model_review") if ctx is not None else "multi_model_review",
+                task_id=review_request_task_id(ctx),
                 call_type="multi_model_review",
                 max_tokens=_out_budget,
                 default_temperature=0.2,
@@ -355,9 +360,10 @@ async def _multi_model_review_async(content: str, prompt: str,
     row_local = _row_vector("use_local", lambda idx: None)
     row_access = _row_vector("session_accesses", lambda idx: "")
     # One brief per seat (PR-3 B): a retrieving row carries ITS OWN two-part
-    # brief and answer policy; an absent entry keeps the shared task/policy.
+    # brief, answer policy and reading root; an absent entry keeps the shared one.
     row_tasks = _row_vector("session_tasks", lambda idx: "")
     row_policies = _row_vector("session_policies", lambda idx: None)
+    row_roots = _row_vector("session_roots", lambda idx: "")
     # Pack assembly follows the RETRIEVES class, not the route name: a native
     # api row retrieves with its own tools and must never trigger (or be counted
     # into) the assembled pack. The class is the plan's explicit ``retrieves``
@@ -408,7 +414,8 @@ async def _multi_model_review_async(content: str, prompt: str,
     llm_client = _rev().LLMClient()
     tasks = [
         _query_model(llm_client, m, messages, semaphore, ctx, slot_id=row_ids[idx],
-                     route=row_routes[idx], session_task=row_tasks[idx] or session_task, session_root=session_root,
+                     route=row_routes[idx], session_task=row_tasks[idx] or session_task,
+                     session_root=row_roots[idx] or session_root,
                      effort=row_efforts[idx], session_target=row_targets[idx],
                      session_profile=row_profiles[idx], surface=surface,
                      session_policy=row_policies[idx] or session_policy, usage_attribution=usage_attribution,
