@@ -1,8 +1,8 @@
 """query_data names its data planes and reads another plane only under existing read authority.
 
 The matrix uses the real registry consumers. For every actor shape the decision
-to read the installation owner's (canonical) queue file must equal the actual
-read_file admission of that exact physical file for the same actor: helpers
+to read the installation owner's (canonical) queue file uses the same physical
+resource permission as read_file, not that tool's availability: helpers
 inherit the canonical runtime alias, ordinary forked roots do not, Cyber Pro's
 user_files read exemption does, and a Presence ceiling narrows it. Native
 reviewers stay on their pinned plane even though read_file could reach live

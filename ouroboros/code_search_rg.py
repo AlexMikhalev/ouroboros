@@ -153,16 +153,17 @@ def match_window(line: str, start: int, end: int, *, count: int = 1, read_line: 
     return f"{shown} [{len(line)}-char line; {which} at char {start} ({end - start} chars); {address}]"
 
 
-def _rg_window(path: pathlib.Path, data: dict, files: dict) -> str:
-    """One long rg match re-addressed in read_file's text model from the file bytes.
+def _rg_windows(path: pathlib.Path, data: dict, files: dict) -> list[tuple[int, str]]:
+    """Long rg matches grouped in read_file's text model from the file bytes.
 
     rg reports LF-only line numbers and byte offsets (after a UTF-8 BOM); read_file
     counts code points between universal-newline/``splitlines`` ends, wherever
-    those occur earlier in the file. ``""`` when rg reported no match position.
+    those occur earlier in the file. One LF event may hold several matched
+    read_file lines; each gets its own row. No rows without a match position.
     """
     lines, subs, offset = data.get("lines") or {}, data.get("submatches") or [], data.get("absolute_offset")
     if not subs or type(offset) is not int:
-        return ""
+        return []
     reported = lines["text"].encode("utf-8") if "text" in lines else base64.b64decode(lines.get("bytes") or "")
     start, end = int(subs[0].get("start") or 0), int(subs[0].get("end") or 0)
     if path not in files:
@@ -180,22 +181,34 @@ def _rg_window(path: pathlib.Path, data: dict, files: dict) -> str:
     base = next((skip for skip in (0, 3) if (skip == 0 or raw.startswith(b"\xef\xbb\xbf"))
                  and raw[skip + offset:skip + offset + len(reported)] == reported), None)
     gap = gap or ("" if base is not None else "the file no longer holds the bytes rg reported")
-    width = len(reported[start:end].decode("utf-8", "replace"))
     if not gap:
-        at = base + offset + start
-        if raw[at - 1:at] == b"\r" and raw[at:at + 1] == b"\n":
-            at -= 1  # inside a CRLF pair: read_file sees one LF there
-        index = bisect.bisect_right(stops, at)
-        first, last = (stops[index - 1] if index else 0), (starts[index] if index < len(starts) else len(raw))
         try:
-            line, column = raw[first:last].decode("utf-8"), len(raw[first:at].decode("utf-8"))
-            count = sum(first <= base + offset + int(sub.get("start") or 0) <= last for sub in subs)
-            return match_window(line, column, column + width, count=count, read_line=index + 1)
+            groups = {}
+            for sub in subs:
+                begin, finish = int(sub.get("start") or 0), int(sub.get("end") or 0)
+                at = base + offset + begin
+                if raw[at - 1:at] == b"\r" and raw[at:at + 1] == b"\n":
+                    at -= 1  # read_file sees one LF for the CRLF pair
+                index = bisect.bisect_right(stops, at)
+                if index not in groups:
+                    width = len(reported[begin:finish].decode("utf-8"))
+                    groups[index] = [at, width, 0]
+                groups[index][2] += 1
+            rows = []
+            for index, (at, width, count) in groups.items():
+                first = stops[index - 1] if index else 0
+                last = starts[index] if index < len(starts) else len(raw)
+                line, column = raw[first:last].decode("utf-8"), len(raw[first:at].decode("utf-8"))
+                rows.append((index + 1, match_window(line, column, column + width,
+                                                    count=count, read_line=index + 1)))
+            return rows
         except UnicodeDecodeError:
             gap = "rg reported a match offset inside a character"
     text = reported.decode("utf-8", "replace").rstrip("\r\n")
     column = len(reported[:start].decode("utf-8", "replace"))
-    return match_window(text, column, column + width, count=len(subs), gap=gap)
+    width = len(reported[start:end].decode("utf-8", "replace"))
+    return [(int(data.get("line_number") or 0),
+             match_window(text, column, column + width, count=len(subs), gap=gap))]
 
 
 @dataclass(frozen=True)
@@ -352,12 +365,14 @@ def search_with_rg(
             text = (str(lines.get("text") or "") if "bytes" not in lines else
                     base64.b64decode(lines["bytes"]).decode("utf-8", "replace")).rstrip("\n")
             line = int(data.get("line_number") or 0)
-            if len(matches) >= max_results:
-                result_truncated = True
+            rows = _rg_windows(path, data, files) if len(text) > MATCH_WINDOW_CHARS else []
+            for line, text in rows or [(line, text)]:
+                if len(matches) >= max_results:
+                    result_truncated = True
+                    break
+                matches.append(RgMatch(path=path, line=line, text=text.rstrip()))
+            if result_truncated:
                 break
-            if len(text) > MATCH_WINDOW_CHARS:
-                text = _rg_window(path, data, files) or text
-            matches.append(RgMatch(path=path, line=line, text=text.rstrip()))
         if result_truncated:
             break
     # Return result-cap, file-scan-cap, and deadline SEPARATELY so the caller can tell

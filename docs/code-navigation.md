@@ -125,12 +125,12 @@ token-matched current sources, and extract only matched-file facts for selector
 ordering after collecting rows, on the same deadline. Other outline/impact
 operations retain their eager preparation and cold cost. `structural` has its own
 bounded walk; architecture reads pinned carriers; their universes can differ.
-`search_code` has separate enumeration: a long matched line shows a first-match
-window with its exact `read_file(start_line, start_char)` range, or a named
-translation gap. That range uses the reader's Unicode/universal-newline line model,
-not ripgrep's LF line number in the row prefix. Empty reader lines use the whole-line
-form. Ripgrep JSON records split on LF, not separators inside strings; native delivery
-limits stay unchanged.
+`search_code` has separate enumeration: long matches show a first-match window
+per matched reader line, with an exact `read_file(start_line, start_char)` range
+or a named translation gap. Translatable window rows use the reader's
+Unicode/universal-newline line model, not ripgrep's LF lines: one rg event may
+produce several rows, each charged to the result cap. Empty reader lines use the
+whole-line form. Short-line output and native delivery limits stay unchanged.
 
 Replies state the actual method, scope and relevant coverage limits: skipped or
 oversized files, missing grammars, partial syntax trees, and applicable file,

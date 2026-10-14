@@ -216,14 +216,28 @@ def test_rg_json_records_split_only_on_lf_not_unicode_inside_strings(tmp_path, s
 
 
 @pytest.mark.parametrize("separator", ["\x0c", "\x0b", "\x85", "\u2028", "\u2029", "\r"])
-def test_rg_window_counts_only_matches_on_its_read_file_line(tmp_path, separator):
-    if not code_search_rg._rg_binary():
-        pytest.skip("ripgrep is not installed")
+def test_every_matched_read_file_line_survives_with_its_own_count(tmp_path, backend, separator):
     raw = ("x" * 300 + "NEEDLE" + separator + "y" * 300 + "NEEDLE\n").encode()
     ctx, result = _search(tmp_path, "separated.txt", raw, "NEEDLE")
-    (row,) = _rows(result)
-    found, line, _, body = _read_back(ctx, row)
-    assert line == 1 and body.endswith("NEEDLE") and found["which"] == "match", row
+    rows = _rows(result)
+    assert len(rows) == 2 and "Found 2 matches" in result, result
+    for expected_line, row in enumerate(rows, 1):
+        found, line, _, body = _read_back(ctx, row)
+        assert line == expected_line and body.endswith("NEEDLE") and found["which"] == "match", row
+
+
+def test_split_rg_event_still_obeys_the_result_limit(tmp_path, backend):
+    raw = ("x" * 300 + "NEEDLE\r").encode() * 3
+    _, result = _search(tmp_path, "limited.txt", raw, "NEEDLE", max_results=2)
+    assert len(_rows(result)) == 2 and "truncated at 2 results" in result, result
+
+
+def test_rg_zero_width_crlf_match_uses_the_same_line_for_count_and_address(tmp_path):
+    if not code_search_rg._rg_binary():
+        pytest.skip("ripgrep is not installed")
+    ctx, result = _search(tmp_path, "crlf.txt", b"x" * 400 + b"\r\n", "$", regex=True)
+    found, line, _, body = _read_back(ctx, _rows(result)[0])
+    assert line == 1 and found["which"] == "match" and found["at"] == "400" and body == "x" * 60
 
 
 def test_rg_json_transport_declares_utf8_independent_of_locale(tmp_path, monkeypatch):
