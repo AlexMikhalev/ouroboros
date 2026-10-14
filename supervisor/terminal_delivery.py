@@ -78,7 +78,14 @@ def _registry_path(drive_root: Any) -> pathlib.Path:
 
 
 # A terminal ANSWER's identity; custody-notice and other suffixed rows are not answers.
+# Exact answer-byte evidence (receipt capture, acceptance) stays this narrow.
 _TERMINAL_ANSWER_ID = re.compile(r"final:(?P<task>[^:]+):[0-9a-f]{16}")
+# The three families a task's terminal MESSAGE takes: the model final, the Stop/reap
+# salvage receipt (``cancel:<tid>:<request_id>``, CF-04) and a cascade root's digest
+# (``cascade:<root>:<request_id>``). Exactly three parts, so a ``:custody_notice`` /
+# ``:terminal_incident`` suffix, the Main mirror (``project-completion:``) and every
+# other row are never the answer. The Done gate reads debt through THIS family set.
+_TERMINAL_MESSAGE_ID = re.compile(r"(?:final|cancel|cascade):(?P<task>[^:]+):(?P<episode>[^:]+)")
 
 
 def _mapping_rows(current: Dict[str, Any], key: str, *, strict: bool = False) -> Dict[str, Any]:
@@ -144,18 +151,25 @@ def _read_registry(drive_root: Any) -> Dict[str, Any]:
 
 
 def terminal_answer_receipts(drive_root: Any, task_id: str) -> Dict[str, Any]:
-    """What the host can PROVE it emitted as one task's terminal answer.
+    """What the host can PROVE it emitted as one task's terminal answer, and what it still owes.
 
     ``delivered`` lists exact text digests, routed chats and retained sources
-    captured after sends. Owed rows and ids without receipts prove no bytes.
-    Both remain listed; state is delivered (at least one receipt), owed or
-    unknown, never inferred from the task result or an id digest.
+    captured after sends (``final:`` ids only). Owed rows and ids without
+    receipts prove no bytes. Membership covers every terminal-message family
+    (``final:``, the Stop/reap ``cancel:`` receipt, the ``cascade:`` digest), so a
+    pending salvage answer is debt too. ``state`` is ``owed`` while any such
+    message is still owed — debt outranks every older or technical receipt —
+    then ``exhausted`` when the host gave up delivering one (its payload stays
+    in the registry), then ``delivered`` (at least one receipt), else
+    ``unknown``; an unreadable registry answers ``unknown`` with
+    ``registry: "unreadable"``. Never inferred from the task result or an id digest.
     """
     fact: Dict[str, Any] = {"source": "terminal_delivery_registry", "state": "unknown", "delivered": [],
-                            "unverified_delivery_ids": [], "owed_delivery_ids": [], "owed": []}
+                            "unverified_delivery_ids": [], "owed_delivery_ids": [], "owed": [], "exhausted": []}
     try:
         data = _read_registry(drive_root)
         receipts, pending = _mapping_rows(data, "receipts", strict=True), _mapping_rows(data, "pending", strict=True)
+        exhausted = _mapping_rows(data, "exhausted", strict=True)
         delivered = _delivered_rows(data, strict=True)
     except Exception:
         log.debug("terminal-delivery registry unreadable for %s", task_id, exc_info=True)
@@ -163,7 +177,7 @@ def terminal_answer_receipts(drive_root: Any, task_id: str) -> Dict[str, Any]:
         return fact
 
     def answer(did: str) -> bool:
-        match = _TERMINAL_ANSWER_ID.fullmatch(did)
+        match = _TERMINAL_MESSAGE_ID.fullmatch(did)
         return match is not None and match.group("task") == str(task_id)
 
     for did in (item for item in delivered if answer(item)):
@@ -176,7 +190,10 @@ def terminal_answer_receipts(drive_root: Any, task_id: str) -> Dict[str, Any]:
     # The owed rows themselves (exact text, routed chat): recovery finalizes from these bytes.
     fact["owed"] = [{**pending[did], "delivery_id": did} for did in fact["owed_delivery_ids"]
                     if isinstance(pending.get(did), dict)]
-    fact["state"] = "delivered" if fact["delivered"] else "owed" if fact["owed_delivery_ids"] else "unknown"
+    fact["exhausted"] = [{**exhausted[did], "delivery_id": did} for did in sorted(exhausted)
+                         if answer(str(did)) and did not in delivered and isinstance(exhausted.get(did), dict)]
+    fact["state"] = ("owed" if fact["owed_delivery_ids"] else "exhausted" if fact["exhausted"]
+                     else "delivered" if fact["delivered"] else "unknown")
     return fact
 
 

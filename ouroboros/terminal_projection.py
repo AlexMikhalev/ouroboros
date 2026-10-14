@@ -83,6 +83,31 @@ def _publication_lock(root: Any, tid: str):
             release_exclusive_file_lock(path, fd)
 
 
+def _delivery_disposition(root: Any, tid: str) -> dict:
+    """What the outbox says about this task's terminal message (owner Fork 2, 20:48).
+
+    ``state`` is ``owed`` while any terminal message (model final, Stop/reap
+    salvage receipt, cascade digest) is still owed — debt outranks every older or
+    technical receipt — ``exhausted`` when the host gave up delivering one,
+    ``unknown`` when the delivery registry cannot be read, ``delivered`` with
+    proven bytes, else ``""`` (no terminal message known). Only ``owed`` holds the
+    Done card; unknown and exhausted are SHOWN on it, never hidden. Nothing here is
+    recomputed from stored prose, and no read failure turns into a silent hold.
+    """
+    from supervisor.terminal_delivery import terminal_answer_receipts
+
+    receipts = terminal_answer_receipts(root, tid)
+    if receipts.get("registry") == "unreadable":
+        return {"state": "unknown"}
+    state = str(receipts.get("state") or "")
+    disposition = {"state": state if state in {"owed", "exhausted", "delivered"} else ""}
+    if state == "exhausted":
+        row = max(receipts["exhausted"], key=lambda item: str(item.get("exhausted_at") or ""))
+        disposition["delivery_id"] = str(row.get("delivery_id") or "")
+        disposition["preserved_path"] = str(row.get("preserved_path") or "")
+    return disposition
+
+
 def _prepare(root: Any, tid: str, task: dict, event: dict) -> dict:
     """Durably record readiness from canonical terminal authority, before IO."""
     def prepare(current: dict, _patch: dict):
@@ -123,7 +148,7 @@ def _prepare(root: Any, tid: str, task: dict, event: dict) -> dict:
                              _field_projector=prepare)
 
 
-def _project_row(tid: str, row: dict, event: dict, ready: dict) -> dict:
+def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dict | None = None) -> dict:
     from ouroboros import project_dialogue as dialogue
     from ouroboros.project_facts import resolve_project_id
 
@@ -203,9 +228,13 @@ def _append_project(root: Any, tid: str, task: dict, event: dict) -> bool:
     marker = stored.get("canonical_terminal_projection")
     if isinstance(marker, dict) and (not ready or marker.get("token") == ready.get("token")):
         return False
-    if is_root and (not ready or _open(stored) or not _files_ready(root, tid, effective)):
+    # The Done card follows the answer: the outbox's own debt holds it (owner Fork 2).
+    delivery = _delivery_disposition(root, tid) if is_root else {}
+    if is_root and (not ready or _open(stored) or delivery.get("state") == "owed"
+                    or not _files_ready(root, tid, effective)):
         return False
-    row = _project_row(tid, effective, {key: event[key] for key in ("ts", "chat_id") if key in event}, ready)
+    row = _project_row(tid, effective, {key: event[key] for key in ("ts", "chat_id") if key in event}, ready,
+                       delivery=delivery)
     appended = False
     existing_row = _already_in_chat(root, row) if is_root else None
     if existing_row:
@@ -286,6 +315,7 @@ def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | No
                     or is_reconciled_presence_placeholder(stored)):  # readiness an earlier release recorded
                 return SETTLEMENT_NONE
             if (_open(stored) or not _settled(stored)
+                    or _delivery_disposition(drive_root, tid).get("state") == "owed"
                     or not _files_ready(drive_root, tid, {**(task or {}), **stored})):
                 return SETTLEMENT_DEFERRED
             _append_project(drive_root, tid, task or {}, event or {})
@@ -297,6 +327,7 @@ def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | No
             if (not isinstance(ready, dict) or not isinstance(marker, dict)
                     or marker.get("token") != ready.get("token") or _open(stored)
                     or not _settled(stored)
+                    or _delivery_disposition(drive_root, tid).get("state") == "owed"
                     or not _files_ready(drive_root, tid, {**(task or {}), **stored})):
                 return SETTLEMENT_DEFERRED
             effective = {**(task or {}), **stored, "id": tid}

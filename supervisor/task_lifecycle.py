@@ -1290,6 +1290,19 @@ def _finish_captured_running(
                 q, task_id, error="claim lost before terminal write", intent=intent,
             )
             return CANCEL_FAILED
+    # GR2-4 (owed-before-settle), now owed-before-the-terminal-row (owner Fork 2):
+    # the owner's terminal answer is durably registered as OWED before the row
+    # turns terminal, so a settle landing between the write and the registration
+    # sees the debt and never publishes a Done card without the answer. The build
+    # is deterministic (the stop-episode id), so the publish below enqueues the
+    # same row idempotently by delivery_id; a crash between the settle and the
+    # send is replayed by the boot/tick outbox. Completion-wins re-registers from
+    # the kept result after the write.
+    owed_ok = _register_owed_terminal_delivery(
+        q, task, task_id, {"status": STATUS_CANCELLED}, deliver=deliver,
+        salvage_text=salvage_text, salvage_path=salvage_path,
+        unreconciled_runs=unreconciled,
+    )
     try:
         existing = load_task_result(q.DRIVE_ROOT, task_id) or {}
         stored = write_task_result(
@@ -1324,20 +1337,23 @@ def _finish_captured_running(
     # answering 503 now would report a cancellation that demonstrably happened,
     # and a raising respawn must never leave the slot stranded at `reaping`.
     stored_status = str((stored or {}).get("status") or STATUS_CANCELLED)
-    # GR2-4 (owed-before-settle): the owner's terminal answer is durably
-    # registered as OWED before the intent settles. A crash between the settle
-    # and the send used to lose BOTH the watchdog trigger (intent gone) and the
-    # answer (nothing owed); now the boot/tick outbox replay delivers it, and
-    # the publish below enqueues the same event idempotently by delivery_id.
+    # GR2-4 (owed-before-settle): the owner's terminal answer was durably
+    # registered as OWED above, before the terminal write and the intent settle.
+    # A crash between the settle and the send used to lose BOTH the watchdog
+    # trigger (intent gone) and the answer (nothing owed); now the boot/tick
+    # outbox replay delivers it, and the publish below enqueues the same event
+    # idempotently by delivery_id. Completion wins (owner 4=A): the kept result
+    # is the answer that is owed, registered from the row that actually landed.
     # GR3-4: a registration that could NOT be made durable leaves the intent
     # OPEN (claim released for the watchdog) instead of settling over an
     # unowed answer — the retry finds the settled result and re-delivers on
     # the miss lane.
-    owed_ok = _register_owed_terminal_delivery(
-        q, task, task_id, stored, deliver=deliver,
-        salvage_text=salvage_text, salvage_path=salvage_path,
-        unreconciled_runs=unreconciled,
-    )
+    if stored_status != STATUS_CANCELLED:
+        owed_ok = _register_owed_terminal_delivery(
+            q, task, task_id, stored, deliver=deliver,
+            salvage_text=salvage_text, salvage_path=salvage_path,
+            unreconciled_runs=unreconciled,
+        )
     if not owed_ok and intent and intent.get("request_id"):
         _release_intent_claim(
             q, task_id, error="owed terminal-delivery registration failed",

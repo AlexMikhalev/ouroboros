@@ -397,6 +397,28 @@ def _settle_pending_deadline(task: Dict[str, Any], *, event_already_published: b
             cost_fields = q.reconstruct_task_cost(task_id, fields=True)
         except Exception:
             cost_fields = {"cost_accounting_status": "unavailable", "cost_final": False}
+        # The durable outbox owes delivery before the terminal frame; a root reaches its
+        # own lineage, a child its parent through the ordinary handoff.
+        from supervisor.terminal_delivery import (
+            build_unreviewed_salvage_event, deliver_miss_lane_outcome, deliver_unreviewed_salvage,
+            register_pending_delivery, salvage_cancelled_output,
+        )
+
+        drive = _task_drive_for_task(task, task_id)
+        salvage_root = str(task.get("delegation_role") or "") != "subagent"
+
+        def owe_salvage(current: Dict[str, Any]) -> "Dict[str, Any] | None":
+            """Register the deadline salvage answer as OWED; None when the registration failed."""
+            _, text, path = salvage_cancelled_output(q.DRIVE_ROOT, drive, task_id)
+            delivery = dict(outcome="", reason_code=REASON_DEADLINE, salvaged_text=text, preserved_path=path,
+                            settled_status="failed",
+                            unreconciled_runs=list(current.get("delegated_runs_unreconciled") or []))
+            event = build_unreviewed_salvage_event(q.DRIVE_ROOT, {**task, **current}, task_id, **delivery)
+            if event is not None and not register_pending_delivery(q.DRIVE_ROOT, event):
+                return None
+            return delivery
+
+        delivery = None
         # Only the terminal write is serialized against Stop; custody and delivery
         # never make a Q-held cancel wait on this projection.
         with q._queue_lock, cancellation_projection_lock(q.DRIVE_ROOT):
@@ -414,6 +436,14 @@ def _settle_pending_deadline(task: Dict[str, Any], *, event_already_published: b
             if stored.get("status") not in _TRULY_TERMINAL_STATUSES:
                 if not pending_deadline_expirable(task):  # Pause/authority can change while custody runs off Q.
                     return False
+                # Owe the salvage answer BEFORE the terminal row exists (owner Fork 2): a
+                # settle landing between the write and the registration sees the debt and
+                # never publishes a card without the answer. A refused registration keeps
+                # the row in custody, exactly as the post-write refusal used to.
+                if salvage_root:
+                    delivery = owe_salvage(stored)
+                    if delivery is None:
+                        return False
                 stored = write_task_result(
                     q.DRIVE_ROOT, task_id, "failed", strict_existing_dict=True, reason_code=REASON_DEADLINE,
                     outcome_axes=terminal_outcome_axes(
@@ -427,23 +457,14 @@ def _settle_pending_deadline(task: Dict[str, Any], *, event_already_published: b
             return False
         if event_already_published:
             return True
-        # The durable outbox owes delivery before the terminal frame; a root reaches its
-        # own lineage, a child its parent through the ordinary handoff.
-        from supervisor.terminal_delivery import (
-            build_unreviewed_salvage_event, deliver_miss_lane_outcome, deliver_unreviewed_salvage,
-            register_pending_delivery, salvage_cancelled_output,
-        )
-
-        row, drive = {**task, **stored}, _task_drive_for_task(task, task_id)
+        row = {**task, **stored}
         unreconciled = list(stored.get("delegated_runs_unreconciled") or [])
         if status == "failed" and stored.get("reason_code") == REASON_DEADLINE:
-            if str(task.get("delegation_role") or "") != "subagent":
-                _, text, path = salvage_cancelled_output(q.DRIVE_ROOT, drive, task_id)
-                delivery = dict(outcome="", reason_code=REASON_DEADLINE, salvaged_text=text,
-                                preserved_path=path, settled_status=status, unreconciled_runs=unreconciled)
-                event = build_unreviewed_salvage_event(q.DRIVE_ROOT, row, task_id, **delivery)
-                if event is not None and not register_pending_delivery(q.DRIVE_ROOT, event):
-                    return False
+            if salvage_root:
+                if delivery is None:  # the row was already terminal when custody caught up: owe its answer now
+                    delivery = owe_salvage(stored)
+                    if delivery is None:
+                        return False
                 deliver_unreviewed_salvage(q.DRIVE_ROOT, row, task_id, **delivery)
         elif not deliver_miss_lane_outcome(q.DRIVE_ROOT, drive, row, task_id, status,
                                            unreconciled_runs=unreconciled):
