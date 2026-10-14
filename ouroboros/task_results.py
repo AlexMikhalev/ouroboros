@@ -7,7 +7,7 @@ import json
 import logging
 import pathlib
 import re
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ouroboros.cost_projection import COST_ALIAS_PAIRS, COST_OPENNESS_FIELDS, normalize_task_result_cost_planes
 from ouroboros.task_store import list_documents, patch_document, read_document
@@ -743,7 +743,22 @@ def load_task_result(
         if strict:
             raise
         return None
-    data = read_document(drive_root, tid)
+    return _admitted_result(drive_root, tid, read_document(drive_root, tid), strict=strict)
+
+
+def load_signed_task_result(
+    drive_root: Any, task_id: str, *, strict: bool = False,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[int, str]]]:
+    """``load_task_result`` plus the store signature of the very body it returns, from ONE
+    read transaction: an ownership check (``supervisor.task_ownership``) re-checks that
+    stamp later instead of a second read's, so a writer landing between two reads is
+    seen as a change and a busy store as unknown, never as a false change."""
+    tid = validate_task_id(task_id)
+    data, stamp = read_document(drive_root, tid, signed=True)
+    return _admitted_result(drive_root, tid, data, strict=strict), stamp
+
+
+def _admitted_result(drive_root: Any, tid: str, data: Optional[Dict[str, Any]], *, strict: bool) -> Optional[Dict[str, Any]]:
     if data is None:
         if strict:
             _refuse_occupied(drive_root, tid, write=False)

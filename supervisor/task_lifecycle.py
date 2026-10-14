@@ -568,10 +568,13 @@ def cancel_task_custody(
         prepare_retry_chain(q, task_id, reads.load)
         with q._queue_lock:
             retry_target, settled_retry_status = _live_retry_target_locked(q, task_id, results=reads)
-    except Exception:
+    except Exception as exc:
+        # A busy store or a changed chain row under the lock is UNKNOWN: nothing
+        # was claimed or touched, the intent stays open, the watchdog retries.
         log.error(
-            "Cancellation retry-lineage authority is indeterminate for %s",
+            "Cancellation retry-lineage authority is indeterminate for %s (%s)",
             task_id,
+            exc,
             exc_info=True,
         )
         return CANCEL_FAILED
@@ -583,6 +586,11 @@ def cancel_task_custody(
         return _cancel_live_retry_successor(
             q, task_id, retry_target, deliver=deliver,
         )
+    # The capture judges the row prepared outside the lock (A3): a full parse
+    # under the queue lock makes every admission wait on SQLite, and a result
+    # landing meanwhile is re-read after the kill (completion wins) or on miss.
+    prepared = reads.prepared(task_id)
+    settled = settled_status_of(prepared)
 
     # Read the durable intent BEFORE claiming it. The pre-claim row is what the
     # reaping-takeover gate below judges: a slot already marked ``reaping`` is
@@ -603,9 +611,8 @@ def cancel_task_custody(
     if intent.get("claim_refused"):
         return CANCEL_FAILED
     if not intent and not cascade_claim:
-        # No durable request, no authority: nothing is captured, killed or
-        # written. The answer is typed from the stored result alone.
-        return CANCEL_ALREADY_SETTLED if _settled_status(q.DRIVE_ROOT, task_id) else CANCEL_NOT_FOUND
+        # No durable request, no authority: typed from the stored result, nothing touched.
+        return CANCEL_ALREADY_SETTLED if settled else CANCEL_NOT_FOUND
     generation = intent.get("generation")
     request_id = str(intent.get("request_id") or "")
     # Takeover authority (AR2-11, re-based on claim-first): our claim proves a
@@ -629,7 +636,6 @@ def cancel_task_custody(
     captured_meta = None
     captured_running = None
     with q._queue_lock:
-        settled = _settled_status(q.DRIVE_ROOT, task_id)
         if settled:
             # Natural completion (or an earlier cancel) already decided this task.
             # A QUEUED row for a task with a terminal result is a ghost and is
@@ -655,7 +661,7 @@ def cancel_task_custody(
                     from ouroboros.headless import terminal_task_files_ready
                     bound_task = (q.RUNNING.get(task_id) or {}).get("task") or {"id": task_id}
                     if (settled and not _worker_possibly_alive(worker)
-                            and terminal_task_files_ready(q.DRIVE_ROOT, bound_task, _load_result_row(q, task_id))):
+                            and terminal_task_files_ready(q.DRIVE_ROOT, bound_task, prepared)):
                         # Settled result AND provably dead process: no live
                         # ownership remains — the fast path below settles and
                         # recovers a stranded ``reaping`` marker. Only a
@@ -1582,6 +1588,7 @@ from supervisor.queue_transitions import (  # noqa: E402, F401 -- intentional pu
     _live_retry_target_locked,
     _settled_status,
     clear_acceptance_fence_for_root,
+    settled_status_of,
     resume_budget_paused_task,
     resume_project_deletions,
     run_project_deletion,

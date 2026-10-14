@@ -213,3 +213,156 @@ def test_a2_http_single_stop_admitted_after_liveness_probe_cannot_tear_down_with
     assert response.status_code == 404
     assert load_task_result(tmp_path, "late")["status"] == "scheduled"
     assert [t["id"] for t in queue.PENDING] == ["late"]
+
+
+# ---------------------------------------------------------------- A3 -------------------------
+
+def _signature_busy_at_zero_budget(monkeypatch):
+    """A writer is active: a normal-budget read waits and succeeds; a zero-budget
+    probe (``acquisition_budget(0)``) cannot acquire and raises StoreBusy. Returns
+    a callable that lets the store answer again."""
+    from ouroboros import store, task_store
+
+    real_sig = task_store.signature
+
+    def _sig(root, tid, *, txn=None):
+        if store._WAIT_BUDGET.get() == 0:
+            raise store.StoreBusy("writer active")
+        return real_sig(root, tid, txn=txn)
+
+    monkeypatch.setattr(task_store, "signature", _sig)
+    return lambda: monkeypatch.setattr(task_store, "signature", real_sig)
+
+
+def test_a3_load_outside_queue_lock_is_one_signed_transaction(tmp_path, monkeypatch):
+    """The incident's false FAILED: body read, then a zero-budget signature re-check that a
+    concurrent writer turned into "changed while reading". Outside Q the body and its
+    signature come from one transaction with the normal budget and nothing is re-checked."""
+    from ouroboros import task_store
+    from supervisor.task_ownership import TaskOwnershipRead
+
+    write_task_result(tmp_path, "t-a3", "running")
+    _signature_busy_at_zero_budget(monkeypatch)
+    reads = TaskOwnershipRead(tmp_path)
+    assert reads.load("t-a3")["status"] == "running"
+    assert reads.stamps["t-a3"] == task_store.signature(tmp_path, "t-a3")
+
+
+@pytest.mark.parametrize("shape", ["subagent", "root"])
+def test_a3_a_task_without_superseded_by_is_not_rechecked_under_the_lock(qenv, monkeypatch, shape):
+    """'Walk the retry chain only if the task has superseded_by': a task whose live worker
+    rewrites its own row between preparation and the locked resolver is still cancelled."""
+    from supervisor import task_ownership
+
+    lineage = ({"delegation_role": "subagent", "parent_task_id": "root-a3", "root_task_id": "root-a3"}
+               if shape == "subagent" else {"delegation_role": "root", "root_task_id": "kid-a3"})
+    ci.request_cancel(qenv.drive, "kid-a3", reason="stop")
+    qenv.q.PENDING[:] = [{"id": "kid-a3", "chat_id": 1, **lineage}]
+    write_task_result(qenv.drive, "kid-a3", "scheduled", **lineage)
+    real_prepare = task_ownership.prepare_retry_chain
+
+    def _prepare_then_worker_writes(q, task_id, read):
+        real_prepare(q, task_id, read)
+        write_task_result(qenv.drive, task_id, "scheduled", progress_note="worker wrote meanwhile")
+
+    monkeypatch.setattr(task_ownership, "prepare_retry_chain", _prepare_then_worker_writes)
+    monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *_a, **_k: None)
+    assert qenv.tl.cancel_task_custody("kid-a3") == qenv.tl.CANCEL_CANCELLED
+    assert load_task_result(qenv.drive, "kid-a3")["status"] == STATUS_CANCELLED
+    assert qenv.q.PENDING == []
+
+
+def _retry_chain(qenv, monkeypatch):
+    from tests._cancel_intents_shared import _write_root_retry_pair
+
+    monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *_a, **_k: None)
+    monkeypatch.setattr(qenv.q, "QUEUE_MAX_RETRIES", 2)
+    _write_root_retry_pair(qenv.drive, "old-root", "new-root")
+    qenv.q.PENDING[:] = [{
+        "id": "new-root", "type": "task", "chat_id": 0, "depth": 0, "root_task_id": "old-root",
+        "parent_task_id": "", "delegation_role": "root", "original_task_id": "old-root",
+        "timeout_retry_from": "old-root",
+    }]
+    minted = ci.request_cancel(qenv.drive, "old-root", reason="stop")
+    assert minted["task_id"] == "new-root"
+
+
+def test_a3_busy_store_under_the_lock_is_unknown_and_the_watchdog_finishes(qenv, monkeypatch, caplog):
+    """With superseded_by the chain IS re-checked under Q with a zero budget: BUSY is
+    neither a change nor sameness — no capture, no claim taken, the intent stays open
+    (requested), the logged reason says busy (not the incident's false "changed"), and
+    the next sweep settles it once the store answers."""
+    import logging
+    from datetime import datetime
+
+    _retry_chain(qenv, monkeypatch)
+    store_answers_again = _signature_busy_at_zero_budget(monkeypatch)
+    with caplog.at_level(logging.ERROR, logger="supervisor.task_lifecycle"):
+        assert qenv.tl.cancel_task_custody("old-root") == qenv.tl.CANCEL_FAILED
+    assert "ownership result busy during this pass" in caplog.text
+    assert "changed" not in caplog.text
+    intent = ci.active_intent(qenv.drive, "new-root")
+    assert intent["state"] == ci.INTENT_REQUESTED
+    assert [t["id"] for t in qenv.q.PENDING] == ["new-root"]
+    assert load_task_result(qenv.drive, "new-root")["status"] == "scheduled"
+
+    store_answers_again()
+    requested_at = datetime.fromisoformat(intent["requested_at"].replace("Z", "+00:00")).timestamp()
+    outcomes = qenv.tl.sweep_cancel_intents(now=requested_at + 60)
+    assert outcomes == {"new-root": qenv.tl.CANCEL_CANCELLED}
+    assert load_task_result(qenv.drive, "new-root")["status"] == STATUS_CANCELLED
+    assert ci.active_intents(qenv.drive) == {}
+
+
+def test_a3_a_changed_chain_row_under_the_lock_refuses_without_touching_anything(qenv, monkeypatch):
+    from supervisor import task_ownership
+
+    _retry_chain(qenv, monkeypatch)
+    real_prepare = task_ownership.prepare_retry_chain
+
+    def _prepare_then_leaf_rewritten(q, task_id, read):
+        real_prepare(q, task_id, read)
+        write_task_result(qenv.drive, "new-root", "scheduled", progress_note="rewritten meanwhile")
+
+    monkeypatch.setattr(task_ownership, "prepare_retry_chain", _prepare_then_leaf_rewritten)
+    assert qenv.tl.cancel_task_custody("old-root") == qenv.tl.CANCEL_FAILED
+    assert ci.active_intent(qenv.drive, "new-root")["state"] == ci.INTENT_REQUESTED
+    assert [t["id"] for t in qenv.q.PENDING] == ["new-root"]
+    assert load_task_result(qenv.drive, "new-root")["status"] == "scheduled"
+
+
+def test_a3_custody_parses_no_result_under_the_queue_lock(qenv, monkeypatch):
+    """The capture judges the row prepared outside the lock; a result that settles
+    between preparation and capture is still honoured (completion wins)."""
+    from ouroboros import task_results
+    from supervisor import task_ownership
+
+    parses_under_lock = []
+    real_load = task_results.load_task_result
+
+    def _load(root, tid, **kw):
+        if qenv.q._queue_lock._is_owned():
+            parses_under_lock.append(tid)
+        return real_load(root, tid, **kw)
+
+    monkeypatch.setattr(task_results, "load_task_result", _load)
+    monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *_a, **_k: None)
+    ci.request_cancel(qenv.drive, "queued", reason="stop")
+    qenv.q.PENDING[:] = [{"id": "queued", "chat_id": 1}]
+    write_task_result(qenv.drive, "queued", "scheduled")
+    assert qenv.tl.cancel_task_custody("queued") == qenv.tl.CANCEL_CANCELLED
+    assert parses_under_lock == []
+
+    ci.request_cancel(qenv.drive, "finisher", reason="stop")
+    write_task_result(qenv.drive, "finisher", "running")
+    real_prepare = task_ownership.prepare_retry_chain
+
+    def _prepare_then_completes(q, task_id, read):
+        real_prepare(q, task_id, read)
+        write_task_result(qenv.drive, task_id, "completed", result="done just in time")
+
+    monkeypatch.setattr(task_ownership, "prepare_retry_chain", _prepare_then_completes)
+    assert qenv.tl.cancel_task_custody("finisher") == qenv.tl.CANCEL_ALREADY_SETTLED
+    assert load_task_result(qenv.drive, "finisher")["status"] == "completed"
+    assert parses_under_lock == []
+    assert ci.active_intents(qenv.drive) == {}

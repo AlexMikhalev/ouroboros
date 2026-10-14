@@ -945,13 +945,19 @@ def _settled_status(drive_root: object, task_id: str) -> str:
     """The task's own already-settled durable status, or "" — fail-soft."""
     try:
         from ouroboros.task_results import load_task_result
-        from ouroboros.task_status import SETTLED_STATUSES
 
-        status = str((load_task_result(drive_root, task_id) or {}).get("status") or "")
-        return status if status in SETTLED_STATUSES else ""
+        return settled_status_of(load_task_result(drive_root, task_id) or {})
     except Exception:
         log.debug("settled-status read failed for %s", task_id, exc_info=True)
         return ""
+
+
+def settled_status_of(row: Any) -> str:
+    """The row's terminal status, or "" (custody judges the row it prepared outside the lock)."""
+    from ouroboros.task_status import SETTLED_STATUSES
+
+    status = str((row or {}).get("status") or "")
+    return status if status in SETTLED_STATUSES else ""
 
 
 def task_subtree_is_live(task_id: str, *, ignore_intents: bool = False) -> bool:
@@ -1029,7 +1035,12 @@ def _live_retry_target_locked(q: Any, task_id: str, *, results) -> Tuple[str, st
     host-written result chain (old points to new; new points back to old), then
     require the live task row to satisfy the existing root-retry contract.
     Corrupt, overlong, cyclic, or ambiguous chains raise so custody leaves the
-    intent open and fails closed.
+    intent open and fails closed. The chain is walked — and its rows re-checked
+    under the lock — only when the requested row has ``superseded_by``: any
+    other task is its own physical id, and its live worker rewriting the row
+    between preparation and this lock changes nothing about who owns it (a
+    retry admitted meanwhile is still caught below as a live root-shaped row
+    outside the prepared chain).
     """
     requested = str(task_id or "").strip()
     if not requested:
@@ -1050,7 +1061,7 @@ def _live_retry_target_locked(q: Any, task_id: str, *, results) -> Tuple[str, st
 
     from ouroboros.task_results import resolve_task_lineage
 
-    requested_result = results.load(requested)
+    requested_result = results.prepared(requested)
     requested_shape = (
         requested_result
         if requested_result
@@ -1080,8 +1091,9 @@ def _live_retry_target_locked(q: Any, task_id: str, *, results) -> Tuple[str, st
     except (TypeError, ValueError, OverflowError):
         max_edges = 0
     logical_root = requested
+    walks_chain = bool(str(requested_result.get("superseded_by") or "").strip())
     while True:
-        current = results.load(current_id) or {}
+        current = (results.load(current_id) if walks_chain else requested_result) or {}
         if current_id == requested:
             logical_root = str(current.get("root_task_id") or requested)
         superseded_by = str(current.get("superseded_by") or "").strip()
