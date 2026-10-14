@@ -741,27 +741,7 @@ def check_worktree_readiness(
     except Exception:
         pass
 
-    # 4. Diff size.
-    try:
-        diff_path_args = (["--"] + list(paths)) if paths else []
-        staged = subprocess.run(
-            ["git", "diff", "--cached"] + diff_path_args,
-            cwd=str(repo_dir), capture_output=True, text=True, timeout=10,
-        )
-        unstaged = subprocess.run(
-            ["git", "diff"] + diff_path_args,
-            cwd=str(repo_dir), capture_output=True, text=True, timeout=10,
-        )
-        combined_len = len(staged.stdout or "") + len(unstaged.stdout or "")
-        if combined_len > 400_000:
-            warnings.append(
-                f"Large diff detected ({combined_len:,} chars). "
-                "Consider splitting into smaller commits for better advisory coverage."
-            )
-    except Exception:
-        pass
-
-    # 5. Size-ratchet findings. Never blocking here: the official repository's
+    # 4. Size-ratchet findings. Never blocking here: the official repository's
     # CI ``size_ratchet`` lane is the enforcing surface; this warning lets the
     # agent regenerate the manifest or shrink the debt before the official
     # line rejects the same finding. Cheap since the history replay retired
