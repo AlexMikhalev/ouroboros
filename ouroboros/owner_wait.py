@@ -852,8 +852,12 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
 
 
 def rebind_restored_route(tools: Any, state: dict, messages: list) -> tuple:
-    """Rebind the restored route's context-fit plan; returns ``(plan, mode)``."""
+    """Rebind the restored route's context-fit plan; returns ``(plan, mode)``.
+
+    The new capture starts in the mode the task ran in (restored onto ``ctx``), never above the
+    owner's current one: a restore, like any route, never raises a mode."""
     from ouroboros.loop import _rebind_context_fit_plan, get_context_mode
+    from ouroboros.memory_floor import MODES
     from ouroboros.model_slots import task_model_binding
 
     ctx = tools._ctx
@@ -863,11 +867,13 @@ def rebind_restored_route(tools: Any, state: dict, messages: list) -> tuple:
         context_fit_plan=ctx.context_fit_plan,
         overrides=model_wait.overrides if model_wait is not None else None,
     )
+    owner, ran = get_context_mode(), getattr(ctx, "active_context_mode", None)
     return _rebind_context_fit_plan(
         ctx.context_fit_plan, tools, messages, model=ctx.active_model,
-        use_local=ctx.active_use_local, preferred_mode=get_context_mode(),
+        use_local=ctx.active_use_local, preferred_mode=owner,
         tool_schemas=state["tool_schemas"],
         model_role=role, model_route={}, credential_profile_id=account,
+        start_mode=ran if owner in MODES and ran in MODES[MODES.index(owner):] else None,
     )
 
 
