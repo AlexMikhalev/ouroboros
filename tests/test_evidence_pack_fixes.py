@@ -180,16 +180,23 @@ def test_outbox_and_owner_changes_wake_skipped_tasks(root, blocker):
     assert packer.run_pass(root)["packed"] == 1 and not _loose(refs[0])
 
 
-def test_shared_blob_cleanup_retries_after_last_live_reference_settles(root):
+def test_kept_shared_blob_rests_until_the_last_live_sharer_settles(root):
     raw = b'{"shared":true}'
     refs, _ = _task(root, "settled", blobs=1, payloads=[raw])
     _task(root, "live", status="running", blobs=1, payloads=[raw])
-    for _ in range(3):
-        assert packer.run_pass(root)["kept"] >= 1
+    first = packer.run_pass(root)
+    assert (first["kept"], first["packed"], first["swept"]) == (1, 1, 2) and _loose(refs[0])
+    second = packer.run_pass(root)  # once more: the directory revision after its own unlinks (as before)
+    assert (second["examined"], second["kept"], second["swept"]) == (1, 1, 1)
+    for _ in range(2):  # then no treadmill: the settled task is not re-examined, re-verified or re-kept
+        assert packer.changed_tasks(root) == []
+        rest = packer.run_pass(root)
+        assert (rest["candidates"], rest["examined"], rest["kept"], rest["verified_bytes"]) == (0, 0, 0, 0)
         assert _loose(refs[0])
-    _result(root, "live")
+    _result(root, "live")  # the sharer's own stamp moves: ITS pass packs and unlinks the shared blob
+    assert packer.changed_tasks(root) == ["live"]
     assert packer.run_pass(root)["faults"] == 0
-    assert not _loose(refs[0])
+    assert not _loose(refs[0]) and packs.blob_bytes(root, refs[0]) == raw
     packer.run_pass(root)
     assert packer.changed_tasks(root) == []
 
