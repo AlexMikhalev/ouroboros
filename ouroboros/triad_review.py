@@ -621,8 +621,9 @@ Each element of "change" and "coupling":
 "change" lists what you found reviewing the change itself; an empty "change"
 array is a clean answer ONLY together with "change_clean": true. "coupling"
 must carry one PASS or FAIL entry for EVERY required coupling question named in
-Part 2 (a PASS reason states what you checked, at least four words; there is no
-all-clear shortcut and no empty "coupling"). A seat asked only Part 2 returns
+Part 2 (a PASS reason is one line: a pointer to what you checked, or "N/A — <reason>";
+a FAIL names file:line and the violated invariant; there is no all-clear shortcut
+and no empty "coupling"). A seat asked only Part 2 returns
 the object with the "coupling" key alone. Prose around the object, a missing
 "coupling" block or a malformed matrix is recorded against that part; anything
 that is not the object is a non-response excluded from quorum.

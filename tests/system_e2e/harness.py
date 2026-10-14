@@ -313,7 +313,7 @@ REVIEW_KINDS = frozenset({
 # triad — triad_review.REVIEW_JSON_ARRAY_CONTRACT ([] + NO_FINDINGS sentinel);
 # two-part — triad_review.REVIEW_TWO_PART_OBJECT_CONTRACT: one object {change, change_clean,
 # coupling}, the coupling matrix per scope_review_contract.normalize_scope_items (required
-# matrix, PASS reasons must be non-terse); reviewer slot — review_execution's "Return JSON
+# matrix, every row carries a reason); reviewer slot — review_execution's "Return JSON
 # with keys" list.
 # ---------------------------------------------------------------------------
 

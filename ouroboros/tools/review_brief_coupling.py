@@ -5,7 +5,7 @@ episode) reads the repository with its own tools, so the commit gate asks it
 BOTH questions in one brief: ``## Part 1 — The change`` (the same preamble,
 calibration, anti-pattern guard, checklist, governance tiers, intent, history
 and staged change every packet seat is given) and ``## Part 2 — Coupling
-questions`` (the whole-repository reviewer's role frame, the eight coupling
+questions`` (the whole-repository reviewer's role frame, the coupling
 questions, the required-source manifest the seat is OWED, the repository index
 it navigates with, and the coupling history of this subject), closed by
 ``## Answer format`` — contract B (``triad_review.REVIEW_TWO_PART_OBJECT_CONTRACT``).

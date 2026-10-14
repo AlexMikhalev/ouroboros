@@ -15,7 +15,7 @@ the settings guidance below (the resolver's terminal contract already explains
 rollback + retry).
 
 One brief, two parts (PR-3 B): there is no scope role. Every seat answers the
-change (Part 1); a seat that retrieves also answers the eight coupling
+change (Part 1); a seat that retrieves also answers the coupling
 questions (Part 2) in the same brief — ``build_two_part_brief`` is the pure
 builder over a frozen subject, ``assemble_packet_prompt`` the packet seat's
 Part-1 prompt, ``retrieving_brief_for_seat`` the retrieving seat's brief

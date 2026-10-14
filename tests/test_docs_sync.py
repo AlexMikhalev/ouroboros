@@ -228,13 +228,13 @@ def _change_review_items() -> dict:
 
 
 def test_checklist_item_numbers_cited_outside_the_checklist_name_the_current_items():
-    """The change-review checklist was renumbered (core 1-9, body layer 10-31).
+    """The change-review checklist was renumbered (core 1-9, body layer 10-27).
     Every place that cites an item BY NUMBER AND NAME — the engineering chapters,
     the architecture book, runtime comments, test docstrings — must agree with the
     live table; a number that names the wrong item sends a reviewer to the wrong
     rule. The standing archive keeps its historical numbers by its own note."""
     items = _change_review_items()
-    assert items[7] == "capability_regression" and items[11] == "development_compliance" and len(items) == 31
+    assert items[7] == "capability_regression" and items[11] == "development_compliance" and len(items) == 27
     names = "|".join(sorted(items.values(), key=len, reverse=True))
     forms = (
         # "item 17 (`subagent_isolation`)", "item 21 `source_completeness`", "item 15 (self_consistency)", "item 27, `gateway_parity`"
@@ -411,9 +411,7 @@ def test_continuity_projection_contract_is_mirrored_across_governance_docs():
     assert "nine os.stat calls" in _read("ouroboros/agent_startup_checks.py")
     for item in (
         "source_completeness",
-        "actor_readable_projection",
         "canonical_memory_fork",
-        "review_artifact_continuity",
         "display_identity_replay",
     ):
         assert item in checklists
