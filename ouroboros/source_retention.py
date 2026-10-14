@@ -31,6 +31,19 @@ _UNAVAILABLE_RETRIES: dict[tuple, tuple] = {}
 _RETENTION_LOG_FACTS: dict[tuple, str] = {}
 
 
+class InvalidRetainedSource(ValueError):
+    """A captured source whose own bytes fail a retention contract: unchanged bytes fail again.
+
+    ``paths`` names the files the verdict also read (an attachment's placement). The
+    retry memo watches them beside the source, so only a change reopens the walk;
+    transient I/O and store contention keep their own, retryable exceptions.
+    """
+
+    def __init__(self, message: str, *paths: Any):
+        super().__init__(message)
+        self.paths = tuple(str(path) for path in paths if str(path or ""))
+
+
 def active_walk():
     return _WALK.get()
 
@@ -195,7 +208,9 @@ def _unavailable_basis(parent, child, task_id, result):
 
     The healthy graph is not reread. Repair of any failed candidate reopens the
     real traversal, including blob repair without a manifest-directory change.
-    Destination/write failures deliberately have no negative observation.
+    A source whose own bytes fail a retention contract (``invalid_source``) is
+    watched with the files its verdict read. Destination/write failures, transient
+    reads and contention deliberately have no negative observation.
     """
     import re
 
@@ -219,6 +234,14 @@ def _unavailable_basis(parent, child, task_id, result):
             if (not row.get("failed_path") or not row.get("failed_stamp")
                     or _path_fact(pathlib.Path(row["failed_path"]))[:5] != tuple(row["failed_stamp"])):
                 return None  # Repair between the failed read and this observation must retry.
+        elif row.get("failure_kind") == "invalid_source":
+            paths = [row.get("path"), *(row.get("watched_paths") or [])]
+            if not all(isinstance(path, str) and pathlib.Path(path).is_absolute() for path in paths):
+                return None
+            watched.update(pathlib.Path(path) for path in paths)
+        elif row.get("kind") == "history_retention_deferred" and row.get("reason") == "call_inventory_pending":
+            if not any(isinstance(other, dict) and other.get("failure_kind") == "invalid_source" for other in pending):
+                return None  # Pending only behind a remembered deterministic failure.
         else:
             return None  # Transient read/write failures must remain retryable.
     for ref in unavailable:
@@ -564,8 +587,11 @@ class RetentionWalk:
                 if node["kind"] == "source":
                     pending_ref = {**pending_ref, "path": str(self.child / "task_results" / "artifacts" /
                                                                node["task_id"] / pending_ref["path"])}
-                obs._append_promotion_fact(self.state["pending_refs"],
-                    obs._promotion_fact(pending_ref, f"{type(exc).__name__}: {exc}"))
+                fact = obs._promotion_fact(pending_ref, f"{type(exc).__name__}: {exc}")
+                if isinstance(exc, InvalidRetainedSource):
+                    # Deterministic: remembered by basis until a watched file changes.
+                    fact.update(failure_kind="invalid_source", watched_paths=sorted(set(exc.paths)))
+                obs._append_promotion_fact(self.state["pending_refs"], fact)
                 self.state["status"] = "incomplete"
                 node["result"] = dict(node["ref"])
                 node["failure"] = "pending"
