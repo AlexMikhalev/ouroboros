@@ -105,10 +105,10 @@ def test_a_compatible_only_install_reviews_on_main(clean_env):
     doc = {"OPENAI_COMPATIBLE_BASE_URL": "https://llm.example/v1", "OUROBOROS_MODEL": "openai-compatible::glm-5.3"}
     for key, value in doc.items():
         clean_env.setenv(key, value)
-    # The factory POOL is the shipped panel's three seats on the one reachable
-    # model (three independent runs of Main, quorum 2 of 3 — what this install
-    # ran); a configured catalog can select a different explicit panel.
-    assert [row["route"]["target_id"] for row in factory_review_rows(doc)] == ["openai-compatible::glm-5.3"] * 3
+    # The factory POOL is ONE seat on the one reachable model (owner Q5=A: copies of
+    # Main would multiply the cost without a second opinion; quorum 1 of 1); a
+    # configured catalog can select a different explicit panel.
+    assert [row["route"]["target_id"] for row in factory_review_rows(doc)] == ["openai-compatible::glm-5.3"]
     # The deep self-review runs on Main too (decision 3A), on that route.
     clean_env.setenv("OPENAI_COMPATIBLE_API_KEY", "test-only-key")
     assert deep_review_route() == ("", "openai-compatible::glm-5.3")
@@ -128,7 +128,7 @@ def test_another_remote_route_keeps_the_existing_defaults(clean_env, other_key):
 
     doc = {"OPENAI_COMPATIBLE_BASE_URL": "https://llm.example/v1", "OUROBOROS_MODEL": "openai-compatible::glm-5.3",
            other_key: "x-key" if other_key != "OPENAI_BASE_URL" else "https://base.example"}
-    assert [row["route"]["target_id"] for row in factory_review_rows(doc)] == ["openai-compatible::glm-5.3"] * 3
+    assert [row["route"]["target_id"] for row in factory_review_rows(doc)] == ["openai-compatible::glm-5.3"]
 
 
 # --- one-time notices (#1334, #1335) --------------------------------------------------

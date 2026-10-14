@@ -1176,25 +1176,25 @@ def test_package_a_factory_rows_seam_is_the_one_factory_source(monkeypatch):
     ("local-only", {"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "owner/local.gguf", "OUROBOROS_MODEL": "owner/local-main"}),
     ("compatible-only", {"OPENAI_COMPATIBLE_BASE_URL": "https://llm.example/v1", "OUROBOROS_MODEL": "openai-compatible::glm-5.3"}),
 ])
-def test_factory_cells_of_a_one_model_install_mint_the_three_runs_of_main(install, main):
-    """I3-1: the factory pool of a local-only or compatible-only install (cells (A,0),
-    (C,0), (D,0), (E,0)) is what those installs ran — three independent seats of
-    Main (twins, quorum 2 of 3) — through package A's bound seam, so the migration
-    and a fresh onboarding mint one shape; an OpenRouter install keeps three models."""
+def test_factory_cells_of_a_one_model_install_mint_main_once(install, main):
+    """I3-1 after owner Q5=A: the factory pool of a local-only or compatible-only install
+    (cells (A,0), (C,0), (D,0), (E,0)) is ONE seat of Main, never copies of it (each copy
+    paid a run and added no second opinion; quorum 1 of 1), through package A's bound seam,
+    so the migration and a fresh onboarding mint one shape; OpenRouter keeps three models."""
     from ouroboros.review_model_routes import adaptive_quorum
 
     target = main["OUROBOROS_MODEL"] + (" (local)" if install == "local-only" else "")  # the full route identity
     outcome, after = _migrated({SLOTS: "", **main})
     marked = [row for row in after["items"] if row.get("review_eligible")]
-    assert [row["subagent_id"] for row in marked] == ["review-1", "review-2", "review-3"], install
-    assert [row["route"]["target_id"] for row in marked] == [target] * 3, install
+    assert [row["subagent_id"] for row in marked] == ["review-1"], install
+    assert [row["route"]["target_id"] for row in marked] == [target], install
     assert all(row["minted_from"] == "factory_default" and row["effort"] == "high" for row in marked), install
-    assert outcome.snapshot["summary"]["rows_marked_after"] == 3 and adaptive_quorum(len(marked)) == 2
-    assert outcome.snapshot["summary"]["distinct_models"] == 1, "twins are one engine, disclosed"
-    # The same seam on an existing catalog with one row of that engine: marked, not twinned (F6).
+    assert outcome.snapshot["summary"]["rows_marked_after"] == 1 and adaptive_quorum(len(marked)) == 1
+    assert outcome.snapshot["summary"]["distinct_models"] == 1
+    # The same seam on an existing catalog with one row of that engine: that row is marked, nothing minted (F6).
     twin = api_row("mine", target, "high")
     _outcome, after = _migrated({SLOTS: "", SUBAGENTS: catalog(twin), **main})
-    assert _marked(after["items"]) == ["mine", "review-1", "review-2"], install
+    assert _marked(after["items"]) == ["mine"] and len(after["items"]) == 1, install
     # OpenRouter: three different models, as before.
     _outcome, after = _migrated({SLOTS: "", "OPENROUTER_API_KEY": "present"})
     assert [r["route"]["target_id"] for r in after["items"] if r.get("review_eligible")] == list(
@@ -1204,7 +1204,7 @@ def test_factory_cells_of_a_one_model_install_mint_the_three_runs_of_main(instal
 @pytest.mark.parametrize("install, document, seats", [
     ("local Main behind a dead OPENAI_BASE_URL (D1-V04)",
      {"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "owner/local.gguf", "OUROBOROS_MODEL": "local-demo",
-      "OPENAI_BASE_URL": "http://127.0.0.1:9/v1"}, 3),
+      "OPENAI_BASE_URL": "http://127.0.0.1:9/v1"}, 1),
     ("one direct key beside an OpenRouter-style Main (the Colab re-run over N-1)",
      {"OPENAI_API_KEY": "present", "OUROBOROS_MODEL": "anthropic/claude-opus-5"}, 0),
 ])
@@ -1231,7 +1231,7 @@ def test_d1_v04_a_document_without_lanes_gets_exactly_the_factory_rows_from_one_
         outcome, after = _migrated({**document, **lanes_cell})
         marked = [row for row in after["items"] if row.get("review_eligible")]
         assert [row["route"]["target_id"] for row in marked] == targets, (install, lanes_cell)
-        assert len(marked) == 3 and outcome.snapshot["summary"]["seats_before"] == 3, (install, lanes_cell)
+        assert len(marked) == seats and outcome.snapshot["summary"]["seats_before"] == seats, (install, lanes_cell)
         # Only the never-configured cell (no lanes key) adds the wizard's unmarked Auto helpers;
         # the historical blank-lanes cell migrates exactly as it did.
         helpers = [row["subagent_id"] for row in after["items"] if not row.get("review_eligible")]

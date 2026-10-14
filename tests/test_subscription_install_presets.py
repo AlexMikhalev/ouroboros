@@ -105,8 +105,8 @@ def _target(harness, surface):
 
 
 def _triad_harnesses(connected):
-    core = [harness for harness in CORE_HARNESSES if harness in connected]
-    return core * 3 if len(core) == 1 else core
+    """One triad seat per connected reviewer harness, a sole one included (owner Q5=A)."""
+    return [harness for harness in CORE_HARNESSES if harness in connected]
 
 
 def _expected_pool(connected):
@@ -168,15 +168,27 @@ def test_credential_profile_is_never_pinned(connected):
 
 
 @pytest.mark.parametrize("harness", CORE_HARNESSES)
-def test_single_core_harness_runs_three_independent_same_model_slots(harness):
-    pool = _pool(compile_install_preset(_discoveries(harness)))
+def test_a_single_core_harness_reviews_once_never_as_copies_of_one_model(harness):
+    """Owner Q5=A: three identical seats paid three runs of one model for no second
+    opinion, so a sole harness takes ONE triad seat. Its scope seat merges into that row
+    when the identity matches (Claude, Codex) and keeps its own model otherwise (Cursor's
+    scope seat is the high-effort slug), so no two pool rows run one model."""
+    preset = compile_install_preset(_discoveries(harness))
+    pool = _pool(preset)
 
     expected_target, _ = _target(harness, "triad")
-    triad = [row for row in pool if row.target_id == expected_target]
-    # Three independent runs of the one model = three identical marked rows
-    # (the host never multiplies a seat); the twins share the engine legally.
-    assert [row.target_id for row in triad] == [expected_target] * 3
-    assert len({row.slot_id for row in triad}) == 3
+    assert [row.target_id for row in pool if row.target_id == expected_target] == [expected_target]
+    assert [seat["harness"] for seat in preset.receipt["surfaces"]["triad"]] == [harness]
+    assert len({row.target_id for row in pool}) == len(pool)
+
+
+@pytest.mark.parametrize("connected", [c for c in COMBINATIONS if len(c) > 1])
+def test_two_or_three_harnesses_keep_one_triad_seat_each(connected):
+    preset = compile_install_preset(_discoveries(*connected))
+
+    assert [seat["harness"] for seat in preset.receipt["surfaces"]["triad"]] == [
+        harness for harness in HARNESSES if harness in connected]
+    assert [seat["position"] for seat in preset.receipt["surfaces"]["triad"]] == list(range(1, len(connected) + 1))
 
 
 def test_settings_keys_write_new_actor_ssot_and_receipt_not_legacy_singleton():
@@ -329,9 +341,9 @@ def test_owner_pinned_session_is_reported_truthfully_in_the_receipt():
     assert preset.receipt["profile_pinned"] is True
     saved_route = preset.receipt["available_subagents"]["items"][0]["route"]
     assert saved_route["credential_profile_id"] == "owner-account"
-    # The pinned owner row is not the wizard's seat (unpinned, medium): three
-    # unpinned twins are minted beside it and the owner's row stays unmarked.
-    assert [row.slot_id for row in _pool(preset)] == ["review-claude", "review-claude-2", "review-claude-3"]
+    # The pinned owner row is not the wizard's seat (unpinned, medium): one
+    # unpinned row is minted beside it and the owner's row stays unmarked.
+    assert [row.slot_id for row in _pool(preset)] == ["review-claude"]
     assert all(row.profile_id == "" for row in _pool(preset))
 
 
@@ -481,20 +493,18 @@ def test_one_harness_plus_distinct_main_and_light_normally_yields_three_real_act
     })
 
     items = json.loads(preset.available_subagents)["items"]
-    # One list: the actors are Auto rows (no effort), so the three identical triad seats
-    # mint their own pinned reviewer rows and the scope seat merges.
+    # One list: the actors are Auto rows (no effort), so the one triad seat mints its
+    # own pinned reviewer row and the scope seat merges into it.
     assert [row["subagent_id"] for row in items] == [
-        "primary-builder", "fast-scout", "independent-perspective",
-        "review-claude", "review-claude-2", "review-claude-3",
+        "primary-builder", "fast-scout", "independent-perspective", "review-claude",
     ]
     assert all("name" not in row and "effort" not in row for row in items[:3])  # retired field; Auto actors
-    assert [row.slot_id for row in _pool(preset)] == ["review-claude", "review-claude-2", "review-claude-3"]
-    assert [row.effort for row in _pool(preset)] == ["medium"] * 3
+    assert [row.slot_id for row in _pool(preset)] == ["review-claude"]
+    assert [row.effort for row in _pool(preset)] == ["medium"]
     assert [row["route"]["target_id"] for row in items] == [
-        "claude=claude-opus-5-5", "openai/gpt-5.6-luna", "openai/gpt-5.6-sol",
-        "claude=claude-opus-5-5", "claude=claude-opus-5-5", "claude=claude-opus-5-5",
+        "claude=claude-opus-5-5", "openai/gpt-5.6-luna", "openai/gpt-5.6-sol", "claude=claude-opus-5-5",
     ]
-    assert [row.get("minted_from") for row in items] == [None, None, None] + ["factory_default"] * 3
+    assert [row.get("minted_from") for row in items] == [None, None, None, "factory_default"]
 
 
 def test_roster_cap_overflow_omits_the_seat_with_a_diagnostic():
@@ -539,7 +549,9 @@ def test_roster_cap_overflow_omits_the_seat_with_a_diagnostic():
 def test_marking_the_review_rows_is_idempotent_so_a_shown_catalog_resaved_is_unchanged():
     """The wizard's output fed back as its input (the catalog a preview showed,
     saved as shown) is a fixed point: every marked row already stands for one
-    seat, so nothing is re-marked and no further twin is minted."""
+    seat, so nothing is re-marked and no further twin is minted. Pinned on
+    identical seats, the strongest case (the compiler itself names each harness
+    once): each still takes exactly one row."""
     from ouroboros.configured_subagents import (
         ROUTE_KIND_AGENT_SESSION,
         ConfiguredSubagent,
@@ -577,9 +589,10 @@ def _factory(doc):
 def test_factory_review_rows_mint_the_shipped_panel_for_each_install_class():
     from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
 
-    # An OpenRouter key: the three shipped reviewers.
+    # An OpenRouter key: the three shipped reviewers, three different models.
     rows = factory_review_rows({"OPENROUTER_API_KEY": "configured"})
     assert [row["route"]["target_id"] for row in rows] == list(OPENROUTER_REVIEW_DEFAULTS["triad"])
+    assert len({row["route"]["target_id"] for row in rows}) == 3
     assert [row["subagent_id"] for row in rows] == ["review-1", "review-2", "review-3"]
     assert all(row["review_eligible"] is True and row["minted_from"] == "factory_default" for row in rows)
     assert all("delivery" not in row for row in rows)  # the catalog default (native) applies
@@ -593,21 +606,24 @@ def test_factory_review_rows_mint_the_shipped_panel_for_each_install_class():
     # A Main the provider cannot run is named, never replaced by the provider's default (owner 2A/4A).
     assert _factory({"DEEPSEEK_API_KEY": "configured", "OUROBOROS_MODEL": "openai/gpt-5.5"}) == []
     assert all(t.startswith("deepseek::") for t, _e in _factory({"DEEPSEEK_API_KEY": "configured"}))
-    # No router and no single direct provider: the shipped panel's three seats on the
-    # reachable Main in its full route identity (three independent runs; twins are
-    # allowed, the quorum stays 2 of 3) — a compatible route, a local Main (labelled
-    # local, so delegation runs it locally too).
+    # No router and no provider panel (owner Q5=A): ONE row on the reachable Main in its full
+    # route identity, never copies of it (each copy pays a run and adds no second opinion; the
+    # one answer decides, quorum 1 of 1) — a compatible route, a local Main (labelled local, so
+    # delegation runs it locally too), a managed Main with its account pin.
     from ouroboros.review_model_routes import adaptive_quorum
 
     compatible = _factory({"OPENAI_COMPATIBLE_API_KEY": "configured", "OPENAI_COMPATIBLE_BASE_URL": "http://x",
                            "OUROBOROS_MODEL": "openai-compatible::glm-5.3"})
-    assert compatible == [("openai-compatible::glm-5.3", "high")] * 3 and adaptive_quorum(len(compatible)) == 2
+    assert compatible == [("openai-compatible::glm-5.3", "high")] and adaptive_quorum(len(compatible)) == 1
     local = _factory({"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "owner/model.gguf",
                       "OUROBOROS_MODEL": "owner/local-main"})
-    assert local == [("owner/local-main (local)", "high")] * 3 and adaptive_quorum(len(local)) == 2
+    assert local == [("owner/local-main (local)", "high")] and adaptive_quorum(len(local)) == 1
     assert [row["subagent_id"] for row in factory_review_rows({"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "o/m.gguf",
-                                                               "OUROBOROS_MODEL": "owner/local-main"})] == [
-        "review-1", "review-2", "review-3"]
+                                                               "OUROBOROS_MODEL": "owner/local-main"})] == ["review-1"]
+    managed = factory_review_rows({"OUROBOROS_MODEL": "claudexor::codex=gpt-6-astra",
+                                   "OUROBOROS_MODEL_ACCOUNTS": json.dumps({"main": "koshak"})})
+    assert [row["route"] for row in managed] == [
+        {"kind": "api_model", "target_id": "claudexor::codex=gpt-6-astra", "credential_profile_id": "koshak"}]
     # Without a local source the flag routes nowhere: nothing to run. With no configured
     # access at all the shipped (router) panel stands, as the shipped defaults do.
     assert factory_review_rows({"USE_LOCAL_MAIN": True}) == []

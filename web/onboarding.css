@@ -1059,7 +1059,8 @@ textarea::placeholder {
   .available-subagent-facts > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
 }
 
-.available-subagents-review-empty {
+.available-subagents-review-empty,
+.available-subagents-review-copies {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
