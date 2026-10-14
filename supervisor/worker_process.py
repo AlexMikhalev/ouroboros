@@ -25,8 +25,10 @@ log = logging.getLogger(__name__)
 
 # Log types the worker sink does NOT forward: each already reaches the dashboard
 # live via a dedicated EVENT_Q sibling/handler, so forwarding the worker's
-# append_jsonl copy too would double-broadcast (and task_checkpoint would also be
-# re-persisted to events.jsonl by _handle_log_event, a double file write).
+# append_jsonl copy too would double-broadcast. A task_checkpoint producer
+# appends its own durable rows and then emits the one live frame explicitly
+# (loop_messages._emit_checkpoint_event), so its append copy is exactly the
+# frame that must not go out twice.
 
 
 WORKER_LOG_SINK_SUPPRESSED_TYPES = frozenset({

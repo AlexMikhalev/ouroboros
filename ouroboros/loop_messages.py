@@ -54,20 +54,37 @@ def _emit_checkpoint_event(
     task_id: str,
     drive_logs: Optional[pathlib.Path],
     data: Dict[str, Any],
-) -> bool:
-    """Emit a checkpoint; an explicit System row also projects to chat history."""
-    payload = {"type": "task_checkpoint", "task_id": task_id, **data}
-    if event_queue is not None:
-        _emit_live_log(event_queue, payload)
-    elif drive_logs:
+) -> None:
+    """Emit one checkpoint: the producer's own durable rows first, then the one live frame.
+
+    The worker writes its intermediate logs itself (owner decision 1A(3), 14 Oct
+    2026): the row lands in ``events.jsonl`` — and in ``progress.jsonl`` when it
+    is an explicit System row (``system_type == "task_checkpoint"``), which is
+    what projects it into chat history — with the producer's own ``ts``, before
+    the live ``log_event`` frame is queued. The supervisor's nested log branch
+    only addresses and pushes that frame; the worker log sink suppresses the
+    append's copy, so one checkpoint is one row set and one frame. The task's
+    event endpoint (``log_addressing.TurnEventQueue``) stamps lineage and chat
+    by value onto the row before it is written, so the durable copy is
+    attributed the way the live one is. A row that could not be written is
+    logged and the frame still goes out: the owner sees the fact, the file
+    does not.
+    """
+    from ouroboros.utils import append_jsonl, utc_now_iso
+
+    payload = {"ts": utc_now_iso(), "type": "task_checkpoint", "task_id": task_id, **data}
+    stamp = getattr(event_queue, "stamp", None)
+    if callable(stamp):
+        stamp({"type": "log_event", "data": payload})
+    if drive_logs:
         try:
-            from ouroboros.utils import append_jsonl, utc_now_iso
-            payload = {"ts": utc_now_iso(), **payload}
             append_jsonl(drive_logs / "events.jsonl", payload)
             if payload.get("system_type") == "task_checkpoint":
                 append_jsonl(drive_logs / "progress.jsonl", payload)
         except Exception:
-            pass
+            log.debug("Checkpoint row of %s not written; the live frame still goes out", task_id, exc_info=True)
+    if event_queue is not None:
+        _emit_live_log(event_queue, payload)
 
 
 def _extract_plain_text_from_content(content: Any) -> str:

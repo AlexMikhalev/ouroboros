@@ -176,7 +176,14 @@ def _handle_task_metrics(evt: Dict[str, Any], ctx: Any) -> None:
 
 
 def _handle_log_event(evt: Dict[str, Any], ctx: Any) -> None:
-    """Forward live events; persist durable task checkpoints."""
+    """Address and forward one live frame; persist the one nested kind whose producer owns no row.
+
+    A ``task_checkpoint`` arrives already durable: its producer appended the
+    events.jsonl row (and the progress.jsonl row of a System checkpoint) before
+    queueing the frame (``loop_messages._emit_checkpoint_event``, owner 1A(3)),
+    with lineage and chat stamped by value, so this handler — which under the
+    two-lane bus may run after the task left RUNNING — only addresses and pushes.
+    """
     data = evt.get("data")
     if not isinstance(data, dict):
         return
@@ -191,11 +198,9 @@ def _handle_log_event(evt: Dict[str, Any], ctx: Any) -> None:
         log.debug("Failed to forward live log event", exc_info=True)
     # task_start_settings_reload_failed is a durable owner disclosure (#285):
     # without persistence the fact evaporates on the next page load.
-    if data.get("type") in ("task_checkpoint", "task_start_settings_reload_failed"):
+    if data.get("type") == "task_start_settings_reload_failed":
         try:
             ctx.append_jsonl(ctx.DRIVE_ROOT / "logs" / "events.jsonl", payload)
-            if payload.get("system_type") == "task_checkpoint":
-                ctx.append_jsonl(ctx.DRIVE_ROOT / "logs" / "progress.jsonl", payload)
         except Exception:
             log.debug("Failed to persist %s event to events.jsonl", data.get("type"), exc_info=True)
 

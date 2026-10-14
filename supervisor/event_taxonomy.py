@@ -227,11 +227,12 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
     ),
     "task_checkpoint": EventDisposition(
         NESTED_LOG_EVENT, "supervisor.events_worker_reports",
-        ("ouroboros/agent.py", "ouroboros/loop_messages.py"),
-        "its producer appends the durable rows itself (events.jsonl, and "
-        "progress.jsonl for a System row) before emitting the one live frame; the "
-        "worker log sink suppresses the append's copy and the nested branch only "
-        "addresses and pushes that frame",
+        ("ouroboros/loop_messages.py",),
+        "the one producer (the budget-pause checkpoint in agent.py and every loop "
+        "checkpoint ride through it) appends the durable rows itself (events.jsonl, "
+        "and progress.jsonl for a System row) before emitting the one live frame; "
+        "the worker log sink suppresses the append's copy and the nested branch "
+        "only addresses and pushes that frame",
         lane=TELEMETRY_LANE,
     ),
     "task_start_settings_reload_failed": EventDisposition(
