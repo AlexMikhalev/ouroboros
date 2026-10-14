@@ -1466,15 +1466,15 @@ export function createChatInstance({
         return container;
     }
 
-    // A child's frame reanchors its parent's card (when this room has one) at the frame's time.
+    // A child's frame reanchors its parent's card (one this room has or just minted) at the frame's time.
     function getSubagentCardRecord(childId = '', parentId = '', role = '', rawTs = '') {
-        if (rawTs) reanchorTaskCard(liveCardRecords.get(parentId), rawTs);
         const existing = liveCardRecords.get(childId);
         const childBefore = captureLiveCardProjection(existing);
         const parentBefore = captureLiveCardProjection(liveCardRecords.get(parentId));
         let record = null;
         withStableViewport(() => {
             record = getSubagentCardRecordMutation(childId, parentId, role);
+            if (rawTs) reanchorTaskCard(liveCardRecords.get(parentId), rawTs);
             return liveCardProjectionChanged(childBefore, record)
                 || liveCardProjectionChanged(parentBefore, liveCardRecords.get(parentId));
         });
