@@ -136,7 +136,8 @@ class ChatOutbound(TypedDict):
     comment: NotRequired[str]
     host_facts: NotRequired[str]  # the mirrored card's host sentence (QuizOutbound.host_facts)
     task_incident: NotRequired[str]
-    # A cancellation fault names the PHYSICAL task it could not settle when it differs from the logical task id.
+    # Historical rows only: the retired cancellation-fault notice named the PHYSICAL task it could not
+    # settle when that differed from the logical id. Declared so stored rows keep their shape.
     cancel_physical_task_id: NotRequired[str]
     toast_once: NotRequired[str]
     # The one-shot toast's valence (warn/ok/error; the reaper's rail ``warning`` is normalizeTone's ``warn``

@@ -278,8 +278,8 @@
  * @property {string=} task_terminal_status Typed terminal fact on a frame that IS the turn's conclusion (stamped on direct/ephemeral finals and the direct error branch).
  * @property {string=} task_incident
  * @property {string=} cancel_physical_task_id
- *   A cancellation fault names the physical task it could not settle when that
- *   differs from the displayed task id.
+ *   Historical rows only: the retired cancellation-fault notice named the
+ *   physical task it could not settle when that differed from the displayed id.
  * @property {string=} toast_once
  * @property {string=} toast_tone
  *   The incident's valence for the one-shot toast (warn/ok/error); absent =
