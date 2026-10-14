@@ -1049,7 +1049,11 @@ def _run_emergency_address_pass(ctx: Any, disposition: Any, *, rung: str) -> Any
 
 
 def _coarsen_memory_view(ctx: Any, fit: Any) -> bool:
-    """Fit memory beside the actual transcript without inventing a smaller route window."""
+    """Narrow memory beside the actual transcript without inventing a smaller route window.
+
+    The refusal is the evidence: the view saves at least the measured capacity deficit, and at
+    least one element when the estimate still fits, from the level it shows (no target or
+    working margin reapplied, nothing addressed unfolds)."""
     plan = ctx.context_fit_plan
     measurement = fit.measurement
     if plan is None or measurement.capacity_total_tokens is None or getattr(plan, "core", None) is None:
@@ -1060,7 +1064,7 @@ def _coarsen_memory_view(ctx: Any, fit: Any) -> bool:
         window_tokens=int(measurement.capacity_total_tokens), known_window=True,
         ratio=float(plan.projection(mode).calibration_ratio or 1.0),
         output_reserve=int(plan.output_reserve_tokens), tool_schemas=ctx.tool_schemas, start_mode=mode,
-        current_messages=ctx.messages,
+        current_messages=ctx.messages, refused_tokens=max(1, int(measurement.capacity_deficit_tokens or 0)),
     )
     if rebound.projection(mode).system_content_json == before:
         return False
@@ -1069,6 +1073,9 @@ def _coarsen_memory_view(ctx: Any, fit: Any) -> bool:
     ctx.messages[:] = rebound.reproject_transcript(ctx.messages, mode)
     invalidate_task_cache_splits(ctx.task_id)
     ctx.tools._ctx.messages = ctx.messages
+    from ouroboros.loop_model_call import _adopt_view_facts
+
+    _adopt_view_facts(ctx.tools._ctx, rebound, mode)  # the narrowed view's fact, read back as a memory shortage
     _loop()._emit_checkpoint_event(ctx.event_queue, ctx.task_id, ctx.drive_logs, {
         "checkpoint_kind": "context_memory_coarsened", "round": ctx.round_idx,
         "route_fp": measurement.route_fp, "effective_mode": mode,

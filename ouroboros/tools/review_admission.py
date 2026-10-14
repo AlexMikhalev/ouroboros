@@ -526,7 +526,8 @@ def emit_brief_preparation_failure(ctx: Any, *, slot_id: str, model: str, parts:
 def prepare_retrieving_seats(ctx: Any, row_plan: dict, models: list, row_routes: list, *,
                              target_repo, governance_root, subject, frozen, diff_text: str, layer: str,
                              checklist_section: str, commit_message: str, goal: str, scope: str,
-                             review_rebuttal: str, owner_words: str, task_evidence: dict) -> tuple:
+                             review_rebuttal: str, owner_words: str, task_evidence: dict,
+                             preflight_execution: Optional[dict] = None) -> tuple:
     """Every retrieving seat receives ITS OWN two-part brief (Part 1 the change,
     Part 2 the coupling questions; a coupling-only seat answers Part 2 alone),
     sized to the seat's own first-send bound. Returns ``(row_plan,
@@ -536,7 +537,10 @@ def prepare_retrieving_seats(ctx: Any, row_plan: dict, models: list, row_routes:
     ``(slot_id, exc)`` — the seat whose brief could not be built, already
     recorded as seat-local preparation evidence; the gate turns it into the
     whole wave's typed assembly block (one wave, so one seat's missing context
-    dispatches nothing). Model-control exceptions propagate before logging."""
+    dispatches nothing). Model-control exceptions propagate before logging.
+    ``preflight_execution`` is the wave's frozen exhibit, inside every brief before
+    its size and sha are taken."""
+    from ouroboros.preflight_receipts import execution_section
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.reviewer_slot_config import row_plan_retrieves
     from ouroboros.tools.review_brief_coupling import BriefIntent
@@ -550,7 +554,7 @@ def prepare_retrieving_seats(ctx: Any, row_plan: dict, models: list, row_routes:
     intent = BriefIntent(goal=goal, scope=scope, review_rebuttal=review_rebuttal,
                          review_history=getattr(ctx, "_review_dispute_history", None) or list(ctx._review_history or []),
                          coupling_history=list(getattr(ctx, "_coupling_review_history_rounds", None) or []),
-                         owner_words=owner_words)
+                         owner_words=owner_words, preflight_execution=execution_section(preflight_execution))
     for i in range(len(models)):
         if not row_plan_retrieves(row_plan, i):
             continue
@@ -595,7 +599,8 @@ def build_two_part_brief(frozen_subject: Any, seat: Any, *, layer: Optional[str]
                          review_rebuttal: str = "", review_history: Sequence[dict] = (),
                          coupling_history: Sequence[dict] = (), owner_words: str = "",
                          task_evidence_section: str = "", drive_root: Any = None, task_id: str = "",
-                         source_root: str = "", coupling_only: bool = False) -> dict:
+                         source_root: str = "", coupling_only: bool = False,
+                         preflight_execution: Optional[dict] = None) -> dict:
     """The brief ONE seat would receive for a frozen subject — pure over the
     subject, callable outside the gate (step R).
 
@@ -610,6 +615,7 @@ def build_two_part_brief(frozen_subject: Any, seat: Any, *, layer: Optional[str]
     the constitutional head for a packet seat, the two-part brief for a
     retrieving seat), ``user`` the one user turn every seat opens with, ``sha``
     = ``{"brief", "change_prompt_sha", "coupling_brief_sha"}``.
+    ``preflight_execution`` is the frozen test execution exhibit a gate wave renders.
     """
     from ouroboros.review_ledger import seat_parts
     from ouroboros.tools import review as _rv
@@ -634,8 +640,10 @@ def build_two_part_brief(frozen_subject: Any, seat: Any, *, layer: Optional[str]
     checklist_section = _rv._load_checklist_section(layer)
     # The author's questions and the prior rounds are rendered by the owners the
     # gate and review_change use (D5-004): the text here IS the text a seat is sent.
-    goal_text = goal_with_author_questions(goal, author_questions)
-    goal_section = build_goal_section(goal_text, scope, commit_message, owner_words)
+    from ouroboros.preflight_receipts import execution_section
+
+    goal_text, execution = goal_with_author_questions(goal, author_questions), execution_section(preflight_execution)
+    goal_section = build_goal_section(goal_text, scope, commit_message, owner_words, execution)
     scope_section = build_scope_section(scope)
     rebuttal_section = build_rebuttal_section(review_rebuttal)
     review_history = review_dispute_history(review_history, drive_root=drive_root, repo_root=frozen_subject.spec.root,
@@ -651,7 +659,8 @@ def build_two_part_brief(frozen_subject: Any, seat: Any, *, layer: Optional[str]
     path_subject = frozen_subject.managed if frozen_subject.managed is not None else (
         frozen_subject if not frozen_subject.is_system_index else None)
     intent = BriefIntent(goal=goal_text, scope=scope, review_rebuttal=review_rebuttal, review_history=review_history,
-                         coupling_history=list(coupling_history or []), owner_words=owner_words)
+                         coupling_history=list(coupling_history or []), owner_words=owner_words,
+                         preflight_execution=execution)
     if "coupling" in parts:
         text, manifest = retrieving_brief_for_seat(
             review_root=review_root, governance_root=governance_root, path_subject=path_subject,

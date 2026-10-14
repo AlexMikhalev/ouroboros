@@ -693,8 +693,8 @@ def _retire_orphaned_review_registration(
 
     Same semantics as the delegated-start path (ported from cxi/p34-converged
     ``tools/delegate._retire_orphaned_registration``, adapted to the custody-drive
-    signature this module has): the registration is destroyed ONLY on a DEFINITE
-    negative answer from the daemon. A transport error, a 5xx, or a 2xx handle with
+    signature this module has): only a proven unsent start or a definite negative
+    daemon answer permits retirement. A transport error, a 5xx, or a 2xx handle with
     no run id all leave the POST's fate UNKNOWN, and a run may well be live against
     this very registration — an unverified outcome is never grounds for destroying
     state. The START_FAILED row is written either way, so every failing branch
@@ -828,6 +828,7 @@ def run_delegated_review_session(
             "reconciliation; refusing to start a second paid run", code="review_custody_lost")
     gateway = ensure_owned_gateway()
     observed, summary = {}, {}  # a failure after start still names what it observed
+    start_attempted, start_refused = recovering, False
     try:
         if use_thread and shape.investigation and not run_id:
             from ouroboros.review_thread_continuity import require_delegated_review_threads
@@ -865,13 +866,14 @@ def run_delegated_review_session(
                     shape=shape, thread_seat=f"{surface}:{slot_id}" if use_thread else "", thread_id=thread_id)
             if use_thread:
                 from ouroboros.review_thread_continuity import ensure_review_thread
+                # Thread creation can bind the project even if its response is lost.
+                existing_project = project_id
                 thread_id = ensure_review_thread(
                     gateway, custody, thread_id or checking.get("thread_id", ""), route=route, root=root,
                     workspace_root=checking.get("thread_root", ""),
                     surface=surface, slot_id=slot_id, task_id=task_id, access=shape.access)
                 if shape.investigation:
                     bind_checking_thread(custody_drive, task_id, f"{surface}:{slot_id}", thread_id)
-                existing_project = project_id  # the retained thread now needs this registration
             invocation_id = custody.new_invocation_id()
             seconds = bounded_seconds(timeout_sec, default=300, maximum=_CLAUDEXOR_MAX_SECONDS)
             run_request = prepare_review_session_request(
@@ -908,52 +910,36 @@ def run_delegated_review_session(
                 **usage_custody, **checking.get("custody", {}),
             )
             if not requested:
-                # No durable request means no POST; only a fresh registration is retirable.
-                _retire_orphaned_review_registration(
-                    custody, gateway, custody_drive, project_id if not existing_project else "", definite_refusal=not recovering,
-                    reason="start_request_row_unwritable",
-                    invocation_id=invocation_id, surface=surface, slot_id=slot_id)
                 raise ReviewRouteUnavailable(
                     "the durable start-request row could not be written; the "
                     "delegated review session was NOT started", code="start_request_row_unwritable")
             state["pending_invocation_id"] = invocation_id
             checkpoint_pending_invocation(
                 checkpoint=invocation.pending_invocation_checkpoint, invocation_id=invocation_id,
-                state=state, on_failure=lambda: _retire_orphaned_review_registration(
-                    custody, gateway, custody_drive, project_id if not existing_project else "",
-                    definite_refusal=not recovering,
-                    reason="review_custody_checkpoint_unwritable",
-                    invocation_id=invocation_id, surface=surface, slot_id=slot_id))
+                state=state, on_failure=lambda: None)  # The outer boundary owns cleanup.
+
+            def submit():
+                nonlocal start_attempted
+                start_attempted = True  # Admission and preparation are not a POST.
+                if use_thread:
+                    from ouroboros.review_thread_continuity import start_review_thread_turn
+                    return start_review_thread_turn(gateway, thread_id, run_request, idempotency_key=invocation_id)
+                return gateway.start_run(run_request, idempotency_key=invocation_id)
+
             try:
                 launch_source = SimpleNamespace(drive_root=custody_drive,
                     task_id=task_id, root_task_id=root_task_id)
-                if use_thread:
-                    from ouroboros.review_thread_continuity import start_review_thread_turn
-                    handle = run_operation(launch_source, start_review_thread_turn,
-                        gateway, thread_id, run_request, idempotency_key=invocation_id)
-                else:
-                    handle = run_operation(launch_source, gateway.start_run, run_request, idempotency_key=invocation_id)
+                handle = run_operation(launch_source, submit)
             except (ClaudexorUnavailable, OwnerPauseRefused) as exc:
                 code = getattr(exc, "code", str(exc))
                 status = int(getattr(exc, "status_code", 0) or 0)
-                definite = isinstance(exc, OwnerPauseRefused) or 400 <= status < 500
-                # Only a definite 4xx proves the registration never bound a run.
-                _retire_orphaned_review_registration(
-                    custody, gateway, custody_drive, project_id if not existing_project else "",
-                    definite_refusal=definite and not recovering,
-                    reason=code, invocation_id=invocation_id, surface=surface, slot_id=slot_id)
-                if definite and not recovering:
-                    state.pop("pending_invocation_id", None)
+                start_refused = isinstance(exc, OwnerPauseRefused) or 400 <= status < 500
                 if isinstance(exc, OwnerPauseRefused):
                     raise ReviewRouteUnavailable("New delegated review start is fenced.", code=code) from exc
                 raise
             run_id = str(handle.get("runId") or handle.get("jobId") or "")
             turn_id = str(handle.get("turnId") or "")
             if not run_id:
-                # A successful POST retains the registration on malformed response.
-                _retire_orphaned_review_registration(
-                    custody, gateway, custody_drive, project_id, definite_refusal=False,
-                    reason="queued_without_run_id", invocation_id=invocation_id, surface=surface, slot_id=slot_id)
                 raise ReviewRouteUnavailable(
                     f"Claudexor returned a queued handle without a run id: {handle!r}", code="queued_without_run_id")
         state["pending_invocation_id"] = invocation_id or retry_token
@@ -1027,6 +1013,19 @@ def run_delegated_review_session(
             "requested_access": shape.access, "checking_evidence": checking.get("evidence") or {},
         }
     except BaseException as exc:
+        if not run_id and (project_id or invocation_id):
+            definite = not recovering and (not start_attempted or start_refused)
+            try:
+                _retire_orphaned_review_registration(
+                    custody, gateway, custody_drive, project_id if not existing_project else "",
+                    definite_refusal=definite, reason=str(getattr(exc, "code", type(exc).__name__)),
+                    invocation_id=invocation_id, surface=surface, slot_id=slot_id)
+            except Exception:
+                log.warning("Review start cleanup failed for %s", invocation_id, exc_info=True)
+            if definite:
+                state.pop("pending_invocation_id", None)
+            elif invocation_id:
+                state["pending_invocation_id"] = invocation_id
         if shape.investigation and not checking.get("evidence"):
             checking["evidence"] = terminal_seat_evidence(
                 custody_drive, task_id, str(invocation.operation_id or ""), getattr(exc, "checking_terminal_detail", None))

@@ -64,10 +64,14 @@ def capture_server_source_baseline(repo_dir: pathlib.Path) -> str:
 
     This is the startup baseline, not a claim about every lazy/hot-loaded module.
     An unreadable initial identity stays unknown; later disk HEAD cannot replace it.
+    ``server.py`` runs this at import, so the server and every worker importing it as
+    ``__mp_main__`` also pin their executing bytes here (``preflight_receipts``).
     """
     from ouroboros.gateway.state import _git_checkout_identity
+    from ouroboros.preflight_receipts import capture_executing_source_baseline
 
     global _source_baseline
+    capture_executing_source_baseline()
     with _applied_settings_lock:
         if _source_baseline is None:
             _source_baseline = _git_checkout_identity(repo_dir)[1]

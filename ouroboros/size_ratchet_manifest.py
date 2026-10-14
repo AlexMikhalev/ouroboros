@@ -139,6 +139,7 @@ BAND_PATHS = {
     "ouroboros/owner_pause.py": "The existing launch-admission owner keeps ordinary tool and delegated-start claims under the same Pause boundary, with positive pre-effect contention retried outside its holds and no replay of handed work.",
     "ouroboros/preflight_runner.py": None,
     "ouroboros/presence_runner.py": "Presence turn admission, durable retry identity and transport custody remain one owner; separating them now would duplicate the gate and receipt seam.",
+    "ouroboros/process_custody.py": "The existing process custody owner retains task-bound invocation evidence before spawn and transfers it only after the independent process receipt; the same spawn path preserves unbound callers without another custody layer.",
     "ouroboros/project_dialogue.py": "Shrank INTO the band from 1587 lines: the dead authored_root_summary writer was removed with the old dialogue memory writer; no new content.",
     "ouroboros/projects_registry.py": "Execution admission protocol now has its own shared owner; registry retains persistence, bindings and identity projections.",
     "ouroboros/reflection.py": "TZ-3 PR-1: reflection now stamps typed skip events, writer/route provenance and the project-vs-canonical reflection locator on its memory actions (948->1017); one owner for reflection generation and its memory-action application, no new subsystem",

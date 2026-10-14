@@ -263,8 +263,6 @@ def _describe_bg_consciousness_state(requested_enabled: bool | None) -> dict:
         status, detail = "wake_failed", f"The last wake-up failed ({snapshot.get('last_error') or 'runner error'}); next attempt at {next_at}, backing off."
     else:
         status, detail = "sleeping", f"Sleeping until {next_at}."
-        if snapshot.get("pending_reason"):
-            detail += f" Early wake pending: {snapshot['pending_reason']}."
     return {**snapshot, "enabled": requested_enabled, "status": status, "detail": detail}
 
 
@@ -869,7 +867,6 @@ def _run_supervisor(settings: dict) -> None:
                 log.warning("Scheduled task check failed", exc_info=True)
             _periodic_supervisor_maintenance(
                 _last_custody_reap, _last_review_job_reconcile, stop_event=_watchdog_stop,
-                on_orphans_healed=lambda count: _consciousness and _consciousness.notify(f"orphans_healed:{count}"),
             )
             _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "assign"), time.monotonic()
             # Loop-tick restart drain (no sleep, events keep flowing): while

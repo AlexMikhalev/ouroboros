@@ -22,12 +22,13 @@ _RETRY = "commit_review:original-material"
 _CONTRACT = "original-contract"
 
 
-def _seat(drive, repo, surface, slot_id, *, complete=True, custody=True):
+def _seat(drive, repo, surface, slot_id, *, complete=True, custody=True, evidence=None):
     slot = ReviewSlot(slot_id=slot_id, model="old-review=old-model", route=ReviewRouteKind.AGENT_SESSION,
                       session_target="old-review=old-model", session_profile="old-account", effort="high",
                       max_tokens=65536, default_temperature=0.2, role_hint="multi-model review", use_local=False)
     request = ReviewRequest(surface=surface, task_id=_TASK, goal="original review", retry_key=_RETRY,
-                            call_type=surface, session_root=str(repo), session_task="original paid instructions")
+                            call_type=surface, session_root=str(repo), session_task="original paid instructions",
+                            evidence=dict(evidence or {}))
     request.reconciliation_identity = review_reconciliation_identity(
         request, [slot], root_task_id=_TASK, contract=_CONTRACT,
     )

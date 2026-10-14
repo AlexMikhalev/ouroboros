@@ -198,15 +198,26 @@ def _run_skill_subprocess(
     popen_kwargs.update(subprocess_new_group_kwargs())
     popen_kwargs = merge_hidden_kwargs(popen_kwargs)
     _child_started_ts = time.monotonic()
+    from ouroboros.tool_custody import external_handoff
+    from ouroboros.owner_pause import operation_start
+    confirmed = external_handoff("skill_process")
+    proc = None
     try:
-        proc = Popen(cmd, **popen_kwargs)  # noqa: S603 — cmd is a vetted list, not shell
+        with operation_start():
+            proc = Popen(cmd, **popen_kwargs)  # noqa: S603 — cmd is a vetted list, not shell
     except OSError as exc:
+        if proc is None:
+            confirmed()
         # Pre-exec: no child ever existed (a runtime binary that vanished
         # between resolution and spawn). The platform's exception class is the
         # typed cause; there is no exit code to invent for it.
         _publish_process_facts(
             started_ts=_child_started_ts, pre_exec_failure=type(exc).__name__,
         )
+        raise
+    except BaseException:
+        if proc is None:
+            confirmed()  # the final gate refused before Popen returned
         raise
     with _subprocess_lock:
         _active_subprocesses.add(proc)
@@ -221,6 +232,8 @@ def _run_skill_subprocess(
             proc.wait(timeout=2)
         except Exception:
             pass
+        if proc.poll() is not None:
+            confirmed()
         with _subprocess_lock:
             _active_subprocesses.discard(proc)
         for pipe in (proc.stdout, proc.stderr):
@@ -272,6 +285,8 @@ def _run_skill_subprocess(
         stdout_thread.join(timeout=2)
         stderr_thread.join(timeout=2)
     finally:
+        if proc.poll() is not None:
+            confirmed()
         with _subprocess_lock:
             _active_subprocesses.discard(proc)
         try:
@@ -578,6 +593,12 @@ def _handle_list_skills(ctx: ToolContext, *, name: str = "", offset: int = 0,
     return text
 
 
+def _skill_review_refusal(ctx: ToolContext, code: str, text: str) -> str:
+    from ouroboros.tools.tool_result import TOOL_CODE_SPECS, ToolResult, _publish_tool_result
+
+    return _publish_tool_result(ctx, ToolResult(status=TOOL_CODE_SPECS[code].status, code=code, text=text))
+
+
 def _author_finish_existing_skill_review(
     ctx: ToolContext,
     binding: ResolvedResourceBinding,
@@ -602,10 +623,10 @@ def _author_finish_existing_skill_review(
     enforcement = str(get_review_enforcement() or "").strip().lower()
     cyber = not review_enforcement_blocks("blocking")
     if review_enforcement_blocks(enforcement):
-        return {"error": "SKILL_REVIEW_ERROR: explicit author finish requires advisory enforcement."}
+        return {"error": _skill_review_refusal(ctx, "LEGACY_BLOCKED", "SKILL_REVIEW_ERROR: explicit author finish requires advisory enforcement.")}
     loaded = load_bound_skill(binding)
     if loaded is None:
-        return {"error": "SKILL_REVIEW_ERROR: selected skill is unavailable for author finish."}
+        return {"error": _skill_review_refusal(ctx, "LEGACY_UNAVAILABLE", "SKILL_REVIEW_ERROR: selected skill is unavailable for author finish.")}
     current_hash = compute_content_hash(
         loaded.skill_dir,
         manifest_entry=loaded.manifest.entry,
@@ -637,7 +658,7 @@ def _author_finish_existing_skill_review(
                 or job.get("status") not in {"completed", "succeeded", "failed", "interrupted", "cancelled", "timeout"}
                 or job.get("review_status") not in {"pending", "failed", "interrupted", "cancelled", "timeout"}
                 or supplied.get("job_id") != job["job_id"] or supplied.get("content_hash") != job["content_hash"]):
-            return {"error": "SKILL_REVIEW_ERROR: author finish needs prior reviewer feedback or the exact review_reference returned by a terminal review with feedback or disclosed unavailability. Running or unresolved physical reviewers are not unavailable."}
+            return {"error": _skill_review_refusal(ctx, "TOOL_ARG_ERROR", "SKILL_REVIEW_ERROR: author finish needs prior reviewer feedback or the exact review_reference returned by a terminal review with feedback or disclosed unavailability. Running or unresolved physical reviewers are not unavailable.")}
         basis = {"surface": "skill", "basis": "partial_feedback" if feedback else "unavailable", **{key: job[key] for key in
                  ("job_id", "content_hash", "status", "review_status", "finished_at")}}
         if feedback:
@@ -651,7 +672,7 @@ def _author_finish_existing_skill_review(
             enforcement=enforcement,
         )
     except ValueError as exc:
-        return {"error": f"SKILL_REVIEW_ERROR: {exc}"}
+        return {"error": _skill_review_refusal(ctx, "TOOL_ARG_ERROR", f"SKILL_REVIEW_ERROR: {exc}")}
     previous_hash = str(review_state.reviewed_content_hash or review_state.content_hash or "")
     preflight_facts = None
     # Current preflight is independent evidence; Cyber may continue with its
@@ -660,7 +681,7 @@ def _author_finish_existing_skill_review(
         ctx, drive_root, loaded, current_hash, persist=False, binding=binding,
     )
     if preflight is not None and not cyber:
-        return {"error": "SKILL_REVIEW_ERROR: deterministic preflight did not pass for the current payload."}
+        return {"error": _skill_review_refusal(ctx, "TOOL_ERROR", "SKILL_REVIEW_ERROR: deterministic preflight did not pass for the current payload.")}
     if preflight is not None:
         from ouroboros.utils import append_jsonl, utc_now_iso
 
@@ -713,7 +734,7 @@ def _handle_review_skill(
 ) -> str:
     skill_name = str(skill or "").strip()
     if not skill_name:
-        return "⚠️ SKILL_REVIEW_ERROR: 'skill' argument is required."
+        return _skill_review_refusal(ctx, "TOOL_ARG_ERROR", "⚠️ SKILL_REVIEW_ERROR: 'skill' argument is required.")
     try:
         binding = _resolved_binding or build_resolved_resource_binding(
             ctx, root="skill_payload", operation="review", path=".",
@@ -733,12 +754,12 @@ def _handle_review_skill(
     author_reason = " ".join(str(author_rationale or "").split()).strip()
     if author_value or author_reason:
         if author_value not in {"accepted", "rejected", "partial", "deferred"} or not author_reason:
-            return "⚠️ SKILL_REVIEW_ERROR: explicit author finish requires a valid disposition and rationale."
+            return _skill_review_refusal(ctx, "TOOL_ARG_ERROR", "⚠️ SKILL_REVIEW_ERROR: explicit author finish requires a valid disposition and rationale.")
         finished = _author_finish_existing_skill_review(
             ctx, binding, skill_name, disposition=author_value, rationale=author_reason, review_reference=review_reference,
         )
         if finished is None:
-            return "⚠️ SKILL_REVIEW_ERROR: author finish could not bind the selected skill revision."
+            return _skill_review_refusal(ctx, "LEGACY_UNAVAILABLE", "⚠️ SKILL_REVIEW_ERROR: author finish could not bind the selected skill revision.")
         if finished.get("error"):
             return str(finished["error"])
         attempt_idx = _count_attempts_for_content(
@@ -795,6 +816,8 @@ def _handle_review_skill(
     # state/skills/<name>/review.json (Skills page + on-demand reads).
     if payload.get("job_id") and payload.get("content_hash"):
         markdown += "\n\nReview reference: " + json.dumps({"job_id": payload["job_id"], "content_hash": payload["content_hash"]}, sort_keys=True)
+    if refusal_code := payload.get("dispatch_refusal_code"):
+        return _skill_review_refusal(ctx, refusal_code, markdown)
     return markdown
 
 

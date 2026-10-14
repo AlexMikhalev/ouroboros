@@ -1382,11 +1382,15 @@ def cancel_pending(drive_root: Any, task_id: str, *, strict: bool = False, propa
             raise
         log.debug("cancel-pending intent read failed for %s", task_id, exc_info=True)
     try:
-        from ouroboros.task_results import STATUS_CANCEL_REQUESTED, load_task_result
+        from ouroboros.task_results import STATUS_CANCEL_REQUESTED, load_task_result, validate_task_id
 
-        status = str(
-            (load_task_result(drive_root, task_id, strict=strict) or {}).get("status") or ""
-        )
+        if strict:
+            result = load_task_result(drive_root, task_id, strict=True) or {}
+        else:
+            from ouroboros.task_store import task_facts
+            tid = validate_task_id(task_id)
+            result = task_facts(drive_root, where="task_id=?", params=(tid,)).get(tid, {})
+        status = str(result.get("status") or "")
         return status == STATUS_CANCEL_REQUESTED
     except StoreBusy:
         if strict or propagate_busy:

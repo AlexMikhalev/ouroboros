@@ -318,22 +318,30 @@ def _execute_local(
 
     base_env = local_env if local_env is not None else scrub_repo_from_pythonpath(runtime_environ(), _system_repo_dir())
     process_env = overlay_env(overlay_env(base_env, target_env), env_overlay)
-    with operation_start():
-        try:
-            proc = subprocess.Popen(
-                [str(part) for part in cmd],
-                cwd=str(cwd),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                text=True,
-                errors="replace",
-                env=process_env,
-                **subprocess_new_group_kwargs(),
-            )
-        except (OSError, ValueError) as exc:
-            exc.process_not_started = True
-            raise
+    from ouroboros.tool_custody import external_handoff
+    confirmed = external_handoff("workspace_process")
+    proc = None
+    try:
+        with operation_start():
+            try:
+                proc = subprocess.Popen(
+                    [str(part) for part in cmd],
+                    cwd=str(cwd),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    errors="replace",
+                    env=process_env,
+                    **subprocess_new_group_kwargs(),
+                )
+            except (OSError, ValueError) as exc:
+                exc.process_not_started = True
+                raise
+    except BaseException:
+        if proc is None:
+            confirmed()
+        raise
     _FOREGROUND[proc] = (None, executor.kind)
     if _panic_requested:
         request_process_tree_kill(proc)
@@ -348,6 +356,8 @@ def _execute_local(
             "cmd": _redacted_cmd(cmd),
         },
     )
+    if record_path is not None:
+        confirmed()
     _FOREGROUND[proc] = (record_path, executor.kind)
     try:
         stdout, stderr = proc.communicate(timeout=timeout_sec)
@@ -417,21 +427,29 @@ def _execute_docker(
     started = time.monotonic()
     from ouroboros.owner_pause import operation_start
 
-    with operation_start():
-        try:
-            proc = subprocess.Popen(
-                docker_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                errors="replace",
-                stdin=subprocess.DEVNULL,
-                **({"env": {**os.environ, **{aliases[key]: value for key, value in target_env.items()}}} if target_env else {}),
-                **subprocess_new_group_kwargs(),
-            )
-        except (OSError, ValueError) as exc:
-            exc.process_not_started = True
-            raise
+    from ouroboros.tool_custody import external_handoff
+    confirmed = external_handoff("workspace_process")
+    proc = None
+    try:
+        with operation_start():
+            try:
+                proc = subprocess.Popen(
+                    docker_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    errors="replace",
+                    stdin=subprocess.DEVNULL,
+                    **({"env": {**os.environ, **{aliases[key]: value for key, value in target_env.items()}}} if target_env else {}),
+                    **subprocess_new_group_kwargs(),
+                )
+            except (OSError, ValueError) as exc:
+                exc.process_not_started = True
+                raise
+    except BaseException:
+        if proc is None:
+            confirmed()
+        raise
     _FOREGROUND[proc] = (None, executor.kind)
     if _panic_requested:
         request_process_tree_kill(proc)
@@ -448,6 +466,8 @@ def _execute_docker(
             "cmd": _redacted_cmd(cmd),
         },
     )
+    if record_path is not None:
+        confirmed()
     _FOREGROUND[proc] = (record_path, executor.kind)
     cleanup_confirmed = False
     try:
@@ -1015,6 +1035,8 @@ def start_service(
         with _STATE_LOCK:
             _SERVICES[key] = record
     record.durable_record_path = _register_service_process(_drive_root_from_ctx(ctx), record)
+    if executor.kind != "local" and record.durable_record_path is not None:
+        proc._invocation_confirm()
     _wait_readiness(record, readiness)
     return _service_payload(record)
 
@@ -1023,12 +1045,20 @@ def _submit_service_command(cmd: list[str], **kwargs) -> subprocess.CompletedPro
     """Start the Docker CLI under the Pause gate; wait outside it."""
     from ouroboros.owner_pause import operation_start
 
-    with operation_start():
-        try:
-            proc = subprocess.Popen(cmd, **kwargs)
-        except (OSError, ValueError) as exc:
-            exc.process_not_started = True
-            raise
+    from ouroboros.tool_custody import external_handoff
+    confirmed = external_handoff("backend_service")
+    proc = None
+    try:
+        with operation_start():
+            try:
+                proc = subprocess.Popen(cmd, **kwargs)
+            except (OSError, ValueError) as exc:
+                exc.process_not_started = True
+                raise
+    except BaseException:
+        if proc is None:
+            confirmed()
+        raise
     try:
         stdout, stderr = proc.communicate(timeout=20)
     except Exception as exc:
@@ -1039,7 +1069,9 @@ def _submit_service_command(cmd: list[str], **kwargs) -> subprocess.CompletedPro
             proc.communicate()
         # The host CLI ended; no backend service receipt was obtained.
         raise
-    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    result = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    result._invocation_confirm = confirmed  # only the backend receipt, never CLI exit, discharges it
+    return result
 
 
 def service_status(ctx: Any, name: str) -> dict[str, Any] | None:

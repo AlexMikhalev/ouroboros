@@ -81,7 +81,7 @@ def run_ouroboros(prompt: str, sample_id: str = "sample", attachments: list[path
     ]
     # P6: give the agent a VISIBLE deadline STRICTLY tighter than the outer hard kill
     # (GAIA_SAMPLE_TIMEOUT_SEC). The gateway derives deadline_at = now + timeout_sec,
-    # so the agent gets 50/25/10% milestones + a save-at-10% nudge and finalizes before
+    # so the agent gets factual 50/25/10% crossings and local finalization before
     # the SIGKILL backstop. Honest: the visible deadline == the real budget minus a
     # finalization reserve (10%, capped at 240s); the agent is never told a deadline it
     # is killed before reaching. GAIA itself imposes no per-task time limit (the timeout

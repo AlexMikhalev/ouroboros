@@ -99,7 +99,8 @@ class BriefIntent:
     object instead of parallel arguments a caller can silently mis-order.
     ``owner_words`` is the host-attested section of the owner's words that
     caused the work (``owner_words_text``); ``coupling_history`` is this
-    subject's prior ``per_question.coupling`` rounds.
+    subject's prior ``per_question.coupling`` rounds; ``preflight_execution`` the
+    wave's frozen test execution exhibit text (``preflight_receipts``).
     """
 
     goal: str = ""
@@ -108,6 +109,7 @@ class BriefIntent:
     review_history: Optional[list | dict] = None
     coupling_history: Optional[list] = None
     owner_words: str = ""
+    preflight_execution: str = ""
 
 
 @dataclass(frozen=True)
@@ -527,7 +529,8 @@ def build_retrieving_brief(
 
         checklist_section = _load_checklist_section(layer)
     intent = brief.intent
-    goal_section = build_goal_section(intent.goal, intent.scope, brief.commit_message, intent.owner_words)
+    goal_section = build_goal_section(intent.goal, intent.scope, brief.commit_message, intent.owner_words,
+                                      intent.preflight_execution)
     scope_section = build_scope_section(intent.scope)
     rebuttal_section = build_rebuttal_section(intent.review_rebuttal)
     history_section = review_history_with_obligations(intent.review_history, drive_root=brief.drive_root,
