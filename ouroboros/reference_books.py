@@ -362,6 +362,17 @@ def _official_contribution_target(root: Path) -> str:
     return ""
 
 
+def contribution_base(root: Path) -> tuple[str, str]:
+    """``(official ref, HEAD's merge-base with it)``, each ``""`` when unavailable.
+
+    The one base every contribution measurement uses (the book balance and
+    ``review.diff_pulse``): a branch's own earlier commits stay inside what it contributes.
+    """
+    upstream = _official_contribution_target(root)
+    base = (_git_bytes(root, "merge-base", "HEAD", upstream) or b"").decode().strip() if upstream else ""
+    return upstream, base
+
+
 def book_source_sizes(root: Path, book_id: str, ref: str = "") -> dict[str, int] | None:
     """UTF-8 bytes of each book source, entrypoint first, in the working tree or at ``ref``.
 
@@ -402,8 +413,7 @@ def book_balances(root: Path, paths: Iterable[str] | None = None) -> list[BookBa
          for path in paths if book_entrypoint_for(path) == entry})
     if not wanted:
         return []
-    upstream = _official_contribution_target(root)
-    base = (_git_bytes(root, "merge-base", "HEAD", upstream) or b"").decode().strip() if upstream else ""
+    upstream, base = contribution_base(root)
     balances: list[BookBalance] = []
     for book_id in wanted:
         now = book_source_sizes(root, book_id)

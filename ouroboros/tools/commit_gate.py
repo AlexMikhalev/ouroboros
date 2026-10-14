@@ -1004,17 +1004,20 @@ def release_diagnostics(ctx: ToolContext, paths: Optional[List[str]], source: st
 
 def deterministic_preflight(ctx: ToolContext, commit_message: str, paths: Optional[List[str]]) -> str:
     """The free checks that ran ahead of the retired advisory delivery, kept whole for every
-    commit: size headroom and readiness (information and warnings), release metadata of the
-    staged index, and the syntax of staged ``.py`` files. Returns the blocking message or ""."""
+    commit: size headroom, the staged change's diff pulse (the text the panel's seats read
+    first) and readiness (information and warnings), release metadata of the staged index,
+    and the syntax of staged ``.py`` files. Returns the blocking message or ""."""
     from ouroboros.commit_admission import release_metadata_preflight, syntax_preflight_staged_py_files
+    from ouroboros.review import diff_pulse
     from ouroboros.tools.review_helpers import check_worktree_readiness
     from ouroboros.utils import append_jsonl, utc_now_iso
 
     repo_dir = pathlib.Path(ctx.repo_dir)
     information: List[str] = []
     warnings = check_worktree_readiness(repo_dir, paths=paths, information=information)
+    information = [line for line in (*information, diff_pulse(repo_dir, staged=True)) if line]
     if information:
-        ctx.emit_progress_fn("Size headroom (information):\n" + "\n".join(information))
+        ctx.emit_progress_fn("Size (information):\n" + "\n".join(information))
     if warnings:
         ctx.emit_progress_fn(f"⚠️ Readiness: {'; '.join(warnings)}")
         try:

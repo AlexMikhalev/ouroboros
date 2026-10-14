@@ -2,7 +2,7 @@
 
 The official CI lane (tests/test_reference_book_budgets.py) is what refuses a grown book;
 here the same measurement reaches Ouroboros when it writes book text, plans book work,
-runs readiness before a paid reviewer and asks for codebase health.
+runs the commit gate's free checks before a paid reviewer and asks for codebase health.
 """
 from __future__ import annotations
 
@@ -365,17 +365,22 @@ def test_plan_task_measures_a_bound_body_candidate(harness):
 
 
 @pytest.mark.serial
-def test_readiness_warns_on_a_grown_touched_book_only(tmp_path):
+def test_the_commit_gate_states_the_staged_books_balance_in_its_diff_pulse(tmp_path):
+    """The gate's free checks carry the touched books' balance once, inside the diff
+    pulse they show before the panel: the rule when the book grew, "nothing owed" when
+    it was paid; the readiness warnings no longer repeat it in a second rendering."""
+    from ouroboros.tools import commit_gate
+    from ouroboros.tools.registry import ToolContext
     from ouroboros.tools.review_helpers import check_worktree_readiness
 
     repo = _book_repo(tmp_path / "body")
-    (repo / CHAPTER).write_text(BODY + "Added.\n", encoding="utf-8", newline="\n")
-    grown = [w for w in check_worktree_readiness(repo) if "Architecture book" in w]
-    assert len(grown) == 1 and grown[0].startswith("official CI will enforce:") and BOOK_GROWTH_RULE in grown[0]
-    (repo / CHAPTER).write_text(BODY.replace(" and long enough to shorten", ""), encoding="utf-8", newline="\n")
-    assert not [w for w in check_worktree_readiness(repo) if "book" in w]
-    foreign = _book_repo(tmp_path / "foreign")
-    (foreign / "ouroboros" / "reference_books.py").unlink()
-    _git(foreign, "commit", "-qam", "no book contract")
-    (foreign / CHAPTER).write_text(BODY + "Added.\n", encoding="utf-8", newline="\n")
-    assert not [w for w in check_worktree_readiness(foreign) if "book" in w]
+    for text, owed in ((BODY + "Added.\n", True), (BODY.replace(" and long enough to shorten", ""), False)):
+        (repo / CHAPTER).write_text(text, encoding="utf-8", newline="\n")
+        _git(repo, "add", CHAPTER)
+        progress: list = []
+        ctx = ToolContext(repo_dir=repo, drive_root=tmp_path / "data", task_id="t-books", emit_progress_fn=progress.append)
+        commit_gate.deterministic_preflight(ctx, "docs: one chapter", [CHAPTER])
+        [size] = [line for line in progress if line.startswith("Size (information):")]
+        assert "Diff pulse since canonical/ouroboros merge-base" in size and "Architecture book" in size
+        assert (BOOK_GROWTH_RULE in size) is owed and ("nothing owed" in size) is not owed
+        assert not [w for w in check_worktree_readiness(repo, paths=[CHAPTER]) if "book" in w]

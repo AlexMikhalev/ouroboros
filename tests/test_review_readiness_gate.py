@@ -70,21 +70,28 @@ class TestCheckWorktreeReadiness:
             warnings = check_worktree_readiness(tmp_path)
             assert not any("test" in w.lower() for w in warnings)
 
-    def test_large_diff_warning(self, tmp_path):
-        """Very large diffs should produce a size warning."""
-        def side_effect(cmd, **kwargs):
-            result = MagicMock(returncode=0, stderr="")
-            if "status" in cmd and "--porcelain" in cmd:
-                result.stdout = " M bigfile.py\n"
-            elif "diff" in cmd:
-                result.stdout = "x" * 500_000  # 500K chars
-            else:
-                result.stdout = ""
-            return result
+    def test_diff_size_is_no_readiness_trigger(self, tmp_path):
+        """No diff size warns: the commit gate states a change's size as the diff pulse
+        (information beside the readiness warnings), so a 500K-char diff warns exactly
+        as a small one does."""
+        def side_effect_for(diff_chars):
+            def side_effect(cmd, **kwargs):
+                result = MagicMock(returncode=0, stderr="")
+                if "status" in cmd and "--porcelain" in cmd:
+                    result.stdout = " M bigfile.py\n"
+                elif "diff" in cmd:
+                    result.stdout = "x" * diff_chars
+                else:
+                    result.stdout = ""
+                return result
+            return side_effect
 
-        with patch("ouroboros.tools.review_helpers.subprocess.run", side_effect=side_effect):
-            warnings = check_worktree_readiness(tmp_path)
-            assert any("large" in w.lower() or "size" in w.lower() for w in warnings)
+        warnings = {}
+        for diff_chars in (10, 500_000):
+            with patch("ouroboros.tools.review_helpers.subprocess.run", side_effect=side_effect_for(diff_chars)):
+                warnings[diff_chars] = check_worktree_readiness(tmp_path)
+        assert warnings[500_000] == warnings[10]
+        assert not any("large diff" in w.lower() for w in warnings[500_000])
 
     def test_version_sync_warning_included(self, tmp_path):
         """Version sync issues from check_worktree_version_sync should be included."""

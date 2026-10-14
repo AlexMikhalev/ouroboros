@@ -21,12 +21,11 @@ Methods over 150 lines or eight parameters are decomposition signals, not gates
 (CHECKLISTS item 11(c); BIBLE P7). Runtime function totals are descriptive, with no
 aggregate ceiling, because a repository-wide count penalizes useful decomposition.
 
-Enforcement: the official repository's CI runs the `size_ratchet` pytest lane as a
-blocking step (`OURO_SIZE_RATCHET_BASE_REF` names the event base; ARCHITECTURE §8 "CI
-topology"). Local surfaces never block on size: default lanes exclude the marker, and
-`check_worktree_readiness` and `codebase_health` report `validate_size_ratchet`
-findings as "official CI will enforce" warnings, so a locally evolved fork is never
-trapped by inherited debt.
+Enforcement: official-repository CI runs the blocking `size_ratchet` lane (ARCHITECTURE
+§8 "CI topology"). Locally nothing blocks on size (BIBLE P3): default lanes exclude the
+marker, `check_worktree_readiness` and `codebase_health` report `validate_size_ratchet`
+findings as "official CI will enforce" warnings, and the diff pulse shows growth since
+the contribution base while a change is made (ARCHITECTURE §6 "Commit preflight").
 
 ### Paying down a size cap
 
