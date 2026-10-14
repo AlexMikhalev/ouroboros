@@ -287,19 +287,22 @@ def test_packet_open_plan_wave_binds_no_claims():
 
     ev = build_task_acceptance_evidence(ctx, llm_trace={"tool_calls": []}, drive_root=dr, task_id="acc")
 
-    # An OPEN (unclosed) wave's claims never bind acceptance, but AP5 discloses
-    # why the contract has no claims instead of silently omitting that fact.
-    assert ev["acceptance_claims_source"] == "none_open_plan_wave"
+    # A legacy v2 wave the old organ never closed selected nothing: the one binder binds
+    # no claim, and the plan-history exhibit discloses the legacy record instead of the
+    # contract silently omitting the fact.
+    assert "acceptance_claims_source" not in ev
     assert not ev["task_contract"].get("acceptance_claims")
     assert "acceptance_support_refs" not in ev
+    exhibit = ev["plan_claims_exhibit"]
+    assert exhibit["binding"] == "none" and exhibit["revisions"] == [] and exhibit["legacy"]["fingerprint"] == "a" * 64
 
-    # The acceptance prompt keeps the disclosure at packet top level. Its
-    # claim-specific reviewer rule names only task_contract.acceptance_claims,
-    # so the typed source cannot be mistaken for a binding claim.
+    # The acceptance prompt keeps the disclosure at packet top level. Its claim-specific
+    # reviewer rule names only task_contract.acceptance_claims, so the exhibit cannot be
+    # mistaken for a binding claim.
     stable, _task, dynamic = _render_prompt_parts(
         ReviewRequest(surface="task_acceptance", goal="do X", evidence=ev),
         ReviewSlot("s0", "m"),
     )
     assert "`task_contract.acceptance_claims` is present" in stable
-    assert '"acceptance_claims_source": "none_open_plan_wave"' in dynamic
+    assert '"plan_claims_exhibit"' in dynamic and '"binding": "none"' in dynamic
     assert '"task_contract": {\n    "requirements": "do X"\n  }' in dynamic
