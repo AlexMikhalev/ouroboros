@@ -12,7 +12,6 @@ from __future__ import annotations
 import time
 import types
 
-import pytest
 
 from tests._usage_store_testing import root  # noqa: F401  (fixture)
 
