@@ -156,12 +156,31 @@ def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dic
     is_root = lineage["is_root_task"]
     role = str(row.get("role") or ("root" if is_root else "child"))
     parent = str(lineage["parent_task_id"] or "")
+    chat_id = int(ready.get("chat_id", row.get("chat_id", event.get("chat_id", 0))) or 0)
+    delivery = {key: str(value or "") for key, value in (delivery or {}).items()
+                if key in ("state", "delivery_id", "preserved_path")}
+    if delivery.get("state") in {"exhausted", "unknown"}:
+        # Honest delivery state (owner 20:48): an exhausted or unknown delivery is a
+        # ROW-LEVEL warning — the same objective.warning the browser reads for its
+        # pill — never a durable change to the task's own axes (the registry may be
+        # repaired, the copy delivered later), plus one plain sentence and the
+        # saved-answer pointer when a copy exists.
+        from ouroboros.outcomes import _merge_objective_warning
+
+        axes = dict(row.get("outcome_axes") or {}) if isinstance(row.get("outcome_axes"), dict) else {}
+        objective = dict(axes.get("objective") or {}) if isinstance(axes.get("objective"), dict) else {}
+        _merge_objective_warning(objective, f"terminal_delivery_{delivery['state']}")
+        row = {**row, "outcome_axes": {**axes, "objective": objective}}
+    else:
+        delivery = {}
     phase = dialogue.outcome_phase(row, event)
     outcome = dialogue.OUTCOME_PHASE_HEADLINE[phase]
-    chat_id = int(ready.get("chat_id", row.get("chat_id", event.get("chat_id", 0))) or 0)
     text = (f"{outcome}. Root task {tid}." if is_root
             else f"{outcome}. {role} (child {tid} of {parent or 'unknown'}).")
-    verdict = dialogue._completion_verdict(row, event)
+    verdict = dialogue._join_cause_clauses([
+        dialogue._completion_verdict(row, event),
+        dialogue.terminal_delivery_clause(delivery.get("state", ""), delivery.get("preserved_path", "")),
+    ])
     excerpt = dialogue._completion_excerpt(row, chat_id=chat_id, salvage_only=True)
     text += "".join(f" {part}" for part in (verdict, excerpt) if part)
     from ouroboros.dialogue_provenance import presence_provenance_fields
@@ -182,6 +201,8 @@ def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dic
         "result_ref": {"kind": "task_result", "task_id": tid, "reader": "get_task_result"}, "text": text,
         **({"reason_detail": verdict} if verdict else {}),
         **({"terminal_projection_token": ready["token"]} if ready.get("token") else {}),
+        # The typed delivery disposition the browser card renders (log_events.terminalDeliveryClause).
+        **({"terminal_delivery": delivery} if delivery else {}),
     }
     if isinstance(row.get("model_execution"), dict):
         result["model_execution"] = dict(row["model_execution"])
@@ -300,7 +321,14 @@ def clear_terminal_projection_obligation(root: Any, tid: str, expected: dict, di
 
 
 def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | None = None,
-                               event: dict | None = None, event_queue: Any = None) -> str:
+                               event: dict | None = None, event_queue: Any = None,
+                               prepare: bool = True) -> str:
+    """Run both halves of a root's owed terminal projection once its conditions hold.
+
+    ``prepare=False`` is the delivery lanes' word (a delivery acknowledged or given
+    up on): readiness is task_done's to mint, so the settle only proceeds when an
+    earlier terminal transition already recorded it.
+    """
     from ouroboros import project_dialogue as dialogue
 
     tid = str(task_id or "").strip()
@@ -310,7 +338,8 @@ def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | No
         with _publication_lock(drive_root, tid) as acquired:
             if not acquired:
                 return SETTLEMENT_DEFERRED
-            stored = _prepare(drive_root, tid, task or {}, event or {})
+            stored = (_prepare(drive_root, tid, task or {}, event or {}) if prepare
+                      else load_task_result(drive_root, tid, strict=True) or {})
             if (not isinstance(stored.get("canonical_terminal_projection_ready"), dict)
                     or is_reconciled_presence_placeholder(stored)):  # readiness an earlier release recorded
                 return SETTLEMENT_NONE

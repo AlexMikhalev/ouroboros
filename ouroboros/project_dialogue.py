@@ -818,7 +818,29 @@ TASK_CAUSE_PHRASES = {
     "child_results_deferred": "Some sub-task results were deferred instead of being folded into this answer",
     "tool_failure": "A tool this task used failed and nothing recovered it",
     "task_exception": "The task stopped on an internal error",
+    # Recovery finalized a dead attempt from its already registered answer instead of a retry
+    # (working_checkpoint.adopt_registered_answer): the answer stands, the packaging does not.
+    "finalization_incomplete": "The answer was authored, but the task's finalization did not complete, so its review evidence, artifacts and cost accounting are incomplete.",
+    # The Done card's delivery disposition (terminal_projection._project_row): not reason codes but the
+    # row-level warning keys of a delivery the host could not confirm; terminal_delivery_clause adds the copy pointer.
+    "terminal_delivery_exhausted": "Sending the final answer was not confirmed after the delivery attempts ran out",
+    "terminal_delivery_unknown": "Delivery of the final answer could not be confirmed because the delivery registry could not be read; the result is in task details.",
 }
+
+
+def terminal_delivery_clause(state: str, preserved_path: str = "") -> str:
+    """The card's one sentence about a delivery the host could not confirm (exhausted / unknown).
+
+    An exhausted delivery names the saved copy when one exists and says so when it
+    does not — never a claimed copy. The browser twin is terminalDeliveryClause.
+    """
+    sentence = TASK_CAUSE_PHRASES.get(f"terminal_delivery_{state}", "")
+    if not sentence:
+        return ""
+    if state == "exhausted":
+        sentence += (f"; a copy of the answer is saved at {preserved_path}." if preserved_path
+                     else "; no copy of the answer could be saved.")
+    return sentence
 
 
 def outcome_phase(result: Dict[str, Any], event: Dict[str, Any]) -> str:

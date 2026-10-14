@@ -31,7 +31,7 @@ from ouroboros.task_finalization import (
 
 log = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3  # v3: ``exhausted`` — a delivery the host gave up on, kept with its payload
 _REGISTRY_CAP = 512
 # Bounded chat preview of the salvaged answer; the full copy is referenced by a
 # durable receipt, and the omitted tail is DISCLOSED (BIBLE P1), never silent.
@@ -104,12 +104,20 @@ def _mapping_rows(current: Dict[str, Any], key: str, *, strict: bool = False) ->
 
 
 def _registry_document(current: Dict[str, Any], rows: List[str], pending: Dict[str, Any],
-                       receipts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """The whole registry a mutator writes: every mutator keeps the receipts it did not touch."""
+                       receipts: Optional[Dict[str, Any]] = None,
+                       exhausted: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The whole registry a mutator writes: every mutator keeps the receipts and exhausted rows it did not touch.
+
+    ``exhausted`` holds the rows the host gave up delivering (replay cap reached or
+    evicted by the pending capacity), payload included, keyed by delivery id: a
+    disposition the Done card reads, retired only by a later real receipt of that id."""
     receipts = _mapping_rows(current, "receipts", strict=True) if receipts is None else receipts
+    exhausted = _mapping_rows(current, "exhausted", strict=True) if exhausted is None else exhausted
     document = {"schema_version": _SCHEMA_VERSION, "delivered": rows[-_REGISTRY_CAP:], "pending": pending}
     if receipts:
         document["receipts"] = dict(list(receipts.items())[-_REGISTRY_CAP:])
+    if exhausted:
+        document["exhausted"] = dict(list(exhausted.items())[-_REGISTRY_CAP:])
     return document
 
 
@@ -261,6 +269,7 @@ def register_delivery(drive_root: Any, delivery_id: str, *, emitted: Optional[Di
         rows: List[str] = _delivered_rows(current, strict=True)
         pending = _mapping_rows(current, "pending", strict=True)
         receipts = _mapping_rows(current, "receipts", strict=True)
+        exhausted = _mapping_rows(current, "exhausted", strict=True)
         target = pending.get(did)
         if target is not None and not isinstance(target, dict):
             # GR6-3: a malformed owed ROW is corruption — clearing it as part
@@ -269,16 +278,18 @@ def register_delivery(drive_root: Any, delivery_id: str, *, emitted: Optional[Di
                 f"terminal-delivery registry pending row for {did} is malformed"
             )
         had_pending = pending.pop(did, None) is not None
+        # A real receipt retires only ITS exhausted mark: the answer reached the chat after all.
+        was_exhausted = exhausted.pop(did, None) is not None
         new_receipt = receipt is not None and did not in receipts
         if new_receipt:
             receipts[did] = receipt
         if did in rows:
-            if not had_pending and not new_receipt:
+            if not had_pending and not new_receipt and not was_exhausted:
                 return None
         else:
             rows.append(did)
             fresh["value"] = True
-        return _registry_document(current, rows, pending, receipts)
+        return _registry_document(current, rows, pending, receipts, exhausted)
 
     try:
         update_json_locked(_registry_path(drive_root), _mutate, strict_existing_dict=True)
@@ -330,6 +341,7 @@ def register_pending_delivery(drive_root: Any, event: Dict[str, Any]) -> bool:
         if did in rows:
             return None  # already delivered: nothing is owed
         pending = _mapping_rows(current, "pending", strict=True)
+        exhausted = _mapping_rows(current, "exhausted", strict=True)
         if did in pending:
             if not isinstance(pending.get(did), dict):
                 # A malformed row cannot count as durably owed: replay cannot send it.
@@ -340,10 +352,13 @@ def register_pending_delivery(drive_root: Any, event: Dict[str, Any]) -> bool:
         if len(pending) > _PENDING_CAP:
             for stale in list(pending)[: len(pending) - _PENDING_CAP]:
                 row = pending.pop(stale, None)
-                # Every eviction is disclosed through the exhaustion seam below.
+                # An eviction is a TRANSITION of the same debt, payload kept: the
+                # exhausted row is what the Done card reads; the disclosure seam
+                # below preserves a copy and emits the typed event.
                 if isinstance(row, dict):
-                    evicted.append({**row, "delivery_id": str(stale)})
-        return _registry_document(current, rows, pending)
+                    exhausted[str(stale)] = _exhausted_row(row, reason="outbox_capacity")
+                    evicted.append({**exhausted[str(stale)], "delivery_id": str(stale)})
+        return _registry_document(current, rows, pending, exhausted=exhausted)
 
     try:
         update_json_locked(_registry_path(drive_root), _mutate, strict_existing_dict=True)
@@ -429,14 +444,21 @@ def pending_deliveries(
     return rows
 
 
-def _bump_replay_attempts(drive_root: Any, ids: List[str]) -> List[str]:
-    """Count replays and return ids still eligible; disclose exhausted rows.
+def _exhausted_row(row: Dict[str, Any], *, reason: str) -> Dict[str, Any]:
+    """The registry's exhausted disposition of one owed row: its payload plus how it ended."""
+    try:
+        attempts = int(row.get("replay_attempts") or 0)
+    except (TypeError, ValueError):
+        attempts = 0
+    return {**row, "exhausted_at": utc_now_iso(), "reason": reason, "attempts": attempts, "preserved_path": ""}
 
-    Each bump stamps ``last_replay_at`` for exponential backoff. Exhaustion
-    preserves the message and emits a durable event plus a live notice."""
-    live: List[str] = []
-    exhausted: List[Dict[str, Any]] = []
 
+def _bump_replay_attempts(drive_root: Any, ids: List[str]) -> None:
+    """Count one REAL replay enqueue per id and stamp ``last_replay_at`` for the backoff.
+
+    Attempts are never counted for a copy that was not enqueued (still queued,
+    being handled, or an unobservable queue). Exhaustion is a separate
+    transition (``_retire_exhausted``), decided before the next enqueue."""
     def _mutate(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         pending = _mapping_rows(current, "pending", strict=True)
         changed = False
@@ -444,15 +466,9 @@ def _bump_replay_attempts(drive_root: Any, ids: List[str]) -> List[str]:
             row = pending.get(did)
             if not isinstance(row, dict):
                 continue
-            attempts = int(row.get("replay_attempts") or 0) + 1
             changed = True
-            if attempts > _PENDING_MAX_REPLAYS:
-                pending.pop(did, None)
-                exhausted.append({**row, "delivery_id": did})
-                continue
-            pending[did] = {**row, "replay_attempts": attempts,
+            pending[did] = {**row, "replay_attempts": int(row.get("replay_attempts") or 0) + 1,
                             "last_replay_at": utc_now_iso()}
-            live.append(did)
         if not changed:
             return None
         rows = _delivered_rows(current, strict=True)
@@ -462,33 +478,98 @@ def _bump_replay_attempts(drive_root: Any, ids: List[str]) -> List[str]:
         update_json_locked(_registry_path(drive_root), _mutate, strict_existing_dict=True)
     except ValueError:
         _log_registry_corrupt(drive_root, ",".join(ids), op="bump_replay_attempts")
-        return list(ids)
     except Exception:
         log.warning("terminal-delivery replay bookkeeping failed", exc_info=True)
-        return list(ids)
-    for row in exhausted:
-        _disclose_exhausted_delivery(drive_root, row)
-    return live
+
+
+def _retire_exhausted(drive_root: Any, rows: List[Dict[str, Any]], *, reason: str = "replay_exhausted") -> None:
+    """Move owed rows the host gives up on into the registry's ``exhausted`` mapping, payload kept.
+
+    The transition re-checks each row under the registry lock (a receipt that
+    landed meanwhile wins: nothing is retired), so the only active disposition is
+    never lost between a pop and its disclosure. Each retired row is then
+    disclosed through ``_disclose_exhausted_delivery``."""
+    ids = [str(row.get("delivery_id") or "") for row in rows]
+    retired: List[Dict[str, Any]] = []
+
+    def _mutate(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        retired.clear()
+        rows = _delivered_rows(current, strict=True)
+        pending = _mapping_rows(current, "pending", strict=True)
+        exhausted = _mapping_rows(current, "exhausted", strict=True)
+        for did in ids:
+            row = pending.get(did)
+            if not isinstance(row, dict) or did in rows:
+                continue
+            exhausted[did] = _exhausted_row(pending.pop(did), reason=reason)
+            retired.append({**exhausted[did], "delivery_id": did})
+        if not retired:
+            return None
+        return _registry_document(current, rows, pending, exhausted=exhausted)
+
+    try:
+        update_json_locked(_registry_path(drive_root), _mutate, strict_existing_dict=True)
+    except ValueError:
+        _log_registry_corrupt(drive_root, ",".join(ids), op="retire_exhausted")
+        return
+    except Exception:
+        log.warning("terminal-delivery exhaustion bookkeeping failed", exc_info=True)
+        return
+    for row in retired:
+        _disclose_exhausted_delivery(drive_root, row, reason=reason)
+
+
+def _stamp_exhausted_copy(drive_root: Any, delivery_id: str, preserved: str) -> None:
+    """Record the preserved copy's path on the exhausted row: the Done card's pointer. Fail-soft."""
+    def _mutate(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        exhausted = _mapping_rows(current, "exhausted", strict=True)
+        row = exhausted.get(delivery_id)
+        if not isinstance(row, dict) or row.get("preserved_path") == preserved:
+            return None
+        exhausted[delivery_id] = {**row, "preserved_path": preserved}
+        return _registry_document(current, _delivered_rows(current, strict=True),
+                                  _mapping_rows(current, "pending", strict=True), exhausted=exhausted)
+
+    try:
+        update_json_locked(_registry_path(drive_root), _mutate, strict_existing_dict=True)
+    except Exception:
+        log.debug("exhausted-delivery copy path could not be recorded for %s", delivery_id, exc_info=True)
+
+
+def _replay_attempts(row: Dict[str, Any]) -> int:
+    try:
+        return int(row.get("replay_attempts") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _disclose_exhausted_delivery(
     drive_root: Any, row: Dict[str, Any], *, reason: str = "replay_exhausted",
 ) -> None:
-    """Disclose an outbox row dropped without a confirmed send.
+    """Disclose an outbox row the host gave up delivering (its registry row is already ``exhausted``).
 
     Replay exhaustion and capacity eviction share this seam. Preserve THIS row's
-    full message (a receipt may hold only an excerpt), emit ``terminal_delivery_exhausted`` even
-    if chat fails, and say sending was not confirmed. Only a cancel receipt
-    proving this delivery reached this destination suppresses the notice;
-    a bare delivery id proves no destination. Every step is fail-soft."""
+    full message (a receipt may hold only an excerpt) and stamp the copy's path on
+    the exhausted row (the Done card points at it; a failed copy stays an honest
+    empty path, never a claimed copy), emit ``terminal_delivery_exhausted`` even
+    if chat fails, and say sending was not confirmed. The separate ⚠️ chat row and
+    the card settlement belong to the supervisor process only: a worker-side
+    capacity eviction records the mark and the copy and leaves the rest to the
+    delivery/reconcile duties. Only a cancel receipt proving this delivery reached
+    this destination suppresses the notice; a bare delivery id proves no
+    destination. Every step is fail-soft."""
+    from ouroboros.utils import in_worker_process
+
     did = str(row.get("delivery_id") or "")
     tid = str(row.get("task_id") or "")
     text = str(row.get("text") or "")
     capacity = reason == "outbox_capacity"
     try:
-        attempts = int(row.get("replay_attempts") or 0) if capacity else _PENDING_MAX_REPLAYS
+        attempts = int(row.get("attempts") if "attempts" in row else row.get("replay_attempts") or 0)
     except (TypeError, ValueError):
         attempts = 0
+    if not capacity:
+        attempts = max(attempts, _PENDING_MAX_REPLAYS)
     try:
         chat_id = int(row.get("chat_id") or 0)
     except (TypeError, ValueError):
@@ -506,6 +587,8 @@ def _disclose_exhausted_delivery(
             )
     except Exception:
         log.debug("exhausted-delivery preservation failed for %s", did, exc_info=True)
+    if preserved and did:
+        _stamp_exhausted_copy(drive_root, did, preserved)
     try:  # positive evidence only: the cancel receipt stamped THIS delivery at THIS chat
         from ouroboros.task_results import load_task_result
 
@@ -528,6 +611,17 @@ def _disclose_exhausted_delivery(
         )
     except Exception:
         log.debug("exhausted-delivery event append failed for %s", did, exc_info=True)
+    if in_worker_process():
+        return  # the mark and the copy are recorded; chat and the card are the supervisor's
+    if tid:
+        try:
+            from ouroboros.terminal_projection import settle_terminal_projection
+
+            # The card may have been held behind this very debt: let it settle now,
+            # stating the exhausted delivery (prepare=False: readiness stays task_done's).
+            settle_terminal_projection(drive_root, tid, prepare=False)
+        except Exception:
+            log.debug("terminal projection settlement after exhausted delivery deferred", exc_info=True)
     # A live notice needs a reader; the hidden partition (0) has none.
     if chat_id == 0 or reached:
         return
@@ -573,6 +667,14 @@ def replay_pending_deliveries(drive_root: Any, *, event_queue: Any = None) -> Li
     ]
     if not owed:
         return []
+    spent = [row for row in owed if _replay_attempts(row) >= _PENDING_MAX_REPLAYS]
+    if spent:
+        # The cap is reached: the debt TRANSITIONS to exhausted (payload kept, copy
+        # preserved, disclosed) instead of being enqueued once more.
+        _retire_exhausted(drive_root, spent)
+        owed = [row for row in owed if row not in spent]
+    if not owed:
+        return []
     if event_queue is None:
         try:
             from supervisor import workers
@@ -581,26 +683,48 @@ def replay_pending_deliveries(drive_root: Any, *, event_queue: Any = None) -> Li
         except Exception:
             log.warning("terminal-delivery replay could not reach the event queue", exc_info=True)
             return []
-    allowed = set(_bump_replay_attempts(
-        drive_root, [str(row.get("delivery_id") or "") for row in owed],
-    ))
     replayed: List[str] = []
     for row in owed:
         did = str(row.get("delivery_id") or "")
-        if did not in allowed:
-            continue
+        if already_delivered(drive_root, did):
+            continue  # a receipt landed since the rows were read: nothing to replay
         event = {**row, "type": "send_message"}
-        for key in ("registered_at", "replay_attempts"):
+        for key in ("registered_at", "replay_attempts", "last_replay_at"):
             event.pop(key, None)
-        try:
-            event_queue.put(event)
-        except Exception:
-            log.warning("terminal-delivery replay enqueue failed for %s", did, exc_info=True)
-            continue
-        replayed.append(did)
+        admitted = _put_unless_outstanding(event_queue, event)
+        if admitted is None:
+            log.warning("terminal-delivery replay skipped this sweep: bus membership is unobservable")
+            break
+        if admitted:
+            replayed.append(did)
     if replayed:
+        # Attempts count only a copy that really entered the bus (owner: never burn
+        # retries while the message already stands in the queue).
+        _bump_replay_attempts(drive_root, replayed)
         log.info("Replayed %d undelivered terminal answer(s): %s", len(replayed), replayed)
     return replayed
+
+
+def _put_unless_outstanding(event_queue: Any, event: Dict[str, Any]) -> Optional[bool]:
+    """Enqueue a replay copy only when the bus holds no copy of this delivery id.
+
+    The bus (``supervisor/event_observation.py``, INTERFACES I1) counts every
+    ``send_message`` put by delivery id from the put until the consumer's handler
+    finished — the worker's original included. True: enqueued, the one attempt that
+    counts. False: a copy is still queued or being handled; nothing is enqueued or
+    counted. None: unobservable (a bus without membership, a proxy error): nothing is
+    enqueued or counted either — unknown is not "lost"; the next sweep and the boot
+    replay on a fresh bus generation cover it.
+    """
+    put = getattr(event_queue, "put_unless_outstanding", None)
+    if put is None:
+        return None
+    try:
+        return bool(put(event))
+    except Exception:
+        log.warning("terminal-delivery replay: bus membership unobservable for %s",
+                    event.get("delivery_id"), exc_info=True)
+        return None
 
 
 def _replay_due(row: Dict[str, Any], *, now: Optional[float] = None) -> bool:
