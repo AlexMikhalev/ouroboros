@@ -10,6 +10,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -54,7 +55,8 @@ def _caller_origin(data_dir, caller: str, headers) -> None:
         if (headers.get("x-media-provider") != origin.transport
                 or headers.get("x-media-account") != origin.account_id
                 or origin.conversation_id not in ("*", headers.get("x-media-conversation"))
-                or headers.get("x-media-thread", "") != origin.thread_id):
+                or ((origin.conversation_id != "*" or origin.thread_id)
+                    and headers.get("x-media-thread", "") != origin.thread_id)):
             raise ValueError("origin_mismatch")
     elif "inject_chat" not in granted:
         raise ValueError("caller_not_a_transport")
@@ -70,7 +72,7 @@ async def _dispatch(request: Request, data_dir, name: str, declaration: dict, au
     app = SimpleNamespace(state=SimpleNamespace(drive_root=data_dir, repo_dir=Path(__file__).resolve().parents[2]))
     scope = {"type": "http", "http_version": "1.1", "method": "POST", "scheme": "http",
              "server": ("127.0.0.1", 8765), "client": ("127.0.0.1", 0), "app": app,
-             "path": path, "raw_path": path.encode("ascii"), "query_string": b"",
+             "path": path, "raw_path": quote(path, safe="/").encode("ascii"), "query_string": b"",
              "path_params": {"skill": name, "rest": declaration["route"]},
              "headers": [(b"content-type", mime.encode("ascii")),
                          (b"content-length", str(len(audio)).encode("ascii"))]}

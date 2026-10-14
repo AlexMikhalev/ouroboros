@@ -13,7 +13,7 @@ SKILL_MANIFEST_SCHEMA_VERSION = 1
 MAX_SKILL_CONFLICTS = 32
 MAX_SKILL_NAME_LENGTH = 64
 VOICE_INPUT_MAX_BYTES = 393216  # below the isolated extension route's 512 KiB body limit
-VOICE_INPUT_MIME_TYPES = frozenset({"audio/webm", "audio/ogg", "audio/mp4"})
+VOICE_INPUT_MIME_TYPES = frozenset({"audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg"})
 
 VALID_SKILL_TYPES = frozenset({"instruction", "script", "extension"})
 VALID_SKILL_RUNTIMES = frozenset({

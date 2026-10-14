@@ -3868,7 +3868,7 @@ export function createChatInstance({
         // unsaved attachment send still need this instance.
         hasPendingWork: () => composer.count > 0 || composer.busy || unconfirmed.count > 0,
         // Close file dialogs/readers on hide without losing staged uploads.
-        closeTransient: () => chatMedia.closeTransient(),
+        closeTransient: () => { chatMedia.closeTransient(); disposeVoice.suspend(); },
         // Release subscriptions, listeners, observers and timers before DOM removal;
         // `destroyed` guards late callbacks and repeated teardown.
         destroy() {

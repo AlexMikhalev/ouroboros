@@ -32,7 +32,8 @@ class Recorder {
 
 async function tick() { await new Promise(resolve => setTimeout(resolve, 0)); }
 
-function fixture({ index = () => ({ skills: [row] }), result = () => ({ text: 'hello world' }), deny = false } = {}) {
+function fixture({ index = () => ({ skills: [row] }), result = () => ({ text: 'hello world' }),
+    deny = false, RecorderClass = Recorder } = {}) {
     const previous = globalThis.document;
     const document = new Node();
     document.createElement = () => new Node();
@@ -52,9 +53,10 @@ function fixture({ index = () => ({ skills: [row] }), result = () => ({ text: 'h
         return { ok: true, json: async () => result() };
     };
     const drafts = [];
-    const dispose = mountVoiceInput({ row, input, anchor, media, Recorder, fetcher,
+    const dispose = mountVoiceInput({ row, input, anchor, media, Recorder: RecorderClass, fetcher,
         onDraft: (...args) => drafts.push(args) });
-    return { dispose: () => { dispose(); globalThis.document = previous; }, input, anchor, drafts,
+    return { dispose: () => { dispose(); globalThis.document = previous; },
+        suspend: () => dispose.suspend?.(), input, anchor, drafts,
         document, stops: () => stops, requests: () => requests };
 }
 
@@ -119,5 +121,65 @@ test('silent recording reports no speech without changing the draft', async () =
         assert.equal(f.input.value, 'old draft');
         assert.deepEqual(f.drafts, []);
         assert.match(f.anchor.children[1].textContent, /No speech detected/);
+    } finally { f.dispose(); }
+});
+
+
+test('hide suspends microphone without destroying the draft or affordance', async () => {
+    const f = fixture();
+    try {
+        const button = f.anchor.children[0];
+        button.click(); await tick();
+        assert.equal(button.dataset.busy, 'true');
+        f.suspend();
+        assert.equal(f.stops(), 1);
+        assert.equal(button.dataset.busy, 'false');
+        assert.equal(f.input.value, 'old draft');
+        assert.equal(f.drafts.length, 0);
+        button.click(); await tick(); // same mounted control can start again
+        assert.equal(button.dataset.busy, 'true');
+    } finally { f.dispose(); }
+});
+
+test('late onstop from cancelled recording cannot release the next microphone', async () => {
+    class DelayedRecorder extends Recorder {
+        static instances = [];
+        constructor(stream) { super(stream); DelayedRecorder.instances.push(this); }
+        stop() {
+            this.state = 'inactive';
+            this.ondataavailable?.({ data: new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 1])]) });
+            this.deliverStop = this.onstop;
+        }
+    }
+    const f = fixture({ RecorderClass: DelayedRecorder });
+    try {
+        const button = f.anchor.children[0];
+        button.click(); await tick();
+        button.click();
+        const old = DelayedRecorder.instances[0];
+        button.click(); // cancel while waiting for onstop
+        button.click(); await tick();
+        const next = DelayedRecorder.instances[1];
+        old.deliverStop(); await tick();
+        assert.equal(next.state, 'recording');
+        assert.equal(button.dataset.busy, 'true');
+        assert.equal(f.drafts.length, 0);
+    } finally { f.dispose(); }
+});
+
+test('late no-speech reply after cancel cannot repaint a new recording', async () => {
+    let fulfill;
+    const f = fixture({ result: () => new Promise(resolve => { fulfill = resolve; }) });
+    try {
+        const button = f.anchor.children[0];
+        button.click(); await tick();
+        button.click(); await tick();
+        assert.equal(typeof fulfill, 'function');
+        button.click(); // cancel pending transcription
+        button.click(); await tick(); // new recording
+        fulfill({ text: '', status: 'no_speech' }); await tick();
+        assert.equal(button.dataset.busy, 'true');
+        assert.match(f.anchor.children[1].textContent, /Recording/);
+        assert.equal(f.input.value, 'old draft');
     } finally { f.dispose(); }
 });

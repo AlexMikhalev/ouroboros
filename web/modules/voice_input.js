@@ -48,12 +48,14 @@ export function bindVoiceInput({ input, anchor, fetcher, onWs, onChange, showToa
     onWs('extension_lifecycle', refresh);
     window.addEventListener('ouro:page-shown', refresh);
     void refresh();
-    return () => {
+    const teardown = () => {
         alive = false;
         read++;
         dispose?.();
         window.removeEventListener('ouro:page-shown', refresh);
     };
+    teardown.suspend = () => dispose?.suspend?.();
+    return teardown;
 }
 
 export function mountVoiceInput({ row, input, anchor, fetcher = fetch, media = navigator.mediaDevices,
@@ -174,10 +176,12 @@ export function mountVoiceInput({ row, input, anchor, fetcher = fetch, media = n
         recorder.stop();
     }
     async function transcribe(ticket) {
+        // MediaRecorder.onstop can arrive after Escape or a new recording.
+        // The old callback must not release the new stream or its timer.
+        if (!alive || ticket !== generation) return;
         const total = recordedBytes;
         const blob = new Blob(chunks, { type: mime });
         release();
-        if (!alive || ticket !== generation) return;
         if (!total || total > voice.max_bytes || Date.now() - startedAt > (MAX_RECORD_SECONDS + 2) * 1000) {
             transcribing = false;
             present('Recording too long or too large. Try a shorter phrase.');
@@ -192,6 +196,7 @@ export function mountVoiceInput({ row, input, anchor, fetcher = fetch, media = n
                 signal: controller.signal, cache: 'no-store',
             });
             const result = await response.json();
+            if (!alive || ticket !== generation) return;
             if (response.ok && result?.status === 'no_speech' && result.text === '') {
                 present('No speech detected. The draft is unchanged.');
                 return;
@@ -233,7 +238,7 @@ export function mountVoiceInput({ row, input, anchor, fetcher = fetch, media = n
     }
     button.addEventListener('click', toggle);
     document.addEventListener('keydown', hotkey);
-    return () => {
+    const teardown = () => {
         if (!alive) return;
         cancel();
         alive = false;
@@ -243,4 +248,9 @@ export function mountVoiceInput({ row, input, anchor, fetcher = fetch, media = n
         status.remove();
         onChange();
     };
+    teardown.suspend = () => {
+        if (requesting || recorder?.state === 'recording' || transcribing || abort)
+            cancel('Voice input cancelled when chat was hidden.');
+    };
+    return teardown;
 }

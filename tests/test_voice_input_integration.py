@@ -17,11 +17,13 @@ permissions: [route]
 voice_input:
   version: 1
   route: transcribe
-  mime_types: [audio/webm]
+  mime_types: [audio/webm, audio/mpeg]
   max_bytes: 393216
 ---
 voice'''
-    assert parse_skill_manifest_text(valid).voice_input['route'] == 'transcribe'
+    assert 'audio/mpeg' in parse_skill_manifest_text(valid).voice_input['mime_types']
+    transcriber = parse_skill_manifest_text(valid.replace('voice_input:', 'media_transcription:'))
+    assert 'audio/mpeg' in transcriber.media_transcription['mime_types']
     for broken in (valid.replace('max_bytes: 393216', 'max_bytes: 524289'),
                    valid.replace('version: 1', 'version: 2'),
                    valid.replace('permissions: [route]', 'permissions: []')):

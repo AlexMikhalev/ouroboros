@@ -333,19 +333,19 @@ voice_input:
 ```
 
 The declaration requires exactly those keys, an extension with `route` permission,
-a one-segment lower-case route, unique supported MIME values (WebM/Ogg/MP4) and a
+a one-segment lower-case route, unique supported MIME values (WebM/Ogg/MP4/MP3) and a
 positive byte limit no greater than 393216. It is only a hint; the composer
 offers its mic/hotkey when `/api/extensions` also proves the skill's current
 review/enablement/live registration and matching POST route. The route receives
-raw audio as the POST body, never base64 or multipart, and answers a JSON
-`{ "text": "recognized words" }` object. Failures use HTTP error status;
+raw audio as the POST body, never base64 or multipart, and answers JSON
+`{ "text": "recognized words" }`, or `{ "text": "", "status": "no_speech" }` for decoded silence. Failures use HTTP error status;
 recommend `{ "error": {"code": "...", "message": "..."} }` so the owner sees the
 reason. The host has an independent 512 KiB isolated-route body cap and
 revalidates review/enablement at dispatch. The skill must cap *decoded duration*
 too, since compressed bytes alone do not bound inference time. Recording puts
 text into an unsent editable draft; a skill has no Send authority by declaring
-this field. `contributions/whisper/` is a candidate example, not a preinstalled
-or implicitly reviewed skill.
+this field. A separately published skill may use this declaration; no candidate is preinstalled
+or implicitly reviewed.
 Out-of-process extensions have near full PluginAPI parity. They proxy tools, HTTP
 routes, WS handlers, UI tabs, and settings sections; `on_unload` runs at child
 teardown; `send_ws_message` relays to the browser through the Host Service
@@ -626,7 +626,7 @@ calls and runtime behaviours:
 | `transcribe_audio` | A transport skill may call a separately reviewed audio extension through Host Service `/media/transcribe/{target_skill}` after an explicit content-hash-bound owner grant. Its `presence` or `inject_chat` transport grant is also required; a Presence caller names an owner-created binding matching its origin. |
 | `notify_owner` | The skill may tell the owner one thing through `POST /notify` after an explicit owner permission grant (see "Telling the owner something" below): one bounded plain sentence the host shows in the owner's chat as a System row signed with the skill's name. It wakes no model; narrower than `inject_chat`. |
 
-A transcription target opts in separately with `media_transcription: {version: 1, route: transcribe, mime_types: [audio/ogg], max_bytes: 393216}` and registers a matching POST route. The composer `voice_input` declaration alone never permits cross-skill calls. A caller posts bounded raw audio with its own `x-skill-token` to the Host Service, not the browser `/api/extensions/` URL or another skill's private companion port. The Host strips every caller header before internal dispatch except validated media type/length, checks the target's current review, enablement and route, then returns bounded `{ok, text}`. A cancelled request need not stop inference already running; the transport must keep an ambiguous outcome distinct from an unstarted one. A media-only Presence event can carry its source bytes as `staged_files` under the calling skill's own state directory through `/presence/turn`; exact peer/topic binding and source identity remain the transport's responsibility.
+A transcription target opts in separately with `media_transcription: {version: 1, route: transcribe, mime_types: [audio/ogg], max_bytes: 393216}` and registers a matching POST route. The composer `voice_input` declaration alone never permits cross-skill calls. A caller posts bounded raw audio with its own `x-skill-token` to the Host Service, not the browser `/api/extensions/` URL or another skill's private companion port. The Host strips every caller header before internal dispatch except validated media type/length, checks the target's current review, enablement and route, then returns bounded `{ok, text}` (or `{ok, text: "", status: "no_speech"}`). A cancelled request need not stop inference already running; the transport must keep an ambiguous outcome distinct from an unstarted one. A media-only Presence event can carry its source bytes as `staged_files` under the calling skill's own state directory through `/presence/turn`; exact peer/topic binding and source identity remain the transport's responsibility.
 
 A missing permission causes the matching `register_*` call to raise
 `ExtensionRegistrationError`, surfaced as a skill load error in the

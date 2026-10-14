@@ -17,8 +17,8 @@ from tests._shared import clean_extension_runtime_state
 from tests.test_host_service_api import _seed_token
 
 
-def _target(root: Path, *, exposed: bool = True, isolated: bool = False) -> None:
-    folder = root / "skills" / "external" / "voice_target"
+def _target(root: Path, *, name: str = "voice_target", exposed: bool = True, isolated: bool = False) -> None:
+    folder = root / "skills" / "external" / name
     folder.mkdir(parents=True)
     declaration = (
         "media_transcription:\n  version: 1\n  route: transcribe\n"
@@ -28,7 +28,7 @@ def _target(root: Path, *, exposed: bool = True, isolated: bool = False) -> None
         "  mime_types: [audio/ogg]\n  max_bytes: 393216\n"
     )
     (folder / "SKILL.md").write_text(
-        "---\nname: voice_target\ndescription: local audio\nversion: 0.1.0\n"
+        f"---\nname: {name}\ndescription: local audio\nversion: 0.1.0\n"
         "type: extension\nentry: plugin.py\npermissions: [route]\n"
         + ("dependencies: [dummy_pkg]\n" if isolated else "") + declaration + "---\n# Test\n",
         encoding="utf-8",
@@ -45,19 +45,19 @@ def _target(root: Path, *, exposed: bool = True, isolated: bool = False) -> None
         encoding="utf-8",
     )
     sha = compute_content_hash(folder, manifest_entry="plugin.py")
-    save_review_state(root, "voice_target", SkillReviewState(status="pass", content_hash=sha))
-    save_enabled(root, "voice_target", True)
-    save_skill_grants(root, "voice_target", [], content_hash=sha, requested_keys=[],
+    save_review_state(root, name, SkillReviewState(status="pass", content_hash=sha))
+    save_enabled(root, name, True)
+    save_skill_grants(root, name, [], content_hash=sha, requested_keys=[],
                       requested_permissions=["route"], granted_permissions=["route"])
     if isolated:
         from ouroboros.skill_loader import find_skill
         from tests.test_extension_loader import _add_fake_native_dep, _mark_isolated_deps_installed
 
-        loaded = find_skill(root, "voice_target")
+        loaded = find_skill(root, name)
         assert loaded is not None
         _add_fake_native_dep(loaded)
         _mark_isolated_deps_installed(root, loaded)
-    state = extension_loader.reconcile_extension("voice_target", root, lambda: {})
+    state = extension_loader.reconcile_extension(name, root, lambda: {})
     assert state.get("live_loaded"), state
 
 
@@ -231,5 +231,53 @@ def test_silent_audio_is_a_real_no_speech_result_not_failed_infrastructure(tmp_p
                              headers={"X-Skill-Token": "private", "Content-Type": "audio/ogg"})
         assert result.status_code == 200, result.text
         assert result.json() == {"ok": True, "text": "", "status": "no_speech"}
+    finally:
+        clean_extension_runtime_state()
+
+
+def test_account_wide_presence_binding_can_transcribe_a_topic(tmp_path, monkeypatch):
+    from ouroboros.presence_bindings import (
+        PresenceBinding, PresenceEndpoint, new_presence_binding_id, save_presence_binding,
+    )
+
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", "")
+    clean_extension_runtime_state()
+    try:
+        _seed_token(tmp_path, skill="transport", token="private",
+                    permissions=["presence", "transcribe_audio"],
+                    manifest_permissions=["presence", "transcribe_audio"])
+        _target(tmp_path)
+        binding = save_presence_binding(tmp_path, PresenceBinding(
+            new_presence_binding_id(), "transport", "voice_target",
+            PresenceEndpoint("telegram", "account-2", "*", ""),
+            PresenceEndpoint("telegram", "account-2", "-100123", "42"),
+        ))
+        headers = {"X-Skill-Token": "private", "Content-Type": "audio/ogg",
+                   "X-Presence-Binding": binding.binding_id, "X-Media-Provider": "telegram",
+                   "X-Media-Account": "account-2", "X-Media-Conversation": "-100123",
+                   "X-Media-Thread": "42"}
+        client = TestClient(create_host_service_app(tmp_path))
+        assert client.post("/media/transcribe/voice_target", headers=headers,
+                           content=b"OggSvoice").json() == {"ok": True, "text": "recognized"}
+        assert client.post("/media/transcribe/voice_target",
+                           headers={**headers, "X-Media-Account": "other"},
+                           content=b"OggSvoice").status_code == 403
+    finally:
+        clean_extension_runtime_state()
+
+
+def test_unicode_reviewed_target_is_quoted_only_on_raw_asgi_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", "")
+    clean_extension_runtime_state()
+    try:
+        _seed_token(tmp_path, skill="transport", token="private",
+                    permissions=["inject_chat", "transcribe_audio"],
+                    manifest_permissions=["inject_chat", "transcribe_audio"])
+        _target(tmp_path, name="голос")
+        client = TestClient(create_host_service_app(tmp_path))
+        result = client.post("/media/transcribe/голос", content=b"OggSvoice",
+                             headers={"X-Skill-Token": "private", "Content-Type": "audio/ogg"})
+        assert result.status_code == 200, result.text
+        assert result.json() == {"ok": True, "text": "recognized"}
     finally:
         clean_extension_runtime_state()
