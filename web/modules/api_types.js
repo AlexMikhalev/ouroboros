@@ -1393,11 +1393,16 @@
  * @property {boolean} ok
  * @property {string} task_id
  * @property {boolean=} cascade
- *   Echoed only for {"cascade": true}, after subtree cancel completes; single-task envelope unchanged.
+ *   Echoed when the Stop ran as a cascade (requested, or an already recorded cascade scope); single-task envelope unchanged.
  * @property {string=} cancel_state
- *   "pending" on graceful 202 ACK: durable intent stays open during bounded finalization; absent for immediate.
+ *   "pending" on every 202: the durable intent stays open — bounded graceful finalization, or an immediate
+ *   teardown not confirmed yet that the supervisor finishes; absent on 200.
  * @property {string=} stop_policy
- *   Effective durable "immediate" | "finalize_then_cancel"; a graceful request never softens a hard intent.
+ *   On 202, the effective durable "immediate" | "finalize_then_cancel"; a graceful request never softens a hard intent.
+ * @property {string=} request_id
+ *   On an immediate 202, the open intent's custody id (distinct from the client's stop_action_id).
+ * @property {string=} reason_code
+ *   On an immediate 202, "teardown_unconfirmed".
  * @property {string=} error
  */
 /**
