@@ -472,10 +472,9 @@ const TASK_CAUSE_PHRASES = {
     child_results_deferred: "Some sub-task results were deferred instead of being folded into this answer",
     tool_failure: "A tool this task used failed and nothing recovered it",
     task_exception: "The task stopped on an internal error",
-    // Recovery finalized a dead attempt from its already registered answer instead of a retry.
+    // Recovery finalized a dead attempt from its registered answer; the Done card's delivery
+    // disposition keys (the row's typed terminal_delivery), rendered by terminalDeliveryClause.
     finalization_incomplete: "The answer was authored, but the task's finalization did not complete, so its review evidence, artifacts and cost accounting are incomplete.",
-    // The Done card's delivery disposition (the row's typed terminal_delivery): not reason codes but the
-    // row-level warning keys of a delivery the host could not confirm; terminalDeliveryClause adds the copy pointer.
     terminal_delivery_exhausted: "Sending the final answer was not confirmed after the delivery attempts ran out",
     terminal_delivery_unknown: "Delivery of the final answer could not be confirmed because the delivery registry could not be read; the result is in task details.",
 };
@@ -486,19 +485,14 @@ export function taskReasonPhrase(code) {
     return TASK_CAUSE_PHRASES[raw] ? tr(`task.cause.${raw}`, TASK_CAUSE_PHRASES[raw]) : raw;
 }
 
-// The card's one sentence about a delivery the host could not confirm (the row's typed
-// terminal_delivery, written by the Done-card projector): an exhausted delivery names the
-// saved copy when one exists and says so when it does not — never a claimed copy. The twin
-// of project_dialogue.terminal_delivery_clause.
+// The card's one sentence about a delivery the host could not confirm: an exhausted delivery names
+// the saved copy when one exists and says so when it does not. Twin: project_dialogue.terminal_delivery_clause.
 export function terminalDeliveryClause(delivery) {
     const state = String(delivery?.state || '');
     if (!TASK_CAUSE_PHRASES[`terminal_delivery_${state}`]) return '';
-    let sentence = taskReasonPhrase(`terminal_delivery_${state}`);
-    if (state === 'exhausted') {
-        const path = String(delivery?.preserved_path || '');
-        sentence += path ? `; a copy of the answer is saved at ${path}.` : '; no copy of the answer could be saved.';
-    }
-    return sentence;
+    const path = String(delivery?.preserved_path || '');
+    return taskReasonPhrase(`terminal_delivery_${state}`) + (state !== 'exhausted' ? ''
+        : path ? `; a copy of the answer is saved at ${path}.` : '; no copy of the answer could be saved.');
 }
 
 // The cause lookup the shared acceptance presenter receives: no second path reads the table.
@@ -616,10 +610,9 @@ export function taskReasonDetail(evt) {
             : taskReasonPhrase(reason === 'plan_review_advisory' ? planReviewKey(record, reason) : reason);
     }
     const rationale = completion?.action === 'stop' ? plainCauseText(completion.rationale, 0) : authorStopRationale(decision);
-    // The delivery disposition comes last, as the host's twin appends it after its own verdict.
     const line = joinCauseClauses([clause, rationale, ...acceptanceIncidentClauses(decision, reason, causePhraseLookup),
         ...terminalLimitations(record, reason, held), custody ? taskReasonPhrase(custody) : '',
-        terminalDeliveryClause(record.terminal_delivery)]);
+        terminalDeliveryClause(record.terminal_delivery)]);  // the host twin appends the delivery clause last too
     // Cancellation's host/browser sentence has identical punctuation. Other
     // cause policy stays with the runtime owner of this shared seam.
     return severity === 'cancelled' && line && !/[.!?…)\u2026]$/.test(line) ? `${line}.` : line;
