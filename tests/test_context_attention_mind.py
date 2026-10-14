@@ -190,10 +190,10 @@ def test_memory_rung_passes_the_actual_window_and_current_transcript(tmp_path, m
         p.reproject_transcript = lambda messages, mode: [{"role": "system", "content": system}, *messages[1:]]
 
         def reproject_for_route(*, window_tokens, known_window, ratio, output_reserve,
-                                tool_schemas, start_mode, current_messages):
+                                tool_schemas, start_mode, current_messages, refused_tokens):
             seen.append({"window": window_tokens, "known": known_window, "mode": start_mode,
                          "messages": list(current_messages), "schemas": list(tool_schemas),
-                         "reserve": output_reserve})
+                         "reserve": output_reserve, "refused": refused_tokens})
             return plan("COARSE")
 
         p.reproject_for_route = reproject_for_route
@@ -204,14 +204,18 @@ def test_memory_rung_passes_the_actual_window_and_current_transcript(tmp_path, m
     before = list(context.messages)
     context.context_fit_plan = context.tools._ctx.context_fit_plan = plan("FULL")
     # A large transcript changes memory granularity, never the route's physical window.
-    fit = _fit(estimated_input=520_000)
+    fit = _fit(estimated_input=520_000, capacity_deficit=85_536)
     assert _coarsen_memory_view(context, fit) is True
+    # The refusal's measured deficit is what the view must save beyond the level it shows.
     assert seen == [{"window": 500_000, "known": True, "mode": "max", "messages": before,
-                     "schemas": [], "reserve": 65_536}]
+                     "schemas": [], "reserve": 65_536, "refused": 85_536}]
     assert context.context_fit_plan.window_tokens == 500_000
     assert context.messages[0]["content"] == "COARSE" and context.messages[1:] == before[1:]
     assert context.tools._ctx.context_fit_plan is context.context_fit_plan
     assert _coarsen_memory_view(context, fit) is False  # already at this granularity
+    fitting = _fit(estimated_input=300_000, capacity_deficit=0)  # refused although the estimate fits
+    _coarsen_memory_view(context, fitting)
+    assert seen[-1]["refused"] == 1  # still a strict narrowing: at least one element
     unknown = replace(fit, measurement=replace(fit.measurement, capacity_total_tokens=None))
     count = len(seen)
     assert _coarsen_memory_view(context, unknown) is False and len(seen) == count
@@ -249,9 +253,12 @@ def test_facts_line_names_room_money_and_tariff_as_known_or_unknown(tmp_path, mo
     assert line.startswith(f"{CONTEXT_FACTS_HEADER} round 1 ")
     assert "model same-model" in line and "mode low" in line
     usage = context.accumulated_usage
-    free = 250_000 - usage["_context_prompt_estimate"] - usage["_context_reply_allowance_tokens"]
+    # Free room is the window's (#1727); the target is its own fact, measured with the reply floor.
+    free = 500_000 - usage["_context_prompt_estimate"] - usage["_context_reply_allowance_tokens"]
+    room = 250_000 - usage["_context_prompt_estimate"] - 65_536
     for part in ("window 500,000", "target 250,000", "input ~120,000 before this line (cold_estimate)",
-                 f"free {free:,}", "largest unit:2:3:", "own cost unknown",
+                 f"free {free:,}", f"target room {room:,} (reply floor 65,536)",
+                 "largest unit:2:3:", "own cost unknown",
                  "shared wallet $12.50 known headroom (unreserved; shared with other tasks)",
                  "quota 3 of 10 this hour", "tariff unknown", "elapsed unknown (no recorded start)",
                  "no execution limit", "observed tool results 0 (0 errored)"):
