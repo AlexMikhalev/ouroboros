@@ -58,7 +58,7 @@ test('restarting and restart_required stay distinct states with distinct actions
 test('an unsafe update keeps ONE button plus a warning, never a second control', () => {
     const verdict = updateVerdict({
         managed: true, check_ok: true, available: true, safe_to_apply: false,
-        ahead: 2, dirty_count: 1,
+        ahead: 2, dirty: true, dirty_count: 1, local_changes: 'present', local_changes_base: 'c0ffee0123456789',
         current_version: '1', latest_version: '2',
         current_short_sha: 'aaaa', latest_short_sha: 'bbbb',
     }, '');
@@ -66,8 +66,31 @@ test('an unsafe update keeps ONE button plus a warning, never a second control',
     assert.equal(verdict.tone, 'warn');
     assert.equal(verdict.action.id, 'update');
     assert.match(verdict.action.label, /Update to 2/);
-    const divergence = verdict.chips.find((chip) => chip.label === 'Divergence');
-    assert.match(divergence.value, /2 local \/ 1 dirty/);
+    const chip = (label) => verdict.chips.find((item) => item.label === label)?.value;
+    assert.equal(chip('Commits'), '2 local');
+    assert.equal(chip('Local changes'), 'present since c0ffee01');
+    assert.equal(chip('Uncommitted'), '1 file(s)');
+    assert.match(verdict.hint, /changed since its last shared commit .* applying merges those changes\. Uncommitted changes are stashed/);
+});
+
+
+test('commits ahead with no content of their own are history, not a caution (#1718)', () => {
+    const facts = { managed: true, check_ok: true, available: true, behind: 1, ahead: 45, dirty: false,
+        current_version: '1', latest_version: '2', current_short_sha: 'aaaa', latest_short_sha: 'bbbb' };
+    const merges = updateVerdict({ ...facts, safe_to_apply: true, local_changes: 'absent' }, '');
+    assert.equal(merges.state, 'available');
+    assert.equal(merges.tone, 'ok');
+    assert.equal(merges.hint, '');
+    assert.equal(merges.chips.find((chip) => chip.label === 'Commits').value, '1 incoming / 45 local');
+    assert.equal(merges.chips.find((chip) => chip.label === 'Local changes').value, 'none');
+    const unknown = updateVerdict({ ...facts, safe_to_apply: false, local_changes: 'unknown' }, '');
+    assert.equal(unknown.state, 'available_unsafe');
+    assert.match(unknown.hint, /^Could not compare this checkout with the official line/);
+    assert.equal(unknown.chips.find((chip) => chip.label === 'Local changes').value, 'unknown');
+    const dirtyOnly = updateVerdict({ ...facts, ahead: 0, safe_to_apply: false, local_changes: 'absent',
+        dirty: true, dirty_count: 3 }, '');
+    assert.equal(dirtyOnly.hint, 'Uncommitted changes are stashed and restored around the update.');
+    assert.equal(dirtyOnly.chips.find((chip) => chip.label === 'Commits').value, '1 incoming');
 });
 
 
