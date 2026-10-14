@@ -188,7 +188,7 @@ class TestCouplingAnswerFailClosed:
         a FAIL without severity stays fail-closed (severity decides blocking),
         a PASS without severity is deliberately legal (defaulted to advisory)."""
         rows = _matrix()
-        rows[0]["reason"] = "PASS"
+        rows[0]["reason"] = ""
         rows[1]["severity"] = "blocker"
         rows[2]["verdict"] = "FAIL"
         rows[2].pop("severity")
@@ -196,7 +196,7 @@ class TestCouplingAnswerFailClosed:
         records, _findings = _parse(_seat("slot_1", answer))
 
         error = records[0]["answers"]["coupling"]["error"]
-        assert "PASS reason is too terse" in error
+        assert "missing reason" in error
         assert "missing or invalid severity 'blocker'" in error
         assert "missing or invalid severity ''" in error
 
@@ -374,9 +374,8 @@ class TestCouplingPromptMatrixContract:
 
     def test_pass_justification_is_mandatory(self, tmp_path):
         prompt = _brief(tmp_path)
-        assert "stating WHY it passes" in prompt
-        assert "bare" in prompt.lower()
-        assert "reviewer failure" in prompt.lower()
+        assert "one line — a pointer to what you checked" in prompt and "N/A — <reason>" in prompt
+        assert "stating WHY it passes" not in prompt
 
     def test_one_behavioral_countercheck_per_brief(self, tmp_path):
         from ouroboros.tools.review_helpers import anti_pattern_lock_guard

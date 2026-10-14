@@ -38,7 +38,7 @@ that would stay correct with the parent far below the cap: its own reason to cha
 explicit contract, a real caller. A cap-driven bucket, a one-caller passthrough, or
 bytes bought by deleting contract-bearing comments, docstrings, messages or tests is a
 defect to report, not paydown (BIBLE P7 «first simplify what exists»). Enforcement:
-CHECKLISTS item 31 `size_cap_paydown`, advisory when applicable.
+CHECKLISTS item 27 `size_cap_paydown`, advisory when applicable.
 
 ### Pragmatic SOLID
 
@@ -71,7 +71,7 @@ semantics across live and recovery paths at comparable freshness, and make legit
 differences explicit. Verify with falsifiable checks at real consumer boundaries, not
 helper outputs or matching field names, choosing the paths from the change and its
 dependencies rather than a fixed inventory. Enforcement: review-only, through the
-scope-review `cross_module_bugs` and `implicit_contracts` items.
+scope-review `implicit_contracts` item.
 
 ### Invariant: Projection over replay (hot readers of growing stores)
 
@@ -133,7 +133,7 @@ invalid output contracts and delivery failures may affect review authority; wind
 sizing and reading diagnostics alone may not (BIBLE P3). Neither case blanks, rewrites
 or relabels the artifact.
 
-Enforcement: CHECKLISTS item 21 `source_completeness` (critical when applicable).
+Enforcement: CHECKLISTS item 20 `source_completeness` (critical when applicable).
 
 #### Review presentation adapters
 

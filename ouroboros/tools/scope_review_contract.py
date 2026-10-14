@@ -10,16 +10,16 @@ from __future__ import annotations
 from typing import List
 
 
-SCOPE_REQUIRED_ITEMS = frozenset({
+# The coupling questions in their checklist order (docs/CHECKLISTS.md "Coupling questions").
+COUPLING_QUESTION_IDS = (
     "intent_alignment",
     "forgotten_touchpoints",
     "cross_surface_consistency",
     "regression_surface",
-    "prompt_doc_sync",
     "architecture_fit",
-    "cross_module_bugs",
     "implicit_contracts",
-})
+)
+SCOPE_REQUIRED_ITEMS = frozenset(COUPLING_QUESTION_IDS)
 SCOPE_VALID_SEVERITIES = frozenset({"critical", "advisory"})
 
 
@@ -60,18 +60,6 @@ def normalize_scope_items(items: list) -> tuple[list[dict], str]:
             invalid.append(f"{item_id}: missing reason")
             continue
         if verdict == "PASS":
-            reason_words = [
-                word.strip(".,;:!?()[]{}\"'")
-                for word in reason.split()
-                if word.strip(".,;:!?()[]{}\"'")
-            ]
-            if (
-                reason.lower().strip(".!?:;")
-                in {"pass", "ok", "okay", "yes", "n/a", "na", "none"}
-                or len(reason_words) < 4
-            ):
-                invalid.append(f"{item_id}: PASS reason is too terse")
-                continue
             if item_id in seen_pass:
                 invalid.append(f"{item_id}: duplicate PASS")
             seen_pass.add(item_id)

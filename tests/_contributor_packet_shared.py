@@ -67,9 +67,7 @@ def _coupling_matrix(reason: str) -> list:
     ``coupling`` block must cover every required item or the gate records it as
     unanswered."""
     return [{"item": item, "verdict": "PASS", "severity": "advisory", "reason": reason}
-            for item in ("intent_alignment", "forgotten_touchpoints", "cross_surface_consistency",
-                         "regression_surface", "prompt_doc_sync", "architecture_fit",
-                         "cross_module_bugs", "implicit_contracts")]
+            for item in __import__("ouroboros.tools.scope_review_contract", fromlist=["x"]).COUPLING_QUESTION_IDS]
 
 
 # The packet seat (t1) answers contract A (the change array); the retrieving seats

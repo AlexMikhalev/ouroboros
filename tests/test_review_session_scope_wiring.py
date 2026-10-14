@@ -167,7 +167,7 @@ def test_delegated_seat_goes_out_as_the_brief_and_never_builds_the_pack(tmp_path
 
     record = parsed.actor_records[0]
     assert record.status == "responded", (record.raw_text, _result["results"][0])
-    assert len(record.parsed_items) == 8
+    assert len(record.parsed_items) == len(__import__("ouroboros.tools.scope_review_contract", fromlist=["x"]).SCOPE_REQUIRED_ITEMS)
     assert record.answers["change"]["verdict"] == "PASS" and record.answers["coupling"]["verdict"] == "PASS"
     start = fake_route.instances[0].start_requests[0]
     assert brief in start["prompt"]       # the brief (under the seat header), not a pack

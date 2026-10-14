@@ -297,8 +297,7 @@ def test_repeated_exposed_host_failure_does_not_pump_author_rounds(tmp_path, mon
 
 
 _COUPLING_PASS = [{"item": item, "verdict": "PASS", "severity": "advisory", "reason": f"{item} checked against the diff and its callers"}
-                  for item in ("intent_alignment", "forgotten_touchpoints", "cross_surface_consistency", "regression_surface",
-                               "prompt_doc_sync", "architecture_fit", "cross_module_bugs", "implicit_contracts")]
+                  for item in __import__("ouroboros.tools.scope_review_contract", fromlist=["x"]).COUPLING_QUESTION_IDS]
 _CRITICAL = {"item": "secrets_check", "verdict": "FAIL", "severity": "critical", "reason": "a key is committed"}
 
 
@@ -390,7 +389,7 @@ def test_not_dispatched_is_the_first_branch():
 _SEATS = (("s1", "openai/a"), ("s2", "anthropic/b"), ("s3", "google/c"))
 _RETRIEVING_PANEL = {**_PANEL, "retrieves": [True] * 3, "parts": [("change", "coupling")] * 3, "brief_shas": ["b1", "b2", "b3"]}
 _PACKET_PANEL = {**_PANEL, "retrieves": [False] * 3, "parts": [("change",)] * 3, "brief_shas": ["", "", ""]}
-_TERSE = _two_part(coupling=[{**row, "reason": "ok"} for row in _COUPLING_PASS])
+_TERSE = _two_part(coupling=[{**row, "reason": ""} for row in _COUPLING_PASS])
 
 
 def _prepared(ctx, panel, *, blocking=True):
@@ -425,11 +424,11 @@ def test_three_uncountable_coupling_answers_are_named_per_seat(candidate, monkey
     assert "Part 2" in text and "asked of: s1, s2, s3" in text
     for seat_id, model in _SEATS:
         line = text.split(f"- {seat_id} ({model}): ", 1)
-        assert len(line) == 2 and "PASS reason is too terse" in line[1].split("\n- ")[0], text
+        assert len(line) == 2 and "missing reason" in line[1].split("\n- ")[0], text
     assert "configure a retrieving reviewer seat" not in text
     typed = ctx._last_review_advisory_findings
     assert [(f["item"], f["model"]) for f in typed] == [("review_coupling_unanswered", m) for _s, m in _SEATS]
-    assert all("too terse" in f["reason"] for f in typed)
+    assert all("missing reason" in f["reason"] for f in typed)
     if enforcement == "advisory":
         assert ctx._review_advisory[1:] == typed, "the early branch keeps the wave's typed diagnostics for the author"
     # No seat could read the work: the same branch, and now the advice is the pool.
@@ -447,9 +446,9 @@ def test_a_critical_in_an_uncountable_matrix_stays_visible_under_an_aggregate_pa
     in the record's advisory findings and on the seat's own ledger row."""
     ctx = candidate
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
-    broken = [{**_COUPLING_PASS[7], "verdict": "FAIL", "severity": "critical",
+    broken = [{**_COUPLING_PASS[-1], "verdict": "FAIL", "severity": "critical",
                "reason": "the new helper bypasses the documented invariant on a live path"},
-              {**_COUPLING_PASS[0], "reason": "ok"}, *_COUPLING_PASS[1:7]]
+              {**_COUPLING_PASS[0], "reason": ""}, *_COUPLING_PASS[1:-1]]
     results = [_seat("s1", "openai/a", _two_part(coupling=broken)), _seat("s2", "anthropic/b", _two_part()),
                _seat("s3", "google/c", _two_part())]
     error = _dispatch(ctx, monkeypatch, _RETRIEVING_PANEL, results)
@@ -488,9 +487,9 @@ def test_a_discarded_critical_reaches_the_author_when_the_whole_row_is_uncountab
     whose text carries no object at all has no answers to diagnose and ends at the row-level entry."""
     ctx = candidate
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
-    broken = [{**_COUPLING_PASS[7], "verdict": "FAIL", "severity": "critical",
+    broken = [{**_COUPLING_PASS[-1], "verdict": "FAIL", "severity": "critical",
                "reason": "the new helper bypasses the documented invariant on a live path"},
-              {**_COUPLING_PASS[0], "reason": "ok"}, *_COUPLING_PASS[1:7]]
+              {**_COUPLING_PASS[0], "reason": ""}, *_COUPLING_PASS[1:-1]]
     s1_text = "I could not finish reading the diff in time." if unreadable else _two_part(coupling=broken, clean=False)
     results = [_seat("s1", "openai/a", s1_text), _seat("s2", "anthropic/b", _two_part()), _seat("s3", "google/c", _two_part())]
     error = _dispatch(ctx, monkeypatch, _RETRIEVING_PANEL, results)

@@ -49,7 +49,7 @@ The full `ToolContext` dataclass stays mutable implementation detail; the protoc
 
 ### 11.3 What to do when extending
 
-Add the field to its active frozen owner (§11.1), keep existing consumers working, and enforce the new surface in the contract/parity tests (CHECKLISTS item 27, `gateway_parity`, owns the review-time criteria). Removing anything from 11.1 is a deliberate ABI break needing a versioned successor and a release-row migration note; 11.4 carries only the current window's upgrade facts, the release ledger the rest.
+Add the field to its active frozen owner (§11.1), keep existing consumers working, and enforce the new surface in the contract/parity tests (CHECKLISTS item 23, `gateway_parity`, owns the review-time criteria). Removing anything from 11.1 is a deliberate ABI break needing a versioned successor and a release-row migration note; 11.4 carries only the current window's upgrade facts, the release ledger the rest.
 
 ### 11.4 Recent ABI Retirements
 

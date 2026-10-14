@@ -30,11 +30,8 @@ def test_public_contributor_flow_is_agent_first_and_route_neutral():
     # 10=A: the agentic checklist review is the main path and must cover all
     # eight Intent/Scope items with the runtime output contract.
     assert "agentic checklist review" in guide
-    for item in (
-        "intent_alignment", "forgotten_touchpoints", "cross_surface_consistency",
-        "regression_surface", "prompt_doc_sync", "architecture_fit",
-        "cross_module_bugs", "implicit_contracts",
-    ):
+    from ouroboros.tools.scope_review_contract import COUPLING_QUESTION_IDS
+    for item in COUPLING_QUESTION_IDS:
         assert item in guide
     assert "scripts/validate_scope_receipt.py" in guide
     assert "separate agent context" in guide
@@ -83,11 +80,8 @@ def test_pull_request_template_has_one_universal_agent_review_block():
     # 21=A: the checklist coverage travels as a markdown table plus the raw
     # reviewer JSON, both inside the single review-evidence block — all eight
     # rows, not just the endpoints.
-    for item in (
-        "intent_alignment", "forgotten_touchpoints", "cross_surface_consistency",
-        "regression_surface", "prompt_doc_sync", "architecture_fit",
-        "cross_module_bugs", "implicit_contracts",
-    ):
+    from ouroboros.tools.scope_review_contract import COUPLING_QUESTION_IDS
+    for item in COUPLING_QUESTION_IDS:
         assert template.count(f"| {item} |") == 1
     assert "Reviewer checklist JSON" in template
     assert "scripts/validate_scope_receipt.py" in template

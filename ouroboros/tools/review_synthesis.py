@@ -344,18 +344,6 @@ def per_slot_input_token_limits(
     return limits
 
 
-COUPLING_QUESTION_IDS = (
-    "intent_alignment",
-    "forgotten_touchpoints",
-    "cross_surface_consistency",
-    "regression_surface",
-    "prompt_doc_sync",
-    "architecture_fit",
-    "cross_module_bugs",
-    "implicit_contracts",
-)
-
-
 def build_coupling_part(
     *,
     coupling_checklist: str,
@@ -365,13 +353,15 @@ def build_coupling_part(
     layer: str = "body",
 ) -> str:
     """``## Part 2 — Coupling questions`` of the two-part brief: the whole-repository
-    reviewer's role frame (the former scope reviewer's), the eight coupling
+    reviewer's role frame (the former scope reviewer's), the coupling
     questions, the required-source manifest the seat is OWED, the repository
     index it navigates with, and the coupling history of this subject. No
     preamble, calibration, anti-pattern guard, intent, diff or answer format
     here — Part 1 carries each exactly once, and ``## Answer format`` closes the
     brief. ``layer`` is the checklist layer (``review_body_fact.layer_for``).
     """
+    from ouroboros.tools.scope_review_contract import COUPLING_QUESTION_IDS
+
     questions = "\n".join(f"{i}. {item}" for i, item in enumerate(COUPLING_QUESTION_IDS, start=1))
     body_note = (
         "Apply the `Critical surface whitelist` in `docs/CHECKLISTS.md` for prose-vs-code\n"
@@ -392,7 +382,7 @@ completeness. For each finding name the exact file, symbol, test, prompt, doc,
 config, or sibling flow that proves it. Vague concerns without a concrete artifact
 reference are advisory, not critical.
 
-### The eight coupling questions
+### The coupling questions
 
 Answer EVERY question below with one entry in the "coupling" block of your answer;
 the "item" field carries the identifier verbatim (case-sensitive, no substitutions).
@@ -402,8 +392,9 @@ A missing entry means the question was not reviewed.
 
 - For FAIL: concrete artifact (file/symbol/line/contract) + what is wrong + how to fix;
   one FAIL entry per distinct root cause, never a compressed summary.
-- For PASS: 1–2 sentences stating WHY it passes, naming a concrete artifact or code
-  path you checked. A bare "PASS" or a single-word reason is a reviewer failure.
+- For PASS: one line — a pointer to what you checked, `see Part 1 <item>` for a defect
+  you already report there (one root defect is one FAIL across both parts), or
+  `N/A — <reason>` when the change does not reach the question.
 - Do not return duplicate PASS entries, and never PASS a question that also has a
   FAIL — the concrete FAIL is authoritative.
 - Severity: critical requires a concrete current artifact and a required change to

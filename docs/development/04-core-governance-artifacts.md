@@ -76,6 +76,6 @@ A new flow that reasons about code structure, system architecture or engineering
 
 1. Explicitly loads `ARCHITECTURE.md` (and BIBLE.md when constitutional reasoning applies).
 2. Logs a warning when the file is missing or unavailable — never skips silently; a required artifact that cannot fit fails assembly ("No silent truncation").
-3. Adds a test asserting the file is present in the assembled context/prompt. That test is the enforcing surface; CHECKLISTS item 25 (`context_building`, advisory) backstops the review.
+3. Adds a test asserting the file is present in the assembled context/prompt. That test is the enforcing surface; CHECKLISTS item 22 (`context_building`, advisory) backstops the review.
 
 ---

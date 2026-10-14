@@ -73,7 +73,7 @@ def test_change_findings_are_the_fail_rows_only():
 
 @pytest.mark.parametrize("raw, error", [
     (_b(coupling=_matrix()[:-1]), "missing required items"),
-    (_b(coupling=_matrix(reason="ok")), "PASS reason is too terse"),
+    (_b(coupling=_matrix(reason="")), "missing reason"),
     (_b(coupling=[{**_matrix()[0], "severity": "blocker"}, *_matrix()[1:]]), "missing or invalid severity 'blocker'"),
     (_b(coupling=[]), "missing required items"),
 ])
@@ -92,15 +92,15 @@ def test_a_defective_matrix_keeps_its_fail_rows_as_discarded_diagnostics():
     is not counted (``findings`` empty, ``critical`` 0, the part ``unanswered``) and
     not lost: it rides beside the error as ``discarded`` with this seat's model."""
     rows = _matrix(fail="implicit_contracts")
-    rows[0] = {**rows[0], "reason": "ok"}
+    rows[0] = {**rows[0], "reason": ""}
     answers = parse_two_part_answer(_b(coupling=rows), BOTH, model_label="m", slot_id="s1")
     coupling = answers["coupling"]
     assert coupling["status"] == "unanswered" and coupling["findings"] == [] and coupling["critical"] == 0
-    assert "too terse" in coupling["error"]
+    assert "missing reason" in coupling["error"]
     assert [(d["item"], d["severity"], d["verdict"], d["model"], d["slot_id"]) for d in coupling["discarded"]] == [
         ("implicit_contracts", "critical", "FAIL", "m", "s1")]
     assert "discarded" not in parse_two_part_answer(_b(coupling=_matrix(fail="implicit_contracts")), BOTH)["coupling"]
-    assert parse_two_part_answer(_b(coupling=_matrix(reason="ok")), BOTH)["coupling"]["discarded"] == []
+    assert parse_two_part_answer(_b(coupling=_matrix(reason="")), BOTH)["coupling"]["discarded"] == []
 
 
 def test_a_bare_array_from_a_both_part_seat_leaves_part_two_out():

@@ -687,21 +687,10 @@ class AdvisoryReviewState:
             reason = str(f.get("reason", ""))
             severity = str(f.get("severity", "critical"))
             raw_explicit_id = str(f.get("obligation_id", "") or "").strip()
-            # Reviewer-supplied ids must match an open compatible obligation;
-            # otherwise a bogus id could corrupt durable debt links.
-            explicit_id = ""
-            if raw_explicit_id and _rs()._looks_like_public_obligation_id(raw_explicit_id):
-                candidate = existing.get(raw_explicit_id)
-                if candidate is not None:
-                    canon_new = _rs()._normalize_obligation_item_key(item)
-                    canon_old = _rs()._normalize_obligation_item_key(candidate.item)
-                    items_compatible = (
-                        (canon_new and canon_old and canon_new == canon_old)
-                        or not canon_new
-                        or not canon_old
-                    )
-                    if items_compatible:
-                        explicit_id = raw_explicit_id
+            # A reviewer-supplied id folds only into an OPEN obligation of this repo, under
+            # any item: one root defect is one obligation across both parts of the brief.
+            explicit_id = raw_explicit_id if (
+                _rs()._looks_like_public_obligation_id(raw_explicit_id) and raw_explicit_id in existing) else ""
             fingerprint = _rs()._make_obligation_fingerprint(item, reason)
 
             # A reworded restatement that misses the exact fingerprint folds into the
