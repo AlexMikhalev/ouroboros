@@ -483,8 +483,11 @@ def commit_dispatch_marks(task: dict, projections: list) -> Optional[bool]:
     later projection wins a shared field (the schedule receipt's ``running``), so the
     document is the one the owners' separate writes produced. True: committed and
     read back. False: positively not written (a refusal, or a transaction whose
-    rollback was confirmed). None: a commit may have landed (an exception without
-    confirmed rollback, an unreadable or disagreeing readback) — never replayable.
+    rollback was confirmed for another cause). None: a commit may have landed (an
+    exception without confirmed rollback, an unreadable or disagreeing readback) —
+    never replayable. Confirmed-rollback contention re-raises: nothing was written,
+    and the caller's contention classifier (``schedule_occurrence.contention``)
+    defers the same first dispatch, as demand rather than a refusal.
     """
     from supervisor import queue
 
@@ -506,6 +509,10 @@ def commit_dispatch_marks(task: dict, projections: list) -> Optional[bool]:
                           strict_existing_dict=True)
     except Exception as exc:
         if getattr(exc, "rollback_confirmed", None) is True:
+            from supervisor.schedule_occurrence import contention
+
+            if contention(exc):
+                raise
             log.info("Dispatch evidence for %s was not written (%s)", task.get("id"), type(exc).__name__)
             return False
         log.warning("Dispatch evidence for %s may have committed", task.get("id"), exc_info=True)

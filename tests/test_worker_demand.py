@@ -913,3 +913,42 @@ def test_saturation_notice_needs_every_worker_busy_at_the_configured_cap(tmp_pat
     (text, kwargs), = sent
     assert bool(kwargs["progress_meta"].get("worker_saturation_warning")) is saturated
     assert ("all workers are currently busy" in text) is saturated
+
+
+def test_contended_launch_commits_stay_demand_and_retire_no_ready_worker(assigning, monkeypatch):
+    """Wave-1 M2: with every launch commit contended, the pool retired 2 of 3 ready workers
+    while 3 tasks pended. A real ``BEGIN IMMEDIATE`` holder makes each dispatch-mark commit
+    fail with a confirmed rollback; that contention is deferred demand, never a refusal."""
+    import sqlite3
+
+    from ouroboros import store
+    from ouroboros.task_results import load_task_result, write_task_result
+
+    monkeypatch.setattr(workers, "MAX_WORKERS", 3)
+    workers.RUNNING.clear()
+    assigning.original.busy_task_id = None
+    for wid in (1, 2):
+        workers.WORKERS[wid] = affirm_ready(workers.Worker(wid, Process(42 + wid), InputQueue()))
+    for slot in workers.WORKERS.values():
+        acknowledge(slot)  # every resident is quiet: a zero forecast retires two of them
+    for tid in ("a", "b", "c"):  # admitted work whose launch carries the Project dispatch mark
+        write_task_result(assigning.root, tid, "scheduled")
+        workers.PENDING.append(task(tid, _project_scope_none=True))
+    forecasts = []
+    real_reconcile = lifecycle.reconcile_worker_capacity
+    monkeypatch.setattr(lifecycle, "reconcile_worker_capacity",
+                        lambda residual: forecasts.append(residual()) or real_reconcile(residual))
+    holder = sqlite3.connect(store.store_path(assigning.root), isolation_level=None, check_same_thread=False)
+    holder.execute("BEGIN IMMEDIATE")
+    try:
+        workers.assign_tasks()
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    assert forecasts == [3], "contended commits stay residual demand"
+    assert [row["id"] for row in workers.PENDING] == ["a", "b", "c"] and not workers.RUNNING
+    assert all(row.get("admitted_dispatch", "none") == "none" for row in workers.PENDING), "nothing claimed"
+    assert all(load_task_result(assigning.root, tid).get("admitted_dispatch") is None for tid in "abc")
+    assert queue._reap_queue.empty() and not any(slot.retiring for slot in workers.WORKERS.values())
+    workers.assign_tasks()  # released: the same first dispatches, one per ready worker
+    assert sorted(workers.RUNNING) == ["a", "b", "c"] and len(workers.WORKERS) == 3

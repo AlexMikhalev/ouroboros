@@ -336,12 +336,13 @@ def _mark_launch_row(candidate, projections: list) -> bool:
     return schedule is None or occurrences.mark_occurrence_row(candidate, redispatch=schedule.redispatch)
 
 
-def _claim_worker_launch(queue, candidate, worker):
+def _claim_worker_launch(queue, candidate, worker, *, deferred: Optional[set] = None):
     """Commit prepared work to the local worker queue under Pause's lock.
 
     No put before every durable step lands (``_commit_launch``, ``_mark_launch_row``). The Q-held start
     fence tries its table, control and store acquisitions once
-    (``automatic_acquisitions``): contention keeps the same unsent row. Once the put
+    (``automatic_acquisitions``): contention keeps the same unsent row, and its id joins
+    ``deferred`` — still residual demand for the pool, never a refusal. Once the put
     is entered the worker owns the task, even if the put raised: the caller binds it
     RUNNING/busy, so Stop, completion and worker health settle it before reuse.
     """
@@ -416,6 +417,8 @@ def _claim_worker_launch(queue, candidate, worker):
         from supervisor.schedule_occurrence import contention
 
         if contention(exc):
+            if deferred is not None:
+                deferred.add(str(candidate.get("id") or ""))
             log.info("Worker start of %s deferred: a schedule, control or store lock is busy", candidate.get("id"))
         else:
             log.exception("Scheduled worker start refused; authority or persistence unavailable")
@@ -706,7 +709,8 @@ def assign_tasks() -> None:
                 _pool().send_with_budget(int(st["owner_chat_id"]), evo_block, role="system", system_type="evolution_notice")
             queue.persist_queue_snapshot(reason="evolution_blocked_light")
 
-        refused_this_pass = set()  # failed physical claims are not residual demand
+        refused_this_pass = set()  # failed physical claims are not residual demand,
+        deferred_this_pass = set()  # unless contention deferred them: the same work retries
         for w in _pool().WORKERS.values():
             while (w.busy_task_id is None and worker_ready(w) and not getattr(w, "resume_hold", "")
                     and getattr(w, "active_capacity", True) and _pool().PENDING):
@@ -719,7 +723,7 @@ def assign_tasks() -> None:
                     break
                 task = _pool().PENDING[chosen_idx]
                 # Keep PENDING custody through preparation and the final handoff.
-                if not _claim_worker_launch(queue, task, w):
+                if not _claim_worker_launch(queue, task, w, deferred=deferred_this_pass):
                     # Keep custody and identity; try another candidate on THIS
                     # available worker without rechecking the refusal this pass.
                     refused_this_pass.add(str(task.get("id") or ""))
@@ -752,7 +756,7 @@ def assign_tasks() -> None:
         running, selected = list(_pool().RUNNING.values()), set()
         for _ in range(max(1, _pool().MAX_WORKERS)):
             idx, blocked = _choose_candidate(queue, remaining, unresolved_invalid_id_set,
-                                             refused_this_pass, running, selected)
+                                             refused_this_pass - deferred_this_pass, running, selected)
             if blocked:
                 return None
             if idx is None:
