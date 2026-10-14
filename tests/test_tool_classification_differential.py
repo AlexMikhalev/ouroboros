@@ -399,6 +399,9 @@ CURRENT_PRODUCER_CONTRACTS = {
     "MANAGED_UPDATE_POSTCOMMIT_CHANGED": (False, "ok"),
     "native:LEGACY_TOOL_ERROR:MANAGED_UPDATE_POSTCOMMIT_CHANGED": (True, "error"),
     "OWNER_LAUNCH_AUTHORITY_UNAVAILABLE": (True, "unavailable"),
+    # Direction06 adds producer-owned whole-invocation phase, not a rewritten historical golden.
+    "OWNER_OPERATION_REFUSED": (True, "blocked"),
+    "TOOL_ADMISSION_UNAVAILABLE": (True, "unavailable"),
     "STOP_ACTION_CONFLICT": (True, "blocked"),
     "SAFETY_ADVICE": (False, "ok"),
     "LIGHT_MODE_REPO_CHANGED": (False, "ok"),

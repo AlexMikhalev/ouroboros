@@ -1032,16 +1032,17 @@ def _execute_with_timeout(
             else:
                 submit = scope.enter_context(abandoned_on_timeout(timeout_sec, bounded=not is_reviewed_mutative))
             from ouroboros.owner_pause import OwnerPauseRefused
+            from ouroboros.store import StoreError
             try:
                 future, release_tool_custody = submit_tool_future(
                     tool_ctx, invocation["invocation_id"], fn_name, submit, _settling_tool_worker,
                     function, tools, drive_logs, live, invocation, *arguments)
-            except OwnerPauseRefused as exc:
+            except (OwnerPauseRefused, StoreError) as exc:
                 if not use_stateful:
                     raise
                 from ouroboros.tools.tool_result import launch_refusal_result
                 result = _execute_single_tool(tools, tc, drive_logs, task_id, invocation,
-                                              host_refusal=launch_refusal_result(str(exc)))
+                                              host_refusal=launch_refusal_result(exc, not_started=True))
                 return _emit_finished(tools, live, result, started_at)
             # Registration pins the caller through the wait and any late-hold
             # claim. The exact submitted future also identifies no-entry cancellation.
