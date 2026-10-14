@@ -1323,7 +1323,7 @@ async def lifespan(app):
         log.warning("Native skills bootstrap failed", exc_info=True)
 
     # Boot-reconcile the project registry BEFORE /api/state and context-building
-    # can rely on registered_project_chat_ids (the multi-project isolation SSOT):
+    # can rely on reserved_project_chat_ids (the multi-project isolation SSOT):
     # register any pre-existing data/projects/<id>/ store whose row is missing, so
     # an inherited project's raw chat is partitioned from turn one (not only after
     # the 300s periodic tick). Idempotent and never prunes.

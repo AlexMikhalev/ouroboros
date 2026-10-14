@@ -516,7 +516,7 @@ function renderProjectsNav(projects, projectChatIds, activityIndex = projectActi
     const all = projects || [];
     // Isolation fan-out SSOT: recognize EVERY registered project chat_id (incl.
     // file-less / no-activity / beyond the sidebar summary cap), matching the
-    // backend registered_project_chat_ids, so chat.js::isMyThread never treats a
+    // backend reserved_project_chat_ids, so chat.js::isMyThread never treats a
     // project frame as a main-thread frame on the live WS path. Prefer the
     // COMPLETE /api/state `project_chat_ids` (uncapped); fall back to the (capped)
     // projects array only if that field is absent. Sidebar visibility is a
