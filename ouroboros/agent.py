@@ -21,6 +21,7 @@ _PROGRESS_ID_UNSET = object()
 
 from ouroboros.utils import (
     append_jsonl,
+    atomic_write_json,
     emit_log_event,
     get_git_info,
     read_json_dict,
@@ -38,6 +39,7 @@ from ouroboros.memory import Memory
 from ouroboros.context import build_llm_messages
 from ouroboros.loop import run_llm_loop
 from ouroboros.observability import task_timing_scope
+from ouroboros.process_custody import current_custody_session_id
 from ouroboros.config import EFFORT_SCALE, resolve_effort  # noqa: F401 -- the agent module keeps its historical import surface for the dispatch leaf
 from ouroboros.agent_startup_checks import (
     persist_early_origin_stub as _persist_early_origin_stub_impl,  # noqa: F401 -- the agent module keeps its historical import surface for the dispatch leaf
@@ -426,6 +428,13 @@ class OuroborosAgent:
             ("released", "sealed"), action="end", token=str(token), outcome=str(outcome), **generation)
 
     def _log_worker_boot_once(self) -> None:
+        """A ``worker_boot`` row per process; the startup verification once per server generation (P1).
+
+        Workers inherit the server's custody session id: the first process of a generation (and of
+        each checked-out code version) runs ``verify_restart`` and ``verify_system_state`` and stamps
+        ``state/startup_verification.json``; later ones, a pool re-grow, honour that stamp. A missing,
+        unreadable or different stamp runs both again; a failed run stamps nothing.
+        """
         global _worker_boot_logged
         try:
             with _worker_boot_lock:
@@ -437,8 +446,14 @@ class OuroborosAgent:
                 'ts': utc_now_iso(), 'type': 'worker_boot',
                 'pid': os.getpid(), 'git_branch': git_branch, 'git_sha': git_sha,
             })
-            verify_restart(self.env, git_sha)
-            verify_system_state(self.env, git_sha)
+            env, stamp = self.env, {'generation': current_custody_session_id(), 'git_sha': git_sha}
+            receipt = pathlib.Path(env.drive_root) / "state" / "startup_verification.json"
+            seen = read_json_dict(receipt) or {}
+            if stamp['generation'] and all(seen.get(key) == value for key, value in stamp.items()):
+                return
+            verify_restart(env, git_sha)
+            verify_system_state(env, git_sha)
+            atomic_write_json(receipt, {**stamp, 'pid': os.getpid(), 'verified_at': utc_now_iso()})
         except Exception:
             log.warning("Worker boot logging failed", exc_info=True)
             return
