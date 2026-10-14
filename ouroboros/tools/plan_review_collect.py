@@ -40,7 +40,7 @@ def announce_released_settlement(
     fingerprint = str((getattr(request, "reconciliation_identity", {}) or {}).get("subject_hash") or "")
     if usage_ctx is not None and getattr(usage_ctx, "drive_root", None):
         try:
-            from ouroboros.tools.plan_review import _planning_state_location
+            from ouroboros.tools.plan_review_legacy import _planning_state_location
             state_root, _ = _planning_state_location(usage_ctx)
             attach_historical_results(
                 state_root, task_id, fingerprint=fingerprint,
@@ -99,7 +99,7 @@ def prepared_from_wave(ctx: Any, exact: Dict[str, Any]) -> tuple[Any, Dict[str, 
     restored spec, prose and evidence manifest of the wave itself — never a
     re-read of the evidence, so the collection cannot change the wave's identity."""
     from ouroboros.review_substrate import review_repo_dirs_for
-    from ouroboros.tools.plan_review import _PlanRequest
+    from ouroboros.tools.plan_review_legacy import _PlanRequest
 
     system_root, active_root = review_repo_dirs_for(ctx)
     spec = dict(exact.get("spec") or {})
@@ -122,7 +122,7 @@ async def collect_open_wave(ctx: Any, *, state_root: Any, task_id: str, wave: Di
     """Collect one open wave: the engine's own resume path over the wave's recorded
     inputs with drain window 0 — settled slots are reconciled, nothing is re-sent,
     nothing is waited for, and the engine remains the sole wave writer/reducer."""
-    from ouroboros.tools import plan_review as engine
+    from ouroboros.tools import plan_review_legacy as engine
 
     exact = engine._authority_wave(state_root, task_id, wave) or wave
     request, prepared = prepared_from_wave(ctx, exact)
@@ -132,7 +132,7 @@ async def collect_open_wave(ctx: Any, *, state_root: Any, task_id: str, wave: Di
 def collect_wave_sync(ctx: Any, *, state_root: Any, task_id: str, wave: Dict[str, Any]) -> tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Disposition-mode collection: ``(rendered text, reloaded state, authority wave)``."""
     from ouroboros.task_results import load_plan_review_state, plan_review_wave
-    from ouroboros.tools import plan_review as engine
+    from ouroboros.tools import plan_review_legacy as engine
 
     fingerprint = str(wave.get("request_fingerprint") or "")
     text = run_plan_coroutine(collect_open_wave(ctx, state_root=state_root, task_id=task_id, wave=wave))
@@ -228,7 +228,7 @@ def collect_before_gate(ctx: Any, state: Dict[str, Any]) -> Dict[str, Any]:
     other state is returned untouched. ``owner_hurry.force_plan_decision`` then
     projects the verdict. Older waves keep their historical-supplement path."""
     from ouroboros.task_results import current_plan_review_wave, load_plan_review_state
-    from ouroboros.tools.plan_review import _planning_state_location
+    from ouroboros.tools.plan_review_legacy import _planning_state_location
 
     current = current_plan_review_wave(state)
     if not current or not current.get("custody_pending"):
