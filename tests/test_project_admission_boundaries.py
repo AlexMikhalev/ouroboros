@@ -129,9 +129,7 @@ def test_failed_head_proof_keeps_custody_without_starving_other_work(host, tmp_p
     persist, write, read = queue.persist_queue_snapshot, task_admission.write_task_result, task_admission.load_task_result
 
     def snapshot(**kwargs):
-        if (kwargs.get("reason") == "worker_launch_claimed"
-                and not any(row["id"].startswith("main-") and row.get("admitted_dispatch") == "possible"
-                            for row in host.pending)):
+        if kwargs.get("reason") == "worker_launch_locator" and not attempts:  # the head's, before any mark
             attempts.append("held")
             return False
         return persist(**kwargs)
@@ -150,8 +148,8 @@ def test_failed_head_proof_keeps_custody_without_starving_other_work(host, tmp_p
             raise OSError("synthetic unavailable proof readback")
         return read(root, tid, **kwargs)
 
-    def schedule_readback(tid):
-        attempts.append(tid)
+    def schedule_row(candidate, **_kwargs):  # the occurrence row, the last step before the put
+        attempts.append(candidate["id"])
         raise OSError("synthetic unavailable schedule proof")
 
     with monkeypatch.context() as patch:
@@ -162,7 +160,7 @@ def test_failed_head_proof_keeps_custody_without_starving_other_work(host, tmp_p
         elif boundary == "readback":
             patch.setattr(task_admission, "load_task_result", readback)
         else:
-            patch.setattr(schedule_occurrence, "_read_back", schedule_readback)
+            patch.setattr(schedule_occurrence, "mark_occurrence_row", schedule_row)
         workers.assign_tasks()
     assert [row["id"] for row in sent] == [f"main-{i}" for i in range(worker_count)]
     assert attempts == ["held"]
@@ -255,7 +253,7 @@ def test_global_snapshot_failure_blocks_every_candidate_without_dropping_rows(ho
     with monkeypatch.context() as patch:
         patch.setattr(queue, "persist_queue_snapshot", unavailable)
         workers.assign_tasks()
-    assert attempts == ["worker_launch_claimed", "worker_launch_claimed"]
+    assert attempts == ["worker_launch_locator", "worker_launch_locator"]
     assert not sent and not queue.RUNNING and workers.WORKERS[0].busy_task_id is None
     assert [row["id"] for row in host.pending] == [head["id"], "main"]
     workers.assign_tasks()

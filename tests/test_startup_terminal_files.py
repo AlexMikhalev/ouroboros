@@ -404,6 +404,9 @@ def test_periodic_bulk_work_does_not_block_drain_or_duplicate_sweep(roots, monke
     calls, threads = [], []
     monkeypatch.setattr(maintenance, "_CANCEL_INTENT_SWEEP_LOCK", cancel_lock)
     monkeypatch.setattr(maintenance, "_RECONCILE_SWEEP_LOCK", reconcile_lock)
+    schedule_pass = threading.Lock()
+    schedule_pass.acquire()  # a schedule pass already runs: this test pins the other cadences
+    monkeypatch.setattr(maintenance, "_SCHEDULE_SWEEP_LOCK", schedule_pass)
     monkeypatch.setattr(maintenance, "_LAST_CANCEL_INTENT_SWEEP", [0.0])
     monkeypatch.setattr(maintenance, "time", SimpleNamespace(time=lambda: clock[0]))
 

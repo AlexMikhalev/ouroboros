@@ -203,13 +203,15 @@ def _prepare_owner_restart_returns(ctx: Any) -> tuple:
 
     try:
         from ouroboros.owner_wait import prepare_owner_wait_handoffs
+        from supervisor.queue import name_queue_returns
         from supervisor.restart_retention import prepare_restart_returns
         from supervisor.workers import direct_chat_turns
 
         _LAST_RETURN_TX["id"] = ""
         transaction_id = uuid.uuid4().hex
         owner_waits = prepare_owner_wait_handoffs(DATA_DIR, _question_waits(ctx.RUNNING), transaction_id)
-        returning = prepare_restart_returns(DATA_DIR, dict(ctx.RUNNING or {}), list(ctx.PENDING or []),
+        returning = prepare_restart_returns(DATA_DIR, dict(ctx.RUNNING or {}),
+                                            name_queue_returns(ctx.PENDING or [], "owner_restart"),
                                             transaction_id=transaction_id, direct=direct_chat_turns(),
                                             owner_wait_ids=owner_waits)
         _LAST_RETURN_TX["id"] = transaction_id

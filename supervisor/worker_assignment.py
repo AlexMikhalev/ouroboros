@@ -11,12 +11,11 @@ from __future__ import annotations
 import logging
 import pathlib
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from ouroboros.model_wait import budget_paused_seconds, settle_execution_carry
 from supervisor.events_budget import budget_fence_selected, budget_hold_fact
 from supervisor.queue import _queue_lock
-from supervisor.schedule_occurrence import record_dispatch_possible
 
 
 def _pool():
@@ -249,18 +248,114 @@ def _deadline_refuses_launch(queue, candidate, *, unsubmitted=None) -> bool:
     return True  # unknown or protected custody never authorizes an expired handoff
 
 
+# Memory only: launches whose dispatch marks this process wrote, or may have written, while
+# the put was never entered (a later step failed or the commit's readback was unknown). The
+# same queue row, attempt and marks re-read the result and may finish and put once in this
+# generation, only after this commit's own marks read back; entering the put retires it, and
+# so does its row leaving the queue. Until then budget and deadline stops read it as never
+# dispatched (the deadline with its pre-commit claim). A crash or an entered put leaves the
+# durable ``possible`` that restore and the occurrence reconcile never replay.
+_COMMITTED_UNSENT: Dict[str, Dict[str, Any]] = {}
+
+
+def _unsent(candidate) -> Optional[Dict[str, Any]]:
+    """This exact queued row's witness (same row object and attempt), else None."""
+    witness = _COMMITTED_UNSENT.get(str(candidate.get("id") or ""))
+    return (witness if witness is not None and witness["row"] is candidate
+            and witness["attempt"] == candidate.get("_attempt") else None)
+
+
+def _forget_departed_launches(pending) -> None:
+    """Under Q: a witness lives only while its own row is still queued."""
+    live = {id(row) for row in pending}
+    for task_id, witness in list(_COMMITTED_UNSENT.items()):
+        if id(witness["row"]) not in live:
+            _COMMITTED_UNSENT.pop(task_id, None)
+
+
+def _commit_launch(queue, candidate, unsubmitted=None) -> Optional[list]:
+    """The durable steps before the put: the committed marks' projections, else None.
+
+    A locator snapshot first keeps the row restorable with its own dispatch fact.
+    Then ONE task-result write carries the Project and schedule marks
+    (``task_admission.commit_dispatch_marks``); a refusal or rolled-back write
+    changes nothing, so every consumer still sees the same first dispatch. Only
+    after the commit (or an unknown one) do memory and the snapshot say
+    ``possible``; a later pass of the same process re-reads, rewrites under the
+    same owners' predicates if the marks are absent, and continues. Legacy rows
+    without a canonical mark keep the snapshot as their witness, and their prior
+    value on failure. The occurrence row is marked last, just before the put
+    (``_mark_launch_row``): until then the scheduler reads the pending launch as
+    live and neither retires nor reclaims it.
+    """
+    from supervisor import schedule_occurrence as occurrences
+    from supervisor.task_admission import commit_dispatch_marks, project_dispatch_projection
+
+    task_id = str(candidate.get("id") or "")
+    witness = _unsent(candidate)
+    if witness is None:
+        _COMMITTED_UNSENT.pop(task_id, None)  # another row or attempt of this id never inherits it
+        row = occurrences.occurrence_row(candidate) if occurrences._occurrence_of(candidate) else ""
+        projections = [p for p in (project_dispatch_projection(candidate),
+                                   occurrences.dispatch_projection(candidate, row=row)) if p is not None]
+        prior = candidate.get("admitted_dispatch")
+        if not projections:
+            candidate["admitted_dispatch"] = "possible"
+            if queue.persist_queue_snapshot(reason="worker_launch_claimed") is not True:
+                candidate["admitted_dispatch"] = prior
+                return None
+            return []
+        if queue.persist_queue_snapshot(reason="worker_launch_locator") is not True:
+            return None
+        committed = commit_dispatch_marks(candidate, projections)
+        if committed is False:
+            return None
+        candidate["admitted_dispatch"] = "possible"
+        witness = _COMMITTED_UNSENT[task_id] = {"row": candidate, "attempt": candidate.get("_attempt"),
+                                                "projections": projections, "unsubmitted": unsubmitted}
+        if committed is None:  # it may have landed: never replayable, retried here before any put
+            queue.persist_queue_snapshot(reason="worker_launch_unknown")
+            return None
+    else:
+        from ouroboros.task_results import load_task_result
+
+        stored = load_task_result(queue.DRIVE_ROOT, task_id, strict=True) or {}
+        if (not all(projection.verify(stored) for projection in witness["projections"])
+                and commit_dispatch_marks(candidate, witness["projections"]) is not True):
+            return None  # unresolved or refused now (terminal, Stop, owner hold): no put; the row stays in custody
+    if queue.persist_queue_snapshot(reason="worker_launch_claimed") is not True:
+        return None
+    return witness["projections"]
+
+
+def _mark_launch_row(candidate, projections: list) -> bool:
+    """The occurrence row's monotonic copy of the committed receipt mark, the last step before the put."""
+    from supervisor import schedule_occurrence as occurrences
+
+    schedule = next((p for p in projections if hasattr(p, "redispatch")), None)
+    return schedule is None or occurrences.mark_occurrence_row(candidate, redispatch=schedule.redispatch)
+
+
 def _claim_worker_launch(queue, candidate, worker):
-    """Commit prepared work to the local worker queue under Pause's lock."""
+    """Commit prepared work to the local worker queue under Pause's lock.
+
+    No put before every durable step lands (``_commit_launch``, ``_mark_launch_row``). The Q-held start
+    fence tries its table, control and store acquisitions once
+    (``automatic_acquisitions``): contention keeps the same unsent row. Once the put
+    is entered the worker owns the task, even if the put raised: the caller binds it
+    RUNNING/busy, so Stop, completion and worker health settle it before reuse.
+    """
     from types import SimpleNamespace
     from ouroboros.owner_pause import launch_admission, OwnerPauseRefused
-    from supervisor.task_admission import record_project_dispatch_possible
+    from supervisor.queue_schedules import automatic_acquisitions
     from supervisor.queue_timeouts import _pending_continuation, _deadline_launch_claim, pending_deadline_expirable
 
-    if _deadline_refuses_launch(queue, candidate):
+    witness = _unsent(candidate)
+    if (witness is None or witness["unsubmitted"] is None) and _deadline_refuses_launch(queue, candidate):
         return False
     try:
         from supervisor.followup_policy import scheduled_start
-        with scheduled_start(queue.DRIVE_ROOT, candidate) as allowed:
+        with automatic_acquisitions(), scheduled_start(queue.DRIVE_ROOT, candidate) as allowed:
             if not allowed:
                 return False
             root_id = str(candidate.get("root_task_id") or candidate.get("id"))
@@ -275,8 +370,11 @@ def _claim_worker_launch(queue, candidate, worker):
                     task_id=candidate.get("id"), root_task_id=candidate.get("root_task_id"),
                     budget_drive_root=candidate.get("budget_drive_root") or queue.DRIVE_ROOT),
                     root_resume=resume if not latch or selected_child else None, wait=False):
-                unsubmitted = None
-                if (queue._task_deadline_ts(candidate) and _pending_continuation(candidate) == "_working_recovery"
+                unsubmitted = None if witness is None else witness["unsubmitted"]
+                if unsubmitted is not None and _deadline_refuses_launch(queue, candidate, unsubmitted=unsubmitted):
+                    return False  # a committed, never-put launch expires on its own pre-commit claim
+                if (witness is None and queue._task_deadline_ts(candidate)
+                        and _pending_continuation(candidate) == "_working_recovery"
                         and pending_deadline_expirable(candidate)):
                     import copy
                     from ouroboros.task_results import load_task_result
@@ -287,30 +385,38 @@ def _claim_worker_launch(queue, candidate, worker):
                                               candidate["id"], strict=True) or {}
                     unsubmitted = copy.deepcopy({"task_id": candidate["id"], "task_attempt": candidate["_attempt"],
                         "source": candidate["_working_recovery"], "claim": _deadline_launch_claim(stored)})
-                prior = candidate.get("admitted_dispatch")
-                candidate["admitted_dispatch"] = "possible"
-                if queue.persist_queue_snapshot(reason="worker_launch_claimed") is not True:
-                    candidate["admitted_dispatch"] = prior
-                    return False
-                # Durable Project handoff evidence, then the schedule receipt
-                # (#1315): no physical handoff before both are verified.
-                if not record_project_dispatch_possible(candidate) or not record_dispatch_possible(candidate):
+                projections = _commit_launch(queue, candidate, unsubmitted)
+                if projections is None:
                     return False
                 from ouroboros.obligations import drive_started
                 drive_started(_pool().DRIVE_ROOT, candidate)
                 _mirror_assigned_running_status(candidate)
                 if _deadline_refuses_launch(queue, candidate, unsubmitted=unsubmitted):  # positively before any put
                     return False
+                if not _mark_launch_row(candidate, projections):
+                    return False
                 continuation = candidate.get("_owner_wait_resume") or candidate.get("_budget_pause_resume") or candidate.get("_working_recovery") or {}
                 launched = _settled_running_task(candidate, continuation)
-                worker.in_q.put(launched)
+                # The handoff boundary: from here this worker may hold the task.
+                _COMMITTED_UNSENT.pop(str(candidate.get("id") or ""), None)
+                try:
+                    worker.in_q.put(launched)
+                except Exception:
+                    log.exception("Handoff of %s raised after entering the worker queue; it stays bound to "
+                                  "worker %s until that worker reports or is reaped", candidate.get("id"),
+                                  getattr(worker, "wid", "?"))
                 candidate.pop("_execution_handoff_sec", None)
                 candidate.update(launched)
                 return True
     except OwnerPauseRefused:
         return False
-    except Exception:
-        log.exception("Scheduled worker start refused; authority or persistence unavailable")
+    except Exception as exc:
+        from supervisor.schedule_occurrence import contention
+
+        if contention(exc):
+            log.info("Worker start of %s deferred: a schedule, control or store lock is busy", candidate.get("id"))
+        else:
+            log.exception("Scheduled worker start refused; authority or persistence unavailable")
         return False
 
 
@@ -331,6 +437,7 @@ def assign_tasks() -> None:
         _pool()._retry_terminalization_pending_for_assignment(queue)
         from supervisor.task_admission import revalidate_project_holds
         revalidate_project_holds()
+        _forget_departed_launches(_pool().PENDING)
         invalid_ids, unresolved_invalid_ids = _pool()._quarantine_invalid_pending_depths()
         unresolved_invalid_id_set = set(unresolved_invalid_ids)
 
@@ -382,7 +489,7 @@ def assign_tasks() -> None:
                     or task.get("original_task_id") or task.get("timeout_retry_from")
                 )
                 replay_safe = (
-                    task.get("admitted_dispatch") == "none"
+                    (task.get("admitted_dispatch") == "none" or _unsent(task) is not None)  # never put here
                     and int(cost_fields.get("total_rounds") or 0) == 0
                     and not bool(cost_fields.get("ledger_integrity_degraded"))
                     and not retry_lineage

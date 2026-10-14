@@ -118,7 +118,8 @@ def test_cold_transfer_observation_uses_body_cadence_without_running_each_tick(t
     monkeypatch.setattr(active_activity, "get_direct_activity_registry", lambda: SimpleNamespace(actors=lambda: []))
 
     def start(latch, name, target, args):
-        started.append(name)
+        if name != "schedule-admission":  # the schedule duty starts on every tick by design
+            started.append(name)
         latch.release()
         return True
 

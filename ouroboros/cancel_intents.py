@@ -102,12 +102,14 @@ def _intents_path(drive_root: Any) -> pathlib.Path:
 
 
 @contextmanager
-def cancellation_projection_lock(drive_root: Any) -> Iterator[None]:
+def cancellation_projection_lock(drive_root: Any, *, wait: bool = True) -> Iterator[None]:
     """Hold the same short lock used by cancel-intent mutators.
 
     Cross-store decisions such as a paid acceptance claim use this only while
     committing their own atomic row.  If cancellation linearizes first they see
     it; if this lock wins first, the claim linearizes before cancellation.
+    ``wait=False`` tries once (an automatic caller under Q); the refusal's
+    ``reason`` keeps the acquisition outcome, so contention stays distinct.
     """
     from ouroboros.platform_layer import (
         acquire_exclusive_file_lock,
@@ -116,9 +118,13 @@ def cancellation_projection_lock(drive_root: Any) -> Iterator[None]:
 
     path = _intents_path(drive_root)
     lock_path = path.with_name(path.name + ".lock")
-    lock_fd = acquire_exclusive_file_lock(lock_path, owner_aware_stale=True)
+    outcome: Dict[str, Any] = {}
+    lock_fd = acquire_exclusive_file_lock(lock_path, owner_aware_stale=True, outcome=outcome,
+                                          **({} if wait else {"timeout_sec": 0.0}))
     if lock_fd is None:
-        raise TimeoutError("cancel-intent projection lock unavailable")
+        error = TimeoutError("cancel-intent projection lock unavailable")
+        error.reason = outcome.get("reason", "unknown")
+        raise error
     try:
         yield
     finally:

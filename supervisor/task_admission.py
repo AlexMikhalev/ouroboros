@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import pathlib
 import uuid
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, Optional
 
 from ouroboros.depth_evidence import parse_task_depth
@@ -422,7 +423,14 @@ def enqueue_with_admission_receipt(task: Dict[str, Any], *, receipt_required: bo
 
 
 def record_project_dispatch_possible(task: dict) -> bool:
-    """Persist possible handoff for scoped work and every saved-work successor.
+    """Persist possible handoff for scoped work and every saved-work successor (alone)."""
+    projection = project_dispatch_projection(task)
+    return projection is None or commit_dispatch_marks(task, [projection]) is True
+
+
+def project_dispatch_projection(task: dict) -> Optional[SimpleNamespace]:
+    """The Project half of a launch's dispatch mark, for scoped work and every saved-work
+    successor; None when it does not apply (``commit_dispatch_marks`` writes it).
 
     Assignment reads back 'possible' before handoff, so even an older PENDING
     snapshot cannot overrule it if the best-effort RUNNING mirror fails. Its
@@ -431,16 +439,16 @@ def record_project_dispatch_possible(task: dict) -> bool:
     Only the governing continuation's own check applies (``governing_continuation``).
     """
     if not task.get("project_id") and task.get("_project_scope_none") is not True and "_working_recovery" not in task:
-        return True
+        return None
     from supervisor import queue
     from ouroboros.task_results import _TRULY_TERMINAL_STATUSES, STATUS_CANCEL_REQUESTED
 
     attempt = task.get("_attempt") or 1
     if type(attempt) is not int or attempt < 1:
-        return False
+        return SimpleNamespace(project=lambda current, incoming: None, verify=lambda stored: False)
     governing = governing_continuation(task)
     source = _working_source(task, queue.DRIVE_ROOT) if governing == "working" else None
-    accepted = [False]
+    mark = uuid.uuid4().hex[:12]  # this commit's own: an earlier mark of the same attempt never verifies it
 
     def project(current, _incoming):
         if (current.get("status") in _TRULY_TERMINAL_STATUSES | {STATUS_CANCEL_REQUESTED}
@@ -455,24 +463,61 @@ def record_project_dispatch_possible(task: dict) -> bool:
                 or governing == "exact_pause" and not _exact_resume_granted(task, queue.DRIVE_ROOT, existing=current)
                 or source is not None and not _working_attempt_unstarted(task, current, source)):
             return None
-        accepted[0] = True
         return {"admitted_dispatch": "possible", "admitted_dispatch_attempt": attempt,
-                "status": current.get("status") or STATUS_REQUESTED}
+                "admitted_dispatch_mark": mark, "status": current.get("status") or STATUS_REQUESTED}
 
-    try:
-        written = write_task_result(queue.DRIVE_ROOT, task["id"], STATUS_REQUESTED,
-                                    _field_projector=project, strict_existing_dict=True)
-        if written is False or not accepted[0]:
-            return False
-        stored = load_task_result(queue.DRIVE_ROOT, task["id"], strict=True) or {}
+    def verify(stored):
         return (stored.get("admitted_dispatch") == "possible"
                 and type(stored.get("admitted_dispatch_attempt")) is int
-                and stored["admitted_dispatch_attempt"] == attempt
+                and stored["admitted_dispatch_attempt"] == attempt and stored.get("admitted_dispatch_mark") == mark
                 and stored.get("status") not in _TRULY_TERMINAL_STATUSES | {STATUS_CANCEL_REQUESTED}
                 and not stored.get("_owner_hold"))
-    except Exception:
-        log.warning("Project dispatch evidence unavailable for %s", task.get("id"), exc_info=True)
+
+    return SimpleNamespace(project=project, verify=verify)
+
+
+def commit_dispatch_marks(task: dict, projections: list) -> Optional[bool]:
+    """ONE task-result write carrying every applicable owner's dispatch mark (Project, schedule).
+
+    Each projection keeps its owner's predicate and any refusal writes nothing; a
+    later projection wins a shared field (the schedule receipt's ``running``), so the
+    document is the one the owners' separate writes produced. True: committed and
+    read back. False: positively not written (a refusal, or a transaction whose
+    rollback was confirmed). None: a commit may have landed (an exception without
+    confirmed rollback, an unreadable or disagreeing readback) — never replayable.
+    """
+    from supervisor import queue
+
+    refused = [False]
+
+    def compose(current, incoming):
+        fields: Dict[str, Any] = {}
+        for projection in projections:
+            projected = projection.project(current, incoming)
+            if projected is None:
+                refused[0] = True
+                return None
+            fields.update(projected)
+        refused[0] = False
+        return fields
+
+    try:
+        write_task_result(queue.DRIVE_ROOT, task["id"], STATUS_REQUESTED, _field_projector=compose,
+                          strict_existing_dict=True)
+    except Exception as exc:
+        if getattr(exc, "rollback_confirmed", None) is True:
+            log.info("Dispatch evidence for %s was not written (%s)", task.get("id"), type(exc).__name__)
+            return False
+        log.warning("Dispatch evidence for %s may have committed", task.get("id"), exc_info=True)
+        return None
+    if refused[0]:
         return False
+    try:
+        stored = load_task_result(queue.DRIVE_ROOT, task["id"], strict=True) or {}
+    except Exception:
+        log.warning("Committed dispatch evidence for %s could not be read back", task.get("id"), exc_info=True)
+        return None
+    return True if all(projection.verify(stored) for projection in projections) else None
 
 
 def governing_continuation(task: dict) -> str:
@@ -587,7 +632,7 @@ def revalidate_project_holds() -> None:
     )
     from supervisor import queue
     from supervisor.queue_snapshot import _descends_from, _interrupted_ancestors, _fence_snapshot_running_rows, _exact_pause_row
-    from supervisor.schedule_occurrence import restore_allowed
+    from supervisor.schedule_occurrence import first_dispatch_unsent, restore_allowed
     from supervisor.update_merge import assisted_resume_authorizes
     from ouroboros.projects_registry import _load_bindings, project_binding_for_task
     from ouroboros.owner_wait import restore_owner_wait_allowed
@@ -657,8 +702,11 @@ def revalidate_project_holds() -> None:
                        ) or assisted_resume_authorizes(task, stored)
             # Planned authority never replaces a governing loop carrier, valid or invalid.
             granted = granted or (not governing and planned_handoff_resume_allowed(queue.DRIVE_ROOT, task))
+            # A first-attempt schedule receipt that still proves no handoff outranks an
+            # earlier launcher's Project mark of that attempt (``first_dispatch_unsent``).
+            unsent = not governing and first_dispatch_unsent(task)
             if (stored.get("admission_outcome") == "never_admitted"
-                    or not granted and (
+                    or not granted and not unsent and (
                         stored.get("status") != STATUS_SCHEDULED or stored.get("started_at")
                         or task.get("admitted_dispatch") != "none"
                         or "admitted_dispatch" in stored and stored["admitted_dispatch"] != "none")):
@@ -727,7 +775,10 @@ def revalidate_project_holds() -> None:
                         raise ValueError("The original prepared task drive is unavailable.")
                 # Preserve independent Pause/budget/restart holds in the row.
                 task.pop("_project_admission_restore_hold")
-                released.append((task, hold))
+                released.append((task, {"_project_admission_restore_hold": hold,
+                                        **({"admitted_dispatch": task.get("admitted_dispatch")} if unsent else {})}))
+                if unsent:  # restore's own correction, read now that the receipt is readable
+                    task["admitted_dispatch"] = "none"
         except (OSError, ValueError, TypeError, RuntimeError) as exc:
             reason = getattr(exc, "reason", "project_routing_fence_lookup_failed")
             if reason in {"project_routing_fence", "project_routing_fence_changed", "deadline"}:
@@ -741,11 +792,11 @@ def revalidate_project_holds() -> None:
     changed = any(prior != {key: task[key] for key in effects if key in task}
                   for prior, task in zip(before, held))
     persisted = not changed or queue.persist_queue_snapshot(reason="project_hold_revalidated") is True
-    for task, hold in released:
+    for task, prior in released:
         if persisted:
             task.pop("_managed_update_resume", None)  # a spent resolver resume never reaches a worker
         else:
-            task["_project_admission_restore_hold"] = hold
+            task.update(prior)
 
 
 def persist_never_admitted_refusal(

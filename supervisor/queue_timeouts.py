@@ -274,6 +274,10 @@ def pending_deadline_expirable(task: Dict[str, Any]) -> bool:
             if (task.get("admitted_dispatch") == "none" and stored.get("status") == "scheduled"
                     and not stored.get("started_at") and stored.get("admitted_dispatch", "none") == "none"):
                 return True
+            from supervisor.schedule_occurrence import first_dispatch_unsent
+
+            if task.get("admitted_dispatch") == "none" and first_dispatch_unsent(task):
+                return True  # an earlier launcher's Project mark; its receipt proves no handoff
             # With no carrier selected, Project release's exact planned grant (#1500) is the
             # other positive authority, only while its successor attempt was never claimed.
             from ouroboros.delegate_recovery import planned_handoff_resume_allowed
