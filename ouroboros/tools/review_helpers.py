@@ -610,6 +610,7 @@ def build_goal_section(
     scope: str = "",
     commit_message: str = "",
     owner_words: str = "",
+    preflight_execution: str = "",
 ) -> str:
     """Format the 'Intended transformation' section.
 
@@ -623,6 +624,8 @@ def build_goal_section(
     caused the work (``owner_words.owner_words_text``), placed right after the
     intent: what was asked, beside the author's account of the change. Empty
     keeps the section byte-identical to a review without it.
+    ``preflight_execution`` is the wave's frozen test execution exhibit
+    (``preflight_receipts.execution_section``), placed after them on the same terms.
     """
     resolved_text, source = resolve_intent(goal, scope, commit_message)
     sections = [
@@ -635,6 +638,8 @@ def build_goal_section(
     ]
     if owner_words.strip():
         sections.append(f"\n\n{owner_words}")
+    if preflight_execution.strip():
+        sections.append(f"\n\n{preflight_execution}")
 
     commit_text = commit_message.strip()
     if commit_text and commit_text != resolved_text:

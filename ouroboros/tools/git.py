@@ -401,12 +401,15 @@ def _managed_candidate_needs_proof(ctx: ToolContext) -> bool:
     regardless of skip_tests (the only exemption the ordinary rule knows), so a
     red candidate is fixed in place instead of committed and rolled back.
 
-    AUTHORITY (synthesis F2): the proof consulted here is the PROCESS-HELD ctx
-    record pinned by the hermetic runner when the host itself ran
-    the suite — never the durable ``tests_evidence`` tx copy, which is a plain
-    resolver-writable file (forensic only; a forged tree there must not
-    suppress the mandatory run). A restart between the proof run and the
-    commit therefore re-runs the suite once."""
+    AUTHORITY: the proof consulted here is the PROCESS-HELD ctx record the
+    hermetic runner pins — never the durable ``tests_evidence`` tx copy, which
+    stays forensic. A restart loses that record, so the runner is entered again
+    and may reuse a matching unsigned receipt of a complete run — but only a
+    process running the code on disk mints or accepts one: the resolver booted
+    on the base before its merge landed runs the suite and records nothing
+    durable, so reuse starts once a process that loaded the merge ran it (owner
+    decision 3A retired synthesis F2's resolver-writable-file premise: the
+    receipt is writable too and authenticates no one)."""
     if not _authorized_managed_update_resolver(ctx):
         return False
     try:
@@ -513,6 +516,14 @@ def _preflight_and_tests_gate(
         # recorded by the shared admission helper (commit_admission SSOT).
     elif not message:
         ctx.emit_progress_fn("Tests preflight skipped (skip_tests).")
+    from ouroboros.preflight_receipts import execution_exhibit  # frozen for the author's look and the panel
+    if message and reason in {"preflight", "infra_failure"}:
+        # This invocation never reached the tests, even if ctx holds an earlier proof.
+        ctx._preflight_execution = {"status": "not_run", "reason": (
+            f"tests not started: deterministic preflight refused ({reason}): {message}")}
+    else:
+        ctx._preflight_execution = execution_exhibit(ctx, otherwise="tests preflight did not pass" if reason == (
+            "tests_preflight_blocked") else "skipped by the author (skip_tests)" if skip_tests and not _managed_needs_proof else "")
     if message and not review_enforcement_blocks("blocking"):
         from ouroboros.tools.review import _handle_review_block_or_warning
 

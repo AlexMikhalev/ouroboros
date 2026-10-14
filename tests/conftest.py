@@ -860,6 +860,17 @@ def _os_environ_isolation():
 
 
 @pytest.fixture(autouse=True)
+def _reset_executing_source_baseline_between_tests(monkeypatch):
+    """``preflight_receipts`` pins the executing source once per process: a ``server`` import or a
+    worker entry in one test would turn durable test receipts on for every later test of that
+    xdist worker, so pass counts would depend on test order. Each test starts with no baseline; a
+    test that wants durable receipts captures one itself."""
+    from ouroboros import preflight_receipts
+
+    monkeypatch.setattr(preflight_receipts, "_baseline", None)
+
+
+@pytest.fixture(autouse=True)
 def _reset_runtime_mode_baseline_between_tests():
     """v5.1.2 iter-2 test isolation fix (Gemini finding F2-7):
     ``ouroboros.config._BOOT_RUNTIME_MODE`` is a module-level global

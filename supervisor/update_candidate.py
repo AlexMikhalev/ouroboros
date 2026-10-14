@@ -344,12 +344,13 @@ def record_managed_tests_evidence(
     the authorized host runner after its mandatory suite actually ran green;
     it does not replace resolver authorization. Returns the tree sha, or ''.
 
-    AUTHORITY NOTE (synthesis F2): the durable ``tests_evidence`` copy written
-    here is FORENSIC/telemetry only. The tx marker is a plain writable file the
-    authorized resolver's shell can reach, so the single-run gates
-    (``_managed_candidate_needs_proof`` / ``_managed_post_commit_tests_gate``)
-    consult ONLY the process-held record on the task ctx (see
-    ``record_managed_tests_proof``), never this file."""
+    AUTHORITY NOTE: the durable ``tests_evidence`` copy written here is
+    FORENSIC/telemetry only. The single-run gates (``_managed_candidate_needs_proof``
+    / ``_managed_post_commit_tests_gate``) consult the runner's process-held
+    record (``record_managed_tests_proof``), and the runner itself may reuse an
+    unsigned receipt of a complete run — never this file. Synthesis F2's premise
+    that a resolver-writable file must not count was retired by owner decision
+    3A: the receipt is ordinary writable state too and authenticates no one."""
     if not force and os.environ.get("OUROBOROS_PRE_PUSH_TESTS", "1") != "1":
         return ""
     from supervisor import update_merge as _um
@@ -481,9 +482,9 @@ def update_tx_phase_or_keep(base_tx: Dict[str, Any], patch: Dict[str, Any]) -> D
 
 def managed_tests_evidence_covers(committed_tree: str) -> bool:
     """True when the durable tx carries a green-suite record for EXACTLY this
-    tree. FORENSIC surface only (synthesis F2): the tx marker is
-    resolver-writable, so the single-run gates never consult this — they read
-    the process-held ctx record pinned by ``record_managed_tests_proof``."""
+    tree. FORENSIC surface only: the single-run gates never consult this —
+    they read the process-held ctx record pinned by ``record_managed_tests_proof``
+    (which the runner may have taken from an unsigned receipt)."""
     if not committed_tree:
         return False
     from supervisor import update_merge as _um

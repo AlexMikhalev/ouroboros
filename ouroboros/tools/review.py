@@ -1199,15 +1199,15 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         log.warning("Failed to build touched file pack for triad review: %s", e)
         current_files_section = f"(touched file pack unavailable: {e})"
 
+    from ouroboros.preflight_receipts import execution_section
     from ouroboros.review_evidence import commit_review_evidence_section, materialize_commit_review_session_view
-
     task_evidence = dict(getattr(ctx, "_commit_review_evidence", None) or {})
     if any(route is ReviewRouteKind.AGENT_SESSION for route in row_routes):
         task_evidence = materialize_commit_review_session_view(task_evidence, target_repo)
         ctx._commit_review_evidence = task_evidence
     task_evidence_compact = False
-    owner_words = owner_words_text(ctx)
-    goal_section = build_goal_section(goal, scope, commit_message, owner_words)
+    owner_words, execution = owner_words_text(ctx), dict(getattr(ctx, "_preflight_execution", None) or {})
+    goal_section = build_goal_section(goal, scope, commit_message, owner_words, execution_section(execution))
     scope_section = build_scope_section(scope)
 
     def _assemble_prompt(files_section: str, staged_diff: str) -> tuple:
@@ -1286,7 +1286,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         ctx, row_plan, models, row_routes, target_repo=target_repo, governance_root=governance_root,
         subject=subject, frozen=frozen, diff_text=diff_text, layer=layer, checklist_section=checklist_section,
         commit_message=commit_message, goal=goal, scope=scope, review_rebuttal=review_rebuttal,
-        owner_words=owner_words, task_evidence=task_evidence)
+        owner_words=owner_words, task_evidence=task_evidence, preflight_execution=execution)
     if brief_failure is not None:
         failed_slot, exc = brief_failure
         ctx._last_review_block_reason = "infra_failure"
@@ -1308,7 +1308,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         "prompt": prompt, "stable_prefix_len": stable_prefix_len,
         "models": models, "routes": row_routes, "row_plan": row_plan,
         "session_task": "", "target_repo": target_repo,
-        "blocking_review": blocking_review, "task_evidence": task_evidence,
+        "blocking_review": blocking_review, "task_evidence": task_evidence, "preflight_execution": execution,
         "layer": layer,
         "governance_manifest": list(governance.manifest), "checking_source": commit_checking_source(ctx, row_plan, target_repo, frozen),
         "governance_packet_slots": [slot.slot_id for slot in api_slots],
@@ -1366,7 +1366,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
             session_root=str(prepared["target_repo"]),
             row_plan=prepared["row_plan"],
             retry_key=str(prepared.get("retry_key") or ""),
-            task_evidence=prepared.get("task_evidence"),
+            task_evidence=prepared.get("task_evidence"), preflight_execution=prepared.get("preflight_execution"),
             layer=str(prepared.get("layer") or "body"),
             checking_source=prepared.get("checking_source"),
         )
