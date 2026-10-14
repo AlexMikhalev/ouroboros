@@ -17,6 +17,9 @@ from tests.test_git_review_preflight_gate import candidate  # noqa: F401
 
 MESSAGE = "fix the original candidate"
 INTENT = dict(goal="keep the original goal", scope="change.py only", review_rebuttal="original evidence")
+# The test execution fact the paid seats were dispatched with (``preflight_receipts`` exhibit).
+DISPATCHED = {"status": "passed", "authenticity": "unsigned", "evidence": "executed", "lanes": ["serial"],
+              "empty_lanes": ["parallel"], "tested": {"head": "a" * 40, "tree": "b" * 40, "index_tree": "b" * 40}}
 
 
 def _git(ctx, *args):
@@ -32,9 +35,11 @@ def paid_commit(candidate, monkeypatch):  # noqa: F811
     identity = SimpleNamespace(_current_review_contract_fingerprint=historical._CONTRACT)
     retry = git._commit_review_retry_key(identity, MESSAGE, binding_fingerprint=fingerprint["fingerprint"], **INTENT)
     monkeypatch.setattr(historical, "_RETRY", retry)
-    ready, prompt = historical._seat(ctx.drive_root, ctx.repo_dir, "multi_model_review", "old-triad")
-    unknown, _ = historical._seat(ctx.drive_root, ctx.repo_dir, "multi_model_review", "old-unknown", complete=False, custody=False)
-    peer, _ = historical._seat(ctx.drive_root, ctx.repo_dir, "multi_model_review", "old-peer")
+    sent = {"preflight_execution": DISPATCHED}
+    ready, prompt = historical._seat(ctx.drive_root, ctx.repo_dir, "multi_model_review", "old-triad", evidence=sent)
+    unknown, _ = historical._seat(ctx.drive_root, ctx.repo_dir, "multi_model_review", "old-unknown", complete=False,
+                                  custody=False, evidence=sent)
+    peer, _ = historical._seat(ctx.drive_root, ctx.repo_dir, "multi_model_review", "old-peer", evidence=sent)
     attempt = CommitAttemptRecord(
         ts=utc_now_iso(), commit_message=MESSAGE, status="reviewing", task_id=ctx.task_id,
         repo_key=make_repo_key(ctx.repo_dir), tool_name="commit_reviewed", attempt=1, paid=True,
@@ -204,5 +209,8 @@ def test_public_commit_collects_under_an_emptied_pool_with_its_saved_history_bin
     from ouroboros.review_ledger import load_record, recent_records
     [emitted] = [load_record(ctx.drive_root, r["record_id"]) for r in recent_records(ctx.drive_root, ctx.task_id)]
     assert emitted["surface"] == "commit_gate" and emitted["brief"]["dispute_input"] == saved
+    # The commit gate's own rejoin before its first ledger write records the test execution fact
+    # frozen in the paid requests; this call's tests gate is forbidden by the fixture.
+    assert emitted["preflight_execution"] == DISPATCHED
     [row] = load_state(ctx.drive_root).attempts
     assert row.review_input == saved and row.review_retry_key == attempt.review_retry_key

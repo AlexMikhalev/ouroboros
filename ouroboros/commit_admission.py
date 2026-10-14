@@ -346,6 +346,8 @@ class PreflightTestProof(NamedTuple):
     Every workload binds HEAD as well as candidate files and the installed
     index: even an ordinary unmarked test can read committed Git content.
     No phase label, generated probe nonce or temporary pathname is a workload.
+    A later process reuses only a complete default run, through its unsigned
+    durable receipt (``preflight_receipts``).
     """
 
     tree: str
@@ -368,28 +370,46 @@ def _executable_identity(executable: str) -> tuple:
     return str(invocation), str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
 
 
+def workload_fingerprint(workload: tuple) -> str:
+    return hashlib.sha256(json.dumps(workload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def log_preflight_test_proof(ctx, proof: PreflightTestProof, *, reused: bool, phase: str,
-                             passes: list[tuple[str, float]] | None = None) -> None:
+                             passes: list[tuple[str, float]] | None = None, receipt: dict | None = None,
+                             empty_lanes: list[str] | None = None) -> None:
     """Disclose the runner's actual proof on the existing event log, never read it as authority.
 
     ``passes`` are the executed passes' own `(label, seconds)`. A green run renders
     no pytest output at all, so this row is the only durable record of what the gate
     cost against `budget_sec`; a reused proof executed nothing and reports none.
+    ``receipt`` is the durable receipt's disclosure (``preflight_receipts``). The same
+    row stays on the ctx as the source of the reviewer exhibit (``execution_exhibit``).
+    ``empty_lanes`` are the lanes the proof's run observed collecting no test (a green
+    gate tolerates one, the exhibit must not call it green). A reused process proof
+    passes neither and keeps both from the row of THIS exact proof, so a proof taken
+    from a receipt keeps that receipt as its provenance; any other row lends nothing.
     """
+    from ouroboros.preflight_receipts import canonical_data_root
+
+    fingerprint = workload_fingerprint(proof.workload)
+    prior = getattr(ctx, "_preflight_test_disclosure", None)
+    prior = prior if isinstance(prior, dict) else {}
+    if reused and receipt is None and empty_lanes is None and (
+            prior.get("head"), prior.get("tree"), prior.get("index_tree"), prior.get("workload_fingerprint")
+    ) == (proof.head, proof.tree, proof.index_tree, fingerprint):
+        receipt, empty_lanes = prior.get("receipt"), prior.get("empty_lanes")
     event = {
         "ts": utc_now_iso(), "type": "preflight_test_proof",
         "action": "reused" if reused else "created", "phase": phase,
         "task_id": str(getattr(ctx, "task_id", "") or ""),
         "pass_seconds": dict(passes or ()), "budget_sec": proof.workload[1],
         "head": proof.head, "tree": proof.tree, "index_tree": proof.index_tree,
-        "workload_fingerprint": hashlib.sha256(json.dumps(
-            proof.workload, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")).hexdigest(),
+        "workload_fingerprint": fingerprint,
+        **({"receipt": receipt} if receipt is not None else {}),
+        **({"empty_lanes": list(empty_lanes)} if isinstance(empty_lanes, list) else {}),
     }
-    metadata = getattr(ctx, "task_metadata", None)
-    metadata = metadata if isinstance(metadata, dict) else {}
-    root = (metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", None)
-            or getattr(ctx, "drive_root", None))
+    ctx._preflight_test_disclosure = event
+    root = canonical_data_root(ctx)
     try:
         if root and append_jsonl(pathlib.Path(root) / "logs" / "events.jsonl", event):
             return  # append_jsonl also forwards through the worker/server log sink.
@@ -408,10 +428,15 @@ def preflight_test_workload(
     import tempfile
     from ouroboros import preflight_runner as pr
     from ouroboros.preflight_node import candidate_node_tests, resolve_node
+    from ouroboros.process_containment import CONTAINMENT_ENV_PREFIX
 
     base = pathlib.Path(tempfile.gettempdir()) / "ouroboros-preflight-contract"
     env = pr._preflight_env(base, base / "repo", create=False)
-    environment = hashlib.sha256(json.dumps(env, sort_keys=True).encode()).hexdigest()
+    # Containment membership stays in the child env (an outer reap must see the
+    # tree), but its keys are per-launch nonces, not test inputs.
+    environment = hashlib.sha256(json.dumps({key: value for key, value in env.items()
+                                             if not key.startswith(CONTAINMENT_ENV_PREFIX)},
+                                            sort_keys=True).encode()).hexdigest()
     python = agent_python or os.environ.get("OUROBOROS_AGENT_PYTHON") or sys.executable or "python3"
     specs = pr._preflight_pass_specs(pytest_args) if passes is None else passes
     node_tests = tuple(candidate_node_tests(repo))
@@ -475,8 +500,8 @@ def run_tests_preflight_with_proof(ctx: ToolContext, *, runner) -> Optional[str]
 
     None includes no-suite and policy skips. The runner stamps the ctx only
     after every applicable lane and containment check succeeded (or matched a
-    process-held proof). Managed telemetry consumes that receipt, never a later
-    live-tree snapshot.
+    process-held proof or an unsigned durable receipt). Managed telemetry
+    consumes that proof, never a later live-tree snapshot.
     """
     from ouroboros.tools.registry import _authorized_managed_update_resolver
 

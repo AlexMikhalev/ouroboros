@@ -574,13 +574,13 @@ def _observed_worker_ids(temp_root: pathlib.Path) -> set:
 
 
 def _preflight_env(temp_root: pathlib.Path, repo_worktree: pathlib.Path, *, create=True) -> dict:
-    from ouroboros.test_environment import isolated_environment
+    from ouroboros.test_environment import isolated_environment, without_launch_descriptors
 
     temp_root = pathlib.Path(temp_root).resolve(strict=False)
-    # The scrub drops settings keys (`test_environment.settings_keys`), secret
-    # suffixes, `NODE_OPTIONS`, `VIRTUAL_ENV` and the OUROBOROS_/GH_/GIT_/PYTEST_/
-    # PYTHON/UV_/PIP_ prefixes; writable paths are re-rooted under `temp_root`.
-    env = isolated_environment(temp_root, repo_worktree, create=create)
+    # The scrub drops settings keys (`test_environment.settings_keys`), secret suffixes,
+    # `NODE_OPTIONS`, `VIRTUAL_ENV`, the OUROBOROS_/GH_/GIT_/PYTEST_/PYTHON/UV_/PIP_
+    # prefixes and launch descriptors; writable paths are re-rooted under `temp_root`.
+    env = without_launch_descriptors(isolated_environment(temp_root, repo_worktree, create=create))
     # PREPENDED, so `-p ouroboros_preflight_probe` resolves to the gate's own
     # worker-count plugin and not to anything the candidate tree or the
     # operator's PYTHONPATH happens to shadow it with.
@@ -1063,6 +1063,9 @@ def _classify_pass_result(
     return _diagnosis(f"⚠️ PRE_PUSH_TEST_ERROR: {head}", "", output, max_output)
 
 
+_SOURCE_INDEX_BLOCK = "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_SOURCE_INDEX (hard block): "
+
+
 def _capture_source_index_tree(
     repo: pathlib.Path,
     max_output: int,
@@ -1072,8 +1075,7 @@ def _capture_source_index_tree(
         source_index = _run_git(repo, ["write-tree"])
     except (subprocess.SubprocessError, OSError) as exc:
         return None, _diagnosis(
-            "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_SOURCE_INDEX (hard block): "
-            "the source index could not be snapshotted",
+            _SOURCE_INDEX_BLOCK + "the source index could not be snapshotted",
             "The disposable preflight cannot reproduce an unreadable source index, "
             "so no test pass was run. Repair the Git/filesystem error shown below.",
             str(exc),
@@ -1085,8 +1087,7 @@ def _capture_source_index_tree(
         unmerged = _run_git(repo, ["ls-files", "-u"])
     except (subprocess.SubprocessError, OSError) as exc:
         return None, _diagnosis(
-            "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_SOURCE_INDEX (hard block): "
-            "the failed source index could not be classified",
+            _SOURCE_INDEX_BLOCK + "the failed source index could not be classified",
             "The preflight may preserve live resolution semantics only for a proven "
             "unmerged index. No test pass was run.",
             str(exc),
@@ -1095,8 +1096,7 @@ def _capture_source_index_tree(
     if unmerged.returncode == 0 and str(unmerged.stdout).strip():
         return None, None
     return None, _diagnosis(
-        "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_SOURCE_INDEX (hard block): "
-        "the source index could not be snapshotted",
+        _SOURCE_INDEX_BLOCK + "the source index could not be snapshotted",
         "The source `git write-tree` failed without real unmerged entries. "
         "The disposable preflight cannot reproduce the staged candidate, so no "
         "test pass was run. Repair the index error shown below.",
@@ -1110,46 +1110,36 @@ def _install_source_index_tree(
     source_index_tree: str,
     max_output: int,
 ) -> str | None:
-    """Install and verify the immutable source index without updating files."""
+    """Install and verify the immutable source index without updating files.
+
+    A Git call that raised and one that exited nonzero are the same typed block.
+    """
     try:
         read_tree = _run_git(worktree, ["read-tree", source_index_tree])
+        failure = None if read_tree.returncode == 0 else read_tree.stderr.strip() or "git read-tree failed"
     except (subprocess.SubprocessError, OSError) as exc:
+        failure = str(exc)  # may be empty: an exception is a block whatever its message
+    if failure is not None:
         return _diagnosis(
-            "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_SOURCE_INDEX (hard block): "
-            "the source index tree could not be installed",
+            _SOURCE_INDEX_BLOCK + "the source index tree could not be installed",
             "The disposable index must exactly reproduce the source index before "
             "tests run. No candidate test pass was started.",
-            str(exc),
-            max_output,
-        )
-    if read_tree.returncode != 0:
-        return _diagnosis(
-            "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_SOURCE_INDEX (hard block): "
-            "the source index tree could not be installed",
-            "The disposable index must exactly reproduce the source index before "
-            "tests run. No candidate test pass was started.",
-            read_tree.stderr.strip() or "git read-tree failed",
+            failure,
             max_output,
         )
     try:
         projected_index = _run_git(worktree, ["write-tree"])
     except (subprocess.SubprocessError, OSError) as exc:
-        return _diagnosis(
-            "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_SOURCE_INDEX (hard block): "
-            "the disposable index could not be verified",
-            "The source and disposable indexes must have identical `write-tree` "
-            "identities before tests run. No candidate test pass was started.",
-            str(exc),
-            max_output,
+        problem, detail = "the disposable index could not be verified", str(exc)
+    else:
+        if projected_index.returncode == 0 and str(projected_index.stdout).strip() == source_index_tree:
+            return None
+        problem = "the disposable index does not match the source index tree"
+        detail = projected_index.stderr.strip() or (
+            f"expected {source_index_tree}, got {str(projected_index.stdout).strip() or '<empty>'}"
         )
-    if projected_index.returncode == 0 and str(projected_index.stdout).strip() == source_index_tree:
-        return None
-    detail = projected_index.stderr.strip() or (
-        f"expected {source_index_tree}, got {str(projected_index.stdout).strip() or '<empty>'}"
-    )
     return _diagnosis(
-        "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_SOURCE_INDEX (hard block): "
-        "the disposable index does not match the source index tree",
+        _SOURCE_INDEX_BLOCK + problem,
         "The source and disposable indexes must have identical `write-tree` "
         "identities before tests run. No candidate test pass was started.",
         detail,
@@ -1217,7 +1207,9 @@ def run_hermetic_pytest(
 
     Returns ``None`` on success or when no suite applies, otherwise an error.
     An optional caller ctx retains proof only of completed green lanes and
-    containment; matching workloads reuse it after the baseline/assembly checks.
+    containment; a matching workload reuses it, or another process's unsigned
+    receipt of a complete default run (``preflight_receipts``), after the
+    baseline/assembly checks; only a complete default run mints that receipt.
     ``OUROBOROS_PREFLIGHT_TIMEOUT_SEC`` overrides ``timeout`` for all callers.
 
     ``phase`` selects the deleted-suite baseline (see ``_TESTS_BASELINE_REFS``):
@@ -1367,16 +1359,19 @@ def run_hermetic_pytest(
             PreflightTestProof, capture_preflight_test_subject, log_preflight_test_proof,
             preflight_test_workload_unchanged,
         )
+        from ouroboros.preflight_receipts import FullGateReceipt
 
         subject = capture_preflight_test_subject(
             worktree, timeout=timeout, pytest_args=pytest_args,
             passes=passes, agent_python=agent_python, probe_module=probe_module,
         ) if ctx is not None else None
         can_reuse = isinstance(previous_proof, PreflightTestProof) and previous_proof.covers(subject)
-        if can_reuse:
-            ctx._preflight_test_proof = previous_proof
+        receipt = None if can_reuse else FullGateReceipt.prepare(ctx, subject, passes, probe_module, agent_python, temp_root, worktree)
+        if can_reuse or receipt.covered():
+            ctx._preflight_test_proof = previous_proof if can_reuse else subject
             ctx._preflight_tests_passed = True
-            log_preflight_test_proof(ctx, previous_proof, reused=True, phase=phase)
+            log_preflight_test_proof(ctx, ctx._preflight_test_proof, reused=True, phase=phase, receipt=receipt and receipt.disclosure(),
+                                     empty_lanes=receipt and receipt.empty_lanes)
             return None
         started = time.monotonic()
         unproven_teardown = "the node lane did not return, so its teardown is unconfirmed"
@@ -1384,7 +1379,7 @@ def run_hermetic_pytest(
         unproven_teardown = (node_result or {}).get("reap_error") or ""
         if node_error := (node_result or {}).get("error"):
             return _with_retention_notice(node_error, unproven_teardown, worktree, max_output)
-        empty_passes = 0
+        empty_passes: list[str] = []
         timings: list[tuple[str, float]] = []
         for spec in passes:
             # Keep the exact float remainder; rounding up would exceed the
@@ -1435,7 +1430,7 @@ def run_hermetic_pytest(
                     output, max_output,
                 )
             if returncode == _PYTEST_EXIT_NO_TESTS:
-                empty_passes += 1
+                empty_passes.append(spec.label)
                 continue
             if returncode == 0 and probe_module in spec.args:
                 # Use the actual nonce flag, not the stem or spec.parallel:
@@ -1468,7 +1463,7 @@ def run_hermetic_pytest(
                 return failure or (
                     f"⚠️ PRE_PUSH_TEST_ERROR: {spec.label} pass, exit {returncode}, {elapsed:.0f}s"
                 )
-        if empty_passes == len(passes):
+        if len(empty_passes) == len(passes):
             return (
                 "⚠️ PRE_PUSH_TEST_ERROR: no tests were collected in any preflight pass — "
                 "a repository with a tests/ directory must yield at least one runnable test"
@@ -1481,7 +1476,9 @@ def run_hermetic_pytest(
                     and preflight_test_workload_unchanged(subject, worktree, timeout=timeout, pytest_args=pytest_args)
                     and (not subject.workload[4] or (node_result or {}).get("returncode") == 0)):
                 ctx._preflight_test_proof = subject
-                log_preflight_test_proof(ctx, subject, reused=False, phase=phase, passes=timings)
+                receipt.publish(ctx, temp_root, worktree, agent_python, empty_passes, phase, timings)
+                log_preflight_test_proof(ctx, subject, reused=False, phase=phase, passes=timings, receipt=receipt.disclosure(),
+                                         empty_lanes=empty_passes)
         return None
     except subprocess.TimeoutExpired:
         failure = f"⚠️ PRE_PUSH_TEST_ERROR: pytest timed out after {timeout} seconds"

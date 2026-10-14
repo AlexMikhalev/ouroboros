@@ -50,6 +50,11 @@ DATA = pathlib.Path(
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+# The executing body's own bytes, pinned before the rest of it loads: the hermetic test
+# receipt this process may mint or accept binds the code that runs the gate.
+from ouroboros.preflight_receipts import capture_executing_source_baseline  # noqa: E402
+
+capture_executing_source_baseline()
 from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS  # noqa: E402
 # Stdlib-only leaves: nothing may import ``ouroboros.config`` before isolation.
 from ouroboros.review_run_isolation import (  # noqa: E402
@@ -612,8 +617,10 @@ def _contributor_tests_preflight(host_ctx, proposal: dict, *, review_drive_root:
     """The proposal's own hermetic test suite, run by the commit gate's runner in an
     isolated checkout of the same ``base..head`` subject the review operation freezes,
     BEFORE any reviewer is paid. Returns ``(tests evidence bound to the tested tree,
-    refusal outcome)``; a failed suite refuses the review (nothing is dispatched)."""
+    refusal outcome)``; a failed suite refuses the review (nothing is dispatched). The
+    evidence carries the reviewer exhibit (tested HEAD = the base it was materialized on)."""
     from ouroboros.commit_admission import run_tests_preflight_with_proof
+    from ouroboros.preflight_receipts import execution_exhibit
     from ouroboros.tools.commit_gate import _review_tests_facts
     from ouroboros.tools.registry import ToolContext
     from ouroboros.tools.review_helpers import _run_review_preflight_tests
@@ -630,7 +637,7 @@ def _contributor_tests_preflight(host_ctx, proposal: dict, *, review_drive_root:
                         "message": f"Hermetic test preflight failed on the proposal tree {frozen.tree_sha}; "
                                    f"no reviewer was dispatched.\n{test_err}", "tested_tree_sha": frozen.tree_sha}
         tests = _review_tests_facts(test_ctx, bool(getattr(test_ctx, "_preflight_tests_passed", False)))
-        return {"tests": tests, "tree_sha": frozen.tree_sha}, {}
+        return {"tests": tests, "tree_sha": frozen.tree_sha, "preflight_execution": execution_exhibit(test_ctx)}, {}
 
 
 def _attach_tests_evidence(ctx, record: dict | None, evidence: dict) -> dict | None:
@@ -1269,7 +1276,8 @@ def _contributor_lane(args, host_ctx, proposal: dict, *, resolved_config: dict, 
     if not refusal:
         result, refusal = _call_review_change(
             host_ctx, root="system_repo", surface="change", goal=goal, scope=scope,
-            subject="base..head", base=proposal["base_sha"], head=proposal["head_sha"])
+            subject="base..head", base=proposal["base_sha"], head=proposal["head_sha"],
+            _preflight_execution=tests_evidence.get("preflight_execution"))
     record, problem = _review_record(host_ctx, result) if not refusal else (None, refusal["message"])
     expected_subject = {"base": proposal["base_sha"], "head": proposal["head_sha"],
                         "tree_sha": proposal["head_tree_sha"]}

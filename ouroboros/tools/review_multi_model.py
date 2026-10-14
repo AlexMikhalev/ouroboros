@@ -158,7 +158,8 @@ def _handle_multi_model_review(ctx: ToolContext, content: str = "",
                                 session_policy: dict = None,
                                 usage_attribution: dict = None,
                                 retry_key: str = "", task_evidence: dict = None,
-                                layer: str = "body", checking_source: dict = None) -> str:
+                                layer: str = "body", checking_source: dict = None,
+                                preflight_execution: dict = None) -> str:
     if models is None:
         models = []
     try:
@@ -175,13 +176,15 @@ def _handle_multi_model_review(ctx: ToolContext, content: str = "",
                     _multi_model_review_async(content, prompt, models, ctx, stable_prefix_len,
                                               routes, session_task, session_root, row_plan,
                                               surface, session_policy, usage_attribution,
-                                              retry_key, task_evidence, layer=layer, checking_source=checking_source),
+                                              retry_key, task_evidence, layer=layer, checking_source=checking_source,
+                                              preflight_execution=preflight_execution),
                 ).result()
         except RuntimeError:
             result = asyncio.run(_multi_model_review_async(content, prompt, models, ctx, stable_prefix_len,
                                                            routes, session_task, session_root, row_plan,
                                                            surface, session_policy, usage_attribution,
-                                                           retry_key, task_evidence, layer=layer, checking_source=checking_source))
+                                                           retry_key, task_evidence, layer=layer, checking_source=checking_source,
+                                                           preflight_execution=preflight_execution))
         text = json.dumps(result, ensure_ascii=False)
         if "error" in result:
             from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
@@ -210,7 +213,7 @@ async def _query_model(
     surface: str = "multi_model_review", session_policy: dict = None, usage_attribution: dict = None,
     retry_key: str = "", subagent_id: str = "", use_local: bool | None = None, task_evidence: dict = None,
     native_retrieval: bool = False, resolved_wave_id: str = "",
-    session_access: str = "", checking_source: dict = None,
+    session_access: str = "", checking_source: dict = None, preflight_execution: dict = None,
 ):
     async with semaphore:
         slot = None
@@ -252,7 +255,9 @@ async def _query_model(
                 session_task=session_task if retrieves else "",
                 session_root=session_root if retrieves else "",
                 policy=policy,
-                evidence={"task_execution": evidence} if evidence else {},
+                # The wave's frozen exhibits, persisted with the request for an exact rejoin.
+                evidence={**({"task_execution": evidence} if evidence else {}),
+                          **({"preflight_execution": preflight_execution} if preflight_execution else {})},
                 evidence_refs=commit_review_evidence_refs(evidence),
                 usage_attribution=usage_attribution or {},
                 resolved_wave_id=resolved_wave_id,
@@ -327,7 +332,8 @@ async def _multi_model_review_async(content: str, prompt: str,
                                      session_policy: dict = None,
                                      usage_attribution: dict = None,
                                      retry_key: str = "", task_evidence: dict = None,
-                                     layer: str = "body", checking_source: dict = None):
+                                     layer: str = "body", checking_source: dict = None,
+                                     preflight_execution: dict = None):
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.reviewer_slot_config import row_plan_retrieves
 
@@ -407,6 +413,7 @@ async def _multi_model_review_async(content: str, prompt: str,
                      session_profile=row_profiles[idx], surface=surface,
                      session_policy=row_policies[idx] or session_policy, usage_attribution=usage_attribution,
                      retry_key=retry_key, subagent_id=row_actors[idx], use_local=row_local[idx], task_evidence=task_evidence,
+                     preflight_execution=preflight_execution,
                      resolved_wave_id=fan_out_wave, session_access=row_access[idx], checking_source=checking_source,
                      native_retrieval=row_retrieves[idx] and row_routes[idx] is ReviewRouteKind.API_CHAT)
         for idx, m in enumerate(models)
