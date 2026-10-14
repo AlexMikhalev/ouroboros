@@ -195,7 +195,20 @@ def capture_directory_result(drive, entry, gateway):
     detail = gateway.get_run(entry.run_id)
     product = detail.get("workProduct") or {}
     if product.get("kind") != "files":
-        raise ValueError("the completed run has no file work product")
+        # The engine's answer for a finished run is final: no file work product is a
+        # finished run with no changes, never a capture to retry every sweep pass.
+        manifest = {
+            "schema_version": 1, "capture_kind": "engine_directory", "status": "ready", "no_changes": True,
+            "workspace_root": "", "authority_target_root": entry.target_root,
+            "engine_manifest": None, "engine_manifest_sha256": "", "complete": True, "scope_paths": None,
+            "strategy": entry.resource_ref["strategy"], "file_outputs": [], "apply_state": None,
+            "note": "The finished run produced no file work product: it made no changes to capture.",
+        }
+        cap_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(manifest_path, manifest, trailing_newline=True)
+        custody.record_patch_captured(drive, entry, status="ready", sha256="", capture_dir=str(cap_dir),
+                                     execution_root="", no_changes=True)
+        return manifest
     source = (product.get("files") or {}).get("manifest")
     digest = str((product.get("meta") or {}).get("manifest_sha256") or "").removeprefix("sha256:")
     if not source or len(digest) != 64:
@@ -266,7 +279,16 @@ def integrate_directory_result(ctx, entry, decision, reason, gateway, *, acknowl
         return "⚠️ TOOL_ARG_ERROR (integrate_delegated_patch): paths must be a nonempty list of captured file paths."
     if admission_check and (refusal := admission_check()):
         return refusal
-    if decision == "reject":
+    receipt: dict = {}
+    if manifest.get("no_changes"):
+        # Nothing to apply or undo; an envelope copy is still discarded so the engine releases it.
+        if manifest["strategy"] != "direct":
+            key = sha256(f"discard:{entry.run_id}:no_changes".encode()).hexdigest()
+            receipt = gateway.decide_run(entry.run_id, {"action": "discard"}, idempotency_key=key) or {}
+            if receipt.get("accepted") is not True or receipt.get("status") != "discarded":
+                return "⚠️ INTEGRATE_DELEGATED_DISCARD_UNCONFIRMED: engine disposition was not confirmed; all results remain retained."
+        disposition = "applied" if decision == "apply" else "rejected"
+    elif decision == "reject":
         if manifest["strategy"] == "direct":
             return "⚠️ INTEGRATE_DIRECTORY_ALREADY_APPLIED: direct effects remain in the folder; rejecting a report cannot undo them."
         key = sha256(f"discard:{entry.run_id}:{manifest['engine_manifest_sha256']}".encode()).hexdigest()
@@ -318,5 +340,6 @@ def integrate_directory_result(ctx, entry, decision, reason, gateway, *, acknowl
         return "⚠️ INTEGRATE_DISPOSITION_UNWRITTEN: the engine completed the operation but its host receipt could not be saved."
     return json.dumps({"status": disposition, "run_id": entry.run_id, "target": entry.target_root,
                        "engine_receipt": receipt,
-                       "note": "Original effects are unchanged." if disposition == "rejected" else
+                       "note": manifest["note"] if manifest.get("no_changes") else
+                       "Original effects are unchanged." if disposition == "rejected" else
                        "Results are already in the target folder; this disposition does not commit or publish."}, ensure_ascii=False)
