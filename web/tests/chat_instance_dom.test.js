@@ -1542,6 +1542,8 @@ test('an in-room parent whose carrier has no terminal stays unconfirmed, never D
         assert.ok(parent, 'the carrier is the parent\'s own evidence');
         assert.notEqual(parent.dataset.finished, '1');
         assert.equal(parent.dataset.inert, '1', 'liveness unconfirmed in this room');
+        assert.match(parent.querySelector('[data-live-meta]')?.innerHTML || '', /Activity unconfirmed/,
+            'the summary row says so, never a blank card');
         assert.equal(walkCard(messages(), 'kid-x').parentNode?.dataset?.subagentsFor, 'par-x');
     } finally { instance.destroy(); restoreDom(prior); }
 });

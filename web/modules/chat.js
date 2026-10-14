@@ -2508,17 +2508,17 @@ export function createChatInstance({
 
                 // Pass 2 inserts cards at the first visible task message, then finishes them.
                 const insertedCardTaskIds = new Set();
-                function reorderDirtyCardIfNeeded(rec) {
-                    if (!rec?._anchorOrderDirty || rec.isSubagent || !rec.root?.isConnected) return;
-                    insertMessageNode(rec.root, { reorderExisting: true });
-                    rec._anchorOrderDirty = false;
+                function mountReplayedCard(rec) {
+                    if (rec?._anchorOrderDirty && !rec.isSubagent && rec.root?.isConnected) {
+                        insertMessageNode(rec.root, { reorderExisting: true });
+                        rec._anchorOrderDirty = false;
+                    }
+                    ensureLiveCardVisible(rec);
                 }
                 function insertCardIfNeeded(taskId) {
                     if (!taskId || insertedCardTaskIds.has(taskId)) return;
                     insertedCardTaskIds.add(taskId);
-                    const rec = liveCardRecords.get(taskId);
-                    reorderDirtyCardIfNeeded(rec);
-                    ensureLiveCardVisible(rec);
+                    mountReplayedCard(liveCardRecords.get(taskId));
                 }
                 // A stored row as its bubble: its own identity and labels, plus what its kind adds.
                 const addStoredRow = (msg, taskId, extra) => addMessage(msg.text, msg.role, !!msg.markdown, msg.ts || null, false, {
@@ -2631,10 +2631,9 @@ export function createChatInstance({
                 // Every block the predicate admits is in the transcript after a rebuild; a card
                 // this replay minted with neither a terminal nor a census entry is unconfirmed.
                 for (const [id, record] of liveCardRecords) {
-                    reorderDirtyCardIfNeeded(record);
-                    ensureLiveCardVisible(record);
-                    if (!knownCards.has(id) && !record.finished && !activeDirectActivities.has(id)
-                            && setHistoricalUnconfirmed(record)) {
+                    mountReplayedCard(record);
+                    if (!knownCards.has(id) && !record.finished && !activeDirectActivities.has(id)) {
+                        setHistoricalUnconfirmed(record);
                         syncCancelRunButton(record);
                         renderLiveCardMeta(record);
                     }
