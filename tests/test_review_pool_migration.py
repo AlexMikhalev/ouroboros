@@ -1051,7 +1051,7 @@ def test_n1_the_ui_saved_n_minus_1_document_does_not_shadow_an_environment_catal
     assert settings[SUBAGENTS] == unmarked and rs.review_pool_rows(settings) == []
     assert rs.review_pool_state(settings[SUBAGENTS]) == {"state": "empty", "error": ""}
     facts = block(settings)
-    assert (facts["source"], facts["pool_empty"], facts["pool"], facts["error"]) == ("empty", True, [], "")
+    assert (facts["source"], facts["pool_empty"], facts["error"], facts["main_self_review"]) == ("empty", True, "", True)
     assert "migration_snapshot" not in facts, "the environment's pool was not decided by the document's migration"
 
     monkeypatch.delenv(SUBAGENTS)
@@ -1435,7 +1435,7 @@ def test_n1_the_boot_notice_names_the_environment_pool_in_force_not_the_minted_r
 
     text = boot_with(catalog(api_row("helper", "env/model", "high")))
     assert "is in force" in text and "the review pool is empty (pool_empty)" in text
-    assert "will not run and will report not performed" in text and not any(claim in text for claim in minted_claims)
+    assert "the Main model reviews alone" in text and not any(claim in text for claim in minted_claims)
 
     text = boot_with(None)
     assert "is in force" not in text and "pool_empty" not in text

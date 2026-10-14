@@ -508,7 +508,7 @@ Ouroboros runs connected coding subscriptions through its bundled agent engine, 
 - Poll `GET .../operations/{id}` while `state` is `queued` or `running`, or `termination` is `unconfirmed`. `POST .../operations/{id}/cancel` asks to cancel; the answer is not proof the work stopped.
 - Maintenance refusals are `ClaudexorMaintenanceProblem`: `error` is the engine's problem object (`code`, `message`, `context`), not a sentence. A `503` with `context.acceptance: "unknown"` means the request may have been accepted: send the same key and body again.
 
-**The review pool.** `GET /api/review-pool` lists the agent rows that may review work and what one review costs on each. A broken configuration answers a non-empty `config_error` with an empty pool.
+**The review pool.** `GET /api/review-pool` lists the agent rows that may review work and what one review costs on each. A broken configuration answers a non-empty `config_error` with an empty pool. A readable catalog with no row marked Reviewer also answers an empty pool: the Main model then reviews alone.
 
 ## 14. Models, local model and MCP
 

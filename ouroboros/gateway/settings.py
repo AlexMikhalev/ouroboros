@@ -763,7 +763,8 @@ def review_pool_payload(snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, 
     try:
         if state.get("state") == "error":
             raise ValueError(str(state.get("error") or "the review pool could not be read"))
-        slots = review_pool_slots(env)
+        # The catalog's pool rows: an empty pool's Main seat is no catalog row (Settings says it).
+        slots = [slot for slot in review_pool_slots(env) if slot.subagent_id]
         handles = roster_handles(parse_configured_subagents(raw), env) if items else {}
     except ValueError as exc:
         payload["config_error"] = str(exc)

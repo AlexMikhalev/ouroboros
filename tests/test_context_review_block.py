@@ -2,7 +2,8 @@
 
 It is read through the builder every review surface uses (``review_pool_slots``), so the mind sees the pool its own
 commit, plan and acceptance review would run — never a last-execution receipt and never settings saved after the
-task started. The pool is the catalog's marked rows (contract §1.3): there is no default panel any more.
+task started. The pool is the catalog's marked rows (contract §1.3): there is no default panel any more, and
+with none marked the Main model reviews alone (``main_self_review``).
 """
 from __future__ import annotations
 
@@ -101,6 +102,7 @@ def test_the_pool_is_the_marked_rows_named_by_their_catalog_handle(tmp_path, mon
     handles = _handles()
 
     assert (block["source"], block["error"], block["pool_empty"]) == ("structured", "", False)
+    assert "main_self_review" not in block, "a marked pool is never the Main model reviewing alone"
     first, second, third = block["pool"]
     # seat_id is the stored row id (the identity the records carry); subagent_id
     # is the roster handle ``## Available subagents`` shows.
@@ -155,11 +157,17 @@ def test_the_pool_ignores_the_catalog_switch_and_reads_only_enabled_rows(monkeyp
     assert [row["seat_id"] for row in block["pool"]] == ["critic-key"]
 
 
-def test_a_catalog_with_no_marked_row_is_an_empty_pool_a_loud_fact_not_a_default_panel(monkeypatch):
+def test_a_catalog_with_no_marked_row_is_an_empty_pool_reviewed_by_the_main_model_alone(monkeypatch):
+    """Owner decision B: the empty pool stays a loud configured fact (``source: empty``,
+    ``pool_empty: true``) and its one seat is the Main model reviewing alone, named by its
+    seat id because no catalog row stands behind it."""
+    monkeypatch.setenv("OUROBOROS_MODEL", "openai/gpt-5.6-sol")
     monkeypatch.setenv(SUBAGENTS_SETTING, _roster(_row("helper-key", "openai/gpt-5.6-luna", marked=False)))
     block, text = _block()
 
-    assert (block["source"], block["error"], block["pool"], block["pool_empty"]) == ("empty", "", [], True)
+    assert (block["source"], block["error"], block["pool_empty"], block["main_self_review"]) == ("empty", "", True, True)
+    assert [(row["seat_id"], row["subagent_id"], row["model"], row["delivery"]) for row in block["pool"]] == [
+        ("main", "main", "openai/gpt-5.6-sol", "native")]
     assert "default" not in (block["source"], text.split('"rule"')[0]), "no shipped panel is implied"
     assert block["rule"] and block["surfaces"]["commit_gate"].startswith("every pool row")
     # No catalog at all is a never-configured install: the read seam mints the factory
@@ -210,6 +218,7 @@ def test_an_invalid_catalog_is_an_error_with_an_empty_pool_not_an_absent_one(mon
     assert block["source"] == "error"
     assert block["error"] == review_pool_state(os.environ[SUBAGENTS_SETTING])["error"] and block["error"]
     assert (block["pool"], block["pool_empty"]) == ([], False)
+    assert "main_self_review" not in block, "a malformed catalog refuses; it never falls back to Main"
     assert block["rule"] and block["surfaces"]["plan_review"] == "every pool row"
 
 
@@ -379,10 +388,13 @@ def test_w4_a_refused_migration_is_the_error_of_the_task_whose_document_it_refus
     block, _ = _block(refused_task)
     assert block["source"] == "error" and block["error"] == refused.error
     assert "triad[0] has unknown keys" in block["error"], "the refusal's own sentence, not a paraphrase"
-    assert block["migration_snapshot"] == _SNAPSHOT and block["pool"] == []
+    assert block["migration_snapshot"] == _SNAPSHOT
+    # Its helpers-only catalog marks no reviewer, so until the owner repairs it the Main model reviews alone.
+    assert [row["seat_id"] for row in block["pool"]] == ["main"] and block["main_self_review"] is True
 
     live, _ = _block()
     assert (live["source"], live["error"]) == ("structured", "") and "migration_snapshot" not in live
+    assert "main_self_review" not in live
     assert [row["seat_id"] for row in live["pool"]] == ["critic-key", "packet-key", "session-key"]
     assert cfg.review_pool_migrations_seen() == (finished, refused), "history is bound, never erased"
 
@@ -488,11 +500,12 @@ def test_w4_the_read_seam_refusal_reaches_the_model_and_the_owners_repair_clears
     (refusal,) = m.migrations_seen()
     assert refusal.error and block["source"] == "error" and block["error"] == refusal.error
     assert "triad[0] has unknown keys" in block["error"] and "migration_snapshot" not in block
-    assert block["pool"] == []
+    assert [row["seat_id"] for row in block["pool"]] == ["main"] and block["main_self_review"] is True
 
     path.write_text(json.dumps({SUBAGENTS_SETTING: _POOL}), encoding="utf-8")  # the owner's repairing save
     repaired, _ = _block()
     assert (repaired["source"], repaired["error"]) == ("structured", "") and "migration_snapshot" not in repaired
+    assert "main_self_review" not in repaired
     assert [row["seat_id"] for row in repaired["pool"]] == ["critic-key", "packet-key", "session-key"]
     assert m.migrations_seen() == (refusal,), "the registry keeps the refusal; the block no longer wears it"
 

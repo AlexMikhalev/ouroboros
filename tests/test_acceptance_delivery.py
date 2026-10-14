@@ -184,20 +184,25 @@ def test_malformed_catalog_refuses_acceptance_typed(structured_env, tmp_path):
     assert result.actors == []
 
 
-def test_a_comma_list_without_a_catalog_is_an_empty_pool_and_a_typed_refusal(monkeypatch, tmp_path):
+def test_a_comma_list_without_a_catalog_is_an_empty_pool_reviewed_by_the_main_model_alone(monkeypatch, tmp_path):
     """PR-3: the lane-era comma list projects NO panel any more. With no catalog
-    (or no marked row) the pool is empty and acceptance refuses typed — nobody
-    is called, no default rows are invented. The benchmark classes that used to
-    ride the comma list carry explicit catalog rows instead."""
+    (or no marked row) the pool is empty and acceptance runs ONE seat, the Main model
+    reviewing alone (owner decision B) — never the comma list's models, never
+    invented default rows. The benchmark classes that used to ride the comma list
+    carry explicit catalog rows instead."""
     from ouroboros import loop as loop_mod
 
     for key in ("OUROBOROS_REVIEW_ROUTES", "OUROBOROS_SUBAGENTS"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OUROBOROS_MODEL", "openai/main-model")
     monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "openai/a,openai/b,openai/c")
     captured = _capture_panel(monkeypatch)
     result = loop_mod._execute_task_acceptance_panel(_acceptance_ctx(tmp_path))
-    assert captured == []
-    assert result.aggregate_signal == "DEGRADED" and result.degraded_reasons == ["no_review_slots"]
+    [(request, kwargs)] = captured
+    assert [(slot.slot_id, slot.model, slot.retrieves) for slot in kwargs["slots"]] == [
+        ("main", "openai/main-model", True)]
+    assert request.policy["min_successful_slots"] == 1
+    assert "no_review_slots" not in (getattr(result, "degraded_reasons", None) or [])
 
 
 def test_child_and_off_acceptance_follow_the_configured_rows(structured_env, tmp_path):

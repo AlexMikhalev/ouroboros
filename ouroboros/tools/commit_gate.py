@@ -19,11 +19,7 @@ from ouroboros.review_state import (
     infer_review_phase,
 )
 from ouroboros.tools.registry import ToolContext
-from ouroboros.tools.review_helpers import (
-    REVIEW_POOL_EMPTY_REASON,
-    REVIEW_POOL_EMPTY_SENTENCE,
-    review_enforcement_blocks,
-)
+from ouroboros.tools.review_helpers import review_enforcement_blocks
 from ouroboros.utils import (
     truncate_review_artifact as _truncate_review_reason,
 )
@@ -971,8 +967,8 @@ def compose_commit_panel(ctx: ToolContext, reviewers: Sequence[str], reason: str
     the owner's menu: ``reviewers`` names the counted seats (an enabled catalog row outside
     the pool is an added critic, never the quorum) and ``reason`` says why; below Cyber Pro
     the whole pool judges and ``reviewers`` only add critics outside it. No ``reviewers`` is
-    ``None``: the configured pool exactly as the gate reads it today (an empty pool stays the
-    gate's own typed ``pool_empty`` refusal). The runtime mode is the gate's own reading (the
+    ``None``: the configured pool exactly as the gate reads it today (an empty pool is the
+    Main seat alone). The runtime mode is the gate's own reading (the
     ``mode`` fact of its record). Raises ``ReviewChangeArgumentError`` — before anything is
     staged, reviewed or recorded."""
     from ouroboros.runtime_mode_policy import runtime_mode_at_least
@@ -1338,10 +1334,6 @@ def settle_commit_review_ledger(ctx: ToolContext, commit_message: str, *, goal: 
                        "message": str(advisory_replay.get("advisory_replay") or "")}
         elif str(getattr(ctx, "_last_review_block_reason", "") or "") == "review_wave_budget_insufficient":
             refusal = {"kind": "review_wave_budget_insufficient", "message": str(structured.get("wave_refusal") or "")}
-        elif str(getattr(ctx, "_last_review_block_reason", "") or "") == REVIEW_POOL_EMPTY_REASON:
-            # An empty pool dispatches nothing under either enforcement: the record
-            # names that cause itself, not only the gate's block.
-            refusal = {"kind": REVIEW_POOL_EMPTY_REASON, "message": REVIEW_POOL_EMPTY_SENTENCE}
         pending = advisory_replay is None and bool(git_mod._review_custody_pending(ctx))
         facts = _review_ledger_facts(
             ctx, commit_message, goal=goal, scope=scope, pre_fingerprint=pre_fingerprint or {},
