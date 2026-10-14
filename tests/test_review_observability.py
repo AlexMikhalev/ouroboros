@@ -489,7 +489,8 @@ def test_scope_history_section_labels_blocked_as_blocked():
 def _run_unified_review_with_one_fresh_seat(tmp_path, monkeypatch, *, pool: bool):
     """One ``_run_unified_review`` over a ctx that still carries a prior attempt's actor
     record. ``pool=True`` puts one marked api seat (``fresh-model``) in the environment catalog
-    so the wave is dispatched to the mocked fan-out; ``pool=False`` leaves the pool empty."""
+    so the wave is dispatched to the mocked fan-out; ``pool=False`` leaves the catalog malformed,
+    so no seat can be built (an empty pool would run the Main seat)."""
     from ouroboros.tools import review as review_mod
     from tests.review_pool_rosters import pool_roster, pool_seat, set_review_pool
 
@@ -497,6 +498,8 @@ def _run_unified_review_with_one_fresh_seat(tmp_path, monkeypatch, *, pool: bool
         set_review_pool(monkeypatch, pool_roster(pool_seat("fresh-seat", "fresh-model")))
         # The synthetic model has no remote capability catalog entry.
         monkeypatch.setattr(review_mod, "reviewer_context_window", lambda *a, **kw: 1_000_000)
+    else:
+        set_review_pool(monkeypatch, "{broken")
     ctx = _make_ctx(tmp_path)
     # Pre-seed stale data simulating a prior attempt
     ctx._last_triad_raw_results = [
@@ -548,27 +551,26 @@ def test_last_triad_raw_results_reset_at_start_of_run_unified_review(tmp_path, m
     assert "fresh-model" in model_ids, "Fresh actor record from this run must be present"
 
 
-def test_last_triad_raw_results_reset_precedes_the_empty_pool_exit(tmp_path, monkeypatch):
-    """The reset is at function ENTRY, before the pool is even assembled: an empty pool
-    ends the run as the typed ``pool_empty`` block without a wave (PR-3 W2), and a prior
+def test_last_triad_raw_results_reset_precedes_the_invalid_pool_exit(tmp_path, monkeypatch):
+    """The reset is at function ENTRY, before the pool is even assembled: a malformed
+    catalog ends the run as the typed infrastructure block without a wave, and a prior
     attempt's actor records must not survive into that record either."""
-    from ouroboros.tools.review_helpers import REVIEW_POOL_EMPTY_REASON
-
     ctx, fan_out = _run_unified_review_with_one_fresh_seat(tmp_path, monkeypatch, pool=False)
 
-    assert not fan_out.called, "an empty pool dispatches no wave"
-    assert ctx._last_review_block_reason == REVIEW_POOL_EMPTY_REASON
+    assert not fan_out.called, "a malformed pool dispatches no wave"
+    assert ctx._last_review_block_reason == "infra_failure"
     assert ctx._last_triad_raw_results == [], "stale actor records must not outlive the attempt that made them"
 
 
-def test_the_empty_pool_exit_holds_for_a_real_tool_context(tmp_path, monkeypatch):
+def test_the_invalid_pool_exit_holds_for_a_real_tool_context(tmp_path, monkeypatch):
     """The same exit over the product's own ``ToolContext``, which no test double can
-    make truthy by accident: no reconcile flag is armed, so an empty pool is the typed
-    ``pool_empty`` block and no wave, whatever a prior attempt left behind."""
+    make truthy by accident: no reconcile flag is armed, so a malformed catalog is the typed
+    infrastructure block and no wave, whatever a prior attempt left behind."""
     from ouroboros.tools import review as review_mod
     from ouroboros.tools.registry import ToolContext
-    from ouroboros.tools.review_helpers import REVIEW_POOL_EMPTY_REASON
+    from tests.review_pool_rosters import set_review_pool
 
+    set_review_pool(monkeypatch, "{broken")
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="test-task")
     ctx._last_triad_raw_results = [{"model_id": "stale-model", "status": "responded"}]
     fan_out = MagicMock()
@@ -581,8 +583,8 @@ def test_the_empty_pool_exit_holds_for_a_real_tool_context(tmp_path, monkeypatch
          patch("ouroboros.tools.review_helpers.build_touched_file_pack", return_value=("(files)", [])):
         review_mod._run_unified_review(ctx, "test commit")
 
-    assert not fan_out.called, "an empty pool dispatches no wave"
-    assert ctx._last_review_block_reason == REVIEW_POOL_EMPTY_REASON
+    assert not fan_out.called, "a malformed pool dispatches no wave"
+    assert ctx._last_review_block_reason == "infra_failure"
     assert ctx._last_triad_raw_results == []
 
 

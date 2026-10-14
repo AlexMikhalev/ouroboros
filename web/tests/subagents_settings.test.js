@@ -1540,7 +1540,7 @@ test('an edited catalog with rows but no Reviewer is refused until the owner sav
     assert.deepEqual(editor.validate(), [], 'loading is not saving');
     assert.equal(dom.pool.count.textContent, 'Reviewers: 0');
     assert.equal(dom.pool.empty.hidden, false);
-    assert.equal(dom.pool['empty-text'].textContent, 'No row is marked Reviewer, so reviews will not run and will report “not performed”.');
+    assert.equal(dom.pool['empty-text'].textContent, 'No row is marked Reviewer, so the main model reviews alone: one model, no second opinion.');
     assert.equal(dom.pool.confirm.hidden, false);
     assert.equal(dom.pool.stays.hidden, true);
 
@@ -1578,10 +1578,28 @@ test('an edited catalog with rows but no Reviewer is refused until the owner sav
     assert.equal(dom.pool.confirm.hidden, true);
     dom.row(0).querySelector('[data-subagent-field="enabled"]').toggle(false);
     assert.equal(dom.pool['empty-text'].textContent,
-        'Every row marked Reviewer is switched off, so reviews will not run and will report “not performed”.');
+        'Every row marked Reviewer is switched off, so the main model reviews alone: one model, no second opinion.');
     assert.equal(dom.pool.confirm.hidden, false);
     assert.deepEqual(editor.validate(), ['Every row marked Reviewer is switched off. Switch one on, or tick “Save without reviewers”.']);
     dom.toolbar.allowEmpty.toggle(true);
     assert.equal(editor.collect()[ALLOW_EMPTY_REVIEW_POOL], true);
+    editor.destroy();
+});
+
+test('a list without rows needs no tick and says the main model reviews alone; an unread catalog says nothing', () => {
+    const dom = accessEditorDom();
+    const editor = createAvailableSubagentsEditor({ doc: dom.doc, win: null });
+    editor.load(setting([]));
+    assert.equal(dom.pool.count.textContent, 'Reviewers: 0');
+    assert.equal(dom.pool.empty.hidden, false);
+    assert.equal(dom.pool['empty-text'].textContent, 'No row is marked Reviewer, so the main model reviews alone: one model, no second opinion.');
+    assert.equal(dom.pool.confirm.hidden, true, 'no rows: the server asks for no confirmation');
+    assert.deepEqual(editor.validate(), []);
+    assert.equal(ALLOW_EMPTY_REVIEW_POOL in editor.collect(), false);
+    // A catalog this editor could not read states no pool fact, whatever rows it held before.
+    editor.load(setting([apiRow()]));
+    editor.load('{broken');
+    assert.equal(dom.pool.empty.hidden, true);
+    assert.equal(dom.pool['empty-text'].textContent, '');
     editor.destroy();
 });

@@ -9,8 +9,8 @@ the operation real) yields (a) a non-empty pool whose quorum is the lane era's
 ``adaptive_quorum(len(triad))``, (b) at least one seat asked the ``coupling`` part
 (every lane-era install had a scope seat, mandatory in the lane format), and (c) a
 ledger record whose rows carry ``parts`` and per-part ``answers``. An install class
-with an empty pool or without a coupling seat is a blocker, not a disclosure — the two
-controls at the end show the assertions bite.
+without a marked row reviews on the Main model alone, and one without a coupling seat is
+a blocker, not a disclosure — the two controls at the end show the assertions bite.
 
 Classes: the N-1 fixture (6.113.4), the structural copy of Anton's install (contract
 §2), the factory OpenRouter install, local-only, compatible-only, one direct provider,
@@ -293,20 +293,21 @@ def test_a_colab_launch_pins_the_pool_its_own_provider_can_run(launch, staged_bo
 # --- the controls: the assertions above bite -------------------------------------------
 
 
-def test_a_catalog_without_a_review_mark_is_an_empty_pool_and_no_wave_is_paid(staged_body, tmp_path, monkeypatch):
+def test_a_catalog_without_a_review_mark_is_an_empty_pool_the_main_model_reviews_alone(staged_body, tmp_path,
+                                                                                         monkeypatch):
     """A pool document (no lane key) whose rows carry no mark: the migration has
-    nothing to do, the pool is empty, and the wave refuses deterministically before
-    any reviewer is paid — never a default panel."""
-    from ouroboros.tools.review_change import ReviewChangeArgumentError
-
-    _install(monkeypatch, {SUBAGENTS: catalog(api_row("scout", "openai/gpt-5.6-luna")), "OPENROUTER_API_KEY": "present"})
-    assert review_pool_slots() == []
-    served: list[dict] = []
-    monkeypatch.setattr(substrate, "run_review_request", _answering_substrate(served))
-    ctx = ToolContext(repo_dir=Path(staged_body["repo"]), drive_root=tmp_path / "drive")
-    with pytest.raises(ReviewChangeArgumentError, match="no seat for the change question"):
-        run_review_change(ctx, root="system_repo", surface="change", goal=GOAL, scope=SCOPE, subject="index")
-    assert served == [] and not list((tmp_path / "drive").rglob("*.json"))
+    nothing to do and the pool is empty, so the wave seats ONE reviewer, the Main model
+    alone (owner decision B) — asked both parts, quorum one — never a default panel and
+    never the unmarked row."""
+    _install(monkeypatch, {SUBAGENTS: catalog(api_row("scout", "openai/gpt-5.6-luna")), "OPENROUTER_API_KEY": "present",
+                           "OUROBOROS_MODEL": "openai/gpt-5.6-sol"})
+    assert [slot.slot_id for slot in review_pool_slots()] == ["main"]
+    result, record, served = _one_wave(tmp_path, monkeypatch, Path(staged_body["repo"]))
+    assert [(s["slot_id"], s["model"], s["parts"]) for s in served] == [
+        ("main", "openai/gpt-5.6-sol", (PART_CHANGE, PART_COUPLING))]
+    assert (result["aggregate"], result["state"]) == ("PASS", "settled"), result
+    assert [row["seat_id"] for row in record["rows"]] == ["main"]
+    assert record["verdict"]["quorum"]["required"] == 1 and record["panel"]["seats"] == 1
 
 
 def test_a_pool_of_packet_seats_only_leaves_the_coupling_question_not_performed(staged_body, tmp_path, monkeypatch):

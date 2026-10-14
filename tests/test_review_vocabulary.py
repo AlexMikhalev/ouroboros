@@ -57,13 +57,13 @@ def test_the_gates_malformed_pool_refusals_name_the_review_pool():
 
 def test_review_status_explains_the_pool_gate_codes_in_the_gates_words():
     """``review_status`` knows every code the pool gate can leave on a blocked attempt
-    (``pool_empty`` and the three NOT_PERFORMED reasons of ``reduce_verdict``), and
-    its line uses the gate's own phrase for each, not the bare token."""
+    (the three NOT_PERFORMED reasons of ``reduce_verdict``, plus the retired ``pool_empty``
+    an older attempt may still carry), and its line uses the gate's own phrase for each, not
+    the bare token; the history line says what an empty pool does now."""
     from types import SimpleNamespace
 
     from ouroboros.review_ledger import NOT_PERFORMED_PHRASES
     from ouroboros.review_status_projection import _review_status_message
-    from ouroboros.tools.review_helpers import REVIEW_POOL_EMPTY_SENTENCE
 
     def line(code):
         return _review_status_message({
@@ -71,7 +71,7 @@ def test_review_status_explains_the_pool_gate_codes_in_the_gates_words():
             "effective_status": "stale", "open_debts": [],
         })
 
-    assert REVIEW_POOL_EMPTY_SENTENCE in line("pool_empty")
+    assert "(history)" in line("pool_empty") and "the Main model alone" in line("pool_empty")
     for code, phrase in NOT_PERFORMED_PHRASES.items():
         rendered = line(code)
         assert f"({code})" in rendered and phrase in rendered and "NOT_PERFORMED" in rendered
