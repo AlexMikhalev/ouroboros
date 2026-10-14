@@ -416,7 +416,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_commit_readiness_debts_view", "_dedupe_strings", "_filter_lifecycle_records",
         "_filter_repo_scope", "_looks_like_public_obligation_id",
         "_make_obligation_fingerprint", "_max_iso_ts", "_merge_attempt", "_min_iso_ts",
-        "_normalize_obligation_item_key", "_parse_iso_ts", "_review_roster_row_is_pending",
+        "_parse_iso_ts", "_review_roster_row_is_pending",
         "_strip_attempt_heavy_payload", "_utc_now",
     })),
     "ouroboros/review_state_records.py": ("ouroboros/review_state.py", "_rs", frozenset({

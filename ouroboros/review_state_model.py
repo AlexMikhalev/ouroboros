@@ -687,10 +687,14 @@ class AdvisoryReviewState:
             reason = str(f.get("reason", ""))
             severity = str(f.get("severity", "critical"))
             raw_explicit_id = str(f.get("obligation_id", "") or "").strip()
-            # A reviewer-supplied id folds only into an OPEN obligation of this repo, under
-            # any item: one root defect is one obligation across both parts of the brief.
-            explicit_id = raw_explicit_id if (
-                _rs()._looks_like_public_obligation_id(raw_explicit_id) and raw_explicit_id in existing) else ""
+            # A reviewer-supplied id folds into the OPEN obligation of this repo it names,
+            # under any item: one root defect is one obligation across both parts of the
+            # brief. A malformed or unknown id names nothing, so it cannot corrupt debt
+            # links; a mis-cited open id folds a distinct defect into it, which then
+            # re-surfaces under its own fingerprint while still broken (as below).
+            explicit = None
+            if _rs()._looks_like_public_obligation_id(raw_explicit_id):
+                explicit = existing.get(raw_explicit_id)
             fingerprint = _rs()._make_obligation_fingerprint(item, reason)
 
             # A reworded restatement that misses the exact fingerprint folds into the
@@ -708,8 +712,8 @@ class AdvisoryReviewState:
             # false-MERGE here is the costly direction; it never blocks review.
             redirected = existing.get(redirects.get(fingerprint, "")) if redirects else None
             obligation = None
-            if explicit_id and explicit_id in existing:
-                obligation = existing[explicit_id]
+            if explicit is not None:
+                obligation = explicit
             elif fingerprint in by_fingerprint:
                 obligation = by_fingerprint[fingerprint]
             elif redirected is not None:

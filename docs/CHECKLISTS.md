@@ -111,9 +111,12 @@ explicit work-order review obligations.
   a different checklist item name. One renderer serves both deliveries
   (`review_prompt_text.build_anti_thrashing_rules_section`: packet prompts via
   `review.py::_review_history_with_open_obligations`, retrieving briefs via
-  `review_brief_coupling.build_retrieving_brief`), and a Part 2 answer reuses an
-  open obligation's `obligation_id` for the same root cause.
-- **One root defect, one obligation:** a reviewer that sees an open obligation's root defect again — in either part, under any item — reuses its `obligation_id`, and the gate folds a reused open id or an exact restatement into it. A reworded restatement without the id can still open a second obligation; answer such duplicates together in `review_rebuttal`.
+  `review_brief_coupling.build_retrieving_brief`).
+- **One root defect, one obligation:** a reviewer that sees an open obligation's
+  root defect again — in either part, under any item — reuses its
+  `obligation_id`, and the gate folds a reused open id or an exact restatement
+  into it. A reworded restatement without the id can still open a second
+  obligation; answer such duplicates together in `review_rebuttal`.
 
 ---
 
