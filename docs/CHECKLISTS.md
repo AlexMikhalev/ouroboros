@@ -64,7 +64,7 @@ explicit work-order review obligations.
   missing advisory provider) leaves a durable trace: a `review_advisory_override`
   event in `events.jsonl` plus the persistent `advisory_overrides_count` /
   recent-overrides fields in `review_status`. Silent advisory is forbidden.
-- **Author finality remains evidence, not reviewer PASS:** plan, task acceptance,
+- **Author finality remains evidence, not reviewer PASS:** task acceptance,
   skill, and commit owners may record an explicit author disposition against the
   exact current subject after received feedback or a disclosed unavailable review under Advisory.
   Material commit outcomes return before Git effects; explicit continuation uses
@@ -228,7 +228,7 @@ Ouroboros binds Ouroboros as the author, never the subject repository.
 | 4 | tests_affected | Did code logic change without corresponding test changes? (PASS if only docs/config/memory changed, or if tests already cover the new behavior.) **Critical FAIL requires all three:** (a) name a specific behavior, code path, symbol, or failure scenario that THIS diff introduces or changes; (b) explain why existing or newly staged tests do NOT catch that specific scenario; (c) the gap is concrete, not speculative. Existing tests in any module or layer count when they exercise the changed behavior and would catch the identified failure; module or feature proximity alone is not coverage. Requiring an additional overlapping selector/unit/e2e test is only justified when a second distinct failure mode is named explicitly. If the only concern is "I'd feel better with one more test," that is advisory, not critical. | critical |
 | 5 | architecture_doc | Did the change REPLACE the current description of every node it touched in the subject's architecture / engineering documents (map rows, flows, invariants)? PASS when a new module, endpoint or data flow gains its one-line row and touched descriptions read as current truth; PASS with "Not applicable" when nothing architectural changed or the subject keeps no such document. A removed or relocated claim names its surviving owner or evidence of retirement; registry tests prove membership, not preservation of meaning. FAIL when the edit only appended a version stamp, a decision codename, a "used to / previously" narrative, or a second statement of a fact already owned elsewhere in the docs (a present-tense map, one home per fact). | critical |
 | 6 | cross_platform | Does the diff use platform-specific APIs (`os.kill`, `os.setsid`, `os.killpg`, `os.getpgid`, `fcntl`, `msvcrt`, `signal.SIGKILL`, `signal.SIGTERM`, `subprocess` with `start_new_session`/`creationflags`, hardcoded `/` or `\\` in filesystem paths) outside the subject's platform abstraction layer, when it has one? Does it import Unix-only or Windows-only modules (`fcntl`, `msvcrt`, `winreg`, `resource`) at any level without a platform guard (a `sys.platform` check or the subject's equivalent)? | critical |
-| 7 | capability_regression | Does the diff REMOVE or NARROW a previously-supported user-facing behavior or capability — a tool/flag/mode/path that worked before now errors or is gated tighter (e.g. a new `is_dir`/existence guard that blocks a legitimate create, a tightened allowlist that drops a real path, a removed fallback)? If so, is it INTENTIONAL and disclosed as a breaking/capability change in the commit message + changelog? Accidental capability removal is the failure class this item names. Ask whether a golden "from zero" test would have caught it. **Guard-change trigger (executable requirements, not an essay):** ADDING or TIGHTENING a guard, filter, allowlist, or deny rule IS a capability change and fires this item. For such a diff the reviewer must verify two things: (a) the diff STAGES A POSITIVE TEST that exercises a legitimate flow THROUGH the new guard and proves it still succeeds — a negative "it blocks X" test alone is insufficient (a gate can pass its own probe while breaking every real run); (b) the diff or its disclosure NAMES THE SURVIVING POSITIVE PATH — the concrete actor and flow that still work after the change. A guard change that stages no surviving-path test is a capability-regression finding, not a safety improvement. A guard keyed on model or provider identity (id, prefix, family, provider name) always fires this item; its positive test uses an identity that the diff's own literals do not contain, and a test that proves only refusal is insufficient. **Owner acceptance:** a narrowing counts as OWNER-ACCEPTED only when the subject's owner actually decided it (the owner's words or answer for this work, or a standing disclosure the subject keeps for this purpose) or it lies within authority the owner had already delegated for this work; a GREEN plan review is the reviewers' verdict, not the owner's consent. Owner acceptance makes the finding advisory (disclosed, non-blocking). Intent wording, a commit-message disclosure, or a changelog row alone is disclosure, NOT acceptance. This names who accepts a narrowing; it adds no approval step. Severity follows the `Critical surface whitelist` below — silently removing a documented user-facing capability or a release contract is critical; removing or loosening an internal guard, proof or re-check is advisory and needs one line naming the residual; an owner-accepted narrowing or an internal-only refactor is advisory. | advisory |
+| 7 | capability_regression | Does the diff REMOVE or NARROW a previously-supported user-facing behavior or capability — a tool/flag/mode/path that worked before now errors or is gated tighter (e.g. a new `is_dir`/existence guard that blocks a legitimate create, a tightened allowlist that drops a real path, a removed fallback)? If so, is it INTENTIONAL and disclosed as a breaking/capability change in the commit message + changelog? Accidental capability removal is the failure class this item names. Ask whether a golden "from zero" test would have caught it. **Guard-change trigger (executable requirements, not an essay):** ADDING or TIGHTENING a guard, filter, allowlist, or deny rule IS a capability change and fires this item. For such a diff the reviewer must verify two things: (a) the diff STAGES A POSITIVE TEST that exercises a legitimate flow THROUGH the new guard and proves it still succeeds — a negative "it blocks X" test alone is insufficient (a gate can pass its own probe while breaking every real run); (b) the diff or its disclosure NAMES THE SURVIVING POSITIVE PATH — the concrete actor and flow that still work after the change. A guard change that stages no surviving-path test is a capability-regression finding, not a safety improvement. A guard keyed on model or provider identity (id, prefix, family, provider name) always fires this item; its positive test uses an identity that the diff's own literals do not contain, and a test that proves only refusal is insufficient. **Owner acceptance:** a narrowing counts as OWNER-ACCEPTED only when the subject's owner actually decided it (the owner's words or answer for this work, or a standing disclosure the subject keeps for this purpose) or it lies within authority the owner had already delegated for this work; the plan council's answers are the reviewers' view, not the owner's consent. Owner acceptance makes the finding advisory (disclosed, non-blocking). Intent wording, a commit-message disclosure, or a changelog row alone is disclosure, NOT acceptance. This names who accepts a narrowing; it adds no approval step. Severity follows the `Critical surface whitelist` below — silently removing a documented user-facing capability or a release contract is critical; removing or loosening an internal guard, proof or re-check is advisory and needs one line naming the residual; an owner-accepted narrowing or an internal-only refactor is advisory. | advisory |
 | 8 | changelog_accuracy | Do the exact wording, test counts, and minor description details in the subject's changelog or release-notes entry match what the diff actually does? Wording drift, off-by-one test counts, minor inaccuracies in descriptive prose — these belong here, NOT in a release-metadata or consistency item. This item exists so reviewers have a dedicated advisory bucket for prose-level changelog imprecision that does not affect release metadata, runtime behavior, or safety contracts. (PASS with "Not applicable" when the subject keeps no changelog.) | advisory |
 | 9 | perf_lifecycle | If the diff changes data readers or an endpoint, poller, subscription, timer, startup, shutdown or other batch operation: evaluate the total read cost as history, object count and project size grow, including nested repeats, cold caches and contention for shared resources. Where that growth can materially hurt responsiveness, is there proportionate evidence at representative scale, and was redundant work or within-operation reuse considered before adding infrastructure? This remains advisory, with no universal time limit, mandatory heavy benchmark or new approval gate. Does any interaction-path read scan an unbounded store per request/message/tick (a full-table read filtered in code is such a scan)? Is a subscription/observer/interval/listener added without a paired disposer? Does O(history) work run on a poll/stream path? Does a GET handler perform new steady-state durable writes? Where the subject documents these invariants, check against its definitions rather than re-deriving them here. (PASS with "Not applicable" if the diff touches none of these surfaces.) | advisory |
 
@@ -251,8 +251,8 @@ Ouroboros binds Ouroboros as the author, never the subject repository.
   of a documented user-facing capability or a release contract is critical;
   removing or loosening an internal guard, proof or re-check stays advisory with
   one line naming the residual; an owner-accepted narrowing (an actual owner
-  decision or authority the owner already delegated — see item 7; a GREEN plan
-  review is not one) or an internal-only refactor stays advisory. Disclosure
+  decision or authority the owner already delegated — see item 7; plan council
+  answers are not one) or an internal-only refactor stays advisory. Disclosure
   alone (commit message, changelog) is not acceptance.
 - The `Ouroboros Body Layer` sets the severity of its own items and names the
   body's addresses for items 5-9. Its editorial calibration of item 5
@@ -382,8 +382,8 @@ Ownership` section is delivered beside them.
   standing notes); they remain binding on every reviewer — consult that file
   before raising a removal/narrowing finding on a surface it covers, and do not
   re-raise anything recorded there. Owner acceptance is the owner's actual
-  decision for this work or authority already delegated for it; a GREEN plan
-  review is not one.
+  decision for this work or authority already delegated for it; plan council
+  answers are not one.
 - Item 8 (`changelog_accuracy`): the entry is the README Version History row;
   the buckets it must NOT leak into are `self_consistency` (item 14) and
   `version_bump` (item 12).
@@ -945,173 +945,108 @@ block repo commits and vice versa.
 
 ## Plan Review Checklist
 
-Used by `plan_task` to review an INTENTION before the work starts — the same organ whether the
-work is code, research, a deliverable, or an action in the world. Reviewers see the agent's typed
-SPEC, the task objective, the own-room conversation inline as numbered readable lines (both
-speakers, explanations, options, quiz cards with the chosen answer, attachment names and addressed
-mailbox provenance; each line carries its snapshot line number), and declared evidence (attached
-bounded, with every absence named). Progress rows and host notices stay in the exact redacted
-snapshot outside those evidence bounds, addressed by the inline line numbers through a pointer every
-reviewer receives; a route that cannot hold the whole conversation keeps its newest rows and names
-the cut as an exact line range. Related rooms are pointers, not unsolicited content. Replay refers
-to the recorded snapshot and does not claim later messages reviewed. What a session reads of the
-snapshot is recorded as a fact, never a gate. Missing generations and unavailable rooms remain gaps. For a self-modification plan, BIBLE.md and ARCHITECTURE.md are
-required in full (inline for
-an api reviewer; a retrieving reviewer reads both in full with its own tools, the pack names them
-as mandatory reads); every other plan gets the heading-derived navigation maps of BIBLE.md and
-ARCHITECTURE.md and may request more with `need_evidence` (the host attaches it on the next cycle,
-or names its absence as an omission row when the locator cannot be resolved).
-Judge only the evidence actually present; nothing missing is ever silent.
+Used by `plan_task` when the mind asks the council about an INTENTION — code, research, a
+deliverable or an action in the world. The council is one organ: independent reviewers (by
+default the review pool; the Main model when no reviewer is marked) weigh the plan and each
+other's answers. The host builds what each of you receives: this section; the task objective and
+the owner's words, with the own-room conversation inline as numbered lines (both speakers,
+options, quiz cards with the chosen answer, attachment names, addressed mailbox provenance;
+progress rows and host notices stay in the exact redacted snapshot those numbers address; a route
+that cannot hold the whole conversation keeps the newest rows and names the cut as an exact line
+range; related rooms are pointers); the plan, whole the first time and afterwards the change since
+the revision you last answered about; everything said in the council since your last answer, peers
+attributed by seat and model; your own open objections; the mind's message; and attached evidence
+(bounded, every absence named). A first answer is blind: peers answer the same ask in parallel. A
+body plan — its declared `affected_paths` reach Ouroboros's own body — carries BIBLE.md and
+ARCHITECTURE.md in full (inline for an api reviewer; mandatory full reads with its own tools for a
+retrieving reviewer). Any other plan carries no Ouroboros governance and no navigation maps: judge
+it in its own domain. Judge only the evidence actually present; nothing missing is ever silent.
 
-**One question: is this SPEC sufficient to START the work safely?** Not "is everything
-specified" — details may be worked out while doing. This is also an important brainstorming
-mechanism: challenge the premise and suggest simpler, more general alternatives when useful.
-Such advice is an optional `note`; Ouroboros decides whether to adopt it without mandatory
-disposition. A premise challenge, preference or repetition alone does not earn blocking
-authority. Independently demonstrated failures still follow the height rule below. No
-compulsory competing plan or finding quota: those create endless rewrite/review cycles.
-Ouroboros authors the plan and is the addressee of everything this review produces (P0);
-reviewers contribute criticism; the host aggregates and enforces the actual blocking contract.
+**One question: is it right to START the work as planned?** Not "is everything specified": details
+may be worked out while doing. The council is also where directions are compared before one is
+chosen: challenge the premise and suggest simpler, more general alternatives when useful.
+Suggestions, alternatives and questions are prose; the mind decides whether to adopt them. A premise
+challenge, preference or repetition alone is not an objection; a demonstrated failure follows the
+height rule below. No compulsory competing plan or finding quota. The mind authors the plan and is
+the addressee of everything the council produces (P0).
 
-### The spec you are reviewing
+### The plan you are reviewing
 
 ```
-goal · in_scope[] · non_goals[] · acceptance_claims[] (checkable "done" statements)
-invariants[] (budget, deadline, safety, irreversibility, external commitments)
-decisions[] {choice, rejected[], why}  ·  deferred[] {what, why_safe_to_defer}
-affected_paths[] (files the work will CHANGE)  ·  affected_resources[] (descriptions: systems, services, people)  ·  evidence[] (what to look at)
+goal · done_when[] {id, claim, support} · affected_paths[] (files the work will CHANGE; [] = none)
+plan (prose: the reading of the ask and its bar, approach, constraints, decisions that are
+      expensive to reverse with their alternatives, risks)
 ```
-Every element has a host-minted id (`goal`, `claim_N`, `invariant_N`, `decision_N`, `deferred_N`).
-Those ids are the only valid `breaks` targets. Ids may shift between cycles when the agent
-rewrites the spec — re-target `breaks` against the CURRENT ids using the Spec delta.
+`done_when` is what acceptance will judge: each `claim` an observable outcome, its `support` how it
+will be shown (run a check, inspect the artifact, a judgment and by whom). Ids are the mind's and
+stay stable across revisions.
 
-### The rubric (six domain-free questions + one for self-modification)
+### The rubric (six domain-free questions + one for body plans)
 
 | # | item | what to check |
 |---|------|---------------|
-| 1 | success conditions | Are the acceptance claims checkable — could a third party tell whether each one holds? |
+| 1 | the bar | Does `done_when` capture what the ask needs? For a vague ask ("make it good"), is it the bar a demanding person who made the request would mean — nothing obviously missing, nothing met trivially? Is each claim an observable outcome a third party could check, not a method? |
 | 2 | load-bearing decisions | Are the decisions that are expensive to reverse explicit, with their rejected alternatives and why? |
 | 3 | constraints and invariants | Are the real constraints named — budget, deadline, safety, irreversibility, commitments to others? |
 | 4 | deferrals | Is anything deferred that will be expensive to change once the work has started? |
-| 5 | evidence sufficiency | Is the evidence enough to judge? If not, ask for exactly what is missing (`need_evidence` with a locator or a spec item id) instead of inventing a gap. |
-| 6 | subtraction | What could the spec drop (a claim, decision, invariant, deferral, path or guard) without losing the goal? Say it as a `note` naming the element id; removing is advice as legitimate as adding. |
-| 7 | governance (self-modification plans only) | Does the intention contradict BIBLE.md or a frozen contract? Name the principle or contract. |
+| 5 | evidence sufficiency | Is the evidence enough to judge? If not, read what is missing with your own tools when you have them, or name exactly what is missing — a locator, or a question for the mind — instead of inventing a gap. |
+| 6 | direction and health | Is this the right way to the outcome? Does an existing owner, primitive or contract in the subject already give the same owner-chosen result? Would the plan add a second home for a fact, a duplicate mechanism, state or a background loop nothing needs, or a concept a reader must trace across files (why it matters: DEVELOPMENT "Pragmatic SOLID")? Such an objection names all three: the plan element that adds the cost, the existing simpler path to the same owner-chosen outcome, and the concrete cost. Without all three it is advice, and a preference is advice. A method the owner fixed is not objectionable this way. |
+| 7 | governance (body plans only) | Does the intention contradict BIBLE.md or a frozen contract? Name the principle or contract. |
 
-### Height rule — what may block
+### Height rule — what is an objection
 
-A finding is **blocking** only if being wrong about it AFTER the work starts would invalidate work
-already done, violate a declared commitment, or make an acceptance claim unverifiable — and it
-MUST name the spec id it breaks. Everything else is a **note**. A claim you cannot check as written
-is a question to the author (`need_evidence` with the claim id in `breaks`) or a `note`, not a blocker.
+An **objection** says that starting or finishing as planned would be wrong: being wrong about it
+after the work starts would invalidate work already done, violate a declared commitment (the
+owner's ask among them), or make a `done_when` claim unverifiable. It names what in the plan causes
+the failure — a `done_when` id, a path, a passage, or the requirement it omits — and what happens.
+Everything else is prose and never holds. A claim you cannot check as written is a question, not
+an objection. A row 6 objection reaches this height only when starting as planned would itself
+build the cost: a durable mechanism, state or boundary that should not exist.
 
-Blocking authority belongs to the spec element a finding breaks, never to its `recommendation`. The
-author may answer with any change that actually makes that element true or checkable, and the seat
-that raised it judges the changed element, not whether its own remedy was adopted. Narrowing an
-element so the plan no longer delivers part of what the owner asked for needs the owner's
-realignment, not a disposition; a GREEN review is not the owner's consent. A finding that demands a
-new guard, check, binding or restriction blocks only when it names the fault it prevents, what in
-the plan's own world can actually produce that fault (for a plan that changes Ouroboros itself: a
-trigger a real actor can produce on a supported install, BIBLE P7), the legitimate work that still
-succeeds with it in place, and what it costs or forecloses; otherwise it is a `note`, and an
-unverified premise is `need_evidence`. A past incident is not required. That an actor holding the
-same authority could already cause the same effect answers only deliberate misuse; it never excuses
-an accidental fault such as a correctness error or a race.
-
-- `blocking` — requires `breaks: <spec id>`. Without a valid id the host demotes it to a note and
-  discloses the demotion.
-- `note` — optional advice retained in the review; no disposition is required to proceed.
-- `need_evidence` — a typed request `{locator, why}` for a document the host can attach, or
-  `{breaks: <spec id>, why}` for a question only the author can answer (Ouroboros answers it in
-  its disposition, escalates it, or defers it openly). It never blocks by itself and the same
-  locator is remembered only once per task; repeating a valid request or filling the bounded
-  request memory does not turn it into optional advice. It retains its free disposition,
-  without another remembered locator or paid call. The host attaches a remembered locator on the next cycle
-  (through the same evidence policy), so the agent's next envelope carries it — a new
-  fingerprint, i.e. a paid cycle that actually has the evidence — or, when the locator cannot
-  be resolved, carries a named omission row for it, so the panel judges the absence instead
-  of waiting for a source that will not arrive.
+An objection belongs to the defect, never to its remedy: the mind may answer with any change that
+removes the defect, and you judge the changed plan, not whether your remedy was adopted. Narrowing
+the plan so it no longer delivers part of what the owner asked needs the owner's realignment; an
+unobjected plan is not the owner's consent. An objection that demands a new guard, check, binding
+or restriction stands only when it names the fault it prevents, what in the plan's own world can
+actually produce that fault (for a body plan: a trigger a real actor can produce on a supported
+install, BIBLE P7), the legitimate work that still succeeds with it in place, and what it costs or
+forecloses; otherwise it is advice, and an unverified premise is a question. A past incident is
+not required. That an actor holding the same authority could already cause the same effect answers
+only deliberate misuse; it never excuses an accidental fault such as a correctness error or a race.
 
 ### Output
 
-Return ONLY a JSON array of findings (optionally one code fence); for nothing to report return the
-empty array followed by `NO_FINDINGS`. Each element:
+Return ONLY one JSON object (optionally in one code fence):
 
 ```
-{"id": "f1", "class": "blocking|note|need_evidence", "breaks": "<spec id>",
- "locator": "<path|url|task:id>", "summary": "...", "recommendation": "..."}
+{"prose": "...", "objections": [{"id": "o1", "text": "..."}], "withdrawn": [{"id": "o1", "why": "..."}]}
 ```
 
-There is no reviewer-authored aggregate line: the HOST computes the aggregate from the findings
-across all configured slots using `config.adaptive_quorum(N)`. A reviewer never emits GREEN as
-authority, and prose outside the array is not parsed.
+`prose` carries your reasoning, suggestions and questions. An objection's `id` is yours and stays
+stable across your answers; empty `objections` is a legitimate answer. Nothing outside the object
+is parsed; an unparseable answer changes nothing and is shown to the mind as unparseable.
 
-### Cycles and closure
+### Your own objections
 
-- **GREEN** — no blocking finding and no `need_evidence` without a disposition; notes never
-  change the verdict, so a note-only wave is GREEN in either enforcement mode. Proceed.
-- **REVIEW_REQUIRED** — `need_evidence` without a disposition, or a blocking finding BELOW
-  quorum. The agent closes outstanding `need_evidence` with a disposition (accept / reject with
-  rationale / defer) — no new panel, no cost; notes do not need entries. Voluntary dispositions
-  on closed note-only waves remain available through the same call, without reopening or a
-  paid cycle. Under advisory enforcement a reject with its rationale also closes a below-quorum
-  blocking finding (per finding; accept or defer keeps it open until a changed spec is
-  reviewed). Under blocking enforcement a below-quorum blocking finding stays OPEN whatever the
-  disposition says: it closes only through a changed spec (a new spec hash reviewed in the next
-  paid cycle) or the slot that raised it no longer raising it in a later paid cycle. A
-  REVIEW_REQUIRED wave whose open set empties is recorded GREEN.
-- **REVISE_PLAN** — blocking findings at quorum. A disposition can never close it: the agent
-  either changes the spec (a new fingerprint, the next paid cycle) or answers a blocking finding
-  and sends the unchanged envelope with that answer, which asks again only the slot that raised
-  it (one paid cycle; every other slot keeps its recorded answer at $0) so it marks the finding
-  resolved or still open.
-- **DEGRADED** — no parseable quorum. Not a verdict, but the dispatched panel PAID its cycle:
-  the wave records OPEN with each slot's typed failure state (code and reset time when known),
-  the control line reports DEGRADED honestly, and the recorded result replays for free ONLY
-  under all three conditions — an identical envelope, a NON-EMPTY recorded structural
-  lane-health epoch that a fresh snapshot still matches, and an unchanged reviewer roster
-  (slot ids, targets, routes, pinned profiles and the effective per-seat EFFORTS, an
-  envelope's `reviewer_effort` included). An empty-epoch DEGRADED wave
-  (slots died at dispatch time, no structural snapshot evidence) re-dispatches a PAID panel
-  on the identical envelope; so does a healed or newly dead lane or a changed roster. Only a
-  wave in which no pool seat was physically dispatched (typed $0 skip rows only —
-  pre-fan-out health skips included) stays unpaid.
-  When the wave's typed rows prove the quorum STRUCTURALLY unreachable, the wave carries
-  `quorum_unreachable` + the earliest reset: under blocking the finalization gate releases for
-  an agent-chosen honest `blocked_with_evidence` terminal (review stays open, implementation
-  stays held), waiting via a one-shot `schedule_followup` and asking the owner stay open too.
-
-Paid cycles per task are bounded by the owner's `OUROBOROS_REVIEW_MAX_CYCLES` (default 2,
-`unlimited` available). Replaying an identical envelope without answers is free — identical
-including the evidence the host attaches for reviewers' `need_evidence` requests, so a request
-received in the last cycle makes the next envelope a new one. Answers merge by `finding_id`
-across calls; the identical envelope sent WITH `review_disposition` items is the addressed
-re-ask (one paid cycle for the named slots only), and no host path buys a panel the agent did
-not send. On cycle 2+ every reviewer sees
-all reviewers' findings from the previous cycle, the agent's dispositions and the spec delta, and
-its first duty is to adjudicate its OWN earlier findings (the rows whose finding_id starts with its
-panel seat): RESOLVED (the delta or the rationale answers it) and SUPERSEDED (the element it targeted
-was removed or replaced) are not repeated; STILL OPEN is re-emitted naming the residual the answer
-does not cover, and only while the goal is unchanged (the packet states `Goal changed since cycle n`;
-a changed goal is judged afresh). Then: a reformulation of an earlier finding is not a new finding,
-and a new blocking finding must say why it was invisible before. A seat that does not answer a
-same-spec cycle is recorded as not having answered; its earlier still-open findings stay listed on
-the wave (never as re-emitted), so silence never reads as GREEN. When the cap is spent under blocking enforcement the host holds
-implementation and escalates with the typed `review_cycles_exhausted` reason; under advisory the
-agent may proceed with the wave open under a loud host disclosure. Explicit
-`review_disposition.author_action` plus author disposition may retain/select a full
-corrected goal/plan/spec against the actual critic fingerprint without another panel.
-The current author source and decision stay separate from critic closure: Advisory
-finish can select them; Blocking stop preserves unfinished work without authorizing
-implementation. Critic findings, paid counts and pending custody remain intact.
+First answer your own open objections, listed for you: put each under `withdrawn` with why (the
+change or the answer removed the defect, or you were wrong), or keep it by restating what is still
+missing. One you do not mention stays open, and the mind sees that you did not adjudicate it. Only
+you withdraw your objection; neither another reviewer nor the mind can. Agree or disagree with
+another reviewer's objection in prose. A reformulation of an earlier objection is not a new one,
+and a new objection on a revision you saw before says why it was invisible then. Nobody votes and
+there is no aggregate verdict. Under Blocking enforcement an open objection of an owner-marked
+reviewer (or of Main standing in for an empty pool) holds the task's normal final answer until its
+raiser withdraws it or the owner releases it; an added critic's objection, and any objection under
+Advisory or in Cyber Pro, holds nothing and is stated in the mind's answer.
 
 ### Rules for reviewers
 
-- Do not name files, functions or modules as a finding unless naming them is what breaks a spec id;
-  a file-level observation without a `breaks` id is a note.
+- Name a file, function or module in an objection only when it is what fails; a file-level
+  observation is prose.
 - Do not penalise missing tests, version bumps, changelog rows or doc updates — there is no code
   yet, and the commit gate reviews those at commit time.
 - Do not require the plan to specify what can safely be decided while doing the work. "Unspecified"
-  is only a finding when leaving it open is expensive to reverse.
+  is an objection only when leaving it open is expensive to reverse.
 - A plan with no file paths at all (a trip, a deck, a research question) is a first-class subject:
   the same questions apply, and repository conventions are irrelevant to it.
 
