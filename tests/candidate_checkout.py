@@ -108,15 +108,25 @@ def assert_served_candidate(url, checkout, data_dir, pid, candidate):
       `ouroboros` package was loaded from this directory.
     """
     from ouroboros.server_process import read_service_bindings
+    from ouroboros.server_web import UI_OWNER_MARKER
 
     binding = read_service_bindings(data_dir)["main"]
-    require_running_supervisor(json.loads(_fetch(url + "/api/state")))
+    state = json.loads(_fetch(url + "/api/state"))
+    require_running_supervisor(state)
     assert binding["pid"] == pid, "health answered by a different server process"
     assert url == f"http://127.0.0.1:{binding['port']}"
-    for relative, route in (("web/index.html", "/"),
-                            ("web/modules/api_client.js", "/static/modules/api_client.js")):
-        assert _fetch(url + route) == candidate.state.files[relative][0], relative
-    assert _fetch(url + SENTINEL_ROUTE) == candidate.sentinel_bytes, (
+    # The selected interface owns / and /static (OUROBOROS_UI_DIR); the core's own builtin tree is
+    # always /onboarding/static. A core that reports no served_ui predates that split.
+    served = state.get("served_ui")
+    tree = "/static" if served is None else "/onboarding/static"
+    if served is None or served.get("source") == "builtin":
+        # The builtin index response adds only its core-ownership marker to the checkout's bytes.
+        index = candidate.state.files["web/index.html"][0]
+        expected = index if served is None else index.replace(b"<head>", b"<head>" + UI_OWNER_MARKER.encode(), 1)
+        assert _fetch(url + "/") == expected, "web/index.html"
+    assert _fetch(url + tree + "/modules/api_client.js") == candidate.state.files["web/modules/api_client.js"][0], (
+        "web/modules/api_client.js")
+    assert _fetch(url + tree + SENTINEL_ROUTE.removeprefix("/static")) == candidate.sentinel_bytes, (
         "the static tree served is not this candidate checkout")
     health = json.loads(_fetch(url + "/api/health"))
     assert health["runtime_version"] == candidate.version_text, (

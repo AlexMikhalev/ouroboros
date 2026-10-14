@@ -682,8 +682,9 @@ def test_architecture_endpoint_table_mirrors_route_registries(tmp_path):
             if method in ("HEAD", "OPTIONS"):
                 continue
             expected_public.add(f"{method} {route.path}")
-    # server-level surfaces that are not gateway routes but belong in the map
-    expected_public |= {"GET /", "WS /ws", "STATIC /static/*"}
+    # server-level surfaces that are not gateway routes but belong in the map (server_web.ServedUI:
+    # the selected interface at / and /static, the core's own builtin tree at /onboarding/static)
+    expected_public |= {"GET /", "WS /ws", "STATIC /static/*", "STATIC /onboarding/static/*"}
     # /api/extensions/{skill}/{rest:path} is mounted for every verb and documented once as ANY
     expected_public = {e for e in expected_public if not e.endswith("/api/extensions/{skill}/{rest:path}")}
     expected_public.add("ANY /api/extensions/{skill}/{rest:path}")

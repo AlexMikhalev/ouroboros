@@ -1,8 +1,10 @@
 # 4. Server API Endpoints
 
-Registry of the browser, CLI and Host Service routes, with non-loopback authentication, file confinement and the WebSocket protocol. `ouroboros/gateway/router.py` owns the executable Route objects; the table mirrors them one row per route; tests check that nothing mounted is undocumented and nothing documented is unmounted.
+Registry of the browser, CLI and Host Service routes, with non-loopback authentication, the selected main interface, file confinement and the WebSocket protocol. `ouroboros/gateway/router.py` owns the executable Route objects; the table mirrors them one row per route (shapes: `GET /api/contract`); tests check that nothing mounted is undocumented and nothing documented is unmounted.
 
-With `OUROBOROS_NETWORK_PASSWORD` configured, non-loopback HTTP and WebSocket access requires authentication; loopback clients bypass the gate, and `/api/health` plus the middleware-owned login/logout paths stay reachable. Browser sessions use a server-keyed, expiring HttpOnly HMAC cookie, `Secure` only under TLS, so a plain-HTTP LAN session does not enter a login loop. An unauthenticated WebSocket is closed with code 4401 before `ws_endpoint` accepts it. Without a password, non-loopback access stays open by explicit operator choice.
+With `OUROBOROS_NETWORK_PASSWORD` configured, non-loopback HTTP and WebSocket access requires authentication; loopback clients bypass the gate, and `/api/health` plus the middleware-owned login/logout paths stay reachable. Behind a proxy uvicorn trusts (`FORWARDED_ALLOW_IPS`, default loopback) the client and TLS are the forwarded ones (proxy duties: `docs/DEPLOYMENT.md`). Browser sessions use a server-keyed, expiring HttpOnly HMAC cookie, `Secure` only under TLS, so a plain-HTTP LAN session does not enter a login loop. An unauthenticated WebSocket gets the gate's 4401 close before `ws_endpoint` accepts it, which a browser sees only as a refused handshake (1006); so a 401 on the SPA's state or readiness read means signed out and opens `/auth/login?next=` back to the page, resending nothing queued or unsaved. Without a password, non-loopback access stays open by explicit operator choice.
+
+`server_web.ServedUI` serves `/` and `/static/*` from `OUROBOROS_UI_DIR` (§7), once per server generation; one record answers serving, the builtin index's response-only `ouroboros-ui-owner` marker and `StateResponse.served_ui` (the applied source, not an asset digest), so they cannot disagree. A chosen directory is trusted and served unrewritten (no marker, no Telegram SDK); an unusable or core-exposing one leaves the builtin interface with its reason. Core paths (`core_paths` in `GET /api/contract`) and resources (`/onboarding/static/*`, the author kit) never follow the choice, so a broken or absent interface cannot take setup, sign-in or control with it (separate hosting, one origin: `docs/CLIENT_CONTRACT.md`).
 
 File-browser routes are contributed by `gateway/files.py::file_browser_routes()`; envelopes and their parity: §11. The loopback Host Service is a separate token-authenticated app assembled by `gateway/host_service.py::create_host_service_app`, not a second public owner API (§12).
 
@@ -12,6 +14,7 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 |---|---|---|
 | GET | `/` | |
 | GET | `/api/health` | |
+| GET | `/api/contract` | |
 | GET | `/api/state` | |
 | GET | `/api/extensions` | installed-skill projection; never fetches the hub catalog |
 | POST | `/api/skills/{skill}/publish-preflight` | |
@@ -39,14 +42,14 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | GET | `/api/marketplace/ouroboroshub/catalog` | |
 | GET | `/api/marketplace/ouroboroshub/installed` | |
 | GET | `/api/marketplace/ouroboroshub/preview/{slug:path}` | |
-| POST | `/api/marketplace/ouroboroshub/install` | also the adopt transport (`adopt: true`, `expected_content_hash`) |
+| POST | `/api/marketplace/ouroboroshub/install` | also the adopt transport |
 | POST | `/api/marketplace/ouroboroshub/update/{name}` | |
 | POST | `/api/marketplace/ouroboroshub/uninstall/{name}` | |
 | POST | `/api/marketplace/ouroboroshub/publication/{name}/clear` | forgets only the local publication receipt |
 | GET | `/api/files/list` | |
 | GET | `/api/files/read` | |
 | GET | `/api/files/content` | |
-| GET | `/api/files/download` | `?upload=<id>`: chat attachment, separate authority (above) |
+| GET | `/api/files/download` | `upload`: a chat attachment, separate authority (above) |
 | POST | `/api/files/upload` | |
 | POST | `/api/files/mkdir` | |
 | POST | `/api/files/write` | |
@@ -54,19 +57,20 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | POST | `/api/files/transfer` | |
 | GET | `/onboarding` | |
 | GET | `/api/onboarding` | |
+| GET | `/api/onboarding/bootstrap` | |
 | POST | `/api/onboarding/complete` | |
 | POST | `/api/onboarding/subagents/preview` | |
 | GET | `/api/settings` | |
 | POST | `/api/settings` | |
 | POST | `/api/settings/secret` | |
 | GET | `/api/review-pool` | |
-| GET | `/api/claudexor/status` | `last_exit`/`memory` (§9), resource-catalog evidence (§3); `?view=quota`: roster/quota only; never wakes |
+| GET | `/api/claudexor/status` | `last_exit`/`memory` (§9), resource-catalog evidence (§3); never wakes |
 | POST | `/api/claudexor/quota/refresh` | full or exact account (§3) |
-| POST | `/api/claudexor/account-resets` | exact request and Idempotency-Key (§3) |
+| POST | `/api/claudexor/account-resets` | exact request (§3) |
 | GET | `/api/claudexor/account-resets/{operation_id}` | receipt inspection (§3) |
 | POST | `/api/claudexor/wake` | |
-| GET | `/api/claudexor/maintenance/harnesses` | passive inspection; optional fresh/latest check |
-| POST | `/api/claudexor/maintenance/operations` | Idempotency-Key; 202 operation handle |
+| GET | `/api/claudexor/maintenance/harnesses` | passive inspection |
+| POST | `/api/claudexor/maintenance/operations` | 202 operation handle |
 | GET | `/api/claudexor/maintenance/operations/{operation_id}` | retained engine facts |
 | POST | `/api/claudexor/maintenance/operations/{operation_id}/cancel` | acknowledgement does not prove termination |
 | POST | `/api/claudexor/login` | |
@@ -92,9 +96,9 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | GET | `/api/ui/i18n/export` | |
 | POST | `/api/ui/i18n/regenerate` | drops generated entries; owner and imported ones stay |
 | GET | `/api/desktop/autostart` | |
-| POST | `/api/desktop/autostart` | `{enabled}`; host-OS state, `owner_audit`, no settings mirror |
+| POST | `/api/desktop/autostart` | host-OS state, `owner_audit`, no settings mirror |
 | GET | `/api/desktop/background` | |
-| POST | `/api/desktop/background` | `{enabled}`; persists `OUROBOROS_DESKTOP_KEEP_RUNNING`; `owner_audit` |
+| POST | `/api/desktop/background` | persists `OUROBOROS_DESKTOP_KEEP_RUNNING`; `owner_audit` |
 | GET | `/api/model-catalog` | |
 | POST | `/api/openai-compatible/models` | |
 | POST | `/api/providers/test` | |
@@ -103,11 +107,11 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | GET | `/api/tasks/{task_id}` | |
 | GET | `/api/tasks/{task_id}/events` | integer rank |
 | POST | `/api/tasks/{task_id}/events` | read-only v2 cursor (§3 History reads and the SSE v2 transport) |
-| GET | `/api/tasks/{task_id}/artifacts/{name}` | bare name, `?relpath=`, `?archive=<dir>` ZIP, delegated `?source=`; digest drift 409, failed capture 404, no confined opens 503; SVG: `sandbox` CSP, `nosniff` (`gateway/task_archive.py`) |
-| POST | `/api/tasks/{task_id}/cancel` | body `cascade`, `stop_policy`, `stop_action_id` (§5 Stop policy and hurry) |
+| GET | `/api/tasks/{task_id}/artifacts/{name}` | confined reads of the task's own stores; SVG: `sandbox` CSP, `nosniff` (`gateway/task_archive.py`) |
+| POST | `/api/tasks/{task_id}/cancel` | (§5 Stop policy and hurry) |
 | POST | `/api/tasks/{task_id}/hurry` | (§5 Stop policy and hurry) |
-| POST | `/api/tasks/{task_id}/pause` | `{request_id}` (§6 Owner Pause of a whole tree) |
-| POST | `/api/tasks/{task_id}/continue` | `{action_nonce}` (§6 Owner Continue after a technical interruption) |
+| POST | `/api/tasks/{task_id}/pause` | (§6 Owner Pause of a whole tree) |
+| POST | `/api/tasks/{task_id}/continue` | (§6 Owner Continue after a technical interruption) |
 | POST | `/api/tasks/{task_id}/resume` | |
 | POST | `/api/decisions` | |
 | GET | `/api/schedules` | |
@@ -148,6 +152,7 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | POST | `/api/mcp/import/preview` | |
 | WS | `/ws` | |
 | STATIC | `/static/*` | |
+| STATIC | `/onboarding/static/*` | |
 | GET | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/identity` | |
 | GET | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/tools/schemas` | |
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/chat/allocate-internal` | |
@@ -186,7 +191,7 @@ A built-in `command` frame carries a slash command into the same bridge with reb
 
 #### Frame addressing
 
-Outbound envelope types are the members of `gateway.contracts.WS_MESSAGE_TYPES` other than the inbound `command`. `update_progress_changed` only invalidates the process-local update observation and is never boot-completion proof. Chat progress carries additive presentation facts (lineage, model lane, delegated route, execution evidence, review projection, cancellation eligibility, outcome axes, artifact references, nullable cost and finality); consumers must not infer a missing receipt, cost or result from an absent optional field.
+Outbound envelope types are the members of `gateway.contracts.WS_MESSAGE_TYPES` other than the inbound `command`. `update_progress_changed` only invalidates the process-local update observation and is never boot-completion proof. Chat progress carries additive presentation facts (`ChatOutbound` in `GET /api/contract`); consumers must not infer a missing receipt, cost or result from an absent optional field.
 
 Project chat, typing, media and log frames carry `chat_id`; each Project panel consumes its own thread, and Main admits only Project question mirrors, the host-stamped Project lifecycle rows (§3 Project handoff receipts) and a Project root's `main_notice`. `projects_changed` carries the new chat id so every tab extends its fan-out set before fetching the registry; when even that loses the race, the server-stamped `project_thread` marker on the frame keeps Main from adopting it (`chat_activity.mainThreadAccepts`). The marker is set once at the message-bus broadcast choke from the registry, a membership lens, not a numeric range, so external transport ids such as Telegram stay unstamped. Task-scoped log events get their audience at supervisor ingress: `supervisor/log_addressing.py::address_task_event` stamps it from host-attested truth (an explicit chat_id of 0 is `HIDDEN_CHAT_ID`, never missing), and direct turns carry their chat by value: the registry entry dies with the turn while queued events drain later. `message_annotation` updates one canonical owner message without a second bubble; `task_named` updates a card only where that task exists.
 
@@ -196,6 +201,6 @@ Server broadcasts snapshot the client list and send to all clients concurrently,
 
 #### Reconnect and recovery
 
-The browser reconnects with bounded exponential delay and shows the reconnect overlay; a watchdog closes a seemingly open connection without inbound frames, so heartbeats prove stream liveness, not task progress. One served-SHA decision (`ws.js decide()`: `keep` / `reload_changed` / `reload_unknown`) governs both the post-open state read and the socket-down recovery probe, so a transient drop cannot destroy in-page state: a changed or unprovable SHA reloads, because a restarted server must not keep old JavaScript or CSS alive in PyWebView; an unchanged SHA keeps the page and its queued outbound frames; an unversioned `/api/state` keeps the page when no SHA was ever remembered, deliberately accepting possibly stale assets. A failed or non-OK state read never reloads, because a server seconds into its life can answer 500; the probe discipline and its one forced reload per disconnect episode live in `web/modules/ws.js`.
+The browser reconnects with bounded exponential delay and shows the reconnect overlay; a watchdog closes a seemingly open connection without inbound frames, so heartbeats prove stream liveness, not task progress. One served-page decision (`ws.js decideServedPage`) governs both the post-open state read and the socket-down recovery probe, so a transient drop cannot destroy in-page state. The core attests only pages it serves: without `served_ui` (an older core), or for its marked page while it serves builtin, `decide()` reloads on a changed or unprovable SHA, because a restarted server must not keep old JavaScript or CSS alive in PyWebView, and an unchanged one keeps the page and its queued frames (an unversioned `/api/state` with no remembered SHA keeps it too, accepting possibly stale assets); the marked page reloads once after a restart applied a directory or `none`, and an unmarked page owns its refresh and only reconnects. A failed or non-OK state read never reloads, because a server seconds into its life can answer 500; the probe discipline and its one forced reload per disconnect episode live in `web/modules/ws.js`.
 
 Each Chat instance handles `open` by resynchronizing archive-aware durable history and `close` by withdrawing online and accounting presentation; reconnect deduplication covers the overlap between live frames and REST replay, and large history parsing runs off the server event loop. Delivery is live plus replay, not a promise that every transient frame is persisted: durable chat rows, task results, queue snapshots, Project revisions, review ledgers, cost ledgers and lifecycle state remain the recovery authorities.

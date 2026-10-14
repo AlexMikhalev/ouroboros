@@ -19,6 +19,10 @@ from ouroboros.gateway.attachment_contracts import (  # noqa: F401 -- public re-
 )
 from ouroboros.gateway.widgets import ExtensionLiveSnapshot, WidgetTab, WidgetsResponse
 from ouroboros.gateway.decision_contracts import DecisionRequest, DecisionResponse  # noqa: F401 -- public re-exports
+from ouroboros.gateway.management_contracts import (  # noqa: F401 -- public re-exports
+    ExtensionsIndexResponse, LocalModelStatusResponse, MarketplaceInstalledResponse, MarketplaceSearchResponse,
+    McpStatusResponse, ModelCatalogResponse, SkillLifecycleQueueResponse,
+)
 from ouroboros.gateway.schedule_contracts import (  # noqa: F401 -- public re-exports
     ScheduleActionResponse,
     ScheduledTasksResponse,
@@ -576,7 +580,7 @@ class ProjectCreateRequest(TypedDict, total=False):
     ``with_workspace`` (genesis provision), or none (file-less project).
     ``name``-only creation derives a filesystem id."""
 
-    id: str
+    id: str  # ``project_id`` is accepted as an alias
     name: str
     path: str
     init_git: bool
@@ -585,9 +589,10 @@ class ProjectCreateRequest(TypedDict, total=False):
 
 
 class ProjectEntry(TypedDict, total=False):
-    """A registry project row as returned by the projects endpoints. ``provenance``
-    (attached|cloned|genesis|none) and ``clone_url`` are historical facts;
-    operational git data is always read live from ``.git``."""
+    """A registry project row. ``provenance`` (attached|cloned|genesis|none) and ``clone_url``
+    are historical facts; operational git data is read live from ``.git``. List rows are a
+    compact projection with ``has_thread_activity``; a create/update answer is the full row
+    (``created: false``: an idempotent repeat create)."""
 
     id: str
     name: str
@@ -601,8 +606,13 @@ class ProjectEntry(TypedDict, total=False):
     last_active_at: str
     lifecycle: Literal["active", "deleting", "tombstoned"]
     routing_generation: int
+    routing_incarnation: str
     visible_revision: int
     delete_error: str
+    has_thread_activity: bool
+    thread_activity_seen: bool
+    last_task_result_id: str
+    created: bool
 
 
 class ProjectDeleteResponse(TypedDict):
@@ -645,7 +655,11 @@ class TaskNamedOutbound(TypedDict):
 
 
 class ErrorResponse(TypedDict):
+    """A refusal: ``error`` is a sentence; ``code`` or ``reason_code`` types it when present."""
+
     error: str
+    code: NotRequired[str]
+    reason_code: NotRequired[str]
 
 
 class StatusResponse(TypedDict):
@@ -659,6 +673,7 @@ class HealthResponse(TypedDict):
     version: str
     runtime_version: str
     app_version: str
+    abi_version: NotRequired[str]  # schema.GATEWAY_ABI_VERSION; absent on cores older than GET /api/contract
 
 
 class EvolutionStateSnapshot(TypedDict):
@@ -743,7 +758,7 @@ class StateResponse(TypedDict):
     spent_usd: Optional[float]
     budget_limit: float
     budget_pct: Optional[float]
-    branch: str
+    branch: Optional[str]  # null for detached HEAD or unavailable checkout identity
     sha: str
     evolution_enabled: Optional[bool]  # None: an unknown control (state unavailable/recovering), never "off"
     bg_consciousness_enabled: Optional[bool]
@@ -777,6 +792,7 @@ class StateResponse(TypedDict):
     # compatibility; new clients hydrate from this field.
     active_chat_activities: NotRequired[List[ActiveChatActivity]]
     active_chat_activities_complete: NotRequired[bool]
+    served_ui: NotRequired[ServedUiState]  # this generation's main interface; absent on older cores
 
 
 class SettingsNetworkMeta(TypedDict):
@@ -841,6 +857,7 @@ class SettingsSaveResponse(TypedDict, total=False):
     immediate_changed: bool
     next_task_changed: bool
     warnings: list[str]
+    ignored_keys: Dict[str, str]
     # True when the save landed while an agent task was already STARTED: that
     # task keeps its start-time config (snapshot boundary); changes apply from
     # the next task. Queued-but-unstarted tasks re-read settings at start.
@@ -881,14 +898,20 @@ class OwnerSkillPresenceRuntimeResponse(TypedDict):
 
 
 class SkillGrantResponse(TypedDict, total=False):
+    """``POST /api/skills/{skill}/grants``; a refusal answers ``SkillActionRefusal``."""
+
     ok: bool
     skill: str
+    content_hash: str
     granted_keys: list[str]
     granted_permissions: list[str]
     extension_action: str
     extension_reason: str
     load_error: str
     grants: Dict[str, Any]
+    process: str
+    server_reconcile: str
+    live_loaded: bool
     error: str
 
 
@@ -896,6 +919,7 @@ class SkillDeleteResponse(TypedDict, total=False):
     ok: bool
     skill: str
     source: str
+    content_hash: str
     deleted_payload_root: str
     deleted_state: bool
     extension_action: str
@@ -947,14 +971,6 @@ class UploadResponse(TypedDict):
     view: NotRequired[ChatAttachmentView]  # the sender's own bubble renders exactly this (kind proven from bytes)
 
 
-class ExtensionsIndexResponse(TypedDict, total=False):
-    extensions: list[Dict[str, Any]]
-    skills: list[Dict[str, Any]]
-    live: ExtensionLiveSnapshot
-    lifecycle: Dict[str, Any]
-    error: str
-
-
 class SkillPublishPreflightResponse(TypedDict):
     """Safe selected-skill publication facts; never raw scanner output."""
 
@@ -977,45 +993,11 @@ class SkillPublishPreflightResponse(TypedDict):
     repair_hint: str
 
 
-class SkillLifecycleQueueResponse(TypedDict, total=False):
-    active: Dict[str, Any]
-    events: list[Dict[str, Any]]
+class OpenAICompatibleModelsResponse(TypedDict):
+    """``POST /api/openai-compatible/models``: upstream ``data[].id`` in upstream order."""
 
-
-class MarketplaceSearchResponse(TypedDict, total=False):
-    items: list[Dict[str, Any]]
-    results: list[Dict[str, Any]]
-    installed: list[Dict[str, Any]]
-    error: str
-
-
-class MarketplaceInstalledResponse(TypedDict, total=False):
-    installed: list[Dict[str, Any]]
-    skills: list[Dict[str, Any]]
-    error: str
-
-
-class LocalModelStatusResponse(TypedDict, total=False):
-    status: str
-    running: bool
-    ready: bool
-    port: int
-    message: str
-    error: str
-    settings_application: Dict[str, Any]
-
-
-class McpStatusResponse(TypedDict, total=False):
-    enabled: bool
-    servers: list[Dict[str, Any]]
-    tools: list[Dict[str, Any]]
-    error: str
-
-
-class ModelCatalogResponse(TypedDict, total=False):
-    providers: list[Dict[str, Any]]
-    models: list[Dict[str, Any]]
-    error: str
+    models: List[str]
+    error: NotRequired[str]
 
 
 class ProviderTestRequest(TypedDict):
@@ -1026,13 +1008,6 @@ class ProviderTestRequest(TypedDict):
 class ProviderTestResponse(TypedDict):
     ok: bool
     error: NotRequired[str]
-
-
-class FileBrowserListResponse(TypedDict, total=False):
-    root: str
-    path: str
-    entries: list[Dict[str, Any]]
-    error: str
 
 
 class ExecutorRef(TypedDict, total=False):
@@ -1393,12 +1368,14 @@ class OnboardingCompleteRequest(TypedDict, total=False):
     subscriptionsConnected: bool
     skipSubscriptionPresets: bool
     OUROBOROS_SUBAGENTS: Dict[str, Any]
+    allow_empty_review_pool: bool  # confirms saving agents that leave no review row
 
 
 class OnboardingSubagentsPreviewResponse(TypedDict):
     """Read-only canonical actor draft returned to Settings/onboarding."""
 
     ok: bool
+    model_settings: Dict[str, Any]  # the model setting keys the draft would save
     available_subagents: Dict[str, Any]
     source: str
     diagnostics: list[Dict[str, Any]]
@@ -1454,6 +1431,7 @@ class OnboardingPresetFailureResponse(TypedDict):
 
 # Human/test-visible contract index; routers own executable Route objects.
 from ouroboros.gateway.endpoint_index import HTTP_ENDPOINTS
+from ouroboros.gateway.client_contracts import FileBrowserListResponse, ServedUiState  # noqa: E402,F401
 
 WS_MESSAGE_TYPES: tuple[str, ...] = (
     "chat",
@@ -1473,6 +1451,7 @@ WS_MESSAGE_TYPES: tuple[str, ...] = (
     "task_named",
     "update_status_ready",
     "update_progress_changed",
+    "ui_language_changed", "ui_i18n_updated",  # gateway/ui_i18n_contracts.py frames
 )
 
 
@@ -1558,7 +1537,7 @@ __all__ = [
     "MarketplaceInstalledResponse",
     "LocalModelStatusResponse",
     "McpStatusResponse",
-    "ModelCatalogResponse",
+    "ModelCatalogResponse", "OpenAICompatibleModelsResponse",
     "ProviderTestRequest",
     "ProviderTestResponse",
     "FileBrowserListResponse",

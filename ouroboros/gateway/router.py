@@ -15,7 +15,7 @@ from starlette.routing import BaseRoute, Route, WebSocketRoute
 
 
 def _ui_client_routes() -> list[BaseRoute]:
-    """The browser client's own state: per-client UI preferences and the install's
+    """Installation-wide owner UI preferences and the install's
     interface language with its translation memory (``/api/ui/*``)."""
     from ouroboros.gateway.ui_i18n import (
         api_ui_i18n_export_get,
@@ -139,7 +139,7 @@ def collect_routes(
         api_projects_create,
         api_projects_list,
     )
-    from ouroboros.gateway.state import api_health, api_state
+    from ouroboros.gateway.state import api_contract, api_health, api_state
     from ouroboros.gateway.skill_publish import skill_publish_routes
     from ouroboros.gateway.tasks import (
         api_task_artifact,
@@ -153,7 +153,7 @@ def collect_routes(
         api_tasks_list,
     )
     from ouroboros.gateway import desktop_autostart as desktop_host
-    from ouroboros.gateway.onboarding_host import onboarding_page
+    from ouroboros.gateway.onboarding_host import api_onboarding_bootstrap, onboarding_page
     from ouroboros.gateway.owner_effort import api_owner_effort_range
     from ouroboros.gateway.settings import (
         api_acknowledge_capability,
@@ -175,6 +175,7 @@ def collect_routes(
 
     routes: list[BaseRoute] = [
         Route("/api/health", endpoint=api_health),
+        Route("/api/contract", endpoint=api_contract, methods=["GET"]),
         Route("/api/state", endpoint=api_state),
         Route("/api/widgets", endpoint=api_widgets, methods=["GET"]),
         Route("/api/extensions", endpoint=api_extensions_index, methods=["GET"]),
@@ -232,6 +233,8 @@ def collect_routes(
         # /api/onboarding sibling below stays the readiness probe + legacy body.
         Route("/onboarding", endpoint=onboarding_page, methods=["GET"]),
         Route("/api/onboarding", endpoint=onboarding),
+        # The same wizard bootstrap as JSON, for a client that renders its own setup.
+        Route("/api/onboarding/bootstrap", endpoint=api_onboarding_bootstrap, methods=["GET"]),
         # ONE atomic owner-scoped completion (D-8): replaces the wizard's old
         # POST /api/settings + POST /api/owner/runtime-mode pair.
         Route("/api/onboarding/subagents/preview", endpoint=api_onboarding_subagents_preview, methods=["POST"]),

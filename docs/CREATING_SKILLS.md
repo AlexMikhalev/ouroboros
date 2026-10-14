@@ -1125,7 +1125,9 @@ allow-downloads"`, never `allow-same-origin`; see "What the frame may do"
 below), and injects the host bridge (`window.OuroborosWidget`, below) that
 forwards only `/api/extensions/<skill>/...` requests and the skill's own
 WebSocket events. The `widget_module_safety` review item still checks the
-source; do not rely on the sandbox alone.
+source; do not rely on the sandbox alone. A replacement interface keeps the
+same promises through the host-side protocol in
+[`WIDGET_HOST_PROTOCOL.md`](WIDGET_HOST_PROTOCOL.md).
 
 Framed render declarations may add a bounded `height` (320–8,192 pixels).
 When a module omits `height`, the host starts at 320px and measures its
@@ -1455,12 +1457,12 @@ from your routes. Two rules come with that:
   face (`FontFace.status === "error"`; WebKit is lenient, so test on Chromium).
   Images and media are plain no-cors loads and need no header; the module
   endpoint already sends it for scripts.
-- **Passive loads carry no session on network installs.** On a
-  password-protected install reached over the network (not loopback, not the
-  desktop shell), the owner's session cookie is `SameSite=Lax` and an opaque
-  frame's `<img>`/`<audio>`/`<video>`/`@font-face` requests are cross-site, so
-  they arrive without it and get 401. Loopback and the desktop shell are exempt.
-  For an asset that must work everywhere, go through the bridge — the parent
+- **Passive network loads are browser-dependent.** On a password-protected
+  install, an opaque frame's requests may lack the `SameSite=Lax` session and
+  get 401. A passive image was refused in Chromium but sent the cookie and
+  loaded in WebKit in the separate-host tests; this is not a guarantee for
+  other browsers or request modes. Loopback remains exempt from the gate.
+  For an asset that must work across browsers, use the bridge — the parent
   sends the session — and hand the bytes to the element as a `blob:` URL, which
   `img-src`/`media-src`/`font-src` admit:
 
@@ -1498,12 +1500,10 @@ The endpoint sends `Access-Control-Allow-Origin: *`, which the opaque-origin
 frame needs for `import()`; relative specifiers inside a module loaded this way
 resolve against its URL, so `import './y.mjs'` reaches `module/lib/y.mjs`.
 
-A sibling loaded this way carries no session, for the same reason passive image
-and font loads do not (above): on a password-protected install reached over the
-network, the frame's request for `module/lib/x.js` is cross-site, arrives without
-the `SameSite=Lax` session cookie and gets 401. The declared entry is unaffected
-— the host fetches it with the owner's session and inlines it — and loopback and
-the desktop shell are exempt. For a skill that must load siblings on a network
+A sibling loaded directly may be refused by the network gate: do not assume
+that an opaque frame's request carries the session (see the browser-dependent
+asset behaviour above). The declared entry is fetched by the host with the
+owner's session and inlined. For portable sibling loading on a network
 install, fetch the source through the bridge and run it from a `blob:` URL, which
 `script-src` admits:
 

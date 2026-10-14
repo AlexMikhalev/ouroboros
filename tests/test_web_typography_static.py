@@ -206,8 +206,10 @@ class _Stylesheets(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = dict(attrs)
         href = values.get("href") or ""
-        if tag == "link" and values.get("rel") == "stylesheet" and href.startswith("/static/"):
-            self.paths.append("web/" + href.removeprefix("/static/").split("?", 1)[0])
+        # The wizard links the same builtin files under the core-owned /onboarding/static prefix.
+        prefix = next((p for p in ("/static/", "/onboarding/static/") if href.startswith(p)), "")
+        if tag == "link" and values.get("rel") == "stylesheet" and prefix:
+            self.paths.append("web/" + href.removeprefix(prefix).split("?", 1)[0])
 
 
 def _document_stylesheets(document: str) -> list[str]:
