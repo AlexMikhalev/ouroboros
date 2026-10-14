@@ -892,15 +892,20 @@ def test_parallel_starts_on_same_payload_yield_exactly_one_winner(tmp_path, monk
     request row, before its STARTED row. The loser runs its locked busy predicate
     strictly inside that window: the old two-pass read could miss a holder whose
     transition landed between the passes; the single-pass snapshot cannot. Fifty
-    fresh-drive iterations prove the interleaving is stable, not schedule-lucky."""
+    fresh-drive iterations prove the interleaving is stable, not schedule-lucky.
+    (Both starts are one task here; distinct owners: tests/test_custody_keyed_readers.py.)"""
     import threading
+    from contextlib import contextmanager
 
     import ouroboros.tools.delegate as delegate
     import ouroboros.tools.delegate_integration as integration
+    from ouroboros import delegate_custody_current as current
+    from ouroboros import store
     from ouroboros.gateways import claudexor as gw
 
     real_provision = integration._provision_payload_snapshot
-    real_replay = custody.replay
+    real_snapshot, real_open = current.payload_snapshot, store.open_store
+    inside = threading.local()
     for iteration in range(50):
         base = tmp_path / f"iter{iteration}"
         base.mkdir()
@@ -924,20 +929,32 @@ def test_parallel_starts_on_same_payload_yield_exactly_one_winner(tmp_path, monk
                 assert release.wait(30), "the loser never settled"
                 return super().start_run(request, idempotency_key=idempotency_key)
 
-        def _replay_hook(drive_root, rows=None):
-            state = real_replay(drive_root, rows=rows)
-            if (threading.current_thread().name != "winner"
+        fired: list = []
+
+        def _snapshot_hook(drive_root):
+            inside.active = True
+            try:
+                return real_snapshot(drive_root)
+            finally:
+                inside.active = False
+
+        @contextmanager
+        def _read_hook(root, **kwargs):
+            with real_open(root, **kwargs) as txn:
+                yield txn
+            if (getattr(inside, "active", False) and threading.current_thread().name != "winner"
                     and in_window.is_set() and not release.is_set()):
                 # Mutant-killer: the winner's STARTED row lands durably AFTER
-                # this pass returned and BEFORE the pending projection runs —
-                # the exact hole a two-pass (re-reading) predicate had. Only a
-                # single shared row snapshot still reports busy here.
+                # the busy snapshot's read transaction closed and BEFORE its
+                # projections are built — the exact hole a two-pass (re-reading)
+                # predicate had. Only one shared read still reports busy here.
+                fired.append(iteration)
                 release.set()
                 thread.join(timeout=30)
-            return state
 
         seen: dict = {}
-        monkeypatch.setattr(custody, "replay", _replay_hook)
+        monkeypatch.setattr(current, "payload_snapshot", _snapshot_hook)
+        monkeypatch.setattr(store, "open_store", _read_hook)
         monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _WindowStub(seen))
         monkeypatch.setattr(integration, "_provision_payload_snapshot", _synced)
         monkeypatch.setattr(delegate, "_provision_payload_snapshot", _synced)
@@ -959,6 +976,7 @@ def test_parallel_starts_on_same_payload_yield_exactly_one_winner(tmp_path, monk
         assert loser["status"] == "refused", (iteration, loser)
         assert loser["reason"] == "payload_delegation_busy", (iteration, loser)
         assert winner_out and winner_out[0]["status"] == "started", (iteration, winner_out)
+        assert fired == [iteration], f"iteration {iteration}: the window hook never ran"
     custody._CUSTODY.clear()
 
 
