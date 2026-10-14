@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from ouroboros.triad_review import extract_json_array
 from ouroboros.tools.review_helpers import emit_review_usage
+from ouroboros.tools.scope_review_contract import COUPLING_QUESTION_IDS
 
 log = logging.getLogger(__name__)
 
@@ -360,8 +361,6 @@ def build_coupling_part(
     here — Part 1 carries each exactly once, and ``## Answer format`` closes the
     brief. ``layer`` is the checklist layer (``review_body_fact.layer_for``).
     """
-    from ouroboros.tools.scope_review_contract import COUPLING_QUESTION_IDS
-
     questions = "\n".join(f"{i}. {item}" for i, item in enumerate(COUPLING_QUESTION_IDS, start=1))
     body_note = (
         "Apply the `Critical surface whitelist` in `docs/CHECKLISTS.md` for prose-vs-code\n"
@@ -390,7 +389,7 @@ A missing entry means the question was not reviewed.
 
 {questions}
 
-- For FAIL: concrete artifact (file/symbol/line/contract) + what is wrong + how to fix;
+- For FAIL: file:line (or the exact artifact) + the invariant it violates + how to fix;
   one FAIL entry per distinct root cause, never a compressed summary.
 - For PASS: one line — a pointer to what you checked, `see Part 1 <item>` for a defect
   you already report there (one root defect is one FAIL across both parts), or

@@ -10,11 +10,11 @@ once by ``review_ledger.reduce_verdict``.
 Verifies:
 - the brief's roots (the committed subject under the installed body's governance)
   and the ambiguous-workspace refusal
-- the coupling answer's fail-closed parsing (incomplete matrix, bare PASS,
+- the coupling answer's fail-closed parsing (incomplete matrix, a PASS without a reason,
   invalid severity) and the PASS rows kept on the actor record
 - enforcement: advisory downgrades every critical coupling item; blocking keeps
   its authority whatever the seat's window
-- the Part 2 prompt contract (full matrix, PASS justification, ONE anti-pattern guard)
+- the Part 2 prompt contract (full matrix, one-line PASS pointer, ONE anti-pattern guard)
 - coupling-only seat identity (one mint, distinct ids)
 - reviewer-window sizing and its provenance wording
 """
@@ -184,7 +184,7 @@ class TestCouplingAnswerFailClosed:
         assert verdict["reason"] == "coupling_not_performed"
 
     def test_bare_pass_and_invalid_severity_are_rejected(self):
-        """The coupling contract rejects weak PASS reasons and bad severities;
+        """The coupling contract rejects a PASS without a reason and bad severities;
         a FAIL without severity stays fail-closed (severity decides blocking),
         a PASS without severity is deliberately legal (defaulted to advisory)."""
         rows = _matrix()
@@ -372,10 +372,11 @@ class TestCouplingPromptMatrixContract:
             assert f"`{item}`" in prompt or item in prompt, f"coupling question `{item}` missing"
         assert "one FAIL entry per distinct root cause" in prompt
 
-    def test_pass_justification_is_mandatory(self, tmp_path):
+    def test_pass_is_a_one_line_pointer(self, tmp_path):
         prompt = _brief(tmp_path)
         assert "one line — a pointer to what you checked" in prompt and "N/A — <reason>" in prompt
-        assert "stating WHY it passes" not in prompt
+        assert "`see Part 1 <item>`" in prompt
+        assert "stating WHY it passes" not in prompt and "reviewer failure" not in prompt.lower()
 
     def test_one_behavioral_countercheck_per_brief(self, tmp_path):
         from ouroboros.tools.review_helpers import anti_pattern_lock_guard

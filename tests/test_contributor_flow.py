@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from ouroboros.tools.scope_review_contract import COUPLING_QUESTION_IDS
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,7 +32,6 @@ def test_public_contributor_flow_is_agent_first_and_route_neutral():
     # 10=A: the agentic checklist review is the main path and must cover every
     # coupling item with the runtime output contract.
     assert "agentic checklist review" in guide
-    from ouroboros.tools.scope_review_contract import COUPLING_QUESTION_IDS
     for item in COUPLING_QUESTION_IDS:
         assert item in guide
     assert "scripts/validate_scope_receipt.py" in guide
@@ -80,7 +81,6 @@ def test_pull_request_template_has_one_universal_agent_review_block():
     # 21=A: the checklist coverage travels as a markdown table plus the raw
     # reviewer JSON, both inside the single review-evidence block — every row,
     # not just the endpoints.
-    from ouroboros.tools.scope_review_contract import COUPLING_QUESTION_IDS
     for item in COUPLING_QUESTION_IDS:
         assert template.count(f"| {item} |") == 1
     assert "Reviewer checklist JSON" in template

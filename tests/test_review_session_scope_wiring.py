@@ -20,6 +20,7 @@ import pytest
 
 from ouroboros.review_execution import REVIEW_SESSION_ROUTE_ENV
 from ouroboros.reviewer_window import ReviewerWindow
+from ouroboros.tools.scope_review_contract import SCOPE_REQUIRED_ITEMS
 from ouroboros.triad_review import parse_seat_answers
 
 from tests._review_session_route_shared import _owned_gateway_uses_each_test_transport as __owned_gateway_uses_each_test_transport
@@ -167,7 +168,7 @@ def test_delegated_seat_goes_out_as_the_brief_and_never_builds_the_pack(tmp_path
 
     record = parsed.actor_records[0]
     assert record.status == "responded", (record.raw_text, _result["results"][0])
-    assert len(record.parsed_items) == len(__import__("ouroboros.tools.scope_review_contract", fromlist=["x"]).SCOPE_REQUIRED_ITEMS)
+    assert len(record.parsed_items) == len(SCOPE_REQUIRED_ITEMS)
     assert record.answers["change"]["verdict"] == "PASS" and record.answers["coupling"]["verdict"] == "PASS"
     start = fake_route.instances[0].start_requests[0]
     assert brief in start["prompt"]       # the brief (under the seat header), not a pack

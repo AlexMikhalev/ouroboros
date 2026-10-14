@@ -6,6 +6,7 @@ from ouroboros.tools import git
 from ouroboros.mutation_attribution import capture_mutation_baseline
 from ouroboros.task_results import write_task_result
 from ouroboros.review_state import load_state
+from ouroboros.tools.scope_review_contract import COUPLING_QUESTION_IDS
 from tests.test_git_review_preflight_gate import candidate  # noqa: F401
 
 
@@ -297,7 +298,7 @@ def test_repeated_exposed_host_failure_does_not_pump_author_rounds(tmp_path, mon
 
 
 _COUPLING_PASS = [{"item": item, "verdict": "PASS", "severity": "advisory", "reason": f"{item} checked against the diff and its callers"}
-                  for item in __import__("ouroboros.tools.scope_review_contract", fromlist=["x"]).COUPLING_QUESTION_IDS]
+                  for item in COUPLING_QUESTION_IDS]
 _CRITICAL = {"item": "secrets_check", "verdict": "FAIL", "severity": "critical", "reason": "a key is committed"}
 
 
@@ -389,7 +390,7 @@ def test_not_dispatched_is_the_first_branch():
 _SEATS = (("s1", "openai/a"), ("s2", "anthropic/b"), ("s3", "google/c"))
 _RETRIEVING_PANEL = {**_PANEL, "retrieves": [True] * 3, "parts": [("change", "coupling")] * 3, "brief_shas": ["b1", "b2", "b3"]}
 _PACKET_PANEL = {**_PANEL, "retrieves": [False] * 3, "parts": [("change",)] * 3, "brief_shas": ["", "", ""]}
-_TERSE = _two_part(coupling=[{**row, "reason": ""} for row in _COUPLING_PASS])
+_REASONLESS = _two_part(coupling=[{**row, "reason": ""} for row in _COUPLING_PASS])
 
 
 def _prepared(ctx, panel, *, blocking=True):
@@ -410,14 +411,14 @@ def _dispatch(ctx, monkeypatch, panel, results, *, blocking=True):
 @pytest.mark.parametrize("enforcement", ["blocking", "advisory"])
 def test_three_uncountable_coupling_answers_are_named_per_seat(candidate, monkeypatch, enforcement):  # noqa: F811
     """Three retrieving seats each answer Part 2 with a matrix the gate cannot count
-    (terse PASS reasons). NOT_PERFORMED names every seat's own error — in the block
+    (PASS rows without a reason). NOT_PERFORMED names every seat's own error — in the block
     (blocking) or in the author's advisory list beside the typed per-seat entries
     (advisory) — and does not send the owner to configure a retrieving seat: the
     pool has three. That advice belongs to a panel in which no seat read the work."""
     ctx = candidate
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", enforcement)
     blocking = enforcement == "blocking"  # the assembled wave carries the enforcement into the dispatch
-    error = _dispatch(ctx, monkeypatch, _RETRIEVING_PANEL, [_seat(s, m, _TERSE) for s, m in _SEATS], blocking=blocking)
+    error = _dispatch(ctx, monkeypatch, _RETRIEVING_PANEL, [_seat(s, m, _REASONLESS) for s, m in _SEATS], blocking=blocking)
     assert ctx._last_review_verdict["reason"] == "coupling_not_performed"
     text = error if enforcement == "blocking" else ctx._review_advisory[0]
     assert (error is None) is (enforcement == "advisory")

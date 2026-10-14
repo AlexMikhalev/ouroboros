@@ -87,8 +87,19 @@ def test_a_defective_coupling_block_is_recorded_against_part_two_only(raw, error
     assert error in answers["coupling"]["error"], answers["coupling"]
 
 
+@pytest.mark.parametrize("reason", ["N/A — the change touches no prompt or doc", "see Part 1 development_compliance",
+                                    "callers"])
+def test_a_one_line_pass_pointer_is_a_complete_answer(reason):
+    """A PASS is one line: a pointer to what was checked, ``see Part 1 <item>`` or
+    ``N/A — <reason>``; there is no length or wording filter. The twin above: only a
+    PASS without any reason leaves the part unanswered."""
+    coupling = parse_two_part_answer(_b(coupling=_matrix(reason=reason)), BOTH)["coupling"]
+    assert coupling["status"] == "responded" and coupling["verdict"] == "PASS" and coupling["coverage"] == "full"
+    assert {item["reason"] for item in coupling["items"]} == {reason}
+
+
 def test_a_defective_matrix_keeps_its_fail_rows_as_discarded_diagnostics():
-    """A critical FAIL inside a matrix the gate cannot count (a terse PASS elsewhere)
+    """A critical FAIL inside a matrix the gate cannot count (a PASS without a reason elsewhere)
     is not counted (``findings`` empty, ``critical`` 0, the part ``unanswered``) and
     not lost: it rides beside the error as ``discarded`` with this seat's model."""
     rows = _matrix(fail="implicit_contracts")
