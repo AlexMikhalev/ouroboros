@@ -315,6 +315,7 @@ def dialogue_slot_inputs(slots: list, *, system_prompt: str, user_content: str,
     from ouroboros.tools.plan_review_runtime import PLAN_REVIEW_MAX_TOKENS, slot_retrieves, slot_is_session
     from ouroboros.tools.review_synthesis import build_plan_review_messages, per_slot_input_token_limits
     from ouroboros.tools.plan_packet import plan_user_stable_len
+    from ouroboros.tools.plan_packet_legacy import plan_user_stable_len as _legacy_stable_len  # the retired engine's marker
     from ouroboros.tools.plan_spec import PLAN_FINDINGS_ARRAY_CONTRACT
     from ouroboros.tools.scope_required_sources import source_text_identity
 
@@ -360,7 +361,8 @@ def dialogue_slot_inputs(slots: list, *, system_prompt: str, user_content: str,
                     restarted[sid] = "prior_transcript_exceeds_slot_window"
             if not existing:
                 view, coverage[sid] = fit_dialogue_view(user_content, own, capacity - len(system_prompt) - len(seat))
-                messages[sid] = build_plan_review_messages(system_prompt, view + seat, plan_user_stable_len(view))
+                messages[sid] = build_plan_review_messages(system_prompt, view + seat,
+                                                           plan_user_stable_len(view) or _legacy_stable_len(view))
             lengths[sid] = _messages_char_count(messages[sid])
         elif not slot_is_session(slot):
             # Initial layout only: an irreducible brief remains sendable and

@@ -590,24 +590,10 @@ def test_revise_plan_render_names_only_available_paid_cycles_and_exits(enforceme
     assert ("asks only the slots its items name" in evidence_text) is (cap != 2)
 
 
-def test_loop_reminder_does_not_repromise_a_spent_panel(monkeypatch):
-    from ouroboros.owner_hurry import plan_review_reminder
-
-    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
-    for outcome in ("REVISE_PLAN", "REVIEW_REQUIRED", "DEGRADED"):
-        text = plan_review_reminder({"outcome": outcome, "status": "open", "cycles_paid": 2,
-                                    "reviewer_slots_degraded": outcome == "DEGRADED"})
-        assert "cannot dispatch another paid panel" in text
-        assert "re-dispatches a fresh panel" not in text
-        assert "a changed spec starts the next paid cycle" not in text
-    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "unlimited")
-    assert "re-dispatches a fresh panel" in plan_review_reminder({"outcome": "DEGRADED", "reviewer_slots_degraded": True, "cycles_paid": 2})
-
-
 def _effort_aware_builder(harness, monkeypatch):
     """A builder stub that honours ``default_effort`` (the engine wraps the builder
     only when the envelope declares an effort; zero-arg stubs stay valid)."""
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
 
     def build(default_effort=""):
         return [dataclasses.replace(slot, effort=default_effort or slot.effort,
@@ -694,7 +680,7 @@ def test_no_model_facing_text_promises_that_a_host_will_disclose_the_open_review
     import re
 
     from ouroboros.tools import plan_render
-    from ouroboros.tools.plan_review import get_tools
+    from ouroboros.tools.plan_review_legacy import legacy_tool_entries as get_tools
     from tests.test_plan_review_engine import DECK_SPEC
 
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
@@ -729,7 +715,7 @@ def test_an_author_finish_narrates_its_rationale_in_the_models_voice(harness, mo
     verbatim, exactly once per durable author record — never on a refusal, never
     for an empty rationale, and never a second time from the tool's host lines."""
     import ouroboros.review_records as review_records
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
 
     harness.state["enforcement"] = "advisory"
     harness.install({"s1": json.dumps([_finding("b1", "blocking", breaks="claim_1")]), "s2": CLEAN, "s3": CLEAN})
@@ -770,7 +756,7 @@ def test_an_author_finish_narrates_its_rationale_in_the_models_voice(harness, mo
 
 def _pinned_xhigh_rows_env(monkeypatch):
     """Three api pool rows the owner pinned `xhigh`, read by the REAL plan builder."""
-    from ouroboros.tools import plan_review as pr, plan_review_runtime
+    from ouroboros.tools import plan_review_legacy as pr, plan_review_runtime
     from tests.review_pool_rosters import pool_roster, pool_seat
 
     monkeypatch.setenv("OUROBOROS_SUBAGENTS", pool_roster(*(
@@ -841,7 +827,7 @@ def test_a_compound_route_slug_keeps_its_effort_and_discloses_the_unapplied_orde
     """A seat whose route slug encodes its effort ignores the order (its effort is the
     route's identity) and says so on its actor row; the other seats run the order and
     only they can rank weaker than the owner's setting. Without an order: no disclosure."""
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
 
     _patch_health(monkeypatch, lambda slots: {})
 

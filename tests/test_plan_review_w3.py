@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import pytest
 
-import ouroboros.tools.plan_review as pr
+import ouroboros.tools.plan_review_legacy as pr
 from tests.test_plan_review_engine import CLEAN, DECK_SPEC, _call, _control, _finding, _slots, _state, _user_text
 from tests.test_plan_review_engine import harness as _engine_harness  # the shared fixture, re-exported below
 from tests._store_shared import seed_result, unreadable_result
@@ -346,7 +346,7 @@ def test_session_slot_is_never_fit_excluded_and_budget_is_priced_on_callable_slo
     and the wave budget gate is priced on the slots that will actually be called, so a $0
     oversize row cannot decline the callable quorum."""
     from ouroboros.tools import review_synthesis
-    import ouroboros.tools.plan_review as pr_mod
+    import ouroboros.tools.plan_review_legacy as pr_mod
 
     harness.state["slots"] = _slots(("s1", "m/a"), ("s2", "m/b"), ("s3", "cursor=grok", "session"))
     caps = {"m/a": 10, "m/b": 10_000_000}

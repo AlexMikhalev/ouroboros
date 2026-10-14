@@ -6,7 +6,7 @@ import pytest
 
 from ouroboros.task_results import (closed_plan_review_wave, load_plan_review_state,
     plan_review_gate_projection, record_plan_review_wave)
-from ouroboros.tools import plan_review as pr
+from ouroboros.tools import plan_review_legacy as pr
 from ouroboros.tools.plan_review_artifacts import current_author_plan, authority_wave
 from tests.test_plan_review_engine import harness, _call, _finding, DECK_SPEC  # noqa: F401
 from tests._store_shared import result_exists
@@ -41,20 +41,28 @@ def test_last_critic_correction_retains_current_source(harness, monkeypatch, enf
     assert gate["closed"] is False
     assert gate["allow"] is True  # at cap: terminalization, never a clean verdict
     assert gate["status"] == ("author_stopped" if action == "stop" else "advisory_open" if enforcement == "advisory" else "cycles_exhausted")
-    if action == "stop" or enforcement == "blocking":
-        from ouroboros.outcomes import derive_loop_outcome
-        from ouroboros.project_dialogue import outcome_phase
-        outcome = derive_loop_outcome("Saved current plan; no implementation.", {}, {"force_plan_decision": gate})
-        assert outcome_phase({"status": "completed", "outcome_axes": outcome["outcome_axes"]}, {}) == "error"
+    # The live gate and binder read this legacy state through the read-only importer: the
+    # author plan superseded the critic wave, so no objection is open and the cap is history
+    # (owner batch 2, Q3=A); the outcome axis names no plan failure.
+    from ouroboros.outcomes import derive_loop_outcome
+    from ouroboros.owner_hurry import force_plan_decision
+    from ouroboros.project_dialogue import outcome_phase
+    decision = force_plan_decision(ctx, {}, enforcement=enforcement)
+    assert decision["allow"] is True and decision["status"] == "clear" and decision["source"] == "legacy_v2"
+    outcome = derive_loop_outcome("Saved current plan; no implementation.", {}, {"force_plan_decision": decision})
+    assert outcome_phase({"status": "completed", "outcome_axes": outcome["outcome_axes"]}, {}) == "done"
     from ouroboros.review_evidence_sections import _accept_effective_claims
-    claims, source, _ = _accept_effective_claims(ctx, {}, h.drive, ctx.task_id)
-    assert (source == "author_plan") is (enforcement == "advisory" and action == "finish")
-    if source == "author_plan":
-        assert claims[0]["claim"] == "the corrected claim"
+    claims, source, exhibit = _accept_effective_claims(ctx, {}, h.drive, ctx.task_id)
+    selected = enforcement == "advisory" and action == "finish"  # the one legacy selection the binder honours
+    assert (exhibit["binding"] == "legacy_author_plan") is selected
+    if selected:
+        assert source == "plan_review" and claims[0]["claim"] == "the corrected claim"
         from ouroboros.review_evidence import build_task_acceptance_evidence
         packet = build_task_acceptance_evidence(ctx, llm_trace={}, drive_root=h.drive, task_id=ctx.task_id, budget_chars=1000000)
-        assert packet["acceptance_claims_source"] == "author_plan"
+        assert packet["acceptance_claims_source"] == "plan_review"
         assert packet["task_contract"]["acceptance_claims"][0]["claim"] == "the corrected claim"
+    else:
+        assert claims == [] and exhibit["binding"] == "none"
     # A late old-wave update preserves the independently selected current source.
     record_plan_review_wave(h.drive, ctx.task_id, critic)
     assert load_plan_review_state(h.drive, ctx.task_id)["current_attempt"] == after["current_attempt"]
@@ -218,7 +226,7 @@ def test_author_action_error_names_unknown_field_and_value(harness):  # noqa: F8
 
 
 def test_plan_neutral_enums_are_named_first_and_default():
-    props = pr.get_tools()[0].schema["parameters"]["properties"]
+    props = pr.legacy_tool_entries()[0].schema["parameters"]["properties"]
     for schema, neutral in [(props["reviewer_effort"], "default"),
                             (props["review_disposition"]["properties"]["author_action"], "none")]:
         assert schema["enum"][0] == schema["default"] == neutral

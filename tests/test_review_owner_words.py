@@ -237,7 +237,7 @@ def _plan_ctx(harness, kind="root"):
 
 def test_the_plan_packet_puts_the_words_after_the_objective_and_never_trims_them(harness):
     from ouroboros.tools.plan_dialogue import attach_own_dialogue, fit_dialogue_view
-    from ouroboros.tools.plan_packet import build_plan_review_user_content, plan_user_stable_len
+    from ouroboros.tools.plan_packet_legacy import build_plan_review_user_content, plan_user_stable_len
 
     ctx = _plan_ctx(harness)
     for text in ("ROW_ONE", "ROW_TWO", "ROW_THREE"):

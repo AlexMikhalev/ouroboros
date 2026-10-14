@@ -252,6 +252,33 @@ def test_legacy_closed_wave_and_advisory_author_selection_bind_as_done_when():
     assert malformed["engaged"] is True and malformed["open_objections"] == []
 
 
+
+def test_legacy_in_flight_wave_is_one_pending_ask_that_discloses_and_never_holds():
+    """An in-flight v2 wave at upgrade: its unanswered reviewers are ONE pending ask the final
+    answer discloses (silence never holds); a blocking finding already landed still holds."""
+    from ouroboros.owner_hurry import plan_review_disclosure
+
+    state = _v2_state(closed=False)
+    wave = state["waves"][0]
+    wave.update(aggregate="DEGRADED", custody_pending=True,
+                actors=[{"slot": "s1", "ok": False, "operation_state": "pending_dispatch", "late_result_pending": True}])
+    legacy = pr.import_legacy_v2(state)
+    assert legacy["pending_asks"] == ["legacy wave " + "f" * 12] and legacy["open_objections"] == []
+    decision = _gate(pr.empty_record(), legacy=legacy)
+    assert decision["status"] == "awaiting" and decision["allow"] is True and decision["pending_asks"] == legacy["pending_asks"]
+    disclosed = plan_review_disclosure(decision)
+    assert "legacy wave ffffffffffff" in disclosed and "had not arrived" in disclosed and "silence holds nothing" in disclosed
+    # answered and settled: nothing pending, nothing disclosed
+    wave.update(custody_pending=False, actors=[{"slot": "s1", "ok": True, "operation_state": "settled", "late_result_pending": False}])
+    settled = pr.import_legacy_v2(state)
+    assert settled["pending_asks"] == [] and _gate(pr.empty_record(), legacy=settled)["status"] == "clear"
+    assert pr.import_legacy_v2(_v2_state(closed=True))["pending_asks"] == []
+    # a landed blocking finding holds whether or not the rest of the wave is still owed
+    held_state = _v2_state(closed=False, blocking_findings=("triad_old",))
+    held_state["waves"][0]["custody_pending"] = True
+    held = _gate(pr.empty_record(), legacy=pr.import_legacy_v2(held_state))
+    assert held["status"] == "held" and held["pending_asks"] == ["legacy wave " + "f" * 12]
+
 # ---------------------------------------------------------------- durable index
 
 def test_durable_record_round_trips_revisions_asks_and_replies(tmp_path):

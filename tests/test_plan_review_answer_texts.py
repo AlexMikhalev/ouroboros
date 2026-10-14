@@ -78,7 +78,7 @@ def test_cap_reached_texts_report_state_and_authority_without_an_escape_recipe()
 
 
 def test_disposition_schema_states_the_answer_route_and_escalation():
-    from ouroboros.tools.plan_review import _DISPOSITION_SCHEMA, get_tools
+    from ouroboros.tools.plan_review_legacy import _DISPOSITION_SCHEMA, legacy_tool_entries as get_tools
 
     description = _DISPOSITION_SCHEMA["description"]
     assert "merged by finding_id" in description
@@ -99,24 +99,11 @@ def test_disposition_schema_states_the_answer_route_and_escalation():
     assert "ignored when only collecting a recorded wave" in effort and "answering" not in effort
 
 
-def test_blocking_reminder_states_the_answer_route():
-    from ouroboros.owner_hurry import plan_review_reminder
-
-    held = plan_review_reminder({"outcome": "REVIEW_REQUIRED", "status": "open", "cycles_paid": 1})
-    assert "REVIEW_REQUIRED" in held and "the unchanged envelope with your items asks only that slot" in held
-    assert "do not rerun reviewers" not in held and "Implementation stays held" in held
-    revise = plan_review_reminder({"outcome": "REVISE_PLAN", "status": "open", "cycles_paid": 1})
-    assert "asks only the slots those items name" in revise and "a new envelope every slot reviews" in revise
-    assert "beside a disposition with confirm_fresh_panel=true" in revise
-    assert "a task-wide rail releases finalization, never implementation" in revise
-    assert "rail fires" not in revise and "rail fires" not in plan_review_reminder({"outcome": "", "status": "open"})
-
-
 def test_deadline_and_cap_producers_state_facts_not_advice(harness, monkeypatch):  # noqa: F811
     """The deadline rail names remaining time and the absent review; the cap rail names the
     open review, the released finalization and the owner's authority — neither advises the
     mind to proceed with a plan of its own or to seek a reviewer-free escape."""
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
     from ouroboros.deadline_utils import utc_now
     from ouroboros.tools.plan_review_runtime import plan_deadline_skip
 
@@ -143,7 +130,7 @@ def test_quiz_answer_never_closes_a_finding(harness):  # noqa: F811
     later accept citing the decision is what closes it (two-sided)."""
     from ouroboros import owner_quiz
     from ouroboros.task_results import load_plan_review_state
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
 
     harness.install({"s1": json.dumps([_finding("q1", "need_evidence", breaks="claim_1", summary="which?")]),
                      "s2": CLEAN, "s3": CLEAN})

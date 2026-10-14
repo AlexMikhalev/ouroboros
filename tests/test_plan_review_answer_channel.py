@@ -12,7 +12,7 @@ import json
 
 from ouroboros.task_results import (STATUS_RUNNING, load_plan_review_state, plan_review_wave,
     record_plan_review_dispositions, record_plan_review_wave, write_task_result)
-from ouroboros.tools import plan_review as pr
+from ouroboros.tools import plan_review_legacy as pr
 from ouroboros.tools.plan_review_artifacts import authority_wave, read_wave
 from tests.test_plan_review_engine import (  # noqa: F401
     CLEAN, DECK_SPEC, _call, _control, _finding, _state, _user_text, harness,
@@ -343,8 +343,8 @@ def _blocking(fid: str = "f1") -> str:
 
 
 def _objection(h, monkeypatch, *, cap: str = "5"):
-    """Under blocking: s1 objects (below quorum), s2 and s3 are clean → REVIEW_REQUIRED; the gate
-    holds while a paid cycle remains (at a spent cap finalization is released by the cap rail)."""
+    """Under blocking: s1 objects (below quorum), s2 and s3 are clean → REVIEW_REQUIRED in the retired
+    engine; the live gate holds on the imported objection (the cap never releases a plan)."""
     from ouroboros.owner_hurry import force_plan_decision
 
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", cap)
@@ -352,7 +352,10 @@ def _objection(h, monkeypatch, *, cap: str = "5"):
     ctx = h.make_ctx()
     out = _call(ctx)
     assert _control(out) == {"outcome": "REVIEW_REQUIRED", "closed": False}
-    assert force_plan_decision(ctx, {}, enforcement="blocking")["allow"] is (cap == "1")
+    # The live gate reads this legacy wave through the importer: s1's blocking finding is an open
+    # objection that holds under Blocking whatever the retired cap says (owner batch 2, Q3=A).
+    gate = force_plan_decision(ctx, {}, enforcement="blocking")
+    assert gate["allow"] is False and gate["status"] == "held" and gate["source"] == "legacy_v2"
     return ctx, _state(h)["waves"][-1]["request_fingerprint"]
 
 

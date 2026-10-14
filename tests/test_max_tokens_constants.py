@@ -142,7 +142,7 @@ def test_review_prompt_token_budget_is_ssot():
     # Plan review reserves output headroom inside the reviewer window (same class of
     # fix as scope review), but v6.80.0 replaced its module constants with PER-SLOT
     # calibrated caps: every slot cap must still stay inside the shared SSOT.
-    from ouroboros.tools.plan_review import _PLAN_REVIEW_MAX_TOKENS
+    from ouroboros.tools.plan_review_legacy import _PLAN_REVIEW_MAX_TOKENS
     from ouroboros.tools.review_synthesis import per_slot_input_token_limits
 
     limits = per_slot_input_token_limits(
@@ -497,7 +497,7 @@ def test_unevidenced_reviewer_keeps_the_full_window_assumption(tmp_path, monkeyp
 
     from ouroboros import capability_evidence
     from ouroboros.reviewer_window import REVIEWER_FULL_WINDOW, reviewer_context_window
-    from ouroboros.tools.plan_review import _PLAN_REVIEW_MAX_TOKENS
+    from ouroboros.tools.plan_review_legacy import _PLAN_REVIEW_MAX_TOKENS
     from ouroboros.tools.review_synthesis import per_slot_input_token_limits
 
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(tmp_path))
@@ -529,7 +529,7 @@ def test_known_small_window_reviewer_gets_its_real_window(tmp_path, monkeypatch)
 
     from ouroboros import capability_evidence
     from ouroboros.reviewer_window import reviewer_context_window
-    from ouroboros.tools.plan_review import _PLAN_REVIEW_MAX_TOKENS
+    from ouroboros.tools.plan_review_legacy import _PLAN_REVIEW_MAX_TOKENS
     from ouroboros.tools.review_synthesis import per_slot_input_token_limits
 
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(tmp_path))
@@ -716,7 +716,7 @@ def test_plan_review_sizing_honors_the_local_route(monkeypatch, tmp_path):
     failure on a supported install."""
     _local_only_install(monkeypatch, tmp_path)
 
-    from ouroboros.tools.plan_review import _PLAN_REVIEW_MAX_TOKENS
+    from ouroboros.tools.plan_review_legacy import _PLAN_REVIEW_MAX_TOKENS
     from ouroboros.tools.review_synthesis import per_slot_input_token_limits
 
     model = "openai/gpt-5.6-terra"

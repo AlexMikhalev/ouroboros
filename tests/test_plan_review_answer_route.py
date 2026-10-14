@@ -2,7 +2,8 @@
 ``task_results``/artifact store on ``tmp_path``, the fake review substrate of
 ``tests.test_plan_review_engine`` and the production finalization gate
 (``owner_hurry.force_plan_decision``), all under BLOCKING enforcement at the shipped
-cycle cap of 2 — the configuration every install starts from.
+cycle cap of 2. The gate reads the retired engine's waves through the read-only importer:
+an open blocking finding is an objection of its seat and holds; the cap releases nothing.
 
 Five routes: the objector retires after the addressed re-ask (GREEN, closed, the gate
 releases, the closed wave's claims bind acceptance); two objectors at quorum retire;
@@ -51,9 +52,11 @@ def _bound_claims(state: dict) -> tuple[list, str]:
     return effective_acceptance_claims({}, closed_plan_review_wave(state))
 
 
-def _objection(h, answers: dict) -> tuple:
+def _objection(h, answers: dict, *, holds: bool = True) -> tuple:
     """Cycle 1 at the shipped cap: the configured seats answer ``answers``; the wave is
-    open, one cycle is paid, and the blocking gate holds."""
+    open and one cycle is paid. The LIVE gate reads the wave through the read-only importer:
+    a blocking finding is an objection of its seat and holds under Blocking; questions and
+    notes are not objections, so they hold nothing (``holds=False``)."""
     assert review_max_cycles() == 2, "the route runs at the shipped default cap"
     sub = h.install(answers)
     ctx = h.make_ctx()
@@ -61,7 +64,11 @@ def _objection(h, answers: dict) -> tuple:
     assert not _control(out)["closed"], out
     assert len(sub.calls) == 1 and _state(h)["cycles_paid"] == 1
     gate = _gate(ctx)
-    assert gate["allow"] is False and gate["status"] == "open", gate
+    assert gate["source"] == "legacy_v2", gate
+    if holds:
+        assert gate["allow"] is False and gate["status"] == "held", gate
+    else:
+        assert gate["allow"] is True and gate["status"] == "clear", gate
     assert _bound_claims(_state(h)) == ([], "")  # no closed authority: nothing binds acceptance
     return ctx, _wave(h)["request_fingerprint"], sub
 
@@ -107,7 +114,7 @@ def test_e2e_reject_addressed_retire_green_under_blocking(harness):  # noqa: F81
     assert _ids(prior) == [("s1:f1", "reject")] and not prior["closed"]
 
     gate = _gate(ctx)
-    assert gate["allow"] is True and gate["status"] == "closed" and gate["closed"] is True
+    assert gate["allow"] is True and gate["status"] == "clear" and gate["holding"] == []  # the closed wave imports no objection
     claims, source = _bound_claims(state)
     assert source == "plan_review"
     assert [c["claim"] for c in claims] == DECK_SPEC["acceptance_claims"] and claims[0]["id"] == "claim_1"
@@ -140,9 +147,10 @@ def test_e2e_revise_plan_two_objectors_retire(harness):  # noqa: F811
 
 def test_e2e_unresolved_objector_spends_the_cap_and_exits_honestly(harness):  # noqa: F811
     """The re-ask at the final permitted cycle: s1 re-emits its finding → the wave stays
-    open, both cycles are spent, the typed cap state lands at once (no further envelope
-    needed), finalization is RELEASED for an honest blocked exit while no closed authority
-    exists, and any further re-ask is refused typed at $0 with the answers kept."""
+    open, both cycles are spent, the retired engine lands its typed cap state at once and
+    refuses any further re-ask typed at $0 with the answers kept. The LIVE gate still holds
+    on the standing objection: the cap releases nothing (owner batch 2, Q3=A); the exits are
+    the raiser's withdrawal, an honest stop, the owner's hurry or a change of enforcement."""
     ctx, fp, _sub1 = _objection(harness, {"s1": _blocking(), "s2": CLEAN, "s3": CLEAN})
     _reject(ctx, fp)
     sub2 = harness.install({"s1": _blocking(), "s2": CLEAN, "s3": CLEAN})
@@ -161,12 +169,10 @@ def test_e2e_unresolved_objector_spends_the_cap_and_exits_honestly(harness):  # 
     exhausted = _events(harness, "review_cycles_exhausted")
     assert exhausted and exhausted[-1]["surface"] == "plan_review" and exhausted[-1]["cycles_paid"] == 2
     gate = _gate(ctx)
-    assert gate["status"] == "cycles_exhausted" and gate["allow"] is True and gate["closed"] is False
-    assert gate["review_capacity_reason"] == "review_cycles_exhausted" and gate["outcome"] == "REVIEW_REQUIRED"
+    assert gate["status"] == "held" and gate["allow"] is False and [o["id"] for o in gate["open_objections"]] == ["s1:f1"]
     assert closed_plan_review_wave(state) is None and _bound_claims(state) == ([], "")
-    objective = derive_loop_outcome("done", {}, {"force_plan_decision": gate, "tool_calls": []})["outcome_axes"]["objective"]
-    assert (objective["status"], objective["outcome_tier"], objective["reason"]) == (
-        "fail", "blocked_with_evidence", "review_cycles_exhausted")
+    axes = derive_loop_outcome("done", {}, {"force_plan_decision": gate, "tool_calls": []})["outcome_axes"]
+    assert axes["objective"]["status"] != "fail" and axes["execution"]["plan_review"] == "objections_open"
 
     # A further re-ask at the spent cap: refused typed, nothing sent, the answer recorded.
     _reject(ctx, fp)
@@ -180,14 +186,13 @@ def test_e2e_unresolved_objector_spends_the_cap_and_exits_honestly(harness):  # 
     replay = _call(ctx)
     assert _control(replay) == {"outcome": "REVIEW_REQUIRED", "closed": False} and "cached exact review" in replay
     assert not sub3.calls and _state(harness)["cycles_paid"] == 2
-    assert _gate(ctx)["status"] == "cycles_exhausted" and _wave(harness)["cycles_exhausted"] is True
+    assert _gate(ctx)["status"] == "held" and _wave(harness)["cycles_exhausted"] is True
 
 
 def test_e2e_failed_objector_never_closes(harness):  # noqa: F811
     """s1 answers garbage to the re-ask: its recorded finding is CARRIED (disclosed), the
     wave stays REVIEW_REQUIRED and never turns GREEN; absence never retires a finding.
-    The gate before the re-ask holds; the final permitted cycle ending open lands the cap
-    state, so finalization is released for a blocked exit with no closed authority."""
+    The live gate holds before and after the re-ask: only the raiser withdraws."""
     ctx, fp, _sub1 = _objection(harness, {"s1": _blocking(), "s2": CLEAN, "s3": CLEAN})
     _reject(ctx, fp)
     assert _gate(ctx)["allow"] is False
@@ -208,8 +213,7 @@ def test_e2e_failed_objector_never_closes(harness):  # noqa: F811
     assert wave["addressed"]["slots"] == ["s1"] and wave["addressed"]["kept"] == ["s2", "s3"]
     assert closed_plan_review_wave(state) is None and _bound_claims(state) == ([], "")
     gate = _gate(ctx)
-    assert gate["closed"] is False and gate["outcome"] == "REVIEW_REQUIRED"
-    assert gate["status"] == "cycles_exhausted" and gate["allow"] is True  # the cap rail, not a verdict
+    assert gate["status"] == "held" and gate["allow"] is False and [o["id"] for o in gate["open_objections"]] == ["s1:f1"]
     # Nothing turns it GREEN afterwards: the answers stay recorded, no seat is asked again.
     sub3 = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
     later = _addressed(ctx, fp, "s1:f1")
@@ -221,11 +225,11 @@ def test_e2e_failed_objector_never_closes(harness):  # noqa: F811
 
 def test_e2e_no_need_path_closes_at_zero_cost(harness):  # noqa: F811
     """s1 asks the author (need_evidence on claim_1, no locator) and s2 leaves a note:
-    REVIEW_REQUIRED holds the gate; answering the note alone changes nothing (notes never
-    hold); the $0 accept of the question closes GREEN with no second transport call, one
-    cycle paid, and the gate releases with the claims bound."""
+    REVIEW_REQUIRED in the retired engine (the live gate holds on neither: questions and notes
+    are not objections); answering the note alone changes nothing; the $0 accept of the
+    question closes GREEN with no second transport call, one cycle paid, claims bound."""
     note = json.dumps([_finding("n1", "note", summary="a thought", rec="")])
-    ctx, fp, sub = _objection(harness, {"s1": json.dumps([_question("q1")]), "s2": note, "s3": CLEAN})
+    ctx, fp, sub = _objection(harness, {"s1": json.dumps([_question("q1")]), "s2": note, "s3": CLEAN}, holds=False)
     wave = _wave(harness)
     assert wave["aggregate"] == "REVIEW_REQUIRED"
     assert [(f["finding_id"], f["class"]) for f in wave["findings"]] == [("s1:q1", "need_evidence"), ("s2:n1", "note")]
@@ -233,7 +237,7 @@ def test_e2e_no_need_path_closes_at_zero_cost(harness):  # noqa: F811
 
     noted = _answer(ctx, fp, _item("s2:n1", "accept", "noted"))
     assert _control(noted) == {"outcome": "REVIEW_REQUIRED", "closed": False}
-    assert _gate(ctx)["allow"] is False and len(sub.calls) == 1
+    assert _gate(ctx)["allow"] is True and len(sub.calls) == 1  # a question is not an objection
 
     closed = _answer(ctx, fp, _item("s1:q1", "accept", "the author's word"))
     assert _control(closed) == {"outcome": "GREEN", "closed": True}
@@ -245,7 +249,7 @@ def test_e2e_no_need_path_closes_at_zero_cost(harness):  # noqa: F811
     assert _ids(wave) == [("s2:n1", "accept"), ("s1:q1", "accept")]
     assert [f["finding_id"] for f in wave["findings"]] == ["s1:q1", "s2:n1"]  # the record keeps both
     gate = _gate(ctx)
-    assert gate["allow"] is True and gate["status"] == "closed"
+    assert gate["allow"] is True and gate["status"] == "clear"
     claims, source = _bound_claims(state)
     assert source == "plan_review" and [c["claim"] for c in claims] == DECK_SPEC["acceptance_claims"]
     # Two-sided: an identical envelope after closure replays the verdict free, sends nothing.

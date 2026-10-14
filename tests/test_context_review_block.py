@@ -219,7 +219,7 @@ def test_an_invalid_catalog_is_an_error_with_an_empty_pool_not_an_absent_one(mon
     assert block["error"] == review_pool_state(os.environ[SUBAGENTS_SETTING])["error"] and block["error"]
     assert (block["pool"], block["pool_empty"]) == ([], False)
     assert "main_self_review" not in block, "a malformed catalog refuses; it never falls back to Main"
-    assert block["rule"] and block["surfaces"]["plan_review"] == "every pool row"
+    assert block["rule"] and block["surfaces"]["plan_review"] == "ask='council' = every pool row; ask=[ids] = those rows"
 
 
 def test_the_block_never_reads_the_last_execution(monkeypatch):

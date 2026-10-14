@@ -46,7 +46,7 @@ def first_plan(harness):
     ctx = harness.make_ctx()
     assert _control(_call(ctx))['closed']
     first = _state(harness)['waves'][-1]
-    from ouroboros.tools.plan_review import _apply_disposition
+    from ouroboros.tools.plan_review_legacy import _apply_disposition
     _apply_disposition(ctx, {'review_fingerprint': first['request_fingerprint'], 'items': [
         {'finding_id': first['findings'][0]['finding_id'], 'decision': 'reject', 'rationale': LONG}]})
     return ctx, sub
@@ -232,7 +232,7 @@ def test_two_decisions_partial_selection_stale_entry_and_new_finding_stay_local(
     assert _control(_call(ctx))['closed']
     wave = _state(harness)['waves'][-1]
     reasons = [LONG, 'An independent reason for the second concern. ' * 700]
-    from ouroboros.tools.plan_review import _apply_disposition
+    from ouroboros.tools.plan_review_legacy import _apply_disposition
     _apply_disposition(ctx, {'review_fingerprint': wave['request_fingerprint'], 'items': [
         {'finding_id': f['finding_id'], 'decision': 'reject', 'rationale': r}
         for f, r in zip(wave['findings'], reasons)]})

@@ -134,7 +134,7 @@ def build_plan_review_packet(
     """Build the api packet and route-owned retrieving-session task."""
     from ouroboros.context_layout import design_navigation, generate_doc_nav_map
     from ouroboros.tools import plan_spec
-    from ouroboros.tools.plan_packet import (
+    from ouroboros.tools.plan_packet_legacy import (  # the retired engine's own packet builder
         build_plan_review_system_prompt, build_plan_review_user_content,
     )
     from ouroboros.tools.review_helpers import load_checklist_section
@@ -450,6 +450,7 @@ async def run_plan_review_slots(
     from ouroboros.review_substrate import ReviewRequest, run_review_request
     from ouroboros.model_wait import copy_wait_context
     from ouroboros.tools.plan_packet import plan_user_stable_len
+    from ouroboros.tools.plan_packet_legacy import plan_user_stable_len as _legacy_stable_len  # the retired engine's marker
     from ouroboros.tools.review_synthesis import build_plan_review_messages
     from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
@@ -457,7 +458,7 @@ async def run_plan_review_slots(
         surface="plan_review",
         goal="Review the proposed plan spec before the work starts.",
         messages=build_plan_review_messages(
-            system_prompt, user_content, plan_user_stable_len(user_content),
+            system_prompt, user_content, plan_user_stable_len(user_content) or _legacy_stable_len(user_content),
         ),
         slot_messages=dict(slot_messages or {}),
         slot_session_tasks=dict(slot_session_tasks or {}),

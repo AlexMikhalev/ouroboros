@@ -377,7 +377,7 @@ def gate_projection(record: Mapping[str, Any], *, enforcement: str, cyber_pro: b
                 "open_objections": [], "holding": [], "pending_asks": [], "revision": 0}
     objections = open_objections(record, legacy)
     holding = [o for o in objections if o.get("holds")]
-    pending = [str(a.get("ask_id") or "") for a in pending_asks(record)]
+    pending = [str(a.get("ask_id") or "") for a in pending_asks(record)] + [str(x) for x in (legacy or {}).get("pending_asks") or []]
     dispatched = asks_dispatched(record) + int((legacy or {}).get("asks_dispatched") or 0)
     latest = latest_revision(record)
     decision: Dict[str, Any] = {
@@ -466,10 +466,13 @@ def import_legacy_v2(state: Any, *, author_plan: Optional[Mapping[str, Any]] = N
     entered the old gate), the OPEN blocking findings of the current open wave as
     objections of their seats (pool rows of that wave were owner-marked), and the
     claims the old organ had selected (a CLOSED current wave's spec claims, or an
-    Advisory author ``finish`` selection) as ``done_when`` with legacy provenance.
+    Advisory author ``finish`` selection) as ``done_when`` with legacy provenance, and
+    an open wave whose reviewers had not all answered as one pending ask (``legacy wave
+    <fingerprint>``: silence never holds, but the final answer discloses it).
     Malformed attempts and waves are history, never new objections or promises."""
     if not isinstance(state, dict):
-        return {"engaged": False, "open_objections": [], "done_when": [], "done_when_source": "", "asks_dispatched": 0}
+        return {"engaged": False, "open_objections": [], "done_when": [], "done_when_source": "", "asks_dispatched": 0,
+                "pending_asks": []}
     waves = [w for w in state.get("waves") or [] if isinstance(w, dict)]
     attempt = state.get("current_attempt") if isinstance(state.get("current_attempt"), dict) else {}
     legacy_v1 = state.get("legacy_v1_projection") if isinstance(state.get("legacy_v1_projection"), dict) else {}
@@ -479,7 +482,12 @@ def import_legacy_v2(state: Any, *, author_plan: Optional[Mapping[str, Any]] = N
     objections: List[Dict[str, Any]] = []
     done_when: List[Dict[str, Any]] = []
     source = ""
+    pending: List[str] = []
     if isinstance(current, dict) and not current.get("closed"):
+        actors = [a for a in current.get("actors") or [] if isinstance(a, dict)]
+        if current.get("custody_pending") or any(
+                a.get("late_result_pending") or str(a.get("operation_state") or "") == "pending_dispatch" for a in actors):
+            pending.append(f"legacy wave {(fingerprint or str(current.get('request_fingerprint') or ''))[:12] or '?'}")
         for finding in current.get("findings") or []:
             if not isinstance(finding, dict) or str(finding.get("class") or "") != "blocking":
                 continue
@@ -498,7 +506,7 @@ def import_legacy_v2(state: Any, *, author_plan: Optional[Mapping[str, Any]] = N
     elif legacy_v1.get("status") == "closed":
         done_when, source = normalize_done_when(legacy_v1.get("acceptance_claims")), "legacy_closed_wave"
     return {"engaged": engaged_fact, "open_objections": objections, "done_when": done_when, "done_when_source": source,
-            "fingerprint": fingerprint, "asks_dispatched": sum(1 for w in waves if w.get("paid"))}
+            "fingerprint": fingerprint, "asks_dispatched": sum(1 for w in waves if w.get("paid")), "pending_asks": pending}
 
 
 # ------------------------------------------------------------------ read view

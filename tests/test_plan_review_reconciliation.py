@@ -219,7 +219,7 @@ def test_malformed_paid_wave_cannot_bypass_resume_validation(
     harness, monkeypatch, actors, custody_pending,
 ):
     """Malformed exact custody must not fall through to a fresh paid cycle."""
-    from ouroboros.tools import plan_review as plan_review_tool
+    from ouroboros.tools import plan_review_legacy as plan_review_tool
 
     calls = []
     _install_two_turn_substrate(monkeypatch, calls)
@@ -252,7 +252,7 @@ def test_contradictory_positive_capture_reenters_custody_instead_of_fresh_cycle(
 ):
     """A synthetic $0 label cannot erase a positive physical-attempt fact."""
     import ouroboros.review_custody as review_custody
-    from ouroboros.tools import plan_review as plan_review_tool
+    from ouroboros.tools import plan_review_legacy as plan_review_tool
 
     calls = []
     _install_two_turn_substrate(monkeypatch, calls)
@@ -536,7 +536,7 @@ def _install_barrier_substrate(monkeypatch, calls, *, texts=None, still_pending=
 
 
 def _collect(ctx, fingerprint, items=()):
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
 
     return pr._handle_plan_task(ctx, review_disposition={"review_fingerprint": fingerprint, "items": list(items)})
 
@@ -665,7 +665,7 @@ def test_collection_rebuilds_the_roster_the_wave_was_dispatched_with(harness, mo
     recorded declaration, so it finds the same roster instead of refusing."""
     import dataclasses
 
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
 
     def build(default_effort=""):
         return [dataclasses.replace(slot, effort=default_effort or slot.effort, declared_effort=default_effort)

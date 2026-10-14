@@ -241,7 +241,7 @@ def test_a_wave_stored_before_affected_paths_still_closes_at_zero_cost(harness):
     `review_disposition` with no reviewer call, and its recorded identity does not move."""
     from ouroboros import task_results
     from ouroboros.tools import plan_review_artifacts as artifacts
-    from ouroboros.tools.plan_review import _apply_disposition
+    from ouroboros.tools.plan_review_legacy import _apply_disposition
 
     legacy_spec, errors = plan_spec.normalize_spec({
         "goal": "Deliver the TSMC analysis",

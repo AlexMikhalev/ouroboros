@@ -128,6 +128,27 @@ def get_tools():
     return [ToolEntry(name="plan_task", schema=_SCHEMA, handler=_handle_plan_task, timeout_sec=_plan_task_tool_timeout_sec())]
 
 
+def _legacy_facts(state_root: Any, task_id: str) -> Dict[str, Any]:
+    """The read-only projection of a v1/v2 ``plan_review_state`` (an in-flight task at
+    upgrade keeps its open blocking findings as objections of their seats)."""
+    from ouroboros.task_results import load_plan_review_state
+
+    try:
+        state = load_plan_review_state(state_root, task_id)
+    except Exception:
+        log.debug("legacy plan state unreadable for %s", task_id, exc_info=True)
+        return {}
+    author_plan = None
+    if state.get("current_attempt"):
+        from ouroboros.tools.plan_review_artifacts import current_author_plan
+
+        try:
+            author_plan = current_author_plan(state_root, task_id, state)
+        except (OSError, ValueError):
+            author_plan = None
+    return plan_record.import_legacy_v2(state, author_plan=author_plan)
+
+
 # ------------------------------------------------------------------ refusals
 
 def _refuse(ctx: ToolContext, code: str, text: str) -> str:
@@ -282,7 +303,7 @@ def _ask_summary(prepared: Any, record: Mapping[str, Any]) -> str:
 
 # ------------------------------------------------------------------ rendering
 
-def _decision(ctx: ToolContext, record: Mapping[str, Any]) -> Dict[str, Any]:
+def _decision(ctx: ToolContext, record: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     from ouroboros.owner_hurry import latched
     from ouroboros.tools.review_helpers import review_enforcement_blocks
 
@@ -290,7 +311,7 @@ def _decision(ctx: ToolContext, record: Mapping[str, Any]) -> Dict[str, Any]:
     metadata = metadata if isinstance(metadata, Mapping) else {}
     return plan_record.gate_projection(
         record, enforcement=str(get_review_enforcement() or ""), cyber_pro=not review_enforcement_blocks("blocking"),
-        hurry=latched(ctx) is not None, force_plan=metadata.get("force_plan") is True)
+        hurry=latched(ctx) is not None, force_plan=metadata.get("force_plan") is True, legacy=legacy)
 
 
 def _render_done_when(rows: List[Mapping[str, Any]]) -> str:
@@ -300,12 +321,17 @@ def _render_done_when(rows: List[Mapping[str, Any]]) -> str:
                      for r in rows)
 
 
-def render_record(record: Mapping[str, Any], decision: Mapping[str, Any]) -> str:
+def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = None) -> str:
     """The read view as text: current revision, council, open objections, gate facts."""
-    view = plan_record.read_view(record)
+    view = plan_record.read_view(record, legacy)
     revision = view.get("revision")
     if revision is None:
-        return "No plan revision recorded for this task yet. Write one: goal, done_when, affected_paths ([] for no files), plan."
+        imported = [o for o in (decision.get("open_objections") or []) if o.get("legacy")]
+        lead = "No plan revision recorded for this task yet. Write one: goal, done_when, affected_paths ([] for no files), plan."
+        if imported:
+            lead += ("\n\nImported from this task's previous plan review (still open until their raisers withdraw them):\n- "
+                     + "\n- ".join(f"{o['seat_id']} / {o['id']}: {o.get('text')}" for o in imported))
+        return lead
     lines = [f"# Plan — revision {revision.get('n')} of {view['revisions']}"
              + (" (body plan: " + str(revision.get("body_note") or "changes Ouroboros's own body") + ")" if revision.get("body") else "")]
     lines += [f"goal: {revision.get('goal') or '(none)'}", "done_when:", _render_done_when(revision.get("done_when") or []),
@@ -370,7 +396,7 @@ def render_record(record: Mapping[str, Any], decision: Mapping[str, Any]) -> str
     elif status == "objections_open":
         lines.append("Open objections are disclosed in your final answer; nothing holds it.")
     elif status == "awaiting":
-        lines.append(f"Answers still on their way for ask(s) {', '.join(view['pending_asks'])}; silence never holds.")
+        lines.append(f"Answers still on their way for ask(s) {', '.join(decision.get('pending_asks') or view['pending_asks'])}; silence never holds.")
     elif status == "force_plan_unmet":
         lines.append("This task was admitted with a planning obligation: ask the council before you finish.")
     else:
@@ -379,8 +405,10 @@ def render_record(record: Mapping[str, Any], decision: Mapping[str, Any]) -> str
 
 
 def _publish(ctx: ToolContext, record: Mapping[str, Any], *, effect: str, notes: List[str]) -> str:
-    decision = _decision(ctx, record)
-    text = ("\n".join(notes) + "\n\n" if notes else "") + render_record(record, decision)
+    state_root, task_id = plan_ask.state_location(ctx)
+    legacy = _legacy_facts(state_root, task_id)
+    decision = _decision(ctx, record, legacy)
+    text = ("\n".join(notes) + "\n\n" if notes else "") + render_record(record, decision, legacy)
     latest = plan_record.latest_revision(record)
     return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=text, meta={
         "plan_effect": effect,
@@ -389,3 +417,8 @@ def _publish(ctx: ToolContext, record: Mapping[str, Any], *, effect: str, notes:
         "plan_holding": len(decision.get("holding") or []),
         "plan_pending_asks": len(decision.get("pending_asks") or []),
     }))
+
+
+# The retired form reaches the handler through the registry's hidden-legacy seam so the
+# refusal can name the new form; the model-visible schema never lists these keys.
+setattr(_handle_plan_task, "_hidden_legacy_params", tuple(sorted(RETIRED_FIELDS)))

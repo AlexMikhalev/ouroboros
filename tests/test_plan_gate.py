@@ -8,7 +8,6 @@ import json
 import queue
 from types import SimpleNamespace
 
-import pytest
 
 from ouroboros import owner_hurry as oh
 from ouroboros import plan_record

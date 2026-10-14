@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroboros.tools import plan_review as pr
+from ouroboros.tools import plan_review_legacy as pr
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.review_synthesis import PLAN_REVIEW_CONTROL_PREFIX
 from tests._store_shared import read_result, seed_result
@@ -326,26 +326,27 @@ def test_cap_reached_returns_typed_exhausted_result_hold_and_event(harness, monk
 
     gate = plan_review_gate_projection(state, "blocking")
     assert gate["status"] == "cycles_exhausted" and gate["allow"] is True and gate["closed"] is False
+    # The live gate reads the spent wave through the importer: its two open blocking findings
+    # are objections of their seats and hold under Blocking (the cap itself is history, Q3=A).
     decision = force_plan_decision(ctx, {}, enforcement="blocking")
-    assert decision["required"] and decision["self_opened"] and decision["status"] == "cycles_exhausted"
-    # Owner-readable prose says the ending in words; the ledger identifier
-    # stays on the typed objective axis asserted below.
-    disclosure = plan_review_disclosure(decision)
-    assert "the task ends blocked with its evidence recorded" in disclosure
-    assert "blocked_with_evidence" not in disclosure
+    assert decision["required"] and decision["self_opened"] and decision["status"] == "held"
+    assert decision["source"] == "legacy_v2" and len(decision["holding"]) == 2
+    assert {o["seat_id"] for o in decision["open_objections"]} == {"s1", "s2"}
+    assert "s1/" in plan_review_disclosure(decision) and "blocked_with_evidence" not in plan_review_disclosure(decision)
     events = []
     while not harness.events.empty():
         events.append(harness.events.get_nowait())
     typed = [e for e in events if e.get("type") == "log_event"
              and e.get("data", {}).get("type") == "review_cycles_exhausted"]
     assert typed and typed[0]["data"]["surface"] == "plan_review" and typed[0]["data"]["cap"] == 1
-    # outcomes: a blocking plan review whose cap is spent terminalizes BLOCKED, never best_effort
+    # outcomes: open objections ride the execution axis and never fail the objective by themselves
     from ouroboros.outcomes import derive_loop_outcome
 
-    outcome = derive_loop_outcome("done", {}, {"force_plan_decision": decision, "tool_calls": []})
-    assert outcome["outcome_axes"]["objective"]["status"] == "fail"
-    assert outcome["outcome_axes"]["objective"]["outcome_tier"] == "blocked_with_evidence"
-    assert outcome["outcome_axes"]["objective"]["reason"] == "review_cycles_exhausted"
+    advisory = force_plan_decision(ctx, {}, enforcement="advisory")
+    assert advisory["allow"] is True and advisory["status"] == "objections_open"
+    outcome = derive_loop_outcome("done", {}, {"force_plan_decision": advisory, "tool_calls": []})
+    assert outcome["outcome_axes"]["execution"]["plan_review"] == "objections_open"
+    assert outcome["outcome_axes"]["objective"]["status"] != "fail"
 
 
 def test_cap_under_advisory_lets_the_agent_proceed_with_disclosure(harness, monkeypatch):
@@ -360,9 +361,10 @@ def test_cap_under_advisory_lets_the_agent_proceed_with_disclosure(harness, monk
     assert "host records and" not in second and "your own answer is where they are stated" in second
     from ouroboros.owner_hurry import force_plan_decision, plan_review_disclosure
 
+    # Through the importer a note is not an objection: nothing is open, nothing is disclosed.
     decision = force_plan_decision(ctx, {}, enforcement="advisory")
-    assert decision["allow"] is True and decision["status"] == "advisory_open"
-    assert "advisory" in plan_review_disclosure(decision)
+    assert decision["allow"] is True and decision["status"] == "clear" and decision["source"] == "legacy_v2"
+    assert plan_review_disclosure(decision) == ""
 
 
 def test_dispatched_degraded_wave_pays_and_empty_epoch_never_caches(harness):
@@ -578,23 +580,28 @@ def test_blocking_without_valid_breaks_is_demoted_to_note(harness):
 
 
 def test_hold_on_self_opened_plan_under_blocking_and_advisory_disclosure(harness):
+    """Through the read-only importer, a self-opened legacy wave with open blocking findings
+    holds under Blocking, is disclosed under Advisory and is released by a hard rail."""
     from ouroboros.owner_hurry import force_plan_decision, plan_review_disclosure, plan_review_reminder
 
-    note = json.dumps([_finding("n1", "need_evidence", locator="notes.md")])
-    harness.install({"s1": note, "s2": CLEAN, "s3": CLEAN})
+    blocking = json.dumps([_finding("f1", "blocking", breaks="claim_1")])
+    harness.install({"s1": blocking, "s2": blocking, "s3": CLEAN})
     ctx = harness.make_ctx()  # no force_plan: the task opened the review itself
     before = force_plan_decision(ctx, {}, enforcement="blocking")
-    assert before == {"required": False, "allow": True, "status": "not_required"}
+    assert (before["required"], before["allow"], before["status"]) == (False, True, "not_required")
     _call(ctx)
     held = force_plan_decision(ctx, {}, enforcement="blocking")
-    assert held["required"] and held["self_opened"] and held["allow"] is False and held["status"] == "open"
-    assert "REVIEW_REQUIRED" in plan_review_reminder(held)
+    assert held["required"] and held["self_opened"] and held["allow"] is False and held["status"] == "held"
+    assert {o["seat_id"] for o in held["open_objections"]} == {"s1", "s2"} and all(o["legacy"] for o in held["open_objections"])
+    reminder = plan_review_reminder(held)
+    assert reminder.startswith("[PLAN_REVIEW_HOLD]") and "s1/" in reminder and "imported from the previous plan review" in reminder
     advisory = force_plan_decision(ctx, {}, enforcement="advisory")
-    assert advisory["allow"] is True and advisory["status"] == "advisory_open"
+    assert advisory["allow"] is True and advisory["status"] == "objections_open"
     assert "advisory enforcement" in plan_review_disclosure(advisory)
-    # A real rail releases the hold while preserving the open-review disclosure.
+    # A real rail releases the hold while preserving the open-objection disclosure.
     railed = force_plan_decision(ctx, {}, hard_rail="round_limit", enforcement="blocking")
     assert railed["allow"] is True and railed["status"] == "rail_degraded"
+    assert "round_limit" in plan_review_disclosure(railed)
 
 
 # ------------------------------------------------------------- v1 read compat (S5)
@@ -844,10 +851,10 @@ def test_ratchet_module_sizes():
     from ouroboros.size_ratchet_manifest import BAND_PATHS
 
     repo = pathlib.Path(pr.__file__).resolve().parents[2]
-    lines = len((repo / "ouroboros" / "tools" / "plan_review.py").read_text(encoding="utf-8").splitlines())
+    lines = len((repo / "ouroboros" / "tools" / "plan_review_legacy.py").read_text(encoding="utf-8").splitlines())
     assert lines <= 1500
     if lines > 1000:
-        assert (BAND_PATHS.get("ouroboros/tools/plan_review.py") or "").strip()
+        assert (BAND_PATHS.get("ouroboros/tools/plan_review_legacy.py") or "").strip()
     assert len((repo / "ouroboros" / "config.py").read_text(encoding="utf-8").splitlines()) <= 1600
 
 
@@ -906,7 +913,7 @@ def test_blocking_finding_below_quorum_stays_open_after_disposition():
 def test_packet_uses_the_REAL_checklist_section_and_its_findings_only_contract():
     """C-04: the shipped Plan Review Checklist must agree with the parsed contract."""
     from ouroboros.tools.review_helpers import load_checklist_section
-    from ouroboros.tools.plan_packet import build_plan_review_system_prompt
+    from ouroboros.tools.plan_packet_legacy import build_plan_review_system_prompt
 
     section = load_checklist_section("Plan Review Checklist")
     assert section and len(section) > 500
@@ -1105,7 +1112,7 @@ def test_evidence_prefix_is_cache_stable_across_delta_cycles():
     """I-14 / audit R2: the cache boundary must be real — objective/spec/prose/evidence are
     byte-identical between cycle 1 and cycle 2 even when the agent's exploration log and the
     prior-cycle history DIFFER (they do, on every real delta cycle)."""
-    from ouroboros.tools.plan_packet import build_plan_review_user_content, plan_user_stable_len
+    from ouroboros.tools.plan_packet_legacy import build_plan_review_user_content, plan_user_stable_len
     from ouroboros.tools import plan_spec
 
     spec, _ = plan_spec.normalize_spec({"goal": "Ship the deck", "acceptance_claims": ["5 slides"]})
@@ -1299,28 +1306,6 @@ def test_nothing_dispatched_wave_stays_unpaid_and_preserves_the_paid_predecessor
     assert wave["findings"] and wave["dispositions"], "the paid predecessor survives"
     assert wave["degraded_retries"] == 1
     assert state["cycles_paid"] == 1, "a nothing-dispatched wave charges nothing"
-
-
-def test_session_output_schema_for_plan_review_can_carry_a_blocking_finding():
-    """Audit R9 / final-gate finding: the plan-review session schema must admit the plan
-    element contract (a conformant answer CAN carry a blocking finding); the generic
-    item/verdict shape could not."""
-    from ouroboros.review_execution import review_session_output_schema
-    from ouroboros.tools import plan_spec
-
-    schema = review_session_output_schema("plan_review")
-    assert schema is plan_spec.PLAN_REVIEW_SESSION_OUTPUT_SCHEMA
-    props = schema["properties"]["findings"]["items"]["properties"]
-    assert set(props) >= {"id", "class", "breaks", "locator", "summary", "recommendation"}
-    assert props["class"]["enum"] == ["blocking", "note", "need_evidence"]
-    assert "verdict" not in props
-    # a conformant blocking finding validates as blocking, not as a demoted note
-    findings, disclosures, _ = plan_spec.validate_findings(
-        [{"id": "f1", "class": "blocking", "breaks": "goal", "summary": "s", "recommendation": "r"}],
-        spec_ids={"goal"}, seen_locators=(), slot="s1")
-    assert findings[0]["class"] == "blocking" and disclosures == []
-    # and the generic surfaces still get the generic schema
-    assert review_session_output_schema("triad") is not schema
 
 
 def test_engine_denies_the_runtime_data_plane_as_evidence(harness, tmp_path, monkeypatch):

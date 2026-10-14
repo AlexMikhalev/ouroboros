@@ -198,7 +198,7 @@ def test_a_tool_may_speak_in_the_models_voice_only_with_the_narration_fact():
     """Through the real task binder, a tool that relays the model's own words passes the
     typed ``narration`` fact and the frame is the assistant's; the same text without the
     keyword stays a host note. The plan-review author paths use exactly this seam."""
-    from ouroboros.tools.plan_review import _narrate_author_rationale
+    from ouroboros.tools.plan_review_legacy import _narrate_author_rationale
 
     agent, events = _agent()
     agent._emit_progress = partial(OuroborosAgent._emit_progress, agent)
@@ -221,7 +221,7 @@ def test_a_tool_may_speak_in_the_models_voice_only_with_the_narration_fact():
 def test_an_unbound_tool_context_swallows_the_narration_fact(tmp_path):
     """A ToolContext nobody bound to an agent (the dataclass default) accepts the same
     keyword facts the real binder does, so an author finish can never raise on it."""
-    from ouroboros.tools.plan_review import _narrate_author_rationale
+    from ouroboros.tools.plan_review_legacy import _narrate_author_rationale
     from ouroboros.tools.tool_context import ToolContext
 
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)

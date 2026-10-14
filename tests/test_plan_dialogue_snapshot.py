@@ -260,7 +260,7 @@ def test_dialogue_source_survives_real_child_promotion_and_cleanup(harness):
     ctx.drive_root = child
     ctx.current_chat_id = 1
     from tests.test_plan_review_engine import _finding
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
     harness.install({"s1": json.dumps([_finding("note", "note")]), "s2": CLEAN, "s3": CLEAN})
     append_jsonl(child / "logs" / "chat.jsonl", {"direction": "in", "chat_id": 1, "text": "Must survive cleanup"})
     _call(ctx)
@@ -303,7 +303,7 @@ def test_same_root_sibling_rooms_are_pointers_and_unrelated_rooms_stay_private(h
 
 
 def test_budget_prices_the_actual_window_fitted_inputs(harness, monkeypatch):
-    from ouroboros.tools import plan_review as pr, review_synthesis
+    from ouroboros.tools import plan_review_legacy as pr, review_synthesis
     from ouroboros import usage_accounting as ua
     from tests.test_plan_review_engine import _user_text
     from ouroboros.tools.plan_review_runtime import PLAN_REVIEW_MAX_TOKENS
@@ -465,7 +465,7 @@ def test_the_seat_line_follows_the_cache_stable_prefix_on_every_api_slot(harness
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.tools import plan_spec, review_synthesis
     from ouroboros.tools.plan_dialogue import dialogue_slot_inputs
-    from ouroboros.tools.plan_packet import build_plan_review_user_content, plan_user_stable_len
+    from ouroboros.tools.plan_packet_legacy import build_plan_review_user_content, plan_user_stable_len
     from tests.test_plan_review_engine import DECK_SPEC, _user_text
 
     spec, _ = plan_spec.normalize_spec({**DECK_SPEC, "goal": "Ship the deck"})

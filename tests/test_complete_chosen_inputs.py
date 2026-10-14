@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from ouroboros.tools import plan_packet, plan_spec
+from ouroboros.tools import plan_packet_legacy as plan_packet, plan_spec
 
 
 @pytest.mark.parametrize("field", ["goal", "in_scope", "non_goals", "invariants",

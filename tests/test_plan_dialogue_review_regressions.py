@@ -84,7 +84,7 @@ def test_missing_historical_policy_is_a_typed_collection_failure(harness, monkey
 
 
 def test_paid_same_author_retry_discloses_its_recorded_snapshot(harness, monkeypatch):
-    from ouroboros.tools import plan_review
+    from ouroboros.tools import plan_review_legacy as plan_review
     from tests.test_plan_review_epoch import _patch_health
 
     _patch_health(monkeypatch, lambda slots: {})

@@ -267,7 +267,7 @@ def test_plan_api_and_session_receive_same_map_without_rule_content(harness, mon
     ("unknown", "event.py"), ("folderless", ""),
 ])
 def test_plan_navigation_respects_body_identity_without_changing_gate(harness, subject, affected):
-    from ouroboros.tools.plan_review import _PlanRequest, build_plan_review_packet_for_dry_run
+    from ouroboros.tools.plan_review_legacy import _PlanRequest, build_plan_review_packet_for_dry_run
 
     source = _design(harness.system)
     _design(harness.workspace, "# Workspace\n\n## Workspace design\n\nWorkspace rule.\n")
