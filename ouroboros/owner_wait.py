@@ -91,7 +91,13 @@ def _fresh_wake(ctx: Any, quiz_id: str, outcome: str) -> str:
     reason the resume was requested with; anything else replaces only
     ``unknown``, so a bound that ended the wait keeps saying so.
     """
-    observed = classify_wake(_wait_entries(ctx), quiz_id)
+    try:
+        observed = classify_wake(_wait_entries(ctx), quiz_id)
+    except Exception:
+        if outcome == "unknown":
+            raise  # A failed refresh cannot establish a wake on its own.
+        log.warning("Wake refresh unreadable for %s; retaining %s", ctx.task_id, outcome, exc_info=True)
+        return outcome
     if observed in {"answer", "owner_text", "control:finalize_now", "control:owner_pause"}:
         return observed
     return observed if outcome == "unknown" else outcome
@@ -244,7 +250,7 @@ def checkpoint_owner_wait(ctx: Any, messages: list, trace: dict, usage: dict,
     return {
         "wait_id": wait_id, "quiz_id": quiz_id,
         **bound,
-        # A model sleep (``model_sleep``): only its selected sources wake it.
+        # A model sleep uses model_sleep's source and question readiness contract.
         "reason": reason, **({"sleep": dict(sleep),
                                 "sleep_started_at": float(getattr(ctx, "_model_sleep_started", 0) or time.time())}
                                if sleep else {}),
@@ -807,6 +813,7 @@ def wait_after_tools(ctx: Any, messages: list, trace: dict, usage: dict,
         finally:
             slept = model_sleep.end(ctx)  # through capacity reacquisition: the task runs again now
         messages.append(model_sleep.wake_notice(sleep, str(outcome or ""), slept))
+        model_sleep.append_question_notice(ctx, str(outcome or ""), messages)
         ctx._model_sleep = None
     else:
         outcome = callback(ctx, checkpoint)
@@ -901,7 +908,11 @@ def resume_native_loop(tools: Any, state: dict, messages: list, trace: dict,
     # The bound survived the restart as an absolute stamp, so the cold
     # continuation can ALSO end on it — and a peer wake or a hurry is no more
     # an answer cold than warm: the same notice seam says so.
-    append_wake_notice(ctx, cold_checkpoint or {}, outcome, messages)
+    if (cold_checkpoint or {}).get("reason") == "sleep":
+        from ouroboros.model_sleep import append_question_notice
+        append_question_notice(ctx, str(outcome or ""), messages)
+    else:
+        append_wake_notice(ctx, cold_checkpoint or {}, outcome, messages)
     return (ctx.active_model, ctx.active_effort, ctx.active_use_local,
             mode, state["round_idx"], plan)
 

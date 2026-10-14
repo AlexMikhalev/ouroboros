@@ -1358,10 +1358,10 @@ def _resume_disclosure(ctx: Any, row: Dict[str, Any], state: Dict[str, Any], gra
     pending = pending_tool_call_ids(messages)
     abandoned = [str(item) for item in ((row.get("resume_point") or {}).get("abandoned_model_attempts") or [])]
     if str(row.get("reason") or "") == REASON_SLEEP and not pending:
-        from ouroboros.model_sleep import wake_notice
+        from ouroboros import model_sleep, sleep_custody
 
         slept = max(0.0, float(grant["consumed_at"]) - float(row.get("paused_at") or grant["consumed_at"]))
-        messages.append(wake_notice({**(row.get("sleep") or {}), "mode": "cold"},
+        messages.append(model_sleep.wake_notice({**(row.get("sleep") or {}), "mode": "cold"},
                                     str((row.get("sleep_ready") or {}).get("reason") or ""), slept))
         if row.get("external_custody"):
             messages.append({"role": "user", "content": (
@@ -1369,8 +1369,8 @@ def _resume_disclosure(ctx: Any, row: Dict[str, Any], state: Dict[str, Any], gra
                 "You remain their author and may inspect, answer, message or cancel them. "
                 "Retained output is not consumed or accepted. Current observations: "
                 + json.dumps(external, ensure_ascii=False))})
-            from ouroboros.sleep_custody import record_question_notice
-            record_question_notice(ctx, row, external)
+            sleep_custody.record_question_notice(ctx, external)
+        model_sleep.append_question_notice(ctx, str((row.get("sleep_ready") or {}).get("reason") or ""), messages)
         return
     kind = "owner Pause" if str(row.get("reason") or "") == REASON_OWNER else "budget pause"
     held = ""
