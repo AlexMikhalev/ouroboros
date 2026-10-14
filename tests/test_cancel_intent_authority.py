@@ -109,13 +109,16 @@ def test_a1_wake_claimed_by_another_worker_is_silent_and_leaves_the_claim(qenv, 
 # ---------------------------------------------------------------- A2 -------------------------
 
 def test_a2_the_no_intent_boolean_facade_is_gone(qenv, monkeypatch):
-    """cancel_task_by_id is cascade-only; the single shape ran custody without any intent."""
+    """cancel_task_by_id is cascade-only by signature; the single shape ran custody without
+    any intent. A cascade over a tree nobody asked to cancel tears nothing down."""
+    import inspect
+
+    assert list(inspect.signature(qenv.tl.cancel_task_by_id).parameters) == ["task_id"]
+    assert not hasattr(qenv.q, "_cancel_task_by_id_single")
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *_a, **_k: None)
     qenv.q.PENDING[:] = [{"id": "facade", "chat_id": 1}]
     write_task_result(qenv.drive, "facade", "scheduled")
-    with pytest.raises(ValueError):
-        qenv.q.cancel_task_by_id("facade", cascade=False)
-    assert not hasattr(qenv.q, "_cancel_task_by_id_single")
+    assert qenv.tl.cancel_task_by_id("facade") is False
     assert [t["id"] for t in qenv.q.PENDING] == ["facade"]
     assert load_task_result(qenv.drive, "facade")["status"] == "scheduled"
 
@@ -142,12 +145,12 @@ def test_a2_cascade_stops_a_child_whose_own_mint_failed_only_under_the_root_clai
 
     monkeypatch.setattr(ci, "request_cancel", _unwritable_for_the_child)
 
-    assert qenv.tl.cancel_task_by_id("tree", cascade=True) is False
+    assert qenv.tl.cancel_task_by_id("tree") is False
     assert sorted(t["id"] for t in qenv.q.PENDING) == ["kid", "tree"]
     assert load_task_result(qenv.drive, "kid")["status"] == "scheduled"
 
     real_request(qenv.drive, "tree", scope=ci.SCOPE_CASCADE, reason="stop the tree")
-    assert qenv.tl.cancel_task_by_id("tree", cascade=True) is True
+    assert qenv.tl.cancel_task_by_id("tree") is True
     assert qenv.q.PENDING == []
     assert load_task_result(qenv.drive, "kid")["status"] == STATUS_CANCELLED
     assert load_task_result(qenv.drive, "tree")["status"] == STATUS_CANCELLED

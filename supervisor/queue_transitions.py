@@ -1412,7 +1412,7 @@ def run_project_deletion(
                     errors.append(f"{task_id}: cancel_intent_write_failed")
                     continue
                 try:
-                    q.cancel_task_by_id(task_id, cascade=True)
+                    q.cancel_task_by_id(task_id)
                 except Exception as exc:
                     errors.append(f"{task_id}: {type(exc).__name__}: {exc}")
             first_pass = False

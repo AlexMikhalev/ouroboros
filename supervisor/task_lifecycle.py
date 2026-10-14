@@ -242,7 +242,7 @@ def _queue_module():
     return queue
 
 
-def cancel_task_by_id(task_id: str, *, cascade: bool = True) -> bool:
+def cancel_task_by_id(task_id: str) -> bool:
     """Cancel a task and its atomically captured live subtree.
 
     The cascade is SYNCHRONOUS end to end (v6.82.0): the caller is answered only
@@ -271,16 +271,13 @@ def cancel_task_by_id(task_id: str, *, cascade: bool = True) -> bool:
     reached its own terminal result, and the durable write is refused by the
     result writer's monotonic guard if it settles mid-teardown.
 
-    ``cascade`` stays for the existing callers and must be True: a single cancel
-    is ``cancel_task_custody`` with its typed outcome, and the no-intent boolean
-    facade this keyword used to select is gone (invariant 14).
+    Cascade-only: a single cancel is ``cancel_task_custody`` with its typed
+    outcome; the no-intent boolean facade is gone (invariant 14).
     """
     q = _queue_module()
     task_id = str(task_id or "").strip()
     if not task_id:
         return False
-    if not cascade:
-        raise ValueError("cancel_task_by_id is cascade-only; a single cancel goes through cancel_task_custody")
     # Close admission for the TARGET before the first snapshot (a schedule event
     # already draining would otherwise slip in), then each sweep fences every id it
     # captures — so a child naming a since-removed descendant as its parent is still
@@ -465,7 +462,7 @@ def drive_cancel_intent_scope(task_id: str, *, deliver: bool = True) -> str:
     if str(intent.get("scope") or "") == SCOPE_CASCADE:
         return (
             CANCEL_CANCELLED
-            if q.cancel_task_by_id(task_id, cascade=True)
+            if q.cancel_task_by_id(task_id)
             else CANCEL_FAILED
         )
     return q.cancel_task_custody(task_id, deliver=deliver)

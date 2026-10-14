@@ -919,7 +919,7 @@ def _settle_retry_cancel_handoff(
         if str(intent.get("scope") or "") == SCOPE_CASCADE:
             outcomes[cancel_target] = (
                 q.CANCEL_CANCELLED
-                if q.cancel_task_by_id(cancel_target, cascade=True)
+                if q.cancel_task_by_id(cancel_target)
                 else q.CANCEL_FAILED
             )
         elif sweep_owner_stop_hold(
