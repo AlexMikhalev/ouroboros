@@ -229,13 +229,15 @@ def _policy_seat(surface: str, position: int, harness: str) -> PresetSeat:
 
 
 def _compile_policy_seats(connected: Sequence[str]) -> Dict[str, Tuple[PresetSeat, ...]]:
-    """Apply linear priority rules; no powerset row grows when a harness is added."""
+    """Apply linear priority rules; no powerset row grows when a harness is added.
+
+    One triad seat per connected reviewer harness: a sole harness reviews once (owner
+    Q5=A), never as three copies of one model that pay three runs for no second opinion.
+    """
     present = set(connected)
     scope = _first_connected(_SCOPE_ORDER, present)
 
     triad_harnesses = [harness for harness in _TRIAD_ORDER if harness in present]
-    if len(triad_harnesses) == 1:
-        triad_harnesses *= 3
 
     return {
         SURFACE_TRIAD: tuple(
@@ -345,13 +347,13 @@ def _mark_review_rows(
     a seat whose session route already exists as an unmarked roster row with
     the seat's effort marks that row (``review_eligible``); otherwise a
     ``review-<harness>`` row is minted for it, marked, with
-    ``minted_from: factory_default``. Each triad seat takes one row, so a
-    one-harness panel's three identical seats become one marked existing row
-    plus two minted twins (three independent runs, as the lane ran them). A
-    scope seat whose effective identity a marked row already has MERGES into it
-    (every pool row judges both parts of the brief), else takes a row like a
-    triad seat. If the catalog ceiling leaves no room, the seat is omitted and
-    said so in diagnostics — honest disclosure, never a silent drop.
+    ``minted_from: factory_default``. Each triad seat takes one row (the
+    compiler names each harness once; identical seats would each mint their
+    own twin, ``review-<harness>-2`` and on). A scope seat whose effective
+    identity a marked row already has MERGES into it (every pool row judges
+    both parts of the brief), else takes a row like a triad seat. If the
+    catalog ceiling leaves no room, the seat is omitted and said so in
+    diagnostics — honest disclosure, never a silent drop.
 
     Idempotent: a row already marked with a seat's identity COUNTS as that seat
     (each marked row satisfies one triad seat), so feeding the wizard's own

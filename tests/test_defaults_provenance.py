@@ -561,8 +561,9 @@ def test_an_unused_advisory_model_never_refuses_the_preset():
         preset = compile_install_preset([HarnessDiscovery(harness, (model,))])
         assert preset.ok, preset.refusal
         assert preset.receipt["version"] == "4" and "advisory" not in preset.receipt["surfaces"]
+        # A sole harness takes one triad seat (owner Q5=A), never three copies of one model.
         assert [(row["target_id"], row["effort"]) for row in preset.receipt["surfaces"]["triad"]] == [
-            (f"{harness}={model}", "medium")] * 3
+            (f"{harness}={model}", "medium")]
 
 
 def test_a_codex_catalog_without_the_newer_sol_still_gets_its_fresh_preset():
