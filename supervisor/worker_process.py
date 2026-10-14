@@ -430,7 +430,10 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
                 break
             if task.get("type") == "worker_quiescence":
                 try:
-                    probe = None if local_reviews_settled() and local_producers_settled() else task
+                    # Handoffs register the new owner before the old one settles (tool -> review,
+                    # review -> inspection tool), so producers, reviews, producers again sees
+                    # every chain a review-started tool can form: those cannot start reviews.
+                    probe = None if local_producers_settled() and local_reviews_settled() and local_producers_settled() else task
                 except Exception:
                     probe = task  # unknown defers; the bounded recheck retries, never a crash
                     log.warning("Idle probe could not prove local quiescence", exc_info=True)
