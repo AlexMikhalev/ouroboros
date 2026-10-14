@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import { ROUTE_KIND_AGENT_SESSION, ROUTE_KIND_API_MODEL } from '../modules/route_editor_primitives.js';
 import { createAvailableSubagentsEditor, reviewCopiesText, reviewPoolCopies } from '../modules/subagents_settings.js';
+import { accessEditorDom } from './helpers/subagents_editor.js';
 
 const MAIN = 'openai-compatible::glm-5.3';
 const api = (id, extra = {}) => ({ subagent_id: id, recommended_use: 'Reviews.', effort: 'high',
@@ -25,7 +26,7 @@ test('copies of one model are grouped under the first pool row and priced as rep
     assert.deepEqual(reviewPoolCopies(twins), [{ keep: 0, copies: [1, 2] }]);
     assert.equal(offer(twins.items), 'Subagents 1, 2 and 3 are copies of one model: each review pays for 3 runs of it and '
         + 'gets no second opinion. With one kept, a single answer decides each review, so one flaky answer can block or pass it.');
-    // The one-harness subscription wizard's shape: the owner's own row marked plus two minted twins.
+    // What the former one-harness subscription wizard saved: the owner's own row marked plus two minted twins.
     assert.deepEqual(reviewPoolCopies(catalog([session('primary-builder'), session('review-claude', { minted_from: 'factory_default' }),
         session('review-claude-2', { minted_from: 'factory_default' })])), [{ keep: 0, copies: [1, 2] }]);
     // An unmarked delegation row on the same engine is no pool row: the first MARKED row is kept.
@@ -53,69 +54,35 @@ test('diverse rows, one row, unmarked or switched-off look-alikes and another ef
     }
 });
 
-// The painter's nodes, created on first query when the markup carries the attribute; row nodes stay per row.
-function fakeEditorDom() {
-    let rows = [];
-    let page = () => null;
-    let markup = '';
-    const node = () => ({ textContent: '', hidden: false, dataset: {}, listeners: {}, setAttribute() {}, toggleAttribute() {},
-        addEventListener(type, fn) { this.listeners[type] = fn; }, querySelector: () => null });
-    const scope = (html) => {
-        const nodes = new Map();
-        return (selector) => {
-            const key = selector.match(/^\[(data-[a-z-]+)(?:="([^"]+)")?\]/);
-            if (!key || !html.includes(key[2] ? `${key[1]}="${key[2]}"` : key[1])) return null;
-            if (!nodes.has(selector)) nodes.set(selector, node());
-            return nodes.get(selector);
-        };
-    };
-    const container = {
-        scrollTop: 0,
-        set innerHTML(html) {
-            markup = html;
-            page = scope(html.replace(/<article[\s\S]*?<\/article>/g, ''));
-            rows = [...html.matchAll(/<article[^>]*data-subagent-row="([^"]+)"[^>]*>([\s\S]*?)<\/article>/g)].map(([, key, body]) => (
-                { dataset: { subagentRow: key }, toggleAttribute() {}, querySelector: scope(body), querySelectorAll: () => [] }));
-        },
-        querySelector(selector) {
-            const row = selector.match(/^\[data-subagent-row="([^"]+)"\]$/)?.[1];
-            return row ? rows.find((item) => item.dataset.subagentRow === row) || null : page(selector);
-        },
-        querySelectorAll: (selector) => (selector === '[data-subagent-row]' ? rows : []),
-    };
-    return { doc: { getElementById: () => container }, rows: () => rows, html: () => markup,
-        page: (selector) => container.querySelector(selector) };
-}
-
-test('Keep one removes the copies from the draft only, and the offer follows the marks in place', () => {
-    const dom = fakeEditorDom();
+test('Keep one per model removes the copies from the draft only, and the offer follows the marks in place', () => {
+    const dom = accessEditorDom();
     const changes = [];
     const editor = createAvailableSubagentsEditor({ doc: dom.doc, win: null, onChange: (value) => changes.push(value) });
     editor.load(catalog([api('helper', { review_eligible: undefined, effort: 'low' }), api('review-1', { minted_from: 'factory_default' }),
         api('review-2', { minted_from: 'factory_default' }), api('review-3', { minted_from: 'factory_default' })]));
-    const line = () => dom.page('[data-review-pool-copies]');
-    assert.equal(line().hidden, false);
-    assert.match(dom.page('[data-review-pool-copies-text]').textContent, /^Subagents 2, 3 and 4 are copies of one model: each review pays for 3 runs/);
+    assert.equal(dom.pool.copies.hidden, false);
+    assert.match(dom.pool['copies-text'].textContent, /^Subagents 2, 3 and 4 are copies of one model: each review pays for 3 runs/);
     assert.match(dom.html(), /<button type="button" class="btn btn-default" data-review-pool-keep-one>Keep one per model<\/button>/);
     assert.equal(editor.dirty, false, 'loading shows the offer and changes nothing');
 
-    // An unmarked copy leaves the pool, so the line is patched in place, never by a rebuild.
-    const text = dom.page('[data-review-pool-copies-text]');
-    dom.rows()[3].querySelector('[data-subagent-field="review_eligible"]').listeners.change({ target: { checked: false } });
-    assert.match(text.textContent, /^Subagents 2 and 3 are copies of one model: each review pays for 2 runs/);
-    dom.rows()[3].querySelector('[data-subagent-field="review_eligible"]').listeners.change({ target: { checked: true } });
+    // An unmarked copy leaves the pool, so the line is patched in place: the cards are not rebuilt.
+    const card = dom.row(3);
+    card.querySelector('[data-subagent-field="review_eligible"]').toggle(false);
+    assert.equal(dom.row(3), card);
+    assert.match(dom.pool['copies-text'].textContent, /^Subagents 2 and 3 are copies of one model: each review pays for 2 runs/);
+    card.querySelector('[data-subagent-field="review_eligible"]').toggle(true);
 
-    dom.page('[data-review-pool-keep-one]').listeners.click();
+    dom.toolbar.keepOne.emit('click');
     assert.deepEqual(editor.setting.items.map((row) => [row.subagent_id, row.review_eligible === true]), [['helper', false], ['review-1', true]]);
     assert.equal(editor.dirty, true, 'an unsaved draft: the owner sees it and saves it');
     assert.deepEqual(changes.at(-1).items.map((row) => row.subagent_id), ['helper', 'review-1']);
     assert.deepEqual(editor.collect().OUROBOROS_SUBAGENTS.items.map((row) => row.subagent_id), ['helper', 'review-1']);
     assert.deepEqual(editor.validate(), []);
-    assert.equal(line().hidden, true, 'nothing is a copy any more');
+    assert.equal(dom.pool.copies.hidden, true, 'nothing is a copy any more');
 
     editor.load(catalog([api('review-1'), api('review-2', { route: { kind: ROUTE_KIND_API_MODEL, target_id: 'anthropic::claude-opus-5' } })]));
-    assert.equal(line().hidden, true, 'diverse reviewers are no copies');
+    assert.equal(dom.pool.copies.hidden, true, 'diverse reviewers are no copies');
     editor.load('{broken');
-    assert.equal(line().hidden, true, 'an unread catalog states no pool fact');
+    assert.equal(dom.pool.copies.hidden, true, 'an unread catalog states no pool fact');
     editor.destroy();
 });
