@@ -59,6 +59,7 @@ from ouroboros.tools.review_helpers import (
     REVIEW_POOL_EMPTY_REASON,
     REVIEW_POOL_EMPTY_SENTENCE,
     review_enforcement_blocks,
+    review_subject_pulse,
     single_line as _single_line,
 )
 
@@ -186,7 +187,6 @@ def _handle_task_acceptance_review(
 
     if late_review is not None:
         from ouroboros.acceptance_late import owner_historical_acceptance
-        from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
         result = owner_historical_acceptance(ctx, late_review)
         return _publish_tool_result(ctx, ToolResult(
             status="error" if result["status"] == "refused" else "ok",
@@ -260,7 +260,6 @@ def _handle_task_acceptance_review(
         disposition = ""
     agent_rationale = " ".join(str(rationale or "").split()).strip()
     if author_action and (author_action not in {"finish", "stop"} or not agent_rationale):
-        from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
             text="ERROR: TOOL_ARG_ERROR: author_action requires finish|stop and a rationale."))
     # v6.54.4 obligations layer: normalized per-obligation dispositions ride the
@@ -1207,7 +1206,8 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         ctx._commit_review_evidence = task_evidence
     task_evidence_compact = False
     owner_words, execution = owner_words_text(ctx), dict(getattr(ctx, "_preflight_execution", None) or {})
-    goal_section = build_goal_section(goal, scope, commit_message, owner_words, execution_section(execution))
+    pulse = review_subject_pulse(target_repo, layer, subject)  # the same line on every seat's brief
+    goal_section = build_goal_section(goal, scope, commit_message, owner_words, execution_section(execution), pulse)
     scope_section = build_scope_section(scope)
 
     def _assemble_prompt(files_section: str, staged_diff: str) -> tuple:
@@ -1286,7 +1286,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         ctx, row_plan, models, row_routes, target_repo=target_repo, governance_root=governance_root,
         subject=subject, frozen=frozen, diff_text=diff_text, layer=layer, checklist_section=checklist_section,
         commit_message=commit_message, goal=goal, scope=scope, review_rebuttal=review_rebuttal,
-        owner_words=owner_words, task_evidence=task_evidence, preflight_execution=execution)
+        owner_words=owner_words, task_evidence=task_evidence, preflight_execution=execution, diff_pulse=pulse)
     if brief_failure is not None:
         failed_slot, exc = brief_failure
         ctx._last_review_block_reason = "infra_failure"

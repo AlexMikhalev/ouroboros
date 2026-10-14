@@ -611,6 +611,7 @@ def build_goal_section(
     commit_message: str = "",
     owner_words: str = "",
     preflight_execution: str = "",
+    diff_pulse: str = "",
 ) -> str:
     """Format the 'Intended transformation' section.
 
@@ -625,7 +626,9 @@ def build_goal_section(
     intent: what was asked, beside the author's account of the change. Empty
     keeps the section byte-identical to a review without it.
     ``preflight_execution`` is the wave's frozen test execution exhibit
-    (``preflight_receipts.execution_section``), placed after them on the same terms.
+    (``preflight_receipts.execution_section``), placed after them on the same terms,
+    and ``diff_pulse`` the subject's growth since its contribution base
+    (``review_subject_pulse``) after that.
     """
     resolved_text, source = resolve_intent(goal, scope, commit_message)
     sections = [
@@ -640,6 +643,8 @@ def build_goal_section(
         sections.append(f"\n\n{owner_words}")
     if preflight_execution.strip():
         sections.append(f"\n\n{preflight_execution}")
+    if diff_pulse.strip():
+        sections.append(f"\n\n{diff_pulse}")
 
     commit_text = commit_message.strip()
     if commit_text and commit_text != resolved_text:
@@ -652,6 +657,18 @@ def build_goal_section(
         )
 
     return "\n".join(sections)
+
+
+def review_subject_pulse(review_root: Any, layer: str, managed: Any = None) -> str:
+    """The diff pulse a review brief carries: ``review.diff_pulse`` over the reading root's
+    index, which holds the subject. Only the body has a contribution base to grow from, and
+    a managed resolution is reviewed as its declared delta rather than as that growth, so
+    neither another root's subject nor a managed one carries a pulse."""
+    if layer != "body" or managed is not None:
+        return ""
+    from ouroboros.review import diff_pulse
+
+    return diff_pulse(Path(review_root), staged=True)
 
 
 def review_history_with_obligations(history: Any, *, drive_root: Any, repo_root: Any, task_id: str = "") -> str:
@@ -768,15 +785,6 @@ def check_worktree_readiness(
                 f"size-ratchet validator unavailable ({type(exc).__name__}); "
                 "the official CI lane still enforces"
             )
-
-    try:  # 6. Touched reference books' balance: a warning; official CI refuses a grown book.
-        from ouroboros.reference_books import BOOK_GROWTH_RULE, book_balances, render_book_balance
-        if status_result is not None and (repo_dir / "ouroboros" / "reference_books.py").is_file():
-            touched = parse_changed_paths_from_porcelain(status_result.stdout or "")
-            warnings.extend(f"official CI will enforce: {render_book_balance(b)}. {BOOK_GROWTH_RULE}"
-                            for b in book_balances(repo_dir, touched) if b.owed)
-    except Exception:
-        pass
 
     return warnings
 

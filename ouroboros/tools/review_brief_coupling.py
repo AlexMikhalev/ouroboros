@@ -100,7 +100,8 @@ class BriefIntent:
     ``owner_words`` is the host-attested section of the owner's words that
     caused the work (``owner_words_text``); ``coupling_history`` is this
     subject's prior ``per_question.coupling`` rounds; ``preflight_execution`` the
-    wave's frozen test execution exhibit text (``preflight_receipts``).
+    wave's frozen test execution exhibit text (``preflight_receipts``) and
+    ``diff_pulse`` the subject's growth since its contribution base.
     """
 
     goal: str = ""
@@ -110,6 +111,7 @@ class BriefIntent:
     coupling_history: Optional[list] = None
     owner_words: str = ""
     preflight_execution: str = ""
+    diff_pulse: str = ""
 
 
 @dataclass(frozen=True)
@@ -530,7 +532,7 @@ def build_retrieving_brief(
         checklist_section = _load_checklist_section(layer)
     intent = brief.intent
     goal_section = build_goal_section(intent.goal, intent.scope, brief.commit_message, intent.owner_words,
-                                      intent.preflight_execution)
+                                      intent.preflight_execution, intent.diff_pulse)
     scope_section = build_scope_section(intent.scope)
     rebuttal_section = build_rebuttal_section(intent.review_rebuttal)
     history_section = review_history_with_obligations(intent.review_history, drive_root=brief.drive_root,
