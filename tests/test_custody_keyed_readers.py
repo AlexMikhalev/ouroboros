@@ -687,7 +687,9 @@ def test_sleep_selection_reads_its_own_rows_from_the_canonical_root(tmp_path):
     ctx.drive_root = tmp_path / "child-drive"  # a child's own drive: custody lives on the canonical root
     oracle = [(run.run_id, run.terminal_state in custody.TERMINAL_STATES or bool(run.settled))
               for run in custody.replay(tmp_path).values() if run.task_id == "sleeper"]
-    assert model_sleep._owned_runs(ctx) == oracle == [("run-live", False), ("run-own", True)]
+    actual = [(rid, run.terminal_state in custody.TERMINAL_STATES or bool(run.settled))
+              for rid, run in model_sleep._owned_runs(ctx).items()]
+    assert actual == oracle == [("run-live", False), ("run-own", True)]
     assert model_sleep.selectors(ctx, runs=["run-own", "run-live"])["runs"] == ["run-own", "run-live"]
     for ghost in ("run-foreign", "run-missing"):
         with pytest.raises(ValueError, match=f"runs: {ghost} are not delegated runs of this task"):
@@ -754,7 +756,9 @@ def _consumer_decodes(root):
         counts[name] = len(seen)
     custody._CUSTODY.clear()
     assert answers["payload busy"] == "run-pay-live" and answers["hand-over"] == {}
-    assert answers["sleep"] == [("run-own", True), ("run-own-acked", True), ("run-own-live", False)]
+    sleep_terminals = [(rid, run.terminal_state in custody.TERMINAL_STATES or bool(run.settled))
+                       for rid, run in answers["sleep"].items()]
+    assert sleep_terminals == [("run-own", True), ("run-own-acked", True), ("run-own-live", False)]
     return counts
 
 

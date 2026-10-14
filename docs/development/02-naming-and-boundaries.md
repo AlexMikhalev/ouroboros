@@ -366,12 +366,12 @@ readiness signal, test probe or fallback.
 Provider facts that bind routing: the `-pro` suffix is an OpenRouter routing slug, not
 an OpenAI model id, so a direct OpenAI Chat slot uses the plain Sol id; direct OpenAI
 tool conversations stay on Chat Completions, and a model-name prefix is never admission
-authority; DeepSeek and Z.ai carry `reasoning_effort` through projections keyed on the
-provider id; direct Anthropic is the deliberate exception to a purely reconstructed
-provider transcript, and no effort-to-`budget_tokens` policy is synthesized
-(ARCHITECTURE §7 "LLM output token budgets"). A provider-specific optional feature may
-be unavailable elsewhere; the core loop degrades explicitly rather than crashing or
-rerouting.
+authority; each non-OpenRouter Chat route sends `reasoning_effort`, DeepSeek and Z.ai
+by provider-id projection; direct Anthropic is the deliberate exception to a purely
+reconstructed provider transcript, and no effort-to-`budget_tokens` policy is
+synthesized (ARCHITECTURE §7 "LLM output token budgets"). A provider-specific optional
+feature may be unavailable elsewhere; the core loop degrades explicitly rather than
+crashing or rerouting.
 
 Canonical assistant history and tool schemas are function-shaped across providers,
 never a second stored transcript for a provider dialect. Static, semantics-preserving

@@ -837,9 +837,12 @@ def _presence_exception(exc: Exception, status: int) -> JSONResponse:
                   "presence_conversation_key_required", "presence_admission_conversation_mismatch",
                   "presence_event_identity_conflict"}:
         disposition = "rejected"
+    if getattr(exc, "disposition", "") in {"retained", "retry"}:
+        disposition = exc.disposition  # the runner holds the durable attempt authority
     facts = {"field": getattr(exc, "field", "presence")}
     if getattr(exc, "turn_ref", ""):
         facts["turn_ref"] = exc.turn_ref
+        facts["delivery_reporting_version"] = getattr(exc, "delivery_reporting_version", 0)
     if getattr(exc, "work_ref", ""):
         facts["work_ref"] = exc.work_ref
     manifest = getattr(exc, "attachment_manifest", None)
@@ -1007,20 +1010,9 @@ def _presence_work_view(
     if str(presence.get("binding_id") or "") != binding_id:
         return 404, {"ok": False, "error": "presence work reference not found",
                      "code": "presence_work_not_found", "disposition": "rejected"}
-    from ouroboros.presence_continuation import work_view
+    from ouroboros.presence_recovery import retained_work_view
 
-    continued = work_view(stored, work_ref)  # a continuing Presence author's own poll (#1536)
-    if continued is not None:
-        return continued
-    status = str(stored.get("status") or "")
-    if status not in {"completed", "failed", "cancelled"}:
-        return 202, {"ok": True, "status": "pending", "work_ref": work_ref,
-                     "delivery_reporting_version": presence.get("delivery_reporting_version", 0)}
-    from ouroboros.presence_runner import presence_result_from_stored
-
-    result = presence_result_from_stored(stored, work_ref)
-    return 200, {"ok": True, "status": status, "outcome": result.outcome, "text": result.text, "work_ref": work_ref,
-                 "delivery_reporting_version": result.delivery_reporting_version}
+    return retained_work_view(stored, work_ref)
 
 
 async def _api_presence_work(request: Request) -> JSONResponse:

@@ -77,6 +77,10 @@ _CAPABILITY_REJECTION_MARKERS = (
     "no endpoints found",
 )
 _MANDATORY_MARKERS = ("mandatory", "cannot be disabled", "must be enabled")
+# A capability refusal whose object is the model's thinking refuses the standard effort field
+# without naming it (Ollama maps reasoning_effort to think: '"<model>" does not support thinking').
+_THINKING_REFUSAL = re.compile(r"\b(?:does not|doesn't|do not|don't)\s+support\s+(?:thinking|reasoning)\b"
+                               r"|\b(?:thinking|reasoning)\s+(?:is\s+)?(?:not\s+supported|unsupported)\b")
 _NON_COMPATIBILITY_4XX = frozenset({401, 402, 403, 408, 409, 425, 429})
 _NON_REASONING_OPTIONAL_FIELDS = tuple(
     field for field in OPTIONAL_REQUEST_FIELDS
@@ -802,15 +806,17 @@ def _classify_action(
     low = str(message or "").lower()
     if any(token in evidence.code for token in ("quota", "rate_limit", "billing", "auth", "context", "policy")):
         return None
-    if not low or not (evidence.value_constraint or any(marker in low for marker in (
+    candidate = registered.candidate
+    profile = candidate.accepted_profile
+    thinking_refused = (profile.reasoning_carrier == "reasoning_effort" and not evidence.param
+                        and bool(_THINKING_REFUSAL.search(low)))
+    if not low or not (evidence.value_constraint or thinking_refused or any(marker in low for marker in (
         *_VALUE_REJECTION_MARKERS,
         *_CAPABILITY_REJECTION_MARKERS,
         *_MANDATORY_MARKERS,
     ))):
         return None
-    candidate = registered.candidate
     payload = candidate.physical_payload()
-    profile = candidate.accepted_profile
     current_effort = payload_effort(payload)
     # Rejecting the disabled carrier's native TYPE is not rejecting an effort
     # tier. Preserve the bounded omission repair without dropping a valid
@@ -908,7 +914,8 @@ def _classify_action(
         aliases = {field, field.replace(".", "_"), field.split(".")[-1]}
         implicated = (evidence.param in aliases if evidence.param else
                       field in error_tokens if field in {"stream", "stream_options"}
-                      else any(alias in low or alias in compact for alias in aliases))
+                      else any(alias in low or alias in compact for alias in aliases)
+                      or (field == "reasoning_effort" and thinking_refused))
         if _field_is_present(payload, field) and implicated:
             if value_implicated or (
                 field != NESTED_REASONING_FIELD

@@ -173,7 +173,6 @@ HOST_ROW_CLASSES = {
     "initialization_notice": ("not_started", 1),
     "managed_update_notice": ("runtime_state", 2),
     "owner_pause_notice": ("card_row", 1),
-    "presence_recovery_required": ("no_mind", 1),
     "project_completion_summary": ("main_lifecycle", 1),
     "project_handoff": ("main_lifecycle", 1),
     "project_started": ("main_lifecycle", 1),
