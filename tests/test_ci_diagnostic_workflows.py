@@ -157,22 +157,23 @@ def test_provider_canaries_share_one_body_between_the_code_workflow_and_the_push
     assert callers == [("ci.yml", "integration-test"), (CANARY_PUSH, "integration-test")]
 
 
-def test_provider_canary_workflows_are_protected_exactly_like_ci_yml():
-    """`release-preflight` requires the provider-canary job, whose body and
-    branch-push trigger live in two workflow files beside ci.yml; an inventory
-    naming only the parent would leave the release canary editable."""
+def test_provider_canary_workflows_are_editable_while_ci_yml_stays_protected():
+    """`release-preflight` requires the provider-canary job, but ci.yml, which
+    wires that job into the release chain, is the protected release invariant;
+    the canary body and its branch-push wrapper reach no install, so Advanced
+    may edit them. The contributor review label still follows the body."""
     from ouroboros.runtime_mode_policy import RELEASE_INVARIANT_PATHS, protected_path_category
     from scripts.run_external_review import _RELEASE_MACHINERY_PATHS
 
-    parent = protected_path_category(".github/workflows/ci.yml")
+    parent = ".github/workflows/ci.yml"
+    assert parent in RELEASE_INVARIANT_PATHS
+    assert protected_path_category(parent) == protected_path_category(f"./{parent}") == "release-invariant"
     for name in (CANARY, CANARY_PUSH):
         path = f".github/workflows/{name}"
         assert (ROOT / path).is_file(), path
-        assert path in RELEASE_INVARIANT_PATHS, path
+        assert path not in RELEASE_INVARIANT_PATHS, path
         assert path in _RELEASE_MACHINERY_PATHS, path  # The contributor label follows the body too.
-        assert protected_path_category(path) == protected_path_category(f"./{path}") == parent, path
-    # The category follows the listed files, not the directory.
-    assert protected_path_category(".github/workflows/unlisted.yml") == ""
+        assert protected_path_category(path) == protected_path_category(f"./{path}") == "", path
 
 
 CANARY_DRIFTS = {
