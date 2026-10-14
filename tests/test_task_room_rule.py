@@ -240,3 +240,65 @@ def test_an_absent_id_is_read_once_per_resolver(tmp_path, monkeypatch):
     rooms.warm(["ghost-1", "ghost-2"])
     assert counts["open_store"] == 2 and rooms("ghost-2") == 0 and counts["open_store"] == 2
     assert pr.RoomResolver(tmp_path)("ghost-1") == 0 and counts["open_store"] == 3, "a fresh resolver (a new frame) asks again"
+
+
+def _request(root, body):
+    async def _json():
+        return body
+
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(drive_root=root)), json=_json)
+
+
+def _history(root, chat):
+    import asyncio
+
+    from ouroboros.gateway.history import make_chat_history_endpoint
+
+    response = asyncio.run(make_chat_history_endpoint(root)(SimpleNamespace(query_params={"chat_id": str(chat)})))
+    assert response.status_code == 200, response.body
+    return [row["task_id"] for row in json.loads(response.body)["messages"] if row.get("task_id")]
+
+
+def test_converting_a_middle_task_moves_its_subtrees_earlier_rows_out_of_the_old_room(tmp_path, monkeypatch):
+    """Astra's counterexample through the real conversion endpoint: root R bound to A, its child C
+    emits a row into A, then the owner turns C into project B. Live delivery already goes to B;
+    history, chat_chain and the memory inventory must show C's earlier row in B only."""
+    import asyncio
+
+    from ouroboros import chat_chain, memory_inventory
+    from ouroboros.gateway.projects import api_project_from_task
+
+    monkeypatch.setattr("ouroboros.gateway.state._chat_activities_snapshot_safe", lambda *_a, **_k: [])
+    a = pr.create_project(tmp_path, "room-a", name="Room A")
+    write_task_result(tmp_path, "root-1", "running", root_task_id="root-1", chat_id=1)
+    pr.bind_task_to_project(tmp_path, "root-1", a["id"], origin={"absent": "system"})
+    write_task_result(tmp_path, "kid-1", "running", delegation_role="subagent", parent_task_id="root-1",
+                      root_task_id="root-1", chat_id=1)
+    bus, sent = _bus(monkeypatch, tmp_path)
+    bus.send_with_budget(1, "Root planning", is_progress=True, task_id="root-1", role="system", system_type="host_progress")
+    bus.send_with_budget(1, "Child working", is_progress=True, task_id="kid-1", role="system", system_type="host_progress")
+    assert [row["chat_id"] for row in _progress_rows(tmp_path)] == [a["chat_id"]] * 2, "before: both rows live in A"
+    assert _history(tmp_path, a["chat_id"]) == ["root-1", "kid-1"]
+
+    response = asyncio.run(api_project_from_task(_request(tmp_path, {"task_id": "kid-1", "id": "task-kid-1"})))
+    payload = json.loads(response.body)
+    b = int(payload["project"]["chat_id"])
+    assert response.status_code == 200 and payload["binding"]["project_id"] == payload["project"]["id"] and b != a["chat_id"]
+
+    bus.send_with_budget(1, "Child still working", is_progress=True, task_id="kid-1", role="system", system_type="host_progress")
+    assert sent[-1][0][0] == b, "live delivery follows the conversion"
+    assert _history(tmp_path, a["chat_id"]) == ["root-1"], "A no longer shows the converted subtree's earlier row"
+    assert _history(tmp_path, b) == ["kid-1", "kid-1"], "B shows the earlier row beside the new one"
+    assert _history(tmp_path, 1) == [], "Main shows neither"
+    assert [row.get("task_id") for _addr, row, _pos in chat_chain.iter_room_rows(tmp_path, a["chat_id"])] == []
+    assert [row.get("task_id") for _addr, row, _pos in chat_chain.iter_room_rows(tmp_path, b)] == []
+    facts = memory_inventory.membership_facts(tmp_path)
+    early = _progress_rows(tmp_path)[1]
+    assert memory_inventory.rooms_of_row(memory_inventory.row_meta(early), facts) == {str(b)}
+    # Controls: the root's own row stays in its room, a Project-born row in its own room, Main work in Main.
+    assert memory_inventory.rooms_of_row(memory_inventory.row_meta(_progress_rows(tmp_path)[0]), facts) == {str(a["chat_id"])}
+    native = pr.create_project(tmp_path, "room-native", name="Native")
+    write_task_result(tmp_path, "born-1", "running", root_task_id="born-1", chat_id=native["chat_id"])
+    facts = memory_inventory.membership_facts(tmp_path)  # the registry facts of the moment, as a capture takes them
+    assert memory_inventory.rooms_of_row({"chat_id": native["chat_id"], "task_id": "born-1"}, facts) == {str(native["chat_id"])}
+    assert memory_inventory.rooms_of_row({"chat_id": 1, "task_id": "direct-9"}, facts) == {"1"}

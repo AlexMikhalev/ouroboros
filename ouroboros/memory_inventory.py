@@ -152,8 +152,8 @@ def rooms_of_row(meta: Mapping[str, Any], facts: MembershipFacts) -> FrozenSet[s
     pinned = kind in MAIN_PINNED_ROW_TYPES
     projects = facts.project_chat_ids
     rooms = set()
-    if not pinned:
-        rooms.update(room for room in (bound, chat) if room in projects)
+    if not pinned:  # the resolved room is authoritative over the stored address (``room_membership``)
+        rooms.update(room for room in ((bound,) if bound else (chat,)) if room in projects)
         for key in meta.get("source_keys") or ():
             rooms.update(facts.projects_by_source_key.get(tuple(key), ()))
     if MAIN_ROOM not in projects and chat != HIDDEN_CHAT_ID and chat not in projects and (pinned or not bound):
