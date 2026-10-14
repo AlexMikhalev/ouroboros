@@ -28,7 +28,6 @@ import importlib.util
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import time
 from typing import Any, Dict
@@ -47,6 +46,7 @@ from ouroboros.marketplace.isolated_deps import (
     python_runtime_binary,
     read_deps_state,
 )
+from ouroboros.review_records import review_slot_awaiting, review_slot_unresolved
 from ouroboros.skill_dependencies import auto_install_specs_for_skill
 from ouroboros.skill_loader import (
     _sanitize_skill_name,
@@ -56,7 +56,9 @@ from ouroboros.skill_loader import (
     save_enabled,
 )
 from ouroboros.skill_readiness import skill_readiness_for_execution
+from ouroboros.skill_review_cycles import SUBSTANTIVE_SKILL_REVIEW_STATUSES
 from ouroboros.skill_review_history import load_history
+from ouroboros.skill_review_status import normalize_skill_review_status
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.skill_preflight import _handle_skill_preflight
 from tests.review_pool_rosters import pool_roster, pool_seat, set_review_pool
@@ -647,9 +649,48 @@ def _actor_reported_valuation_usd(review: Dict[str, Any]) -> float:
     return sum(float(rec.get("cost_usd") or 0.0) for rec in review.get("raw_actor_records") or [])
 
 
-# 2100s: one review (300s model timeout + pack build) + one fresh verdict
-# retry + the post-review COLD a2a venv+pip (this pytest process has its own
-# temp data dir, so a Tier 4 venv from another step is never warm here).
+def _smoke_retry_refusal(name: str, status: str) -> str:
+    """Retry only settled work, retaining production replay/cycle and custody facts."""
+    if status not in ("clean", "warnings") and normalize_skill_review_status(status) in SUBSTANTIVE_SKILL_REVIEW_STATUSES:
+        return f"recorded {status!r} verdict is final for identical material"
+    skill, history = find_skill(DATA_DIR, name), load_history(DATA_DIR, name, limit=1)
+    if skill is None or not history or history[-1].get("content_hash") != skill.content_hash:
+        return "no recorded wave for the current content"
+    records = history[-1].get("raw_actor_records")
+    if not isinstance(records, list) or not records:
+        return "the recorded wave has no reviewer records"
+    stack = list(records)
+    while stack:
+        row = stack.pop()
+        if not isinstance(row, dict):
+            return "reviewer settlement is unknown"
+        if review_slot_awaiting(row) or review_slot_unresolved(row) or row.get("late_result_pending"):
+            return "reviewer work is still unsettled in the original wave"
+        children = row.get("raw_results")
+        if isinstance(children, list) and children:
+            stack.extend(children)
+        elif row.get("operation_state") not in {"settled", "late_settled", "not_dispatched"}:
+            return "reviewer settlement is unknown"
+    return ""
+
+
+def _review_with_one_settled_retry(slug: str, name: str):
+    status, error, deps_status, payload = _run_review_flow(slug, name)
+    failed = status not in ("clean", "warnings") or error or (slug in DEPS_SKILLS and deps_status != "installed")
+    if not failed:
+        return status, error, deps_status, payload, ""
+    refusal = _smoke_retry_refusal(name, status)
+    note = f" (not retried: {refusal})" if refusal else " after one settled retry"
+    print(f"{slug}: first attempt not OK; original state kept{note}\n"
+          + _review_diag(name, status, error, payload))
+    if refusal:
+        return status, error, deps_status, payload, note
+    return (*_run_review_flow(slug, name), note)
+
+
+# 2100s: review (300s model timeout + pack build), at most one settled retry,
+# and cold a2a venv+pip. The unchanged production path owns free verdict replay
+# and the paid-cycle cap. Pending work stays red; its state is never erased.
 @pytest.mark.timeout(2100)
 # review_secret (session) is listed before install_skill (session): among
 # same-scope fixtures signature order wins, so a fork without the secret reds
@@ -660,26 +701,9 @@ def test_review_grants_and_enable(slug, review_secret, install_skill, review_env
     name = _sanitize_skill_name(slug)
     started = time.time()
 
-    def _flow_not_ok(status: str, error: str, deps_status: str) -> bool:
-        # A pip/venv flake after a clean review surfaces only as
-        # deps_status="failed" (review error stays empty) — it deserves the
-        # same single bounded retry as a verdict flake (lane posture: bounded
-        # transient retries, never a skip).
-        if status not in ("clean", "warnings") or error:
-            return True
-        return slug in DEPS_SKILLS and deps_status != "installed"
-
-    status, error, deps_status, payload = _run_review_flow(slug, name)
-    if _flow_not_ok(status, error, deps_status):
-        print(
-            f"{slug}: first review attempt not OK (deps_status={deps_status!r}) — "
-            f"full diagnostics below; wiping skill state for one fresh retry\n"
-            + _review_diag(name, status, error, payload)
-        )
-        shutil.rmtree(_skill_state_dir(name), ignore_errors=True)
-        status, error, deps_status, payload = _run_review_flow(slug, name)
+    status, error, deps_status, payload, note = _review_with_one_settled_retry(slug, name)
     assert status in ("clean", "warnings") and not error, (
-        f"{slug}: review not OK after one retry\n" + _review_diag(name, status, error, payload)
+        f"{slug}: review not OK{note}\n" + _review_diag(name, status, error, payload)
     )
 
     # Production ordering: dependencies reconcile only AFTER the executable

@@ -296,7 +296,9 @@ def test_an_attempt_that_recorded_no_home_fact_is_not_a_containment_fault(tmp_pa
     # And a lone failed attempt on a live run is a task failure, not a containment fault.
     cancelled = _isolation_stub(monkeypatch, run_dir=(only := tmp_path / "run-2"))
     _write_failed_attempt(only, attempt="a01")
-    out = _waiting(tmp_path, monkeypatch)
+    live_case = tmp_path / "live-case"
+    live_case.mkdir()
+    out = _waiting(live_case, monkeypatch)
     assert out["status"] == "progress" and cancelled == {}, out
 
 
@@ -469,7 +471,9 @@ def test_linux_shaped_run_is_disclosed_unconfined_with_the_engines_reason_not_ca
         unavailable_reason="no_boundary_mechanism_for_host: linux",
     )
     cancelled = _isolation_stub(monkeypatch, run_dir=run_dir)
-    out = _waiting(tmp_path, monkeypatch)
+    live_case = tmp_path / "unconfined-live-case"
+    live_case.mkdir()
+    out = _waiting(live_case, monkeypatch)
     assert out["reason"] == "home_isolation_not_applied", out
     assert cancelled["reason"] == "home_isolation_not_applied"
 

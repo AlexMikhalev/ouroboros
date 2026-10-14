@@ -315,7 +315,7 @@ def published_terminal_fixture(root, monkeypatch):
     bridge = bus.LocalChatBridge({})
     frames = []
     bridge._broadcast_fn = frames.append
-    monkeypatch.setattr('supervisor.workers.get_event_q', lambda: queue)
+    monkeypatch.setattr('supervisor.workers.get_event_q', lambda *, create=True: queue)
     monkeypatch.setattr(bus, 'DATA_DIR', root)
     monkeypatch.setattr(bus, 'get_bridge', lambda: bridge)
     monkeypatch.setattr(bus, 'load_state', lambda: {'session_id': 'qualification', 'owner_id': 7})

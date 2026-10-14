@@ -112,34 +112,42 @@ export function compactModel(model = '') {
 }
 
 // Phase 6, owner directive #1: «бейдж точно нужен, но не рекламный … что ТУТ
-// бабл \ субагент на codex». A small chip carrying the harness route this bubble
-// or subagent was DISPATCHED to — icon plus the short harness name, in the style
-// of the agent account rows on the Agents tab, never a promotional badge.
-// Dispatch, not receipt:
-// `executor_route` is resolved once when the work is sent, so the chip says where
-// it was sent, and a landing below that ask is disclosed on `capability_delta`.
-//
-// Only a DELEGATED route is a fact worth a chip: the native API path is the
-// ordinary case and prints nothing, so the lane never fills with "api" noise on
-// every ordinary bubble. Absent fact -> null -> no chip element at all.
-// The completion seam's typed substrate claim (subagents.actual_substrate),
-// carried on the terminal frame beside the counts. Surfaced as a tooltip
-// clause — the counts own the label; the enum never travels bare.
+// бабл \ субагент на codex». A small chip naming the harness this bubble or
+// subagent was DISPATCHED to — icon plus the short harness name, in the style of
+// the agent account rows on the Agents tab, never a promotional badge.
+// Dispatch, not receipt: `executor_route` is resolved once when the work is sent,
+// so the chip says where it was sent; a landing below that ask is disclosed on
+// `capability_delta`. Only a DELEGATED route is worth a chip: the native API path
+// is the ordinary case and prints nothing (absent fact -> null -> no element).
+// The completion seam's typed substrate claim (subagents.actual_substrate) rides
+// the terminal frame beside the counts and joins the detail sentence; the enum
+// never travels bare.
 const SUBSTRATE_NOTE = {
     harness_used: 'custody evidence confirms a harness run',
     harness_attempted: 'harness attempted, no delegated run succeeded',
     native_only: 'no harness run recorded',
 };
 
-// A well-formed `executor_observation` (this task, run/attempt/harness ids, integer
-// revision) without execution evidence yields a progress chip labelled `last update`
-// that keeps the requested/observed model source; `sourceTs` and revision let keepStickyExecutorChip drop older updates.
+// Quiet label (owner choice #360 A). `label` is the helper's name, with one short
+// ` · phrase` only where the bare name would read as a receipt nothing issued: a
+// progress actor (`last update`), a refused pin (`blocked`, frozen), unreadable
+// evidence, no run, runs not settled, failed or unverified runs, an undisclosed
+// outcome split. The ordinary case — an assigned route while the card's own phase
+// chip says Working, or every settled run ok — is the bare name: it names the
+// selected helper and never proves its session computes now. `title` is the
+// detail sentence (counts, model and its source, spend, substrate, access);
+// executorIdentityMarkup also prints it as text on the expanded card, because a
+// hover title alone is invisible on touch, to AT and in copies. `hasEvidence`,
+// `observation`, `sourceTs` and the revision feed keepStickyExecutorChip.
 export function executorChip(evt) {
     const raw = evt?.executor_observation;
     const observation = raw && raw.task_id === String(evt?.subagent_task_id || evt?.task_id || '')
         && raw.run_id && raw.attempt_id && raw.harness_id && Number.isInteger(raw.revision)
         ? raw : null;
     if (observation && !evt?.execution_evidence) {
+        // A well-formed observation without execution evidence is the run's own
+        // progress report: it keeps `last update` (an observation, not a receipt)
+        // and its requested/observed model source, or `model unconfirmed`, in the detail.
         const name = harnessPresentation(observation.harness_id).label;
         const model = observation.model_source === 'observed' || observation.model_source === 'requested'
             ? compactModel(observation.model) : '';
@@ -148,8 +156,8 @@ export function executorChip(evt) {
             hasEvidence: false,
             observation,
             sourceTs: Date.parse(evt?.ts || evt?.timestamp || '') || 0,
-            label: `${name}${model ? ` · ${model} (${observation.model_source})` : ' · model unconfirmed'} · last update`,
-            title: `Latest observed activity: ${name}, run ${observation.run_id}, attempt ${observation.attempt_id}, revision ${observation.revision}. This is progress, not a terminal execution receipt.`,
+            label: `${name} · last update`,
+            title: `Latest observed activity: ${name}, ${model ? `model ${model} (${observation.model_source})` : 'model unconfirmed'}, run ${observation.run_id}, attempt ${observation.attempt_id}, revision ${observation.revision}. This is progress, not a terminal execution receipt.`,
         };
     }
     const route = String(evt?.executor_route || '').trim();
@@ -160,55 +168,43 @@ export function executorChip(evt) {
     if (!harness) return null;
     const name = harnessPresentation(harness).label;
     const base = { harness, label: name, sourceTs: Date.parse(evt?.ts || evt?.timestamp || '') || 0 };
-    // LAYERED TRUTH, label-level. Identity (mark + product name) comes from the
-    // harness_presentation SSOT; the run STATE stays on this label. The route is
-    // a DISPATCH decision; whether a delegated run actually happened is
-    // EVIDENCE, reconciled once at the completion seam
-    // (subagents.envelope_from_task -> execution_evidence) and carried on the
-    // terminal frame. The chip label always states the run FACT beside the
-    // harness name (`{harness} · {state}`) — a bare product name reads as
-    // "ran on codex", a receipt nothing may have issued, and the hover-only
-    // tooltip is invisible on touch, to AT, and in copies.
+    const chip = (hasEvidence, phrase, title) => ({ ...base, hasEvidence, label: phrase ? `${name} · ${phrase}` : name, title });
+    // LAYERED TRUTH: identity (mark + product name) comes from the
+    // harness_presentation SSOT; the route is a DISPATCH decision; whether a
+    // delegated run happened is EVIDENCE, reconciled once at the completion seam
+    // (subagents.envelope_from_task -> execution_evidence) on the terminal frame.
     const evidence = (evt && typeof evt.execution_evidence === 'object' && evt.execution_evidence)
         ? evt.execution_evidence : null;
-    // The substrate clause is a completion-seam claim coupled to evidence:
-    // never attach it to an evidence-less frame (a bare enum beside "dispatched"
-    // could contradict the label if a producer ever decoupled them).
+    // The substrate clause is a completion-seam claim coupled to evidence: never
+    // attach it to an evidence-less frame, where it could contradict the dispatch.
     const substrateNote = evidence ? (SUBSTRATE_NOTE[String(evt?.actual_substrate || '')] || '') : '';
     const withSubstrate = (title) => (substrateNote ? `${title} — ${substrateNote}` : title);
     if (String(evt?.reason_code || '') === 'subagent_executor_unavailable') {
         // The typed $0 terminal of a harness pin the resolution refused (#363):
-        // the route names WHO refused, the reason code says the child never
-        // ran. Checked before the evidence branches — an empty custody read
-        // would otherwise print "no run yet" over a child that was never
-        // dispatched at all. Evidence-grade so a later dispatch-shaped frame
-        // cannot downgrade it to "dispatched".
-        return {
-            ...base,
-            hasEvidence: true,
-            label: `${name} · blocked`,
-            title: `Pinned to ${name}, but the route could not run — the task was NOT run (no metered API spend, no delegated run)`,
-        };
+        // the route names WHO refused, the reason code says the child never ran.
+        // Checked before the evidence branches — an empty custody read would
+        // otherwise print "no run yet" over a child never dispatched at all.
+        // Evidence-grade so a later dispatch-shaped frame cannot downgrade it.
+        return chip(true, 'blocked', `Pinned to ${name}, but the route could not run — the task was NOT run (no metered API spend, no delegated run)`);
     }
     if (!evidence) {
+        const record = normalizeTaskTerminalRecord(evt);
+        const status = String(record.outcome_axes?.lifecycle?.status || record.status || evt?.subagent_event || '').toLowerCase();
+        if (OBSERVED_OUTCOME_STATUSES.has(status)) {
+            return chip(false, 'run outcome unknown', `The ${name} route was assigned, but this terminal record has no delegated-run evidence; the run outcome is unknown`);
+        }
         // Evidence rides TERMINAL frames only, so a live frame proves nothing
-        // either way — and under the pre-start charter the leaf usually IS
-        // running by now. "dispatched" states the dispatch-plan fact the frame
-        // actually carries; an evidence-grade negative ("no run yet") here
-        // would be false for most of the live phase.
-        return {
-            ...base,
-            hasEvidence: false,
-            label: `${name} · dispatched`,
-            title: `Dispatched to ${name} — run evidence arrives with the terminal receipt; this subagent itself runs on the API`,
-        };
+        // either way, and under the pre-start charter the leaf usually IS running
+        // by now: an evidence-grade negative ("no run yet") would be false for most
+        // of the live phase. The bare name states the assignment the frame carries.
+        return chip(false, '', `Dispatched to ${name} — run evidence arrives with the terminal receipt; this subagent itself runs on the API`);
     }
     const started = Number(evidence.delegated_runs_started || 0);
     const settled = Number(evidence.delegated_runs_settled || 0);
     // Historical frames (v6.94–v6.99) carry delegated_runs_succeeded without
     // delegated_runs_failed: reconstruct the exact complement rather than
-    // rendering a clean receipt over an all-failed delegation. Frames with
-    // neither counter stay plain, exactly as wide as what they disclosed.
+    // rendering a clean receipt over an all-failed delegation. A frame with
+    // neither counter disclosed no outcome split, so it never reads clean.
     let failed = Number(evidence.delegated_runs_failed ?? NaN);
     if (!Number.isFinite(failed)) {
         const succeeded = Number(evidence.delegated_runs_succeeded ?? NaN);
@@ -217,38 +213,21 @@ export function executorChip(evt) {
     failed = Math.max(0, failed);
     if (evidence.evidence_read_failed) {
         // The custody log EXISTS but could not be (fully) read: the counts are
-        // UNKNOWN, not an established fact (sol finding, b49f8192 wave). This
-        // holds past recorded starts too — the partial work-order replay sets
-        // the flag with started>0, and a confident settled/spend receipt over
-        // admittedly incomplete evidence would be a lie. No substrate clause:
-        // the seam never claims a substrate over unreadable evidence.
-        return {
-            ...base,
-            hasEvidence: true,
-            label: `${name} · evidence unavailable`,
-            title: started
-                ? `The ${name} route was assigned and at least ${started} delegated run(s) started, but the evidence could not be fully read — final counts are unknown`
-                : `The ${name} route was assigned, but the delegated-run evidence could not be read — whether a run happened is unknown, not "none"`,
-        };
+        // UNKNOWN, not an established fact (sol finding, b49f8192 wave) — past
+        // recorded starts too, where the partial work-order replay sets the flag.
+        // No substrate clause: the seam never claims one over unreadable evidence.
+        return chip(true, 'evidence unavailable', started
+            ? `The ${name} route was assigned and at least ${started} delegated run(s) started, but the evidence could not be fully read — final counts are unknown`
+            : `The ${name} route was assigned, but the delegated-run evidence could not be read — whether a run happened is unknown, not "none"`);
     }
     if (!started) {
-        return {
-            ...base,
-            hasEvidence: true,
-            label: `${name} · no run yet`,
-            title: withSubstrate(`The ${name} route was assigned, but there is no durable record of a delegated run for this subagent`),
-        };
+        return chip(true, 'no run yet', withSubstrate(`The ${name} route was assigned, but there is no durable record of a delegated run for this subagent`));
     }
     if (!settled) {
-        // Evidence is terminal-frame material: started-but-unsettled here means
-        // the run(s) never settled (orphaned or lost), not "still executing" —
-        // a present-tense "running" on a finished card would be a lie.
-        return {
-            ...base,
-            hasEvidence: true,
-            label: `${name} · ${started} started, none settled`,
-            title: withSubstrate(`Delegated to your ${name} account — ${started} run(s) started, none settled`),
-        };
+        // Terminal-frame material: started-but-unsettled means the run(s) never
+        // settled (orphaned or lost), not "still executing" — a present-tense
+        // "running" on a finished card would be a lie.
+        return chip(true, 'not settled', withSubstrate(`Delegated to your ${name} account — ${started} run(s) started, none settled`));
     }
     const cost = evidence.subscription_cost_usd;
     const approx = evidence.subscription_cost_estimated ? '~' : '';
@@ -256,23 +235,29 @@ export function executorChip(evt) {
         ? 'subscription spend undisclosed'
         : `${approx}$${Number(cost).toFixed(2)} subscription`;
     const runsPart = `${settled} run${settled === 1 ? '' : 's'}`;
-    // The owner dictionary is "N ok, M failed" (plan D9): ok = settled − failed
-    // when either counter is disclosed; a frame with neither counter renders
-    // plain "N runs", exactly as wide as what it disclosed. All-failed runs
-    // must never read as a clean receipt.
+    // Unverified work-order coverage is an honesty fact: those runs sit inside the
+    // aggregate failed count, discounted from ok, so label and detail name them
+    // instead of claiming a physical failure, and a mix says "failed or unverified".
+    // Nothing orders failures and recoveries in time: the counts carry no chronology.
+    // The detail keeps the owner dictionary "N ok, M failed" (plan D9) when either
+    // counter is disclosed. Access rides the detail — requested surface from the
+    // frame, applied access from the settlement receipts when the engine disclosed
+    // it (empty = predates the receipt).
     const counted = Number.isFinite(Number(evidence.delegated_runs_failed ?? NaN))
         || Number.isFinite(Number(evidence.delegated_runs_succeeded ?? NaN));
-    const ok = Math.max(0, settled - failed);
-    const okPart = `${ok} ok${failed ? `, ${failed} failed` : ''}`;
-    // Unverified work-order coverage is an honesty fact, not a style note:
-    // those runs were discounted from the ok-count, and the label must say
-    // why a "successful" delegation reads short. Access rides the tooltip —
-    // requested surface from the frame, applied access from the settlement
-    // receipts when the engine disclosed it (empty = predates the receipt).
     const unresolved = Number(evidence.delegated_runs_source_unresolved || 0);
-    const unresolvedPart = unresolved
-        ? `, ${unresolved} unverified`
-        : '';
+    const notOk = Math.max(failed, unresolved);
+    const ok = Math.max(0, settled - notOk);
+    // Coverage can be incomplete on a non-successful run; equal aggregate counts
+    // cannot erase that terminal fact. Legacy frames without states stay count-based.
+    const terminalFailure = Array.isArray(evidence.delegated_run_failure_states)
+        && evidence.delegated_run_failure_states.some(state => typeof state === 'string' && state && state !== 'source_incomplete');
+    const notOkWord = unresolved && (terminalFailure || unresolved < notOk) ? 'failed or unverified'
+        : unresolved ? 'unverified' : 'failed';
+    const okPart = `${ok} ok${notOk ? `, ${notOk} ${notOkWord}` : ''}`;
+    const unsettled = Math.max(0, started - settled);
+    const phrase = notOk ? (settled === 1 ? `run ${notOkWord}` : `${notOk} of ${settled} runs ${notOkWord}`)
+        : unsettled ? `${unsettled} of ${started} runs not settled` : (counted ? '' : 'run outcome unknown');
     const accessClauses = [];
     const surface = String(evt?.write_surface || '').trim();
     if (surface) accessClauses.push(`write surface ${surface}`);
@@ -283,13 +268,12 @@ export function executorChip(evt) {
     const unresolvedTitle = unresolved
         ? ` — ${unresolved} run(s) settled with unverified work-order coverage (not counted ok)`
         : '';
+    const unsettledTitle = unsettled ? ` — ${unsettled} more run(s) started, not settled` : '';
     return {
-        ...base,
-        hasEvidence: true,
-        label: counted ? `${name} · ${okPart}${unresolvedPart}` : `${name} · ${runsPart}${unresolvedPart}`,
+        ...chip(true, phrase, withSubstrate(`Delegated to your ${name} account — ${runsPart} settled${counted ? ` (${okPart})` : ''}, ${costPart}`)
+            + unresolvedTitle + unsettledTitle + accessPart),
         observedModels: Array.isArray(evidence.harness_models)
             ? [...new Set(evidence.harness_models.filter((model) => typeof model === 'string' && model))] : [],
-        title: withSubstrate(`Delegated to your ${name} account — ${runsPart} settled${counted ? ` (${okPart})` : ''}, ${costPart}`) + unresolvedTitle + accessPart,
     };
 }
 
@@ -307,11 +291,7 @@ function subagentHeadline(sid = '', role = '', label = '', model = '', { full = 
     return `${cleanRole}${modelPart}${shortId && full ? ` (${shortId})` : ''}${suffix}`;
 }
 
-const SUBAGENT_CARD_LABEL = {
-    scheduled: 'Working',
-    running: 'Working',
-    interrupted: 'Working',
-};
+const SUBAGENT_CARD_LABEL = { scheduled: 'Working', running: 'Working', interrupted: 'Working' };
 
 export function formatLogMoney(value) {
     return formatUsd4(value);
@@ -320,11 +300,7 @@ export function formatLogMoney(value) {
 export function formatLogDuration(sec) {
     const num = Number(sec);
     if (!Number.isFinite(num) || num < 0) return '';
-    if (num >= 60) {
-        const mins = Math.floor(num / 60);
-        const rem = Math.round(num % 60);
-        return `${mins}m ${rem}s`;
-    }
+    if (num >= 60) return `${Math.floor(num / 60)}m ${Math.round(num % 60)}s`;
     return `${num < 10 ? num.toFixed(1) : Math.round(num)}s`;
 }
 
@@ -333,6 +309,14 @@ function formatLogTokens(evt) {
     const completion = Number(evt.completion_tokens || 0);
     if (!prompt && !completion) return '';
     return `${prompt}\u2192${completion} tok`;
+}
+
+// Usage rows only (#1578): v2 null = not reported, 0 = a reported zero; an unstamped/v1 zero stays ambiguous (LEGACY_RULE).
+function formatUsageTokens(evt) {
+    const count = (n) => (!Number.isSafeInteger(n) || n < 0 ? '?' : n === 0 && evt.record_contract_version !== 2 ? '0?' : String(n));
+    const prompt = count(evt.prompt_tokens), completion = count(evt.completion_tokens);
+    if (prompt === '?' && completion === '?') return 'tokens not reported';
+    return `${prompt}\u2192${completion} tok${[prompt, completion].includes('0?') ? ' (legacy 0 may be unreported)' : ''}`;
 }
 
 function compactJson(value, maxLen = 220) {
@@ -477,7 +461,7 @@ const TASK_CAUSE_PHRASES = {
     deep_self_review_unavailable: "The deep self-review could not run",
     deep_self_review_error: "The deep self-review stopped on an error",
     // #869: the provider-death rail's terminal words (twin of project_dialogue.TASK_CAUSE_PHRASES).
-    provider_unavailable: "The model provider stopped answering, so the task could not finish",
+    provider_unavailable: "The task could not get a usable model answer, so it could not finish",
     accounting_wait_expired: "Accounting access did not recover within this turn’s wait window",
     delivery_control_degraded: "Ouroboros's final delivery instruction could not be applied, so the answer stands as delivered.",
     authoring_handover_incomplete: "The replacement model stopped before resuming tool work.",
@@ -832,7 +816,7 @@ export function summarizeLogEvent(evt) {
             body: effortEvidenceText(evt),
             meta: taskMeta(
                 evt.model || '',
-                formatLogTokens(evt),
+                formatUsageTokens(evt),
                 // Backfill uses accounted upper bounds; live frames may carry cost.
                 formatLogMoney(accountedUpperBound(evt) ?? evt.cost),
                 evt.response_kind === 'tool_calls' ? `${evt.tool_call_count || 0} tool calls` : evt.response_kind || '',
@@ -858,7 +842,7 @@ export function summarizeLogEvent(evt) {
             body: effortEvidenceText(evt),
             meta: taskMeta(
                 evt.model || '',
-                formatLogTokens(evt),
+                formatUsageTokens(evt),
                 formatLogMoney(accountedUpperBound(evt) ?? evt.cost),
                 evt.category || '',
             ),

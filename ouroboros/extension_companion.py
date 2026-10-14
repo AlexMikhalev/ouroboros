@@ -145,9 +145,11 @@ class CompanionSupervisor:
             for port in descriptor.ports:
                 if not _port_is_available(port):
                     raise RuntimeError(f"port {port} is already in use")
+            from ouroboros.process_custody import lifeline_parent_env
+
             popen_kwargs: Dict[str, Any] = {
                 "cwd": str(descriptor.cwd),
-                "env": {**_companion_base_env(), **dict(descriptor.env)},
+                "env": {**_companion_base_env(), **dict(descriptor.env), **lifeline_parent_env()},
                 "stdin": subprocess.DEVNULL,
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.PIPE,
@@ -481,6 +483,7 @@ def companion_spawn_env(
     from ouroboros.node_runtime import prepend_skill_node_emergency_path, skill_manifest_owns_path
     from ouroboros.extension_isolated_deps import _isolated_python_site_dirs
     from ouroboros.gateway.host_service import DEFAULT_HOST_SERVICE_HOST, host_service_port
+    from ouroboros.process_custody import PARENT_PID_ENV
     from ouroboros.tools.skill_exec import _scrub_env
     # Case-aware merge (delta finding D2-8): a manifest "Path" must REPLACE
     # the allowlisted "PATH" on Windows, never sit next to it — duplicate
@@ -488,7 +491,7 @@ def companion_spawn_env(
     # undefined winner. Same contract as the executor-local service lane.
     from ouroboros.workspace_executor import overlay_env
 
-    reserved = set(FORBIDDEN_SKILL_SETTINGS) | {"HOST_SERVICE_TOKEN", "HOST_SERVICE_URL"}
+    reserved = set(FORBIDDEN_SKILL_SETTINGS) | {"HOST_SERVICE_TOKEN", "HOST_SERVICE_URL", PARENT_PID_ENV}
     env = overlay_env(
         _scrub_env(
             list(env_allow), state_dir, skill,

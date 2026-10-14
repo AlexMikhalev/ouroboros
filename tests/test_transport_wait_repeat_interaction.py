@@ -350,7 +350,7 @@ def test_latched_wait_cause_outranks_the_overflow_a_failed_local_pass_left(tmp_p
         interactive=turn != "managed", is_deadline_exhausted=False,
     )
     assert result == base  # byte-identical zero-wait outage wording
-    assert "Could not establish a provider connection" in result
+    assert "The request did not reach the provider" in result
     assert "context exceeded" not in result
     # The published projection says what the terminal said: no overflow kind under the wait terminal's reason code.
     assert derive_loop_outcome(result, usage, trace)["failure"] == {"kind": "provider", "reason_code": "provider_unavailable"}

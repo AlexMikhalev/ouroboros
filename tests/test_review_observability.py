@@ -31,6 +31,9 @@ def _make_ctx(tmp_path: pathlib.Path) -> MagicMock:
     # materialises a literal ``MagicMock/mock.drive_root.__truediv__()...`` dir
     # in the repo CWD (then committed by a careless ``git add -A``).
     ctx.drive_root = str(tmp_path)
+    # Match ToolContext's absent canonical override; an auto-Mock here becomes
+    # a truthy path ahead of drive_root in the real review-error log writer.
+    ctx.budget_drive_root = ""
     # A real ToolContext has no reconcile flag until the commit gate arms one
     # (``tools/git.py``). Left unset, the auto-MagicMock is truthy and the commit
     # review takes the reconcile-only path over a roster of mocks instead of the pool.
@@ -81,6 +84,8 @@ def test_parse_failure_distinct_from_pass(tmp_path):
     # raw_text must be preserved in full — not truncated
     assert triad_raw[0]["raw_text"] == bad_json
     assert triad_raw[0]["parsed_items"] == []
+    [event] = [json.loads(line) for line in (tmp_path / "logs" / "events.jsonl").read_text().splitlines()]
+    assert (event["type"], event["model"], event["status"]) == ("review_model_error", "model-a", "parse_failure")
 
 
 def test_pass_verdict_distinct_from_parse_failure(tmp_path):
@@ -490,6 +495,8 @@ def _run_unified_review_with_one_fresh_seat(tmp_path, monkeypatch, *, pool: bool
 
     if pool:
         set_review_pool(monkeypatch, pool_roster(pool_seat("fresh-seat", "fresh-model")))
+        # The synthetic model has no remote capability catalog entry.
+        monkeypatch.setattr(review_mod, "reviewer_context_window", lambda *a, **kw: 1_000_000)
     ctx = _make_ctx(tmp_path)
     # Pre-seed stale data simulating a prior attempt
     ctx._last_triad_raw_results = [

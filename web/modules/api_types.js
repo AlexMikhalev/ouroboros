@@ -684,8 +684,7 @@
  * durable copy when the canonical row left the bounded read window:
  * `origin_projected: true` marks such a synthesized user row (normal history
  * shape otherwise), and a `system_type: "origin_omission"` system row discloses
- * origins omitted past the synthesis cap. Both fields are additive and safely
- * ignorable by renderers.
+ * origins omitted past the synthesis cap. Both fields are additive and safely ignorable by renderers.
  * @typedef {Object} ProjectOriginHistoryFields
  * @property {boolean=} origin_projected
  * @property {"origin_omission"=} system_type
@@ -1035,6 +1034,7 @@
  * @property {string=} deadline_at
  * @property {number=} timeout_sec
  * @property {number=} timeout
+ * @property {number=} execution_timeout_sec Execution seconds excluding queue and confirmed pauses; 0 adds no limit. Calendar timeout/deadline stays independent.
  * @property {string=} context
  * @property {string=} expected_output
  * @property {string=} constraints

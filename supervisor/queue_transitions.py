@@ -48,13 +48,17 @@ def _queue_module():
 
 def transition_acceptance_fence(
     *, action: str, token: str, root_task_id: str = "", task_id: str = "", outcome: str = "",
-    expected_generation: Optional[int] = None,
+    expected_generation: Optional[int] = None, pooled_owner: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Atomically open, inspect, release, or seal a root admission fence.
 
-    ``begin`` is idempotent for its requester: the same token, or the SAME task with a
+    A pooled ``begin`` names its worker attempt (``pooled_owner``: task attempt and
+    pid) and is refused unless that attempt is the current RUNNING one (#1183);
+    direct callbacks pass none, needing no RUNNING row.
+    ``begin`` is idempotent for its requester: the same token, or the SAME owner with a
     new one (its answer was lost), re-adopts the ``active`` row and rebinds it, so a dead
-    attempt's late events own no row. A ``sealed`` row is never re-adopted. A token that
+    attempt's late events own no row. A consumed exact Resume can transfer its park-bound
+    fence to the new PID; a ``sealed`` row is never re-adopted. A token that
     owns no row answers ``released`` + ``row_absent`` — idempotent after ``task_done``
     cleared the fence, and never a seal. Every answer carries the row's real status.
     """
@@ -69,18 +73,27 @@ def transition_acceptance_fence(
             if not root_task_id:
                 return {"ok": False, "status": "error", "error": "missing root_task_id"}
             matched_root, requester = root_task_id, str(task_id or root_task_id)
+            if pooled_owner is not None and not _current_acceptance_owner(q, requester, root_task_id, pooled_owner):
+                return {"ok": False, "status": "stale_attempt",
+                        "error": "acceptance requester is not the current worker attempt"}
             row = q.ACCEPTANCE_FENCES.get(root_task_id)
             if not isinstance(row, dict):
                 row = q.ACCEPTANCE_FENCES[root_task_id] = {
                     "token": token, "root_task_id": root_task_id, "task_id": requester,
                     "status": "active", "opened_at": utc_now_iso(), "owner_message_generation": 0,
+                    **({"pooled_owner": dict(pooled_owner)} if pooled_owner is not None else {}),
                 }
-            elif str(row.get("token") or "") != token:
+            elif str(row.get("token") or "") != token or row.get("pooled_owner") != pooled_owner:
                 status = str(row.get("status") or "active")
-                if status != "active" or str(row.get("task_id") or "") != requester:
+                if (status != "active" or str(row.get("task_id") or "") != requester
+                        or (row.get("pooled_owner") != pooled_owner and (row.get("token") == token
+                            or not _consumed_acceptance_handoff(q, row, requester, pooled_owner)))):
                     return {"ok": False, "status": status,
                             "error": f"acceptance fence already {status} for root {root_task_id}"}
                 row["token"] = token
+                if pooled_owner is not None:
+                    row["pooled_owner"] = dict(pooled_owner)
+                row.pop("paused_continuation", None)
         else:
             matched_root = next(
                 (rid for rid, row in q.ACCEPTANCE_FENCES.items() if str(row.get("token") or "") == token),
@@ -112,6 +125,96 @@ def transition_acceptance_fence(
             result["status"] = "sealed"
     q.persist_queue_snapshot(reason=f"acceptance_fence_{result['status']}")
     return result
+
+
+def _consumed_acceptance_handoff(q: Any, fence: dict, task_id: str, owner: Any) -> bool:
+    """Rebind only the fence captured at this exact Pause, after its grant was consumed.
+
+    Called under Q after current pooled-worker validation. The park's old owner (pooled, or the
+    direct turn's ownerless row)/source, RUNNING handoff and durable grant must agree; no history or TTL.
+    """
+    from ouroboros.budget_pause import STATE_RESUMED
+    from ouroboros.task_results import _TRULY_TERMINAL_STATUSES, load_task_result
+
+    if not isinstance(owner, dict) or fence.get("root_task_id") in q.BUDGET_ROOT_FENCES:
+        return False
+    task, binding = q.RUNNING[task_id]["task"], fence.get("paused_continuation")
+    resume, binding = task.get("_budget_pause_resume") or {}, dict(binding) if isinstance(binding, dict) else {}
+    parked = binding.pop("pooled_owner" if "pooled_owner" in fence else "direct_owner", None)
+    if (not isinstance(parked, dict) or ("pooled_owner" in fence and parked != fence["pooled_owner"])
+            or binding != {key: resume.get(key) for key in ("pause_id", "pause_generation", "source_ref")}
+            or parked.get("task_attempt") != owner["task_attempt"]):
+        return False
+    try:
+        from ouroboros.store import acquisition_budget
+        with acquisition_budget(0):
+            result = load_task_result(pathlib.Path(task.get("budget_drive_root") or q.DRIVE_ROOT), task_id, strict=True) or {}
+    except Exception:
+        return False
+    row = result.get("budget_pause") or {}
+    grant = row.get("grant") or {}
+    return bool(result.get("task_id") == task_id and result.get("status") not in _TRULY_TERMINAL_STATUSES
+                and row.get("state") == STATE_RESUMED
+                and row.get("root_task_id") == fence.get("root_task_id")
+                and row.get("task_attempt") == owner["task_attempt"]
+                and row.get("pause_id") == resume.get("pause_id") and row.get("source_ref")
+                and row["source_ref"] == resume.get("source_ref")
+                and row.get("pause_generation") == resume.get("pause_generation")
+                and grant.get("grant_id") and grant["grant_id"] == resume.get("grant_id")
+                and grant.get("generation") == resume.get("grant_generation")
+                and grant.get("consumed_at") and not grant.get("revoked_at"))
+
+
+def _current_acceptance_owner(q: Any, task_id: str, root_id: str, owner: Dict[str, Any]) -> bool:
+    """Positive pooled ownership, read in the begin's own queue-lock transaction."""
+    from supervisor import workers
+
+    meta = q.RUNNING.get(task_id)
+    task = meta.get("task") if isinstance(meta, dict) else None
+    if not isinstance(task, dict) or not isinstance(owner, dict):
+        return False
+    worker = workers.WORKERS.get(meta.get("worker_id"))
+    return bool(
+        type(owner.get("task_attempt")) is int and type(owner.get("pid")) is int
+        and owner["task_attempt"] == int(meta.get("attempt") or task.get("_attempt") or 1)
+        and task.get("id") == task_id and str(task.get("root_task_id") or task_id) == root_id
+        and worker is not None and worker.busy_task_id == task_id
+        and worker.proc.pid == owner["pid"] and worker.proc.is_alive()
+        and not getattr(worker, "reaping", False)
+    )
+
+
+def release_ended_attempt_fences_locked(fences: Dict[Any, Any], task_id: str, *, task_attempt: int,
+                                        pid: Optional[int] = None, paused_roots: Any = ()) -> bool:
+    """Drop the active fence a proven-ended pooled attempt began (#1183).
+
+    The caller holds the fences' owner (Q, or the boot restore's snapshot copy) and
+    proves the attempt ended (confirmed death, or a previous supervisor generation)
+    at the handoff that creates its successor, before any restore or admission
+    consumer reads them. Only an ``active`` row whose recorded ``pooled_owner`` is
+    exactly that attempt (and pid, when known) goes: direct, unattributed legacy,
+    sealed and foreign-owner rows, and a root under a budget/owner Pause fence,
+    stay. Independent paid review custody is not touched.
+    """
+    for key, row in list(fences.items()):
+        owner = row.get("pooled_owner") if isinstance(row, dict) else None
+        if (isinstance(owner, dict) and row.get("status") == "active" and row.get("task_id") == task_id
+                and owner.get("task_attempt") == task_attempt and (pid is None or owner.get("pid") == pid)
+                and str(row.get("root_task_id") or key) not in paused_roots):
+            fences.pop(key)
+            return True
+    return False
+
+
+def clear_acceptance_fence_for_attempt(task_id: str, *, task_attempt: int, pid: Optional[int] = None) -> bool:
+    """Release a confirmed-ended pooled attempt's own active fence and persist it."""
+    q = _queue_module()
+    with q._queue_lock:
+        if not release_ended_attempt_fences_locked(q.ACCEPTANCE_FENCES, task_id, task_attempt=task_attempt,
+                                                   pid=pid, paused_roots=q.BUDGET_ROOT_FENCES):
+            return False
+        q.persist_queue_snapshot(reason="acceptance_fence_attempt_ended")
+    return True
 
 
 def _live_descendants_locked(

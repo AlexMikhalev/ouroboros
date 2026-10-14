@@ -12,10 +12,16 @@ Default local pytest excludes seven costly or environment-dependent lanes — `i
 
 - `integration` runs real provider checks. Split manual/tag jobs by `credential_required`, never waive a mixed pytest exit: optional failures stay red outside release dependencies. Required missing credentials fail; quota/429/5xx/timeout stay inconclusive, contract/auth/model/reasoning/tool 4xx red. `provider_release_floor.py` blocks official tags unless every required canary passed; pre-tag qualification must check those rows too, not aggregate workflow green. No provider secrets in PRs. Keyless `tests/system_e2e/` adds `serial` and `OUROBOROS_E2E_DEEP`: only `system-e2e-mock` runs `mock`; S39 `container` is operator-run (ARCHITECTURE §8).
 - `browser` / `ui_browser` / `ui_browser_docker` launch real Playwright engines (agent browser tools / the host UI / the `ouroboros-web:test` container; the docker lane skips cleanly when Docker is unavailable locally). The marker is the source of truth for what a lane collects. `portable_detail` covers build and portable artifact invariants. `ui-smoke` runs the complete `ui_browser` lane on non-documentation PRs and on every push to `ouroboros` (required invocation: "Safe local verification and dirty browser candidates" below). None of these joins the default local run or needs a paid provider.
-- `skill_smoke` installs the pinned official skills from the live catalog (list in `tests/test_skill_smoke_official.py`) as the dedicated 3-OS CI job, with real network and real pip; red means investigate, and there is deliberately no fallback-skip. Its paid review tier is a separate ubuntu-only step, ordered first and alone carrying the provider key (why: ARCHITECTURE §8 "CI topology"); a missing key is a hard red, not a skip.
+- `skill_smoke` installs pinned official skills (`tests/test_skill_smoke_official.py`) from the live catalog on three OSes with real network/pip; red means investigate, never fallback-skip. Paid review runs first on Ubuntu and alone holds the provider key (ARCHITECTURE §8); a missing key fails. Its single retry requires settled reviewer work and keeps state: production replay/cycle rules still apply, pending/unknown never passes.
 - `size_ratchet` carries the live-repo size gates and is the only blocking surface for repository size (rules under "Module Size & Complexity"; base fallback and the fail-closed rule: ARCHITECTURE §8 "CI topology").
 
 `skill_smoke` and `size_ratchet` tests never also carry the `serial` marker or join `_SERIAL_TEST_FILES`: the `and not <lane>` markexprs are the lane barrier, and single-lane assignment keeps each test's placement unambiguous. A new opt-in lane registers its marker in `pyproject.toml`, adds a collect-only zero-test guard in CI, and keeps the default local addopts free of network and Docker requirements.
+
+### Retiring test pins
+
+Record the retired proposition and named behaviour-test survivor (or obsolete
+requirement) in PR evidence, not a tracked ledger. Run the survivor and a falsifying
+negative. CHECKLISTS Body item 11(d) owns the preservation rule and review.
 
 ### Parallel CI and the `serial` marker
 

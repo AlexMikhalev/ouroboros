@@ -168,7 +168,7 @@ def test_startup_recovery_reuses_pending_root_result_checkpoint(tmp_path, monkey
     calls = []
 
     def fake_run(env, task, usage, trace, evidence, drive_logs, *, blocking=False,
-                 sealed_final=None):
+                 sealed_final=None, **_recovery):
         calls.append((env.drive_root, task, usage, trace, evidence, drive_logs, blocking))
         pipeline._set_root_post_task_checkpoint(env, task, "completed")
 
@@ -278,7 +278,8 @@ def test_root_synthesis_uses_one_shared_nonfinal_subtree_cost_snapshot(tmp_path,
     monkeypatch.setattr(pipeline, "_update_improvement_backlog", lambda *args, **kwargs: 0)
     monkeypatch.setattr(pipeline, "_apply_reflection_memory_actions", lambda *args, **kwargs: 0)
     monkeypatch.setattr(post_task_evolution, "maybe_promote", lambda *args, **kwargs: None)
-    monkeypatch.setattr(pipeline, "_set_root_post_task_checkpoint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline, "_set_root_post_task_checkpoint",
+                        lambda _env, _task, status, **kwargs: {"root_phase_checkpoint": {"post_task_synthesis": status}})
 
     env = SimpleNamespace(
         repo_dir=tmp_path,
@@ -329,7 +330,8 @@ def test_nonblocking_post_task_snapshot_precedes_worker_dispatch(tmp_path, monke
             "integrity_degraded": False,
         },
     )
-    monkeypatch.setattr(pipeline, "_set_root_post_task_checkpoint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline, "_set_root_post_task_checkpoint",
+                        lambda _env, _task, status, **kwargs: {"root_phase_checkpoint": {"post_task_synthesis": status}})
 
     class DeferredThread:
         def __init__(self, *, target, args=(), daemon):

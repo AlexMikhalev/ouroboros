@@ -95,7 +95,7 @@ def test_gr4_1_cascade_summary_registration_failure_keeps_the_intent(qenv, monke
     from supervisor import workers
 
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
     write_task_result(qenv.drive, "cs1", STATUS_CANCELLED, chat_id=6, result="killed")
     ci.request_cancel(qenv.drive, "cs1", scope=ci.SCOPE_CASCADE, allow_settled_target=True)
@@ -126,7 +126,7 @@ def test_gr4_1_already_settled_fast_path_keeps_intent_and_stays_loud(qenv, monke
     from supervisor import workers
 
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     write_task_result(qenv.drive, "fs1", STATUS_RUNNING, chat_id=4, result="working")
     ci.request_cancel(qenv.drive, "fs1", reason="stop")
     # Natural completion wins the race before custody arrives.
@@ -170,7 +170,7 @@ def test_gr4_1_miss_lane_registration_failure_keeps_the_intent(qenv, monkeypatch
     from supervisor import workers
 
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
     write_task_result(qenv.drive, "ml1", STATUS_RUNNING, chat_id=5, result="was working")
     ci.request_cancel(qenv.drive, "ml1", reason="stop")
@@ -203,7 +203,7 @@ def test_gr4_2_same_intent_replay_dedups_by_the_per_intent_delivery_id(qenv, mon
     from supervisor import workers
 
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
     write_task_result(qenv.drive, "cr2", STATUS_CANCELLED, chat_id=6, result="killed")
     minted = ci.request_cancel(
@@ -342,7 +342,7 @@ def test_gr4_4_cascade_digest_reports_the_current_durable_child_state(tmp_path, 
     from supervisor import workers
 
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     write_task_result(tmp_path, "r4", STATUS_CANCELLED, chat_id=9, result="root down")
     # c4 was reported ``failed`` by the sweep but a concurrent actor settled it.
     write_task_result(tmp_path, "c4", STATUS_CANCELLED, result="settled elsewhere")

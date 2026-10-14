@@ -59,3 +59,53 @@ def test_smoke_diagnostics_keep_successful_review_actors(tmp_path, monkeypatch):
     diagnostic = smoke._review_diag("clean", "clean", "", {"review_findings": []})
     assert smoke._REVIEW_MODEL in diagnostic
     assert json.dumps(actors) in diagnostic
+
+
+@pytest.mark.parametrize("case,calls", [
+    ("in_flight", 1), ("custody_lost", 1), ("pending_dispatch", 1),
+    ("late_result_pending", 1), ("missing_history", 1), ("wrong_hash", 1),
+    ("empty_records", 1), ("unknown_record", 1), ("nested_pending", 1),
+    ("blockers", 1), ("settled_error", 2), ("late_settled_error", 2),
+    ("not_dispatched", 2), ("deps_failed", 2), ("clean", 1),
+])
+def test_smoke_retry_preserves_original_wave_and_requires_settlement(tmp_path, monkeypatch, case, calls):
+    from ouroboros.skill_review_history import append_history_once, review_history_path
+
+    name = "bounded-smoke"
+    monkeypatch.setattr(smoke, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(smoke, "find_skill", lambda *_: SimpleNamespace(content_hash="current-hash"))
+    status = "clean" if case in {"clean", "deps_failed"} else "blockers" if case == "blockers" else "pending"
+    state = case if case in {"in_flight", "custody_lost", "pending_dispatch", "not_dispatched"} else "settled"
+    if case == "late_settled_error":
+        state = "late_settled"
+    records = [{"operation_state": state, "late_result_pending": case == "late_result_pending"}]
+    if case == "empty_records":
+        records = []
+    elif case == "unknown_record":
+        records = [{}]
+    elif case == "nested_pending":
+        records = [{"raw_results": [{"operation_state": "in_flight"}]}]
+    path = review_history_path(tmp_path, name)
+    if case != "missing_history":
+        assert append_history_once(tmp_path, name, {"job_id": "original-wave", "status": status,
+            "content_hash": "old-hash" if case == "wrong_hash" else "current-hash",
+            "raw_actor_records": records, "paid": True})
+    before = path.read_bytes() if path.exists() else None
+    observed = []
+
+    def flow(slug, skill):
+        observed.append((slug, skill))
+        assert (path.read_bytes() if path.exists() else None) == before
+        if len(observed) == 1:
+            return status, "" if status in {"clean", "blockers"} else "first failure", (
+                "failed" if case == "deps_failed" else "installed"), {}
+        return "clean", "", "installed", {}
+
+    monkeypatch.setattr(smoke, "_run_review_flow", flow)
+    result = smoke._review_with_one_settled_retry("a2a", name)
+    assert len(observed) == calls
+    assert (path.read_bytes() if path.exists() else None) == before
+    if calls == 1 and case != "clean":
+        assert result[0] == status and "not retried:" in result[-1]
+    else:
+        assert result[:3] == ("clean", "", "installed")

@@ -6,7 +6,6 @@ import time
 from ouroboros.utils import read_json_dict
 
 _sleep = time.sleep  # the in-flight re-read's pause, kept apart from frozen test clocks
-_monotonic = time.monotonic  # publication waits are independent of stamp age
 
 
 def queue_stamp(document: dict, *, boot: bool = False) -> dict:
@@ -41,29 +40,36 @@ def load_queue_document(drive_root, name="queue_snapshot.json") -> dict:
 
 
 DISPATCH_PUBLICATION_WAIT_SEC = 30.0  # the wait budget for an in-flight queue publication on a loaded host
+DISPATCH_PUBLICATION_POLL_SEC = 0.05
 
 
-def published_dispatch(drive_root, *, attempts=None, pause_sec=0.05, deadline=None, check=None):
+class DispatchPublicationPending(RuntimeError):
+    """A generated dispatch document is not certified yet; never permissive authority."""
+
+
+def dispatch_probe(drive_root):
+    """One read, with no sleep: a publication gap is distinct from a malformed document."""
+    document = load_queue_document(drive_root, "queue_dispatch.json")
+    if not document.get("generation"):
+        return None
+    if not queue_stamp(document):
+        raise DispatchPublicationPending(f"root budget fence authority unavailable: {drive_root}/state/queue_dispatch.json")
+    return document
+
+
+def published_dispatch(drive_root, *, attempts=None, pause_sec=DISPATCH_PUBLICATION_POLL_SEC):
     """The dispatch document of the last successful publication: its generation certified by
     queue.alive, whatever its age (a stalled tick never stops a send). A publication in flight
     (the stamp is unlinked first) is re-read for up to DISPATCH_PUBLICATION_WAIT_SEC; None when
-    it stays uncertified (issue #1754: a one-second window failed sends under load).
-    A caller may share its deadline across acquisitions and check controls on each re-read."""
+    it stays uncertified (issue #1754: a one-second window failed sends under load)."""
     if attempts is None:
         attempts = max(1, int(DISPATCH_PUBLICATION_WAIT_SEC / pause_sec))
-    if deadline is None:
-        deadline = _monotonic() + DISPATCH_PUBLICATION_WAIT_SEC
     for attempt in range(attempts):
-        if attempt and check is not None:
-            check()  # controls are honoured while waiting, never before the first read
         document = load_queue_document(drive_root, "queue_dispatch.json")
         if not document.get("generation"):
             return None  # Only an uncertified publication can be in flight.
         if queue_stamp(document):
             return document
         if attempt + 1 < attempts:
-            remaining = deadline - _monotonic()
-            if remaining <= 0:
-                return None
-            _sleep(min(pause_sec, remaining))
+            _sleep(pause_sec)
     return None

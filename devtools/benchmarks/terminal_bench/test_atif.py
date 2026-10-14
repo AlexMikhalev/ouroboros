@@ -100,6 +100,35 @@ def test_build_trajectory_structure(tmp_path: Path) -> None:
     assert metrics["total_cost_usd"] == 0.5
 
 
+def test_event_fallback_preserves_partial_token_evidence_and_measured_zero(tmp_path: Path) -> None:
+    agent = _make_agent_dir(tmp_path)
+    _write_jsonl(agent / "ouroboros-data/logs/events.jsonl", [
+        {"type": "llm_usage", "record_contract_version": 2, "prompt_tokens": 10,
+         "completion_tokens": 0, "cached_tokens": None, "cache_write_tokens": 3},
+        {"type": "llm_usage", "record_contract_version": 2, "prompt_tokens": None,
+         "completion_tokens": 0, "cached_tokens": 0, "cache_write_tokens": 0},
+    ])
+    metrics = build_trajectory(agent)["final_metrics"]
+    assert metrics["total_prompt_tokens"] is None
+    assert metrics["total_completion_tokens"] == 0
+    assert metrics["total_cached_tokens"] is None
+    assert metrics["total_cost_usd"] == 0.5
+    evidence = metrics["extra"]["event_token_evidence"]
+    assert evidence["prompt_tokens"]["known_total"] == 10
+    assert evidence["prompt_tokens"]["unknown_count"] == 1
+    assert evidence["cache_write_tokens"]["total"] == 3
+
+
+def test_event_fallback_keeps_legacy_zero_ambiguous(tmp_path: Path) -> None:
+    agent = _make_agent_dir(tmp_path)
+    _write_jsonl(agent / "ouroboros-data/logs/events.jsonl", [
+        {"type": "llm_usage", "prompt_tokens": 0, "completion_tokens": 2, "cached_tokens": 0},
+    ])
+    metrics = build_trajectory(agent)["final_metrics"]
+    assert metrics["total_prompt_tokens"] is None and metrics["total_completion_tokens"] == 2
+    assert metrics["extra"]["event_token_evidence"]["prompt_tokens"]["legacy_zero_count"] == 1
+
+
 def test_rotated_events_and_tools_stay_in_the_trajectory(tmp_path: Path) -> None:
     """Audit #15-12: the CPL4-C1/C2 train started rotating events.jsonl and
     tools.jsonl, but ATIF still read only the LIVE files — a rotated trial

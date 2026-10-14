@@ -261,6 +261,10 @@ def _unread_output_line(custody_root: Any, run: Any, task_id: str) -> str:
             "covered end to end, or say plainly that the result was not "
             "collected."
         )
+    if getattr(run, "terminal_source", None) and not run.unread_disclosed:
+        return (f"INFO: DELEGATED RESULT AVAILABLE — run {run.run_id or '?'} has retained full output at "
+                f"{address.get('path') or run.output_artifact}, not yet read by its owner. "
+                "Body collection proves availability, not acceptance. " + action)
     return (f"WARNING: DELEGATED RESULT NEVER READ — run {run.run_id or '?'} settled "
             f"with its full output staged at {address.get('path') or run.output_artifact} and never read to "
             f"EOF (owner task {run.task_id or '?'}). {action}")
@@ -599,20 +603,23 @@ def build_health_invariants(env: Any, task_id: str = "", active_root: str = "",
 
 
 def _compute_cache_hit_rate(env: Any) -> Optional[float]:
+    from ouroboros.event_token_totals import token_counter
+
     total_prompt = total_cached = reported = 0
     try:
         for ev in _iter_recent_jsonl(env.drive_path("logs/events.jsonl")):
             if ev.get("type") != "llm_round":
                 continue
-            usage = ev.get("usage", ev)
-            pt = int(usage.get("prompt_tokens", 0))
-            # An absent key and an explicit null both mean the round measured
-            # nothing, so it joins NEITHER side of the ratio; only a number is
-            # a report, and an explicit 0 is a real measured miss.
-            cached = usage.get("cached_tokens")
-            if pt > 0 and cached is not None:
+            # Per round (#1578): an absent, null (record v2) or malformed counter
+            # means the round measured nothing, and an unstamped/v1 zero may be an
+            # old writer's unknown-to-zero (record contract LEGACY_RULE), so such a
+            # round joins NEITHER side of the ratio and never voids the measured
+            # rounds beside it; a v2 zero is a real measured miss.
+            pt_state, pt = token_counter(ev, "prompt_tokens")
+            cached_state, cached = token_counter(ev, "cached_tokens")
+            if pt and pt_state == cached_state == "known":
                 total_prompt += pt
-                total_cached += int(cached or 0)
+                total_cached += cached
                 reported += 1
     except Exception:
         return None

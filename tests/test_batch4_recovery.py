@@ -194,8 +194,11 @@ def test_warm_sleep_refuses_selected_root_blocked_by_its_project_lease(tmp_path)
     ctx.project_id = "project"
     _result(tmp_path, "other-root", "scheduled", project_id="project")
     chosen = selectors(ctx, tasks=["other-root"])
-    with pytest.raises(ValueError, match="project lease"):
+    with pytest.raises(ValueError):
         request_sleep(ctx, chosen, "warm")
+    assert not getattr(ctx, "_model_sleep", None)
+    _result(tmp_path, "other-root", "scheduled", project_id="other-project")
+    assert request_sleep(ctx, chosen, "warm")["reason"] == "sleep_armed"
 
 
 def test_cold_sleep_retains_unknown_child_start_after_result_collection(tmp_path):

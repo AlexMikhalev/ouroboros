@@ -287,8 +287,8 @@ def test_cold_rechecks_a_child_claim_that_lands_after_initial_census(tmp_path, m
     ctx._model_sleep = {"sleep_id": "s", "mode": "cold", **model_sleep.selectors(ctx, wake_after_sec=3600)}
     original = model_sleep.cold_blockers
     observations = []
-    def initial_census(source):
-        blockers = original(source)
+    def initial_census(source, **kwargs):
+        blockers = original(source, **kwargs)
         observations.append(blockers)
         if len(observations) == 1:
             write_task_result(tmp_path, "child", "scheduled", launch_handoffs={"external": {"tool": "opaque"}})

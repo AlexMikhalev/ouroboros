@@ -163,12 +163,20 @@ def _receipts(geo):
 def _publish_terminal_result(geo, task_id, status="cancelled"):
     """The owner's terminal boundary: the real audit producer, then the real recorder."""
     from ouroboros.delegate_terminal import record_terminal_reconciliation, terminal_reconcile_task
-    from ouroboros.task_results import write_task_result
+    from ouroboros.task_results import load_task_result, write_task_result
 
     write_task_result(geo.canonical, task_id, status, result="stopped", reason_code="server_shutdown")
     audit = terminal_reconcile_task(geo.canonical, task_id)
     assert audit["audit_status"] == "ok", audit
-    assert record_terminal_reconciliation(geo.canonical, task_id, audit)
+    record_terminal_reconciliation(geo.canonical, task_id, audit)
+    # Output retention may already have published this exact disclosure. Its
+    # idempotent recorder need not write twice; the actual published facts must match.
+    stored = load_task_result(geo.canonical, task_id)
+    assert stored["delegated_runs_unreconciled"] == audit["unreconciled"]
+    published = stored["delegate_terminal_reconciliation"]
+    for field in ("open_run_ids", "pending_invocation_ids", "undisposed_patch_run_ids",
+                  "terminal_runs", "deferred_project_retirements"):
+        assert published[field] == audit[field]
     return audit
 
 

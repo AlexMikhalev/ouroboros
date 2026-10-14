@@ -127,7 +127,9 @@ export class NodeStub {
     }
     async play() { this.paused = false; }
     pause() { this.paused = true; this.pauseCalls += 1; }
-    select() { this.selectCalls += 1; }
+    // Like a browser, selecting a field focuses it.
+    select() { this.selectCalls += 1; globalThis.document.activeElement = this; }
+    focus() { globalThis.document.activeElement = this; }
     load() {}
 }
 

@@ -27,6 +27,8 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
         top: 0,
         stick: true,
         get generation() { return generation; },
+        // The unread opening still owed (`claim(true)`): its claim's generation, else null.
+        get arriving() { return arriving === generation ? arriving : null; },
         get pending() { return Boolean(intent); },
         get target() { return intent; },
         get approximate() { return approximate; },
@@ -161,9 +163,10 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
                 const follow = state.stick, absorb = () => { state.stick = follow && direction > 0 && state.nearBottom(); };
                 if (nested) {
                     // Box scrolling also ends an earlier feed gesture's queued frame and
-                    // the scrolls it still owes, though not a scrollbar drag still held.
+                    // the scrolls it still owes, though not a scrollbar drag still held,
+                    // and an unread opening still owed after its claim reached the present.
                     gestures++; if (dragging !== 'held') dragging = '';
-                    if (intent || approximate || claimed === generation) state.cancel();
+                    if (intent || approximate || claimed === generation || arriving === generation) state.cancel();
                     absorb();
                     return;
                 }
@@ -210,10 +213,11 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
             state.position();
         },
         /** An unread room opened (`claim(true)`) lands once on its newest message, `measure()`
-         * px from the bottom, unless the reader moved first. Nothing to move (on screen there,
-         * unknown, not on this page) leaves the claim's own navigation in charge. */
-        land(measure) {
-            if (arriving !== generation) return;
+         * px from the bottom, unless the reader moved first; `token` is that opening's
+         * own claim, so a superseded one spends nothing. Nothing to move (on screen
+         * there, unknown, never reached) leaves the claim's own navigation in charge. */
+        land(measure, token) {
+            if (arriving !== generation || token !== generation) return;
             arriving = null;
             if (!visible()) return;
             feed.scrollTop = feed.scrollHeight;

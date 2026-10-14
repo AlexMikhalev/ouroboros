@@ -12,6 +12,7 @@ from ouroboros.task_results import load_task_result, write_task_result
 from supervisor import queue, state, workers
 from tests.test_swarm_host_admission import host  # noqa: F401
 from tests._store_shared import delete_result, unreadable_result
+from tests.test_pending_deadline_continuations import expiry  # noqa: F401
 
 pytestmark = pytest.mark.serial
 
@@ -327,9 +328,12 @@ def test_room_rebind_and_back_cannot_redirect_original_preparation(host, tmp_pat
         assert not sent and load_task_result(host.root, prepared["id"])["status"] == "failed"
 
 
-@pytest.mark.parametrize("dispatch", [None, "none", "possible"])
+@pytest.mark.parametrize("dispatch", [None, "none", "possible", "stored_possible", "missing_receipt",
+                                      "unreadable_receipt", "started", "owner_pause", "panic"])
 @pytest.mark.parametrize("readable", [False, True])
-def test_held_deadline_keeps_custody_without_replay(host, tmp_path, monkeypatch, dispatch, readable):  # noqa: F811
+def test_held_deadline_keeps_custody_without_replay(host, tmp_path, monkeypatch, expiry, dispatch, readable):  # noqa: F811
+    from supervisor.events_budget import HOLD_SAVED_WORK, budget_hold_fact
+
     accepted(host, tmp_path)
     path, original = restore_unreadable(host)
     if readable:
@@ -338,18 +342,39 @@ def test_held_deadline_keeps_custody_without_replay(host, tmp_path, monkeypatch,
     held["deadline_at"] = "2000-01-01T00:00:00Z"
     if dispatch is None:
         held.pop("admitted_dispatch", None)
-    else:
+    elif dispatch in {"none", "possible"}:
         held["admitted_dispatch"] = dispatch
+    elif dispatch == "stored_possible":
+        write_task_result(host.root, "held", "scheduled", admitted_dispatch="possible")
+    elif dispatch == "missing_receipt":
+        delete_result(host.root, "held")
+    elif dispatch == "unreadable_receipt":
+        unreadable_result(monkeypatch, "held")
+    elif dispatch == "started":
+        write_task_result(host.root, "held", "scheduled", started_at="2026-01-01T00:00:00Z")
+    elif dispatch == "owner_pause":
+        from supervisor.owner_pause_control import request_owner_pause
+
+        assert request_owner_pause("held", request_id="held-pause")["ok"]
+    elif dispatch == "panic":
+        (host.root / "state" / "panic_stop.flag").write_text("panic")
     sent = worker(host, monkeypatch)
-    workers.assign_tasks()
-    assert held["_terminalization_retry"]["trigger"] == "deadline"
-    assert held["_terminalization_retry"]["reconcile_delegate_custody"] is True
+    # Retention grants no execution; a positive never-started receipt still expires.
+    assert budget_hold_fact(held)["reason"] == HOLD_SAVED_WORK
+    for _ in range(2):
+        queue.enforce_task_timeouts()
+        workers.assign_tasks()
+        expiry.reap()
     assert not sent and not host.attempts
-    workers.assign_tasks()
-    assert not host.pending and not sent
-    stored = load_task_result(host.root, "held")
-    assert stored["status"] == "failed" and stored.get("admission_outcome") != "never_admitted"
-    assert "deadline" in stored["result"].lower()
+    if dispatch == "none":
+        assert not host.pending
+        assert load_task_result(host.root, "held")["reason_code"] == "deadline"
+    else:
+        assert host.pending == [held]
+        assert held.get("_terminalization_retry") is None
+        if dispatch not in {"missing_receipt", "unreadable_receipt"}:
+            stored = load_task_result(host.root, "held")
+            assert stored["status"] == "scheduled" and stored.get("admission_outcome") != "never_admitted"
 
 
 def test_unchanged_hold_does_not_rewrite_snapshot_but_changed_reason_does(host, tmp_path, monkeypatch):  # noqa: F811

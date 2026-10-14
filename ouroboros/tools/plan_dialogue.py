@@ -357,6 +357,8 @@ def dialogue_slot_inputs(slots: list, *, system_prompt: str, user_content: str,
                 messages[sid] = build_plan_review_messages(system_prompt, view + seat, plan_user_stable_len(view))
             lengths[sid] = _messages_char_count(messages[sid])
         elif not slot_is_session(slot):
+            # Initial layout only: an irreducible brief remains sendable and
+            # every omitted dialogue range retains its exact readable source.
             bound = review_native_transcript_bound(slot.model, output_reserve=PLAN_REVIEW_MAX_TOKENS,
                                                    mandatory_read_chars=native_mandatory_chars,
                                                    **reviewer_window_binding(slot))

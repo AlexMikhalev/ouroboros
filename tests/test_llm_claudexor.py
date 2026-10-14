@@ -542,7 +542,40 @@ def test_upload_proof_refines_terminal_without_resending_or_inventing_usage(setu
     assert ledger(root)[-1]["state"] == ("released" if proven else "unresolved")
     classified = classify_llm_exception(error)
     assert classified.retry_same_request is proven
+    # The kind decides the free wait (12.10: a proven non-delivery read as provider_error).
+    assert classified.kind == ("transport_unavailable" if proven else "provider_outcome_unknown")
+    assert error.physical_attempt_capture.route_is_loopback is False  # the daemon is no model server
     assert len(gateway.accepted_operations) == len(gateway.creates) == 1
+
+
+@pytest.mark.parametrize("code, basis, cause, kind", [
+    ("transport_not_delivered", "incomplete_upload", "EPIPE", "transport_unavailable"),
+    ("transport_not_delivered", "connect_failure", "UND_ERR_CONNECT_TIMEOUT", "transport_unavailable"),
+    ("auth_unavailable", "", "", "auth_error"),
+    ("model_source_unavailable", "", "", "bad_request"),
+])
+def test_engine_not_started_receipt_is_classified_by_its_typed_code(setup, code, basis, cause, kind):
+    """The 12.10 receipt verbatim waits as a free outage; a typed engine precondition
+    refusal before dispatch never waits as one (it would hold the task for hours)."""
+    from ouroboros.loop_llm_call import classify_llm_exception
+
+    root, gateway, client = setup
+    context = ({"errorCode": cause, "stage": "fetch", "generationStarted": False,
+                "requestDelivery": {"basis": basis, "state": "not_delivered", "bodyBytes": 4_910_776,
+                                    "handedOffBytes": 3_997_696, "responseReceived": False}} if basis else {})
+    message = ("The complete Codex request was not delivered; generation did not start." if basis
+               else "Controlled engine refusal")
+    value = result(outcome="failed", problem={"code": code, "message": message, "retryable": bool(basis),
+                                              "context": context})
+    gateway.results = [value]
+    gateway.dispatch = ["not_started"]
+    with pytest.raises(transport.ClaudexorModelNotDispatched) as raised:
+        client.chat([{"role": "user", "content": "hi"}], MODEL)
+    assert raised.value.physical_attempt_capture.state == "released"
+    assert [row["state"] for row in ledger(root)] == ["released"]
+    classified = classify_llm_exception(raised.value)
+    assert classified.kind == kind
+    assert classified.retry_same_request is (kind == "transport_unavailable")
 
 
 def test_typed_subject_refusal_suppresses_next_auto_preference(setup):

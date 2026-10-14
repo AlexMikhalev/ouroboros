@@ -48,7 +48,9 @@ def _readiness(q: Any, task: Dict[str, Any], row: Dict[str, Any]) -> str:
         drive_root=str(task.get("drive_root") or task.get("child_drive_root") or root),
         budget_drive_root=str(root), task_attempt=int(task.get("_attempt") or 1),
         _loop_mailbox_seen_ids=set(row.get("sleep_seen") or ()), task_metadata=task.get("metadata") or {})
-    return wake_reason(ctx, row["sleep"])
+    from ouroboros.sleep_custody import accepted_receipt
+    receipt = accepted_receipt(ctx.task_id, row)
+    return wake_reason(ctx, {**row["sleep"], **({"body_runs": receipt["runs"]} if receipt else {})})
 
 
 def _vetoed(q: Any, task: Dict[str, Any]) -> str:

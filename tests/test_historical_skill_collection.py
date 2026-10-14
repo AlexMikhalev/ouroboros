@@ -87,7 +87,8 @@ def session_skill(late_skill, monkeypatch):  # noqa: F811
             h.calls.append(a)
             if len(h.calls) >= 2:
                 started.set()
-            assert h.release.wait(10)
+            # This test owns release; teardown also releases on an early failure.
+            h.release.wait()
             if getattr(h.behavior, "session_remains_live", False):
                 raise TimeoutError("review waiter ended while the original delegated run remains live")
             return ReviewAttemptResult(message={"content": h.text}, raw_text=h.text,
@@ -139,9 +140,9 @@ def test_paid_session_wave_collects_original_roster_rights_and_tokens(session_sk
         monkeypatch.setattr(skill_review, "reviewer_slot_config_error", lambda: "malformed new Settings")
     monkeypatch.setattr(skill_review, "_build_review_prompt_for_attempt",
                         lambda *a, **kw: pytest.fail("collection rebuilt a prompt"))
-    _handle_review_skill(h.ctx(), skill="late")
+    answer = _handle_review_skill(h.ctx(), skill="late")
     state = load_review_state(h.root, "late")
-    assert state.status == "clean", state
+    assert state.status == "clean", (state, answer)
     assert len(h.calls) == 2 and h.history.read_bytes().startswith(original)
     newest = json.loads(h.history.read_bytes().splitlines()[-1])
     assert newest["review_resume_of"] == old["wave_id"]
@@ -154,6 +155,32 @@ def test_paid_session_wave_collects_original_roster_rights_and_tokens(session_sk
     assert original_requests == {slot: delegate_custody.invocation_record(h.root, token)["request"]
                                  for slot, token in tokens.items()}
     assert not (h.root / "state/skills/late/enabled.json").exists()
+
+
+def test_session_release_belongs_to_the_test_not_the_first_wave_clock(session_skill, monkeypatch):
+    h = session_skill
+    real_wait, observed = h.release.wait, []
+
+    def expire_only_timed_waits(timeout=None):
+        observed.append(timeout)
+        # Deterministically model a seat deadline expiring before its owner
+        # finishes first-wave publication; do not spend ten real seconds.
+        return False if timeout is not None else real_wait()
+
+    monkeypatch.setattr(h.release, "wait", expire_only_timed_waits)
+    try:
+        first = _handle_review_skill(h.ctx(), skill="late")
+        original = h.history.read_bytes()
+        h.release.set()
+        assert h.settled.wait(10)
+        answer = _handle_review_skill(h.ctx(), skill="late")
+        state = load_review_state(h.root, "late")
+        assert state.status == "clean", (state, first, answer)
+        assert observed == [None, None]
+        assert len(h.calls) == 2 and h.history.read_bytes().startswith(original)
+        assert all(actor["raw_text"] == h.text for actor in state.raw_actor_records)
+    finally:
+        h.release.set()
 
 
 @pytest.mark.parametrize("defect", ["missing_prompt", "foreign_operation", "invocation", "chunk_contract"])

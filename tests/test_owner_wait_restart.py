@@ -566,10 +566,15 @@ def test_project_wait_unreadable_authority_stays_same_id_then_recovers(restart_c
                                    "ceiling_unreadable_transaction", "stop"])
 def test_project_wait_positive_refusal_uses_existing_custody(restart_case, monkeypatch, refusal):
     from ouroboros.cancel_intents import request_cancel
+    from supervisor import queue_timeouts
     from tests.test_project_hold_recovery import worker
 
     case = restart_case
     restored = restore_project_wait(case, monkeypatch)
+    deadline_jobs = stdqueue.Queue()
+    monkeypatch.setattr(queue, "_ensure_reaper_started", lambda: None)
+    monkeypatch.setattr(queue, "_reap_queue", deadline_jobs)
+    monkeypatch.setattr(queue_timeouts, "_pending_deadline_jobs", {})
     if refusal == "unacknowledged":
         transaction = delegate_recovery._read_restart_transaction(case.root, case.transaction_id)
         delegate_recovery._write_restart_transaction(case.root, {**transaction, "status": "prepared"})
@@ -590,6 +595,14 @@ def test_project_wait_positive_refusal_uses_existing_custody(restart_case, monke
     sent = worker(SimpleNamespace(root=case.root), monkeypatch)
     workers.assign_tasks()
     workers.assign_tasks()
+    if refusal == "deadline":
+        # Expiry retains custody until the off-loop reaper durably settles it.
+        assert not sent and workers.PENDING == [restored]
+        job = deadline_jobs.get_nowait()
+        assert job["kind"] == "pending_deadline"
+        queue_timeouts._reap_pending_deadline(job)
+        deadline_jobs.task_done()
+    assert deadline_jobs.empty()
     assert not sent and not workers.PENDING
     stored = load_task_result(case.root, case.task_id)
     assert stored["status"] == ("failed" if refusal == "deadline" else "cancelled")
@@ -597,6 +610,90 @@ def test_project_wait_positive_refusal_uses_existing_custody(restart_case, monke
     if refusal not in {"deadline", "stop"}:
         assert stored["cancel_origin"]["reason"] == "server_shutdown"
         assert stored["cancel_origin"]["source"] == "snapshot_restore"
+
+
+def _expired_project_wait(case, monkeypatch):
+    """The restored acknowledged wait past its explicit deadline, with the reaper's queue captured."""
+    from supervisor import queue_timeouts
+
+    restored = restore_project_wait(case, monkeypatch)
+    jobs = stdqueue.Queue()
+    monkeypatch.setattr(queue, "_ensure_reaper_started", lambda: None)
+    monkeypatch.setattr(queue, "_reap_queue", jobs)
+    monkeypatch.setattr(queue_timeouts, "_pending_deadline_jobs", {})
+    restored["deadline_at"] = "2000-01-01T00:00:00Z"
+    return restored, jobs
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("unknown", ["transaction", "source", "store"])
+def test_project_wait_deadline_keeps_custody_while_its_authority_is_unreadable(restart_case, monkeypatch, unknown):
+    """#939: the deadline settles only the exact continuation it can still read; unknown authority
+    keeps the hold (no marker, start or deletion) until it reads again, then the deadline binds."""
+    from supervisor import queue_timeouts
+    from tests.test_project_hold_recovery import worker
+
+    case = restart_case
+    restored, jobs = _expired_project_wait(case, monkeypatch)
+    transaction = delegate_recovery._restart_transaction_path(case.root, case.transaction_id)
+    source = task_artifact_dir_path(case.root, case.task_id) / case.wait["source_ref"]["path"]
+    saved = {"transaction": transaction.read_bytes(), "source": source.read_bytes()}
+    unreadable = unreadable_result(monkeypatch, case.task_id) if unknown == "store" else None
+    if unknown != "store":
+        (transaction if unknown == "transaction" else source).write_bytes(b"{torn")
+    sent = worker(SimpleNamespace(root=case.root), monkeypatch)
+    for _ in range(2):
+        queue.enforce_task_timeouts()
+        workers.assign_tasks()
+    assert not sent and workers.PENDING == [restored] and jobs.empty()
+    assert restored["_project_admission_restore_hold"] and not restored.get("_terminalization_retry")
+    if unreadable:
+        unreadable["on"] = False
+    else:
+        (transaction if unknown == "transaction" else source).write_bytes(saved[unknown])
+    assert load_task_result(case.root, case.task_id)["status"] == "running"
+    workers.assign_tasks()
+    workers.assign_tasks()
+    queue_timeouts._reap_pending_deadline(jobs.get_nowait())
+    assert not sent and not workers.PENDING
+    stored = load_task_result(case.root, case.task_id)
+    assert stored["status"] == "failed" and stored["reason_code"] == "deadline"
+    assert read_actor_source_bytes(case.root, case.task_id, case.wait["source_ref"]) == saved["source"]
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("control", ["owner_pause", "stop", "saved_terminal", "live_owner"])
+def test_project_wait_deadline_rechecks_controls_before_settlement(restart_case, monkeypatch, control):
+    """A control arriving after the deadline marker and before the reaper's write wins."""
+    from ouroboros.cancel_intents import request_cancel
+    from supervisor import queue_timeouts
+    from supervisor.owner_pause_control import request_owner_pause
+    from tests.test_project_hold_recovery import worker
+
+    case = restart_case
+    restored, jobs = _expired_project_wait(case, monkeypatch)
+    sent = worker(SimpleNamespace(root=case.root), monkeypatch)
+    workers.assign_tasks()
+    workers.assign_tasks()
+    assert restored["_terminalization_retry"]["trigger"] == "deadline" and jobs.qsize() == 1
+    if control == "owner_pause":
+        assert request_owner_pause(case.task_id, request_id="pause-before-deadline")["ok"]
+    elif control == "stop":
+        request_cancel(case.root, case.task_id, reason="owner stopped")
+    elif control == "saved_terminal":
+        write_task_result(case.root, case.task_id, "completed", result="Saved answer")
+    else:
+        workers.WORKERS[0].busy_task_id = case.task_id
+    queue_timeouts._reap_pending_deadline(jobs.get_nowait())
+    stored = load_task_result(case.root, case.task_id)
+    assert not sent and stored.get("reason_code") != "deadline"
+    if control == "saved_terminal":
+        assert not workers.PENDING and stored["status"] == "completed" and stored["result"] == "Saved answer"
+        return
+    assert workers.PENDING == [restored] and stored["status"] == "running"
+    if control == "stop":
+        assert queue.cancel_task_custody(case.task_id) in {queue.CANCEL_CANCELLED, queue.CANCEL_ALREADY_SETTLED}
+        assert load_task_result(case.root, case.task_id)["status"] == "cancelled" and not workers.PENDING
 
 
 @pytest.mark.serial

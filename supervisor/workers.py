@@ -20,6 +20,7 @@ from supervisor.message_bus import send_with_budget
 from supervisor.message_bus import coerce_chat_identity  # noqa: F401 -- worker_health leaf reads it via the _pool() handle
 from ouroboros.config import DATA_DIR, REPO_DIR as CONFIG_REPO_DIR, WORKER_SPAWN_GRACE_SEC
 from ouroboros.depth_evidence import parse_task_depth
+from ouroboros.model_wait import stamp_execution_handoff
 from ouroboros.review_owner_custody import (
     reconcile_confirmed_dead_review_owners as _reconcile_review_owners,
 )
@@ -101,25 +102,32 @@ _EVENT_Q_SHUTDOWN = False
 _WORKER_POOL_DISABLED_REASON = ""
 
 
-def get_event_q():
+def get_event_q(*, create: bool = True):
     """Return the process-lifetime supervisor event bus, creating it lazily.
 
     Worker-pool generations are replaceable; the producers that publish onto
     this bus (direct chat, active turns, and workers) are not.
     Rotating the queue during a pool respawn strands those producers on an
     undrained queue, so only a new server process creates a new bus.
+    Producers without an injected endpoint may read the existing server bus
+    with ``create=False``; they never create an undrained child-local bus.
     """
     global _EVENT_Q, _EVENT_Q_MANAGER, _EVENT_Q_GENERATION
     with _EVENT_Q_LOCK:
         if _EVENT_Q_SHUTDOWN:
             raise RuntimeError("supervisor event bus is shutting down")
         if _EVENT_Q is None:
+            if not create:
+                raise RuntimeError("supervisor event bus is not attached")
             # A raw multiprocessing.Queue has an asynchronous feeder and its
             # pipe can be corrupted when a worker is force-killed mid-frame.
             # A manager-backed queue serializes synchronously in the producer
             # and isolates each producer connection, so replacing/killing a
             # worker generation cannot wedge the process-lifetime bus.
-            _EVENT_Q_MANAGER = _get_ctx().Manager()
+            from supervisor.event_observation import EventQueueManager
+
+            _EVENT_Q_MANAGER = EventQueueManager(ctx=_get_ctx())
+            _EVENT_Q_MANAGER.start()
             _EVENT_Q = _EVENT_Q_MANAGER.Queue()
             _EVENT_Q_GENERATION = f"{os.getpid()}:{uuid.uuid4().hex[:12]}"
             try:
@@ -972,6 +980,12 @@ def _settle_terminalization_task(
     event_already_published: bool = False, stop_source: str = "",
 ) -> bool:
     """Write and publish one shutdown outcome, retaining custody on any failure."""
+    if trigger == "deadline":
+        # An expired queued row (#939) settles off Q on the reaper, which keeps the row.
+        from supervisor.queue_timeouts import _queue_pending_deadline
+
+        _queue_pending_deadline(task)
+        return False
     task_id = str(task.get("id") or "").strip()
     if not task_id:
         return False
@@ -1071,6 +1085,12 @@ def _retry_terminalization_pending() -> Tuple[List[str], List[str]]:
     for task in list(PENDING):
         spec = _terminalization_retry_spec(task)
         if spec is None:
+            survivors.append(task)
+            continue
+        if spec["trigger"] == "deadline":  # reaper-owned, settled off Q (#939)
+            from supervisor.queue_timeouts import _queue_pending_deadline
+
+            _queue_pending_deadline(task)
             survivors.append(task)
             continue
         raw_marker = task.get(_TERMINALIZATION_RETRY_FIELD) if isinstance(task, dict) else None
@@ -1333,9 +1353,12 @@ def kill_workers(
                 if task_id in retained_running_ids:
                     continue
                 if task_id in preserve_running:
+                    from supervisor.events_budget import fold_consumed_resume
+                    fold_consumed_resume(meta, DRIVE_ROOT)
                     successor = dict(task)
                     continuing_wait = isinstance(successor.get("_owner_wait_resume"), dict)
                     successor["_attempt"] = int(meta.get("attempt") or task.get("_attempt") or 1) + (0 if continuing_wait else 1)
+                    stamp_execution_handoff(successor, meta)  # #939: no fresh explicit time
                     try:
                         from ouroboros.owner_hurry import retry_reset
 
@@ -1345,10 +1368,7 @@ def kill_workers(
                                 DRIVE_ROOT, str(task_id), reason="planned_restart_requeue",
                             )
                     except Exception:
-                        log.debug(
-                            "Planned-restart retry reset failed for %s", task_id,
-                            exc_info=True,
-                        )
+                        log.debug("Planned-restart retry reset failed for %s", task_id, exc_info=True)
                     PENDING.insert(0, successor)
                     RUNNING.pop(str(task_id), None)
                     continue

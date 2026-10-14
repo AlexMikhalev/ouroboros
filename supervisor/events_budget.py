@@ -16,6 +16,8 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
+from ouroboros.contracts.record_contract import RECORD_CONTRACT_VERSION
+from ouroboros.event_usage import event_token_counts
 # The hold carrier and the row's selection against a latch live with the pause owner,
 # so reservation reads the very predicate assignment does; re-exported here.
 from ouroboros.budget_pause import BUDGET_HOLD_KEY, budget_fence_selected, budget_hold_fact  # noqa: F401
@@ -58,30 +60,11 @@ def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
                 if not evt.get(_field) and _task.get(_field):
                     evt[_field] = str(_task.get(_field))
 
-    # Normalize usage across loop.py, web_search, and delegated-run producers.
-    # Tolerant coercion: one malformed token field must not raise and drop the
-    # whole round from the budget ledger and events.jsonl (the exception would
-    # be swallowed by dispatch_event and the cost silently lost).
-    def _tolerant_int(*candidates: Any) -> int:
-        for value in candidates:
-            if value in (None, ""):
-                continue
-            try:
-                return int(float(value))
-            except (TypeError, ValueError):
-                log.warning("llm_usage: non-numeric token field %r ignored", value)
-        return 0
-
-    prompt_tokens = _tolerant_int(
-        usage.get("prompt_tokens"), usage.get("input_tokens"), evt.get("prompt_tokens")
-    )
-    completion_tokens = _tolerant_int(
-        usage.get("completion_tokens"), usage.get("output_tokens"), evt.get("completion_tokens")
-    )
-    cached_tokens = _tolerant_int(usage.get("cached_tokens"), evt.get("cached_tokens"))
-    cache_write_tokens = _tolerant_int(
-        usage.get("cache_write_tokens"), evt.get("cache_write_tokens")
-    )
+    # Normalize usage across loop.py, web_search, review and delegated-run producers.
+    # Each counter keeps its own knowledge state (#1578): a missing or malformed field
+    # neither drops the event (dispatch_event would swallow it, losing the round) nor
+    # claims the provider measured zero tokens.
+    token_counts = event_token_counts(usage, evt)
     prompt_cache_ttl = str(usage.get("prompt_cache_ttl") or evt.get("prompt_cache_ttl") or "")
     ledger_attempt_ids = [
         str(value)
@@ -123,6 +106,7 @@ def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
     usage_event = {
         "ts": evt.get("ts", utc_now_iso()),
         "type": "llm_usage",
+        "record_contract_version": RECORD_CONTRACT_VERSION,
         "task_id": evt.get("task_id", ""),
         "root_task_id": evt.get("root_task_id", ""),
         "parent_task_id": evt.get("parent_task_id", ""),
@@ -134,17 +118,15 @@ def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
         "model": evt.get("model", ""),
         "api_key_type": evt.get("api_key_type", ""),
         "model_category": evt.get("model_category", "other"),
-        "provider": evt.get("provider", ""),
+        "provider": evt.get("provider") or usage.get("provider", ""),
         "source": evt.get("source", ""),
-        **{key: evt[key] for key in ("llm_call_id", "execution_id", "round_id", "round") if key in evt},
+        **{key: evt[key] for key in ("llm_call_id", "execution_id", "round_id", "round", "session_id") if key in evt},
+        **({"session_id": usage["session_id"]} if "session_id" not in evt and usage.get("session_id") else {}),
         **{key: str(evt[key]) for key in REVIEW_ATTRIBUTION_KEYS if evt.get(key)},  # #807: the review wave/slot
         "cost_estimated": bool(evt.get("cost_estimated", False)),
         "cost": resolved_cost,
         "cost_known": cost_known,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "cached_tokens": cached_tokens,
-        "cache_write_tokens": cache_write_tokens,
+        **token_counts,
         "prompt_cache_ttl": prompt_cache_ttl,
         "accounting_authority": "physical_attempt_ledger",
         "projection_update_status": projection_update_status,
@@ -223,6 +205,54 @@ def _set_root_budget_pause_locked(root_task_id: str, pause: Dict[str, Any], *,
     return row
 
 
+def fold_consumed_resume(meta: Any, drive_root: Any, evt: Optional[Dict[str, Any]] = None) -> bool:
+    """End a live or captured RUNNING clock's Resume exclusion at consumption (#939).
+
+    Events and the assignment tick's event handler name the grant; recovery
+    stamp producers use the captured row's own identity. Only the current durable
+    consumption decides; unreadable or changed authority leaves the clock alone.
+    """
+    from ouroboros.budget_pause import budget_pause_row, STATE_RESUMED
+
+    task = meta.get("task") if isinstance(meta, dict) else None
+    resume = (task.get("_budget_pause_resume") if isinstance(task, dict) else None) or {}
+    evt = evt or {"task_attempt": meta.get("attempt") if isinstance(meta, dict) else None,
+                  **{key: resume.get(key) for key in ("pause_id", "grant_id")}}
+    if (not isinstance(task, dict) or meta.get("attempt") != evt.get("task_attempt")
+            or resume.get("pause_id") != evt.get("pause_id")
+            or resume.get("grant_id") != evt.get("grant_id")
+            or not resume.get("sleep_exclusion_since")
+            or meta.get("sleep_parked_at") != resume["sleep_exclusion_since"]):
+        return False
+    try:
+        row = budget_pause_row(pathlib.Path(task.get("budget_drive_root") or drive_root), task["id"])
+    except Exception:
+        return False
+    grant = row.get("grant") or {}
+    if (row.get("state") != STATE_RESUMED
+            or row.get("pause_id") != evt.get("pause_id")
+            or grant.get("grant_id") != evt.get("grant_id") or not grant.get("consumed_at")
+            or grant.get("revoked_at")
+            or row.get("root_task_id") != str(task.get("root_task_id") or task["id"])
+            or row.get("source_ref") != resume.get("source_ref")
+            or row.get("pause_generation") != resume.get("pause_generation")
+            or grant.get("generation") != resume.get("grant_generation")
+            or grant.get("granted_at_ts") != resume["sleep_exclusion_since"]
+            or row.get("task_attempt") != evt.get("task_attempt")):
+        return False
+    meta["budget_paused_sec"] = float(row["paused_duration_sec"])
+    meta.pop("sleep_parked_at", None)
+    # Consumption spends the sleep clock, not the selection: an explicit
+    # Resume keeps its fence-bound handoff like any consumed grant
+    # (``budget_fence_selected``); a readiness wake selected nothing.
+    if resume.get("authority") == "explicit_resume":
+        task["_budget_pause_resume"] = {key: value for key, value in resume.items()
+                                        if key != "sleep_exclusion_since"}
+    else:
+        task.pop("_budget_pause_resume", None)
+    return True
+
+
 def _handle_budget_pause(evt: Dict[str, Any], ctx: Any) -> None:
     """Move a paused task back to the same durable queue generation.
 
@@ -232,38 +262,10 @@ def _handle_budget_pause(evt: Dict[str, Any], ctx: Any) -> None:
     THAT row, never against the event's prose.
     """
     if evt.get("phase") == "consumed":
-        from ouroboros.budget_pause import budget_pause_row, STATE_RESUMED
         from supervisor.queue import _queue_lock
 
         with _queue_lock:
-            meta = ctx.RUNNING.get(str(evt.get("task_id") or ""))
-            if not isinstance(meta, dict) or meta.get("attempt") != evt.get("task_attempt"):
-                return
-            task = meta.get("task") or {}
-            resume = task.get("_budget_pause_resume") or {}
-            if (resume.get("pause_id") != evt.get("pause_id")
-                    or resume.get("grant_id") != evt.get("grant_id")
-                    or not resume.get("sleep_exclusion_since")
-                    or meta.get("sleep_parked_at") != resume["sleep_exclusion_since"]):
-                return
-            row = budget_pause_row(pathlib.Path(task.get("budget_drive_root") or ctx.DRIVE_ROOT), task["id"])
-            grant = row.get("grant") or {}
-            if (row.get("state") != STATE_RESUMED or row.get("reason") != "sleep"
-                    or row.get("pause_id") != evt.get("pause_id")
-                    or grant.get("grant_id") != evt.get("grant_id") or not grant.get("consumed_at")
-                    or grant.get("granted_at_ts") != resume["sleep_exclusion_since"]
-                    or row.get("task_attempt") != evt.get("task_attempt")):
-                return
-            meta["budget_paused_sec"] = float(row["paused_duration_sec"])
-            meta.pop("sleep_parked_at", None)
-            # Consumption spends the sleep clock, not the selection: an explicit
-            # Resume keeps its fence-bound handoff like any consumed grant
-            # (``budget_fence_selected``); a readiness wake selected nothing.
-            if resume.get("authority") == "explicit_resume":
-                task["_budget_pause_resume"] = {key: value for key, value in resume.items()
-                                                if key != "sleep_exclusion_since"}
-            else:
-                task.pop("_budget_pause_resume", None)
+            fold_consumed_resume(ctx.RUNNING.get(str(evt.get("task_id") or "")), ctx.DRIVE_ROOT, evt)
         return
     task_id = str(evt.get("task_id") or "")
     pause = evt.get("resource_limit") if isinstance(evt.get("resource_limit"), dict) else {}
@@ -393,7 +395,25 @@ def install_exact_budget_pause(ctx: Any, task_id: str, checkpoint: Dict[str, Any
         if (row.get("pause_id") != pause_id or row.get("state") not in {STATE_PAUSING, STATE_PAUSED}
                 or int(row.get("task_attempt") or 0) != attempt or not row.get("source_ref")):
             raise ValueError(f"exact budget pause {pause_id} has no live durable row for attempt {attempt}")
+        if row.get("external_custody"):
+            from ouroboros.sleep_custody import accepted_receipt
+            if not accepted_receipt(task_id, row):
+                raise ValueError("cold external custody has no exact body acceptance")
         marker = exact_pause_marker(row, default_root=str(task.get("root_task_id") or task_id))
+        # Bind this exact park to its physical owner's fence: the parking pooled attempt/PID, or
+        # the direct turn's own in-process fence (no pooled owner). On the in-memory fence it survives
+        # marker reconstruction on revocation; a boot restores no fence row. No token enters cognition.
+        fence = queue_mod.ACCEPTANCE_FENCES.get(marker["root_task_id"]) or {}
+        worker = ctx.WORKERS.get(meta.get("worker_id"))
+        owner = fence.get("pooled_owner")
+        parked = {"direct_owner": {"task_attempt": attempt}} if direct_turn and "pooled_owner" not in fence else None
+        if (not direct_turn and worker is not None and isinstance(owner, dict) and worker.busy_task_id == task_id
+                and type(owner.get("pid")) is int and owner["pid"] == worker.proc.pid
+                and type(owner.get("task_attempt")) is int and owner["task_attempt"] == attempt):
+            parked = {"pooled_owner": dict(owner)}
+        if parked and fence.get("status") == "active" and fence.get("task_id") == task_id:
+            fence["paused_continuation"] = {**parked,
+                **{key: row[key] for key in ("pause_id", "pause_generation", "source_ref")}}
         if marker["scope"] == "root":
             fence = _set_root_budget_pause_locked(marker["root_task_id"], marker)
             marker = {**marker, "fence_id": fence["fence_id"]}

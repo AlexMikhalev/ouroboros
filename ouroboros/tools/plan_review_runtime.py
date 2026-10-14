@@ -587,6 +587,7 @@ def _plan_row_from_actor(actor: Dict[str, Any], slot: Any) -> dict:
         "operation_id": str(actor.get("operation_id") or ""),
         "operation_state": str(actor.get("operation_state") or "settled"),
         "late_result_pending": bool(actor.get("late_result_pending")),
+        "error_event_logged": actor.get("error_event_logged") is True,  # #1578 append receipt
         "awaiting_since": str(actor.get("awaiting_since") or ""),
         "pending_invocation_id": str(
             usage.get("pending_invocation_id") or actor.get("pending_invocation_id") or ""

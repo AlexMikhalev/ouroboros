@@ -46,9 +46,9 @@ from dataclasses import asdict, dataclass, field
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-from ouroboros.model_wait import TaskModelWait
+from ouroboros.model_wait import TaskModelWait, control_probe_requires_current, control_probe_active
 from ouroboros.utils import utc_now_iso
-from ouroboros.store import StoreError
+from ouroboros.store import StoreBusy, StoreError
 
 log = logging.getLogger(__name__)
 
@@ -134,21 +134,19 @@ def controller_state(identity: Any) -> str:
 
 
 def _operation_stop_state(root: pathlib.Path, task_id: str) -> str:
-    """``panic``, ``cancelled`` (a current ungraceful Stop or a settled cancellation), ``""`` or ``unknown``.
-
-    Read strictly: an unreadable intent or result is ``unknown``, never a clear.
-    """
+    """Panic, immediate/settled cancellation, clear or unknown; unreadable authority is never clear."""
     try:
         if any((root / "state" / name).exists() for name in ("panic_stop.flag", "owner_restart_no_resume.flag")):
             return "panic"
         from ouroboros.cancel_intents import cancel_pending, resolve_owner_stop_intent
         from ouroboros.task_results import load_task_result
-
+        if cancel_pending(root, task_id, strict=True) and not resolve_owner_stop_intent(root, task_id, propagate_busy=control_probe_active())[1]:
+            return "cancelled"
         if str((load_task_result(root, task_id, strict=True) or {}).get("status") or "") == "cancelled":
             return "cancelled"
-        if cancel_pending(root, task_id, strict=True) and not resolve_owner_stop_intent(root, task_id)[1]:
-            return "cancelled"
-    except Exception:
+    except Exception as exc:
+        if isinstance(exc, StoreBusy) and control_probe_requires_current():
+            raise
         log.debug("review operation stop state unreadable for %s", task_id, exc_info=True)
         return "unknown"
     return ""
@@ -254,28 +252,30 @@ class ReviewOperation:
                 "controller": dict(self.identity), "chat_id": self.wait.task.get("chat_id")}
 
     def control(self) -> Optional[str]:
-        """The task's Stop/Panic and settled cancellation stay binding; latched once seen.
+        """Latch Stop/Panic/cancellation. Sent observers reuse the short cache; admission reads afresh.
 
-        Re-read at most once per ``_CONTROL_RECHECK_SEC``: the live wait polls far
-        more often, and each read parses the task result. An unreadable state is
-        not a stop — the live wait keeps its paid call, as the author's fail-soft
-        read does — but ``control_state`` says ``unknown`` and no decision is
-        accepted for this operation while it does.
+        An unreadable state is unknown, not a stop or decision authority. Failed probes never
+        refresh the cache. A paid receiver keeps its call; unsent contention reaches its wait owner.
         """
         now = time.monotonic()
-        if not self._control and now - self._checked_at >= _CONTROL_RECHECK_SEC:
-            self._checked_at = now
-            self.control_state = _operation_stop_state(self.result_root, self.task_id)
-            if self.historical_purpose:
-                from ouroboros.acceptance_late import owner_paused_controls
-
-                blocked, paused = owner_paused_controls(self.result_root, self.historical_purpose,
-                                                        unstarted=not self._dispatched)
-                # An owner Pause defers unsent work until Resume (D10); it is never a Stop.
-                if blocked and not paused:
-                    self.control_state = "cancelled"
+        if not self._control and (control_probe_requires_current() or now - self._checked_at >= _CONTROL_RECHECK_SEC):
+            try:
+                self.control_state = _operation_stop_state(self.result_root, self.task_id)
+                if self.historical_purpose and self.control_state != "unknown":
+                    from ouroboros.acceptance_late import owner_paused_controls
+                    blocked, paused = owner_paused_controls(self.result_root, self.historical_purpose,
+                                                            unstarted=not self._dispatched)
+                    # An owner Pause defers unsent work until Resume (D10); it is never a Stop.
+                    if blocked and not paused:
+                        self.control_state = "cancelled"
+            except StoreBusy:
+                if control_probe_requires_current():
+                    raise
+                self.control_state = "unknown"  # A paid receiver keeps its operation and late result.
             if self.control_state in {"panic", "cancelled"}:
                 self._control = self.control_state
+            if self.control_state != "unknown":
+                self._checked_at = now
         return self._control or None
 
     def enter(self) -> None:
@@ -1023,7 +1023,8 @@ def recover_review_producer(root: Any, request: Any, slot: Any, row: dict) -> An
                 raise ValueError("completed producer delegated run mismatch")
         if outcome.get("operation_id") != operation or outcome.get("slot_id") != slot.slot_id:
             raise ValueError("producer actor identity mismatch")
-        actor = ReviewActorRecord(**outcome)
+        # The outcome is stamped before its failure is logged; this verified operation's row holds the receipt (#1578).
+        actor = ReviewActorRecord(**{**outcome, "error_event_logged": row.get("error_event_logged") is True})
         message = payload.get("message")
         actor.raw_text = str(message.get("content") or "") if isinstance(message, dict) else ""
         actor.usage = dict(payload.get("usage") or {})
@@ -1039,7 +1040,6 @@ def recover_review_producer(root: Any, request: Any, slot: Any, row: dict) -> An
         actor.response_ref = refs or actor.response_ref
         actor.recovery_binding = dict(row.get("recovery_binding") or expected)
         return actor
-
 
 
 def _row_actor(slot: Any, operation_id: str, row: Optional[dict], *, state: str, reason: str) -> Any:
@@ -1180,6 +1180,9 @@ def _attach_only_run(root: Any, request: Any, slot: Any, operation_id: str, run_
     # or the summary's request echoes. Absent final-attempt facts stay unknown.
     routes = (invocation.get("request") or {}).get("harnesses") or []
     requested_route = str(routes[0]) if len(routes) == 1 else ""
+    from ouroboros.review_session_usage import session_usage_facts  # #1578: one session usage projection
+
+    usage.update(session_usage_facts(run_id, requested_route=requested_route, observed_attempt=observed, summary=summary))
     usage.update(resolved_model=observed.get("model", ""), observed_attempt=observed,
                  delegated_route=observed.get("harness_id", ""), requested_route=requested_route,
                  applied_profile=observed.get("profile_id", ""))
@@ -1308,6 +1311,9 @@ def collect_recorded_acceptance_run(run: Dict[str, Any], *, drive_root: Any, usa
         request=request, slots=slots, actors=actors, slots_by_id={slot.slot_id: slot for slot in slots},
         actor_projection=_review_actor_projection, criteria_shape_valid=_criteria_shape_valid,
         advisory_hardness=HARDNESS_ADVISORY_VISIBLE)
+    from ouroboros.triad_review import emit_review_run_errors
+
+    emit_review_run_errors(usage_ctx, request, actors, drive_root=root)  # #1578: unlogged failures, once
     result = ReviewRunResult(request=asdict(request), actors=[asdict(actor) for actor in actors], **aggregate,
                              panel_id=_review_panel_id(request, actors),
                              slot_roster=copy.deepcopy(run.get("slot_roster") or []))

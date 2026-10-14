@@ -172,6 +172,7 @@ def continuation_state(ctx: Any, messages: list, trace: dict, usage: dict,
         ) if getattr(ctx, key, None) is not None},
         "round_idx": round_idx, "tool_schemas": tool_schemas,
         "seen": sorted(seen), "owner_directives": getattr(ctx, "_owner_directives", []),
+        "sleep_interaction_seen": dict(getattr(ctx, "_sleep_interaction_seen", None) or {}),
         # Own routing acts still unconfirmed: a resumed turn reports their outcomes too.
         "unconfirmed_routing_acts": list(getattr(ctx, "unconfirmed_routing_acts", None) or []),
         "route": {key: getattr(ctx, key, None) for key in (
@@ -307,12 +308,15 @@ def load_owner_wait(ctx: Any, handoff: dict | None = None) -> dict:
     return state
 
 
-def restore_owner_wait_allowed(root: Any, task: dict, *, strict: bool = False) -> bool:
-    """Current wait and acknowledged restart authorize a locator; strict preserves read failures."""
+def restore_owner_wait_allowed(root: Any, task: dict, *, strict: bool = False, expiring: bool = False) -> bool:
+    """Current wait and acknowledged restart authorize a locator; strict preserves read failures.
+
+    ``expiring``: the caller is settling the task's explicit deadline (#939), so only that
+    elapsed deadline is not a refusal; every other check and read still binds."""
     from ouroboros.cancel_intents import has_active_intent
     from ouroboros.deadline_utils import parse_deadline_ts, utc_now
     from ouroboros.delegate_recovery import _ack_direct_exec_successor, _read_restart_transaction, _restart_transaction_path
-    from ouroboros.config import get_task_abs_ceiling_sec
+    from ouroboros.config import resolve_task_execution_timeout_sec
     from ouroboros.model_wait import execution_elapsed_seconds
     import time
 
@@ -342,11 +346,11 @@ def restore_owner_wait_allowed(root: Any, task: dict, *, strict: bool = False) -
     if has_active_intent(root, task_id, strict=True):
         return False
     deadline = parse_deadline_ts(task.get("deadline_at") or (task.get("task_contract") or {}).get("deadline_at"))
-    if deadline is not None and deadline <= utc_now():
+    if deadline is not None and deadline <= utc_now() and not expiring:
         return False
     started = float(handoff.get("started_at") or wait.get("started_at") or 0)
     now = time.time()
-    ceiling = get_task_abs_ceiling_sec()  # None = no lifetime bound to have outlived
+    ceiling = resolve_task_execution_timeout_sec(task)  # None = no execution bound to have outlived
     # ONE shared clock (``model_wait.execution_elapsed_seconds``): wall time minus
     # the quota union minus the budget-paused carrier. A task that was paused and
     # then parked in an owner wait must not have that paused time charged to its
@@ -357,7 +361,7 @@ def restore_owner_wait_allowed(root: Any, task: dict, *, strict: bool = False) -
     if paused_carrier is None:
         paused_carrier = handoff.get("budget_paused_sec") or 0.0
     executed = execution_elapsed_seconds(
-        {"started_at": started,
+        {"task": task, "started_at": started,
          "model_wait_quota_clock": wait.get("model_wait_quota_clock") or {},
          "budget_paused_sec": paused_carrier}, now)
     if started and ceiling is not None and executed >= ceiling:
@@ -827,6 +831,7 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
     usage.update(state["usage"])
     seen.update(state["seen"])
     ctx._loop_mailbox_seen_ids = seen
+    ctx._sleep_interaction_seen = dict(state.get("sleep_interaction_seen") or {})
     ctx._owner_directives = state["owner_directives"]
     ctx.unconfirmed_routing_acts = [dict(act) for act in state.get("unconfirmed_routing_acts") or [] if isinstance(act, dict)]
     # The cumulative budget-paused carrier rides EVERY same-ID continuation

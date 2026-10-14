@@ -94,16 +94,12 @@ from ouroboros.runtime_limits import (
     EXTENSION_STREAM_CHUNK_BYTES,  # noqa: F401
     EXTENSION_CHILD_CLEANUP_GRACE_SEC, LAUNCHER_STOP_GRACE_SEC, SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SEC,  # noqa: F401
     NESTED_SETTLEMENT_MARGIN_SEC,  # noqa: F401
-    NETWORK_WAIT_NOTE_INTERVAL_SEC,  # noqa: F401
-    NETWORK_WAIT_BACKOFF_START_SEC,  # noqa: F401
-    NETWORK_WAIT_BACKOFF_MAX_SEC,  # noqa: F401
+    NETWORK_WAIT_NOTE_INTERVAL_SEC, NETWORK_WAIT_BACKOFF_START_SEC, NETWORK_WAIT_BACKOFF_MAX_SEC,  # noqa: F401
     TCP_KEEPALIVE_IDLE_SEC, TCP_KEEPALIVE_INTERVAL_SEC, TCP_KEEPALIVE_PROBE_COUNT,  # noqa: F401
     EXTENSION_STREAM_METADATA_BYTES,  # noqa: F401
-    WS_RELAY_BURST,  # noqa: F401
-    WS_RELAY_REFILL_PER_SEC,  # noqa: F401
-    CLAUDEXOR_MODEL_POLL_INTERVAL_SEC,  # noqa: F401
-    CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC,  # noqa: F401
-    CLAUDEXOR_STOP_EXIT_WAIT_SEC,  # noqa: F401
+    WS_RELAY_BURST, WS_RELAY_REFILL_PER_SEC,  # noqa: F401
+    CLAUDEXOR_MODEL_POLL_INTERVAL_SEC, CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC,  # noqa: F401
+    CLAUDEXOR_STOP_EXIT_WAIT_SEC, BODY_MAINTENANCE_INTERVAL_SEC,  # noqa: F401
     DELEGATE_WAIT_CEILING_SEC,  # noqa: F401
     DELEGATE_WAIT_WINDOW_MAX_SEC, OPERATION_WINDOW_FALLBACK_SEC,  # noqa: F401
     MAX_ACTIVE_SUBAGENTS_HARD_CAP, MAX_SUBAGENT_DEPTH_HARD_CAP,  # noqa: F401
@@ -112,15 +108,13 @@ from ouroboros.runtime_limits import (
     _clamped_number_setting,  # noqa: F401
     get_acceptance_reserve_pct,  # noqa: F401
     get_acceptance_review_est_sec,  # noqa: F401
-    get_bg_wakeup_max_sec,  # noqa: F401
-    get_bg_wakeup_min_sec,  # noqa: F401
+    get_bg_wakeup_max_sec, get_bg_wakeup_min_sec,  # noqa: F401
     get_claudexor_harness_install_timeout_sec,  # noqa: F401
     get_claudexor_quota_refresh_timeout_sec,  # noqa: F401
     get_consciousness_autonomy,  # noqa: F401
     get_consciousness_daily_usd,  # noqa: F401
     get_consciousness_max_tasks,  # noqa: F401
-    get_delegate_wait_max_sec,  # noqa: F401
-    get_delegate_wait_sec,  # noqa: F401
+    get_delegate_wait_max_sec, get_delegate_wait_sec,  # noqa: F401
     get_finalization_grace_sec,  # noqa: F401
     get_direct_turn_stop_wait_sec,  # noqa: F401
     get_llm_transport_read_timeout_sec,  # noqa: F401
@@ -137,16 +131,22 @@ from ouroboros.runtime_limits import (
     get_safety_call_timeout_sec,  # noqa: F401
     get_settings_document_lock_timeout_sec,  # noqa: F401
     get_safety_max_tokens,  # noqa: F401
-    get_search_code_wall_sec,  # noqa: F401
-    get_supervisor_liveness_deadline_sec,  # noqa: F401
+    get_search_code_wall_sec, get_supervisor_liveness_deadline_sec,  # noqa: F401
     get_task_abs_ceiling_sec, get_max_rounds, operation_window_sec,  # noqa: F401
-    get_task_idle_timeout_sec,  # noqa: F401
-    get_vision_caption_timeout_sec,  # noqa: F401
-    get_update_letter_timeout_sec,  # noqa: F401
-    get_ui_translation_timeout_sec,  # noqa: F401
-    get_websearch_timeout_sec,  # noqa: F401
+    explicit_execution_timeout_sec, _CURRENT_TASK_CEILING,  # noqa: F401
+    resolve_task_execution_timeout_sec as _resolve_task_execution_timeout_sec,
+    get_task_idle_timeout_sec, get_vision_caption_timeout_sec,  # noqa: F401
+    get_update_letter_timeout_sec, get_ui_translation_timeout_sec, get_websearch_timeout_sec,  # noqa: F401
 )
 from ouroboros.update_channels import UPDATE_SETTINGS_DEFAULTS, normalize_update_channel  # noqa: F401
+
+
+def resolve_task_execution_timeout_sec(task: dict, *, global_ceiling=_CURRENT_TASK_CEILING) -> Optional[float]:
+    """The leaf's bound arithmetic with this facade's (patchable) configured ceiling."""
+    if global_ceiling is _CURRENT_TASK_CEILING:
+        global_ceiling = get_task_abs_ceiling_sec()
+    return _resolve_task_execution_timeout_sec(task, global_ceiling=global_ceiling)
+
 
 # Paths. resolve_*() is the per-call form of the constants below, which freeze the env at first
 # import: a writer that must follow isolation applied AFTER its import (an isolated test, a child

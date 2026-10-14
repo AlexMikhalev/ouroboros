@@ -752,7 +752,8 @@ def _reset_native(payload: dict, error: ClaudexorModelNotDispatched, invocation:
 def _accounted_request(invocation: _ModelInvocation):
     # Every invocation is a new host preparation: Main's clock line, kept by the idempotent upload/rejoin.
     invocation.payload = stamp_clock_note(invocation.payload)
-    request = replace(_attempt_request(invocation.target, invocation.payload),
+    # The engine relays to the vendor: its loopback address is not where the model runs (a not-started receipt is a remote-hop fact).
+    request = replace(_attempt_request(invocation.target, invocation.payload), route_is_loopback=False,
                       force_unknown_reservation=True, max_completion_tokens=invocation.output_reserve)
     existing = _candidate_before_dispatch(invocation.payload, request)
 

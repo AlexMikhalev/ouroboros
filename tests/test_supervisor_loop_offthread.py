@@ -105,7 +105,7 @@ def test_a_slow_custody_block_never_holds_the_loop_tick(quiet_tick, monkeypatch)
         assert tick < 2.0, f"the loop tick waited {tick:.1f}s for the custody block"
         assert not release.is_set(), "the block is still in flight"
         sm._periodic_supervisor_maintenance([0.0], [time.time()])
-        assert len(threads) == 1, [thread.name for thread in threads]
+        assert len([t for t in threads if t.name == "custody-maintenance"]) == 1, [t.name for t in threads]
     finally:
         release.set()
         for thread in threads:
@@ -153,30 +153,32 @@ def test_the_reaper_reads_its_candidates_before_it_reads_liveness(tmp_path, monk
 def test_the_delegated_reconciler_reads_its_candidates_before_it_reads_liveness(
     tmp_path, monkeypatch,
 ):
-    """The same rule on the delegated surface: `open_runs` replays the custody log
-    for seconds, and a run whose owner was admitted during that replay is not an
+    """The same rule on the delegated surface: current custody reads may wait,
+    and a run whose owner was admitted during that read is not an
     orphan. A set still means the same thing; None still means touch nothing."""
     from ouroboros import delegate_custody as dc
+    from ouroboros import delegate_custody_current as current
     from ouroboros import delegate_custody_reconcile as dcr
 
     live: set[str] = set()
     run = SimpleNamespace(task_id="late-task", run_id="run-1", settled=False)
     seen: list = []
 
-    def replaying_the_log(root, state=None):
-        live.add("late-task")  # admitted while the custody log is replayed
-        return [run]
+    def reading_candidates(root, where="", params=()):
+        assert (where, params) == ("state=?", ("held",))
+        live.add("late-task")  # admitted while current candidates are read
+        return {run.run_id: run}
 
     monkeypatch.setattr(dc, "pending_invocations", lambda root, rows=None: [])
     monkeypatch.setattr(dcr, "_reconcile_each", lambda root, runs, factory, **kwargs:
                         seen.append([c.run_id for c in runs]) or [])
 
-    monkeypatch.setattr(dc, "open_runs", replaying_the_log)
+    monkeypatch.setattr(current, "runs", reading_candidates)
     dc.reconcile_orphaned_runs(tmp_path, running_task_ids=lambda: set(live))
-    assert seen == [[]], "a run whose owner was admitted during the replay is spared"
+    assert seen == [[]], "a run whose owner was admitted during the read is spared"
 
     live.clear()
-    monkeypatch.setattr(dc, "open_runs", lambda root, state=None: [run])
+    monkeypatch.setattr(current, "runs", lambda root, where="", params=(): {run.run_id: run})
     dc.reconcile_orphaned_runs(tmp_path, running_task_ids=lambda: set(live))
     assert seen[-1] == ["run-1"], "a genuinely orphaned run is still reconciled"
 
@@ -390,7 +392,7 @@ def test_a_slow_reconcile_block_never_holds_the_loop_tick(quiet_tick, monkeypatc
         assert tick < 2.0, f"the loop tick waited {tick:.1f}s for the reconcile block"
         assert marker[0] == 0.0, "not stamped until the pass ENDS (issue #1230)"
         sm._periodic_supervisor_maintenance([time.time()], marker)
-        assert [thread.name for thread in threads] == ["reconcile-maintenance"], "busy => skipped"
+        assert [thread.name for thread in threads if thread.name != "cold-custody"] == ["reconcile-maintenance"], "busy => skipped"
         assert threads[0].daemon and threads[0].is_alive()
     finally:
         release.set()
@@ -421,7 +423,7 @@ def test_child_ref_promotion_retries_left_the_cancel_sweep(quiet_tick, monkeypat
     sm._periodic_supervisor_maintenance([time.time()], [time.time()])  # the 20 s sweep alone
     for thread in threads:
         thread.join(5)
-    assert [name for name, _ in done] == ["cancel", "delivery", "usage"], "no history-sized step"
+    assert sorted(name for name, _ in done) == ["cancel", "delivery", "usage"], "no history-sized step"
     assert not sm._CANCEL_INTENT_SWEEP_LOCK.locked()
 
     done.clear()
@@ -429,7 +431,7 @@ def test_child_ref_promotion_retries_left_the_cancel_sweep(quiet_tick, monkeypat
     for thread in threads:
         thread.join(5)
     assert [name for name, _ in done] == ["review_jobs", "orphans", "projects", "deletions", "child_refs"]
-    assert [thread.name for thread in threads] == ["terminal-maintenance", "reconcile-maintenance"]
+    assert [thread.name for thread in threads if thread.name != "cold-custody"] == ["cancel_intent_sweep", "terminal_delivery_replay", "pause_notice_replay", "abandoned_usage_reconciliation", "post_task_synthesis_recovery", "reconcile-maintenance"]
 
 
 def test_a_closed_generation_stops_the_reconcile_block_before_its_next_mutation(quiet_tick, monkeypatch):

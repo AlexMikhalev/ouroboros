@@ -785,6 +785,9 @@ def _resolve_lifecycle_fault(
         "ts": utc_now_iso(),
         "type": "task_done",
         "task_id": task_id,
+        # #1578: the lineage this writer already holds, never reconstructed from history.
+        **{key: str(stored.get(key) or task_row.get(key) or evt.get(key)) for key in ("root_task_id", "parent_task_id")
+           if stored.get(key) or task_row.get(key) or evt.get(key)},
         "task_type": task_type,
         "chat_id": row_chat_identity(
             _events()._bound_project_chat_id(
@@ -807,6 +810,7 @@ def _resolve_lifecycle_fault(
     except Exception:
         log.debug("lifecycle-fault cost projection failed for %s", task_id, exc_info=True)
     try:
+        task_done_event["logged_at"] = utc_now_iso()  # the append observation; ts keeps completion time
         append_jsonl(ctx.DRIVE_ROOT / "logs" / "events.jsonl", task_done_event)
     except Exception:
         log.warning("Failed to log lifecycle-fault task_done to events.jsonl", exc_info=True)
@@ -1064,10 +1068,14 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     )
     eff_cost = terminal_cost.get("accounted_upper_bound_usd")
     eff_rounds = terminal_cost.get("total_rounds")
+    known_result = final_task_result if isinstance(final_task_result, dict) else {}
     task_done_event = {
         "ts": evt.get("ts", utc_now_iso()),
         "type": "task_done",
         "task_id": task_id,
+        # #1578: the lineage this writer already holds, never reconstructed from history.
+        **{key: str(known_result.get(key) or (task or {}).get(key) or evt.get(key)) for key in (
+            "root_task_id", "parent_task_id") if known_result.get(key) or (task or {}).get(key) or evt.get(key)},
         "task_type": task_type,
         "chat_id": row_chat_identity(
             _events()._bound_project_chat_id(
@@ -1108,6 +1116,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     if isinstance(model_execution, dict):
         task_done_event["model_execution"] = model_execution
     try:
+        task_done_event["logged_at"] = utc_now_iso()  # the append observation; ts keeps completion time
         append_jsonl(ctx.DRIVE_ROOT / "logs" / "events.jsonl", task_done_event)
     except Exception:
         log.warning("Failed to log task_done to events.jsonl", exc_info=True)

@@ -92,7 +92,7 @@ def require_physical_dispatch_window() -> Optional[float]:
     from ouroboros.owner_pause import RAIL_OWNER_PAUSE, scope_fence, model_handed_off
 
     owner = current_model_wait()
-    reason = owner.control_reason() if owner is not None else None
+    reason = owner.control_reason(strict_current=not model_handed_off()) if owner is not None else None
     if not reason and not model_handed_off() and scope_fence():
         reason = RAIL_OWNER_PAUSE
     if reason:
@@ -668,7 +668,8 @@ def _candidate_before_dispatch(candidate: Dict[str, Any], request: AttemptReques
 def _execute_candidate(request: AttemptRequest, send: Any, before_dispatch: Any) -> Any:
     """Keep existing two-argument injected executors usable."""
     adopt_physical_attempt_capture(None)
-    require_physical_dispatch_window()
+    from ouroboros._usage_wait import retry_presend
+    retry_presend(require_physical_dispatch_window, check=False)
     send, before_dispatch = _deadline_checked_send(send, before_dispatch)
     if "before_dispatch" not in inspect.signature(execute_physical_attempt).parameters:
         return execute_physical_attempt(request, send)
@@ -677,7 +678,8 @@ def _execute_candidate(request: AttemptRequest, send: Any, before_dispatch: Any)
 
 async def _execute_candidate_async(request: AttemptRequest, send: Any, before_dispatch: Any) -> Any:
     adopt_physical_attempt_capture(None)
-    require_physical_dispatch_window()
+    from ouroboros._usage_wait import presend_off_loop, retry_presend
+    await presend_off_loop(retry_presend, require_physical_dispatch_window, check=False)
     send, before_dispatch = _deadline_checked_send(send, before_dispatch)
     if "before_dispatch" not in inspect.signature(execute_physical_attempt_async).parameters:
         return await execute_physical_attempt_async(request, send)
@@ -688,7 +690,8 @@ def _deadline_checked_send(send: Any, before_dispatch: Any):
     def prepare(reservation):
         manifest = before_dispatch(reservation) if before_dispatch is not None else None
         try:
-            require_physical_dispatch_window()
+            from ouroboros._usage_wait import retry_presend
+            retry_presend(require_physical_dispatch_window, check=False)
         except PhysicalDispatchInterrupted as exc:
             exc.candidate_manifest_ref = manifest
             raise

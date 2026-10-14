@@ -116,8 +116,12 @@ def _save_state(ctx: Any, state: dict[str, Any]) -> None:
 
 
 def _emit(ctx: Any, kind: str, payload: dict[str, Any]) -> bool:
+    metadata = getattr(ctx, "task_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    # #1578: the lineage this context already knows; an unknown id stays absent.
+    lineage = {key: str(metadata.get(key) or getattr(ctx, key, "") or "") for key in ("root_task_id", "parent_task_id")}
     return custody.emit(custody.custody_root(ctx), kind, {
-        "task_id": str(getattr(ctx, "task_id", "") or ""), **payload,
+        "task_id": str(getattr(ctx, "task_id", "") or ""), **{k: v for k, v in lineage.items() if v}, **payload,
     })
 
 
@@ -1098,14 +1102,18 @@ def supervised_wait(
     outage_since = ""
     outage_stamp = ""
     # The loop's own transport, only when it built the observing wait.
-    gateway = _loop_gateway() if owns_transport else None
-    live_input = _leaf_live_input(ctx, run_id, gateway)
+    from ouroboros.tools.delegate_terminal_evidence import retained_terminal_result
+    retained = retained_terminal_result(ctx, run_id) if owns_transport else None
+    gateway = _loop_gateway() if owns_transport and retained is None else None
+    live_input = _leaf_live_input(ctx, run_id, gateway) if retained is None else "unknown"
     try:
         while True:
             # A control already present does not wait behind another HTTP read.
             observed = not _control_wakes(ctx)
             if not observed:
                 raw = json.dumps({"status": "no_progress", "run_id": str(run_id)})
+            elif retained is not None:
+                raw, retained = json.dumps(retained), None
             else:
                 if owns_transport and gateway is None:
                     gateway = _loop_gateway()

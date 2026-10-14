@@ -893,7 +893,7 @@ def bounded_max_seconds(ctx: ToolContext, requested: Optional[int]) -> MaxSecond
     the engine's schema bound narrowed it (each named); an omitted ask derives
     from the tighter of deadline and lifetime, else the operation window.
     """
-    from ouroboros.config import get_task_abs_ceiling_sec, operation_window_sec
+    from ouroboros.config import operation_window_sec, resolve_task_execution_timeout_sec
     from ouroboros.deadline_utils import deadline_remaining_sec, has_deadline
     from ouroboros.delegate_registration_policy import (
         CAP_BASIS_DEADLINE_DERIVED, CAP_BASIS_LIFETIME_DERIVED, CAP_BASIS_OPERATION_WINDOW,
@@ -912,15 +912,18 @@ def bounded_max_seconds(ctx: ToolContext, requested: Optional[int]) -> MaxSecond
             return MaxSecondsBound(0, "", "task_deadline_too_close",
                                    "Less than one second of this task's deadline remains: no delegated run "
                                    "can be started under it. Finalize with what you have.")
-    # Seconds of the task's FINITE lifetime still unspent (``None`` = unlimited).
+    # Seconds of the task's FINITE execution bound still unspent (``None`` = unlimited):
+    # the narrower of its API/CLI ``execution_timeout_sec`` and the global ceiling (#939).
     # Cumulative EXECUTION time decides, never a reset clock: the live model-wait
-    # owner's window (elapsed minus the quota union minus the budget-paused
+    # owner's window (offset plus elapsed minus the quota union minus the budget-paused
     # carrier) when this task's is bound, else the same arithmetic over the
     # original ``task_started_at`` and the paused carrier the resume handed over
     # (quota waits unknown here count as execution — the narrower direction).
     # No recorded start uses the operation-bounded ceiling; a failed clock read
     # is a typed unknown-lifetime refusal, never a fresh finite window.
-    lifetime_left: Optional[float] = get_task_abs_ceiling_sec()
+    metadata = getattr(ctx, "task_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    lifetime_left: Optional[float] = resolve_task_execution_timeout_sec(metadata)
     if lifetime_left is not None:
         try:
             from ouroboros.model_wait import current_model_wait, execution_elapsed_seconds
@@ -938,7 +941,8 @@ def bounded_max_seconds(ctx: ToolContext, requested: Optional[int]) -> MaxSecond
                 if paused is None:
                     paused = (getattr(ctx, "budget_pause_resume", None) or {}).get("paused_duration_sec")
                 executed = execution_elapsed_seconds(
-                    {"started_at": float(started), "budget_paused_sec": float(paused or 0.0),
+                    {"_execution_consumed_sec": metadata.get("_execution_consumed_sec"),
+                     "started_at": float(started), "budget_paused_sec": float(paused or 0.0),
                      "model_wait_quota_clock": {}}, time.time())
                 lifetime_left = max(0.0, float(lifetime_left) - executed)
             else:
@@ -1067,6 +1071,10 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
     if not_mine or entry is None:
         return (not_mine or _fail("delegate_wait", "run_ownership_unknown",
                                   "custody unresolved", run_id=rid)).text
+    from ouroboros.tools.delegate_terminal_evidence import retained_terminal_result
+    retained = retained_terminal_result(ctx, rid)
+    if retained is not None:
+        return json.dumps(retained, ensure_ascii=False, indent=2)
     ceiling = get_delegate_wait_max_sec()
     try:
         window = int(wait_sec) if wait_sec is not None else get_delegate_wait_sec()
@@ -1150,36 +1158,9 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
                               drain_sec=read_window() if state in _TERMINAL_STATES else None)
                 baseline = last_seq          # so the NEXT advance is counted once
             if state in _TERMINAL_STATES:
-                settlement = custody.settle_run(custody.custody_root(ctx), gateway, entry, detail)
-                payload = _delivered_terminal_payload(ctx, rid, detail, authority, entry, gateway)
-                payload["settlement"] = settlement
-                # C1: a mutating run's changes live in its private snapshot until the
-                # nanny explicitly integrates them. Captured HERE, durably, on every
-                # terminal observation (idempotent), cancelled runs included — a
-                # cancelled run's partial work is salvage material, not garbage.
-                capture = _capture_terminal_patch(ctx, entry, **(
-                    {"gateway": gateway} if entry.resource_ref.get("workspace_kind") == "directory" else {}))
-                if capture is not None:
-                    payload["workspace_capture"] = capture
-                # D7 made load-bearing: settlement is where "paid for and never read"
-                # becomes permanent, so the parent is told in WORDS here — not left to
-                # infer it from `output_delivery.consumed`. Re-settling an already
-                # settled run reports the CURRENT durable fact, so the line disappears
-                # once the read has happened rather than echoing a stale omission.
-                if custody.record_settled_unread(custody.custody_root(ctx), entry):
-                    payload["result_not_collected"] = (
-                        "THIS RESULT IS NOT COLLECTED YET: the run is settled and its "
-                        "full output is staged, but nothing has read it to EOF. Read the "
-                        "artifact with the read_file arguments in "
-                        "output_delivery.read_next until it is covered end to end — a result you "
-                        "have not read is not a result you may report."
-                    )
-                # The containment disclosure is read off what the PARENT was told, so the
-                # durable line and the relayed payload cannot disagree. It runs on the
-                # PREVIEW path too: a payload big enough to spill is exactly the one whose
-                # containment block a reader is least likely to reach.
-                _record_containment(ctx, entry, payload)
-                return json.dumps(payload, ensure_ascii=False, indent=2)
+                from ouroboros.tools.delegate_terminal_evidence import collect_and_deliver_terminal
+                return json.dumps(collect_and_deliver_terminal(ctx, rid, detail, authority, entry, gateway),
+                                  ensure_ascii=False, indent=2)
             pending = _cx_pending(detail)
             if pending and _interactions_are_news(rid, pending):
                 # A NEW question returns IMMEDIATELY: the old wait kept only the
@@ -1233,6 +1214,10 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
                 return _expired()   # unanswered AT expiry: expire on what is already held
             detail = fresh
     except ClaudexorUnavailable as exc:
+        from ouroboros.tools.delegate_terminal_evidence import retained_terminal_after_gap
+        retained = retained_terminal_after_gap(ctx, rid, str(exc.code))
+        if retained is not None:
+            return json.dumps(retained, ensure_ascii=False, indent=2)
         if observation_only and exc.observation_timeout:
             # The gateway's per-class reason, not the generic transport code: a
             # read bound that expired against a live daemon is a quiet hole and

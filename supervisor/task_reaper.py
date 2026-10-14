@@ -81,7 +81,10 @@ def reaper_loop() -> None:
         except Exception:
             continue
         try:
-            if job.get("kind") == "terminal_file_recovery":
+            if job.get("kind") == "pending_deadline":  # #939: an expired queued row, no worker
+                from supervisor.queue_timeouts import _reap_pending_deadline
+                _reap_pending_deadline(job)
+            elif job.get("kind") == "terminal_file_recovery":
                 _recover_terminal_files(job)
             elif job.get("kind") == "confirmed_dead_worker":
                 from supervisor.worker_health import recover_confirmed_dead_worker
@@ -100,11 +103,10 @@ def reaper_loop() -> None:
             log.warning("Reaper file custody remains pending for %s", job.get("task_id"))
         except Exception:
             log.error("Reaper failed for task %s", (job or {}).get("task_id"), exc_info=True)
-            # Self-heal: an escape BEFORE the guarded teardown (e.g. the top-of-function
-            # imports / variable extraction) must not strand the slot at reaping=True forever —
-            # the crash detector skips reaping slots, so it would be unrecoverable until restart.
-            # Clear reaping (the same conservative recovery step 5 uses) so a later tick reclaims
-            # it; do NOT respawn here (an early escape may have left the original worker alive).
+            # Self-heal: an escape BEFORE the guarded teardown (top-of-function imports/extraction)
+            # must not strand the slot at reaping=True (the crash detector skips reaping slots, so it
+            # stays unrecoverable until restart). Clear reaping as step 5 does; never respawn: an early
+            # escape may have left the original worker alive.
             try:
                 from supervisor import workers as _w_mod
                 from supervisor.queue import _queue_lock as _ql
@@ -701,16 +703,10 @@ def _enqueue_retry(
     runtime_sec: float = 0.0,
     unreconciled_runs: Optional[list] = None,
     salvage_note: str = "",
-    custody_audit: Optional[Dict[str, Any]] = None,
+    custody_audit: Optional[Dict[str, Any]] = None, clock_meta: Optional[Dict[str, Any]] = None,
 ) -> tuple[bool, int, str, Dict[str, str]]:
-    """Atomically admit a dead task's retry or suppress it.
-
-    The queue row and reciprocal result lineage are published only inside the
-    final queue->cancel locked transition.  If cancellation/terminal truth wins
-    the boundary, no successor result or historical link is created.  If retry
-    admission wins, a later SINGLE cancel resolves the complete durable chain
-    under the same projection lock and targets the physical leaf.
-    """
+    """Publish retry and reciprocal lineage under queue->cancel locks, unless cancelled/terminal.
+    A later cancel resolves the admitted chain to its physical leaf under the same lock."""
     from ouroboros.task_results import STATUS_FAILED, load_task_result, write_task_result
     from supervisor.cancel_publication import _custody_disclosure_fields
 
@@ -719,6 +715,11 @@ def _enqueue_retry(
     from ouroboros.working_checkpoint import attach_recovery  # the same retry continues the killed attempt's work
     attach_recovery(pathlib.Path(task.get("budget_drive_root") or q.DRIVE_ROOT), retried,
                     source_task_id=task_id, from_attempt=attempt, cause="idle_timeout", prior_task=task)
+    from ouroboros.model_wait import fold_running_clock, stamp_execution_handoff  # #939: one carried clock
+    from supervisor.events_budget import fold_consumed_resume
+    fold_consumed_resume(clock_meta, q.DRIVE_ROOT)  # consumption may follow RUNNING's capture/removal
+    fold_running_clock(retried, clock_meta)
+    stamp_execution_handoff(retried, clock_meta)
     if retry_task_id and retry_task_id != task_id:
         from ouroboros.artifacts import handoff_task_attachments_for_retry
         from ouroboros.owner_mailbox import copy_owner_mailbox_for_retry
@@ -773,6 +774,8 @@ def _enqueue_retry(
                 result=message,
             )
             return False, attempt, blocked_reason, {}
+    from supervisor.queue_transitions import clear_acceptance_fence_for_attempt  # #1183: the dead attempt's own fence
+    clear_acceptance_fence_for_attempt(task_id, task_attempt=attempt)
     suppression, admission_block = _run_retry_admission_transaction(
         q,
         task,
@@ -1318,8 +1321,7 @@ def reap_timed_out_task(job: Dict[str, Any]) -> None:
     Unfinished file publication retains this job for health retry without model
     replay. A replacement pool/task gets no teardown/retry; old files remain recoverable.
     """
-    from supervisor import queue as _q
-    from supervisor import workers as workers_mod
+    from supervisor import queue as _q, workers as workers_mod
 
     worker_id = int(job.get("worker_id")) if job.get("worker_id") is not None else -1
     # Older in-process callers acquire this binding once, before any deferred replay.
@@ -1456,8 +1458,7 @@ def reap_timed_out_task(job: Dict[str, Any]) -> None:
                     exc_info=True,
                 )
 
-        # 4. Enqueue the retry ONLY now (original is dead) — no concurrent execution.
-        #    Guarded so an enqueue failure cannot abort the reaper before respawn.
+        # 4. Retry ONLY now (original is dead); an enqueue failure cannot abort the respawn.
         requeued = False
         new_attempt = attempt
         retry_suppression: Dict[str, str] = {}
@@ -1475,7 +1476,7 @@ def reap_timed_out_task(job: Dict[str, Any]) -> None:
                     runtime_sec=runtime_sec,
                     unreconciled_runs=unreconciled,
                     salvage_note=salvage_note,
-                    custody_audit=custody_audit,
+                    custody_audit=custody_audit, clock_meta=job.get("meta"),
                 )
                 will_retry = requeued
             except Exception:

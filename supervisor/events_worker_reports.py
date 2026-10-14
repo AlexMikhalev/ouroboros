@@ -238,6 +238,8 @@ def _handle_acceptance_fence(evt: Dict[str, Any], ctx: Any) -> None:
             token=token,
             root_task_id=str(evt.get("root_task_id") or ""),
             task_id=str(evt.get("task_id") or ""),
+            # A legacy event without it keeps the unattributed (pre-#1183) begin.
+            pooled_owner=evt.get("pooled_owner") if isinstance(evt.get("pooled_owner"), dict) else None,
             outcome=str(evt.get("outcome") or ""),
             expected_generation=(
                 int(evt["expected_generation"])

@@ -27,6 +27,8 @@ bars the next admission; it was not prevented.
 
 from __future__ import annotations
 
+from ouroboros.store import StoreBusy
+
 import logging
 import math
 import pathlib
@@ -89,6 +91,8 @@ def effective_billing_fields(budget_root: Any, root_id: str, fields: Dict[str, A
                 result.update(billing_group_limit_usd=cap, billing_group_limit_source="owner_amendment",
                               billing_group_limit_revision=last["source_identity"])
         return result
+    except StoreBusy:
+        raise
     except Exception:
         log.warning("Effective billing authority unavailable for %s", group, exc_info=True)
         return {**result, "billing_group_id": UNAVAILABLE_GROUP_PREFIX + group, "billing_group_limit_usd": 0.0}
@@ -213,6 +217,8 @@ def task_billing_fields(task: Dict[str, Any], root_task_id: str, root_limit: Opt
                 "billing_group_limit_revision")}}
         return {"root_limit_usd": root_limit, "billing_group_id": root_task_id,
                 "billing_group_limit_usd": root_limit}
+    except StoreBusy:
+        raise
     except Exception:
         log.warning("Billing authority unavailable for %s", root_task_id, exc_info=True)
         return unavailable
@@ -228,6 +234,8 @@ def settlement_billing_fields(root: Any, task_id: str, root_task_id: str) -> Dic
 
     try:
         carried = tree_billing_group(pathlib.Path(root), root_task_id)
+    except StoreBusy:
+        raise
     except StoreError:
         return {"billing_group_id": UNAVAILABLE_GROUP_PREFIX + root_task_id, "billing_group_limit_usd": 0.0}
     return carried if carried else binding

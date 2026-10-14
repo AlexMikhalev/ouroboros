@@ -140,7 +140,7 @@ def _execute(request):
 def run_sql(ctx, root, *, db, query, max_rows, max_bytes, snapshot, timeout_sec):
     """Only host-resolved sources cross the process boundary, never an SQL path."""
     from ouroboros.process_containment import CONTAINMENT_ENV_PREFIX
-    from ouroboros.process_custody import current_custody_session_id, spawn_supervised
+    from ouroboros.process_custody import current_custody_session_id, lifeline_parent_env, spawn_supervised
 
     repo = Path(__file__).resolve().parents[1]
     env = {key: value for key, value in os.environ.items()
@@ -148,7 +148,7 @@ def run_sql(ctx, root, *, db, query, max_rows, max_bytes, snapshot, timeout_sec)
                       "LANG", "LC_ALL", "OUROBOROS_SETTINGS_PATH"}
            or key.startswith(CONTAINMENT_ENV_PREFIX)}
     env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(repo),
-               OUROBOROS_DATA_DIR=str(root), OUROBOROS_REPO_DIR=str(repo))
+               OUROBOROS_DATA_DIR=str(root), OUROBOROS_REPO_DIR=str(repo), **lifeline_parent_env())
     with tempfile.TemporaryDirectory(prefix="query-data-") as scratch:
         request = dict(root=str(root), db=db, query=query, max_rows=max_rows, max_bytes=max_bytes,
                        snapshot=snapshot, timeout_sec=timeout_sec, scratch=scratch)

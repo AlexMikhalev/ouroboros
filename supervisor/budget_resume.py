@@ -75,6 +75,10 @@ def _resume_custody_refusal(result_root, task_id, row, external):
     unsettled = [run for run in (external.get("runs") or [])
                  if isinstance(run, dict) and str(run.get("state") or "") != EXTERNAL_STOP_CONFIRMED
                  and not (owner_paused and run.get("review_owned"))]
+    if unsettled and row.get("reason") == "sleep":
+        from ouroboros.sleep_custody import return_allowed
+        if return_allowed(task_id, row, external):
+            unsettled = []  # same author's retained dependency, not a stop receipt
     if unsettled:
         try:
             set_budget_pause(result_root, task_id, {**row, "external_runs": external},
@@ -284,7 +288,7 @@ def _grant_exact_resume(task: Dict[str, Any], pause: Dict[str, Any], *, selected
         exact_pause_marker, set_budget_pause,
     )
     from ouroboros.cancel_intents import has_active_intent
-    from ouroboros.config import get_task_abs_ceiling_sec
+    from ouroboros.config import explicit_execution_timeout_sec, resolve_task_execution_timeout_sec
     from ouroboros.deadline_utils import parse_deadline_ts, utc_now
     from ouroboros.model_wait import execution_elapsed_seconds
     from ouroboros.task_results import _TRULY_TERMINAL_STATUSES, load_task_result
@@ -397,9 +401,9 @@ def _grant_exact_resume(task: Dict[str, Any], pause: Dict[str, Any], *, selected
     prior_paused = float(row.get("paused_duration_sec") or 0.0)
     # ONE shared clock: wall time minus the quota union minus the paused carrier.
     executed_sec = execution_elapsed_seconds(
-        {"started_at": started, "budget_paused_sec": prior_paused,
+        {"task": task, "started_at": started, "budget_paused_sec": prior_paused,
          "model_wait_quota_clock": row.get("model_wait_quota_clock") or {}}, paused_at)
-    ceiling = get_task_abs_ceiling_sec()  # None = unlimited lifetime; 0 = exhausted
+    ceiling = resolve_task_execution_timeout_sec(task)  # None = unlimited; 0 = exhausted
     if ceiling is not None and started and executed_sec >= float(ceiling):
         return {"ok": False, "error": "lifetime_exhausted", "executed_sec": round(executed_sec, 1)}
     refusal = _global_money_refusal(q, budget_remaining)
@@ -458,7 +462,11 @@ def _grant_exact_resume(task: Dict[str, Any], pause: Dict[str, Any], *, selected
         "grant_generation": generation, "pause_id": pause_id, "pause_generation": pause_generation,
         "paused_duration_sec": grant["paused_duration_sec"], "pause": prior_pause,
         "external_runs": external,
-        **({"sleep_exclusion_since": now} if row.get("reason") == "sleep" else {}),
+        # A sleep, and an explicitly bounded task's every exact Resume, stays excluded until
+        # the worker consumes the grant: a capacity-delayed start is still that Pause (#939,
+        # owner A). A task without an execution budget keeps its legacy clock.
+        **({"sleep_exclusion_since": now}
+           if row.get("reason") == "sleep" or explicit_execution_timeout_sec(task) is not None else {}),
         **{key: grant[key] for key in ("selected_by", "authority", "sleep_id", "root_grant_id", "root_resume_generation", "root_fence_id")},
     }
     task["budget_resumed_at"] = grant["granted_at"]

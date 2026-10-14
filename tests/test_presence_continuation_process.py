@@ -62,13 +62,14 @@ def eventually(read, *, seconds=45):
 
 
 class Host:
-    def __init__(self, root, generation, mode, scenario="incoming"):
+    def __init__(self, root, generation, mode, scenario="incoming", *, with_event_bus=False):
         self.root, self.generation = root, generation
         self.ready = root / f"ready-{generation}.json"
         env = isolated_environment(root, ROOT)
         self.log = (root / f"host-{generation}.log").open("w")
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "tests.presence_lifecycle_host", str(root), str(generation), mode, scenario],
+            [sys.executable, "-m", "tests.presence_lifecycle_host", str(root), str(generation), mode, scenario,
+             *(["--fixture-event-bus"] if with_event_bus else [])],
             cwd=ROOT, env=env, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True,
         )
         self.client = None
@@ -408,8 +409,10 @@ def second_park_with_late_child(host):
 @pytest.mark.parametrize("mode", ["blocking", "advisory"])
 @pytest.mark.parametrize("ending", ["complete", "stop"])
 def test_second_park_exposes_late_child_without_changing_initial_replay(tmp_path, mode, ending):
-    host = Host(tmp_path, 1, mode, "late_child")
+    host = Host(tmp_path, 1, mode, "late_child", with_event_bus=ending == "stop")
     try:
+        if ending == "stop":
+            assert host.info["event_bus_children"]
         initial, record = second_park_with_late_child(host)
         ref = initial["continuation_ref"]
         pending = host.work(ref)
@@ -443,16 +446,17 @@ def test_second_park_exposes_late_child_without_changing_initial_replay(tmp_path
     cleanup = json.loads((tmp_path / "process-cleanup-1.json").read_text())
     assert cleanup["remaining_children"] == [] and cleanup["resource_tracker_joined"]
     if ending == "stop":
-        # Releasing the pending reviewer after Stop emits a late notice through
-        # the real manager-backed event bus. Both support processes must be
-        # joined by the fixture, before the parent's group assertion runs.
+        # The bus existed before this author started. Both owned support
+        # processes must be joined before the parent's group assertion runs.
         assert cleanup["event_bus_children"] and cleanup["resource_tracker_pid"], cleanup
+        assert set(host.info["event_bus_children"]) <= set(cleanup["event_bus_children"])
 
 
 def test_terminal_poll_precedes_author_teardown_but_cleanup_must_finish(tmp_path):
     """Deterministically expose the stop/advisory race; never infer cleanup from HTTP 200."""
-    host = Host(tmp_path, 1, "advisory", "late_child_close_barrier")
+    host = Host(tmp_path, 1, "advisory", "late_child_close_barrier", with_event_bus=True)
     try:
+        assert host.info["event_bus_children"]
         initial, record = second_park_with_late_child(host)
         ref = initial["continuation_ref"]
         assert host.client.post("/fixture/stop", json={"task_id": ref}).status_code == 200
@@ -478,6 +482,7 @@ def test_terminal_poll_precedes_author_teardown_but_cleanup_must_finish(tmp_path
     cleanup = json.loads((tmp_path / "process-cleanup-1.json").read_text())
     assert cleanup["remaining_children"] == [] and cleanup["resource_tracker_joined"]
     assert cleanup["event_bus_children"] and cleanup["resource_tracker_pid"], cleanup
+    assert set(host.info["event_bus_children"]) <= set(cleanup["event_bus_children"])
 
 
 @pytest.mark.parametrize("mode", ["blocking", "advisory"])

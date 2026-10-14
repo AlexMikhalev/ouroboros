@@ -45,6 +45,8 @@ def historical_operation_controls(root: Any, purpose: dict, *, admission: bool =
     from ouroboros.acceptance_history import historical_review_controls, read_acceptance_history
     from ouroboros.deadline_utils import parse_deadline_ts, utc_now
     from ouroboros.task_results import load_task_result
+    from ouroboros.store import StoreBusy
+    from ouroboros.model_wait import control_probe_active
 
     try:
         row = load_task_result(root, purpose['task_id'], strict=True) or {}
@@ -62,6 +64,10 @@ def historical_operation_controls(root: Any, purpose: dict, *, admission: bool =
         if deadline and (parse_deadline_ts(deadline) is None or parse_deadline_ts(deadline) <= utc_now()):
             blocked.append('caller_deadline')
         return blocked
+    except StoreBusy:
+        if control_probe_active():
+            raise
+        return ['historical_control_authority_unavailable']
     except Exception:
         return ['historical_control_authority_unavailable']
 
@@ -74,10 +80,16 @@ def owner_paused_controls(root: Any, purpose: dict, **controls: Any) -> tuple[li
     fence is read on both sides: a block read while it was closed waits for the next read.
     """
     from ouroboros.owner_pause import fence_closed, read_fence
+    from ouroboros.store import StoreBusy
+    from ouroboros.model_wait import control_probe_active
 
     def closed() -> bool:
         try:
             return fence_closed(read_fence(root, purpose['accounting_root_task_id']))
+        except StoreBusy:
+            if control_probe_active():
+                raise
+            return False
         except Exception:
             return False
 

@@ -24,6 +24,7 @@ from ouroboros.review_source_closure import retain_review_request_sources
 from ouroboros.review_substrate import ReviewRequest, run_review_request
 from tests.test_acceptance_delivery import _CLEAN_VERDICT, _EpisodeLLM, _fake_session, _tool_call
 from tests.test_acceptance_source_first import _SOURCE_PATH, _prepared_request
+from tests.test_plan_review_engine import _user_text
 from tests import test_main_authored_context as context_fixtures
 
 main_loop = context_fixtures.main_loop
@@ -98,7 +99,7 @@ def test_native_historical_read_reaches_next_model_input_after_author_cleanup(tm
         def _reply(self, kwargs):
             self.calls.append(copy.deepcopy(kwargs))
             if len(self.calls) == 1:
-                prompt = "\n".join(row["content"] for row in kwargs["messages"])
+                prompt = "\n".join(_user_text(row["content"]) for row in kwargs["messages"])
                 assert _OLD not in prompt and _TODAY not in prompt
                 binding = _historical_binding(request)
                 assert binding["retained_path"] in prompt
@@ -106,7 +107,7 @@ def test_native_historical_read_reaches_next_model_input_after_author_cleanup(tm
                 shutil.rmtree(author)
                 calls = [_tool_call("read_file", binding["read"]["arguments"], "history")]
                 if paged:
-                    packet_path = _SOURCE_PATH.search(kwargs["messages"][-1]["content"]).group(1)
+                    packet_path = _SOURCE_PATH.search(_user_text(kwargs["messages"][-1]["content"])).group(1)
                     calls.append(_tool_call("read_file", {"root": "artifact_store", "path": packet_path}, "packet"))
                 reply = {"tool_calls": calls}
             else:

@@ -1080,6 +1080,7 @@ class TaskCreateRequest(_TaskCreateRequestRequired, total=False):
     deadline_at: str
     timeout_sec: float
     timeout: float
+    execution_timeout_sec: float  # excludes queue and confirmed pauses; 0 adds no limit
     context: str
     expected_output: str
     constraints: str

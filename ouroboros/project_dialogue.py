@@ -806,7 +806,7 @@ TASK_CAUSE_PHRASES = {
     "deep_self_review_error": "The deep self-review stopped on an error",
     # #869: the provider-death rail's terminal words; the amount of retained text is
     # said by the notice, this clause only names why the task ended.
-    "provider_unavailable": "The model provider stopped answering, so the task could not finish",
+    "provider_unavailable": "The task could not get a usable model answer, so it could not finish",
     "accounting_wait_expired": "Accounting access did not recover within this turn’s wait window",
     "delivery_control_degraded": "Ouroboros's final delivery instruction could not be applied, so the answer stands as delivered.",
     "authoring_handover_incomplete": "The replacement model stopped before resuming tool work.",
@@ -1317,7 +1317,7 @@ MAIN_MIRROR_OWED, MAIN_MIRROR_INELIGIBLE, MAIN_MIRROR_UNKNOWN = "owed", "ineligi
 def project_completion_delivery_outcome(
     drive_root: Any, evt: Dict[str, Any], task_id: str, task: Dict[str, Any],
     result: Dict[str, Any], task_done_event: Dict[str, Any],
-    *, _on_owed: Optional[Callable[[], bool]] = None,
+    *, _on_owed: Optional[Callable[[], bool]] = None, event_queue: Any = None,
 ) -> tuple:
     """Owe Main's answer for Project roots, including conversations moved from Main.
 
@@ -1421,7 +1421,7 @@ def project_completion_delivery_outcome(
             return MAIN_MIRROR_UNKNOWN, False
         # A live queue exception cannot undo an already durable outbox row.
         try:
-            queued = bool(enqueue_terminal_delivery(drive_root, event))
+            queued = bool(enqueue_terminal_delivery(drive_root, event, event_queue=event_queue))
         except Exception:
             log.warning("Main mirror remains owed after queue failure for %s", tid, exc_info=True)
             queued = False

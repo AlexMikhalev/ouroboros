@@ -142,6 +142,12 @@
             "cache_write_tokens": 25,
             "provider": "anthropic",
             "resolved_model": "anthropic/claude-sonnet-4-6",
+            "reported_tokens": {
+              "prompt_tokens": 165,
+              "completion_tokens": 6,
+              "cached_tokens": 40,
+              "cache_write_tokens": 25
+            },
             "effort": {
               "requested": "high",
               "sent": {
@@ -424,6 +430,12 @@
             "cache_write_tokens": 0,
             "provider": "anthropic",
             "resolved_model": "anthropic/claude-sonnet-4-6",
+            "reported_tokens": {
+              "prompt_tokens": null,
+              "completion_tokens": 3,
+              "cached_tokens": null,
+              "cache_write_tokens": null
+            },
             "effort": {
               "requested": "medium",
               "sent": {
@@ -695,6 +707,12 @@
             "cache_write_tokens": 0,
             "provider": "anthropic",
             "resolved_model": "anthropic/claude-sonnet-4-6",
+            "reported_tokens": {
+              "prompt_tokens": null,
+              "completion_tokens": 1,
+              "cached_tokens": null,
+              "cache_write_tokens": null
+            },
             "effort": {
               "requested": "minimal",
               "sent": {
@@ -897,6 +915,12 @@
             "cache_write_tokens": 0,
             "provider": "anthropic",
             "resolved_model": "anthropic/claude-sonnet-4-6",
+            "reported_tokens": {
+              "prompt_tokens": null,
+              "completion_tokens": 1,
+              "cached_tokens": null,
+              "cache_write_tokens": null
+            },
             "effort": {
               "requested": "medium",
               "sent": {
@@ -1075,6 +1099,12 @@
             "cache_write_tokens": 0,
             "provider": "anthropic",
             "resolved_model": "anthropic/claude-sonnet-4-6",
+            "reported_tokens": {
+              "prompt_tokens": null,
+              "completion_tokens": 1,
+              "cached_tokens": null,
+              "cache_write_tokens": null
+            },
             "effort": {
               "requested": "medium",
               "sent": {
@@ -1402,6 +1432,12 @@
             "cache_write_tokens": 0,
             "provider": "anthropic",
             "resolved_model": "anthropic/claude-sonnet-4-6",
+            "reported_tokens": {
+              "prompt_tokens": null,
+              "completion_tokens": 2,
+              "cached_tokens": null,
+              "cache_write_tokens": null
+            },
             "effort": {
               "requested": "medium",
               "sent": {
@@ -1600,6 +1636,12 @@
             "cache_write_tokens": 0,
             "provider": "anthropic",
             "resolved_model": "anthropic/claude-sonnet-4-6",
+            "reported_tokens": {
+              "prompt_tokens": null,
+              "completion_tokens": 1,
+              "cached_tokens": null,
+              "cache_write_tokens": null
+            },
             "effort": {
               "requested": "medium",
               "sent": {

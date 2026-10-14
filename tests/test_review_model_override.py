@@ -39,9 +39,9 @@ def test_pure_projection_preserves_native_delivery_and_changes_only_one_role():
 
 
 @pytest.mark.parametrize("narrow", [False, True])
-def test_native_wait_switch_rechecks_bound_before_send_and_never_replays_read(live_wait, monkeypatch, narrow):
+def test_native_wait_switch_keeps_reads_and_sends_with_the_new_window_facts(live_wait, monkeypatch, narrow):
     from ouroboros.review_native_episode import NativeToolRoundReviewExecutor
-    from ouroboros.review_execution import ReviewAssignment, ReviewRouteUnavailable
+    from ouroboros.review_execution import ReviewAssignment
     from ouroboros.review_records import ReviewRequest
 
     root, gateway, client, controller, events, decide = live_wait
@@ -68,6 +68,12 @@ def test_native_wait_switch_rechecks_bound_before_send_and_never_replays_read(li
     monkeypatch.setattr(LLMClient, "claudexor_model_catalog", staticmethod(catalog))
     from ouroboros import config
     monkeypatch.setattr(config, "DATA_DIR", root)
+    # Native facts read existing metadata without fetching. Seed exact account
+    # evidence so the returned physical account can resolve its own window.
+    for route in (ROUTE, route_b):
+        ce.probe(root, provider="claudexor", model=MODEL,
+                 options=ce.model_account_options(MODEL,
+                     credential_profile_id=route["credentialProfileId"], model_route=route))
     decisions = []
 
     def choose(*_args, **_kwargs):
@@ -93,27 +99,42 @@ def test_native_wait_switch_rechecks_bound_before_send_and_never_replays_read(li
         return real_read(*args, **kwargs)
 
     monkeypatch.setattr(executor, "_execute_inspection_call", read_once)
-    if narrow:
-        with pytest.raises(ReviewRouteUnavailable) as raised:
-            executor.execute()
-        assert raised.value.code == "native_transcript_cap_exceeded"
-        assert len(gateway.accepted_operations) == 2
-        assert executor.failure_custody()["native_transcript_bound"] == 0
-        with pytest.raises(ReviewRouteUnavailable):
-            executor.execute()
-        assert len(gateway.accepted_operations) == 2
-    else:
-        answer = executor.execute()
-        assert answer.raw_text == final["message"]["content"]
-        assert answer.usage["model_role_route"]["credential_profile_id"] == "account-b"
-        assert answer.usage["claudexor"]["route"] == route_b
-        sent = gateway.uploads[-1][0]
-        assert sent["account"] == {"mode": "pin", "profileId": "account-b"}
-        assert any(message.get("role") == "tool" and "completed original read" in message["content"] for message in sent["messages"])
-        assert answer.usage["native_rounds"] == 2 and len(gateway.accepted_operations) == 3
+    prepared_facts = []
+    real_reprepare = executor._reprepare_model_call
+
+    def reprepare(*args, **kwargs):
+        prepared = real_reprepare(*args, **kwargs)
+        prepared_facts.append(executor._context_facts(prepared["messages"], prepared["tools"]))
+        return prepared
+
+    monkeypatch.setattr(executor, "_reprepare_model_call", reprepare)
+    answer = executor.execute()
+    assert answer.raw_text == final["message"]["content"]
+    assert answer.usage["model_role_route"]["credential_profile_id"] == "account-b"
+    assert answer.usage["claudexor"]["route"] == route_b
+    sent = gateway.uploads[-1][0]
+    assert sent["account"] == {"mode": "pin", "profileId": "account-b"}
+    assert any(message.get("role") == "tool" and "completed original read" in message["content"] for message in sent["messages"])
+    assert answer.usage["native_rounds"] == 2 and len(gateway.accepted_operations) == 3
+    window = answer.usage["native_context"]["window"]
+    assert window["window_tokens"] == (4_000 if narrow else 800_000)
+    assert window["status"] == "confirmed"
+    assert "native_transcript_bound" not in answer.usage
+    switched = prepared_facts[-1]
+    # Before the new account has physically responded its fingerprint is not
+    # known on this request, so the old account's window is never substituted.
+    assert switched["window"]["window_tokens"] is None
+    assert switched["window"]["model"] == MODEL
+    assert switched["previous_request"]["requested_profile"] == "account-a"
+    assert switched["previous_request"]["round"] == 1
+    assert switched["previous_request"]["prompt_tokens"] == 20
+    assert "free_tokens" not in switched
+    # Local format repair keeps the already-completed episode, even for the small window.
+    assert executor.execute().raw_text == answer.raw_text
+    assert len(gateway.accepted_operations) == 3
     assert len(reads) == len(decisions) == 1
     assert controller.overrides.keys() == {"reviewer:critic"}
-    assert [row["state"] for row in ledger(root)].count("settled") == (1 if narrow else 2)
+    assert [row["state"] for row in ledger(root)].count("settled") == 2
 
 
 def test_plan_and_acceptance_prepare_effective_slot_before_capacity(live_wait, monkeypatch):

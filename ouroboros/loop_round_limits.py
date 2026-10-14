@@ -25,7 +25,6 @@ from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_nega
 from ouroboros.loop_transport import TransportWaitEpisode, finalize_now_transport_terminal as _finalize_now_transport_terminal
 from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
 from ouroboros.pricing import estimate_cost_optional
-from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.transcript_prefix import sanction_rewrite
 from ouroboros.usage_accounting import invalidate_task_cache_splits
@@ -684,21 +683,18 @@ def _handle_provider_unavailable(
     wait_cause: str = "", waited_sec: float = 0.0, interactive: bool = False,
     control_reason: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Provider-death rail wrapper: every arm carries terminal provenance.
-    The forced-finalization sink stamps ``host_notice``; retained/generated
-    model candidates stamp ``model_final``. Read the recognized control here
-    so ordinary and delegated-hold terminal paths share the same cause."""
+    """Provider-death rail wrapper: every arm carries terminal provenance, decided by
+    ``_provider_unavailable_result`` where the salvage is known (retained model
+    output is ``host_salvage``, the host's own notice ``host_notice``, model
+    candidates ``model_final``). Read the recognized control here so ordinary
+    and delegated-hold terminal paths share the same cause."""
     if control_reason is None:
         owner_ctx = getattr(ctx.tools, "_ctx", None)
         control_reason = str(getattr(owner_ctx, "_transport_repeat_control_reason", "") or "")
-    text, usage, llm_trace = _loop()._provider_unavailable_result(
+    return _loop()._provider_unavailable_result(
         ctx, error_kind=error_kind, wait_cause=wait_cause, waited_sec=waited_sec,
         interactive=interactive, control_reason=control_reason,
     )
-    if str(usage.get("reason_code") or "") not in ("", "deadline_local") and usage.get(
-            "terminal_origin") in (None, TERMINAL_ORIGIN_HOST_NOTICE):
-        usage["terminal_origin"] = TERMINAL_ORIGIN_HOST_SALVAGE
-    return text, usage, llm_trace
 
 
 def _loop_exit_after_exception(
@@ -872,27 +868,32 @@ def _handle_model_wait_control(
 def _maybe_deadline_local_finalize(
     ctx: _RoundLimitContext, tools: ToolRegistry
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
-    """Loop-local graceful finalization on a REAL task deadline.
+    """Loop-local graceful finalization on a REAL task deadline or explicit execution budget.
 
     Headless runs (benchmarks, harbor) often get no supervisor finalize_now:
-    the process is killed at the deadline, discarding any best-effort
-    artifact. With a real deadline_at set and less than the
-    finalization-grace window left, self-finalize one tool-less best answer —
-    independent of the supervisor — so a deadline NEVER returns emptiness.
-    Never fires without a real deadline_at (no synthesized deadline;
-    leaderboard timeouts stay legal)."""
+    the process is killed at the bound, discarding any best-effort artifact.
+    With less than the finalization-grace window left on an explicit calendar
+    ``deadline_at`` or API/CLI ``execution_timeout_sec`` (#939), self-finalize
+    one tool-less best answer — independent of the supervisor — so a bound
+    NEVER returns emptiness. Never fires without one (no synthesized deadline;
+    leaderboard timeouts stay legal); confirmed waits extend only the execution budget."""
     meta = getattr(tools._ctx, "task_metadata", {})
     if not isinstance(meta, dict):
         return None
+    from ouroboros.model_wait import explicit_execution_window_remaining
+
     deadline = parse_deadline_ts(meta.get("deadline_at"))
-    if deadline is None:
+    execution_left = explicit_execution_window_remaining(tools._ctx)
+    if deadline is None and execution_left is None:
         return None
-    ctx.deadline_ts = deadline.timestamp()
-    remaining = (deadline - _loop().utc_now()).total_seconds()
+    if deadline is not None:
+        ctx.deadline_ts = deadline.timestamp()
+    remaining = min(value for value in ((deadline - _loop().utc_now()).total_seconds() if deadline else None,
+                                        execution_left) if value is not None)
     if remaining > task_pacing.effective_finalization_reserve_sec(tools._ctx):
         return None
     prompt = (
-        f"[DEADLINE] The task deadline ({meta.get('deadline_at')}) is ~{max(0.0, remaining)/60:.1f} min away "
+        f"[DEADLINE] The task's remaining time is ~{max(0.0, remaining)/60:.1f} min "
         "and the run will stop at it. Produce your best final answer NOW from the verified work so far; "
         "clearly mark anything unverified or incomplete. An honest best-effort result is the expected "
         "outcome here, not a failure."

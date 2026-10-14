@@ -114,6 +114,14 @@ def observe_task_runs(root: Any, task_id: str, *, reason: str = "budget_resume_u
 
     def _row(run: Any, **fields: Any) -> Dict[str, Any]:
         return {"run_id": str(getattr(run, "run_id", "") or ""),
+                "invocation_id": str(getattr(run, "invocation_id", "") or ""),
+                "terminal_state": str(getattr(run, "terminal_state", "") or ""),
+                "terminal_source": getattr(run, "terminal_source", {}) or {},
+                "interaction_source": getattr(run, "interaction_source", {}) or {},
+                "pending_interaction_ids": getattr(run, "pending_interaction_ids", []) or [],
+                "output_complete": bool(getattr(run, "output_complete", False)),
+                "patch_captured": bool(getattr(run, "patch_captured", False)),
+                "ledger_recorded": bool(getattr(run, "ledger_recorded", False)),
                 "route": str(getattr(run, "route", "") or getattr(run, "route_id", "") or ""),
                 "cost_coverage": "unproven_preterminal", "stop_policy": "observe_only",
                 "review_owned": review_owned_source(getattr(run, "source", "")),
@@ -122,8 +130,16 @@ def observe_task_runs(root: Any, task_id: str, *, reason: str = "budget_resume_u
                 "state": EXTERNAL_RUNNING, "stop_outcome": "", "detail": "", **fields}
 
     if stop_policy == STOP_POLICY_OBSERVE:
-        return {"runs": [_row(run) for run in runs] + pending_rows, "observed_at": time.time(),
-                "custody_read": "ok", "coverage_basis": "observed_without_stop_request"}
+        observed = {"runs": [_row(run) for run in runs] + pending_rows, "observed_at": time.time(),
+                    "custody_read": "ok", "coverage_basis": "observed_without_stop_request"}
+        try:
+            from ouroboros.sleep_custody import observe_return
+            body = observe_return(root, str(task_id), observed)
+            if body:
+                observed["body_custody"] = body
+        except Exception:
+            log.debug("Cold-return body observation unavailable", exc_info=True)
+        return observed
     stopping = [run for run in runs
                 if stop_policy == STOP_POLICY_ALL or not review_owned_source(getattr(run, "source", ""))]
     # The owner's exception: an already-started critic finishes the same check

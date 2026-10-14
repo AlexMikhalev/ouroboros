@@ -239,7 +239,7 @@ def test_gr7_2_shared_drive_settled_row_survives_byte_identical(qenv, monkeypatc
 
     task_id = "shared7"
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
     state = _install_live_worker(qenv, monkeypatch, task_id)
     qenv.q.RUNNING[task_id] = {
@@ -274,7 +274,7 @@ def test_gr7_2_split_drive_child_answer_never_replaces_the_settled_canonical(
 
     task_id = "split7"
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
     state = _install_live_worker(qenv, monkeypatch, task_id)
     child_drive = qenv.drive / "child-drive"
@@ -346,7 +346,7 @@ def test_gr7_3_settled_lingering_root_gets_exactly_one_summary(qenv, monkeypatch
 
     done = _patch_project_registry(monkeypatch)
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
 
     root_id = "w7-root"
@@ -394,7 +394,7 @@ def test_gr7_3_stuck_nonsettled_task_still_gets_recancelled(qenv, monkeypatch):
 
     done = _patch_project_registry(monkeypatch)
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
 
     root_id = "w7b-root"

@@ -49,8 +49,19 @@ def _decode(raw):
     return entry
 
 
+def collection_pending(entry) -> bool:
+    """Applicable technical duties on an observed terminal, independent of money or disposition alone."""
+    if entry is None:
+        return False
+    capture = bool(entry.execution_root or entry.resource_ref.get("workspace_kind") == "directory")
+    return bool(entry.terminal_source and (not entry.ledger_recorded or not entry.settled
+        or not entry.output_source or not entry.output_complete
+        or entry.output_terminal_sha != entry.terminal_source.get("sha256")
+        or (capture and not entry.patch_captured and not entry.patch_disposed and not entry.superseded_by)))
+
+
 def _held(entry) -> bool:
-    return (not entry.settled or entry.project_owned
+    return (not entry.settled or entry.project_owned or collection_pending(entry)
             or ((entry.snapshot_id or (entry.resource_ref.get("workspace_kind") == "directory"
                                       and entry.resource_ref.get("strategy") == "copy"))
                 and not entry.patch_disposed))
@@ -64,7 +75,8 @@ def _decode_all(rows: Dict[str, Dict[str, Any]]):
 def runs(root, where: str = "", params: tuple = ()):
     """Custody selected by typed columns (all runs when unfiltered)."""
     with store.open_store(root, write=False) as txn:
-        return _decode_all(txn.custody_rows(where, params))
+        raw = txn.custody_raw_rows(where, params)
+    return _decode_all({rid: json_loads(text) for rid, text in raw.items()})
 
 
 def run(root, run_id: str):
@@ -138,7 +150,8 @@ def task_snapshot(root, task_id: str):
 
     mine = str(task_id or "")
     with store.open_store(root, write=False) as txn:
-        runs_by_id, requests = txn.custody_rows("task_id=?", (mine,)), _pending_rows(txn)
+        raw, requests = txn.custody_raw_rows("task_id=?", (mine,)), _pending_rows(txn)
+    runs_by_id = {rid: json_loads(text) for rid, text in raw.items()}
     requests = [row for row in requests if str(row.get("task_id") or "") == mine]
     return {"runs": _decode_all(runs_by_id), "pending": pending_invocations(root, rows=requests)}
 
@@ -281,7 +294,7 @@ def _loaded(txn, event: Dict[str, Any]) -> Dict[str, Any]:
     return state
 
 
-def publish(root, event: Dict[str, Any]) -> bool:
+def publish(root, event: Dict[str, Any], *, propagate_contention: bool = False) -> bool:
     """Returns whether custody + outbox COMMITTED; append failure does not undo custody.
     A failed append keeps the outbox for the next flush, so the chain never leads the store.
     Transaction/append ordering: module docstring."""
@@ -290,6 +303,10 @@ def publish(root, event: Dict[str, Any]) -> bool:
             owed = _reduce(txn, event, _loaded(txn, event), {})
             txn.outbox_put(event)
     except store.StoreError as exc:
+        if (propagate_contention and isinstance(exc, store.StoreBusy) and exc.reason == "contention"
+                and getattr(exc, "rollback_confirmed", None) is not False):
+            exc.custody_not_committed = True  # Only this pre-COMMIT boundary grants retry.
+            raise
         log.warning("Custody %s not recorded under %s (%s)", event.get("type"), root, type(exc).__name__)
         return False
     flush_outbox(root)

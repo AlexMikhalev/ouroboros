@@ -21,8 +21,24 @@ def test_live_and_recovered_synthesis_use_recorded_presence_body(
     tmp_path, monkeypatch, completion, origin, failed, work_ref, expected,
 ):
     captured = []
-    monkeypatch.setattr(pipeline, "_run_post_task_processing_async",
-                        lambda *_a, **kwargs: captured.append(kwargs["sealed_final"]))
+    launch = pipeline._run_post_task_processing_async
+
+    def run_synchronously(*args, **kwargs):
+        kwargs["blocking"] = True
+        return launch(*args, **kwargs)
+
+    def reflection(env, _llm, task, *_args, sealed_final, **_kwargs):
+        # Exercise the real claim and its durable running phase before the
+        # fake paid stage observes the exact cognitive input.
+        current = load_task_result(env.drive_root, task["id"])
+        assert current["root_phase_checkpoint"]["post_task_synthesis"] == "running"
+        captured.append(sealed_final)
+
+    monkeypatch.setattr(pipeline, "_run_post_task_processing_async", run_synchronously)
+    monkeypatch.setattr("ouroboros.llm.LLMClient", lambda: SimpleNamespace())
+    monkeypatch.setattr(pipeline, "_run_memory_fallback_draft", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_run_scratchpad_consolidation", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_run_reflection", reflection)
     raw = "Internal terminal diagnostic" if failed else "Current authored result"
     task = {"id": "presence-synthesis", "root_task_id": "presence-synthesis", "type": "presence",
             "chat_id": 7, "text": "Read the request", "_is_direct_chat": True,
@@ -67,6 +83,7 @@ def test_live_and_recovered_synthesis_use_recorded_presence_body(
                       root_phase_checkpoint={"post_task_synthesis": "pending_once"})
     assert pipeline.recover_pending_root_post_task_synthesis(tmp_path, tmp_path) == 1
     assert len(captured) == 2 and captured[1] == sealed
+    assert load_task_result(tmp_path, task["id"])["root_phase_checkpoint"]["post_task_synthesis"] == "completed"
 
 
 def test_historical_host_reply_is_remembered_without_claiming_delivery():

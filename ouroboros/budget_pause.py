@@ -554,8 +554,10 @@ def _hold_control_reason(ctx: Any) -> str:
             return "panic"
         from ouroboros.cancel_intents import cancel_pending
 
-        if cancel_pending(root, str(ctx.task_id)):
-            return "cancelled"
+        from ouroboros.store import acquisition_budget
+        with acquisition_budget(0):
+            if cancel_pending(root, str(ctx.task_id)):
+                return "cancelled"
     except Exception:
         log.debug("Owner stop readers unavailable during a budget pause hold", exc_info=True)
     return ""
@@ -594,7 +596,7 @@ def _exact_continuation_row(limit_ctx: Any, ctx: Any, *, pause_id: str, rail: st
     if rail == RAIL_MODEL_SLEEP:
         from ouroboros.model_sleep import cold_blockers
 
-        blockers = cold_blockers(ctx)
+        blockers = cold_blockers(ctx, allow_transfer=True)
         if any(blocker.get("kind") == "queued_member" for blocker in blockers):
             raise ColdSleepDependencyBlocked(f"selected queued dependency: {blockers}")
         if blockers:
@@ -673,7 +675,7 @@ def _exact_continuation_row(limit_ctx: Any, ctx: Any, *, pause_id: str, rail: st
         # What the supervisor's sleep-wake policy reads: the selected sources and
         # the mailbox ids this loop had already seen (never a second latch).
         settlement = {"sleep": dict(sleep), "sleep_seen": sorted(set(limit_ctx.owner_msg_seen or ()))}
-    return {
+    row = {
         "pause_id": pause_id, "state": STATE_PAUSING, "reason": reason,
         **settlement,
         "pause_generation": int(getattr(ctx, "_budget_pause_generation", 0) or 0),
@@ -695,6 +697,15 @@ def _exact_continuation_row(limit_ctx: Any, ctx: Any, *, pause_id: str, rail: st
         "resume_policy": RESUME_POLICY,
         "model_wait_quota_clock": (state.get("model_wait") or {}).get("quota_clock", {}),
     }
+    if reason == REASON_SLEEP:
+        from ouroboros.sleep_custody import request_fields
+        row["project_id"] = str(getattr(ctx, "project_id", "") or (getattr(ctx, "task_metadata", None) or {}).get("project_id") or "")
+        transfer = request_fields(ctx, row)
+        if transfer:
+            row["external_custody"] = transfer
+            from ouroboros.sleep_custody import seen_interactions
+            row["sleep"] = {**row["sleep"], "interaction_seen": seen_interactions(ctx, transfer["runs"])}
+    return row
 
 
 def request_pause(limit_ctx: Any, *, rail: str, scope: str, reason_text: str,
@@ -845,8 +856,18 @@ def request_pause(limit_ctx: Any, *, rail: str, scope: str, reason_text: str,
                     # A publication that failed is retried with the SAME prepared
                     # snapshot: its custody stop requests and its stored source are
                     # one observation, not one per poll.
-                    set_budget_pause(root, task_id, prepared, expected_pause_id=pause_id)
-                    row = prepared
+                    if prepared.get("external_custody"):
+                        from ouroboros.sleep_custody import confirm_release
+                        row = confirm_release(ctx, prepared, seed, control=_hold_control_reason)
+                        if row is None:
+                            usage.pop("budget_pause_hold", None)
+                            limit_ctx.messages.append({"role": "user", "content": (
+                                "[SYSTEM NOTICE]\nCold sleep was not taken: transfer was not confirmed or an owner Pause won. "
+                                "The exact sleep request was withdrawn; your external work remains yours.")})
+                            return
+                    else:
+                        set_budget_pause(root, task_id, prepared, expected_pause_id=pause_id)
+                        row = prepared
                     break
                 except ColdSleepDependencyBlocked as exc:
                     try:
@@ -979,8 +1000,8 @@ def enter_cold_sleep(limit_ctx: Any) -> None:
 
     The loop's own continuation is saved and the process parks under the same
     exact-pause carrier; nothing wakes it but its selected sources through the
-    supervisor's sleep-wake policy. A writer of this task that appeared since
-    the request (a delegated run, a live service) refuses the cold park here:
+    supervisor's sleep-wake policy. Bound external work needs the body's exact
+    acceptance before release. Other writers and local services refuse the park:
     the model is told the blockers and stays awake — never a killed helper.
     """
     ctx = getattr(getattr(limit_ctx, "tools", None), "_ctx", None)
@@ -989,7 +1010,7 @@ def enter_cold_sleep(limit_ctx: Any) -> None:
         return
     from ouroboros.model_sleep import cold_blockers
 
-    blockers = cold_blockers(ctx)
+    blockers = cold_blockers(ctx, allow_transfer=True)
     if blockers:
         ctx._model_sleep = None
         limit_ctx.messages.append({"role": "user", "content": (
@@ -1070,6 +1091,7 @@ def exact_pause_marker(row: Dict[str, Any], *, default_root: str = "") -> Dict[s
         "reason": str(row.get("reason") or "budget"),
         **({"settlement": row["settlement"]} if row.get("settlement") else {}),
         **({"sleep": row["sleep"]} if isinstance(row.get("sleep"), dict) else {}),
+        **({"external_custody": row["external_custody"]} if row.get("external_custody") else {}),
         "paused_at": row.get("paused_at"),
         "checkpoint": {
             key: row.get(key) for key in (
@@ -1318,6 +1340,14 @@ def _resume_disclosure(ctx: Any, row: Dict[str, Any], state: Dict[str, Any], gra
         slept = max(0.0, float(grant["consumed_at"]) - float(row.get("paused_at") or grant["consumed_at"]))
         messages.append(wake_notice({**(row.get("sleep") or {}), "mode": "cold"},
                                     str((row.get("sleep_ready") or {}).get("reason") or ""), slept))
+        if row.get("external_custody"):
+            messages.append({"role": "user", "content": (
+                "[SYSTEM NOTICE]\nThe body retained your exact external runs while you slept. "
+                "You remain their author and may inspect, answer, message or cancel them. "
+                "Retained output is not consumed or accepted. Current observations: "
+                + json.dumps(external, ensure_ascii=False))})
+            from ouroboros.sleep_custody import record_question_notice
+            record_question_notice(ctx, row, external)
         return
     kind = "owner Pause" if str(row.get("reason") or "") == REASON_OWNER else "budget pause"
     held = ""
@@ -1383,10 +1413,14 @@ def resume_paused_loop(tools: Any, state: Dict[str, Any], messages: list, trace:
         refresh = _refresh_planning_threshold(ctx, budget_remaining_usd, usage)
     waiter = getattr(ctx, "model_wait_context", None)
     restored, published = len(messages), ""
+    # Grant to consumption is still the sleep, or the bounded task's Pause (the grant's
+    # live exclusion, #939): folded once below. Otherwise the legacy clock runs on.
+    excluded = row.get("reason") == REASON_SLEEP or bool((getattr(ctx, "budget_pause_resume", None) or {})
+                                                         .get("sleep_exclusion_since"))
     while True:
         grant["consumed_at"] = time.time()
         paused_sec = float(grant.get("paused_duration_sec") or row.get("paused_duration_sec") or 0.0)
-        if row.get("reason") == REASON_SLEEP:
+        if excluded:
             paused_sec += max(0.0, grant["consumed_at"] - float(grant.get("granted_at_ts") or grant["consumed_at"]))
         consumed = {**row, "state": STATE_RESUMED, "grant": grant,
                     "resumed_at": grant["consumed_at"], "paused_duration_sec": paused_sec}
@@ -1461,14 +1495,14 @@ def resume_paused_loop(tools: Any, state: Dict[str, Any], messages: list, trace:
     if str(row.get("reason") or "") == REASON_OWNER or grant.get("owner_pause_fence_id"):
         _reopen_owner_fence(ctx, usage, fence_id=str(grant.get("owner_pause_fence_id") or ""),
                             grant_id=str(grant.get("grant_id") or ""))
-    if row.get("reason") == REASON_SLEEP and getattr(ctx, "event_queue", None) is not None:
+    if excluded and getattr(ctx, "event_queue", None) is not None:
         # The existing worker event channel, with durable identity revalidation.
         try:
             ctx.event_queue.put({"type": "budget_pause", "phase": "consumed",
                 "task_id": str(ctx.task_id), "task_attempt": int(ctx.task_attempt or 1),
                 "pause_id": row.get("pause_id"), "grant_id": grant.get("grant_id")})
         except Exception:
-            log.warning("Sleep consumption event unavailable; supervisor rereads the durable grant", exc_info=True)
+            log.warning("Resume consumption event unavailable; supervisor rereads the durable grant", exc_info=True)
     ctx.budget_pause_resume = None
     setattr(ctx, "_budget_pause_generation", int(row.get("pause_generation") or 0))
     end_dispatch_fence(str(ctx.task_id))
