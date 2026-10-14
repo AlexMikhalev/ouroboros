@@ -102,3 +102,63 @@ def test_only_source_bound_no_start_proof_keeps_quota_event_retryable(tmp_path, 
         assert response.status_code == 409 and body["disposition"] == disposition
         assert body["code"] == "presence_resources_unavailable"
     assert len(started) == 1
+
+
+
+def test_work_poll_distinguishes_live_then_retained_lost_turn_and_late_terminal(tmp_path):
+    """One real Host author: live pending, lost retained uncertainty, then its canonical late answer."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from starlette.testclient import TestClient
+    from tests.test_presence_orphan_replay import _answering_agent, _complete, _host as orphan_host, _host_body
+
+    agents, calls = [], []
+    app, binding = orphan_host(tmp_path, agents)
+    body = _host_body(binding)
+    reference = presence_turn_task_id(binding, body["event"]["source_event_id"])
+    started, release = Event(), Event()
+
+    def hold(_task):
+        started.set()
+        assert release.wait(5)
+
+    agents.append(_answering_agent(calls, "", tmp_path, during=hold, lost=True))
+    with TestClient(app) as client:
+        headers = {"X-Skill-Token": "presence-token"}
+        def post():
+            return client.post("/presence/turn", headers=headers, json=body)
+        def poll():
+            return client.get(f"/presence/work/{reference}", headers=headers, params={"binding_id": binding})
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            running = pool.submit(post)
+            try:
+                assert started.wait(5)
+                live = poll()
+                assert live.status_code == 202 and live.json()["status"] == "pending"
+                assert "presence_recovery_recorded" not in load_task_result(tmp_path, reference)
+            finally:
+                release.set()
+            assert running.result(timeout=5).status_code == 500
+
+        refused = post()
+        assert refused.status_code == 409 and refused.json()["disposition"] == "retained"
+        lost = load_task_result(tmp_path, reference)
+        assert lost["status"] == "running" and lost["presence_recovery_recorded"]
+        unresolved = poll()
+        facts = unresolved.json()
+        assert unresolved.status_code == 200 and facts["status"] == "unresolved"
+        assert facts["disposition"] == "retained" and facts["code"] == "presence_attempt_outcome_unknown"
+        assert facts["turn_ref"] == reference and facts["source_event_id"] == body["event"]["source_event_id"]
+        assert facts["recorded_status"] == "running" and facts["delivery_reporting_version"] == 1
+        assert not {"outcome", "text", "work_ref"} & facts.keys()
+        assert poll().json() == facts
+
+        _complete(calls[0], "Late canonical answer", tmp_path)
+        completed = poll()
+        assert completed.status_code == 200 and completed.json()["status"] == "completed"
+        assert completed.json()["outcome"] == "message" and completed.json()["text"] == "Late canonical answer"
+        assert poll().json() == completed.json()
+        assert post().json()["text"] == "Late canonical answer"
+        assert load_task_result(tmp_path, reference)["presence_recovery_recorded"] == lost["presence_recovery_recorded"]
+    assert len(calls) == 1 and agents == []

@@ -110,6 +110,7 @@ def retained_work_view(stored: Mapping[str, Any], reference: str) -> tuple[int, 
     continued = work_view(stored, reference)  # a continuing Presence author's own poll (#1536)
     unresolved = (_terminal_refusal(stored) and
                   (status in {"completed", "failed", "cancelled"}
+                   or stored.get("presence_recovery_recorded")
                    or (continued is not None and continued[1].get("status") == "interrupted")))
     if unresolved:
         # Already released continuation outputs keep their exact identities. A draft

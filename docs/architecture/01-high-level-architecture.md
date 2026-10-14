@@ -101,7 +101,7 @@ ouroboros/ — agent core and shared runtime (§6)
   post_task_checkpoint.py — root phase/cost and saved late-work Pause (§6)
   terminal_projection.py, terminal_time.py — cognition-free settled-result projection and durable Main delivery; per-attempt end time (§3 Main rows; §6 Post-task reflection)
   presence_profile.py, presence_runtime.py, presence_capabilities.py, presence_authority.py, presence_bindings.py, presence_admission.py, presence_context.py — Presence admission: reviewed `presence:` profile parser, symbolic defaults, host-owned capability selections, the immutable positive capability ceiling, revocable room → skill bindings, per-turn snapshot and context (§12)
-  presence_runner.py, presence_continuation.py, presence_observations.py, presence_delivery.py — Presence turns: capped, per-conversation-serialized fresh-agent runs; same-author continuation at an acceptance-review wait; transport observations; provider receipts in chat history (§12)
+  presence_runner.py, presence_continuation.py, presence_observations.py, presence_delivery.py, presence_recovery.py — Presence: capped, conversation-serialized fresh agents; same-author review continuation, transport observations, delivery receipts and retained room facts (§12)
   dialogue_provenance.py — exact transport-provenance rendering for history, memory and consolidation
   extension_companion.py, extension_reconcile_queue.py — host-supervised companion processes for transport skills; durable worker→server reconcile markers (§12; §13)
   event_bus.py — typed in-process event bus for skill subscriptions
