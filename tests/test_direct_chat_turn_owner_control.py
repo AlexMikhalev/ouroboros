@@ -545,16 +545,14 @@ def _inflight_synthesis(monkeypatch, tmp_path, task_id=TURN_ID):
             if name == "scratchpad_consolidation":
                 arrived.set()
                 assert release.wait(30), "stage gate never released"
-            return {"reflection": "x", "backlog_candidates": [], "memory_actions": []} if name == "reflection" else None
+            return None
         return _f
 
     monkeypatch.setattr(llm_mod, "LLMClient", lambda *a, **k: object())
     for name, attr in (("scratchpad_consolidation", "_run_scratchpad_consolidation"),
-                       ("facts", "_record_task_facts"), ("reflection", "_run_reflection"),
-                       ("promotion", "_update_improvement_backlog")):
+                       ("facts", "_record_task_facts")):
         monkeypatch.setattr(pipeline, attr, _stage(name))
-    monkeypatch.setattr(pipeline, "_apply_reflection_memory_actions", lambda *a, **k: None)
-    monkeypatch.setattr(pte, "maybe_promote", lambda *a, **k: None)
+    monkeypatch.setattr(pte, "maybe_promote", _stage("promotion"))
     spawned = []
     _real_thread = threading.Thread
 
@@ -565,7 +563,7 @@ def _inflight_synthesis(monkeypatch, tmp_path, task_id=TURN_ID):
 
     monkeypatch.setattr(pipeline.threading, "Thread", CapturingThread)
     pipeline._run_post_task_processing_async(
-        env, task, {"rounds": 3, "cost": 0.01}, {"tool_calls": [], "reasoning_notes": []}, {}, tmp_path / "logs")
+        env, task, {"rounds": 3, "cost": 0.01}, {"tool_calls": [], "reasoning_notes": []}, tmp_path / "logs")
     assert arrived.wait(30), "the synthesis never reached its first paid stage"
     return SimpleNamespace(thread=spawned[0], release=release, calls=calls)
 
@@ -627,7 +625,7 @@ def test_stop_now_during_the_inflight_synthesis_is_accepted_and_stops_the_remain
     checkpoint = stored["root_phase_checkpoint"]
     assert checkpoint["post_task_synthesis"] == "degraded", checkpoint
     assert checkpoint["post_task_stop_reason"] == (
-        "owner_stopped:skipped=reflection,promotion"), checkpoint
+        "owner_stopped:skipped=promotion"), checkpoint
     assert not active_intent(tmp_path, TURN_ID)
 
 
@@ -677,5 +675,5 @@ def test_cascade_stop_now_during_the_inflight_synthesis_keeps_the_intent_open_an
     checkpoint = stored["root_phase_checkpoint"]
     assert checkpoint["post_task_synthesis"] == "degraded", checkpoint
     assert checkpoint["post_task_stop_reason"] == (
-        "owner_stopped:skipped=reflection,promotion"), checkpoint
+        "owner_stopped:skipped=promotion"), checkpoint
     assert not active_intent(tmp_path, TURN_ID)

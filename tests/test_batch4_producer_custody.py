@@ -149,7 +149,11 @@ def test_docker_popen_no_start_is_positive_no_effect(tmp_path, monkeypatch, serv
     if service:
         args["name"] = "writer"
     result = registry.execute_result("start_service" if service else "run_command", args)
-    assert result.meta.get("operation_outcome") == "completed_no_effect", result
+    if service:
+        assert result.meta["process_not_started"] is True
+        assert "operation_outcome" not in result.meta  # a replacement may have retired its old instance
+    else:
+        assert result.meta.get("operation_outcome") == "completed_no_effect", result
     assert [kind for kind, _ in calls] == ["start"]
     assert not list(_owned(tmp_path))
     _consumers(tmp_path, registry, queue, workers, False)

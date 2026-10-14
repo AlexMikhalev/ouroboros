@@ -13,18 +13,17 @@ def test_globalized_project_promotion_keeps_the_origin(monkeypatch):
     from ouroboros import agent_task_pipeline as pipeline
 
     captured: list = []
-    monkeypatch.setattr(pipeline, "_update_improvement_backlog", lambda env, entry: None)
     monkeypatch.setattr("ouroboros.post_task_evolution.maybe_promote",
-                        lambda env, task, entry, llm: captured.append(task))
+                        lambda env, task, sealed, llm: captured.append(task))
     task = {"id": "p-1", "type": "task", "metadata": dict(_wake_task("full")["metadata"]),
             "task_contract": {"disabled_tools": []}}
-    entry = {"backlog_candidates": [{"summary": "make it better"}]}
-    pipeline._run_global_backlog_promotion_only(types.SimpleNamespace(), task, entry, None)
+    sealed = {"final_result_text": "Shipped.", "artifact_manifest": [], "completion_observations": {"status": "unavailable"}}
+    pipeline._run_global_backlog_promotion_only(types.SimpleNamespace(), task, sealed, None)
     assert captured and captured[0]["metadata"] == {
         "globalized_from_project_task": True, "initiator": "consciousness",
         "usage_category": "consciousness_task", "consciousness_autonomy": "full"}
     captured.clear()
-    pipeline._run_global_backlog_promotion_only(types.SimpleNamespace(), {"id": "p-2", "type": "task"}, entry, None)
+    pipeline._run_global_backlog_promotion_only(types.SimpleNamespace(), {"id": "p-2", "type": "task"}, sealed, None)
     assert captured[0]["metadata"] == {"globalized_from_project_task": True}
 
 

@@ -936,9 +936,9 @@ def _matching_projection(drive_root: Any, call: Dict[str, Any]) -> Dict[str, Any
     return payload
 
 
-# sanitize_tool_args_for_log's transport markers — the ONE list. The reflection
-# pointer's cut detection reads the same names, so a marker shape added there is
-# never missed here (and the colons keep a literal value like "_truncated" out).
+# sanitize_tool_args_for_log's transport markers — the ONE list, so a marker shape
+# added there is never missed here (the colons keep a literal value like
+# "_truncated" out).
 SANITIZER_OMISSION_MARKERS = (
     "<TRUNCATED:", '"_depth_limit":', '"_truncated":', '"_repr":', '"_error":',
 )

@@ -104,7 +104,10 @@ def test_pause_during_process_preparation_prevents_process_start(tmp_path, monke
         args['name'] = 'held'
     result = registry.execute_result('start_service' if service else 'run_command', args)
     assert not marker.exists(), result
-    assert result.code == 'OWNER_PAUSE_NOT_STARTED', result
+    # The process was not launched, but its tool handler/preparation did run.
+    assert result.code == 'OWNER_OPERATION_REFUSED', result
+    assert result.meta['owner_pause_not_started'] is False
+    assert result.meta.get('operation_outcome') != 'completed_no_effect'
     assert not load_task_result(tmp_path, 'root').get('launch_handoffs')
 
 

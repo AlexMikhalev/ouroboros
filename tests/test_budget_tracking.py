@@ -210,80 +210,8 @@ class TestReviewUsageFallback:
 
 
 # ---------------------------------------------------------------------------
-# Reflection cost tracking
-# ---------------------------------------------------------------------------
-
-class TestReflectionCostTracking:
-    """generate_reflection must call update_budget_from_usage for the LLM call."""
-
-    def test_update_budget_called_on_success(self):
-        from ouroboros.reflection import generate_reflection
-
-        mock_llm = MagicMock()
-        mock_llm.chat.return_value = (
-            {"content": "Reflection text"},
-            {"prompt_tokens": 200, "completion_tokens": 100, "cost": 0.003},
-        )
-
-        with patch("supervisor.state.update_budget_from_usage") as mock_budget:
-            generate_reflection(
-                task={"id": "t1", "text": "test goal"},
-                llm_trace={"tool_calls": [{"result": "REVIEW_BLOCKED"}]},
-                trace_summary="summary",
-                llm_client=mock_llm,
-                usage_dict={"rounds": 5, "cost": 2.0},
-            )
-            mock_budget.assert_called_once()
-            call_args = mock_budget.call_args[0][0]
-            assert call_args.get("prompt_tokens") == 200
-
-    def test_budget_not_called_when_usage_empty(self):
-        from ouroboros.reflection import generate_reflection
-
-        mock_llm = MagicMock()
-        mock_llm.chat.return_value = ({"content": "ok"}, {})
-
-        with patch("supervisor.state.update_budget_from_usage") as mock_budget:
-            generate_reflection(
-                task={"id": "t1", "text": "goal"},
-                llm_trace={"tool_calls": [{"result": "REVIEW_BLOCKED"}]},
-                trace_summary="sum",
-                llm_client=mock_llm,
-                usage_dict={},
-            )
-            mock_budget.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
 # Consolidation cost tracking
 # ---------------------------------------------------------------------------
-
-class TestUpdatePatternsCostTracking:
-    """_update_patterns must call update_budget_from_usage for its LLM call."""
-
-    def test_update_budget_called_on_success(self, tmp_path):
-        from ouroboros.reflection import _update_patterns
-        # _update_patterns creates its own LLMClient internally — patch at the class level.
-        with patch("ouroboros.llm.LLMClient") as mock_cls, \
-             patch("supervisor.state.update_budget_from_usage") as mock_budget:
-            inst = MagicMock()
-            inst.chat.return_value = (
-                {"content": "| Error class | Count | Root cause | Fix | Status |\n|---|---|---|---|---|\n| test | 1 | bug | fix | open |"},
-                {"prompt_tokens": 300, "completion_tokens": 150, "cost": 0.002},
-            )
-            mock_cls.return_value = inst
-            _update_patterns(
-                tmp_path,
-                {
-                    "goal": "test task",
-                    "key_markers": ["REVIEW_BLOCKED"],
-                    "reflection": "Something went wrong",
-                },
-            )
-            mock_budget.assert_called_once()
-            usage_arg = mock_budget.call_args[0][0]
-            assert usage_arg.get("prompt_tokens") == 300
-
 
 class TestScratchpadConsolidationCostTracking:
     """_run_scratchpad_consolidation must call update_budget_from_usage when cost > 0."""

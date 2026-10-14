@@ -111,9 +111,9 @@ Reviewed skills, transport bridges, tools, and widgets are available through [Ou
 
 ## What Ouroboros Can Do
 
-- **Modify its implementation.** Its editable surface spans application code, architecture, prompts, tools, and dependencies, while reflection can also reshape its living self-understanding.
+- **Modify its implementation.** Its editable surface spans application code, architecture, prompts, tools, and dependencies, while it also revises its living self-understanding — identity and knowledge — in its own words.
 - **Evolve autonomously.** Evolution campaigns turn selected improvements into reviewed changes that remain part of its Git history.
-- **Continue across restarts.** Identity, memory, dialogue, knowledge, reflections, and version history form one ongoing biography.
+- **Continue across restarts.** Self-authored identity and knowledge, retained memory and dialogue, earlier reflections kept as dated history, and version history form one ongoing biography.
 - **Think between requests.** Background consciousness supports reflection, initiative, and preparation outside the immediate request-response loop.
 - **Coordinate a live swarm.** Specialist agents can investigate or act in parallel, share task-tree findings, and return work for integration.
 - **Work on external projects.** A separate Git workspace can receive the full task loop while Ouroboros keeps its own repository and governance boundary distinct.

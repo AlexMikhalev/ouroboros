@@ -119,7 +119,7 @@ def test_native_post_task_wait_remains_addressable_after_dialogue_closes(phase, 
                                                   worker_slot_held=False) as owner:
                 observed["owner"] = owner
                 pipeline._dispatch_root_post_task(f.env, f.task, "Already answered", self._event_queue, pending,
-                    {"rounds": 3}, {}, {}, f.root / "logs", budget_drive_root="", split_drive=False,
+                    {"rounds": 3}, {}, f.root / "logs", budget_drive_root="", split_drive=False,
                     project_scoped=bool(project_id), project_task=False, parent_env=None, parent_task=None)
             return pending
 
@@ -210,7 +210,7 @@ def test_native_post_task_wait_remains_addressable_after_dialogue_closes(phase, 
             assert f.engine.uploads[-1][0]["account"] == {"mode": "pin", "profileId": "replacement"}
         else:
             assert row["resolution"] == "cancelled"
-            assert f.stages == ["facts", "scratch", "reflection"]
+            assert f.stages == ["facts", "scratch", "promotion"]
         assert workers.drain_repo_writers(0) == []
         assert post_task_model_wait(f.root, task_id) is None
     finally:
