@@ -1,8 +1,10 @@
 """Addressed result reads shared by ownership checks before queue mutation.
 
 A pass reads each body once. Reuse checks its atomic-replacement stamp; a changed
-or unreadable row means unknown ownership, never permission to mutate. Locked
-callers supply the reads they prepared before acquiring the queue RLock.
+or unreadable row means unknown ownership, never permission to mutate. A busy
+store re-check raises ``StoreBusy`` from ``load``: busy is reported as busy, not
+as a change. Locked callers supply the reads they prepared before acquiring the
+queue RLock.
 """
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ class TaskOwnershipRead:
         if task_id in self.errors:
             raise self.errors[task_id]
         if task_id in self.rows:
-            if not self.unchanged((task_id,)):
+            if not self._same_stamps((task_id,)):
                 raise ValueError('ownership result changed during this pass')
             return self.rows[task_id]
         if queue._queue_lock._is_owned():
@@ -50,15 +52,19 @@ class TaskOwnershipRead:
             self.errors[task_id] = exc
             raise
         self.stamps[task_id] = stamp
-        if not self.unchanged((task_id,)):
+        if not self._same_stamps((task_id,)):
             raise ValueError('ownership result changed while reading')
         return self.rows[task_id]
 
+    def _same_stamps(self, task_ids):
+        from ouroboros.store import acquisition_budget
+        with acquisition_budget(0):
+            return all(self.stamps[tid] == self._stamp(tid) for tid in task_ids)
+
     def unchanged(self, task_ids):
-        from ouroboros.store import StoreBusy, acquisition_budget
+        from ouroboros.store import StoreBusy
         try:
-            with acquisition_budget(0):
-                return all(self.stamps[tid] == self._stamp(tid) for tid in task_ids)
+            return self._same_stamps(task_ids)
         except StoreBusy:
             return False  # A busy signature cannot prove unchanged ownership, and never waits under Q.
 

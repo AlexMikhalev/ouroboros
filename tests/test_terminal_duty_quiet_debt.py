@@ -414,3 +414,53 @@ def test_a_thousand_unprojectable_owners_cost_one_presence_query_and_no_repeated
     assert counts["fence"] == 0 and counts["loads"] <= 3 * present and counts["presence"] == 1
     assert sink.stat().st_size == size and duty_records(caplog) == []
     assert usage.usage_projection(env.root) == summary
+
+
+def test_absence_is_recorded_once_and_a_busy_reread_is_busy_not_a_change(env, monkeypatch):
+    """Owner Q2=A (VERIFY_SWEEPS S2): on 14 Oct 145 duty rows a day re-listed the same 1 010
+    absent owners, because a busy store under a re-read was reported as "ownership result
+    changed" and churned the map. Busy is busy now: the owner keeps its last observation and
+    debt, the absent owner is recorded once, and a copied-back body still re-opens it
+    (test_a_body_landing_after_the_last_ledger_write_is_projected_without_a_receipt)."""
+    from ouroboros import store, task_store
+
+    task(env)  # a settled owner the pass reads, whose re-read finds the store busy
+    attempt(env, "root")
+    child(env)
+    attempt(env, "child", logical="root")
+    delete_result(env.root, "child")  # an owner with no task row at all
+    real, stamps, busy = task_store.signature, {}, [True]
+
+    def signature(root, task_id, *, txn=None):
+        if txn is None:  # an addressed read; the real one recurses with its open transaction
+            stamps[task_id] = stamps.get(task_id, 0) + 1
+            if busy[0] and task_id == "root" and stamps[task_id] > 1:
+                raise store.StoreBusy("current store busy: database is locked", reason="contention")
+        return real(root, task_id, txn=txn)
+
+    monkeypatch.setattr(task_store, "signature", signature)
+    for _ in range(3):
+        stamps.clear()
+        reconcile_abandoned_usage(env.root)
+    rows = published(env, duty.COST_PROJECTIONS)
+    assert [(row["by_basis"], row["task_ids"]) for row in rows] == [({"result_absent": 1}, ["child"])]
+    assert "root" in dirty(env), "a busy pass proves nothing: the projection debt waits"
+    busy[0] = False
+    reconcile_abandoned_usage(env.root)
+    assert "root" not in dirty(env) and "child" in dirty(env)
+
+
+def test_an_absent_tasks_open_attempt_costs_no_per_task_read(env, monkeypatch):
+    """VERIFY_SWEEPS S2: 65 open attempts of 48 tasks without a row were re-read (3-4 store reads
+    each) every 20 s pass, forever ineligible. One presence statement now proves the absence."""
+    task(env)
+    attempt(env, "ghost", logical="root", final=False)  # open; its task row was never written
+    fences, loads = [], []
+    read_fence, load = owner_pause.read_fence, task_results.load_task_result
+    monkeypatch.setattr(owner_pause, "read_fence", lambda root, tid: fences.append(tid) or read_fence(root, tid))
+    monkeypatch.setattr(task_results, "load_task_result",
+                        lambda root, tid, *a, **k: loads.append(tid) or load(root, tid, *a, **k))
+    for _ in range(2):
+        reconcile_abandoned_usage(env.root)
+    assert "ghost" not in fences and "ghost" not in loads
+    assert "ghost" in dirty(env), "the attempt and its debt stay open for a body that may land"
