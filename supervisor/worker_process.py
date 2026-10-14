@@ -18,6 +18,7 @@ import pathlib
 from typing import Any
 from ouroboros.observability import stamp_finalization_enqueue
 from ouroboros.utils import utc_now_iso
+from supervisor.log_addressing import task_event_queue
 
 log = logging.getLogger(__name__)
 
@@ -330,11 +331,16 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
     # exactly-once rationale per group).
     try:
         from ouroboros.utils import emit_log_event, set_log_sink
+        from supervisor.log_addressing import stamp_recorded_row
 
         def _worker_log_sink(obj: Any) -> None:
             if isinstance(obj, dict) and str(obj.get("type") or "") in WORKER_LOG_SINK_SUPPRESSED_TYPES:
                 return
-            emit_log_event(out_q, obj, log_label="worker log")
+            # A row this worker appended names only its task: stamp that task's
+            # chat and lineage by value (the task's own endpoint, by task id), so
+            # the frame still routes when the supervisor handles it after task_done.
+            emit_log_event(out_q, stamp_recorded_row(dict(obj)) if isinstance(obj, dict) else obj,
+                           log_label="worker log")
 
         set_log_sink(_worker_log_sink)
     except Exception:
@@ -454,11 +460,20 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
                     budget_drive_root=str(task.get("budget_drive_root") or drive_root),
                 )
                 runner.owner_wait_callback = agent.owner_wait_callback
+            # The task's own endpoint (the direct lane's TurnEventQueue shape): every
+            # telemetry frame this task emits — live, or from a callback that
+            # outlives it — carries its chat and lineage by value, so the
+            # supervisor can handle it after task_done without a RUNNING row.
+            task_queue = task_event_queue(out_q, task)
+            pool_queue = getattr(runner, "_event_queue", None)
+            runner._event_queue = task_queue
             try:
                 events = runner.handle_task(task)
             except Exception as task_error:
                 _record_task_exception(runner, task, task_error, drive_root)
                 raise
+            finally:
+                runner._event_queue = pool_queue
             for e in events:
                 e2 = dict(e)
                 e2["worker_id"] = wid
@@ -479,7 +494,7 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
                         # File publication must not enter the model's crash-retry rail.
                         log.exception("Terminal file preparation failed for %s", task.get("id"))
                     e2["_files_prepared_attempt"] = int(task.get("_attempt") or 1)
-                out_q.put(stamp_finalization_enqueue(e2))
+                task_queue.put(stamp_finalization_enqueue(e2))
         except Exception as _e:
             _log_worker_crash(wid, _drive, "handle_task", _e, _tb.format_exc())
             return
