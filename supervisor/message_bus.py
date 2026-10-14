@@ -20,7 +20,8 @@ from supervisor.state import append_jsonl, load_state
 from supervisor.message_ingress import _INGRESS_LOCK, _accepted_web_message, _take_undispatched, _write_marked, _enter_dispatch, delivery_facts
 from supervisor.message_ingress import (  # noqa: F401 - the named ingress's public names stay importable here
     _UNDISPATCHED, accept_local_message, accepted_chat_message, acceptance_undispatched, record_inbound_message)
-from ouroboros.projects_registry import stamp_project_thread
+from ouroboros.project_dialogue import ROOM_FIXED_ROW_TYPES
+from ouroboros.projects_registry import project_chat_for_task_tree, stamp_project_thread, task_lineage
 from ouroboros.tools.core import (
     LinkActionsValidationError,
     QuizValidationError,
@@ -1452,6 +1453,18 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
         meta["narration"] = bool(narration)
     meta.setdefault("narration", False)
     progress_meta = meta
+    if task_id and DATA_DIR and system_type not in ROOM_FIXED_ROW_TYPES and meta.get("_is_direct_chat") is not True:
+        # The one room rule (A4) at the one send seam: a task-addressed host row
+        # lands in its task's Project room on the durable row, the WebSocket frame
+        # and every transport alike, whichever producer addressed it. A child row
+        # that reached here without its lineage borrows it from the same cached
+        # facts (never a result read), so its card nests it live and on replay.
+        chat_id = project_chat_for_task_tree(DATA_DIR, task_id, meta.get("parent_task_id"), meta.get("root_task_id")) or chat_id
+        if not meta.get("parent_task_id"):
+            lineage = task_lineage(DATA_DIR, task_id)
+            for key in ("parent_task_id", "root_task_id", "delegation_role"):
+                if lineage.get(key) and not meta.get(key):
+                    meta[key] = lineage[key]
 
     if is_progress and DATA_DIR:
         progress_record = {

@@ -10,6 +10,7 @@ creates fresh execution incarnations; lost folders/tombstones are not recovered
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 import pathlib
@@ -20,6 +21,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from ouroboros.contracts.chat_id_policy import project_chat_id
 from ouroboros.contracts.schema_versions import with_schema_version
 from ouroboros.project_facts import sanitize_project_id
+from ouroboros.store import open_store
 from ouroboros.utils import atomic_write_json, iter_jsonl_objects, read_json_dict, utc_now_iso, strip_markdown
 
 log = logging.getLogger(__name__)
@@ -42,7 +44,6 @@ PROJECT_ACTIVE = "active"
 PROJECT_DELETING = "deleting"
 PROJECT_TOMBSTONED = "tombstoned"
 PROJECT_LIFECYCLES = frozenset({PROJECT_ACTIVE, PROJECT_DELETING, PROJECT_TOMBSTONED})
-_DEPRECATED_CHAT_IDS_EVENTS: set[str] = set()
 
 
 @contextmanager
@@ -664,35 +665,128 @@ def _bindings_lens(drive_root: Any) -> Dict[str, Any]:
     return bindings
 
 
+_TASK_LINEAGE: Dict[tuple, Dict[str, Any]] = {}
+_TASK_LINEAGE_LIMIT = 50_000  # a memory bound, not a policy: the facts are re-read on the next sight
+_ROOM_ANSWERS: Dict[str, tuple] = {}
+_LINEAGE_SELECT = ("SELECT t.task_id, t.parent_task_id, t.root_task_id, t.delegation_role, json_extract(b.body, '$.chat_id') "
+                   "FROM tasks t LEFT JOIN task_bodies b ON b.task_id = t.task_id WHERE t.task_id")
+
+
+def _remember_lineage(drive_root: Any, record: Any) -> Dict[str, Any]:
+    try:
+        chat = int(record[4]) if record[4] not in (None, "") else None
+    except (TypeError, ValueError):
+        chat = None
+    facts = {"parent_task_id": str(record[1] or ""), "root_task_id": str(record[2] or ""),
+             "delegation_role": str(record[3] or ""), "chat_id": chat}
+    if len(_TASK_LINEAGE) >= _TASK_LINEAGE_LIMIT:
+        _TASK_LINEAGE.clear()
+    _TASK_LINEAGE[(str(drive_root), str(record[0]))] = facts
+    return facts
+
+
+def task_lineage(drive_root: Any, task_id: Any) -> Dict[str, Any]:
+    """A task's immutable lineage facts (``parent_task_id``, ``root_task_id``,
+    ``delegation_role``: indexed columns) and the ``chat_id`` it was admitted with,
+    read ONCE per task id per process (an existing task's lineage never changes).
+    ``{}`` for an id the store does not hold yet (admission creates it later, so a
+    miss is never remembered) or cannot answer right now."""
+    tid = str(task_id or "").strip()
+    facts = _TASK_LINEAGE.get((str(drive_root), tid)) if tid else {}
+    if facts is not None:
+        return facts
+    try:
+        with open_store(drive_root, write=False) as txn:
+            record = txn.conn.execute(f"{_LINEAGE_SELECT} = ?", (tid,)).fetchone()
+    except Exception:
+        log.debug("task lineage read failed for %s", tid, exc_info=True)
+        return {}
+    return _remember_lineage(drive_root, record) if record is not None else {}
+
+
+class RoomResolver:
+    """``room(task)``, the one rule live routing, history and cognition share: the
+    nearest explicit «Turn into project» binding on task → parent → … (the root
+    only after the parent chain: converting a sub-task moves its own subtree);
+    else the task's own admitted chat when it is a registered Project chat (a
+    task born in a Project; never ``project_id``, which a Main direct turn can
+    carry too); else 0 and the caller keeps its address. Lineage is the caller's or
+    ``task_lineage``; answers hold per task id for one bindings snapshot (a conversion invalidates, a commit does not)."""
+
+    __slots__ = ("root", "bindings", "answers", "_projects")
+
+    def __init__(self, drive_root: Any) -> None:
+        self.root = drive_root
+        self.bindings = _bindings_lens(drive_root)  # one ``stat`` per resolver
+        key = str(_bindings_path(drive_root))
+        cached = _ROOM_ANSWERS.get(key)
+        if cached is None or cached[0] is not self.bindings:
+            cached = _ROOM_ANSWERS[key] = (self.bindings, {})
+        self.answers: Dict[str, int] = cached[1]
+        self._projects: Optional[frozenset] = None
+
+    def lineage(self, task_id: Any) -> Dict[str, Any]:
+        """``task_lineage`` of this root: the facts a reader anchors by."""
+        return task_lineage(self.root, task_id)
+
+    def _bound(self, task_id: str) -> int:
+        row = self.bindings.get(task_id)
+        try:
+            return int(row.get("project_chat_id") or 0) if isinstance(row, dict) else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def __call__(self, task_id: Any, parent_task_id: Any = "", root_task_id: Any = "") -> int:
+        tid = str(task_id or "").strip()
+        if not tid:
+            return 0
+        answer = self.answers.get(tid)
+        if answer is not None:
+            return answer
+        chain: List[str] = []
+        cur, parent, chat = tid, str(parent_task_id or "").strip(), 0
+        while cur and cur not in chain:
+            chain.append(cur)
+            if chat := self._bound(cur):
+                break
+            cur, parent = parent or task_lineage(self.root, cur).get("parent_task_id", ""), ""
+        own = {} if chat else task_lineage(self.root, tid)
+        if not chat:
+            root = str(root_task_id or "").strip() or own.get("root_task_id", "")
+            chat = self._bound(root) if root and root not in chain else 0
+            if not chat and own.get("chat_id"):
+                if self._projects is None:
+                    self._projects = project_thread_chat_ids(self.root)
+                chat = own["chat_id"] if own["chat_id"] in self._projects else 0
+        if chat or own:
+            self.answers[tid] = chat
+        return chat
+
+    def warm(self, task_ids: Any) -> None:
+        """Read every unseen id's lineage in ONE transaction (an archive summary names hundreds)."""
+        unseen = sorted({tid for tid in map(str, task_ids) if tid and (str(self.root), tid) not in _TASK_LINEAGE})
+        if not unseen:
+            return
+        try:
+            with open_store(self.root, write=False) as txn:
+                records = txn.conn.execute(f"{_LINEAGE_SELECT} IN (SELECT value FROM json_each(?))",
+                                           (json.dumps(unseen),)).fetchall()
+        except Exception:
+            log.debug("task lineage batch read failed", exc_info=True)
+            return
+        for record in records:
+            _remember_lineage(self.root, record)
+
+
 def project_chat_for_task_tree(
     drive_root: Any, task_id: Any, parent_task_id: Any = "", root_task_id: Any = ""
 ) -> int:
-    """Resolve the project chat for a task by its TASK TREE: the task's OWN binding
-    wins; else inherit from its parent; else its root. A subagent is never bound
-    itself, so this is how its live frames + history are recognized as belonging to
-    its root's project and route to the project thread instead of staying in the main
-    chat (the cyber-racing "subagents vanished from the project" gap). Membership is
-    DERIVED from lineage — no per-child binding store, one SSOT."""
-    # One cached bindings view for all three probes (runs per live log event).
+    """The room rule (``RoomResolver``) under its live-addressing name: 0 when none; never raises."""
     try:
-        bindings = _bindings_lens(drive_root)
+        return RoomResolver(drive_root)(task_id, parent_task_id, root_task_id)
     except Exception:
-        log.debug("project_chat_for_task_tree bindings read failed", exc_info=True)
+        log.debug("project_chat_for_task_tree failed", exc_info=True)
         return 0
-    for tid in (task_id, parent_task_id, root_task_id):
-        tid = str(tid or "").strip()
-        if not tid:
-            continue
-        row = bindings.get(tid)
-        if not isinstance(row, dict):
-            continue
-        try:
-            chat = int(row.get("project_chat_id") or 0)
-        except (TypeError, ValueError):
-            chat = 0
-        if chat:
-            return chat
-    return 0
 
 
 def list_reserved_projects(drive_root: Any, *, strict: bool = False) -> List[Dict[str, Any]]:
@@ -788,28 +882,6 @@ def stamp_project_thread(drive_root: Any, payload: Dict[str, Any]) -> None:
             payload["project_thread"] = True
     except Exception:
         log.debug("Project thread lens failed", exc_info=True)
-
-
-def registered_project_chat_ids(drive_root: Any) -> set:
-    """One-minor compatibility alias for :func:`reserved_project_chat_ids`."""
-    key = str(pathlib.Path(drive_root).resolve(strict=False))
-    if key not in _DEPRECATED_CHAT_IDS_EVENTS:
-        _DEPRECATED_CHAT_IDS_EVENTS.add(key)
-        try:
-            from ouroboros.utils import append_jsonl
-
-            append_jsonl(
-                pathlib.Path(drive_root) / "logs" / "events.jsonl",
-                {
-                    "ts": utc_now_iso(),
-                    "type": "deprecated_project_chat_ids_alias_used",
-                    "alias": "registered_project_chat_ids",
-                    "replacement": "reserved_project_chat_ids",
-                },
-            )
-        except Exception:
-            log.debug("Failed to record Project chat-id alias use", exc_info=True)
-    return reserved_project_chat_ids(drive_root)
 
 
 def get_project(drive_root: Any, project_id: str, *, strict: bool = False) -> Optional[Dict[str, Any]]:
@@ -1481,11 +1553,12 @@ __all__ = [
     "project_chat_for_task",
     "project_thread_note_for_task",
     "project_chat_for_task_tree",
+    "RoomResolver",
+    "task_lineage",
     "project_id_for_origin",
     "project_task_bindings",
     "task_presentation_snapshot",
     "task_presentation_name",
-    "registered_project_chat_ids",
     "reserved_project_chat_ids",
     "projects_summary",
     "reconcile_projects",

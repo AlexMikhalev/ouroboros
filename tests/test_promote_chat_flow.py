@@ -1445,23 +1445,23 @@ def test_promote_chat_to_task_broadcasts_projects_changed(tmp_path, monkeypatch)
     assert changed[0]["chat_id"] == project_chat_id("proj-x")
 
 
-def test_registered_project_chat_ids_recognizes_every_project(tmp_path):
+def test_reserved_project_chat_ids_recognizes_every_project(tmp_path):
     """The isolation SSOT recognizes EVERY registered project's chat_id (regardless
     of sidebar visibility) so its raw chat never re-leaks into the штаб's main
     context / dialogue consolidation / background consciousness (BIBLE P1). Sidebar
     visibility is a separate presentation concern (no project statuses, v6.33.0)."""
     from ouroboros.projects_registry import (
         create_project,
-        registered_project_chat_ids,
+        reserved_project_chat_ids,
         update_project,
     )
 
     proj = create_project(tmp_path, "old-racer")
     chat_id = int(proj["chat_id"])
-    assert chat_id in registered_project_chat_ids(tmp_path)
+    assert chat_id in reserved_project_chat_ids(tmp_path)
     # A rename (or any mutable-field update) never drops it from the isolation set.
     update_project(tmp_path, "old-racer", name="Old Racer (renamed)")
-    assert chat_id in registered_project_chat_ids(tmp_path)
+    assert chat_id in reserved_project_chat_ids(tmp_path)
 
 
 def test_chat_history_tool_spans_all_threads_full_awareness(tmp_path):
