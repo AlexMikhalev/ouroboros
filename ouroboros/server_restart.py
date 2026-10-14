@@ -69,7 +69,20 @@ def _perform_owner_restart(ctx: Any, reply=None) -> tuple[bool, str]:
     # Everything reversible is behind us (checkout landed, no-resume
     # intent durable): from here the restart always follows, and every
     # unconfirmed stop is a critical diagnostic, never a deferral.
-    stopped_task_ids = _stop_owned_work(ctx)
+    try:
+        stopped_task_ids = _stop_owned_work(ctx)
+    except Exception:
+        # The stop may not veto. Continuing this generation instead would leave the durable
+        # flags above live under it (reviews and pauses read them as a stop, follow-ups as a
+        # restart in progress): the restart follows, and the next start reconciles the rest.
+        log.critical("Owner restart: stopping owned work raised; the restart proceeds and the next "
+                     "generation reconciles the remainder", exc_info=True)
+        stopped_task_ids = []  # unknown: the notice claims no stopped task
+    except BaseException:
+        from supervisor.queue import reopen_queue_returns
+
+        reopen_queue_returns("owner_restart")  # no exit follows here: this generation keeps admitting
+        raise
     try:
         if reply is not None:
             # Say only what happened: with nothing owned the stop sentence
