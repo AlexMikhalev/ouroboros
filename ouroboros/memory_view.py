@@ -509,6 +509,12 @@ def _task_line(root_id: str, group: List[Tuple[Entry, Dict[str, Any]]], texts: M
                     if entry[1].get("summary_kind") == "terminal_result_projection"
                     and str(entry[1].get("task_id") or "") in children)
     parts = [status]
+    for entry, _cls in group:
+        row = texts.get(entry[0]["row_sha256"]) or {}
+        if entry != chosen and isinstance(row.get("presence_recovery"), Mapping):
+            # A later canonical terminal owns status, but does not erase the earlier
+            # source-bound observation. This history is not a new current verdict.
+            parts.append(f"observation at {row.get('ts') or 'unknown time'}: " + _indented(render_row_text(row)).lstrip())
     if children:
         parts.append(f"children {len(children)}" + (" (" + ", ".join(f"{name} {n}" for name, n in sorted(tally.items()))
                                                     + ")" if tally else ""))
