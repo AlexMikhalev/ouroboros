@@ -24,7 +24,10 @@ SCOPE_VALID_SEVERITIES = frozenset({"critical", "advisory"})
 # Questions merged into a survivor. A row under a retired id answers an obligation
 # recorded before the merge: it counts for its survivor and never duplicates or
 # contradicts the survivor's own row, so it cannot void the seat's whole block.
-_RETIRED_ITEM_SURVIVORS = {"prompt_doc_sync": "cross_surface_consistency", "cross_module_bugs": "implicit_contracts"}
+_RETIRED_ITEM_SURVIVORS = {
+    "prompt_doc_sync": "cross_surface_consistency",
+    "cross_module_bugs": "implicit_contracts",
+}
 
 
 def normalize_scope_items(items: list) -> tuple[list[dict], str]:
