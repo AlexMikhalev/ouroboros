@@ -28,7 +28,11 @@ folder) and the reviewer's files under ``.review-evidence/``, with no byte bound
 A completed capture may release a one-shot copy only when
 its caller has observed normal success in the exact run's daemon detail; thread
 copies remain at their bound path and refresh after successful capture. An incomplete capture keeps the
-copy and names the gap. A full-access copy is not an OS sandbox.
+copy and names the gap. Git's inventory omits untracked special entries and
+ignored outputs outside ``.review-evidence/``; the latter are listed, not retained.
+Frozen ``.review-drive`` inputs are excluded too: reviewer edits there are not kept.
+Unbounded capture can increase peak storage and delay the answer; a full volume
+leaves failed generations beside the copy. A full-access copy is not an OS sandbox.
 """
 
 from __future__ import annotations
@@ -338,6 +342,9 @@ def retain_named_evidence(area: pathlib.Path, files_dir: pathlib.Path, budget: L
     if declared.is_symlink():
         gaps.append({"path": EVIDENCE_DIRNAME, "reason": "evidence_symlink"})
         return []
+    if declared.exists() and not declared.is_dir():
+        gaps.append({"path": EVIDENCE_DIRNAME, "reason": "evidence_root_not_directory"})
+        return []
     paths: List[str] = []
     if declared.is_dir():
         for current, dirs, files in os.walk(declared, onerror=_raise_walk_error, followlinks=False):
@@ -374,10 +381,16 @@ def _git_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pathlib.
             metadata, _, name = entry.partition(b"\t")
             if metadata.startswith(b"160000 "):
                 gitlinks[name.decode("utf-8", "surrogateescape")] = metadata.split()[1]
-        inventory = _git(area, "ls-files", "--cached", "--others", "--exclude-standard", "-z", env=env)
-        if inventory.stderr.strip():  # e.g. a folder Git could not open: a localized warning, exit 0
+        listing_env = {**env, "LC_ALL": "C", "LANGUAGE": "C",
+                       **{key: "0" for key in os.environ if key.startswith("GIT_TRACE")}}
+        inventory = _git(area, "ls-files", "--cached", "--others", "--exclude-standard", "-z", env=listing_env)
+        listing_warning = inventory.stderr.decode("utf-8", "replace").strip()
+        # Git exits zero for an unlistable directory. Other warnings (for example
+        # a symlinked ignore file) do not prove missing entries and must not block
+        # the next reviewer turn. Pin the diagnostic locale for this CLI boundary.
+        if any(line.startswith("warning: could not open directory ") for line in listing_warning.splitlines()):
             raise CheckingAreaUnavailable("the checking copy could not be fully listed: "
-                                          + inventory.stderr.decode("utf-8", "replace").strip())
+                                          + listing_warning)
         paths, kept_gitlinks = set(), []
         for raw in sorted(set(inventory.stdout.split(b"\0"))):
             if not raw:
@@ -430,17 +443,22 @@ def _git_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pathlib.
     else:
         budget[0] -= patch_size
     return {"after_tree": after, "patch_sha256": patch_sha, "patch_bytes": patch_size,
+            "listing_warning": listing_warning,
             "patch_retained": patch.exists(),
             "changed": changed.splitlines(), "ignored_not_retained": ignored}
 
 
 def _open_regular(path: pathlib.Path) -> Any:
     """A file the inventory saw as regular; a link swapped in since is refused, not followed."""
-    handle = open(os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)), "rb")
-    if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode) or path.is_symlink():  # Windows: no O_NOFOLLOW
-        handle.close()
-        raise CheckingAreaUnavailable(f"{path} stopped being a regular file during capture")
-    return handle
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
+                 getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode) or path.is_symlink():  # Windows: no O_NOFOLLOW
+            raise CheckingAreaUnavailable(f"{path} stopped being a regular file during capture")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def _same_bytes(left: pathlib.Path, right: pathlib.Path) -> bool:
@@ -484,7 +502,7 @@ def _directory_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pa
         state["kind"] == "file" and not _same_bytes(view / path, area / path)))
     removed = sorted(set(before) - set(after))
     for path in changed:
-        if after[path]["kind"] == "special":
+        if after[path]["kind"] == "special" and pathlib.PurePosixPath(path).parts[0] != EVIDENCE_DIRNAME:
             gaps.append({"path": path, "reason": "unsupported_entry_type"})
     # Links are data, never dereferenced into the files store; directory modes
     # and removals survive in the receipt even after a successful copy release.

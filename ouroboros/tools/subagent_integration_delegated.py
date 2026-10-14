@@ -258,8 +258,9 @@ def _dispose_delegated(drive: Any, entry: Any, snapshot_key: str, reason: str,
 def _retain_named_evidence(drive: Any, entry: Any, *, reread: bool = False) -> Dict[str, Any]:
     """Keep every file the run put under its copy's ``.review-evidence/``, whether or not
     the patch may carry it (an excluded ``coverage.xml``, a gitignored log), byte-exact
-    within ``EVIDENCE_RETAIN_BYTES`` (reviewer seats have no bound). ``status`` is ``retained``, ``partial`` (the
-    bound left files in the copy, named in ``gaps``), ``capture_failed`` or ``copy_missing``.
+    within ``EVIDENCE_RETAIN_BYTES`` (reviewer seats have no bound). ``status`` is
+    ``retained``, ``partial`` (bound, link or unsupported-entry gaps), ``capture_failed``
+    (including unreadable paths) or ``copy_missing``.
     A ``reread`` only answers from the retained summary.
     """
     from ouroboros import delegate_custody as custody
