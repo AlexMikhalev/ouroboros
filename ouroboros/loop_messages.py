@@ -588,8 +588,9 @@ def context_facts_line(ctx: Any, *, money: Optional[Dict[str, Any]] = None,
     """One short line of this round's room facts for the actor, no advice (owner decision 5A).
 
     Reads the measurement the round already recorded (``_remember_main_fit`` facts),
-    the whole-fit boundaries as known or unknown, the largest resident units from the
-    existing unit reader, the task's settled cost, and a tariff only when the exact
+    the window's free room and the owner target's room or excess apart, each known or
+    unknown (free room is never the smaller of window and target), the largest resident
+    units from the existing unit reader, the task's settled cost, and a tariff only when the exact
     route's catalog is already cached (no fetch, no price table). ``money`` lets the loop
     add what it holds (``budget_remaining_usd``, ``ceiling_usd``, ``tree_line``, ``quota``).
     ``measured=False`` names the input as unmeasured instead of reusing stale numbers.
@@ -607,9 +608,15 @@ def context_facts_line(ctx: Any, *, money: Optional[Dict[str, Any]] = None,
     if estimate is None:
         parts.append("input unmeasured")
     else:
-        bounds = [int(value) for value in (capacity, target) if value is not None]
         parts.append(f"input ~{int(estimate):,} before this line ({basis}) + reply {int(reserve or 0):,}")
-        parts.append(f"free {min(bounds) - int(estimate) - int(reserve or 0):,}" if bounds else "free unknown")
+        # Free room is the window's; the economy target is its own fact, measured with the reply floor.
+        parts.append(f"free {int(capacity) - int(estimate) - int(reserve or 0):,}" if capacity is not None
+                     else "free unknown")
+        if target is not None:
+            floor = int(usage.get("_context_response_reserve_tokens") or reserve or 0)
+            excess = int(estimate) + floor - int(target)
+            parts.append((f"over target {excess:,}" if excess > 0 else f"target room {-excess:,}")
+                         + (f" (reply floor {floor:,})" if floor != int(reserve or 0) else ""))
     components = _context_components(ctx, measured=measured)
     if components:
         parts.append("largest " + ", ".join(f"{label} ~{tokens:,}" for label, tokens in components))

@@ -140,13 +140,19 @@ class ContextFitPlan:
 
     def reproject_for_route(self, *, window_tokens: int, known_window: bool, ratio: float, output_reserve: int,
                             tool_schemas: Optional[List[Dict[str, Any]]], start_mode: Optional[str] = None,
-                            current_messages: Optional[List[Dict[str, Any]]] = None) -> "ContextFitPlan":
-        """This plan on another route's window: each mode's view, fit and starting mode measured anew.
+                            current_messages: Optional[List[Dict[str, Any]]] = None,
+                            refused_tokens: int = 0, select_mode: Optional[str] = None) -> "ContextFitPlan":
+        """This plan on another route's window: fit and starting mode measured anew, shown views kept while they fit.
 
-        The view is re-rendered from ``core.memory_view_json`` (chronicle and chat not read again), from
-        ``start_mode`` (the task's mode; default ``preferred_mode``). Current Max books stay full until
-        actual refusal recovery selects another mode; memory granularity still fits the known window.
-        Lower starts retain their sizing behavior. Only the owner's mode carries a target.
+        Measured on the actual running tail and resident schemas from ``start_mode`` (the task's mode; default
+        ``preferred_mode``). While that mode's request with its reply reserve fits a known fresh window -- a
+        smaller one included -- or the window is unknown, every view keeps its bytes: a larger window or a
+        shorter tail unfolds nothing (owner decision 2026-10-11, 2A). A request the window cannot hold, or
+        ``refused_tokens`` (an actual size refusal's calibrated deficit, at least 1), narrows each view from the
+        level it shows against the window alone (``memory_floor.render_view_for_mode``), from
+        ``core.memory_view_json`` (chronicle and chat not read again). Current Max books stay full until actual
+        refusal recovery selects another mode (``select_mode``: rendered from the level ``start_mode`` shows, never
+        its own unsent one); lower starts keep their mode. Only the owner's mode carries a target.
         """
         from dataclasses import replace
 
@@ -157,15 +163,43 @@ class ContextFitPlan:
                 current_messages = [self.projection(start).system_message(), *json.loads(retained)]
         tail_json = (json.dumps(_request_tail(current_messages), ensure_ascii=False, sort_keys=True)
                      if current_messages is not None else None)
-        if self.core is not None:
-            contents, start = _view_projections(
-                self.core, {form: _governance_blocks(None, self.core, mode=form) for form in books},
-                self.user_content_json, preferred=self.preferred_mode, start=start_mode, tool_schemas=tool_schemas,
-                window_tokens=window_tokens, known_window=known_window, output_reserve=output_reserve, ratio=ratio,
-                resident=True, current_messages=current_messages)  # actual running tail, enable_tools included
+        if self.core is not None and self.core.memory_view_json:
+            from ouroboros import memory_floor
+            from ouroboros.context_budget import context_mode_limits
+            from ouroboros.memory_view import snapshot_from_json
+            from ouroboros.tool_policy import select_tool_schemas
+
+            shown = self.projection(start)
+            names = [schema["function"]["name"] for schema in tool_schemas or []]
+            sent = select_tool_schemas(tool_schemas or [], context_mode=start, schema_names=names).schemas
+            request = math.ceil((_request_tokens(json.loads(shown.system_content_json),
+                                                 shown.user_content_json or self.user_content_json,
+                                                 supplementary_messages_json=self.core.supplementary_messages_json,
+                                                 current_messages=current_messages)
+                                 + tool_schema_tokens(list(sent))) * ratio)
+            request += context_mode_limits(start, self.preferred_mode, output_reserve)[1]
+            deficit = max(request - window_tokens if known_window and window_tokens else 0, int(refused_tokens or 0))
+            if deficit > 0 or select_mode:
+                snapshot = snapshot_from_json(self.core.memory_view_json)
+                contents, start = _view_projections(
+                    self.core, {form: _governance_blocks(None, self.core, mode=form) for form in books},
+                    self.user_content_json, preferred=self.preferred_mode, start=start_mode, select=select_mode,
+                    tool_schemas=tool_schemas,
+                    window_tokens=window_tokens, known_window=known_window, output_reserve=output_reserve, ratio=ratio,
+                    resident=True, current_messages=current_messages,  # actual running tail, enable_tools included
+                    kept={mode: memory_floor.kept_level(snapshot, self.projection(mode).memory_facts)
+                          for mode in memory_floor.MODES},
+                    saving={start: math.ceil(deficit / max(ratio, 0.01))})
+
+        def narrowed(projection: ContextFitProjection) -> bool:
+            # A view whose level, budget and mode line did not move keeps its bytes (its floor note names its
+            # cut window); equal counts from another level never keep a view's budget provenance.
+            old, new = (dict(facts.get("floor") or {}) for facts in (projection.memory_facts or {},
+                                                                     contents[projection.mode][1] or {}))
+            return any(old.get(key) != new.get(key) for key in ("steps", "by_budget", "target_tokens", "mode_switch"))
 
         def project(projection: Optional[ContextFitProjection]) -> Optional[ContextFitProjection]:
-            if projection is not None and projection.mode in contents:
+            if projection is not None and projection.mode in contents and narrowed(projection):
                 system, facts = contents[projection.mode]
                 projection = replace(projection, system_content_json=json.dumps(system, ensure_ascii=False, sort_keys=True),
                                      memory_facts=facts, continuation_messages_json=tail_json,
@@ -179,7 +213,8 @@ class ContextFitPlan:
             calibrated = int(int(projection.estimated_tokens or 0) * ratio) if projection is not None else 0
             return projection and replace(projection, calibrated_tokens=calibrated, calibration_ratio=ratio)
 
-        return replace(self, initial_mode=start, window_tokens=window_tokens, output_reserve_tokens=output_reserve,
+        return replace(self, initial_mode=select_mode or start, window_tokens=window_tokens,
+                       output_reserve_tokens=output_reserve,
                        max_projection=project(self.max_projection), low_projection=project(self.low_projection),
                        nano_projection=project(self.nano_projection))
 
@@ -740,6 +775,8 @@ def _view_projections(core: ContextCore, governance: Mapping[str, Tuple[str, ...
                       tool_schemas: Optional[List[Dict[str, Any]]], window_tokens: int, known_window: bool, output_reserve: int,
                       ratio: float, start: Optional[str] = None, resident: bool = False,
                       current_messages: Optional[List[Dict[str, Any]]] = None,
+                      kept: Optional[Mapping[str, Any]] = None, saving: Optional[Mapping[str, int]] = None,
+                      select: Optional[str] = None,
                       ) -> Tuple[Dict[str, Tuple[List[Dict[str, Any]], Dict]], str]:
     """Each mode's ``(system content, view receipt)`` and the mode the task starts in.
 
@@ -747,7 +784,9 @@ def _view_projections(core: ContextCore, governance: Mapping[str, Tuple[str, ...
     plus the schemas it sends: the owner-mode selection of ``tool_schemas`` on the first request,
     or, ``resident``, the list a running task already sends (an ``enable_tools`` addition counts,
     whatever the mode). View and starting mode are ``memory_floor.mode_views`` of the core's
-    snapshot, so a new route re-renders both from the same capture.
+    snapshot, so a new route re-renders both from the same capture; ``kept``/``saving`` narrow
+    the shown views from their own levels and ``select`` is a mode an actual refusal chose
+    (``ContextFitPlan.reproject_for_route``).
     """
     form = {mode: "low" if core.compact_reference_docs or mode == "nano" else mode for mode in ("max", "low", "nano")}
     if not core.memory_view_json:
@@ -763,7 +802,7 @@ def _view_projections(core: ContextCore, governance: Mapping[str, Tuple[str, ...
     views, start = memory_floor.mode_views(snapshot_from_json(core.memory_view_json), preferred=preferred, start=start,
         fixed_tokens_by_mode=fixed, tool_names=None if tool_schemas is None else {m: sent[m].chosen for m in form},
         window_tokens=window_tokens, known_window=known_window, output_reserve=output_reserve, ratio=ratio,
-        allow_mode_lowering=preferred != "max" or start in {"low", "nano"})
+        allow_mode_lowering=preferred != "max" or start in {"low", "nano"}, kept=kept, saving=saving, select=select)
     return {mode: (_system_blocks(core, governance[form[mode]], story, room), receipt)
             for mode, (story, room, receipt) in views.items()}, start
 
@@ -819,12 +858,16 @@ def build_context_fit_plan(
         preferred=preferred, tool_schemas=tool_schemas, window_tokens=int(evidence.window_tokens or 0),
         known_window=known_window, output_reserve=output_reserve, ratio=ratio)
 
-    from ouroboros.context_budget import OWNER_NANO_TARGET_TOKENS, context_mode_limits
+    from ouroboros.context_budget import context_mode_limits
     from ouroboros.tool_policy import select_tool_schemas
 
     # The task-input pointer is decided on the calibrated Nano request: the schemas it sends and its reply floor.
     nano_sent_tokens = tool_schema_tokens(list(select_tool_schemas(tool_schemas or [], context_mode="nano").schemas))
     nano_reserve = context_mode_limits("nano", preferred, output_reserve)[1]
+    window = int(evidence.window_tokens or 0) if known_window else 0
+
+    def nano_total(tokens: int) -> int:
+        return math.ceil((tokens + nano_sent_tokens) * ratio) + nano_reserve
 
     def _projection(mode: str) -> ContextFitProjection:
         nonlocal input_source
@@ -834,8 +877,10 @@ def build_context_fit_plan(
         estimated = _request_tokens(system_content, core.user_content_json,
                                     supplementary_messages_json=core.supplementary_messages_json)
         user_projection = None
-        target = OWNER_NANO_TARGET_TOKENS if mode == "nano" else None
-        if preferred == "nano" and target is not None and math.ceil((estimated + nano_sent_tokens) * ratio) + nano_reserve > target:
+        # Physical rescue only: the owner's words are delivered whole unless a known fresh window cannot hold
+        # this request and the pointer request fits it. The Nano target never hides them, and neither does
+        # an unknown window (owner decision 2026-10-13, #1527).
+        if preferred == "nano" and mode == "nano" and window and nano_total(estimated) > window:
             # The original owner input stays exact in the captured core and
             # existing source store. Only its initial Nano delivery changes;
             # this is neither the external-assignment compiler nor a summary.
@@ -854,7 +899,7 @@ def build_context_fit_plan(
                 source_estimate = estimate_context_prompt_tokens([
                     {"role": "system", "content": json.loads(system_content_json)},
                     {"role": "user", "content": source_content}, *json.loads(core.supplementary_messages_json)])
-                if source_estimate < estimated:
+                if nano_total(source_estimate) <= window:
                     user_projection = json.dumps(source_content, ensure_ascii=False)
                     estimated = source_estimate
             except (OSError, ValueError, KeyError):
