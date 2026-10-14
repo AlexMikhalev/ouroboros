@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import asyncio
 
+import pytest
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.testclient import TestClient
@@ -198,6 +199,7 @@ def test_bridge_consumes_lazy_asgi_response_instead_of_unopened_body(tmp_path, m
     assert (status, body) == (200, b'{"text":"from child"}')
 
 
+@pytest.mark.serial
 def test_host_bridge_runs_isolated_extension_response(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", "")
     clean_extension_runtime_state()
