@@ -12,6 +12,7 @@ and the registration sees "not yet", never a card without the answer.
 from __future__ import annotations
 
 import json
+import pathlib
 import queue as stdqueue
 import types
 from collections import deque
@@ -90,8 +91,9 @@ def test_a_host_terminal_root_with_a_delivered_salvage_receipt_publishes_its_car
     sent = []
     delivery._handle_send_message(evt, _ctx(tmp_path, sent))
     assert sent and td.terminal_answer_receipts(tmp_path, tid)["state"] == "delivered"
-    assert settle_terminal_projection(tmp_path, tid) == SETTLEMENT_SETTLED
+    # The delivery ack re-entered the settle owner: the card is already published.
     assert isinstance(load_task_result(tmp_path, tid).get("canonical_terminal_projection"), dict)
+    assert settle_terminal_projection(tmp_path, tid) == SETTLEMENT_NONE, "nothing left to settle"
     rows = _chat_rows(tmp_path)
     (card,) = _terminal_rows(tmp_path, tid)
     assert rows.index(card) > rows.index(next(row for row in rows if row.get("text") == evt["text"]))
@@ -159,7 +161,7 @@ def test_a_stop_episode_answer_is_owed_until_its_actual_send(tmp_path):
     assert sent == [(4, event["text"])]
     receipts = td.terminal_answer_receipts(tmp_path, tid)
     assert receipts["state"] == "unknown" and receipts["unverified_delivery_ids"] == [event["delivery_id"]]
-    assert settle_terminal_projection(tmp_path, tid) == SETTLEMENT_SETTLED
+    assert settle_terminal_projection(tmp_path, tid) == SETTLEMENT_NONE, "the ack already published the card"
     rows = _chat_rows(tmp_path)
     (card,) = _terminal_rows(tmp_path, tid)
     assert rows.index(card) > rows.index(next(row for row in rows if row.get("text") == event["text"]))
@@ -234,7 +236,7 @@ def test_running_cancel_owes_the_salvage_before_its_terminal_row_and_the_card_fo
     sent = []
     delivery._handle_send_message({**owed, "type": "send_message"}, _ctx(qenv.drive, sent))
     assert sent == [(9, owed["text"])]
-    assert settle_terminal_projection(qenv.drive, task_id) == SETTLEMENT_SETTLED
+    assert settle_terminal_projection(qenv.drive, task_id) == SETTLEMENT_NONE, "the ack already published the card"
     rows = _chat_rows(qenv.drive)
     (card,) = _terminal_rows(qenv.drive, task_id)
     assert rows.index(card) > rows.index(next(row for row in rows if row.get("text") == owed["text"]))
@@ -281,7 +283,7 @@ def test_pending_deadline_expiry_owes_the_salvage_before_its_terminal_row(host, 
     sent = []
     delivery._handle_send_message({**owed, "type": "send_message"}, _ctx(host.root, sent))
     assert sent == [(1, owed["text"])]
-    assert settle_terminal_projection(host.root, "pending") == SETTLEMENT_SETTLED
+    assert settle_terminal_projection(host.root, "pending") == SETTLEMENT_NONE, "the ack already published the card"
     rows = _chat_rows(host.root)
     (card,) = _terminal_rows(host.root, "pending")
     assert rows.index(card) > rows.index(next(row for row in rows if row.get("text") == owed["text"]))
@@ -290,3 +292,108 @@ def test_pending_deadline_expiry_owes_the_salvage_before_its_terminal_row(host, 
 
 def test_no_debt_and_no_readiness_settles_nothing(tmp_path):
     assert settle_terminal_projection(tmp_path, "never-stored") == SETTLEMENT_NONE
+
+
+# ------------------------------------------------------------------ honest delivery state ON the card (owner 20:48)
+
+def test_an_unreadable_registry_card_says_delivery_could_not_be_confirmed(tmp_path):
+    """DEL-2 rendering: the sixth case of the matrix. The warning is row-level only."""
+    tid = "root-corrupt-registry-2"
+    write_task_result(tmp_path, tid, "completed", _terminal_observed=True, chat_id=1, result="Answer.")
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "state" / "terminal_deliveries.json").write_text("{corrupt", encoding="utf-8")
+    assert settle_terminal_projection(tmp_path, tid) == SETTLEMENT_SETTLED
+    (row,) = _terminal_rows(tmp_path, tid)
+    assert row["outcome_phase"] == "warn" and row["outcome"] == "Done with warnings"
+    assert row["terminal_delivery"] == {"state": "unknown"}
+    assert row["outcome_axes"]["objective"]["warning"] == "terminal_delivery_unknown"
+    assert row["reason_detail"] == ("Delivery of the final answer could not be confirmed because the delivery "
+                                    "registry could not be read; the result is in task details.")
+    assert row["reason_detail"] in row["text"]
+    stored = load_task_result(tmp_path, tid)
+    assert "warning" not in (stored.get("outcome_axes") or {}).get("objective", {}), "no durable change to the task's axes"
+    assert "terminal_delivery" not in stored
+
+
+def test_an_exhausted_delivery_is_shown_with_its_saved_copy_and_a_late_receipt_clears_the_mark(tmp_path, monkeypatch):
+    notices: list = []
+    monkeypatch.setattr("supervisor.message_bus.send_with_budget",
+                        lambda chat_id, text, **kw: notices.append((chat_id, text, kw)))
+    tid = "root-exhausted"
+    event = {"type": "send_message", "chat_id": 9, "task_id": tid, "text": "the answer nobody confirmed",
+             "delivery_id": td.delivery_id_for(tid, "the answer nobody confirmed")}
+    assert td.register_pending_delivery(tmp_path, event)
+    write_task_result(tmp_path, tid, "completed", _terminal_observed=True, chat_id=9, result="the answer nobody confirmed")
+    assert settle_terminal_projection(tmp_path, tid) == SETTLEMENT_DEFERRED, "owed holds the card"
+    # Exhaustion is a transition inside the registry: the payload stays, the copy is preserved,
+    # the disclosure is supervisor-owned (this test is the supervisor), and the held card settles.
+    for _ in range(td._PENDING_MAX_REPLAYS):
+        td._bump_replay_attempts(tmp_path, [event["delivery_id"]])  # five real replay enqueues, no receipt
+    (owed,) = td.pending_deliveries(tmp_path)
+    td._retire_exhausted(tmp_path, [owed])
+    receipts = td.terminal_answer_receipts(tmp_path, tid)
+    assert receipts["state"] == "exhausted" and td.pending_deliveries(tmp_path) == []
+    (mark,) = receipts["exhausted"]
+    assert mark["text"] == "the answer nobody confirmed" and mark["reason"] == "replay_exhausted"
+    assert mark["attempts"] == td._PENDING_MAX_REPLAYS and mark["preserved_path"].endswith(".txt")
+    (notice,) = notices
+    assert notice[0] == 9 and "was not confirmed" in notice[1] and notice[2]["system_type"] == "terminal_incident"
+    (card,) = _terminal_rows(tmp_path, tid)
+    assert card["outcome_phase"] == "warn" and card["terminal_delivery"] == {
+        "state": "exhausted", "delivery_id": event["delivery_id"], "preserved_path": mark["preserved_path"]}
+    assert card["reason_detail"] == ("Sending the final answer was not confirmed after the delivery attempts "
+                                     f"ran out; a copy of the answer is saved at {mark['preserved_path']}.")
+    # The queued original lands after all: the real receipt retires only that id's mark.
+    sent = []
+    delivery._handle_send_message(event, _ctx(tmp_path, sent))
+    assert sent == [(9, event["text"])]
+    receipts = td.terminal_answer_receipts(tmp_path, tid)
+    assert receipts["state"] == "delivered" and receipts["exhausted"] == []
+
+
+def test_a_capacity_eviction_in_a_worker_records_the_mark_and_the_copy_only(tmp_path, monkeypatch):
+    """Worker-side eviction: no chat write, no settle from a worker (DEL-5); the registry mark
+    plus the preserved copy and the typed event are the disclosure the supervisor reads."""
+    notices: list = []
+    monkeypatch.setattr("supervisor.message_bus.send_with_budget",
+                        lambda chat_id, text, **kw: notices.append((chat_id, text)))
+    monkeypatch.setattr("ouroboros.utils.in_worker_process", lambda: True)
+    monkeypatch.setattr("ouroboros.terminal_projection.settle_terminal_projection",
+                        lambda *_a, **_k: pytest.fail("a worker never settles the card"))
+    for index in range(td._PENDING_CAP + 1):
+        assert td.register_pending_delivery(tmp_path, {
+            "type": "send_message", "chat_id": 5, "task_id": f"cap{index}",
+            "text": f"answer {index}", "delivery_id": td.delivery_id_for(f"cap{index}", f"answer {index}")})
+    assert notices == []
+    receipts = td.terminal_answer_receipts(tmp_path, "cap0")
+    assert receipts["state"] == "exhausted"
+    (mark,) = receipts["exhausted"]
+    assert mark["reason"] == "outbox_capacity" and mark["text"] == "answer 0"
+    assert pathlib.Path(mark["preserved_path"]).read_text(encoding="utf-8") == "answer 0"
+    rows = [json.loads(line) for line in (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+    (event,) = [row for row in rows if row.get("type") == "terminal_delivery_exhausted"]
+    assert event["task_id"] == "cap0" and event["reason"] == "outbox_capacity"
+    assert len(td.pending_deliveries(tmp_path)) == td._PENDING_CAP
+
+
+def test_a_failed_copy_leaves_an_honest_empty_pointer(tmp_path, monkeypatch):
+    monkeypatch.setattr("supervisor.message_bus.send_with_budget", lambda *_a, **_k: None)
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("Too many open files")
+
+    monkeypatch.setattr("ouroboros.observability.preserve_salvaged_output", refuse)
+    tid = "root-no-copy"
+    event = {"type": "send_message", "chat_id": 9, "task_id": tid, "text": "lost",
+             "delivery_id": td.delivery_id_for(tid, "lost")}
+    assert td.register_pending_delivery(tmp_path, event)
+    write_task_result(tmp_path, tid, "completed", _terminal_observed=True, chat_id=9, result="lost")
+    assert settle_terminal_projection(tmp_path, tid) == SETTLEMENT_DEFERRED
+    (owed,) = td.pending_deliveries(tmp_path)
+    td._retire_exhausted(tmp_path, [owed])
+    (mark,) = td.terminal_answer_receipts(tmp_path, tid)["exhausted"]
+    assert mark["preserved_path"] == ""
+    (card,) = _terminal_rows(tmp_path, tid)
+    assert card["reason_detail"].endswith("; no copy of the answer could be saved.")
+    assert "saved at" not in card["reason_detail"]

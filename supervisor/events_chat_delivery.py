@@ -137,13 +137,24 @@ def _register_delivered(ctx: Any, delivery_id: str, emitted: "Dict[str, Any] | N
 
 
 def _handoff_delivered_review(ctx: Any, task_id: str, delivery_id: str) -> None:
+    """After a delivery is registered (a real send, or a copy suppressed as already delivered):
+    the late-acceptance join, then settle-on-ack — the Done card held behind this very debt
+    follows the answer now (owner Fork 2). ``prepare=False``: readiness is task_done's to mint,
+    so an ack that lands before the row is terminal settles nothing and task_done retries."""
+    if not task_id:
+        return
     try:
         from ouroboros.acceptance_late import handoff_delivered_acceptance
 
-        if task_id:
-            handoff_delivered_acceptance(ctx, task_id, delivery_id)
+        handoff_delivered_acceptance(ctx, task_id, delivery_id)
     except Exception:
         log.debug('historical acceptance remains owed before operation handoff', exc_info=True)
+    try:
+        from ouroboros.terminal_projection import settle_terminal_projection
+
+        settle_terminal_projection(ctx.DRIVE_ROOT, task_id, event_queue=getattr(ctx, "EVENT_Q", None), prepare=False)
+    except Exception:
+        log.debug("terminal projection settlement after delivery deferred", exc_info=True)
 
 
 def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:

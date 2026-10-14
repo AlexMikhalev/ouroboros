@@ -81,7 +81,7 @@ def _send_photo(ctx: ToolContext, file_path: str = "", image_base64: str = "",
         "mime": mime,
         "caption": caption or "",
     })
-    text = "OK: photo sent to owner chat." if mode == "live" else "OK: photo queued for delivery to owner."
+    text = "OK: photo accepted for delivery to owner chat." if mode == "live" else "OK: photo queued for delivery to owner."
     return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=text))
 
 
@@ -129,7 +129,7 @@ def _send_video(ctx: ToolContext, file_path: str = "", caption: str = "") -> str
         "mime": mime,
         "caption": caption or "",
     })
-    text = "OK: video sent to owner chat." if mode == "live" else "OK: video queued for delivery to owner."
+    text = "OK: video accepted for delivery to owner chat." if mode == "live" else "OK: video queued for delivery to owner."
     return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=text))
 
 
@@ -213,7 +213,7 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
         "download_url_compat": compat_url,
         "file_ref": file_ref,
     })
-    text = (f"OK: file '{fp.name}' sent to owner chat." if mode == "live"
+    text = (f"OK: file '{fp.name}' accepted for delivery to owner chat." if mode == "live"
             else f"OK: file '{fp.name}' queued for delivery to owner.")
     return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=text))
 
@@ -516,7 +516,7 @@ def _send_links(
         "actions": actions,
     })
     if mode == "live":
-        return "OK: link buttons sent to owner chat."
+        return "OK: link buttons accepted for delivery to owner chat."
     return "OK: link buttons queued for delivery to owner."
 
 
