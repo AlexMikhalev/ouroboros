@@ -7497,7 +7497,7 @@ textarea.chat-input {
 /* Local chip/dot primitives on purpose: the shared .ui-chip alias group
    carries page palettes (skills/marketplace) and .ui-status recolors the
    sentence itself — neither covers a label:value fact chip with a dot-status
-   sibling (checklist item 30 one-line statement). DESIGN section 2: label at
+   sibling (checklist item 26 one-line statement). DESIGN section 2: label at
    meta ink, the value is the primary thing. */
 .updates-chip {
     font-size: var(--type-meta);

@@ -103,6 +103,34 @@ def test_a_defective_matrix_keeps_its_fail_rows_as_discarded_diagnostics():
     assert parse_two_part_answer(_b(coupling=_matrix(reason="")), BOTH)["coupling"]["discarded"] == []
 
 
+def test_a_retired_question_id_answers_for_its_survivor_without_voiding_the_block():
+    """An open obligation recorded before two questions merged keeps its old item id,
+    and a seat told to mark "the SAME item" answers it beside the current rows. That
+    row counts for its survivor and never duplicates or contradicts the survivor's own
+    row; an id that never was a question, a duplicate PASS or PASS+FAIL of a current
+    id still leave the part unanswered."""
+    def coupling(rows):
+        return parse_two_part_answer(_b(coupling=rows), BOTH)["coupling"]
+
+    old_pass = {"item": "prompt_doc_sync", "verdict": "PASS", "severity": "advisory", "reason": "obl-0003 is fixed"}
+    beside = coupling([*_matrix(), old_pass])
+    assert beside["status"] == "responded" and beside["coverage"] == "full" and beside["verdict"] == "PASS"
+    assert coupling([*_matrix(fail="cross_surface_consistency"), old_pass])["critical"] == 1
+    old_fail = {"item": "cross_module_bugs", "verdict": "FAIL", "severity": "critical",
+                "reason": "the caller still reads the old key", "obligation_id": "obl-0002"}
+    instead = coupling([*(row for row in _matrix() if row["item"] != "implicit_contracts"), old_fail])
+    assert instead["status"] == "responded" and instead["coverage"] == "full" and instead["critical"] == 1
+    assert [(f["item"], f["obligation_id"]) for f in instead["findings"]] == [("implicit_contracts", "obl-0002")]
+    assert coupling([*_matrix(), old_fail])["critical"] == 1
+
+    never = {**old_pass, "item": "scope_creep"}
+    assert "unexpected items: scope_creep" in coupling([*_matrix(), never])["error"]
+    assert "duplicate PASS" in coupling([*_matrix(), _matrix()[0]])["error"]
+    current_fail = next(row for row in _matrix(fail="implicit_contracts") if row["verdict"] == "FAIL")
+    contradiction = coupling([*_matrix(), current_fail])
+    assert contradiction["status"] == "unanswered" and "both PASS and FAIL" in contradiction["error"]
+
+
 def test_a_bare_array_from_a_both_part_seat_leaves_part_two_out():
     finding = {"item": "secrets_check", "verdict": "FAIL", "severity": "critical", "reason": "a key is committed"}
     answers = parse_two_part_answer(json.dumps([finding]), BOTH)

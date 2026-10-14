@@ -21,6 +21,10 @@ COUPLING_QUESTION_IDS = (
 )
 SCOPE_REQUIRED_ITEMS = frozenset(COUPLING_QUESTION_IDS)
 SCOPE_VALID_SEVERITIES = frozenset({"critical", "advisory"})
+# Questions merged into a survivor. A row under a retired id answers an obligation
+# recorded before the merge: it counts for its survivor and never duplicates or
+# contradicts the survivor's own row, so it cannot void the seat's whole block.
+_RETIRED_ITEM_SURVIVORS = {"prompt_doc_sync": "cross_surface_consistency", "cross_module_bugs": "implicit_contracts"}
 
 
 def normalize_scope_items(items: list) -> tuple[list[dict], str]:
@@ -40,6 +44,8 @@ def normalize_scope_items(items: list) -> tuple[list[dict], str]:
             invalid.append(f"entry {index} is not an object")
             continue
         item_id = str(item.get("item", "") or "").strip()
+        retired = item_id in _RETIRED_ITEM_SURVIVORS
+        item_id = _RETIRED_ITEM_SURVIVORS.get(item_id, item_id)
         verdict = str(item.get("verdict", "") or "").strip().upper()
         if item_id not in SCOPE_REQUIRED_ITEMS:
             unexpected.append(item_id or f"<missing item at {index}>")
@@ -59,11 +65,11 @@ def normalize_scope_items(items: list) -> tuple[list[dict], str]:
         if not reason:
             invalid.append(f"{item_id}: missing reason")
             continue
-        if verdict == "PASS":
+        if verdict == "PASS" and not retired:
             if item_id in seen_pass:
                 invalid.append(f"{item_id}: duplicate PASS")
             seen_pass.add(item_id)
-        else:
+        elif not retired:
             seen_fail.add(item_id)
         seen_items.add(item_id)
 

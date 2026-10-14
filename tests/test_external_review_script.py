@@ -906,15 +906,11 @@ def test_contributor_landing_obligations_are_exact_typed_items_only():
         "block_reason": "critical_findings",
         "combined_findings": [
             {"item": "version_bump", "severity": "critical"},
-            {"item": "changelog_and_badge", "severity": "critical"},
         ],
     }
     deferred = _apply_contributor_landing_obligations(version_only)
     assert deferred["status"] == "passed"
-    assert {item["item"] for item in deferred["landing_obligations"]} == {
-        "version_bump",
-        "changelog_and_badge",
-    }
+    assert {item["item"] for item in deferred["landing_obligations"]} == {"version_bump"}
 
     real_defect = {
         **version_only,

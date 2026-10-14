@@ -251,8 +251,8 @@ Ouroboros binds Ouroboros as the author, never the subject repository.
   decision or authority the owner already delegated — see item 7; a GREEN plan
   review is not one) or an internal-only refactor stays advisory. Disclosure
   alone (commit message, changelog) is not acceptance.
-- The `Ouroboros Body Layer` adds its own severity rules for items 10-27 and
-  names the body's addresses for items 5-9. Its editorial calibration of item 5
+- The `Ouroboros Body Layer` sets the severity of its own items and names the
+  body's addresses for items 5-9. Its editorial calibration of item 5
   applies only to the body; other core severities remain unchanged.
 
 ### Retry convergence for tests_affected
