@@ -14,6 +14,9 @@ the new one takes its slot.
 The lifecycle serializer lives here too: it is a decorator, so it is applied at
 import time and cannot be reached through a call-time handle. It is a primitive,
 not pool state — nothing rebinds it — so the parent imports it back directly.
+It guards pool membership, never a native wait: a reserved slot's kill and join
+run outside it and the membership step re-validates identity under it, so the
+loop's try-lock misses only a real generation stop, which holds it across joins.
 """
 
 from __future__ import annotations
@@ -540,21 +543,26 @@ def kill_worker_tree(pid: int, *, keep_services: bool = False, panic_process=Non
     kill_pid_tree(pid, exclude_pids=spared)
 
 
-@_serialized_worker_lifecycle
+def _booting_slot_current(wid: int, slot: Any) -> bool:
+    """This watcher's booting slot is still the pool's own at ``wid``; a pool restart replaces or clears it."""
+    with _queue_lock:
+        return _pool().WORKERS.get(wid) is slot and slot.booting and not slot.retiring
+
+
 def _replace_unready_slot(wid: int, slot: Any, owner_chat_id: int, started: float, attempt: int,
                          window_sec: float = 0.0) -> None:
     """No worker_ready inside the window: tear the child down and replace the slot, bounded.
 
-    One lifecycle transaction (lifecycle -> queue lock order, like every pool start/kill/respawn):
-    the identity check, the teardown and the nested ``respawn_worker`` cannot be interleaved by a
-    generation change (``kill_workers`` -> ``spawn_workers``), which would otherwise install a fresh
-    live slot at ``wid`` in the gap for this stale watcher's respawn to evict — its process never
-    terminated, gone from WORKERS. A stop it cannot confirm (the child outlives the kill, or the
+    The lifecycle serializer guards pool membership, never a native wait: the kill and join run
+    without it, since the booting slot is unassignable and only this watcher acts on it. The
+    replace/park step takes it (lifecycle -> queue lock order, like every pool start/kill/respawn)
+    and re-validates the identity first, so a generation change (``kill_workers`` ->
+    ``spawn_workers``) that installed a fresh live slot at ``wid`` meanwhile is never evicted by
+    this stale watcher's respawn. A stop it cannot confirm (the child outlives the kill, or the
     kill raised) stays charged with this attempt until the reaper observes the death.
     """
-    with _queue_lock:
-        if _pool().WORKERS.get(wid) is not slot or not slot.booting or slot.retiring:
-            return  # a pool restart already replaced or cleared this slot
+    if not _booting_slot_current(wid, slot):
+        return
     pid = _slot_pid(slot)
     action = "respawn" if attempt < WORKER_READY_MAX_ATTEMPTS else "parked"
     _supervisor_row({
@@ -577,7 +585,9 @@ def _replace_unready_slot(wid: int, slot: Any, owner_chat_id: int, started: floa
     if slot.proc.is_alive():
         _defer_unready_teardown(wid, slot, owner_chat_id, started, attempt)
         return  # stop unconfirmed: never spawn beside it
-    _replace_or_park_unready_slot(wid, slot, owner_chat_id, started, attempt)
+    with _WORKER_LIFECYCLE_LOCK:
+        if _booting_slot_current(wid, slot):
+            _replace_or_park_unready_slot(wid, slot, owner_chat_id, started, attempt)
 
 
 def _defer_unready_teardown(wid: int, slot: Any, owner_chat_id: int, started: float, attempt: int) -> None:
@@ -598,26 +608,34 @@ def _defer_unready_teardown(wid: int, slot: Any, owner_chat_id: int, started: fl
                                "drive_root": str(_pool().DRIVE_ROOT), "first_stop": True})
 
 
-@_serialized_worker_lifecycle
+def _unready_teardown_current(job: dict, slot: Any) -> bool:
+    """The reaper's unready slot is still this pool's own, charged and neither booting nor parked."""
+    with _queue_lock:
+        return (str(_pool().DRIVE_ROOT) == job["drive_root"] and _pool().WORKERS.get(job["worker_id"]) is slot
+                and not slot.booting and not slot.retiring and not getattr(slot, "readiness_exhausted", False))
+
+
 def finish_unready_teardown(job: dict) -> None:
     """The reaper's half: confirmed death continues the SAME bounded replace/park step.
 
     Unconfirmed death raises ``TerminalFileRecoveryPending``; the reaper retains the job for the
-    next health tick, whose re-drive only polls. It is never a crash, and the count never resets.
+    next health tick, whose re-drive repeats one bounded tree kill and then joins without waiting.
+    It is never a crash, and the count never resets. The kill and join hold no lifecycle
+    serializer (the slot stays reserved under Q); the replace/park step takes it and re-validates.
     """
     from supervisor.task_reaper import TerminalFileRecoveryPending
 
     slot, wid = job["worker"], job["worker_id"]
-    with _queue_lock:
-        if (str(_pool().DRIVE_ROOT) != job["drive_root"] or _pool().WORKERS.get(wid) is not slot
-                or slot.booting or slot.retiring or getattr(slot, "readiness_exhausted", False)):
-            return
+    if not _unready_teardown_current(job, slot):
+        return
     if slot.proc.is_alive() and _slot_pid(slot):
         kill_worker_tree(_slot_pid(slot))
         slot.proc.join(timeout=2 if job.pop("first_stop", False) else 0)  # the first stop sees an ordinary exit now
     if slot.proc.is_alive():
         raise TerminalFileRecoveryPending("unready worker stop is not yet confirmed")
-    _replace_or_park_unready_slot(wid, slot, job["owner_chat_id"], job["started"], job["attempt"])
+    with _WORKER_LIFECYCLE_LOCK:
+        if _unready_teardown_current(job, slot):
+            _replace_or_park_unready_slot(wid, slot, job["owner_chat_id"], job["started"], job["attempt"])
 
 
 def _replace_or_park_unready_slot(wid: int, slot: Any, owner_chat_id: int, started: float, attempt: int) -> None:
@@ -845,28 +863,38 @@ def retire_quiescent_worker(slot: Any) -> bool:
         return True
 
 
-@_serialized_worker_lifecycle
+def _idle_retirement_current(job: dict, slot: Any) -> bool:
+    """The reserved acknowledged actor is still this pool's own, and no stop fence owns membership."""
+    with _queue_lock:
+        return (str(_pool().DRIVE_ROOT) == job["drive_root"]
+                and _pool().WORKERS.get(slot.wid) is slot and slot.retiring
+                and slot.busy_task_id is None and job["token"] == slot.quiescence_token
+                # A captured storm stop keeps membership stable; its owner tears down.
+                and not _pool()._WORKER_POOL_DISABLED_REASON)
+
+
 def reap_idle_worker(job: dict) -> None:
     """Kill only the reserved acknowledged actor, then forget only confirmed death (an enabled
-    pool's last member is replaced). The first stop's bounded join sees an ordinary exit now; one row records it."""
+    pool's last member is replaced). The first stop's bounded join sees an ordinary exit now; one row records it.
+
+    The lifecycle serializer guards membership, never a native wait: the slot is reserved under Q
+    (``retiring``), so the kill and join run without it and assignment keeps its turn; the
+    membership step takes it after re-validating the identity.
+    """
     from supervisor.task_reaper import TerminalFileRecoveryPending
 
     slot = job["worker"]
-    with _queue_lock:
-        if (str(_pool().DRIVE_ROOT) != job["drive_root"]
-                or _pool().WORKERS.get(slot.wid) is not slot or not slot.retiring
-                or slot.busy_task_id is not None or job["token"] != slot.quiescence_token):
-            return
-        if _pool()._WORKER_POOL_DISABLED_REASON:
-            # Keep membership stable for a captured storm stop. Its owner tears down.
-            return
+    if not _idle_retirement_current(job, slot):
+        return
     if slot.proc.is_alive():
         kill_worker_tree(_slot_pid(slot), keep_services=True)
-        # A health-tick re-drive only polls: assignment defers its whole turn while this serializer is held.
+        # Each health-tick re-drive repeats one bounded tree kill, then joins without waiting.
         slot.proc.join(timeout=2 if job.pop("first_stop", False) else 0)
     if slot.proc.is_alive():
         raise TerminalFileRecoveryPending("idle worker stop is not yet confirmed")
-    if outcome := retire_or_replace_worker(slot.wid, slot):
+    with _WORKER_LIFECYCLE_LOCK:
+        outcome = _idle_retirement_current(job, slot) and retire_or_replace_worker(slot.wid, slot)
+    if outcome:
         _supervisor_row({"type": "worker_retired", "worker_id": slot.wid, "pid": _slot_pid(slot), "token": job["token"],
                          "process_birth": slot.process_birth, "replaced": outcome == "replaced"})
 

@@ -639,8 +639,10 @@ def _run_in_thread(target):
     return thread, done
 
 
-def test_assignment_entry_never_waits_behind_an_off_loop_retirement_teardown(assigning, monkeypatch):
-    """Parent witness: every tick's assignment entry blocked while the reaper held the serializer."""
+def test_a_retirement_mid_kill_never_costs_a_pending_task_its_tick(assigning, monkeypatch):
+    """Parent witness: every tick's assignment entry blocked while the reaper held the serializer;
+    then (owner 14 Oct 21:09 #4) the try-lock skipped the whole turn. The serializer now guards
+    membership only: the reserved slot's native kill runs outside it, and the tick assigns."""
     monkeypatch.setattr(workers, "MAX_WORKERS", 3)
     workers.RUNNING.clear()
     assigning.original.busy_task_id = None
@@ -663,13 +665,18 @@ def test_assignment_entry_never_waits_behind_an_off_loop_retirement_teardown(ass
         workers.PENDING.append(task("fresh"))
         caller, returned = _run_in_thread(workers.assign_tasks)
         assert returned.wait(2), "the assignment entry waited behind native teardown"
-        assert "fresh" not in workers.RUNNING, "a deferred turn dispatches nothing"
+        assert workers.RUNNING["fresh"]["worker_id"] == 0, "the tick assigned beside the native kill"
+        assert workers.WORKERS[1] is surplus and surplus.retiring, "membership waits for confirmed death"
+        checked = []
+        monkeypatch.setattr(workers, "_LAST_SPAWN_TIME", 0.0)
+        monkeypatch.setattr(workers, "_ensure_workers_healthy_locked", lambda q: checked.append(q) or ([], False))
+        workers.ensure_workers_healthy()
+        assert checked == [queue], "the health check keeps its tick too"
     finally:
         release.set()
         for thread in (reaper, caller):
             if thread is not None:
                 thread.join(10)
-    workers.assign_tasks()
     assert workers.WORKERS == {0: assigning.original} and workers.RUNNING["fresh"]["worker_id"] == 0
 
 

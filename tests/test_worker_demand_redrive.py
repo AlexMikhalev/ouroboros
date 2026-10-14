@@ -4,6 +4,8 @@ Reviewer counterexample: an idle retirement or unready teardown whose stop could
 confirmed was re-driven on every health tick, each pass holding the serializer for another
 bounded join, while assignment defers its whole turn on that serializer, so independent work
 starved beside a ready idle slot. The failed slot itself stays charged until its death is seen.
+Each re-drive repeats one bounded tree kill and joins without waiting; since owner 14 Oct
+21:09 #4 no kill or join holds the serializer at all (it guards the membership step only).
 """
 
 import json
@@ -124,7 +126,7 @@ def _retired_rows(root):
 
 @pytest.mark.parametrize("kill_raises", [False, True])
 @pytest.mark.parametrize("kind", ["idle", "unready"])
-def test_a_retained_stop_spends_one_bounded_join_and_its_re_drives_only_poll(assigning, monkeypatch, kind, kill_raises):
+def test_a_retained_stop_spends_one_bounded_join_and_its_re_drives_never_wait(assigning, monkeypatch, kind, kill_raises):
     monkeypatch.setattr(workers, "MAX_WORKERS", 3)
     monkeypatch.setattr(task_reaper, "_deferred_reap_jobs", [])
     kills, errors = _wedge(monkeypatch)

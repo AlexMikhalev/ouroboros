@@ -549,7 +549,8 @@ def test_a_slot_the_pool_already_replaced_is_left_alone(pool, seam):
     assert _rows(seam.supervisor, "worker_ready_timeout") == []
 
 
-def test_a_generation_change_cannot_interleave_with_the_watcher_s_teardown_and_respawn(pool, monkeypatch):
+def test_a_generation_change_during_the_watcher_s_native_teardown_never_lets_its_respawn_evict_the_fresh_slot(
+        pool, monkeypatch):
     """rc.15 review MAJOR 2: ``_replace_unready_slot`` checked the slot's identity,
     dropped the queue lock, tore the child down and only then called
     ``respawn_worker(wid)``. A pool generation change in that gap
@@ -559,12 +560,14 @@ def test_a_generation_change_cannot_interleave_with_the_watcher_s_teardown_and_r
     terminating its process — a worker gone from WORKERS, its live child an
     orphan (the parent-sentinel lifeline does not fire: the server is alive).
 
-    The teardown and the respawn now run under the ONE lifecycle lock every
-    generation change takes (lifecycle -> queue order kept; the RLock lets the
-    nested respawn re-enter), so the change WAITS for the watcher and the
-    watcher never sees the fresh slot: the real ``respawn_worker`` on a fake
-    context, the watcher held inside its teardown while the generation change
-    is attempted through the same serializer."""
+    The respawn runs under the ONE lifecycle lock every generation change takes
+    (lifecycle -> queue order kept; the RLock lets the nested respawn re-enter),
+    after re-validating the slot's identity. The native teardown itself holds no
+    lifecycle lock (owner 14 Oct 21:09 #4: the lock guards membership, never a
+    kill or join), so the change may run while the watcher kills, and the
+    watcher then finds the fresh slot and leaves it alone: the real
+    ``respawn_worker`` on a fake context, the watcher held inside its teardown
+    while the generation change runs through the same serializer."""
     import threading
 
     import ouroboros.platform_layer as platform_layer
@@ -584,6 +587,7 @@ def test_a_generation_change_cannot_interleave_with_the_watcher_s_teardown_and_r
         killed.append(pid)
         in_teardown.set()
         assert release.wait(10), "the test never released the watcher"
+        stale.proc._alive = False  # the stop lands: the watcher reaches its replace step
 
     monkeypatch.setattr(platform_layer, "kill_pid_tree", _kill)
     watcher = threading.Thread(
@@ -612,7 +616,8 @@ def test_a_generation_change_cannot_interleave_with_the_watcher_s_teardown_and_r
     assert workers.WORKERS[2] is fresh, "the fresh generation's live slot was evicted by the stale watcher"
     fresh.in_q.close.assert_not_called()
     assert killed == [5020], "only the stale child is torn down; the fresh one is never touched"
-    assert not interleaved, "the generation change ran inside the watcher's check/teardown/respawn window"
+    assert interleaved, "the generation change waited behind the watcher's native kill"
+    fake_ctx.Process.assert_not_called()  # the stale watcher re-validated and started nothing
 
 
 def test_the_first_event_reader_keeps_its_contract_over_the_list_reader(pool, seam):
