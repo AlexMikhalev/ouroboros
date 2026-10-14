@@ -24,14 +24,22 @@ from ouroboros.cost_projection import live_root_cost_projection
 
 
 def _handle_task_heartbeat(evt: Dict[str, Any], ctx: Any) -> None:
+    """Liveness stamp and live frame for one running task; a no-op once it left RUNNING.
+
+    Mutates the RUNNING entry IN PLACE (the ``_handle_llm_usage`` rule): a
+    write-back would resurrect a task a cross-thread cancel popped between the
+    get and the write. The root cost figure is the stale-allowed projection,
+    so a heartbeat never reads the current task-result store on the drain.
+    """
     task_id = str(evt.get("task_id") or "")
     if task_id and task_id in ctx.RUNNING:
-        meta = ctx.RUNNING.get(task_id) or {}
+        meta = ctx.RUNNING.get(task_id)
+        if not isinstance(meta, dict):
+            return
         meta["last_heartbeat_at"] = time.time()
         phase = str(evt.get("phase") or "")
         if phase:
             meta["heartbeat_phase"] = phase
-        ctx.RUNNING[task_id] = meta
         task = meta.get("task") if isinstance(meta.get("task"), dict) else {}
         started_at = float(meta.get("started_at") or 0.0)
         runtime_sec = round(max(0.0, time.time() - started_at), 1) if started_at > 0 else None
