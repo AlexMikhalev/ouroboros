@@ -188,8 +188,8 @@ def task_processing_preference(task: dict, *, model_role: str = "",
 
 
 def _persisted_role(role: str) -> tuple[str, str]:
-    """``role`` as a wait card persists it: ``(family, identity)``. ``/review`` runs on the direct
-    Main row when the call names no reviewer (deep_self_review.main_review_row, decision 3A): there
+    """``role`` as a wait card persists it: ``(family, identity)``. ``/review`` with no reviewer named
+    and an empty pool run on the direct Main row (reviewer_slot_config.main_review_row): there
     is no catalog row behind ``reviewer:main``, so its card persists as Main's own role."""
     family, _, identity = role.partition(":")
     return ("main", "") if (family, identity) == ("reviewer", "main") else (family, identity)

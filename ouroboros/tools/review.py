@@ -56,8 +56,6 @@ from ouroboros.tools.review_helpers import (
     format_name_status_for_preflight,
     format_review_history_entry as _format_review_entry,
     REVIEW_PROMPT_TOKEN_BUDGET,  # noqa: F401 — patchable seam (see note above)
-    REVIEW_POOL_EMPTY_REASON,
-    REVIEW_POOL_EMPTY_SENTENCE,
     review_enforcement_blocks,
     single_line as _single_line,
 )
@@ -439,7 +437,7 @@ def _handle_task_acceptance_review(
     if not slots:
         return _publish_tool_result(ctx, ToolResult(status="unavailable", code="LEGACY_UNAVAILABLE",
             text=json.dumps({"status": "not_dispatched", "reason": "no_review_slots",
-                           "detail": "no triad reviewer row is configured; no reviewer was called"},
+                           "detail": "the review pool built no seat; no reviewer was called"},
                           ensure_ascii=False)))
     retrieving = [slot for slot in slots if slot.retrieves]
     if retrieving:
@@ -1117,9 +1115,9 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     touched_paths = [f.strip() for f in review_changed.strip().splitlines() if f.strip()]
 
     # Per-row identity/delivery/strength from the ONE review-pool builder
-    # (``review_pool_slots``): the catalog's marked rows, which a never-configured
-    # install owns as the factory rows minted at the settings read seam; there is
-    # no default panel here. A malformed configuration is an infra failure, never
+    # (``review_pool_slots``): the catalog's marked rows (a never-configured install
+    # owns the factory rows minted at the settings read seam), else the Main seat
+    # alone. A malformed configuration is an infra failure, never
     # a silent api spend. Resolved BEFORE the packet's governance and file
     # evidence: only the api rows receive a packet at all, and their windows size
     # its governance share.
@@ -1137,16 +1135,6 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
             "Review enforcement=Advisory: invalid review pool configuration did not block commit. ",
         ), True
     models, row_routes = row_plan["models"], row_plan["routes"]
-    if not models:
-        # A configured fact (the ``## Review`` block's ``pool_empty``), stated as such
-        # before anything is assembled: nothing to dispatch, no provider to blame.
-        ctx._last_review_block_reason = REVIEW_POOL_EMPTY_REASON
-        return None, _handle_review_block_or_warning(
-            ctx, blocking_review,
-            f"⚠️ REVIEW_BLOCKED: review NOT_PERFORMED — {REVIEW_POOL_EMPTY_SENTENCE}",
-            "Review enforcement=Advisory: the review pool is empty, so no review ran; "
-            "an explicit author decision is required. ",
-        ), True
     ctx._last_triad_models = list(models)  # forensic: actual resolved model IDs
     # Packet rows only: a retrieving api row (native delivery or a configured
     # subagent) neither constrains the fit ladder nor counts as an api seat for

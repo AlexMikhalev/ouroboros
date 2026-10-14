@@ -274,9 +274,10 @@ def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None) -> str:
     ``seat_id`` is the stored row id the records carry. Above four seats the rows shrink to ``{seat_id, model}``
     and ``omitted`` counts them; ``coupling_unanswerable: true`` (:func:`coupling_unanswerable`) is a block fact,
     so the shrink keeps it. ``source`` is ``structured`` (a non-empty pool), ``empty`` (a readable catalog
-    with no marked row — a loud, configured fact, never a default panel) or ``error`` (a malformed catalog or a
-    refused migration). Stable for the task (cache-marked prefix); the task's recent ledger records ride
-    separately in the changing part (:func:`review_records_block`)."""
+    with no marked row — a loud, configured fact whose one seat is the Main model reviewing alone,
+    ``main_self_review: true``) or ``error`` (a malformed catalog or a refused migration). A seat without a
+    catalog row (the Main seat) is named by its ``seat_id``. Stable for the task (cache-marked prefix); the
+    task's recent ledger records ride separately in the changing part (:func:`review_records_block`)."""
     from ouroboros import reviewer_slot_config as rs
     from ouroboros.config import get_review_enforcement, get_runtime_mode, runtime_settings, task_settings_scope
     from ouroboros.configured_subagents import SUBAGENTS_SETTING, parse_configured_subagents
@@ -304,7 +305,7 @@ def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None) -> str:
                 session = slot.route is ReviewRouteKind.AGENT_SESSION
                 pool.append({
                     "seat_id": slot.slot_id,
-                    "subagent_id": handles.get(slot.subagent_id, slot.subagent_id),
+                    "subagent_id": handles.get(slot.subagent_id, slot.subagent_id) or slot.slot_id,
                     "model": slot.model, "effort": slot.effort,
                     "delivery": "session" if session else ("native" if slot.native_retrieval else "packet"),
                     "cost_hint": SESSION_SEAT_COST_HINT if session else _api_review_cost_hint(slot),
@@ -312,6 +313,8 @@ def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None) -> str:
                 # A session seat logs in itself; an api seat answers only with its provider's key.
                 if not session and not model_has_credentials_in_settings(slot.model, dict(settings)):
                     without_credentials.append(pool[-1]["subagent_id"])
+        # No marked row: the seats built are the one Main seat (``review_pool_slots``).
+        main_alone = state["state"] == "empty" and bool(slots)
         migration = _review_migration_facts(settings)
         if migration.get("error") and source != "error":
             source, error = "error", migration["error"]
@@ -330,6 +333,8 @@ def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None) -> str:
         "rule": _REVIEW_RULES["cyber_pro" if runtime_mode_at_least(mode, "cyber_pro") else enforcement],
         "pool": pool,
         "pool_empty": source == "empty",
+        # The Main model reviews alone: one model, no second opinion, its own work.
+        **({"main_self_review": True} if main_alone else {}),
         **({"coupling_unanswerable": True} if unanswerable else {}),
         # VD3-08: the seats this install holds no credentials for (the fact Settings shows
         # from the same payload field); every seat of the pool is the loud one.

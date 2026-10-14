@@ -42,17 +42,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # non-blocking skip gate leaves headroom for default 1M-context reviewer models.
 REVIEW_PROMPT_TOKEN_BUDGET = 920_000
 
-# The empty review pool is a configured fact, the one the ``## Review`` context block
-# states as ``pool_empty`` and the settings panel promises as "reviews will not run and
-# will report not performed": the commit gate says the same, typed ``pool_empty``, and
-# never blames a provider key for it.
-REVIEW_POOL_EMPTY_REASON = "pool_empty"
-REVIEW_POOL_EMPTY_SENTENCE = (
-    "the review pool is empty (pool_empty): no enabled catalog row is marked Reviewer, so no review "
-    "wave ran and the review is NOT_PERFORMED. Mark a row as Reviewer in Settings → Agents (or run "
-    "the wizard), then retry the commit."
-)
-
 
 def review_enforcement_blocks(enforcement: str | None = None) -> bool:
     """Project action authority without changing configured policy or review facts."""

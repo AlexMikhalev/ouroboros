@@ -784,10 +784,9 @@ def system_review_row(reviewer: str = "", effort: str = "") -> Any:
     handle, pool member or not, else the direct Main row; ``effort`` is the call's
     order (a compound route keeps its own)."""
     from ouroboros import reviewer_slot_config as slots
-    from ouroboros.deep_self_review import main_review_row
 
     if not reviewer:
-        row = main_review_row()  # Main's own failure (an invalid pin document) is not a catalog refusal
+        row = slots.main_review_row()  # Main's own failure (an invalid pin document) is not a catalog refusal
     else:
         try:
             row = slots.catalog_review_row(None, reviewer)
