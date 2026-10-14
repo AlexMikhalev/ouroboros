@@ -118,14 +118,13 @@ def postwork(f, monkeypatch):
     from ouroboros import agent_task_pipeline as pipeline
     from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
     observed = []
-    for name in ('_record_task_facts', '_run_scratchpad_consolidation',
-                 '_run_reflection', '_update_improvement_backlog'):
+    for name in ('_record_task_facts', '_run_scratchpad_consolidation'):
         monkeypatch.setattr(pipeline, name, lambda *_a, _name=name, **_k: observed.append(_name))
     monkeypatch.setattr('ouroboros.post_task_evolution.maybe_promote', lambda *_a, **_k: observed.append('promotion'))
     task = {**f.task, 'drive_root': str(f.root)}
     task.pop('_skip_post_task_synthesis', None)
     env = SimpleNamespace(drive_root=f.root, repo_dir=f.tmp_path)
-    pipeline._run_post_task_processing_async(env, task, {}, {}, {}, f.root / 'logs', blocking=True)
+    pipeline._run_post_task_processing_async(env, task, {}, {}, f.root / 'logs', blocking=True)
     assert not post_task_synthesis_in_flight(f.root, f.tid)
     assert load_task_result(f.root, f.tid)['root_phase_checkpoint']['post_task_synthesis'] == 'completed'
     assert 'promotion' in observed

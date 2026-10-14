@@ -32,8 +32,6 @@ Providers name the output budget differently: OpenRouter and Anthropic-compatibl
 | Context compaction round summaries | 32,768 |
 | Review synthesis dedup | 16,384 |
 | Scratchpad consolidation, Light memory drafts (`consolidator.LIGHT_ANSWER_CEILING_TOKENS`) | 16,384 |
-| Execution reflection and pattern-register update | 16,384 |
-| Improvement-backlog grooming (`improvement_backlog.groom_backlog`) | 8,192 |
 | Post-task evolution promotion decision (`post_task_evolution`) | 8,192 |
 | Skill publish PR body generation | 8,192 |
 | Update letter LIGHT one-shot (`update_letter.UPDATE_LETTER_MAX_TOKENS`) | 1,024 |

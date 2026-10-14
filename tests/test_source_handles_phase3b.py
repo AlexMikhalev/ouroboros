@@ -68,7 +68,6 @@ class _ConsolidationLLM:
     def chat(self, **_kwargs):
         return {
             "content": json.dumps({
-                "knowledge_entries": [],
                 "compressed_block": "compressed working memory",
             })
         }, {"prompt_tokens": 10, "completion_tokens": 5}
@@ -83,7 +82,6 @@ def test_scratchpad_consolidation_journals_exact_replaced_blocks_and_ref(tmp_pat
 
     usage = consolidate_scratchpad(
         memory,
-        tmp_path / "memory" / "knowledge",
         _ConsolidationLLM(),
     )
     assert usage["prompt_tokens"] == 10

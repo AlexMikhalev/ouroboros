@@ -199,7 +199,6 @@ class TestAliasProducerFanOutSweep:
         # usage/observability event streams (events.jsonl, live log frames;
         # /api/logs replay converts to the honest name at the boundary)
         ("ouroboros/loop_llm_call.py", "cost_usd", "call_llm_with_retry"): ("llm_round usage event rows", 1),
-        ("ouroboros/post_task_synthesis.py", "cost_usd", "_run_reflection"): ("reflection generation gate args", 1),
         ("supervisor/events_evolution_done.py", "cost_usd", "_handle_evolution_task_done"): ("internal lifecycle/checkpoint call kwargs + supervisor.jsonl observability row", 3),
         # review/evidence receipt schemas (internal review plane)
         ("ouroboros/triad_review.py", "cost_usd", "to_dict"): ("triad review receipt serialization", 1),
@@ -218,8 +217,6 @@ class TestAliasProducerFanOutSweep:
         ("ouroboros/evolution_checkpoints.py", "cost_usd", "append_evolution_checkpoint"): ("evolution checkpoint records", 1),
         # custody settlement events
         ("ouroboros/delegate_collection.py", "cost_usd", "record_terminal_money"): ("custody SETTLED event row", 1),
-        # reflection records
-        ("ouroboros/reflection.py", "cost_usd", "generate_reflection"): ("task reflection record", 1),
     }
 
     @staticmethod

@@ -62,7 +62,7 @@ Disclosed truncation (the `⚠️ OMISSION NOTE` marker) protects **LLM context 
 
 - **Owner/UI-bound surfaces** (chat, task_results projections, review verdicts shown to a person) present the complete text or a reference to a durable full copy (an observability `response_ref`): reviewer rationale is a cognitive artifact (BIBLE P1), and truncating it beside an unreferenced full copy is partial memory loss. Terminal text asserts only recovery facts the round record carries, never a route mechanism the selected transport cannot perform.
 - **Model-bound projections** (review packs, context sections, tool-result transport) keep their disclosed-truncation budgets.
-- **A cut cheaper than its own marker is forbidden everywhere** (the shared primitive's floor); the one exception, an identifier-shaped single-line field under a tiny limit, is `reflection._truncate_with_notice`.
+- **A cut cheaper than its own marker is forbidden everywhere** (the shared primitive's floor).
 
 Enforcement: `tests/test_owner_facing_honesty.py`.
 

@@ -65,17 +65,13 @@ def test_tool_result_projection_never_credits_undelivered_body_or_header(tmp_pat
     assert not reads.reads
 
 
-def test_light_reads_large_note_in_multiple_windows_then_publishes_its_revision(tmp_path, fit):
+def test_light_reads_large_note_in_multiple_windows_across_authored_views(tmp_path, fit):
     fit.window = 50000
     ctx, original, reads = _setup(tmp_path, "Original account of events. " * 7000 + "DECISIVE LAST EVENT.")
     chunk = 40000
     total = len(original.text)
     assert estimate_context_prompt_tokens([{"role": "user", "content": original.text}], reads.tools) + 16384 > fit.window
     episode = "ORIGINAL EPISODE: reconsider the complete account."
-    revised = "A coherent revised account preserving the decisive last event."
-    nomination = [{"topic": "large", "scope": "global", "edits": [{
-        "old_text": "DECISIVE LAST EVENT.", "new_text": revised,
-        "basis": "The complete source and new episode correct the final event."}]}]
     answer = "I read the full account and retained what changed."
 
     class Reader:
@@ -109,12 +105,9 @@ def test_light_reads_large_note_in_multiple_windows_then_publishes_its_revision(
 
     llm = Reader()
     content, usage = c._call_consolidation_llm(llm, episode, "multiwindow", knowledge=reads)
-    bound = reads.bind_entries(nomination)
-    assert content, usage
+    assert content == answer, usage
     assert len(llm.revisions) > 2
-    assert bound[0]["expected_revision"] == original.revision
-    assert c._write_knowledge_entries(original.address.shelf, bound, context=ctx)[0]["ok"]
-    assert k.read_knowledge_note(original.address).text.endswith("decisive last event.")
+    assert k.read_knowledge_note(original.address).raw == original.raw  # a read writes nothing
     assert list((tmp_path / "task_results" / "artifacts" / "memory-view" / "source_handles").rglob("*.json"))
 
 

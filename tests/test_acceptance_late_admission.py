@@ -274,13 +274,12 @@ def test_spawned_worker_public_request_waits_for_real_original_owner(late, tmp_p
             entered.set()
             assert release.wait(20)
         monkeypatch.setattr(pipeline, '_record_task_facts', hold)
-        for name in ('_run_scratchpad_consolidation', '_run_reflection', '_update_improvement_backlog'):
-            monkeypatch.setattr(pipeline, name, lambda *_a, **_k: None)
+        monkeypatch.setattr(pipeline, '_run_scratchpad_consolidation', lambda *_a, **_k: None)
         monkeypatch.setattr('ouroboros.post_task_evolution.maybe_promote', lambda *_a, **_k: None)
         task = {**f.task, 'drive_root': str(f.root), '_is_direct_chat': True}
         task.pop('_skip_post_task_synthesis')
         postwork = threading.Thread(target=lambda: pipeline._run_post_task_processing_async(
-            SimpleNamespace(drive_root=f.root, repo_dir=tmp_path), task, {}, {}, {}, f.root / 'logs', blocking=True))
+            SimpleNamespace(drive_root=f.root, repo_dir=tmp_path), task, {}, {}, f.root / 'logs', blocking=True))
         postwork.start()
         assert entered.wait(5)
     mp = multiprocessing.get_context('spawn')

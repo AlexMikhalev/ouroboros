@@ -894,9 +894,7 @@ exact `text`, `format`, provider facts in `message`, and
 sets kind explicitly. A tool handler may use its supported first `ctx` argument
 to retain compact task provenance; never serialize the full context or secrets.
 The Host establishes source identity, and a task reference grants no authority.
-A reflection written for that task's root after the report arrives shows it labelled
-`skill_claimed` unless the Host itself bound the row to a Presence turn of the same
-transport (`host_bound`); a report arriving later stays in chat history only.
+Reports stay in chat history, where the room view names them as delivery facts.
 
 Report physical parts separately. Preserve resolved DM IDs, actual chunk or
 fallback text, captions and provider message IDs in the receipt snapshot.

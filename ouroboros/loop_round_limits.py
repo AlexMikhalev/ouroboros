@@ -613,8 +613,8 @@ def _handle_direct_turn_hard_stop(
     existing ``_skip_post_task_synthesis`` marker (the authority-refusal
     terminal's seam, honoured by ``post_task_checkpoint.is_root_post_task``)
     is recorded on the tool context here; ``emit_task_results`` copies it
-    onto the task record before the root predicate runs, so no summary,
-    reflection or consolidation bills after the owner's stop."""
+    onto the task record before the root predicate runs, so no fallback
+    draft, consolidation or promotion bills after the owner's stop."""
     live_trace = getattr(ctx, "llm_trace", None)
     llm_trace = live_trace if isinstance(live_trace, dict) else {}
     tool_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)

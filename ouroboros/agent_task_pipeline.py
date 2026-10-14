@@ -1,4 +1,4 @@
-"""Post-task result emission, memory work, reflections, and review context.
+"""Post-task result emission, root post-task work, and review context.
 
 ``emit_task_results`` derives the loop outcome once, emits the lifecycle and
 usage events, registers the final answer in the durable outbox, stores the
@@ -87,15 +87,11 @@ from ouroboros.presence_runner import build_presence_result_event
 log = logging.getLogger(__name__)
 
 
-# The synthesis cost/snapshot projections live in `ouroboros/synthesis_cost_text.py`
+# The task_summary cost fields live in `ouroboros/synthesis_cost_text.py`
 # (extracted at this module's size ceiling); re-exported here because the
-# synthesis prompts, the tests and monkeypatch targets name them on THIS surface.
+# tests name the helper on THIS surface.
 from ouroboros.synthesis_cost_text import (  # noqa: F401,E402
-    _SYNTHESIS_USAGE_PROMPT_FIELDS,
     _summary_row_cost_fields,
-    _synthesis_cost_text,
-    _synthesis_cost_usd,
-    _synthesis_usage_snapshot_text,
 )
 
 
@@ -132,7 +128,6 @@ def _run_post_task_processing_async(
     task: Dict[str, Any],
     usage: Dict[str, Any],
     llm_trace: Dict[str, Any],
-    review_evidence: Dict[str, Any],
     drive_logs: pathlib.Path,
     *,
     blocking: bool = False,
@@ -142,17 +137,20 @@ def _run_post_task_processing_async(
     resume: Dict[str, Any] | None = None,
     expected_record: Dict[str, Any] | None = None,
     owner_liveness=None, claim_guard=None, stop_requested=None,
-) -> Dict[str, Any] | None:
-    """Run best-effort LLM-heavy post-task memory work off the reply path (``resume``: a saved late-phase Pause)."""
+) -> None:
+    """Run best-effort post-task work off the reply path (``resume``: a saved late-phase Pause).
+
+    No stage authors a lesson, the Pattern Register or the backlog; that is the
+    acting mind's ordinary ``knowledge_write``. ``on_reflection`` is a split Project
+    root's canonical chooser entry; the promotion stage hands it the sealed final.
+    """
     task_snapshot = json.loads(json.dumps(task, ensure_ascii=False, default=str))
     trace_snapshot = json.loads(json.dumps(llm_trace, ensure_ascii=False, default=str))
-    review_evidence_snapshot = json.loads(json.dumps(review_evidence, ensure_ascii=False, default=str))
     sealed_snapshot = (
         json.loads(json.dumps(sealed_final, ensure_ascii=False, default=str))
         if isinstance(sealed_final, dict) and sealed_final else None
     )
 
-    result: Dict[str, Any] = {}
     from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
     base_scope = current_usage_scope()
@@ -217,9 +215,8 @@ def _run_post_task_processing_async(
         skipped: list[str] = []
         interrupted = current = ""
         saved = resume or {}
-        free_actions_applied = bool(saved.get("free_actions_applied"))
         completed: list[str] = list(saved.get("completed_stages") or ())
-        result.update(saved.get("result") or {})
+        retired: list[str] = []
         late_token = bind_late_phase_run(late := LatePhaseRun(saved.get("marks"), saved.get("drafts")))
         try:
             # The free facts row precedes every paid stage, so neither Stop nor a
@@ -232,64 +229,42 @@ def _run_post_task_processing_async(
             llm_client = LLMClient()
             task_memory = Memory(drive_root=env.drive_root, repo_dir=env.repo_dir)
 
-            def _apply_free_reflection() -> None:
-                nonlocal free_actions_applied
-                entry = result.get("reflection_entry")
-                if entry is None or free_actions_applied:
-                    return
-                # An action may partially apply before raising; never replay it.
-                free_actions_applied = True
-                try:
-                    from ouroboros.project_facts import resolve_project_id
-                    _apply_reflection_memory_actions(env, entry, project_id=resolve_project_id(task_snapshot))
-                except Exception:
-                    log.warning("Completed reflection actions could not be applied for %s", stage_task_id, exc_info=True)
-
             def _promotion() -> str:
-                reflection_entry = result.get("reflection_entry")
-                _apply_free_reflection()
                 if is_presence_task(task_snapshot):
                     return ""
-                # Project facts stay scoped; generic process lessons remain global.
                 failure = ""
-                try:
-                    late_phase_step("promotion:backlog", lambda: _update_improvement_backlog(env, reflection_entry))
-                except Exception as error:
-                    propagate_paid_interruption(error)
-                    # A lost append or grooming pass is this stage's own typed
-                    # failure (degraded, nothing skipped); the chooser still runs.
-                    failure = "backlog_update_failed"
-                    log.warning("Improvement backlog update failed", exc_info=True)
                 try:
                     from ouroboros.post_task_evolution import maybe_promote
 
-                    late_phase_step("promotion:promote", lambda: maybe_promote(env, task_snapshot, reflection_entry, llm_client))
+                    late_phase_step("promotion:promote", lambda: maybe_promote(env, task_snapshot, sealed_snapshot, llm_client))
                 except Exception as error:
                     propagate_paid_interruption(error)
                     # An ordinary chooser failure is this stage's own typed failure
-                    # (degraded, nothing skipped); the global callback still runs.
+                    # (degraded, nothing skipped); the Project root's canonical entry still runs.
                     failure = "promotion_failed"
                     log.warning("Post-task evolution promotion failed", exc_info=True)
                 if on_reflection is not None:
-                    late_phase_step("promotion:global", lambda: on_reflection(reflection_entry, llm_client))
+                    late_phase_step("promotion:global", lambda: on_reflection(sealed_snapshot, llm_client))
                 return failure
 
             # All late model work belongs to this one scoped worker.  This keeps
             # the root checkpoint non-final until the fallback memory draft,
-            # consolidation, reflection and promotion have all stopped billing.
+            # consolidation and promotion have all stopped billing.
             stages: List[tuple[str, Callable[[], Any]]] = [
                 ("memory_fallback_draft", lambda: _run_memory_fallback_draft(
                     env, task_snapshot, llm_client, drive_logs, trace_snapshot)),
                 ("scratchpad_consolidation", lambda: _run_scratchpad_consolidation(
                     env, task_memory, llm_client)),
-                ("reflection", (lambda: finish_published_reflection(env, task_snapshot, result["reflection_entry"]))
-                 if saved.get("stage") == "reflection" and result.get("reflection_entry") else
-                 lambda: result.__setitem__("reflection_entry", _run_reflection(
-                    env, llm_client, task_snapshot, usage_snapshot, trace_snapshot,
-                    review_evidence_snapshot, sealed_final=sealed_snapshot,
-                    publish=lambda entry: result.__setitem__("reflection_entry", entry)))),
                 ("promotion", _promotion),
             ]
+            # A Pause saved by an earlier version may name a stage that no longer
+            # exists (its reflection): it is retired, never run, and its saved outputs
+            # (an entry, nominations, a callback's candidates) cause no effect. A later
+            # Pause of the remainder carries what was retired until the phase settles.
+            names = [name for name, _run in stages]
+            retired = [stage for stage in dict.fromkeys([*(saved.get("retired_stages") or ()), saved.get("stage"),
+                                                         *(saved.get("remaining_stages") or ())])
+                       if stage and stage not in names and stage not in completed]
             from ouroboros.post_task_synthesis import (
                 POST_TASK_INTERRUPT_KINDS, post_task_interruption, propagate_paid_interruption,
             )
@@ -306,9 +281,6 @@ def _run_post_task_processing_async(
                 current = name
                 try:
                     stage_reason = run_stage()
-                    if name == "reflection" and isinstance(result.get("reflection_entry"), dict):
-                        stage_reason = _post_task_paid_interruption(
-                            result["reflection_entry"].get("memory_operation_errors"))
                     if isinstance(stage_reason, str) and stage_reason in POST_TASK_INTERRUPT_KINDS:
                         interrupted = stage_reason
                         skipped = [stage for stage, _run in stages[index + 1:]]
@@ -344,23 +316,19 @@ def _run_post_task_processing_async(
         finally:
             if interrupted == "owner_pause" and _owner_stop_requested():  # Stop outranks Pause: nothing saved
                 interrupted, skipped = "owner_stopped", [current, *skipped]
-            # Applying actions already produced by reflection is free and must
-            # survive a later paid-stage refusal; never run the paid promotion here.
-            if (result.get("reflection_entry") is not None
-                    and interrupted not in {"owner_stopped", "cancelled", "finalize_requested"}
-                    and not free_actions_applied):
-                _apply_free_reflection()
             # The owner's Pause keeps the remainder (D10); a failed save stays an honest degraded.
             if not (interrupted == "owner_pause" and park_late_phase(
                     env, task_snapshot, current, [current, *skipped], completed, late=late, inputs=(
-                        usage, usage_snapshot, trace_snapshot, review_evidence_snapshot, sealed_snapshot, drive_logs,
-                        on_reflection), state=dict(result=dict(result), free_actions_applied=free_actions_applied,
-                                                   stage_errors=stage_errors))):
+                        usage, usage_snapshot, trace_snapshot, sealed_snapshot, drive_logs,
+                        on_reflection), state=dict(stage_errors=stage_errors,
+                                                   **({"retired_stages": retired} if retired else {})))):
+                reasons = [f"{interrupted}:skipped={','.join(skipped)}"] if interrupted else []
+                if retired:  # disclosed, never silently dropped: the stage does not exist any more
+                    reasons.append(f"stage_retired:skipped={','.join(retired)}")
                 try:
                     _publish_root_post_task_checkpoint(
                         env, task_snapshot, checkpoint_status, expected=phase_witness,
-                        stop_requested=stop_requested,
-                        stop_reason=(f"{interrupted}:skipped={','.join(skipped)}" if interrupted else ""),
+                        stop_requested=stop_requested, stop_reason=";".join(reasons),
                         event_queue=event_queue,
                     )
                 except Exception:
@@ -413,7 +381,7 @@ def _run_post_task_processing_async(
 
     if blocking:
         _run()
-        return result.get("reflection_entry")
+        return None
     try:
         settings_context = contextvars.Context()
         copy_task_settings_context(settings_context)
@@ -507,7 +475,7 @@ def recover_pending_root_post_task_synthesis(
             trace = {"tool_calls": [], "reasoning_notes": [str(task.get("trace_summary") or "")],
                      "recovered_post_task_synthesis": True}
             _run_post_task_processing_async(
-                env, task, usage, trace, task.get("review_evidence") or {}, root / "logs", blocking=False,
+                env, task, usage, trace, root / "logs", blocking=False,
                 sealed_final=build_sealed_final_package(task, str(task.get("result") or "")),
                 expected_record=authority, owner_liveness=owner_liveness, claim_guard=claim_guard,
                 stop_requested=stop_requested, event_queue=event_queue)
@@ -523,27 +491,17 @@ def recover_pending_root_post_task_synthesis(
 def _run_global_backlog_promotion_only(
     env: Any,
     task: Dict[str, Any],
-    reflection_entry: Dict[str, Any] | None,
+    sealed_final: Dict[str, Any] | None,
     llm: Any,
 ) -> None:
-    """Feed canonical improvement backlog/promotion without leaking project memory.
+    """A split Project root's entry to the canonical chooser (owner-enabled evolution).
 
-    Runs inside the promotion stage; a failure raises to that stage's coordinator."""
-
-    if not reflection_entry:
-        return
-    candidates = [
-        item for item in (reflection_entry.get("backlog_candidates") or [])
-        if isinstance(item, dict) and str(item.get("summary") or "").strip()
-    ]
-    if not candidates:
-        return
-    sanitized_entry = {
-        "reflection": "\n".join(f"- {str(item.get('summary') or '').strip()}" for item in candidates),
-        "backlog_candidates": candidates,
-        "memory_actions": [],
-    }
-    _update_improvement_backlog(env, sanitized_entry)
+    The project task's own chooser stays project-gated; this globalized view reaches
+    the canonical drive with the run's sealed final and its provenance, never its
+    project scope, initial text or memory, and that drive's opt-in, cadence counter,
+    eligibility and authored backlog decide as for any root. Its cadence counter,
+    observed call and any promotion request remain recorded. A failure
+    raises to that stage's coordinator."""
     from ouroboros.consciousness_authority import consciousness_origin_metadata
     from ouroboros.post_task_evolution import maybe_promote
 
@@ -558,7 +516,7 @@ def _run_global_backlog_promotion_only(
         # globalized view keeps it: a level that may not evolve stays that way.
         **({"task_contract": dict(task["task_contract"])} if isinstance(task.get("task_contract"), dict) else {}),
     }
-    maybe_promote(env, global_task, sanitized_entry, llm)
+    maybe_promote(env, global_task, sealed_final if isinstance(sealed_final, dict) else None, llm)
 
 
 def _attach_host_mutation_projection(
@@ -971,7 +929,7 @@ def emit_task_results(
         if not _root_post_task_already_completed(env, task):
             _dispatch_root_post_task(
                 env, task, str(send_event.get("text") or ""), event_queue, pending_events,
-                post_usage, llm_trace, review_evidence, drive_logs,
+                post_usage, llm_trace, drive_logs,
                 budget_drive_root=budget_drive_root, split_drive=split_drive,
                 project_scoped=_project_scoped, project_task=_project_task,
                 parent_env=parent_env, parent_task=parent_task,
@@ -981,8 +939,7 @@ def emit_task_results(
 def _dispatch_root_post_task(
     env: Any, task: Dict[str, Any], text: str,
     event_queue: Any, pending_events: List[Dict[str, Any]],
-    post_usage: Dict[str, Any], llm_trace: Dict[str, Any],
-    review_evidence: Dict[str, Any], drive_logs: pathlib.Path,
+    post_usage: Dict[str, Any], llm_trace: Dict[str, Any], drive_logs: pathlib.Path,
     *, budget_drive_root: str, split_drive: bool,
     project_scoped: bool, project_task: bool,
     parent_env: Any, parent_task: Dict[str, Any] | None,
@@ -1020,20 +977,20 @@ def _dispatch_root_post_task(
             event_queue, pending_events, str(task.get("id") or ""),
             drive_root=budget_drive_root or env.drive_root,
         )
-    # Sealed ground truth for summary/reflection: what the owner actually
-    # received + the durable result's own artifact facts (Q4A).
+    # Sealed ground truth for the post-task phase: what the owner actually
+    # received + the durable result's own artifact facts.
     sealed_final = build_sealed_final_package(
         load_task_result(env.drive_root, str(task.get("id") or "")), text,
     )
     if split_non_project:
         _run_post_task_processing_async(
-            parent_env, parent_task, post_usage, llm_trace, review_evidence,
+            parent_env, parent_task, post_usage, llm_trace,
             pathlib.Path(budget_drive_root) / "logs",
             blocking=True, sealed_final=sealed_final, event_queue=event_queue,
         )
     else:
         _run_post_task_processing_async(
-            env, task, post_usage, llm_trace, review_evidence, drive_logs,
+            env, task, post_usage, llm_trace, drive_logs,
             blocking=blocking,
             on_reflection=global_reflection_callback,
             sealed_final=sealed_final,
@@ -1449,17 +1406,12 @@ def build_review_context(env: Any) -> str:
 # ouroboros.agent_task_pipeline bindings for consumers.
 from ouroboros.post_task_synthesis import (  # noqa: E402, F401 -- intentional public re-exports
     build_trace_summary,
-    _update_improvement_backlog,
-    _apply_reflection_memory_actions,
-    _child_task_evidence,
     _pre_synthesis_usage_snapshot,
     _compact_review_projection,
     _record_task_facts,
     _post_task_paid_interruption,
     _run_memory_fallback_draft,
     _run_scratchpad_consolidation,
-    _run_reflection,
-    finish_published_reflection,
     late_phase_step,
     park_late_phase,
 )

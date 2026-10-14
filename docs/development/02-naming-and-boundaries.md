@@ -266,7 +266,7 @@ verbs").
 ### The owner corpus archives inputs; the owner door's stamp is the only authority
 
 A task-authored objective copies only its retained owner corpus, never the draft. Other
-runs record their first user turn for acceptance, Safety and reflection, labelled by
+runs record their first user turn for acceptance and Safety, labelled by
 what the host knows: `initial_user` when owner routing stamped the run
 (`metadata.origin_message_ref` or `origin_suppressed`, inherited by value by a promoted
 root), `initial_text` otherwise. `dialogue_provenance.run_origin` mints that fact once

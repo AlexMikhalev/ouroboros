@@ -755,7 +755,10 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 370 -> 371 (FIXB): observability/packs/.publications, the disposable per-pass
 # reference journal documented in the existing evidence-pack row.
 # 371 -> 372: the fixed DATA server-lifetime admission lock (state/server.lock).
-EXPECTED_SCAN_PATHS = 373
+# 373 -> 371: the automatic reflection writer's two literal history paths left with it
+# (memory/knowledge/patterns_history.jsonl, retained as history; memory/knowledge_history.jsonl,
+# still written by knowledge.write_knowledge_note through its address, which the scan cannot see).
+EXPECTED_SCAN_PATHS = 371
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

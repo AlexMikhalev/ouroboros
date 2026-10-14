@@ -46,8 +46,6 @@ def test_native_agent_returns_durable_result_before_synthesis_and_retry_reuses_i
     # The first paid late stage (scratchpad consolidation since the dialogue writer is retired).
     monkeypatch.setattr(pipeline, "_run_scratchpad_consolidation", consolidate)
     monkeypatch.setattr(pipeline, "_record_task_facts", lambda *_a, **_k: stages.append("facts"))
-    monkeypatch.setattr(pipeline, "_run_reflection", lambda *_a, **_k: stages.append("reflection"))
-    monkeypatch.setattr(pipeline, "_apply_reflection_memory_actions", lambda *_a, **_k: stages.append("memory"))
     monkeypatch.setattr(loop, "call_llm_with_retry", lambda *_a, **_k: (_call(outcome, "Reply" if outcome == "message" else ""), 0.0))
 
     # Cold tool-catalog construction is setup, outside the completion-order barrier.
@@ -100,7 +98,7 @@ def test_native_agent_returns_durable_result_before_synthesis_and_retry_reuses_i
         release.set()
         for thread in set(threading.enumerate()) - threads_before:
             thread.join(timeout=5)
-    assert stages.count("facts") == stages.count("reflection") == 2
+    assert stages.count("facts") == stages.count("consolidation") == 2
     for task_id in (first.task_id, second.task_id):
         row = load_task_result(tmp_path, task_id)
         assert row["root_phase_checkpoint"]["post_task_synthesis"] == "completed"
@@ -119,7 +117,7 @@ def test_only_native_unsplit_presence_changes_post_task_wait(tmp_path, monkeypat
     task = {"id": "test", "type": "presence" if presence else "task", "_is_direct_chat": True,
             "_presence_turn": presence}
     env = SimpleNamespace(drive_root=tmp_path)
-    pipeline._dispatch_root_post_task(env, task, "Done", None, [], {}, {}, {}, tmp_path / "logs",
+    pipeline._dispatch_root_post_task(env, task, "Done", None, [], {}, {}, tmp_path / "logs",
         budget_drive_root="", split_drive=split, project_scoped=False, project_task=False,
         parent_env=env if split else None, parent_task=task if split else None)
     assert calls == [expected]
