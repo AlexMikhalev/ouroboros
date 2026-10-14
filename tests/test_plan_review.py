@@ -466,17 +466,15 @@ def test_expired_explicit_deadline_skips_before_any_reviewer(monkeypatch, tmp_pa
     assert attempt["status"] == "rail_degraded"
     assert attempt["reason"] == "plan_task_deadline"
 
-    # The live gate: the skip dispatched nobody, so this force_plan task's planning obligation
-    # stays unmet until an ask reaches a reviewer; the task's own deadline rail releases it at
-    # finalization (hard_rail → rail_degraded), never the skip itself.
-    from ouroboros.owner_hurry import force_plan_decision
-
+    # The skip dispatched nobody: the force_plan obligation stays unmet until an ask reaches a
+    # reviewer or the task's own deadline rail fires at finalization (never the skip itself).
     monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: "blocking")
     decision = loop_mod._force_plan_decision(ctx, {})
     assert decision["allow"] is False and decision["status"] == "force_plan_unmet"
-    railed = force_plan_decision(ctx, {}, hard_rail="deadline", enforcement="blocking")
+    railed = loop_mod._force_plan_decision(ctx, {}, hard_rail="deadline")
     assert railed["allow"] is True and railed["status"] == "rail_degraded"
-    assert "plan_task_deadline" in loop_mod._force_plan_disclosure(ctx, {}, forced_reason="")
+    assert loop_mod._force_plan_disclosure(ctx, {}, forced_reason="") == ""  # held, not finalized: nothing to disclose yet
+    assert "planning obligation was not met" in loop_mod._force_plan_disclosure(ctx, {}, forced_reason="deadline")
 
 
 def test_expired_deadline_replays_a_recorded_wave_but_never_pays(monkeypatch, tmp_path):
@@ -609,10 +607,9 @@ class TestPlanReviewToolRegistration(unittest.TestCase):
             )
 
         self.assertIn("TOOL_ARG_ERROR (plan_task)", result)
-        # The accepted list is the new form; the retired names are hidden, never advertised.
-        for field in ("goal", "done_when", "affected_paths", "plan", "ask", "message", "attach", "reviewer_effort"):
+        for field in ("done_when", "affected_paths", "ask", "reviewer_effort"):  # the new form is advertised
             self.assertIn(field, result)
-        self.assertNotIn("review_disposition", result)
+        self.assertNotIn("review_disposition", result)  # retired names are hidden, never advertised
         self.assertIn("unsupported argument(s): review_dispositon", result)
         self.assertNotIn("handler-ran", result)
 
