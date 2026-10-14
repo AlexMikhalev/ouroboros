@@ -333,3 +333,59 @@ def test_a3_custody_parses_no_result_under_the_queue_lock(qenv, monkeypatch):
     assert load_task_result(qenv.drive, "finisher")["status"] == "completed"
     assert parses_under_lock == []
     assert ci.active_intents(qenv.drive) == {}
+
+
+# ------------------------------------------------- fix round 1: Presence-owned rows ----------
+
+def _presence_row(drive, task_id, kind="presence"):
+    from ouroboros.task_status import execution_owner_record
+
+    write_task_result(drive, task_id, "running", result="Task is running.", _is_direct_chat=True,
+                      execution_owner=execution_owner_record(drive, {"id": task_id}, kind))
+
+
+def test_miss_lane_leaves_a_live_presence_turns_row_to_its_runner(qenv, monkeypatch):
+    """Intent-first minting reaches custody for a RUNNING row no supervisor map owns. A
+    Presence turn (its own thread, execution_owner kind 'presence') must not be rewritten
+    as cancelled while it keeps running: the intent settles not_found, the row stays.
+    A pooled row no map owns is still finalized on miss."""
+    from supervisor import terminal_delivery
+
+    monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *_a, **_k: None)
+    monkeypatch.setattr(terminal_delivery, "deliver_miss_lane_outcome", lambda *a, **kw: True, raising=False)
+    _presence_row(qenv.drive, "presence-turn")
+    ci.request_cancel(qenv.drive, "presence-turn", reason="stop")
+
+    assert qenv.tl.cancel_task_custody("presence-turn") == qenv.tl.CANCEL_NOT_FOUND
+    assert load_task_result(qenv.drive, "presence-turn")["status"] == "running"
+    assert ci.active_intents(qenv.drive) == {}
+
+    _presence_row(qenv.drive, "orphan-pooled", kind="pooled")
+    ci.request_cancel(qenv.drive, "orphan-pooled", reason="stop")
+    assert qenv.tl.cancel_task_custody("orphan-pooled") == qenv.tl.CANCEL_CANCELLED
+    assert load_task_result(qenv.drive, "orphan-pooled")["status"] == STATUS_CANCELLED
+    assert ci.active_intents(qenv.drive) == {}
+
+
+def test_http_stop_on_a_live_presence_turn_answers_404_and_leaves_no_intent(tmp_path, monkeypatch):
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from ouroboros.gateway.tasks import api_task_cancel
+    from supervisor import queue, workers
+
+    monkeypatch.setattr(queue, "DRIVE_ROOT", tmp_path)
+    monkeypatch.setattr(queue, "PENDING", [])
+    monkeypatch.setattr(queue, "RUNNING", {})
+    monkeypatch.setattr(workers, "WORKERS", {}, raising=False)
+    monkeypatch.setattr(queue, "persist_queue_snapshot", lambda reason="": None)
+    monkeypatch.setattr(queue, "_emit_cancel_task_done", lambda *_a, **_k: None)
+    _presence_row(tmp_path, "presence-http")
+    app = Starlette(routes=[Route("/api/tasks/{task_id}/cancel", api_task_cancel, methods=["POST"])])
+    app.state.drive_root = tmp_path
+    with TestClient(app) as client:
+        response = client.post("/api/tasks/presence-http/cancel")
+    assert response.status_code == 404, response.text
+    assert load_task_result(tmp_path, "presence-http")["status"] == "running"
+    assert ci.active_intents(tmp_path) == {}
