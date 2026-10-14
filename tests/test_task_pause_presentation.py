@@ -54,3 +54,20 @@ def test_only_a_stored_answer_names_its_late_work(tmp_path, synthesis, named):
     assert ("late_work" in display) is named
     if named:
         assert display["late_work"]["title"] == "Audit the release"
+
+
+def test_late_work_dates_the_answer_only_by_the_executor_terminal_fact(tmp_path):
+    from ouroboros.gateway.state import _task_activity_facts
+    from ouroboros.task_results import write_task_result
+    from ouroboros.terminal_time import terminal_time_fact
+
+    paused = {"root_phase_checkpoint": {"post_task_synthesis": "paused"}}
+    observed = write_task_result(tmp_path, "observed", "completed", _terminal_observed=True,
+                                 suggested_name="Audit the release", **paused)
+    occurred = terminal_time_fact(observed)["occurred_at"]
+    assert occurred, "the executor observed this terminal"
+    assert _task_activity_facts(tmp_path, "observed")["display"]["late_work"] == {
+        "title": "Audit the release", "answered_at": occurred}
+    # A record without the executor's own observation keeps an unknown time, never its row ts.
+    write_task_result(tmp_path, "legacy", "completed", suggested_name="Legacy", **paused)
+    assert _task_activity_facts(tmp_path, "legacy")["display"]["late_work"]["answered_at"] == ""
