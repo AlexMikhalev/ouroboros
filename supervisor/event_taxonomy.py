@@ -30,6 +30,22 @@ Tiers, exhaustive:
     the log-event handler, so it never needs a dispatch key of its own. Without
     a row here such an event reads as a producer nobody answers.
 
+Lanes, exhaustive (``lane``): the one supervisor event bus carries two lanes and
+its single consumer always serves ``control`` before ``telemetry``
+(``supervisor/event_observation.py``), so a stream of worker telemetry can never
+sit in front of a chat message or a start/stop/control event (owner decision,
+14 Oct 2026). ``telemetry`` is the three high-volume streams whose handlers take
+no runtime action and need no RUNNING row to be correct — heartbeats, usage
+rows and the ``log_event`` envelope with every nested kind it carries. Everything
+authority-changing stays ``control``: every ``send_message`` (progress narration
+is a chat row), ``task_done``, scheduling, cancel, owner/model waits, worker
+readiness and quiescence, the cognitive-operation lifecycle, fences, restart.
+The rare ``telemetry_only`` tier rows stay in the control lane too: they are
+single typed facts, not streams, and their readers (health checks, audits)
+expect them in FIFO order with the task's own control events. A kind without a
+row rides the control lane. The lane is declared here once; the bus reads it
+and the drain loop never carries a second classification.
+
 The table is data. Nothing here decides policy or dispatches anything; the
 dispatch table stays the single execution authority.
 """
@@ -46,20 +62,27 @@ NESTED_LOG_EVENT = "nested_log_event"
 
 TIERS: Tuple[str, ...] = (WORKER_HANDLER, TELEMETRY_ONLY, SERVER_INTERCEPT, NESTED_LOG_EVENT)
 
+CONTROL_LANE = "control"
+TELEMETRY_LANE = "telemetry"
+
+LANES: Tuple[str, ...] = (CONTROL_LANE, TELEMETRY_LANE)
+
 
 @dataclass(frozen=True)
 class EventDisposition:
-    """Who answers one event kind, and where its producers live."""
+    """Who answers one event kind, where its producers live, and which lane it rides."""
 
     tier: str
     answered_by: str
     producers: Tuple[str, ...]
     note: str = ""
     idle_input: bool = False  # its handler can change an existing task-idle input
+    lane: str = CONTROL_LANE  # the bus lane; a nested kind names the envelope's lane
 
 
-def _handled(answered_by: str, *producers: str, note: str = "", idle_input: bool = False) -> EventDisposition:
-    return EventDisposition(WORKER_HANDLER, answered_by, tuple(producers), note, idle_input)
+def _handled(answered_by: str, *producers: str, note: str = "", idle_input: bool = False,
+             lane: str = CONTROL_LANE) -> EventDisposition:
+    return EventDisposition(WORKER_HANDLER, answered_by, tuple(producers), note, idle_input, lane)
 
 
 def _telemetry(*producers: str, note: str = "") -> EventDisposition:
@@ -91,9 +114,11 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
     "llm_usage": _handled(
         "supervisor.events_budget", "ouroboros/agent.py",
         "ouroboros/pricing.py", "ouroboros/tools/search.py", "ouroboros/tools/vision.py",
-        "ouroboros/tools/skill_publish.py", idle_input=True),
+        "ouroboros/tools/skill_publish.py", idle_input=True, lane=TELEMETRY_LANE,
+        note="the producer's per-task endpoint stamps lineage and chat by value; "
+             "the handler fills a missing field from RUNNING only as a fallback"),
     "log_event": _handled(
-        "supervisor.events_worker_reports", "ouroboros/utils.py",
+        "supervisor.events_worker_reports", "ouroboros/utils.py", lane=TELEMETRY_LANE,
         note="the envelope every worker log line rides; the payload types that "
              "need their own answer are the nested_log_event rows below"),
     "main_llm_call_state": _handled(
@@ -147,7 +172,8 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         "supervisor.events_task_done", "ouroboros/agent_task_pipeline.py",
         "supervisor/queue.py", "supervisor/task_reaper.py", "supervisor/worker_health.py", idle_input=True),
     "task_heartbeat": _handled(
-        "supervisor.events_worker_reports", "ouroboros/agent.py"),
+        "supervisor.events_worker_reports", "ouroboros/agent.py", lane=TELEMETRY_LANE,
+        note="liveness only: a heartbeat of a task that already left RUNNING is a no-op"),
     "task_model_wait": _handled(
         "supervisor.task_model_wait", "ouroboros/model_wait.py", idle_input=True),
     "task_metrics": _handled(
@@ -191,25 +217,29 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         "handler before dispatch",
     ),
 
-    # --- nested_log_event -----------------------------------------------------
+    # --- nested_log_event (they ride the log_event envelope's telemetry lane) --
     "review_reference": EventDisposition(
         NESTED_LOG_EVENT, "supervisor.events_worker_reports",
         ("ouroboros/tools/plan_review_references.py",),
         "an opaque Plan-detail invalidation: the nested branch forwards it live "
         "and its producer appends the durable copy to progress.jsonl itself",
+        lane=TELEMETRY_LANE,
     ),
     "task_checkpoint": EventDisposition(
         NESTED_LOG_EVENT, "supervisor.events_worker_reports",
         ("ouroboros/agent.py", "ouroboros/loop_messages.py"),
-        "persisted to events.jsonl from inside log_event.data; the worker log "
-        "sink suppresses the duplicate copy, so the nested branch is the only "
-        "place it can be answered",
+        "its producer appends the durable rows itself (events.jsonl, and "
+        "progress.jsonl for a System row) before emitting the one live frame; the "
+        "worker log sink suppresses the append's copy and the nested branch only "
+        "addresses and pushes that frame",
+        lane=TELEMETRY_LANE,
     ),
     "task_start_settings_reload_failed": EventDisposition(
         NESTED_LOG_EVENT, "supervisor.events_worker_reports",
         ("ouroboros/subagent_runtime.py",),
-        "a durable owner disclosure (#285) persisted by the same nested branch: "
+        "a durable owner disclosure (#285) persisted by the nested branch: "
         "without it the fact evaporates on the next page load",
+        lane=TELEMETRY_LANE,
     ),
 }
 

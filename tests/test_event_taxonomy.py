@@ -21,9 +21,12 @@ import pytest
 
 from supervisor import event_taxonomy, events
 from supervisor.event_taxonomy import (
+    CONTROL_LANE,
     EVENT_DISPOSITIONS,
+    LANES,
     NESTED_LOG_EVENT,
     SERVER_INTERCEPT,
+    TELEMETRY_LANE,
     TELEMETRY_ONLY,
     TIERS,
     WORKER_HANDLER,
@@ -46,6 +49,34 @@ def test_every_row_declares_one_of_the_four_tiers_and_both_ends():
         # A row with no producer is the schedule_task shape: an answer nothing
         # can reach. There is no allowlist for it — retire the key instead.
         assert row.producers, name
+
+
+def test_every_row_declares_a_lane_and_telemetry_is_exactly_the_three_streams():
+    """The lane is declared once, here. Telemetry is the three high-volume
+    streams whose handlers take no runtime action (plus the nested kinds that
+    ride the log envelope); everything authority-changing is control, and an
+    undeclared kind rides control."""
+    from supervisor.event_observation import event_lane
+
+    assert set(LANES) == {CONTROL_LANE, TELEMETRY_LANE}
+    for name, row in EVENT_DISPOSITIONS.items():
+        assert row.lane in LANES, name
+    telemetry = {name for name, row in EVENT_DISPOSITIONS.items() if row.lane == TELEMETRY_LANE}
+    assert telemetry == {"task_heartbeat", "llm_usage", "log_event"} | _tier(NESTED_LOG_EVENT)
+    for name in (
+        "send_message", "send_photo", "send_document", "send_links", "send_quiz", "send_video",
+        "typing_start", "task_done", "task_metrics", "schedule_subagent", "cancel_task", "owner_wait",
+        "task_model_wait", "worker_quiescent", "restart_request", "cognitive_operation",
+        "main_llm_call_state", "external_wait_lease", "acceptance_fence", "budget_pause",
+        "budget_root_fence", "task_dispatch_resolved", "promote_chat_to_task", "steer_task",
+        *_tier(TELEMETRY_ONLY),
+    ):
+        assert EVENT_DISPOSITIONS[name].lane == CONTROL_LANE, name
+        assert event_lane({"type": name, "task_id": "t"}) == CONTROL_LANE, name
+    for name in ("task_heartbeat", "llm_usage", "log_event"):
+        assert event_lane({"type": name, "task_id": "t"}) == TELEMETRY_LANE
+    assert event_lane({"type": "no_such_kind"}) == CONTROL_LANE
+    assert event_lane("not an event") == CONTROL_LANE
 
 
 def test_the_dispatch_table_is_exactly_the_two_dispatched_tiers():
