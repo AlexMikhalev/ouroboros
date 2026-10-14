@@ -1522,6 +1522,9 @@
  * @typedef {Object} UpdateApplyErrorResponse
  * @property {string} error
  * @property {string=} reason
+ * @property {boolean=} abandoned
+ * @property {Object=} rescue
+ * @property {string=} keep_branch
  * @property {string[]=} blockers
  * @property {boolean=} rolled_back
  * @property {string=} rollback

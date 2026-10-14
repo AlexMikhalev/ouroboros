@@ -425,6 +425,27 @@ def _safe_restart_serialized(safe_restart_fn, *, reason: str, unsynced_policy: s
         release_update_lock(lock_fh)
 
 
+def _noticed_bootstrap(safe_restart_fn):
+    """Bootstrap's ``safe_restart``: a failure after it RAN (a refused checkout step, a blocked
+    reset, dependency sync, the import test) is also told in the owner's chat, which the agent
+    reads. ``_safe_restart_serialized``'s deliberate deferrals never call it and stay silent."""
+    def run(**kwargs):
+        ok, msg = safe_restart_fn(**kwargs)
+        if not ok:
+            try:
+                from supervisor.message_bus import notification_chat_route, send_with_budget
+                from supervisor.state import load_state
+
+                owner_chat = notification_chat_route(load_state().get("owner_chat_id"))
+                if owner_chat is not None:
+                    send_with_budget(owner_chat, f"⚠️ Startup bootstrap failed: {msg}",
+                                     role="system", system_type="startup_notice")
+            except Exception:
+                log.warning("Bootstrap failure notice was not delivered", exc_info=True)
+        return ok, msg
+    return run
+
+
 def _shutdown_task_cleanup_args(restart_requested: bool) -> tuple[str, str]:
     """Return ``(terminal_status, result_reason)`` for tasks torn down by a
     graceful server shutdown.

@@ -9,7 +9,6 @@ import os
 import pathlib
 import re
 import subprocess
-import time
 from typing import Any, Dict, Tuple
 
 from ouroboros.evolution_checkpoints import (
@@ -339,24 +338,14 @@ def _is_release_tag(tag: str) -> bool:
 
 
 def check_uncommitted_changes(env: Any) -> Tuple[dict, int]:
-    """Warn on dirty worker boot; rescue/reset is supervisor-owned, never worker-owned."""
-    try:
-        lock_path = env.repo_path(".git/index.lock")
-        if lock_path.exists():
-            try:
-                # Age gate (mirrors supervisor.git_ops._stale_git_lock_paths):
-                # an unconditional unlink could yank index.lock from under a
-                # LIVE supervisor git operation during worker boot, corrupting
-                # the index. Only locks orphaned by dead processes are stale.
-                age_sec = time.time() - lock_path.stat().st_mtime
-                if age_sec >= 15.0:
-                    lock_path.unlink()
-                    log.warning("Removed stale git index.lock (age %.0fs)", age_sec)
-            except OSError:
-                pass
+    """Warn on dirty worker boot; rescue/reset is supervisor-owned, never worker-owned.
 
+    A read only: it takes no optional index lock and removes none, since a lock's
+    age says nothing about whether its writer is still running.
+    """
+    try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "--no-optional-locks", "status", "--porcelain"],
             cwd=str(env.repo_dir),
             capture_output=True, text=True, timeout=10, check=True
         )

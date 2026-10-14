@@ -1273,37 +1273,37 @@ def abort_orphaned_assisted_tx(
             release_update_lock(lock_fh)
 
 
+def abandon_unapplied_replace(head: str, **event: Any) -> Dict[str, Any]:
+    """Disarm a replace that never moved HEAD off ``pre_update_sha`` (intent, then tx); earlier rescue/keep refs stay."""
+    if not _g._clear_update_intent():
+        mark_update_tx_gate_blocked("replace_abandon_intent_cleanup_failed")
+        return {"finalized": False, "reason": "could not disarm replace replay"}
+    if not clear_update_tx():
+        mark_update_tx_gate_blocked("replace_abandon_tx_cleanup_failed", cleanup_only=True)
+        return {"finalized": False, "reason": "could not clear replace transaction"}
+    _log_supervisor({"type": "managed_update_replace_apply_abandoned", "head": head, **event})
+    return {"finalized": False, "abandoned": True, "reason": "replace_not_applied"}
+
+
 def _recover_replace_on_boot(tx: Dict[str, Any], supervisor_ready: bool) -> Dict[str, Any]:
     """Resume the narrow crash window between replace rescue and pending smoke."""
     pre = str(tx.get("pre_update_sha") or "")
     target = str(tx.get("target_sha") or "")
     rc_h, head, _head_error = _g.git_capture(["git", "rev-parse", "--verify", "HEAD"])
     rc_s, dirty, _status_error = _g.git_capture(["git", "status", "--porcelain"])
-    if rc_h != 0 or rc_s != 0 or not pre or not target:
-        ok, msg = rollback_managed_update(
-            "replace_apply_state_unreadable", reopen_writer_admission=False
-        )
-        return {"finalized": False, "rolled_back": ok, "msg": msg, "stash_note": msg}
-    applied = head == target and not dirty.strip()
-    if applied:
-        tx["phase"] = "pending_boot_smoke"
-        write_update_tx(tx)
-        _log_supervisor({"type": "managed_update_replace_apply_recovered", "head": head})
-        return _finalize_pending_boot_smoke(tx, supervisor_ready)
-    if head == pre:
-        # No target checkout is visible. Disarm replay and leave the current tree alone;
-        # the rescue already exists, but a crash before reset must not erase dirty work.
-        if not _g._clear_update_intent():
-            mark_update_tx_gate_blocked("replace_abandon_intent_cleanup_failed")
-            return {"finalized": False, "reason": "could not disarm replace replay"}
-        if not clear_update_tx():
-            mark_update_tx_gate_blocked("replace_abandon_tx_cleanup_failed", cleanup_only=True)
-            return {"finalized": False, "reason": "could not clear replace transaction"}
-        _log_supervisor({"type": "managed_update_replace_apply_abandoned", "head": head})
-        return {"finalized": False, "abandoned": True, "reason": "replace_not_applied"}
-    ok, msg = rollback_managed_update(
-        "replace_apply_interrupted", reopen_writer_admission=False
-    )
+    reason = "replace_apply_state_unreadable"
+    if rc_h == rc_s == 0 and pre and target:
+        if head == target and not dirty.strip():
+            tx["phase"] = "pending_boot_smoke"
+            write_update_tx(tx)
+            _log_supervisor({"type": "managed_update_replace_apply_recovered", "head": head})
+            return _finalize_pending_boot_smoke(tx, supervisor_ready)
+        if head == pre:
+            # No target checkout is visible. Disarm replay and leave the current tree alone;
+            # the rescue already exists, but a crash before reset must not erase dirty work.
+            return abandon_unapplied_replace(head)
+        reason = "replace_apply_interrupted"
+    ok, msg = rollback_managed_update(reason, reopen_writer_admission=False)
     return {"finalized": False, "rolled_back": ok, "msg": msg, "stash_note": msg}
 
 

@@ -548,6 +548,9 @@ class UpdateApplySuccessResponse(TypedDict):
 class UpdateApplyErrorResponse(TypedDict):
     error: str
     reason: NotRequired[str]
+    abandoned: NotRequired[bool]
+    rescue: NotRequired[Dict[str, Any]]
+    keep_branch: NotRequired[str]
     blockers: NotRequired[List[str]]
     rolled_back: NotRequired[bool]
     rollback: NotRequired[str]

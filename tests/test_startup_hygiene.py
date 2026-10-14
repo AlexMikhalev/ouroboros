@@ -121,7 +121,7 @@ def test_check_uncommitted_changes_never_commits_outside_launcher(monkeypatch, t
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
-        if cmd[:3] == ["git", "status", "--porcelain"]:
+        if cmd == ["git", "--no-optional-locks", "status", "--porcelain"]:
             return types.SimpleNamespace(returncode=0, stdout=" M server.py\n")
         raise AssertionError(f"Unexpected subprocess call: {cmd}")
 
@@ -134,7 +134,7 @@ def test_check_uncommitted_changes_never_commits_outside_launcher(monkeypatch, t
     assert result["status"] == "warning"
     assert result["auto_committed"] is False
     assert result["auto_rescue_skipped"] == "supervisor_side_rescue_owns_this"
-    assert calls == [["git", "status", "--porcelain"]]
+    assert calls == [["git", "--no-optional-locks", "status", "--porcelain"]]
 
 
 def test_check_budget_reports_corrupt_state_json(tmp_path, monkeypatch):
@@ -512,7 +512,7 @@ def test_check_uncommitted_changes_never_commits_even_when_launcher_managed(monk
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
-        if cmd[:3] == ["git", "status", "--porcelain"]:
+        if cmd == ["git", "--no-optional-locks", "status", "--porcelain"]:
             return types.SimpleNamespace(returncode=0, stdout=" M server.py\n")
         raise AssertionError(
             f"Unexpected subprocess call {cmd}: worker-side check_uncommitted_changes "
@@ -528,4 +528,4 @@ def test_check_uncommitted_changes_never_commits_even_when_launcher_managed(monk
     assert result["status"] == "warning"
     assert result["auto_committed"] is False
     assert result["auto_rescue_skipped"] == "supervisor_side_rescue_owns_this"
-    assert calls == [["git", "status", "--porcelain"]]
+    assert calls == [["git", "--no-optional-locks", "status", "--porcelain"]]

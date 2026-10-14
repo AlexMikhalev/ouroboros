@@ -540,6 +540,7 @@ Ouroboros runs connected coding subscriptions through its bundled agent engine, 
 
 **Applying an update.** Send `POST /api/update/apply` (`UpdateApplyRequest`) with `strategy`, `expected_base_sha` and `expected_target_sha` from the preflight:
 - **Release moved:** 409 `release_moved` means the release changed since the preflight. Run the preflight again.
+- **Replacement not applied:** 409 `reason: replace_not_applied`, `abandoned: true` means Git refused the first tree-changing command because its index lock was held. The transaction is disarmed without rollback; `rescue` and `keep_branch` disclose retained preparation artifacts. The lock is untouched. Diagnose it before another deliberate attempt; age alone never authorizes removal. Other partial or unknown failures keep fenced recovery and their error.
 - **What `200` means:** inspect `status`, not HTTP success alone. `ok` with `restarting:true` means a restart was requested, not adoption. `assisted_started` means a supervised task owns resolution. `manual` returns a plan without applying or restarting. `restart_required` means the code landed but a restart could not be requested; show its error and offer the ordinary restart control.
 - **Watching it:**
   - `update_progress_changed` frames mean "read the status again" (progress is kept in memory only).
