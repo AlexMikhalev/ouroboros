@@ -231,13 +231,13 @@ def is_retryable_transport_death(exc: BaseException) -> bool:
     route, whose dead server is not a network fault worth paying for again. A
     missing capture proves nothing and fails closed.
 
-    The repeat policy lives in ``loop_llm_call``: only an inline Presence turn
-    repeats, at most ``_TRANSPORT_DEATH_RETRIES`` times per round, each repeat a
-    separate ledger attempt with an unresolved upper bound. The round-keyed
-    record (``TRANSPORT_DEATHS_KEY``) counts repeats and keeps their failure
-    class; an exhausted budget or an expiring task deadline ends the round with
-    ``llm_non_retryable_same_request``, and while the record stands only a
-    further typed death (or the free pre-dispatch redial) may send again.
+    Running turns, Presence included, use shared configured-route recovery
+    (``loop_transport.new_generation_after_unknown``). This predicate serves
+    ``loop_llm_call``'s explicit low-level repeat API and retained old records,
+    a compatibility surface, not production Presence policy. Each opted-in
+    repeat has its own attempt and unknown cost; ``TRANSPORT_DEATHS_KEY`` binds
+    the count/failure to its round. Budget/deadline still bind, and an open
+    record permits only a typed-death repeat or free pre-dispatch redial.
     """
     if is_pre_dispatch_transport_failure(exc):
         return False  # the free released class: the two predicates are never both true

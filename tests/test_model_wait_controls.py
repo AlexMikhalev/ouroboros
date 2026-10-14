@@ -358,15 +358,11 @@ def test_outage_wrap_keeps_older_wire_death_custody_without_summary(tmp_path, mo
             msg_id=owner_stop_control_id(intent), kind=owner_mailbox.KIND_FINALIZE_NOW)
         return True
 
-    if interactive:
-        monkeypatch.setattr(loop_llm_call, "_sleep_within_deadline",
-                            lambda seconds, deadline, **kw: release_wait_after_control_check(seconds, kw["wake_check"]))
-    else:
-        monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", release_wait_after_control_check)
+    monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", release_wait_after_control_check)
     def run():
         kwargs = _loop_kwargs(tmp_path, ControlledLLM(), [])
         kwargs["tools"]._ctx.is_direct_chat = interactive
-        if interactive:  # inline Presence retains the paid-repeat rail
+        if interactive:
             kwargs["task_type"] = kwargs["tools"]._ctx.current_task_type = "presence"
         with model_wait.task_model_wait_scope(task={"id": "t-death"}, drive_root=tmp_path,
                 event_queue=None, worker_slot_held=not interactive) as owner:
@@ -385,11 +381,8 @@ def test_outage_wrap_keeps_older_wire_death_custody_without_summary(tmp_path, mo
     assert posted and llm.calls == 1
     assert [row["state"] for row in _ledger(tmp_path)] == ["unresolved"]
     assert loop_llm_call.provider_no_call_source(usage, False)[0] == "provider_outcome_unknown_no_resend"
-    if interactive:
-        assert trace["forced_finalization"]["control_reason"] == "finalize_requested"
-    else:
-        assert "owner requested Wrap up" in _text
-        assert trace["forced_finalization"]["source"] == "provider_outcome_unknown_no_resend"
+    assert "owner requested Wrap up" in _text
+    assert trace["forced_finalization"]["source"] == "provider_outcome_unknown_no_resend"
 
 
 @pytest.mark.parametrize("stop,expected_reason", [

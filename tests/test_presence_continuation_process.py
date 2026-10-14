@@ -256,8 +256,9 @@ def test_direct_exec_restart_interrupts_same_pid_author_without_replaying_effect
                  "model_calls_after_exec": len(host.inputs()), "foreign_observer_state": controller_state(original)}
         (tmp_path / "exec-facts.json").write_text(json.dumps(facts, indent=2))
         assert interrupted.status_code == 200, interrupted.text
-        assert interrupted.json()["status"] == "interrupted"
-        assert interrupted.json()["text"] == "" and interrupted.json()["output_ref"] == ""
+        assert interrupted.json()["status"] == "unresolved"
+        assert interrupted.json()["disposition"] == "retained"
+        assert "text" not in interrupted.json() and "output_ref" not in interrupted.json()
         assert interrupted.json()["outputs"] == before["presence_continuation"].get("outputs", [])
         for _ in range(2):
             assert host.turn().json() == initial
@@ -325,8 +326,9 @@ def test_killed_author_stays_interrupted_and_explicit_new_event_can_continue(tmp
         assert second_host.turn().json() == first
         interrupted = second_host.work(ref)
         assert interrupted.status_code == 200, interrupted.text
-        assert interrupted.json()["status"] == "interrupted"
-        assert interrupted.json()["text"] == "" and interrupted.json()["output_ref"] == ""
+        assert interrupted.json()["status"] == "unresolved"
+        assert interrupted.json()["disposition"] == "retained"
+        assert "text" not in interrupted.json() and "output_ref" not in interrupted.json()
         assert interrupted.json()["outputs"] == continuation["outputs"]
         assert len(second_host.inputs()) == 2  # no automatic author and no original event regeneration
         legacy = second_host.turn(version=0)
@@ -500,10 +502,10 @@ def test_killed_second_park_author_preserves_late_child_for_tcp_consumer(tmp_pat
     second_host = Host(tmp_path, 2, mode, "late_child")
     try:
         interrupted = second_host.work(ref)
-        assert interrupted.status_code == 200 and interrupted.json()["status"] == "interrupted"
+        assert interrupted.status_code == 200 and interrupted.json()["status"] == "unresolved"
         child_ref = interrupted.json().get("child_work_ref")
         assert child_ref == LATE_CHILD, interrupted.text
-        assert interrupted.json()["text"] == "" and interrupted.json()["output_ref"] == ""
+        assert "text" not in interrupted.json() and "output_ref" not in interrupted.json()
         assert interrupted.json()["outputs"] == record["presence_continuation"]["outputs"]
         assert record["presence_continuation"]["child_work_ref"] == child_ref
         child = second_host.work(child_ref)
@@ -594,8 +596,8 @@ def test_proactive_caller_process_death_and_recycle_preserve_interrupted_work(tm
     second_host = Host(tmp_path, 2, mode, "proactive")
     try:
         interrupted = second_host.work(ref)
-        assert interrupted.status_code == 200 and interrupted.json()["status"] == "interrupted"
-        assert interrupted.json()["text"] == "" and interrupted.json()["output_ref"] == ""
+        assert interrupted.status_code == 200 and interrupted.json()["status"] == "unresolved"
+        assert "text" not in interrupted.json() and "output_ref" not in interrupted.json()
         assert second_host.client.post("/fixture/proactive").json() == initial
         assert second_host.client.post("/fixture/proactive").json() == initial
         assert len(second_host.inputs()) == 2
