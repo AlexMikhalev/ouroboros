@@ -519,3 +519,203 @@ def test_cascade_over_a_settled_root_leaves_a_replayable_intent_on_crash(tmp_pat
         "watchdog's replay trigger for the live descendants"
     )
     assert response.json()["request_id"] == row["request_id"]
+
+
+# ---------------------------------------------------------------------------
+# Intent first (no liveness pre-probe); a recorded, unconfirmed Stop is pending
+# ---------------------------------------------------------------------------
+
+
+def _supervisor_rows(tmp_path, kind):
+    path = tmp_path / "logs" / "supervisor.jsonl"
+    if not path.exists():
+        return []
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [row for row in rows if row.get("type") == kind]
+
+
+@pytest.mark.parametrize("cascade", [False, True])
+def test_unknown_id_is_404_with_no_task_row_and_no_open_intent(tmp_path, monkeypatch, cascade):
+    """An id that names no task. The single Stop records its intent and
+    custody's miss lane settles it ``not_found`` in the same call; a cascade has
+    no recorded tree to stop and mints nothing. Neither invents a task row,
+    leaves an intent open or runs a cascade over a phantom tree."""
+    from ouroboros.cancel_intents import active_intents
+    from ouroboros.task_results import load_task_result
+
+    _isolate_queue(monkeypatch, tmp_path, [])
+    with _client(tmp_path) as client:
+        response = client.post("/api/tasks/ghost-id/cancel", json={"cascade": cascade})
+    assert response.status_code == 404
+    assert response.json()["error"] == "task not found or not active"
+    assert load_task_result(tmp_path, "ghost-id") is None
+    assert active_intents(tmp_path) == {}
+    events = [(row.get("event"), row.get("outcome")) for row in _supervisor_rows(tmp_path, "cancel_intent")]
+    if cascade:
+        assert events == []
+        assert _supervisor_rows(tmp_path, "task_cancel_subtree_snapshot") == []
+    else:
+        assert ("requested", None) in events and ("settled", "not_found") in events, events
+
+
+@pytest.mark.parametrize("cascade", [False, True])
+def test_finished_and_dead_task_is_404_and_mints_nothing(tmp_path, monkeypatch, cascade):
+    """Completion wins: a settled task with no live owner left mints no intent
+    (no false "Cancelling…" on a finished card) and keeps its stored answer."""
+    from ouroboros.cancel_intents import active_intents
+    from ouroboros.task_results import load_task_result, write_task_result
+
+    _isolate_queue(monkeypatch, tmp_path, [])
+    write_task_result(tmp_path, "done-1", "completed", result="the finished answer")
+    before = load_task_result(tmp_path, "done-1")
+    with _client(tmp_path) as client:
+        response = client.post("/api/tasks/done-1/cancel", json={"cascade": cascade})
+    assert response.status_code == 404
+    assert active_intents(tmp_path) == {}
+    assert [row for row in _supervisor_rows(tmp_path, "cancel_intent") if row.get("event") == "requested"] == []
+    assert load_task_result(tmp_path, "done-1") == before
+
+
+@pytest.mark.parametrize("cascade", [False, True])
+def test_persisted_but_never_admitted_task_is_cancelled_by_stop(tmp_path, monkeypatch, cascade):
+    """A child stuck at ``requested`` that never reached the queue (the
+    admission stall the agent's cancel_task already settles): Stop records the
+    intent and custody's miss lane settles it cancelled. A liveness pre-probe
+    used to answer 404 here and leave it requested."""
+    from ouroboros.cancel_intents import active_intents
+    from ouroboros.task_results import STATUS_CANCELLED, load_task_result, write_task_result
+
+    _isolate_queue(monkeypatch, tmp_path, [])
+    write_task_result(tmp_path, "stuck-kid", "requested", parent_task_id="coord",
+                      root_task_id="coord", delegation_role="subagent")
+    with _client(tmp_path) as client:
+        response = client.post("/api/tasks/stuck-kid/cancel", json={"cascade": cascade})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True, "task_id": "stuck-kid", **({"cascade": True} if cascade else {})}
+    assert load_task_result(tmp_path, "stuck-kid")["status"] == STATUS_CANCELLED
+    assert active_intents(tmp_path) == {}
+
+
+def test_settled_task_with_a_live_worker_is_still_killed_and_keeps_its_answer(tmp_path, monkeypatch):
+    """Stored completion can precede the worker's exit (post-task cognition still
+    spends). Once the intent request finds the target settled, live ownership
+    qualifies it: the worker is killed, the stored answer survives, and
+    completion wins the envelope (404)."""
+    import types
+
+    from supervisor import workers
+
+    from ouroboros.cancel_intents import active_intents
+    from ouroboros.task_results import load_task_result, write_task_result
+
+    queue, _pending = _isolate_queue(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(workers, "respawn_worker", lambda wid: None, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: types.SimpleNamespace(put=lambda evt: None),
+                        raising=False)
+    monkeypatch.setattr(queue, "_emit_cancel_task_done", lambda *_a, **_kw: None)
+    alive = {"value": True}
+    proc = types.SimpleNamespace(pid=4242, is_alive=lambda: alive["value"],
+                                 terminate=lambda: alive.update(value=False), join=lambda timeout=None: None)
+    workers.WORKERS[0] = types.SimpleNamespace(wid=0, proc=proc, busy_task_id="burning", reaping=False)
+    monkeypatch.setattr("ouroboros.platform_layer.kill_pid_tree", lambda *_a, **_kw: alive.update(value=False))
+    queue.RUNNING["burning"] = {"task": {"id": "burning", "chat_id": 0, "root_task_id": "burning"}, "worker_id": 0}
+    write_task_result(tmp_path, "burning", "completed", chat_id=0, result="the stored answer")
+    with _client(tmp_path) as client:
+        response = client.post("/api/tasks/burning/cancel")
+    assert response.status_code == 404, response.text
+    assert alive["value"] is False, "the still-spending worker is killed"
+    stored = load_task_result(tmp_path, "burning")
+    assert (stored["status"], stored["result"]) == ("completed", "the stored answer")
+    assert active_intents(tmp_path) == {}
+
+
+def test_stop_records_its_intent_before_custody_even_when_admission_races_the_click(tmp_path, monkeypatch):
+    """The single Stop used to ask liveness first, mint only for a live answer and
+    call custody anyway: a task admitted between the probe and custody was torn
+    down with no durable intent. No probe gates the intent now — even when every
+    liveness observation says "not live", custody starts from a recorded,
+    watchdog-replayable intent."""
+    from ouroboros.cancel_intents import active_intent
+    from ouroboros.task_results import STATUS_CANCELLED, load_task_result, write_task_result
+
+    queue, pending = _isolate_queue(monkeypatch, tmp_path, [{"id": "late", "chat_id": 1, "root_task_id": "late"}])
+    # Observed before scheduler admission: both liveness readers say "not live".
+    monkeypatch.setattr(queue, "task_has_live_ownership", lambda *_a, **_kw: False)
+    monkeypatch.setattr(queue, "task_subtree_is_live", lambda *_a, **_kw: False)
+    write_task_result(tmp_path, "late", "scheduled")
+    intents_at_custody = []
+    real_custody = queue.cancel_task_custody
+
+    def _custody(task_id, **kwargs):
+        intents_at_custody.append(active_intent(tmp_path, task_id))
+        return real_custody(task_id, **kwargs)
+
+    monkeypatch.setattr(queue, "cancel_task_custody", _custody)
+    with _client(tmp_path) as client:
+        response = client.post("/api/tasks/late/cancel")
+    assert response.status_code == 200, response.text
+    assert intents_at_custody and (intents_at_custody[0] or {}).get("source") == "http_single", intents_at_custody
+    assert load_task_result(tmp_path, "late")["status"] == STATUS_CANCELLED
+    assert pending == []
+
+
+@pytest.mark.parametrize("cascade", [False, True])
+def test_unconfirmed_teardown_answers_pending_and_the_watchdog_settles_it(tmp_path, monkeypatch, cascade):
+    """The intent is recorded but this request cannot confirm the teardown (a
+    busy store or a refused custody leaves it open with nothing captured): 202
+    pending with the intent's request id — never 503 for a Stop that is recorded
+    — and the cancel-intent watchdog finishes it once custody can."""
+    import time
+
+    from supervisor.task_lifecycle import sweep_cancel_intents
+
+    from ouroboros.cancel_intents import active_intent, active_intents
+    from ouroboros.task_results import STATUS_CANCELLED, load_task_result, write_task_result
+
+    queue, pending = _isolate_queue(monkeypatch, tmp_path, [{"id": "busy-1", "chat_id": 0, "root_task_id": "busy-1"}])
+    write_task_result(tmp_path, "busy-1", "scheduled")
+    store = {"busy": True}
+    real_custody = queue.cancel_task_custody
+
+    def _custody(task_id, **kwargs):
+        if store["busy"]:
+            return queue.CANCEL_FAILED  # nothing captured, the intent stays open
+        return real_custody(task_id, **kwargs)
+
+    monkeypatch.setattr(queue, "cancel_task_custody", _custody)
+    with _client(tmp_path) as client:
+        response = client.post("/api/tasks/busy-1/cancel", json={"cascade": cascade})
+    intent = active_intent(tmp_path, "busy-1")
+    assert response.status_code == 202, response.text
+    assert response.json() == {
+        "ok": True, "task_id": "busy-1", "cancel_state": "pending", "stop_policy": "immediate",
+        "request_id": intent["request_id"], "reason_code": "teardown_unconfirmed",
+        **({"cascade": True} if cascade else {}),
+    }
+    assert [task["id"] for task in pending] == ["busy-1"], "nothing was torn down yet"
+
+    store["busy"] = False
+    assert sweep_cancel_intents(now=time.time() + 60) == {"busy-1": queue.CANCEL_CANCELLED}
+    assert load_task_result(tmp_path, "busy-1")["status"] == STATUS_CANCELLED
+    assert active_intents(tmp_path) == {}
+    assert pending == []
+
+
+def test_stop_action_replay_joins_the_pending_intent_and_other_arguments_are_409(tmp_path, monkeypatch):
+    """The exact retry of one Stop action joins the recorded intent (same request
+    id, still pending); the same stop_action_id with different arguments is
+    refused 409 and changes nothing."""
+    from ouroboros.task_results import write_task_result
+
+    queue, pending = _isolate_queue(monkeypatch, tmp_path, [{"id": "act-1", "chat_id": 0, "root_task_id": "act-1"}])
+    write_task_result(tmp_path, "act-1", "scheduled")
+    monkeypatch.setattr(queue, "cancel_task_custody", lambda task_id, **_kw: queue.CANCEL_FAILED)
+    with _client(tmp_path) as client:
+        first = client.post("/api/tasks/act-1/cancel", json={"stop_action_id": "stop-a"})
+        replay = client.post("/api/tasks/act-1/cancel", json={"stop_action_id": "stop-a"})
+        conflict = client.post("/api/tasks/act-1/cancel", json={"stop_action_id": "stop-a", "cascade": True})
+    assert (first.status_code, replay.status_code) == (202, 202)
+    assert replay.json()["request_id"] == first.json()["request_id"]
+    assert conflict.status_code == 409
+    assert conflict.json()["reason_code"] == "stop_action_conflict"
+    assert [task["id"] for task in pending] == ["act-1"]
