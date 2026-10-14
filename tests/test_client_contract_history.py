@@ -52,6 +52,10 @@ def _produce(chat) -> None:
     message_bus.send_with_budget(1, "Here is the plan.", task_id="t1")
     message_bus.send_with_budget(1, "Here is the plan.", task_id="t2")  # same words, another task
     message_bus.send_with_budget(1, "Review settled.", task_id="t1", role="system", system_type="custody_notice")
+    for fmt in ("", "markdown"):
+        for index, meta in enumerate(({"source": "custom-service"}, {}, {"source": ""})):
+            message_bus.send_with_budget(1, f"**Notice {index}** ({fmt or 'plain'})", fmt=fmt,
+                                         task_id="t1", progress_meta=meta)
     bridge.send_document(1, b"%PDF-1.4 data", filename="plan.pdf", caption="the plan",
                          mime="application/pdf", task_id="t1")
     bridge.send_photo(1, b"\x89PNG\r\n\x1a\n" + b"0" * 16, caption="map", task_id="t1")
@@ -115,6 +119,7 @@ def test_every_stored_live_frame_finds_exactly_its_history_row(chat):
         assert len(matches) == 1, (frame, matches)
         # The facts the rule relies on: the stored row keeps the live frame's exact time string.
         assert matches[0]["ts"] == frame["ts"]
+        assert matches[0].get("source", "") == frame.get("source", ""), (frame, matches[0])
     live_keys = [_live_key(frame) for frame in stored]
     assert len(live_keys) == len(set(live_keys)), "the same words on another task stay distinct"
 
