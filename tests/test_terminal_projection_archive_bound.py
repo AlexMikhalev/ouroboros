@@ -16,8 +16,6 @@ import pathlib
 from collections import deque
 from types import SimpleNamespace
 
-import pytest
-
 from ouroboros import terminal_projection as tp
 from ouroboros.task_results import load_task_result, write_task_result
 from ouroboros.utils import append_jsonl

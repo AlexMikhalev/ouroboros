@@ -18,7 +18,7 @@ import pytest
 
 from ouroboros.task_results import load_task_result, write_task_result
 from supervisor import terminal_delivery as td
-from tests._cancel_intents_shared import qenv  # noqa: F401 - shared reaper fixture
+from tests._cancel_intents_shared import qenv as _qenv  # noqa: F401 - the shared reaper fixture, by its fixture name
 
 
 def _event(tid: str, text: str = "the authored answer") -> dict:
