@@ -388,8 +388,10 @@ def test_answered_root_with_a_paused_late_phase_is_not_readdressed_at_the_page_e
     census = [paused]
     monkeypatch.setattr("ouroboros.gateway.state._chat_activities_snapshot_safe", lambda *_: census)
     assert [row["text"] for row in _read(tmp_path)["messages"]] == ["Latest question"]
-    # Positive control: unanswered current work of the room keeps its evidence at the page end.
-    census[:] = [{"activity_id": "root", "chat_id": 1, "kind": "direct_chat", "phase": "working"}]
+    # Positive control: unanswered current work of the room keeps its evidence at the page end,
+    # including a turn whose checkpoint holds only the pre-answer cost "refresh" pseudo-status.
+    census[:] = [{"activity_id": "root", "chat_id": 1, "kind": "direct_chat", "phase": "working",
+                  "root_phase_checkpoint": {"post_task_synthesis": "refresh"}}]
     _write(tmp_path / "logs/tools.jsonl", [_tool("root")])
     carrier = _read(tmp_path)["messages"][-1]
     assert carrier["system_type"] == "task_evidence" and carrier["task_id"] == "root" and carrier["ts"] == ""

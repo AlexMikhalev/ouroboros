@@ -38,3 +38,19 @@ def test_census_carries_typed_pause_cause_for_a_parked_direct_root(tmp_path, mon
     row = next(row for row in rows if row["activity_id"] == "paused")
     assert row["kind"] == "direct_chat" and row["phase"] == "budget_paused"
     assert row["pause_cause"] == cause
+
+
+@pytest.mark.parametrize("synthesis,named", [("paused", True), ("pending_once", True), ("refresh", False), ("", False)])
+def test_only_a_stored_answer_names_its_late_work(tmp_path, synthesis, named):
+    """Activity names an answered root's remaining work; a working turn whose checkpoint holds
+    only the pre-answer cost "refresh" pseudo-status is not answered and is never so labelled."""
+    from ouroboros.gateway.state import _task_activity_facts
+    from ouroboros.task_results import write_task_result
+
+    write_task_result(tmp_path, "root", "running" if synthesis in {"refresh", ""} else "completed",
+                      suggested_name="Audit the release", chat_id=1,
+                      **({"root_phase_checkpoint": {"post_task_synthesis": synthesis}} if synthesis else {}))
+    display = _task_activity_facts(tmp_path, "root")["display"]
+    assert ("late_work" in display) is named
+    if named:
+        assert display["late_work"]["title"] == "Audit the release"

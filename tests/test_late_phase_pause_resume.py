@@ -257,14 +257,15 @@ def test_paused_remainder_is_named_in_activity_and_never_readdressed_as_current_
     f = late
     from ouroboros.gateway.state import _chat_activities_snapshot_safe, current_work_in_room
     from ouroboros.projects_registry import task_presentation_name
+    from ouroboros.terminal_time import terminal_time_fact
 
     _pause_during_read(f)
     [row] = [r for r in _chat_activities_snapshot_safe(f.root, {}, direct_turns=[]) if r["activity_id"] == ROOT]
     assert row["phase"] == "budget_paused" and row["pause_cause"] == "owner"
     result = _row(f)
     assert row["late_work"]["title"] == task_presentation_name(result)
-    assert row["late_work"]["answered_at"] in {(result.get("terminal_time") or {}).get("occurred_at"), result.get("ts")}
-    assert row["late_work"]["answered_at"]
+    # Only the executor's own terminal fact dates the answer; generic ts never does.
+    assert row["late_work"]["answered_at"] == (terminal_time_fact(result).get("occurred_at") or "")
     assert ROOT not in current_work_in_room(f.root, {}, lambda *_: True)
 
 

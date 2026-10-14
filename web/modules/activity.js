@@ -40,7 +40,8 @@ function lateWorkHtml(a, late) {
     const when = iso ? ` <time datetime="${esc(iso)}" title="${esc(iso)}">${esc(at.toLocaleString([], {
         month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</time>` : '';
     const state = { budget_paused: 'paused', budget_pausing: 'pausing', unknown: 'status unknown' }[a.phase] || 'running';
-    return { name: esc(late.title || 'Answered task'), sub: `Answer delivered${when} · remaining work ${state}` };
+    // The state leads: a narrow row's ellipsis may cut the time, never what waits.
+    return { name: esc(late.title || 'Answered task'), sub: `Remaining work ${state} · answer delivered${when}` };
 }
 
 /** A census-only live root (a direct turn, or an answered root whose late work the owner

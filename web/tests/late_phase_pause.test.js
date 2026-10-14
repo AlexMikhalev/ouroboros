@@ -53,11 +53,11 @@ test('an answered root names its work and that only the remainder waits, not a g
         started_at: 0, late_work }, 1_700_000_100_000);
     const paused = row('budget_paused', { title: 'Audit <the> release', answered_at: '2026-10-13T21:11:55Z' });
     assert.match(paused, /<span class="activity-name">Audit &lt;the&gt; release<\/span>/);
-    assert.match(paused, /Answer delivered <time datetime="2026-10-13T21:11:55.000Z"[^>]*>[^<]+<\/time> · remaining work paused/);
+    assert.match(paused, /Remaining work paused · answer delivered <time datetime="2026-10-13T21:11:55.000Z"[^>]*>[^<]+<\/time>/);
     assert.doesNotMatch(paused, /Direct turn|budget_paused/);
     assert.match(paused, /data-budget-paused="1"/, 'its saved remainder keeps the shared Resume');
     const pausing = row('budget_pausing', { title: 'Audit', answered_at: 'not a time' });
-    assert.match(pausing, /Answer delivered · remaining work pausing/);
+    assert.match(pausing, /Remaining work pausing · answer delivered<\/span>/, 'an unknown answer time is omitted');
     assert.doesNotMatch(pausing, /data-budget-paused/);
     assert.match(row('budget_paused', {}), /<span class="activity-name">Answered task<\/span>/);
     // Positive control: a live direct turn without a late phase keeps its plain census line.
