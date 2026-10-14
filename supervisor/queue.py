@@ -647,11 +647,6 @@ from supervisor.queue_transitions import (  # noqa: E402, F401 -- intentional pu
 )
 
 
-def _cancel_task_by_id_single(task_id: str) -> bool:
-    """Boolean facade for the pre-v6.82 single-task callers."""
-    return cancel_task_custody(task_id) in {CANCEL_CANCELLED, CANCEL_ALREADY_SETTLED}
-
-
 # Evolution-stop transitions (GR2-13) live in supervisor.queue_transitions
 # (module-size boundary); re-exported below with the other transition helpers
 # so `supervisor.queue` stays the single import surface for callers.

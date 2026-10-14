@@ -104,3 +104,112 @@ def test_a1_wake_claimed_by_another_worker_is_silent_and_leaves_the_claim(qenv, 
         ci.INTENT_CLAIMED, "watchdog", owner["generation"])
     assert [t["id"] for t in qenv.q.PENDING] == ["raced"]
     assert load_task_result(qenv.drive, "raced")["status"] == "scheduled"
+
+
+# ---------------------------------------------------------------- A2 -------------------------
+
+def test_a2_the_no_intent_boolean_facade_is_gone(qenv, monkeypatch):
+    """cancel_task_by_id is cascade-only; the single shape ran custody without any intent."""
+    monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *_a, **_k: None)
+    qenv.q.PENDING[:] = [{"id": "facade", "chat_id": 1}]
+    write_task_result(qenv.drive, "facade", "scheduled")
+    with pytest.raises(ValueError):
+        qenv.q.cancel_task_by_id("facade", cascade=False)
+    assert not hasattr(qenv.q, "_cancel_task_by_id_single")
+    assert [t["id"] for t in qenv.q.PENDING] == ["facade"]
+    assert load_task_result(qenv.drive, "facade")["status"] == "scheduled"
+
+
+def test_a2_cascade_stops_a_child_whose_own_mint_failed_only_under_the_root_claim(qenv, monkeypatch):
+    """The one authority besides a task's own intent is the root's durable cascade
+    intent, passed explicitly by the sweep. Without it a cascade touches nothing; with
+    it a child whose intent write failed is still stopped, its forensic row kept."""
+    import json
+
+    monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *_a, **_k: None)
+    qenv.q.PENDING[:] = [
+        {"id": "tree", "chat_id": 1, "root_task_id": "tree"},
+        {"id": "kid", "chat_id": 1, "root_task_id": "tree", "parent_task_id": "tree"},
+    ]
+    write_task_result(qenv.drive, "tree", "scheduled")
+    write_task_result(qenv.drive, "kid", "scheduled", parent_task_id="tree", root_task_id="tree")
+    real_request = ci.request_cancel
+
+    def _unwritable_for_the_child(root, tid, **kw):
+        if tid == "kid":
+            raise OSError("intent store unwritable")
+        return real_request(root, tid, **kw)
+
+    monkeypatch.setattr(ci, "request_cancel", _unwritable_for_the_child)
+
+    assert qenv.tl.cancel_task_by_id("tree", cascade=True) is False
+    assert sorted(t["id"] for t in qenv.q.PENDING) == ["kid", "tree"]
+    assert load_task_result(qenv.drive, "kid")["status"] == "scheduled"
+
+    real_request(qenv.drive, "tree", scope=ci.SCOPE_CASCADE, reason="stop the tree")
+    assert qenv.tl.cancel_task_by_id("tree", cascade=True) is True
+    assert qenv.q.PENDING == []
+    assert load_task_result(qenv.drive, "kid")["status"] == STATUS_CANCELLED
+    assert load_task_result(qenv.drive, "tree")["status"] == STATUS_CANCELLED
+    rows = [json.loads(line) for line in
+            (qenv.drive / "logs" / "supervisor.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert any(row.get("type") == "cascade_descendant_intent_write_failed" and row.get("task_id") == "kid"
+               for row in rows)
+
+
+def test_a2_retry_transfer_mints_no_successor_authority_after_an_empty_claim(qenv, monkeypatch):
+    """The legacy retry-transfer lane runs before the main claim; an empty claim on the
+    logical root must not mint an intent on the physical retry and tear it down."""
+    from tests._cancel_intents_shared import _write_root_retry_pair
+
+    monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *_a, **_k: None)
+    monkeypatch.setattr(qenv.q, "QUEUE_MAX_RETRIES", 2)
+    _write_root_retry_pair(qenv.drive, "old-root", "new-root")
+    qenv.q.PENDING[:] = [{
+        "id": "new-root", "type": "task", "chat_id": 0, "depth": 0, "root_task_id": "old-root",
+        "parent_task_id": "", "delegation_role": "root", "original_task_id": "old-root",
+        "timeout_retry_from": "old-root",
+    }]
+
+    assert qenv.tl.cancel_task_custody("old-root") == qenv.tl.CANCEL_NOT_FOUND
+    assert ci.active_intents(qenv.drive) == {}
+    assert [t["id"] for t in qenv.q.PENDING] == ["new-root"]
+
+    minted = ci.request_cancel(qenv.drive, "old-root", reason="stop")
+    assert minted["task_id"] == "new-root"
+    assert qenv.tl.cancel_task_custody("new-root") == qenv.tl.CANCEL_CANCELLED
+    assert qenv.q.PENDING == []
+    assert load_task_result(qenv.drive, "new-root")["status"] == STATUS_CANCELLED
+
+
+def test_a2_http_single_stop_admitted_after_liveness_probe_cannot_tear_down_without_an_intent(tmp_path, monkeypatch):
+    """The product Stop path: the HTTP single cancel probes liveness, mints an intent only
+    when the probe says live, then calls custody. A task admitted between the probe and
+    custody reaches custody with NO durable intent; custody refuses (404, task untouched)."""
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from ouroboros.gateway.tasks import api_task_cancel
+    from supervisor import queue, workers
+
+    monkeypatch.setattr(queue, "DRIVE_ROOT", tmp_path)
+    monkeypatch.setattr(queue, "PENDING", [{"id": "late", "chat_id": 1, "root_task_id": "late"}])
+    monkeypatch.setattr(queue, "RUNNING", {})
+    monkeypatch.setattr(workers, "WORKERS", {}, raising=False)
+    monkeypatch.setattr(queue, "persist_queue_snapshot", lambda reason="": None)
+    monkeypatch.setattr(queue, "task_has_live_ownership", lambda *_a, **_k: False)
+    monkeypatch.setattr(queue, "task_subtree_is_live", lambda *_a, **_k: False)
+    write_task_result(tmp_path, "late", "scheduled")
+    monkeypatch.setattr(queue, "_emit_cancel_task_done", lambda *_a, **_k: None)
+    minted = []
+    real_request = ci.request_cancel
+    monkeypatch.setattr(ci, "request_cancel", lambda *a, **k: minted.append(a[1]) or real_request(*a, **k))
+    app = Starlette(routes=[Route("/api/tasks/{task_id}/cancel", api_task_cancel, methods=["POST"])])
+    app.state.drive_root = tmp_path
+    with TestClient(app) as client:
+        response = client.post("/api/tasks/late/cancel")
+    assert minted == []
+    assert response.status_code == 404
+    assert load_task_result(tmp_path, "late")["status"] == "scheduled"
+    assert [t["id"] for t in queue.PENDING] == ["late"]
