@@ -94,12 +94,12 @@ def test_cascade_acknowledges_and_cancels_whole_live_subtree(tmp_path, monkeypat
             {"id": "other", "chat_id": 0, "root_task_id": "other", "depth": 0},
         ],
     )
-    cascade_calls: list[tuple[str, bool]] = []
+    cascade_calls: list[str] = []
     real = queue.cancel_task_by_id
 
-    def _spy(task_id, *, cascade=False):
-        cascade_calls.append((task_id, cascade))
-        return real(task_id, cascade=cascade)
+    def _spy(task_id):
+        cascade_calls.append(task_id)
+        return real(task_id)
 
     monkeypatch.setattr(queue, "cancel_task_by_id", _spy)
     with _client(tmp_path) as client:
@@ -108,7 +108,7 @@ def test_cascade_acknowledges_and_cancels_whole_live_subtree(tmp_path, monkeypat
     assert response.status_code == 200
     # Same envelope keys as the plain path, plus the cascade echo.
     assert response.json() == {"ok": True, "task_id": "root", "cascade": True}
-    assert cascade_calls == [("root", True)]
+    assert cascade_calls == ["root"]
     assert [task["id"] for task in pending] == ["other"]
     for task_id in ("root", "child", "grandchild"):
         assert load_task_result(tmp_path, task_id)["status"] == STATUS_CANCELLED
@@ -196,7 +196,7 @@ def test_a_failing_teardown_is_reported_and_recorded_never_swallowed(tmp_path, m
         [{"id": "root", "chat_id": 0, "root_task_id": "root"}],
     )
 
-    def _boom(task_id, *, cascade=False):
+    def _boom(task_id):
         raise RuntimeError("teardown exploded")
 
     monkeypatch.setattr(queue, "cancel_task_by_id", _boom)
@@ -229,14 +229,12 @@ def test_running_task_counts_as_live_for_cascade_precheck(tmp_path, monkeypatch)
         "RUNNING",
         {"root": {"task": {"id": "root", "root_task_id": "root"}}},
     )
-    seen: list[tuple[str, bool]] = []
-    monkeypatch.setattr(
-        queue, "cancel_task_by_id", lambda task_id, *, cascade=False: seen.append((task_id, cascade)) or True,
-    )
+    seen: list[str] = []
+    monkeypatch.setattr(queue, "cancel_task_by_id", lambda task_id: seen.append(task_id) or True)
     with _client(tmp_path) as client:
         response = client.post("/api/tasks/root/cancel", json={"cascade": True})
     assert response.status_code == 200
-    assert seen == [("root", True)]
+    assert seen == ["root"]
 
 
 def test_non_boolean_cascade_is_a_client_error_not_a_subtree_cancel(tmp_path, monkeypatch):
@@ -464,11 +462,11 @@ def test_plain_stop_now_executes_an_existing_durable_cascade(tmp_path, monkeypat
         scope=ci.SCOPE_CASCADE,
         requested_stop_policy=ci.STOP_POLICY_FINALIZE,
     )
-    cascades: list[tuple[str, bool]] = []
+    cascades: list[str] = []
     monkeypatch.setattr(
         queue,
         "cancel_task_by_id",
-        lambda task_id, *, cascade=False: cascades.append((task_id, cascade)) or True,
+        lambda task_id: cascades.append(task_id) or True,
     )
     monkeypatch.setattr(
         queue,
@@ -483,7 +481,7 @@ def test_plain_stop_now_executes_an_existing_durable_cascade(tmp_path, monkeypat
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "task_id": "root", "cascade": True}
-    assert cascades == [("root", True)]
+    assert cascades == ["root"]
     hardened = ci.active_intent(tmp_path, "root")
     assert hardened is not None
     assert hardened["request_id"] == graceful["request_id"]

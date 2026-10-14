@@ -743,15 +743,17 @@ def _finalize_cancel_intent_on_miss(
     """Neither queued nor running: settle an open cancel intent (or a legacy
     ``cancel_requested`` latch file) as cancelled with reconstructed cost.
 
-    Two things this lane must NOT do. It must not invent a task: an intent for an
-    id that has no durable result at all names a task that never existed, and
+    Three things this lane must NOT do. It must not invent a task: an intent for
+    an id that has no durable result at all names a task that never existed, and
     fabricating a ``cancelled`` row with $0 for it would put a phantom task in the
-    ledger — it settles as ``not_found`` instead. And it must not bury a child
+    ledger — it settles as ``not_found`` instead. It must not take a row whose
+    execution owner is a live Presence turn (no supervisor map knows it): that
+    settles ``not_found`` too, the row untouched. And it must not bury a child
     that finished: when the row names a child drive, the child's own result is
     copied back BEFORE the cancelled write, so a crash of the split-drive
     copy-back window cannot cost a completed answer.
     """
-    from supervisor.queue_transitions import _settled_status
+    from supervisor.queue_transitions import _settled_status, settled_status_of
     from supervisor.task_lifecycle import (
         SETTLED_ALREADY,
         _active_intent,
@@ -779,6 +781,15 @@ def _finalize_cancel_intent_on_miss(
             # the intent honestly rather than minting a cancelled task.
             _settle_intent(q, task_id, outcome="not_found",
                            detail="no durable task result for this id", intent=intent)
+            return CANCEL_NOT_FOUND
+        owner = existing.get("execution_owner")
+        if isinstance(owner, dict) and owner.get("kind") == "presence" and not settled_status_of(existing):
+            # A live Presence turn runs on its own thread outside every supervisor
+            # map: nothing here can capture it, and a cancelled write would only
+            # strand a turn that keeps spending. The row stays its runner's and
+            # the Stop answers "not active", as it did before intent-first minting.
+            _settle_intent(q, task_id, outcome="not_found",
+                           detail="execution owned by a live Presence turn", intent=intent)
             return CANCEL_NOT_FOUND
         # A concurrent custody attempt may have captured this task between our
         # own capture miss and here (the pending double-settle probe). If the

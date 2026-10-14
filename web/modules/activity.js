@@ -482,9 +482,10 @@ export function initActivity({ mount, ws } = {}) {
                         }
                         // Same declared semantics as the chat card (v6.82): the
                         // task AND its live subtree, so stopping an orchestrator
-                        // never orphans its running subagents. Soft stop answers
-                        // 202 with the intent open; immediate answers after the
-                        // teardown — either way the refresh shows honest state.
+                        // never orphans its running subagents. A soft stop answers
+                        // 202 with the intent open; an immediate stop answers 200
+                        // once torn down or 202 pending while the intent is still
+                        // being driven — either way the refresh shows honest state.
                         await requestStop(id, action);
                     } catch (exc) {
                         // A 404 is the documented completion race (the run
