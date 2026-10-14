@@ -300,12 +300,12 @@ For any finding about narrative, prose, or cross-surface consistency, also apply
 the `Critical surface whitelist` below (same rules for every reviewer — both
 parts of the brief, and a preflight). A mismatch outside the whitelist is advisory.
 
-One root cause = one FAIL entry, across both parts of the brief. Do NOT split one underlying problem into multiple
-FAIL items that all require the same change. Do NOT hold an obligation open by
-reformulating a fixed concrete issue into a broader future-risk variant — if the
-named artifact is fixed, mark PASS; raise a new advisory if a broader concern remains.
-Coverage is semantic, not numerical: zero or one FAIL is valid, and reviewers
-must never invent findings to reach a count.
+One root cause = one FAIL entry, across both parts of the brief. Do NOT split one
+underlying problem into multiple FAIL items that all require the same change. Do NOT
+hold an obligation open by reformulating a fixed concrete issue into a broader
+future-risk variant — if the named artifact is fixed, mark PASS; raise a new
+advisory if a broader concern remains. Coverage is semantic, not numerical: zero or
+one FAIL is valid, and reviewers must never invent findings to reach a count.
 
 ### Critical surface whitelist (binding for ALL reviewers — every pool seat, both parts, and a preflight)
 
@@ -1139,7 +1139,20 @@ receipts; a session's `harness_observed` journal; unobserved where neither is
 available) is diagnostic: preserve the received verdict and quorum participation,
 disclose gaps, and leave further reading to the agent's judgment (BIBLE P3).
 
-**Output contract:** the seat returns one JSON object whose `coupling` block has one entry for every item below (`REVIEW_TWO_PART_OBJECT_CONTRACT` in `ouroboros/triad_review.py`; a seat asked this part alone returns the bare array). PASS is one line: a pointer to what was checked, `see Part 1 <item>` for a defect already reported there, or `N/A — <reason>` when the change does not reach the question. FAIL names the file:line (or exact artifact) and the violated invariant. Several FAIL entries for one item are valid for distinct root causes; never PASS an item that also has a FAIL. The gate forwards only FAIL entries; PASS rows stay in the record's per-seat answers. The matrix is validated before findings are classified (`ouroboros/tools/scope_review_contract.py`): a missing or unexpected item, a duplicate PASS, or PASS+FAIL for one item leaves this part unanswered as a reviewer output failure; a seat that answered Part 1 without it is recorded `coupling_block_missing`, and a wave in which no responding seat answered it aggregates `NOT_PERFORMED`, never PASS.
+**Output contract:** the seat returns one JSON object whose `coupling` block has one
+entry for every item below (`REVIEW_TWO_PART_OBJECT_CONTRACT` in
+`ouroboros/triad_review.py`; a seat asked this part alone returns the bare array).
+PASS is one line: a pointer to what was checked, `see Part 1 <item>` for a defect
+already reported there, or `N/A — <reason>` when the change does not reach the
+question. FAIL names the file:line (or exact artifact) and the violated invariant.
+Several FAIL entries for one item are valid for distinct root causes; never PASS an
+item that also has a FAIL. The gate forwards only FAIL entries; PASS rows stay in
+the record's per-seat answers. The matrix is validated before findings are
+classified (`ouroboros/tools/scope_review_contract.py`): a missing or unexpected
+item, a duplicate PASS, or PASS+FAIL for one item leaves this part unanswered as a
+reviewer output failure; a seat that answered Part 1 without it is recorded
+`coupling_block_missing`, and a wave in which no responding seat answered it
+aggregates `NOT_PERFORMED`, never PASS.
 
 | # | item | what to check | severity when FAIL |
 |---|------|---------------|--------------------|
