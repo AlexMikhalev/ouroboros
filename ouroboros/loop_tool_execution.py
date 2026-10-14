@@ -1450,12 +1450,13 @@ def process_tool_results(
                 exec_result, truncated_result, facts=typed_result_facts(exec_result),
                 source_ref=result_source_ref),
         })
-        delivered_meta = ((exec_result.get("result_meta") or {}).get("tool_result_meta") or {}) if not (is_error or result_partial) else {}
-        if ctx is not None and delivered_meta.get("sleep_question_notice"):
+        published = (exec_result.get("result_meta") or {}).get("tool_result_meta") or {}
+        if ctx is not None and published.get("sleep_question_notice") and not (is_error or result_partial):
             from ouroboros.model_sleep import acknowledge_question_delivery
-            acknowledge_question_delivery(ctx, truncated_result)
+            acknowledge_question_delivery(ctx, truncated_result)  # exposure needs the complete ready view
         # Keyed on the wake the RESULT published, not on a tool name: a call that published none has nothing to ack.
-        if ctx is not None and delivered_meta.get("supervision_wake_id"):
+        # A delivered refusal wake too: ``acknowledge_pending_wake`` itself verifies what the text carried.
+        if ctx is not None and published.get("supervision_wake_id"):
             try:
                 from ouroboros.delegate_supervision import acknowledge_pending_wake
 

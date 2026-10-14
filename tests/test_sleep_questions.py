@@ -41,16 +41,16 @@ def _source(root, question):
     return json.loads(read_actor_source_bytes(root, "sleeper", question["interaction_source"]))
 
 
-def _deliver(ctx, text, monkeypatch, *, partial=False, error=False):
+def _deliver(ctx, text, monkeypatch, *, partial=False, error=False, tool="await_messages", meta=None):
     from ouroboros import loop_tool_execution as loop
 
     monkeypatch.setattr(loop, "_deliver_tool_results", lambda *_a, **_k: [
         {"result": text, "result_partial": partial}])
     messages = []
     loop.process_tool_results([{
-        "fn_name": "await_messages", "tool_call_id": "wait-call", "result": text,
+        "fn_name": tool, "tool_call_id": "wait-call", "result": text,
         "is_error": error, "args_for_log": {}, "tool_args": {},
-        "result_meta": {"tool_result_meta": {"sleep_question_notice": True}}}],
+        "result_meta": {"tool_result_meta": meta or {"sleep_question_notice": True}}}],
         messages, {"tool_calls": []}, lambda *_a, **_k: None, tools=SimpleNamespace(_ctx=ctx))
     return messages
 
@@ -186,6 +186,7 @@ def test_cold_unselected_question_keeps_pause_veto_then_returns_and_carries_expo
     messages, usage = [], {}
     bp.resume_paused_loop(SimpleNamespace(_ctx=fresh), saved, messages, {}, usage, set(), budget_remaining_usd=5)
     assert any("interaction_source" in m["content"] for m in messages)
+    assert not any("no longer readable" in m["content"] for m in messages), "the census shows it pending"
     assert bp.budget_pause_row(tmp_path, "sleeper")["grant"]["consumed_at"]
     assert wake_reason(fresh, {"any_mail": False}) == ""
     retained = owner_wait.continuation_state(fresh, messages, {}, usage, 4, [], set())
@@ -209,7 +210,31 @@ def test_native_saved_sleep_delivers_question_on_its_existing_return_path(tmp_pa
     messages = []
     owner_wait.resume_native_loop(SimpleNamespace(_ctx=ctx), state, messages, {}, {}, set())
     assert "interaction_source" in messages[-1]["content"]
+    assert "requesting input" in messages[-2]["content"], "the wake reason precedes its sources"
     assert ctx._sleep_interaction_seen == {"run-one": ["q1"]}
+
+
+@pytest.mark.parametrize("outcome,named", [("timeout", "the wake time you chose"), ("mail:peer", "mail from peer"),
+                                           ("run:run-x", "delegated run run-x reaching an engine terminal")])
+@pytest.mark.parametrize("started", [None, 30.0])
+def test_native_saved_sleep_names_its_wake_without_inventing_elapsed_time(tmp_path, monkeypatch, outcome,
+                                                                         named, started):
+    import re
+    import time
+    from ouroboros import owner_wait
+
+    ctx = _ctx(tmp_path)
+    state = owner_wait.continuation_state(ctx, [{"role": "user", "content": "intent"}], {}, {}, 3, [], set())
+    ctx.owner_wait_resume = {"reason": "sleep", "sleep": {"mode": "warm"},
+                             **({"sleep_started_at": time.time() - started} if started else {})}
+    ctx.owner_wait_callback = lambda *_a: outcome
+    monkeypatch.setattr(owner_wait, "rebind_restored_route", lambda *_a: (None, "max"))
+    messages = []
+    owner_wait.resume_native_loop(SimpleNamespace(_ctx=ctx), state, messages, {}, {}, set())
+    notice = messages[-1]["content"]
+    assert named in notice, messages
+    assert bool(re.search(r"You slept 3[01]s \(warm\)", notice)) == bool(started), notice
+    assert started or "You slept (warm)" in notice, "no recorded start: no invented duration"
 
 
 def test_delegate_wait_a_b_ack_union_and_legacy_ack_survive_restored_cognition(tmp_path):
@@ -242,7 +267,8 @@ def test_unavailable_question_source_does_not_suppress_later_ready_question(tmp_
     ctx = _ctx(tmp_path)
     original = current.run
     with monkeypatch.context() as fault:
-        fault.setattr(model_sleep, "_owned_runs", lambda *_a: (_ for _ in ()).throw(OSError("read unavailable")))
+        fault.setattr(model_sleep, "_owned_runs",
+                      lambda *_a, **_k: (_ for _ in ()).throw(OSError("read unavailable")))
         messages = []
         model_sleep.append_question_notice(ctx, "run_question:run-one", messages)
         assert "no longer readable" in messages[-1]["content"] and not getattr(ctx, "_sleep_interaction_seen", {})
@@ -250,24 +276,98 @@ def test_unavailable_question_source_does_not_suppress_later_ready_question(tmp_
     assert model_sleep.wake_reason(ctx, {"any_mail": False}) == "run_question:run-one"
 
 
-def test_implicit_custody_failure_does_not_refuse_time_only_warm_arm(tmp_path, monkeypatch):
-    from ouroboros import model_sleep, store
+def test_only_polls_and_implicit_question_reads_skip_store_contention_waits(tmp_path, monkeypatch):
+    from ouroboros import delegate_custody_current as current, model_sleep, owner_wait, store
     from ouroboros.tools.control_task_results import _await_messages
+    from supervisor.sleep_wake import _readiness
 
     _result(tmp_path, "sleeper")
+    _run(tmp_path)
+    reads, real = [], current.runs
+
+    def observed(root, where="", params=()):
+        reads.append((where, store._WAIT_BUDGET.get()))
+        return real(root, where, params)
+
+    monkeypatch.setattr(current, "runs", observed)
     ctx = _ctx(tmp_path)
-    budgets = []
-    def broken(_ctx):
-        budgets.append(store._WAIT_BUDGET.get())
+    assert json.loads(_await_messages(ctx, mode="warm", runs=["run-one"]))["reason"] == "sleep_armed"
+    assert reads == [("task_id=?", None), ("task_id=?", None), ("task_id=? AND state=?", 0)], \
+        "arming a selected run keeps the ordinary contention wait; only the implicit read is a probe"
+    reads.clear()
+    assert owner_wait._sleep_wake(ctx, {"sleep": ctx._model_sleep}) == ""
+    assert _readiness(SimpleNamespace(DRIVE_ROOT=tmp_path), {"id": "sleeper"}, {"sleep": ctx._model_sleep}) == ""
+    assert [budget for _where, budget in reads] == [0] * 4, "a poll retries next beat instead of stalling"
+
+    def busy(root, where="", params=()):
+        reads.append((where, store._WAIT_BUDGET.get()))
         raise store.StoreBusy("contended", reason="contention")
-    monkeypatch.setattr(model_sleep, "_owned_runs", broken)
-    out = json.loads(_await_messages(ctx, mode="warm", wake_at="2099-01-01T00:00:00+00:00"))
-    assert out["reason"] == "sleep_armed" and budgets == [0]
+
+    monkeypatch.setattr(current, "runs", busy)
+    reads.clear()
+    out = json.loads(_await_messages(_ctx(tmp_path), mode="warm", wake_at="2099-01-01T00:00:00+00:00"))
+    assert out["reason"] == "sleep_armed" and reads == [("task_id=? AND state=?", 0)]
     assert model_sleep.wake_reason(ctx, {"wake_at": "2000-01-01T00:00:00+00:00"}) == "timeout"
     # An explicitly selected unreadable run still preserves its original error.
     with pytest.raises(store.StoreBusy):
         model_sleep.wake_reason(ctx, {"runs": ["run-one"]})
-    assert all(value == 0 for value in budgets)
+
+
+def test_implicit_question_poll_reads_open_rows_but_selected_settled_runs_still_wake(tmp_path, monkeypatch):
+    from ouroboros import delegate_custody as custody, delegate_custody_current as current, model_sleep, owner_wait
+    from ouroboros.tools.control_task_results import _await_messages
+
+    _result(tmp_path, "sleeper")
+    for index in range(3):
+        _run(tmp_path, f"done-{index}")
+        assert custody.emit(tmp_path, custody.SETTLED, {"run_id": f"done-{index}", "task_id": "sleeper",
+                                                         "state": "succeeded"})
+    _question(tmp_path, _run(tmp_path, "open"))
+    decoded, original = [], current._decode
+    monkeypatch.setattr(current, "_decode", lambda raw: decoded.append(raw.get("run_id")) or original(raw))
+    ctx = _ctx(tmp_path)
+    assert model_sleep.wake_reason(ctx, {"any_mail": False}) == "run_question:open"
+    assert decoded == ["open"], "implicit attention never decodes closed history"
+    assert owner_wait._sleep_wake(ctx, {"sleep": {"runs": ["done-0"]}}) == "run:done-0"
+    ready = json.loads(_await_messages(ctx, mode="warm", runs=["done-1"]))
+    assert ready["reason"] == "ready" and ready["woke_by"] == "run:done-1", "a settled selection answers at once"
+    assert [question["run_id"] for question in ready["questions"]] == ["open"]
+
+
+def test_cold_resume_retry_rolls_back_question_exposure_with_its_deleted_disclosure(tmp_path, monkeypatch):
+    from tests.test_cold_external_custody import _setup, _park
+    from ouroboros import budget_pause as bp, delegate_custody_current as current, owner_wait
+    from ouroboros import working_checkpoint as wc
+    from ouroboros.owner_mailbox import write_owner_message
+    from supervisor.sleep_wake import wake_ready_sleepers
+
+    env = _setup(tmp_path, monkeypatch)
+    _park(env, tmp_path, monkeypatch, selected={"wake_at": "2099-01-01T00:00:00+00:00"})
+    assert write_owner_message(tmp_path, "come back", "sleeper", msg_id="owner-wake")
+    assert wake_ready_sleepers(env.q)[0]["ok"]
+    _question(tmp_path, current.run(tmp_path, "run-one"))  # asked after the grant's census
+    fresh, _ = _loop_ctx(tmp_path, "sleeper")
+    fresh.budget_pause_resume = env.workers.PENDING[0]["_budget_pause_resume"]
+    saved = bp.load_budget_pause(fresh)
+    monkeypatch.setattr(owner_wait, "rebind_restored_route", lambda *_a: (None, "max"))
+    monkeypatch.setattr(bp, "_publish_hold", lambda *_a: None)
+    real, attempts = wc.save_resumed, []
+
+    def flaky(*args, **kwargs):
+        attempts.append(dict(fresh._sleep_interaction_seen))
+        if len(attempts) == 1:
+            raise OSError("disk full")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(wc, "save_resumed", flaky)
+    messages = []
+    bp.resume_paused_loop(SimpleNamespace(_ctx=fresh), saved, messages, {}, {}, set(), budget_remaining_usd=5)
+    assert attempts == [{"run-one": ["q1"]}] * 2
+    assert sum("Delegated question observation" in m["content"] for m in messages) == 1, \
+        "the retried disclosure shows the question its deleted predecessor had shown"
+    retained = wc.read_working(tmp_path, "sleeper", 1)[1]
+    assert retained["messages"] == messages and retained["sleep_interaction_seen"] == {"run-one": ["q1"]}
+
 
 
 @pytest.mark.parametrize("woke_by", ["task:ready:completed", "mail:peer", "timeout"])
@@ -304,7 +404,9 @@ def test_concurrent_ready_condition_delivers_all_unseen_questions(tmp_path, monk
     assert model_sleep.wake_reason(ctx, {"any_mail": False}) == ""
 
 
-def test_cold_notice_marks_all_sources_it_actually_shows(tmp_path):
+@pytest.mark.parametrize("late", [False, True])
+@pytest.mark.parametrize("fresh", ["readable", "unreadable"])
+def test_cold_notice_marks_all_sources_it_actually_shows(tmp_path, monkeypatch, fresh, late):
     from ouroboros import budget_pause, model_sleep
 
     ctx = _ctx(tmp_path)
@@ -313,13 +415,51 @@ def test_cold_notice_marks_all_sources_it_actually_shows(tmp_path):
         run = _question(tmp_path, _run(tmp_path, rid))
         external.append({"run_id": rid, "state": "running", "pending_interaction_ids": ["q1"],
                          "interaction_source": run.interaction_source})
+    if late:
+        _question(tmp_path, _run(tmp_path, "run-late"))  # asked after the grant's census
     row = {"reason": "sleep", "sleep": {"mode": "cold"}, "external_custody": {"state": "accepted"},
            "external_runs": {"runs": external}, "sleep_ready": {"reason": "run_question:run-a"}}
     messages = []
-    budget_pause._resume_disclosure(ctx, row, {}, {"consumed_at": 100}, {}, messages)
-    assert any("run-a" in m["content"] and "run-b" in m["content"] for m in messages)
-    assert ctx._sleep_interaction_seen == {"run-a": ["q1"], "run-b": ["q1"]}
-    assert model_sleep.wake_reason(ctx, {"any_mail": False}) == ""
+    with monkeypatch.context() as fault:
+        if fresh == "unreadable":
+            fault.setattr(model_sleep, "_owned_runs", lambda *_a, **_k: (_ for _ in ()).throw(OSError("busy")))
+        budget_pause._resume_disclosure(ctx, row, {}, {"consumed_at": 100}, {}, messages)
+    text = "\n".join(m["content"] for m in messages)
+    assert "run-a" in text and "run-b" in text
+    assert "no longer readable" not in text, "the census itself delivered the waking question"
+    shown_late = late and fresh == "readable"
+    assert ("run-late" in text) is shown_late
+    assert ctx._sleep_interaction_seen == {"run-a": ["q1"], "run-b": ["q1"],
+                                           **({"run-late": ["q1"]} if shown_late else {})}
+    lost = late and not shown_late
+    assert model_sleep.wake_reason(ctx, {"any_mail": False}) == ("run_question:run-late" if lost else "")
+
+
+@pytest.mark.parametrize("view", ["complete_refusal", "spilled_refusal", "partial"])
+def test_loop_acks_each_delivered_wake_but_exposes_only_questions_its_text_carries(tmp_path, monkeypatch, view):
+    """Wake ACK keys on the wake a delivered result names, error or not; question
+    exposure keys only on interaction ids present in that delivered text."""
+    from ouroboros import delegate_supervision as sup, sleep_custody, tool_capabilities
+    from ouroboros.tool_result_delivery import render_result_view
+
+    ctx = _ctx(tmp_path)
+    payload = {"status": "refused", "ok": False, "host_code": "TOOL_REPORTED_FAILURE", "run_id": "run-a",
+               "reason": "daemon_busy", "detail": "x" * 1500, "supervision_wake_id": "wake",
+               "pending_interactions": [{"interaction_id": "q1", "questions": [{"id": "choice"}]}]}
+    sup._save_state(ctx, {"run_id": "run-a", "pending_wake": {"wake_id": "wake", "interaction_ids": ["q1"],
+                                                              "payload": payload}})
+    if view == "spilled_refusal":
+        monkeypatch.setattr(tool_capabilities, "tool_result_limit", lambda _name: 900)
+    result = sup._render_wake_payload(ctx, payload)
+    assert result.status == "error" and result.meta == {"supervision_wake_id": "wake"}
+    text = render_result_view(result.text, head_chars=80, tail_chars=80)[0] if view == "partial" else result.text
+    _deliver(ctx, text, monkeypatch, partial=view == "partial", error=True, tool="delegate_wait", meta=result.meta)
+    pending = sup._load_state(ctx, "").get("pending_wake")
+    if view == "partial":
+        assert pending and sleep_custody.seen_interactions(ctx) == {}, "a partial view proves no delivery"
+    else:
+        assert not pending, "a delivered refusal wake is acknowledged, so it never replays"
+        assert sleep_custody.seen_interactions(ctx) == {"run-a": ["q1"] if view == "complete_refusal" else []}
 
 
 def test_supervision_id_without_delivered_question_cannot_mark_sleep_exposure(tmp_path):

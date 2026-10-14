@@ -18,8 +18,9 @@ latch, so an event that lands between the first check and the park is seen by
 the first check after it: the sequence is check → install the wait → recheck.
 A failed source read cannot hide another ready source or the chosen time.
 If nothing is ready, an explicit source's original error reaches the caller
-(pollers keep sleeping; arming raises). Implicit question reads never wait on
-store contention; unavailable observations are logged, not new prerequisites.
+(pollers keep sleeping; arming raises). Pollers and implicit question reads
+(open custody rows only) never wait on store contention; arming still does.
+Unavailable implicit observations are logged, not new prerequisites.
 A terminal counts once as the stable fact that the task settled, never as a
 later enrichment of its result. Readiness while the task cannot
 run (no capacity, a lease, money, an owner Pause or a Restart hold) stays
@@ -160,21 +161,23 @@ def _service_wake(pin: Dict[str, Any]) -> str:
     return f"service:{name}:unknown"
 
 
-def _owned_runs(ctx: Any) -> dict:
+def _owned_runs(ctx: Any, held_only: bool = False) -> dict:
+    """This task's custody rows: every one for a selected terminal (it may already be
+    settled), only the indexed open (``held``) ones for implicit question attention."""
     from ouroboros import delegate_custody as custody
-    from ouroboros.delegate_custody_current import runs
+    from ouroboros.delegate_custody_current import HELD, runs
 
-    root = custody.custody_root(ctx)
     task_id = str(ctx.task_id)
-    return {run.run_id: run for run in runs(pathlib.Path(root), "task_id=?", (task_id,)).values()
+    where, params = ("task_id=? AND state=?", (task_id, HELD)) if held_only else ("task_id=?", (task_id,))
+    return {run.run_id: run for run in runs(pathlib.Path(custody.custody_root(ctx)), where, params).values()
             if run.task_id == task_id}
 
 
 def _pending_question(run: Any) -> bool:
     from ouroboros.delegate_custody import TERMINAL_STATES
 
-    return bool(not run.review_owned and not run.settled and run.terminal_state not in TERMINAL_STATES
-                and run.pending_interaction_ids and run.interaction_source)
+    return bool(run is not None and not run.review_owned and not run.settled and run.terminal_state not in
+                TERMINAL_STATES and run.pending_interaction_ids and run.interaction_source)
 
 
 def _question_runs(ctx: Any) -> dict:
@@ -183,39 +186,50 @@ def _question_runs(ctx: Any) -> dict:
 
     try:
         with acquisition_budget(0):
-            return _owned_runs(ctx)
+            return _owned_runs(ctx, held_only=True)
     except Exception:
         log.debug("Sleep question observations unavailable for %s", ctx.task_id, exc_info=True)
         return {}
 
 
-def question_sources(ctx: Any) -> list:
+def question_sources(ctx: Any, runs: Any = None) -> list:
     """Unseen own questions accompany a return even when another source woke it."""
     from ouroboros.sleep_custody import seen_interactions
 
     seen = seen_interactions(ctx)
     return [{"run_id": rid, "pending_interaction_ids": list(run.pending_interaction_ids),
              "interaction_source": dict(run.interaction_source)}
-            for rid, run in _question_runs(ctx).items()
+            for rid, run in (_question_runs(ctx) if runs is None else runs).items()
             if _pending_question(run) and set(run.pending_interaction_ids) - set(seen.get(rid) or ())]
 
 
-def append_question_notice(ctx: Any, reason: str, messages: list) -> None:
-    """Expose the retained source on every return path, then remember notification only."""
+def append_question_notice(ctx: Any, reason: str, messages: list, shown: Any = ()) -> None:
+    """Expose the retained source on every return path, then remember notification only.
+
+    ``shown`` rows already reached this transcript (the cold custody census): their refs
+    count as delivered, so only questions beyond them are repeated, and the question
+    that woke the author is called unreadable only when neither they nor a fresh read
+    show it pending. A failed fresh read marks nothing it did not show.
+    """
     import json
     from ouroboros.sleep_custody import record_question_notice
 
+    record_question_notice(ctx, shown)
     if reason.startswith("control:"):
         return
-    questions = question_sources(ctx)
+    runs = _question_runs(ctx)
+    questions = question_sources(ctx, runs)
+    waking = reason[13:] if reason.startswith("run_question:") else ""
+    delivered = {str(row.get("run_id") or "") for row in shown if isinstance(row, dict)
+                 and row.get("interaction_source") and row.get("pending_interaction_ids")}
     if questions:
         messages.append({"role": "user", "content": "[SYSTEM NOTICE]\nDelegated question observation: "
                          + json.dumps(questions, ensure_ascii=False)
                          + "\nRead the retained source or use delegate_wait; nothing answered the question."})
         record_question_notice(ctx, questions)
-    elif reason.startswith("run_question:"):
+    elif waking and waking not in delivered and not _pending_question(runs.get(waking)):
         messages.append({"role": "user", "content": "[SYSTEM NOTICE]\nThe question that woke you is no longer "
-                         "readable as pending. Nothing was acknowledged; inspect " + reason[13:] + "."})
+                         "readable as pending. Nothing was acknowledged; inspect " + waking + "."})
 
 
 def acknowledge_question_delivery(ctx: Any, text: str) -> None:
@@ -273,12 +287,9 @@ def wake_reason(ctx: Any, chosen: Dict[str, Any]) -> str:
     from ouroboros.delegate_custody import TERMINAL_STATES
     from ouroboros.sleep_custody import seen_interactions
 
-    if chosen.get("runs"):
-        from ouroboros.store import acquisition_budget
-        with acquisition_budget(0):
-            owned = read_source(_owned_runs, ctx) or {}
-    else:
-        owned = _question_runs(ctx)
+    # A selected terminal waits on contention like any arm-time read; the pollers
+    # bound their whole readiness pass to a probe instead.
+    owned = (read_source(_owned_runs, ctx) or {}) if chosen.get("runs") else {}
     for run_id in chosen.get("runs") or ():
         run = owned.get(run_id)
         if run is not None and (run.terminal_state in TERMINAL_STATES or run.settled):
@@ -286,7 +297,7 @@ def wake_reason(ctx: Any, chosen: Dict[str, Any]) -> str:
     # Questions need their responsible author, even when it selected another
     # branch. Reviewer custody belongs to its panel, never to this sleeper.
     seen = seen_interactions(ctx)
-    for run_id, run in owned.items():
+    for run_id, run in _question_runs(ctx).items():
         shown = set(seen.get(run_id) or ()) | set((chosen.get("interaction_seen") or {}).get(run_id) or ())
         if _pending_question(run) and set(run.pending_interaction_ids) - shown:
             return f"run_question:{run_id}"
@@ -456,8 +467,10 @@ def end(ctx: Any) -> float:
     return slept
 
 
-def wake_notice(chosen: Dict[str, Any], outcome: str, slept: float) -> Dict[str, Any]:
-    """Host facts for the woken model: what woke it — a fact, never a verdict."""
+def wake_notice(chosen: Dict[str, Any], outcome: str, slept: float | None) -> Dict[str, Any]:
+    """Host facts for the woken model: what woke it — a fact, never a verdict.
+
+    ``slept`` is ``None`` when no sleep start was recorded: no duration is claimed."""
     what = {
         "timeout": "the wake time you chose",
     }.get(outcome, "")
@@ -483,7 +496,8 @@ def wake_notice(chosen: Dict[str, Any], outcome: str, slept: float) -> Dict[str,
         else:
             what = outcome or "an unconfirmed input"
     return {"role": "user", "content": (
-        f"[SYSTEM NOTICE]\nYou slept {slept:.0f}s ({chosen.get('mode') or 'warm'}) and were woken by {what}. "
+        "[SYSTEM NOTICE]\nYou slept" + ("" if slept is None else f" {slept:.0f}s")
+        + f" ({chosen.get('mode') or 'warm'}) and were woken by {what}. "
         "Mail you did not select stayed unread and reaches you now with everything else pending. "
         "The sleep did not count as execution time; an explicit deadline did not move."
         + (" A cold sleep ended your previous process: its browser and task-local services are gone; "

@@ -469,9 +469,11 @@ def _sleep_wake(ctx: Any, checkpoint: dict) -> str | None:
     if not isinstance(chosen, dict):
         return None
     from ouroboros.model_sleep import wake_reason
+    from ouroboros.store import acquisition_budget
 
     try:
-        return wake_reason(ctx, chosen)
+        with acquisition_budget(0):  # store contention is retried by the next poll, never waited on
+            return wake_reason(ctx, chosen)
     except Exception:
         log.warning("Sleep readiness unreadable for %s; still sleeping", ctx.task_id, exc_info=True)
         return ""
@@ -909,8 +911,12 @@ def resume_native_loop(tools: Any, state: dict, messages: list, trace: dict,
     # continuation can ALSO end on it — and a peer wake or a hurry is no more
     # an answer cold than warm: the same notice seam says so.
     if (cold_checkpoint or {}).get("reason") == "sleep":
-        from ouroboros.model_sleep import append_question_notice
-        append_question_notice(ctx, str(outcome or ""), messages)
+        from ouroboros import model_sleep
+
+        started = cold_checkpoint.get("sleep_started_at")  # absent on legacy rows: no invented duration
+        messages.append(model_sleep.wake_notice(cold_checkpoint.get("sleep") or {}, str(outcome or ""),
+                                                max(0.0, time.time() - float(started)) if started else None))
+        model_sleep.append_question_notice(ctx, str(outcome or ""), messages)
     else:
         append_wake_notice(ctx, cold_checkpoint or {}, outcome, messages)
     return (ctx.active_model, ctx.active_effort, ctx.active_use_local,

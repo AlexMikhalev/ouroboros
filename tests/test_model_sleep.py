@@ -280,7 +280,7 @@ def test_read_errors_do_not_hide_a_selected_time_or_become_a_wake(tmp_path, monk
         raise failure
 
     monkeypatch.setattr(owner_wait, "_wait_entries", lambda _ctx: [])
-    monkeypatch.setattr(model_sleep, "_owned_runs", lambda _ctx: {})
+    monkeypatch.setattr(model_sleep, "_owned_runs", lambda *_a, **_k: {})
     monkeypatch.setattr(delegate_custody_current, "run", lambda *_a: None)
     monkeypatch.setattr(model_sleep, "_service_wake", lambda _pin: "")
     # The real fail-soft task reader still propagates store-open failures.
@@ -328,7 +328,7 @@ def test_failed_read_preserves_direct_wait_and_owner_control_priority(tmp_path, 
 
     _result(tmp_path, "sleeper")
     ctx = _ctx(tmp_path)
-    def broken(_ctx):
+    def broken(*_a, **_k):
         raise OSError("unreadable selected run")
     reader = (model_sleep, "_owned_runs") if source == "runs" else (owner_wait, "_wait_entries")
     with monkeypatch.context() as fault:
@@ -350,7 +350,7 @@ def test_pooled_sleep_requests_resume_after_read_failure_when_its_time_is_due(tm
     _result(tmp_path, "sleeper")
     ctx = _ctx(tmp_path)
     events = []
-    def broken(_ctx):
+    def broken(*_a, **_k):
         raise OSError("unreadable selected run")
     reader = (model_sleep, "_owned_runs") if source == "runs" else (owner_wait, "_wait_entries")
     monkeypatch.setattr(*reader, broken)
