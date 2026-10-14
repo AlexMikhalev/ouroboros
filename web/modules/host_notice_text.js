@@ -43,7 +43,6 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
     // Progress rows: a task card's timeline line (`log_events.summarizeChatLiveEvent`).
     task_scheduled: ['🗓️ Scheduled subagent ', '🗓️ Scheduled task '],
     task_error: ['⚠️ Error: '],
-    cancellation_notice: ['❌ cancel '],
     finalization_notice: ['⏳ Task ', '▶️ Task '],
     skill_review: ['✅ Skill review round ', '⚠️ Skill review round ', '❌ Skill review round ', '⏳ Skill review round '],
     host_progress: ['🌐 Connection restored ', '🌐 The new attempt could not reach the provider ',
@@ -57,6 +56,7 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
 export const RETIRED_HOST_NOTICE_PREFIXES = new Map(Object.entries({
     attachment_notice: ['📎 Attachment staging report for ', '⚠️ Task not started: every attachment was rejected.',
         '⚠️ Some declared attachments could not be staged; '],
+    cancellation_notice: ['❌ cancel '],
     task_admission_notice: ['✅ Repair task '],
     task_started: ['🧬 Evolution task ', '🔎 Review task '],
     host_progress: ['🌐 Could not establish a provider connection '],

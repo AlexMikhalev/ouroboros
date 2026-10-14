@@ -412,7 +412,9 @@ def test_kill_fast_lane_clears_a_stale_disclosure(tmp_path, monkeypatch):
         reason_code="delegated_custody_unreconciled",
         delegated_runs_unreconciled=["run-stale"], delegated_runs_settled=0,
     )
-    ci.request_cancel(env.drive, "t-fast")
+    # The ingress saw live ownership (a worker still winding down) and minted on the
+    # settled target; by the time custody runs the worker is gone: the fast lane.
+    ci.request_cancel(env.drive, "t-fast", allow_settled_target=True)
 
     assert env.tl.cancel_task_custody("t-fast", deliver=False) == env.tl.CANCEL_ALREADY_SETTLED
 
@@ -434,7 +436,7 @@ def test_kill_fast_lane_adds_no_write_when_nothing_is_stale(tmp_path, monkeypatc
 
     env = _kill_env(tmp_path, monkeypatch)
     write_task_result(env.drive, "t-clean-kill", STATUS_FAILED, result="settled")
-    ci.request_cancel(env.drive, "t-clean-kill")
+    ci.request_cancel(env.drive, "t-clean-kill", allow_settled_target=True)
     row_before = result_signature(tmp_path, "t-clean-kill")
 
     writes: list = []
