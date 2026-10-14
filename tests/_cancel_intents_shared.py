@@ -141,6 +141,14 @@ class _LiveProc:
     def is_alive(self) -> bool:
         return self._proc.poll() is None
 
+    @property
+    def exitcode(self):
+        """Mirror `multiprocessing.Process.exitcode`: None while alive, the code (negative signal) after.
+
+        The pool's birth-gated death proof reads it, as real worker processes always have it.
+        """
+        return self._proc.poll()
+
     def join(self, timeout=None):
         try:
             self._proc.wait(timeout=timeout)
