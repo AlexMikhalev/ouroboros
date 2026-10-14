@@ -49,11 +49,11 @@ def _setup(tmp_path, monkeypatch, *, direct=False, access="workspace_write"):
     return SimpleNamespace(q=q, state=state, workers=workers, ctx=ctx, limit=limit, task=task, runtime=runtime)
 
 
-def _park(env, tmp_path, monkeypatch, *, direct=False):
+def _park(env, tmp_path, monkeypatch, *, direct=False, selected=None):
     from ouroboros import budget_pause as bp, model_sleep, sleep_custody as sc
     from supervisor.events_budget import install_exact_budget_pause
 
-    chosen = model_sleep.selectors(env.ctx, runs=["run-one"])
+    chosen = model_sleep.selectors(env.ctx, **({"runs": ["run-one"]} if selected is None else selected))
     model_sleep.request_sleep(env.ctx, chosen, "cold")
     observed_before_release = []
 
@@ -171,7 +171,8 @@ def test_question_wakes_an_active_transferred_run(tmp_path, monkeypatch):
     chosen = {"body_runs": [["run-one", "invoke-one"]], "any_mail": False,
               "interaction_seen": sc.seen_interactions(restored, [["run-one", "invoke-one"]])}
     assert wake_reason(restored, chosen) == "", "the delivered question notice does not buy another wake"
-    chosen["interaction_seen"] = {"other-run": ["question-1"]}
+    restored._sleep_interaction_seen = {"other-run": ["question-1"]}
+    chosen["interaction_seen"] = {}
     assert wake_reason(restored, chosen) == "run_question:run-one", "ids are scoped by run"
 
 

@@ -934,7 +934,8 @@ def _await_as_sleep(ctx: ToolContext, mode: str, **chosen: Any) -> str:
         return _publish_tool_result(ctx, ToolResult(
             status="error", code="TOOL_ARG_ERROR", text=f"⚠️ TOOL_ARG_ERROR (await_messages): {exc}",
             meta={"operation_outcome": "completed_no_effect"}))
-    return json.dumps(outcome, ensure_ascii=False)
+    return _publish_tool_result(ctx, ToolResult(status="ok", code="OK",
+        text=json.dumps(outcome, ensure_ascii=False), meta={"sleep_question_notice": bool(outcome.get("questions"))}))
 
 
 def await_messages_entry() -> ToolEntry:
@@ -962,11 +963,12 @@ def await_messages_entry() -> ToolEntry:
             "own, the exit of your own `services` (warm only: the start each has now; a replaced, stopped "
             "or lost one wakes you as unknown, never as success), and/or `wake_at`/`wake_after_sec`; with "
             "nothing selected any addressed mail wakes you. The "
-            "owner's messages and controls always wake you; unselected mail waits unread. Warm keeps your "
+            "owner's messages, controls and typed descendant escalations always wake you; other unselected mail waits unread. Warm keeps your "
             "process and browser (a pooled slot is lent meanwhile). Cold saves your continuation and releases "
             "the process only after the body accepts custody of your bound external runs; local services "
-            "still need warm sleep. A new question from body-held work also wakes you, without answering "
-            "it. Retaining an external writer retains its project lane. You choose which fits. A source that is "
+            "still need warm sleep. A new question from any ordinary run you own also wakes you, even "
+            "if not selected; reviewer runs stay with their panel. Question sources are delivered, not answered. "
+            "Retaining an external writer retains its project lane. A source that is "
             "already ready answers at once. Sleep does not count as execution time; an explicit deadline "
             "still applies. A settled task is not a successful one: read its result when you wake."
         ),
@@ -977,7 +979,7 @@ def await_messages_entry() -> ToolEntry:
             "mode": {"type": "string", "enum": ["in_slot", "warm", "cold"],
                      "description": "in_slot (default) holds your slot for timeout_sec; warm/cold is a sleep."},
             "senders": {"type": "array", "items": {"type": "string"},
-                        "description": "Sleep: task ids whose mail wakes you (others' mail stays unread)."},
+                        "description": "Sleep: task ids whose ordinary mail wakes you; owner input and descendant escalations bypass this filter."},
             "tasks": {"type": "array", "items": {"type": "string"},
                       "description": "Sleep: task ids whose terminal (any settled status) wakes you."},
             "runs": {"type": "array", "items": {"type": "string"},
