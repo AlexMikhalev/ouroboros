@@ -152,7 +152,7 @@ def terminal_answer_receipts(drive_root: Any, task_id: str) -> Dict[str, Any]:
     unknown, never inferred from the task result or an id digest.
     """
     fact: Dict[str, Any] = {"source": "terminal_delivery_registry", "state": "unknown", "delivered": [],
-                            "unverified_delivery_ids": [], "owed_delivery_ids": []}
+                            "unverified_delivery_ids": [], "owed_delivery_ids": [], "owed": []}
     try:
         data = _read_registry(drive_root)
         receipts, pending = _mapping_rows(data, "receipts", strict=True), _mapping_rows(data, "pending", strict=True)
@@ -173,6 +173,9 @@ def terminal_answer_receipts(drive_root: Any, task_id: str) -> Dict[str, Any]:
         else:
             fact["unverified_delivery_ids"].append(did)
     fact["owed_delivery_ids"] = sorted(did for did in pending if answer(str(did)) and did not in delivered)
+    # The owed rows themselves (exact text, routed chat): recovery finalizes from these bytes.
+    fact["owed"] = [{**pending[did], "delivery_id": did} for did in fact["owed_delivery_ids"]
+                    if isinstance(pending.get(did), dict)]
     fact["state"] = "delivered" if fact["delivered"] else "owed" if fact["owed_delivery_ids"] else "unknown"
     return fact
 

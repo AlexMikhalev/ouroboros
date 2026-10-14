@@ -485,6 +485,30 @@ def _recover_crashed_task_without_terminal(job: dict, queue: Any) -> None:
     parked, budget_pausing = _complete_exact_budget_pause_after_death(job, root, task, task_id, attempt)
     if parked:
         return
+    # An answer the host already holds (owed, delivered, or unreadable evidence) is
+    # never generated again: the dead attempt is finalized from the outbox's bytes
+    # and published like a saved terminal, with the answer still replayed by the
+    # outbox. Only a confirmed absence of any registered answer reaches crash policy.
+    from ouroboros.working_checkpoint import adopt_registered_answer
+
+    try:
+        adopted = adopt_registered_answer(
+            root, task, task_id, attempt=attempt, cause="worker_crash",
+            registry_root=pathlib.Path(task.get("budget_drive_root") or root),
+        )
+    except Exception as exc:
+        raise TerminalFileRecoveryPending("registered-answer finalization could not be stored") from exc
+    if adopted:
+        with _queue_lock:
+            if not _dead_job_is_current(job):
+                return
+        from supervisor.task_reaper import _finish_self_finalized_task
+
+        _finish_self_finalized_task(
+            queue, _pool(), task, task_id, task_type, str(adopted.get("status") or ""), adopted,
+            terminal_task_metadata(task.get("metadata")), worker_id=wid,
+        )
+        return
     replay_unsafe = (not getattr(w, "active_capacity", True)
                      or has_owner_wait_checkpoint(meta, attempt) or budget_pausing)
     # Reconstruct cost/rounds from durable llm_usage for any

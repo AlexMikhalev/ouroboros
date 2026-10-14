@@ -712,7 +712,19 @@ def _enqueue_retry(
 
     retried = {**task, "original_task_id": task_id, "id": retry_task_id or task_id, "_attempt": attempt + 1,
                "timeout_retry_from": task_id, "timeout_retry_at": utc_now_iso()}
-    from ouroboros.working_checkpoint import attach_recovery  # the same retry continues the killed attempt's work
+    from ouroboros.working_checkpoint import adopt_registered_answer, attach_recovery
+    # An answer the host already holds (owed, delivered, or unreadable evidence) is never
+    # generated again: the dead attempt is finalized from the outbox's bytes and the caller
+    # publishes that terminal row exactly like any other terminal result.
+    adopted = adopt_registered_answer(
+        q.DRIVE_ROOT, task, task_id, attempt=attempt, cause=terminal_reason,
+        registry_root=pathlib.Path(task.get("budget_drive_root") or q.DRIVE_ROOT),
+    )
+    if adopted:
+        _discard_retry_inputs(q, task, task_id, retry_task_id)
+        return False, attempt, "registered_answer_finalized", {
+            "kind": "terminal_result", "target": task_id, "status": str(adopted.get("status") or "")}
+    # the same retry continues the killed attempt's work
     attach_recovery(pathlib.Path(task.get("budget_drive_root") or q.DRIVE_ROOT), retried,
                     source_task_id=task_id, from_attempt=attempt, cause="idle_timeout", prior_task=task)
     from ouroboros.model_wait import fold_running_clock, stamp_execution_handoff  # #939: one carried clock
