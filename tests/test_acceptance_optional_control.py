@@ -338,6 +338,10 @@ def test_return_order_preserves_feedback_identity_and_new_subjects(full_loop, mo
                                       "binding_hash": offered["binding_hash"]}
                            for message in messages for source in message.get("review_feedback", []))
             if next_action == "effect" or (next_action == "held_effect" and order == "ready"):
+                if next_action == "held_effect":
+                    # Control the revised panel too; the first panel's released
+                    # event otherwise races the final answer on a fast reviewer.
+                    _order_acceptance_feedback(f, monkeypatch, revised, "ready")
                 return {"content": "", "tool_calls": [call("write_file", {
                     "root": "task_drive", "path": "new-effect.txt", "content": "Additional evidence.",
                 }, "effect")]}, 0.0
@@ -372,10 +376,10 @@ def test_return_order_preserves_feedback_identity_and_new_subjects(full_loop, mo
         effect = f.ctx.drive_root / "task_drives" / f.run_args["task_id"] / "new-effect.txt"
         assert effect.read_text(encoding="utf-8") == "Additional evidence."
     if next_action == "held_effect" and order == "ready":
-        # The refused fence bought no round: the new subject was reviewed at once on the
-        # disclosed rail (the fourth round is the ordinary post-PASS control round, as for
-        # `effect`), and the answered re-seal closed admission as usual.
-        assert f.model_step == 4 and "TASK ACCEPTANCE WAIT" not in str(f.model_inputs)
+        # Both panels are ready before returning. The refused fence creates no
+        # acceptance-wait request; the answered re-seal still closes admission.
+        assert f.model_step == 3  # nomination, effect, final selection; no refusal-only round
+        assert "TASK ACCEPTANCE WAIT" not in str(f.model_inputs)
         assert len(begins) == 3  # the nomination's, the refused one, the answered re-seal
         assert trace["acceptance_decision"]["reason"] == "clean_pass"
     if next_action == "rewrite":

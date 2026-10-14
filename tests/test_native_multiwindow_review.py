@@ -45,7 +45,7 @@ class ContractReviewer:
             from ouroboros.tools.core_file_tools import _render_line_slice, delivered_source_prefix
 
             view = {}
-            _render_line_slice("source", (self.repo / f"{self.stage}.py").read_text(),
+            _render_line_slice("source", (self.repo / f"{self.stage}.py").read_text(encoding="utf-8"),
                                start_line=1, max_lines=3, start_char=len(self.buffer), extent=view)
             view["body_start"] = response.find("\n") + 1
             visible = response.partition("\n⚠️ RESULT TRUNCATED:")[0]
@@ -113,12 +113,10 @@ def test_native_review_reads_beyond_one_window_and_computes_cross_file_finding(t
     if broken:
         table["route_2137"] = 1
     reader = "FROM_WIRE = " + repr(table) + "\ndef decode(message): return message['ttl'] / FROM_WIRE[message['route']]\n"
-    (repo / "writer.py").write_text(writer)
-    (repo / "reader.py").write_text(reader)
-    # Include the expanded inspection schemas; the corpus still needs two views.
-    bound = 140_000
-    assert len(writer) + len(reader) > bound
-    monkeypatch.setattr(native, "review_native_transcript_bound", lambda *a, **k: bound)
+    (repo / "writer.py").write_text(writer, encoding="utf-8")
+    (repo / "reader.py").write_text(reader, encoding="utf-8")
+    # The reviewer chooses two working views; the read page is a delivery limit.
+    assert len(writer) + len(reader) > 140_000
     monkeypatch.setattr(native, "_EPISODE_TOOL_RESULT_CHAR_CAP", 8000)
     llm = ContractReviewer()
     llm.repo = repo
@@ -132,7 +130,8 @@ def test_native_review_reads_beyond_one_window_and_computes_cross_file_finding(t
     assert result.usage["native_read_coverage"]["status"] == "complete"
     assert "native_incomplete" not in result.message
     sizes = [native._wire_size(call["messages"], call["tools"]) for call in llm.calls]
-    assert max(sizes) <= bound and any(b < a / 2 for a, b in zip(sizes, sizes[1:]))
+    assert any(b < a / 2 for a, b in zip(sizes, sizes[1:]))
+    assert "native_transcript_bound" not in result.usage
     assert any(r.get("text_chars", 0) > 0 and r["end_line"] < r["start_line"] for r in executor._tool_receipts)
     history = json.loads(read_actor_source_bytes(data, "t-native", result.usage["native_history_source"]))
     assert len(history["round_sources"]) == len(llm.calls)
@@ -145,7 +144,7 @@ def test_native_review_reads_beyond_one_window_and_computes_cross_file_finding(t
 def test_more_than_200_observed_reads_close_the_required_source(tmp_path):
     repo, data = tmp_path / "repo", tmp_path / "data"
     repo.mkdir()
-    (repo / "part.txt").write_text("first\nsecond\n")
+    (repo / "part.txt").write_text("first\nsecond\n", encoding="utf-8")
     calls = [{"tool_calls": [_tool_call("read_file", {"path": "part.txt", "max_lines": 1}, f"c{i}")]}
              for i in range(200)]
     calls += [{"tool_calls": [_tool_call("read_file", {"path": "part.txt", "start_line": 2}, "last")]},
@@ -183,7 +182,7 @@ def test_same_normalized_text_on_a_new_raw_revision_cannot_complete_old_coverage
 def test_read_not_carried_by_another_physical_send_does_not_count_as_delivered(tmp_path):
     repo, data = tmp_path / "repo", tmp_path / "data"
     repo.mkdir()
-    (repo / "file.txt").write_text("source\n")
+    (repo / "file.txt").write_text("source\n", encoding="utf-8")
 
     class FailsBeforeSend(_ScriptedLLM):
         def chat(self, **kwargs):

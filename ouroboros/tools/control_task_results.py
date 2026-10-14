@@ -963,7 +963,10 @@ def await_messages_entry() -> ToolEntry:
             "or lost one wakes you as unknown, never as success), and/or `wake_at`/`wake_after_sec`; with "
             "nothing selected any addressed mail wakes you. The "
             "owner's messages and controls always wake you; unselected mail waits unread. Warm keeps your "
-            "process and browser (a pooled slot is lent meanwhile); you choose which fits. A source that is "
+            "process and browser (a pooled slot is lent meanwhile). Cold saves your continuation and releases "
+            "the process only after the body accepts custody of your bound external runs; local services "
+            "still need warm sleep. A new question from body-held work also wakes you, without answering "
+            "it. Retaining an external writer retains its project lane. You choose which fits. A source that is "
             "already ready answers at once. Sleep does not count as execution time; an explicit deadline "
             "still applies. A settled task is not a successful one: read its result when you wake."
         ),

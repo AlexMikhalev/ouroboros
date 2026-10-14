@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from ouroboros import review_native_episode as native
 from ouroboros.review_execution import ReviewAssignment, ReviewRouteKind
 from ouroboros.review_native_episode import NativeToolRoundReviewExecutor
 from ouroboros.review_substrate import ReviewRequest, ReviewSlot
@@ -124,14 +125,15 @@ def test_readonly_reader_proves_original_source_with_private_key_fixture(tmp_pat
     assert extent["text_sha256"] == _sha(raw)
 
 
-def test_result_fitting_receipt_matches_exact_text_returned_to_the_reviewer(tmp_path):
+def test_result_fitting_receipt_matches_exact_text_returned_to_the_reviewer(tmp_path, monkeypatch):
     raw = ('α\\"\t' * 2000 + "\n").encode()
     (tmp_path / "source.md").write_bytes(raw)
     executor = _executor(tmp_path)
     registry, _schemas = executor._inspection_registry(str(tmp_path), tmp_path / "data")
+    monkeypatch.setattr(native, "_EPISODE_TOOL_RESULT_CHAR_CAP", 1500)
     message = executor._execute_inspection_call(registry, {
         "id": "read-1", "function": {"name": "read_file", "arguments": json.dumps({"path": "source.md"})},
-    }, {}, round_idx=1, room=1500)
+    }, {}, round_idx=1)
     receipt = executor._tool_receipts[0]
     shown = message["content"].index("\n⚠️ RESULT TRUNCATED:")
     delivered = delivered_source_prefix(executor._inspection_ctx.last_read_view, message["content"], shown)
@@ -158,7 +160,7 @@ def test_exact_source_identity_keeps_the_complete_opened_path(tmp_path):
     assert extent["source_revision"] == _sha(b"source\n")
 
 
-def test_staged_output_is_credited_only_after_native_projected_delivery(tmp_path):
+def test_staged_output_is_credited_only_after_native_projected_delivery(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from ouroboros import delegate_output as output
     from tests.test_delegated_result_delivery import _staged_for_main
@@ -169,7 +171,8 @@ def test_staged_output_is_credited_only_after_native_projected_delivery(tmp_path
     content = target.read_text(encoding="utf-8")
     request = {"id": "read-staged", "function": {"name": "read_file", "arguments": json.dumps({
         "root": "task_drive", "path": entry.output_artifact})}}
-    message = executor._execute_inspection_call(registry, request, {}, round_idx=1, room=3000)
+    monkeypatch.setattr(native, "_EPISODE_TOOL_RESULT_CHAR_CAP", 3000)
+    message = executor._execute_inspection_call(registry, request, {}, round_idx=1)
     assert not entry.output_consumed and not output._READ_COVERAGE
     end = executor._tool_receipts[-1]["source_end_char"]
     assert 0 < end < len(content)
@@ -179,7 +182,8 @@ def test_staged_output_is_credited_only_after_native_projected_delivery(tmp_path
     assert not entry.output_consumed
     request["function"]["arguments"] = json.dumps({"root": "task_drive", "path": entry.output_artifact,
                                                   "start_char": end})
-    second = executor._execute_inspection_call(registry, request, {}, round_idx=2, room=100_000)
+    monkeypatch.setattr(native, "_EPISODE_TOOL_RESULT_CHAR_CAP", 100_000)
+    second = executor._execute_inspection_call(registry, request, {}, round_idx=2)
     assert not entry.output_consumed
     executor._observe_sent_view([{"role": "assistant", "tool_calls": [request]}, second], schemas)
     assert entry.output_consumed
@@ -207,10 +211,11 @@ def test_abandoned_native_reader_cannot_ack_when_its_worker_finishes(tmp_path, m
 
     monkeypatch.setattr(core_file_tools, "_stamp_read_view", held_stamp)
     monkeypatch.setattr(loop_tool_execution, "_get_tool_timeout", lambda *args: 0.05)
+    monkeypatch.setattr(native, "_EPISODE_TOOL_RESULT_CHAR_CAP", 10_000)
     request = {"id": "late-read", "function": {"name": "read_file", "arguments": json.dumps({
         "root": "task_drive", "path": entry.output_artifact})}}
     try:
-        message = executor._execute_inspection_call(registry, request, {}, round_idx=1, room=10_000)
+        message = executor._execute_inspection_call(registry, request, {}, round_idx=1)
         assert executor._tool_receipts[-1]["outcome"] == "error"
     finally:
         release.set()

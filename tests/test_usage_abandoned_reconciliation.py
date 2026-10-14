@@ -90,11 +90,11 @@ def test_early_cancel_is_revisited_by_the_existing_maintenance_pass(env, monkeyp
     env.live.add("child")
 
     lock.acquire()
-    maintenance._run_cancel_delivery_ref_sweep(env.root)
+    maintenance._run_terminal_duty(env.root, "abandoned_usage_reconciliation", lock)
     assert _final(env, reservation)["state"] == "dispatched"
     env.live.clear()
     lock.acquire()
-    maintenance._run_cancel_delivery_ref_sweep(env.root)
+    maintenance._run_terminal_duty(env.root, "abandoned_usage_reconciliation", lock)
 
     assert not lock.locked()
     assert is_abandoned_settlement(_final(env, reservation))
@@ -111,7 +111,7 @@ def test_early_cancel_is_revisited_by_the_existing_maintenance_pass(env, monkeyp
     assert root["result"] == "Preserved root answer" and root["status"] == "cancelled"
     before = ledger_rows(env.root), _events(env)
     lock.acquire()
-    maintenance._run_cancel_delivery_ref_sweep(env.root)
+    maintenance._run_terminal_duty(env.root, "abandoned_usage_reconciliation", lock)
     assert (ledger_rows(env.root), _events(env)) == before
 
 

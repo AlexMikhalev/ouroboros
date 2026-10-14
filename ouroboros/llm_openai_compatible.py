@@ -257,23 +257,23 @@ class _OpenAICompatibleLaneMixin:
             apply_processing_preference(target, kwargs)
             return kwargs
 
-        if any(isinstance(m, dict) and "reasoning_content" in m for m in messages):
-            # ``reasoning_content`` is direct-provider custody (DeepSeek and
-            # MiniMax); OpenRouter responses drop it. OR upstreams of other families
-            # reject the echoed field, and leaving it here would also trip the
-            # replay-artifact pin below (allow_fallbacks=False), silently
-            # killing same-model failover for a mixed transcript. Dropping it
-            # from the OR physical copy restores the exact pre-DeepSeek OR
-            # wire; the canonical transcript is untouched. Keyed on key
-            # PRESENCE, not truthiness: an empty-string echo (a legal kept
-            # value) must not ride the OR wire either.
-            messages = [
-                (
-                    {k: v for k, v in m.items() if k != "reasoning_content"}
-                    if isinstance(m, dict) else m
-                )
-                for m in messages
-            ]
+        # OpenRouter cannot echo direct-provider ``reasoning_content`` (DeepSeek
+        # and MiniMax), even when empty: upstreams reject it, and malformed values
+        # would also pin same-model failover below. Only change the physical copy.
+        messages = [dict(m) if isinstance(m, dict) else m for m in messages]
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            message.pop("reasoning_content", None)
+            flat, details = message.get("reasoning"), message.get("reasoning_details")
+            # Drop only a complete exact text duplicate. All ordered entries must
+            # qualify; signed details and unknown metadata remain byte-identical.
+            if (message.get("role") == "assistant"
+                    and isinstance(flat, str) and flat and isinstance(details, list) and details
+                    and all(isinstance(entry, dict) and entry.get("type") == "reasoning.text"
+                            and isinstance(entry.get("text"), str) for entry in details)
+                    and "".join(entry["text"] for entry in details) == flat):
+                message.pop("reasoning")
         effort = normalize_reasoning_effort(reasoning_effort)
         raw_return_reasoning = runtime_setting("OUROBOROS_RETURN_REASONING")
         return_reasoning = (

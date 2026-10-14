@@ -17,7 +17,7 @@ huge inventory delays only its own task.
 
 Registry updates are whole-file read-modify-write, O(rows). Eligible untracked
 text is hashed into the target's object database; once the pin or branch is
-deleted those blobs are unreachable loose objects until ``git gc``.
+deleted those blobs are unreachable objects until ``git gc``.
 """
 
 from __future__ import annotations
@@ -943,6 +943,84 @@ def payload_git_metadata_refusal(exec_root: Path) -> str:
     return ""
 
 
+class _RawBlobWriter:
+    """ONE ``git fast-import`` storing the raw blobs of one staging call.
+
+    A Git process per blob would cost a process start per file. Each blob is
+    framed by its exact length (``data <n>``), so payload bytes are never parsed
+    as commands, and fast-import opens no path and applies no attribute, filter
+    or eol conversion. Each id is read back (``get-mark``) before the next blob
+    is sent and stderr goes to a file, so no unread pipe can fill and stall the
+    writer. The ids name stored objects only after the explicit ``done``
+    (``--done``) and exit 0 (``finish``); any other end kills the process.
+    By default fast-import holds a blob, its predecessor and a delta of them in
+    memory; ``core.bigFileThreshold`` streams every blob over 1 MiB (the
+    ``--big-file-threshold`` option reaches only the first blob in Git 2.53),
+    and the written pack is kept rather than exploded into loose objects by a
+    second process; large payloads need not stay in Git's delta search.
+    """
+
+    def __init__(self, root: Path, env: Dict[str, str]):
+        self._root, self._env, self._errors = root, env, None
+        self._proc: Optional[subprocess.Popen] = None
+
+    def __enter__(self) -> "_RawBlobWriter":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        if self._proc is not None:
+            if self._proc.poll() is None:
+                self._proc.kill()  # it never acknowledged ``done``: nothing it wrote is staged
+            self._proc.wait()
+            for pipe in (self._proc.stdin, self._proc.stdout):
+                with contextlib.suppress(OSError):
+                    pipe.close()
+        if self._errors is not None:
+            self._errors.close()
+
+    def _failure(self, detail: bytes) -> subprocess.CalledProcessError:
+        if self._proc.poll() is None:
+            self._proc.kill()
+        self._errors.seek(0)
+        return subprocess.CalledProcessError(
+            self._proc.wait(), self._proc.args, detail, self._errors.read() or detail)
+
+    def write(self, blob: bytes) -> str:
+        """Store one blob; its object id."""
+        if self._proc is None:
+            import tempfile
+
+            self._errors = tempfile.TemporaryFile()
+            self._proc = subprocess.Popen(
+                ["git", "-c", "core.bigFileThreshold=1m", "-c", "fastimport.unpackLimit=0",
+                 "fast-import", "--quiet", "--done"], cwd=str(self._root), env=self._env,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._errors)
+        try:
+            self._proc.stdin.write(b"blob\nmark :1\ndata %d\n" % len(blob))
+            self._proc.stdin.write(blob)
+            self._proc.stdin.write(b"\nget-mark :1\n")
+            self._proc.stdin.flush()
+        except OSError as exc:  # the process is gone: its status and stderr say why
+            raise self._failure(str(exc).encode()) from exc
+        answer = self._proc.stdout.readline().strip()
+        if not re.fullmatch(rb"[0-9a-f]{40}|[0-9a-f]{64}", answer):
+            raise self._failure(b"no object id from fast-import: " + answer[:80])
+        return answer.decode("ascii")
+
+    def finish(self) -> None:
+        """End the stream; raises unless every written blob is now a stored object."""
+        if self._proc is None:
+            return
+        try:
+            self._proc.stdin.write(b"done\n")
+            self._proc.stdin.close()
+        except OSError as exc:
+            raise self._failure(str(exc).encode()) from exc
+        trailing = self._proc.stdout.read()
+        if self._proc.wait() != 0 or trailing:
+            raise self._failure(trailing[:200])
+
+
 def stage_raw_payload_inventory(
     worktree: Path, rel_paths: Any, env: Dict[str, str],
     baseline_modes: Optional[Dict[str, str]] = None,
@@ -951,36 +1029,37 @@ def stage_raw_payload_inventory(
 
     ``git add``/worktree ``update-index`` run clean/eol filters from a child- or
     payload-authored ``.gitattributes`` (CRLF staged as LF — reproduced by
-    review), so every regular file is hashed with ``hash-object --no-filters``
-    over raw bytes and staged via ``--index-info``; ``.gitattributes`` is just
-    content, a symlink stages as 120000 over its raw link-target bytes. Modes:
+    review), so each file's raw bytes are read here, one file at a time, stored
+    by ONE ``git fast-import`` for the whole inventory (``_RawBlobWriter``) and
+    staged via ``--index-info``, both in the caller's ``env`` (its index, object
+    database and config); ``.gitattributes`` is just content, a symlink stages
+    as 120000 over its raw link-target bytes. Modes:
     with ``baseline_modes`` (capture) regular files pin to the baseline mode for
     existing paths / 100644 for new ones so an executable-bit flip can never
-    ride a patch; without it (provisioning) the real on-disk mode is recorded.
+    ride a patch; without it (provisioning/reviewer capture) on-disk modes ride.
     Returns the paths whose on-disk executable bit diverges from the staged mode.
     """
     root = Path(worktree)
     lines: List[bytes] = []
     divergent: List[str] = []
-    for rel in sorted(str(p) for p in rel_paths):
-        path = root / rel
-        if path.is_symlink():
-            blob, mode = os.readlink(os.fsencode(str(path))), "120000"
-        else:
-            blob = path.read_bytes()
-            executable = bool(path.stat().st_mode & 0o111)
-            if baseline_modes is None:
-                mode = "100755" if executable else "100644"
+    with _RawBlobWriter(root, env) as writer:
+        for rel in sorted(str(p) for p in rel_paths):
+            path = root / rel
+            if path.is_symlink():
+                blob, mode = os.readlink(os.fsencode(str(path))), "120000"
             else:
-                base = baseline_modes.get(rel, "")
-                mode = base if base in ("100644", "100755") else "100644"
-                if executable != (mode == "100755"):
-                    divergent.append(rel)
-        hashed = subprocess.run(
-            ["git", "hash-object", "--no-filters", "-w", "--stdin"],
-            cwd=str(root), capture_output=True, env=env, input=blob, check=True)
-        sha = hashed.stdout.decode("ascii", errors="replace").strip()
-        lines.append(f"{mode} {sha}\t{rel}".encode("utf-8", errors="surrogateescape"))
+                blob = path.read_bytes()
+                executable = bool(path.stat().st_mode & 0o111)
+                if baseline_modes is None:
+                    mode = "100755" if executable else "100644"
+                else:
+                    base = baseline_modes.get(rel, "")
+                    mode = base if base in ("100644", "100755") else "100644"
+                    if executable != (mode == "100755"):
+                        divergent.append(rel)
+            sha = writer.write(blob)
+            lines.append(f"{mode} {sha}\t{rel}".encode("utf-8", errors="surrogateescape"))
+        writer.finish()
     subprocess.run(
         ["git", "update-index", "-z", "--index-info"],
         cwd=str(root), capture_output=True, env=env,

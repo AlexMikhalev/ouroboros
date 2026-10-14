@@ -17,6 +17,12 @@ Default local pytest excludes seven costly or environment-dependent lanes — `i
 
 `skill_smoke` and `size_ratchet` tests never also carry the `serial` marker or join `_SERIAL_TEST_FILES`: the `and not <lane>` markexprs are the lane barrier, and single-lane assignment keeps each test's placement unambiguous. A new opt-in lane registers its marker in `pyproject.toml`, adds a collect-only zero-test guard in CI, and keeps the default local addopts free of network and Docker requirements.
 
+### Retiring test pins
+
+Record the retired proposition and named behaviour-test survivor (or obsolete
+requirement) in PR evidence, not a tracked ledger. Run the survivor and a falsifying
+negative. CHECKLISTS Body item 11(d) owns the preservation rule and review.
+
 ### Parallel CI and the `serial` marker
 
 CI runs the default suite in two passes (`.github/workflows/ci.yml`, jobs `quick-test` / `full-test`): a parallel pass, `-m "not serial and <the seven lane exclusions>"` with `PARALLEL_PASS_FLAGS` (`-n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread`), then a flag-free serial pass, `-m "serial and <the same exclusions>"`. Two rules keep new tests from breaking that:

@@ -120,7 +120,7 @@ def test_project_work_name_survives_real_outbox_bus_live_and_history(tmp_path, m
     task = {"id": "root", "title": "**Check › boundary**", "project_id": project["id"]}
     write_task_result(tmp_path, "root", "running", title=task["title"])
     queued, live = [], []
-    monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=queued.append))
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: SimpleNamespace(put=queued.append))
     monkeypatch.setattr(events_chat_delivery, "_DELIVERED_MESSAGE_IDS", deque(maxlen=256))
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "load_state", lambda: {})

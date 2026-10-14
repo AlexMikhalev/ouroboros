@@ -749,7 +749,7 @@ def test_a_staged_diff_that_fits_the_first_send_is_inlined(tmp_path):
 
 @pytest.mark.parametrize("delegated", [False, True], ids=["native", "session"])
 @pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
-def test_a_staged_diff_above_the_first_send_is_paged_as_one_exact_source(tmp_path, delegated, newline):
+def test_a_staged_diff_above_the_first_send_is_paged_as_one_exact_source(tmp_path, monkeypatch, delegated, newline):
     """A diff too large for the first send is not refused and not truncated: it
     is stored ONCE, byte-exactly, at an address the seat's own reader reaches —
     the task artifact store for a native episode, the review's git-ignored
@@ -759,6 +759,10 @@ def test_a_staged_diff_above_the_first_send_is_paged_as_one_exact_source(tmp_pat
     from ouroboros.tools.review_binary_context import capture_staged_diff
     from ouroboros.tools.scope_required_sources import required_sources_ref, source_text_identity
     from ouroboros.tools.registry import ToolContext
+    from ouroboros.tools import review_brief_coupling
+
+    # Pin an initial layout hint; the retired execution cap no longer sizes it.
+    monkeypatch.setattr(review_brief_coupling, "first_send_bound", lambda _brief: 900_000)
 
     repo = _staged_subject(tmp_path, payload_chars=900_000, newline=newline)
     drive = tmp_path / "data"

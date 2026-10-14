@@ -791,6 +791,12 @@ def _track_sweep_threads(monkeypatch) -> list:
     import threading
 
     from ouroboros import server_maintenance as sm
+    from supervisor import active_activity, queue
+
+    # This fixture owns only the daemon-retry duty, with no cold actors.
+    monkeypatch.setattr(queue, "RUNNING", {})
+    monkeypatch.setattr(queue, "PENDING", [])
+    monkeypatch.setattr(active_activity, "get_direct_activity_registry", lambda: SimpleNamespace(actors=lambda: []))
 
     threads: list = []
 

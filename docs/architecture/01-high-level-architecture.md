@@ -60,10 +60,10 @@ supervisor/ — background thread inside server.py (§5)
   schedule_time.py, schedule_occurrence.py — cron/timezone parsing; a due occurrence admits at most one root
   schedule_notes.py — a due `kind:"notify"` row becomes a signed `reminder` System row; no model, no retry
   evolution_lifecycle.py — evolution campaign state and cycle lifecycle (§6 Background consciousness)
-  events.py — worker→supervisor dispatcher; `main_llm_call_state` binds observations to the active attempt/round/call; unregistered types become `unknown_worker_event`
+  events.py, event_observation.py — worker→supervisor dispatch and pending idle-input index; `main_llm_call_state` binds the active attempt/round/call; unregistered types become `unknown_worker_event`
   subagent_task_truth.py — delegation-truth enrichment of the subagent `task_done` frame (§11.1)
   event_taxonomy.py, events_budget.py, events_chat_delivery.py, events_coop_checkpoint.py, events_evolution_done.py, events_project_routing.py, events_runtime_controls.py, events_schedule_task.py, events_subagent_admission.py, events_task_done.py, events_worker_reports.py — `EVENT_HANDLERS` leaves, one event family each; `event_taxonomy.py` declares each `EVENT_Q` disposition; `events_project_routing.py` is the single durable writer of promote/route refusals (§5)
-  task_dispatch.py — admitted event → worker payload, with the depth and route projections workers consume
+  task_dispatch.py, workspace_preparation.py — admitted worker payload; off-loop preparation with durable phases (§5)
   log_addressing.py — audience of task-scoped log events: project binding wins, chat id 0 is `HIDDEN_CHAT_ID`, A2A frames are dropped at the `push_log` choke (§4 WebSocket protocol; §12)
   steering.py — steering into a running task's mailbox, keyed on the host-minted `issuer`; refused while a cancel intent is pending (§6 Owner routing verbs)
   plan_obligation.py — a promoting root hands an unmet `force_plan` to the new root inside the admission transaction (§6 Owner routing verbs)
@@ -135,7 +135,7 @@ ouroboros/ — agent core and shared runtime (§6)
   owner_hurry.py — owner "hurry": a typed task-local latch, never a chat message, written on its own keys, as `write_task_result`'s status-regression guard could drop concurrent terminal fields (§5)
   owner_quiz.py — owner-quiz lifecycle: asked, first-answer-wins answered, terminal reconcile closing the paired `owner_wait` (§11.1)
   owner_wait.py — cognition serialization, native waits, acknowledged restart handoffs (§5, §6)
-  model_sleep.py — the model's own warm/cold sleep (§6 The model's own sleep)
+  model_sleep.py, sleep_custody.py — warm/cold sleep and body acceptance (§6 The model's own sleep)
   budget_pause.py — exact monetary pause and Resume (§6 Exact budget pause and Resume)
   owner_pause.py — whole-tree Pause fence, launch gate, per-attempt review episode, retained-member selection (§6 Owner Pause)
   review_pause.py — a review operation under its author's Pause: a pending row for the author, launched reviewers finish, unsent slots never launch (§6 Owner Pause)
@@ -158,7 +158,7 @@ ouroboros/ — agent core and shared runtime (§6)
   store.py, store_import.py, store_switch.py — `state/current.sqlite` on money's shared SQLite core (`BEGIN IMMEDIATE` writes advance `meta.commit_seq` atomically; typed `StoreMigrating`/`StoreRetired`/`StoreLost`/`StoreBusy`); import reconciles rows, export preserves bytes. Boot owns import (§2); restart exports before a storeless switch (§9). Packer snapshots stay outside deletion locks; changed facts defer the pass.
   cost_projection.py — the one task-cost projection for every producer: `accounted_upper_bound_usd`, null as None and never $0.00 (§6 Budget tracking)
   storage.py — Dashboard Storage: one bounded, link-safe metadata walk at a time, kept in memory (§3 Dashboard)
-  delegate_custody.py, delegate_custody_reconcile.py, delegate_state_sweep.py, delegate_custody_usage.py — Delegated-run custody, reconciliation, sweeps and usage; ownership stays OWNED/FOREIGN/UNKNOWN (§6 Nanny, transport and custody)
+  delegate_custody.py, delegate_custody_reconcile.py, delegate_collection.py, delegate_state_sweep.py, delegate_custody_usage.py — run custody, observation, collection and usage; OWNED/FOREIGN/UNKNOWN (§6 Nanny, transport and custody)
   delegate_hold.py — unknown-provider hold in supervised_wait until the leaf wakes; never resends (§6 Context fitting)
   delegate_source_coverage.py — oversized work-order source custody; incomplete source cannot authorize a passing terminal verdict or an apply
   delegate_evidence.py — read-side execution evidence over custody rows; an unreadable log is `evidence_read_failed`, never clean (§6 Delegated subagents; §11.1)
@@ -221,7 +221,7 @@ ouroboros/ — agent core and shared runtime (§6)
   workspace_patch_rules.py, workspace_patch_capture.py — patch-exclusion rules (env/cache, junk, lockfiles, credential-shaped names); the patch artifact and its manifest
   workspace_copies.py — git-copy source/baseline identity and own-body policy (§6 Delegated subagents)
   coop_checkpoint.py — quiescent checkpoint commits of cooperative trees from a mutative child's `write_root`; a root mid merge/rebase/cherry-pick/revert is skipped: staging it would commit a half-resolved tree (§5)
-  delegate_output.py, delegate_directory.py, workspace_file_outputs.py — retained terminal JSON, its physical-task read, directory-result apply/discard through the artifact owner, ordinary-folder file results with exact before/after identities (§6 Terminal products and their reader)
+  delegate_output.py, delegate_directory.py, workspace_file_outputs.py — retained terminal JSON with physical-task reads; artifact-owned directory apply/discard and ordinary-folder results with exact before/after identities (§6 Terminal products)
   delegate_activity.py — typed executor activity JSONL with an emission-committed cursor (§6 Delegated activity)
   delegate_containment.py — engine-derived isolation facts; absence is reported unproven (§6 Delegated subagents)
   delegate_progress.py — poll-bound transport retry and event-local executor observations (§6 Delegated subagents)
@@ -514,7 +514,7 @@ ouroboros/ — agent core and shared runtime (§6)
     delegate_payload_patch.py, delegate_terminal_evidence.py, subagent_integration_delegated.py — Delegation leaves: the skill-payload patch pipeline, the terminal story of one delegated run, `integrate_delegated_patch`
     subagent_integration.py — integrate_subagent_patch (sha256, 3-way --index, protected-path gated, genesis refused), external-workspace audited verdict, `coop_already_in_tree` no-op, compare_subagent_patches
     patch_verdict.py — The one verdict writer for both patch pipelines: subjects are minted by the writer (`run_<rid>`), never prefix-matched by readers; artifact plus typed `delegate_run_patch_verdict` custody row
-  delegate_start_claims.py — One short pre-transport transaction serializing the zero-run/custody recheck and the `START_REQUESTED` append; transport and waiting stay outside claim locks
+  delegate_start_claims.py — Serializes custody recheck and `START_REQUESTED`; transport/run waits are outside locks. Unsent retries may hold actor/payload locks, never root/store locks
   process_containment.py — Env-token container membership (`OURO_PROC_CONTAINER_*`: Linux /proc, macOS `ps -E`, Windows Job Object); an alive-or-undeterminable member is an honest hard-block answer, never a kill guarantee (§6 Delegated subagents)
   process_custody.py — `spawn_supervised` and the durable process_ledger.jsonl; `reap_orphaned_processes` with strict identity and `retained_purposes`; the parent lifeline; `stop_ledgered_processes` requires measured identity and confirmed exit (Runtime topology below; §9)
   obligations.py — Atomic current sets; owning transitions publish before work and retire after discharge

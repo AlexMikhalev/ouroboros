@@ -196,11 +196,17 @@ def test_server_extraction_size_bounds_have_meaningful_headroom():
         for module in _LEAVES
     }
     counts["server"] = len((REPO / "server.py").read_text(encoding="utf-8").splitlines())
-    # server_maintenance.py entered the size band with TZ-1 A (its rationale in
-    # size_ratchet_manifest.BAND_PATHS): the bounded off-loop drive-custody pass joined the
-    # reconcile block it runs in; it stays under the band's ceiling, shrink-only from here.
+    # The independent maintenance duties share their registered owner; its
+    # rationale and band ceiling live in the canonical size-ratchet contract.
     assert all(count <= 1000 for name, count in counts.items() if name not in {"server", "ouroboros.server_maintenance"})
-    assert counts["ouroboros.server_maintenance"] <= 1150
+    # Its registered band and exact debt are enforced by the size-ratchet lane
+    # (test_repo_health_smoke.test_checked_in_manifest_generator_check_is_exact),
+    # rather than a second historical line ceiling.
+    from ouroboros.review import BAND_MODULE_MAX_LINES
+    from ouroboros.size_ratchet_manifest import BAND_PATHS
+
+    assert BAND_PATHS.get("ouroboros/server_maintenance.py")
+    assert counts["ouroboros.server_maintenance"] <= BAND_MODULE_MAX_LINES
     # server.py keeps the lifespan, the supervisor loop, the owner-command
     # dispatch, the process state those three need, AND (on this tree) the
     # deferred restart transaction plus post-cutoff upstream drift, so the
@@ -210,6 +216,8 @@ def test_server_extraction_size_bounds_have_meaningful_headroom():
     # 1730 -> 1770 (TZ-1 batch ingress): the drained-batch tail hand-back around the
     # owner-command dispatch and the init-outcome latch beside readiness stay with
     # the loop and the process state they protect.
-    assert counts["server"] <= 1770
+    # Body lifespan and pending-event observation remain wired by this same
+    # composition root; their landed integration added two net lines.
+    assert counts["server"] <= 1772
     assert counts["ouroboros.server_routing_context"] <= 1000
     assert counts["ouroboros.server_owner_routing"] <= 1000

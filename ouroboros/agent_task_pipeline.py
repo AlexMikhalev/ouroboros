@@ -62,13 +62,14 @@ from ouroboros.post_task_checkpoint import (
     POST_TASK_SYNTHESIS_INFLIGHT as _POST_TASK_SYNTHESIS_INFLIGHT,
     POST_TASK_SYNTHESIS_LOCK as _POST_TASK_SYNTHESIS_LOCK,
     bind_late_phase_run,
+    post_task_checkpoint_witness, begin_root_post_task, PostTaskCheckpointChanged,
+    reserve_post_task_synthesis, release_post_task_synthesis, post_task_dispatch_evidence,
     is_root_post_task as _is_root_post_task,
     post_task_synthesis_is_open as _post_task_synthesis_is_open,
     post_task_synthesis_is_terminal as _post_task_synthesis_is_terminal,
     root_checkpoint_roots as _root_checkpoint_roots,
     root_post_task_already_completed as _root_post_task_already_completed,
     reset_late_phase_run,
-    root_post_task_paused as _root_post_task_paused,
     set_root_post_task_checkpoint as _set_root_post_task_checkpoint,
     settle_terminal_projection as _settle_terminal_projection,
 )
@@ -98,6 +99,34 @@ from ouroboros.synthesis_cost_text import (  # noqa: F401,E402
 )
 
 
+def _publish_root_post_task_checkpoint(env, task, status, *, expected=None, stop_requested=None, **fields):
+    """Retry only an already computed checkpoint, never a synthesis stage or provider call."""
+    from ouroboros.store import StoreBusy, acquisition_budget
+    from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
+    from ouroboros.task_custody import fence_publication
+
+    while True:
+        fence_publication()
+        if stop_requested and stop_requested():
+            return None  # Current phase/paid receipts remain owed, never a false completion.
+        try:
+            with acquisition_budget(0):
+                return _set_root_post_task_checkpoint(env, task, status, expected=expected, strict=True, **fields)
+        except StoreBusy as exc:
+            if exc.reason != "contention" or getattr(exc, "rollback_confirmed", None) is False:
+                raise
+            from ouroboros.model_wait import current_model_wait
+            owner = current_model_wait()
+            try:
+                if owner is not None and owner.control_reason():
+                    return None  # Stop/deadline ends waiting, not the already recorded paid work.
+            except StoreBusy:
+                pass  # A temporarily unreadable control is not a fabricated stop.
+            # The setter has unwound its result/store/phase locks before this wait.
+            time.sleep(ACQUISITION_SLICE_SEC)
+
+
+
 def _run_post_task_processing_async(
     env: Any,
     task: Dict[str, Any],
@@ -111,6 +140,8 @@ def _run_post_task_processing_async(
     sealed_final: Dict[str, Any] | None = None,
     event_queue: Any = None,
     resume: Dict[str, Any] | None = None,
+    expected_record: Dict[str, Any] | None = None,
+    owner_liveness=None, claim_guard=None, stop_requested=None,
 ) -> Dict[str, Any] | None:
     """Run best-effort LLM-heavy post-task memory work off the reply path (``resume``: a saved late-phase Pause)."""
     task_snapshot = json.loads(json.dumps(task, ensure_ascii=False, default=str))
@@ -140,31 +171,18 @@ def _run_post_task_processing_async(
             source="post_task_synthesis",
         )
 
-    post_task_key: tuple[str, str] | None = None
-    if _is_root_post_task(task_snapshot):
-        # The durable checkpoint owns paid idempotency; terminal roots never pay again.
-        if _root_post_task_already_completed(env, task_snapshot):
-            return None
-        if not resume and _root_post_task_paused(env, task_snapshot):
-            return None  # only the owner's Resume grant continues a saved late phase
-        task_id = str(task_snapshot.get("id") or task_snapshot.get("task_id") or "")
-        roots = _root_checkpoint_roots(env, task_snapshot)
-        root_key = str(pathlib.Path(
-            task_snapshot.get("budget_drive_root")
-            or (roots[0] if roots else env.drive_root)
-        ).resolve(strict=False))
-        post_task_key = (root_key, task_id)
-        with _POST_TASK_SYNTHESIS_LOCK:
-            if post_task_key in _POST_TASK_SYNTHESIS_INFLIGHT:
-                return None
-            _POST_TASK_SYNTHESIS_INFLIGHT[post_task_key] = None
-        _set_root_post_task_checkpoint(env, task_snapshot, "running")
-
-    # Freeze one honest subtree view synchronously at the pre-synthesis
-    # boundary. No scoped worker or consolidation/model call may start first;
-    # summary and reflection then receive this same object, while the existing
-    # terminal checkpoint remains the only final accounting authority.
+    from ouroboros.model_wait import current_model_wait, task_model_wait_scope
+    parent_wait = current_model_wait()
+    role_overrides = copy.deepcopy(parent_wait.overrides) if parent_wait else {}
+    # No reservation exists until all fallible, unpaid snapshot preparation is done.
     usage_snapshot = resume["usage_snapshot"] if resume else _pre_synthesis_usage_snapshot(env, task_snapshot, usage)
+    post_task_key, phase_witness = None, None
+    if _is_root_post_task(task_snapshot):
+        post_task_key, phase_witness = begin_root_post_task(env, task_snapshot,
+            resume=bool(resume), expected_record=expected_record, owner_liveness=owner_liveness,
+            claim_guard=claim_guard, stop_requested=stop_requested, event_queue=event_queue)
+        if post_task_key is None:
+            return None
 
     # The owner's will while the synthesis is ALREADY billing (Stop-now after
     # the loop returned): one local predicate, consulted before EACH paid
@@ -175,8 +193,14 @@ def _run_post_task_processing_async(
     # existing mailbox remains owned until this phase settles.
     intent_root = task_snapshot.get("budget_drive_root") or env.drive_root
     stage_task_id = str(task_snapshot.get("id") or task_snapshot.get("task_id") or "")
+    def _release_owner() -> None:
+        nonlocal post_task_key
+        key, post_task_key = post_task_key, None
+        release_post_task_synthesis(key)
 
     def _owner_stop_requested() -> bool:
+        if stop_requested and stop_requested():
+            return True
         if task.get("_skip_post_task_synthesis"):
             return True
         try:
@@ -332,14 +356,17 @@ def _run_post_task_processing_async(
                         usage, usage_snapshot, trace_snapshot, review_evidence_snapshot, sealed_snapshot, drive_logs,
                         on_reflection), state=dict(result=dict(result), free_actions_applied=free_actions_applied,
                                                    stage_errors=stage_errors))):
-                _set_root_post_task_checkpoint(
-                    env, task_snapshot, checkpoint_status,
-                    stop_reason=(f"{interrupted}:skipped={','.join(skipped)}" if interrupted else ""),
-                )
+                try:
+                    _publish_root_post_task_checkpoint(
+                        env, task_snapshot, checkpoint_status, expected=phase_witness,
+                        stop_requested=stop_requested,
+                        stop_reason=(f"{interrupted}:skipped={','.join(skipped)}" if interrupted else ""),
+                        event_queue=event_queue,
+                    )
+                except Exception:
+                    log.warning("Post-task result publication remains owed for %s", stage_task_id, exc_info=True)
             reset_late_phase_run(late_token)
-            if post_task_key is not None:
-                with _POST_TASK_SYNTHESIS_LOCK:
-                    _POST_TASK_SYNTHESIS_INFLIGHT.pop(post_task_key, None)
+            _release_owner()  # The following owner-Pause census must see the phase's physical return.
             if not in_worker_process():
                 # Pooled completion still owes child files and accepted inputs.
                 # Its terminal owner cleans up after the first save attempt.
@@ -348,11 +375,7 @@ def _run_post_task_processing_async(
                 from supervisor.owner_pause_control import late_phase_settled
                 late_phase_settled(intent_root, stage_task_id)
 
-    from ouroboros.model_wait import current_model_wait, task_model_wait_scope
-    parent_wait = current_model_wait()
-    role_overrides = copy.deepcopy(parent_wait.overrides) if parent_wait else {}
-
-    def _run() -> None:
+    def _run_owned() -> None:
         with usage_scope(post_scope):
             if blocking:
                 # Native post-task work retains its call owner after dialogue
@@ -382,6 +405,12 @@ def _run_post_task_processing_async(
                             _POST_TASK_SYNTHESIS_INFLIGHT[post_task_key] = owner
                     _run_scoped()
 
+    def _run() -> None:
+        try:
+            _run_owned()
+        finally:
+            _release_owner()
+
     if blocking:
         _run()
         return result.get("reflection_entry")
@@ -390,10 +419,11 @@ def _run_post_task_processing_async(
         copy_task_settings_context(settings_context)
         threading.Thread(target=settings_context.run, args=(_run,), daemon=True).start()
     except Exception:
-        _set_root_post_task_checkpoint(env, task_snapshot, "degraded")
-        if post_task_key is not None:
-            with _POST_TASK_SYNTHESIS_LOCK:
-                _POST_TASK_SYNTHESIS_INFLIGHT.pop(post_task_key, None)
+        try:
+            _publish_root_post_task_checkpoint(env, task_snapshot, "degraded", expected=phase_witness,
+                event_queue=event_queue, stop_requested=stop_requested, stop_reason="post_task_worker_not_started")
+        finally:
+            _release_owner()
         raise
     return None
 
@@ -401,106 +431,92 @@ def _run_post_task_processing_async(
 def recover_pending_root_post_task_synthesis(
     drive_root: Any, repo_dir: Any = None,
     *, exclude_task_ids: frozenset[str] = frozenset(), resume_task_id: str = "",
+    startup: bool = True, owner_liveness=None, claim_guard=None, stop_requested=None, event_queue=None,
 ) -> int:
-    """Resume an undispatched root synthesis; degrade an indeterminate one.
+    """Service existing synthesis debt; only proven absent/unsent work may dispatch.
 
-    The existing task-result checkpoint is the only durable authority.  The
-    process-local in-flight set prevents the periodic reconciler from spawning a
-    duplicate while the recovered thread is alive.  After restart only
-    ``pending_once`` is replay-safe: ``running`` may have crossed a paid provider
-    boundary, so it becomes terminal ``degraded`` instead of repeating calls.
-    A ``paused`` late phase is kept and never auto-runs (an unconsumed Resume
-    grant is revoked); ``resume_task_id`` consumes that root's live grant.
+    Startup retains its prior-worker proof. A steady-state caller supplies the
+    queue's tri-state physical liveness and settlement interlock. A saved Pause
+    never auto-runs; only startup revokes its unconsumed Resume grant. Paid or
+    unknown legacy pending_once is indeterminate, just like a lost running phase.
     """
     from types import SimpleNamespace
     from ouroboros.post_task_synthesis import resume_paused_late_phase, revoke_late_phase_grant
+    from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
     from ouroboros.obligations import result_rows
     from ouroboros.terminal_projection import terminal_projection_owed
 
     root = pathlib.Path(drive_root).resolve(strict=False)
     if resume_task_id:
         return int(resume_paused_late_phase(root, repo_dir or root.parent, str(resume_task_id)))
-    try:
-        rows = list(result_rows(root, "synthesis", exclude=exclude_task_ids))
-    except Exception:
-        return 0
+    if not startup and owner_liveness is None:
+        return 0  # An empty/foreign process-local map cannot prove physical absence.
     recovered = 0
-    for stored in rows:
+    for stored in result_rows(root, "synthesis", exclude=exclude_task_ids):
+        if stop_requested and stop_requested():
+            break
         task_id = str(stored.get("task_id") or stored.get("id") or "")
-        if task_id in exclude_task_ids:
-            continue
-        checkpoint = stored.get("root_phase_checkpoint")
-        phase = str(checkpoint.get("post_task_synthesis") or "") if isinstance(checkpoint, dict) else ""
         if not task_id:
             continue
-        if not _post_task_synthesis_is_open(phase):
-            # #1154: a root whose synthesis already settled can still OWE its
-            # terminal projection — the process died between the obligation and
-            # the Project/Main effects, or Main's eligibility could not be
-            # established last pass. Replaying it here is pure bookkeeping on this
-            # existing startup scan: no model call, no new timer, no new store. It is not
-            # counted as a recovered synthesis, which is what this number means.
-            if terminal_projection_owed(task_id, stored):
-                _settle_terminal_projection(root, task_id, task={**stored, "id": task_id})
-            continue
-        if phase == "paused":
-            try:
-                revoke_late_phase_grant(root, task_id, reason="restart_no_resume")
-            except Exception:
-                log.warning("Late-phase Resume grant of %s was not revoked at restart", task_id, exc_info=True)
-            from supervisor.owner_pause_control import retain_late_phase_latch
-
-            retain_late_phase_latch(root, task_id)
-            continue
-        task = {**stored, "id": task_id, "root_task_id": str(stored.get("root_task_id") or task_id)}
-        task.setdefault("budget_drive_root", str(root))
-        if not _is_root_post_task(task):
-            continue
-        env = SimpleNamespace(
-            repo_dir=pathlib.Path(repo_dir or task.get("repo_dir") or root.parent),
-            drive_root=root,
-            drive_path=lambda rel, _root=root: _root / rel,
-        )
-        if phase == "running":
-            stored = _set_root_post_task_checkpoint(
-                env,
-                task,
-                "degraded",
-                stop_reason="restart_indeterminate_running",
-            )
-            stored_checkpoint = (stored or {}).get("root_phase_checkpoint") or {}
-            stored_phase = str(stored_checkpoint.get("post_task_synthesis") or "")
-            if not _post_task_synthesis_is_terminal(stored_phase):
-                raise RuntimeError(
-                    "Root post-task synthesis recovery did not persist a terminal "
-                    f"checkpoint for {task_id} (stored={stored_phase or 'unavailable'})"
-                )
-            recovered += 1
-            continue
-        usage = {
-            # Null stays NULL (C2): `float(... or 0)` turned a task whose cost was
-            # never accounted into a confident "$0.00" in the recovered synthesis —
-            # a fabricated receipt for the one path (restart recovery) where the
-            # amount is least likely to be known.
-            "cost": cost_projection(task)["accounted_upper_bound_usd"],
-            "rounds": int(task.get("total_rounds") or 0),
-            "reason_code": str(task.get("reason_code") or ""),
-            "outcome_axes": task.get("outcome_axes") or {},
-        }
-        trace = {
-            "tool_calls": [],
-            "reasoning_notes": [str(task.get("trace_summary") or "")],
-            "recovered_post_task_synthesis": True,
-        }
-        _run_post_task_processing_async(
-            env, task, usage, trace,
-            task.get("review_evidence") if isinstance(task.get("review_evidence"), dict) else {},
-            root / "logs", blocking=False,
-            # Recovered synthesis gets the same sealed ground truth from the
-            # durable record: delivered result text + its artifact facts.
-            sealed_final=build_sealed_final_package(task, str(task.get("result") or "")),
-        )
-        recovered += 1
+        try:
+            task = {**stored, "id": task_id, "root_task_id": str(stored.get("root_task_id") or task_id)}
+            task.setdefault("budget_drive_root", str(root))
+            env = SimpleNamespace(repo_dir=pathlib.Path(repo_dir or task.get("repo_dir") or root.parent),
+                                  drive_root=root, drive_path=lambda rel, _root=root: _root / rel)
+            governing_root = _root_checkpoint_roots(env, task)[0]
+            authority = (load_task_result(governing_root, task_id, strict=True) or {}
+                         if governing_root != root else stored)
+            if post_task_synthesis_in_flight(governing_root, task_id):
+                continue
+            checkpoint = (authority or stored).get("root_phase_checkpoint") or {}
+            phase = str(checkpoint.get("post_task_synthesis") or "")
+            if not _post_task_synthesis_is_open(phase):
+                if terminal_projection_owed(task_id, authority):
+                    _settle_terminal_projection(governing_root, task_id, task=task, event_queue=event_queue)
+                continue
+            if phase == "paused":
+                if startup:
+                    revoke_late_phase_grant(governing_root, task_id, reason="restart_no_resume")
+                    from supervisor.owner_pause_control import retain_late_phase_latch
+                    retain_late_phase_latch(governing_root, task_id)
+                continue
+            if owner_liveness is not None and owner_liveness(task_id) is not False:
+                continue
+            if not _is_root_post_task(task):
+                continue
+            dispatched = phase == "running" or post_task_dispatch_evidence(governing_root, task_id, authority)
+            if dispatched:
+                key = reserve_post_task_synthesis(governing_root, task_id, owner_liveness=owner_liveness,
+                    claim_guard=claim_guard, stop_requested=stop_requested)
+                if key is None:
+                    continue
+                try:
+                    updated = _publish_root_post_task_checkpoint(env, task, "degraded",
+                        expected=post_task_checkpoint_witness(authority), event_queue=event_queue,
+                        stop_requested=stop_requested, stop_reason=("restart_indeterminate_running" if startup
+                            else "owner_ended_indeterminate_post_task"))
+                    if updated and _post_task_synthesis_is_terminal(
+                            (updated.get("root_phase_checkpoint") or {}).get("post_task_synthesis")):
+                        recovered += 1
+                finally:
+                    release_post_task_synthesis(key)
+                continue
+            usage = {"cost": cost_projection(task)["accounted_upper_bound_usd"],
+                     "rounds": int(task.get("total_rounds") or 0),
+                     "reason_code": str(task.get("reason_code") or ""), "outcome_axes": task.get("outcome_axes") or {}}
+            trace = {"tool_calls": [], "reasoning_notes": [str(task.get("trace_summary") or "")],
+                     "recovered_post_task_synthesis": True}
+            _run_post_task_processing_async(
+                env, task, usage, trace, task.get("review_evidence") or {}, root / "logs", blocking=False,
+                sealed_final=build_sealed_final_package(task, str(task.get("result") or "")),
+                expected_record=authority, owner_liveness=owner_liveness, claim_guard=claim_guard,
+                stop_requested=stop_requested, event_queue=event_queue)
+            fresh = load_task_result(governing_root, task_id, strict=True) or {}
+            recovered += int((fresh.get("root_phase_checkpoint") or {}).get("post_task_synthesis") != phase)
+        except PostTaskCheckpointChanged:
+            continue  # A newer Pause, completed result or task attempt owns the phase.
+        except Exception:
+            log.warning("Post-task recovery remains owed for %s", task_id, exc_info=True)
     return recovered
 
 
@@ -1174,9 +1190,8 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
             existing_checkpoint = existing.get("root_phase_checkpoint")
             if (
                 isinstance(existing_checkpoint, dict)
-                and _post_task_synthesis_is_terminal(
-                    existing_checkpoint.get("post_task_synthesis")
-                )
+                and (existing_checkpoint.get("post_task_synthesis") in {"running", "paused"}
+                     or _post_task_synthesis_is_terminal(existing_checkpoint.get("post_task_synthesis")))
             ):
                 root_phase_checkpoint = dict(existing_checkpoint)
             elif isinstance(incoming_checkpoint, dict):

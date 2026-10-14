@@ -75,6 +75,10 @@ def _resume_custody_refusal(result_root, task_id, row, external):
     unsettled = [run for run in (external.get("runs") or [])
                  if isinstance(run, dict) and str(run.get("state") or "") != EXTERNAL_STOP_CONFIRMED
                  and not (owner_paused and run.get("review_owned"))]
+    if unsettled and row.get("reason") == "sleep":
+        from ouroboros.sleep_custody import return_allowed
+        if return_allowed(task_id, row, external):
+            unsettled = []  # same author's retained dependency, not a stop receipt
     if unsettled:
         try:
             set_budget_pause(result_root, task_id, {**row, "external_runs": external},

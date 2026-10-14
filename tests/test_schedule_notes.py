@@ -108,6 +108,7 @@ def test_an_overdue_note_reaches_extension_subscribers_on_a_provider_boot(host, 
     monkeypatch.setattr(srv, "has_startup_ready_provider", lambda _settings: True)
     monkeypatch.setattr(srv, "_boot_managed_update_tasks", lambda: None)
     delivered = []
+    first_tick_finished = threading.Event()
 
     def reload_extensions(_root, _reader, *, repo_path=None):
         event_bus.get_global_event_bus().subscribe("telegram", event_bus.CHAT_OUTBOUND, delivered.append)
@@ -117,13 +118,17 @@ def test_an_overdue_note_reaches_extension_subscribers_on_a_provider_boot(host, 
         first_tick = threading.Thread(target=host.queue.check_scheduled_tasks)
         first_tick.start()
         first_tick.join(timeout=30)
+        assert not first_tick.is_alive()
+        first_tick_finished.set()
         return True
 
     monkeypatch.setattr(extension_loader, "reload_all", reload_extensions)
     monkeypatch.setattr(srv, "_start_supervisor_if_needed", start_supervisor)
     try:
         with TestClient(srv.app):
-            pass
+            # Store publication starts the supervisor off-loop. Keep this
+            # generation alive until its real first scheduler tick has run.
+            assert first_tick_finished.wait(30)
     finally:
         event_bus.init_global_event_bus()
         clean_extension_runtime_state()

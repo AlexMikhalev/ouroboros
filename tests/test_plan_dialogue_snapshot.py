@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from tests.test_plan_review_engine import harness as _harness, _call, _state, CLEAN
 
@@ -117,7 +120,8 @@ def test_inline_view_is_the_numbered_conversation(harness):
     assert "Explicit gap: own room source unavailable (own_room_unavailable)" in gap_view and gap_facts["conversation_rows"] == 0
 
 
-def test_mixed_delivery_keeps_full_file_and_exact_overflow_range(harness, monkeypatch):
+@pytest.mark.parametrize("native_hint", [100_000, 1_000])
+def test_mixed_delivery_keeps_full_file_and_exact_overflow_range(harness, monkeypatch, native_hint):
     from types import SimpleNamespace
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.tools.plan_dialogue import attach_own_dialogue, dialogue_slot_inputs, render_dialogue
@@ -145,7 +149,7 @@ def test_mixed_delivery_keeps_full_file_and_exact_overflow_range(harness, monkey
     declarations = []
     def bound(*a, **kwargs):
         declarations.append(kwargs)
-        return 100000
+        return native_hint
     monkeypatch.setattr(review_native_episode, "review_native_transcript_bound", bound)
     delivery = dialogue_slot_inputs(slots, system_prompt="governance", user_content=packet,
                                    session_task=packet, manifest=manifest, slot_messages={}, native_mandatory_chars=len(packet), session_root=str(harness.workspace), task_id=ctx.task_id)
@@ -157,7 +161,14 @@ def test_mixed_delivery_keeps_full_file_and_exact_overflow_range(harness, monkey
     assert coverage["small"]["conversation_inline_rows"] == 1 and coverage["small"]["conversation_first_inline_line"] == 3
     assert coverage["large"]["conversation_inline_rows"] == 2 and coverage["large"]["delivery"] == "packet"
     native = delivery["slot_session_tasks"]["native"]
-    assert "LATEST CHOICE" in native and "exact omitted prefix" in native and coverage["native"]["delivery"] == "native_retrieving"
+    assert "exact omitted prefix" in native and coverage["native"]["delivery"] == "native_retrieving"
+    if native_hint == 100_000:
+        assert "LATEST CHOICE" in native
+    else:
+        # An irreducible first send is retained above the hint, with its source.
+        assert delivery["slot_prompt_chars"]["native"] > native_hint
+        assert own["source_ref"]["path"] in native
+        assert Path(own["file"]).read_text(encoding="utf-8") == own["text"]
     assert declarations[0]["mandatory_read_chars"] == len(packet)
     delegated = delivery["slot_session_tasks"]["delegated"]
     # The delegated session gets the same inline conversation (no invented window) plus the pointer.
@@ -178,7 +189,8 @@ def test_mixed_delivery_keeps_full_file_and_exact_overflow_range(harness, monkey
     assert len(source) > 120000 and source.decode() == own["text"]
     import re
     match = re.search(r'::lines=2-(\d+)', native)
-    assert match and int(match[1]) == 2  # the OLDER row (line 2) is the exact omitted prefix
+    # The ordinary hint omits only OLDER; the tiny one addresses the whole snapshot.
+    assert match and int(match[1]) == (2 if native_hint == 100_000 else own["lines"])
     assert not (harness.workspace / ".ouroboros-review").exists()
 
 

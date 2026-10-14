@@ -96,6 +96,22 @@ def test_no_notice_without_a_retired_key(boot_state, sent):
     assert "retired_settings_notified" not in state.load_state()
 
 
+@pytest.mark.parametrize("value", ["900000", "400000", "50000", "1900000", 0, "unlimited"])
+def test_native_character_cap_retires_every_value_with_no_successor(boot_state, sent, value):
+    from ouroboros.settings_defaults import RETIRED_SETTING_SUCCESSORS, SETTINGS_DEFAULTS
+
+    key = "OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS"
+    _bind_owner(1)
+    loaded = cfg.normalize_settings_raw({key: value, "TOTAL_BUDGET": 31.0})
+    assert key not in loaded and key not in SETTINGS_DEFAULTS
+    assert key not in RETIRED_SETTING_SUCCESSORS
+    assert loaded["TOTAL_BUDGET"] == 31.0
+    server_maintenance._startup_retired_settings_notice(loaded)
+    (chat_id, text, _kwargs), = sent
+    assert chat_id == 1 and key in text and "NOT honored" in text
+    assert "no successor setting" in text
+
+
 def test_the_durable_marker_survives_a_fresh_process(boot_state, sent):
     """The dedupe is the state file, not the in-process seam: a new process that reads
     the same document again (the seam's own set is empty there) still stays quiet."""

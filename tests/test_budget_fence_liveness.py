@@ -129,13 +129,14 @@ def test_publication_waits_only_outside_the_money_lock(tmp_path, monkeypatch, op
 
     _publish(tmp_path)
     reservation = _reserve(tmp_path, CHILD) if operation == "dispatch" else None
-    stamp, held, waits = tmp_path / "state/queue.alive", [], []
+    stamp, held, waits, replaced = tmp_path / "state/queue.alive", [], [], []
     original = ua._locked
 
     @contextlib.contextmanager
     def locked(*args, **kwargs):
         with original(*args, **kwargs) as view:
-            if publication == "under_lock":
+            if publication == "under_lock" and not replaced:
+                replaced.append(True)
                 stamp.unlink()
             held.append(True)
             try:
@@ -156,16 +157,13 @@ def test_publication_waits_only_outside_the_money_lock(tmp_path, monkeypatch, op
     try:
         def act():
             return _reserve(tmp_path, CHILD) if operation == "reserve" else ua.mark_dispatched(reservation)
-        if publication == "under_lock":
-            with pytest.raises(ua.UsageAccountingError, match="root budget fence authority unavailable"):
-                act()
-        elif operation == "reserve":
+        if operation == "reserve":
             assert act().attempt_id
         else:
             act()
     finally:
         _usage_wait._CANCEL.reset(token)
-    assert len(waits) == int(publication == "before_lock")
+    assert len(waits) == int(publication != "stable")
     if reservation:
         with ua.usage_store.read(tmp_path) as view:
-            assert view.attempt(reservation.attempt_id)["state"] == ("reserved" if publication == "under_lock" else "dispatched")
+            assert view.attempt(reservation.attempt_id)["state"] == "dispatched"
