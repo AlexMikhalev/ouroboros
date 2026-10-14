@@ -1226,8 +1226,7 @@ export function createChatInstance({
         // Carrier facts precede presentation returns.
         if (row.tool_evidence && row.task_id) noteToolMetrics(row.task_id, row, row.ts || row.timestamp || '');
         if (row.system_type === 'task_evidence') {
-            // The task's own evidence: mints the card its children nest under (zero tools
-            // included) at the carrier's row; the terminal pass finishes it (A5).
+            // The task's own evidence: mints its card at the carrier's row (zero tools included).
             const record = getLiveCardRecord(row.task_id);
             const activity = activeDirectActivities.get(row.task_id);
             if (row.ts) reanchorTaskCard(record, row.ts);
@@ -1442,9 +1441,8 @@ export function createChatInstance({
         return Boolean(changed && record.root?.isConnected);
     }
 
-    // A parent card comes only from the parent's OWN evidence in this room (its record,
-    // a census activity, its replayed rows), never from a child's bare parent_task_id
-    // (A5): null leaves the child visible on its own until that evidence nests it.
+    // A parent card comes only from the parent's OWN evidence here (its record, a census
+    // activity, a replayed row of its own), never a child's bare parent_task_id (A5).
     function ensureSubagentContainer(parentId = '', depth = 0) {
         if (!parentId || !(liveCardRecords.has(parentId) || activeDirectActivities.has(parentId)
                 || evidencedTaskIds.has(parentId))) return null;
@@ -1552,7 +1550,7 @@ export function createChatInstance({
         { suppressDomInsert = false, reorderExisting = false } = {},
     ) {
         if (!record || suppressDomInsert || _syncPass1Active) return;
-        const container = record.isSubagent && record.parentGroupId ? ensureSubagentContainer(record.parentGroupId) : null;
+        const container = record.isSubagent ? ensureSubagentContainer(record.parentGroupId) : null;
         if (container) {
             // The container nests a lineage-known parent (#636); the recursion
             // carries the chain up to the inserted root.
@@ -2461,7 +2459,7 @@ export function createChatInstance({
                 }
                 for (const msg of messages) {
                     learnSubagentLineage(msg);
-                    // A notice names its target, never a speaker: it is no evidence of that task here.
+                    // A notice names its target, not a speaker: no evidence of that task here.
                     if (msg.task_id && !ORIGIN_ADDRESSED_NOTICE_TYPES.has(msg.system_type)
                             && msg.system_type !== 'project_question_pointer') evidencedTaskIds.add(msg.task_id);
                 }
@@ -2496,11 +2494,10 @@ export function createChatInstance({
                         updateLiveCardFromProgressMessage(msg, { grantCancelAuthority: msg.project_mirror !== true });
                         const historyCard = liveCardRecords.get(taskId);
                         if (historyCard && !historyCard.isSubagent && !activeDirectActivities.has(taskId)
-                                && !msg.task_terminal_status && msg.task_phase !== 'finalizing') {
-                            if (setHistoricalUnconfirmed(historyCard)) {
-                                syncCancelRunButton(historyCard);
-                                renderLiveCardMeta(historyCard);
-                            }
+                                && !msg.task_terminal_status && msg.task_phase !== 'finalizing'
+                                && setHistoricalUnconfirmed(historyCard)) {
+                            syncCancelRunButton(historyCard);
+                            renderLiveCardMeta(historyCard);
                         }
                         if (historyCard && historicalTerminals.has(taskId)) historyCard.historicalTerminal = historicalTerminals.get(taskId);
                         continue;
@@ -2576,21 +2573,15 @@ export function createChatInstance({
                         insertCardIfNeeded(taskId); routeSubagentProgressToCard(taskId, msg, true); continue;
                     }
                     if (taskId && replayConcludesTask(msg)) {
-                        if (subagentChildParents.has(taskId)) {
-                            insertCardIfNeeded(taskId);
-                            routeSubagentFinalMessageToCard(taskId, msg);
-                            const record = liveCardRecords.get(taskId);
-                            finishLiveCard(taskId, msg.task_terminal_status ? taskTerminalPhase(msg) : replayTerminalPhase(record));
-                            continue;
-                        }
                         insertCardIfNeeded(taskId);
-                        // A replayed early final must not finalize the card.
-                        if (msg.task_phase === 'finalizing') {
-                            markLiveCardFinalizing(taskId, msg);
-                        } else if (!msg.historical_terminal || positiveTaskTerminalFact(msg)) {
-                            const record = liveCardRecords.get(taskId);
-                            finishLiveCard(taskId, msg.task_terminal_status ? taskTerminalPhase(msg) : replayTerminalPhase(record));
+                        const child = subagentChildParents.has(taskId);
+                        if (child) routeSubagentFinalMessageToCard(taskId, msg);
+                        // A replayed early final must not finalize a root's card.
+                        if (!child && msg.task_phase === 'finalizing') markLiveCardFinalizing(taskId, msg);
+                        else if (child || !msg.historical_terminal || positiveTaskTerminalFact(msg)) {
+                            finishLiveCard(taskId, msg.task_terminal_status ? taskTerminalPhase(msg) : replayTerminalPhase(liveCardRecords.get(taskId)));
                         }
+                        if (child) continue;
                     }
                     // A durable routing receipt retires Sending like its live frame.
                     if (msg.chat_annotation && msg.client_message_id) {
@@ -2610,37 +2601,22 @@ export function createChatInstance({
                 }
                 _historyRow = null;
                 // Persisted terminals without task_summary (crash/timeout/cancel) also settle
-                // progress-only cards; otherwise reload revives them as Working.
-                const terminalTaskRecords = new Map();
-                for (const msg of messages) {
-                    const tid = msg.task_id || '';
-                    if (tid && msg.task_terminal_status) {
-                        terminalTaskRecords.set(tid, {
-                            ...msg,
-                            status: String(msg.task_terminal_status),
-                        });
-                    }
-                }
+                // progress-only cards, or reload revives them as Working. A child's terminal
+                // resolves the child card, never its parent; a root's uses the shared terminal
+                // mapping (P5: a cancelled root replays as "Cancelled", never a generic "Done").
+                const settleReplayedTerminal = (tid, terminalRecord, phase, summary = false) => {
+                    if (!taskDoneIsTerminal(terminalRecord)) return;
+                    if (subagentChildParents.has(tid)) return routeSubagentTerminalToCard(tid, terminalRecord);
+                    if (!liveCardRecords.has(tid)) return;
+                    insertCardIfNeeded(tid);
+                    if (summary) appendTaskSummaryToLiveCard(terminalRecord); else finishLiveCard(tid, phase);
+                };
+                const terminalTaskRecords = new Map(messages.filter((msg) => msg.task_id && msg.task_terminal_status)
+                    .map((msg) => [msg.task_id, { ...msg, status: String(msg.task_terminal_status) }]));
                 for (const [tid, terminalRecord] of terminalTaskRecords) {
                     _historyRow = terminalRecord;
-                    if (!taskDoneIsTerminal(terminalRecord)) continue;
-                    // Subagent terminal status resolves the child card, not the
-                    // parent. Otherwise reload can revive a crashed/cancelled child.
-                    if (subagentChildParents.has(tid)) {
-                        routeSubagentTerminalToCard(tid, terminalRecord);
-                        continue;
-                    }
-                    const rec = liveCardRecords.get(tid);
-                    if (rec) {
-                        insertCardIfNeeded(tid);
-                        if (terminalRecord.outcome_axes || terminalRecord.review_projection || terminalRecord.reason_code) {
-                            appendTaskSummaryToLiveCard(terminalRecord);
-                        } else {
-                            // P5: shared terminal mapping — a cancelled root replays
-                            // as "Cancelled", never as a generic "Done".
-                            finishLiveCard(tid, taskTerminalPhase(terminalRecord));
-                        }
-                    }
+                    settleReplayedTerminal(tid, terminalRecord, taskTerminalPhase(terminalRecord),
+                        Boolean(terminalRecord.outcome_axes || terminalRecord.review_projection || terminalRecord.reason_code));
                 }
                 _historyRow = null;
 
@@ -2649,27 +2625,16 @@ export function createChatInstance({
                 // which may still say finalizing; status alone loses failures.
                 for (const [tid, historicalTerminal] of historicalTerminals) {
                     if (!historicalTerminalProjections.has(tid)) continue;
-                    const terminalRecord = { ...historicalTerminal, task_id: tid };
-                    if (!taskDoneIsTerminal(terminalRecord)) continue;
-                    if (subagentChildParents.has(tid)) {
-                        routeSubagentTerminalToCard(tid, terminalRecord);
-                        continue;
-                    }
-                    const rec = liveCardRecords.get(tid);
-                    if (!rec) continue;
-                    insertCardIfNeeded(tid);
-                    finishLiveCard(tid, historicalTerminal.phase);
+                    settleReplayedTerminal(tid, { ...historicalTerminal, task_id: tid }, historicalTerminal.phase);
                 }
 
-                // Every block the predicate admits is in the transcript after a rebuild.
-                for (const rec of liveCardRecords.values()) {
-                    reorderDirtyCardIfNeeded(rec);
-                    ensureLiveCardVisible(rec);
-                }
-
+                // Every block the predicate admits is in the transcript after a rebuild; a card
+                // this replay minted with neither a terminal nor a census entry is unconfirmed.
                 for (const [id, record] of liveCardRecords) {
-                    if (!knownCards.has(id) && !record.finished && !activeDirectActivities.has(id)) {
-                        setHistoricalUnconfirmed(record);
+                    reorderDirtyCardIfNeeded(record);
+                    ensureLiveCardVisible(record);
+                    if (!knownCards.has(id) && !record.finished && !activeDirectActivities.has(id)
+                            && setHistoricalUnconfirmed(record)) {
                         syncCancelRunButton(record);
                         renderLiveCardMeta(record);
                     }
