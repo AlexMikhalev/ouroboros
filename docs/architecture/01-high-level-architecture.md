@@ -250,7 +250,7 @@ ouroboros/ — agent core and shared runtime (§6)
   workspace_admission.py — Task/promotion workspace admission: disjoint roots and Project binding, never a system-repo fallback (§6 Owner routing verbs; CLI / Headless Boundary below)
   local_model.py, local_model_autostart.py — llama-cpp lifecycle over proxy-free loopback and its startup helper (§3 Settings)
   deep_self_review.py — Whole-system diagnostic review on a named enabled row, defaulting to the direct Main row (§6 Deep self-review)
-  review.py — Size and complexity inventory behind the shrink-only ceilings (§6 Structural gates)
+  review.py — Size and complexity inventory behind the shrink-only ceilings and the diff pulse (§6 Structural gates, Commit preflight)
   size_ratchet_manifest.py — Generated data-only size-debt manifest (`scripts/regenerate_size_ratchet.py`)
   review_execution_projection.py — Reviewer-execution projection; kinds `api` | `harness` | `native`, so the owner can tell a retrieving review from a packet review on the same model
   preflight_runner.py, preflight_node.py, preflight_receipts.py — Hermetic test gate, Node lane, receipts (§6 Hermetic preflight proof; §8)
@@ -486,7 +486,7 @@ ouroboros/ — agent core and shared runtime (§6)
     review_context_atlas.py — `repository_index`: compact tracked-path map plus touched-file and direct-importer facts; no file bodies, no restriction on what a reviewer may read (§6 The coupling question)
     governance_context.py — Shared governance tiers for every change-review seat, the preflight and deep review: stable inline rules, bounded change-class rules, physical-source navigation; every omitted inline body has an explicit disposition (§6 Governance delivery)
     query_code.py — Read-only code navigation: scoped/paged outlines and digest, source occurrences and call evidence, candidate import impact; explicit `user_files` targets and permitted subagent reads (Code navigation below)
-    edit_ops.py — `apply_patch` and `edit_batch` with the shared syntax check and unified diff backing write_file; the book balance in every book-touching edit result
+    edit_ops.py — `apply_patch` and `edit_batch` with the shared syntax check and unified diff backing write_file; the diff pulse in every system-repository edit result
     media.py — `ocr_pdf`, `youtube_transcript`, `extract_video_frames` (dependency-optional, typed capability envelopes; frames under `artifact_store/video_frames`)
     verify.py — Independent checks through the shared pre-exec guards, not a process-command tool by design; receipts at `task_results/artifacts/<task_id>/verification_receipts.jsonl` (§6 Tool capability and execution)
     review_helpers.py — Shared review helpers: governance-doc loading, checklist section slicing, the prompt-size SSOT, the density-calibrated input cap and probe sample `DENSITY_PROBE_SAMPLE_CHARS`
