@@ -993,6 +993,36 @@ def _record_cascade_incident(task_id: str, kind: str, detail: str = "") -> None:
         log.debug("Failed to surface cascade cancel incident for %s", task_id, exc_info=True)
 
 
+def _run_cascade_cancel(task_id: str) -> bool:
+    """Subtree cancel for the Host Service ``/chat/cancel`` path, AWAITED by its caller.
+
+    Returns True when the subtree is settled — cancelled, or already terminal
+    (the benign completion-wins race) — and False when the teardown failed or
+    refused while the tree is STILL live, which the caller reports rather than
+    answering ok:true for a cancellation that did not happen. Failures stay
+    durable and owner-visible as incidents either way.
+    """
+    try:
+        from supervisor.queue import CANCEL_CANCELLED, drive_cancel_intent_scope
+
+        if drive_cancel_intent_scope(task_id) != CANCEL_CANCELLED:
+            # A cascade that cancelled nothing is only an incident when the subtree
+            # is STILL live: the ordinary completion-wins race (the task reached
+            # terminal between the pre-check and this call) is the benign case the
+            # UI already handles, and reporting it would train the owner to ignore
+            # the real "refused to cancel" signal.
+            from supervisor.queue import task_subtree_is_live
+
+            if task_subtree_is_live(task_id):
+                _record_cascade_incident(task_id, "task_cancel_cascade_noop")
+                return False
+        return True
+    except Exception as exc:
+        log.warning("Cascade cancel failed for %s", task_id, exc_info=True)
+        _record_cascade_incident(task_id, "task_cancel_cascade_error", repr(exc))
+        return False
+
+
 def _record_stop(task_id: str, *, cascade: bool, stop_action_id: str) -> Optional[Dict[str, Any]]:
     """Record a hard Stop's durable intent before anything is torn down.
 
