@@ -31,7 +31,7 @@ from ouroboros.configured_subagents import (
     roster_handles,
 )
 from ouroboros.delegate_shared import delegate_payload
-from ouroboros.route_spec import RouteSpec, model_named_effort, route_spec_dict
+from ouroboros.route_spec import ROUTE_KIND_API_MODEL, RouteSpec, model_named_effort, route_spec_dict
 from ouroboros.runtime_mode_policy import effort_range_binds
 from ouroboros.settings_integrity import SETTINGS_ENV_LOCK, TaskSettingsSnapshot, live_effort_range, runtime_setting
 from ouroboros.settings_scales import choose_effort, effort_fact, effort_range
@@ -85,8 +85,38 @@ def effective_runtime_subagent_settings(settings: Mapping[str, Any]) -> dict[str
     return effective
 
 
+def offered_subagents(settings: Mapping[str, Any]) -> ConfiguredSubagentsResolution:
+    """The catalog NEW work chooses from (:func:`resolve_configured_subagents`): a valid,
+    switched-on catalog with no rows at all offers the Main model as its one base agent —
+    with no agent configured, the default model is the base agent. The row is stored id
+    ``main``, Main's model as a catalog row runs it under ``settings`` (route, account pin,
+    processing: ``subscription_install_presets.role_route_binding``) and is never saved. A
+    Main without access offers nothing, as before; a switched-off catalog stays off."""
+    resolution = resolve_configured_subagents(settings)
+    config = resolution.config
+    if (config is None or config.items or not config.enabled
+            or resolution.source in {SOURCE_INVALID, SOURCE_UNDECIDED}):
+        return resolution
+    from ouroboros.configured_subagents import PRIMARY_RECOMMENDATION, make_configured_subagents
+    from ouroboros.subscription_install_presets import role_route_binding
+
+    binding = role_route_binding(settings, "main")
+    if not binding:
+        return resolution
+    target, pin = binding["route"]["target_id"], binding["route"].get("credential_profile_id", "")
+    try:
+        offered = make_configured_subagents([ConfiguredSubagent(
+            subagent_id="main", recommended_use=PRIMARY_RECOMMENDATION,
+            route=RouteSpec(ROUTE_KIND_API_MODEL, target, pin),
+            processing_preference=binding.get("processing_preference", ""))])
+    except ValueError:  # a Main the catalog cannot carry offers nothing: the typed empty-list refusal stands
+        return resolution
+    return dataclass_replace(resolution, config=offered)
+
+
 def model_visible_subagent_catalog(settings: Mapping[str, Any]) -> dict[str, Any]:
-    """Project saved, dispatchable rows as facts, without probing or ranking them.
+    """Project saved, dispatchable rows as facts, without probing or ranking them
+    (a switched-on catalog with no rows offers the Main model, :func:`offered_subagents`).
 
     Facts only: how to choose among rows is the mind's own prose
     (``prompts/SYSTEM.md`` §Delegation), never a host-authored sentence here.
@@ -94,7 +124,7 @@ def model_visible_subagent_catalog(settings: Mapping[str, Any]) -> dict[str, Any
     stored key and the list fingerprint stay host-side in snapshots.
     """
 
-    resolution = resolve_configured_subagents(settings)
+    resolution = offered_subagents(settings)
     config = resolution.config
     if (
         resolution.source in {SOURCE_INVALID, SOURCE_UNDECIDED}
@@ -452,7 +482,7 @@ def apply_task_start_settings_or_disclose(task_id: str, emit_live_log: Any) -> T
 def _resolution(
     settings: Mapping[str, Any], *, allow_undecided_legacy: bool,
 ) -> ConfiguredSubagentsResolution:
-    resolution = resolve_configured_subagents(settings)
+    resolution = offered_subagents(settings)
     if resolution.source == SOURCE_INVALID:
         raise SubagentSelectionError(
             "subagent_configuration_invalid",
