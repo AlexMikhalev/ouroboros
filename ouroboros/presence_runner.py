@@ -1029,7 +1029,7 @@ def _log_dialogue(
                   "text": text, "transport": row["transport"]}
         row["context_source_ref"] = chat_chain.retain_memory_source(
             SimpleNamespace(drive_root=drive_root, task_id=task_id), "presence-event",
-            json.dumps(source, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8"), "json")
+            json.dumps(source, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"), "json")
     written = append_jsonl(
         drive_root / "logs" / "chat.jsonl", obj=row,
         ensure_record_boundary=(direction == "in"),  # a re-run never re-logs: this row must be parseable

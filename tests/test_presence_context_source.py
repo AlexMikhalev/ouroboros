@@ -80,13 +80,15 @@ def test_next_presence_reads_the_same_source_through_its_selected_memory_tool(tm
                 history = registry.execute("chat_history", {"count": 100})
                 rows = registry.execute("memory_read", {"rows": True})
                 refs = [_context_ref(view) for view in (room, history, rows)]
-                assert refs == [source_ref] * 3
+                assert refs == [{key: value for key, value in source_ref.items()
+                                 if key not in {"read", "canonical_root"}}] * 3
                 for view in (room, history, rows):
                     assert "not new speech or current provider truth" in view
                 source = registry.execute("memory_read", {"source_ref": refs[0]})
                 assert QUESTION in source and CANCELLED in source and "rate_limited" in source
                 assert "remaining-page" in source and "2026-10-15T10:00:00Z" in source
-                assert "2026-10-15T11:00:00Z" in source and '"complete": false' in source
+                observed = json.loads(source[source.index("{"):])
+                assert observed["transport"]["conversation"] == event.conversation
                 reads.append(source)
             _terminal(data, task, "Observed without a reply.")
             return [{"type": "presence_result", "outcome": "silent", "text": "", "work_ref": ""}]
@@ -103,6 +105,7 @@ def test_next_presence_reads_the_same_source_through_its_selected_memory_tool(tm
     payload = json.loads(raw)
     assert payload == {"recorded_at": original["ts"], "source_event_id": event.source_event_id,
                        "text": event.text, "transport": original["transport"]}
+    assert len(raw) < len(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
     assert original["ts"] != event.message["sent_at"]  # chat-chain address stays the host's row time
     address = chat_chain.row_address(original)
     assert original["text"] == event.text and len(_rows(data)) == 1  # history is not new speech

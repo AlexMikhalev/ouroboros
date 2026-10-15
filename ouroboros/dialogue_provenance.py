@@ -331,8 +331,10 @@ def dialogue_text(entry: Mapping[str, Any]) -> str:
         text += "\n[Late review evidence: " + json.dumps(dict(evidence), ensure_ascii=False, sort_keys=True) + "]"
     source = entry.get("context_source_ref")
     if entry.get("direction") == "in" and isinstance(source, Mapping):
+        locator = {key: value for key, value in source.items() if key not in {"read", "canonical_root"}}
         text += ("\n[Context recorded with this event, not new speech or current provider truth: "
-                 "memory_read(source_ref=" + json.dumps(dict(source), ensure_ascii=False, sort_keys=True) + ")]")
+                 "memory_read(source_ref=" + json.dumps(locator, ensure_ascii=False, sort_keys=True,
+                                                      separators=(",", ":")) + ")]")
     return text
 
 
