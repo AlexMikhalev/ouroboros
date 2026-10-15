@@ -253,9 +253,10 @@ def test_reservation_race_with_persistent_absence_still_refuses(tmp_path, monkey
     monkeypatch.setattr(queue_observation, "_sleep", unavailable)
     token = _usage_wait._CANCEL.set(threading.Event() if sliced else None)
     try:
-        with pytest.raises(ua.UsageAccountingError, match="root budget fence authority unavailable"):
+        with pytest.raises(ua.ControlAuthorityUnavailable, match="root budget fence authority unavailable") as refused:
             with ua.usage_scope(ua.UsageScope(drive_root=tmp_path, task_id=CHILD, root_task_id=ROOT)):
                 ua.execute_physical_attempt(ua.AttemptRequest(model="m", provider="p"), lambda: sent.append(True))
+        assert refused.value.cause == "dispatch_publication_unconfirmed"
     finally:
         _usage_wait._CANCEL.reset(token)
     assert sum(waits) == pytest.approx(0.2)
@@ -263,7 +264,7 @@ def test_reservation_race_with_persistent_absence_still_refuses(tmp_path, monkey
     rows = ua.read_usage_records(tmp_path)
     assert sent == [] and [row["state"] for row in rows] == (["released"] if revoke_on == 2 else [])
     if rows:
-        assert rows[0]["reason"] == "before_dispatch_failed:UsageAccountingError"
+        assert rows[0]["reason"] == "before_dispatch_failed:ControlAuthorityUnavailable"
 
 
 def test_reservation_race_observes_a_new_fence(tmp_path, monkeypatch, reservation_race):
@@ -448,8 +449,9 @@ def test_repeated_publication_races_share_one_wait_budget(tmp_path, monkeypatch,
 
     monkeypatch.setattr(ua, "_locked", locked)
     monkeypatch.setattr(queue_observation, "_sleep", publish)
-    with pytest.raises(ua.UsageAccountingError, match="root budget fence authority unavailable"):
+    with pytest.raises(ua.ControlAuthorityUnavailable, match="root budget fence authority unavailable") as refused:
         ua.mark_dispatched(reservation) if reservation else _reserve(tmp_path, CHILD)
+    assert refused.value.cause == "dispatch_publication_unconfirmed"
     assert len(acquisitions) == 3 and len(waits) == 2
     assert [row["state"] for row in ua.read_usage_records(tmp_path)] == (["reserved"] if reservation else [])
 
@@ -497,8 +499,9 @@ def test_nested_precheck_near_expiry_keeps_the_outer_publication_deadline(tmp_pa
     monkeypatch.setattr(queue_observation, "_sleep", publish)
     token = _usage_wait._CANCEL.set(threading.Event())
     try:
-        with pytest.raises(ua.UsageAccountingError, match="root budget fence authority unavailable"):
+        with pytest.raises(ua.ControlAuthorityUnavailable, match="root budget fence authority unavailable") as refused:
             ua.mark_dispatched(reservation) if reservation else _reserve(tmp_path, CHILD)
+        assert refused.value.cause == "dispatch_publication_unconfirmed"
     finally:
         _usage_wait._CANCEL.reset(token)
     assert precheck_gaps and len(acquisitions) == 1

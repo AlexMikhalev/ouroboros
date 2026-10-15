@@ -1286,7 +1286,7 @@ async def api_task_cancel(request: Request) -> JSONResponse:
 
 
 async def api_task_resume(request: Request) -> JSONResponse:
-    """Explicit owner Resume of a budget-paused task.
+    """Explicit owner Resume of a saved budget, owner or technical pause.
 
     A replay-safe zero-dispatch row is released; an exact mid-run continuation
     (#1196) receives ONE single-use grant and continues under the same task id.
@@ -1312,6 +1312,13 @@ async def api_task_resume(request: Request) -> JSONResponse:
     if result.get("ok"):
         return JSONResponse(result)
     error = str(result.get("error") or "resume_refused")
+    if error == "billing_authority_unavailable":
+        message = ("This task's billing lineage does not authorize a return; repair it or cancel the task."
+                   if result.get("billing_authority") == "refused" else
+                   "This task's billing conditions could not be read. Fix that cause, then try Resume again.")
+        return json_error(message + " The task stays paused; budget exhaustion was not established.", 409,
+                          code=error, reason_code=result.get("cause", ""), task_id=task_id,
+                          **({"action": result["action"]} if result.get("action") else {}))
     status = 409 if error in {
         "task_not_budget_paused", "replay_unsafe", "root_budget_fence_missing",
         # exact-continuation refusals (#1196): the task stays paused

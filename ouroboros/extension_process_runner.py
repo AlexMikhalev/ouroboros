@@ -646,6 +646,7 @@ def _record_extension_dispatch(
         parent_task_id=parent_task_id,
         category="external_skill",
         source=f"extension_{surface_kind}:{skill_name}:{surface}",
+        non_task_operation=root_task_id == system_root,  # no task lineage was bound: a host dispatch
     )
 
 

@@ -301,6 +301,7 @@ class PluginAPIImpl:
             root_task_id=system_task,
             category="external_skill",
             source=f"extension_{surface_kind}:{self._skill}:{surface}",
+            non_task_operation=True,  # a host extension callback: no task lineage to read
         )
 
     def _wrap_runtime_handler(

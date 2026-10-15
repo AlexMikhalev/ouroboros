@@ -794,10 +794,11 @@ TASK_CAUSE_PHRASES = {
     "host_child_status_suffix": "A child task had not settled when the answer was delivered",
     "invalid_delivery_control_after_repair": "Ouroboros's final delivery instruction could not be read even after repair, so the answer stands as delivered.",
     "budget_exhausted": "The task ran out of budget before it could finish cleanly",
-    # The other forced-finalization rails (outcomes.BEST_EFFORT_REASON_CODES and
-    # the keys of ACCEPTANCE_BYPASS_REASON_BY_RAIL): the loop's typed reason_code
-    # when a limit ended the task. Each sentence names only the limit its code
-    # states; whether an answer was still delivered is the status word's to say.
+    "billing_authority_unreadable": "Ouroboros could not read this task's billing authority, so it admitted no further paid call; budget exhaustion was not established",
+    "control_authority_unreadable": "Ouroboros could not read a control this task needs before a call, so it admitted none; budget exhaustion was not established",
+    "billing_authority_refused": "This task's billing lineage was missing or not its own, so it admitted no further paid call; budget exhaustion was not established",
+    # The other forced-finalization rails (outcomes.BEST_EFFORT_REASON_CODES, ACCEPTANCE_BYPASS_REASON_BY_RAIL keys):
+    # the loop's typed reason_code when a limit ended it; each names only its limit, the status word says the rest.
     "round_limit": "The task hit its round limit before it could finish cleanly",
     "finalization_grace": "The task hit a time limit and had to wrap up before it could finish cleanly",
     "deadline_local": "The task reached its deadline before it could finish cleanly",

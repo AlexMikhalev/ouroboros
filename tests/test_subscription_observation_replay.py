@@ -15,6 +15,9 @@ def _record(root, model, **overrides):
                 category="review", source="test", review_skill="skill", review_wave_id="wave",
                 review_slot_id="slot", spend_usd=2.5)
     args.update(overrides)
+    from ouroboros.task_results import load_task_result, write_task_result
+    if args["root_task_id"] and load_task_result(root, args["root_task_id"]) is None:  # the receipt's real lineage
+        write_task_result(root, args["root_task_id"], "running", root_task_id=args["root_task_id"])
     return usage.record_subscription_session("same-run", drive_root=root, model=model, **args)
 
 

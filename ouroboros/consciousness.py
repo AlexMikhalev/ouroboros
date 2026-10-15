@@ -343,7 +343,8 @@ class BackgroundConsciousness:
                     outcome = "pausing"
                 elif (owner_pause.get("state") == "paused" or pause.get("state") == "paused"
                       or row and row.get("status") == "scheduled"
-                      and row.get("reason_code") in {"budget_paused", "budget_exhausted", "owner_paused"}):
+                      and row.get("reason_code") in {"budget_paused", "budget_exhausted", "owner_paused",
+                                                     "authority_paused"}):
                     outcome = "paused"
                 elif row:
                     outcome = "done"  # the ordinary successful-turn contract is unchanged

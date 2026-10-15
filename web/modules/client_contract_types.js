@@ -650,10 +650,18 @@
  */
 
 /**
- * `POST /api/tasks/{task_id}/resume` for a task its budget paused.
+ * `POST /api/tasks/{task_id}/resume` after budget, owner, sleep or technical authority pause.
  * @typedef {Object} TaskResumeResponse
  * @property {boolean} ok
  * @property {string} task_id
  * @property {string=} root_task_id
  * @property {('resumed'|'settled')=} late_phase
+ * @property {boolean=} exact_continuation
+ * @property {string=} grant_id
+ * @property {number=} grant_generation
+ * @property {number=} paused_duration_sec
+ * @property {string[]=} eligible_descendants
+ * @property {string[]=} held_siblings
+ * @property {string[]=} rebound_held_siblings
+ * @property {string=} released_hold
  */

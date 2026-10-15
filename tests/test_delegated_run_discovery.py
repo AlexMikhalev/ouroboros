@@ -107,6 +107,9 @@ def _top(geo, task_id, *, forked=False, predecessor=""):
 
 
 def _child(geo, task_id, parent, *, acting=False):
+    from ouroboros.task_results import load_task_result, write_task_result
+    if load_task_result(geo.canonical, parent) is None:  # a child's root exists before it runs
+        write_task_result(geo.canonical, parent, "running", root_task_id=parent)
     ctx = ToolContext(repo_dir=geo.repo, drive_root=_drive(geo, task_id), task_id=task_id)
     ctx.budget_drive_root = str(geo.canonical)
     ctx.task_metadata = {"delegation_role": "subagent", "parent_task_id": parent, "root_task_id": parent,

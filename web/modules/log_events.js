@@ -446,6 +446,9 @@ const TASK_CAUSE_PHRASES = {
     host_child_status_suffix: "A child task had not settled when the answer was delivered",
     invalid_delivery_control_after_repair: "Ouroboros's final delivery instruction could not be read even after repair, so the answer stands as delivered.",
     budget_exhausted: "The task ran out of budget before it could finish cleanly",
+    billing_authority_unreadable: "Ouroboros could not read this task's billing authority, so it admitted no further paid call; budget exhaustion was not established",
+    billing_authority_refused: "This task's billing lineage was missing or not its own, so it admitted no further paid call; budget exhaustion was not established",
+    control_authority_unreadable: "Ouroboros could not read a control this task needs before a call, so it admitted none; budget exhaustion was not established",
     // The other forced-finalization rails (outcomes.BEST_EFFORT_REASON_CODES / ACCEPTANCE_BYPASS_REASON_BY_RAIL keys).
     round_limit: "The task hit its round limit before it could finish cleanly",
     finalization_grace: "The task hit a time limit and had to wrap up before it could finish cleanly",
@@ -1487,21 +1490,13 @@ function summarizeChatLiveEventView(evt) {
         if (errorResult.preview) bodyParts.push(errorResult.preview);
         if (commandText.full) fullBodyParts.push(`Command: ${commandText.full}`);
         if (errorResult.full) fullBodyParts.push(errorResult.full);
-        if (evt.status === 'non_zero_exit') {
-            const exitCode = Number(evt.exit_code);
-            return chatView({
-                phase: 'warn',
-                headline: `A command returned ${Number.isFinite(exitCode) ? `exit code ${exitCode}` : 'a non-zero exit code'}`,
-                body: shortText(bodyParts.join(' '), 220),
-                fullBody: fullBodyParts.join('\n\n'),
-                visible: true,
-                dedupeKey: toolCallKey(evt, groupId),
-                toolCall: failed,
-            });
-        }
+        const commandFailed = evt.status === 'non_zero_exit';
+        const exitCode = commandFailed ? Number(evt.exit_code) : NaN;
         return chatView({
-            phase: 'error',
-            headline: `One of the steps failed${evt.tool ? ` · ${evt.tool}` : ''}`,
+            phase: commandFailed ? 'warn' : 'error',
+            headline: commandFailed
+                ? `A command returned ${Number.isFinite(exitCode) ? `exit code ${exitCode}` : 'a non-zero exit code'}`
+                : `One of the steps failed${evt.tool ? ` · ${evt.tool}` : ''}`,
             body: shortText(bodyParts.join(' '), 220),
             fullBody: fullBodyParts.join('\n\n'),
             visible: true,

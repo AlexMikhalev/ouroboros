@@ -95,8 +95,10 @@ def test_new_relation_required_and_unrecorded_legacy_keeps_its_own_wallet_until_
     result = task_billing_fields(task, task['id'], 999.0, root, pin_initial=True, persist_initial=False)
     assert (result['billing_group_id'], result['billing_group_limit_usd']) == ('legacy-fired', 999.0)
     garbled_task = {'id': 'garbled-fired', 'metadata': {'schedule_id': 'garbled'}}
-    assert task_billing_fields(garbled_task, 'garbled-fired', 999.0, root, pin_initial=True,
-                               persist_initial=False)['billing_group_id'].startswith('unavailable:')
+    from ouroboros.usage_ledger import BillingAuthorityUnavailable
+    with pytest.raises(BillingAuthorityUnavailable) as refused:
+        task_billing_fields(garbled_task, 'garbled-fired', 999.0, root, pin_initial=True, persist_initial=False)
+    assert (refused.value.kind, refused.value.cause) == ('refused', 'related_followup_unbound')
     assert load_task_result(root, task['id']) is None
     # Only an actual Stop holds it; its release then needs the relationship decision.
     stop(root)

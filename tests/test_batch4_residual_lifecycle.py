@@ -109,7 +109,7 @@ def test_launch_authority_wait_rejoins_typed_controls(tmp_path, monkeypatch, rea
     controls = iter([None, reason])
     @contextmanager
     def unavailable(*_a, **_k):
-        raise owner_pause.OwnerPauseRefused('owner_launch_authority_unavailable')
+        raise owner_pause.LaunchBusy('contention')
         yield
     monkeypatch.setattr(owner_pause, 'launch_admission', unavailable)
     ctx = SimpleNamespace(status_drive_root=tmp_path, drive_root=tmp_path, task_id='root',
