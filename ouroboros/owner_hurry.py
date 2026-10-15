@@ -472,6 +472,13 @@ def _plan_facts(ctx: Any) -> tuple[Dict[str, Any], Dict[str, Any], bool]:
             record = collect_pending(ctx, record, state_root=root, task_id=task_id)
         except Exception:
             log.warning("pending plan asks could not be collected before the gate", exc_info=True)
+    if not unreadable and legacy.get("pending_wave"):
+        try:  # 03 D7: the earlier schema's owed wave, read-only through the same collector
+            from ouroboros.tools.plan_review import collect_legacy_contributions
+
+            legacy = collect_legacy_contributions(ctx, legacy, state_root=root, task_id=task_id)
+        except Exception:
+            log.warning("the earlier plan review's owed wave could not be collected before the gate", exc_info=True)
     return record, legacy, unreadable
 
 

@@ -128,6 +128,42 @@ def get_tools():
     return [ToolEntry(name="plan_task", schema=_SCHEMA, handler=_handle_plan_task, timeout_sec=_plan_task_tool_timeout_sec())]
 
 
+def collect_legacy_contributions(ctx: Any, legacy: Mapping[str, Any], *, state_root: Any, task_id: str) -> Dict[str, Any]:
+    """03 D7 (option A): the earlier schema's wave still owed at upgrade is read through the same
+    recorded-actor collector as the organ's seats, so an answer paid before the upgrade reaches the
+    author as read-only HISTORY — never approval of the current revision, never an objection or a
+    claim, never written back into the v2 state, never re-sent. Returns the legacy projection with
+    ``legacy_contributions`` and ``legacy_wave_collection`` added and its disclosed pending ask
+    settled in memory once nothing of that wave is still on its way."""
+    wave = legacy.get("pending_wave") if isinstance(legacy, Mapping) else None
+    out: Dict[str, Any] = dict(legacy or {})
+    if not isinstance(wave, Mapping) or not wave.get("actors"):
+        return out
+    from ouroboros.review_operation import collect_recorded_review_actor
+
+    contributions, owed, unknown, failed = [], [], [], []
+    for row in wave["actors"]:
+        seat = str(row.get("slot_id") or "")
+        actor = collect_recorded_review_actor(state_root, task_id=task_id, surface="plan_review", row=dict(row),
+                                              retry_key=str(wave.get("retry_key") or ""), usage_ctx=ctx)
+        state = str(actor.get("operation_state") or "")
+        if state == "custody_lost":
+            unknown.append(seat)
+        elif state in ("in_flight", "pending_dispatch") or actor.get("late_result_pending"):
+            owed.append(seat)
+        elif str(actor.get("status") or "") == "ok" and str(actor.get("raw_text") or ""):
+            contributions.append({"seat_id": seat, "model": str(actor.get("model") or row.get("model") or ""),
+                                  "operation_id": str(actor.get("operation_id") or ""), "text": str(actor.get("raw_text"))})
+        else:
+            failed.append(seat)
+    out["legacy_contributions"] = contributions
+    out["legacy_wave_collection"] = {"fingerprint": str(wave.get("fingerprint") or ""), "owed": owed, "unknown": unknown, "failed": failed}
+    if not owed:  # nothing of that wave is still on its way: the disclosed pending ask settles — in memory only
+        label = f"legacy wave {str(wave.get('fingerprint') or '')[:12] or '?'}"
+        out["pending_asks"] = [a for a in legacy.get("pending_asks") or [] if a != label]
+    return out
+
+
 # ------------------------------------------------------------------ refusals
 
 def _refuse(ctx: ToolContext, code: str, text: str) -> str:
@@ -259,6 +295,7 @@ def _handle_plan_task(ctx: ToolContext, **params) -> str:
     if effect == "read":
         try:
             record = plan_ask.collect_pending(ctx, record, state_root=state_root, task_id=task_id)
+            legacy = collect_legacy_contributions(ctx, legacy, state_root=state_root, task_id=task_id)
         except Exception:
             log.warning("plan_task read: pending seats could not be collected", exc_info=True)
     return _publish(ctx, record, effect=effect, notes=notes, legacy=legacy, legacy_error=legacy_error)
@@ -408,6 +445,20 @@ def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy
         lines.append("## Latest contributions")
         for sid, prose in contributions:
             lines.append(f"### {sid}\n{prose}")
+    legacy_rows = (legacy or {}).get("legacy_contributions") or []
+    if legacy_rows:  # read-only history from the earlier plan review's wave: never approval of this revision
+        from ouroboros.utils import truncate_review_artifact
+
+        lines.append("")
+        lines.append("## Legacy contributions (history; not approval of the current revision)")
+        for row in legacy_rows:
+            lines.append(f"### {row['seat_id']} ({row.get('model') or '?'}) — answered the earlier plan review; read back from its retained source\n"
+                         + truncate_review_artifact(str(row.get("text") or ""), limit=6000))
+    collection = (legacy or {}).get("legacy_wave_collection") or {}
+    if collection.get("owed") or collection.get("unknown") or collection.get("failed"):
+        lines.append("")
+        lines.append("legacy wave " + str(collection.get("fingerprint") or "")[:12] + ": "
+                     + "; ".join(f"{name}: {', '.join(collection[name])}" for name in ("owed", "unknown", "failed") if collection.get(name)))
     lines.append("")
     lines.append("## Gate")
     status = str(decision.get("status") or "")

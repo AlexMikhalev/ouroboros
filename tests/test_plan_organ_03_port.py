@@ -13,7 +13,7 @@ from dataclasses import asdict
 from types import SimpleNamespace
 
 from ouroboros import owner_hurry as oh
-from ouroboros import review_operation
+from ouroboros import plan_record, review_operation
 from ouroboros.observability import persist_call
 from ouroboros.review_dispatch import review_operation_binding, review_reconciliation_identity
 from ouroboros.review_records import ReviewActorRecord
@@ -146,3 +146,64 @@ def test_a_seat_a_live_controller_still_owns_is_deferred_not_read_as_dead(harnes
     row = _rows(harness)["s1"]
     assert row["status"] == "pending" and row["unresolved"] is True and barrier.calls == [["s1", "s2"]]
     assert oh.force_plan_decision(cold, {}, enforcement="blocking")["unknown_outcome"] == ["a1"]
+
+
+# ---------------------------------------------------------------- D7 (option A): a v2 wave still owed at upgrade reaches the author as history
+
+def test_a_v2_wave_still_owed_at_upgrade_reaches_the_author_as_history_without_writing_state(harness):
+    """03 D7, the coordinator's option A: the earlier schema's owed wave is read through the same
+    collector by the free READ and the gate pre-collection. A delegated seat still running in the
+    engine stays owed (disclosed, holds nothing); once its run has finished its paid answer shows as
+    read-only history ("not approval of the current revision") and the disclosed pending ask settles
+    in memory; an API seat of the dead old process is unknown — named, never cleaned, never re-sent.
+    The v2 state is never written; no objection or claim is created; nothing is sent."""
+    import json
+
+    from ouroboros.review_custody import _frozen_actor
+    from ouroboros.review_records import ReviewRequest, ReviewRouteKind, ReviewSlot
+    from tests._store_shared import read_result, seed_result
+    from tests.test_plan_gate import _v2
+
+    session = ReviewSlot(slot_id="old_a", model="cursor=grok", route=ReviewRouteKind.AGENT_SESSION, session_target="cursor=grok",
+                         max_tokens=65536, default_temperature=0.2)
+    api = ReviewSlot(slot_id="old_b", model="m/old", route=ReviewRouteKind.API_CHAT, max_tokens=65536, default_temperature=0.2)
+    request = ReviewRequest(surface="plan_review", goal="the earlier plan review", task_id="task-1",
+                            retry_key="plan:task-1:cycle-1", call_type="plan_review")
+    rows = []
+    for slot, operation, extra in ((session, "op-old-a", {"pending_invocation_id": "inv-old-a"}), (api, "op-old-b", {})):
+        _persist_prompt(harness.drive, request, slot, operation)
+        rows.append({"slot_id": slot.slot_id, "model": slot.model, "route": str(slot.route.value), "ok": False, "error": "",
+                     "operation_id": operation, "operation_state": "pending_dispatch", "late_result_pending": True,
+                     "recovery_binding": review_operation_binding(request, slot, operation), **extra})
+    state = _v2(closed=False, blocking=())
+    state["waves"][0].update(retry_key="plan:task-1:cycle-1", custody_pending=True, actors=rows)
+    seed_result(harness.drive, "task-1", {"task_id": "task-1", "status": "running", "plan_review_state": state})
+    before = json.dumps(read_result(harness.drive, "task-1")["plan_review_state"], sort_keys=True)
+    finished = {"text": ""}
+
+    def observe(root, request, slot, row, operation_id, *, controller_known=True):  # the engine's run, attach-only
+        if not finished["text"]:
+            return _frozen_actor(row, slot), review_operation.DEFERRED  # still running
+        return ReviewActorRecord(slot_id=slot.slot_id, model=slot.model, status="ok", raw_text=finished["text"],
+                                 operation_id=operation_id, operation_state="late_settled"), review_operation.COLLECTED
+
+    harness.monkeypatch.setattr(review_operation, "_observe_delegated_review", observe)
+    sub = harness.install({})
+    ctx = harness.make_ctx()
+    _write(ctx)  # revision 1 on the organ; the earlier wave is still owed
+    text, _result = _call(ctx)
+    owed = oh.force_plan_decision(ctx, {}, enforcement="blocking")
+    assert "Legacy contributions" not in text and "legacy wave ffffffffffff: owed: old_a; unknown: old_b" in text
+    assert owed["pending_asks"] == ["legacy wave " + "f" * 12] and owed["status"] == "awaiting" and owed["allow"] is True
+    finished["text"] = "[]\nNO_FINDINGS: the earlier plan read fine."
+    text, result = _call(ctx)
+    assert "## Legacy contributions (history; not approval of the current revision)" in text
+    assert "### old_a (cursor=grok) — answered the earlier plan review; read back from its retained source" in text
+    assert "NO_FINDINGS: the earlier plan read fine." in text and "legacy wave ffffffffffff: unknown: old_b" in text
+    assert result.meta["plan_open_objections"] == 0
+    decision = oh.force_plan_decision(ctx, {}, enforcement="blocking")
+    assert decision["pending_asks"] == [] and decision["open_objections"] == [] and decision["status"] == "clear"
+    assert json.dumps(read_result(harness.drive, "task-1")["plan_review_state"], sort_keys=True) == before, "the v2 state is never written"
+    assert sub.calls == [], "nothing was sent"
+    legacy, _error = plan_record.legacy_facts(harness.drive, "task-1")
+    assert legacy["done_when"] == [] and legacy["open_objections"] == [], "history creates no claim and no objection"

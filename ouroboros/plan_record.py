@@ -509,11 +509,17 @@ def import_legacy_v2(state: Any, *, author_plan: Optional[Mapping[str, Any]] = N
     done_when: List[Dict[str, Any]] = []
     source = ""
     pending: List[str] = []
+    pending_wave: Dict[str, Any] = {}
     if isinstance(current, dict) and not current.get("closed"):
         actors = [a for a in current.get("actors") or [] if isinstance(a, dict)]
-        if current.get("custody_pending") or any(
-                a.get("late_result_pending") or str(a.get("operation_state") or "") == "pending_dispatch" for a in actors):
-            pending.append(f"legacy wave {str(current.get('request_fingerprint') or fingerprint)[:12] or '?'}")
+        owed = [a for a in actors if a.get("late_result_pending")
+                or str(a.get("operation_state") or "") in ("pending_dispatch", "in_flight")]
+        if current.get("custody_pending") or owed:
+            wave_fp = str(current.get("request_fingerprint") or fingerprint)
+            pending.append(f"legacy wave {wave_fp[:12] or '?'}")
+            # The rows a reader may still collect, read-only, through the shared collector (03 D7):
+            # paid before the upgrade, never re-sent, never written back into this state.
+            pending_wave = {"fingerprint": wave_fp, "retry_key": str(current.get("retry_key") or ""), "actors": copy.deepcopy(owed)}
         for finding in current.get("findings") or []:
             if not isinstance(finding, dict) or str(finding.get("class") or "") != "blocking":
                 continue
@@ -532,7 +538,7 @@ def import_legacy_v2(state: Any, *, author_plan: Optional[Mapping[str, Any]] = N
     elif legacy_v1.get("status") == "closed":
         done_when, source = normalize_done_when(legacy_v1.get("acceptance_claims")), "legacy_closed_wave"
     return {"engaged": engaged_fact, "open_objections": objections, "done_when": done_when, "done_when_source": source,
-            "fingerprint": fingerprint, "pending_asks": pending,
+            "fingerprint": fingerprint, "pending_asks": pending, "pending_wave": pending_wave,
             # a wave reached its reviewers unless the old engine marked it unpaid with nothing to show
             # for it (a free replay, an all-skipped dispatch); roster rows, findings or owed custody prove the send
             "asks_dispatched": sum(1 for w in waves if w.get("paid") is not False or w.get("actors") or w.get("findings")
