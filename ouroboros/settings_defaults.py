@@ -104,6 +104,14 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_MODEL_FALLBACKS": OPENROUTER_DEFAULTS["fallback"],
     "OUROBOROS_SERVED_MODEL_REDOS": 2,  # redos of a round another model answered (`llm_substitution.py`)
     "OUROBOROS_MAX_WORKERS": 10, "OUROBOROS_PRESENCE_MAX_ACTIVE": 2,
+    # Live calls: the realtime engine and models a call opens with, per-engine voices
+    # ("" = the provider's default), Gemini's native search grounding, and the owner's
+    # optional duration ceilings ("" = none; a Presence call holds a slot while it lasts).
+    "OUROBOROS_CALL_ENGINE": "openai", "OUROBOROS_CALL_MODEL_OPENAI": "gpt-realtime-2.1",
+    "OUROBOROS_CALL_MODEL_GOOGLE": "gemini-3.8-live", "OUROBOROS_CALL_VOICE_OPENAI": "",
+    "OUROBOROS_CALL_VOICE_GOOGLE": "", "OUROBOROS_CALL_NATIVE_SEARCH": True,
+    "OUROBOROS_CALL_MAX_MINUTES": "", "OUROBOROS_PRESENCE_CALL_MAX_MINUTES": "",
+    "GOOGLE_API_KEY": "",
     "OUROBOROS_MAX_ACTIVE_SUBAGENTS_PER_ROOT": 6,
     "OUROBOROS_MAX_SUBAGENT_DEPTH": 3,
     # Mutative ("acting") subagents master toggle. Empty = follow runtime mode

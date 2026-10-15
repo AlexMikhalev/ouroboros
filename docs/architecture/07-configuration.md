@@ -49,6 +49,7 @@ A registry of `config.SETTINGS_DEFAULTS` (defaults canonical in `settings_defaul
 | OPENAI_BASE_URL | "" | OpenAI base-URL override; legacy compatible endpoint (only with `OPENAI_API_KEY`) |
 | OPENAI_COMPATIBLE_API_KEY | "" | OpenAI-compatible endpoint credential |
 | OPENAI_COMPATIBLE_BASE_URL | "" | OpenAI-compatible endpoint base URL; only with its own key (blank = no auth) |
+| GOOGLE_API_KEY | "" | Google AI (Gemini API) credential; used by the Gemini Live call engine |
 | CLOUDRU_FOUNDATION_MODELS_API_KEY | "" | Cloud.ru credential |
 | CLOUDRU_FOUNDATION_MODELS_BASE_URL | `https://foundation-models.api.cloud.ru/v1` | Cloud.ru base URL |
 | GIGACHAT_CREDENTIALS | "" | GigaChat auth key |
@@ -208,6 +209,14 @@ A registry of `config.SETTINGS_DEFAULTS` (defaults canonical in `settings_defaul
 | OUROBOROS_HOST_SERVICE_PORT | 8767 | Host Service port (loopback-only; §12) |
 | OUROBOROS_DESKTOP_KEEP_RUNNING | false | Closing the desktop window keeps Ouroboros running (Windows, macOS; `launcher_background.py`); disk-authored consent, absent until the owner chooses |
 | OUROBOROS_PRESENCE_MAX_ACTIVE | 2 | Cross-process Presence turn cap (UI-bounded 1-20) |
+| OUROBOROS_CALL_ENGINE | "openai" | Realtime engine a live call opens with (`openai` or `google`) |
+| OUROBOROS_CALL_MODEL_OPENAI | "gpt-realtime-2.1" | OpenAI Realtime model for calls |
+| OUROBOROS_CALL_MODEL_GOOGLE | "gemini-3.8-live" | Gemini Live model for calls |
+| OUROBOROS_CALL_VOICE_OPENAI | "" | OpenAI voice for calls (blank = provider default) |
+| OUROBOROS_CALL_VOICE_GOOGLE | "" | Gemini voice for calls (blank = provider default) |
+| OUROBOROS_CALL_NATIVE_SEARCH | true | Let Gemini Live use its native Google Search grounding in calls |
+| OUROBOROS_CALL_MAX_MINUTES | "" | Owner's optional duration ceiling for a call (blank = none) |
+| OUROBOROS_PRESENCE_CALL_MAX_MINUTES | "" | Owner's optional duration ceiling for a Presence call, which holds a Presence slot while it lasts (blank = none) |
 | LOCAL_MODEL_CHAT_FORMAT | "" | Local-model chat template override |
 | GITHUB_TOKEN | "" | GitHub token (push/PR/issues) |
 | GITHUB_REPO | "" | Personal `origin` repository |

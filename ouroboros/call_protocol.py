@@ -156,3 +156,87 @@ class CallSpec:
             label=str(data.get("label") or ""),
             client_message_id=str(data.get("client_message_id") or ""),
         )
+
+
+# ---- the peer side of one call, as the live driver sees it ------------------------
+#
+# The gateway (``call_peers``) owns the sockets; the driver (``live_turn``) owns the
+# engine. They meet in one in-process hub per admitted call. The hub is thread-safe
+# and synchronous: the gateway's socket handlers run on the server's event loop, the
+# driver runs on the turn's own thread with its own loop.
+
+
+@dataclass(frozen=True)
+class PeerInfo:
+    peer_id: str
+    role: str            # PEER_OWNER | PEER_MEETING
+    mic: bool
+    speaker: bool
+    label: str = ""
+    skill: str = ""      # the reviewed skill a companion peer belongs to ("" for an owner surface)
+
+
+@dataclass(frozen=True)
+class PeerJoined:
+    peer: PeerInfo
+
+
+@dataclass(frozen=True)
+class PeerLeft:
+    peer_id: str
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class PeerAudio:
+    """Mic audio of one peer, already converted to the engine input rate (PCM16 mono)."""
+
+    peer_id: str
+    role: str
+    pcm: bytes
+
+
+@dataclass(frozen=True)
+class PeerControl:
+    """A validated control message from one peer (``played``, ``mute``, ``context``,
+    ``participant``, ``bye``)."""
+
+    peer_id: str
+    role: str
+    message: Dict[str, Any]
+
+
+class CallHub:
+    """Interface of the per-call hub (implemented by ``call_peers.LiveCallHub``).
+
+    Methods never block on a socket: ``play``/``flush``/``send_*`` enqueue for the
+    peers; ``next_event`` waits at most ``timeout_s`` for the next inbound event.
+    """
+
+    call_id: str
+
+    def set_engine_rates(self, input_rate: int, output_rate: int) -> None:
+        raise NotImplementedError
+
+    def next_event(self, timeout_s: float):  # -> PeerJoined | PeerLeft | PeerAudio | PeerControl | None
+        raise NotImplementedError
+
+    def play(self, pcm: bytes, item_id: str) -> None:
+        """Engine-rate output audio for every speaker peer (resampled per peer)."""
+        raise NotImplementedError
+
+    def flush(self) -> int:
+        """Bump the output epoch, tell peers to drop older playback now; returns the epoch."""
+        raise NotImplementedError
+
+    def send_state(self, state: str, reason: str = "") -> None:
+        raise NotImplementedError
+
+    def send_caption(self, speaker: str, text: str, final: bool, item_id: str = "") -> None:
+        raise NotImplementedError
+
+    def peers(self) -> "tuple[PeerInfo, ...]":
+        raise NotImplementedError
+
+    def close(self, reason: str) -> None:
+        raise NotImplementedError
