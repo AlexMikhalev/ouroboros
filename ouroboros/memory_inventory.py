@@ -406,6 +406,22 @@ _RETELLING_CHARS: Dict[str, Dict[str, int]] = {}
 _UNITS: Dict[str, Tuple[Tuple[Any, ...], List[LegacyUnit]]] = {}
 
 
+FALLBACK_REFUSAL_PREFIX = "fallback_refusal:"
+
+
+def fallback_refusals(scan: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Read per-unit receipts over the old whole map; a null key clears its receipt.
+
+    The journal's top-level scan deltas already provide per-unit replacement;
+    old authority stays readable without rewriting its accumulated maps.
+    """
+    old = scan.get("fallback_refusals")
+    found = dict(old) if isinstance(old, dict) else {}
+    found.update((name[len(FALLBACK_REFUSAL_PREFIX):], value) for name, value in scan.items()
+                 if name.startswith(FALLBACK_REFUSAL_PREFIX))
+    return {key: receipt for key, receipt in found.items() if isinstance(receipt, dict)}
+
+
 def _exact_range(pointer: Mapping[str, Any]) -> Optional[Tuple[int, int]]:
     raw = (pointer.get("covers") or {}).get("raw_range") or {}
     span = raw.get("pos")
@@ -493,8 +509,7 @@ def legacy_units(store: ChronicleStore, root: Any) -> List[LegacyUnit]:
     if cached is not None and cached[0] == key:
         return list(cached[1])
     pointers = store.legacy_pointer_rows()
-    refusals = store.scan_state().get("fallback_refusals")
-    refusals = refusals if isinstance(refusals, dict) else {}
+    refusals = fallback_refusals(store.scan_state())
     chars = _retelling_chars(store, {pointer["node_id"] for pointer in pointers}) if pointers else {}
     ranges = {pointer["node_id"]: (str(pointer["room_id"]), span) for pointer in pointers
               if (span := _exact_range(pointer)) is not None}

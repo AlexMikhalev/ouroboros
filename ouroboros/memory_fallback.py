@@ -21,9 +21,9 @@ a part carries the room head read at selection. Rows the helper received only by
 address, and the mind's notes it never reads, are not covered: they stay open, since a
 page seals only what its writer actually read.
 
-One call, no retry: a refusal on the same input and the same Light route is recorded in
-the chronicle's scan state (``fallback_refusals``, with the raw answer retained) and that
-unit is skipped until its input or the route changes. The helper never nominates
+One call, no retry: a refusal or keep-original on the same input and Light route is
+recorded in its own ``fallback_refusal:<unit>`` scan-state key; an available response
+body is retained. An exact rejected draft is skipped until input or route changes. The helper never nominates
 knowledge, writes ``overview`` or touches the old dialogue files. Nothing here activates
 the chronicle: before activation the writer makes no call and creates no file.
 """
@@ -33,14 +33,14 @@ import hashlib
 import json
 import logging
 import pathlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import ceil, inf
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple
 
 from ouroboros import chat_chain, memory_inventory
 from ouroboros.chronicle_import import row_lineage
-from ouroboros.chronicle_store import ChronicleStore, PublishResult, source_time_span
+from ouroboros.chronicle_store import ChronicleStore, PublishResult, draft_signer, source_time_span
 from ouroboros.consolidator import LIGHT_ANSWER_CEILING_TOKENS
 from ouroboros.dialogue_provenance import memory_row_header, render_memory_row, render_row_text, row_class
 from ouroboros.memory_inventory import OpenSegment, ShortageFact, shortage_from_trace
@@ -48,7 +48,6 @@ from ouroboros.utils import extract_trailing_json_object, utc_now_iso
 
 log = logging.getLogger(__name__)
 
-FALLBACK_REFUSALS_KEY = "fallback_refusals"  # the chronicle scan-state key this writer owns
 LABEL = "memory_fallback_page"
 ANSWER_RESERVE_TOKENS = LIGHT_ANSWER_CEILING_TOKENS  # the answer ceiling the Light transport sends
 INDENT = "  "
@@ -64,8 +63,18 @@ _PAGE = ("You are a helper drafting one memory page for Ouroboros from the rows 
          "not read: name it if it matters, never guess its words.\n")
 _PART = ("You are a helper drafting one memory part for Ouroboros: one account that folds the records below, "
          "oldest first. You are not Ouroboros and did not live these events: write in the third person and "
-         "attribute every statement to whoever made it. Use only these records; an earlier helper retelling "
-         "is not a source and may be wrong.\n")
+         "use only these records and keep each statement's speaker and confidence. An account's 'I' names "
+         "its author, not the owner. A prior account is evidence of what its author reported, not fresh "
+         "verification or current permission.\n"
+         "For each thread preserve who chose what, when and under which limits; what was done, what remains "
+         "open, and what a signed correction changes. A later scoped choice does not lift unrelated limits. "
+         "Keep completed work distinct from missing work, possibilities from accomplished effects, and "
+         "unknown from disproved. Preserve both new evidence and the limits it does not remove.\n"
+         "Preserve each author's conclusions—lessons learned, errors admitted and reasons for choices—alongside "
+         "decisions, outcomes and their limits. Combine genuinely repeated explanations across records; omit "
+         "incidental particulars, not distinctions that carry meaning. Keep substantive history rather than a "
+         "disclaimer. Produce a shorter faithful account when useful, not merely a rewording; otherwise keep "
+         "the originals.\n")
 _COMMON = ("A task's outcome is its host stamp: never call a task done, accepted or verified unless its stamp "
            "says so.\n"
            "Keep what a later reader needs: what was asked and by whom, what was decided or refused, what was "
@@ -82,6 +91,8 @@ _MEMBER_QUOTES = ("No chat rows are supplied here: quote only by copying a quote
                   "with its address and speaker, into quotes.\n")
 _ANSWER = ('Answer with one JSON object and nothing else: {"text": "<the account>", "quotes": [{"address": '
            '"row:…", "text": "<exact words>", "speaker": "<class>"}]}')
+_KEEP_ORIGINAL = ('\nFor this part only, when no useful shorter faithful account is possible, answer instead '
+                  'with {"keep_original": true, "reason": "<why retaining these records is better>"}.')
 
 
 # --- when and on which route -----------------------------------------------------------------------
@@ -154,7 +165,7 @@ class FallbackUnit:
     """One unit the helper may draft: a page over rows of one room, or a part over adjacent records."""
     kind: str  # "page" (open rows after the frontier), "legacy" (one old period's rows of a room), "part"
     room_id: str
-    key: str  # its refusal receipt's key in ``scan_state[FALLBACK_REFUSALS_KEY]``
+    key: str  # its receipt's suffix after memory_inventory.FALLBACK_REFUSAL_PREFIX
     segment: Optional[OpenSegment] = None
     record_id: str = ""  # a legacy unit's record: its retelling is a hint, never a source
     member_ids: Tuple[str, ...] = ()
@@ -186,8 +197,8 @@ def _unfolded_run(store: ChronicleStore, room: str, kind: str) -> List[str]:
     return [r["id"] for r in store.pages_of_room(room) if r["kind"] == kind and not r["folded_into"]]
 
 
-def _narrative_unit(store: ChronicleStore, pointer_records: Tuple[str, ...]) -> Optional[FallbackUnit]:
-    """The oldest adjacent unfolded records of one kind of one room among the view's pointers."""
+def _narrative_units(store: ChronicleStore, pointer_records: Tuple[str, ...]) -> Iterator[FallbackUnit]:
+    """Disjoint adjacent pointer runs, oldest first; one refused run cannot hide the rest."""
     runs: Dict[Tuple[str, str], List[str]] = {}
     found = []
     for ident in pointer_records:
@@ -199,18 +210,19 @@ def _narrative_unit(store: ChronicleStore, pointer_records: Tuple[str, ...]) -> 
             runs[place] = _unfolded_run(store, *place)
         if ident in runs[place]:
             found.append(((_stream_start(record), record["sequence"]), place, ident))
-    if not found:
-        return None
-    _order, place, first = min(found)
-    run, wanted = runs[place], set(pointer_records)
-    members = []
-    for ident in run[run.index(first):]:
-        if ident not in wanted:
-            break
-        members.append(ident)
-    room = place[0]
-    return FallbackUnit("part", room, f"part:{room}:{members[0]}", member_ids=tuple(members),
-                        head_sequence=store.room_head(room))
+    remaining = set(pointer_records)
+    for _order, place, first in sorted(found):
+        if first not in remaining:
+            continue
+        run, members = runs[place], []
+        for ident in run[run.index(first):]:
+            if ident not in remaining:
+                break
+            members.append(ident)
+        remaining.difference_update(members)
+        room = place[0]
+        yield FallbackUnit("part", room, f"part:{room}:{first}", member_ids=tuple(members),
+                           head_sequence=store.room_head(room))
 
 
 def _legacy_units(root: pathlib.Path, store: ChronicleStore) -> Iterator[FallbackUnit]:
@@ -242,16 +254,13 @@ def candidate_units(root: Any, store: ChronicleStore, shortage: Optional[Shortag
             yield FallbackUnit("page", segment.room_id, f"open:{segment.room_id}:{first}", segment=segment,
                                head_sequence=segment.head_sequence)
     elif shortage is not None and shortage.kind == "narrative":
-        unit = _narrative_unit(store, shortage.pointer_records)
-        if unit is not None:
-            yield unit
+        yield from _narrative_units(store, shortage.pointer_records)
     if allow_legacy:
         yield from _legacy_units(root, store)
 
 
 def _refusals(store: ChronicleStore) -> Dict[str, Any]:
-    found = store.scan_state().get(FALLBACK_REFUSALS_KEY)
-    return dict(found) if isinstance(found, dict) else {}
+    return memory_inventory.fallback_refusals(store.scan_state())
 
 
 def select_unit(root: Any, store: ChronicleStore, shortage: Optional[ShortageFact], *, allow_legacy: bool,
@@ -259,16 +268,36 @@ def select_unit(root: Any, store: ChronicleStore, shortage: Optional[ShortageFac
                 ) -> Optional[Tuple[FallbackUnit, "WriterInput"]]:
     """The first candidate with a readable input that no receipt refused on this input and route."""
     refusals = _refusals(store)
+    part_rooms = {}
+    part_units = None
     for unit in candidate_units(root, store, shortage, allow_legacy=allow_legacy):
         budget, measure = fit()
-        draft = build_writer_input(root, store, unit, budget_tokens=budget, measure=measure)
-        if draft is None:
-            continue
-        receipt = refusals.get(unit.key)
-        if (isinstance(receipt, dict) and receipt.get("input_sha256") == draft.input_sha256
-                and receipt.get("light_binding") == dict(binding)):
-            continue
-        return unit, draft
+        records = None
+        if unit.kind == "part":
+            if part_units is None:
+                part_units = {u.record_id: u for u in memory_inventory.legacy_units(store, root)}
+            # Reuse this selection pass's room view, never a later head's view.
+            # Publication still checks the selected head after the model call.
+            key = (unit.room_id, unit.head_sequence)
+            if key not in part_rooms:
+                part_rooms[key] = {r["id"]: r for r in store.room_records(unit.room_id)}
+            records = part_rooms[key]
+        while True:
+            draft = build_writer_input(root, store, unit, budget_tokens=budget, measure=measure,
+                                       part_records=records, part_units=part_units)
+            if draft is None:
+                break
+            receipt = refusals.get(unit.key)
+            suppressed = (isinstance(receipt, dict) and receipt.get("input_sha256") == draft.input_sha256
+                          and receipt.get("light_binding") == dict(binding))
+            if not suppressed and not store.rejected_input(unit.room_id, unit.key, draft.input_sha256, binding):
+                return unit, draft
+            # Only the fitted prefix was attempted. Never retry its overlapping
+            # subsets; the untouched suffix can still be useful in this pass.
+            suffix = unit.member_ids[len(draft.member_ids):] if unit.kind == "part" else ()
+            if not suffix:
+                break
+            unit = replace(unit, key=f"part:{unit.room_id}:{suffix[0]}", member_ids=suffix)
     return None
 
 
@@ -301,9 +330,9 @@ def _indented(text: Any) -> str:
     return "\n".join(INDENT + line if line else line for line in str(text or "").split("\n"))
 
 
-def _head(root: pathlib.Path, opening: str, quotes: str) -> str:
+def _head(root: pathlib.Path, opening: str, quotes: str, *, answer: str = _ANSWER) -> str:
     guidance = _remembering(root)
-    head = opening + _COMMON + quotes + _ANSWER
+    head = opening + _COMMON + quotes + answer
     if guidance:
         head += ("\n\n## Authored guidance from the mind (its knowledge note `remembering`)\n" + _indented(guidance))
     return head
@@ -505,34 +534,56 @@ def _page_input(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, b
 
 
 def _part_input(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, budget: Optional[int],
-                measure: Callable[[str], int]) -> Optional[WriterInput]:
+                measure: Callable[[str], int], records: Optional[Mapping[str, Any]] = None,
+                units: Optional[Mapping[str, Any]] = None) -> Optional[WriterInput]:
     from ouroboros.terminal_projection import part_stamp  # D15->D17 is lazy-only
 
-    records = {record["id"]: record for record in store.room_records(unit.room_id)}
+    if records is None:
+        records = {record["id"]: record for record in store.room_records(unit.room_id)}
     members = [records.get(ident) for ident in unit.member_ids]
     if not members or any(member is None for member in members):
         return None
-    head = _head(root, _PART, _MEMBER_QUOTES if any(member.get("quotes") for member in members) else _NO_QUOTES)
+    head = _head(root, _PART, _MEMBER_QUOTES if any(member.get("quotes") for member in members) else _NO_QUOTES,
+                 answer=_ANSWER + _KEEP_ORIGINAL)
+    if units is None:
+        units = {u.record_id: u for u in memory_inventory.legacy_units(store, root)}
+    label, blocks = _room_label(root, unit.room_id), []
+    for member in members:
+        period = memory_inventory.record_period(store, member, units)
+        span = period.span or {}
+        dated = (f"{span.get('start') or '?'} → {span.get('end') or '?'}{period.note()}"
+                 + ("; incomplete" if span.get("incomplete") else "")) if span else "unknown"
+        author = member.get("author") or {}
+        signer = f" ({draft_signer(author)})" if author.get("kind") == "helper" else ""
+        blocks.append(f"### {member['kind']} {member['id']} — by {memory_inventory._author_words(author)}{signer}"
+                      + f" — status {member.get('status') or 'not recorded'} — period {dated}"
+                      + (" — prior helper account, retain its attributed meaning" if member["kind"] == "legacy" else "")
+                      + "\n" + _indented(member.get("current_text"))
+                      + "".join(f"\nquote ({q.get('speaker')}, {q.get('address')}): {q.get('text')}"
+                                for q in member.get("quotes") or ()))
 
     def compose(k: int) -> Tuple[str, Dict[str, Any]]:
         stamp = part_stamp(member.get("host_stamp") for member in members[:k])
-        blocks = [f"### {m['kind']} {m['id']} — by {memory_inventory._author_words(m.get('author'))}"
-                  + (" — earlier helper retelling, not a source, may be wrong" if m["kind"] == "legacy" else "")
-                  + "\n" + _indented(m.get("current_text"))
-                  + "".join(f"\nquote ({q.get('speaker')}, {q.get('address')}): {q.get('text')}" for q in m.get("quotes") or ())
-                  for m in members[:k]]
         counts = "; ".join(f"{c['tasks']} from {c['source'] or 'nothing recorded'}, phase {c['outcome_phase'] or 'not recorded'}"
                            for c in stamp["counts"])
         lines = [_stamp_line(entry, 0) for entry in stamp["tasks"]]
         tasks = ("## Host stamp of the members' tasks\n" + (counts or "no task stamped")
                  + ("\n" + "\n".join(lines) if lines else ""))
-        return "\n\n".join([head, f"## Records to fold: {_room_label(root, unit.room_id)}, oldest first",
-                            *blocks, tasks]), stamp
+        return "\n\n".join([head, f"## Records to fold: {label}, oldest first", *blocks[:k], tasks]), stamp
 
     k = len(members)
     prompt, stamp = compose(k)
-    while budget is not None and k > 1 and measure(prompt) > budget:
-        k -= 1
+    if budget is not None and k > 1 and measure(prompt) > budget:
+        # Search prefix lengths, as the page fitter does; measure the selected
+        # prompt itself. A single oversized member still reaches the transport.
+        low, high = 1, k - 1
+        while low < high:
+            middle = (low + high + 1) // 2
+            if measure(compose(middle)[0]) <= budget:
+                low = middle
+            else:
+                high = middle - 1
+        k = low
         prompt, stamp = compose(k)
     return WriterInput(prompt, hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                        measure(prompt) if budget is not None else None, stamp=stamp,
@@ -540,11 +591,13 @@ def _part_input(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, b
 
 
 def build_writer_input(root: Any, store: ChronicleStore, unit: FallbackUnit, *, budget_tokens: Optional[int],
-                       measure: Callable[[str], int] = _chars_measure) -> Optional[WriterInput]:
+                       measure: Callable[[str], int] = _chars_measure,
+                       part_records: Optional[Mapping[str, Any]] = None,
+                       part_units: Optional[Mapping[str, Any]] = None) -> Optional[WriterInput]:
     """The helper's input for one unit within the Light window, or ``None`` when nothing of it is readable."""
     root = pathlib.Path(root)
     if unit.kind == "part":
-        return _part_input(root, store, unit, budget_tokens, measure)
+        return _part_input(root, store, unit, budget_tokens, measure, part_records, part_units)
     return _page_input(root, store, unit, budget_tokens, measure)
 
 
@@ -553,7 +606,7 @@ def build_writer_input(root: Any, store: ChronicleStore, unit: FallbackUnit, *, 
 @dataclass
 class FallbackRun:
     """What one stage run did: ``consciousness_on``, ``not_activated``, ``nothing``, ``busy``,
-    ``published``, ``conflict``, ``refused`` (a receipt) or ``failed`` (no receipt; ``errors``)."""
+    ``published``, ``kept_original``, ``conflict``, ``refused`` (a receipt) or ``failed`` (no receipt; ``errors``)."""
     outcome: str
     unit: Optional[FallbackUnit] = None
     record_id: str = ""
@@ -563,8 +616,13 @@ class FallbackRun:
     input_tokens: Optional[int] = None
 
 
-def _parse(text: str) -> Optional[Dict[str, Any]]:
+def _parse(text: str, *, part: bool = False) -> Optional[Dict[str, Any]]:
     _prose, found, _duplicate = extract_trailing_json_object(text)
+    if part and isinstance(found, dict) and found.get("keep_original") is True:
+        reason = found.get("reason")
+        if isinstance(reason, str) and reason.strip() and not found.get("text") and not found.get("quotes"):
+            return {"keep_original": True, "reason": reason.strip()}
+        return None
     if not isinstance(found, dict) or not isinstance(found.get("text"), str) or not found["text"].strip():
         return None
     quotes = found.get("quotes") if found.get("quotes") is not None else []
@@ -591,26 +649,21 @@ def _publish(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, draf
 
 
 def _set_refusal(store: ChronicleStore, key: str, receipt: Optional[Dict[str, Any]]) -> None:
-    """Rewrite the whole receipt map (scan state merges by top-level key) under the writer's lock."""
-    refusals = _refusals(store)
-    if receipt is None and key not in refusals:
+    """Append only this unit's scan delta under the writer lock; null clears an old receipt."""
+    if receipt is None and key not in _refusals(store):
         return
-    if receipt is None:
-        refusals.pop(key)
-    else:
-        refusals[key] = receipt
-    store.publish([], scan_state={FALLBACK_REFUSALS_KEY: refusals})
+    store.publish([], scan_state={memory_inventory.FALLBACK_REFUSAL_PREFIX + key: receipt})
 
 
 def _refuse(root: pathlib.Path, store: ChronicleStore, run: FallbackRun, draft: WriterInput, kind: str,
-            binding: Dict[str, Any], task_id: str, answer: str) -> FallbackRun:
+            binding: Dict[str, Any], task_id: str, answer: str, *, outcome: str = "refused") -> FallbackRun:
     ref = None
     if answer:
         ref = chat_chain.retain_memory_source(SimpleNamespace(drive_root=root, task_id=task_id),
                                               "memory_fallback_response", answer.encode("utf-8"))
     _set_refusal(store, run.unit.key, {"input_sha256": draft.input_sha256, "light_binding": binding, "kind": kind,
                                        "at": utc_now_iso(), "task_id": task_id, "response_ref": ref})
-    run.outcome, run.kind = "refused", kind
+    run.outcome, run.kind = outcome, kind
     return run
 
 
@@ -646,29 +699,37 @@ def run_fallback_draft(env: Any, task: Mapping[str, Any], llm: Any, drive_logs: 
         from ouroboros import consolidator
 
         text, usage = consolidator._call_consolidation_llm(llm, draft.prompt, LABEL, reasoning_effort="low")
-        bound, task_id = light_binding(), str(task.get("id") or task.get("task_id") or "")
         errors = [row for row in usage.get("_consolidation_errors") or [] if isinstance(row, dict)]
         run = FallbackRun("failed", unit, usage=usage, errors=errors, input_tokens=draft.input_tokens)
-        if errors:
-            run.kind = str(errors[-1].get("kind") or "")
-            return _refuse(root, store, run, draft, run.kind, bound, task_id, "") if run.kind in RECEIPT_KINDS else run
-        answer = _parse(text)
-        if answer is None:
-            return _refuse(root, store, run, draft, "invalid", bound, task_id, text)
+        phase = "binding_failed"
         try:
+            bound, task_id = light_binding(), str(task.get("id") or task.get("task_id") or "")
+            phase = "receipt_failed"
+            if errors:
+                run.kind = str(errors[-1].get("kind") or "")
+                return _refuse(root, store, run, draft, run.kind, bound, task_id, "") if run.kind in RECEIPT_KINDS else run
+            answer = _parse(text, part=unit.kind == "part")
+            if answer is None:
+                return _refuse(root, store, run, draft, "invalid", bound, task_id, text)
+            if answer.get("keep_original"):
+                return _refuse(root, store, run, draft, "keep_original", bound, task_id, text, outcome="kept_original")
+            phase = "publish_failed"
             result = _publish(root, store, unit, draft, answer, usage, bound)
-        except Exception as error:  # e.g. a busy publication lock: a returned failure, so the paid call is billed
-            log.debug("fallback writer: publication raised", exc_info=True)
-            run.kind = "publish_failed"
-            run.errors = [{"kind": run.kind, "label": LABEL, "message": f"{type(error).__name__}: {error}"}]
-            return run
-        if result.ok:
-            _set_refusal(store, unit.key, None)
-            run.outcome, run.record_id = "published", str((result.record or {}).get("id") or "")
-        elif result.reason in CONFLICT_REASONS:
-            run.outcome, run.kind = "conflict", result.reason
-        else:
-            return _refuse(root, store, run, draft, result.reason, bound, task_id, text)
+            if result.ok:
+                run.outcome, run.record_id = "published", str((result.record or {}).get("id") or "")
+                phase = "receipt_clear_failed"
+                _set_refusal(store, unit.key, None)
+            elif result.reason in CONFLICT_REASONS:
+                run.outcome, run.kind = "conflict", result.reason
+            else:
+                phase = "receipt_failed"
+                return _refuse(root, store, run, draft, result.reason, bound, task_id, text)
+        except Exception as error:
+            # The call already returned: keep usage and any published record ID.
+            # Receipt trouble is not setup failure, nor proof publication failed.
+            log.debug("fallback writer: %s", phase, exc_info=True)
+            run.kind = phase
+            run.errors = [*run.errors, {"kind": phase, "label": LABEL, "message": f"{type(error).__name__}: {error}"}]
         return run
     finally:
         release_exclusive_file_lock(lock_path, fd)
