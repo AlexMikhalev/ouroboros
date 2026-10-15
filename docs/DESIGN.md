@@ -206,7 +206,10 @@ A segmented choice row gives every choice the same width. Up to four fill their
 row; a longer scale wraps into equal columns of four and leaves its last row partly
 empty rather than stretching a lone choice; a narrow card stacks two; one-glyph
 values such as review cycles stay one row. An empty inherit choice is as real as
-any other, and the focused choice wears the one focus ring.
+any other, and the focused choice wears the one focus ring. A choice the running
+Access suspends — Blocking under Cyber Pro — stays selected; the note beside it
+names its effect for the current process and for the selected next start, from
+the draft before Save.
 
 Short fixed choices keep native selects, including the platform's own popup.
 A control never widens its column: a select shows its chosen label on one
@@ -1438,6 +1441,8 @@ asks to return, and only the primary's own accepted reply counts as a return.
 
 A submitted action is shown as pending until the task reports its application.
 A saved Settings change and a still-pending task change are disclosed separately.
+When a requested Settings save failed or is unconfirmed, resolving the wait shows one
+toast with those facts; closing its card without resolution announces nothing.
 Retries preserve the original request identity and payload. Revisioned rows reject
 older observations and resolved episodes never reopen. Terminal authors retain
 exact live paid-review controls without reviving author status; other waits end. A mailbox delivery failure keeps Retry request available for

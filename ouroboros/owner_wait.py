@@ -207,6 +207,13 @@ def continuation_state(ctx: Any, messages: list, trace: dict, usage: dict,
             "_task_acceptance_reviewed": bool(getattr(ctx, "_task_acceptance_reviewed", False)),
             "_task_acceptance_pending": str(getattr(ctx, "_task_acceptance_pending", "")),
             "_task_acceptance_reviewed_subject": str(getattr(ctx, "_task_acceptance_reviewed_subject", "")),
+            # The validated wait/finish choice outlives its consumed selection; turn
+            # start and a new nomination reset it, so only the current choice rides.
+            "_acceptance_pending_review_choice": str(getattr(ctx, "_acceptance_pending_review_choice", "") or ""),
+            # A left commit/change review wait, by value; its owner token says whether a
+            # restored copy still has live custody in the resuming process.
+            "_left_review_wait": (dict(getattr(ctx, "_left_review_wait", None))
+                                  if isinstance(getattr(ctx, "_left_review_wait", None), dict) else None),
         },
     }
 
@@ -461,13 +468,18 @@ def worker_owner_wait(wid: int, in_q: Any, out_q: Any, ctx: Any,
 
 
 def _sleep_wake(ctx: Any, checkpoint: dict) -> str | None:
-    """``None`` for an owner/review wait (any mail wakes it); for a model sleep, the
+    """``None`` for an owner/review wait (any mail wakes it; ``review_settled`` once a left
+    review's wave settled); for a model sleep, the
     reason its selected sources give NOW (``""`` = keep sleeping), read from the
     canonical records on every poll — the recheck after the park that closes the
     race with an event landing between the tool's check and the park."""
     chosen = (checkpoint or {}).get("sleep")
     if not isinstance(chosen, dict):
-        return None
+        # A left review's park also ends at its wave's settlement, notice written or not.
+        left = getattr(ctx, "_left_review_wait", None)
+        binding = (checkpoint or {}).get("review_binding")
+        return str(left.get("wake_reason") or "review_settled") if (
+            binding and isinstance(left, dict) and left.get("binding") == binding and left.get("done")) else None
     from ouroboros.model_sleep import wake_reason
     from ouroboros.store import acquisition_budget
 
@@ -825,6 +837,46 @@ def wait_after_tools(ctx: Any, messages: list, trace: dict, usage: dict,
     ctx._owner_wait_max_minutes = 0
 
 
+def park_for_left_review(tools: Any, limit_ctx: Any, content: Any, emit_progress: Any) -> bool:
+    """Plain prose with no completion choice while a commit/change review the author left
+    for an addressed message is still its intention: the prose stays in the transcript as
+    narration and the same wait resumes on the review park, with no model call until the
+    settlement (``_sleep_wake``) or another addressed event. A notice written but not yet read
+    gets one round, and one that could not be written is said inline; a wait restored from
+    another process holds no live custody here, so the author gets one round with that fact
+    instead of a park nothing would end. A new commit or review_change act, an explicit
+    completion, a new turn or a read notice ends it."""
+    from ouroboros.review_pause import PROCESS_TOKEN
+
+    ctx = tools._ctx
+    wait = getattr(ctx, "_left_review_wait", None)
+    if not isinstance(wait, dict) or getattr(ctx, "_task_acceptance_pending", ""):
+        return False
+    restored = wait.get("owner") != PROCESS_TOKEN
+    if str(wait.get("msg_id") or "") in limit_ctx.owner_msg_seen:
+        return False  # its notice was read: that wave is over
+    from ouroboros.loop_messages import _emit_round_progress
+
+    if str(content or "").strip():
+        limit_ctx.messages.append({"role": "assistant", "content": str(content)})
+        _emit_round_progress(content, {"content": content}, emit_progress, limit_ctx.llm_trace)
+    if restored:
+        from ouroboros.review_pause import left_review_custody_note
+
+        ctx._left_review_wait = None
+        limit_ctx.messages.append({"role": "user", "content": left_review_custody_note(wait)})
+        return True
+    if not wait.get("done"):
+        wait_after_tools(ctx, limit_ctx.messages, limit_ctx.llm_trace, limit_ctx.accumulated_usage,
+                         limit_ctx.round_idx, limit_ctx.tool_schemas, limit_ctx.owner_msg_seen,
+                         review_binding=str(wait.get("binding") or ""))
+    if wait.get("done") and not wait.get("noticed"):  # settled, but its notice could not be written
+        ctx._left_review_wait = None
+        if wait.get("notice"):
+            limit_ctx.messages.append({"role": "user", "content": str(wait["notice"])})
+    return True
+
+
 def restore_continuation_state(tools: Any, state: dict, messages: list, trace: dict,
                                usage: dict, seen: set) -> None:
     """Rebind the saved cognition onto the live loop objects (shared by every
@@ -896,9 +948,12 @@ def rebind_restored_route(tools: Any, state: dict, messages: list) -> tuple:
 def resume_native_loop(tools: Any, state: dict, messages: list, trace: dict,
                        usage: dict, seen: set) -> tuple:
     """Restore the selected cold continuation and await its ordinary input grant."""
+    from ouroboros.review_pause import wake_restored_left_review
+
     ctx = tools._ctx
     restore_continuation_state(tools, state, messages, trace, usage, seen)
     cold_checkpoint = ctx.owner_wait_resume
+    wake_restored_left_review(ctx)  # a left review's custody ended with its process: say so, which also wakes
     outcome = ctx.owner_wait_callback(ctx, cold_checkpoint)
     ctx.owner_wait_resume = None
     plan, mode = rebind_restored_route(tools, state, messages)
@@ -907,6 +962,10 @@ def resume_native_loop(tools: Any, state: dict, messages: list, trace: dict,
         "Prior tool results remain recorded; do not repeat completed effects. "
         "The restart ended the previous browser process and task-local services; "
         "their recorded results remain evidence, not proof they are still running.")})
+    left = getattr(ctx, "_left_review_wait", None)
+    if isinstance(left, dict) and left.get("done") and not left.get("noticed") and left.get("notice"):
+        messages.append({"role": "user", "content": str(left["notice"])})
+        ctx._left_review_wait = None
     # The bound survived the restart as an absolute stamp, so the cold
     # continuation can ALSO end on it — and a peer wake or a hurry is no more
     # an answer cold than warm: the same notice seam says so.

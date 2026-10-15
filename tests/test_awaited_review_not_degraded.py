@@ -260,8 +260,6 @@ def test_a_real_answer_released_over_a_running_panel_is_not_a_degraded_review(fu
     def main(_llm, messages, *_a, **_kw):
         f.model_inputs.append(list(messages))
         f.model_step += 1
-        if mode == "cyber_pro":
-            return {"content": ANSWER}, 0.0
         if f.model_step == 1:
             return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "nominate")]}, 0.0
         assert f.entered.wait(5) and not f.release.is_set()
@@ -283,3 +281,51 @@ def test_a_real_answer_released_over_a_running_panel_is_not_a_degraded_review(fu
     card = {"status": "completed", "reason_code": "final_message", "outcome_axes": axes}
     assert completion_status_label(card, {}) == "Done"
     assert _completion_verdict(card, {}) == TASK_CAUSE_PHRASES["author_finish"]
+
+
+@pytest.mark.parametrize("mode", ["advisory", "cyber_pro"])
+@pytest.mark.parametrize("choice", ["prose", "default", "wait"])
+def test_plain_or_waiting_answer_keeps_the_same_panel_until_feedback(full_loop, monkeypatch, mode, choice):  # noqa: F811
+    f = full_loop
+    if mode == "cyber_pro":
+        monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "cyber_pro")
+    else:
+        monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    f.reviewer_verdict = "FAIL"
+    paid = {}
+    def park(ctx, checkpoint):
+        run = ctx._execution_trace["review_runs"][0]
+        paid.update(binding=run["binding_hash"], identity=run["paid_identity"], request=run["request"].copy())
+        assert not ctx._execution_trace.get("acceptance_decision", {}).get("author_disposition")
+        assert not run.get("settled_feedback_delivered")
+        f.park(ctx, checkpoint)
+    f.ctx.owner_wait_callback = park
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(list(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "nominate")]}, 0.0
+        if f.model_step == 2:
+            assert f.entered.wait(5) and not f.release.is_set()
+            if choice == "prose":
+                return {"content": ANSWER}, 0.0
+            return keep(f, **({"pending_review": "wait"} if choice == "wait" else {})), 0.0
+        assert f.model_step <= 4
+        settled = any(source.get("settled") and source.get("binding_hash") == paid["binding"]
+                      for row in messages for source in row.get("review_feedback", []))
+        if not settled:
+            # Prose made no selection. Select the retained answer to collect
+            # the paid result, then respond to the exposed feedback next round.
+            assert choice == "prose" and f.model_step == 3
+            return keep(f), 0.0
+        assert "Independent review" in str(messages) and "FAIL" in str(messages)
+        return keep(f, rationale="I read the failed independent review and retain this complete answer."), 0.0
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == ANSWER and len(f.waits) == 1 and len(f.review_sends) == 1
+    run, = trace["review_runs"]
+    assert (run["binding_hash"], run["paid_identity"], run["request"]) == (paid["binding"], paid["identity"], paid["request"])
+    assert run["aggregate_signal"] == "FAIL" and run["settled_feedback_delivered"]
+    assert "Add independent verification" in run["actors"][0]["raw_text"]
+    assert trace["acceptance_decision"]["reason"] == "author_finish"
+    assert trace["acceptance_decision"]["author_disposition"]["source"] != "author_final_response"

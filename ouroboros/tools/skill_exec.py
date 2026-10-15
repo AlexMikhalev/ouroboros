@@ -33,7 +33,7 @@ from ouroboros.skill_loader import (
 )
 from ouroboros.skill_catalogue import LIST_SKILLS_SCHEMA as _LIST_SCHEMA, list_skills_payload
 from ouroboros.skill_review import review_skill as _review_skill_impl
-from ouroboros.skill_review_status import normalize_skill_review_status
+from ouroboros.skill_review_status import executable_review_requirement, normalize_skill_review_status
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result, completed_local_read
 from ouroboros.tool_access import (
@@ -831,13 +831,14 @@ def _skill_deps_exec_block(drive_root: pathlib.Path, loaded: Any) -> str:
     return (
         f"⚠️ SKILL_EXEC_BLOCKED: skill {loaded.name!r} isolated "
         f"dependencies are not ready (status={deps_status!r}). "
-        "Re-run skill_review so a fresh executable review can reinstall dependencies."
+        "Reconcile the declared dependencies through skill_review before executing."
     )
 
 
 
-def _non_executable_review_message(prefix: str, skill_name: str, status: str, *, stale: bool = False) -> str:
-    gate = skill_review_gate(status, stale=stale)
+def _non_executable_review_message(prefix: str, skill_name: str, status: str, *, stale: bool = False,
+                                   gate: Dict[str, Any] | None = None) -> str:
+    gate = gate or skill_review_gate(status, stale=stale)
     normalized_status = normalize_skill_review_status(status)
     if gate["blocking_reason"] == "blocker_findings_under_blocking_enforcement":
         return (
@@ -849,7 +850,8 @@ def _non_executable_review_message(prefix: str, skill_name: str, status: str, *,
     stale_note = f", stale={stale}" if stale else ""
     return (
         f"⚠️ {prefix}: skill {skill_name!r} review status is {normalized_status!r}{stale_note}, "
-        f"not executable ({gate['blocking_reason']}). A fresh executable review is required. {gate['summary']}"
+        f"not executable ({gate['blocking_reason']}). Execution needs {executable_review_requirement(gate)}. "
+        f"{gate['summary']}"
     )
 
 
@@ -972,11 +974,11 @@ def _handle_skill_exec(
     if stale and not gate["executable_review"]:
         return (
             f"⚠️ SKILL_EXEC_BLOCKED: skill {skill_name!r} was edited since "
-            f"the last review. Re-run skill_review(skill={skill_name!r}) "
-            "before executing."
+            f"the last review. Execution needs {executable_review_requirement(gate)}."
         )
     if not gate["executable_review"]:
-        return _non_executable_review_message("SKILL_EXEC_BLOCKED", skill_name, loaded.review.status, stale=stale)
+        return _non_executable_review_message("SKILL_EXEC_BLOCKED", skill_name, loaded.review.status, stale=stale,
+                                              gate=gate)
     deps_block = _skill_deps_exec_block(drive_root, loaded)
     if deps_block:
         return deps_block
@@ -1079,7 +1081,7 @@ def _handle_skill_exec(
         return (
             "⚠️ SKILL_EXEC_GRANT_REQUIRED: skill "
             f"{loaded.name!r} requests {' and '.join(requested)}. "
-            "Grant them from the Skills UI after a fresh executable review before execution."
+            "Its review gate already permits these bytes; grant them from the Skills UI before execution."
         )
     env = _scrub_env(
         manifest_env_keys=list(loaded.manifest.env_from_settings or []),
@@ -1286,8 +1288,10 @@ _REVIEW_SCHEMA = {
         "bounds PAID panel dispatches per ceiling key (root task for "
         "task-driven reviews; the current content snapshot for the manual "
         "lane); on exhaustion the review is refused free with a typed "
-        "review_cycles_exhausted event and the skill stays honestly PENDING — "
-        "never executable without a real verdict."
+        "review_cycles_exhausted event and stays honestly PENDING — no verdict "
+        "is fabricated. Whether the payload may run is the skill's review_gate "
+        "under the effective enforcement; Cyber Pro leaves it to Ouroboros's "
+        "judgment, with the review as evidence, not a PASS."
     ),
     "parameters": {
         "type": "object",
@@ -1332,7 +1336,12 @@ _EXEC_SCHEMA = {
     "name": "skill_exec",
     "description": (
         "Execute a script from an external skill package. The skill must be "
-        "enabled and carry a fresh executable review verdict. Only type=script "
+        "enabled and its review_gate must permit the current bytes: outside "
+        "Cyber Pro, a current executable reviewer verdict or a qualified "
+        "Advisory author acceptance of these exact bytes (the reviewer status "
+        "may then still be pending or stale); Cyber Pro leaves it to "
+        "Ouroboros's judgment. Requested key/permission grants and isolated "
+        "dependencies still apply. Only type=script "
         "skills execute via this substrate — type=instruction skills are "
         "catalogued + reviewable but have no executable payload by "
         "design; type=extension skills run IN-PROCESS via the Phase 4 "
@@ -1378,8 +1387,11 @@ _TOGGLE_SCHEMA = {
     "name": "toggle_skill",
     "description": (
         "Enable or disable a skill. Disabled skills are excluded from "
-        "skill_exec regardless of review status. Enabling requires a fresh "
-        "executable review and any requested key or host-permission grants. "
+        "skill_exec regardless of review status. Enabling requires the "
+        "skill's review_gate to permit the current bytes (outside Cyber Pro: "
+        "a current executable reviewer verdict or a qualified Advisory author "
+        "acceptance of these exact bytes), any requested key or "
+        "host-permission grants, and ready isolated dependencies. "
         "For selected-skill development, interpret the real owner request: "
         "Repair and run authorizes enabling and leaving the repaired skill running. "
         "The host resolves that task's original owner message when owner_source is omitted; "

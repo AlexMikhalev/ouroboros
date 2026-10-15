@@ -119,6 +119,12 @@ does not rewrite the scorer or normalize Ouroboros's core `final_answer`.
   repo as forensic input; useful settings and wrapper ideas are copied/adapted
   here rather than imported as live code.
 
+The Ouroboros adapter declares `final_answer_line`. Runtime retention selects its
+exact answer payload before result-review eligibility, and the packet uses that
+same source. Inspect consumes only the structured `final_answer` bytes; empty or
+missing selection stays empty instead of falling back to narrative `result`.
+Synthetic contract checks do not establish live scores or historical parity.
+
 ## Answer-leakage audit protocol (publishable web-on runs)
 
 GAIA's validation answers are public on HuggingFace, so a web-capable agent can

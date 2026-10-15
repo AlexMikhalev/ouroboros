@@ -77,13 +77,13 @@ def test_acceptance_answer_choice_preserves_wait_policy(tmp_path, monkeypatch, e
     assert (getattr(registry._ctx, "_acceptance_pending_review_choice", "") or "wait") == (
         "finish" if answer == "finish" else "wait")
     assert acceptance_wait_chosen(registry._ctx) is (
-        mode != "cyber_pro" and (enforcement == "blocking" or answer != "finish")
+        (enforcement == "blocking" and mode != "cyber_pro") or answer != "finish"
     )
     assert registry._ctx._task_acceptance_pending == "paid-binding"
     assert candidate.control_episode_seen is True
     assert "Interim prose is activity, not a new completion selection" in str(ctx.messages)
     assert ("Pending critics: choose pending_review=wait" in str(ctx.messages)) is (
-        enforcement == "advisory" and mode != "cyber_pro"
+        enforcement == "advisory" or mode == "cyber_pro"
     )
 
 
@@ -244,26 +244,31 @@ def test_whole_loop_delivers_selected_complete_answer_after_settlement(full_loop
             if entry == "explicit":
                 return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "review")]}, 0.0
             return {"content": ANSWER}, 0.0
-        assert f.model_step < 5, f.progress
+        assert f.model_step <= 5, f.progress  # Two panels each expose their own feedback/choice.
         return _finish(revised, acceptance_subject={
             "owner_source_sha256": f.ctx._acceptance_observation["owner_source_sha256"],
         }), 0.0
 
     monkeypatch.setattr(loop, "call_llm_with_retry", main)
     result, _usage, trace = f.run()
-    assert result == revised and len(f.review_sends) == 1
-    assert [wait["reason"] for wait in f.waits] == ["review"]
+    assert result == revised and len(f.review_sends) == 2
+    assert 1 <= len(f.waits) <= 2  # The second distinct panel may already be ready.
+    assert all(wait["reason"] == "review" for wait in f.waits)
+    waited_bindings = [wait['review_binding'] for wait in f.waits]
+    assert len(waited_bindings) == len(set(waited_bindings))
+    assert set(waited_bindings) <= {run['binding_hash'] for run in trace['review_runs']}
     assert not any("[DELIVERY_CONTROL_REPAIR]" in str(messages) for messages in f.model_inputs)
-    assert trace["acceptance_decision"]["reason"] == "previous_revision_accepted"
+    assert trace["acceptance_decision"]["reason"] == "clean_pass"
     assert f.review_requests[0].subject == ANSWER
-    assert trace["delivery_candidate"]["content_sha256"] != trace["acceptance_decision"]["reviewed_candidate_hash"]
+    assert f.review_requests[-1].subject == revised
+    assert trace["delivery_candidate"]["acceptance_binding"]["authoritative"]
 
 
-def test_cyber_explicit_nomination_keeps_its_existing_no_wait_power(full_loop, monkeypatch):
+def test_cyber_explicit_early_finish_keeps_its_no_wait_power(full_loop, monkeypatch):
     f = full_loop
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "cyber_pro")
     revised = ANSWER + " Budget: $12."
-    f.ctx.owner_wait_callback = lambda *_a, **_kw: pytest.fail("Cyber must not acquire a wait")
+    f.ctx.owner_wait_callback = lambda *_a, **_kw: pytest.fail("explicit early finish must not acquire a wait")
 
     def main(_llm, messages, *_a, **_kw):
         f.model_step += 1
@@ -271,7 +276,7 @@ def test_cyber_explicit_nomination_keeps_its_existing_no_wait_power(full_loop, m
             return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "review")]}, 0.0
         assert f.model_step == 2 and f.entered.wait(5) and not f.release.is_set()
         assert "Interim prose is activity, not a new completion selection" in str(messages)
-        return _finish(revised, acceptance_subject={
+        return _finish(revised, pending_review="finish", acceptance_subject={
             "owner_source_sha256": f.ctx._acceptance_observation["owner_source_sha256"],
         }), 0.0
 
@@ -280,7 +285,7 @@ def test_cyber_explicit_nomination_keeps_its_existing_no_wait_power(full_loop, m
     assert result == revised and len(f.review_sends) == 1 and not f.waits
     assert trace["acceptance_decision"]["reason"] == "author_finish"
     author = trace["acceptance_decision"]["author_disposition"]
-    assert author["source"] == "author_final_response"
+    assert author["source"] == "finish_task"
     # The submitted final is Main's act: the host records "finish" and invents
     # neither an "accepted" stance nor a "solved" tier (TZ-2 C4).
     assert author["action"] == "finish" and author["disposition"] == ""
@@ -352,7 +357,7 @@ def test_return_order_preserves_feedback_identity_and_new_subjects(full_loop, mo
                 index, offered = next((i, row) for i, row in enumerate(runs) if row.get("authority") == "host_root")
                 assert offered["feedback_offered"] and not offered.get("feedback_delivered")
                 assert any(source == {"task_id": f.run_args["task_id"], "run_index": index,
-                                      "binding_hash": offered["binding_hash"]}
+                                      "binding_hash": offered["binding_hash"], "settled": True}
                            for message in messages for source in message.get("review_feedback", []))
             if next_action == "effect" or (next_action == "held_effect" and order == "ready"):
                 if next_action == "held_effect":
@@ -384,7 +389,7 @@ def test_return_order_preserves_feedback_identity_and_new_subjects(full_loop, mo
     monkeypatch.setattr(loop, "call_llm_with_retry", main)
     result, _usage, trace = f.run()
     assert result == revised
-    assert len(f.review_sends) == (1 if next_action == "rewrite" else 2)
+    assert len(f.review_sends) == 2  # Changed answer bytes require their own PASS.
     assert f.review_requests[0].subject == ANSWER
     if order == "ready":
         first_run = next(row for row in trace["review_runs"] if row.get("authority") == "host_root")
@@ -393,30 +398,31 @@ def test_return_order_preserves_feedback_identity_and_new_subjects(full_loop, mo
         effect = f.ctx.drive_root / "task_drives" / f.run_args["task_id"] / "new-effect.txt"
         assert effect.read_text(encoding="utf-8") == "Additional evidence."
     if next_action == "held_effect" and order == "ready":
-        # Both panels are ready before returning. The refused fence creates no
-        # acceptance-wait request; the answered re-seal still closes admission.
-        assert f.model_step == 3  # nomination, effect, final selection; no refusal-only round
+        # Both panels are ready before returning. The refused fence buys no
+        # refusal-only round, but the changed subject's feedback precedes its
+        # author's next completion decision: nomination, effect, select, confirm.
+        assert f.model_step == 4
         assert "TASK ACCEPTANCE WAIT" not in str(f.model_inputs)
         assert len(begins) == 3  # the nomination's, the refused one, the answered re-seal
         assert trace["acceptance_decision"]["reason"] == "clean_pass"
     if next_action == "rewrite":
         decision = trace["acceptance_decision"]
-        assert decision["reason"] == "previous_revision_accepted"
-        assert decision["reviewed_candidate_hash"] != trace["delivery_candidate"]["content_sha256"]
-        assert not trace["delivery_candidate"]["acceptance_binding"]["authoritative"]
+        assert decision["reason"] == "clean_pass"
+        assert f.review_requests[-1].subject == revised
+        assert trace["delivery_candidate"]["acceptance_binding"]["authoritative"]
     else:
         assert f.review_requests[-1].subject == revised
         assert trace["acceptance_decision"]["reason"] != "previous_revision_accepted"
 
 
 @pytest.mark.parametrize("delivered,reason,signal,reused", [
-    (True, "delivery_candidate_replaced", "PASS", True),
+    (True, "delivery_candidate_replaced", "PASS", False),  # Changed bytes never inherit PASS.
     (False, "delivery_candidate_replaced", "PASS", False),  # Main never received the verdict
     (True, "delivery_evidence_changed_after_host_acceptance", "PASS", False),
     (True, "delivery_candidate_replaced", "FAIL", False),
     (True, "delivery_candidate_replaced", "DEGRADED", False),
 ])
-def test_ready_fallback_reuses_only_a_delivered_pass_on_a_replaced_text(
+def test_ready_fallback_cannot_approve_replaced_text(
         tmp_path, monkeypatch, delivered, reason, signal, reused):
     """The ready-order lookup falls toward a fresh panel, never toward acceptance."""
     from types import SimpleNamespace

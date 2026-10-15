@@ -38,7 +38,7 @@ def test_queue_inspection_failure_does_not_invent_owner_generation_change():
 
 
 @pytest.fixture
-def full_loop(tmp_path, monkeypatch):
+def full_loop(tmp_path, monkeypatch, request):
     from ouroboros import review_custody
     from ouroboros.review_execution import ReviewAttemptResult
 
@@ -65,6 +65,10 @@ def full_loop(tmp_path, monkeypatch):
     task_id = "async-loop-root"
     _seed_acceptance_root(ctx.drive_root, task_id, ctx)
     ctx.task_contract["expected_output"] = "A complete report including its budget."
+    # Required admits actual production, not the expected_output declaration.
+    from ouroboros.artifacts import store_task_artifact_bytes
+    if getattr(request, "param", True):
+        store_task_artifact_bytes(ctx.drive_root, task_id, "fixture-report.txt", ANSWER.encode())
     ctx.task_attempt = 1
     ctx.current_chat_id = 1
     ctx.is_direct_chat = False
@@ -78,7 +82,8 @@ def full_loop(tmp_path, monkeypatch):
                               model_inputs=[], review_requests=[], review_snapshots=[], review_sends=[],
                               entered=threading.Event(), release=threading.Event(), settled=threading.Event(),
                               waits=[], progress=[], model_step=0, condition=threading.Condition(),
-                              settled_count=0, settled_operations=set(), reviewer_verdict="PASS", slots=slots)
+                              settled_count=0, settled_operations=set(), reviewer_verdict="PASS", slots=slots,
+                              slot_releases={})
     original_settle = review_custody._settle_review_attempt
     def settle(*a, **kw):
         try:
@@ -116,7 +121,7 @@ def full_loop(tmp_path, monkeypatch):
                 fixture.condition.notify_all()
             # The real park/teardown owns release; elapsed host preparation
             # must not fabricate a reviewer failure or trigger a retry.
-            fixture.release.wait()
+            fixture.slot_releases.get(self.assignment.slot.slot_id, fixture.release).wait()
             from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary
             vocabulary = acceptance_evidence_ref_vocabulary(request.evidence)
             reference = next(key for key, basis in vocabulary.items() if basis in {"tool_record", "packet_section"})
@@ -171,6 +176,8 @@ def full_loop(tmp_path, monkeypatch):
         yield fixture
     finally:
         fixture.release.set()
+        for gate in fixture.slot_releases.values():
+            gate.set()
         if fixture.entered.is_set():
             assert fixture.settled.wait(10)
 
@@ -385,14 +392,14 @@ def _terminal_record(trace):
                              "objective": outcomes._objective_axis(review)}}
 
 
-def test_a_rewritten_answer_delivers_under_the_running_panel_instead_of_buying_one(full_loop, monkeypatch):
-    """The live incident shape (task 4525349b, cap 1) under owner D4=A and fork 1=B:
+def test_a_rewritten_answer_cannot_inherit_the_running_panels_pass_at_cycle_cap(full_loop, monkeypatch):
+    """The live incident shape (task 4525349b, cap 1):
     Main nominates, the reviewers are still reading when it rewrites the answer
     through explicit completion selection (round 7 of the original incident). The rewrite is a
-    DELIVERY, not a nomination: it buys nothing and is refused nothing; the host
+    delivery selection: it buys no duplicate panel; the host
     waits for the panel it already paid for, and when that panel PASSES the earlier
-    revision the task is accepted on the reviewers' word and the row says so."""
-    from ouroboros.project_dialogue import _completion_verdict, outcome_phase
+    revision that verdict cannot approve the changed subject."""
+    from ouroboros.project_dialogue import outcome_phase
 
     f = full_loop
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
@@ -420,17 +427,15 @@ def test_a_rewritten_answer_delivers_under_the_running_panel_instead_of_buying_o
     assert not any("review_cycles_exhausted" in str(reason) for reason in host[0].get("degraded_reasons") or [])
     # The host waited for the panel it had paid for (blocking enforcement in this fixture).
     assert f.waits and f.waits[0]["reason"] == "review"
-    assert any("holding the answer for its verdict" in line for line in f.progress), f.progress
     decision = trace["acceptance_decision"]
-    assert decision["status"] == "accepted" and decision["reason"] == "previous_revision_accepted"
-    assert decision["reviewer_signal"] == "PASS" and "rationale" not in decision
+    assert decision["status"] == "finalized_unaccepted"
+    assert decision["reason"] == "review_cycles_exhausted"
+    assert host[0]["superseded_by_revision"]
     from ouroboros.task_results import project_task_acceptance_review_capacity
     assert project_task_acceptance_review_capacity(f.ctx, task_id=f.ctx.task_id)["claimed_cycles"] == 1
     record = _terminal_record(trace)
-    assert outcome_phase(record, {}) == "done", record["outcome_axes"]
-    assert _completion_verdict(record, {}) == (
-        "The reviewers approved an earlier version of this answer; the current version was not re-reviewed."
-    )
+    assert outcome_phase(record, {}) == "error", record["outcome_axes"]
+    assert record["outcome_axes"]["objective"]["reason"] == "review_cycles_exhausted"
 
 
 def test_a_rejected_earlier_revision_is_not_a_verdict_on_the_rewrite(full_loop, monkeypatch):
@@ -593,8 +598,8 @@ def test_a_rejected_earlier_revision_buys_a_panel_on_the_rewrite_when_the_cap_al
 @pytest.mark.parametrize("enforcement", ["advisory", "blocking"])
 def test_an_older_fail_never_outvotes_the_pass_that_accepted_the_task(full_loop, monkeypatch, order, enforcement):
     """Astra review round 4: panel A rejects the first draft, Main re-nominates and
-    panel B passes the second, Main rewrites once more under B. Both runs end up
-    superseded; the decision names B. The review axis must read B alone — the
+    panel B passes the second, Main nominates a third version and C passes it.
+    The first two runs end up superseded. The review axis must read C alone — the
     old FAIL is audit evidence, not a vote against the accepted answer."""
     from ouroboros.project_dialogue import outcome_phase
 
@@ -603,37 +608,37 @@ def test_an_older_fail_never_outvotes_the_pass_that_accepted_the_task(full_loop,
     f.reviewer_verdict = "FAIL"
     second = ANSWER + " Budget: $12."
     third = second + " Timeline: two weeks."
+    nominations = [ANSWER]
 
     def main(_llm, messages, *_a, **_kw):
         f.model_inputs.append(copy.deepcopy(messages))
         f.model_step += 1
         if f.model_step == 1:
             return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "first-review")]}, 0.0
-        if f.model_step == 2:
-            assert f.entered.wait(5)
-            f.release.set()
-            with f.condition:
-                assert f.condition.wait_for(lambda: f.settled_count >= 1, timeout=10)
+        latest = f.ctx._execution_trace['review_runs'][-1]
+        informed = any(source.get('binding_hash') == latest['binding_hash'] and source.get('settled')
+                       for message in messages for source in message.get('review_feedback', []))
+        if informed and len(nominations) < 3:
             f.reviewer_verdict = "PASS"
-            _order_acceptance_feedback(f, monkeypatch, second, order)
-            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": second}, "second-review")]}, 0.0
-        if f.model_step == 3:
-            # This scenario rewrites under B's settled PASS, not while B runs.
-            with f.condition:
-                assert f.condition.wait_for(lambda: f.settled_count >= 2, timeout=10)
-            return select_completion(f, third), 0.0
-        assert f.model_step < 8, f.progress
+            selected = second if len(nominations) == 1 else third
+            if selected == second:
+                _order_acceptance_feedback(f, monkeypatch, second, order)
+            nominations.append(selected)
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": selected}, f"review-{len(nominations)}")]}, 0.0
+        assert f.model_step < 10, f.progress
         return keep(f), 0.0
 
     monkeypatch.setattr(loop, "call_llm_with_retry", main)
     result, _usage, trace = f.run()
-    assert result == third and len(f.review_sends) == 2
+    assert result == third and len(f.review_sends) == 3
     host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
-    assert [r.get("aggregate_signal") for r in host] == ["FAIL", "PASS"], host
-    assert all(r.get("superseded_by_revision") for r in host)
+    assert [r.get("aggregate_signal") for r in host] == ["FAIL", "PASS", "PASS"], host
+    assert all(r.get("superseded_by_revision") for r in host[:2])
+    assert not host[2].get('superseded_by_revision')
+    assert f.review_requests[-1].subject == third
     decision = trace["acceptance_decision"]
-    assert decision["status"] == "accepted" and decision["reason"] == "previous_revision_accepted"
-    assert decision["reviewed_panel_id"] == host[1]["panel_id"]
+    assert decision["status"] == "accepted" and decision["reason"] == "clean_pass"
+    assert trace['delivery_candidate']['acceptance_binding']['authoritative']
     record = _terminal_record(trace)
     assert record["outcome_axes"]["review"]["aggregate_signals"] == ["PASS"], record["outcome_axes"]["review"]
     assert outcome_phase(record, {}) == "done", record["outcome_axes"]
@@ -683,15 +688,14 @@ def test_an_owner_followup_acknowledged_through_the_control_sets_the_panel_aside
 @pytest.mark.parametrize("install", ["advisory_default", "blocking_finish", "cyber_pro"])
 def test_waiting_is_the_default_and_blocking_enforcement_never_offers_the_choice(full_loop, monkeypatch, install):
     """Waiting needs no key; blocking enforcement waits whatever the model says and
-    is never offered the choice; Cyber Pro keeps its own rule (Main's final response
-    is its decision) and is not offered the choice either."""
+    is never offered the choice; Cyber Pro offers explicit early delivery while
+    omission still waits for the same paid review."""
     f = full_loop
     if install == "advisory_default":
         _advisory(monkeypatch)
     if install == "cyber_pro":
         _advisory(monkeypatch)
         monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "cyber_pro")
-        f.ctx.owner_wait_callback = lambda *_a, **_kw: pytest.fail("Cyber Pro never parks on a review")
 
     def main(_llm, messages, *_a, **_kw):
         f.model_inputs.append(copy.deepcopy(messages))
@@ -715,8 +719,8 @@ def test_waiting_is_the_default_and_blocking_enforcement_never_offers_the_choice
         assert not offered and f.waits and f.waits[0]["reason"] == "review"
         assert trace["acceptance_decision"]["status"] == "accepted"
     else:
-        assert not offered and f.waits == []
-        assert trace["acceptance_decision"]["reason"] == "author_finish"
+        assert offered and f.waits and f.waits[0]["reason"] == "review"
+        assert trace["acceptance_decision"]["status"] == "accepted"
 
 
 @pytest.mark.parametrize("pending_first", [False, True])
@@ -917,7 +921,7 @@ def test_automatic_completion_uses_the_same_retained_candidate_and_free_collect(
 
 
 @pytest.mark.parametrize("failure", ["pending", "fail", "late_fail", "unavailable", "evidence_unavailable"])
-def test_cyber_final_response_never_waits_for_or_obeys_critic_veto(full_loop, monkeypatch, failure):
+def test_cyber_explicit_early_finish_never_waits_for_or_obeys_critic_veto(full_loop, monkeypatch, failure):
     f = full_loop
     monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "cyber_pro")
     if failure in {"fail", "late_fail"}:
@@ -936,7 +940,7 @@ def test_cyber_final_response_never_waits_for_or_obeys_critic_veto(full_loop, mo
     def main(_llm, messages, *_a, **_kw):
         f.model_inputs.append(copy.deepcopy(messages))
         f.model_step += 1
-        if failure in {"fail", "late_fail"} and f.model_step == 1:
+        if failure != "evidence_unavailable" and f.model_step == 1:
             return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "explicit-critic")]}, 0.0
         if failure in {"fail", "late_fail"}:
             if failure == "late_fail" and f.model_step == 2:
@@ -945,9 +949,11 @@ def test_cyber_final_response_never_waits_for_or_obeys_critic_veto(full_loop, mo
             with f.condition:
                 assert f.condition.wait_for(lambda: f.settled_count == 1, timeout=10)
             assert f.model_step == 2
-            return keep(f), 0.0
-        assert f.model_step == 1
-        return {"content": ANSWER}, 0.0
+            return keep(f, pending_review="finish"), 0.0
+        if f.model_step == 1:
+            return {"content": ANSWER}, 0.0
+        assert f.model_step == 2
+        return keep(f, pending_review="finish"), 0.0
     monkeypatch.setattr(loop, "call_llm_with_retry", main)
     result, _usage, trace = f.run()
     assert result == ANSWER
@@ -957,7 +963,7 @@ def test_cyber_final_response_never_waits_for_or_obeys_critic_veto(full_loop, mo
         assert not trace.get("review_runs") and not f.waits
         return  # local preparation is not a synthetic DEGRADED critic
     assert trace["acceptance_decision"]["reason"] == "author_finish"
-    assert trace["acceptance_decision"]["author_disposition"]["source"] == "author_final_response"
+    assert trace["acceptance_decision"]["author_disposition"]["source"] == "finish_task"
     assert not f.waits
     if failure == "pending":
         assert not f.release.is_set()
@@ -993,14 +999,19 @@ def test_cyber_admission_unavailable_is_disclosed_without_review_veto(full_loop,
         f.ctx.inspect_acceptance_fence = inspect_unavailable
     monkeypatch.setattr(loop, "_task_acceptance_subtree_snapshot", lambda *_a: (False, [{"task_id": "child", "status": "running"}]))
     f.ctx.owner_wait_callback = lambda *_a: pytest.fail("review admission withheld Cyber final")
-    def main(*_a, **_kw):
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
         f.model_step += 1
-        assert f.model_step == 1, "Unknown admission inspection was treated as a new owner request"
-        return {"content": ANSWER}, 0.0
+        assert f.model_step <= 2, "Unknown admission inspection was treated as a new owner request"
+        if f.model_step == 1:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "nominate")]}, 0.0
+        return keep(f, pending_review="finish"), 0.0
     monkeypatch.setattr(loop, "call_llm_with_retry", main)
     result, _usage, trace = f.run()
     assert result == ANSWER
-    assert trace["review_decision"]["admission_fence_available"] is (failure != "begin")
+    # The explicit completion pass re-observes the fence. A failed inspection
+    # cannot retain the first nomination's earlier availability claim.
+    assert trace["review_decision"]["admission_fence_available"] is (failure == "end")
     assert trace["review_decision"]["admission_released"] is (failure == "begin")
     assert trace["review_decision"]["subtree_quiescent"] is False
     assert trace["acceptance_decision"]["status"] == "finalized_unaccepted"
@@ -1031,7 +1042,7 @@ def test_cyber_unread_owner_message_still_reaches_same_main(full_loop, monkeypat
             return {"content": ANSWER}, 0.0
         assert f.model_step == 2 and STATUS in str(messages)
         assert f.ctx._acceptance_ack_source_sha256 != f.ctx._acceptance_observation["owner_source_sha256"]
-        return keep(f), 0.0
+        return keep(f, pending_review="finish"), 0.0
     monkeypatch.setattr(loop, "call_llm_with_retry", main)
     result, _usage, trace = f.run()
     assert result == ANSWER and f.model_step == 2

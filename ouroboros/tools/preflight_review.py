@@ -51,8 +51,8 @@ def _next_step(projection: Dict[str, Any]) -> str:
         return ("Cyber Pro: whether and how to commit is your judgment; findings, missing evidence and pending "
                 "operations stay recorded, and this is not a PASS." + carried)
     return ("When the edits are complete, run commit_reviewed(commit_message='...'): the deterministic checks, "
-            "the tests and the review panel decide; preflight_reviewer='<enabled row>' optionally buys one "
-            "early look first." + carried)
+            "the tests and the review panel run (Blocking gates; Advisory returns the outcome before any commit); "
+            "preflight_reviewer='<enabled row>' optionally buys one early look first." + carried)
 
 
 def _handle_review_status(

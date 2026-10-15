@@ -299,7 +299,7 @@
       },
       {
         "className": "blocking",
-        "copy": "Slower and more expensive, but much safer. Critical review findings stop commits, which dramatically reduces the chance of gradual code degradation.",
+        "copy": "Outside Cyber Pro Access, unresolved critical review findings block commits. Cyber Pro keeps the findings as evidence for Ouroboros's decision.",
         "label": "Blocking",
         "tone": "Strict",
         "value": "blocking"
@@ -329,7 +329,7 @@
       },
       {
         "className": "cyber-pro",
-        "copy": "Host and configuration authority, including credentials, models, Supervisor and protected rewrites. Review scope and Blocking or Advisory enforcement remain owner-controlled.",
+        "copy": "Host and configuration authority, including credentials, models, Supervisor and protected rewrites. Review still runs and the Blocking or Advisory choice is kept, but review findings do not block actions in Cyber Pro: they are evidence for Ouroboros, which decides.",
         "label": "Cyber Pro",
         "tone": "Maximum power",
         "value": "cyber_pro"

@@ -151,9 +151,11 @@ def run_ouroboros(prompt: str, sample_id: str = "sample", attachments: list[path
             payload = json.loads(result_json.read_text(encoding="utf-8"))
         except Exception:
             payload = {}
-    answer = payload.get("final_answer") or payload.get("result") or ""
+    # The runtime selects and retains this protocol payload before review.
+    # Narration is never a fallback answer, and this consumer does not trim it.
+    answer = payload.get("final_answer") or ""
     return {
-        "final_answer": str(answer or "").strip(),
+        "final_answer": str(answer),
         "returncode": proc.returncode,
         "result_json": str(result_json),
         # The full runtime task result is already on disk here and was read for the answer
