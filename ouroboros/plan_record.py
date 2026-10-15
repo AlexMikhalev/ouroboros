@@ -820,6 +820,29 @@ def update_participant(root: Any, task_id: str, *, ask_id: str, seat_id: str, fa
     return _update_plan_record(root, task_id, _merge)
 
 
+def collection_pending(value: Any) -> bool:
+    """Body-only candidate selection, not a plan verdict or a packing obligation.
+    Unknown record/participant shapes stay selectable. No sources or liveness are
+    read here: the collector validates the record and checks its task's end."""
+    if value is None or value == {}:
+        return False
+    if not isinstance(value, dict) or value.get("schema_version") != PLAN_RECORD_VERSION:
+        return True
+    asks = value.get("asks")
+    if not isinstance(asks, list):
+        return True
+    for ask in asks:
+        if not isinstance(ask, dict) or not isinstance(ask.get("participants"), list):
+            return True
+        for participant in ask["participants"]:
+            if not isinstance(participant, dict):
+                return True
+            status = participant.get("status")
+            if not isinstance(status, str) or status not in PARTICIPANT_STATUSES:
+                return True
+    return any(pending_participants(value))
+
+
 def pending_participants(record: Mapping[str, Any]) -> Iterable[tuple[Dict[str, Any], Dict[str, Any]]]:
     """``(ask, participant)`` pairs still pending, oldest first."""
     for ask in record.get("asks") or []:
