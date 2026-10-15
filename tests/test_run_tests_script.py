@@ -85,6 +85,32 @@ def test_a_bare_call_never_means_a_subset(run_tests, monkeypatch):
     calls.clear()
     assert run_tests.main(["tests/test_x.py", "-k", "one"]) == 0
     assert calls == [("focused", [run_tests.sys.executable, "-m", "pytest", "tests/test_x.py", "-k", "one"])]
+    calls.clear()
+    explicit = ["tests/test_x.py", "--ci-evidence-dir", "my-exact-pytest-directory"]
+    assert run_tests.main(explicit) == 0
+    assert calls == [("focused", [run_tests.sys.executable, "-m", "pytest", *explicit])]
+
+
+@pytest.mark.parametrize("arguments, phases", [([], ["overlapped"]), (["--sequential"], ["parallel", "serial"]),
+                                              (["tests/test_x.py", "-k", "one"], ["focused"])])
+def test_evidence_option_keeps_selection_and_gives_each_pytest_phase_its_own_argv(
+    run_tests, monkeypatch, tmp_path, arguments, phases,
+):
+    calls, node = [], []
+    monkeypatch.setattr(run_tests, "_node_lane", lambda: node.append(True) or 0)
+    monkeypatch.setattr(run_tests, "_run", lambda label, argv, cwd: calls.append((label, argv)) or 0)
+    monkeypatch.chdir(tmp_path)
+    assert run_tests.main(["--evidence-dir", "diagnostics", *arguments]) == 0
+    assert [label for label, _ in calls] == phases
+    assert node == ([] if phases == ["focused"] else [True])
+    for label, command in calls:
+        offset = command.index("--ci-evidence-dir")
+        assert command[offset + 1] == str(tmp_path / "diagnostics" / label)
+        selection = command[:offset] + command[offset + 2:]
+        if label == "focused":
+            assert selection == [run_tests.sys.executable, "-m", "pytest", *arguments]
+        else:
+            assert selection == dict(run_tests.battery_commands("--sequential" in arguments))[label]
 
 
 def test_a_missing_node_is_a_red_not_run_never_a_silent_skip(run_tests, monkeypatch):

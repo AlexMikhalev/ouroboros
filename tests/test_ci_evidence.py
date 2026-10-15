@@ -191,6 +191,58 @@ def test_passing_process_exports_safe_results_and_redacts_parameter_identity(tmp
     assert "diagnostics_incomplete" not in summary
 
 
+def test_runner_evidence_stays_with_its_controller_across_nested_and_sequential_pytest(tmp_path):
+    """Exercise the runner's real argv; inheriting PYTEST_ADDOPTS used to truncate both files."""
+    outer, inner = tmp_path / "outer", tmp_path / "inner"
+    outer.mkdir()
+    inner.mkdir()
+    (inner / "test_child.py").write_text("def test_child():\n    assert True\n", encoding="utf-8")
+    evidence, child_evidence = tmp_path / "diagnostics", tmp_path / "child-diagnostics"
+    public = evidence / "focused"
+    public.mkdir(parents=True)
+    child_args = ["-p", "tests.conftest", "-o", "addopts=", "--rootdir", str(inner),
+                  "--confcutdir", str(inner), "-q", str(inner)]
+    (outer / "test_parent.py").write_text(textwrap.dedent(f"""
+        import os, subprocess, sys
+        from pathlib import Path
+        def test_parent():
+            assert "--ci-evidence-dir" not in os.environ.get("PYTEST_ADDOPTS", "")
+            public = Path({str(public)!r})
+            before = {{name: (public / name).read_bytes() for name in ("events.jsonl", "results.json")}}
+            for explicit in ([], ["--ci-evidence-dir", {str(child_evidence)!r}]):
+                result = subprocess.run([sys.executable, "-m", "pytest", *{child_args!r}, *explicit],
+                                        cwd={str(REPO)!r}, capture_output=True, text=True,
+                                        encoding="utf-8", timeout=60)
+                assert result.returncode == 0, result.stdout + result.stderr
+                assert {{name: (public / name).read_bytes() for name in before}} == before
+        """), encoding="utf-8")
+    arguments = ["--evidence-dir", str(evidence), "-p", "tests.conftest", "-o", "addopts=",
+                 "--rootdir", str(outer), "--confcutdir", str(outer), "-q", str(outer)]
+    entry = tmp_path / "run_parent.py"
+    entry.write_text(
+        "import runpy\n"
+        f"runner = runpy.run_path({str(REPO / 'scripts/run_tests.py')!r})\n"
+        f"raise SystemExit(runner['main']({arguments!r}))\n", encoding="utf-8")
+    command = [sys.executable, "-I", "-S", str(REPO / "scripts/safe_test.py"),
+               "--temp-parent", str(tmp_path), "--", sys.executable, str(entry)]
+    # Reuse after the preceding controller exited is valid, without stale ownership locks.
+    for previous in range(2):
+        (public / "results.json").write_text(json.dumps({"previous": previous}), encoding="utf-8")
+        result = subprocess.run(command, cwd=REPO, capture_output=True, text=True,
+                                encoding="utf-8", timeout=180)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert _results(public)["tests_collected"] == 1
+        assert _results(public)["session_exit_code"] == 0
+        assert {row["nodeid"] for row in _results(public)["reports"]} == {"test_parent.py::test_parent"}
+        raw = (public / "events.jsonl").read_text(encoding="utf-8")
+        assert "\x00" not in raw
+        rows = [json.loads(line) for line in raw.splitlines()]
+        assert _started(rows) == ["test_parent.py::test_parent"]
+        assert rows[-1]["event"] == "finish"
+        assert _results(child_evidence)["session_exit_code"] == 0
+        assert {row["nodeid"] for row in _results(child_evidence)["reports"]} == {"test_child.py::test_child"}
+
+
 def test_http_chain_assertion_and_setup_bodies_remain_in_private_junit(tmp_path):
     result, public, private = _producer(tmp_path, f"""
         import httpx

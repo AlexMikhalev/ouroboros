@@ -610,6 +610,48 @@ def member_fence(source: Any, *, _observations=None) -> Dict[str, Any]:
     return fence if fence_closed(fence) else {}
 
 
+def wait_member_fence(source: Any) -> Dict[str, Any]:
+    """Read at the member's safe boundary, retaining its stack through contention.
+
+    Only this pure observation repeats, outside queue, launch and money locks.
+    A busy store proves neither an open fence nor an accepted Pause. The usual
+    reader still owns unknown authority; supervisor/launch callers do not wait.
+    """
+    from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
+    from ouroboros.budget_pause import _HOLD_POLL_SEC, _hold_control_reason, _publish_hold
+    from ouroboros.model_wait import ModelWaitInterrupted
+
+    started, episode_id, entered = time.monotonic(), uuid.uuid4().hex, False
+
+    def publish(phase):
+        detail = "Waiting for control storage" if phase == "entered" else "Control storage wait ended"
+        _publish_hold(source, {
+            "checkpoint_kind": "control_store_wait", "state": "waiting" if phase == "entered" else "ended",
+            "hold_reason": "control_store_contention", "phase": phase, "episode_id": episode_id,
+            "elapsed_sec": time.monotonic() - started, "detail": detail, "content": detail,
+            "text": detail, "role": "system", "system_type": "task_checkpoint",
+        })
+
+    try:
+        while True:
+            try:
+                with acquisition_budget(ACQUISITION_SLICE_SEC):
+                    return member_fence(source)
+            except StoreBusy as exc:
+                if exc.reason != "contention" or getattr(exc, "rollback_confirmed", None) is False:
+                    raise
+                control = _hold_control_reason(source)
+                if control:
+                    raise ModelWaitInterrupted(control) from exc
+                if not entered:
+                    entered = True
+                    publish("entered")
+                time.sleep(_HOLD_POLL_SEC)
+    finally:
+        if entered:
+            publish("ended")
+
+
 @contextmanager
 def review_episode(root_task_id: str, operation: Any = None):
     """Bind ONE physical review attempt's Pause exception to this context (owner 2026-10-08).

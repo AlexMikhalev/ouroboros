@@ -949,11 +949,11 @@ def enter_owner_pause(limit_ctx: Any) -> None:
     hold. Returns only when the fence is open.
     """
     from ouroboros.model_wait import ModelWaitInterrupted
-    from ouroboros.owner_pause import member_fence
+    from ouroboros.owner_pause import wait_member_fence
 
     ctx = getattr(getattr(limit_ctx, "tools", None), "_ctx", None)
     while True:
-        fence = member_fence(ctx) if ctx is not None else {}
+        fence = wait_member_fence(ctx) if ctx is not None else {}
         if not fence:
             return
         if fence.get("state") == "unknown":
@@ -980,7 +980,7 @@ def enter_owner_pause(limit_ctx: Any) -> None:
                   reason_text="The owner paused this task tree.")
     usage = limit_ctx.accumulated_usage
     published = False
-    while member_fence(ctx):
+    while wait_member_fence(ctx):
         control = _hold_control_reason(ctx)
         if control:
             raise ModelWaitInterrupted(control)

@@ -3,6 +3,7 @@
 
     python scripts/run_tests.py                  full battery (node lane + every default-lane test)
     python scripts/run_tests.py --sequential     full battery exactly as the commit gate and CI split it
+    python scripts/run_tests.py --evidence-dir DIR  pytest diagnostics in DIR/<phase>, passed by argv
     python scripts/run_tests.py tests/test_x.py  focused run; every argument is forwarded to pytest
 
 A bare call always means the FULL battery — it never skips a test on the
@@ -113,18 +114,26 @@ def _node_lane() -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--sequential", action="store_true", help="two passes, exactly as the commit gate and CI")
+    parser.add_argument("--evidence-dir", type=pathlib.Path,
+                        help="write pytest diagnostics under DIR/<phase>; never inherited by nested pytest",
+                        metavar="DIR")
     args, pytest_args = parser.parse_known_args(argv)
+    evidence = args.evidence_dir.resolve() if args.evidence_dir is not None else None
     if not (REPO / "tests" / "conftest.py").is_file():
         print(f"{REPO} is not an Ouroboros checkout (no tests/conftest.py)", file=sys.stderr)
         return 2
     if pytest_args:
         if args.sequential:
             parser.error("--sequential selects the full two-pass battery; drop it or drop the pytest arguments")
+        if evidence is not None:
+            pytest_args = ["--ci-evidence-dir", str(evidence / "focused"), *pytest_args]
         return _run("focused", [sys.executable, "-m", "pytest", *pytest_args], REPO)
     started = time.monotonic()
     code = _node_lane()
     ran = 0
     for label, command in battery_commands(args.sequential) if code == 0 else []:
+        if evidence is not None:
+            command = [*command, "--ci-evidence-dir", str(evidence / label)]
         code = _run(label, command, REPO)
         if code == _PYTEST_EXIT_NO_TESTS:
             code = 0

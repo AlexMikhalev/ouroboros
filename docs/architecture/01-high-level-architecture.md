@@ -155,7 +155,7 @@ ouroboros/ — agent core and shared runtime (§6)
   _usage_rows.py, _usage_money.py, _usage_response.py, usage_ledger.py, skill_review_usage.py — the one reducer, exact Decimal cash, the accounting usage normalizer, shared row rules and the money lock, the read-only Skill Review projection (§6 Usage ledger substrate vs. accounting policy)
   _usage_cache_splits.py — process-local cache split by task/provider/route/review; a missing entry prices a full cache write (§6)
   usage_store.py, usage_journal.py, openrouter_cost.py — `state/usage.sqlite`, its journal import and explicit OpenRouter price receipts (docs/USAGE_STORE.md)
-  store.py, store_import.py, store_switch.py — `state/current.sqlite` on money's SQLite core: atomic `meta.commit_seq`, typed `StoreMigrating`/`StoreRetired`/`StoreLost`/`StoreBusy`. Boot imports/reconciles (§2); restart exports bytes before storeless switches (§9). Packer snapshots precede deletion locks; changed facts defer.
+  store.py, store_import.py, store_switch.py — `state/current.sqlite`: money's SQLite core, atomic `meta.commit_seq`, typed `StoreMigrating`/`StoreRetired`/`StoreLost`/`StoreBusy`. Boot import/reconcile (§2), export before storeless switches (§9); packer snapshots precede deletion locks, changed facts defer.
   cost_projection.py — the one task-cost projection for every producer: `accounted_upper_bound_usd`, null as None and never $0.00 (§6 Budget tracking)
   storage.py — Dashboard Storage: one bounded, link-safe metadata walk at a time, kept in memory (§3 Dashboard)
   delegate_custody.py, delegate_custody_reconcile.py, delegate_collection.py, delegate_state_sweep.py, delegate_custody_usage.py — run custody, observation, collection and usage; OWNED/FOREIGN/UNKNOWN (§6 Nanny, transport and custody)
@@ -255,7 +255,7 @@ ouroboros/ — agent core and shared runtime (§6)
   review_execution_projection.py — Reviewer-execution projection; kinds `api` | `harness` | `native`, so the owner can tell a retrieving review from a packet review on the same model
   preflight_runner.py, preflight_node.py, preflight_receipts.py — Hermetic test gate, Node lane, receipts (§6 Hermetic preflight proof; §8)
   review_substrate.py — Review seat coordinator: independent seats, per-actor records that keep transport, parse, verdict, coverage and quorum distinct (§6 Review stack, Task acceptance)
-  review_custody.py, review_source_closure.py, review_operation.py, review_live_join.py — Physical reviewer workers with no-resend retry custody; retained owner-bound review inputs; panel-owned waits, checkpoints and existing-producer collection and its live join (§6 Task acceptance)
+  review_custody.py, review_source_closure.py, review_operation.py, review_live_join.py — Reviewer workers: no-resend custody, retained owner-bound inputs, panel waits/checkpoints, existing-producer collection/live joins (§6 Task acceptance)
   review_owner_custody.py — Paid attempts record `(server session, pid)` (§6 Paid stamp and owner custody)
   review_execution.py, review_session_preparation.py — Review delivery (`delivery_retrieves(route, native_retrieval)`) and session preparation without transport fallback (§6 Review delivery)
   review_native_episode.py — Read-only native API reviewer episodes for pool seats and deep self-review (§6 Native tool-round episode)
@@ -336,7 +336,7 @@ ouroboros/ — agent core and shared runtime (§6)
   terminal_cost_reconciliation.py — Usage recovery/projection (§6 Budget tracking)
   task_continuation.py — Durable review continuation state
   task_results.py — Task-result merge-writes (one store transaction) and typed readers; the locked `task_acceptance_review_accounting` claim is unknown without a recoverable terminal host run, never permission to re-dispatch (§6 Task acceptance)
-  task_store.py — Indexed facts/signatures and documents: implicit reads capture raw body+handoffs together, decode after close; supplied transactions keep their read/modify contract (PERSISTENCE.md)
+  task_store.py — Indexed facts/signatures, review candidates and documents: implicit body+handoff snapshots decode after close; explicit read/modify stays (PERSISTENCE.md)
   pause_notices.py — Confirmed-pause System disclosures: pending episodes, saved-chat receipts, off-loop local replay
   task_result_schema.py — Task-result schema admission: the `_schema_version` stamp, the classifier, and the quarantine an unstamped, future or malformed row lands in
   task_status.py — Effective status, lineage and waits; `execution_owner` and dated `execution_observation` separate lifecycle from liveness (§5); `task_has_live_queue_ownership` supplies the worker-side cancel predicate and fails open toward liveness (§10 invariant 14)
