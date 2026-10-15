@@ -21,7 +21,8 @@ harness = _harness
 
 
 def _continued(harness):
-    ctx, sub = first_plan(harness)
+    ctx = first_plan(harness)
+    sub = harness.install({})
     _apply(ctx, _capture(ctx), note=NOTE, review_notes=notes_for(ctx))
     env, root = successor(ctx)
     return ctx, sub, env, root
