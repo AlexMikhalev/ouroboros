@@ -69,6 +69,8 @@ TECHNICAL_REASON_CODES = frozenset({
     # is not retried automatically (replaying would repeat effects), and its saved
     # source is retained: an explicit Continue is exactly its manual path (#1543).
     "worker_crash_owner_wait", "worker_crash_budget_pausing",
+    # A billing or dispatch-fence authority that could not be read, where no exact pause was saved.
+    "billing_authority_unreadable", "control_authority_unreadable",
 })
 # The loop's forced-finalization rails that are technical limits: an extracted
 # best-effort answer settles ``completed``, the host fallback ``failed``
@@ -124,6 +126,8 @@ def continuation_eligibility(result: Dict[str, Any], task_id: str) -> Dict[str, 
     reason = str(result.get("reason_code") or "")
     if reason in HARD_LIMIT_REASON_CODES:
         return {"eligible": False, "cause": reason, "refusal": "hard_limit_reached"}
+    if reason == "billing_authority_refused":  # missing/foreign lineage: Continue cannot supply one
+        return {"eligible": False, "cause": reason, "refusal": "billing_lineage_refused"}
     if status == "completed" and reason not in EXECUTION_LIMIT_RAILS:
         return {"eligible": False, "cause": "finished", "refusal": "author_finished"}
     origin = result.get("cancel_origin") if isinstance(result.get("cancel_origin"), dict) else {}

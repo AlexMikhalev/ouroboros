@@ -51,7 +51,9 @@ from ouroboros.triad_review import review_output_shape
 from ouroboros.delegate_custody_usage import observe_failed_review_send
 from ouroboros.usage_accounting import (
     POSITIVE_PHYSICAL_ATTEMPT_STATES,
+    BillingAuthorityUnavailable,
     BudgetExceeded,
+    ControlAuthorityUnavailable,
     physical_attempt_limit,
 )
 from ouroboros.utils import utc_now_iso
@@ -757,9 +759,10 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     try:
                         msg, usage = chat(**chat_kwargs)
                     except BaseException as exc:
-                        # The paid ledger refusing the NEXT send is the money
-                        # floor landing, not a transport fault: name it.
-                        end_reason = "budget_exhausted" if isinstance(exc, BudgetExceeded) else "transport_error"
+                        # A budget or authority refusal of the NEXT send is not a transport fault.
+                        end_reason = ("budget_exhausted" if isinstance(exc, BudgetExceeded) else "billing_authority_unavailable"
+                                      if isinstance(exc, BillingAuthorityUnavailable) else "control_authority_unavailable"
+                                      if isinstance(exc, ControlAuthorityUnavailable) else "transport_error")
                         capture = getattr(exc, "physical_attempt_capture", None)
                         if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
                             # A send that was physically dispatched IS a round
@@ -770,7 +773,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                             self._observe_sent_view(messages, schemas)
                             invoke_review_paid_stamp(self.assignment.dispatch_stamp)
                         observe_failed_review_send(self.usage_observer, exc)
-                        if isinstance(exc, BudgetExceeded) and shape == "report" and last_content:
+                        if isinstance(exc, (BudgetExceeded, BillingAuthorityUnavailable, ControlAuthorityUnavailable)) and shape == "report" and last_content:
                             break  # nothing was sent; a report keeps its draft
                         raise
                 self._rounds_used, last_send_chars = round_idx, transcript_chars  # a returned send is the last physical send

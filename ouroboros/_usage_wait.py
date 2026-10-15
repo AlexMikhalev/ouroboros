@@ -50,7 +50,7 @@ class _PresendWait:
         from ouroboros.queue_observation import (
             DispatchPublicationPending, DISPATCH_PUBLICATION_WAIT_SEC, DISPATCH_PUBLICATION_POLL_SEC,
         )
-        from ouroboros.usage_ledger import UsageAccountingError
+        from ouroboros.usage_ledger import ControlAuthorityUnavailable
 
         pending = isinstance(error, DispatchPublicationPending)
         contention = (isinstance(error, (StoreBusy, LaunchBusy)) and error.reason == "contention"
@@ -81,7 +81,7 @@ class _PresendWait:
         remaining = DISPATCH_PUBLICATION_WAIT_SEC - max(self.publication_waited,
             time.monotonic() - self.publication_started if self.publication_started is not None else 0.0)
         if pending and remaining <= 0:
-            raise UsageAccountingError(str(error)) from error
+            raise ControlAuthorityUnavailable(str(error), cause="dispatch_publication_unconfirmed") from error
         if not self.owned and elapsed >= USAGE_LOCK_TIMEOUT_SEC:
             raise error
         if not self.entered:

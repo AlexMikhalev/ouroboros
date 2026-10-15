@@ -539,12 +539,13 @@ def install_exact_budget_pause(ctx: Any, task_id: str, checkpoint: Dict[str, Any
             try:
                 from supervisor.state import reconstruct_task_cost
 
-                owner = str(row.get("reason") or "") == "owner"
+                reason = str(row.get("reason") or "")
+                cause = {"owner": "owner Pause", "authority": str(row.get("rail") or "").replace("_", " ")}.get(reason, "budget")
                 cost_fields = reconstruct_task_cost(task_id, fields=True, drive_root=result_root)
                 write_task_result(
-                    result_root, task_id, STATUS_SCHEDULED,
-                    reason_code="owner_paused" if owner else "budget_paused", resource_limit=marker,
-                    result=(f"Task paused exactly at a completed boundary ({'owner Pause' if owner else 'budget'})"
+                    result_root, task_id, STATUS_SCHEDULED, resource_limit=marker,
+                    reason_code={"owner": "owner_paused", "authority": "authority_paused"}.get(reason, "budget_paused"),
+                    result=(f"Task paused exactly at a completed boundary ({cause})"
                             + ("; delegated work it had already sent is still running" if unsettled else "")
                             + ". Cumulative spend, rounds and execution time are retained; an explicit owner "
                             "Resume continues the same task."),
@@ -564,7 +565,7 @@ def install_exact_budget_pause(ctx: Any, task_id: str, checkpoint: Dict[str, Any
             "toast_once": f"{task_id}:budget-paused:{pause_id}",
             "pause_source": source,
             "park_state": STATE_PAUSED if confirmed else STATE_PAUSING,
-            **({"pause_reason": "owner"} if str(row.get("reason") or "") == "owner" else {}),
+            **({"pause_reason": str(row["reason"])} if row.get("reason") in {"owner", "authority"} else {}),
             **{key: value for key, value in marker.items() if key != "checkpoint"},
             "pause_id": pause_id,
             "external_runs": [

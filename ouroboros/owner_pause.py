@@ -578,12 +578,24 @@ def admit_delegated_start(drive_root: Any, payload: Dict[str, Any]) -> bool:
     from ouroboros._usage_wait import retry_presend
     from ouroboros.delegate_custody import emit, START_REQUESTED
     from ouroboros.model_wait import current_model_wait
-    from ouroboros.usage_admission import task_billing_fields
+    from ouroboros.usage_admission import effective_billing_fields, task_billing_fields
     from ouroboros.utils import utc_now_iso
 
     source = SimpleNamespace(drive_root=drive_root, task_id=str(payload.get("task_id") or ""),
                              root_task_id=str(payload.get("root_task_id") or payload.get("task_id") or ""))
-    binding = task_billing_fields({"id": source.task_id}, source.root_task_id, None, drive_root)
+    # START custody is this session's paid admission and its late receipt's bucket: an
+    # unestablished authority raises typed here, before any row or POST (owner 2026-10-14).
+    # A host operation its caller bound explicitly as non-task (no task lineage) is its own
+    # uncapped group on the global axis, exactly as its reservations are; never a prefix guess.
+    from ouroboros.usage_accounting import current_usage_scope
+    bound = current_usage_scope()
+    if not source.root_task_id:  # no task identity at all: an unattributed host start, no group to guess
+        binding = {}
+    elif bound is not None and bound.non_task_operation is True and str(bound.root_task_id or "") == source.root_task_id:
+        binding = {"billing_group_id": source.root_task_id, "billing_group_limit_usd": None}
+    else:
+        binding = effective_billing_fields(drive_root, source.root_task_id,
+            task_billing_fields({"id": source.task_id}, source.root_task_id, None, drive_root))
     payload = {"ts": utc_now_iso(), "event_id": uuid.uuid4().hex, **payload}
     payload["billing_group"] = {k: v for k, v in binding.items() if k.startswith("billing_group_")}
     retrying = False

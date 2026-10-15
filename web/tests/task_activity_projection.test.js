@@ -26,6 +26,7 @@ for (const [patch, text, motion, waiting] of [
     [{ phase: 'thinking' }, 'Thinking', true, false],
     [{ phase: 'queued' }, 'Queued', false, false],
     [{ phase: 'budget_paused', pause_cause: 'owner' }, 'Paused · owner pause', false, true],
+    [{ phase: 'budget_paused', pause_cause: 'authority' }, 'Paused · technical issue', false, true],
     [{ phase: 'budget_paused', pause_cause: 'owner', finishing_reviews: true }, 'Paused · owner pause · review work finishing', false, true],
     [{ phase: 'budget_pausing', pause_cause: 'owner', finishing_reviews: true }, 'Pausing… · owner pause', false, true],
     [{ phase: 'budget_pausing' }, 'Pausing…', false, true],

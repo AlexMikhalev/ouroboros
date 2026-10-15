@@ -33,13 +33,44 @@ _TERMINAL = frozenset({"settled", "unresolved", "released"})
 ONE_SHOT_KINDS = frozenset({"external_unmetered", "subscription_session"})
 
 __all__ = (
-    "LEDGER_REL", "LOCK_REL", "QUARANTINE_REL", "UsageAccountingError", "UsageLedgerCorrupt",
-    "UsageLockUnavailable", "UsageNonFiniteMoney", "is_abandoned_settlement",
+    "LEDGER_REL", "LOCK_REL", "QUARANTINE_REL", "BillingAuthorityUnavailable", "ControlAuthorityUnavailable",
+    "UsageAccountingError", "UsageLedgerCorrupt", "UsageLockUnavailable", "UsageNonFiniteMoney",
+    "is_abandoned_settlement",
 )
 
 
 class UsageAccountingError(RuntimeError):
     """Base error for fail-closed accounting operations."""
+
+
+class BillingAuthorityUnavailable(UsageAccountingError):
+    """No paid admission: the whole-work billing authority could not be established.
+
+    Not money, and never represented as a group or a zero: nothing shows a limit
+    was reached, so no catcher of ``BudgetExceeded`` sees it. ``kind`` is
+    ``unreadable`` (a read, parse, permission or corrupt-binding fault: work may
+    park exactly and Resume rereads) or ``refused`` (missing lineage or a
+    forbidden carried binding, positively established: neither waiting nor money
+    repairs it); ``cause`` names which.
+    """
+
+    def __init__(self, message: str, *, kind: str = "unreadable", cause: str = "", root_task_id: str = "") -> None:
+        super().__init__(message)
+        self.kind = "refused" if kind == "refused" else "unreadable"
+        self.cause = str(cause or "")
+        self.root_task_id = str(root_task_id or "")
+
+
+class ControlAuthorityUnavailable(UsageAccountingError):
+    """No dispatch: the root's dispatch-fence authority could not be read or validated.
+
+    Neither a Stop nor money; ``cause`` names the read. The loop saves the same work on
+    the technical rail where that capture works, otherwise it ends as infrastructure.
+    """
+
+    def __init__(self, message: str, *, cause: str = "") -> None:
+        super().__init__(message)
+        self.kind, self.cause = "unreadable", str(cause or "")
 
 
 class UsageLedgerCorrupt(UsageAccountingError):

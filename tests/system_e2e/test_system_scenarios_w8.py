@@ -185,9 +185,11 @@ def test_w8_literals_still_exist_in_the_tree():
     (MUST reach it on the resumed round). A literal that drifted upstream would
     make the first claim vacuously green and the second red by the wrong name."""
     # Runtime scenarios keep the concrete budget notice; source selects the
-    # owner/budget wording through the existing f-string. Pin that choice too.
+    # owner/authority/budget wording through the existing mapping. Pin those choices too.
     source = (REPO_ROOT / "ouroboros/budget_pause.py").read_text(encoding="utf-8")
-    assert 'kind = "owner Pause" if str(row.get("reason") or "") == REASON_OWNER else "budget pause"' in source
+    assert 'REASON_OWNER: "owner Pause"' in source
+    assert 'REASON_AUTHORITY: f"technical pause (' in source
+    assert 'str(row.get("reason") or ""), "budget pause")' in source
     for literal, relpath in LITERAL_SOURCES.items():
         source = (REPO_ROOT / relpath).read_text(encoding="utf-8")
         assert literal in source, f"{relpath} no longer carries {literal!r}"

@@ -113,7 +113,7 @@ def test_immediate_launch_refusal_uses_existing_poll_before_retry(monkeypatch):
     @contextmanager
     def gate(*_a, **_kw):
         if len(events) == 1:
-            raise owner_pause.OwnerPauseRefused("owner_launch_authority_unavailable")
+            raise owner_pause.LaunchBusy("contention")
         yield
     monkeypatch.setattr(owner_pause, "launch_admission", gate)
     assert loop_round_limits._handle_model_wait_control(SimpleNamespace(),

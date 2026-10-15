@@ -24,7 +24,7 @@
  * @property {Object=} project_admission_hold  // accepted unstarted work waiting for original Project authority
  * @property {boolean=} can_resume Positive current queue/grant authority, never derived from a label.
  * @property {boolean=} cancelable
- * @property {string=} pause_cause  // budget | owner | restart | sleep | unknown; display only
+ * @property {string=} pause_cause  // budget | owner | authority | restart | sleep | unknown; display only
  * @property {boolean=} finishing_reviews  // review work an owner Pause lets finish runs on; display only, no count
  * @property {Object=} late_work  // answered root with an open late phase (D10): title, answered_at; display only
  * @property {Object=} required_question  // read-only pointer to the current required Project quiz

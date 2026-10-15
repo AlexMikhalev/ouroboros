@@ -761,7 +761,7 @@ class ActiveChatActivity(ActiveDirectTurn):
     required_question: NotRequired[Dict[str, Any]]
     required_question_unavailable: NotRequired[bool]
     project_admission_hold: NotRequired[Dict[str, Any]]
-    pause_cause: NotRequired[str]  # budget | owner | restart | sleep | unknown; display only
+    pause_cause: NotRequired[str]  # budget | owner | restart | sleep | authority | unknown; display only
     finishing_reviews: NotRequired[bool]  # review work an owner Pause lets finish runs on; display only, no count
     late_work: NotRequired[Dict[str, Any]]  # answered root with an open late phase (D10): title, answered_at; display only
     can_resume: NotRequired[bool]

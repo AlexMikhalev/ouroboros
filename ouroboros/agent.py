@@ -974,6 +974,16 @@ class OuroborosAgent:
                     if root_limit_known and math.isfinite(root_limit) else
                     {"state": "unknown", "source": "invalid_admission_setting"})
             from ouroboros.usage_admission import task_billing_fields
+            from ouroboros.usage_ledger import BillingAuthorityUnavailable
+            try:
+                # The whole-work group and its cap (a Continue's successor spends the ORIGINAL cap).
+                billing = task_billing_fields(task, root_task_id, root_limit if root_limit > 0 else None,
+                                              budget_root, pin_initial=True)
+            except BillingAuthorityUnavailable as exc:
+                # Never bound as a stand-in: the group stays unbound, each send rereads it, and a
+                # failure that persists meets the loop's own technical rail before any paid call.
+                log.warning("Billing authority unavailable at start of %s: %s", task_id, exc)
+                billing = {"root_limit_usd": root_limit if root_limit > 0 else None}
             scope = UsageScope(
                 drive_root=budget_root,
                 task_id=task_id,
@@ -982,8 +992,7 @@ class OuroborosAgent:
                 category=str(metadata.get("usage_category") or task.get("type") or "task"),
                 source="agent.task",
                 root_cost_ceiling_usd=task.get("root_cost_ceiling_usd") or metadata.get("root_cost_ceiling_usd"),
-                # The whole-work group and its cap (a Continue's successor spends the ORIGINAL cap).
-                **task_billing_fields(task, root_task_id, root_limit if root_limit > 0 else None, budget_root, pin_initial=True),
+                **billing,
             )
             with usage_scope(scope), task_model_wait_scope(
                 task=task, drive_root=self.env.drive_root, event_queue=self._event_queue,

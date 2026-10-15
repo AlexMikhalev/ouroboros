@@ -464,7 +464,7 @@ def _activity_pause_cause(row: dict, fence: dict) -> str:
         return "owner"
     pause = row.get("_budget_pause") or row.get("budget_pause") or {}
     reason = pause.get("reason") if isinstance(pause, dict) else None
-    if reason in {"budget", "owner", "sleep"}:
+    if reason in {"budget", "owner", "sleep", "authority"}:
         return reason
     if isinstance(pause, dict) and pause.get("status") == "paused_before_dispatch":
         return "budget"
@@ -472,6 +472,8 @@ def _activity_pause_cause(row: dict, fence: dict) -> str:
         return "budget"
     if row.get("reason_code") == "owner_paused":
         return "owner"
+    if row.get("reason_code") == "authority_paused":
+        return "authority"
     return "unknown"
 
 

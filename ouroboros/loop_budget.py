@@ -18,7 +18,7 @@ from ouroboros import task_pacing
 from ouroboros.loop_transport import TransportWaitEpisode, end_episode_budget as _end_episode_budget
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.context_fit import messages_carry_native_images
-from ouroboros.usage_accounting import BudgetExceeded
+from ouroboros.usage_accounting import BillingAuthorityUnavailable, BudgetExceeded, ControlAuthorityUnavailable
 from ouroboros.utils import truncate_within_limit
 
 
@@ -602,6 +602,57 @@ def _handle_budget_exceeded(
             source="budget_host_fallback",
         )
     return message, ctx.accumulated_usage, ctx.llm_trace
+
+
+def _handle_authority_unavailable(
+    exc: BillingAuthorityUnavailable | ControlAuthorityUnavailable,
+    ctx: _LoopExitContext,
+    *,
+    limit_ctx: Optional[_RoundLimitContext] = None,
+    episode: Optional[TransportWaitEpisode] = None,
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    """An authority that cannot be established is no money fact (owner 2026-10-14, ab53 = A).
+
+    An unreadable billing authority or dispatch fence parks the SAME thought on the
+    exact pause under reason ``authority``, member-only: its Resume rereads the original
+    group and global authority strictly, and its sent runs are observed, never stopped
+    (00a5 = A). That raises, so this returns only when no exact pause can be saved, or
+    for a refused billing authority (missing lineage, foreign binding): then an
+    infrastructure interruption keeps the saved work, with no root fence, budget advice
+    or paid wrap-up, and never promises that waiting fixes it.
+    """
+    billing = isinstance(exc, BillingAuthorityUnavailable)
+    subject = "billing authority" if billing else "dispatch-fence authority"
+    code = f"billing_authority_{exc.kind}" if billing else "control_authority_unreadable"
+    if episode is not None:
+        _end_episode_budget(episode, ctx.drive_logs, ctx.task_id,
+                            limit_ctx.active_model if limit_ctx is not None else "", detail=code)
+    usage = ctx.accumulated_usage
+    if exc.kind == "unreadable" and limit_ctx is not None:
+        limit_ctx.tools, limit_ctx.llm_trace = ctx.tools, ctx.llm_trace
+        # The failed authority may name a billing group; the saved member keeps its own root lineage.
+        budget_pause.request_pause(
+            limit_ctx, rail=budget_pause.RAIL_BILLING_AUTHORITY if billing else budget_pause.RAIL_CONTROL_AUTHORITY,
+            scope="task", reason_text=str(exc))
+    fact = {"kind": exc.kind, "cause": exc.cause, "root_task_id": getattr(exc, "root_task_id", ""), "detail": str(exc),
+            "exact_pause_unavailable": str(usage.get("exact_pause_unavailable") or "")}
+    usage.update(execution_status="infra_failed", reason_code=code, billing_authority=fact)
+    ctx.llm_trace["billing_authority"] = fact
+    message = (
+        f"⚠️ No new paid call was admitted at this boundary: this task's billing lineage is missing or not its own "
+        f"({exc}). This is not a budget limit, and neither waiting nor a budget change repairs it. "
+        "Work already saved stays retained."
+        if exc.kind == "refused" else
+        f"⚠️ No new paid call was admitted at this boundary: this task's {subject} could not be read ({exc}), "
+        f"and its exact pause could not be saved ({fact['exact_pause_unavailable'] or 'no actor context'}). "
+        "This is not a budget limit. Work already saved stays retained; nothing unsaved is promised back.")
+    if limit_ctx is None:
+        _loop()._finalize_task_services(ctx)
+        return message, usage, ctx.llm_trace
+    limit_ctx.tools, limit_ctx.llm_trace = ctx.tools, ctx.llm_trace
+    _loop()._finalize_forced_services(limit_ctx, ctx.llm_trace)
+    return _loop()._forced_fallback_result(limit_ctx, ctx.llm_trace, message, code,
+                                           source="authority_host_notice")
 
 
 def _cleanup_loop_resources(

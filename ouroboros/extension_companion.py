@@ -202,6 +202,7 @@ class CompanionSupervisor:
                             f"extension_companion:{descriptor.skill_name}:"
                             f"{descriptor.name}"
                         ),
+                        non_task_operation=True,  # a host companion: no task lineage to read
                     )
                 except Exception:
                     self._retire_failed_start(key, runtime, "cost disclosure failed")

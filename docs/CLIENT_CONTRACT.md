@@ -365,7 +365,7 @@ data: {"seq":12,"type":"task_result","task_id":"…","data":{…}}
 **Pause, continue, resume, hurry:**
 - **Pause:** `POST /api/tasks/{id}/pause` takes exactly `{request_id}`. `202` with `latch_pending` means the pause is recorded and still taking hold; repeat the same `request_id`.
 - **Continue:** `POST /api/tasks/{id}/continue` takes exactly `{action_nonce}`. A timeout does not mean it failed: retry with the same nonce. The successor task's id is derived from the nonce, so it cannot start twice.
-- **Resume:** `POST /api/tasks/{id}/resume` resumes a task paused by its budget (`TaskResumeResponse`). It is not idempotent: a repeat is refused (409 or 404). After an unclear answer, read the task.
+- **Resume:** `POST /api/tasks/{id}/resume` returns saved work from a budget, owner or technical pause (`TaskResumeResponse`), after fresh control and money checks. Unreadable billing conditions refuse with HTTP 409, `code=billing_authority_unavailable`, the cause in `reason_code`, and explanatory `error`; this is not a missing task or exhausted money. It is not idempotent: a repeat is refused (409 or 404). After an unclear answer, read the task.
 - **Hurry:** `POST /api/tasks/{id}/hurry` takes exactly `{request_id}`.
 
 ## 9. Settings
