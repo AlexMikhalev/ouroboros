@@ -32,6 +32,7 @@ from tests.test_preflight_receipts import (  # noqa: F401 -- gate_env: the share
     _receipt_files,
     _tiny_repo,
     gate_env,
+    receipt_python,
 )
 from tests.test_review_change_end_to_end import _brief_text
 

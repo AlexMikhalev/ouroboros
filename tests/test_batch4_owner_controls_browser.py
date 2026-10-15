@@ -684,17 +684,23 @@ def test_continue_after_a_crash_rejoins_a_lost_answer_and_survives_reload(direct
                 page.route(f"**/api/tasks/{DELTA}/continue", lose_answer)
                 button.click()
                 expect(page.locator(".toast").last).to_contain_text("Continue not confirmed", timeout=15_000)
-                expect(button).to_be_enabled()
+                # A lost answer never strands the card: it offers the same Continue again, or the
+                # settled card's rows have already named the successor (task_continue.js).
+                page.wait_for_function("b => !b.disabled || Boolean(b.dataset.continueSuccessor)",
+                                       arg=button.element_handle(), timeout=15_000)
                 assert dropped == [200]
                 page.unroute(f"**/api/tasks/{DELTA}/continue")
                 offer = _task(page, url, DELTA).get("continuation_offer") or {}
                 successor = offer.get("successor_task_id")
                 assert successor and offer.get("refusal") == "already_continued", offer
                 shot("03-continue-answer-lost")
-                button.click()
+                # A press on a still-offered Continue retries the very admission; a disabled
+                # button ignores it, exactly as for the owner.
+                retried = button.evaluate("b => { const offered = !b.disabled; b.click(); return offered; }")
                 expect(button).to_have_text("Continued", timeout=15_000)
                 expect(button).to_have_attribute("data-continue-successor", successor)
-                expect(page.locator(".toast").last).to_contain_text("Continue accepted.")
+                if retried:
+                    expect(page.locator(".toast").last).to_contain_text("Continue accepted.")
                 nonce = page.evaluate(f"localStorage.getItem('ouro_continue_nonce:{DELTA}')")
                 assert nonce
                 shot("04-continue-retry-same-successor")

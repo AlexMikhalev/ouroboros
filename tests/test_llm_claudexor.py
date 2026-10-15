@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
 from copy import deepcopy
 import gzip
 import hashlib
@@ -1105,38 +1106,40 @@ def test_caller_control_before_create_proves_no_dispatch(setup):
 @pytest.mark.parametrize("phase", ["upload", "ack"])
 def test_async_cancellation_preserves_io_ownership_outside_polling(setup, phase):
     root, gateway, client = setup
-    entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+    entered, release, closed = Future(), threading.Event(), Future()
     name = "upload_model_request" if phase == "upload" else "acknowledge_model_result"
     original = getattr(gateway, name)
     original_close = gateway.close
 
     def blocked(*args, **kwargs):
-        entered.set()
-        assert release.wait(2)
-        assert not closed.is_set()
+        entered.set_result(None)
+        release.wait()
+        assert not closed.done()
         return original(*args, **kwargs)
 
     def close():
         original_close()
-        closed.set()
+        closed.set_result(None)
 
     setattr(gateway, name, blocked)
     gateway.close = close
 
     async def run():
         task = asyncio.create_task(client.chat_async([], MODEL))
-        assert await asyncio.to_thread(entered.wait, 2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert not closed.is_set()
-        release.set()
-        assert await asyncio.to_thread(closed.wait, 2)
+        try:
+            # Witness the I/O owner directly, without another executor waiter or
+            # a two-second performance requirement on request preparation.
+            await asyncio.wrap_future(entered)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not closed.done()
+        finally:
+            task.cancel()
+            release.set()  # also unblock the owner if the scenario fails
+        await asyncio.wrap_future(closed)
 
-    try:
-        asyncio.run(run())
-    finally:
-        release.set()
+    asyncio.run(asyncio.wait_for(run(), timeout=30))
     assert gateway.closed == 1
     if phase == "upload":
         assert not gateway.creates and ledger(root)[-1]["state"] == "released"
@@ -1147,36 +1150,36 @@ def test_async_cancellation_preserves_io_ownership_outside_polling(setup, phase)
 
 def test_async_cancellation_leaves_io_owner_to_cancel_and_close(setup):
     root, gateway, client = setup
-    entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+    entered, release, closed = Future(), threading.Event(), Future()
     gateway.pending = True
     original = gateway.get_model_operation
     original_close = gateway.close
 
     def read(*args, **kwargs):
-        entered.set()
-        assert release.wait(2)
+        entered.set_result(None)
+        release.wait()
         return original(*args, **kwargs)
 
     def close():
         original_close()
-        closed.set()
+        closed.set_result(None)
 
     gateway.get_model_operation, gateway.close = read, close
 
     async def run():
         task = asyncio.create_task(client.chat_async([{"role": "user", "content": "hi"}], MODEL))
-        assert await asyncio.to_thread(entered.wait, 2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert not closed.is_set()
-        release.set()
-        assert await asyncio.to_thread(closed.wait, 2)
+        try:
+            await asyncio.wrap_future(entered)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not closed.done()
+        finally:
+            task.cancel()
+            release.set()
+        await asyncio.wrap_future(closed)
 
-    try:
-        asyncio.run(run())
-    finally:
-        release.set()
+    asyncio.run(asyncio.wait_for(run(), timeout=30))
     assert gateway.cancels == [("op-0", "host_cancelled")]
     assert ledger(root)[-1]["state"] == "unresolved" and not gateway.acks
 

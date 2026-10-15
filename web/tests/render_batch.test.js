@@ -495,6 +495,21 @@ test('a card crossing the top with nothing anchorable inside keeps the reader on
     assert.equal(messages.scrollTop, 260, 'the reader stays on the same message');
 });
 
+test('a restore that finds its node in place writes nothing to the feed', () => {
+    // Even a write of the same scrollTop stops a scroll WebKit animates (End, PageDown).
+    let scrollTop = 500, writes = 0;
+    const bubble = { isConnected: true, bounds: { top: 40, width: 600, height: 80 },
+        getBoundingClientRect() { return this.bounds; }, getClientRects() { return [this.bounds]; } };
+    const messages = { getBoundingClientRect: () => ({ top: 0 }), contains: node => node === bubble,
+        get scrollTop() { return scrollTop; }, set scrollTop(value) { writes += 1; scrollTop = value; } };
+    const { restoreVisibleTimelineAnchor } = createTimelineAnchors({ messagesDiv: messages, liveCardRecords: new Map() });
+    assert.equal(restoreVisibleTimelineAnchor({ node: bubble, offset: 40 }), true);
+    assert.deepEqual({ writes, scrollTop }, { writes: 0, scrollTop: 500 });
+    bubble.bounds = { top: 70, width: 600, height: 80 }; // a card above grew 30 px
+    assert.equal(restoreVisibleTimelineAnchor({ node: bubble, offset: 40 }), true);
+    assert.deepEqual({ writes, scrollTop }, { writes: 1, scrollTop: 530 }, 'a moved node is put back');
+});
+
 // A small layout model: a child's top follows its parent's top, the parent's own
 // scrollTop when the parent scrolls, and its offset in the parent's content.
 function layoutNode({ classes = [], data = {}, y = 0, height = 0, scroll = null, parent = null } = {}) {

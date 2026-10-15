@@ -249,11 +249,11 @@ class ReviewOperation:
             try:
                 self.control_state = _operation_stop_state(self.result_root, self.task_id)
                 if self.historical_purpose and self.control_state != "unknown":
-                    from ouroboros.acceptance_late import historical_operation_controls, owner_paused_only
-                    blocked = historical_operation_controls(self.result_root, self.historical_purpose,
+                    from ouroboros.acceptance_late import owner_paused_controls
+                    blocked, paused = owner_paused_controls(self.result_root, self.historical_purpose,
                                                             unstarted=not self._dispatched)
                     # An owner Pause defers unsent work until Resume (D10); it is never a Stop.
-                    if blocked and not owner_paused_only(self.result_root, self.historical_purpose, blocked):
+                    if blocked and not paused:
                         self.control_state = "cancelled"
             except StoreBusy:
                 if control_probe_requires_current():

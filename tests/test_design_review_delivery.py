@@ -46,7 +46,7 @@ def test_deep_review_separates_installed_governance_from_candidate_sources(
     candidate = tmp_path / "candidate"
     _design(candidate, "## Proposed replacement\n")
     proposed_bible = "# Proposed constitution\nCandidate-only proposal.\n"
-    (candidate / "BIBLE.md").write_text(proposed_bible)
+    (candidate / "BIBLE.md").write_bytes(proposed_bible.encode("utf-8"))
     required = [{"root": "active_workspace", "path": "BIBLE.md",
                  **source_text_identity(proposed_bible.encode())}]
     llm = _ScriptedLLM([
