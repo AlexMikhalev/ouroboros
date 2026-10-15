@@ -424,7 +424,7 @@ def _handle_bridge_update_batch(bridge, updates, offset: int, ctx: Any, cursor: 
                 task_metadata["_host_operation"] = True
         reply_source = origin_message_ref if msg.get("accepted_source_ref") else None
         def reply(body: str, status: str = "completed") -> None:
-            ctx.send_with_budget(chat_id, body, **host_operation_reply_kwargs(reply_source, status), role="system", system_type="command_reply")
+            ctx.send_with_budget(chat_id, body, **host_operation_reply_kwargs(reply_source, status, client_message_id), role="system", system_type="command_reply")
         def _stamp_owner_activity(live: dict) -> None:
             # Global owner = primary chat for outbound notices (web on desktop, the first
             # transport on headless Colab), bound once — only into a slot KNOWN to be empty.
@@ -487,7 +487,7 @@ def _handle_bridge_update_batch(bridge, updates, offset: int, ctx: Any, cursor: 
             # `/review <row>` names the executor (the Web selector sends it);
             # a bare `/review` (Telegram) runs on the Main model.
             parts = text.split(None, 1)
-            ctx.queue_deep_self_review_task(reason="owner:/review", force=True, chat_id=chat_id,
+            ctx.queue_deep_self_review_task(reason="owner:/review", force=True, chat_id=chat_id, client_message_id=client_message_id,
                                             reviewer=parts[1].strip() if len(parts) > 1 else "")
         elif lowered.startswith("/evolve"):
             parts = lowered.split()

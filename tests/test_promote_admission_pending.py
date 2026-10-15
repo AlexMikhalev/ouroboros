@@ -52,7 +52,7 @@ def test_an_unconfirmed_promote_reads_as_a_pending_admission(tmp_path, _short_co
     from ouroboros.tools.control_task_results import _get_task_result
 
     ctx = _promote_ctx(tmp_path, _DeadQueue())
-    out = _promote_chat_to_task(ctx, "Continue the racer", workspace="none",
+    out = _promote_chat_to_task(ctx, "Continue the racer", title="Racer continuation", workspace="none",
                                 predecessor_task_id="")
     assert out.startswith("⚠️ PROMOTE_UNCONFIRMED")
     task_id = ctx.event_queue.events[0]["task_id"]
@@ -82,7 +82,8 @@ def test_a_confirmed_admission_reads_as_the_ordinary_result(tmp_path, _short_con
     from ouroboros.tools.control_task_results import _get_task_result
 
     ctx = _promote_ctx(tmp_path, _DeadQueue())
-    _promote_chat_to_task(ctx, "Continue the racer", workspace="none", predecessor_task_id="")
+    _promote_chat_to_task(ctx, "Continue the racer", title="Racer continuation",
+                          workspace="none", predecessor_task_id="")
     event = ctx.event_queue.events[0]
     task_id = event["task_id"]
 
@@ -121,7 +122,7 @@ def test_a_fast_admission_leaves_no_emitted_stub_behind(tmp_path, _short_confirm
             )
 
     ctx = _promote_ctx(tmp_path, _FastSupervisor())
-    out = _promote_chat_to_task(ctx, "Build the racer", workspace="none",
+    out = _promote_chat_to_task(ctx, "Build the racer", title="Racer build", workspace="none",
                                 predecessor_task_id="")
     assert out.startswith("OK: task")
 
@@ -138,7 +139,7 @@ def test_a_late_admission_replaces_the_stub_it_finds(tmp_path, _short_confirmati
     from ouroboros.tools.control_routing import _promote_chat_to_task
 
     ctx = _promote_ctx(tmp_path, _DeadQueue())
-    _promote_chat_to_task(ctx, "Build the racer", workspace="none", predecessor_task_id="")
+    _promote_chat_to_task(ctx, "Build the racer", title="Racer build", workspace="none", predecessor_task_id="")
     event = ctx.event_queue.events[0]
 
     write_task_result(
@@ -164,7 +165,7 @@ def test_the_emitted_stub_never_owns_its_own_admissions_id(tmp_path, monkeypatch
     from ouroboros.tools.control_routing import _promote_chat_to_task
 
     ctx = _promote_ctx(tmp_path, _DeadQueue())
-    _promote_chat_to_task(ctx, "Build the racer", workspace="none", predecessor_task_id="")
+    _promote_chat_to_task(ctx, "Build the racer", title="Racer build", workspace="none", predecessor_task_id="")
     event = ctx.event_queue.events[0]
     task_id, token = event["task_id"], event["routing_token"]
 
@@ -207,7 +208,7 @@ def test_a_stub_is_read_around_only_by_the_token_that_wrote_it(tmp_path, monkeyp
     from ouroboros.tools.control_routing import _promote_chat_to_task
 
     ctx = _promote_ctx(tmp_path, _DeadQueue())
-    _promote_chat_to_task(ctx, "Build the racer", workspace="none", predecessor_task_id="")
+    _promote_chat_to_task(ctx, "Build the racer", title="Racer build", workspace="none", predecessor_task_id="")
     task_id = ctx.event_queue.events[0]["task_id"]
     monkeypatch.setattr(supervisor_queue, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(supervisor_queue, "PENDING", [])
@@ -255,7 +256,7 @@ def _emit_into(root, monkeypatch):
     monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 0.05)
     monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_POLL_SEC", 0.005)
     ctx = _promote_ctx(root, _DeadQueue())
-    out = _promote_chat_to_task(ctx, "Build the racer", workspace="none", predecessor_task_id="")
+    out = _promote_chat_to_task(ctx, "Build the racer", title="Racer build", workspace="none", predecessor_task_id="")
     assert out.startswith("⚠️ PROMOTE_UNCONFIRMED"), out
     return ctx, ctx.event_queue.events[0]
 
@@ -316,7 +317,8 @@ def test_the_pending_sentence_never_forbids_a_new_promote_for_ever(tmp_path, _sh
     from ouroboros.tools.control_task_results import _get_task_result
 
     ctx = _promote_ctx(tmp_path, _DeadQueue())
-    _promote_chat_to_task(ctx, "Continue the racer", workspace="none", predecessor_task_id="")
+    _promote_chat_to_task(ctx, "Continue the racer", title="Racer continuation",
+                          workspace="none", predecessor_task_id="")
     task_id = ctx.event_queue.events[0]["task_id"]
 
     read = _get_task_result(ctx, task_id)

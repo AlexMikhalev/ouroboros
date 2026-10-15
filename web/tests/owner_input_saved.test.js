@@ -354,6 +354,34 @@ const until = async (check, why) => {
     assert.ok(check(), why);
 };
 
+test('an initialization refusal names one kept send in its own room; a nameless refusal names the room', async () => {
+    const tab = keptTab();
+    try {
+        const room = tab.open();
+        await room.send('first');
+        await room.send('second');
+        const counts = () => ['cm-1', 'cm-2'].map((id) => room.actions(id).length);
+        const notice = (chat_id, client_message_id = '') => room.fire('chat', {
+            type: 'chat', role: 'system', system_type: 'initialization_notice', chat_id, client_message_id,
+            content: 'Still starting. Send again when ready.',
+        });
+        assert.deepEqual(counts(), [0, 0]);
+        notice(1, 'cm-1');
+        notice(1);
+        notice(7, 'other-message');
+        assert.deepEqual(counts(), [0, 0], 'a foreign room or unknown id changes neither send');
+        notice(7, 'cm-1');
+        assert.deepEqual(counts(), [2, 0], 'the chat consumer scopes doubt to the named submission');
+        assert.deepEqual(room.actions('cm-1').map((node) => node.textContent), ['Send again', 'Discard']);
+        room.press('cm-1', 'Send again');
+        assert.deepEqual(room.sent[2], room.sent[0], 'retry keeps the original frame and id');
+        assert.deepEqual(counts(), [0, 0]);
+        notice(7);
+        assert.deepEqual(counts(), [2, 2], 'the legacy nameless refusal still doubts the whole room');
+        assert.equal(room.sent.length, 3, 'a notice never resends by itself');
+    } finally { tab.close(); }
+});
+
 test('a sent attachment message outlives a reload and a room teardown: Send again with the same id', async () => {
     const tab = keptTab();
     try {

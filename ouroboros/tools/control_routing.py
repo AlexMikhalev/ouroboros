@@ -346,6 +346,20 @@ def _requested_scope_label(display_name: str, project_id: str) -> str:
     return f"project '{project_id}'" if project_id else "the main chat"
 
 
+def _task_card_title_arg(title: str, verb: str) -> tuple[str, str]:
+    """Model-created roots need a name that survives admission's lexical cleaner."""
+    from ouroboros.project_naming import admission_names
+
+    card_title = str(title or "").strip()[:80]
+    if admission_names({"title": card_title}, "")[0]:
+        return card_title, ""
+    return "", (
+        f"⚠️ TOOL_ARG_ERROR ({verb}): title is required: the short name "
+        "the owner sees on the new task's card (<=80 chars). Supply title separately "
+        "from the executor's work order. Nothing was scheduled."
+    )
+
+
 def _promote_chat_to_task(
     ctx: ToolContext,
     objective: str,
@@ -371,9 +385,12 @@ def _promote_chat_to_task(
 
     ``title`` is a short human name the model coins for the card AT CREATION
     (no extra request, owner P1) — reused as the project name if this task is
-    later turned into a project. ``project_name`` makes this an LLM-first
-    "create a named project and work there" call: the project is created NOW
-    with that display name and the task runs inside it (v6.33.0).
+    later turned into a project. It is required here (#1725): the shared
+    admission fallback would show the work order's first line as its name;
+    owner, API and queued entrances keep that fallback. ``project_name`` makes
+    this an LLM-first "create a named project and work there" call: the
+    project is created NOW with that display name and the task runs inside it
+    (v6.33.0).
     """
     selector_error = _predecessor_selector_error(predecessor_task_id, "promote_chat_to_task")
     if selector_error:
@@ -384,6 +401,9 @@ def _promote_chat_to_task(
     goal = str(objective or "").strip()
     if not goal:
         return "⚠️ TOOL_ARG_ERROR (promote_chat_to_task): objective is required"
+    card_title, title_error = _task_card_title_arg(title, "promote_chat_to_task")
+    if title_error:
+        return title_error
     from ouroboros.project_facts import (
         explicit_project_id_ok,
         project_id_from_display_name,
@@ -472,7 +492,7 @@ def _promote_chat_to_task(
         "expected_output": str(expected_output or "").strip(),
         "project_id": pid,
         "project_name": display_name,
-        "title": str(title or "").strip()[:80],
+        "title": card_title,
         "workspace_root": requested_root,
         # Source admission is intentionally supervisor-side, after the
         # authoritative worker-pool and duplicate-id gates.
@@ -670,6 +690,7 @@ def _route_to_project(
     predecessor_task_id: Any = _MISSING_PREDECESSOR_SELECTOR,
     candidates: Any = None,
     reasoning_effort: Any = None,
+    title: str = "",
 ) -> str:
     """Route a main-chat message to an EXISTING project so the work continues in
     that project's context (its memory/journal/thread), keeping the main chat free.
@@ -678,6 +699,9 @@ def _route_to_project(
     keyword rule); this verb just delivers the decision and returns a visible
     receipt. The receipt is host metadata on the owner message; any non-empty
     final decision-turn explanation remains a separate conversational reply.
+    An existing target starts a new root and requires its human-facing title;
+    the manual picker starts nothing and needs no title. Queued/owner events
+    retain admission's fallback; this check belongs only to the model's call.
     """
     selector_error = _predecessor_selector_error(predecessor_task_id, "route_to_project")
     if selector_error:
@@ -798,6 +822,9 @@ def _route_to_project(
             f"⚠️ ROUTING_UNCONFIRMED ({failure}, {mode}): no route was dispatched{_cause_words(failure)}, and "
             "delivery of the manual target options was not confirmed."
         )
+    card_title, title_error = _task_card_title_arg(title, "route_to_project")
+    if title_error:
+        return title_error
     tid = uuid.uuid4().hex[:16]
     routing_token = uuid.uuid4().hex
     objective = msg if not str(reason or "").strip() else f"{msg}\n\n(routing reason: {str(reason).strip()})"
@@ -806,6 +833,7 @@ def _route_to_project(
         "task_id": tid,
         "routing_token": routing_token,
         "objective": objective,
+        "title": card_title,
         "project_id": pid,
         **effort_fields,
         "chat_id": current_chat_id,

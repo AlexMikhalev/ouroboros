@@ -588,6 +588,40 @@ test('a typing frame is a receipt: Sending... steps to the census verdict, never
     } finally { fx.instance.destroy(); restoreDom(fx.prior); }
 });
 
+test('#1403: an unrelated System row keeps Working and Sending; a refusal settles only its own submission', async () => {
+    const fx = makeInstance();
+    const notice = (extra = {}) => fx.handlers.get('chat')({ chat_id: 1, role: 'system', system_type: 'budget_notice',
+        task_id: '', content: '🚫 Model budget reached. Unrelated runtime fact.', ts: '2026-10-13T09:00:00Z', ...extra });
+    const send = async (text, cmid) => {
+        fx.state.messageId = cmid;
+        globalThis.document.byId.get('chat-input').value = text;
+        globalThis.document.byId.get('chat-send').listeners.get('click')[0]();
+        await fx.settle();
+    };
+    try {
+        fx.census([{ activity_id: 'turn-1', chat_id: 1, kind: 'direct_chat', phase: 'working' }], true);
+        assert.equal(fx.status(), 'Working');
+        notice();
+        assert.equal(fx.status(), 'Working', 'a runtime notice concludes no turn');
+        fx.census([], true);
+        await send('first', 'cm-first');
+        await send('second', 'cm-second');
+        assert.equal(fx.status(), 'Sending...');
+        notice();
+        assert.equal(fx.status(), 'Sending...', 'nor retires a submission it does not name');
+        // A host refusal names the submission it answers: only that one settles.
+        notice({ system_type: 'task_admission_notice', content: '🚫 Budget exhausted. Task rejected.',
+            client_message_id: 'cm-first' });
+        assert.equal(fx.status(), 'Sending...', 'the other submission is still unanswered');
+        notice({ system_type: 'command_reply', content: '🧠 Background consciousness: on', client_message_id: 'cm-second' });
+        assert.equal(fx.status(), 'Online');
+        // A legacy unkeyed model final still ends the unscoped turn, as documented.
+        await send('third', 'cm-third');
+        fx.handlers.get('chat')({ chat_id: 1, role: 'assistant', task_id: '', content: 'Done.', ts: '2026-10-13T09:01:00Z' });
+        assert.equal(fx.status(), 'Online');
+    } finally { fx.instance.destroy(); restoreDom(fx.prior); }
+});
+
 test('#866: a progress-minted card the census never lists is not shielded from durable reconcile', async () => {
     const id = 'presence-0adf5b78';
     const fx = makeInstance({ details: { [id]: { task_id: id, status: 'completed', phase: 'done', ts: '2026-09-14T10:00:00Z' } } });

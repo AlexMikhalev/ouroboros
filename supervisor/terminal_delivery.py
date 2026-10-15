@@ -1440,16 +1440,16 @@ def build_unreviewed_salvage_event(
     descendants = (
         f" {len(children)} descendant task(s) were settled with it." if children else ""
     )
+    # Only a receipt with a preview promises one below (new fallback ids; owed rows keep their bytes).
     if str(settled_status or "").strip().lower() == STATUS_COMPLETED:
         # Completion-wins (owner 4=A): the kept result is the real answer, not a
         # salvage — but it still bypassed the normal delivery path, so say so.
-        lines = [f"✅ Task {tid} {outcome_text}. Its completed result is preserved below." + descendants]
+        lines = [f"✅ Task {tid} {outcome_text}." + (" Its completed result is preserved below." if preview else "")
+                 + descendants]
     else:
-        lines = [
-            f"⚠️ Task {tid} was {outcome_text}. Below is the last persisted "
-            "intermediate model message, preserved WITHOUT review (salvaged "
-            "best-effort; NOT a final answer)." + descendants,
-        ]
+        lines = [f"⚠️ Task {tid} was {outcome_text}." + (
+            " Below is the last persisted intermediate model message, preserved WITHOUT review (salvaged "
+            "best-effort; NOT a final answer)." if preview else "") + descendants]
     lines += ["", preview, "", _preview_note_line(preserved_path, omitted)] if preview else [
         "", "(no salvageable agent output was found for this task)"]
     # TZ-2 C2: "no salvageable text" never implies "no files": the stat-only store count

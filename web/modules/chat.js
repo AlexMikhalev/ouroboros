@@ -3559,17 +3559,14 @@ export function createChatInstance({
         });
     });
 
-    const isMyThread = (msg) => {
-        return chatThreadAccepts(msg, isMain, chatId, state.projectChatIds);
-    };
-
-    const isMyLogThread = (msg) => {
-        return chatLogThreadAccepts(msg, isMain, chatId, state.projectChatIds);
-    };
+    const isMyThread = msg => chatThreadAccepts(msg, isMain, chatId, state.projectChatIds);
+    const isMyLogThread = msg => chatLogThreadAccepts(msg, isMain, chatId, state.projectChatIds);
 
     onWs('chat', (msg) => {
-        if (msg.system_type === 'initialization_notice') unconfirmed.unsettle();  // a frame was refused
         if (!isMyThread(msg)) return;
+        if (msg.system_type === 'initialization_notice') {
+            unconfirmed.unsettle(msg.client_message_id ? [msg.client_message_id] : undefined);
+        }
         if (msg.system_type === 'project_question_pointer') { chatDecision.appendQuestionPointer(msg); return; }
         if (msg.role === 'user') {
             const clientMessageId = msg.client_message_id || '';
@@ -3638,11 +3635,10 @@ export function createChatInstance({
                     if (finished?.clientMessageId) {
                         pendingSubmissions.delete(finished.clientMessageId);
                     }
-                } else if (unkeyedFrameEndsTurn(msg)) {
-                    // Unkeyed finals clear unscoped state; incidents, notes and skill notices do not.
+                } else if (unkeyedFrameEndsTurn(msg)) {  // a legacy model final
                     activeDirectActivities.clear();
                     pendingSubmissions.clear();
-                }
+                } else pendingSubmissions.delete(String(msg.client_message_id || ''));
             }
 
             if (msg.system_type === 'task_summary') {
