@@ -9,7 +9,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | domain | name | modules | proposed |
 |---|---|---:|---:|
 | D01 | Agent core & main loop | 51 | 0 |
-| D02 | LLM client, routing & providers | 44 | 0 |
+| D02 | LLM client, routing & providers | 48 | 0 |
 | D03 | Context assembly, fit & compaction | 22 | 0 |
 | D04 | Tool execution: registry, access & typed results | 22 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 38 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 25 | 0 |
 | D19 | Frozen contracts (ABI) | 11 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **743** | **0** |
+| **total** | | **747** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -257,6 +257,9 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/fallback_cooldown.py`
 - `ouroboros/gateways/image_api.py`
 - `ouroboros/gateways/realtime_engine.py`
+- `ouroboros/gateways/realtime_gemini.py`
+- `ouroboros/gateways/realtime_openai.py`
+- `ouroboros/gateways/realtime_transport.py`
 - `ouroboros/image_preparation.py`
 - `ouroboros/llm.py`
 - `ouroboros/llm_anthropic.py`
@@ -265,6 +268,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/llm_claudexor.py`
 - `ouroboros/llm_fallback.py`
 - `ouroboros/llm_gigachat.py`
+- `ouroboros/llm_live.py`
 - `ouroboros/llm_local.py`
 - `ouroboros/llm_messages.py`
 - `ouroboros/llm_observability.py`
