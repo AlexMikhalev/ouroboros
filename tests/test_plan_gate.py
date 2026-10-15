@@ -268,3 +268,25 @@ def test_plan_task_meta_is_carried_only_when_typed(tmp_path):
         assert "plan_effect" not in _extract_result_metadata("plan_task", result.text, False, result)
     assert "plan_effect" not in _extract_result_metadata("plan_task", good.text, True, good)
     assert "plan_review_outcome" not in json.dumps(meta)
+
+
+# ---------------------------------------------------------------- Codex audit (2026-10-15), point 2 at the finalization seam
+
+def test_an_attempt_no_route_could_take_releases_the_blocking_obligation_as_disclosed(tmp_path):
+    _plan(tmp_path)  # a plan the mind never asked about
+    held = oh.force_plan_decision(_ctx(tmp_path, force_plan=True), {}, enforcement="blocking")
+    assert held["allow"] is False and held["asks_unroutable"] == 0 and oh.plan_review_reminder(held).startswith("[PLAN_REVIEW_HOLD]")
+    plan_record.append_attempt(tmp_path, "t-plan", {"revision": 1, "kind": "no_route", "ask": "council",
+                                                    "not_sendable": {SEAT: "health_skip[credential_pool_exhausted]"}})
+    attempted = oh.force_plan_decision(_ctx(tmp_path, force_plan=True), {}, enforcement="blocking")
+    assert attempted["status"] == "force_plan_unmet" and attempted["allow"] is True and attempted["asks_unroutable"] == 1
+    assert attempted["holding"] == [] and attempted["force_plan_met"] is False
+    text = oh.plan_review_disclosure(attempted)
+    assert "1 ask could reach no reviewer (every named route was unavailable)" in text and "disclosed, not held" in text
+    assert "advisory enforcement" not in text
+    assert oh.unmet_force_plan_obligation(_ctx(tmp_path, force_plan=True))["unmet"] is True, "unmet (nobody reached), yet not held"
+    assert "advisory enforcement" in oh.plan_review_disclosure(
+        oh.force_plan_decision(_ctx(tmp_path, force_plan=True), {}, enforcement="advisory"))
+    _seed(tmp_path, "t-none")  # an attempt without a plan is not a plan: held to write one
+    plan_record.append_attempt(tmp_path, "t-none", {"revision": None, "kind": "no_route", "ask": "council", "not_sendable": {}})
+    assert oh.force_plan_decision(_ctx(tmp_path, task_id="t-none", force_plan=True), {}, enforcement="blocking")["allow"] is False

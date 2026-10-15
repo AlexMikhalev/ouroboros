@@ -663,10 +663,14 @@ def plan_review_disclosure(decision: Dict[str, Any], forced_reason: str = "") ->
         return ("\n\n⚠️ Plan review: the answers of ask(s) " + ", ".join(pending)
                 + " had not arrived when the task ended; silence holds nothing and is not agreement.")
     if unmet and decision.get("allow"):
+        attempts = int(decision.get("asks_unroutable") or 0)
+        reached = (f"{attempts} ask{'' if attempts == 1 else 's'} could reach no reviewer (every named route was unavailable)"
+                   if attempts else "no ask reached a reviewer")
         why = ("released by the owner's hurry request" if decision.get("owner_hurry_local_advisory") else
                "Cyber Pro: Ouroboros proceeded by its own judgment" if decision.get("decision_authority") == "cyber_pro" else
+               "outages never hold, so the obligation is disclosed, not held" if str(decision.get("enforcement") or "") == "blocking" else
                "work proceeded under the owner-selected advisory enforcement")
-        return f"\n\n⚠️ Plan review: this task's planning obligation was not met — no ask reached a reviewer; {why}."
+        return f"\n\n⚠️ Plan review: this task's planning obligation was not met — {reached}; {why}."
     return ""
 
 

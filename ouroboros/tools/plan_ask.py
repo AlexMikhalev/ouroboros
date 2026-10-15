@@ -20,13 +20,15 @@ review-ledger record per ask (``surface="intention"``, a narrow adapter that nev
 asks the change/coupling reducer for a verdict), and the last settlement wakes the
 task mailbox. A seat whose process died before settling is recovered later from
 its retained operation (``collect_pending``), never resent. Every refusal before
-the dispatch — unknown participant, nothing sendable, budget, deadline, a malformed
-pool — writes nothing and engages no gate.
+the dispatch writes nothing and engages no gate, except an ask that NO named route
+could take: it leaves a typed attempt fact (nobody called, nothing held) so a Swarm
+obligation reads "asked, but no route" instead of "never asked".
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import pathlib
@@ -67,10 +69,11 @@ _PARTICIPANT_RECEIPT_KEYS = ("resolved_model", "applied_profile", "profile_conti
 
 
 class PlanAskRefused(Exception):
-    """A typed $0 refusal before anything was written: ``code`` is a tool-result code."""
+    """A typed $0 refusal; ``code`` is a tool-result code, ``attempt`` the one fact (asked, no route) the handler records."""
 
-    def __init__(self, code: str, text: str):
+    def __init__(self, code: str, text: str, attempt: Optional[Dict[str, Any]] = None):
         super().__init__(text)
+        self.attempt = attempt
         self.code, self.text = code, text
 
 
@@ -315,11 +318,42 @@ def _asks_since(record: Mapping[str, Any], last_ask_id: str) -> List[Dict[str, A
     return asks if index is None else asks[index:]
 
 
+def _delivered_asks(state_root: Any, task_id: str, asks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The council's asks as a participant is told them, every answer's prose present: prose the
+    index moved out (``plan_record._fit``) is read back from the retained reply source when it fits
+    one attachment (``EVIDENCE_PER_ITEM_BYTES``), else the omission is named with the source's address."""
+    from ouroboros.review_ledger import read_source
+    from ouroboros.tools import plan_evidence
+
+    out = copy.deepcopy(list(asks))
+    for participant in (p for ask in out for p in ask.get("participants") or []):
+        reply = participant.get("reply")
+        if not isinstance(reply, dict) or reply.get("prose_inline", True):
+            continue
+        ref = participant.get("reply_ref") if isinstance(participant.get("reply_ref"), dict) else {}
+        inner = ref.get("ref") if isinstance(ref.get("ref"), dict) else {}
+        chars, retained = int(ref.get("chars") or 0), ref.get("status") == "retained"
+        parsed = None
+        if retained and chars <= plan_evidence.EVIDENCE_PER_ITEM_BYTES:
+            try:
+                parsed, _error = plan_record.parse_reply(read_source(state_root, task_id, ref).decode("utf-8"))
+            except (OSError, ValueError, KeyError, TypeError):
+                parsed = None
+        if parsed is not None:
+            reply.update(prose=str(parsed.get("prose") or ""), prose_inline=True)
+            continue
+        reply["prose_omitted"] = {"chars": chars, "address": str(inner.get("path") or ""),
+                                  "reason": ("unreadable" if retained and chars <= plan_evidence.EVIDENCE_PER_ITEM_BYTES
+                                             else "too_large" if retained else "not_retained")}
+    return out
+
+
 def participant_content(ctx: Any, record: Mapping[str, Any], revision: Mapping[str, Any], participant: Participant, *,
-                        message: str, manifest: Mapping[str, Any], dialogue_section: str) -> str:
-    """One participant's user content: whole plan the first time, the delta since the
-    revision it last answered about afterwards; the council since its last answer; its
-    own open objections; the mind's message; the attachments."""
+                        message: str, manifest: Mapping[str, Any], dialogue_section: str,
+                        legacy: Optional[Mapping[str, Any]] = None, state_root: Any = None, task_id: str = "") -> str:
+    """One participant's user content: whole plan the first time, the delta since the revision
+    it last answered about afterwards; the council since its last answer; its own open objections
+    (an imported legacy one included: its raiser must see what holds the task); message; attachments."""
     seat_id = participant.seat_id
     last_ask, _row = _last_answer_row(record, seat_id)
     first_time = last_ask is None
@@ -327,8 +361,11 @@ def participant_content(ctx: Any, record: Mapping[str, Any], revision: Mapping[s
     if not first_time:
         seen = plan_record.revision_by_number(record, last_ask.get("revision"))
         delta = plan_record.revision_delta(seen, revision) if seen is not None else None
-    own = [o for o in plan_record.open_objections(record) if o.get("seat_id") == seat_id]
-    cross_talk = plan_packet.render_cross_talk(_asks_since(record, str((last_ask or {}).get("ask_id") or "")), seat_id=seat_id)
+    own = [o for o in plan_record.open_objections(record, legacy) if o.get("seat_id") == seat_id]
+    since = _asks_since(record, str((last_ask or {}).get("ask_id") or ""))
+    if state_root is not None and task_id:
+        since = _delivered_asks(state_root, task_id, since)
+    cross_talk = plan_packet.render_cross_talk(since, seat_id=seat_id)
     return plan_packet.build_participant_content(
         objective=_task_objective(ctx), owner_words=str(manifest.get("owner_words") or ""),
         dialogue_section=dialogue_section, revision=revision, delta=delta, cross_talk=cross_talk,
@@ -363,9 +400,10 @@ class PreparedAsk:
 
 
 def prepare_ask(ctx: Any, *, record: Mapping[str, Any], revision: Mapping[str, Any], ask: Any, message: str,
-                attach: List[str], reviewer_effort: str, state_root: pathlib.Path, task_id: str) -> PreparedAsk:
-    """Everything that can refuse, before anything is written: participants, the deadline
-    rail, each participant's delivery, fit and lane health, the budget admission."""
+                attach: List[str], reviewer_effort: str, state_root: pathlib.Path, task_id: str,
+                legacy: Optional[Mapping[str, Any]] = None) -> PreparedAsk:
+    """Everything that can refuse, before anything is written: participants, the deadline rail, each
+    participant's delivery, fit and lane health, the budget admission (``legacy``: the imported v2 state)."""
     from ouroboros.config import get_review_enforcement
     from ouroboros.tools.plan_dialogue import attach_own_dialogue, dialogue_slot_inputs, render_dialogue, session_input_limits
     from ouroboros.tools.review_helpers import review_enforcement_blocks, review_wave_binding_fence, review_wave_budget_gate
@@ -400,7 +438,7 @@ def prepare_ask(ctx: Any, *, record: Mapping[str, Any], revision: Mapping[str, A
     for participant in participants:
         sid = participant.seat_id
         contents[sid] = participant_content(ctx, record, revision, participant, message=message, manifest=manifest,
-                                            dialogue_section=dialogue_section)
+                                            dialogue_section=dialogue_section, legacy=legacy, state_root=state_root, task_id=task_id)
         session_tasks[sid] = _session_task_text(session_prompt, contents[sid], str(active_root))
         _ask, prior = _last_answer_row(record, sid)
         if prior is None:
@@ -444,7 +482,9 @@ def prepare_ask(ctx: Any, *, record: Mapping[str, Any], revision: Mapping[str, A
     if not callable_slots:
         raise PlanAskRefused("CAPABILITY_UNAVAILABLE",
                              "ERROR: PLAN_ASK_NOTHING_SENDABLE: no named participant can take this plan — "
-                             + "; ".join(f"{sid}: {why}" for sid, why in not_sendable.items()) + ". Nothing was written.")
+                             + "; ".join(f"{sid}: {why}" for sid, why in not_sendable.items()) + ". Nobody was called.",
+                             attempt={"kind": "no_route", "ask": copy.deepcopy(ask), "participants": [p.seat_id for p in participants],
+                                      "not_sendable": dict(not_sendable)})
     admission = review_wave_budget_gate(
         ctx, surface="plan_review", models=[str(s.model) for s in callable_slots],
         prompt_chars=[int(merged["slot_prompt_chars"].get(str(s.slot_id), len(system_prompt))) for s in callable_slots],
@@ -759,8 +799,7 @@ def dispatch_ask(ctx: Any, prepared: PreparedAsk, *, revision: Mapping[str, Any]
         facts = reply_facts_from_row(row)
         current = next((p for a in record.get("asks") or [] if a.get("ask_id") == prepared.ask_id for p in a.get("participants") or []
                         if str(p.get("seat_id") or "") == sid), None)
-        if current is not None and current.get("status") not in ("pending",) and facts.get("status") == "pending":
-            continue  # the custody hook settled this seat between the barrier and this write
+        # a seat the custody hook settled meanwhile keeps its answer: ``update_participant`` refuses the pending echo
         record = plan_record.update_participant(state_root, task_id, ask_id=prepared.ask_id, seat_id=sid, facts=facts)
         if facts.get("status") != "pending":
             reply_ref = settle_ledger_seat(state_root, task_id, record_id, sid, facts, raw_text=str(row.get("text") or ""))

@@ -554,3 +554,48 @@ def test_plan_history_views_read_the_record_and_still_read_a_finished_v2_wave(tm
     assert [r.get("plan_ask") or r.get("aggregate") for r in history["rounds"]] == ["REVIEW_REQUIRED", "a1"]
     assert [r["decision_kind"] for r in history["decision_rows"]] == ["plan_objection"] and operative["kind"] == "plan_revision"
     assert pr.RECORD_HISTORY_RULE in history["rule"] and len(history["rule"]) > len(pr.RECORD_HISTORY_RULE)
+# ---------------------------------------------------------------- Codex audit (2026-10-15), points 2 and 5
+
+def test_an_ask_no_route_could_take_is_attempted_and_disclosed_while_never_asking_or_no_plan_still_holds():
+    """Owner decision (Codex audit, point 2): a Swarm obligation counts as ATTEMPTED when the mind
+    wrote a plan and asked, and no route could take the ask (a recorded attempt) — disclosed, not
+    held, under Blocking too; it stays held when the mind never asked, or when no plan exists."""
+    attempt = {"ts": "t", "revision": 1, "kind": "no_route", "ask": "council",
+               "not_sendable": {SEAT_A: "health_skip[credential_pool_exhausted]"}}
+    asked = {**_record(revisions=1), "attempts": [attempt]}
+    decision = _gate(asked, force_plan=True)
+    assert decision["status"] == "force_plan_unmet" and decision["allow"] is True and decision["force_plan_met"] is False
+    assert decision["asks_unroutable"] == 1 and decision["holding"] == [] and decision["open_objections"] == []
+    assert _gate(asked, force_plan=True, enforcement="advisory")["allow"] is True
+    assert _gate(_record(revisions=1), force_plan=True)["allow"] is False, "a plan the mind never asked about: held"
+    for enforcement in ("blocking", "advisory"):  # no plan at all: still held to write one, attempt or not
+        assert _gate({**pr.empty_record(), "attempts": [attempt]}, force_plan=True, enforcement=enforcement)["allow"] is False
+    reached = {**_record([_participant(SEAT_A)]), "attempts": [attempt]}
+    assert _gate(reached, force_plan=True)["force_plan_met"] is True and _gate(reached, force_plan=True)["status"] == "awaiting"
+    assert pr.unroutable_asks(asked) == 1 and pr.read_view(asked)["attempts"] == [attempt]
+    assert pr.validate_record({**pr.empty_record(), "attempts": []})["attempts"] == []
+    with pytest.raises(pr.PlanRecordInvalid):
+        pr.validate_record({**pr.empty_record(), "attempts": "x"})
+
+
+def test_a_pending_echo_never_reopens_a_settled_seat_under_the_records_lock(tmp_path):
+    """Codex audit, point 5: the custody hook settles a released seat on its own thread while the
+    dispatcher still writes the barrier's pending rows from a stale copy — the record itself
+    refuses the echo under its lock; a seat still pending is written as before."""
+    root, task = tmp_path, "task-race"
+    seed_result(root, task, {"task_id": task, "status": "running"})
+    pr.append_revision(root, task, pr.compose_revision(None, goal="g", plan="p", done_when=[], affected_paths=[]), body=False)
+    pr.append_ask(root, task, {"ask_id": "a1", "ts": "t", "revision": 1, "message": "",
+                               "participants": [_participant(SEAT_A), _participant(SEAT_B)]})
+    pr.update_participant(root, task, ask_id="a1", seat_id=SEAT_A, facts={
+        "status": "answered", "model": "m/x", "cost": 0.01,
+        "reply": {"prose": "early", "objections": [{"id": "o1", "text": "no"}], "withdrawn": []}})
+    echo = {"status": "pending", "model": "m/x", "operation_state": "pending_dispatch", "late_result_pending": True}
+    settled, still = pr.update_participant(root, task, ask_id="a1", seat_id=SEAT_A, facts=echo)["asks"][0]["participants"]
+    assert settled["status"] == "answered" and settled["reply"]["objections"][0]["id"] == "o1" and "late_result_pending" not in settled
+    assert still["status"] == "pending" and "operation_state" not in still
+    still = pr.update_participant(root, task, ask_id="a1", seat_id=SEAT_B, facts=echo)["asks"][0]["participants"][1]
+    assert still["operation_state"] == "pending_dispatch" and still["late_result_pending"] is True
+    merged = pr.update_participant(root, task, ask_id="a1", seat_id=SEAT_A, facts={"reply_ref": {"status": "empty"}})
+    assert merged["asks"][0]["participants"][0]["reply_ref"] == {"status": "empty"}, "status-less facts still merge"
+    assert pr.open_objections(merged)[0]["holds"] is True
