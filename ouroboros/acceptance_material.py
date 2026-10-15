@@ -4,12 +4,20 @@ Inputs, checkpoints and requested outputs do not establish production. These
 sources use the existing artifact/source owners; this module neither dispatches
 critics nor writes a terminal/quiescent mutation state. A failed capture stays a
 gap and never resurrects the previous selection.
+
+Material names the execution whose store holds its sources (``task_id``). A retry
+under a new execution id restores that record with the work it continues, so the
+work's sources stay its premises: what the retry does not produce itself is copied
+into its own store under the same content references (``_carry_continued_sources``).
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Any
+
+_WORKSPACE_SOURCES = ("produced-workspace", "produced-workspace-diff")
+_PRODUCED_FILES = "source_handles/context_checkpoints/produced-"
 
 
 def retain_acceptance_material(ctx: Any, trace: dict, content: str | None = None, *, include_outputs: bool = True) -> dict:
@@ -26,14 +34,22 @@ def retain_acceptance_material(ctx: Any, trace: dict, content: str | None = None
 
     previous = trace.get("acceptance_material") or {}
     material: dict = {"produced": False, "sources": [], "issues": []}
+    attempted: set = set()  # names this execution produces itself (or failed to): never carried
+    unknown: set = set()  # kinds whose own capture failed: nothing of that kind is carried
     trace["acceptance_material"] = material
     root, task_id = getattr(ctx, "drive_root", None), str(getattr(ctx, "task_id", "") or "")
     if root is None or not task_id:
         return material
+    material["task_id"] = task_id
 
     def retain(name: str, text: str) -> dict:
+        attempted.add(name)
         prior = next((row.get("source_ref") for row in previous.get("sources", []) if row.get("name") == name), None)
-        if prior and read_actor_source_bytes(root, task_id, prior) == text.encode("utf-8"):
+        try:
+            reusable = bool(prior) and read_actor_source_bytes(root, task_id, prior) == text.encode("utf-8")
+        except (OSError, ValueError):
+            reusable = False  # e.g. a continued execution's ref: this store keeps its own copy
+        if reusable:
             material["sources"].append({"name": name, "source_ref": prior})
             return prior
         exact, ref, gap = persist_exact_text_source(root, task_id, source_id=name, text=text)
@@ -43,6 +59,7 @@ def retain_acceptance_material(ctx: Any, trace: dict, content: str | None = None
         return ref
 
     if answer_protocol_active(ctx):
+        attempted.add("selected-final-answer")  # present or absent, the answer is this execution's
         try:
             text = content if content is not None else str(getattr(getattr(ctx, "_delivery_candidate", None), "full_text", ""))
             answer = selected_final_answer(text, trace)
@@ -64,6 +81,7 @@ def retain_acceptance_material(ctx: Any, trace: dict, content: str | None = None
             if any(name == str(p).lstrip("/") or name.startswith(str(p).strip("/") + "/")
                    or Path(name).name == Path(str(p)).name for p in protected):
                 continue  # hidden/restricted evidence is never opened for admission
+            attempted.add(name)
             source = Path(row["path"])
             identity = stream_artifact_file(source, expected=row)
             rel = "source_handles/context_checkpoints/produced-" + identity["sha256"] + ".bin"
@@ -74,6 +92,7 @@ def retain_acceptance_material(ctx: Any, trace: dict, content: str | None = None
             material["sources"].append({"name": name, "source_ref": ref})
             material["produced"] = True
     except Exception as exc:
+        unknown.add("artifact")
         material["issues"].append({"status": "source_unavailable", "reason": str(exc), "tool": "artifact_manifest"})
 
     # The extension producer owns execution semantics (PluginAPI.register_tool).
@@ -112,6 +131,8 @@ def retain_acceptance_material(ctx: Any, trace: dict, content: str | None = None
         if repo:
             accounting = getattr(ctx, "budget_drive_root", None) or root
             snapshot = attributed_git_candidates(accounting, task_id, repo)
+            if snapshot.get("candidates"):
+                attempted.update(_WORKSPACE_SOURCES)
             if snapshot.get("candidates") and not snapshot.get("blockers"):
                 fingerprints = _git_path_fingerprints(Path(repo), snapshot["candidates"])
                 diff, meta = _accept_repo_diff(ctx, include_recent_commit=False, drive_root=root, task_id=task_id)
@@ -123,5 +144,92 @@ def retain_acceptance_material(ctx: Any, trace: dict, content: str | None = None
                                          "repo_diff_capture": meta.get("capture_disclosure") or {}}
                 material["produced"] = True
     except Exception as exc:
+        unknown.add("workspace")
         material["issues"].append({"status": "source_unavailable", "reason": str(exc), "tool": "repo_diff"})
+    # Another execution's record is the work this new-id retry continues; a later pass of the
+    # retry finds that execution in its own record's ``continued_from``.
+    owner = str(previous.get("task_id") or "")
+    continued = owner if owner != task_id else str((previous.get("continued_from") or {}).get("task_id") or "")
+    if continued and continued != task_id:
+        _carry_continued_sources(root, task_id, continued, previous, material, attempted, unknown)
     return material
+
+
+def _carry_continued_sources(root: Any, task_id: str, continued: str, previous: dict, material: dict,
+                             attempted: set, unknown: set) -> None:
+    """A new-id retry keeps the produced sources of the execution it continues.
+
+    ``previous`` is that execution's recorded material (restored with its working
+    checkpoint), or this retry's own on a later pass, whose ``continued_from`` names
+    what came from it. Each
+    such source this retry does not produce itself is copied into its own store under
+    the same reference and keeps its place, so an unchanged delivery keeps the paid
+    subject: nothing is re-paid and the old verdict still approves nothing. Material
+    the retry produces, re-derives differently or fails to capture changes the subject
+    and buys its own review; an unreadable source stays a gap, never a claimed identity.
+    """
+    marker = previous.get("continued_from") or {}
+    rows = [row for row in previous.get("sources") or [] if isinstance(row, dict)]
+    names = (set(marker.get("names") or ()) if marker.get("task_id") == continued
+             else {str(row.get("name") or "") for row in rows})
+    derived = {row["name"]: row for row in material["sources"]}
+    merged = []
+    for row in rows:
+        name, ref = str(row.get("name") or ""), row.get("source_ref") if isinstance(row.get("source_ref"), dict) else {}
+        if name in derived:
+            merged.append(derived.pop(name))
+            continue
+        kind = ("artifact" if str(ref.get("path") or "").startswith(_PRODUCED_FILES)
+                else "workspace" if name in _WORKSPACE_SOURCES else "")
+        if name not in names or name in attempted or kind in unknown:
+            continue  # this retry's own material is never resurrected
+        try:
+            _place_continued_source(root, task_id, continued, ref)
+        except Exception as exc:
+            material["issues"].append({"status": "source_unavailable", "reason": str(exc), "tool": "continued_material"})
+            continue
+        merged.append({"name": name, "source_ref": ref})
+        material["produced"] = True
+    material["sources"] = merged + list(derived.values())
+    if names:
+        material["continued_from"] = {"task_id": continued, "names": sorted(names)}
+
+
+def _place_continued_source(root: Any, task_id: str, continued: str, ref: dict) -> None:
+    """Copy one source of ``continued`` to the same path in this task's store, verified."""
+    from pathlib import PurePosixPath
+
+    from ouroboros.artifacts import (
+        copy_artifact_file, read_actor_source_bytes, stream_artifact_file, task_artifact_dir_path,
+    )
+    from ouroboros.task_custody import fence_publication
+    from ouroboros.utils import write_bytes_atomic
+
+    rel = PurePosixPath(str(ref.get("path") or ""))
+    identity = {"size": ref.get("size"), "sha256": ref.get("sha256")}
+    if ((ref.get("kind"), ref.get("root")) != ("task_source", "artifact_store") or rel.is_absolute()
+            or rel.parts[:1] != ("source_handles",) or ".." in rel.parts
+            or not isinstance(identity["size"], int) or not identity["sha256"]):
+        raise ValueError("continued material is not a verified task source")
+
+    def inside(owner: str, *, create: bool = False) -> Path:
+        base = task_artifact_dir_path(root, owner, create=create).resolve(strict=False)
+        path = base.joinpath(*rel.parts)
+        if path.is_symlink() or not path.resolve(strict=False).is_relative_to(base):
+            raise ValueError("continued material escapes its task store")
+        return path
+
+    target = inside(task_id, create=True)
+    try:
+        stream_artifact_file(target, expected=identity)
+        return  # placed by an earlier pass of this retry
+    except OSError:
+        pass
+    source = inside(continued)
+    if source.is_file():
+        copy_artifact_file(source, target, expected=identity)  # streamed and verified
+    else:  # packed or retained bytes of the continued execution
+        fence_publication()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        write_bytes_atomic(target, read_actor_source_bytes(root, continued, ref))
+    stream_artifact_file(target, expected=identity)
