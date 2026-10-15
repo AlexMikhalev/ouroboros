@@ -67,7 +67,7 @@ def test_named_symlink_is_a_gap_not_silent_retained_evidence(tmp_path):
     assert not (tmp_path / "files").exists()
 
 
-def test_large_binary_delta_streams_to_file_and_keeps_copy_when_over_budget(author, tmp_path, monkeypatch):  # noqa: F811
+def test_large_binary_delta_streams_to_file_and_is_retained_whole(author, tmp_path, monkeypatch):  # noqa: F811
     data = tmp_path / "data"
     source = rc.freeze_checking_source(author, data_root=data, subject=rc.SUBJECT_INDEX)
     area = pathlib.Path(rc.prepare_seat_area(data, "task", "large", source))
@@ -81,18 +81,11 @@ def test_large_binary_delta_streams_to_file_and_keeps_copy_when_over_budget(auth
         return real_run(argv, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", observe)
-    monkeypatch.setattr(rc, "EVIDENCE_RETAIN_BYTES", 16 * 1024)
+    monkeypatch.setattr(rc, "EVIDENCE_RETAIN_BYTES", 16 * 1024)  # investigations' bound; never a reviewer's
     result = rc.capture_seat_evidence(data, "task", "large", release=True)
-    assert streamed and result["status"] == "partial"
+    assert streamed and result["status"] == "retained" and result["patch_retained"] and not result["gaps"]
     assert result["patch_bytes"] > rc.EVIDENCE_RETAIN_BYTES
-    assert result["patch_retained"] is False and not pathlib.Path(result["evidence_dir"], "delta.patch").exists()
-    assert result["gaps"][0]["path"] == "delta.patch" and area.is_dir()
-    # The oversized stream was not a partial delivered patch; its original bytes
-    # stay in the copy and a later capture with room retains the complete delta.
-    monkeypatch.setattr(rc, "EVIDENCE_RETAIN_BYTES", 1024 * 1024)
-    retained = rc.capture_seat_evidence(data, "task", "large", release=True)
-    assert retained["status"] == "retained" and retained["patch_retained"]
-    assert pathlib.Path(retained["evidence_dir"], "delta.patch").stat().st_size == retained["patch_bytes"]
+    assert pathlib.Path(result["evidence_dir"], "delta.patch").stat().st_size == result["patch_bytes"]
     assert not area.exists()
 
 

@@ -121,9 +121,28 @@ RUNNING: Dict[str, Dict[str, Any]] = {}
 QUEUE_SEQ_COUNTER_REF: Dict[str, int] = {"value": 0}
 ACCEPTANCE_FENCES: Dict[str, Dict[str, Any]] = {}
 ADMISSION_RESERVATIONS: Dict[str, str] = {}
+# This generation's returning stop (planned or owner Restart) that copied PENDING for its
+# returns, under Q (``name_queue_returns``). The off-loop schedule duty reads it under Q
+# before its final enqueue: an admission after that copy would boot held for Resume.
+# Those doors always exit; the next generation's ``init_queue_refs`` starts open.
+RETURNS_NAMED: Dict[str, str] = {}
 
 # Guards PENDING/RUNNING mutations across main loop, direct chat, watchdog.
 _queue_lock = threading.RLock()
+
+
+def name_queue_returns(pending: List[Dict[str, Any]], door: str) -> List[Dict[str, Any]]:
+    """Close automatic admission, then copy the queue a returning stop names (one Q step)."""
+    with _queue_lock:
+        RETURNS_NAMED["door"] = door
+        return list(pending or [])
+
+
+def reopen_queue_returns(door: str) -> None:
+    """That door's stop raised before its exit: this generation goes on admitting."""
+    with _queue_lock:
+        if RETURNS_NAMED.get("door") == door:
+            RETURNS_NAMED.clear()
 from supervisor.task_admission import (  # noqa: E402,F401 - public queue API
     coerce_queue_order, enqueue_with_admission_receipt, prefer_terminalization_retry_rows,
     reject_invalid_task_depth, release_task_admission, restore_invalid_depth_admission,
@@ -149,6 +168,7 @@ def init_queue_refs(pending: List[Dict[str, Any]], running: Dict[str, Dict[str, 
     RUNNING = running
     QUEUE_SEQ_COUNTER_REF = seq_counter_ref
     ADMISSION_RESERVATIONS.clear()
+    RETURNS_NAMED.clear()
 
 
 def _task_priority(task_type: str) -> int:
@@ -204,15 +224,20 @@ def prepare_root_billing(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                                persist_initial=False)
 
 
+_UNRESOLVED = object()
+
+
 @contextlib.contextmanager
-def prepared_root_billing(task: Dict[str, Any]):
+def prepared_root_billing(task: Dict[str, Any], *, resolved: Any = _UNRESOLVED):
     """Resolve a root's billing BEFORE the caller takes ``_queue_lock``.
 
     ``enqueue_task`` called inside the block for the same task uses the result
     instead of reading the ledger under the lock. Written as a context manager
     so the call shape ``enqueue_task(task, ...)`` stays the same everywhere.
+    ``resolved``: a ``prepare_root_billing`` result the caller read before Q.
     """
-    token = _PREPARED_ROOT_BILLING.set((str(task.get("id") or "").strip(), prepare_root_billing(task)))
+    billing = prepare_root_billing(task) if resolved is _UNRESOLVED else resolved
+    token = _PREPARED_ROOT_BILLING.set((str(task.get("id") or "").strip(), billing))
     try:
         yield
     finally:
@@ -410,10 +435,13 @@ def enqueue_task(
                         t["_project_scope_none"] = True
                     PENDING.append(t)
         except (OSError, ValueError, TypeError, RuntimeError) as exc:
+            from supervisor.schedule_occurrence import contention
+
             t.update(_admission_blocked=getattr(exc, "reason", lookup),
                      _admission_detail=str(exc), _project_id=project_id,
                      _project_lifecycle=getattr(exc, "lifecycle", ""),
-                     _admission_never_admitted=True)
+                     _admission_never_admitted=True,
+                     **({"_admission_contention": True} if contention(exc) else {}))
             if admission_token and ADMISSION_RESERVATIONS.get(task_id) == admission_token:
                 ADMISSION_RESERVATIONS.pop(task_id, None)
             return t

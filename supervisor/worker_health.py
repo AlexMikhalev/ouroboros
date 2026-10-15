@@ -2,7 +2,9 @@
 
 Distinguishes a worker that died from one that is merely slow, respects the spawn
 grace window so a booting pool is not read as a crash storm, and publishes the
-task_done the dying task can no longer publish for itself.
+task_done the dying task can no longer publish for itself. A crash storm freezes the
+captured membership, suppresses respawn until terminal sources settle, then fences
+pooled admission; direct chat is spared.
 """
 
 from __future__ import annotations
@@ -141,8 +143,16 @@ def ensure_workers_healthy() -> None:
     if (time.time() - _pool()._LAST_SPAWN_TIME) < _pool()._SPAWN_GRACE_SEC:
         return
     queue._ensure_reaper_started()
-    with _queue_lock:
-        _pool()._ensure_workers_healthy_locked(queue)
+    # Do not capture a storm membership halfway through a serialized spawn/retire.
+    # Health intake retries next tick rather than waiting behind native teardown.
+    from supervisor.worker_pool_lifecycle import _WORKER_LIFECYCLE_LOCK
+    if not _WORKER_LIFECYCLE_LOCK.acquire(blocking=False):
+        return
+    try:
+        with _queue_lock:
+            _pool()._ensure_workers_healthy_locked(queue)
+    finally:
+        _WORKER_LIFECYCLE_LOCK.release()
 
 
 def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
@@ -189,16 +199,24 @@ def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
     for job in jobs:
         job["skip_respawn"] = disable_pool
     if disable_pool:
+        # Freeze the exact captured membership for its stop: under this latch no slot
+        # starts or is forgotten (``respawn_worker``), so only a generation change,
+        # whose own stop or start then owns the fence, can make the stop a no-op.
+        _pool()._WORKER_POOL_DISABLED_REASON = "worker_crash_storm"
         jobs.append({"kind": "worker_crash_storm", "workers": tuple(_pool().WORKERS.items()),
                      "drive_root": str(_pool().DRIVE_ROOT)})
-    for job in jobs:
+    for index, job in enumerate(jobs):
         try:
             queue._reap_queue.put(job)
         except Exception:
             # No handoff happened. Keep RUNNING intact for the next health tick.
-            worker = job.get("worker")
-            if worker is not None and _pool().WORKERS.get(job["worker_id"]) is worker:
-                worker.reaping = False
+            for unsent in jobs[index:]:
+                worker = unsent.get("worker")
+                if worker is not None and _pool().WORKERS.get(unsent["worker_id"]) is worker:
+                    worker.reaping = False
+            if disable_pool:
+                # The latch never outlives its stop: an unsent stop waits with the reaper's retries.
+                _reaper()._deferred_reap_jobs.append(jobs[-1])
             raise
     # Kept for private callers; all replacements/storm stops are queued now.
     return [], disable_pool
@@ -224,7 +242,15 @@ def _dead_job_is_current(job: dict) -> bool:
 
 
 def recover_confirmed_dead_worker(job: dict) -> None:
-    """Recover exact saved terminal bytes before applying the old crash policy."""
+    """Recover exact saved terminal bytes before applying the old crash policy.
+
+    Saved terminal bytes, including the ``task_exception`` terminal a worker writes after
+    ``handle_task`` failed, win over signal death; a live exact pause re-parks. Unknown or
+    incomplete publication raises ``TerminalFileRecoveryPending`` and the reaper keeps the
+    job. Only confirmed absence reaches crash policy: a signal is an infrastructure failure,
+    an eligible crash retries within ``QUEUE_MAX_RETRIES`` keeping its cost and wait
+    restrictions, and a budget continuation forbids ordinary retry.
+    """
     from ouroboros.headless import prepare_terminal_task_files, terminal_task_files_ready
     from ouroboros.task_results import load_task_result, _TRULY_TERMINAL_STATUSES
     from supervisor import queue
@@ -468,6 +494,30 @@ def _recover_crashed_task_without_terminal(job: dict, queue: Any) -> None:
     # owner-wait checkpoint: completed work is never replayed (#1196).
     parked, budget_pausing = _complete_exact_budget_pause_after_death(job, root, task, task_id, attempt)
     if parked:
+        return
+    # An answer the host already holds (owed, delivered, or unreadable evidence) is
+    # never generated again: the dead attempt is finalized from the outbox's bytes
+    # and published like a saved terminal, with the answer still replayed by the
+    # outbox. Only a confirmed absence of any registered answer reaches crash policy.
+    from ouroboros.working_checkpoint import adopt_registered_answer
+
+    try:
+        adopted = adopt_registered_answer(
+            root, task, task_id, attempt=attempt, cause="worker_crash",
+            registry_root=pathlib.Path(task.get("budget_drive_root") or root),
+        )
+    except Exception as exc:
+        raise TerminalFileRecoveryPending("registered-answer finalization could not be stored") from exc
+    if adopted:
+        with _queue_lock:
+            if not _dead_job_is_current(job):
+                return
+        from supervisor.task_reaper import _finish_self_finalized_task
+
+        _finish_self_finalized_task(
+            queue, _pool(), task, task_id, task_type, str(adopted.get("status") or ""), adopted,
+            terminal_task_metadata(task.get("metadata")), worker_id=wid,
+        )
         return
     replay_unsafe = (not getattr(w, "active_capacity", True)
                      or has_owner_wait_checkpoint(meta, attempt) or budget_pausing)

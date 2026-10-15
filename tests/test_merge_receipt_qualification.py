@@ -10,7 +10,6 @@ import shutil
 import subprocess
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from queue import Queue
 from threading import Event
 from types import SimpleNamespace
 
@@ -21,6 +20,7 @@ from ouroboros.tools import github
 from tests import test_pr_merge_receipts as merge_fixture
 from tests.test_pr_merge_receipts import BASE, HEAD, MERGE, TREE, _receipts
 from tests._store_shared import delete_result, read_result, seed_result, unreadable_result
+from tests._cancel_intents_shared import DeliveryBus
 
 world = merge_fixture.world
 
@@ -216,7 +216,7 @@ def test_concurrent_publication_through_outbox_dedup_and_history(world, monkeypa
     if delivery_order == "replay_reverse":
         world.ctx.pending_events.clear()
         monkeypatch.setattr(td, "_REPLAY_MIN_AGE_SEC", 0)
-        queue = Queue()
+        queue = DeliveryBus()  # replay admits a copy only through the bus's membership
         td.replay_pending_deliveries(world.root, event_queue=queue)
         events = []
         while not queue.empty():

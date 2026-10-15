@@ -707,7 +707,7 @@ def _run_supervisor(settings: dict) -> None:
         restored_pending = restore_pending_from_snapshot(terminalized=interrupted_running)
         _start_preparation_generation(stop=lambda stop=_watchdog_stop: any(e.is_set() for e in (stop, _supervisor_stop, _restart_requested, _exit_signalled)))
         kill_workers(preserve_pending=True)
-        spawn_workers(max_workers)
+        spawn_workers()
         from ouroboros.server_process import record_applied_restart_settings
         record_applied_restart_settings({"OUROBOROS_MAX_WORKERS": max_workers,
                                         "OUROBOROS_SKILLS_REPO_PATH": settings.get("OUROBOROS_SKILLS_REPO_PATH", "")})
@@ -861,12 +861,7 @@ def _run_supervisor(settings: dict) -> None:
 
             _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "maintenance"), time.monotonic()
             enforce_task_timeouts(pending_events=pending_idle_observations(get_event_q()))
-            try:
-                from supervisor.queue import check_scheduled_tasks
-                check_scheduled_tasks()
-            except Exception:
-                log.warning("Scheduled task check failed", exc_info=True)
-            _periodic_supervisor_maintenance(
+            _periodic_supervisor_maintenance(  # includes the off-loop schedule duty
                 _last_custody_reap, _last_review_job_reconcile, stop_event=_watchdog_stop,
             )
             _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "assign"), time.monotonic()
@@ -1075,6 +1070,7 @@ def _perform_supervisor_restart(
     try:
         from ouroboros.delegate_recovery import prepare_planned_restart_handoffs
         from ouroboros.owner_wait import prepare_owner_wait_handoffs
+        from supervisor.queue import name_queue_returns
         from supervisor.restart_retention import prepare_restart_returns
         from supervisor.workers import direct_chat_turns
 
@@ -1084,29 +1080,37 @@ def _perform_supervisor_restart(
             restart_transaction_id=restart_transaction_id,
             additional_task_ids=owner_waits,
         )
-        # The planned restart also returns active work and the runnable queue (#1563).
-        prepare_restart_returns(ctx.DRIVE_ROOT, ctx.RUNNING, list(ctx.PENDING), transaction_id=restart_transaction_id,
+        # The planned restart also returns active work and the runnable queue (#1563);
+        # the off-loop schedule duty admits nothing after this copy.
+        prepare_restart_returns(ctx.DRIVE_ROOT, ctx.RUNNING, name_queue_returns(ctx.PENDING, "planned_restart"),
+                                transaction_id=restart_transaction_id,
                                 direct=direct_chat_turns(), owner_wait_ids=planned_handoffs)
     except Exception:
         log.debug("Planned self-restart delegate handoff preparation failed", exc_info=True)
-    restart_kill_kwargs = _managed_update_pending_kwargs()
-    if planned_handoffs:
-        _planned_delegate_restart_transaction_id = restart_transaction_id
-        restart_kill_kwargs["preserve_pending"] = True
-    ctx.kill_workers(
-        force=True,
-        terminal_status=cleanup_status,
-        result_reason=cleanup_reason,
-        stop_source="server_shutdown",
-        preserve_running_task_ids=planned_handoffs,
-        retain_saved_work=True,
-        **restart_kill_kwargs,
-    )
-    try:  # a field update: a stale snapshot never erases a control written meanwhile (#1307)
-        ctx.update_state(lambda live: live.__setitem__("session_id", uuid.uuid4().hex))
-    except Exception:
-        log.warning("Restart session id not rotated: runtime state unavailable", exc_info=True)
-    ctx.persist_queue_snapshot(reason="pre_restart_exit")
+    try:
+        restart_kill_kwargs = _managed_update_pending_kwargs()
+        if planned_handoffs:
+            _planned_delegate_restart_transaction_id = restart_transaction_id
+            restart_kill_kwargs["preserve_pending"] = True
+        ctx.kill_workers(
+            force=True,
+            terminal_status=cleanup_status,
+            result_reason=cleanup_reason,
+            stop_source="server_shutdown",
+            preserve_running_task_ids=planned_handoffs,
+            retain_saved_work=True,
+            **restart_kill_kwargs,
+        )
+        try:  # a field update: a stale snapshot never erases a control written meanwhile (#1307)
+            ctx.update_state(lambda live: live.__setitem__("session_id", uuid.uuid4().hex))
+        except Exception:
+            log.warning("Restart session id not rotated: runtime state unavailable", exc_info=True)
+        ctx.persist_queue_snapshot(reason="pre_restart_exit")
+    except BaseException:
+        from supervisor.queue import reopen_queue_returns
+
+        reopen_queue_returns("planned_restart")  # no exit follows: this generation keeps admitting
+        raise
     _request_restart_exit()
 
 

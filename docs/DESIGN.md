@@ -464,7 +464,11 @@ pointer alone; a card in another chat keeps the excerpt.
   SECOND, quieter fact next to it — not a replacement, not a sixth status word,
   and never something the card title has to carry instead. The pair is one
   accessible name, so a screen reader hears the outcome and the hold together.
-  An owner stop outranks the hold entirely and speaks for itself.
+  An owner stop outranks the hold entirely and speaks for itself. Dashboard →
+  Activity applies this to a row's own outcome, never its root's: plain `running`
+  yields to it, a queue wait or hold (`pending`, paused, sleeping, held after
+  Restart) stays beside it as the second fact, and the row keeps its controls
+  while the task still occupies the queue.
 - **Neutral is a real state**, not an absence of one. A classification chip
   (which agent, which family) is neutral: it is a tag, not an alarm.
   A tone value the code actually emits (`muted`) must have a rule; falling

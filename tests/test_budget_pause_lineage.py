@@ -15,6 +15,8 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
+from tests.worker_pool_support import affirm_ready
+
 import pytest
 
 from tests._budget_pause_exact_helpers import _fast_hold, _install_queue, _mock_pause_observation
@@ -55,8 +57,9 @@ def _sup(tmp_path, queue, workers):
 def _workers(workers):
     sent = []
     for wid in (0, 1):
-        workers.WORKERS[wid] = SimpleNamespace(wid=wid, busy_task_id=None, reaping=False,
-                                               in_q=SimpleNamespace(put=lambda task: sent.append(dict(task))))
+        workers.WORKERS[wid] = affirm_ready(SimpleNamespace(wid=wid, busy_task_id=None, reaping=False,
+            in_q=SimpleNamespace(put=lambda task: sent.append(dict(task))
+                                 if task.get("type") != "worker_quiescence" else None)))
     return sent
 
 

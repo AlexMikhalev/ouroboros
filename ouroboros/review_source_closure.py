@@ -121,6 +121,24 @@ def source_carrier(value: dict, key: str, carrier: str) -> str:
     return 'metadata' if key in _REF_FIELDS | _METADATA_FIELDS else ''
 
 
+def _owned_attachment_path(path: pathlib.Path, root: pathlib.Path, task_id: str) -> bool:
+    """The task store's own ``attachments/``, or the review-input copy of one of them.
+
+    ``retain_review_request_sources`` places a reviewer's attachment copy at
+    ``source_handles/review_inputs/request-*/task_results/artifacts/<task>/attachments/<file>``
+    under the same task root, so a persisted request names that placement.
+    """
+    resolved = path.resolve()
+    if resolved.is_relative_to(root / 'attachments'):
+        return True
+    inputs = root / 'source_handles' / 'review_inputs'
+    if not resolved.is_relative_to(inputs):
+        return False
+    rel = resolved.relative_to(inputs).parts
+    return (len(rel) == 6 and rel[0].startswith('request-')
+            and rel[1:5] == ('task_results', 'artifacts', task_id, 'attachments'))
+
+
 def retain_contract(value: dict, source: pathlib.Path, custody: pathlib.Path, task_id: str, state: dict) -> dict:
     """Review inputs must already belong to this host-attested task's store.
 
@@ -136,9 +154,11 @@ def retain_contract(value: dict, source: pathlib.Path, custody: pathlib.Path, ta
                 continue
             path = pathlib.Path(row.get('abs_path') or '')
             if (not path.is_absolute() or path.is_symlink()
-                    or not any(path.resolve().is_relative_to(root / 'attachments') for root in roots)
+                    or not any(_owned_attachment_path(path, root, task_id) for root in roots)
                     or type(row.get('size')) is not int or len(str(row.get('sha256') or '')) != 64):
-                raise ValueError('review attachment has no captured owner-bound source')
+                from ouroboros.source_retention import InvalidRetainedSource
+
+                raise InvalidRetainedSource('review attachment has no captured owner-bound source', path)
     wrapper = {'task_contract': copy.deepcopy(value)}
     promote_task_attachment_refs(custody, source, task_id, wrapper, state)
     return wrapper['task_contract']

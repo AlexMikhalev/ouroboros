@@ -21,12 +21,18 @@ copy as the reviewer left it, never re-frozen or replaced; a copy remade later
 gets the frozen evidence views, never the root's current evidence.
 
 Nothing a seat changes is applied anywhere. When its run is terminal,
-``capture_seat_evidence`` retains the copy's delta (a binary patch for Git;
-changed files and typed entry metadata for a folder) and the reviewer's files under
-``.review-evidence/``. A completed capture may release a one-shot copy only when
+``capture_seat_evidence`` retains the copy's whole delta (a binary patch for Git;
+changed files, same-stat ones compared by content, and typed entry metadata for a
+folder) and the reviewer's files under ``.review-evidence/``, with no byte bound
+(investigations pass their own). A path it cannot list or read leaves it incomplete.
+A completed capture may release a one-shot copy only when
 its caller has observed normal success in the exact run's daemon detail; thread
 copies remain at their bound path and refresh after successful capture. An incomplete capture keeps the
-copy and names the gap. A full-access copy is not an OS sandbox.
+copy and names the gap. Git's inventory omits untracked special entries and
+ignored outputs outside ``.review-evidence/``; the latter are listed, not retained.
+Frozen ``.review-drive`` inputs are excluded too: reviewer edits there are not kept.
+Unbounded capture can increase peak storage and delay the answer; a full volume
+leaves failed generations beside the copy. A full-access copy is not an OS sandbox.
 """
 
 from __future__ import annotations
@@ -49,8 +55,8 @@ log = logging.getLogger(__name__)
 EVIDENCE_DIRNAME = ".review-evidence"
 # Ignored views a reviewer session reads from its root (review_evidence).
 _IGNORED_EVIDENCE_DIRS = (".review-drive",)
-# Retained bytes per seat: patch, changed files, directory metadata and named evidence.
-# Over-limit patches stream to disk, not RAM; a named gap keeps the checking copy.
+# The named-evidence bound an evidence-only investigation passes; a named gap keeps its
+# copy. Reviewer seats keep whole outputs: their copy goes only after its delta is kept.
 EVIDENCE_RETAIN_BYTES = 64 * 1024 * 1024
 SUBJECT_INDEX, SUBJECT_WORKTREE = "index", "worktree"
 
@@ -125,6 +131,10 @@ def _git(cwd: Any, *args: str, env: Optional[Dict[str, str]] = None, check: bool
 
 def _out(result: subprocess.CompletedProcess) -> str:
     return (result.stdout or b"").decode("utf-8", "replace").strip()
+
+
+def _raise_walk_error(error: OSError) -> None:
+    raise error  # a skipped subtree is not a complete inventory
 
 
 def _stat_digest(root: pathlib.Path) -> str:
@@ -350,9 +360,9 @@ def checking_instructions(area: str, source: Mapping[str, Any], root: str = "") 
     )
 
 
-def _retain_files(area: pathlib.Path, paths: List[str], files_dir: pathlib.Path, budget: List[int],
+def _retain_files(area: pathlib.Path, paths: List[str], files_dir: pathlib.Path, budget: List[float],
                   gaps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Copy regular files byte-exact into the evidence store within the seat's budget."""
+    """Copy regular files byte-exact into the evidence store within the caller's byte budget."""
     kept: List[Dict[str, Any]] = []
     for relative in paths:
         source = area / relative
@@ -370,20 +380,24 @@ def _retain_files(area: pathlib.Path, paths: List[str], files_dir: pathlib.Path,
     return kept
 
 
-def retain_named_evidence(area: pathlib.Path, files_dir: pathlib.Path, budget: List[int],
+def retain_named_evidence(area: pathlib.Path, files_dir: pathlib.Path, budget: List[float],
                           gaps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Retain declared checking outputs independently of product-patch filters.
 
     Links are not dereferenced: a linked output is a gap and keeps the working
-    copy, not a receipt claiming its target's bytes were retained.
+    copy, not a receipt claiming its target's bytes were retained. So is an entry
+    that is neither a file nor a folder; a folder that cannot be listed raises.
     """
     declared = area / EVIDENCE_DIRNAME
     if declared.is_symlink():
         gaps.append({"path": EVIDENCE_DIRNAME, "reason": "evidence_symlink"})
         return []
+    if declared.exists() and not declared.is_dir():
+        gaps.append({"path": EVIDENCE_DIRNAME, "reason": "evidence_root_not_directory"})
+        return []
     paths: List[str] = []
     if declared.is_dir():
-        for current, dirs, files in os.walk(declared, followlinks=False):
+        for current, dirs, files in os.walk(declared, onerror=_raise_walk_error, followlinks=False):
             for name in sorted(dirs + files):
                 path = pathlib.Path(current) / name
                 relative = path.relative_to(area).as_posix()
@@ -391,11 +405,13 @@ def retain_named_evidence(area: pathlib.Path, files_dir: pathlib.Path, budget: L
                     gaps.append({"path": relative, "reason": "evidence_symlink"})
                 elif path.is_file():
                     paths.append(relative)
+                elif name in files:
+                    gaps.append({"path": relative, "reason": "unsupported_entry_type"})
     return _retain_files(area, sorted(paths), files_dir, budget, gaps)
 
 
 def _git_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pathlib.Path,
-               budget: List[int], gaps: List[Dict[str, Any]]) -> Dict[str, Any]:
+               budget: List[float], gaps: List[Dict[str, Any]]) -> Dict[str, Any]:
     from ouroboros.subagent_worktrees import (
         payload_capture_git_env, payload_git_metadata_refusal, stage_raw_payload_inventory,
     )
@@ -415,7 +431,16 @@ def _git_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pathlib.
             metadata, _, name = entry.partition(b"\t")
             if metadata.startswith(b"160000 "):
                 gitlinks[name.decode("utf-8", "surrogateescape")] = metadata.split()[1]
-        inventory = _git(area, "ls-files", "--cached", "--others", "--exclude-standard", "-z", env=env)
+        listing_env = {**env, "LC_ALL": "C", "LANGUAGE": "C",
+                       **{key: "0" for key in os.environ if key.startswith("GIT_TRACE")}}
+        inventory = _git(area, "ls-files", "--cached", "--others", "--exclude-standard", "-z", env=listing_env)
+        listing_warning = inventory.stderr.decode("utf-8", "replace").strip()
+        # Git exits zero for an unlistable directory. Other warnings (for example
+        # a symlinked ignore file) do not prove missing entries and must not block
+        # the next reviewer turn. Pin the diagnostic locale for this CLI boundary.
+        if any(line.startswith("warning: could not open directory ") for line in listing_warning.splitlines()):
+            raise CheckingAreaUnavailable("the checking copy could not be fully listed: "
+                                          + listing_warning)
         paths, kept_gitlinks = set(), []
         for raw in sorted(set(inventory.stdout.split(b"\0"))):
             if not raw:
@@ -468,22 +493,45 @@ def _git_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pathlib.
     else:
         budget[0] -= patch_size
     return {"after_tree": after, "patch_sha256": patch_sha, "patch_bytes": patch_size,
+            "listing_warning": listing_warning,
             "patch_retained": patch.exists(),
             "changed": changed.splitlines(), "ignored_not_retained": ignored}
 
 
+def _open_regular(path: pathlib.Path) -> Any:
+    """A file the inventory saw as regular; a link swapped in since is refused, not followed."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
+                 getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode) or path.is_symlink():  # Windows: no O_NOFOLLOW
+            raise CheckingAreaUnavailable(f"{path} stopped being a regular file during capture")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _same_bytes(left: pathlib.Path, right: pathlib.Path) -> bool:
+    """Chunked equality; an unreadable side raises, because uncompared bytes are not unchanged."""
+    with _open_regular(left) as one, _open_regular(right) as two:
+        while True:
+            chunk = one.read(1 << 20)
+            if chunk != two.read(1 << 20):
+                return False
+            if not chunk:
+                return True
+
+
 def _directory_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pathlib.Path,
-                     budget: List[int], gaps: List[Dict[str, Any]]) -> Dict[str, Any]:
+                     budget: List[float], gaps: List[Dict[str, Any]]) -> Dict[str, Any]:
     view = pathlib.Path(str(source["view"]))
 
-    def walk_error(error: OSError) -> None:
-        raise error  # a skipped subtree is not a complete inventory
-
     def entries(root: pathlib.Path) -> Dict[str, Dict[str, Any]]:
-        # The copy preserved every file's size, mode and mtime, so an entry whose
-        # stat moved is one the reviewer wrote (identical rewrites included).
+        # The copy preserved every file's size, mode and mtime: an entry whose stat
+        # moved is one the reviewer wrote, and a same-stat file is compared by content
+        # (a timestamp-preserving rewrite keeps its stat).
         found = {}
-        for current, dirs, files in os.walk(root, onerror=walk_error, followlinks=False):
+        for current, dirs, files in os.walk(root, onerror=_raise_walk_error, followlinks=False):
             for name in dirs + files:
                 path = pathlib.Path(current) / name
                 info = path.lstat()
@@ -500,10 +548,11 @@ def _directory_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pa
         return found
 
     before, after = entries(view), entries(area)
-    changed = sorted(path for path, state in after.items() if before.get(path) != state)
+    changed = sorted(path for path, state in after.items() if before.get(path) != state or (
+        state["kind"] == "file" and not _same_bytes(view / path, area / path)))
     removed = sorted(set(before) - set(after))
     for path in changed:
-        if after[path]["kind"] == "special":
+        if after[path]["kind"] == "special" and pathlib.PurePosixPath(path).parts[0] != EVIDENCE_DIRNAME:
             gaps.append({"path": path, "reason": "unsupported_entry_type"})
     # Links are data, never dereferenced into the files store; directory modes
     # and removals survive in the receipt even after a successful copy release.
@@ -607,7 +656,7 @@ def capture_seat_evidence(data_root: Any, task_id: str, operation_id: str, *,
         except (OSError, ValueError):
             return {"status": "released_without_summary", "evidence_dir": str(evidence)}
     gaps: List[Dict[str, Any]] = []
-    budget = [EVIDENCE_RETAIN_BYTES]
+    budget = [float("inf")]  # reviewers retain whole outputs; only investigations pass a bound
     delta: Dict[str, Any] = {}
     errors = []
     try:

@@ -39,6 +39,10 @@ class TaskOwnershipRead:
             raise self.errors[task_id]
         if task_id in self.rows:
             state = self.recheck((task_id,))
+            if state == BUSY:  # unknown, not a change: the cause names the contention a sweep waits out
+                from ouroboros.store import StoreBusy
+                raise ValueError('ownership result busy during this pass') from StoreBusy(
+                    'ownership re-check found the store busy', reason='contention')
             if state != UNCHANGED:
                 raise ValueError(f'ownership result {state} during this pass')
             return self.rows[task_id]

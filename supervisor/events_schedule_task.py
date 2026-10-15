@@ -214,6 +214,8 @@ def _gate_view(ctx: Any, preparation: Any) -> Any:
 
 
 def _direct_child_count(roots: list, parent_id: Any, tid: str, *, propagate_contention: bool = False) -> Optional[int]:
+    """The supervisor's early count over every root: None when any root cannot prove it, which
+    neither pre-check refuses; the interlocked re-check reads it again and defers contention."""
     counts = [durable_direct_child_count(root, parent_id, exclude_task_id=tid,
                                         propagate_contention=propagate_contention) for root in roots]
     return max(counts) if counts and all(count is not None for count in counts) else None
@@ -452,7 +454,8 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any, preparation: Any = None
             parent_budget,
             direct_child_count=direct_child_count,
         )
-        if not rights.ok:
+        # An unknown count is the interlocked re-check's to decide (it defers contention).
+        if not rights.ok and rights.reason_code != "delegation_rights_child_count_unknown":
             detail = f"Subagent rejected: {rights.reason_code}: {rights.detail}"
             result_fields["delegation_admission"] = {
                 "status": "rejected",
@@ -825,7 +828,9 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any, preparation: Any = None
         else:
             progress_meta["task_event"] = "scheduled"
         workers = getattr(view, "WORKERS", {}) or {}
-        if workers and not any(not getattr(worker, "busy_task_id", None) for worker in workers.values()):
+        from supervisor import workers as pool
+        active = [w for w in workers.values() if getattr(w, "active_capacity", True)]
+        if len(active) >= pool.MAX_WORKERS and all(getattr(w, "busy_task_id", None) for w in active):
             progress_meta["worker_saturation_warning"] = True
             suffix = " (all workers are currently busy; it will start when one is free)"
         else:

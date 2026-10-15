@@ -4,6 +4,8 @@ import json
 import os
 from types import SimpleNamespace
 
+from tests.worker_pool_support import affirm_ready
+
 import pytest
 from tests._store_shared import result_exists, result_signature, seed_result, unreadable_result
 
@@ -282,12 +284,12 @@ def test_terminalization_retry_restore_survives_durable_result_until_event_publi
 
     writes, emitted = [], []
     delivered = []
-    worker = SimpleNamespace(
+    worker = affirm_ready(SimpleNamespace(
         wid=1,
         busy_task_id=None,
         reaping=False,
         in_q=SimpleNamespace(put=lambda row: delivered.append(row)),
-    )
+    ))
     monkeypatch.setattr(workers, "WORKERS", {1: worker})
     monkeypatch.setattr(workers, "load_state", lambda: {})
     monkeypatch.setattr(state, "budget_remaining", lambda *_args, **_kwargs: 100.0)
@@ -488,12 +490,12 @@ def test_invalid_depth_restore_preserves_unreadable_result_authority(tmp_path, m
     # strict terminalization must preserve the same unreadable authority there.
     from supervisor import state, workers
 
-    worker = SimpleNamespace(
+    worker = affirm_ready(SimpleNamespace(
         wid=1,
         busy_task_id=None,
         reaping=False,
         in_q=SimpleNamespace(put=lambda _row: pytest.fail("corrupt row dispatched")),
-    )
+    ))
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(workers, "PENDING", pending)
     monkeypatch.setattr(workers, "RUNNING", running)
@@ -523,7 +525,7 @@ def test_assignment_skips_unresolved_invalid_depth_without_starving_healthy_rows
         def put(self, task):
             delivered.append(dict(task))
 
-    worker = SimpleNamespace(wid=1, busy_task_id=None, reaping=False, in_q=FakeWorkerQueue())
+    worker = affirm_ready(SimpleNamespace(wid=1, busy_task_id=None, reaping=False, in_q=FakeWorkerQueue()))
     pending = [
         {
             "id": "unresolved-invalid-depth",
@@ -656,12 +658,12 @@ def test_terminalization_retry_snapshot_bypasses_depth_gate_and_is_not_dispatcha
     assert pending[0]["_queue_seq"] == 1
 
     delivered = []
-    worker = SimpleNamespace(
+    worker = affirm_ready(SimpleNamespace(
         wid=1,
         busy_task_id=None,
         reaping=False,
         in_q=SimpleNamespace(put=lambda row: delivered.append(row)),
-    )
+    ))
     monkeypatch.setattr(workers, "WORKERS", {1: worker})
     monkeypatch.setattr(workers, "load_state", lambda: {})
     monkeypatch.setattr(state, "budget_remaining", lambda *_args, **_kwargs: 100.0)
@@ -705,7 +707,7 @@ def test_evolution_cleanup_preserves_unresolved_invalid_depth_rows(
         "budget_drive_root": str(tmp_path),
     }
     pending = [task, sibling]
-    worker = SimpleNamespace(wid=1, busy_task_id=None, reaping=False, in_q=SimpleNamespace(put=lambda _task: None))
+    worker = affirm_ready(SimpleNamespace(wid=1, busy_task_id=None, reaping=False, in_q=SimpleNamespace(put=lambda _task: None)))
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(workers, "PENDING", pending)
     monkeypatch.setattr(workers, "RUNNING", {})

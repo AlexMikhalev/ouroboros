@@ -38,7 +38,7 @@ supervisor/ — background thread inside server.py (§5)
   message_ingress.py — one accepted row per message id before dispatch, through a process-local chat-chain index
   workers.py — worker pool: forkserver on Linux, spawn elsewhere, never fork: a child forked from the multi-threaded supervisor inherits a held import lock and wedges
   worker_assignment.py, worker_chat_lane.py, worker_health.py, worker_pool_lifecycle.py, worker_process.py, worker_promotion.py — pool leaves: assignment, chat-lane admission, crash recovery, lifecycle and tree kill, the worker child, promotion (§5; §6 Owner routing verbs)
-  worker_owner_wait.py — a required owner wait hands the active slot to another worker; the task stays RUNNING and custodied (§5)
+  worker_owner_wait.py — a required owner wait lends its active slot; the task stays RUNNING, custodied (§5)
   state.py, state_initialization.py — `state/state.json` updates with typed read quality; init witness
   queue.py — task queue (PENDING/RUNNING) with activity-based timeouts; the one task-state authority (§5)
   queue_schedules.py, schedule_lifecycle.py, queue_snapshot.py, queue_timeouts.py — leaves re-exported through `supervisor.queue`: schedules, durable snapshot and restart restore, activity liveness (§5)
@@ -54,8 +54,8 @@ supervisor/ — background thread inside server.py (§5)
   sleep_wake.py — cold model-sleep wake with a typed `sleep_wake` grant, vetoed by holds (§6)
   restart_retention.py — stop retention and restart/update-abort return authority (§5, §9)
   queue_transitions.py, task_ownership.py — acceptance, Resume, evolution stop, fenced Project deletion; ownership reads precede the queue lock (§5, §6)
-  terminal_delivery.py — delivery-id dedupe, exact emitted-byte receipts and the bounded pending outbox for every terminal answer (§5, §10)
-  task_reaper.py — single-owner off-loop reaper for timeouts and crash jobs; an unconfirmed death keeps reaping (`task_reaper_wedged`); mints no cancel intents (§5)
+  terminal_delivery.py, terminal_cascade.py — delivery-id dedupe, exact emitted-byte receipts and the bounded pending outbox for every terminal answer; a settled cascade's one owner message (§5, §10)
+  task_reaper.py, task_reaper_cancel_handoff.py — one off-loop owner of timeout, crash, idle and unready jobs, and its cancel-suppressed retry handoff; unconfirmed death keeps reaping (`task_reaper_wedged`); mints no cancel intents (§5)
   owner_stop.py — graceful stop: finalize first (`finalize_now`), then cancel on the same durable cancel intent; grace bounded by `OWNER_STOP_OUTER_CAP_SEC`
   schedule_time.py, schedule_occurrence.py — cron/timezone parsing; a due occurrence admits at most one root
   schedule_notes.py — a due `kind:"notify"` row becomes a signed `reminder` System row; no model, no retry

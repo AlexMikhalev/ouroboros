@@ -10,6 +10,7 @@ import pytest
 from tests._budget_pause_exact_helpers import _install_queue
 from tests.test_batch4_repair_compositions import _running
 from tests.test_owner_pause import _owner_park
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -231,8 +232,8 @@ def test_owner_pause_over_saved_budget_checkpoint_keeps_effect_gate_and_reopens_
     refresh_owner_pause_tree("root")
     assert queue.resume_budget_paused_task("root")["ok"]
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                        in_q=SimpleNamespace(put=lambda task: sent.append(dict(task))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                        in_q=SimpleNamespace(put=lambda task: sent.append(dict(task)))))
     workers.assign_tasks()
     assert [task["id"] for task in sent] == ["root"]
     loop_ctx, limit_ctx = _loop_ctx(tmp_path, "root")
@@ -279,8 +280,8 @@ def test_owner_pause_over_sleep_retains_sleep_source_and_explicit_resume(tmp_pat
     assert wake[0]["error"] == "sleep_wake_vetoed" and wake[0]["veto"] == "owner_pause"
     assert queue.resume_budget_paused_task("root")["ok"]
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                        in_q=SimpleNamespace(put=lambda task: sent.append(dict(task))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                        in_q=SimpleNamespace(put=lambda task: sent.append(dict(task)))))
     workers.assign_tasks()
     assert [task["id"] for task in sent] == ["root"]
     ctx, limit = _loop_ctx(tmp_path, "root")
@@ -325,8 +326,8 @@ def test_exact_resume_never_opens_a_replacement_owner_fence(tmp_path, monkeypatc
     else:
         assert queue.resume_budget_paused_task("root")["ok"]
         sent = []
-        workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                            in_q=SimpleNamespace(put=lambda task: sent.append(dict(task))))
+        workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                            in_q=SimpleNamespace(put=lambda task: sent.append(dict(task)))))
         if stage == "assignment":
             replace_fence()
         workers.assign_tasks()

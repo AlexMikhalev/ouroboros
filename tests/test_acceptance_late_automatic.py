@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_acceptance_late_consumers import late as late, delivered
+from tests._cancel_intents_shared import DeliveryBus
 from tests.test_acceptance_history import _caller, _source, _request
 from tests.test_review_operation_collection import _send_ctx, fresh_sends as fresh_sends
 from tests.test_review_operation_lifetime import until
@@ -139,7 +140,7 @@ def test_receipt_after_entire_postwork_starts_once_through_sender_or_outbox(late
     monkeypatch.setattr(task_queue, 'DRIVE_ROOT', f.root)
     postwork(f, monkeypatch)
     before = copy.deepcopy(load_task_result(f.root, f.tid))
-    sends, events = [], queue.Queue()
+    sends, events = [], DeliveryBus()  # replay admits a copy only through the bus's membership
     if replay:
         monkeypatch.setattr(terminal_delivery, '_REPLAY_MIN_AGE_SEC', 0)
         assert terminal_delivery.replay_pending_deliveries(f.root, event_queue=events) == [f.event['delivery_id']]
@@ -446,7 +447,7 @@ def test_duplicate_sender_leaves_held_collection_to_maintenance(late, tmp_path, 
     from tests.test_server_control_panic_daemon import _run_panic
 
     f = delivered(tmp_path, monkeypatch, receipt='owed')
-    outbox = queue.Queue()
+    outbox = DeliveryBus()  # replay admits a copy only through the bus's membership
     monkeypatch.setattr(terminal_delivery, '_REPLAY_MIN_AGE_SEC', 0)
     assert terminal_delivery.replay_pending_deliveries(f.root, event_queue=outbox) == [f.event['delivery_id']]
     replay_event = outbox.get_nowait()  # queued before a competing delivery wins
