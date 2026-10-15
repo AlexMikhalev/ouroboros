@@ -157,3 +157,101 @@ test('unconfirmed service cleanup is visible without claiming stopped', () => {
     assert.notEqual(live.dedupeKey, summarizeChatLiveEvent({ ...pending,
         checkpoint_kind: 'services_stopped' }).dedupeKey);
 });
+
+// ---------------------------------------------------------------------------
+// Threshold crossings (#1748/#1129): one row per crossing, each stating its own fact.
+// The payloads are the shapes `task_pacing` emits; its checkpoint carries no round.
+// ---------------------------------------------------------------------------
+
+const crossing = (checkpoint_kind, ts, fields) => ({ type: 'task_checkpoint', task_id: 't1', ts, checkpoint_kind, ...fields });
+const tree = (axis, spend, basis = 'tree_known') => ({
+    budget_axis: axis, deciding_spend_usd: spend, task_cost_usd: spend, base_usd: 10, hard_stop: true, spend_basis: basis });
+const wallet = (remaining) => ({
+    budget_axis: 'shared_wallet', wallet_remaining_known_usd: remaining, wallet_baseline_usd: 40, wallet_limit_usd: 100,
+    observed_at: '2026-10-13T01:00:00Z', hard_stop: true, task_cost_usd: 0.5 });
+const CROSSINGS = [
+    [crossing('cost_budget_milestone', '2026-10-13T01:00:01Z', { milestone: '50%', ...tree('in_task_cost_ceiling', 5.1) }),
+        'Cost ceiling: 50% remaining'],
+    [crossing('cost_budget_milestone', '2026-10-13T01:00:02Z', { milestone: '25%', ...tree('in_task_cost_ceiling', 7.6) }),
+        'Cost ceiling: 25% remaining'],
+    [crossing('cost_budget_wrapup', '2026-10-13T01:00:03Z', tree('in_task_cost_ceiling', 8.1)),
+        'Cost ceiling: 81% spent'],
+    [crossing('cost_budget_milestone', '2026-10-13T01:00:04Z', { milestone: '10%', ...tree('hard_tree_cap', 9.1) }),
+        'Task tree cost cap: 10% remaining'],
+    [crossing('cost_budget_milestone', '2026-10-13T01:00:05Z', { milestone: '50%', ...tree('whole_work_allowance', 5.5) }),
+        'Whole-work cost allowance: 50% remaining'],
+    [crossing('cost_budget_milestone', '2026-10-13T01:00:06Z', { milestone: '50%', ...wallet(19.5) }),
+        'Shared wallet: 50% of starting headroom remaining'],
+    [crossing('cost_budget_milestone', '2026-10-13T01:00:07Z', { milestone: '25%', ...wallet(9) }),
+        'Shared wallet: 25% of starting headroom remaining'],
+    [crossing('cost_budget_wrapup', '2026-10-13T01:00:08Z', wallet(7.5)),
+        'Shared wallet: 81% of starting headroom spent'],
+    [crossing('time_budget_milestone', '2026-10-13T01:00:09Z', { milestone: '50%', elapsed_sec: 30, remaining_sec: 30, deadline_at: '2026-10-13T01:01:00Z' }),
+        'Time budget: 50% remaining'],
+    [crossing('time_budget_milestone', '2026-10-13T01:00:10Z', { milestone: '25%', elapsed_sec: 45, remaining_sec: 15, deadline_at: '2026-10-13T01:01:00Z' }),
+        'Time budget: 25% remaining'],
+];
+
+test('a crossing row states the bound and the share, from the typed payload', () => {
+    for (const [event, label] of CROSSINGS) {
+        assert.equal(taskCheckpointLabel(event), label);
+        assert.equal(summarizeLogEvent(event).headline, label, 'Logs reads the same words');
+        assert.equal(summarizeChatLiveEvent(event).headline, label);
+        // The notice is a fact, not advice: no row keeps the retired "wrap-up" framing.
+        assert.doesNotMatch(label, /wrap-up|milestone/i);
+    }
+    // An own-calls-only reading is a lower bound against the tree, as the notice says.
+    assert.equal(taskCheckpointLabel(crossing('cost_budget_wrapup', '', tree('hard_tree_cap', 9, 'own_fallback_tree_unknown'))),
+        'Task tree cost cap: at least 90% spent');
+    // Missing or null numbers are never read as zero spend.
+    for (const fields of [{ budget_axis: 'in_task_cost_ceiling' },
+        { budget_axis: 'in_task_cost_ceiling', deciding_spend_usd: null, base_usd: 10 },
+        { budget_axis: 'shared_wallet', wallet_baseline_usd: 40, wallet_remaining_known_usd: null }]) {
+        assert.match(taskCheckpointLabel(crossing('cost_budget_wrapup', '', fields)), /: spend threshold crossed$/);
+    }
+});
+
+test('historical rows without the typed bound keep their old label', () => {
+    // The old producer's wrap-up was advice and carried no bound; its milestone carried none either.
+    for (const [event, label] of [
+        [crossing('cost_budget_wrapup', '', { deciding_spend_usd: 8.1, base_usd: 10 }), 'Cost budget wrap-up'],
+        [crossing('cost_budget_milestone', '', { milestone: '50%', deciding_spend_usd: 5.1, base_usd: 10 }), 'Cost budget milestone'],
+        [crossing('cost_budget_milestone', '', { milestone: '50%', budget_axis: 'a_future_axis' }), 'Cost budget milestone'],
+        [crossing('cost_budget_milestone', '', { budget_axis: 'in_task_cost_ceiling' }), 'Cost budget milestone'],
+        [crossing('time_budget_milestone', '', {}), 'Time budget milestone'],
+    ]) assert.equal(taskCheckpointLabel(event), label);
+});
+
+test('every distinct crossing is its own row, and one event delivered twice is one row', () => {
+    const live = { items: [] }, replay = { items: [] };
+    const feed = (record, event, index, route) => {
+        const summary = summarizeChatLiveEvent(event);
+        if (route === 'live') {
+            updateLiveTimelineItem(record, summary, { ts: event.ts, rawTs: event.ts,
+                syntheticKey: summary.dedupeKey, headline: summary.headline });
+        } else {
+            mergeHistoricalTimelineItem(record, summary, { ...event, history_id: `progress:${index}`,
+                history_position: { source: 'progress', offset: index } }, event.ts);
+        }
+    };
+    CROSSINGS.forEach(([event], index) => feed(live, event, index, 'live'));
+    // Time, the ceiling and the wallet each cross 50% in the same task: three rows, not one.
+    const keys = CROSSINGS.map(([event]) => summarizeChatLiveEvent(event).dedupeKey);
+    assert.equal(new Set(keys).size, CROSSINGS.length, `every crossing has its own identity: ${keys}`);
+    assert.deepEqual(live.items.map((row) => row.headline), CROSSINGS.map(([, label]) => label));
+    // The same events again — a re-delivered live frame — add nothing.
+    CROSSINGS.forEach(([event], index) => feed(live, event, index, 'live'));
+    assert.equal(live.items.length, CROSSINGS.length);
+    // History replays the same facts into a fresh card, then reconnect enriches the live one in place.
+    CROSSINGS.forEach(([event], index) => feed(replay, event, index, 'replay'));
+    assert.deepEqual(replay.items.map((row) => row.headline), live.items.map((row) => row.headline));
+    CROSSINGS.forEach(([event], index) => feed(live, event, index, 'replay'));
+    assert.equal(live.items.length, CROSSINGS.length, 'reconnect adopts the live rows; it does not twin them');
+});
+
+test('other checkpoint kinds keep the round identity they had', () => {
+    const keyOf = (patch) => summarizeChatLiveEvent({ type: 'task_checkpoint', task_id: 't1', ...patch }).dedupeKey;
+    assert.notEqual(keyOf({ checkpoint_kind: 'context_view', round: 3 }), keyOf({ checkpoint_kind: 'context_view', round: 4 }));
+    assert.equal(keyOf({ checkpoint_kind: 'context_view', round: 3 }), keyOf({ checkpoint_kind: 'context_view', round: 3 }));
+    assert.equal(keyOf({ checkpoint_number: 7 }), 'task_checkpoint:t1::7');
+});

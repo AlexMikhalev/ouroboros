@@ -506,6 +506,8 @@ def test_project_glyph_is_a_tinted_mark_never_a_solid_tile(project_chat):
         const {projectReference} = await import('/static/modules/project_reference.js');
         card.append(projectReference({id: 'alpha', name: 'Project Alpha'}, {layout: 'footer'}));
     }""")
+    # The two entries come from the initial history read, which can land after the live rows.
+    expect(page.locator('.project-handoff [data-intent="open-project"]')).to_have_count(2)
     marks = page.locator('[data-intent="open-project"]').evaluate_all(_MARK_MATERIAL)
     assert sorted(mark["host"] for mark in marks) == ["capsule", "capsule", "entry", "entry", "footer"]
     for mark in marks:

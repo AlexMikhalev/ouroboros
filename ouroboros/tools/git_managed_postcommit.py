@@ -33,15 +33,16 @@ def _managed_post_commit_tests_gate(
     commits keep the warning-only contract later in the flow). The gate is
     MANDATORY: neither the caller's skip_tests nor OUROBOROS_PRE_PUSH_TESTS=0
     can wave a managed merge through untested. The shared runner reuses a
-    PROCESS-HELD proof only when candidate files, source index, HEAD and the
-    effective test/environment contract match, after the distinct post-commit
-    baseline checks. A commit changes HEAD and requires a fresh run; repeated
-    checks of the same subject may reuse it. The authority is the ctx record;
-    durable ``tests_evidence`` tx copy is resolver-writable forensics and a
-    forged tree there never suppresses this run; a restart loses the proof
-    and requires a fresh run. The terminal record carries the
-    same review metadata/fingerprints as every sibling failure record, so an
-    operator can reconstruct WHICH reviewed revision the gate rejected."""
+    process-held proof, or the unsigned receipt of a complete run that only a
+    process running the code on disk mints or accepts (never the resolver still
+    on its pre-merge base), only when candidate files, source index, HEAD and
+    the effective test/environment contract match, after the distinct
+    post-commit baseline checks. A commit changes HEAD and requires a fresh run;
+    repeated checks of the same subject may reuse it. The durable
+    ``tests_evidence`` tx copy stays forensics and never suppresses this run.
+    The terminal record carries the same review metadata/fingerprints as every
+    sibling failure record, so an operator can reconstruct WHICH reviewed
+    revision the gate rejected."""
     if not managed_tx:
         return None
     del skip_tests  # deliberately ignored for managed merges

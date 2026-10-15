@@ -333,7 +333,8 @@ async def postresponse_off_loop(function, *args, retain_on_cancel):
 # owner Pause fence at this interval: responsiveness, not a lifetime or bound.
 ABANDON_POLL_SEC = 0.5
 _ABANDONABLE = contextvars.ContextVar("model_receiver_abandonable", default=False)
-_ABANDONED_SENDS: set[asyncio.Task] = set()
+# Abandoned senders (async tasks, sync futures) and their closes, until each settles.
+_ABANDONED_SENDS: set = set()
 
 
 @contextlib.contextmanager
@@ -423,6 +424,9 @@ def model_send(reservation, send, *, settle_late=None):
                     continue  # completion/cancellation won: retrieve its outcome
                 handover["state"] = "abandoned"
             abandoned = True
+            # The process still owns this sender's paid settlement (idle retirement waits).
+            _ABANDONED_SENDS.add(future)
+            future.add_done_callback(_ABANDONED_SENDS.discard)
             raise _abandoned(reservation, future)
     finally:
         executor.shutdown(wait=not abandoned)

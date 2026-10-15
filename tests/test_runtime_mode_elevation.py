@@ -702,7 +702,7 @@ def test_settings_save_warns_when_an_agent_task_is_running(isolated_settings, mo
     assert data["status"] == "saved"
     assert data.get("agent_task_running") is True
     warnings = data.get("warnings") or []
-    assert any("keeps the configuration it started with" in w for w in warnings), warnings
+    assert any("keeps the models, reviewers and subagents it started with" in w for w in warnings), warnings
     assert any("next task" in w for w in warnings), warnings
 
     # No running task -> no warning noise.
@@ -711,7 +711,7 @@ def test_settings_save_warns_when_an_agent_task_is_running(isolated_settings, mo
     assert resp2.status_code == 200, resp2.text
     data2 = resp2.json()
     assert "agent_task_running" not in data2
-    assert not any("keeps the configuration" in w for w in (data2.get("warnings") or []))
+    assert not any("An agent task is running" in w for w in (data2.get("warnings") or []))
 
 
 def test_started_predicate_is_read_only_and_never_constructs_the_agent(monkeypatch):

@@ -470,7 +470,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
         )
 
     access = authority.access
-    requested = recovering  # Recovery may already own a physical run.
+    start_attempted = recovering  # Recovery may already own a physical run.
     try:
         gateway = ensure_owned_gateway()
     except ClaudexorUnavailable as exc:
@@ -616,7 +616,12 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                     reason=reason, invocation_id=invocation_id, snapshot_id=("" if recovering else snapshot_id),
                 ),
             )
-        handle = run_operation(ctx, gateway.start_run, request_body, idempotency_key=invocation_id)
+        def submit():
+            nonlocal start_attempted
+            start_attempted = True  # The durable request is not physical submission.
+            return gateway.start_run(request_body, idempotency_key=invocation_id)
+
+        handle = run_operation(ctx, submit)
         run_id = str(handle.get("runId") or handle.get("jobId") or "")
         if not run_id:
             return _fail("delegate_start", "queued_without_run_id",
@@ -624,39 +629,34 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                          pending_invocation_id=invocation_id, retry_hint=_RETRY_HINT,
                          **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent, history_facts=history_facts,
                              definite_refusal=False, reason="queued_without_run_id", invocation_id=invocation_id))
-    except (ClaudexorUnavailable, OwnerPauseRefused) as exc:
-        code = getattr(exc, "code", str(exc))
-        # A registration we created BEFORE the start must not outlive a failed start.
-        # It used to be left behind with nothing anywhere naming its id.
-        status = int(getattr(exc, "status_code", 0) or 0)
-        definite = (isinstance(exc, OwnerPauseRefused) and not recovering) or 400 <= status < 500 or not requested
-        # An UNKNOWN outcome hands back the retry token: only the caller can say
-        # whether the next call is a retry of this intention or a new intention, and
-        # without the token every next call is a new one. A definite refusal retires
-        # the id, so no token rides a refusal.
-        pending = ({} if definite or not invocation_id else
-                   {"pending_invocation_id": invocation_id,
-                    "retry_hint": _RETRY_HINT})
-        return _fail("delegate_start", code, str(exc), executor="blocked",
-                     **({"definitely_unrun": True} if not requested else {}),
-                     reset_at=getattr(exc, "reset_at", ""), **pending,
-                     **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent, history_facts=history_facts,
-                         definite_refusal=definite, reason=code,
-                         invocation_id=invocation_id, snapshot_id=("" if recovering else snapshot_id)))
     except BaseException as exc:
-        # EVERY pre-custody exit leaves a durable disposition, including the ones no
-        # typed handler claims (a bug here, a timeout, a signal). NEVER retired: an
-        # untyped exit says nothing about whether the POST reached the daemon, so a run
-        # may be live against it. Named with a typed reason so the sweep's
-        # pending-invocation recovery finds it, then re-raised — disclosure, not a swallow.
-        _retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent, history_facts=history_facts,
-                                      definite_refusal=False,
-                                      reason=f"pre_custody_exit_{type(exc).__name__}",
-                                      invocation_id=invocation_id)
-        raise
+        typed = isinstance(exc, (ClaudexorUnavailable, OwnerPauseRefused))
+        code = getattr(exc, "code", str(exc)) if typed else f"pre_custody_exit_{type(exc).__name__}"
+        status = int(getattr(exc, "status_code", 0) or 0) if typed else 0
+        # A request row is not a POST; an entered callable stays unknown unless
+        # its typed refusal proves otherwise. Recovery retains its original fate.
+        definite = not start_attempted or 400 <= status < 500 or (
+            isinstance(exc, OwnerPauseRefused) and not recovering)
+        try:
+            cleanup = _retire_orphaned_registration(
+                ctx, gateway, owned_project_id, project_persistent=project_persistent, history_facts=history_facts,
+                definite_refusal=definite, reason=code,
+                invocation_id=invocation_id, snapshot_id=("" if recovering else snapshot_id))
+        except Exception:
+            log.warning("Start cleanup failed for %s", invocation_id, exc_info=True)
+            cleanup = {"project_id": owned_project_id, "project_retired": False,
+                       "project_retention_reason": "cleanup_unconfirmed"}
+        if not typed:
+            raise
+        # Only the caller identifies a retry: unknown returns the original token;
+        # definite refusal retires it, so the next intention gets a new identity.
+        pending = ({} if definite or not invocation_id else
+                   {"pending_invocation_id": invocation_id, "retry_hint": _RETRY_HINT})
+        return _fail("delegate_start", code, str(exc), executor="blocked",
+                     **({"definitely_unrun": True} if not start_attempted else {}),
+                     reset_at=getattr(exc, "reset_at", ""), **pending, **cleanup)
     finally:
         gateway.close()
-
     # A start whose custody row did not land does not wear the plain name: the run
     # is live and only THIS process knows it exists (the uncustodied-run leak).
     durable = record_started_custody(
@@ -814,7 +814,7 @@ def _retire_orphaned_registration(ctx: ToolContext, gateway: Any, project_id: st
                                   snapshot_id: str = "", history_facts: Optional[dict] = None) -> Dict[str, Any]:
     """Retire a registration this start created but never bound to a run.
 
-    Only when the daemon gave a DEFINITE negative answer (a 4xx refusal): a transport
+    Only a proven unsent start or a definite negative daemon answer permits retirement. A transport
     error, a 5xx, or a 2xx handle with no run id all mean the POST's fate is unknown, and
     a run may well be live against this very registration. An unverified outcome is never
     grounds for destroying state — the durable row names the id either way, which is what

@@ -419,7 +419,7 @@ def test_census_wait_facts_survive_optional_project_detail_and_resume(
         monkeypatch.setattr(projects_registry, "list_reserved_projects",
                             lambda *_: (_ for _ in ()).throw(OSError("registry unreadable")))
     waiting = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])[0]
-    assert waiting["owner_wait"] == {"owner_wait_state": "waiting", "quiz_state": "open"}
+    assert waiting["owner_wait"] == {"quiz_id": "q1", "owner_wait_state": "waiting", "quiz_state": "open"}
     assert bool(waiting.get("required_question_unavailable")) is (registry_unavailable or not project_bound)
 
     assert record_answered(tmp_path, "t1", quiz_id="q1", option_index=0, request_id="answer")["ok"]

@@ -17,19 +17,29 @@ from ouroboros import evidence_packs as packs, store
 from ouroboros.startup_historical_audit import _REPORT_BYTES, finish_maintenance_job, spawn_maintenance_job
 
 log = logging.getLogger(__name__)
-
+# ``packed`` = new generations written; ``examined`` = candidates processed; ``verified_bytes`` = raw bytes re-read.
+_COUNTERS = ("packed", "examined", "swept", "candidates", "raw", "compressed", "verified_bytes",
+             "unlinked", "kept", "busy", "faults", "archived")
 
 
 def task_stamps(root: pathlib.Path, task_id: str, *, obligation_rows: Optional[dict] = None,
                 external: Optional[dict] = None, txn=None) -> str:
-    """Evidence and settlement-source revisions, including owner-held duties and outbox sends."""
-    from ouroboros.artifacts import task_artifact_dir_path
+    """One task's stamp: its row and duties from one short read (or the caller's ``txn``), then ``_stamp``."""
     from ouroboros.task_store import signature
 
-    if obligation_rows is None:
-        obligation_rows = packs.settlement_obligations(root, txn=txn)
-    external = packs.settlement_external(root) if external is None else external
-    stamps = [("task", signature(root, task_id, txn=txn)), ("obligations", obligation_rows.get(task_id, {}))]
+    with (store.open_store(root, write=False) if txn is None else contextlib.nullcontext(txn)) as txn:
+        seq = signature(root, task_id, txn=txn)
+        if obligation_rows is None:
+            obligation_rows = packs.settlement_obligations(root, txn=txn)
+    return _stamp(root, task_id, seq, obligation_rows, packs.settlement_external(root) if external is None else external)
+
+
+def _stamp(root: pathlib.Path, task_id: str, seq, obligation_rows: dict, external: dict) -> str:
+    """Evidence and settlement-source revisions (row, owner-held duties, outbox sends, the two directories),
+    built from facts already read: no store access, so no transaction spans its ``stat`` calls."""
+    from ouroboros.artifacts import task_artifact_dir_path
+
+    stamps = [("task", seq), ("obligations", obligation_rows.get(task_id, {}))]
     stamps.extend((name, None if tasks is None else task_id in tasks) for name, tasks in external.items())
     paths = [root / "observability" / "calls" / task_id,
              task_artifact_dir_path(root, task_id, create=False).joinpath(*packs.CHECKPOINTS_REL.parts)]
@@ -70,18 +80,26 @@ def record_swept(root: pathlib.Path, task_id: str, stamps: str) -> None:
             conn.execute("INSERT OR REPLACE INTO swept VALUES (?,?)", (task_id, stamps))
 
 
-def changed_tasks(root: pathlib.Path, *, obligation_rows: Optional[dict] = None,
-                  external: Optional[dict] = None) -> List[str]:
-    """Tasks with loose evidence whose directories or result changed since a sweep recorded them."""
+def changed_stamps(root: pathlib.Path, *, obligation_rows: Optional[dict] = None, external: Optional[dict] = None,
+                   seqs: Optional[dict] = None) -> Dict[str, str]:
+    """Tasks with loose evidence whose directories or result changed since a sweep recorded them, with their
+    stamps. The rows and duties come from ONE short read that is closed before the directory probes."""
     root = pathlib.Path(root)
     ids = _loose_task_ids(root)
-    if ids and obligation_rows is None:
-        obligation_rows = packs.settlement_obligations(root)
-    if ids and external is None:
-        external = packs.settlement_external(root)
-    swept = swept_stamps(root) if ids else {}
-    return sorted(task for task in ids if swept is None or swept.get(task) !=
-                  task_stamps(root, task, obligation_rows=obligation_rows, external=external))
+    if not ids:
+        return {}
+    if obligation_rows is None or seqs is None:
+        with store.open_store(root, write=False) as txn:
+            obligation_rows = packs.settlement_obligations(root, txn=txn) if obligation_rows is None else obligation_rows
+            seqs = txn.write_seqs() if seqs is None else seqs
+    external = packs.settlement_external(root) if external is None else external
+    swept = swept_stamps(root)
+    stamps = {task: _stamp(root, task, seqs.get(task), obligation_rows, external) for task in sorted(ids)}
+    return {task: stamp for task, stamp in stamps.items() if swept is None or swept.get(task) != stamp}
+
+
+def changed_tasks(root: pathlib.Path, **census) -> List[str]:
+    return sorted(changed_stamps(root, **census))
 
 
 def archive_pending(root: pathlib.Path) -> bool:
@@ -216,16 +234,17 @@ def run_pass(root: pathlib.Path, *, sweep=None) -> Dict[str, Any]:
     if sweep is None:
         with pack_sweep(root) as sweep:
             return run_pass(root, sweep=sweep)
-    report: Dict[str, Any] = {"status": "completed", "packed": 0, "candidates": 0, "raw": 0, "compressed": 0,
-                              "unlinked": 0, "kept": 0, "busy": 0, "faults": 0, "archived": 0}
+    report: Dict[str, Any] = {"status": "completed", **dict.fromkeys(_COUNTERS, 0)}
     duties, external = sweep.duties, sweep.external
-    revisions = {task: task_stamps(root, task, obligation_rows=duties, external=external)
-                 for task in changed_tasks(root, obligation_rows=duties, external=external)}
+    # Stamps from the census baseline (older than every fact read below): evidence that arrives during the
+    # pass makes the recorded stamp stale, so the next pass selects that task again.
+    revisions = changed_stamps(root, obligation_rows=duties, external=external, seqs=sweep.seqs)
     facts = {task: packs.task_settlement_facts(root, task, obligation_rows=duties, external=external) for task in revisions}
     settled = {task for task, fact in facts.items() if packs.facts_settled(fact)}
     for task, fact in facts.items():
         if task not in settled and fact["money_open"] is not None and "unknowns" not in fact["obligations"]:
             record_swept(root, task, revisions[task])
+            report["swept"] += 1
     candidates = ordered_candidates(root, sorted(settled))
     report["candidates"] = len(candidates)
     listing = packs.list_sidecars(root)
@@ -240,13 +259,17 @@ def run_pass(root: pathlib.Path, *, sweep=None) -> Dict[str, Any]:
             packs.record_storage_pack(root, phase="fault", task_id=task, exception_class=type(exc).__name__)
             log.warning("Evidence pack of %s failed", task, exc_info=True)
             continue
-        report["packed"] += 1
+        report["examined"] += 1
+        report["packed"] += int(outcome.get("generation") is not None)
         report["raw"] += int(outcome.get("raw") or 0)
         report["compressed"] += int(outcome.get("packed") or 0)
-        for key in ("unlinked", "kept", "busy"):
+        for key in ("unlinked", "kept", "busy", "verified_bytes"):
             report[key] += int(outcome.get(key) or 0)
-        if not any(outcome.get(key) for key in ("busy", "kept", "deferred")):
+        # A blob kept for a live sharer does not re-queue this task: the sharer's own pass unlinks it
+        # once it settles (its stamp moves then); busy files and deferred candidates retry.
+        if not any(outcome.get(key) for key in ("busy", "deferred")):
             record_swept(root, task, revisions[task])
+            report["swept"] += 1
     try:
         report["archived"] = packs.archive_usage_segments(root)["archived"]
     except Exception as exc:
@@ -325,10 +348,9 @@ def _report_fields(raw: bytes) -> Dict[str, Any]:
         value = json.loads(raw) if len(raw) <= _REPORT_BYTES else None
         if not isinstance(value, dict) or value.get("status") not in {"completed", "unknown", "failed"}:
             return {}
-        keys = ("packed", "candidates", "raw", "compressed", "unlinked", "kept", "busy", "faults", "archived")
-        if any(type(value.get(key)) is not int or value[key] < 0 for key in keys):
+        if any(type(value.get(key)) is not int or value[key] < 0 for key in _COUNTERS):
             return {}
-        return {key: value[key] for key in ("status", *keys)}
+        return {key: value[key] for key in ("status", *_COUNTERS)}
     except (ValueError, UnicodeError, TypeError):
         return {}
 

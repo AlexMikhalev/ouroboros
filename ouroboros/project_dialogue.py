@@ -273,21 +273,21 @@ def project_origin_rows(drive_root: Any, project_chat_id: int) -> List[Dict[str,
     return rows
 
 
-def bound_room_chat(bindings: Dict[str, int], row: Dict[str, Any]) -> int:
-    """Resolve a row's immutable task binding in delivery lineage order."""
-    for field in ("task_id", "parent_task_id", "root_task_id"):
-        chat = bindings.get(str(row.get(field) or "").strip())
-        if chat:
-            return int(chat)
-    return 0
+def bound_room_chat(rooms: Callable[..., int], row: Dict[str, Any]) -> int:
+    """The Project room a row's task lives in by the one room rule (``rooms`` is
+    ``projects_registry.RoomResolver``), 0 when it lives in none: a row that
+    carries only its task id resolves through the task's own recorded lineage."""
+    return int(rooms(row.get("task_id"), row.get("parent_task_id"), row.get("root_task_id")) or 0)
 
 
 def room_membership(chat_id: int, project_chat_ids: set, source_refs: list,
-                    bindings: Dict[str, int]):
+                    rooms: Callable[..., int]):
     """Canonical room membership shared by history and evidence readers.
 
-    ``gateway.history_segments.room_segment_lens`` mirrors the Project admissions
-    below to skip archives; change both together.
+    ``rooms`` is the room rule (``projects_registry.RoomResolver``), the same one
+    the live bus addresses by, so a task's rows replay in the room its frames went
+    to. ``gateway.history_segments.room_segment_lens`` mirrors the Project
+    admissions below to skip archives; change both together.
 
     Presentation-only hiding and cross-room question pointers belong to the UI
     caller. A room source retains the actual cognitive result as well.
@@ -300,10 +300,13 @@ def room_membership(chat_id: int, project_chat_ids: set, source_refs: list,
             return False
         # A routing refusal belongs to the issuing chat, even when the target
         # is bound to another Project. Its lineage must not move the notice.
-        bound = 0 if row.get("type") in ORIGIN_ADDRESSED_NOTICE_TYPES else bound_room_chat(bindings, row)
+        bound = 0 if row.get("type") in ORIGIN_ADDRESSED_NOTICE_TYPES else bound_room_chat(rooms, row)
         lifecycle = row.get("type") in MAIN_PINNED_ROW_TYPES
         if chat_id in project_chat_ids:
-            return not lifecycle and (bound == chat_id or entry_chat == chat_id
+            # A task's resolved room is authoritative over the address its row was
+            # written with: a later conversion moves the subtree's earlier rows too,
+            # out of the old room (live delivery already went to the new one).
+            return not lifecycle and ((bound == chat_id if bound else entry_chat == chat_id)
                                       or entry_matches_source_ref(row, source_refs))
         if chat_id != 1:
             return entry_chat == chat_id and not bound
@@ -657,6 +660,13 @@ MAIN_NOTICE_TYPE = "main_notice"
 # Rows pinned to Main whatever the sender's Project binding: the supervisor
 # send handler and room_membership replay read this one set.
 MAIN_PINNED_ROW_TYPES = frozenset({"project_started", "project_handoff", "project_completion_summary", MAIN_NOTICE_TYPE})
+# Rows whose address is the producer's, never their task's room: Main pins, the
+# origin-addressed refusals, the late-acceptance supplement (its retained chat is
+# the send handler's decision) and the Main question pointer. The bus write seam
+# (``message_bus.send_with_budget``) reads this one set; the readers above keep
+# each component's own reading.
+ROOM_FIXED_ROW_TYPES = MAIN_PINNED_ROW_TYPES | ORIGIN_ADDRESSED_NOTICE_TYPES | frozenset({
+    "acceptance_late_settlement", "project_question_pointer"})
 
 # Statuses of an act that LANDED (or is still in flight): no cause sentence.
 _LANDED_ROUTING_STATUSES = frozenset({"scheduled", "delivered", "pending", "dispatch_pending", "accepted"})
@@ -818,7 +828,29 @@ TASK_CAUSE_PHRASES = {
     "child_results_deferred": "Some sub-task results were deferred instead of being folded into this answer",
     "tool_failure": "A tool this task used failed and nothing recovered it",
     "task_exception": "The task stopped on an internal error",
+    # Recovery finalized a dead attempt from its already registered answer instead of a retry
+    # (working_checkpoint.adopt_registered_answer): the answer stands, the packaging does not.
+    "finalization_incomplete": "The answer was authored, but the task's finalization did not complete, so its review evidence, artifacts and cost accounting are incomplete.",
+    # The Done card's delivery disposition (terminal_projection._project_row): not reason codes but the
+    # row-level warning keys of a delivery the host could not confirm; terminal_delivery_clause adds the copy pointer.
+    "terminal_delivery_exhausted": "Sending the final answer was not confirmed after the delivery attempts ran out",
+    "terminal_delivery_unknown": "Delivery of the final answer could not be confirmed because the delivery registry could not be read; the result is in task details.",
 }
+
+
+def terminal_delivery_clause(state: str, preserved_path: str = "") -> str:
+    """The card's one sentence about a delivery the host could not confirm (exhausted / unknown).
+
+    An exhausted delivery names the saved copy when one exists and says so when it
+    does not — never a claimed copy. The browser twin is terminalDeliveryClause.
+    """
+    sentence = TASK_CAUSE_PHRASES.get(f"terminal_delivery_{state}", "")
+    if not sentence:
+        return ""
+    if state == "exhausted":
+        sentence += (f"; a copy of the answer is saved at {preserved_path}." if preserved_path
+                     else "; no copy of the answer could be saved.")
+    return sentence
 
 
 def outcome_phase(result: Dict[str, Any], event: Dict[str, Any]) -> str:

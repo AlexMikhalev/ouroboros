@@ -35,13 +35,15 @@ HOST_CONTEXT_KIND_KEY = "_host_context_kind"
 # owner's choice of 2026-09-29.
 OWNER_LOW_TARGET_TOKENS = 250_000
 
-# Nano's owner-selected target sizes what goes INTO the request (the memory view
-# floor, the book form, the schema selection, the task-input pointer, the one
-# deficit-triggered reclaim). It stands in for the route window only when that
-# window is unknown. NANO_MIN_HEADROOM_TOKENS is the minimum the input fit leaves
-# for the reply and the reply floor R of ``reply_allowance_tokens``; the reply
-# itself follows the known window up to the caller's ceiling (owner decisions
-# 2026-10-05: Q1=A reply follows the window, Q3=A slack W/8 on approximate counts).
+# Nano's owner-selected target sizes what the host adds to the request unasked (the
+# memory view floor, the book form, the schema selection, unsolicited tool output, the
+# one deficit-triggered reclaim). For the reply alone it stands in for an unknown
+# window; a read the mind chose and the owner's task text answer to the known window
+# only, never to this target (owner decisions 2026-10-11 1A, 2026-10-13 #1527 A).
+# NANO_MIN_HEADROOM_TOKENS is the minimum the input fit leaves for the reply and the
+# reply floor R of ``reply_allowance_tokens``; the reply itself follows the known
+# window up to the caller's ceiling (owner decisions 2026-10-05: Q1=A reply follows
+# the window, Q3=A slack W/8 on approximate counts).
 OWNER_NANO_TARGET_TOKENS = 85_000
 NANO_MIN_HEADROOM_TOKENS = 8_192
 

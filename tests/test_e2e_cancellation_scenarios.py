@@ -720,7 +720,7 @@ def test_e11_stop_now_hardens_the_same_intent_without_minting_a_second(e2e_clone
             first = dict(intents(data_root).get(task_id) or {})
             assert first.get("request_id"), intents(data_root)
 
-            server.cancel_task(task_id)  # Stop-now: 200 while live, 404 if it just settled
+            server.cancel_task(task_id)  # Stop-now: 200 once torn down, 202 while still stopping, 404 if it just settled
             hardened = wait_until(
                 lambda: forensics(data_root, task_id=task_id, event="stop_policy_hardened"), 60,
             )

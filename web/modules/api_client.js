@@ -8,6 +8,25 @@ export async function apiFetch(url, init = {}) {
     return fetch(url, init);
 }
 
+/**
+ * The core's own same-origin sign-in, returning to this page. Only its network
+ * gate answers 401 on the readiness and state reads that send a page here: a
+ * separately hosted interface never passes through the gate's login page at load,
+ * and a page whose session expired keeps showing until such a read is refused.
+ * Every other failure keeps its own presentation, and nothing the page had queued
+ * or failed to save is resent after signing in — the return is a fresh load.
+ */
+export function signInUrl(href = window.location.href) {
+    const here = new URL(href);
+    here.searchParams.delete('_ouro_refresh');
+    here.searchParams.delete('_ouro_reason');
+    return `/auth/login?next=${encodeURIComponent(`${here.pathname}${here.search}${here.hash}`)}`;
+}
+
+export function openSignIn() {
+    window.location.replace(signInUrl());
+}
+
 export const isStoreMigrating = error => error?.status === 503 && error?.body?.reason_code === 'migrating';
 
 /**
@@ -128,12 +147,15 @@ export function createTask(payload) {
 }
 
 /**
- * Cancel a task. With {cascade:true} the server also cancels the task's live
- * subtree and answers only once that teardown has finished; without it the
- * request stays the synchronous single-task cancel (no body — headless compat).
- * S3 (Q1/Q2): stopPolicy "finalize_then_cancel" requests the soft
- * finalize-then-stop episode (202 acknowledgement, cancel_state "pending");
- * "immediate" (or absent) keeps today's hard cancel byte-identical.
+ * Cancel a task. The server records the durable Stop first, then drives it;
+ * with {cascade:true} the task's live subtree is torn down too. Without
+ * options no body is sent (headless compat). Every answer with ok:true is an
+ * accepted Stop: 200 once the teardown settled, 202 cancel_state "pending"
+ * while it is still being finished — the soft finalize-then-stop episode of
+ * stopPolicy "finalize_then_cancel" (S3, Q1/Q2), or an "immediate" (or
+ * absent) Stop whose teardown is not confirmed yet (reason_code
+ * "teardown_unconfirmed"); the supervisor finishes it and task detail shows
+ * the pending state. 404 means there is nothing to stop.
  * Shared by the Chat live-card stop control and the Activity tab.
  * @param {string} taskId
  * @param {{cascade?: boolean, stopPolicy?: string, stopActionId?: string}} [options]
@@ -446,7 +468,9 @@ export const apiClient = {
      * @returns {Promise<import('./storage_types.js').StorageResponse>}
      */
     measureStorage: () => jsonPost('/api/storage/measure', {}),
+    /** @returns {Promise<import('./management_contract_types.js').UpdateStatusResponse>} */
     updateStatus: () => fetchJson('/api/update/status', { cache: 'no-store' }),
+    /** @returns {Promise<import('./management_contract_types.js').UpdateStatusResponse>} */
     updateCheck: () => jsonPost('/api/update/check', {}),
     /** @returns {Promise<import('./api_types.js').UpdatePreflightResponse>} */
     updatePreflight: () => jsonPost('/api/update/preflight', {}),

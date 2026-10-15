@@ -111,6 +111,8 @@ test('inert tool carrier restores a speechless card without invented narration o
         assert.ok(f.card());
         assert.match(f.rows().map(row => row.innerHTML).join(' '), /1 tool call/);
         assert.equal(f.card().querySelector('[data-live-phase]').hidden, true, 'history alone confers no liveness');
+        assert.match(f.meta(), /Activity unconfirmed/, 'the hidden chip is replaced by the meta label');
+        assert.match(f.meta(), /1 tool call/);
         assert.equal(f.card().querySelector('[data-resume-run]'), null);
         assert.equal(f.card().querySelector('[data-cancel-run]'), null);
         assert.equal(f.card().querySelector('[data-live-title]').textContent, '');

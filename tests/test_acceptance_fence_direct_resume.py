@@ -15,6 +15,7 @@ import pytest
 
 from tests._budget_pause_exact_helpers import _fast_hold, _install_queue, _loop_ctx, _quiet_external, _supervisor_ctx
 from tests.test_acceptance_fence_transport import _pooled_agent, _Supervisor
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -107,9 +108,9 @@ def _pooled_resume(tmp_path, monkeypatch, queue, workers, *, consume=True):
 
     assert queue.resume_budget_paused_task(TASK)["ok"]
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
                                          proc=SimpleNamespace(pid=os.getpid(), is_alive=lambda: True),
-                                         in_q=SimpleNamespace(put=lambda row: sent.append(dict(row))))
+                                         in_q=SimpleNamespace(put=lambda row: sent.append(dict(row)))))
     workers.assign_tasks()
     assert len(sent) == 1 and TASK in workers.RUNNING
     ctx, _limit = _loop_ctx(tmp_path, TASK, direct=True)

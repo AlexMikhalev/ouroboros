@@ -162,9 +162,9 @@ def test_failed_pool_snapshot_never_leaks_or_double_counts_pause(pool, monkeypat
     assert pool.original.in_q.empty()
     assert pool.meta["budget_paused_sec"] == 20
     assert execution_elapsed_seconds(pool.meta, clock[0]) == 80
-    # The failed grant's maintenance tick replenished capacity. Its replacement
-    # must finish the normal startup handshake before it can lend that slot back.
-    workers.WORKERS[1].reaping = False
+    # The failed grant minted nothing: its lent capacity is still free (demand
+    # growth belongs to assignment), so the next tick grants the same stack.
+    assert set(workers.WORKERS) == {0}
     worker_owner_wait.maintain_owner_wait_capacity()
     assert pool.original.in_q.get_nowait()["phase"] == "resume_granted"
     assert pool.meta["budget_paused_sec"] == 220

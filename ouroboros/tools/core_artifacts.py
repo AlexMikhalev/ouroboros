@@ -81,7 +81,7 @@ def _send_photo(ctx: ToolContext, file_path: str = "", image_base64: str = "",
         "mime": mime,
         "caption": caption or "",
     })
-    text = "OK: photo sent to owner chat." if mode == "live" else "OK: photo queued for delivery to owner."
+    text = "OK: photo accepted for delivery to owner chat." if mode == "live" else "OK: photo queued for delivery to owner."
     return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=text))
 
 
@@ -129,7 +129,7 @@ def _send_video(ctx: ToolContext, file_path: str = "", caption: str = "") -> str
         "mime": mime,
         "caption": caption or "",
     })
-    text = "OK: video sent to owner chat." if mode == "live" else "OK: video queued for delivery to owner."
+    text = "OK: video accepted for delivery to owner chat." if mode == "live" else "OK: video queued for delivery to owner."
     return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=text))
 
 
@@ -213,7 +213,7 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
         "download_url_compat": compat_url,
         "file_ref": file_ref,
     })
-    text = (f"OK: file '{fp.name}' sent to owner chat." if mode == "live"
+    text = (f"OK: file '{fp.name}' accepted for delivery to owner chat." if mode == "live"
             else f"OK: file '{fp.name}' queued for delivery to owner.")
     return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=text))
 
@@ -501,14 +501,9 @@ def _send_links(
     try:
         actions = validate_link_actions(links)
     except LinkActionsValidationError as exc:
-        # The marker names the CAUSE in the refusal the model reads: SEND_LINKS_URL_BLOCKED a
-        # policy denial, SEND_LINKS_ARG_ERROR an argument fault. Neither name is in the legacy
-        # code map (no _ARG_ERROR suffix rule exists), so the adapter types them from their
-        # SHAPE: the _BLOCKED head becomes LEGACY_BLOCKED and the _ERROR head
-        # LEGACY_TOOL_ERROR. Different buckets, but these TWO are both recorded as a
-        # refusal rather than a successful call, which is why the marker is here. It says
-        # nothing about this tool's other codes: SEND_LINKS_TOO_MANY is a LEGACY_WARNING
-        # whose status stays ok.
+        # Validation rejects the whole batch before delivery. The adapter keeps
+        # URL policy denials distinct from bad arguments, including TOO_MANY;
+        # no links were sent on any of these branches.
         from ouroboros.tools.tool_result import LegacyTextResultAdapter
 
         return _publish_tool_result(ctx, LegacyTextResultAdapter.from_text(
@@ -521,7 +516,7 @@ def _send_links(
         "actions": actions,
     })
     if mode == "live":
-        return "OK: link buttons sent to owner chat."
+        return "OK: link buttons accepted for delivery to owner chat."
     return "OK: link buttons queued for delivery to owner."
 
 

@@ -446,6 +446,7 @@ def test_skill_review_all_session_composition_uses_strict_schema_and_no_api_fall
     import ouroboros.tools.review as review_tool
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.skill_review_passes import run_skill_review_passes
+    from tests.test_skill_review_frozen_delivery import _skill
 
     required = ("manifest_schema", "secrets_hygiene")
     fake_route.detail = _terminal_detail(json.dumps({"findings": [
@@ -476,10 +477,11 @@ def test_skill_review_all_session_composition_uses_strict_schema_and_no_api_fall
         "slot_ids": ["skill-slot-a", "skill-slot-b"],
     }
 
+    skill, content_hash = _skill(tmp_path, name="happy_farm")  # a real frozen payload
     _prompt, _evidence, result_text, error = run_skill_review_passes(
-        ctx, ctx.drive_root, SimpleNamespace(name="happy_farm"),
+        ctx, ctx.drive_root, skill,
         evidence={
-            "manifest_dump": "{}", "content_hash": "hash", "history": [],
+            "manifest_dump": "{}", "content_hash": content_hash, "history": [],
             "review_rebuttal": "", "required_items": required,
         },
         file_packs=["frozen payload bytes"], models=models, row_plan=row_plan,
@@ -503,7 +505,7 @@ def test_skill_review_all_session_composition_uses_strict_schema_and_no_api_fall
     assert all(request["scope"]["root"] == str(root) for request in starts)
     assert all(request["outputSchema"]["properties"]["findings"]["minItems"] == 1
                for request in starts)
-    assert all("exact frozen skill evidence" in request["prompt"] for request in starts)
+    assert all("exact frozen copy" in request["prompt"] for request in starts)
     assert all("DYNAMIC SKILL" in request["prompt"] and "STABLE ONLY" not in request["prompt"]
                for request in starts)
     assert all("docs/ARCHITECTURE.md" in request["prompt"] and
@@ -527,6 +529,7 @@ def test_skill_review_legacy_session_dispatch_keeps_shared_profile_pin(
     # The session row + its credential pin are configured through the review
     # pool's catalog row (the phase-5 route envs are retired and ignored).
     from tests.review_pool_rosters import pool_roster, pool_seat
+    from tests.test_skill_review_frozen_delivery import _skill
 
     monkeypatch.delenv(REVIEW_SESSION_ROUTE_ENV, raising=False)
     monkeypatch.setenv("OUROBOROS_SUBAGENTS", pool_roster(pool_seat(
@@ -542,10 +545,11 @@ def test_skill_review_legacy_session_dispatch_keeps_shared_profile_pin(
     monkeypatch.setattr(review_tool, "LLMClient", lambda: no_api)
     ctx = _wave_ctx(tmp_path)
 
+    skill, content_hash = _skill(tmp_path, name="happy_farm")  # a real frozen payload
     _prompt, _evidence, _result, error = run_skill_review_passes(
-        ctx, ctx.drive_root, SimpleNamespace(name="happy_farm"),
+        ctx, ctx.drive_root, skill,
         evidence={
-            "manifest_dump": "{}", "content_hash": "hash", "history": [],
+            "manifest_dump": "{}", "content_hash": content_hash, "history": [],
             "review_rebuttal": "", "required_items": ("manifest_schema",),
         },
         file_packs=["frozen"], models=delivery["models"], row_plan=delivery,

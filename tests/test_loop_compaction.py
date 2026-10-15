@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -56,13 +57,23 @@ def _plan(*, preferred="max"):
         rebuilt[0] = {"role": "system", "content": f"{mode.upper()}_SYSTEM"}
         return rebuilt
 
-    return SimpleNamespace(
-        model="same-model",
-        route_fp="route-a",
-        preferred_mode=preferred,
-        core_sha256="a" * 64,
-        reproject_transcript=reproject,
+    plan = SimpleNamespace(
+        model="same-model", route_fp="route-a", preferred_mode=preferred, core_sha256="a" * 64,
+        status="confirmed", stale=False,  # evidence-shaped, as ``is_known`` reads the real plan
+        window_tokens=500_000, output_reserve_tokens=65_536,
+        projection=lambda _mode: SimpleNamespace(calibration_ratio=1.0),
+        reproject_transcript=reproject, reproject_for_route=Mock(),
     )
+    plan.reproject_for_route.return_value = plan  # records the rebind; keeps this double's mode stubs
+    return plan
+
+
+def _lowered_from_max(plan, messages):
+    """The one rebind an actual overflow's Low rung makes: Low books from the level Max showed."""
+    plan.reproject_for_route.assert_called_once_with(
+        window_tokens=500_000, known_window=True, ratio=1.0, output_reserve=65_536,
+        tool_schemas=[], start_mode="max", current_messages=messages, select_mode="low")
+    assert plan.reproject_for_route.call_args.kwargs["current_messages"] is messages  # actual transcript, not a copy
 
 
 def _ctx(tmp_path, *, preferred="max", mode="max"):
@@ -518,6 +529,7 @@ def test_equal_context_releases_retry_before_provider_send(tmp_path, monkeypatch
     assert provider_sends == 1
     skipped = [event for event in events if event.get("reason") == "context_candidate_not_strictly_smaller"]
     assert [event["rung"] for event in skipped] == ["helper", "low"]
+    _lowered_from_max(context.context_fit_plan, context.messages)
 
 
 def test_already_low_overflow_never_emits_max_to_low_toast(tmp_path, monkeypatch):
@@ -690,15 +702,10 @@ def test_strict_shrink_predicate_requires_entire_physical_tuple():
 
 
 def test_overflow_retry_is_skipped_while_the_round_holds_an_unresolved_attempt(tmp_path, monkeypatch):
-    """Through the REAL dispatcher: a granted transport-death repeat that is
-    then rejected as a context overflow must not open the compaction retry —
-    attempt #1 of the round is still unresolved, so a smaller candidate would
-    be a third paid send over it. The round record is the single fact."""
+    """A retained explicit-repeat record blocks compaction recovery through the real dispatcher."""
     import json
 
-    import httpx
-
-    from ouroboros import loop, loop_llm_call
+    from ouroboros import loop
     from ouroboros import usage_accounting as ua
     from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY
 
@@ -708,25 +715,20 @@ def test_overflow_retry_is_skipped_while_the_round_holds_an_unresolved_attempt(t
             candidate_measurement_kind="opaque", **extra,
         )
 
-    class _DeathThenOverflow:
+    class _Overflow:
         calls = 0
 
         def chat(self, **_kwargs):
             self.calls += 1
-            if self.calls == 1:
-                try:
-                    raise RuntimeError("Connection error.") from httpx.ReadError("socket died")
-                except RuntimeError as exc:
-                    exc.physical_attempt_capture = _unresolved()
-                    raise
             exc = RuntimeError("routed to a smaller upstream window")
             exc.code = "context_length_exceeded"
             exc.physical_attempt_capture = _unresolved(provider_status_code=400, provider_code="context_length_exceeded")
             raise exc
 
     context = _ctx(tmp_path)
-    context.llm = _DeathThenOverflow()
-    context.task_type = "presence"  # inline Presence alone keeps the paid transport-death repeat
+    context.llm = _Overflow()
+    context.accumulated_usage.update(execution_id="exec", **{
+        TRANSPORT_DEATHS_KEY: {"round_id": "exec:round:1", "count": 1, "backoff_sec": 4.0}})
     fit = _fit()  # Pure measurement may run again for the per-send facts line.
     reclaims = []
 
@@ -738,12 +740,11 @@ def test_overflow_retry_is_skipped_while_the_round_holds_an_unresolved_attempt(t
     monkeypatch.setattr(loop, "_measure_round_main_fit", measure)
     monkeypatch.setattr(loop, "_run_main_reclaim", lambda ctx, d, **_k: reclaims.append(d))
     monkeypatch.setattr(loop, "last_physical_attempt_capture", lambda: _failed_capture())
-    monkeypatch.setattr(loop_llm_call, "_sleep_within_deadline", lambda _sec, _dl, **_kw: True)
 
     msg, _cost, mode = loop._call_round_model(context)
 
     assert msg is None
-    assert context.llm.calls == 2  # the death and its one repeat; no compaction retry
+    assert context.llm.calls == 1  # the current refusal; no compaction retry
     assert context.accumulated_usage["_last_llm_error_kind"] == "context_overflow"
     assert context.accumulated_usage[TRANSPORT_DEATHS_KEY]["count"] == 1
     assert reclaims == []
@@ -754,7 +755,7 @@ def test_overflow_retry_is_skipped_while_the_round_holds_an_unresolved_attempt(t
     assert [row["reason"] for row in skipped] == ["round_holds_unresolved_attempt"]
     api_errors = [row for row in rows if row.get("type") == "llm_api_error"]
     assert [(row["error_kind"], row["retry_same_request"]) for row in api_errors] == [
-        ("provider_outcome_unknown", True), ("context_overflow", False),
+        ("context_overflow", False),
     ]
 
 
@@ -980,6 +981,7 @@ def test_helper_rung_runs_once_per_route_round_and_later_rungs_compare_with_the_
     assert msg["content"] == "fits" and mode == "low" and len(sends) == 3
     assert reclaims == [(max(1, reclaim_low_water_margin(None, 500_000)), True)]
     assert context.messages[0]["content"] == "LOW_SYSTEM"
+    _lowered_from_max(context.context_fit_plan, context.messages)
 
 
 def _fit_key_of(disposition):

@@ -2,6 +2,8 @@ import json
 import pathlib
 import types
 
+import pytest
+
 import ouroboros.agent_startup_checks as startup_mod
 import ouroboros.world_profiler as world_profiler
 from ouroboros.memory import Memory
@@ -121,7 +123,7 @@ def test_check_uncommitted_changes_never_commits_outside_launcher(monkeypatch, t
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
-        if cmd[:3] == ["git", "status", "--porcelain"]:
+        if cmd == ["git", "--no-optional-locks", "status", "--porcelain"]:
             return types.SimpleNamespace(returncode=0, stdout=" M server.py\n")
         raise AssertionError(f"Unexpected subprocess call: {cmd}")
 
@@ -134,7 +136,7 @@ def test_check_uncommitted_changes_never_commits_outside_launcher(monkeypatch, t
     assert result["status"] == "warning"
     assert result["auto_committed"] is False
     assert result["auto_rescue_skipped"] == "supervisor_side_rescue_owns_this"
-    assert calls == [["git", "status", "--porcelain"]]
+    assert calls == [["git", "--no-optional-locks", "status", "--porcelain"]]
 
 
 def test_check_budget_reports_corrupt_state_json(tmp_path, monkeypatch):
@@ -272,32 +274,43 @@ def _known_evolution_controls(tmp_path):
                       "evolution_owner_stopped": False})
 
 
-def test_verify_restart_closes_promoted_backlog_only_on_absorb(tmp_path):
-    import ouroboros.improvement_backlog as ib
+@pytest.mark.parametrize("path", ["restart_verified", "boot_reconcile"])
+def test_verify_restart_absorb_keeps_the_authored_backlog_and_its_ledger_link(tmp_path, monkeypatch, path):
+    """Absorption closes nothing in the authored backlog note on either absorbing boot
+    path; the chooser's named entry rides into the cycle-outcome ledger row as evidence."""
+    from ouroboros.knowledge import resolve_knowledge_address, write_knowledge_note
 
     (tmp_path / "state").mkdir(parents=True)
     (tmp_path / "logs").mkdir(parents=True)
     _known_evolution_controls(tmp_path)
-    ib.append_backlog_items(tmp_path, [{
-        "summary": "promoted fix", "category": "c", "source": "post_task",
-        "evidence": "e", "fingerprint": "fp-x", "id": "ibl-x",
-    }])
-    (tmp_path / "state" / "pending_restart_verify.json").write_text(
-        json.dumps({"expected_sha": "goodsha"}), encoding="utf-8")
+    backlog = resolve_knowledge_address(tmp_path, "improvement-backlog", "global")
+    assert write_knowledge_note(backlog, "## promoted fix\nStill its author's to revise or keep.").ok
+    before = backlog.path.read_bytes()
+    tx = {"transaction_id": "tx1", "task_id": "t1", "commit_sha": "goodsha"}
+    if path == "restart_verified":
+        (tmp_path / "state" / "pending_restart_verify.json").write_text(
+            json.dumps({"expected_sha": "goodsha"}), encoding="utf-8")
+        observed = "goodsha"
+    else:
+        tx.update(restart_required=True, restart_verified=False)
+        monkeypatch.setattr(startup_mod.subprocess, "run",
+                            lambda *_a, **_k: types.SimpleNamespace(returncode=0, stdout="", stderr=""))
+        observed = "headsha"
     (tmp_path / "state" / "evolution_campaign.json").write_text(json.dumps({
-        "status": "active",
-        "post_task_backlog_id": "ibl-x",
-        "active_transaction": {"transaction_id": "tx1", "task_id": "t1", "commit_sha": "goodsha"},
+        "status": "active", "post_task_backlog_id": "ibl-x", "active_transaction": tx,
     }), encoding="utf-8")
-    env = types.SimpleNamespace(drive_path=lambda rel: tmp_path / rel, drive_root=tmp_path)
+    env = types.SimpleNamespace(drive_path=lambda rel: tmp_path / rel, drive_root=tmp_path, repo_dir=tmp_path)
 
-    startup_mod.verify_restart(env, "goodsha")  # sha matches -> absorbed
+    startup_mod.verify_restart(env, observed)
 
-    by_id = {i["id"]: i for i in ib.load_backlog_items(tmp_path)}
-    assert by_id["ibl-x"]["status"] == "done"  # closed only after absorb
+    assert backlog.path.read_bytes() == before
     camp = json.loads((tmp_path / "state" / "evolution_campaign.json").read_text(encoding="utf-8"))
     assert "post_task_backlog_id" not in camp
     assert int(camp.get("absorbed_cycles_done") or 0) == 1
+    checkpoints = [json.loads(line) for line in
+                   (tmp_path / "state" / "evolution_checkpoints.jsonl").read_text(encoding="utf-8").splitlines()]
+    [tag] = [row for row in checkpoints if row.get("kind") == "cycle_outcome"]
+    assert (tag["source"], tag["cycle_outcome"], tag["backlog_id"]) == (path, "absorbed", "ibl-x")
 
 
 def test_verify_restart_absorb_persists_cycle_outcome_and_owner_report(tmp_path):
@@ -512,7 +525,7 @@ def test_check_uncommitted_changes_never_commits_even_when_launcher_managed(monk
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
-        if cmd[:3] == ["git", "status", "--porcelain"]:
+        if cmd == ["git", "--no-optional-locks", "status", "--porcelain"]:
             return types.SimpleNamespace(returncode=0, stdout=" M server.py\n")
         raise AssertionError(
             f"Unexpected subprocess call {cmd}: worker-side check_uncommitted_changes "
@@ -528,4 +541,4 @@ def test_check_uncommitted_changes_never_commits_even_when_launcher_managed(monk
     assert result["status"] == "warning"
     assert result["auto_committed"] is False
     assert result["auto_rescue_skipped"] == "supervisor_side_rescue_owns_this"
-    assert calls == [["git", "status", "--porcelain"]]
+    assert calls == [["git", "--no-optional-locks", "status", "--porcelain"]]

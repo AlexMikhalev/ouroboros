@@ -22,7 +22,7 @@ The context-delivery registry:
 | Background consciousness wake-up (`consciousness.py` → `handle_wake_direct`) | = Main task context | = Main task context | = Main task context |
 | Preflight (`review_change(surface=preflight)`: one named row over the system repository's worktree) | the `review_change` body row | as BIBLE | as BIBLE |
 | The coupling question (Part 2 of the retrieving seat's brief, `tools/review_brief_coupling.py`) | full tier 1 beside the `Coupling questions` section, in every context mode | tier 3 navigation | tier 2 within the usable-window share |
-| Skill review (`skill_review.py`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | same two classes | same two classes |
+| Skill review (`skill_review.py`) | full inline (packet) / declared mandatory full read (retrieving) | same two classes | same two classes |
 | Plan review (`tools/plan_review.py`) | full for a self-modification plan (`api_chat` inline, `agent_session` mandatory full read); otherwise a navigation map plus a named on-demand pointer, never a copy | as BIBLE | not delivered or pointed at; reachable only through a generic `need_evidence` locator |
 | Deep self-review (`deep_self_review.py`) | full tier 1 on both deliveries | tier 3 navigation | tier 2 within the row's share (ARCHITECTURE §6 "Deep self-review") |
 
@@ -32,7 +32,7 @@ Planning resolves targets/evidence against `active_repo_dir_for(ctx)`, governanc
 
 Review history keeps the operative contract, current author/critic statuses and open/deferred/pending facts explicit. Actor `review_notes` may shorten individual reasons or group exact historical decisions, retaining membership and lineage in the existing selected view. No grouping by age or terminal status. Producers project decisions once with mirror references; unknown legacy content stays full. Recheck versions through publication, cold context, new packets and Continue; source gaps preserve recoverable bodies. Invalid optional transfers leave their own attachments full. Unchanged views retain their prefix; all surviving accounts cross continuations. Notes grant no verdict and rewrite no paid replay. Enforcement: `tests/test_review_local_accounts.py`, `tests/test_review_cold_history.py`, `tests/test_review_view_integration.py`. Closure/cycles: ARCHITECTURE §6 "Plan construction and review".
 
-**Context mode (Nano / Low / Max).** Follow the Main row. Max binds Development to the active repository, never inferred intent, retaining books at startup/rebind despite predicted pressure. Only actual size-refusal recovery may lower that projection after earlier steps. Preserve owner Low/Nano sizing, lower starts, tier-0 and P3; estimates permit no quality reduction. Mechanism: ARCHITECTURE §6 “Context fitting, retry, and compaction”.
+**Context mode (Nano / Low / Max).** Follow the Main row. Max binds Development to the active repository, never inferred intent, keeping books at startup/rebind until actual size-refusal recovery lowers them after earlier steps. Preserve owner Low/Nano sizing, lower starts, tier-0 and P3; estimates permit no quality reduction. Targets cut no chosen read or owner words; rebinds re-cut no fitting sent view (`tests/test_context_economy_window.py`). Mechanism: ARCHITECTURE §6 “Context fitting, retry, and compaction”.
 
 ### Invariant: Exact premises with explicit source ownership
 
@@ -49,7 +49,7 @@ Predicted pressure buys no helper. Actual refusal follows ARCHITECTURE §6’s r
 When a core governance artifact does not fit the available budget:
 
 - Where the flow requires inline delivery, inability to fit is an assembly failure, not a smaller pack (BIBLE P3): a typed entry names the artifact and the reason, the review does not proceed on the remainder, and the disclosure accompanies the refusal rather than replacing it. Elsewhere the omission is named where the reader sees it (`Reference book source unavailable: …`, `⚠️ OMISSION NOTE`), never silent; a reviewer without ARCHITECTURE.md is not operating with full context.
-- Retain exact tool sources before projecting the complete Main batch; preserve outcomes, requested ranges and source gaps. Producer pages are separate from this frame, and no tool/path exemption applies. Read receipts count the actual consumer projection, not a predicted head cut.
+- Retain exact tool sources before projecting the complete Main batch; preserve outcomes, requested ranges and source gaps. Producer pages lie outside this frame; no tool/path is exempt. Read receipts count the actual consumer projection, not a predicted head cut.
 - Book navigation (`context_layout.book_navigation`), heading maps and named pointers index available sources; they do not deliver source bodies. Low/Nano use them, never `[:N]` on a document.
 - Bound strings through `utils.truncate_review_artifact` (display previews) or `utils.truncate_within_limit` (a strict wire/prompt bound), never a hand-rolled `text[:cap] + marker`, which loses the anti-waste floor and can return a value longer than its input.
 - A list obeys the same rule: a `[:N]` slice carries the omitted count and, where downstream compares an identity, a durable hash or reference for the full set (`_outcome_receipts.receipt_identity_projection`). Bounding a set is allowed; hiding that it was bounded is the P1 violation.
@@ -62,7 +62,7 @@ Disclosed truncation (the `⚠️ OMISSION NOTE` marker) protects **LLM context 
 
 - **Owner/UI-bound surfaces** (chat, task_results projections, review verdicts shown to a person) present the complete text or a reference to a durable full copy (an observability `response_ref`): reviewer rationale is a cognitive artifact (BIBLE P1), and truncating it beside an unreferenced full copy is partial memory loss. Terminal text asserts only recovery facts the round record carries, never a route mechanism the selected transport cannot perform.
 - **Model-bound projections** (review packs, context sections, tool-result transport) keep their disclosed-truncation budgets.
-- **A cut cheaper than its own marker is forbidden everywhere** (the shared primitive's floor); the one exception, an identifier-shaped single-line field under a tiny limit, is `reflection._truncate_with_notice`.
+- **A cut cheaper than its own marker is forbidden everywhere** (the shared primitive's floor).
 
 Enforcement: `tests/test_owner_facing_honesty.py`.
 

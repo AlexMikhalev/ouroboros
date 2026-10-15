@@ -131,17 +131,21 @@ def resolve_relation(root, origin, kind, *, declared_by):
 
 
 def policy_view(root, data, record):
-    """Pure current projection; callers that authorize starts hold control locks."""
+    """Pure current projection; callers that authorize starts hold control locks.
+
+    A read that met confirmed store contention also says ``busy``: the same
+    unavailable wait, which ``refresh_policy`` neither persists nor audits."""
     from ouroboros.cancel_intents import active_intent, _validated_single_cancel_target
     from ouroboros.owner_pause import read_fence, fence_closed
     from ouroboros.task_results import load_task_result, _TRULY_TERMINAL_STATUSES
     from ouroboros.deadline_utils import parse_deadline_ts
+    from supervisor.schedule_occurrence import contention
     import datetime
 
     kind = relation_kind(record)
     if kind == "independent":
         return {"relation": kind, "controls": {}, "wait": ""}
-    controls, wait = {}, ""
+    controls, wait, busy = {}, "", False
     released = record.get("followup_released") or {}
     try:
         restart = data.get("followup_restart") or {}
@@ -196,8 +200,8 @@ def policy_view(root, data, record):
                 fired = load_task_result(pathlib.Path(root), fired_id, strict=True) or {}
                 if fired.get("status") not in {"completed", "cancelled", "failed"} and not bound_task(fired, record):
                     wait = "pending_binding_unavailable"
-    except Exception:
-        wait = "followup_authority_unavailable"
+    except Exception as exc:
+        wait, busy = "followup_authority_unavailable", contention(exc)
     controls = {key: value for key, value in controls.items() if released.get(key) != value}
     # An unrecorded (published) relationship is held only by an actual control;
     # its release then needs the relationship decision like any unknown one.
@@ -211,7 +215,7 @@ def policy_view(root, data, record):
                     "revision": (record.get("followup_relation") or {}).get("revision")}
         hold = {"hold_id": hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest(),
                 "reason": reason, "controls": controls}
-    return {"relation": kind, "controls": controls, "wait": wait, "hold": hold}
+    return {"relation": kind, "controls": controls, "wait": wait, "hold": hold, **({"busy": True} if busy else {})}
 
 
 def observed_store(root, data):
@@ -235,8 +239,8 @@ def refresh_policy(root, data, record):
 
     view = policy_view(root, data, record)
     hold = view.get("hold") or record.get("followup_hold")
-    if record.get("followup_hold") == hold and record.get("followup_wait", "") == view["wait"]:
-        return view
+    if view.get("busy") or record.get("followup_hold") == hold and record.get("followup_wait", "") == view["wait"]:
+        return view  # contention is not a restriction to persist: no write, no audit flap
     before = copy.deepcopy(record)
     after = {**record, "followup_wait": view["wait"]}
     if hold:
@@ -261,9 +265,13 @@ def refresh_policy(root, data, record):
 
 @contextmanager
 def control_guard(root, record):
-    """Share cancellation and actual owner Pause's final local start boundary."""
+    """Share cancellation and actual owner Pause's final local start boundary.
+
+    An automatic caller (``queue_schedules.automatic_acquisitions``) tries each
+    lock once; contention raises its typed refusal and nothing is changed."""
     from ouroboros.cancel_intents import cancellation_projection_lock
     from ouroboros.owner_pause import launch_lock
+    from supervisor.queue_schedules import automatic
 
     if relation_kind(record) == "independent":
         yield
@@ -273,11 +281,12 @@ def control_guard(root, record):
     if key in depths:
         yield
         return
+    wait = not automatic()
     with ExitStack() as stack:
-        stack.enter_context(cancellation_projection_lock(root))
+        stack.enter_context(cancellation_projection_lock(root, wait=wait))
         origin = origin_of(record)
         if relation_kind(record) != "independent" and origin.get("root_task_id"):
-            stack.enter_context(launch_lock(root, origin["root_task_id"]))
+            stack.enter_context(launch_lock(root, origin["root_task_id"], wait=wait))
         _CONTROL_DEPTH.keys = depths | {key}
         try:
             yield
@@ -313,6 +322,11 @@ The occurrence owner persists dispatch before the physical handoff inside this f
             return
         with control_guard(root, row):
             view = refresh_policy(root, data, row)
+            if view.get("busy"):  # contention defers the start; it never reads as a held row
+                from ouroboros.store import StoreBusy
+                error = StoreBusy("follow-up authority busy", reason="contention")
+                error.rollback_confirmed = True
+                raise error
             yield not (view.get("hold") or view["wait"] or row.get("followup_hold")) and bound_task(task, row)
 
 

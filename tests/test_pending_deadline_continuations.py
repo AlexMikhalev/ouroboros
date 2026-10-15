@@ -12,6 +12,7 @@ from tests._budget_pause_exact_helpers import _parked
 from tests._store_shared import unreadable_result
 from tests.test_swarm_host_admission import host  # noqa: F401
 from tests.test_owner_wait_restart import restart_case  # noqa: F401
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -99,8 +100,8 @@ def _exact(host, monkeypatch, *, recovered=False):  # noqa: F811
 def test_exact_resume_wait_expires_without_worker_dispatch(host, expiry, monkeypatch, entry, recovered):  # noqa: F811
     task = _exact(host, monkeypatch, recovered=recovered)
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                         in_q=SimpleNamespace(put=sent.append))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                         in_q=SimpleNamespace(put=sent.append)))
     task["deadline_at"] = "2000-01-01T00:00:00Z"
     queue.enforce_task_timeouts() if entry == "tick" else workers.assign_tasks()
     workers.assign_tasks()  # reserve a marker made by Project revalidation

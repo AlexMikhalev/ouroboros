@@ -20,7 +20,8 @@ from supervisor.state import append_jsonl, load_state
 from supervisor.message_ingress import _INGRESS_LOCK, _accepted_web_message, _take_undispatched, _write_marked, _enter_dispatch, delivery_facts
 from supervisor.message_ingress import (  # noqa: F401 - the named ingress's public names stay importable here
     _UNDISPATCHED, accept_local_message, accepted_chat_message, acceptance_undispatched, record_inbound_message)
-from ouroboros.projects_registry import stamp_project_thread
+from ouroboros.project_dialogue import ROOM_FIXED_ROW_TYPES
+from ouroboros.projects_registry import RoomResolver, stamp_project_thread
 from ouroboros.tools.core import (
     LinkActionsValidationError,
     QuizValidationError,
@@ -1452,6 +1453,21 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
         meta["narration"] = bool(narration)
     meta.setdefault("narration", False)
     progress_meta = meta
+    if task_id and DATA_DIR and system_type not in ROOM_FIXED_ROW_TYPES and meta.get("_is_direct_chat") is not True:
+        # The one room rule (A4) at the one send seam: a task-addressed host row
+        # lands in its task's Project room on the durable row, the WebSocket frame
+        # and every transport alike, whichever producer addressed it. A child row
+        # that reached here without its lineage borrows it from the same cached
+        # facts (never a result read), so its card nests it live and on replay.
+        try:
+            rooms = RoomResolver(DATA_DIR)
+            chat_id = rooms(task_id, meta.get("parent_task_id"), meta.get("root_task_id")) or chat_id
+            lineage = {} if meta.get("parent_task_id") else rooms.lineage(task_id)
+            for key in ("parent_task_id", "root_task_id", "delegation_role"):
+                if lineage.get(key) and not meta.get(key):
+                    meta[key] = lineage[key]
+        except Exception:
+            log.debug("room rule failed for %s; the producer's address stands", task_id, exc_info=True)
 
     if is_progress and DATA_DIR:
         progress_record = {
@@ -1480,6 +1496,7 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
             text if log_text is None else log_text,
             ts=msg_ts,
             fmt=fmt,
+            source=str(meta.get("source") or ""),
             task_id=task_id,
             record_type=system_type,
             message_meta=progress_meta,

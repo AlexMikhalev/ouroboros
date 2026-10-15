@@ -11,9 +11,12 @@ import datetime as dt
 import json
 import os
 import queue as stdqueue
+from itertools import count
 import threading
 import time
 from types import SimpleNamespace
+
+from tests.worker_pool_support import affirm_ready
 
 import pytest
 
@@ -28,9 +31,10 @@ from tests._store_shared import result_signature, unreadable_result
 class InertProcess:
     """A handle whose termination never reaches an operating-system PID."""
 
-    pid = None
+    _pids = count(2147483000)
 
     def __init__(self):
+        self.pid = next(self._pids)
         self.alive = True
 
     def is_alive(self):
@@ -43,9 +47,18 @@ class InertProcess:
         pass
 
 
+def kill_inert(pid, **kwargs):
+    """The pool's tree kill for an inert handle: terminate the slot its fake PID names."""
+    for slot in workers.WORKERS.values():
+        if slot.proc.pid == pid:
+            slot.proc.terminate()
+
+
 @pytest.fixture
 def restart_case(tmp_path, monkeypatch):
-    from supervisor import task_lifecycle, update_merge
+    from supervisor import task_lifecycle, update_merge, worker_pool_lifecycle
+
+    monkeypatch.setattr(worker_pool_lifecycle, "kill_worker_tree", kill_inert)
 
     pending, running = [], {}
     # The inert pool must not inherit a prior test's manager-backed event bus.
@@ -91,7 +104,7 @@ def restart_case(tmp_path, monkeypatch):
                         "started_at": started, "last_heartbeat_at": time.time(), "owner_wait": wait}
     process = InertProcess()
     monkeypatch.setattr(workers, "WORKERS", {
-        0: workers.Worker(0, process, SimpleNamespace(), busy_task_id=task_id, active_capacity=False),
+        0: affirm_ready(workers.Worker(0, process, SimpleNamespace(), busy_task_id=task_id, active_capacity=False)),
     })
     # Each case owns its event frames. The process-lifetime bus is a SyncManager child that an
     # earlier test's real stop path can leave dead in this worker; a terminal frame that cannot
@@ -270,7 +283,7 @@ def test_preserved_question_parent_keeps_its_saved_running_child(restart_case, m
     case = restart_case
     case.task["root_task_id"] = case.task_id
     _working_run(case.root, workers, "saved-child", parent=case.task_id)
-    workers.WORKERS[1] = workers.Worker(1, InertProcess(), SimpleNamespace(), busy_task_id="saved-child")
+    workers.WORKERS[1] = affirm_ready(workers.Worker(1, InertProcess(), SimpleNamespace(), busy_task_id="saved-child"))
     if control == "stop_child":
         request_cancel(case.root, "saved-child", reason="owner stop", source="owner", requested_by="owner")
     if control == "bad_child_source":
@@ -317,7 +330,7 @@ def test_preserved_question_parent_keeps_its_saved_running_child(restart_case, m
     if control in {"unacknowledged", "panic"}:
         assert all(budget_hold_fact(row)["reason"] == HOLD_SAVED_WORK for row in rows.values())
         commands = stdqueue.Queue()
-        workers.WORKERS[0] = workers.Worker(0, InertProcess(), commands)
+        workers.WORKERS[0] = affirm_ready(workers.Worker(0, InertProcess(), commands))
         monkeypatch.setattr(workers, "load_state", lambda: {})
         workers.assign_tasks()
         assert commands.empty() and not workers.RUNNING
@@ -329,12 +342,15 @@ def test_preserved_question_parent_keeps_its_saved_running_child(restart_case, m
         from supervisor import state
 
         commands = stdqueue.Queue()
-        workers.WORKERS.update({wid: workers.Worker(wid, InertProcess(), commands) for wid in (0, 1)})
+        workers.WORKERS.update({wid: affirm_ready(workers.Worker(wid, InertProcess(), commands)) for wid in (0, 1)})
         monkeypatch.setattr(workers, "load_state", lambda: {})
         monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 100.0)
         workers.assign_tasks()
         assert {commands.get_nowait()["id"] for _ in rows} == set(rows)
-        assert commands.empty() and set(workers.RUNNING) == set(rows)
+        assert set(workers.RUNNING) == set(rows)
+        # Remaining input belongs only to the spare's quiescence protocol.
+        assert all(commands.get_nowait()["type"] == "worker_quiescence"
+                   for _ in range(commands.qsize()))
 
 
 @pytest.mark.parametrize("refusal", ["unacknowledged", "spent_wait", "panic", "owner_restart", "bad_source"])
@@ -373,7 +389,7 @@ def test_old_snapshot_never_revives_unproven_or_spent_wait(restart_case, monkeyp
     assert row["_working_recovery"]["source_ref"] == case.wait["source_ref"]
     assert row["_attempt"] == case.attempt + 1
     commands = stdqueue.Queue()
-    workers.WORKERS[0] = workers.Worker(0, InertProcess(), commands)
+    workers.WORKERS[0] = affirm_ready(workers.Worker(0, InertProcess(), commands))
     monkeypatch.setattr(workers, "load_state", lambda: {})
     workers.assign_tasks()
     assert commands.empty() and not workers.RUNNING, "nothing runs before the owner's Resume"
@@ -448,7 +464,7 @@ def test_child_budget_fence_allows_only_restored_owner_continuation(restart_case
     assert queue.BUDGET_ROOT_FENCES == {case.task_id: fence}
 
     commands = stdqueue.Queue()
-    workers.WORKERS[0] = workers.Worker(0, InertProcess(), commands)
+    workers.WORKERS[0] = affirm_ready(workers.Worker(0, InertProcess(), commands))
     monkeypatch.setattr(workers, "load_state", lambda: {})
     monkeypatch.setattr(workers, "repo_writer_task_allowed", lambda task: True)
     monkeypatch.setattr(state, "budget_remaining", lambda *args, **kwargs: remaining)

@@ -92,6 +92,12 @@ class Worker:
     # Unlike temporary reaping, the readiness owner exhausted its bounded attempts.
     readiness_exhausted: bool = False
     process_birth: str = ""  # captured while this exact Process is alive; never inferred after death
+    ready_identity: tuple[int, str] | None = None
+    booting: bool = False  # positive readiness-owner reservation, not arbitrary reaping
+    quiescence_token: str = ""
+    quiescence_confirmed: bool = False
+    retiring: bool = False  # intentional, charged until observed dead; never crash recovery
+    resume_hold: str = ""  # this tick's authorized warm Resume: held idle slot, or the parked author
 
 
 _EVENT_Q = None
@@ -1157,7 +1163,7 @@ def spawn_workers(n: int = 0) -> None:
     event_q = get_event_q()
     events_cursor, spawned_at = events_log_cursor(), time.time()
 
-    count = n or MAX_WORKERS
+    count = n or 1
     append_jsonl(
         DRIVE_ROOT / "logs" / "supervisor.jsonl",
         {
@@ -1177,7 +1183,7 @@ def spawn_workers(n: int = 0) -> None:
             in_q = _CTX.Queue()
             proc = spawn_worker_process(_CTX, i, in_q, event_q, REPO_DIR, DRIVE_ROOT)
             # Unassignable until the readiness seam observes this child's worker_ready row.
-            new_workers[i] = Worker(wid=i, proc=proc, in_q=in_q, busy_task_id=None, reaping=True)
+            new_workers[i] = Worker(wid=i, proc=proc, in_q=in_q, busy_task_id=None, reaping=True, booting=True)
     except Exception:
         for worker in new_workers.values():
             try:
@@ -1227,7 +1233,7 @@ def kill_workers(
     from supervisor import queue, restart_retention as retention  # every door retains saved pauses
     with _queue_lock:
         if disable_reason:
-            _WORKER_POOL_DISABLED_REASON = str(disable_reason)
+            previous_disable_reason, _WORKER_POOL_DISABLED_REASON = _WORKER_POOL_DISABLED_REASON, str(disable_reason)
             # Publish the admission fence before slow process-tree teardown so
             # concurrent ingress can refuse without starting project/workspace
             # side effects while workers are being joined.
@@ -1237,9 +1243,9 @@ def kill_workers(
                 fence_persisted = False
                 log.warning("Failed to persist worker-pool disable fence", exc_info=True)
             if not fence_persisted:
-                # No worker or queue mutation happened yet.  Re-open the local
-                # pool admission so an aborted managed update can recover it.
-                _WORKER_POOL_DISABLED_REASON = ""
+                # No worker or queue mutation happened yet: restore the prior fence (an aborted
+                # update reopens an enabled pool; a crash-storm latch keeps its membership frozen).
+                _WORKER_POOL_DISABLED_REASON = previous_disable_reason
                 log.error("Worker shutdown blocked: disable fence was not durable")
                 return False
         cleared_running = len(RUNNING)
@@ -2138,11 +2144,11 @@ def _drop_assignable_evolution_tasks(deferred_ids: set[str]) -> list[str]:
     return blocked_ids
 
 
-def _running_subagent_count(root_task_id: str) -> int:
+def _running_subagent_count(root_task_id: str, running=None) -> int:
     if not root_task_id:
         return 0
     count = 0
-    for meta in RUNNING.values():
+    for meta in RUNNING.values() if running is None else running:
         task = meta.get("task") if isinstance(meta, dict) else None
         if (
             isinstance(task, dict)
@@ -2153,7 +2159,8 @@ def _running_subagent_count(root_task_id: str) -> int:
     return count
 
 
-def _assignment_depth_reservation_admits(candidate: dict) -> bool:
+def _assignment_depth_reservation_admits(candidate: dict, running=None) -> bool:
+    running = list(RUNNING.values() if running is None else running)
     root_task_id = str(candidate.get("root_task_id") or "")
     parent_id = str(candidate.get("parent_task_id") or "").strip()
     if not root_task_id or not parent_id:
@@ -2162,12 +2169,12 @@ def _assignment_depth_reservation_admits(candidate: dict) -> bool:
         str((meta.get("task") if isinstance(meta, dict) else {}).get("id") or "") == parent_id
         and str((meta.get("task") if isinstance(meta, dict) else {}).get("root_task_id") or "") == root_task_id
         and str((meta.get("task") if isinstance(meta, dict) else {}).get("delegation_role") or "") == "subagent"
-        for meta in RUNNING.values()
+        for meta in running
     )
     if not parent_running:
         return False
     direct_running_children = sum(
-        1 for meta in RUNNING.values()
+        1 for meta in running
         if isinstance(meta, dict)
         and isinstance(meta.get("task"), dict)
         and str(meta["task"].get("root_task_id") or "") == root_task_id

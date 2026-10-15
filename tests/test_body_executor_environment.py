@@ -37,7 +37,7 @@ def test_docker_candidate_uses_mapped_clean_environment(tmp_path, monkeypatch, c
     probe = ['sh', '-c', 'export -p']
     def exported_env(stdout):
         return dict(word.split('=', 1) for word in shlex.split(stdout) if '=' in word)
-    real_popen, real_run = subprocess.Popen, subprocess.run
+    real_popen = subprocess.Popen
     commands = []
 
     def transport(cmd, **kwargs):
@@ -66,16 +66,18 @@ def test_docker_candidate_uses_mapped_clean_environment(tmp_path, monkeypatch, c
         # actual start_service branch and inert-env transport without orphan processes.
         original = executor._docker_service_start_shell
         captured = {}
+        real_submit = executor._submit_service_command
         def service_shell(record, log_path, aliases=None, **kwargs):
             shell = original(record, log_path, aliases, **kwargs)
             # The same generated exec payload is inside the detached launch shell.
             payload = shlex.split(shell)[shlex.split(shell).index('-c') + 1]
             return f'cd {shlex.quote(str(host_cwd(record.backend_cwd)))} && {payload}'
         def submit(cmd, **kwargs):
-            result = real_run(cmd, **kwargs)
+            result = real_submit(cmd, **kwargs)
             assert result.returncode == 0, result.stderr
             captured['env'] = exported_env(result.stdout)
-            return subprocess.CompletedProcess(cmd, 0, '12345\n', '')
+            result.stdout = '12345\n'  # only the fixture backend PID; keep the real confirmation owner
+            return result
         monkeypatch.setattr(executor, '_docker_service_start_shell', service_shell)
         monkeypatch.setattr(executor, '_submit_service_command', submit)
         monkeypatch.setattr(executor, '_service_state', lambda record: 'exited')

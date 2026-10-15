@@ -25,7 +25,7 @@ the durable ``ended`` detail names the rail that expired — the bound's own
 window closed first. Interactive progress notes omit cancellation promises;
 direct-turn Stop uses its existing typed control and wakes the same sleep.
 An eligible unknown outcome (``new_generation_after_unknown``; its charge is disclosed)
-follows the same order on every turn except inline Presence: configured routes
+follows the same order on every turn, including inline Presence: configured routes
 first, then the upstream-observed continuation inside the same wait bounds.
 Recovery is an owner note for every episode; an
 error-kind change is a note for interactive turns only, because such a turn
@@ -146,13 +146,12 @@ def emit_network_wait_event(
 
 
 def managed_transport_continuation(ctx: Any) -> bool:
-    """Ordinary cognition rejoins its accepted operation under its existing controls."""
-    return bool(ctx is not None and getattr(ctx, "task_id", "")
-                and not inline_presence(ctx))
+    """A running turn rejoins its accepted operation under its existing controls."""
+    return bool(ctx is not None and getattr(ctx, "task_id", ""))
 
 
 def inline_presence(ctx: Any) -> bool:
-    """An inline Presence turn: its unknown outcome ends in its own typed retry refusal."""
+    """An inline Presence turn, which has no owner quota/auth question channel."""
     from ouroboros.dialogue_provenance import is_presence_task
 
     metadata = getattr(ctx, "task_metadata", None)
@@ -165,12 +164,13 @@ def new_generation_after_unknown(ctx: Any, accumulated_usage: Optional[Dict[str,
 
     Typed, never from prose or elapsed time: the receiving call has ended with no usable
     answer and no same-operation rejoin is viable. It is refused for an accepted operation
-    whose READ failed (it may still finish; only it is rejoined), for a round still holding
-    paid repeats, and for inline Presence. It proves nothing about remote computation.
+    whose READ failed (it may still finish; only it is rejoined), and for a round still
+    holding paid repeats. Completed tools stay in the transcript and do not prevent this
+    model call's recovery. It proves nothing about remote computation.
     """
     usage = accumulated_usage if accumulated_usage is not None else (getattr(ctx, "_accumulated_usage", None) or {})
     pending = usage.get("_pending_transport_outcome") or {}
-    return bool(ctx is not None and getattr(ctx, "task_id", "") and not inline_presence(ctx)
+    return bool(ctx is not None and getattr(ctx, "task_id", "")
                 and not isinstance(usage.get(TRANSPORT_DEATHS_KEY), dict)
                 and not pending.get("same_operation_recoverable"))
 

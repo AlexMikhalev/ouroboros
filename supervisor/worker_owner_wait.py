@@ -15,7 +15,8 @@ from typing import Any
 from ouroboros.owner_wait import set_owner_wait
 from supervisor.queue import _queue_lock
 from supervisor.worker_pool_lifecycle import (
-    _serialized_worker_lifecycle, _spawn_worker_slot, kill_worker_tree, retire_worker,
+    _serialized_worker_lifecycle, request_worker_quiescence, retire_or_replace_worker,
+    retire_quiescent_worker, retire_worker, worker_ready,
 )
 
 log = logging.getLogger(__name__)
@@ -126,19 +127,6 @@ def handle_owner_wait(event: dict, ctx: Any) -> None:
         _command(worker, task_id, wait, "parked")
 
 
-def _retire_idle(worker: Any) -> bool:
-    """Retire an idle replacement while assignment cannot reuse its slot."""
-    with _queue_lock:
-        if _pool().WORKERS.get(worker.wid) is not worker or worker.busy_task_id is not None:
-            return False
-        worker.reaping = True
-        worker.active_capacity = False
-    if worker.proc.is_alive():
-        kill_worker_tree(worker.proc.pid, keep_services=True)
-        worker.proc.join(timeout=2)
-    return retire_worker(worker.wid, worker)
-
-
 def _resume_allowed(task_id: str, meta: dict, worker: Any) -> bool:
     from ouroboros.cancel_intents import active_intents
 
@@ -244,7 +232,25 @@ def _grant_resume(
 
 @_serialized_worker_lifecycle
 def maintain_owner_wait_capacity() -> None:
-    """Resume original stacks before assigning fresh work, then fill lent slots."""
+    """Resume original stacks first; assignment owns demand-sized replacement.
+
+    At full capacity an authorized warm Resume keeps ONE idle slot from fresh work
+    until it acknowledges and retires; other probes stay optional, and a slot
+    already retiring pays for one Resume. The parked author's slot carries the same
+    mark, and growth leaves capacity only for marked authors. Holds are recomputed
+    every tick, so they lapse with the authorization (Stop, Panic, a newer Pause,
+    the grant itself).
+    """
+    holds: dict = {}
+    try:
+        _resume_original_stacks(holds)
+    finally:
+        with _queue_lock:
+            for slot in _pool().WORKERS.values():
+                slot.resume_hold = holds.get(slot.wid, "")
+
+
+def _resume_original_stacks(holds: dict) -> None:
     pool = _pool()
     if pool.disable_exhausted_worker_pool():
         return
@@ -255,10 +261,18 @@ def maintain_owner_wait_capacity() -> None:
         retired = [w for w in pool.WORKERS.values()
                    if not getattr(w, "active_capacity", True) and w.busy_task_id is None]
     for worker in retired:
-        _retire_idle(worker)
+        if not worker.proc.is_alive():
+            try:
+                retire_or_replace_worker(worker.wid, worker)
+            except Exception:
+                log.warning("Dead lent worker %s stays for the next tick", worker.wid, exc_info=True)
+        else:
+            retire_quiescent_worker(worker)
     with _queue_lock:
         waiting = [(tid, meta) for tid, meta in pool.RUNNING.items()
                    if meta.get("owner_wait_resume_requested")]
+        freeing = sum(1 for w in pool.WORKERS.values()
+                      if getattr(w, "active_capacity", True) and getattr(w, "retiring", False))
     for task_id, meta in waiting:
         with _queue_lock:
             worker = pool.WORKERS.get(meta.get("worker_id"))
@@ -266,30 +280,30 @@ def maintain_owner_wait_capacity() -> None:
                 continue
             if not _resume_allowed(task_id, meta, worker):
                 continue
+            holds[worker.wid] = task_id  # authorized this tick: owed its lent capacity back
             active = [w for w in pool.WORKERS.values() if getattr(w, "active_capacity", True)]
             exhausted = next((w for w in active
                               if getattr(w, "readiness_exhausted", False)
                               and not w.proc.is_alive()), None)
-            idle = next((w for w in active if w.busy_task_id is None and not w.reaping), None)
-            if len(active) >= pool.MAX_WORKERS and idle is None and exhausted is None:
-                continue
+            idle = [w for w in active if w.busy_task_id is None and worker_ready(w)]
+            if len(active) >= pool.MAX_WORKERS and exhausted is None:
+                for slot in idle:
+                    request_worker_quiescence(slot)
+                quiet = next((slot for slot in idle if slot.quiescence_confirmed), None)
+                held = next((slot for slot in idle if slot.wid not in holds), None)
+                if freeing:
+                    freeing -= 1  # an earlier retirement already frees this Resume's slot
+                elif quiet is not None:
+                    retire_quiescent_worker(quiet)
+                elif held is not None:
+                    holds[held.wid] = task_id
+                continue  # grant after the reaper confirms death, on a later tick
         if len(active) < pool.MAX_WORKERS:
             exhausted = None
-        elif exhausted is None and not _retire_idle(idle):
-            continue
         try:
             if _grant_resume(task_id, meta, worker, exhausted_replacement=exhausted):
+                holds.pop(worker.wid, None)
                 if exhausted is not None:
                     retire_worker(exhausted.wid, exhausted)
         except Exception:
             log.warning("Owner wait resume remains pending for %s", task_id, exc_info=True)
-    with _queue_lock:
-        missing = pool.MAX_WORKERS - sum(1 for w in pool.WORKERS.values()
-                                         if getattr(w, "active_capacity", True))
-        next_id = max(pool.WORKERS, default=-1) + 1
-    for wid in range(next_id, next_id + missing):
-        try:
-            _spawn_worker_slot(wid)
-        except Exception:
-            log.warning("Failed to replenish owner-wait capacity", exc_info=True)
-            break

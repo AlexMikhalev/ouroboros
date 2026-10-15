@@ -1225,11 +1225,19 @@ def find_child_tasks(
     excluded = str(exclude_task_id or "").strip()
     direct_only = str(scope or "subtree").strip().lower() == "direct"
 
-    # The store's WHERE: every row carrying a retry or supersession pointer (lineage any child
-    # may hang on), plus the ``subagent`` rows naming the parent or the root; ``task_id`` order,
-    # so the retry projection and the last-row-wins fold below are deterministic.
-    # Lineage-less live rows reappear through the queue overlay.
-    selected = select_lineage(pathlib.Path(drive_root), parent, root, direct_only=direct_only)
+    # One queue read serves the overlay below and seeds the store's lineage closure: a queued item
+    # naming the parent or root may carry its parent/role only in the queue. The store returns this
+    # lineage alone (``select_lineage``) in ``task_id`` order, so the retry projection and the
+    # last-row-wins fold below are deterministic. Lineage-less live rows reappear in the overlay.
+    snapshot = _load_queue_snapshot(pathlib.Path(drive_root))
+    queued = [(status, item, item["task"] if isinstance(item.get("task"), dict) else {})
+              for group, status in (("pending", STATUS_SCHEDULED), ("running", STATUS_RUNNING))
+              for item in snapshot.get(group) or [] if isinstance(item, dict)]
+    members = {identity for _status, item, task in queued
+               if (parent and str(task.get("parent_task_id") or "").strip() == parent)
+               or (not direct_only and root and str(task.get("root_task_id") or "").strip() == root)
+               for identity in (item.get("id") or item.get("task_id"), item.get("id") or task.get("id"))}
+    selected = select_lineage(pathlib.Path(drive_root), parent, root, direct_only=direct_only, queue_members=members)
     events_index = _EventsTailIndex(pathlib.Path(drive_root))
     rows: Dict[str, Dict[str, Any]] = {}
     for row in (
@@ -1250,42 +1258,37 @@ def find_child_tasks(
         elif not direct_only and root and str(row.get("root_task_id") or "") == root:
             rows[tid] = row
 
-    snapshot = _load_queue_snapshot(pathlib.Path(drive_root))
-    for group, status in (("pending", STATUS_SCHEDULED), ("running", STATUS_RUNNING)):
-        for item in snapshot.get(group) or []:
-            if not isinstance(item, dict):
-                continue
-            task = item.get("task") if isinstance(item.get("task"), dict) else {}
-            tid = str(item.get("id") or task.get("id") or "")
-            if not tid or tid == excluded:
-                continue
-            if str(task.get("delegation_role") or "") != "subagent":
-                continue
-            if parent and str(task.get("parent_task_id") or "") == parent:
-                row = dict(task)
-            elif not direct_only and root and str(task.get("root_task_id") or "") == root:
-                row = dict(task)
-            else:
-                continue
-            row.setdefault("task_id", tid)
-            row["status"] = status
-            existing = rows.get(tid, {})
-            if not existing:
-                # Queue lineage can recover a row skipped by the prefilter;
-                # retain its disk cost, result and artifacts as well.
-                existing = load_effective_task_result(
-                    pathlib.Path(drive_root), tid, materialize_artifacts=materialize_artifacts
-                )
-            if not existing:
-                rows[tid] = row
-                continue
-            combined = dict(existing)
-            for key, value in row.items():
-                if key == "status":
-                    combined["status"] = _merge_queue_status(str(existing.get("status") or ""), str(value or ""), row)
-                elif not combined.get(key) and value:
-                    combined[key] = value
-            rows[tid] = combined
+    for status, item, task in queued:
+        tid = str(item.get("id") or task.get("id") or "")
+        if not tid or tid == excluded:
+            continue
+        if str(task.get("delegation_role") or "") != "subagent":
+            continue
+        if parent and str(task.get("parent_task_id") or "") == parent:
+            row = dict(task)
+        elif not direct_only and root and str(task.get("root_task_id") or "") == root:
+            row = dict(task)
+        else:
+            continue
+        row.setdefault("task_id", tid)
+        row["status"] = status
+        existing = rows.get(tid, {})
+        if not existing:
+            # Queue lineage can recover a row skipped by the prefilter;
+            # retain its disk cost, result and artifacts as well.
+            existing = load_effective_task_result(
+                pathlib.Path(drive_root), tid, materialize_artifacts=materialize_artifacts
+            )
+        if not existing:
+            rows[tid] = row
+            continue
+        combined = dict(existing)
+        for key, value in row.items():
+            if key == "status":
+                combined["status"] = _merge_queue_status(str(existing.get("status") or ""), str(value or ""), row)
+            elif not combined.get(key) and value:
+                combined[key] = value
+        rows[tid] = combined
     return sorted(rows.values(), key=lambda item: (str(item.get("ts") or ""), str(item.get("task_id") or "")))
 
 

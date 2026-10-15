@@ -690,6 +690,7 @@ def _accept_trajectory(tool_calls: list, drive_root: Any = None, task_id: str = 
     from ouroboros.artifacts import materialize_tool_args_source, materialize_tool_result_source, read_actor_source_bytes
     from ouroboros.review_evidence_refs import trajectory_record_ref
     from ouroboros.tool_capabilities import TOOL_RESULT_LIMITS
+    from ouroboros.tool_result_delivery import compact_verification
     if indices is not None:
         try:
             tool_calls = json.loads(read_actor_source_bytes(drive_root, task_id, source_ref))
@@ -733,6 +734,8 @@ def _accept_trajectory(tool_calls: list, drive_root: Any = None, task_id: str = 
             "tool": tool,
             "status": str(c.get("status") or ("error" if c.get("is_error") else "ok")),
             "is_error": bool(c.get("is_error")),
+            # A completed check call can still fail its criterion; both facts stay (#1585).
+            **({"verification": compact_verification(c["verification"])} if c.get("verification") else {}),
             "args": args if indices is not None else _ev().truncate_review_artifact(args, _ACCEPT_ARGS_CAP),
             "result": result if indices is not None else _accept_redact_cap(result, result_cap, legacy_envelope),
         }

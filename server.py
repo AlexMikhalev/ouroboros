@@ -16,7 +16,7 @@ from ouroboros.utils import read_json_dict, utc_now_iso  # noqa: E402
 from typing import Any, Dict, Optional
 
 from starlette.applications import Starlette
-from starlette.routing import Route, Mount
+from starlette.routing import Route
 import uvicorn
 from ouroboros.server_control import (PanicIngress, execute_panic_stop as _execute_panic_stop_impl, exit_after_restart,
                                       restart_current_process as _restart_current_process_impl)
@@ -31,7 +31,7 @@ from ouroboros.server_entrypoint import (ServerAdmissionRefused, admit_data_root
                                          find_free_port, parse_server_args, reserved_service_ports, write_port_file)
 from ouroboros.launcher_bootstrap import automatic_launch_allowed
 from ouroboros import body_adoption, store_switch
-from ouroboros.server_web import NoCacheStaticFiles, make_index_page, resolve_web_dir
+from ouroboros.server_web import ServedUI
 from ouroboros.config import resolve_port_file
 from ouroboros.process_logging import configure_process_logging
 from ouroboros.task_finalization import host_operation_reply_kwargs
@@ -263,8 +263,6 @@ def _describe_bg_consciousness_state(requested_enabled: bool | None) -> dict:
         status, detail = "wake_failed", f"The last wake-up failed ({snapshot.get('last_error') or 'runner error'}); next attempt at {next_at}, backing off."
     else:
         status, detail = "sleeping", f"Sleeping until {next_at}."
-        if snapshot.get("pending_reason"):
-            detail += f" Early wake pending: {snapshot['pending_reason']}."
     return {**snapshot, "enabled": requested_enabled, "status": status, "detail": detail}
 
 
@@ -586,8 +584,9 @@ def _bootstrap_supervisor_repo(settings: dict, git_ops_module=None):
             _managed_update_active = False
         block = _has_active_evolution_transaction() or _managed_update_active
         policy = "rescue_and_block" if block else "rescue_and_reset"
+        from ouroboros.server_restart import _noticed_bootstrap  # its failure, not a deferral, is told
         ok, msg = _safe_restart_serialized(
-            git_ops_module.safe_restart,
+            _noticed_bootstrap(git_ops_module.safe_restart),
             reason="bootstrap",
             unsynced_policy=policy,
         )
@@ -682,7 +681,7 @@ def _run_supervisor(settings: dict) -> None:
         from supervisor.queue import (
             enqueue_task, enforce_task_timeouts, enqueue_evolution_task_if_needed,
             persist_queue_snapshot, restore_pending_from_snapshot,
-            cancel_task_by_id, queue_deep_self_review_task, sort_pending,
+            queue_deep_self_review_task, sort_pending,
         )
         from supervisor.workers import (
             init as workers_init, get_event_q, WORKERS, PENDING, RUNNING,
@@ -708,7 +707,7 @@ def _run_supervisor(settings: dict) -> None:
         restored_pending = restore_pending_from_snapshot(terminalized=interrupted_running)
         _start_preparation_generation(stop=lambda stop=_watchdog_stop: any(e.is_set() for e in (stop, _supervisor_stop, _restart_requested, _exit_signalled)))
         kill_workers(preserve_pending=True)
-        spawn_workers(max_workers)
+        spawn_workers()
         from ouroboros.server_process import record_applied_restart_settings
         record_applied_restart_settings({"OUROBOROS_MAX_WORKERS": max_workers,
                                         "OUROBOROS_SKILLS_REPO_PATH": settings.get("OUROBOROS_SKILLS_REPO_PATH", "")})
@@ -778,7 +777,7 @@ def _run_supervisor(settings: dict) -> None:
             send_with_budget=send_with_budget, load_state=load_state, save_state=save_state,
             update_state=update_state,
             update_budget_from_usage=update_budget_from_usage, append_jsonl=append_jsonl,
-            enqueue_task=enqueue_task, cancel_task_by_id=cancel_task_by_id,
+            enqueue_task=enqueue_task,
             queue_deep_self_review_task=queue_deep_self_review_task, persist_queue_snapshot=persist_queue_snapshot,
             safe_restart=safe_restart, kill_workers=kill_workers, spawn_workers=spawn_workers,
             sort_pending=sort_pending, consciousness=_consciousness,
@@ -862,14 +861,8 @@ def _run_supervisor(settings: dict) -> None:
 
             _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "maintenance"), time.monotonic()
             enforce_task_timeouts(pending_events=pending_idle_observations(get_event_q()))
-            try:
-                from supervisor.queue import check_scheduled_tasks
-                check_scheduled_tasks()
-            except Exception:
-                log.warning("Scheduled task check failed", exc_info=True)
-            _periodic_supervisor_maintenance(
+            _periodic_supervisor_maintenance(  # includes the off-loop schedule duty
                 _last_custody_reap, _last_review_job_reconcile, stop_event=_watchdog_stop,
-                on_orphans_healed=lambda count: _consciousness and _consciousness.notify(f"orphans_healed:{count}"),
             )
             _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "assign"), time.monotonic()
             # Loop-tick restart drain (no sleep, events keep flowing): while
@@ -1077,6 +1070,7 @@ def _perform_supervisor_restart(
     try:
         from ouroboros.delegate_recovery import prepare_planned_restart_handoffs
         from ouroboros.owner_wait import prepare_owner_wait_handoffs
+        from supervisor.queue import name_queue_returns
         from supervisor.restart_retention import prepare_restart_returns
         from supervisor.workers import direct_chat_turns
 
@@ -1086,29 +1080,37 @@ def _perform_supervisor_restart(
             restart_transaction_id=restart_transaction_id,
             additional_task_ids=owner_waits,
         )
-        # The planned restart also returns active work and the runnable queue (#1563).
-        prepare_restart_returns(ctx.DRIVE_ROOT, ctx.RUNNING, list(ctx.PENDING), transaction_id=restart_transaction_id,
+        # The planned restart also returns active work and the runnable queue (#1563);
+        # the off-loop schedule duty admits nothing after this copy.
+        prepare_restart_returns(ctx.DRIVE_ROOT, ctx.RUNNING, name_queue_returns(ctx.PENDING, "planned_restart"),
+                                transaction_id=restart_transaction_id,
                                 direct=direct_chat_turns(), owner_wait_ids=planned_handoffs)
     except Exception:
         log.debug("Planned self-restart delegate handoff preparation failed", exc_info=True)
-    restart_kill_kwargs = _managed_update_pending_kwargs()
-    if planned_handoffs:
-        _planned_delegate_restart_transaction_id = restart_transaction_id
-        restart_kill_kwargs["preserve_pending"] = True
-    ctx.kill_workers(
-        force=True,
-        terminal_status=cleanup_status,
-        result_reason=cleanup_reason,
-        stop_source="server_shutdown",
-        preserve_running_task_ids=planned_handoffs,
-        retain_saved_work=True,
-        **restart_kill_kwargs,
-    )
-    try:  # a field update: a stale snapshot never erases a control written meanwhile (#1307)
-        ctx.update_state(lambda live: live.__setitem__("session_id", uuid.uuid4().hex))
-    except Exception:
-        log.warning("Restart session id not rotated: runtime state unavailable", exc_info=True)
-    ctx.persist_queue_snapshot(reason="pre_restart_exit")
+    try:
+        restart_kill_kwargs = _managed_update_pending_kwargs()
+        if planned_handoffs:
+            _planned_delegate_restart_transaction_id = restart_transaction_id
+            restart_kill_kwargs["preserve_pending"] = True
+        ctx.kill_workers(
+            force=True,
+            terminal_status=cleanup_status,
+            result_reason=cleanup_reason,
+            stop_source="server_shutdown",
+            preserve_running_task_ids=planned_handoffs,
+            retain_saved_work=True,
+            **restart_kill_kwargs,
+        )
+        try:  # a field update: a stale snapshot never erases a control written meanwhile (#1307)
+            ctx.update_state(lambda live: live.__setitem__("session_id", uuid.uuid4().hex))
+        except Exception:
+            log.warning("Restart session id not rotated: runtime state unavailable", exc_info=True)
+        ctx.persist_queue_snapshot(reason="pre_restart_exit")
+    except BaseException:
+        from supervisor.queue import reopen_queue_returns
+
+        reopen_queue_returns("planned_restart")  # no exit follows: this generation keeps admitting
+        raise
     _request_restart_exit()
 
 
@@ -1251,9 +1253,8 @@ async def api_settings_post(request):
     _sync_gateway_settings_module()
     return await _gateway_settings.api_settings_post(request)
 
-web_dir = resolve_web_dir(REPO_DIR)
-web_dir.mkdir(parents=True, exist_ok=True)
-index_page = make_index_page(web_dir)
+served_ui = ServedUI(REPO_DIR)  # `/` and `/static`; the lifespan applies OUROBOROS_UI_DIR per generation
+index_page = served_ui.index_page
 
 routes = [
     Route("/", endpoint=index_page),
@@ -1265,7 +1266,7 @@ routes = [
             "api_settings_post": api_settings_post,
         },
     ),
-    Mount("/static", app=NoCacheStaticFiles(directory=str(web_dir)), name="static"),
+    *served_ui.mounts(),  # builtin /onboarding/static, then the selected /static (kept last)
 ]
 
 from contextlib import ExitStack, asynccontextmanager, suppress
@@ -1300,6 +1301,7 @@ async def lifespan(app):
     # settings.json with no reader that needs it.
     settings, _provider_defaults_changed, _provider_default_keys = apply_runtime_provider_defaults(load_settings())
     _apply_settings_to_env(settings)
+    served_ui.apply(app, settings)  # this generation's main interface, before any request is served
     # Pin boot-time runtime-mode after env apply; save_settings compares to this owner baseline.
     from ouroboros.config import initialize_runtime_mode_baseline
     initialize_runtime_mode_baseline()
@@ -1326,7 +1328,7 @@ async def lifespan(app):
         log.warning("Native skills bootstrap failed", exc_info=True)
 
     # Boot-reconcile the project registry BEFORE /api/state and context-building
-    # can rely on registered_project_chat_ids (the multi-project isolation SSOT):
+    # can rely on reserved_project_chat_ids (the multi-project isolation SSOT):
     # register any pre-existing data/projects/<id>/ store whose row is missing, so
     # an inherited project's raw chat is partitioned from turn one (not only after
     # the 300s periodic tick). Idempotent and never prunes.

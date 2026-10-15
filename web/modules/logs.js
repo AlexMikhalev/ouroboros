@@ -251,6 +251,7 @@ export function initLogs({ ws, state, mount }) {
             events: 0,
             category,
             recent: [],
+            terminal: false,
         };
         taskGroups.set(groupId, record);
         return record;
@@ -311,9 +312,18 @@ export function initLogs({ ws, state, mount }) {
         record.ts.textContent = ts;
         record.kind.textContent = kindLabel;
         record.kind.className = `log-type ${category}`;
-        record.phase.textContent = view.phase || 'info';
-        record.phase.className = `log-phase ${view.phase || 'info'}`;
-        record.headline.textContent = view.headline || 'Task activity';
+        // The card's headline settles only on the typed task_done frame. The bus
+        // serves control before telemetry, so a task's late tool or round frame
+        // (its own `done`/`error` phase included) can arrive after its task_done:
+        // it stays a timeline row and never reopens or rewrites the settled
+        // headline. Until then the headline follows the latest frame.
+        const settles = evt.type === 'task_done';
+        if (settles || !record.terminal) {
+            record.phase.textContent = view.phase || 'info';
+            record.phase.className = `log-phase ${view.phase || 'info'}`;
+            record.headline.textContent = view.headline || 'Task activity';
+        }
+        if (settles) record.terminal = true;
         record.count.textContent = `x${record.events}`;
         record.count.hidden = record.events <= 1;
         record.summary.innerHTML = metaPills([`task=${groupId}`, ...view.meta]);

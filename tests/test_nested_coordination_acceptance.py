@@ -37,6 +37,7 @@ from supervisor import (
     workers,
 )
 from tests._store_shared import delete_result, result_exists, result_signature
+from tests.worker_pool_support import affirm_ready
 
 
 def _acceptance_binding(seed: str) -> dict[str, str]:
@@ -331,15 +332,16 @@ def test_depth3_control_plane_reaches_root_acceptance(tmp_path, monkeypatch):
         def put(self, task):
             # Freeze what the worker really received. A shallow alias could make
             # later mutation hide an assignment/copy-back regression.
-            delivered.append(copy.deepcopy(task))
+            if task.get("type") != "worker_quiescence":  # an idle-surplus probe is no task
+                delivered.append(copy.deepcopy(task))
 
     worker_map = {
-        worker_id: SimpleNamespace(
+        worker_id: affirm_ready(SimpleNamespace(
             wid=worker_id,
             busy_task_id=None,
             reaping=False,
             in_q=WorkerQueue(),
-        )
+        ))
         for worker_id in (1, 2, 3)
     }
 
@@ -715,16 +717,17 @@ def test_depth3_waits_for_worker_slot_then_uses_active_cap_reservation(
 
     class WorkerQueue:
         def put(self, task):
-            delivered.append(copy.deepcopy(task))
+            if task.get("type") != "worker_quiescence":  # an idle-surplus probe is no task
+                delivered.append(copy.deepcopy(task))
 
     # Root + two ancestors + unrelated work occupy a four-worker install.
     worker_map = {
-        idx: SimpleNamespace(
+        idx: affirm_ready(SimpleNamespace(
             wid=idx,
             busy_task_id=task_id,
             reaping=False,
             in_q=WorkerQueue(),
-        )
+        ))
         for idx, task_id in enumerate(("root", "l1", "l2", "other"))
     }
     running = {

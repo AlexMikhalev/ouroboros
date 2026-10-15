@@ -313,9 +313,40 @@ test('live message adopts its physical history identity without replacing the vi
     assert.deepEqual(f.bubbles().filter((node) => node.innerHTML.includes('A useful answer')), [live]);
 });
 
+for (const systemType of ['reminder', 'skill_notice']) for (const historyFirst of [false, true]) {
+    test(`${systemType} retains one node across ${historyFirst ? 'history then live' : 'live then history'} and repeats`, async t => {
+        const message = row('chat:100', 'A scheduled notice', {
+            role: 'system', system_type: systemType, source: 'Ouroboros',
+        });
+        const live = { role: message.role, content: message.text, ts: message.ts,
+            system_type: message.system_type, source: message.source };
+        const f = fixture(t, page(historyFirst ? [message] : []));
+        await f.refresh();
+        if (!historyFirst) f.emit(live);
+        assert.equal(f.bubbles().length, 1);
+        const original = f.bubbles()[0];
+        if (historyFirst) f.emit(live);
+        else await f.refresh(page([message]));
+        for (let repeat = 0; repeat < 2; repeat += 1) {
+            assert.equal(f.bubbles().length, 1, 'the live frame and saved row describe one occurrence');
+            assert.equal(f.bubbles()[0], original, 'joining the row preserves the original node');
+            assert.equal(original.dataset.historyId, 'chat:100');
+            assert.equal(original.dataset.historySource, 'chat:rotation-1');
+            assert.equal(original.dataset.historyOffset, '100');
+            const saved = sessionStorage.getItem('ouro_chat:2');
+            f.emit(live);
+            assert.equal(sessionStorage.getItem('ouro_chat:2'), saved, 'a late live copy is not persisted again');
+            await f.refresh(page([message]));
+        }
+        assert.equal(f.bubbles().length, 1);
+        assert.equal(f.bubbles()[0], original);
+    });
+}
+
 test('repeated physical history identity updates the routing annotation on the same user bubble', async (t) => {
     const message = row('chat:200', 'Please investigate this', {
         role: 'user', client_message_id: 'owner-message', chat_annotation: { status: 'pending' },
+        source: 'web', sender_session_id: 'another-tab',
     });
     const f = fixture(t, page([message]));
     await f.refresh();
@@ -333,6 +364,42 @@ test('repeated physical history identity updates the routing annotation on the s
     assert.equal(bubble.dataset.chatAnnotationStatus, 'delivered');
     assert.notEqual(note.textContent, 'Choosing the right destination…');
     assert.match(note.textContent, /Investigation/);
+    const annotationText = note.textContent, metadata = { ...bubble.dataset };
+    const saved = sessionStorage.getItem('ouro_chat:2');
+    f.emit({ role: message.role, content: message.text, ts: message.ts,
+        client_message_id: message.client_message_id, source: message.source,
+        sender_session_id: message.sender_session_id });
+    assert.equal(f.bubbles().length, 1, 'a remote owner echo does not append a second bubble');
+    assert.equal(f.bubbles()[0], bubble);
+    assert.equal(bubble.querySelector('.msg-routing-annotation'), note);
+    assert.equal(note.textContent, annotationText, 'the live echo cannot clear the saved routing receipt');
+    assert.deepEqual(bubble.dataset, metadata);
+    assert.equal(sessionStorage.getItem('ouro_chat:2'), saved);
+});
+
+test('a live echo preserves the projected saved-context note and origin metadata', async t => {
+    const origin = row('chat:210', 'Original request', {
+        role: 'user', source: 'web', sender_session_id: 'another-tab',
+        history_id: undefined, history_position: undefined,
+        origin_projected: true, origin_id: 'binding-source-ref',
+    });
+    const f = fixture(t, page([origin]));
+    await f.refresh();
+    assert.equal(f.bubbles().length, 1);
+    const original = f.bubbles()[0], note = original.querySelector('.saved-project-context');
+    assert.ok(note);
+    assert.equal(original.dataset.originId, origin.origin_id);
+    assert.equal(original.dataset.originProjected, '1');
+    const metadata = { ...original.dataset }, noteText = note.textContent;
+    const saved = sessionStorage.getItem('ouro_chat:2');
+    f.emit({ role: origin.role, content: origin.text, ts: origin.ts,
+        source: origin.source, sender_session_id: origin.sender_session_id });
+    assert.equal(f.bubbles().length, 1);
+    assert.equal(f.bubbles()[0], original);
+    assert.equal(original.querySelector('.saved-project-context'), note);
+    assert.equal(note.textContent, noteText);
+    assert.deepEqual(original.dataset, metadata);
+    assert.equal(sessionStorage.getItem('ouro_chat:2'), saved);
 });
 
 test('a replayed refusal receipt shows the host cause and a later scheduled receipt patches the same note', async (t) => {
@@ -363,8 +430,9 @@ test('a replayed refusal receipt shows the host cause and a later scheduled rece
     assert.equal(bubble.querySelector('.msg-routing-actions'), null, 'the current Project is already displayed');
 });
 
-test('two physical rows with identical timestamp and body remain two messages across refresh', async (t) => {
-    const rows = [row('chat:300', 'Same words'), row('chat:400', 'Same words')];
+test('two physical rows with one full legacy key remain two messages after refresh and late live delivery', async (t) => {
+    const metadata = { role: 'system', system_type: 'reminder', source: 'Ouroboros' };
+    const rows = [row('chat:300', 'Same words', metadata), row('chat:400', 'Same words', metadata)];
     const f = fixture(t, page(rows));
     await f.refresh();
     const bubbles = f.bubbles().filter((node) => node.innerHTML.includes('Same words'));
@@ -372,6 +440,28 @@ test('two physical rows with identical timestamp and body remain two messages ac
     assert.deepEqual(bubbles.map((node) => node.dataset.historyId), ['chat:300', 'chat:400']);
     await f.refresh(page(rows));
     assert.deepEqual(f.bubbles().filter((node) => node.innerHTML.includes('Same words')), bubbles);
+    assert.equal(bubbles[0].dataset.messageKey, bubbles[1].dataset.messageKey);
+    f.emit({ ...metadata, content: 'Same words', ts: TS });
+    assert.equal(f.bubbles().length, 2, 'the matching live copy cannot become a third physical row');
+    assert.equal(f.bubbles()[0], bubbles[0]);
+    assert.equal(f.bubbles()[1], bubbles[1]);
+    assert.deepEqual(bubbles.map(node => node.dataset.historyId), ['chat:300', 'chat:400']);
+});
+
+test('standalone notice joins still distinguish source, text and timestamp', async t => {
+    const message = row('chat:500', 'A scheduled notice', {
+        role: 'system', system_type: 'reminder', source: 'Ouroboros',
+    });
+    const f = fixture(t, page([message]));
+    await f.refresh();
+    const original = f.bubbles()[0];
+    const live = { role: message.role, content: message.text, ts: message.ts,
+        system_type: message.system_type, source: message.source };
+    for (const difference of [{ source: 'Calendar skill' }, { content: 'A different notice' },
+        { ts: '2026-09-12T12:00:01.000Z' }]) f.emit({ ...live, ...difference });
+    assert.equal(f.bubbles().length, 4, 'each changed field identifies another standalone message');
+    assert.equal(new Set(f.bubbles().map(node => node.dataset.messageKey)).size, 4);
+    assert.equal(f.bubbles().find(node => node.dataset.historyId === message.history_id), original);
 });
 
 test('one older-navigation action crosses a sparse page and displays the next physical row', async (t) => {
@@ -398,6 +488,9 @@ test('retained history nodes still dedupe after navigation exceeds the live key 
     for (let i = 0; i < 16; i += 1) await f.clickOlder();
     const mounted = f.bubbles().length;
     assert.ok(mounted < 1000, 'distant pages actually evicted rather than all remaining protected');
+    f.emit({ role: 'assistant', content: 'Retained answer 2499', ts: TS });
+    assert.equal(f.bubbles().length, mounted, 'the mounted node suppresses a late frame after FIFO turnover');
+    assert.equal(f.bubbles().find(node => node.dataset.historyId === 'chat:2499'), recent);
     await f.refresh(pack(0));
     assert.deepEqual(f.bubbles().filter(node => node.dataset.historyId === 'chat:2499'), [recent]);
     assert.equal(f.bubbles().length, mounted, 'refresh adds no duplicate retained recent page');

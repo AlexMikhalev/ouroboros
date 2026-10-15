@@ -5,6 +5,8 @@ import copy
 import json
 from types import SimpleNamespace
 
+from tests.worker_pool_support import affirm_ready
+
 import pytest
 
 from ouroboros import projects_registry as registry
@@ -61,8 +63,9 @@ def worker(host, monkeypatch):  # noqa: F811
     sent = []
     monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=lambda _event: None))
     monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 5.0)
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-        in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+        in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row))
+                             if row.get("type") != "worker_quiescence" else None)))
     return sent
 
 

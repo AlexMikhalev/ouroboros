@@ -184,16 +184,3 @@ def test_wake_template_addresses_its_human_not_a_user():
 
     assert "Speak to your human" in consciousness
     assert "your human" in consciousness and "the user" not in consciousness
-
-
-def test_reflection_nominates_learning_about_people_as_well_as_itself():
-    from ouroboros.reflection import _REFLECTION_PROMPT_TAIL
-
-    tail = " ".join(_REFLECTION_PROMPT_TAIL.split())
-    lowered = tail.lower()
-
-    assert "people i worked with" in lowered
-    assert "self-knowledge" not in lowered
-    # The typed contract the parser depends on is untouched.
-    assert "MEMORY_ACTIONS_JSON: [...]" in tail
-    assert '"scratchpad_append", "knowledge_write", "identity_update_candidate"' in tail

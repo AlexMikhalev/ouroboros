@@ -167,24 +167,22 @@ def test_grant_without_a_new_attempt_is_not_a_phantom_repeat(tmp_path):
         ("continued", "continuation_outcome_unknown", 1)]
 
 
-def test_unknown_policy_admits_direct_turns_but_not_presence_or_a_readable_operation(tmp_path):
-    """Owner decision 1A: a direct turn's eligible unknown outcome enters the same wait and
-    continuation as a queued one, inside its interactive bound. Inline Presence keeps its own
-    no-resend terminal, and an accepted operation whose read failed is only rejoined."""
+@pytest.mark.parametrize("presence", [{}, {"current_task_type": "presence"},
+                                     {"task_metadata": {"presence": {"binding": "b"}}}])
+def test_unknown_policy_admits_direct_turns_but_not_a_readable_operation(tmp_path, presence):
+    """Direct turns, including Presence, share bounded recovery; accepted operations only rejoin."""
     notes = []
-    direct = SimpleNamespace(task_id="t", is_direct_chat=True, _accumulated_usage={})
+    direct = SimpleNamespace(task_id="t", is_direct_chat=True, _accumulated_usage={}, **presence)
     episode = transport.reconcile_transport_wait(None, direct, msg_present=False,
         error_kind="provider_outcome_unknown", drive_logs=tmp_path, task_id="t", model="m",
         emit_progress=lambda text, **_kw: notes.append(text))
     assert episode is not None and episode.interactive and episode.wait_cause == "provider_outcome_unknown"
     assert episode.wait_bound_sec is not None and notes and "Stop cancels" not in notes[0]
     readable = {"_pending_transport_outcome": {"physical_attempt_id": "a", "same_operation_recoverable": True}}
-    for ctx in (SimpleNamespace(task_id="t", is_direct_chat=True, current_task_type="presence", _accumulated_usage={}),
-                SimpleNamespace(task_id="t", _accumulated_usage=readable),
-                SimpleNamespace(task_id="t", task_metadata={"presence": {"binding": "b"}}, _accumulated_usage={})):
-        assert transport.reconcile_transport_wait(None, ctx, msg_present=False,
-            error_kind="provider_outcome_unknown", drive_logs=tmp_path, task_id="t", model="m",
-            emit_progress=lambda *a, **kw: pytest.fail("unexpected automatic continuation")) is None
+    direct._accumulated_usage = readable
+    assert transport.reconcile_transport_wait(None, direct, msg_present=False,
+        error_kind="provider_outcome_unknown", drive_logs=tmp_path, task_id="t", model="m",
+        emit_progress=lambda *a, **kw: pytest.fail("unexpected automatic continuation")) is None
 
 
 def test_deadline_closes_unknown_wait_without_a_probe_or_send(tmp_path, monkeypatch):

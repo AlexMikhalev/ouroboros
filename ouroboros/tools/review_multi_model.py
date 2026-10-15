@@ -91,6 +91,11 @@ def _review_output_budget() -> int:
     return max(8192, min(raw, 65536))
 
 
+def review_request_task_id(ctx: Any) -> str:
+    """The task a review request runs under; a seat's ``artifact_store`` reads resolve there."""
+    return str(getattr(ctx, "task_id", "") or "multi_model_review") if ctx is not None else "multi_model_review"
+
+
 def review_output_allowance(model: str, window: int = 0, **binding) -> int:
     """The review reservation within the exact route's known maximum response; unknown keeps it.
     A ``window`` from ``reviewer_context_window`` supplies the account it was observed on."""
@@ -158,7 +163,8 @@ def _handle_multi_model_review(ctx: ToolContext, content: str = "",
                                 session_policy: dict = None,
                                 usage_attribution: dict = None,
                                 retry_key: str = "", task_evidence: dict = None,
-                                layer: str = "body", checking_source: dict = None) -> str:
+                                layer: str = "body", checking_source: dict = None,
+                                preflight_execution: dict = None) -> str:
     if models is None:
         models = []
     try:
@@ -175,17 +181,25 @@ def _handle_multi_model_review(ctx: ToolContext, content: str = "",
                     _multi_model_review_async(content, prompt, models, ctx, stable_prefix_len,
                                               routes, session_task, session_root, row_plan,
                                               surface, session_policy, usage_attribution,
-                                              retry_key, task_evidence, layer=layer, checking_source=checking_source),
+                                              retry_key, task_evidence, layer=layer, checking_source=checking_source,
+                                              preflight_execution=preflight_execution),
                 ).result()
         except RuntimeError:
             result = asyncio.run(_multi_model_review_async(content, prompt, models, ctx, stable_prefix_len,
                                                            routes, session_task, session_root, row_plan,
                                                            surface, session_policy, usage_attribution,
-                                                           retry_key, task_evidence, layer=layer, checking_source=checking_source))
-        return json.dumps(result, ensure_ascii=False)
+                                                           retry_key, task_evidence, layer=layer, checking_source=checking_source,
+                                                           preflight_execution=preflight_execution))
+        text = json.dumps(result, ensure_ascii=False)
+        if "error" in result:
+            from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+            return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=text))
+        return text
     except Exception as e:
         log.error("Multi-model review failed: %s", e, exc_info=True)
-        return json.dumps({"error": f"Review failed: {e}"}, ensure_ascii=False)
+        from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
+            text=json.dumps({"error": f"Review failed: {e}"}, ensure_ascii=False)))
 
 
 async def _query_model(
@@ -204,7 +218,7 @@ async def _query_model(
     surface: str = "multi_model_review", session_policy: dict = None, usage_attribution: dict = None,
     retry_key: str = "", subagent_id: str = "", use_local: bool | None = None, task_evidence: dict = None,
     native_retrieval: bool = False, resolved_wave_id: str = "",
-    session_access: str = "", checking_source: dict = None,
+    session_access: str = "", checking_source: dict = None, preflight_execution: dict = None,
 ):
     async with semaphore:
         slot = None
@@ -238,7 +252,7 @@ async def _query_model(
                 goal="Run independent multi-model review over the supplied evidence.",
                 # 5.2: a retrieving slot never receives the assembled api pack.
                 messages=[] if retrieves else messages,
-                task_id=str(getattr(ctx, "task_id", "") or "multi_model_review") if ctx is not None else "multi_model_review",
+                task_id=review_request_task_id(ctx),
                 call_type="multi_model_review",
                 max_tokens=_out_budget,
                 default_temperature=0.2,
@@ -246,7 +260,9 @@ async def _query_model(
                 session_task=session_task if retrieves else "",
                 session_root=session_root if retrieves else "",
                 policy=policy,
-                evidence={"task_execution": evidence} if evidence else {},
+                # The wave's frozen exhibits, persisted with the request for an exact rejoin.
+                evidence={**({"task_execution": evidence} if evidence else {}),
+                          **({"preflight_execution": preflight_execution} if preflight_execution else {})},
                 evidence_refs=commit_review_evidence_refs(evidence),
                 usage_attribution=usage_attribution or {},
                 resolved_wave_id=resolved_wave_id,
@@ -321,9 +337,13 @@ async def _multi_model_review_async(content: str, prompt: str,
                                      session_policy: dict = None,
                                      usage_attribution: dict = None,
                                      retry_key: str = "", task_evidence: dict = None,
-                                     layer: str = "body", checking_source: dict = None):
+                                     layer: str = "body", checking_source: dict = None,
+                                     preflight_execution: dict = None):
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.reviewer_slot_config import row_plan_retrieves
+
+    if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
+        return {"error": "models must be a list of strings"}
 
     row_routes = list(routes or []) + [ReviewRouteKind.API_CHAT] * max(0, len(models) - len(routes or []))
     # Per-row strength/target/identity vectors (6.1). Absent tails keep the
@@ -340,9 +360,10 @@ async def _multi_model_review_async(content: str, prompt: str,
     row_local = _row_vector("use_local", lambda idx: None)
     row_access = _row_vector("session_accesses", lambda idx: "")
     # One brief per seat (PR-3 B): a retrieving row carries ITS OWN two-part
-    # brief and answer policy; an absent entry keeps the shared task/policy.
+    # brief, answer policy and reading root; an absent entry keeps the shared one.
     row_tasks = _row_vector("session_tasks", lambda idx: "")
     row_policies = _row_vector("session_policies", lambda idx: None)
+    row_roots = _row_vector("session_roots", lambda idx: "")
     # Pack assembly follows the RETRIEVES class, not the route name: a native
     # api row retrieves with its own tools and must never trigger (or be counted
     # into) the assembled pack. The class is the plan's explicit ``retrieves``
@@ -393,11 +414,13 @@ async def _multi_model_review_async(content: str, prompt: str,
     llm_client = _rev().LLMClient()
     tasks = [
         _query_model(llm_client, m, messages, semaphore, ctx, slot_id=row_ids[idx],
-                     route=row_routes[idx], session_task=row_tasks[idx] or session_task, session_root=session_root,
+                     route=row_routes[idx], session_task=row_tasks[idx] or session_task,
+                     session_root=row_roots[idx] or session_root,
                      effort=row_efforts[idx], session_target=row_targets[idx],
                      session_profile=row_profiles[idx], surface=surface,
                      session_policy=row_policies[idx] or session_policy, usage_attribution=usage_attribution,
                      retry_key=retry_key, subagent_id=row_actors[idx], use_local=row_local[idx], task_evidence=task_evidence,
+                     preflight_execution=preflight_execution,
                      resolved_wave_id=fan_out_wave, session_access=row_access[idx], checking_source=checking_source,
                      native_retrieval=row_retrieves[idx] and row_routes[idx] is ReviewRouteKind.API_CHAT)
         for idx, m in enumerate(models)

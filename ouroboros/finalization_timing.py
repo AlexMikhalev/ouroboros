@@ -148,6 +148,33 @@ def emit_finalization_timing(event, drive_root):
         logging.getLogger(__name__).debug("Finalization timing could not be recorded", exc_info=True)
 
 
+def emit_post_answer_timing(usage, drive_logs, task, delivery_id):
+    """One best-effort row for the packaging that ran AFTER the answer left (owner 1A(1)).
+
+    The live copy's snapshot was frozen at its enqueue, so the sender's row cannot
+    hold the later ``result_store`` span. This correlated row (same task and
+    delivery id, ``basis: post_answer_store``) carries every span the worker
+    observed up to the store's end; readers keep the two rows apart by basis.
+    """
+    timing = (usage or {}).get("_finalization_timing")
+    phases = (timing or {}).get("phases") if isinstance(timing, dict) else None
+    if drive_logs is None or not isinstance(phases, dict) or "result_store" not in phases:
+        return
+    try:
+        from ouroboros.utils import append_jsonl
+
+        store = phases["result_store"]
+        append_jsonl(pathlib.Path(drive_logs) / "events.jsonl", {
+            **{key: value for key, value in timing.items() if not key.startswith("_")},
+            "type": "task_finalization_timing", "ts": store.get("finished_at") or utc_now_iso(),
+            "task_id": task.get("id"), "task_attempt": task.get("_attempt"),
+            "delivery_id": delivery_id, "basis": "post_answer_store",
+            "total_sec": store.get("finished_sec"),
+        })
+    except Exception:
+        logging.getLogger(__name__).debug("Post-answer finalization timing could not be recorded", exc_info=True)
+
+
 _FINALIZATION_CHILDREN = contextvars.ContextVar("finalization_children", default=None)
 
 

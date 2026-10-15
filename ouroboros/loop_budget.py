@@ -55,8 +55,8 @@ def _check_budget_limits(
     """Budget decision after every unfinished spending round, tool and no-tool alike.
 
     ``ctx.budget_tail`` names the tail, and a cold Resume re-enters the tail
-    recorded in ``resume_point.budget_tail``; only the tool tail advances nanny
-    baselines and arms tool controls (see ``_finish_no_tool_round_budget``). An
+    recorded in ``resume_point.budget_tail``. Response handling anchors nanny
+    requests before saving; only the tool tail arms tool controls. An
     accepted answer returns before this check, so it buys no extra paid final.
     """
     accumulated_usage = ctx.accumulated_usage
@@ -611,9 +611,8 @@ def _cleanup_loop_resources(
     """Release attempt-scoped executors, services, and delegated runs."""
     if ctx.trace_ctx is not None:
         ctx.trace_ctx._execution_trace = ctx.previous_execution_trace
-    # This attempt's tool-future quiescence rows end with it (#1196): a pause
-    # only got here after they settled, and any other exit is on the task's own
-    # control rail; the registry prunes nothing across attempts by itself.
+    # Caller release has already transferred any physical tail before this
+    # logical exit. Prune only joined observations; old-attempt tails stay owned.
     try:
         budget_pause.forget_tool_scope(ctx.tools._ctx)
     except Exception:
@@ -766,15 +765,14 @@ def _finalize_task_services(ctx: _LoopExitContext) -> bool:
 def _finish_tool_round_budget(
     ctx: _RoundLimitContext, budget_remaining_usd: Optional[float],
     cost_ceiling: "task_pacing.CostCeiling", active_model: str,
-    active_use_local: bool, active_effort: str, tool_calls: Optional[list[Dict[str, Any]]] = None,
+    active_use_local: bool, active_effort: str,
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
     """Complete the existing budget decision after warm or cold owner input.
 
-    Only a freshly executed tool batch advances the nanny's metered baseline;
-    cold continuation owes the budget decision, never execution of old tools.
+    The batch's delegate requests were observed with its response, before any
+    save or park, so a cold continuation owes only this decision: no old tool
+    is executed and no nanny anchor is rebuilt here.
     """
-    if tool_calls is not None:
-        _loop()._note_nanny_delegate_activity(ctx.tools._ctx, ctx.round_idx, ctx.accumulated_usage, tool_calls)
     _loop()._prepare_post_tool_budget_context(
         ctx.tools, ctx, ctx.llm_trace, active_model, active_use_local, active_effort)
     result = _loop()._check_budget_limits(ctx, budget_remaining_usd, cost_ceiling=cost_ceiling)
@@ -795,8 +793,7 @@ def _finish_no_tool_round_budget(
     called tools — but only the tool tail ever reached `_check_budget_limits`,
     so a task that kept re-answering under review feedback could run past the
     ceiling untouched (#1223). This is the tool tail's own comparison and
-    nothing else: no metered-baseline bookkeeping (no tools ran) and no
-    `_prepare_post_tool_budget_context`, whose delivery-control arming belongs
+    nothing else: no `_prepare_post_tool_budget_context`, whose delivery-control arming belongs
     to a tool batch's effects. The current delivery candidate is untouched, so a
     eligible budget exit checkpoints the answer the round produced. Its cold
     continuation must return to this tail without tool-only control arming.

@@ -1,33 +1,23 @@
-"""An already-paid review operation: its own lifetime, controls and free collection.
+"""An already-paid review owns its lifetime, controls and free collection.
 
-A reviewer panel released at the dispatch barrier outlives the author turn that
-bought it. The panel therefore owns ONE model-wait owner shared by its drain and
-its workers (its own union and per-slot quota clocks, its own owner controls),
-closed only after settlement publication duties are durable — never when the author's
-scope closes. Explicit calendar deadlines, the task's money and root lineage and
-the task's Stop/Panic stay binding; the author's own execution-lifetime scopes
-do not (``model_wait.operation_wait_scope``). A caller that joins a panel whose
-workers are all still live binds that same operation instead of minting one.
-A review dispatched with no task wait owner in context gets no operation.
+One model-wait owner spans the panel's drain/workers, union and slot quota clocks,
+and settlement publication, beyond the buying author's scope. Calendar deadlines,
+task money, lineage and Stop/Panic still bind; author execution scopes do not
+(``model_wait.operation_wait_scope``). Joining an entirely live panel reuses its
+operation; dispatch without a task wait owner creates none.
 
-Before any physical send a task-acceptance operation retains its exact request,
-roster, the operation ids it will own and its controller identity through the
-existing immutable artifact store plus one pointer in the task result
-(``review_operations``), read back before the send; a pointer that did not land
-refuses those sends at $0. Owner decisions reach the operation as the canonical
-wait row's ``pending_action`` (the author's mailbox is the author's), and only a
-controller proven live — this process's registration, or another process of
-this server generation with the exact pid birth and custody session and a
-pointer still open that matches panel, slot and attempt, with no Stop/Panic or
-unreadable stop state (``review_operation_controller``) — may be told to act. A panel whose controller died is discovered by the existing
-maintenance pass.
+Before task-acceptance sends, immutable artifacts retain the exact request, roster,
+operation ids and controller, with a read-back ``review_operations`` result pointer;
+a failed pointer refuses sends at $0. Decisions use the wait's ``pending_action``,
+not the author's mailbox. Only a proven controller may act: local registration, or
+another process in this server generation with exact pid birth, custody session and
+an open pointer matching panel/slot/attempt, with readable, clear Stop/Panic state
+(``review_operation_controller``). Existing maintenance discovers dead controllers.
 
-Collection here is PURE: it restores an exact completed producer outcome, reads
-an existing delegated run it can prove (attach-only; never a start, re-post,
-cancel, acknowledgement, retirement or daemon ensure) and parses locally. It
-never calls a model, not even a Light extraction. Absence of a record is never
-proof that nothing was sent.
-"""
+Collection restores exact completed outcomes or provable delegated runs and parses
+locally: attach-only, never start, re-post, cancel, acknowledge, retire, ensure a
+daemon or call any model (including Light extraction). Missing records prove no
+absence of sends."""
 
 from __future__ import annotations
 
@@ -96,15 +86,11 @@ def controller_identity() -> Dict[str, Any]:
 
 
 def controller_state(identity: Any) -> str:
-    """``local``, ``alive``, ``dead`` or ``unknown`` — never a guess.
-
-    No live process with the pid (or only its exited zombie) proves the
-    controller gone. A live pid is the recorded controller only with the same
-    birth token (a reused pid proves the original gone); a live pid with no
-    recorded or readable birth is ``unknown``.
-    For our own pid/birth, distinct nonempty custody sessions prove the old
-    controller gone after exec. Another process's session cannot prove that.
-    """
+    """Return proven ``local``, ``alive``, ``dead`` or ``unknown``.
+    No live pid (including zombies) or a changed birth proves the controller gone;
+    a live pid with missing/unreadable birth is unknown. For our own pid/birth,
+    distinct nonempty custody sessions prove the pre-exec controller gone;
+    another process's session cannot prove that."""
     try:
         pid = int(identity.get("pid") or 0) if isinstance(identity, dict) else 0
     except (TypeError, ValueError):
@@ -214,6 +200,7 @@ class ReviewOperation:
         self.checkpointed = False
         self.preparing = False
         self.closed = False
+        self._closing = self._published = False  # one final publisher at a time
         self.control_state = ""
         self._drains = 0
         self._dispatched = False
@@ -297,30 +284,52 @@ class ReviewOperation:
         self.maybe_close()
 
     def maybe_close(self) -> None:
-        """Close after drains, workers and their settlement publication duties finish."""
+        """Close after drains, workers and their settlement publication duties finish.
+
+        ``closed`` ends the controller at once; registration includes the completion
+        tail until the final pointer lands. A failed write or an exception keeps custody
+        unknown and retryable (a later close or the idle probe), never an empty
+        registry that authorizes worker death.
+        """
         from ouroboros.review_custody import operation_has_live_workers
 
         with _LOCK:
-            if self.closed or self._drains or operation_has_live_workers(self):
+            if self._closing or self._published or not self.closed and (
+                    self._drains or operation_has_live_workers(self)):
                 return
-            self.closed = True
-            _LIVE.pop(self.owner_id, None)
-            if self.author_detached:
-                _CLOSED_DETACHED[self.owner_id] = utc_now_iso()
-        self.wait.close()
-        if not self.checkpointed:
-            return
-        if self.surface != "task_acceptance":
-            # A liveness-only pointer ends with its operation; the task result keeps no history of it.
-            _mark_operation(self.result_root, self.task_id, self.owner_id, None, from_states=_OPEN_STATES)
-            return
-        from ouroboros.acceptance_settlement import late_publication_owed
+            self.closed = self._closing = True
+        try:
+            if not self.wait.closed:
+                self.wait.close()
+            state = None  # Liveness-only pointers leave no history after close.
+            if self.checkpointed and self.surface == "task_acceptance":
+                from ouroboros.acceptance_settlement import late_publication_owed
+                # Only settlement consumes a historical panel's first owed supplement.
+                owed = self.historical_purpose or late_publication_owed(self.task_id, self.retry_key)
+                state = OPERATION_UNPUBLISHED if owed else OPERATION_CLOSED
+            self._published = not self.checkpointed or _mark_operation(
+                self.result_root, self.task_id, self.owner_id, state, from_states=_OPEN_STATES)
+        finally:
+            with _LOCK:
+                self._closing = False
+                if self._published:
+                    _LIVE.pop(self.owner_id, None)
+                    if self.author_detached:
+                        _CLOSED_DETACHED[self.owner_id] = utc_now_iso()
 
-        # A historical panel owes its FIRST supplement even if every actor
-        # answered before the drain returned. Only the settlement publisher can
-        # consume that duty; crashing before its first call stays recoverable.
-        state = OPERATION_UNPUBLISHED if self.historical_purpose or late_publication_owed(self.task_id, self.retry_key) else OPERATION_CLOSED
-        _mark_operation(self.result_root, self.task_id, self.owner_id, state, from_states=_OPEN_STATES)
+
+def local_reviews_settled() -> bool:
+    """The idle probe's review half: no local operation or attempt is owed. Closed operations
+    whose final pointer is unpublished retry first, bounded to this process's registry (no
+    history scan; server maintenance reuses this retry); a failure keeps them registered."""
+    from ouroboros.review_custody import _ACTIVE, _ACTIVE_LOCK
+
+    with _LOCK:
+        pending = [op for op in _LIVE.values() if op.closed]
+    for operation in pending:
+        operation.maybe_close()
+    with _LOCK, _ACTIVE_LOCK:
+        return not _LIVE and not _ACTIVE
 
 
 @dataclass
@@ -337,13 +346,10 @@ def current_review_operation() -> Optional[ReviewOperation]:
 
 def prepare_historical_operation(*, root: Any, purpose: dict, event_queue: Any,
                                  work: Callable, background: bool, resume_entry: Optional[dict] = None) -> dict:
-    """Own historical preparation BEFORE starting it; never a ready/paid checkpoint.
-
-    The same operation upgrades its intent to a complete canonical request at
-    the ordinary dispatch seam. Its drain owns the preparation worker, so Stop,
-    calendar limits and crash visibility exist before expensive source work.
-    Panic never joins this worker. Recovery of an abandoned intent buys nothing.
-    """
+    """Own preparation before starting, without claiming a ready/paid checkpoint.
+    The same operation upgrades its intent to a canonical request at dispatch.
+    Its drain owns the preparation worker, exposing Stop/calendar/crash custody
+    before expensive source work. Panic never joins it; intent recovery buys nothing."""
     from ouroboros.artifacts import store_actor_source_bytes
     from ouroboros.model_wait import operation_wait_scope
 
@@ -472,17 +478,13 @@ def _result_root(usage_ctx: Any, parent: Any = None) -> Optional[pathlib.Path]:
 @contextlib.contextmanager
 def review_operation_scope(*, request: Any, slots: List[Any], usage_ctx: Any,
                            task_id: str) -> Iterator[OperationBinding]:
-    """Own the wait, controls and lifetime of one dispatching panel.
+    """Own one panel's wait, controls and lifetime before computing slot windows.
 
-    Bound BEFORE any slot window is computed, so the drain and the workers read
-    the same operation clocks. A call whose every slot is relayed from one live
-    operation of this process binds THAT operation (its controller, clocks and
-    scopes); otherwise a new operation owns exactly the slots it will send, and
-    a task-acceptance checkpoint that cannot be retained and read back refuses
-    those sends. All request sources must already be canonical before entry: the
-    checkpoint serializes ``asdict(request)``. No task wait owner in context (collection, or a dispatch
-    without a task frame) binds nothing.
-    """
+    Drain and workers share operation clocks. If every slot relays one live local
+    operation, bind its controller/clocks/scopes; otherwise own only the new sends.
+    Task acceptance refuses sends unless its checkpoint is retained and read back.
+    Sources must already be canonical for ``asdict(request)``. Without a task wait
+    owner (collection or dispatch outside a task frame), bind nothing."""
     from ouroboros.model_wait import current_model_wait, operation_wait_scope
     from ouroboros.review_custody import review_dispatch_plan
     from ouroboros.review_live_join import live_join_operation
@@ -543,18 +545,14 @@ def review_operation_scope(*, request: Any, slots: List[Any], usage_ctx: Any,
 
 def _retain_before_dispatch(operation: ReviewOperation, request: Any, slots: List[Any], sends: Dict[str, str],
                             usage_ctx: Any, root: Optional[pathlib.Path]) -> Tuple[Dict[str, str], Any]:
-    """Put the operation on record before any send; ``(refused, restore)``.
+    """Record before sends; return ``(refused, restore)``.
 
-    Every operation that will send gets one pointer in its task result (its
-    controller, panel, the slots it owns, the attempt): the proof another
-    process needs before it tells this operation to act, closed when the
-    operation ends. A task-acceptance operation also retains its exact request
-    and roster there (the checkpoint maintenance collects from) under the
-    operation ids it will send (the exact rejoined id, or a reserved new one),
-    and its sends are refused at $0 when that cannot be written and read back.
-    Elsewhere a missing pointer only means no decision from another process.
-    A panel whose every row is refused at $0 sends nothing and owes nothing.
-    """
+    Each sending operation's task-result pointer names controller, panel, owned
+    slots and attempt so other processes can address it; close it when finished.
+    Task acceptance also retains its exact request/roster under rejoined or reserved
+    operation ids for maintenance collection, refusing sends at $0 if write/readback
+    fails. Elsewhere a missing pointer forbids remote decisions only. An entirely
+    refused panel sends nothing and owes nothing."""
     from ouroboros.observability import new_call_id
     from ouroboros.review_dispatch import task_acceptance_row_refusal
 
@@ -750,7 +748,7 @@ def _update_operations(root: Any, task_id: str, transform: Callable[[Dict[str, A
     return write_task_result(root, task_id, STATUS_RUNNING, _field_projector=project, strict_existing_dict=True)
 
 
-def _mark_operation(root: Any, task_id: str, owner_id: str, state: Optional[str], *, from_states: frozenset) -> None:
+def _mark_operation(root: Any, task_id: str, owner_id: str, state: Optional[str], *, from_states: frozenset) -> bool:
     """Move one pointer from an expected state only (``None`` removes it); a fact, fail-soft."""
     def transform(rows: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         row = rows.get(owner_id)
@@ -762,8 +760,10 @@ def _mark_operation(root: Any, task_id: str, owner_id: str, state: Optional[str]
 
     try:
         _update_operations(root, task_id, transform)
+        return True
     except Exception:
         log.warning("Review operation %s could not record %s", owner_id, state, exc_info=True)
+        return False
 
 
 def historical_publication_retained(root: Any, task_id: str, retry_key: str) -> None:
@@ -1422,18 +1422,18 @@ def collect_orphaned_operations_softly(drive_root: Any, *, stop: Optional[Callab
 def recover_orphaned_acceptance_operations(drive_root: Any, *, stop: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """Collect paid acceptance operations nobody live will settle, for terminal tasks.
 
-    Runs inside the existing off-loop maintenance pass. An open pointer whose
-    controller is proven dead (or is this process without a registration), or
-    an ``unpublished`` one, is collected purely and published as a late
-    settlement; only a publication read back marks it ``collected``. A
-    controller that cannot be verified, a source that cannot be read or a panel
-    still in flight is reported and retried — never marked unavailable.
-    """
+    Runs inside the existing off-loop maintenance pass, after this process's closed operations
+    retried their own failed final pointer (``local_reviews_settled``; no history scan). An open
+    pointer whose controller is proven dead (or is this process without a registration), or an
+    ``unpublished`` one, is collected purely and published as a late settlement; only a publication
+    read back marks it ``collected``. A controller that cannot be verified, a source that cannot be
+    read or a panel still in flight is reported and retried — never marked unavailable."""
     from ouroboros.acceptance_settlement import acceptance_actor_ended, settle_acceptance_operation
     from ouroboros.store import StoreError
     from ouroboros.task_results import load_task_result
     from ouroboros.task_store import ids_with_fields
 
+    local_reviews_settled()  # a direct turn's closed operation needs no worker probe to publish
     root = pathlib.Path(drive_root)
     report: Dict[str, Any] = {"settled": [], "pending": [], "deferred": [], "errors": []}
     try:

@@ -52,7 +52,7 @@ def test_capture_contention_retries_before_handoff_with_no_launch_lock_held(sour
 
     def read(*args, **kwargs):
         calls.append(True)
-        if len(calls) == 2:  # validation succeeded; capture is still before the first submit
+        if len(calls) == 1:  # the same pre-send read now validates and captures the generation
             raise store.StoreBusy("admitted generation contended", reason="contention")
         return original(*args, **kwargs)
 

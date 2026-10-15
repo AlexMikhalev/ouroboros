@@ -182,7 +182,9 @@ def test_mode_projection_and_rebind_preserve_actual_shortened_tail_without_reloa
     again = rebound.reproject_for_route(window_tokens=130_000, known_window=True, ratio=1.0, output_reserve=65_536, tool_schemas=[])
     assert again.messages_for("max")[1:] == actual[1:]
     assert "F5" in initial.projection("max").memory_facts["floor"]["steps"]
-    assert "F5" not in rebound.projection("max").memory_facts["floor"]["steps"]
+    # The shorter tail on the same window unfolds nothing (owner 2A): the shown story keeps its bytes.
+    assert rebound.projection("max").memory_facts["floor"]["steps"] == initial.projection("max").memory_facts["floor"]["steps"]
+    assert rebound.projection("max").system_content_json == initial.projection("max").system_content_json
 
 
 def test_current_memory_floor_counts_appended_real_turns_not_only_the_initial_assignment(monkeypatch):

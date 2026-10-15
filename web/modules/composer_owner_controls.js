@@ -963,14 +963,14 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
     for (const control of [context, effort]) if (control) capsules.push(control.capsule);
     // One capsule is open at a time.
     if (context && effort) { context.capsule.peer = effort.capsule; effort.capsule.peer = context.capsule; }
+    win?.addEventListener?.('resize', fitNames);
     const stopObserving = observeLayout(win, [row], fitNames);
     const relayout = () => { if (!destroyed) { fitNames(); capsules.forEach((capsule) => capsule.relayout()); } };
     // Descendant fitting cannot resize this docking box, so mount/show/resize settle before paint.
     // Text is observed at the microtask boundary, not our geometry attributes; unchanged words stay.
     const boxObserver = box && typeof win?.ResizeObserver === 'function' ? new win.ResizeObserver(relayout) : null;
     boxObserver?.observe(box);
-    // Own values yield to an open strip; refitting that strip would cancel the gesture's transition.
-    // They only need the closed line fitted. Other translated words still realign the whole strip.
+    // Own values only refit the closed line: realigning an open strip would cancel its motion.
     const ownValue = (record) => {
         const node = record.target.nodeType === 1 ? record.target : record.target.parentNode;
         return Boolean(node?.closest?.('.chat-capsule-value'));
@@ -988,6 +988,7 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
         destroy() {
             destroyed = true;
             stopObserving();
+            win?.removeEventListener?.('resize', fitNames);
             boxObserver?.disconnect();
             textObserver?.disconnect();
             context?.destroy();

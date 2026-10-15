@@ -401,9 +401,10 @@ def get_tools() -> List[ToolEntry]:
                 "Choose the consciousness wake-up interval in seconds: how long after a wake-up ends the next one "
                 "starts, clamped into the owner's OUROBOROS_BG_WAKEUP_MIN/MAX. A wake-up calling this sets its own "
                 "next one; a wake-up already pending keeps its time; with consciousness off it is stored for later. "
-                "The alarm still adjusts it: a failed wake-up doubles the interval (up to MAX), a pending event "
-                "brings the next wake-up forward, a skipped one retries after MIN (an exhausted allowance waits for "
-                "its reset), and no wake-up starts sooner than MIN after the last wake-up, boot or skip."),
+                "The alarm still adjusts it: a failed wake-up doubles the interval (up to MAX), a skipped one "
+                "retries after MIN (an exhausted allowance waits for its reset), and no wake-up starts sooner than "
+                "MIN after the last wake-up, boot or skip. Events never bring a wake-up forward; the next one "
+                "observes them."),
             "parameters": {"type": "object", "properties": {"seconds": {"type": "integer", "description": "Seconds from the end of a wake-up to the next one"}}, "required": ["seconds"]},
         }, _set_next_wakeup),
         ToolEntry("switch_model", {

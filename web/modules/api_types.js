@@ -1,4 +1,4 @@
-/** Dependency-free JSDoc mirror of `ouroboros.gateway.contracts`; the interface-language envelopes (`UiI18n*`) sit in ./ui_i18n_types.js, the model-route previews in ./model_route_types.js, the Dashboard storage envelopes (`Storage*`) in ./storage_types.js, the MCP import preview in ./mcp_import_types.js. */
+/** Dependency-free JSDoc mirror of `ouroboros.gateway.contracts`; the interface-language envelopes (`UiI18n*`) sit in ./ui_i18n_types.js, the model-route previews in ./model_route_types.js, the Dashboard storage envelopes (`Storage*`) in ./storage_types.js, the MCP import preview in ./mcp_import_types.js, the replaceable-client envelopes (`ServedUiState`, setup bootstrap, `/api/contract`, chat history rows, journey request bodies) in ./client_contract_types.js, the product-management envelopes (skills, marketplaces, accounts, local model, MCP, update status) in ./management_contract_types.js. */
 /**
  * @typedef {Object} CostPresentation
  * @property {'own'|'root_tree'} scope
@@ -18,7 +18,7 @@
  * @property {?number} spent_usd
  * @property {number} budget_limit
  * @property {?number} budget_pct
- * @property {string} branch
+ * @property {?string} branch  // null for detached HEAD or unavailable checkout identity
  * @property {string} sha
  * @property {?boolean} evolution_enabled  // null: the control is unknown (state unavailable/recovering)
  * @property {?boolean} bg_consciousness_enabled  // null: unknown, never "off"
@@ -43,6 +43,7 @@
  * @property {ActiveDirectTurn[]=} active_direct_turns  // active direct/ephemeral chat turns snapshot
  * @property {boolean=} active_chat_activities_complete
  * @property {ActiveChatActivity[]=} active_chat_activities  // combined snapshot: direct/ephemeral turns + root managed queue tasks
+ * @property {import('./client_contract_types.js').ServedUiState=} served_ui  // this generation's main interface; absent on older cores
  */
 /**
  * Background Consciousness alarm clock (server._describe_bg_consciousness_state over consciousness.status_snapshot). A wake-up is an ordinary Main turn; the direct-activity census owns its liveness.
@@ -52,7 +53,6 @@
  * @property {string} detail  // one honest owner-readable line (e.g. "Sleeping until 14:05.")
  * @property {string} level  // observe | act | full
  * @property {string} next_wake_at  // ISO instant; "" when unknown
- * @property {string} pending_reason  // the event that will wake it early, "" when none
  * @property {string} last_wake_at  // ISO instant; "" before the first wake of this process
  * @property {string} last_wake_task_id
  * @property {string} last_wake_outcome  // running | done | paused | pausing | unknown | failed | rejected:<reason> | skipped:<reason>
@@ -68,6 +68,7 @@
  */
 /** @typedef {import('./task_activity_types.js').ActiveDirectTurn} ActiveDirectTurn */
 /** @typedef {import('./task_activity_types.js').ActiveChatActivity} ActiveChatActivity */
+/** @typedef {import('./task_activity_types.js').ToolVerificationFact} ToolVerificationFact */
 /**
  * @typedef {Object} EvolutionDataResponse
  * @property {Object[]} points
@@ -81,6 +82,7 @@
  * @property {string} version
  * @property {string} runtime_version
  * @property {string} app_version
+ * @property {string=} abi_version  // gateway ABI carrier; absent on cores older than GET /api/contract
  */
 /**
  * @typedef {Object} OpenAICompatibleModelsResponse
@@ -151,6 +153,7 @@
  * @property {boolean=} subscriptionsConnected
  * @property {boolean=} skipSubscriptionPresets
  * @property {Object=} OUROBOROS_SUBAGENTS
+ * @property {boolean=} allow_empty_review_pool  // confirms saving agents that leave no review row
  */
 
 /**
@@ -162,6 +165,7 @@
 /**
  * @typedef {Object} OnboardingSubagentsPreviewResponse
  * @property {boolean} ok
+ * @property {Object} model_settings  // the model setting keys the draft would save
  * @property {AvailableSubagentsSetting} available_subagents
  * @property {string} source
  * @property {Object[]} diagnostics
@@ -274,8 +278,8 @@
  * @property {string=} task_terminal_status Typed terminal fact on a frame that IS the turn's conclusion (stamped on direct/ephemeral finals and the direct error branch).
  * @property {string=} task_incident
  * @property {string=} cancel_physical_task_id
- *   A cancellation fault names the physical task it could not settle when that
- *   differs from the displayed task id.
+ *   Historical rows only: the retired cancellation-fault notice named the
+ *   physical task it could not settle when that differed from the displayed id.
  * @property {string=} toast_once
  * @property {string=} toast_tone
  *   The incident's valence for the one-shot toast (warn/ok/error); absent =
@@ -678,22 +682,12 @@
  * @property {string=} ts
  */
 
-/**
- * Additive /api/chat/history row fields (v6.73.0 Project origin projection).
- * A Project thread may synthesize its start message from the binding's own
- * durable copy when the canonical row left the bounded read window:
- * `origin_projected: true` marks such a synthesized user row (normal history
- * shape otherwise), and a `system_type: "origin_omission"` system row discloses
- * origins omitted past the synthesis cap. Both fields are additive and safely ignorable by renderers.
- * @typedef {Object} ProjectOriginHistoryFields
- * @property {boolean=} origin_projected
- * @property {"origin_omission"=} system_type
- */
-
 /** Additive history fact: a project-owned Main mirror cannot grant cancel authority.
  * @typedef {Object} ProjectMirrorHistoryFields
  * @property {boolean=} project_mirror
  */
+
+/** @typedef {import('./management_contract_types.js').SkillReviewHistoryDetailResponse} SkillReviewHistoryDetailResponse */
 
 /** Additive /api/chat/history terminality projection.
  * @typedef {Object} TaskOutcomeHistoryFields
@@ -705,40 +699,11 @@
  */
 
 /**
- * Additive /api/chat/history row fields on `system_type: "skill_review"` rows:
- * the exact-job reference the producer already writes into chat.jsonl. A row
- * carrying a non-empty `job_id` lets the Chat card lazily fetch the rendered
- * review via GET /api/skills/{skill}/review-history/{job_id}; rows without it
- * (legacy full-text rows) keep local expansion. All fields are additive and
- * safely ignorable by renderers.
- * @typedef {Object} SkillReviewHistoryRowFields
- * @property {string=} skill
- * @property {string=} status
- * @property {string=} content_hash
- * @property {string=} job_id
- * @property {number=} review_round
- * @property {number=} snapshot_attempt
- */
-
-/**
- * GET /api/skills/{skill}/review-history/{job_id} response: the
- * server-rendered normalized review block for ONE terminal review record
- * (raw reviewer text stays in review_history.jsonl; degraded reviewers are
- * disclosed by model + status). Errors are `{error}` with a typed 404 for
- * unknown skill/job or unreadable history.
- * @typedef {Object} SkillReviewHistoryDetailResponse
- * @property {string} markdown
- * @property {string} status
- * @property {string} content_hash
- * @property {string} job_status
- */
-
-/**
  * POST /api/projects body (v6.59.0). ONE source: path (attach; optional init_git
  * attach-snapshot commit — never auto-init), git_url (server-side clone; typed
  * auth_required), with_workspace (genesis), or none (file-less).
  * @typedef {Object} ProjectCreateRequest
- * @property {string=} id
+ * @property {string=} id  // `project_id` is accepted as an alias
  * @property {string=} name
  * @property {string=} path
  * @property {boolean=} init_git
@@ -747,6 +712,8 @@
  */
 
 /**
+ * A registry project row: list rows are the compact projection (with `has_thread_activity`);
+ * a create/update answer is the full row (`created: false`: an idempotent repeat create).
  * @typedef {Object} ProjectEntry
  * @property {string} id
  * @property {string=} name
@@ -755,11 +722,18 @@
  * @property {string=} provenance   // attached | cloned | genesis | none (historical fact)
  * @property {string=} clone_url
  * @property {string=} trusted_at
+ * @property {string=} origin
+ * @property {string=} created_at
  * @property {string=} last_active_at
  * @property {"active"|"deleting"|"tombstoned"=} lifecycle
  * @property {number=} routing_generation
+ * @property {string=} routing_incarnation
  * @property {number=} visible_revision
  * @property {string=} delete_error
+ * @property {boolean=} has_thread_activity
+ * @property {boolean=} thread_activity_seen
+ * @property {string=} last_task_result_id
+ * @property {boolean=} created
  */
 
 /**
@@ -806,6 +780,59 @@
  */
 
 /**
+ * @typedef {Object} StatusResponse
+ * @property {string} status
+ */
+
+/**
+ * A refusal: `error` is a sentence; `code` or `reason_code` types it when present.
+ * @typedef {Object} ErrorResponse
+ * @property {string} error
+ * @property {string=} code
+ * @property {string=} reason_code
+ */
+
+/**
+ * @typedef {Object} HeartbeatOutbound
+ * @property {'heartbeat'} type
+ * @property {string=} ts
+ */
+
+/**
+ * `extension_lifecycle`: re-read GET /api/widgets and GET /api/extensions.
+ * @typedef {Object} ExtensionLifecycleOutbound
+ * @property {'extension_lifecycle'} type
+ * @property {string=} skill
+ * @property {string=} action
+ * @property {string=} status
+ * @property {string=} reason
+ * @property {Object=} data
+ */
+
+/**
+ * @typedef {Object} GitLogResponse
+ * @property {Object[]} commits
+ * @property {Object[]} tags  // {tag, date, sha, message}
+ * @property {string} branch
+ * @property {string} sha
+ */
+
+/**
+ * `POST /api/settings` success; `restart_keys` apply only after a restart.
+ * @typedef {Object} SettingsSaveResponse
+ * @property {string=} status
+ * @property {boolean=} no_changes
+ * @property {boolean=} restart_required
+ * @property {string[]=} restart_keys
+ * @property {Object=} restart_state
+ * @property {boolean=} immediate_changed
+ * @property {boolean=} next_task_changed
+ * @property {string[]=} warnings
+ * @property {Object<string, string>=} ignored_keys
+ * @property {boolean=} agent_task_running
+ */
+
+/**
  * @typedef {Object} OwnerRuntimeModeResponse
  * @property {boolean} ok
  * @property {string} runtime_mode
@@ -829,69 +856,25 @@
  * @property {string} min
  * @property {string} recommended
  * @property {string} max
- *
+ */
+
+/**
  * @typedef {Object} OwnerEffortRangeResponse
  * @property {boolean} ok
  * @property {EffortRange} effort_range
- *
+ */
+
+/**
  * @typedef {Object} OwnerSafetyModeResponse
  * @property {boolean} ok
  * @property {string} safety_mode  // full | light | off (v6.54.3)
  */
 
-/**
- * @typedef {Object} InstalledSkill
- * @property {string} name
- * @property {string} type
- * @property {string=} version
- * @property {string=} description
- * @property {boolean=} enabled
- * @property {string=} source
- * @property {string=} payload_root
- * @property {string=} review_status
- * @property {boolean=} review_stale
- * @property {{status: string, stale: boolean, executable_review: boolean, blocking_reason: string, review_enforcement: string, summary: string, author_accepted: (boolean|undefined), reviewed_content_hash: (string|undefined), author_disposition: (Object|undefined), preflight_failed: (boolean|undefined), preflight_failed_stale: (boolean|undefined)}=} review_gate
- * @property {string=} reviewed_content_hash
- * @property {Object=} author_disposition
- * @property {boolean=} executable_review
- * @property {string=} review_profile
- * @property {boolean|null=} official_hub_verified null = no fresh hub catalog view yet (the page re-reads)
- * @property {boolean|null=} owner_attestable
- * @property {{visible: boolean, publication_ready: boolean, task_start_allowed: boolean, disabled: boolean, state: "ready"|"warnings"|"needs_attention"|"repairable"|"hard_block", reason: string}=} submit_hub
- * @property {{current: Object, history: Object[], history_omitted: number=}=} skill_review
- * @property {boolean=} is_self_authored
- * @property {Object=} grants
- * @property {string[]=} permissions
- * @property {string[]=} conflicts
- * @property {{code: "skill_conflict", skills: string[], omitted: number}=} conflict
- * @property {string} content_hash
- * @property {?{slug: string, version: string, content_hash: string, repository: string, pr_number: number, pr_url: string, published_at: string}=} published
- * @property {boolean=} published_malformed
- * @property {boolean=} identity_collision
- * @property {string=} process
- * @property {string=} server_reconcile
- */
+/** @typedef {import('./management_contract_types.js').InstalledSkill} InstalledSkill */
 
-/**
- * @typedef {Object} SkillToggleResponse
- * @property {string} skill
- * @property {boolean} enabled
- * @property {string=} extension_action
- * @property {string=} extension_reason
- * @property {string=} process
- * @property {string=} server_reconcile
- */
+/** @typedef {import('./management_contract_types.js').SkillToggleResponse} SkillToggleResponse */
 
-/**
- * @typedef {Object} SkillReconcileResponse
- * @property {string} skill
- * @property {string=} extension_action
- * @property {string=} extension_reason
- * @property {boolean} live_loaded
- * @property {?string} load_error
- * @property {string=} process
- * @property {string=} server_reconcile
- */
+/** @typedef {import('./management_contract_types.js').SkillReconcileResponse} SkillReconcileResponse */
 
 /**
  * One Widgets card from `GET /api/widgets` (`gateway/widgets.py::WidgetTab`).
@@ -961,27 +944,68 @@
  */
 
 /**
+ * Skill review and owner attestation outcome (`gateway/management_contracts.py::SkillReviewResponse`).
  * @typedef {Object} SkillReviewResponse
  * @property {string} skill
- * @property {string} status
+ * @property {string} status  // clean | warnings | blockers | pending
+ * @property {string=} content_hash
+ * @property {string=} error
+ * @property {boolean=} ok  // attest only
+ * @property {number=} status_code  // attest refusal only
+ * @property {string[]=} reviewer_models
+ * @property {string=} review_profile
+ * @property {Object[]=} findings
+ * @property {Object[]=} raw_actor_records
+ * @property {*=} advisory_result
+ * @property {Object=} review_gate
+ * @property {boolean=} executable_review
+ * @property {*=} auto_flow
+ * @property {string[]=} auto_granted_keys
+ * @property {string[]=} requested_keys
+ * @property {string[]=} auto_granted_permissions
+ * @property {string[]=} requested_permissions
+ * @property {string=} deps_status
+ * @property {string=} deps_error
  * @property {string=} extension_action
  * @property {string=} extension_reason
  * @property {string=} extension_process
  * @property {string=} extension_server_reconcile
  * @property {string|null=} extension_load_error
  * @property {boolean|null=} extension_live_loaded
+ * @property {*=} convergence_hint
+ * @property {string=} job_id
+ * @property {string=} job_status
+ * @property {string=} group_id
+ * @property {number=} review_round
+ * @property {number=} snapshot_attempt
+ * @property {boolean=} snapshot_revised
+ * @property {string=} task_id
+ * @property {string=} root_task_id
+ * @property {string=} origin_task_id
+ * @property {string=} origin_root_task_id
+ * @property {string=} presentation_owner_task_id
+ * @property {number=} chat_id
+ * @property {string=} source
+ * @property {string=} terminal_reason
+ * @property {Object[]=} executions
  */
 
 /**
+ * `POST /api/skills/{skill}/grants`; a refusal answers `SkillActionRefusal`.
  * @typedef {Object} SkillGrantResponse
  * @property {boolean} ok
  * @property {string} skill
+ * @property {string=} content_hash
  * @property {string[]=} granted_keys
  * @property {string[]=} granted_permissions
  * @property {string=} extension_action
  * @property {string=} extension_reason
  * @property {string=} load_error
  * @property {Object=} grants
+ * @property {string=} process
+ * @property {string=} server_reconcile
+ * @property {boolean=} live_loaded
+ * @property {string=} error
  */
 
 /**
@@ -1104,6 +1128,7 @@
  * @typedef {Object} TaskListResponse
  * @property {Object[]} tasks
  * @property {Object=} queue
+ * @property {string=} error
  */
 /**
  * Read-time "where did the money go" projection on GET /api/tasks/{task_id}
@@ -1368,11 +1393,16 @@
  * @property {boolean} ok
  * @property {string} task_id
  * @property {boolean=} cascade
- *   Echoed only for {"cascade": true}, after subtree cancel completes; single-task envelope unchanged.
+ *   Echoed when the Stop ran as a cascade (requested, or an already recorded cascade scope); single-task envelope unchanged.
  * @property {string=} cancel_state
- *   "pending" on graceful 202 ACK: durable intent stays open during bounded finalization; absent for immediate.
+ *   "pending" on every 202: the durable intent stays open — bounded graceful finalization, or an immediate
+ *   teardown not confirmed yet that the supervisor finishes; absent on 200.
  * @property {string=} stop_policy
- *   Effective durable "immediate" | "finalize_then_cancel"; a graceful request never softens a hard intent.
+ *   On 202, the effective durable "immediate" | "finalize_then_cancel"; a graceful request never softens a hard intent.
+ * @property {string=} request_id
+ *   On an immediate 202, the open intent's custody id (distinct from the client's stop_action_id).
+ * @property {string=} reason_code
+ *   On an immediate 202, "teardown_unconfirmed".
  * @property {string=} error
  */
 /**
@@ -1411,16 +1441,19 @@
  * @typedef {Object} LogTailResponse
  * @property {string} name
  * @property {Object[]} entries
+ * @property {string=} error
  */
 /**
+ * `POST /api/skills/{skill}/delete`; a refusal carries only ok, error and status_code.
  * @typedef {Object} SkillDeleteResponse
  * @property {boolean} ok
- * @property {string} skill
- * @property {string} source
- * @property {string} deleted_payload_root
- * @property {boolean} deleted_state
- * @property {string} extension_action
- * @property {string} extension_reason
+ * @property {string=} skill
+ * @property {string=} source
+ * @property {string=} content_hash
+ * @property {string=} deleted_payload_root
+ * @property {boolean=} deleted_state
+ * @property {string=} extension_action
+ * @property {string=} extension_reason
  * @property {string=} error
  */
 /**
@@ -1494,6 +1527,11 @@
  * @typedef {Object} UpdateApplyErrorResponse
  * @property {string} error
  * @property {string=} reason
+ * @property {boolean=} abandoned
+ * @property {Object=} status Preparation observations, not the success discriminator.
+ * @property {Object=} update_intent
+ * @property {Object=} rescue
+ * @property {string=} keep_branch
  * @property {string[]=} blockers
  * @property {boolean=} rolled_back
  * @property {string=} rollback
@@ -1505,19 +1543,7 @@
  * @property {?number=} remaining_usd Remaining model budget the floor compared against.
  */
 
-/**
- * Process-local execution observation on /api/update/status; not recovery authority.
- * @typedef {Object} UpdateProgress
- * @property {string} operation_id
- * @property {string} generation
- * @property {string} stage
- * @property {string} started_at
- * @property {string} stage_started_at
- * @property {boolean} active
- * @property {string} result
- * @property {string} error
- * @property {boolean} restart_required
- */
+/** @typedef {import('./management_contract_types.js').UpdateProgress} UpdateProgress */
 
 /**
  * @typedef {Object} UpdateProgressChangedOutbound
@@ -1558,33 +1584,5 @@ export const MAX_QUIZ_OPTIONS = 6;
 // truncates; cards must offer only comments the ingress can deliver verbatim.
 export const MAX_DECISION_COMMENT = 2000;
 export const GATEWAY_CONTRACT_VERSION = '7.7.0';
-/**
- * @typedef {Object} ChatHistoryPosition
- * @property {'chat'|'progress'} source
- * @property {number} offset Physical byte offset in the retained source chain.
- *
- * @typedef {Object} ChatHistoryResponse
- * @property {Array<Object>} messages Rows and hidden typed quiz/terminal replay evidence.
- * @property {boolean} has_more Older bytes remain or a disclosed source gap prevents establishing EOF.
- * @property {string|null} next_cursor Opaque room-bound older continuation.
- * @property {string|null} page_cursor Replays a frozen page; null for an unavailable source boundary.
- * @property {{complete:boolean,truncated_by:Array<string>,latest_message?:({history_id:string,out_of_order:boolean}|null),latest_before?:number,latest_absent?:true}} window
- *   Bounds/gaps of this response. A recent Project read also names the standalone message that
- *   arrived last (null: its arrival is unknown, as while the live chat's last line is
- *   unfinished, and on a replayed page, frozen before later arrivals), which must itself be
- *   on screen for the room's read receipt, in its ordinary place too;
- *   out_of_order: the bottom is not where it is (it sorts above earlier arrivals, or lies
- *   before the recent read). latest_before: with null, its bounded search ran out first and
- *   found none at or after this chat offset; the older pages of its chain carry the search on,
- *   and the one holding the message names it here, the newest below its coverage.upper;
- *   latest_absent: the one reaching the chat's start without a gap holds none, so none exists
- *   below that upper. A room an unreadable Project registry's readable rows omit is null (not Main).
- * @property {{v:1,view:string,upper:Object,spans:Object}=} coverage Delivered physical byte spans, after deferrals.
- * @property {string} [next_before_ts] Legacy field retained for compatibility.
- * @property {string} [error]
- * @property {string} [reason_code]
- *
- * Physical messages and folded review attempts may additionally carry
- * history_id:string and history_position:ChatHistoryPosition. They identify
- * stored source records, never current task or review authority.
- */
+/** @typedef {import('./client_contract_types.js').ChatHistoryPosition} ChatHistoryPosition */
+/** @typedef {import('./client_contract_types.js').ChatHistoryResponse} ChatHistoryResponse */

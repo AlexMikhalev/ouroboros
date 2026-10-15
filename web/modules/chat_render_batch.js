@@ -864,3 +864,18 @@ export function upsertToolFoldRow(record, view, ts, rawTs) {
         ts: first ? ts : '', rawTs, syntheticKey, headline: view.headline, inPlaceByKey: true,
     });
 }
+
+/** Replay places evidence at its earliest recorded call observation. A surviving start
+ *  outranks the history carrier, which can predate the calls it merely delivers. Without a
+ *  recorded start, retain an earlier carrier (legacy late-settlement placement); no missing
+ *  timestamp is reconstructed, and a partial history cannot prove the task's first call. */
+export function replayedEvidenceTs(evidence, carrierTs) {
+    let at = carrierTs, best = Infinity, observedStart = false;
+    for (const { ts, fact } of evidence?.observations || []) {
+        const time = /^\d{4}-\d\d-\d\dT/.test(ts) ? Date.parse(ts) : NaN;
+        if (Number.isFinite(time) && fact === 'started') observedStart = true;
+        if (time < best) [at, best] = [ts, time];
+    }
+    const carrier = Date.parse(carrierTs);
+    return observedStart || !Number.isFinite(carrier) || best < carrier ? at : carrierTs;
+}

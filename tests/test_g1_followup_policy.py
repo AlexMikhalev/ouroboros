@@ -5,6 +5,7 @@ import copy
 from types import SimpleNamespace
 
 import pytest
+from tests.worker_pool_support import affirm_ready
 
 from ouroboros.cancel_intents import request_cancel, settle_intent, active_intent
 from ouroboros.task_results import write_task_result, load_task_result
@@ -522,8 +523,9 @@ def _assignment_world(world, monkeypatch, count=1):
     _, _, workers = _install_queue(root, monkeypatch)
     sent = []
     for wid in range(count):
-        workers.WORKERS[wid] = SimpleNamespace(wid=wid, busy_task_id=None,
-            in_q=SimpleNamespace(put=lambda task, wid=wid: sent.append((wid, copy.deepcopy(task)))))
+        workers.WORKERS[wid] = affirm_ready(SimpleNamespace(wid=wid, busy_task_id=None,
+            in_q=SimpleNamespace(put=lambda task, wid=wid: sent.append((wid, copy.deepcopy(task)))
+                                 if task.get("type") != "worker_quiescence" else None)))
     return (ctx, root, workers.PENDING), workers, sent
 
 

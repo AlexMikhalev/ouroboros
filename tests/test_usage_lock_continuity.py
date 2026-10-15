@@ -42,8 +42,8 @@ def held_lock(root, timeout=5):
 
     thread = threading.Thread(target=hold)
     thread.start()
-    assert acquired.wait(2)
     try:
+        assert acquired.wait(2)
         yield release
     finally:
         release.set()
@@ -176,13 +176,48 @@ def held_name_lock(root, timeout=5):
 
     thread = threading.Thread(target=hold)
     thread.start()
-    assert acquired.wait(2)
     try:
+        assert acquired.wait(2)
         yield release
     finally:
         release.set()
         thread.join(3)
         assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("factory, lock_owner", [(held_lock, ua), (held_name_lock, ledger)])
+def test_hold_setup_failure_still_releases_its_thread(tmp_path, monkeypatch, factory, lock_owner):
+    real_event, real_thread = threading.Event, threading.Thread
+    events, threads = [], []
+
+    def event():
+        result = real_event()
+        if not events:
+            # Deterministically fail the setup observation, without stranding the test process.
+            monkeypatch.setattr(result, "wait", lambda timeout=None: False)
+        events.append(result)
+        return result
+
+    def thread(*args, **kwargs):
+        result = real_thread(*args, **kwargs)
+        threads.append(result)
+        return result
+
+    monkeypatch.setattr(threading, "Event", event)
+    monkeypatch.setattr(threading, "Thread", thread)
+    monkeypatch.setattr(lock_owner, "_locked", lambda root: contextlib.nullcontext())
+    released_by_helper = False
+    try:
+        with pytest.raises(AssertionError):
+            with factory(tmp_path, timeout=None):
+                pytest.fail("failed setup must not yield")
+        released_by_helper = events[1].is_set()
+    finally:
+        events[1].set()  # Rescue the intentionally broken negative variant too.
+        for worker in threads:
+            worker.join(3)
+            assert not worker.is_alive()
+    assert released_by_helper, "setup failure abandoned an untimed producer"
 
 
 @pytest.mark.parametrize("stage", ["reserve", "dispatch"])

@@ -369,13 +369,14 @@ def test_a_slow_reconcile_block_never_holds_the_loop_tick(quiet_tick, monkeypatc
     held the drain, the fence acks and assignment for its whole walk. The tick that
     STARTS it now returns at once; a tick while it is busy SKIPS (one thread, no queue);
     the marker is stamped only when the pass ENDS; the latch opens in ``finally``; and
-    the orphan-heal notification reaches the alarm clock from the maintenance thread."""
+    the orphan heal itself runs on the maintenance thread."""
     sm = quiet_tick
     threads = _track_threads(monkeypatch)
     entered, release = threading.Event(), threading.Event()
     done, healed = [], []
 
     def slow_heal(root, **kwargs):
+        healed.append(threading.current_thread().name)
         entered.set()
         assert release.wait(5), "the test must release the reconcile block"
         return 2
@@ -384,22 +385,20 @@ def test_a_slow_reconcile_block_never_holds_the_loop_tick(quiet_tick, monkeypatc
     marker = [0.0]
     try:
         started = time.monotonic()
-        sm._periodic_supervisor_maintenance(
-            [time.time()], marker,
-            on_orphans_healed=lambda count: healed.append((count, threading.current_thread().name)))
+        sm._periodic_supervisor_maintenance([time.time()], marker)
         tick = time.monotonic() - started
         assert entered.wait(5), "the reconcile block really ran"
         assert tick < 2.0, f"the loop tick waited {tick:.1f}s for the reconcile block"
         assert marker[0] == 0.0, "not stamped until the pass ENDS (issue #1230)"
         sm._periodic_supervisor_maintenance([time.time()], marker)
-        assert [thread.name for thread in threads if thread.name != "cold-custody"] == ["reconcile-maintenance"], "busy => skipped"
+        assert [thread.name for thread in threads if thread.name not in {"cold-custody", "schedule-admission"}] == ["reconcile-maintenance"], "busy => skipped"
         assert threads[0].daemon and threads[0].is_alive()
     finally:
         release.set()
         for thread in threads:
             thread.join(5)
     assert all(not thread.is_alive() for thread in threads)
-    assert healed == [(2, "reconcile-maintenance")]
+    assert healed == ["reconcile-maintenance"]
     assert [name for name, _ in done] == ["review_jobs", "projects", "deletions", "child_refs"]
     assert {thread for _, thread in done} == {"reconcile-maintenance"}
     assert marker[0] > 0.0 and not sm._RECONCILE_SWEEP_LOCK.locked(), "stamped, then released"
@@ -431,7 +430,7 @@ def test_child_ref_promotion_retries_left_the_cancel_sweep(quiet_tick, monkeypat
     for thread in threads:
         thread.join(5)
     assert [name for name, _ in done] == ["review_jobs", "orphans", "projects", "deletions", "child_refs"]
-    assert [thread.name for thread in threads if thread.name != "cold-custody"] == ["cancel_intent_sweep", "terminal_delivery_replay", "pause_notice_replay", "abandoned_usage_reconciliation", "post_task_synthesis_recovery", "reconcile-maintenance"]
+    assert [thread.name for thread in threads if thread.name not in {"cold-custody", "schedule-admission"}] == ["cancel_intent_sweep", "terminal_delivery_replay", "pause_notice_replay", "abandoned_usage_reconciliation", "post_task_synthesis_recovery", "reconcile-maintenance"]
 
 
 def test_a_closed_generation_stops_the_reconcile_block_before_its_next_mutation(quiet_tick, monkeypatch):

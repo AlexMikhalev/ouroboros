@@ -532,14 +532,15 @@ def _start_service(
             )
             return json.dumps(payload, ensure_ascii=False, indent=2)
         except OwnerPauseRefused as exc:
-            return _publish_tool_result(ctx, launch_refusal_result(str(exc), completed_no_effect=True))
+            return _publish_tool_result(ctx, launch_refusal_result(exc))
         except body_candidate.CandidateRefused:
             raise
         except Exception as exc:
             text = redact_known_values(f"⚠️ SERVICE_START_ERROR: executor backend failed: {type(exc).__name__}: {exc}", secret_values)
             if getattr(exc, "process_not_started", False) is True:
                 return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR",
-                    text=text, meta={"operation_outcome": "completed_no_effect"}))
+                    text=text, meta={"process_not_started": True,
+                                     **({"previous_service_retired": True} if existing is not None else {})}))
             return text
     task_id = str(getattr(ctx, "task_id", "") or "manual")
     log_dir = pathlib.Path(ctx.drive_root) / "services" / task_id
@@ -605,7 +606,7 @@ def _start_service(
         log_fh.close()
     except OwnerPauseRefused as exc:
         log_fh.close()
-        return _publish_tool_result(ctx, launch_refusal_result(str(exc), completed_no_effect=True))
+        return _publish_tool_result(ctx, launch_refusal_result(exc))
     except Exception as exc:
         log_fh.close()
         return redact_known_values(f"⚠️ SERVICE_START_ERROR: {type(exc).__name__}: {exc}", secret_values)
@@ -746,9 +747,15 @@ def _service_logs(ctx: ToolContext, name: str = "service", tail: int = 8000) -> 
             return "⚠️ TOOL_ARG_ERROR (service_logs): tail must be an integer."
         payload = executor_service_logs(ctx, service_name, tail_chars)
         if payload is None:
-            return f"⚠️ SERVICE_NOT_FOUND: {name}"
+            return _publish_tool_result(ctx, ToolResult(
+                status="unavailable", code="LEGACY_UNAVAILABLE",
+                text=f"⚠️ SERVICE_NOT_FOUND: {name}"))
         return json.dumps(payload, ensure_ascii=False, indent=2)
-    return f"⚠️ SERVICE_NOT_FOUND: {name}"
+    # Status discovery and idempotent stop use this same marker as a warning.
+    # A logs request has no requested payload to return; type only this branch.
+    return _publish_tool_result(ctx, ToolResult(
+        status="unavailable", code="LEGACY_UNAVAILABLE",
+        text=f"⚠️ SERVICE_NOT_FOUND: {name}"))
 
 
 def _stop_service(ctx: ToolContext, name: str = "service") -> str:

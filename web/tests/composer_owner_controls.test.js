@@ -909,3 +909,69 @@ test('docking-box geometry and changed text settle descendants before paint, wit
     texts[0].callback();
     assert.equal(thumb.style.left, '180px', 'already queued deliveries after destroy cannot write');
 });
+
+/* The refit of a wrapped row shrinks the composer that chat.js observes higher in the tree. Inside ResizeObserver
+   delivery that is a resize of a box the pass cannot deliver (WebKit: "loop completed with undelivered notifications"),
+   so the observer only schedules and the fit runs in a frame; a window resize, which precedes layout, fits at once. */
+function observedWindow() {
+    const observers = [];
+    const frames = [];
+    const cancelled = [];
+    const listeners = new Map();
+    class FakeObserver {
+        constructor(callback) { this.callback = callback; observers.push(this); }
+        observe() {}
+        unobserve() {}
+        disconnect() { this.disconnected = true; }
+    }
+    const win = {
+        ...hoverWindow(false),
+        ResizeObserver: FakeObserver,
+        requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; },
+        cancelAnimationFrame: (id) => cancelled.push(id),
+        addEventListener: (type, fn) => listeners.set(type, [...(listeners.get(type) || []), fn]),
+        removeEventListener: (type, fn) => listeners.set(type, (listeners.get(type) || []).filter((f) => f !== fn)),
+    };
+    return { win, observers, frames, cancelled, fire: (type) => (listeners.get(type) || []).forEach((fn) => fn({})), count: (type) => (listeners.get(type) || []).length };
+}
+
+test('the row refit never changes layout inside ResizeObserver delivery: the observer schedules a frame, the frame fits', () => {
+    const w = observedWindow();
+    const m = mountPair({ win: w.win });
+    const fit = w.observers.at(-1);  // the row's own observer is the last one the controls create
+    const line = (top) => { m.effortEl.getBoundingClientRect = () => ({ top, bottom: top + 32, width: 130 }); };
+    line(40);  // the names push Effort onto a second line
+    fit.callback([]);
+    assert.equal(m.row.dataset.ownerCompact, undefined, 'nothing is written to the row while the observer delivers');
+    assert.equal(w.frames.length, 1, 'one frame is asked for');
+    fit.callback([]);
+    fit.callback([]);
+    assert.equal(w.frames.length, 1, 'a burst of deliveries asks for the one frame');
+    w.frames[0]();
+    assert.equal(m.row.dataset.ownerCompact, 'true', 'the frame fits the row');
+    line(0);
+    fit.callback([]);
+    assert.equal(w.frames.length, 2, 'the next delivery can ask again once the frame ran');
+    assert.equal(m.row.dataset.ownerCompact, 'true', 'room again, but not inside the delivery');
+    w.frames[1]();
+    assert.equal(m.row.dataset.ownerCompact, undefined, 'the names come back in the frame');
+    m.controls.destroy();
+});
+
+test('a window resize fits the row immediately; destroy cancels a pending frame and the listener', () => {
+    const w = observedWindow();
+    const m = mountPair({ win: w.win });
+    const line = (top) => { m.effortEl.getBoundingClientRect = () => ({ top, bottom: top + 32, width: 130 }); };
+    line(40);
+    w.fire('resize');
+    assert.equal(m.row.dataset.ownerCompact, 'true', 'the resize listener fits synchronously');
+    assert.equal(w.frames.length, 0, 'and no frame was needed');
+    line(0);
+    w.observers.at(-1).callback([]);
+    assert.equal(w.frames.length, 1);
+    m.controls.destroy();
+    assert.deepEqual(w.cancelled, [1], 'the pending frame is cancelled');
+    assert.equal(w.count('resize'), 0, 'no resize listener outlives the controls');
+    w.frames[0]();
+    assert.equal(m.row.dataset.ownerCompact, undefined, 'a late frame writes nothing');
+});

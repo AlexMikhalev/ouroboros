@@ -1,7 +1,7 @@
 """#1569: a missing result keeps its exact projection debt, and a stable failure stays quiet.
 
-Absence is a precondition, not an ownership verdict: the duty stats the canonical
-result before the ownership read, retains the exact revision, and projects a body
+Absence is a precondition, not an ownership verdict: the duty asks the store which owners
+have a row (one query per pass) before the ownership read, retains the exact revision, and projects a body
 that lands later without any new ledger write. Diagnostics are one id->reason map
 per subject: only a change publishes, only a reason new to the subject logs a
 traceback, and an unwritable event log retries without repeating a stack.
@@ -105,6 +105,27 @@ def test_missing_result_keeps_its_exact_revision_without_fence_traversal(env, mo
         from supervisor.task_ownership import TaskOwnershipRead
         with pytest.raises(ValueError, match="owner_pause_authority_missing"):
             TaskOwnershipRead(env.root).load("child")
+
+
+def test_an_unanswered_presence_query_proves_no_absence(env, monkeypatch):
+    """Only proven absence skips the ownership read; a failed batch keeps the exact debt too."""
+    from ouroboros import task_store
+
+    task(env)
+    child(env)
+    attempt(env, "child", logical="root")
+    delete_result(env.root, "child")
+    before = dirty(env)["child"]
+    fences, read_fence = [], owner_pause.read_fence
+    monkeypatch.setattr(owner_pause, "read_fence", lambda root, tid: fences.append(tid) or read_fence(root, tid))
+
+    def unanswered(*_a, **_kw):
+        raise OSError(errno.EIO, "store read failed")
+
+    monkeypatch.setattr(task_store, "task_facts", unanswered)
+    reconcile_abandoned_usage(env.root)
+    assert dirty(env) == {"child": before} and "child" in fences
+    assert all(row["reasons"].get("child") != "result_absent" for row in published(env, duty.COST_PROJECTIONS))
 
 
 @pytest.mark.parametrize("restart", [False, True])
@@ -347,7 +368,7 @@ def test_a_failing_gateway_close_is_logged_once_per_change(env, monkeypatch, cap
 
 
 @pytest.mark.parametrize("scale", [(644, 367, 5)])
-def test_a_thousand_unprojectable_owners_cost_one_stat_each_and_no_repeated_bytes(env, monkeypatch, caplog, scale):
+def test_a_thousand_unprojectable_owners_cost_one_presence_query_and_no_repeated_bytes(env, monkeypatch, caplog, scale):
     """The live install's #1569 shape: 1016 dirty owners, 644 whose results the import
     quarantined, 367 with none and 5 present. Present owners are read and projected as before."""
     from ouroboros import task_store
@@ -358,8 +379,9 @@ def test_a_thousand_unprojectable_owners_cost_one_stat_each_and_no_repeated_byte
     for tid, _ in owners[-present:]:
         task(env, tid)
     monkeypatch.setattr(usage_store.Txn, "dirty_owners", lambda self: list(owners))
-    counts = {"presence": 0, "loads": 0, "fence": 0}
-    exists, load, fence = task_store.exists, task_results.load_task_result, owner_pause.read_fence
+    counts = {"presence": 0, "per_owner": 0, "loads": 0, "fence": 0}
+    facts, exists = task_store.task_facts, task_store.exists
+    load, fence = task_results.load_task_result, owner_pause.read_fence
 
     def counted(name, real):
         def call(*a, **k):
@@ -367,7 +389,8 @@ def test_a_thousand_unprojectable_owners_cost_one_stat_each_and_no_repeated_byte
             return real(*a, **k)
         return call
 
-    monkeypatch.setattr(task_store, "exists", counted("presence", exists))
+    monkeypatch.setattr(task_store, "task_facts", counted("presence", facts))
+    monkeypatch.setattr(task_store, "exists", counted("per_owner", exists))
     monkeypatch.setattr(task_results, "load_task_result", counted("loads", load))
     monkeypatch.setattr(owner_pause, "read_fence", counted("fence", fence))
     summary = usage.usage_projection(env.root)
@@ -377,8 +400,8 @@ def test_a_thousand_unprojectable_owners_cost_one_stat_each_and_no_repeated_byte
     sink = env.root / "logs" / "supervisor.jsonl"
     size = sink.stat().st_size
     assert first["fence"] == 0
-    # One presence query per owner, no body read for an absent one.
-    assert first["presence"] == sum(scale)
+    # One presence query for every owner, no per-owner lookup, no body read for an absent one.
+    assert first["presence"] == 1 and first["per_owner"] == 0
     assert first["loads"] <= 3 * present  # Ownership read plus the result writer's merge reads.
     rows = published(env, duty.COST_PROJECTIONS)
     assert [(row["count"], row["by_basis"], len(row["task_ids"])) for row in rows] == [
@@ -388,6 +411,56 @@ def test_a_thousand_unprojectable_owners_cost_one_stat_each_and_no_repeated_byte
     for name in counts:
         counts[name] = 0
     reconcile_abandoned_usage(env.root)
-    assert counts["fence"] == 0 and counts["loads"] <= 3 * present
+    assert counts["fence"] == 0 and counts["loads"] <= 3 * present and counts["presence"] == 1
     assert sink.stat().st_size == size and duty_records(caplog) == []
     assert usage.usage_projection(env.root) == summary
+
+
+def test_absence_is_recorded_once_and_a_busy_reread_is_busy_not_a_change(env, monkeypatch):
+    """Owner Q2=A (VERIFY_SWEEPS S2): on 14 Oct 145 duty rows a day re-listed the same 1 010
+    absent owners, because a busy store under a re-read was reported as "ownership result
+    changed" and churned the map. Busy is busy now: the owner keeps its last observation and
+    debt, the absent owner is recorded once, and a copied-back body still re-opens it
+    (test_a_body_landing_after_the_last_ledger_write_is_projected_without_a_receipt)."""
+    from ouroboros import store, task_store
+
+    task(env)  # a settled owner the pass reads, whose re-read finds the store busy
+    attempt(env, "root")
+    child(env)
+    attempt(env, "child", logical="root")
+    delete_result(env.root, "child")  # an owner with no task row at all
+    real, stamps, busy = task_store.signature, {}, [True]
+
+    def signature(root, task_id, *, txn=None):
+        if txn is None:
+            stamps[task_id] = stamps.get(task_id, 0) + 1
+        if busy[0] and task_id == "root":  # the signed read and any re-check find the store busy
+            raise store.StoreBusy("current store busy: database is locked", reason="contention")
+        return real(root, task_id, txn=txn)
+
+    monkeypatch.setattr(task_store, "signature", signature)
+    for _ in range(3):
+        stamps.clear()
+        reconcile_abandoned_usage(env.root)
+    rows = published(env, duty.COST_PROJECTIONS)
+    assert [(row["by_basis"], row["task_ids"]) for row in rows] == [({"result_absent": 1}, ["child"])]
+    assert "root" in dirty(env), "a busy pass proves nothing: the projection debt waits"
+    busy[0] = False
+    reconcile_abandoned_usage(env.root)
+    assert "root" not in dirty(env) and "child" in dirty(env)
+
+
+def test_an_absent_tasks_open_attempt_costs_no_per_task_read(env, monkeypatch):
+    """VERIFY_SWEEPS S2: 65 open attempts of 48 tasks without a row were re-read (3-4 store reads
+    each) every 20 s pass, forever ineligible. One presence statement now proves the absence."""
+    task(env)
+    attempt(env, "ghost", logical="root", final=False)  # open; its task row was never written
+    fences, loads = [], []
+    read_fence, load = owner_pause.read_fence, task_results.load_task_result
+    monkeypatch.setattr(owner_pause, "read_fence", lambda root, tid: fences.append(tid) or read_fence(root, tid))
+    monkeypatch.setattr(task_results, "load_task_result",
+                        lambda root, tid, *a, **k: loads.append(tid) or load(root, tid, *a, **k))
+    for _ in range(2):
+        reconcile_abandoned_usage(env.root)
+    assert "ghost" not in fences and "ghost" not in loads
+    assert "ghost" in dirty(env), "the attempt and its debt stay open for a body that may land"

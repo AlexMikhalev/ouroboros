@@ -18,8 +18,7 @@ from ouroboros import startup_historical_audit as audit
 def test_maintenance_completion_contract(tmp_path, monkeypatch, kind, case):
     module = packer if kind == "packer" else audit
     job = packer.EvidencePacker() if kind == "packer" else audit.HistoricalAudit()
-    counters = ({"packed": 1, "candidates": 2, "raw": 3, "compressed": 1,
-                 "unlinked": 1, "kept": 0, "busy": 0, "faults": 0, "archived": 0}
+    counters = ({**dict.fromkeys(packer._COUNTERS, 0), "packed": 1, "candidates": 2, "raw": 3, "compressed": 1, "unlinked": 1}
                 if kind == "packer" else
                 {"facts_written": 1, "manifests_checked": 2, "wall_seconds": 0, "cpu_seconds": 0})
     status = case if case in {"unknown", "failed"} else "completed"

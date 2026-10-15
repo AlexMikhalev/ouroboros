@@ -1126,8 +1126,8 @@ def test_sm1_changes_the_shared_palette_for_both_documents():
     palette = scenarios.sm1_palette_tokens(text)
     assert scenarios.SM1_REQUIRED_PALETTE <= palette.keys() and all(palette.values())
     assert all(f"--accent-{alpha}" in palette for alpha in ("04", "05", "08", "10", "12", "18", "22", "25", "35", "45", "55", "65"))
-    for document in ("web/index.html", "web/onboarding_template.html"):
-        assert 'href="/static/ui.css"' in (REPO_ROOT / document).read_text(encoding="utf-8")
+    for document, prefix in (("web/index.html", "/static"), ("web/onboarding_template.html", "/onboarding/static")):
+        assert f'href="{prefix}/ui.css"' in (REPO_ROOT / document).read_text(encoding="utf-8")
 
 
 def test_sm1_stub_bumps_the_release_carriers_through_the_sync_ssot(tmp_path):

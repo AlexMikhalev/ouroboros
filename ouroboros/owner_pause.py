@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar, copy_context
-import os
+import copy
 import pathlib
 import threading
 import time
@@ -89,7 +89,7 @@ class LaunchBusy(OwnerPauseRefused):
 # --- the durable fence --------------------------------------------------------------
 
 _CACHE_LOCK = threading.Lock()
-_CACHE: Dict[str, Tuple[Tuple[int, int, int], Dict[str, Any]]] = {}
+_CACHE: Dict[str, Tuple[tuple, Dict[str, Any]]] = {}
 
 
 def _lock_path(root_drive: Any, root_task_id: str) -> pathlib.Path:
@@ -98,7 +98,7 @@ def _lock_path(root_drive: Any, root_task_id: str) -> pathlib.Path:
     return task_results_dir(pathlib.Path(root_drive), create=True) / f"{root_task_id}.launch.lock"
 
 
-def read_fence(root_drive: Any, root_task_id: str) -> Dict[str, Any]:
+def _control_projection(root_drive: Any, root_task_id: str) -> Dict[str, Any]:
     """The root's current ``owner_pause`` projection (``{}`` when none).
 
     Cached on the row's write signature: an unchanged signature is an unchanged
@@ -130,7 +130,7 @@ def read_fence(root_drive: Any, root_task_id: str) -> Dict[str, Any]:
     with _CACHE_LOCK:
         cached = _CACHE.get(key)
         if cached is not None and cached[0] == stamp:
-            return dict(cached[1])
+            return copy.deepcopy(cached[1])
     from ouroboros.task_results import load_task_result
 
     try:
@@ -139,12 +139,29 @@ def read_fence(root_drive: Any, root_task_id: str) -> Dict[str, Any]:
         raise
     except StoreError as exc:
         raise ValueError("owner_pause_authority_unreadable") from exc
-    fence = row.get("owner_pause") or {}
+    projection = {"owner_pause": row.get("owner_pause") or {},
+                  "budget_pause": row.get("budget_pause") if isinstance(row.get("budget_pause"), dict) else {},
+                  "status": row.get("status"), "present": bool(row)}
+    # A concurrent body change may make this read newer than the first stamp.
+    # Cache only a stable pair, never tag older data with a later signature.
+    if signature(root_drive, root_task_id) == stamp:
+        with _CACHE_LOCK:
+            _CACHE[key] = (stamp, copy.deepcopy(projection))
+    return projection
+
+
+def read_fence(root_drive: Any, root_task_id: str, *, _observations=None) -> Dict[str, Any]:
+    """Current owner Pause; the same memo also carries admission's small sleep projection."""
+    if _observations is None:
+        projection = _control_projection(root_drive, root_task_id)
+    else:
+        if root_task_id not in _observations:
+            _observations[root_task_id] = _control_projection(root_drive, root_task_id)
+        projection = _observations[root_task_id]
+    fence = projection.get("owner_pause") or {}
     if not isinstance(fence, dict) or (fence and fence.get("state") not in
                                        {FENCE_REQUESTED, FENCE_PAUSED, FENCE_RELEASED}):
         raise ValueError("owner_pause_authority_unreadable")
-    with _CACHE_LOCK:
-        _CACHE[key] = (stamp, dict(fence))
     return dict(fence)
 
 
@@ -520,7 +537,7 @@ def _member_coordinates(source: Any) -> Tuple[str, str, str]:
     return str(root_drive or ""), root_task_id, task_id
 
 
-def member_fence(source: Any) -> Dict[str, Any]:
+def member_fence(source: Any, *, _observations=None) -> Dict[str, Any]:
     """Read the shared fence strictly: unreadable authority refuses new effects."""
     root_drive, root_task_id, _task_id = _member_coordinates(source)
     if not root_drive or not root_task_id:
@@ -536,10 +553,10 @@ def member_fence(source: Any) -> Dict[str, Any]:
         owner = current_model_wait()
         required = getattr(source, "task_lifecycle_bound", False) or (
             owner is not None and owner.task_id == _task_id)
-        from ouroboros.task_store import exists
-        if required and not exists(root_drive, root_task_id):
+        observations = _observations if _observations is not None else {}
+        fence = read_fence(root_drive, root_task_id, _observations=observations)
+        if required and not observations[root_task_id].get("present"):
             raise ValueError("owner_pause_authority_missing")
-        fence = read_fence(root_drive, root_task_id)
     except StoreBusy:
         raise
     except Exception:
@@ -648,19 +665,24 @@ def launch_lock(root_drive: Any, root_task_id: str, *, wait: bool = True):
 
 def _validate_launch(source: Any, root_resume=None):
     root_drive, root_id, task_id = _member_coordinates(source)
-    fence = member_fence(source)
+    observations = {}
+    fence = member_fence(source, _observations=observations)
+    def controls(member_id):
+        if member_id not in observations:
+            observations[member_id] = _control_projection(root_drive, member_id)
+        return observations[member_id]
     selected_resume_start = False
     if fence:
-        from ouroboros.budget_pause import budget_pause_row, STATE_RESUME_GRANTED
+        from ouroboros.budget_pause import STATE_RESUME_GRANTED
 
         allowed = False
         if root_resume and fence_closed(fence):
-            row = budget_pause_row(pathlib.Path(root_drive), task_id)
+            row = controls(task_id).get("budget_pause") or {}
             grant = row.get("grant") or {}
             root_allowed = task_id == root_id
             if not root_allowed and grant.get("selected_by") == "owner":
-                from ouroboros.task_results import load_task_result, _TRULY_TERMINAL_STATUSES
-                root_allowed = (load_task_result(root_drive, root_id, strict=True) or {}).get("status") in _TRULY_TERMINAL_STATUSES
+                from ouroboros.task_results import _TRULY_TERMINAL_STATUSES
+                root_allowed = controls(root_id).get("status") in _TRULY_TERMINAL_STATUSES
             allowed = bool(row.get("state") == STATE_RESUME_GRANTED
                 and root_allowed
                 and (grant.get("owner_pause_fence_id") or row.get("owner_fence_id")) == fence.get("fence_id")
@@ -671,12 +693,12 @@ def _validate_launch(source: Any, root_resume=None):
         if not allowed:
             raise OwnerPauseRefused(str(fence.get("reason") or "owner_pause"))
         selected_resume_start = task_id != root_id
-    from ouroboros.budget_pause import budget_pause_row, STATE_PAUSING, STATE_PAUSED, STATE_RESUME_GRANTED
+    from ouroboros.budget_pause import STATE_PAUSING, STATE_PAUSED, STATE_RESUME_GRANTED
 
     if root_drive and task_id:
         for member_id in {root_id, task_id}:
             try:
-                row = budget_pause_row(pathlib.Path(root_drive), member_id)
+                row = controls(member_id).get("budget_pause") or {}
             except StoreBusy:
                 raise
             except Exception as exc:
@@ -685,7 +707,7 @@ def _validate_launch(source: Any, root_resume=None):
                     STATE_PAUSING, STATE_PAUSED, STATE_RESUME_GRANTED}:
                 continue
             if member_id == root_id and task_id != root_id:
-                selected = read_fence(root_drive, root_id).get("selected_members") or {}
+                selected = read_fence(root_drive, root_id, _observations=observations).get("selected_members") or {}
                 if selected_resume_start or task_id in selected:
                     # Explicit member Resume outlives its terminal root's
                     # saved sleep. It does not release any sibling or root.
@@ -698,6 +720,8 @@ def _validate_launch(source: Any, root_resume=None):
                 and not grant.get("revoked_at") and not grant.get("consumed_at"))
             if not resume_start:
                 raise OwnerPauseRefused("model_sleep")
+
+    return observations.get(root_id, {})
 
 
 @contextmanager
@@ -720,12 +744,12 @@ def launch_admission(source: Any, *, root_resume: Optional[Dict[str, Any]] = Non
         try:
             stack.enter_context(launch_lock(root_drive, root_id, wait=False))
             with admission_acquisition():
-                _validate_launch(source, root_resume)
+                controls = _validate_launch(source, root_resume)
                 marker = _REVIEW_EPISODE.get()
                 if (isinstance(marker, dict) and not episode_armed(marker)
                         and marker.get("root_task_id") == root_id):
                     review_admission = {"root_drive": root_drive, "root_task_id": root_id,
-                        "generation": int(read_fence(root_drive, root_id).get("generation") or 0)}
+                        "generation": int((controls.get("owner_pause") or {}).get("generation") or 0)}
         except BaseException:
             stack.close()
             raise
@@ -768,101 +792,50 @@ def tree_member_results(root_drive: Any, root_task_id: str) -> Dict[str, Dict[st
 
 @contextmanager
 def tool_handoff(source: Any, name: str):
-    """Track the local invocation separately from its owned physical operations.
+    """Bind one actual invocation; its existing future owns local completion.
 
-    Actual handler unwind closes this invocation regardless of business outcome.
-    Pending host receipts and independently owned executors remain custody;
-    neither a result code nor metadata can certify their completion.
+    A directly called registry without that owner keeps the durable fallback.
+    Merely entering registry preparation is never an ordinary handler handoff.
     """
-    from ouroboros.task_store import DELETE_ROW, exists, patch_handoff
-    from ouroboros.utils import utc_now_iso
+    from ouroboros.tool_custody import invocation_outcome, retain_invocation, settle_invocation
+    from ouroboros._usage_wait import retry_presend
 
-    outcome: Dict[str, Any] = {"not_started": True}
-    root_drive, root_id, task_id = _member_coordinates(source)
-    if not root_drive or not task_id:
-        yield outcome
-        return
-    holder = task_id
-    op_id = uuid.uuid4().hex
-    outcome["operation_id"] = op_id
-    outcome["claim_root"], outcome["claim_task"] = root_drive, holder
+    inherited = _TOOL_OPERATION.get()
+    outcome = (inherited[2] if inherited and inherited[0] is source and inherited[1] == name
+               and not inherited[2].get("registry_entered") else invocation_outcome(source, name))
+    outcome["registry_entered"] = True
     token = _TOOL_OPERATION.set((source, name, outcome))
-    def claim(_current):  # the claim is one `launch_handoffs` row of the holder, never a body write
-        return {"tool": name, "task_id": task_id, "root_task_id": root_id, "state": "claimed",
-                "claimed_at": utc_now_iso(), **({"local_owner": local_owner} if local_owner else {})}
-    from ouroboros.model_wait import current_model_wait
-    owner = current_model_wait()
-    local_owner = ({"pid": os.getpid(), "process_birth": owner.answer_owner_birth,
-                    "task_attempt": owner.attempt}
-                   if owner is not None and owner.task_id == task_id else {})
-    claimed = False
+    root_drive, root_id, task_id = _member_coordinates(source)
+    refusal = None
     try:
-        # Stateful tools were submitted to their sticky executor by the loop.
-        # This ticket belongs only to that invocation, not its nested launches.
         handed = _HANDED_TOOL.get()
         with _CACHE_LOCK:
             outcome["handed"] = bool(handed and handed["invocation"] == (id(source), name) and not handed["claimed"])
             if outcome["handed"]:
-                handed["claimed"] = True  # Shared by copied contexts: exactly one consumer.
-        from ouroboros._usage_wait import retry_presend
-        retrying = False
-
-        def claim_once():
-            nonlocal holder, claimed, retrying
-            # A contended child read must not pin a previous root fallback.
-            # The invocation/ticket/local owner are frozen outside this retry.
-            holder = task_id
-            outcome["claim_task"] = holder
-            owner = current_model_wait()
-            if owner is not None and owner.task_id == task_id and owner.closed:
-                raise OwnerPauseRefused("operation_already_returned")
-            if retrying and owner is not None:
-                # A control may arrive during the outside wait. This is the
-                # same reader as retry_presend; handed work still survives Pause.
-                reason = owner.control_reason()
-                if reason:
-                    from ouroboros.llm_attempt import PhysicalDispatchInterrupted
-                    raise PhysicalDispatchInterrupted(reason)
-            retrying = True
-            with (launch_lock(root_drive, root_id, wait=False) if outcome["handed"]
-                  else launch_admission(source, wait=False)):
-                # A standalone tool context is not a lifecycle producer. Never
-                # manufacture a status-less result; use its existing root owner
-                # only while the member still has no published lifecycle row.
-                if not exists(root_drive, holder):
-                    holder = root_id
-                    outcome["claim_task"] = holder
-                if exists(root_drive, holder):
-                    try:
-                        patch_handoff(root_drive, holder, "launch_handoffs", op_id, claim)
-                    except LookupError as exc:
-                        raise OwnerPauseRefused("owner_pause_authority_unreadable") from exc
-                    claimed = True
-                elif getattr(source, "task_lifecycle_bound", None) is not False:
-                    raise OwnerPauseRefused("owner_pause_authority_unreadable")
-
-        # Only this unsent claim retries, after both the launch hold and store
-        # transaction unwind. The handler and its settlement are never replayed.
-        retry_presend(claim_once, check=False)
+                handed["claimed"] = True
+        if not outcome.get("memory_owned") and root_drive and task_id:
+            def claim_once():
+                from ouroboros.model_wait import current_model_wait
+                owner = current_model_wait()
+                if owner is not None and owner.task_id == task_id and owner.closed:
+                    raise OwnerPauseRefused("operation_already_returned")
+                with (launch_lock(root_drive, root_id, wait=False) if outcome["handed"]
+                      else launch_admission(source, wait=False)):
+                    retain_invocation(outcome)
+            retry_presend(claim_once, check=False)
         yield outcome
+    except (OwnerPauseRefused, StoreError) as exc:
+        refusal = exc
+        raise
     finally:
+        with outcome["phase_lock"]:
+            outcome["closed"] = True
+            if refusal is not None:
+                # Snapshot with closure, not before a competing admitted start.
+                refusal.invocation_not_started = outcome.get("not_started") is True
         _TOOL_OPERATION.reset(token)
-        def settle(claim):
-            if claim is None:
-                return None
-            claim = {**claim, "state": "returned", "returned_at": utc_now_iso()}
-            from ouroboros.tool_custody import claim_still_owns_effect
-            return claim if claim_still_owns_effect(root_drive, claim) else DELETE_ROW
-        # Close local admission even if durable cleanup cannot acquire its lock.
-        # Failure retains custody; it must not replace an executed result with
-        # a false NOT STARTED answer. Settlement still serializes with starts.
-        outcome["closed"] = True
-        try:
-            with launch_lock(root_drive, root_id):
-                if claimed and (outcome.get("settled") is True or outcome.get("not_started") is True):
-                    patch_handoff(root_drive, holder, "launch_handoffs", op_id, settle)
-        except Exception:
-            log.warning("Tool %s custody could not settle (%s)", name, op_id, exc_info=True)
+        if outcome.get("future_row") is None:
+            settle_invocation(outcome)
 
 
 def current_tool_operation(source: Any, name: str) -> str:
@@ -893,11 +866,21 @@ def operation_start(source: Any = None):
     source = source if source is not None else (active[0] if active else None)
     with launch_admission(source):
         if active and active[0] is source:
-            if active[2].get("closed"):
-                raise OwnerPauseRefused("operation_already_returned")
-            active[2]["not_started"] = False
+            _mark_tool_start(active[2])
         yield
         arm_review_episode(source)  # the submission inside succeeded under this same lock
+
+
+def _mark_tool_start(outcome: dict) -> None:
+    """Order admission against closure; never hold this lock across I/O.
+
+    Called after root admission. The durable RLock remains independent: taking
+    it here could make Pause wait for another thread's custody write.
+    """
+    with outcome["phase_lock"]:
+        if outcome.get("closed"):
+            raise OwnerPauseRefused("operation_already_returned")
+        outcome["not_started"] = False
 
 
 def submit_tool(source: Any, name: str, submit: Any, function: Any, *args: Any):
@@ -931,24 +914,45 @@ def run_operation(source: Any, function: Any, /, *args: Any, **kwargs: Any):
 
 
 def run_tool_handler(source: Any, function: Any, /, *args: Any, **kwargs: Any):
-    """The host joins the actual body, including its exception unwind.
+    """The prepared callable passes directly to its already-running worker.
 
-    A caller's outer timeout cannot reach this finally while the body still runs.
-    This closes local launch capability, not processes, receipts or remote effects.
+    Taking this exact invocation under the launch lock is the handoff, not a
+    queued preparation or a row write. The next action outside is the body;
+    every nested operation still has its own fresh operation_start gate.
     """
+    from ouroboros.model_wait import current_model_wait, dispatch_deadline_remaining_sec
+    from ouroboros.llm_attempt import PhysicalDispatchInterrupted
+    from ouroboros.tools.process_facts import process_facts_handoff
+    from ouroboros._usage_wait import retry_presend
+
     active = _TOOL_OPERATION.get()
+    outcome = active[2] if active and active[0] is source else None
     try:
-        if active and active[0] is source and active[2].get("handed"):
-            if active[2].get("closed"):
-                raise OwnerPauseRefused("operation_already_returned")
-            active[2]["not_started"] = False
-            return function(*args, **kwargs)  # Keep browser/greenlet thread affinity.
-        from ouroboros.tools.process_facts import process_facts_handoff
         with process_facts_handoff(function) as invoke:
-            return run_operation(source, invoke, *args, **kwargs)
+            def take():
+                root, tree, _task = _member_coordinates(source)
+                with (launch_lock(root, tree, wait=False) if outcome and outcome.get("handed")
+                      else launch_admission(source, wait=False)):
+                    owner = current_model_wait()
+                    reason = owner.control_reason(strict_current=True) if owner is not None else None
+                    remaining = dispatch_deadline_remaining_sec()
+                    if reason or remaining is not None and remaining <= 0:
+                        raise PhysicalDispatchInterrupted(reason or "deadline")
+                    if outcome is not None:
+                        _mark_tool_start(outcome)
+                    arm_review_episode(source)
+            # Validate the inherited caller controls, not this tool's soft wait
+            # envelope. Its retry owner must use that same context. The body
+            # keeps the worker envelope for inner waits after admission returns.
+            admission = outcome.get("admission_context") if outcome is not None else None
+            if admission is None:
+                retry_presend(take, check=False)
+            else:
+                admission.run(retry_presend, take, check=False)
+            return invoke(*args, **kwargs)
     finally:
-        if active and active[0] is source:
-            active[2]["settled"] = True
+        if outcome is not None:
+            outcome["settled"] = True
 
 
 def submit_async_operation(source: Any, function: Any, /, *args: Any, **kwargs: Any):
@@ -980,9 +984,13 @@ def submit_async_preparation(function: Any, *args: Any, source: Any = None, **kw
     async def invoke():
         return await function(*args, **kwargs)
 
-    with launch_admission(source if source is not None else active[0] if active else None):
+    source = source if source is not None else active[0] if active else None
+    with launch_admission(source):
+        if active and active[0] is source:
+            _mark_tool_start(active[2])  # preparation can open a process/socket
         with physical_acquisition():
-            return asyncio.create_task(invoke())
+            task = asyncio.create_task(invoke())
+        return task
 
 
 def model_handed_off(attempt_id: str = "") -> bool:
