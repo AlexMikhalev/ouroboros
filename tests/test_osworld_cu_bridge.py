@@ -29,7 +29,7 @@ _CU_ACTOR_MODEL = "openai/gpt-5.5"
 
 
 def _cu_actor_settings():
-    settings = {}
+    settings = {"OUROBOROS_TASK_REVIEW_MODE": "required"}  # the benchmark's own declared mode (#1731, O4)
     pin_single_model(_CU_ACTOR_MODEL, target=settings)
     return settings
 
