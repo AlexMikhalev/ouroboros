@@ -393,7 +393,8 @@ def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy
     for ask in view["asks"]:
         parts = []
         for p in ask["participants"]:
-            tag = p["status"]
+            tag = p["status"] + (f" ({p['ignored_items']} malformed item{'' if p['ignored_items'] == 1 else 's'} ignored)"
+                                 if p.get("ignored_items") else "")
             if p["status"] == "not_dispatched":
                 tag = f"not sent — {p.get('not_dispatched_reason') or 'not sendable'}"
             elif p["status"] == "failed":

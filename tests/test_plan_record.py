@@ -77,11 +77,35 @@ def test_parse_reply_reads_the_one_object_in_prose_or_fence_and_dedups_ids():
     assert error == "" and nested["withdrawn"] == [{"id": "o2", "why": "done"}]
 
 
-@pytest.mark.parametrize("text", ["just prose", "[1, 2]", '{"objections": "nope"}', '{"objections": [{"text": "no id"}]}',
-                                  '{"withdrawn": [{"id": "bad id!", "why": "x"}]}', '{"prose": 3}'])
+@pytest.mark.parametrize("text", ["just prose", "[1, 2]", '{"objections": "nope"}', '{"withdrawn": {"id": "o1", "why": "x"}}',
+                                  '{"prose": 3}', '```json\n{"id": "c1", "claim": "a quoted done_when row"}\n```'])
 def test_parse_reply_refuses_unreadable_or_malformed_replies_whole(text):
     reply, error = pr.parse_reply(text)
     assert reply is None and error
+
+
+def test_a_quoted_object_in_a_preamble_is_not_the_reply_and_a_malformed_item_is_named_not_voided():
+    """Scope R1 — C1 (Opus) + Fable 2: the reply is the first object carrying prose, objections or
+    withdrawn; a preamble quoting a done_when row (the delivery renders them as fenced JSON) or any
+    other object is skipped; a malformed ITEM is skipped and named while the valid ones act."""
+    preamble = ('Re-reading the bar first:\n```json\n{"id": "c1", "claim": "five slides", "support": "count them"}\n```\n'
+                'Now my reply:\n{"prose": "too thin", "objections": [{"id": "o1", "text": "no story"}], "withdrawn": []}')
+    reply, error = pr.parse_reply(preamble)
+    assert error == "" and reply["prose"] == "too thin" and reply["objections"] == [{"id": "o1", "text": "no story"}]
+    braces, error = pr.parse_reply('a {weird} preamble, then {"prose": "still read"} and a tail')
+    assert error == "" and braces == {"prose": "still read", "objections": [], "withdrawn": []}
+    mixed, error = pr.parse_reply('{"prose": "", "objections": [{"id": "o 2", "text": "spaced id"}, {"text": "no id"}, "junk", '
+                                  '{"id": "o3", "text": 7}], "withdrawn": [{"id": "bad id!", "why": "x"}, {"id": "o1", "why": "fixed"}]}')
+    assert error == "" and mixed["objections"] == [{"id": "o_2", "text": "spaced id"}] and mixed["withdrawn"] == [{"id": "o1", "why": "fixed"}]
+    assert [(i["key"], i["index"], i["id"], i["reason"]) for i in mixed["ignored"]] == [
+        ("objections", 1, "", "no usable id"), ("objections", 2, "", "not an object"), ("objections", 3, "o3", "text must be text"),
+        ("withdrawn", 0, "bad id!", "no usable id")]
+    # Through the fold: the raiser's withdrawal beside a malformed item still releases the hold.
+    held = _record([_participant(SEAT_A, reply={"objections": [{"id": "o1", "text": "low"}]})])
+    assert _gate(held)["status"] == "held"
+    withdrawn, _ = pr.parse_reply('{"withdrawn": [{"id": "o1", "why": "raised"}, {"id": "", "why": "void"}]}')
+    released = _record(held["asks"][0]["participants"], [_participant(SEAT_A, reply=withdrawn)])
+    assert _gate(released)["status"] == "clear" and pr.read_view(released)["asks"][1]["participants"][0]["ignored_items"] == 1
 
 
 # ---------------------------------------------------------------- the fold

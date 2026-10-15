@@ -840,9 +840,10 @@ def _announce_reply(ctx: Any, participant: Mapping[str, Any], facts: Mapping[str
     status = str(facts.get("status") or "")
     if status == "answered":
         reply = facts.get("reply") or {}
-        n_obj, n_with = len(reply.get("objections") or []), len(reply.get("withdrawn") or [])
+        n_obj, n_with, n_bad = len(reply.get("objections") or []), len(reply.get("withdrawn") or []), len(reply.get("ignored") or [])
         _progress(ctx, f"📐 Plan: {who} answered — {n_obj} objection{'' if n_obj == 1 else 's'}"
-                       + (f", {n_with} withdrawn" if n_with else "") + ".")
+                       + (f", {n_with} withdrawn" if n_with else "")
+                       + (f", {n_bad} malformed item{'' if n_bad == 1 else 's'} ignored" if n_bad else "") + ".")
     elif status == "unparseable":
         _progress(ctx, f"📐 Plan: {who} answered, but the reply could not be read as the reply object; nothing changed.")
     elif status == "failed":

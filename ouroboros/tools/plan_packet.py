@@ -234,6 +234,9 @@ def _render_reply(entry: Mapping[str, Any]) -> str:
         lines.append(f"  objection {item.get('id')}: {item.get('text')}")
     for item in reply.get("withdrawn") or []:
         lines.append(f"  withdrew {item.get('id')}: {item.get('why')}")
+    for item in reply.get("ignored") or []:  # a malformed item the host skipped, named so nobody counts it as said
+        lines.append(f"  (ignored malformed {item.get('key')}[{item.get('index')}]"
+                     + (f" id {item.get('id')!r}" if item.get("id") else "") + f": {item.get('reason')})")
     if len(lines) == 1:
         lines.append("  (no prose, no objection, no withdrawal)")
     return "\n".join(lines)

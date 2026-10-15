@@ -180,58 +180,49 @@ def validate_record(value: Any) -> Dict[str, Any]:
 
 # ------------------------------------------------------------------ reply parsing
 
-def _first_json_object(text: str) -> Optional[Dict[str, Any]]:
-    """The reply's one JSON object: the whole text, one fenced block, or the first
-    balanced ``{…}`` the text contains (prose around it is tolerated)."""
-    raw = str(text or "").strip()
-    candidates = [raw]
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
-    if fence:
-        candidates.append(fence.group(1))
+_REPLY_KEYS = ("prose", "objections", "withdrawn")
+
+
+def _reply_object(text: str) -> Optional[Dict[str, Any]]:
+    """The reply object in a participant's text: scanning every ``{``, the first JSON object
+    that carries at least one of ``prose`` / ``objections`` / ``withdrawn``. A quoted
+    ``done_when`` row, a fenced example or any other object in a preamble is not a reply."""
+    raw = str(text or "")
+    decoder = json.JSONDecoder()
     start = raw.find("{")
-    if start >= 0:
-        depth, in_string, escape = 0, False, False
-        for index in range(start, len(raw)):
-            char = raw[index]
-            if in_string:
-                if escape:
-                    escape = False
-                elif char == "\\":
-                    escape = True
-                elif char == '"':
-                    in_string = False
-                continue
-            if char == '"':
-                in_string = True
-            elif char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    candidates.append(raw[start:index + 1])
-                    break
-    for candidate in candidates:
+    while start >= 0:
         try:
-            value = json.loads(candidate)
-        except (TypeError, ValueError):
-            continue
-        if isinstance(value, dict):
+            value, _end = decoder.raw_decode(raw, start)
+        except ValueError:
+            value = None
+        if isinstance(value, dict) and any(key in value for key in _REPLY_KEYS):
             return value
+        start = raw.find("{", start + 1)
     return None
+
+
+def _normalized_id(value: Any) -> str:
+    """An LLM-written id made addressable: whitespace trimmed and collapsed to ``_`` so the
+    same seat's later withdrawal of the same id matches; empty when nothing usable remains."""
+    text = "_".join(_as_text(value).split())
+    return text if _ID_RE.fullmatch(text) else ""
 
 
 def parse_reply(text: str) -> tuple[Optional[Dict[str, Any]], str]:
     """A participant's reply → ``({prose, objections[{id,text}], withdrawn[{id,why}]}, "")``
-    or ``(None, error)``. A missing list is an empty list (an omitted ``withdrawn``
-    keeps every objection); a malformed item is an error for the whole reply, so a
-    reply that changes anything is one the host could read entirely."""
-    payload = _first_json_object(text)
+    or ``(None, error)``. A missing list is an empty list (an omitted ``withdrawn`` keeps
+    every objection). A malformed ITEM — not an object, no usable id, a body that is not
+    text — is skipped and NAMED under ``ignored`` while the valid items act: one bad id never
+    voids the withdrawal beside it. A list that is not a list, or prose that is not text, is
+    still an error for the whole reply. Ids are normalized (``_normalized_id``)."""
+    payload = _reply_object(text)
     if payload is None:
-        return None, "no JSON object found in the reply (prose-only or unparseable)"
+        return None, "no reply object found (no JSON object carrying prose, objections or withdrawn)"
     prose = payload.get("prose", "")
     if prose is not None and not isinstance(prose, str):
         return None, "prose must be text"
     reply: Dict[str, Any] = {"prose": str(prose or ""), "objections": [], "withdrawn": []}
+    ignored: List[Dict[str, Any]] = []
     for key, text_key in (("objections", "text"), ("withdrawn", "why")):
         items = payload.get(key)
         if items is None:
@@ -241,15 +232,18 @@ def parse_reply(text: str) -> tuple[Optional[Dict[str, Any]], str]:
         by_id: Dict[str, Dict[str, str]] = {}
         for index, item in enumerate(items):
             if not isinstance(item, dict):
-                return None, f"{key}[{index}] must be an object"
-            item_id = _as_text(item.get("id"))
-            if not item_id or not _ID_RE.fullmatch(item_id):
-                return None, f"{key}[{index}].id must be a short identifier"
-            body = item.get(text_key, "")
-            if body is not None and not isinstance(body, str):
-                return None, f"{key}[{index}].{text_key} must be text"
-            by_id[item_id] = {"id": item_id, text_key: str(body or "")}
+                ignored.append({"key": key, "index": index, "id": "", "reason": "not an object"})
+                continue
+            item_id, body = _normalized_id(item.get("id")), item.get(text_key, "")
+            if not item_id:
+                ignored.append({"key": key, "index": index, "id": _as_text(item.get("id")), "reason": "no usable id"})
+            elif body is not None and not isinstance(body, str):
+                ignored.append({"key": key, "index": index, "id": item_id, "reason": f"{text_key} must be text"})
+            else:
+                by_id[item_id] = {"id": item_id, text_key: str(body or "")}
         reply[key] = list(by_id.values())
+    if ignored:
+        reply["ignored"] = ignored
     return reply, ""
 
 
@@ -549,9 +543,10 @@ def read_view(record: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = N
         "revision": copy.deepcopy(latest) if latest else None,
         "revisions": len(record.get("revisions") or []),
         "asks": [{"ask_id": a.get("ask_id"), "ts": a.get("ts"), "revision": a.get("revision"), "message": a.get("message"),
-                  "participants": [{k: p.get(k) for k in ("seat_id", "model", "owner_marked", "status", "dispatched",
-                                                            "not_dispatched_reason", "error", "parse_error",
-                                                            "failure_code", "reported_cause", "reset_at")}
+                  "participants": [{**{k: p.get(k) for k in ("seat_id", "model", "owner_marked", "status", "dispatched",
+                                                               "not_dispatched_reason", "error", "parse_error",
+                                                               "failure_code", "reported_cause", "reset_at")},
+                                    "ignored_items": len((p.get("reply") or {}).get("ignored") or []) if isinstance(p.get("reply"), dict) else 0}
                                    for p in a.get("participants") or []],
                   "record_id": a.get("record_id")} for a in record.get("asks") or []],
         "participants": views,
