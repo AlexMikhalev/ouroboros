@@ -8,8 +8,8 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 
 | domain | name | modules | proposed |
 |---|---|---:|---:|
-| D01 | Agent core & main loop | 49 | 0 |
-| D02 | LLM client, routing & providers | 43 | 0 |
+| D01 | Agent core & main loop | 50 | 0 |
+| D02 | LLM client, routing & providers | 44 | 0 |
 | D03 | Context assembly, fit & compaction | 20 | 0 |
 | D04 | Tool execution: registry, access & typed results | 22 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 38 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 25 | 0 |
 | D19 | Frozen contracts (ABI) | 11 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **734** | **0** |
+| **total** | | **736** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -211,6 +211,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/agent_startup_checks.py`
 - `ouroboros/agent_task_pipeline.py`
 - `ouroboros/budget_pause.py`
+- `ouroboros/call_protocol.py`
 - `ouroboros/deadline_utils.py`
 - `ouroboros/external_runs.py`
 - `ouroboros/focus.py`
@@ -254,6 +255,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/anthropic_native_custody.py`
 - `ouroboros/fallback_cooldown.py`
 - `ouroboros/gateways/image_api.py`
+- `ouroboros/gateways/realtime_engine.py`
 - `ouroboros/image_preparation.py`
 - `ouroboros/llm.py`
 - `ouroboros/llm_anthropic.py`
