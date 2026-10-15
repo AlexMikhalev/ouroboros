@@ -1361,18 +1361,12 @@ class ArtifactOracle:
         derived swarm rollup), so lineage enumeration reads the children's rows —
         the same truth ``find_child_tasks`` derives from.
         """
-        results_dir = self.data_root / "task_results"
-        if not results_dir.is_dir():
-            return []
-        children = []
-        for path in sorted(results_dir.glob("*.json")):
-            try:
-                row = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if isinstance(row, dict) and str(row.get("parent_task_id") or "") == str(parent_task_id):
-                children.append(str(row.get("task_id") or path.stem))
-        return children
+        from ouroboros.task_results import list_task_results
+
+        # The store-aware reader (the rows moved out of per-task JSON files): a glob over
+        # ``task_results/*.json`` saw nothing and made every lineage assertion vacuous.
+        return [str(row.get("task_id") or "") for row in list_task_results(self.data_root)
+                if isinstance(row, dict) and str(row.get("parent_task_id") or "") == str(parent_task_id) and row.get("task_id")]
 
     def tree_blackboard(self, root_task_id: str) -> list:
         """Rows of the task-tree ledger (task_trees/<root>/blackboard.jsonl)."""
