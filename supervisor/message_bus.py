@@ -1481,7 +1481,9 @@ def log_chat(
         )
         if written:
             from ouroboros.notice_receipts import record as record_notice_receipt
+            from ouroboros.live_awareness import notify_chat_row  # a live call hears the room's new rows
             record_notice_receipt(root, record)
+            notify_chat_row(root, record)
         if require_write and not written:
             raise RuntimeError("canonical message acceptance could not be persisted")
         return record if written else None
