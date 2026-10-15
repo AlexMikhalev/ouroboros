@@ -697,18 +697,18 @@ class OwnedClaudexorDaemon:
         """Publish our own startup through the existing marker and process custody."""
         config_dir = owned_config_dir()
         config_dir.mkdir(parents=True, exist_ok=True)
-        env = dict(os.environ)
+        from ouroboros.process_scope import shed_scopes
+        # Inheritance is not a lifetime transfer: the installation-owned daemon keeps the installation marker
+        # and sheds the spawning worker's task and engine-run markers, or the first task to need it would end it.
+        env = shed_scopes(dict(os.environ))
         env["CLAUDEXOR_CONFIG_DIR"] = str(config_dir)
-        # Loopback-only ephemeral port is the engine default; explicitly
-        # scrub any operator-level overrides that would cross homes.
+        # Loopback-only ephemeral port is the engine default; scrub operator-level overrides that cross homes.
         for crossing in ("CLAUDEXOR_DAEMON_SOCK", "CLAUDEXOR_CONTROL_PORT"):
             env.pop(crossing, None)
         command_bin = pathlib.Path(command[0]).parent
         if command_bin.is_dir():
-            # Windows materializes os.environ with its native "Path" key; a
-            # plain dict lookup of "PATH" misses it and would hand the child
-            # a PATH holding only the Node bin dir (the engine then reports
-            # git_missing). Prepend onto whichever key the host actually has.
+            # Windows materializes os.environ with its native "Path" key: a plain "PATH" lookup misses it and would
+            # hand the child only the Node bin dir as PATH (the engine reports git_missing); prepend onto the host's key.
             path_key = next((k for k in env if k.upper() == "PATH"), "PATH")
             # An EMPTY PATH component means the CURRENT WORKING DIRECTORY on
             # POSIX. A host with no PATH (a scrubbed service manager, a bare

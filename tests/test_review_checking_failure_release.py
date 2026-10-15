@@ -34,9 +34,15 @@ from tests._review_session_route_shared import (  # noqa: F401 - autouse owned-g
     _terminal_detail,
 )
 from tests.test_review_attach_evidence import (  # noqa: F401
-    COVERAGE, REVIEWER_EDIT, RUN, _assert_receipt, _collect, checking_run,
+    COVERAGE,
+    REVIEWER_EDIT,
+    RUN,
+    _assert_receipt,
+    _collect,
+    checking_run,
 )
 from tests.test_review_checking import _author_state, _git, author  # noqa: F401
+from tests.test_review_checking_scope import ABSENT
 from tests.test_review_operation_collection import PASS, _observe, _started, forbid_effects  # noqa: F401
 from tests.test_review_session_rights import writable_engine  # noqa: F401
 from tests.test_review_thread_checking import ThreadGateway, _assert_coverage, _run, fake_route  # noqa: F401
@@ -50,7 +56,6 @@ UNSETTLED = {**SETTLED, "settled": False, "survivors": 1}
 # The engine's answer where no census exists (Windows): not a settlement.
 NO_CENSUS = {"settled": False, "coverage": "tree_only", "completeness": "not_provable",
              "census": "unsupported", "survivors": 0, "unreadable": 0}
-ABSENT = object()  # the key is missing, a different fact from ``null``
 FAILURES = ("failed", "cancelled", "interrupted")
 UNKNOWN = {
     "absent": ABSENT, "null": None, "unsettled": UNSETTLED, "no-census": NO_CENSUS,
@@ -77,15 +82,15 @@ def _generations(home):
 @pytest.mark.parametrize("scope", [SETTLED, SETTLED_MACOS, {"settled": True}, {**NO_CENSUS, "settled": True}],
                          ids=["linux", "macos", "minimal", "future-windows-settled"])
 def test_settled_scope_permits_failed_release(state, scope):
-    assert rc.checking_writers_settled(_detail(state, scope)) is True
+    assert rc.checking_copy_release(_detail(state, scope)) is True
     restarted = _detail(state, scope, failure={"code": "host_restart"})
-    assert rc.checking_writers_settled(restarted) is True
+    assert rc.checking_copy_release(restarted) is True
 
 
 @pytest.mark.parametrize("state", FAILURES)
 @pytest.mark.parametrize("scope", list(UNKNOWN.values()), ids=list(UNKNOWN))
 def test_unknown_scope_keeps_failed_copy(state, scope):
-    assert rc.checking_writers_settled(_detail(state, scope)) is False
+    assert rc.checking_copy_release(_detail(state, scope)) is False
 
 
 @pytest.mark.parametrize("detail", [
@@ -97,12 +102,12 @@ def test_unknown_scope_keeps_failed_copy(state, scope):
 ], ids=["running", "queued", "empty-state", "null-state", "list-state", "mapping-state", "case",
         "null-summary", "list-summary", "empty", "top-level", "run-facts"])
 def test_nonterminal_or_malformed_detail_never_releases(detail):
-    assert rc.checking_writers_settled(detail) is False
+    assert rc.checking_copy_release(detail) is False
 
 
 def test_success_without_a_scope_key_still_releases():
     """The minimum shared with the success-path owner; its scope semantics are not pinned here."""
-    assert rc.checking_writers_settled(_detail("succeeded")) is True
+    assert rc.checking_copy_release(_detail("succeeded")) is True
 
 
 # ---- attach-only collection (no POST, no preparation) ----
@@ -305,6 +310,8 @@ class ScopedThreadGateway(ThreadGateway):
         detail = super().get_run(run_id, **kwargs)
         if self.process_scope is not ABSENT:
             detail["summary"]["processScope"] = copy.deepcopy(self.process_scope)
+        else:
+            assert "processScope" not in detail["summary"], "the transport must really omit the key"
         return detail
 
 
@@ -364,6 +371,7 @@ def test_settled_failed_turn_lets_next_turn_refresh_the_same_thread_copy(author,
     assert second["thread_id"] == "thread-1" and second["turn_id"] == "turn-2"
     assert second["thread_receipt"]["continuity"] == {"kind": "native_resume"}
     _assert_coverage(second["checking_evidence"], ThreadGateway.coverage(2))
+    assert second["checking_evidence"]["refresh_safe"] is True
     assert len(scoped.thread_requests) == 1 and not scoped.start_requests
     create = scoped.thread_requests[0]
     assert create["workspaceRoot"] == str(area) and create["access"] == "full"
@@ -425,6 +433,7 @@ def test_timeout_cancel_with_settled_scope_keeps_timeout_and_opens_next_turn(
     source_b = rc.freeze_checking_source(author, data_root=drive, subject=rc.SUBJECT_INDEX)
     second = _run(author, drive, source_b, operation="op-2", thread_id="thread-1")
     assert second["turn_id"] == "turn-2" and len(scoped.thread_requests) == 1
+    assert second["checking_evidence"]["refresh_safe"] is True
 
 
 def test_late_thread_bytes_are_recaptured_by_the_exact_rejoin_before_refresh(author, tmp_path, scoped):  # noqa: F811
@@ -493,6 +502,7 @@ def test_stale_rejoin_after_next_turn_never_touches_the_newer_turn(author, tmp_p
     assert (_generations(rc.seat_dir(drive, "task-1", "op-1")),
             _generations(rc.seat_dir(drive, "task-1", "op-2"))) == generations
     _assert_coverage(second["checking_evidence"], ThreadGateway.coverage(2))
+    assert second["checking_evidence"]["refresh_safe"] is True
 
 
 @pytest.mark.parametrize("gap", ["fifo", "summary-write"])

@@ -61,6 +61,7 @@ def _recorded_admission(result: Dict[str, Any], predecessor: str, nonce: str) ->
 
 
 def _replay(q: Any, predecessor: str, nonce: str, successor: str) -> Optional[Dict[str, Any]]:
+    from ouroboros.budget_pause import budget_hold_fact
     from ouroboros.owner_continue import binding_sha, mark_claim_admitted
     from ouroboros.task_results import load_task_result, write_task_result
 
@@ -100,10 +101,13 @@ def _replay(q: Any, predecessor: str, nonce: str, successor: str) -> Optional[Di
                     return {"ok": False, "error": "queue_snapshot_persist_failed",
                             "successor_task_id": successor, "unconfirmed": True}
             mark_claim_admitted(q.DRIVE_ROOT, predecessor, nonce)
+            # Admission is historical; the live row may have released its hold.
+            hold = budget_hold_fact(row) if row is not None else None
             return {"ok": True, "replay": True, "recovered": recovered, "task_id": successor,
                     "successor_task_id": successor, "predecessor_task_id": predecessor,
                     "status": str(stored.get("status") or "scheduled"),
-                    "held": bool(admission.get("held"))}
+                    "held": bool(hold) if row is not None else bool(admission.get("held")),
+                    **({"blockers": list(hold["blockers"])} if hold and "blockers" in hold else {})}
     except Exception as exc:
         return {"ok": False, "error": "continuation_publication_unconfirmed",
                 "successor_task_id": successor, "unconfirmed": True, "detail": str(exc)[:200]}
@@ -124,7 +128,10 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
     ``owner_pause_fence_id`` is the owner Pause's own census: a queued admitted
     dispatch that only that exact accepted Pause's latch holds is not running
     work (its earlier effects are still observed below). Continue never passes
-    it: that row would dispatch again once the Pause is resumed. The answered
+    it: that row would dispatch again once the Pause is resumed. Callers pass the
+    root's closed fence they just read; while its queue latch is not projected
+    (``latch_pending``, or a park that could not read it) that durable fence alone
+    refuses every launch of the tree, so it stands in for the latch. The answered
     predecessor's own late phase (D10) is custody too: running or open, or
     paused (Resume would write again) — the Pause's own census alone reads its
     saved pause as settled.
@@ -155,7 +162,11 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
                     warm_paused_member(meta) if owner_pause_fence_id else False)
                    for tid, meta in q.RUNNING.items() if isinstance(meta, dict)]
         pending = [dict(task) for task in q.PENDING if isinstance(task, dict)]
-        latch = dict(q.BUDGET_ROOT_FENCES.get(predecessor) or {})
+        fences = {root: dict(row) for root, row in q.BUDGET_ROOT_FENCES.items() if isinstance(row, dict)}
+    latch = fences.get(predecessor) or {}
+    if owner_pause_fence_id and not latch:
+        latch = fences[predecessor] = {"root_task_id": predecessor, "fence_id": str(owner_pause_fence_id),
+                                       "cause": "owner_pause", "status": "paused"}
     owner_latched = bool(owner_pause_fence_id and latch.get("cause") == "owner_pause"
                          and str(latch.get("status") or "") in {"active", "paused"}
                          and str(latch.get("fence_id") or "") == str(owner_pause_fence_id))
@@ -176,7 +187,7 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
             members.add(tid)
             if owner_latched and queued_admitted_dispatch(task):
                 continue
-            if budget_pause_fact(task) is None or (task.get("admitted_dispatch") == "possible"
+            if budget_pause_fact(task, fences) is None or (task.get("admitted_dispatch") == "possible"
                                                    and not task.get("_budget_pause")):
                 blockers.append({"kind": "dispatchable_member", "task_id": tid})
     try:
@@ -200,7 +211,9 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
                              "run_id": str(run.get("run_id") or ""),
                              "invocation_id": str(run.get("invocation_id") or ""),
                              # The owner Pause's consumers read it; Continue's hold does not.
-                             "review_owned": bool(run.get("review_owned"))}
+                             "review_owned": bool(run.get("review_owned")),
+                             # The observer's own facts (#1721): running, or a start/stop outcome unknown.
+                             **{key: str(run.get(key) or "") for key in ("state", "stop_outcome", "source")}}
                             for run in observed.get("runs") or [] if isinstance(run, dict)
                             and not (for_continue and run.get("independent_review") is True))
     try:
@@ -246,6 +259,32 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
     except Exception as exc:
         blockers.append({"kind": "attempt_custody_unreadable", "detail": str(exc)[:200]})
     return blockers
+
+
+_RUNNING_KINDS = frozenset({"running_member", "dispatchable_member", "late_phase_running", "owned_process"})
+
+
+def only_running_writers(blockers: Any) -> bool:
+    """Whether every blocker a census named is a positively observed running writer (#1721).
+
+    Only then is "wait for it or stop it" true advice. An unbound start, an
+    unknown stop, an outstanding model send or unreadable custody is reported as
+    that fact, also beside a running writer: Stop may end spending without
+    settling it, and only new facts do.
+    """
+    rows = list(blockers or ())
+    return bool(rows) and all(isinstance(b, dict) and (
+        b.get("kind") in _RUNNING_KINDS or b.get("kind") == "delegated_run" and b.get("state") == "running")
+        for b in rows)
+
+
+def writers_unsettled_refusal(blockers: Any) -> Dict[str, Any]:
+    """A held Continue's Resume refusal (#1721): the whole census, which the UI reduces
+    to a few facts and a truthful remainder count, and wait-or-stop advice only when
+    every one of its rows is a running writer."""
+    rows = list(blockers or ())
+    return {"ok": False, "error": "predecessor_writers_unsettled", "blockers": rows,
+            **({"action": "wait_or_stop_the_previous_work"} if only_running_writers(rows) else {})}
 
 
 def action_writers(q: Any, predecessor: str, *, drive_root: Any = None,
@@ -498,7 +537,7 @@ def admit_continuation(predecessor_task_id: str, *, action_nonce: str) -> Dict[s
 
         hold_budget_row(task, reason=HOLD_CONTINUATION_WRITER,
                         detail="the interrupted task's own work is not proven settled; this Continue waits",
-                        extra={"predecessor_task_id": predecessor, "blockers": blockers[:20],
+                        extra={"predecessor_task_id": predecessor, "blockers": blockers,
                                "root_task_id": successor})
     project_basis = None
     if task.get("project_id"):
@@ -560,11 +599,11 @@ def admit_continuation(predecessor_task_id: str, *, action_nonce: str) -> Dict[s
     append_jsonl(q.DRIVE_ROOT / "logs" / "events.jsonl",
                  {"ts": utc_now_iso(), "type": "owner_continue_admitted", "task_id": successor,
                   "predecessor_task_id": predecessor, "cause": verdict["cause"], "held": bool(blockers),
-                  "blockers": blockers[:20], "owner_visible": True,
+                  "blockers": blockers, "owner_visible": True,
                   "toast_once": f"{successor}:continue-admitted"})
     return {"ok": True, "replay": False, "task_id": successor, "successor_task_id": successor,
             "predecessor_task_id": predecessor, "status": STATUS_SCHEDULED, "held": bool(blockers),
-            **({"blockers": blockers[:20]} if blockers else {})}
+            **({"blockers": blockers} if blockers else {})}
 
 
 def release_settled_continuations(tree_root: str) -> List[str]:

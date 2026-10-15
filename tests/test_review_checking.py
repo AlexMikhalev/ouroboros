@@ -252,9 +252,9 @@ def test_a_thread_refresh_keeps_frozen_index_and_parent_without_synthetic_commit
     (author / "f.txt").write_text("A staged\nround two\n")
     _git(author, "add", "f.txt")
     second = rc.freeze_checking_source(author, data_root=data, subject=rc.SUBJECT_INDEX)
-    with pytest.raises(rc.CheckingAreaUnavailable, match="quiescent"):
+    with pytest.raises(rc.CheckingAreaUnavailable, match="no complete evidence capture that permits a refresh"):
         rc.thread_seat_area(data, "task", "plan_review:t1", second, operation_id="turn-2")
-    # This synchronous test owns all writers; capture acknowledges quiescence.
+    # This synchronous test owns all writers; its capture is granted the refresh permission.
     retained = rc.capture_seat_evidence(data, "task", "turn-1", release=True)
     assert retained["refresh_safe"] and area.is_dir()
     with pytest.raises(rc.CheckingAreaUnavailable, match="same thread operation"):

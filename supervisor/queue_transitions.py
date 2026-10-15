@@ -354,83 +354,79 @@ def budget_pause_fact(task, fences=None):
 
 
 def queued_admitted_dispatch(task: Any) -> bool:
-    """A live queued row whose own next dispatch the queue already admitted.
-
-    A requeued retry carries recorded ``possible`` evidence; nothing of its own
-    (pause, grant, owner-wait or terminalization carrier, typed or selected
-    hold, owner hold, unpublished Continue) can move it past a root latch, so
-    while that latch stands it is queued, not running. It never proves the
-    earlier attempt's effects settled: that is the tree custody's question.
+    """A queued dispatch already admitted (``possible``), including an unselected
+    unsaved pause intent (#1729). Other pause/grant/hold/continuation carriers exclude it.
+    A root latch still keeps it queued; prior effects remain the tree custody's question.
     """
-    from supervisor.events_budget import BUDGET_HOLD_KEY
+    from supervisor.events_budget import BUDGET_HOLD_KEY, HOLD_UNSAVED_PAUSE
 
+    hold = task.get(BUDGET_HOLD_KEY) if isinstance(task, dict) else None
+    intent = isinstance(hold, dict) and hold.get("reason") == HOLD_UNSAVED_PAUSE and not hold.get("selected")
     return bool(isinstance(task, dict) and task.get("admitted_dispatch") == "possible"
                 and not any(task.get(key) for key in (
                     "_owner_hold", "_budget_pause", "_budget_pause_resume", "_owner_wait_resume",
-                    "_terminalization_retry", "_continuation_prepared", BUDGET_HOLD_KEY)))
+                    "_terminalization_retry", "_continuation_prepared", *(() if intent else (BUDGET_HOLD_KEY,)))))
 
 
 def _resume_unstarted_owner_paused_root(q: Any, task: Dict[str, Any], fence: Dict[str, Any],
                                          observation: Dict[str, Any]) -> Dict[str, Any]:
     """The owner's Resume of a root the Pause caught while it was only queued.
 
-    A never-started root has no members: nothing of the tree ran. A queued root
-    whose own dispatch was already admitted (``queued_admitted_dispatch``, a
-    requeued retry) resumes only over a fresh whole-tree observation without
-    unsettled effects (``owner_pause_blockers``); it keeps its attempt and
-    dispatch evidence, and its other queued members wait for explicit selection
-    as after an exact root Resume (Q9). Either way the Resume reopens both the
-    durable fence and the queue latch, and the same queued task becomes
-    assignable again. A durable fence that cannot be reopened refuses the
-    Resume: the root would only be refused at every launch. Queue lock held.
+    A never-started root has no members. An admitted retry needs a fresh tree
+    census without unsettled effects (owner_pause_blockers); its attempt and
+    dispatch evidence stay, and children still need explicit selection (Q9).
+    Reopen both durable fence and queue latch or refuse: reopening only the
+    latch would fail every launch. The latch names the LOGICAL root; task may
+    be its current retry (#1730). Queue lock held.
     """
     from ouroboros.owner_pause import FENCE_RELEASED, launch_lock, read_fence, set_fence_state
-    from supervisor.events_budget import (
-        BUDGET_HOLD_KEY, HOLD_OWNER_RESTART, HOLD_SAVED_WORK, budget_hold_fact, hold_root_resume_descendants,
-    )
+    from supervisor.events_budget import BUDGET_HOLD_KEY, OWNER_ROOT_RESUME_HOLDS, budget_hold_fact, hold_root_resume_descendants
 
-    task_id = str(task.get("id") or "")
+    task_id, root_id = str(task.get("id") or ""), str(fence.get("root_task_id") or task.get("id") or "")
     admitted = "owner_pause_blockers" in observation
     safe, error = observation["safe"], observation["unsafe_error"]
     if not safe and not admitted:
         return {"ok": False, "error": error, "action": "cancel_or_new_run"}
     hold = budget_hold_fact(task)
-    # This explicit root Resume releases both its Pause and its app-stop hold.
+    # This explicit root Resume releases its Pause, its app-stop hold and its unsaved
+    # pause intent. A Continue's prior writer hold is rechecked below, never waived.
     # All other holds, observed effects and durable write gates still bind.
-    if hold and hold.get("reason") not in {HOLD_OWNER_RESTART, HOLD_SAVED_WORK}:
+    if hold and hold.get("reason") not in OWNER_ROOT_RESUME_HOLDS:
         return {"ok": False, "error": str(hold.get("reason") or "selection_owner_held")}
     if observation.get("blockers"):
-        return {"ok": False, "error": "predecessor_writers_unsettled", "blockers": observation["blockers"]}
+        from supervisor.continuation_admission import writers_unsettled_refusal
+
+        return writers_unsettled_refusal(observation["blockers"])
     if observation.get("owner_pause_blockers"):
         return {"ok": False, "error": "owner_pause_effects_unsettled", "action": "wait_for_effect_settlement",
-                "blockers": observation["owner_pause_blockers"][:20]}
+                "blockers": observation["owner_pause_blockers"]}
     root = pathlib.Path(task.get("budget_drive_root") or q.DRIVE_ROOT)
     members = [row for row in q.PENDING if admitted and row is not task
-               and str(row.get("root_task_id") or "") == task_id]
+               and str(row.get("root_task_id") or "") == root_id]
     prior = [(row, copy.deepcopy(row)) for row in [task, *members]]
 
     def rollback() -> None:
         for row, before in prior:
             row.clear()
             row.update(before)
-        q.BUDGET_ROOT_FENCES[task_id] = fence
+        q.BUDGET_ROOT_FENCES[root_id] = fence
 
-    with launch_lock(root, task_id):
-        if read_fence(root, task_id) != observation["authority"]["owner_fence"]:
+    with launch_lock(root, root_id):
+        if read_fence(root, root_id) != observation["authority"]["owner_fence"]:
             return {"ok": False, "error": "selection_authority_changed"}
         # Publish queue eligibility first, while durable launch authority is still
         # closed. A crash or failed second write cannot start the unrun root.
-        q.BUDGET_ROOT_FENCES.pop(task_id, None)
+        q.BUDGET_ROOT_FENCES.pop(root_id, None)
         task.pop("_budget_pause", None)
         task.pop(BUDGET_HOLD_KEY, None)
         if members:
             # No root grant exists to bind: only the owner selects these members.
-            hold_root_resume_descendants(q, task_id, fence, {"grant_id": "", "generation": 0})
+            hold_root_resume_descendants(q, root_id, fence, {"grant_id": "", "generation": 0}, actor_id=task_id)
         if not q.persist_queue_snapshot(reason="owner_pause_root_resumed"):
             rollback()
             return {"ok": False, "error": "snapshot_not_persisted"}
         try:
-            set_fence_state(root, task_id, fence_id=str(fence.get("fence_id") or ""),
+            set_fence_state(root, root_id, fence_id=str(fence.get("fence_id") or ""),
                             state=FENCE_RELEASED, release_reason="owner_resume_unstarted_root")
         except Exception as exc:
             rollback()
@@ -438,9 +434,9 @@ def _resume_unstarted_owner_paused_root(q: Any, task: Dict[str, Any], fence: Dic
             return {"ok": False, "error": "owner_pause_fence_unwritable", "detail": str(exc)[:200]}
     q.append_jsonl(q.DRIVE_ROOT / "logs" / "events.jsonl",
                    {"ts": utc_now_iso(), "type": "owner_pause_resumed", "task_id": task_id,
-                    "root_task_id": task_id, "fence_id": str(fence.get("fence_id") or ""),
+                    "root_task_id": root_id, "fence_id": str(fence.get("fence_id") or ""),
                     "same_generation": True, "never_started": not admitted})
-    return {"ok": True, "task_id": task_id, "root_task_id": task_id, "same_generation": True,
+    return {"ok": True, "task_id": task_id, "root_task_id": root_id, "same_generation": True,
             "owner_pause_released": True, "never_started": not admitted}
 
 
@@ -580,15 +576,17 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
     elif needs_selection:
         observation = observe_held_budget_selection(q, task_id)
         owner_fence = (observation.get("authority") or {}).get("owner_fence") or {}
+        root_id = str(located_state.get("root_task_id") or task_id)
+        from ouroboros.owner_pause import root_actor
         if (not selected_by and owner_fence.get("fence_id") and queued_admitted_dispatch(located_state)
-                and str(located_state.get("root_task_id") or task_id) == task_id):
-            # An owner-paused root whose own dispatch was already admitted resumes
-            # only over this fresh, off-lock whole-tree observation (Pause A).
+                and root_actor(result_root, root_id, task_id)):
+            # An owner-paused root (or its retry's current attempt, #1730) whose own dispatch was
+            # admitted resumes only over this fresh, off-lock whole-tree observation (Pause A).
             from supervisor.continuation_admission import action_writers
 
             try:
                 observation["owner_pause_blockers"] = action_writers(
-                    q, task_id, drive_root=result_root, owner_pause_fence_id=str(owner_fence["fence_id"]))
+                    q, root_id, drive_root=result_root, owner_pause_fence_id=str(owner_fence["fence_id"]))
             except Exception as exc:
                 observation["owner_pause_blockers"] = [{"kind": "tree_census_unreadable", "detail": str(exc)[:200]}]
     with q._queue_lock:
@@ -614,17 +612,18 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
         elif budget_pause_fact(task) is not None:
             return {"ok": False, "error": "selection_observation_required"}
 
-        candidate_root = str(task.get("root_task_id") or task_id)
+        candidate_root = str(task.get("root_task_id") or task_id).strip()
+        if "owner_pause_blockers" in (observation or {}):  # a ``latch_pending`` Pause: the fence revalidated above
+            from supervisor.owner_pause_control import complete_owner_pause_latch
+            complete_owner_pause_latch(candidate_root, observation["authority"]["owner_fence"])
         candidate_fence = q.BUDGET_ROOT_FENCES.get(candidate_root)
-        if (not selected_by and task_id == candidate_root
+        if (not selected_by and (task_id == candidate_root or "owner_pause_blockers" in (observation or {}))
                 and isinstance(candidate_fence, dict) and candidate_fence.get("cause") == "owner_pause"):
             return _resume_unstarted_owner_paused_root(q, task, candidate_fence, observation)
         hold = budget_hold_fact(task)
         if hold is not None and not pause:
             return select_held_budget_row(q, task, hold, selected_by=selected_by, observation=observation)
         if not pause:
-            candidate_root = str(task.get("root_task_id") or task_id).strip()
-            candidate_fence = q.BUDGET_ROOT_FENCES.get(candidate_root)
             if not isinstance(candidate_fence, dict):
                 return {"ok": False, "error": "task_not_budget_paused"}
             if isinstance(task.get("_budget_pause_resume"), dict):
@@ -1268,6 +1267,10 @@ def task_has_live_ownership(task_id: str, *, ignore_review_operation: str = '', 
         # too — the stop ingress must not answer 404 while the spend
         # continues, and custody keeps the intent open for the stage gate.
         if post_task_synthesis_in_flight(q.DRIVE_ROOT, task_id):
+            return True
+        # A dead attempt whose reap the reaper retains (slot reserved, terminal owed) is custody Stop must reach.
+        from supervisor.task_reaper import _deferred_reap_jobs
+        if any(str(job.get("task_id") or "") == task_id for job in _deferred_reap_jobs):
             return True
         try:
             retry_target, _retry_settled_status = _live_retry_target_locked(q, task_id, results=ownership)

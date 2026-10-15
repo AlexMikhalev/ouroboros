@@ -423,7 +423,7 @@ def _run_memory_fallback_draft(env: Any, task: Dict[str, Any], llm: Any, drive_l
         from ouroboros.knowledge import observed_route_stamp
 
         reason = (run.kind if run.outcome == "refused"
-                  else _post_task_paid_interruption(run.errors) if run.outcome == "failed" else "")
+                  else _post_task_paid_interruption(run.errors))
         try:
             append_jsonl(pathlib.Path(drive_logs) / "events.jsonl", {
                 "ts": utc_now_iso(), "type": "memory_fallback_draft", "task_id": str(task.get("id") or ""),

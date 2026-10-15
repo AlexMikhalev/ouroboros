@@ -10,14 +10,12 @@ tests and monkeypatch targets — still finds them there.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
-from ouroboros.observability import timed_phase
 from ouroboros.delegate_registration_policy import record_persistent as _record_persistent
+from ouroboros.observability import timed_phase
 from ouroboros.subagent_history import session_request_facts
-
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # annotation-only name; lazy under future annotations, never imported at runtime
     from ouroboros.delegate_custody import RunCustody
@@ -67,17 +65,37 @@ def pending_invocations(drive_root: Any,
     return replay_pending(drive_root, rows)
 
 
+def attach_only_gateway() -> Any:
+    """The release surfaces' transport: attach to a serving daemon, never start one.
+
+    Exit does not admit (DEVELOPMENT "Process Custody Rule"): a loop exit, a kill
+    boundary or a stop settles what is already running and provisions, downloads,
+    spawns and admits nothing. ``read_owned_gateway`` raises the typed
+    ``ClaudexorUnavailable`` when no daemon answers, which every reconcile pass
+    already treats as "skipped, the sweep re-judges".
+    """
+    from ouroboros.claudexor_daemon import read_owned_gateway
+
+    return read_owned_gateway()
+
+
 @timed_phase("release_task_runs")
 def release_task_runs(drive_root: Any, task_id: str, *,
                       gateway_factory: Optional[Callable[[], Any]] = None) -> List[Dict[str, Any]]:
-    """Run the one non-panic terminal custody boundary for a normal loop exit."""
+    """Run the one non-panic terminal custody boundary for a normal loop exit.
+
+    A release path: ``gateway_factory`` defaults to ``attach_only_gateway``, and a
+    pending invocation of this task is never replayed here (``reconcile_task_runs``).
+    """
 
     from ouroboros.delegate_terminal import (
-        record_terminal_reconciliation, terminal_reconcile_task,
+        record_terminal_reconciliation,
+        terminal_reconcile_task,
     )
 
     result = terminal_reconcile_task(
-        drive_root, task_id, gateway_factory=gateway_factory, trigger="loop_exit",
+        drive_root, task_id, gateway_factory=gateway_factory or attach_only_gateway,
+        trigger="loop_exit",
     )
     record_terminal_reconciliation(drive_root, task_id, result)
     return list(result.get("outcomes") or [])
@@ -92,8 +110,14 @@ def reconcile_task_runs(drive_root: Any, task_id: str, *,
     The supervisor-side twin of ``release_task_runs`` for a task whose worker was
     just KILLED (cancellation custody / reap): the graceful release never ran and
     its memo died with the process, so the durable rows are the only complete
-    view. Covers pending invocations like the orphan sweep; cheap when the task
-    delegated nothing.
+    view. Cheap when the task delegated nothing. A release surface: the task's
+    pending (START_REQUESTED-only) invocations are NOT replayed here — a re-POST
+    starts work, and exit does not admit; they stay durable for the admitted
+    startup/periodic sweep (``reconcile_orphaned_runs``), which recovers them
+    under the same key once the owner is gone. A review panel's own pending
+    invocation, which that sweep leaves to its panel (#1006), is named here once
+    as retained, through no transport. ``gateway_factory`` defaults to
+    ``attach_only_gateway``; a kill boundary names it explicitly.
 
     ``deliberate_terminal`` is the terminal status the KILLING caller is about to
     write, when that terminal is the task's own deliberate end (an owner
@@ -107,12 +131,14 @@ def reconcile_task_runs(drive_root: Any, task_id: str, *,
     mine = str(task_id or "")
     if not mine:
         return []
-    from ouroboros.delegate_custody_current import collection_pending, runs as current_runs, task_snapshot
+    from ouroboros.delegate_custody_current import collection_pending, task_snapshot
+    from ouroboros.delegate_custody_current import runs as current_runs
 
-    view = task_snapshot(drive_root, mine)  # the task's rows and pending starts, one read
+    view = task_snapshot(drive_root, mine)  # one read; pending starts remain the admitted sweep's duty
     held = [c for c in view["runs"].values()
             if not c.settled or (not c.review_owned and collection_pending(c))]
-    stray = view["pending"]
+    named = [_retain_panel_invocation(drive_root, record) for record in view["pending"]
+             if _custody().review_owned_source(record.get("source"))]
     # Also the registration retry lane for the task's OWN settled-but-owned
     # runs in retire-eligible projects (a one-shot process may never see a
     # sweep tick); deferred registrations stay with the periodic sweep. A
@@ -121,10 +147,10 @@ def reconcile_task_runs(drive_root: Any, task_id: str, *,
     live = ({r.project_id for r in current_runs(drive_root, "state=?", ("held",)).values() if r.project_id and r.run_id and not r.settled}
             if owned else set())
     owed = [r for r in owned if r.project_id not in live]
-    if not held and not stray and not owed:
-        return []
-    return _reconcile_each(drive_root, held, gateway_factory, pending=stray,
-                           deliberate_terminal=deliberate_terminal)
+    if not held and not owed:
+        return named  # pending invocations alone open no transport: the sweep or their panel owns them
+    return [*named, *_reconcile_each(drive_root, held, gateway_factory or attach_only_gateway,
+                                     deliberate_terminal=deliberate_terminal)]
 
 
 def reconcile_orphaned_runs(
@@ -133,6 +159,7 @@ def reconcile_orphaned_runs(
     *,
     gateway_factory: Optional[Callable[[], Any]] = None,
     recoverable_task_ids: Optional[set] = None,
+    replay_pending: Optional[Callable[[], bool]] = None,
 ) -> List[Dict[str, Any]]:
     """Settle or cancel every open run whose owning task is no longer running.
 
@@ -141,6 +168,14 @@ def reconcile_orphaned_runs(
     process cannot disagree about whether their owner still exists. ``running_task_ids``
     is that set, or a zero-arg callable producing it; None means UNKNOWN and reconciles
     nothing — never mass-cancel on missing info.
+
+    ``gateway_factory`` is named by every production caller: the admitted startup/periodic
+    sweep ensures, a stop or the owner's Restart attaches; a caller that names none gets
+    the attach-only transport (a bare sweep can only attach). ``replay_pending`` is the admission
+    predicate for re-POSTing an orphaned pending invocation (``_recover_pending_invocation``);
+    it is re-asked immediately before each replay, so a stop that lands mid-pass defers
+    the rest. ``None`` (the release and Restart surfaces) never replays: the rows stay
+    durable and are reported ``invocation_retained``.
     """
     if running_task_ids is None:
         return []
@@ -148,7 +183,8 @@ def reconcile_orphaned_runs(
     # replaying the custody log takes seconds, and a candidate exists ⇒ its owner was
     # registered earlier (admission takes ``_queue_lock`` before any spawn), so an owner
     # absent from the LATER snapshot is really gone rather than merely not yet admitted.
-    from ouroboros.delegate_custody_current import collection_pending, runs as current_runs
+    from ouroboros.delegate_custody_current import collection_pending
+    from ouroboros.delegate_custody_current import runs as current_runs
     candidates = [c for c in current_runs(drive_root, "state=?", ("held",)).values()
                   if not c.settled or (not c.review_owned and collection_pending(c))]
     # The class ONE STEP EARLIER (P34R.2): an invocation whose POST the daemon may have
@@ -167,28 +203,36 @@ def reconcile_orphaned_runs(
     stray = [record for record in unbound
              if record["task_id"] and record["task_id"] not in live_or_reserved
              and not _custody().review_owned_source(record.get("source"))]
-    return _reconcile_each(drive_root, orphans, gateway_factory, pending=stray, live_task_ids=live_or_reserved)
+    return _reconcile_each(drive_root, orphans, gateway_factory or attach_only_gateway, pending=stray,
+                           live_task_ids=live_or_reserved, replay_pending=replay_pending)
 
 
 def _reconcile_each(drive_root: Any, runs: List[RunCustody],
-                    gateway_factory: Optional[Callable[[], Any]],
+                    gateway_factory: Callable[[], Any],
                     pending: Optional[List[Dict[str, Any]]] = None,
-                    deliberate_terminal: str = "", live_task_ids=None) -> List[Dict[str, Any]]:
-    """One transport, one settle-or-cancel pass. Shared by both release surfaces.
+                    deliberate_terminal: str = "", live_task_ids=None,
+                    replay_pending: Optional[Callable[[], bool]] = None) -> List[Dict[str, Any]]:
+    """One transport, one settle-or-cancel pass. Shared by every reconcile surface.
 
+    ``gateway_factory`` has NO default: the caller names whether this pass may ensure
+    (the admitted sweep) or only attach (every release, kill, stop and Restart path).
     ``pending`` is the durable sweep's extra duty: START_REQUESTED-only invocations
-    (P34R.2). The in-process twin ``release_task_runs`` never passes it — its memo is
-    run-keyed and cannot name an unbound invocation — so that class is covered by the
-    startup/periodic sweep, within its cadence. The registration pass at the end is
+    (P34R.2), passed by ``reconcile_orphaned_runs`` alone; the task-scoped
+    ``reconcile_task_runs`` leaves them to the sweep. A pending row is replayed only
+    while ``replay_pending()`` answers True, asked again right before each re-POST;
+    without the predicate the row is retained. The registration pass at the end is
     the third duty: settlement no longer discharges project ownership, and the
     startup/periodic sweep surface is where settled-but-owned registrations get
     their retry lane (the task-scoped surface can exit early with none open).
     """
+    if gateway_factory is None:
+        raise ValueError("delegated-run reconciliation needs an explicit gateway factory: "
+                         "ensure_owned_gateway for the admitted sweep, attach_only_gateway otherwise")
     # Registration duty is real work only for a retire-ELIGIBLE project:
     # a deferred one must not spin the daemon up.
     from ouroboros.delegate_continuation import still_continuable
-
-    from ouroboros.delegate_custody_current import collection_pending, runs as current_runs
+    from ouroboros.delegate_custody_current import collection_pending
+    from ouroboros.delegate_custody_current import runs as current_runs
 
     # Owned registrations and unsettled runs are HELD rows: one indexed read.
     snapshot = list(current_runs(drive_root, "state=?", ("held",)).values())
@@ -203,20 +247,19 @@ def _reconcile_each(drive_root: Any, runs: List[RunCustody],
     registrations = [row for row in snapshot
                      if row.project_owned and row.project_id
                      and row.project_id not in unsettled_projects]
-    if not runs and not pending and not registrations:
-        return []
+    def _replay_admitted() -> bool:
+        return replay_pending is not None and bool(replay_pending())
+
+    retained = [] if _replay_admitted() else [
+        {"invocation_id": str(record["invocation_id"]), "task_id": str(record["task_id"]),
+         "action": "invocation_retained", "reason": "replay_not_admitted"}
+        for record in pending or []]
+    if not runs and not registrations and (not pending or retained):
+        return retained  # no transport is opened for rows this pass may not replay
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
 
-    if gateway_factory is None:
-        # Attach to the installation's surviving daemon, or restart a dead one
-        # when reconciliation has real work (never on the empty early return).
-        # A staged runtime pin applies at that natural start, not by killing
-        # a live daemon merely because its spawning server generation ended.
-        from ouroboros.claudexor_daemon import ensure_owned_gateway
-
-        gateway_factory = ensure_owned_gateway
     gateway = None
-    outcomes: List[Dict[str, Any]] = []
+    outcomes: List[Dict[str, Any]] = list(retained)
     try:
         try:
             gateway = gateway_factory()
@@ -225,14 +268,19 @@ def _reconcile_each(drive_root: Any, runs: List[RunCustody],
             # Existing terminal sources still own local collection work. A
             # transport gap proves nothing about unsettled or review-owned runs.
             log.debug("delegated-run reconciliation: transport unavailable", exc_info=True)
-            return [_reconcile_collection(drive_root, None, row) for row in runs
-                    if row.settled and not row.review_owned and collection_pending(row)]
+            return [*retained, *[_reconcile_collection(drive_root, None, row) for row in runs
+                                if row.settled and not row.review_owned and collection_pending(row)]]
         for custody in runs:
             outcomes.append(_custody()._reconcile_one(
                 drive_root, gateway, custody,
                 deliberate_terminal=deliberate_terminal,
             ))
-        for record in pending or []:
+        for record in [] if retained else (pending or []):
+            if not _replay_admitted():  # rechecked at dispatch: a stop mid-pass defers the rest
+                outcomes.append({"invocation_id": str(record["invocation_id"]),
+                                 "task_id": str(record["task_id"]),
+                                 "action": "invocation_retained", "reason": "replay_not_admitted"})
+                continue
             outcomes.append(_recover_pending_invocation(
                 drive_root, gateway, record, deliberate_terminal=deliberate_terminal,
             ))
@@ -247,6 +295,14 @@ def _reconcile_each(drive_root: Any, runs: List[RunCustody],
         except Exception:
             log.debug("delegated-run reconciliation close failed", exc_info=True)
     return outcomes
+
+
+def _retain_panel_invocation(drive_root: Any, record: Dict[str, Any]) -> Dict[str, Any]:
+    """Name a REVIEW surface's pending invocation as retained: its panel rejoins it (#1006)."""
+    result = {"invocation_id": str(record["invocation_id"]), "task_id": str(record["task_id"]),
+              "action": "invocation_retained", "reason": "review_panel_owns_invocation"}
+    _custody().emit(drive_root, _custody().RECONCILED, result)
+    return result
 
 
 @timed_phase("custody_pending", within="release_task_runs")
@@ -269,11 +325,7 @@ def _recover_pending_invocation(drive_root: Any, gateway: Any,
     invocation_id = str(record["invocation_id"])
     task_id = str(record["task_id"])
     if _custody().review_owned_source(record.get("source")):
-        result = {"invocation_id": invocation_id, "task_id": task_id,
-                  "action": "invocation_retained",
-                  "reason": "review_panel_owns_invocation"}
-        _custody().emit(drive_root, _custody().RECONCILED, result)
-        return result
+        return _retain_panel_invocation(drive_root, record)
     body = record.get("request")
     if not isinstance(body, dict) or not body:
         result = {"invocation_id": invocation_id, "task_id": task_id,
@@ -281,7 +333,8 @@ def _recover_pending_invocation(drive_root: Any, gateway: Any,
         _custody().emit(drive_root, _custody().RECONCILED, result)
         return result
     from types import SimpleNamespace
-    from ouroboros.owner_pause import run_operation, OwnerPauseRefused
+
+    from ouroboros.owner_pause import OwnerPauseRefused, run_operation
 
     request = dict(body)
     try:
@@ -420,8 +473,12 @@ def _owner_terminal_is_deliberate(drive_root: Any, task_id: str, *,
     stay the reviewer's damage limit.
     """
     from ouroboros.outcomes import (
-        EXECUTION_BEST_EFFORT, EXECUTION_CANCELLED, EXECUTION_DEGRADED, EXECUTION_FAILED,
-        EXECUTION_OK, normalize_outcome_axes,
+        EXECUTION_BEST_EFFORT,
+        EXECUTION_CANCELLED,
+        EXECUTION_DEGRADED,
+        EXECUTION_FAILED,
+        EXECUTION_OK,
+        normalize_outcome_axes,
     )
     from ouroboros.task_results import _TRULY_TERMINAL_STATUSES, load_task_result
 
@@ -461,10 +518,10 @@ def _reconcile_collection(drive_root: Any, gateway: Any, custody: RunCustody, *,
 @timed_phase("custody_run", within="release_task_runs")
 def _reconcile_one(drive_root: Any, gateway: Any, custody: RunCustody, *,
                    deliberate_terminal: str = "") -> Dict[str, Any]:
+    from ouroboros.delegate_custody_current import collection_pending
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
     from ouroboros.task_results import STATUS_CANCELLED
     from ouroboros.tools.delegate_integration import capture_stranded_patch
-    from ouroboros.delegate_custody_current import collection_pending
 
     review_owned = custody.review_owned
     if custody.settled and not review_owned and collection_pending(custody):

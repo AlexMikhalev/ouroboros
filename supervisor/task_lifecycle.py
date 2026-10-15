@@ -151,28 +151,28 @@ def root_cancellation_fenced(task: Dict[str, Any], root_task_id: str = "") -> bo
     return False
 
 
-def apply_budget_root_admission_fence(task: Dict[str, Any], root_task_id: str) -> bool:
-    """Reject new work while a root is explicitly budget-paused OR being cancelled.
-
-    The monetary authority remains the physical-attempt ledger.  This marker is
-    only an admission latch, preventing a budget increase from silently resuming
-    a root after one of its dispatches was refused.
-
-    It is also THE root-level admission latch for subtree cancellation (v6.82.0):
-    a cascade cannot rely on re-sweeping, because a `schedule_subagent` event
-    already draining in the supervisor would be admitted after any number of
-    sweeps and leave a live child under a Cancelled root. Both are answers to the
-    same question — "may this root accept new work?" — so they share one latch
-    and one call site instead of growing a second admission check.
+def apply_budget_root_admission_fence(task: Dict[str, Any], root_task_id: str, *,
+                                      timeout_retry: bool = False) -> bool:
+    """Latch new work under Pause or cancellation; money stays in the attempt ledger.
+    Budget increases cannot resume refused roots. Cascade needs this gate because
+    schedule_subagent can drain after its last sweep. A reaper-only timeout_retry
+    stays admitted under owner Pause but undispatchable at assignment/launch (#1729/1730).
+    Root Resume selects no children. Cancellation/money never grant the retry exception.
     """
     if root_cancellation_fenced(task, root_task_id):
         task["_admission_blocked"] = "root_cancelled"
         return True
     fence = BUDGET_ROOT_FENCES.get(str(root_task_id or ""))
-    if not isinstance(fence, dict) or str(fence.get("status") or "") not in {
-        "active", "paused",
-    }:
+    if not isinstance(fence, dict) or str(fence.get("status") or "") not in {"active", "paused"}:
         return False
+    if timeout_retry and fence.get("cause") == "owner_pause":
+        from ouroboros.task_results import resolve_task_lineage
+
+        lineage = resolve_task_lineage(task.get("id"), **{key: task.get(key) for key in (
+            "metadata", "root_task_id", "parent_task_id", "delegation_role", "original_task_id",
+            "timeout_retry_from")})
+        if lineage["root_task_id"] == str(root_task_id):
+            return False
     # One latch, typed by its cause: an owner Pause is not a monetary stop.
     task["_admission_blocked"] = ("root_owner_paused" if fence.get("cause") == "owner_pause"
                                   else "root_budget_fence")

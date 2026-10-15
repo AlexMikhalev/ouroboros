@@ -76,7 +76,10 @@ typed instead of starting with a dirty copy). A Git-subdirectory
 starting folder clones the enclosing worktree and starts in the matching folder;
 a folderless Project's engine copy is made from this invocation's staged lineage
 inputs (`delegate_readonly_inputs`, `resource_ref.source_root`), never from the
-live scratch. A folder no private copy serves (a data-drive subfolder, an
+live scratch. Folderless readonly and investigation starts stage every permitted
+lineage file, a scheduled origin's whole `task_drive`/`artifact_store` included
+(`tool_access_reads.scheduled_origin`): the copy grows with that scratch, and one
+unreadable or nonregular file refuses the start before opening it (`readonly_inputs_unavailable`). A folder no private copy serves (a data-drive subfolder, an
 ignored starting folder) refuses typed, naming `access='readonly'`. A read-only child
 (an explicit `readonly` lowering, Observe, or a Presence ceiling without a
 delegated write grant) requests `mode: ask`, `access: readonly` under Claudexor's

@@ -370,12 +370,10 @@ def _periodic_supervisor_maintenance(
 
 
 def _run_periodic_custody_sweep(stop_event: Any = None, latch: Any = None) -> None:
-    """Keep slow hashing, reaping and reconciliation off the worker-ack thread (INV-B).
-    The caller's nonblocking latch skips busy passes; ``finally`` releases that latch.
-    Assignment stays concurrent: read candidates before live sets and recheck the
-    generation before each mutation. Spawn only after releasing a failed-start latch,
-    at most once per sweep; healthy installs never spawn or wait here.
-    """
+    """Keep slow hashing, reaping and reconciliation off the worker-ack thread (INV-B). The
+    caller's nonblocking latch skips busy passes; ``finally`` releases that latch. Assignment
+    stays concurrent: read candidates before live sets and recheck the generation before each
+    mutation. Spawn only after releasing a failed-start latch, at most once per sweep."""
     try:
         try:
             if _stop_requested(stop_event):
@@ -385,10 +383,9 @@ def _run_periodic_custody_sweep(stop_event: Any = None, latch: Any = None) -> No
         except Exception:
             log.warning("Terminal projection reconciliation deferred", exc_info=True)
         try:
-            # Issue #844: release the owned-daemon start latch in ITS OWN try, ahead of
-            # the reap, so a raising reap can never pin it; retry once, only when THIS
-            # sweep released a latch, on a short-lived thread as warm_owned_daemon()
-            # does. Contract and residual: DEVELOPMENT.md "Process Custody Rule".
+            # Issue #844: release the owned-daemon start latch in ITS OWN try, ahead of the reap, so a
+            # raising reap can never pin it; retry once, only when THIS sweep released a latch, on a
+            # short-lived thread as warm_owned_daemon() does (DEVELOPMENT.md "Process Custody Rule").
             from ouroboros.claudexor_daemon import get_owned_daemon
 
             if _stop_requested(stop_event):
@@ -398,12 +395,13 @@ def _run_periodic_custody_sweep(stop_event: Any = None, latch: Any = None) -> No
                                  name="owned-daemon-latch-retry", daemon=True).start()
         except Exception:
             log.debug("Owned daemon latch release failed", exc_info=True)
-        # One guard for the steps (a failure still ends the pass), but the row names
-        # WHICH died: unnamed at DEBUG, weeks of silent non-reaping looked healthy.
+        # One guard for the steps (a failure still ends the pass), but the row names WHICH died:
+        # unnamed at DEBUG, weeks of silent non-reaping looked healthy.
         step = "reap_orphaned_processes"
         try:
             from ouroboros.claudexor_daemon import CUSTODY_PURPOSE
             from ouroboros.process_custody import reap_orphaned_processes
+            from ouroboros.process_scope import settle_task_scopes
 
             if _stop_requested(stop_event):
                 return
@@ -412,9 +410,12 @@ def _run_periodic_custody_sweep(stop_event: Any = None, latch: Any = None) -> No
                 live_owner_skills=_installed_skill_names(),
                 retained_purposes={CUSTODY_PURPOSE},
             )
-            # A delegated Claudexor run is an orphan under exactly the same predicate:
-            # its owning task is no longer running. It has no pid, so the process
-            # reaper cannot see it — but it is still spending quota and still writing.
+            step = "settle_task_scopes"  # ended tasks' leftovers, on positive terminal evidence only (abrupt death)
+            if _stop_requested(stop_event):
+                return
+            settle_task_scopes(DATA_DIR, _live_task_ids)
+            # A delegated Claudexor run is an orphan under exactly the same predicate: its owning task is
+            # no longer running. It has no pid, so the process reaper cannot see it, yet it still spends.
             step = "reconcile_delegated_runs"
             if _stop_requested(stop_event):
                 return
@@ -423,7 +424,8 @@ def _run_periodic_custody_sweep(stop_event: Any = None, latch: Any = None) -> No
             if _stop_requested(stop_event):
                 return
             _cursor_refresh_settled_terminals(_live_task_ids)
-            for name in ("reap_orphaned_processes", "reconcile_delegated_runs", "cursor_refresh_settled_terminals"):
+            for name in ("reap_orphaned_processes", "settle_task_scopes", "reconcile_delegated_runs",
+                         "cursor_refresh_settled_terminals"):
                 _step_recovered(name)
         except Exception:
             _step_failed(step, "Periodic custody step %s failed")
@@ -432,14 +434,13 @@ def _run_periodic_custody_sweep(stop_event: Any = None, latch: Any = None) -> No
 
 
 def _retry_latched_daemon_start() -> None:
-    """The one retry of a latched owned-daemon start (#844), by the sweep itself, on
-    its own short-lived daemon thread and only after this sweep released the latch:
-    one ``ensure_owned_gateway`` with ZERO admission and ZERO startup wait, so no
-    loop thread ever holds a startup wait — the spawn happens, custody keeps the
-    child, and ``daemon_starting`` is the EXPECTED answer (the next ordinary caller
-    joins or settles it). Any other typed refusal (a child that died at once has
-    re-latched inside the manager) is a warning; nothing is raised into the loop or
-    retried again, and a gateway that did open is closed at once."""
+    """The one retry of a latched owned-daemon start (#844), by the sweep itself, on its own
+    short-lived daemon thread and only after this sweep released the latch: one
+    ``ensure_owned_gateway`` with ZERO admission and ZERO startup wait, so no loop thread ever
+    holds a startup wait — the spawn happens, custody keeps the child, and ``daemon_starting``
+    is the EXPECTED answer (the next ordinary caller joins or settles it). Any other typed
+    refusal (a child that died at once has re-latched inside the manager) is a warning;
+    nothing is raised into the loop or retried again; an opened gateway is closed at once."""
     from ouroboros.claudexor_daemon import ensure_owned_gateway
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
 
@@ -468,14 +469,16 @@ def _reconcile_delegated_runs(running_task_ids: Any, *, stop_event: Any = None) 
         continued = {str(task["id"]) for task in pending_waits
                      if restore_owner_wait_allowed(DATA_DIR, task)}
 
-        # Zero admission wait: a daemon in its recovery-only window waits for the next
-        # sweep. Once a stop, restart or panic is in flight the factory is ATTACH-ONLY;
-        # the one ensure left to this surface is the latch retry (ARCHITECTURE §9).
+        # Zero admission wait: a daemon in its recovery-only window waits for the next sweep. Once a
+        # stop, restart or panic is in flight the factory is ATTACH-ONLY and nothing is replayed
+        # (``replay_pending`` is re-asked before each re-POST); the one ensure left here is the latch
+        # retry (ARCHITECTURE §9). This admitted sweep is the ONLY surface replaying an ended task's start.
         outcomes = reconcile_orphaned_runs(
             DATA_DIR, running_task_ids=running_task_ids,
             gateway_factory=lambda: (read_owned_gateway() if _stop_requested(stop_event)
                                      else ensure_owned_gateway(admission_wait_sec=0)),
             recoverable_task_ids=recoverable_task_ids(DATA_DIR) | continued,
+            replay_pending=lambda: not _stop_requested(stop_event),
         )
         if outcomes:
             log.info("Delegated-run reconciliation handled %d orphan(s): %s", len(outcomes), outcomes)
@@ -871,13 +874,11 @@ def _run_deferred_startup_prunes():
 
 
 def _cursor_refresh_settled_terminals(live_task_ids: Any = None) -> None:
-    """Cursor-driven pass: runs settled OUTSIDE a generation's reconcile outcomes
-    (terminal-boundary settlements, earlier generations) never reappear in the
-    orphan sweep, so their stored evidence would stay stale forever. Bounded to
-    newly appended custody rows per tick; reads the same live-owner source as both
-    custody surfaces (a still-billing owner defers the heal). At BOOT it runs AFTER
-    the D1a backfill (``_startup_custody_sweep``), so a same-generation heal keeps
-    its pinned ``boot_backfill`` attribution without a second write."""
+    """Cursor-driven pass: runs settled OUTSIDE a generation's reconcile outcomes (terminal-boundary
+    settlements, earlier generations) never reappear in the orphan sweep, so their stored evidence
+    would stay stale forever. Bounded to newly appended custody rows per tick; reads the same
+    live-owner source as both custody surfaces (a still-billing owner defers the heal). At BOOT it
+    runs AFTER the D1a backfill (``_startup_custody_sweep``), keeping its ``boot_backfill`` attribution."""
     try:
         from ouroboros.delegate_terminal import refresh_recently_settled_terminals
 
@@ -907,6 +908,11 @@ def _startup_custody_sweep() -> None:
             log.info("Process custody reaper killed %d orphaned process(es): %s", len(reaped), reaped)
     except Exception:
         log.debug("Process custody startup reap failed", exc_info=True)
+    try:  # ended tasks' leftovers (abrupt death): settled on positive terminal evidence only
+        from ouroboros.process_scope import settle_task_scopes
+        settle_task_scopes(DATA_DIR, _live_task_ids)
+    except Exception:
+        log.debug("Task scope startup sweep failed", exc_info=True)
     _reconcile_delegated_runs(_live_task_ids)
     try:
         # D1a boot backfill, ONCE per generation and AFTER the orphan reconcile

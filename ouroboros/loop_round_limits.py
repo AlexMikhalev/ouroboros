@@ -469,9 +469,22 @@ def _run_authored_context_view(messages, ctx, pending, selected_names):
             notice = {"status": receipt["status"], "receipt_source": source}
         except (OSError, ValueError):
             notice = {"status": receipt["status"], "receipt_source": "unavailable"}
+        exceptions = receipt.get("request_exceptions") or []
+        if receipt.get("inherited_selections_unapplied"):
+            notice["inherited_selections_unapplied"] = receipt["inherited_selections_unapplied"]
+        if exceptions:
+            notice["request_exceptions"] = exceptions
         with_receipt = [*candidate, {"role": "user", "content": "[Context view receipt]\n" + json.dumps(notice, ensure_ascii=False)}]
         try:
             final_fit = fit_candidate(copy.deepcopy(with_receipt), copy.deepcopy(schemas))
+            if final_fit.get("accepted") is not True and exceptions:
+                # Optional detail must not undo an otherwise fitting view. The
+                # counted omission still points to the whole retained receipt.
+                notice.pop("request_exceptions")
+                notice["request_exceptions_omitted"] = len(exceptions)
+                with_receipt = [*candidate, {"role": "user", "content": "[Context view receipt]\n"
+                    + json.dumps(notice, ensure_ascii=False)}]
+                final_fit = fit_candidate(copy.deepcopy(with_receipt), copy.deepcopy(schemas))
         except Exception as exc:
             final_fit = {"accepted": False, "reason": type(exc).__name__}
         if final_fit.get("accepted") is True:
