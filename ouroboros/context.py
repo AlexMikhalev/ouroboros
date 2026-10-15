@@ -1354,9 +1354,7 @@ def _capture_context_core(
             "## Task Contract Discipline\n\n"
             "For non-trivial work, state your success criteria early in your plan or reasoning, "
             "then keep tool use, artifact production, and the final claim aligned with the "
-            "visible task_contract. If task_acceptance_review is available and the work is "
-            "non-trivial, effectful, headless, workspace, or delegated, call it before finalizing "
-            "unless task review mode is off."
+            "visible task_contract."
         ),
     ])
 

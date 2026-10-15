@@ -507,6 +507,10 @@ def test_health_invariants_come_first_in_dynamic_context(tmp_path):
     assert dynamic_text.index("## This room (Main)") < dynamic_text.index("## Health Invariants")
     assert dynamic_text.index("## Health Invariants") < dynamic_text.index("## Scratchpad")
     assert dynamic_text.index("## Health Invariants") < dynamic_text.index("## Drive state")
+    # #1731: the root keeps its contract discipline, and no root context orders a result review
+    # before finalizing: under Auto the review is the author's own typed nomination.
+    assert "## Task Contract Discipline" in dynamic_text and "state your success criteria early" in dynamic_text
+    assert "task_acceptance_review" not in dynamic_text.split("## Task Contract Discipline", 1)[1].split("\n## ", 1)[0]
 
 
 def test_health_invariants_come_first_in_a_consciousness_wake_context(tmp_path):
