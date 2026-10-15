@@ -61,25 +61,23 @@ def request_fields(ctx: Any, row: dict) -> dict:
             "retains_project_lane": bool(row.get("project_id") and writer), "requested_at": time.time()}
 
 
-def seen_interactions(ctx: Any, pairs: Any) -> dict:
+def seen_interactions(ctx: Any, pairs: Any = None) -> dict:
     """Notification exposure carried by the actor, never question consumption."""
-    from ouroboros.delegate_supervision import _load_state
-
-    remembered = getattr(ctx, "_sleep_interaction_seen", None) or {}
-    ack = _load_state(ctx, "")  # actual supervision delivery ACK, not producer's seen memo
-    return {run_id: sorted(set(remembered.get(run_id) or ()) | (
-                set(ack.get("interaction_acknowledged_ids") or ()) if ack.get("run_id") == run_id else set()))
-            for run_id, _invocation_id in pairs}
+    remembered = dict(getattr(ctx, "_sleep_interaction_seen", None) or {})
+    # Old transcripts lacking this map may receive one extra notification;
+    # a latest-run supervision ACK alone proves no question was in this view.
+    ids = remembered if pairs is None else (run_id for run_id, _invocation_id in pairs)
+    return {run_id: sorted(set(remembered.get(run_id) or ())) for run_id in ids}
 
 
-def record_question_notice(ctx: Any, row: dict, external: list) -> None:
-    """Called only after the restored actor's question-source notice is appended."""
-    seen = {**(getattr(ctx, "_sleep_interaction_seen", None) or {}),
-            **((row.get("sleep") or {}).get("interaction_seen") or {})}
-    reason = str((row.get("sleep_ready") or {}).get("reason") or "")
+def record_question_notice(ctx: Any, external: list) -> None:
+    """Called only after this actor's question-source notice reaches its transcript."""
+    seen = seen_interactions(ctx)
     for run in external:
+        if not isinstance(run, dict):
+            continue
         rid = str(run.get("run_id") or "")
-        if reason == f"run_question:{rid}" and run.get("interaction_source"):
+        if rid and not run.get("review_owned") and run.get("interaction_source"):
             seen[rid] = sorted(set(seen.get(rid) or ()) | set(run.get("pending_interaction_ids") or ()))
     ctx._sleep_interaction_seen = seen
 

@@ -465,3 +465,57 @@ def test_a_busy_answer_to_a_post_still_wakes_the_model(tmp_path, monkeypatch):
     result, sleeps, notes, reads = _supervised_busy(tmp_path, monkeypatch, busy_reads=0, busy_handshake=True)
     assert result["status"] == "refused" and result["reason"] == "daemon_busy", result
     assert reads == [] and sleeps == [] and notes == []
+
+
+def test_a_delivered_refused_wake_is_acknowledged_by_the_loop_and_the_next_wait_observes(tmp_path, monkeypatch):
+    """A refusal relayed as a wake is a complete ERROR result. The loop still acknowledges the
+    wake that result names (``acknowledge_pending_wake`` proves delivery itself), so the next
+    ``delegate_wait`` observes the run instead of replaying the stale refusal."""
+    from ouroboros import loop_tool_execution as execution
+    from ouroboros.tools.registry import ToolRegistry
+
+    ctx = _delegating_ctx(tmp_path, acting=False)
+    monkeypatch.setattr(delegate_supervision.time, "sleep", lambda _sec: None)
+    monkeypatch.setitem(delegate_custody._CUSTODY, "run-busy", delegate._RunCustody(
+        task_id=ctx.task_id, route_id="fixture", model="fixture", project_id="fixture",
+        project_owned=False, access="readonly"))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    handshakes = []
+
+    def handler(request):
+        if request.url.path == "/v2/handshake":
+            handshakes.append(request.method)
+            return _busy() if len(handshakes) == 1 else httpx.Response(
+                200, json={"compatible": True, "protocolMajor": 3, "engine": {"version": "3.25.1", "sha": "f"}})
+        if request.url.path == "/v2/agent-capabilities":
+            return httpx.Response(200, json={"harnesses": [{"id": "fixture", "liveInput": "mid_turn"}]})
+        if request.url.path == "/v2/operations":
+            return httpx.Response(200, json={"operations": []})
+        assert request.url.path == "/v2/runs/run-busy", request.url.path
+        return httpx.Response(200, json={"lastSeq": 1, "summary": {
+            "state": "succeeded", "effectiveAccess": "readonly", "runDir": str(run_dir),
+        }, "primaryOutput": {"kind": "answer", "text": "complete result", "truncated": False}})
+
+    monkeypatch.setattr(gateway_module, "ClaudexorGateway", lambda *a, **k: _scripted_gateway(handler))
+    registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=tmp_path)
+    registry._ctx = ctx
+    executor = execution.StatefulToolExecutor()
+
+    def wait(call_id):
+        call = {"id": call_id, "type": "function", "function": {
+            "name": "delegate_wait", "arguments": json.dumps({"run_id": "run-busy"})}}
+        return execution._execute_with_timeout(registry, call, tmp_path / "logs", 30, ctx.task_id, executor)
+
+    try:
+        refused = wait("wait-refused")
+        assert refused["is_error"] and json.loads(refused["result"])["reason"] == "daemon_busy", refused["result"]
+        messages = []
+        execution.process_tool_results([refused], messages, {"tool_calls": []}, lambda *_a, **_k: None,
+                                       tools=registry)
+        assert [m["tool_call_id"] for m in messages] == ["wait-refused"]
+        observed = json.loads(wait("wait-next")["result"])
+    finally:
+        executor.shutdown()
+    assert observed["status"] == "terminal" and observed["state"] == "succeeded", observed
+    assert handshakes == ["POST", "POST"], "the next wait observed afresh instead of replaying"

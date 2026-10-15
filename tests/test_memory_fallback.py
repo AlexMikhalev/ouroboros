@@ -689,7 +689,7 @@ def test_a_paid_answer_whose_publication_raises_is_billed_without_a_receipt(tmp_
 
 
 def test_the_writer_never_nominates_knowledge_or_touches_the_old_dialogue_files(tmp_path, monkeypatch, light):
-    from ouroboros import consolidator, knowledge
+    from ouroboros import knowledge
 
     shared.world(tmp_path)
     _consciousness(monkeypatch, False)
@@ -698,7 +698,6 @@ def test_the_writer_never_nominates_knowledge_or_touches_the_old_dialogue_files(
     def forbidden(*_a, **_k):
         raise AssertionError("the fallback writer does not write knowledge")
 
-    monkeypatch.setattr(consolidator, "_write_knowledge_entries", forbidden)
     monkeypatch.setattr(knowledge, "write_knowledge_note", forbidden)
     assert _run(tmp_path, _Light()).outcome == "published"
     assert {name: (tmp_path / "memory" / name).read_bytes() for name in frozen} == frozen

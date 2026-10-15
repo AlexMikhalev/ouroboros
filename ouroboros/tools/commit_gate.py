@@ -1044,7 +1044,8 @@ def run_commit_preflight(ctx: ToolContext, reviewer: str, *, commit_message: str
     try:
         result = rc.run_review_change(ctx, root="system_repo", subject="worktree", surface="preflight",
                                       reviewers=[reviewer], goal=goal or commit_message, scope=scope,
-                                      review_rebuttal=review_rebuttal)
+                                      review_rebuttal=review_rebuttal,
+                                      _preflight_execution=getattr(ctx, "_preflight_execution", None))
     except (BudgetExceeded, BudgetPauseRequested):
         raise
     except Exception as exc:
@@ -1264,6 +1265,8 @@ def _review_ledger_facts(ctx: ToolContext, commit_message: str, *, goal: str, sc
         "advisory_findings": list(getattr(ctx, "_last_review_advisory_findings", []) or []),
         "tests": _review_tests_facts(ctx, tests_passed),
         "preflight": _review_preflight_facts(ctx),
+        # The exhibit frozen before this attempt's dispatch, never re-derived at settle.
+        "preflight_execution": dict(getattr(ctx, "_preflight_execution", None) or {"status": "unobserved"}),
     }
 
 
@@ -1284,7 +1287,9 @@ def _review_tests_facts(ctx: ToolContext, tests_passed: Any) -> Dict[str, Any]:
     the checkout it tested, so it counts only when the process-held test proof still covers
     the current tree/index/workload (``commit_admission.PreflightTestProof``); a skipped
     or stale run is ``NOT_RUN`` with its reason, never a passed result borrowed from an
-    earlier candidate."""
+    earlier candidate. The exhibit this attempt froze for its seats governs too: one that
+    never entered the tests (a deterministic refusal) is ``NOT_RUN`` although a kept
+    earlier proof still covers the candidate."""
     if tests_passed is not True:
         return {"policy": "NOT_RUN", "result": "unknown"}
     try:
@@ -1293,6 +1298,9 @@ def _review_tests_facts(ctx: ToolContext, tests_passed: Any) -> Dict[str, Any]:
         bound = bool(preflight_test_proof_matches(ctx, ctx.repo_dir))
     except Exception:
         bound = False
+    exhibit = getattr(ctx, "_preflight_execution", None)
+    if bound and isinstance(exhibit, dict) and exhibit.get("status") == "not_run":
+        return {"policy": "NOT_RUN", "result": "unknown", "reason": "tests_not_started"}
     if bound:
         return {"policy": "run", "result": "passed", "proof": "candidate_bound"}
     return {"policy": "NOT_RUN", "result": "unknown", "reason": "tests_proof_not_for_this_candidate"}

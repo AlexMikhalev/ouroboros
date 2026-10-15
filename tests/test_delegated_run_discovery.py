@@ -251,11 +251,13 @@ def test_a_root_continue_reads_its_old_nanny_childs_answer_after_drive_cleanup(g
     for reader in (continuation, parent):
         refused = _execute(reader, "read_file", root="artifact_store", path=str(canonical_file))
         assert refused.text.startswith("⚠️") and "outside selected root=artifact_store" in refused.text
-    # runtime_data reaches it only where the reader's runtime root IS the canonical drive.
-    blocked = _execute(continuation, "read_file", root="runtime_data", path=str(canonical_file))
-    assert blocked.text.startswith("⚠️") and "outside selected root=runtime_data" in blocked.text
-    via_runtime = _execute(parent, "read_file", root="runtime_data", path=str(canonical_file))
-    assert (via_runtime.text.startswith("⚠️")) is parent_forked
+        # Canonical runtime_data READ parity: an absolute path reaches the original from a
+        # forked reader too; a relative one keeps the fork's own (here absent) bytes.
+        via_runtime = _execute(reader, "read_file", root="runtime_data", path=str(canonical_file))
+        assert via_runtime.status == "ok" and not via_runtime.text.startswith("⚠️"), via_runtime.text[:300]
+        relative = str(canonical_file.relative_to(geo.canonical))
+        local = _execute(reader, "read_file", root="runtime_data", path=relative)
+        assert ("DATA_NOT_YET_CREATED" in local.text) is (pathlib.Path(reader.drive_root) != geo.canonical), local.text[:300]
 
     listed = _execute(continuation, "get_task_result", task_id=NANNY).text
     assert '"staged_output"' in listed and source["sha256"] in listed, "the receipt names the answer"
@@ -582,13 +584,17 @@ def test_unknown_engine_facts_stay_absent_and_the_line_stays_bounded(tmp_path):
     assert custody.replay(tmp_path)["run-00"].engine_locator == {}
 
 
-def test_one_custody_replay_serves_every_delegated_line(tmp_path, monkeypatch):
+def test_one_custody_read_serves_every_delegated_line(tmp_path, monkeypatch):
+    from ouroboros import delegate_custody_current as current
+
     _settle(tmp_path)
-    calls = []
-    real = custody.replay
-    monkeypatch.setattr(custody, "replay", lambda *a, **k: calls.append(1) or real(*a, **k))
+    calls, replays = [], []
+    real, real_replay = current.health_runs, custody.replay
+    monkeypatch.setattr(current, "health_runs", lambda *a, **k: calls.append(1) or real(*a, **k))
+    monkeypatch.setattr(custody, "replay", lambda *a, **k: replays.append(1) or real_replay(*a, **k))
     assert "OWN DELEGATED RUN ENDED" in _health(tmp_path)
     assert calls == [1]
+    assert replays == []
 
 
 def test_the_context_builder_passes_the_actual_attempt(tmp_path, monkeypatch):

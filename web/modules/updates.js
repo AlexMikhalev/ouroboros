@@ -39,6 +39,21 @@ function extraWarnings(data) {
         .filter((w) => !STATE_WARNINGS.has(String(w).split(':', 1)[0]) && !STATE_WARNINGS.has(w));
 }
 
+const LOCAL_CHANGES = { absent: 'none', present: 'present', unknown: 'unknown' };
+
+// Why an available update is a caution: content of the checkout's own, an
+// unknown comparison, or uncommitted work (stashed and restored around the update).
+function unsafeUpdateHint(data) {
+    const parts = [];
+    if (data.local_changes === 'present') {
+        parts.push('This checkout changed since its last shared commit with the official line; applying merges those changes.');
+    } else if (data.local_changes !== 'absent') {
+        parts.push('Could not compare this checkout with the official line; applying merges any local changes.');
+    }
+    if (data.dirty) parts.push('Uncommitted changes are stashed and restored around the update.');
+    return parts.join(' ');
+}
+
 function statusReadFailed(data) {
     return Array.isArray(data?.warnings)
         && data.warnings.some((warning) => String(warning).startsWith('status_error:'));
@@ -112,11 +127,17 @@ export function updateVerdict(data = {}, phase = '') {
     if (data.official_repo_url) chips.push({ label: 'Official repo', value: repoSlug(data.official_repo_url) });
     if (data.target_ref) chips.push({ label: 'Target', value: data.target_ref });
     if (data.update_channel) chips.push({ label: 'Channel', value: data.update_channel, link: 'settings-advanced' });
-    const divergence = [];
-    if (data.behind) divergence.push(`${data.behind} incoming`);
-    if (data.ahead) divergence.push(`${data.ahead} local`);
-    if (data.dirty_count) divergence.push(`${data.dirty_count} dirty`);
-    if (divergence.length) chips.push({ label: 'Divergence', value: divergence.join(' / ') });
+    // Commit counts are history (the updater's own merges count too); whether the
+    // checkout holds content of its own is the server's `local_changes` fact.
+    const commits = [];
+    if (data.behind) commits.push(`${data.behind} incoming`);
+    if (data.ahead) commits.push(`${data.ahead} local`);
+    if (commits.length) chips.push({ label: 'Commits', value: commits.join(' / ') });
+    if (LOCAL_CHANGES[data.local_changes]) {
+        chips.push({ label: 'Local changes', value: data.local_changes === 'present'
+            ? `present since ${String(data.local_changes_base || '').slice(0, 8)}` : LOCAL_CHANGES[data.local_changes] });
+    }
+    if (data.dirty_count) chips.push({ label: 'Uncommitted', value: `${data.dirty_count} file(s)` });
 
     const warnings = extraWarnings(data);
     const base = { chips, warnings, checkedAgo };
@@ -245,7 +266,7 @@ export function updateVerdict(data = {}, phase = '') {
             state: unsafe ? 'available_unsafe' : 'available',
             tone: unsafe ? 'warn' : 'ok',
             headline: `Update available: ${currentVersion} (${currentSha}) -> ${latestVersion} (${latestSha})`,
-            hint: unsafe ? 'Local commits or uncommitted changes diverge from the official line; applying merges them.' : '',
+            hint: unsafe ? unsafeUpdateHint(data) : '',
             action: { id: 'update', label: `Update to ${latestVersion}` },
         };
     }
@@ -896,7 +917,7 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
                 title: `Update ${String(plan.base_sha).slice(0, 8)} -> ${String(plan.target_sha).slice(0, 8)}`,
                 body: assisted
                     ? `${conflictCount} conflict(s) need resolution. Ouroboros will resolve the merge as a reviewed task (model spend applies); progress lands in chat, and the server restarts after the reviewed commit.`
-                    : `Git applies this update directly (${plan.local_dirty_count || 0} local change(s) are stashed and restored). The server restarts when it lands.`,
+                    : `Git applies this update directly (${plan.local_dirty_count || 0} uncommitted file(s) are stashed and restored). The server restarts when it lands.`,
                 confirmLabel: assisted ? 'Start reviewed resolution' : 'Update now',
             });
             if (!proceed) {

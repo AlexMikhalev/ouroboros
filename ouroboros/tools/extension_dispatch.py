@@ -332,6 +332,9 @@ def _dispatch_extension_tool_untagged(
     except controls:
         raise
     except Exception as exc:
+        from ouroboros.store import StoreError
+        if isinstance(exc, StoreError) and handoff is not None and handoff.get("not_started") is True:
+            raise  # registry snapshots the shared positive no-entry fact
         text = f"⚠️ TOOL_ERROR ({name}): extension tool failed: {type(exc).__name__}: {exc}"
         return _extension_result("error", "EXTENSION_ERROR", text, dispatched=True)
 

@@ -24,6 +24,9 @@ from ouroboros.delegate_custody import RunCustody as _RunCustody
 from ouroboros.delegate_registration_policy import (
     INVESTIGATION_AUTHORITY, no_write_authority, record_persistent as _record_persistent)
 from ouroboros.delegate_shared import _fail, lock_busy_facts
+from ouroboros.delegate_start_claims import (
+    PAYLOAD_CUSTODY_UNREADABLE as _UNREADABLE_HOLDER, payload_busy_detail,
+)
 from ouroboros.configured_subagents import SESSION_ACCESS_PROFILES
 from ouroboros.tools.tool_result import ToolResult
 from ouroboros.tools.registry import ToolContext, active_repo_dir_for
@@ -735,28 +738,36 @@ def _payload_delegation_busy(drive: pathlib.Path, target: pathlib.Path) -> str:
 
     Two concurrent delegations against one payload would race the same CAS
     baseline, so the second is refused while the first has undisposed custody.
-    Single-pass (Sol delta, fix 5a): both projections replay ONE pre-read row
-    snapshot — two separate log reads let the holder's REQUESTED→STARTED
-    transition land between them and a second start slipped the claim lock;
-    against one snapshot the holder is in exactly one state, never missed.
+    Single-pass (Sol delta, fix 5a): both projections come from ONE store read
+    transaction (``delegate_custody_current.payload_snapshot``) — two separate
+    reads let the holder's REQUESTED→STARTED transition land between them and a
+    second start slipped the claim lock; against one snapshot the holder is in
+    exactly one state, never missed. A failed read names ``_UNREADABLE_HOLDER``:
+    unknown custody refuses the start, never reads as a free payload.
 
     An obligation is held by the payload, not by the task that created it: a
     holder whose OWNER TASK is terminal cannot race the CAS baseline (its
     snapshot is frozen; the apply-time whole-payload CAS is the real race
     guard), so it stops locking the payload. Unprovable terminality keeps the
-    lock, and the cheap authority/target filters short-circuit first.
+    lock, and the cheap authority/target filters short-circuit first; the
+    terminality read follows the closed transaction.
     """
+    from ouroboros.delegate_custody_current import payload_snapshot
     from ouroboros.delegate_terminal import _task_is_terminal
 
     resolved = _resolved(target)
-    rows = list(custody.custody_rows(drive))
-    for run in custody.replay(drive, rows=rows).values():
+    try:
+        held = payload_snapshot(drive)
+    except Exception:
+        log.warning("Payload custody unreadable under %s; the start is refused", drive, exc_info=True)
+        return _UNREADABLE_HOLDER
+    for run in held["runs"].values():
         if (run.authority_source == "skill_payload"
                 and _resolved(run.target_root) == resolved
                 and not (run.settled and run.patch_disposed)
                 and not _task_is_terminal(drive, run.task_id)):
             return run.run_id or run.invocation_id
-    for record in custody.pending_invocations(drive, rows=rows):
+    for record in held["pending"]:
         if (str(record.get("authority_source") or "") == "skill_payload"
                 and _resolved(record.get("target_root")) == resolved
                 and not _task_is_terminal(drive, str(record.get("task_id") or ""))):
@@ -893,18 +904,15 @@ def _payload_mutation_authority(
     if busy:
         # Name the HOLDER'S OWNER, not a call the refused caller cannot make:
         # delegate_wait and integrate_delegated_patch both refuse a non-owner.
-        # A PENDING (START_REQUESTED-only) holder has no replayed run row.
-        holder_owner = str(
+        # A PENDING (START_REQUESTED-only) holder has no replayed run row;
+        # unreadable custody has no holder to name.
+        holder_owner = "" if busy == _UNREADABLE_HOLDER else (str(
             getattr(custody.lookup(drive, "", busy)[1], "task_id", "") or "") or next(
             (str(r.get("task_id") or "") for r in custody.pending_invocations(drive)
-             if str(r.get("invocation_id") or "") == busy), "")
+             if str(r.get("invocation_id") or "") == busy), ""))
         return None, None, _fail(
             "delegate_start", "payload_delegation_busy",
-            "Another delegated run holds this exact payload open: its custody is "
-            "not yet settled AND disposed, and its owner task is still live (or its "
-            "terminality cannot be proven from task results). Wait for that task to "
-            "finish, or pick another skill: a non-owner can neither delegate_wait "
-            "that run nor integrate its capture.",
+            payload_busy_detail(busy),
             holder=busy, holder_owner_task_id=holder_owner,
             target_root=str(target))
     record = {

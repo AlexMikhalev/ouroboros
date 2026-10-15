@@ -555,7 +555,7 @@ class _ModelInvocation:
             time.sleep(min(config.CLAUDEXOR_MODEL_POLL_INTERVAL_SEC, self.timeout))
 
     def _control_outage(self, *, recovered: bool = False) -> bool:
-        """Ordinary direct and queued calls keep the same operation through control loss."""
+        """Running turns keep the same accepted operation through control loss."""
         from ouroboros.loop_transport import TransportWaitEpisode, emit_network_wait_event, managed_transport_continuation
         waiter = current_model_wait()
         ctx = getattr(waiter, "tool_context", None)

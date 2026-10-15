@@ -384,7 +384,9 @@ class TestWireProjection:
         )
         sent = [m for m in kwargs["messages"] if m.get("role") == "assistant"]
         assert "reasoning_content" not in sent[0]
-        assert "reasoning_effort" not in kwargs  # non-carrying lane unchanged
+        # Effort rides the standard field, without DeepSeek's projection or toggle.
+        assert kwargs["reasoning_effort"] == "high"
+        assert "thinking" not in (kwargs.get("extra_body") or {})
 
     def test_normalize_keeps_deepseek_reasoning_in_transcript(self):
         client = LLMClient(api_key="x")

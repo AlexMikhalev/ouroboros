@@ -37,7 +37,7 @@ def _finish_in_worker(root_text, task, event_queue, report_queue, attach):
     # Resume after all paid stages: exercise the actual final callback without
     # asking a provider or replacing the checkpoint/projection/outbox writers.
     _run_post_task_processing_async(
-        env, task, {}, {}, {}, root / "logs", blocking=True,
+        env, task, {}, {}, root / "logs", blocking=True,
         event_queue=event_queue if attach else None,
         resume={"usage_snapshot": {}, "completed_stages": [
             "memory_fallback_draft", "scratchpad_consolidation", "reflection", "promotion",

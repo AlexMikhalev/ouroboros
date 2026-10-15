@@ -5,11 +5,11 @@ real WebSocket reconnect and on a narrow light page — then settles once.
 
 Only model judgment is a fixture. The provider refusal is a real HTTP 401 on
 the model wire, the host's provider-unavailable rail preserves intermediate work,
-and the one event-held call is the post-task reflection (identified by the first
-line of the production prompt; the fixture's tool round exits nonzero, so
-the typed reflection trigger fires — there is no paid summary), so
-synthesis is provably open while the browser looks. Nothing is timed: every
-wait is an event or a bounded DOM poll.
+and the one event-held call is the root's post-task scratchpad compression
+(identified by the production prompt's line over a scratchpad seeded past its
+threshold — there is no paid summary and no reflection), so synthesis is
+provably open while the browser looks. Nothing is timed: every wait is an event
+or a bounded DOM poll.
 """
 import json
 
@@ -17,7 +17,7 @@ import pytest
 
 from devtools.benchmarks.common.server_runner import _api
 from ouroboros.contracts.chat_id_policy import WEB_UI_CHAT_ID
-from ouroboros.reflection import _REFLECTION_PROMPT_HEAD
+from ouroboros.memory import Memory
 from tests.test_owner_wait_integration import wait_clone as clone_fixture
 from tests.system_e2e.harness import (
     ArtifactOracle, KeylessIsolatedServer, ModelGate, ScriptedStubModel, body_text,
@@ -28,7 +28,7 @@ wait_clone = clone_fixture
 pytestmark = [pytest.mark.serial, pytest.mark.browser]
 
 MARKER = "FAILED_FINALIZING_REAL_ACTOR"
-REFLECTION_MARKER = _REFLECTION_PROMPT_HEAD.splitlines()[0]
+SCRATCHPAD_MARKER = "The scratchpad working memory has"  # ouroboros/consolidator.py::consolidate_scratchpad
 SALVAGE_MARKER = "[PROVIDER_UNAVAILABLE]"  # ouroboros/loop.py::_provider_unavailable_result
 NEUTRAL = "Nothing further to record for this fixture."
 TITLE = "Provider outage proof"
@@ -73,8 +73,8 @@ class _OutageModel(ScriptedStubModel):
     class, so no backoff retries) on every later tool round of the marked task AND on
     the host's forced outage final (``[PROVIDER_UNAVAILABLE]``): the provider is down
     for that call too, so the host's terminal incident preserves the intermediate
-    output (``host_salvage``). The post-task reflection is never refused — it is the
-    one call the gate holds."""
+    output (``host_salvage``). The post-task scratchpad compression is never refused —
+    it is the one call the gate holds."""
 
     def __init__(self, gate):
         super().__init__([{"tool": "run_command", "arguments": {
@@ -100,9 +100,17 @@ class _OutageModel(ScriptedStubModel):
 
         self._server.RequestHandlerClass = Handler
 
+    def _answer(self, body, seq):
+        if SCRATCHPAD_MARKER in body_text(body):
+            # The held late-phase call answers as the production prompt asks, so the
+            # phase completes instead of recording a failed scratchpad upkeep.
+            return "scratchpad", {"role": "assistant", "content": json.dumps(
+                {"compressed_block": "Compressed fixture working notes."})}
+        return super()._answer(body, seq)
+
     def _refuse(self, body):
         text = body_text(body)
-        if MARKER not in text or REFLECTION_MARKER in text:
+        if MARKER not in text or SCRATCHPAD_MARKER in text:
             return False
         later_tool_round = bool(body.get("tools")) and any(
             isinstance(m, dict) and m.get("role") == "tool" for m in body.get("messages") or [])
@@ -166,7 +174,10 @@ def test_failed_root_reads_failed_then_finalizing(wait_clone, tmp_path, monkeypa
     # only and must itself be a temp-root path, so the test never writes elsewhere.
     shots = tmp_path / "screenshots"
     shots.mkdir(parents=True, exist_ok=True)
-    gate = ModelGate(lambda body: REFLECTION_MARKER in body_text(body) and MARKER in body_text(body), timeout=300)
+    # A scratchpad past its compression threshold: the root's late phase buys that one call.
+    for index in range(4):
+        Memory(root).append_scratchpad_block(f"{MARKER} working note {index}: " + "w" * 9_000, source=f"fixture-{index}")
+    gate = ModelGate(lambda body: SCRATCHPAD_MARKER in body_text(body) and MARKER in body_text(body), timeout=300)
     facts = {}
     with _OutageModel(gate) as model:
         settings_path = root / "settings.json"
@@ -188,7 +199,7 @@ def test_failed_root_reads_failed_then_finalizing(wait_clone, tmp_path, monkeypa
                         "memory_mode": "forked", "metadata": {"delegation_role": "root"}})
                     task_id = str(created.get("task_id") or "")
                     assert task_id, created
-                    # The held reflection IS the open synthesis: the early final already left.
+                    # The held compression IS the open synthesis: the early final already left.
                     assert gate.arrived.wait(180), (model.kinds(), oracle.task_result(task_id))
                     # The worker's own (forked) row already settled Failed; the canonical
                     # row stays live until task_done, and carries the open checkpoint.

@@ -88,6 +88,8 @@ class ReviewLedgerRecord:
     author_decision: Optional[Dict[str, Any]] = None
     tests: Dict[str, Any] = field(default_factory=lambda: {"policy": "NOT_RUN", "result": UNKNOWN})
     preflight: Dict[str, Any] = field(default_factory=lambda: {"status": "not_performed", "record_id": ""})
+    # The exhibit frozen for this attempt; dispatch and observed exposure are separate facts.
+    preflight_execution: Dict[str, Any] = field(default_factory=lambda: {"status": "unobserved"})
     dispatch_refusal: Optional[Dict[str, Any]] = None
     cost: Dict[str, Any] = field(default_factory=lambda: {"usd": 0.0, "unknown": True})
     fingerprints: Dict[str, Any] = field(default_factory=lambda: {"review_contract": "", "binding": ""})
@@ -996,6 +998,7 @@ def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "
         rows=rows, verdict=verdict,
         tests=dict(facts.get("tests") or {"policy": "NOT_RUN", "result": UNKNOWN}),
         preflight=dict(facts.get("preflight") or {"status": "not_performed", "record_id": ""}),
+        preflight_execution=dict(facts.get("preflight_execution") or {"status": "unobserved"}),
         dispatch_refusal=dict(refusal) if isinstance(refusal, dict) else None,
         cost={"usd": round(sum(known_costs), 6), "unknown": len(known_costs) < len(rows)},
         fingerprints={"review_contract": contract_fp, "binding": str(facts.get("binding_fingerprint") or ""),
@@ -1011,9 +1014,11 @@ def build_commit_gate_record(facts: Dict[str, Any], *, record_id: str = "", driv
 # What a pending record keeps from the attempt that DISPATCHED the wave when a later
 # attempt settles it: the subject, the brief with the checklist/rules the seats were
 # judged by, the panel, the fingerprints (reuse key over those rules), and per seat
-# the requested row, its parts and the brief it was given.
+# the requested row, its parts and the brief it was given; the execution exhibit too,
+# and a dispatch that recorded none (pre-exhibit) stays unobserved, never backfilled.
 PROVENANCE_FIELDS = ("task_id", "root_task_id", "review_wave_id", "surface", "subject", "brief", "enforcement", "mode",
-                     "enforcement_blocks", "panel", "fingerprints", "preflight", "dispatch_refusal", "author_decision")
+                     "enforcement_blocks", "panel", "fingerprints", "preflight", "preflight_execution",
+                     "dispatch_refusal", "author_decision")
 ROW_PROVENANCE_FIELDS = ("subagent_id", "parts", "additional", "requested", "brief_sha")
 
 
@@ -1025,7 +1030,8 @@ def settle_pending_payload(prior: Dict[str, Any], fresh: Dict[str, Any]) -> Dict
     status, cost, observed model and response refs, the verdict, the cost, the state —
     so a rules or brief update between dispatch and settle never rewrites what the
     seats actually read. ``revision``/``ts`` are ``revise_record``'s."""
-    settled = {**fresh, **{key: prior[key] for key in PROVENANCE_FIELDS if key in prior}}
+    settled = {**fresh, **{key: prior[key] for key in PROVENANCE_FIELDS if key in prior},
+               **({} if "preflight_execution" in prior else {"preflight_execution": {"status": "unobserved"}})}
     before = {str(row.get("seat_id") or ""): row for row in prior.get("rows") or [] if isinstance(row, dict)}
     rows = []
     for row in fresh.get("rows") or []:

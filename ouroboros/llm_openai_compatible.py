@@ -192,12 +192,14 @@ class _OpenAICompatibleLaneMixin:
                     # its caller-declared affinity instead.
                     kwargs["prompt_cache_key"] = cache_identity
             requested_effort = normalize_reasoning_effort(reasoning_effort)
-            if direct_openai:
-                # Effort-carrying routes honor the OUROBOROS_EFFORT_* lanes
-                # instead of dropping them like generic compatible lanes.
-                # Keyed on the PROVIDER id, not a target capability field, so
-                # a hand-built target (fixtures, probes) cannot silently drop
-                # the carriage; request-wire recovery adapts on a provider 400.
+            if provider not in {"deepseek", "zai"}:
+                # Every Chat Completions route carries the owner's effort in the
+                # standard field: direct OpenAI, MiniMax, Cloud.ru and any
+                # OpenAI-compatible server alike. No provider or model list
+                # decides it — unknown is not no — so a route that refuses the
+                # field or a value is adapted by request-wire recovery on that
+                # exact route's own rejection, requested and sent kept apart.
+                # DeepSeek and Z.ai keep their measured projections below.
                 kwargs["reasoning_effort"] = requested_effort
             elif provider == "deepseek":
                 # Same carriage, projected onto DeepSeek's wire dialect
