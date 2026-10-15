@@ -415,6 +415,12 @@ def test_timed_out_mcp_runner_cannot_start_after_caller_return(tmp_path, monkeyp
     monkeypatch.setattr(mcp_client, "_transport_factory", transport)
     monkeypatch.setattr(mcp_client, "ClientSession", Session)
     def timed_call(*_a):
+        join = threading.Thread.join
+        def after_entry(thread, timeout=None):
+            if thread.name == "mcp-sync-runner":
+                assert entered.wait(5)  # prove preparation began before caller timeout
+            return join(thread, timeout)
+        monkeypatch.setattr(threading.Thread, "join", after_entry)
         try:
             return mcp_client._run_async(
                 lambda: mcp_client._call_tool_async(None, "effect", {}, timeout_sec=10), join_timeout=0)
@@ -427,7 +433,8 @@ def test_timed_out_mcp_runner_cannot_start_after_caller_return(tmp_path, monkeyp
     try:
         result = asyncio.run(execute())
         assert result.status == "timeout" and entered.wait(5)
-        assert not load_task_result(tmp_path, "root").get("launch_handoffs")
+        # Unlike a closed-before-entry runner, this transport is really alive.
+        assert load_task_result(tmp_path, "root").get("launch_handoffs")
     finally:
         release.set()
         assert entered.wait(5)

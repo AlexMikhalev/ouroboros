@@ -454,10 +454,10 @@ def _typed_result_metadata(
     is_error: bool,
     tool_result: ToolResult | None = None,
 ) -> Dict[str, Any]:
-    """Outcome facts for summaries and reflections, taken from the typed result.
+    """Outcome facts for the trace, taken from the typed result.
 
     The status is the code's ``outcome_bucket``, which IS the trace vocabulary the
-    outcome classifier, the reflection scan and the web client already read, so the
+    outcome classifier and the web client already read, so the
     cutover replaces the PRODUCER of the field, not its consumers.
 
     The rules below are deliberately NOT text classification and stay here: the
@@ -502,7 +502,7 @@ def _typed_result_metadata(
             meta["plan_review_historical_critic"] = bool(tool_result.meta.get("plan_review_historical_critic"))
     if isinstance(tool_result, ToolResult) and tool_result.meta.get("post_commit_tests") == "failed":
         # A preserved commit whose post-commit tests failed is a SUCCESS that
-        # still holds a failure the reflection triggers must see. The producer
+        # still holds a failure the trace keeps as a typed fact. The producer
         # states it; nothing here reads the result body for the word.
         meta["post_commit_tests"] = "failed"
     if fn_name in _PROCESS_RESULT_TOOLS and isinstance(tool_result, ToolResult):
@@ -1032,16 +1032,17 @@ def _execute_with_timeout(
             else:
                 submit = scope.enter_context(abandoned_on_timeout(timeout_sec, bounded=not is_reviewed_mutative))
             from ouroboros.owner_pause import OwnerPauseRefused
+            from ouroboros.store import StoreError
             try:
                 future, release_tool_custody = submit_tool_future(
                     tool_ctx, invocation["invocation_id"], fn_name, submit, _settling_tool_worker,
                     function, tools, drive_logs, live, invocation, *arguments)
-            except OwnerPauseRefused as exc:
+            except (OwnerPauseRefused, StoreError) as exc:
                 if not use_stateful:
                     raise
                 from ouroboros.tools.tool_result import launch_refusal_result
                 result = _execute_single_tool(tools, tc, drive_logs, task_id, invocation,
-                                              host_refusal=launch_refusal_result(str(exc)))
+                                              host_refusal=launch_refusal_result(exc, not_started=True))
                 return _emit_finished(tools, live, result, started_at)
             # Registration pins the caller through the wait and any late-hold
             # claim. The exact submitted future also identifies no-entry cancellation.

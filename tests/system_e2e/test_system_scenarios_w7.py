@@ -177,25 +177,17 @@ PARTICIPATION_RULES = (
 )
 
 
-_REFLECTION_MARKER = "Write the reflection now."  # ouroboros/reflection.py, the post-task reflection turn
-_REFLECTION_ANSWER = ("Scripted scenario; nothing to persist.\nMEMORY_ACTIONS_JSON: []\n"
-                      "BACKLOG_CANDIDATES_JSON: []")
-
-
 class _PeerReplayModel(ReplayModel):
     """``ReplayModel`` whose host-side turns are answered canned without consuming the
     fixture: TOOL-LESS non-review calls (the supervisor's semantic duplicate probe on
-    the light slot, and any other plain host probe) and the post-task REFLECTION turn
-    (tool-bearing, after the final answer). The actors under test are the scripted
-    tool-bearing rounds; host probe and reflection counts are not part of the wiring
-    being proved."""
+    the light slot, and any other plain host probe). The actors under test are the
+    scripted tool-bearing rounds; host probe counts are not part of the wiring being
+    proved."""
 
     def _answer(self, body: dict, seq: int) -> tuple[str, dict]:
         kind = classify_call(body)
         if canned_review_answer(kind) is None and not body.get("tools"):
             return "plain", {"role": "assistant", "content": "No existing task duplicates this request."}
-        if canned_review_answer(kind) is None and _REFLECTION_MARKER in body_text(body):
-            return "reflection", {"role": "assistant", "content": _REFLECTION_ANSWER}
         return super()._answer(body, seq)
 
 

@@ -8,8 +8,8 @@ Runs SWE-Pro tasks sequentially against one persistent agent carried by obo-repo
      OBO_SOLVE_WORKSPACE_ROOT="" for the legacy rootless user_files mode);
   2. captures the official SWE patch directly from /app (Method C, not --patch-out).
 The code-growth channel is native post-task evolution. A workspace task is
-project-scoped for per-project FACTS only; global improvement-backlog/promotion
-signals still flow (v6.44.0) -> supervisor tick applies promotion -> gated
+project-scoped for per-project facts; its sealed result reaches the owner-enabled
+canonical evolution chooser -> supervisor tick applies promotion -> gated
 evolution cycle (reviewed commit in /obo-repo + os.execvpe restart), then wait for absorb, dump state, and continue.
 cadence=every_n:1 forces one evolution decision per cycle. Grading is offline.
 
