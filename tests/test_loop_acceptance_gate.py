@@ -192,8 +192,9 @@ def test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason(
     # ... and the final seal's `admission_close_unconfirmed` note (owner 2A) in the delivery leaf.
     # The current-task unfinished-stop record is a typed writer too.
     # Cyber now shares the explicit completion writer; the prose-only
-    # author_final_response writer was removed, leaving 23 typed writers.
-    assert len(starts) == 23, f"writer inventory changed: {len(starts)} call sites"
+    # author_final_response writer was removed. The earlier revision's PASS keeps
+    # its own writer (fork 1=B), leaving 24 typed writers.
+    assert len(starts) == 24, f"writer inventory changed: {len(starts)} call sites"
     allowed_status = {
         "ACCEPTANCE_ACCEPTED", "ACCEPTANCE_REVISION_REQUESTED",
         "ACCEPTANCE_FINALIZED_UNACCEPTED",

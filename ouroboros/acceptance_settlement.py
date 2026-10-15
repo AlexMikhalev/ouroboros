@@ -11,9 +11,10 @@ Main moves on — so they live together:
 * final delivery rejoins that paid panel (``_deliver_under_running_panel``),
   whether feedback returned ready or pending. Main waits for a pending panel — the
   default, and the only option under blocking enforcement — or consciously
-  finishes where policy permits. A verdict on an earlier answer cannot approve
-  changed bytes, criteria, material evidence or owner premises. Ordinary
-  acceptance uses its existing subject-bound admission and reuse path, with the
+  finishes where policy permits. Once the settled feedback reached Main, a panel
+  that PASSED the earlier revision accepts a text-only rewrite and the owner row
+  says so (fork 1=B); a changed subject (criteria, material evidence, owner
+  source) or any other verdict takes the ordinary acceptance path, with the
   collected verdicts retained in its dialogue history;
 * a panel that settles after its task ended is collected at $0, republished on
   the task's own review projection with the host's own settlement note and a
@@ -49,9 +50,9 @@ from ouroboros.tool_access_paths import canonical_data_root as _result_root
 
 log = logging.getLogger(__name__)
 
-# Historical reason for approval based on an earlier answer revision. Keep its
-# display/reduction vocabulary for stored records; new delivery uses subject-bound
-# admission instead. Not a member of
+# The host acceptance reason for "the paid panel approved the answer Main has
+# since rewritten": the task is accepted on the reviewers' word about the
+# earlier revision and the owner row says so. Not a member of
 # ``outcomes._ACCEPTANCE_BLOCKED_TERMINAL_REASONS``: nothing was refused and no
 # review cycle was spent.
 REASON_PREVIOUS_REVISION_ACCEPTED = "previous_revision_accepted"
@@ -475,13 +476,18 @@ def continue_acceptance_wait(tools_ctx: Any, trace: dict, messages: list, task_i
 
 
 def _deliver_under_running_panel(ctx: Any, prior_run: Any) -> Optional[bool]:
-    """Rejoin paid work for an informed author selection. A rewrite retains the
-    earlier verdict's identity, never authority over new material/premises."""
+    """Rejoin paid work for an informed author selection. A rewrite keeps the earlier
+    verdict's identity, never its authority over new material or premises: once the
+    settled feedback reached Main, a PASS on the earlier revision accepts a text-only
+    rewrite with the honest previous_revision_accepted row (fork 1=B)."""
+    from ouroboros import loop
     from ouroboros.loop_acceptance_review import (
-        _finish_cyber_acceptance, acceptance_run_pending,
+        _end_acceptance_terminal, _finish_cyber_acceptance,
+        _set_applied_host_acceptance_impact, acceptance_run_pending,
     )
     from ouroboros.loop_delivery import delivery_subject_hash
     from ouroboros.loop_messages import owner_source_sha256
+    from ouroboros.outcomes import ACCEPTANCE_ACCEPTED
 
     tools_ctx = ctx.tools._ctx
     if getattr(tools_ctx, "_acceptance_review_only", False):
@@ -511,13 +517,38 @@ def _deliver_under_running_panel(ctx: Any, prior_run: Any) -> Optional[bool]:
         tools_ctx._task_acceptance_pending = ""
         return None
     tools_ctx._task_acceptance_pending = ""
-    if not run.get("settled_feedback_delivered") or not (getattr(tools_ctx, "_completion_selected", None) or {}).get("action") == "finish":
-        return None
+    if not run.get("settled_feedback_delivered"):
+        return None  # the settled feedback reaches Main before any decision rests on it
     result = SimpleNamespace(**run)
+    nominated = [(call.get("request") or {}).get("subject") for call in ctx.llm_trace.get("acceptance_evidence_calls") or []
+                 if isinstance(call, dict) and call.get("status") == "deferred_to_host_acceptance"]
+    # A rewrite Main nominated itself asked for its own review: the earlier PASS never stands in for it.
+    if str(run.get("aggregate_signal") or "").upper() == "PASS" and nominated[-1:] in ([], [reviewed_text]):
+        _set_applied_host_acceptance_impact(run, result, requires_revision=False)
+        ctx.llm_trace.setdefault("review_decision", {}).update({
+            "panel_id": str(run.get("panel_id") or ""),
+            "binding_hash": str(run.get("binding_hash") or ""),
+        })
+        _end_acceptance_terminal(ctx, "pass")
+        loop._set_acceptance_decision(ctx.llm_trace, {
+            "status": ACCEPTANCE_ACCEPTED,
+            "reason": REASON_PREVIOUS_REVISION_ACCEPTED,
+            "source": "task_acceptance_review",
+            "reviewer_signal": "PASS",
+            "reviewed_panel_id": str(run.get("panel_id") or ""),
+            "reviewed_candidate_hash": str(run.get("candidate_hash") or ""),
+        })
+        ctx.emit_progress(
+            "Task acceptance review: PASS on the earlier revision of this answer; accepted on the "
+            "reviewers' word (the rewrite itself was not re-reviewed)."
+        )
+        return False
+    if not (getattr(tools_ctx, "_completion_selected", None) or {}).get("action") == "finish":
+        return None
     from ouroboros.tools.review_helpers import review_enforcement_blocks
     if not review_enforcement_blocks("blocking"):
         return _finish_cyber_acceptance(ctx, result)
-    return None  # Ordinary admission/reuse alone can approve the current subject.
+    return None  # Ordinary admission/reuse alone can approve any other current subject.
 
 
 def forced_rail_panel_verdict(tools_ctx: Any, llm_trace: Dict[str, Any], rail_reason: str) -> Dict[str, Any]:

@@ -392,14 +392,14 @@ def _terminal_record(trace):
                              "objective": outcomes._objective_axis(review)}}
 
 
-def test_a_rewritten_answer_cannot_inherit_the_running_panels_pass_at_cycle_cap(full_loop, monkeypatch):
-    """The live incident shape (task 4525349b, cap 1):
+def test_a_rewritten_answer_delivers_under_the_running_panel_instead_of_buying_one(full_loop, monkeypatch):
+    """The live incident shape (task 4525349b, cap 1) under owner D4=A and fork 1=B:
     Main nominates, the reviewers are still reading when it rewrites the answer
     through explicit completion selection (round 7 of the original incident). The rewrite is a
-    delivery selection: it buys no duplicate panel; the host
+    DELIVERY, not a nomination: it buys nothing and is refused nothing; the host
     waits for the panel it already paid for, and when that panel PASSES the earlier
-    revision that verdict cannot approve the changed subject."""
-    from ouroboros.project_dialogue import outcome_phase
+    revision the task is accepted on the reviewers' word and the row says so."""
+    from ouroboros.project_dialogue import _completion_verdict, outcome_phase
 
     f = full_loop
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
@@ -427,15 +427,17 @@ def test_a_rewritten_answer_cannot_inherit_the_running_panels_pass_at_cycle_cap(
     assert not any("review_cycles_exhausted" in str(reason) for reason in host[0].get("degraded_reasons") or [])
     # The host waited for the panel it had paid for (blocking enforcement in this fixture).
     assert f.waits and f.waits[0]["reason"] == "review"
+    assert any("Task acceptance review is running" in line for line in f.progress), f.progress
     decision = trace["acceptance_decision"]
-    assert decision["status"] == "finalized_unaccepted"
-    assert decision["reason"] == "review_cycles_exhausted"
-    assert host[0]["superseded_by_revision"]
+    assert decision["status"] == "accepted" and decision["reason"] == "previous_revision_accepted"
+    assert decision["reviewer_signal"] == "PASS" and "rationale" not in decision
     from ouroboros.task_results import project_task_acceptance_review_capacity
     assert project_task_acceptance_review_capacity(f.ctx, task_id=f.ctx.task_id)["claimed_cycles"] == 1
     record = _terminal_record(trace)
-    assert outcome_phase(record, {}) == "error", record["outcome_axes"]
-    assert record["outcome_axes"]["objective"]["reason"] == "review_cycles_exhausted"
+    assert outcome_phase(record, {}) == "done", record["outcome_axes"]
+    assert _completion_verdict(record, {}) == (
+        "The reviewers approved an earlier version of this answer; the current version was not re-reviewed."
+    )
 
 
 def test_a_rejected_earlier_revision_is_not_a_verdict_on_the_rewrite(full_loop, monkeypatch):
@@ -598,9 +600,10 @@ def test_a_rejected_earlier_revision_buys_a_panel_on_the_rewrite_when_the_cap_al
 @pytest.mark.parametrize("enforcement", ["advisory", "blocking"])
 def test_an_older_fail_never_outvotes_the_pass_that_accepted_the_task(full_loop, monkeypatch, order, enforcement):
     """Astra review round 4: panel A rejects the first draft, Main re-nominates and
-    panel B passes the second, Main nominates a third version and C passes it.
-    The first two runs end up superseded. The review axis must read C alone — the
-    old FAIL is audit evidence, not a vote against the accepted answer."""
+    panel B passes the second, Main rewrites once more under B after B's settled
+    PASS reached it. Both runs end up superseded; the decision names B (fork 1=B).
+    The review axis must read B alone — the old FAIL is audit evidence, not a vote
+    against the accepted answer."""
     from ouroboros.project_dialogue import outcome_phase
 
     f = full_loop
@@ -608,7 +611,7 @@ def test_an_older_fail_never_outvotes_the_pass_that_accepted_the_task(full_loop,
     f.reviewer_verdict = "FAIL"
     second = ANSWER + " Budget: $12."
     third = second + " Timeline: two weeks."
-    nominations = [ANSWER]
+    nominations, rewrites = [ANSWER], []
 
     def main(_llm, messages, *_a, **_kw):
         f.model_inputs.append(copy.deepcopy(messages))
@@ -618,27 +621,27 @@ def test_an_older_fail_never_outvotes_the_pass_that_accepted_the_task(full_loop,
         latest = f.ctx._execution_trace['review_runs'][-1]
         informed = any(source.get('binding_hash') == latest['binding_hash'] and source.get('settled')
                        for message in messages for source in message.get('review_feedback', []))
-        if informed and len(nominations) < 3:
+        if informed and len(nominations) == 1:
             f.reviewer_verdict = "PASS"
-            selected = second if len(nominations) == 1 else third
-            if selected == second:
-                _order_acceptance_feedback(f, monkeypatch, second, order)
-            nominations.append(selected)
-            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": selected}, f"review-{len(nominations)}")]}, 0.0
+            _order_acceptance_feedback(f, monkeypatch, second, order)
+            nominations.append(second)
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": second}, "second-review")]}, 0.0
+        if informed and not rewrites:
+            # This scenario rewrites under B's settled PASS, once that PASS reached Main.
+            rewrites.append(third)
+            return select_completion(f, third), 0.0
         assert f.model_step < 10, f.progress
         return keep(f), 0.0
 
     monkeypatch.setattr(loop, "call_llm_with_retry", main)
     result, _usage, trace = f.run()
-    assert result == third and len(f.review_sends) == 3
+    assert result == third and len(f.review_sends) == 2
     host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
-    assert [r.get("aggregate_signal") for r in host] == ["FAIL", "PASS", "PASS"], host
-    assert all(r.get("superseded_by_revision") for r in host[:2])
-    assert not host[2].get('superseded_by_revision')
-    assert f.review_requests[-1].subject == third
+    assert [r.get("aggregate_signal") for r in host] == ["FAIL", "PASS"], host
+    assert all(r.get("superseded_by_revision") for r in host)
     decision = trace["acceptance_decision"]
-    assert decision["status"] == "accepted" and decision["reason"] == "clean_pass"
-    assert trace['delivery_candidate']['acceptance_binding']['authoritative']
+    assert decision["status"] == "accepted" and decision["reason"] == "previous_revision_accepted"
+    assert decision["reviewed_panel_id"] == host[1]["panel_id"]
     record = _terminal_record(trace)
     assert record["outcome_axes"]["review"]["aggregate_signals"] == ["PASS"], record["outcome_axes"]["review"]
     assert outcome_phase(record, {}) == "done", record["outcome_axes"]

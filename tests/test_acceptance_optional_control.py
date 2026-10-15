@@ -244,24 +244,19 @@ def test_whole_loop_delivers_selected_complete_answer_after_settlement(full_loop
             if entry == "explicit":
                 return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "review")]}, 0.0
             return {"content": ANSWER}, 0.0
-        assert f.model_step <= 5, f.progress  # Two panels each expose their own feedback/choice.
+        assert f.model_step < 5, f.progress
         return _finish(revised, acceptance_subject={
             "owner_source_sha256": f.ctx._acceptance_observation["owner_source_sha256"],
         }), 0.0
 
     monkeypatch.setattr(loop, "call_llm_with_retry", main)
     result, _usage, trace = f.run()
-    assert result == revised and len(f.review_sends) == 2
-    assert 1 <= len(f.waits) <= 2  # The second distinct panel may already be ready.
-    assert all(wait["reason"] == "review" for wait in f.waits)
-    waited_bindings = [wait['review_binding'] for wait in f.waits]
-    assert len(waited_bindings) == len(set(waited_bindings))
-    assert set(waited_bindings) <= {run['binding_hash'] for run in trace['review_runs']}
+    assert result == revised and len(f.review_sends) == 1
+    assert [wait["reason"] for wait in f.waits] == ["review"]
     assert not any("[DELIVERY_CONTROL_REPAIR]" in str(messages) for messages in f.model_inputs)
-    assert trace["acceptance_decision"]["reason"] == "clean_pass"
+    assert trace["acceptance_decision"]["reason"] == "previous_revision_accepted"
     assert f.review_requests[0].subject == ANSWER
-    assert f.review_requests[-1].subject == revised
-    assert trace["delivery_candidate"]["acceptance_binding"]["authoritative"]
+    assert trace["delivery_candidate"]["content_sha256"] != trace["acceptance_decision"]["reviewed_candidate_hash"]
 
 
 def test_cyber_explicit_early_finish_keeps_its_no_wait_power(full_loop, monkeypatch):
@@ -389,7 +384,9 @@ def test_return_order_preserves_feedback_identity_and_new_subjects(full_loop, mo
     monkeypatch.setattr(loop, "call_llm_with_retry", main)
     result, _usage, trace = f.run()
     assert result == revised
-    assert len(f.review_sends) == 2  # Changed answer bytes require their own PASS.
+    # A text-only rewrite delivered after the settled PASS reached Main buys nothing (fork 1=B); a
+    # rewrite Main nominated itself gets its own panel, also when it was nominated while the first ran.
+    assert len(f.review_sends) == (1 if next_action == "rewrite" else 2)
     assert f.review_requests[0].subject == ANSWER
     if order == "ready":
         first_run = next(row for row in trace["review_runs"] if row.get("authority") == "host_root")
@@ -407,22 +404,22 @@ def test_return_order_preserves_feedback_identity_and_new_subjects(full_loop, mo
         assert trace["acceptance_decision"]["reason"] == "clean_pass"
     if next_action == "rewrite":
         decision = trace["acceptance_decision"]
-        assert decision["reason"] == "clean_pass"
-        assert f.review_requests[-1].subject == revised
-        assert trace["delivery_candidate"]["acceptance_binding"]["authoritative"]
+        assert decision["reason"] == "previous_revision_accepted"
+        assert decision["reviewed_candidate_hash"] != trace["delivery_candidate"]["content_sha256"]
+        assert not trace["delivery_candidate"]["acceptance_binding"]["authoritative"]
     else:
         assert f.review_requests[-1].subject == revised
         assert trace["acceptance_decision"]["reason"] != "previous_revision_accepted"
 
 
 @pytest.mark.parametrize("delivered,reason,signal,reused", [
-    (True, "delivery_candidate_replaced", "PASS", False),  # Changed bytes never inherit PASS.
+    (True, "delivery_candidate_replaced", "PASS", True),
     (False, "delivery_candidate_replaced", "PASS", False),  # Main never received the verdict
     (True, "delivery_evidence_changed_after_host_acceptance", "PASS", False),
     (True, "delivery_candidate_replaced", "FAIL", False),
     (True, "delivery_candidate_replaced", "DEGRADED", False),
 ])
-def test_ready_fallback_cannot_approve_replaced_text(
+def test_ready_fallback_reuses_only_a_delivered_pass_on_a_replaced_text(
         tmp_path, monkeypatch, delivered, reason, signal, reused):
     """The ready-order lookup falls toward a fresh panel, never toward acceptance."""
     from types import SimpleNamespace
@@ -437,7 +434,8 @@ def test_ready_fallback_cannot_approve_replaced_text(
         "actors": [{"operation_state": "settled"}], "binding_hash": "binding-one", "panel_id": "panel-one",
         "candidate_hash": candidate.content_sha256,
         "subject_hash": delivery_subject_hash(registry._ctx, trace, ANSWER),
-        "feedback_delivered": delivered, "superseded_by_revision": True, "superseded_reason": reason,
+        "feedback_delivered": delivered, "settled_feedback_delivered": delivered,
+        "superseded_by_revision": True, "superseded_reason": reason,
     }]
     revised = ANSWER + " Reworded only."
     loop_mod._replace_delivery_candidate(registry, ctx, trace, revised, control="replace")
