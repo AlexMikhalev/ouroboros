@@ -57,7 +57,13 @@ log = logging.getLogger(__name__)
 
 INTENTION_SURFACE = "intention"
 _PARTICIPANT_FACT_KEYS = ("recovery_binding", "operation_id", "operation_state", "late_result_pending",
-                          "awaiting_since", "pending_invocation_id", "delegated_run_id")
+                          "awaiting_since", "pending_invocation_id", "delegated_run_id",
+                          # B1 typed failure facts and the substrate's disclosures travel with the seat
+                          "failure_code", "reset_at", "http_status", "transport_status", "reported_cause", "capability_delta")
+# Receipts the substrate produced for this seat (absent when it produced none): the applied
+# account, the engine's resolved model, the room-read coverage and the host's read attestation.
+_PARTICIPANT_RECEIPT_KEYS = ("resolved_model", "applied_profile", "profile_continuity_receipt", "auth_route_receipt",
+                             "room_read_coverage", "host_file_read_attestation")
 
 
 class PlanAskRefused(Exception):
@@ -407,6 +413,11 @@ def prepare_ask(ctx: Any, *, record: Mapping[str, Any], revision: Mapping[str, A
         elif not slot_retrieves(participant.slot):
             transcript = _prior_transcript(state_root, task_id, prior)
             if transcript is not None:
+                # The stable prompt is the host's standing frame, not the seat's words: a seat
+                # continued from an earlier ask carries the CURRENT one, so the governance pack
+                # reaches it the moment the plan becomes a body plan (DESIGN §3, Q4=A).
+                if transcript and str(transcript[0].get("role") or "") == "system":
+                    transcript = [{"role": "system", "content": system_prompt}, *transcript[1:]]
                 slot_messages[sid] = [*transcript, {"role": "user", "content": contents[sid]}]
                 continued[sid] = True
     merged: Dict[str, Any] = {"slot_messages": {}, "slot_session_tasks": {}, "slot_prompt_chars": {}, "dialogue_delivery": {},
@@ -492,6 +503,7 @@ def reply_facts_from_row(row: Mapping[str, Any]) -> Dict[str, Any]:
         "reset_at": str(row.get("reset_at") or ""), "review_thread_id": str(row.get("review_thread_id") or ""),
         "prompt_ref": row.get("prompt_ref") or {}, "response_ref": row.get("response_ref") or {},
         **{k: v for k, v in plan_row_typed_facts(dict(row)).items() if k in _PARTICIPANT_FACT_KEYS},
+        **{k: row[k] for k in _PARTICIPANT_RECEIPT_KEYS if row.get(k)},
     }
     state = str(row.get("operation_state") or "settled")
     if state == "not_dispatched":
@@ -510,8 +522,6 @@ def reply_facts_from_row(row: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _ledger_seat(participant: Participant, facts: Mapping[str, Any]) -> Dict[str, Any]:
-    from ouroboros.review_ledger import UNKNOWN
-
     slot = participant.slot
     route = getattr(slot, "route", "api_chat")
     requested = {"route": str(getattr(route, "value", route) or ""), "model": str(slot.model), "effort": str(slot.effort or ""),
@@ -522,19 +532,40 @@ def _ledger_seat(participant: Participant, facts: Mapping[str, Any]) -> Dict[str
                  "subagent_id": str(getattr(slot, "subagent_id", "") or "")}
     status = {"answered": "responded", "unparseable": "responded", "failed": "error", "pending": "pending",
               "not_dispatched": "not_dispatched"}.get(str(facts.get("status") or "pending"), "pending")
+    effective = {**{k: requested[k] for k in ("route", "model", "effort", "profile", "delivery")}, "verdict_method": "", "source": "requested"}
+    if facts.get("applied_profile"):
+        effective["profile_id"] = str(facts["applied_profile"])
     return {
         "seat_id": participant.seat_id, "subagent_id": requested["subagent_id"], "parts": [], "additional": not participant.owner_marked,
         "host_added": participant.host_added,
-        "requested": requested, "effective": {**{k: requested[k] for k in ("route", "model", "effort", "profile", "delivery")},
-                                              "verdict_method": "", "source": "requested"},
-        "observed_model": str(facts.get("model") or "") if status == "responded" and not slot_is_session(slot) else UNKNOWN,
+        "requested": requested, "effective": effective,
+        "observed_model": _observed_model(slot, facts, status),
         "status": status, "operation_state": str(facts.get("operation_state") or ("settled" if status == "responded" else status)),
-        "answers": {}, "parts_answered": [], "coverage": "not_asked", "capability_delta": [], "usd": facts.get("cost"),
+        "answers": {}, "parts_answered": [], "coverage": "not_asked", "capability_delta": list(facts.get("capability_delta") or []),
+        "receipts": _seat_receipts(facts), "usd": facts.get("cost"),
         "critical_count": 0, "raw_text": "", "brief_sha": "", "source_refs": [],
         "intention": {"objections": [o.get("id") for o in (facts.get("reply") or {}).get("objections") or []],
                       "withdrawn": [w.get("id") for w in (facts.get("reply") or {}).get("withdrawn") or []],
                       "parse_error": str(facts.get("parse_error") or ""), "error": str(facts.get("error") or "")},
     }
+
+
+def _observed_model(slot: Any, facts: Mapping[str, Any], status: str) -> str:
+    """What the seat ran as, from the substrate's own telemetry: an api row's sent model IS its
+    applied one; a session discloses only the model its engine resolved — never the requested
+    one dressed up as observed (``UNKNOWN`` until the receipt names it)."""
+    from ouroboros.review_ledger import UNKNOWN
+
+    if status not in ("responded", "error"):
+        return UNKNOWN
+    if slot_is_session(slot):
+        return str(facts.get("resolved_model") or "") or UNKNOWN
+    return str(facts.get("model") or "") or UNKNOWN
+
+
+def _seat_receipts(facts: Mapping[str, Any]) -> Dict[str, Any]:
+    return {k: facts[k] for k in ("profile_continuity_receipt", "auth_route_receipt", "room_read_coverage", "host_file_read_attestation")
+            if facts.get(k)}
 
 
 def _intention_verdict(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -615,8 +646,17 @@ def settle_ledger_seat(state_root: pathlib.Path, task_id: str, record_id: str, s
                       "not_dispatched": "not_dispatched"}.get(str(facts.get("status") or "pending"), "pending")
             seat.update(status=status, operation_state=str(facts.get("operation_state") or seat.get("operation_state") or ""),
                         usd=facts.get("cost", seat.get("usd")))
-            if status == "responded" and str(seat.get("requested", {}).get("route") or "") != "agent_session" and facts.get("model"):
-                seat["observed_model"] = str(facts["model"])
+            session = str(seat.get("requested", {}).get("route") or "") == "agent_session"
+            observed = (str(facts.get("resolved_model") or "") if session else str(facts.get("model") or "")) if status in ("responded", "error") else ""
+            if observed:
+                seat["observed_model"] = observed
+            if facts.get("capability_delta"):
+                seat["capability_delta"] = list(facts["capability_delta"])
+            receipts = _seat_receipts(facts)
+            if receipts:
+                seat["receipts"] = {**dict(seat.get("receipts") or {}), **receipts}
+            if facts.get("applied_profile"):
+                seat["effective"] = {**dict(seat.get("effective") or {}), "profile_id": str(facts["applied_profile"])}
             seat["intention"] = {"objections": [o.get("id") for o in (facts.get("reply") or {}).get("objections") or []],
                                  "withdrawn": [w.get("id") for w in (facts.get("reply") or {}).get("withdrawn") or []],
                                  "parse_error": str(facts.get("parse_error") or ""), "error": str(facts.get("error") or "")}
@@ -686,7 +726,7 @@ def dispatch_ask(ctx: Any, prepared: PreparedAsk, *, revision: Mapping[str, Any]
         "ask_id": prepared.ask_id, "ts": utc_now_iso(), "revision": revision.get("n"), "message": prepared.message,
         "attach": list(prepared.attach), "attached": [{k: a.get(k) for k in ("locator", "sha256", "bytes")} for a in prepared.manifest.get("attached") or []],
         "omissions": list(prepared.manifest.get("omissions") or []), "reviewer_effort": prepared.reviewer_effort,
-        "body_first_ask": bool(prepared.body_first_ask),
+        "body_first_ask": bool(prepared.body_first_ask), **_dialogue_carrier(prepared.manifest),
         "host_added": [p.seat_id for p in prepared.participants if p.host_added],
         "participants": participants, "record_id": record_id, "retry_key": prepared.retry_key,
     })
@@ -732,6 +772,17 @@ def dispatch_ask(ctx: Any, prepared: PreparedAsk, *, revision: Mapping[str, Any]
 
 
 # ------------------------------------------------------------------ settlement
+
+def _dialogue_carrier(manifest: Mapping[str, Any]) -> Dict[str, Any]:
+    """The ask row's carrier of the own-room snapshot every participant saw: the exact source
+    the ``chat:<id>@<sha256>`` locator in their delivery resolves to (``plan_chat_reader``) and
+    the source closure keeps through promotion and cleanup."""
+    own = manifest.get("own_dialogue") if isinstance(manifest.get("own_dialogue"), Mapping) else {}
+    ref = own.get("source_ref") if isinstance(own.get("source_ref"), Mapping) else None
+    if not ref or not own.get("sha256"):
+        return {}
+    return {"dialogue_ref": {"chat_id": own.get("chat_id"), "sha256": str(own.get("sha256")), "ref": dict(ref)}}
+
 
 def _actor_row(actor: Any, slot: Any) -> Dict[str, Any]:
     raw = asdict(actor) if is_dataclass(actor) else dict(actor if isinstance(actor, Mapping) else getattr(actor, "__dict__", {}))
@@ -801,27 +852,44 @@ def settle_released_reply(usage_ctx: Any, *, request: Any, task_id: str, actor: 
     except Exception:
         log.warning("plan ask %s: reply of %s could not be settled", ask_id, getattr(actor, "slot_id", "?"), exc_info=True)
         return
+    if slot is not None and record is not None:
+        try:  # D22: the seat's «runs as» row, recorded when it settles (the barrier skipped it as pending)
+            from ouroboros.reviewer_slot_config import record_reviewer_slot_executions
+
+            record_reviewer_slot_executions("plan_review", [actor], {seat_id: slot}, keep_on=usage_ctx)
+        except Exception:
+            log.debug("plan ask %s: last-execution row for %s not recorded", ask_id, seat_id, exc_info=True)
     if not settled_wave or record is None:
         return
     ask, _ = _ask_and_participant(record, ask_id, "")
     participants = (ask or {}).get("participants") or []
-    answered = sum(1 for p in participants if p.get("status") == "answered")
-    unread = sum(1 for p in participants if p.get("status") == "unparseable")
-    failed = sum(1 for p in participants if p.get("status") == "failed")
-    objections = [o for o in plan_record.open_objections(record) if o.get("ask_id") == ask_id]
     from ouroboros.owner_mailbox import write_task_message
 
     try:
-        write_task_message(
-            pathlib.Path(str(usage_ctx.drive_root)),
-            f"Plan ask {ask_id}: every participant settled — {answered} answered"
-            + (f", {unread} unreadable" if unread else "") + (f", {failed} failed" if failed else "")
-            + (f"; {len(objections)} open objection{'' if len(objections) == 1 else 's'} from this ask" if objections else "; no open objection from this ask")
-            + ". plan_task() reads the answers.",
-            task_id, source_task_id=task_id, provenance="system",
-        )
+        write_task_message(pathlib.Path(str(usage_ctx.drive_root)), settled_frame(ask_id, participants, plan_record.open_objections(record)),
+                           task_id, source_task_id=task_id, provenance="system")
     except Exception:
         log.warning("plan ask %s settled-wave frame failed for %s", ask_id, task_id, exc_info=True)
+
+
+def settled_frame(ask_id: str, participants: List[Mapping[str, Any]], objections: List[Mapping[str, Any]]) -> str:
+    """The mailbox frame when custody has nothing more to deliver for an ask: who answered,
+    who could not be read, who failed — and a seat whose custody was LOST is named as
+    unresolved (neither a failure nor a reply), never counted as settled."""
+    answered = sum(1 for p in participants if p.get("status") == "answered")
+    unread = sum(1 for p in participants if p.get("status") == "unparseable")
+    failed = sum(1 for p in participants if p.get("status") == "failed")
+    unresolved = [str(p.get("seat_id") or "?") for p in participants if p.get("status") == "pending" and p.get("unresolved")]
+    waiting = [str(p.get("seat_id") or "?") for p in participants if p.get("status") == "pending" and not p.get("unresolved")]
+    own = [o for o in objections if o.get("ask_id") == ask_id]
+    head = (f"Plan ask {ask_id}: every participant settled" if not unresolved and not waiting
+            else f"Plan ask {ask_id}: custody has nothing more to deliver")
+    return (f"{head} — {answered} answered" + (f", {unread} unreadable" if unread else "") + (f", {failed} failed" if failed else "")
+            + (f", {len(unresolved)} unresolved ({', '.join(unresolved)}: custody lost — neither a failure nor a reply; nothing waits on it)"
+               if unresolved else "")
+            + (f", {len(waiting)} still owed ({', '.join(waiting)})" if waiting else "")
+            + (f"; {len(own)} open objection{'' if len(own) == 1 else 's'} from this ask" if own else "; no open objection from this ask")
+            + ". plan_task() reads the answers.")
 
 
 def collect_pending(ctx: Any, record: Mapping[str, Any], *, state_root: pathlib.Path, task_id: str) -> Dict[str, Any]:

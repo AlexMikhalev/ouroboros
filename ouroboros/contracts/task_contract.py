@@ -356,8 +356,9 @@ def effective_acceptance_claims(
     Ingress-contract claims win (adapter/gateway/parent-authored — already in the
     built contract); the CLOSED plan wave's frozen claims apply ONLY when ingress
     is empty. PURE: no I/O and no contract mutation — the running task contract is
-    never rebuilt mid-task; plan-frozen claims live in ``plan_review_state``
-    (``task_results.closed_plan_review_wave``) and are resolved at READ time.
+    never rebuilt mid-task; plan-selected claims live in the plan record (the latest
+    revision's ``done_when``) or, for an earlier-schema task, in a closed wave read by
+    ``plan_record.import_legacy_v2`` / the acceptance binder, and are resolved at READ time.
     Returns ``(claims, source)`` with source ``ingress_contract`` |
     ``plan_review`` | ``""`` (no claims anywhere)."""
     task = task if isinstance(task, Mapping) else {}

@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from tests.test_plan_task_tool import harness  # noqa: F401 — the planning organ's fixture
 
 WORDS = "Selected model is at capacity. Please try a different model."
@@ -149,17 +147,47 @@ def test_the_last_execution_projection_keeps_the_cause_only_when_one_was_reporte
     assert "reported_cause" not in rows["c_wordless"] and "reported_cause" not in rows["c_alive"]
 
 
+def test_the_mind_reads_typed_facts_and_never_the_engines_retry_coach():
+    """What the model reads about a dead participant in ``plan_task``'s read view: the typed
+    facts (code, reset, the engine's reported sentence) — never its ``nextActions`` retry
+    coach. The stored participant row is untouched (it keeps the raw prose); a seat that
+    reported no words renders a bounded first line of the error and no "reported cause"."""
+    import copy
+
+    from ouroboros import plan_record
+    from ouroboros.tools.plan_review import render_record
+
+    prose = "delegated review session run-e23 ended failed: " + json.dumps(INCIDENT_FAILURE, ensure_ascii=False)
+
+    def _record(seat):
+        record = plan_record.empty_record()
+        record["revisions"].append({"n": 1, "ts": "t", "goal": "ship", "plan": "p", "done_when": [], "affected_paths": [],
+                                    "body": False, "content_sha256": "0" * 64})
+        record["asks"].append({"ask_id": "a1", "ts": "t", "revision": 1, "message": "", "participants": [
+            seat, {"seat_id": "s2", "model": "m", "owner_marked": True, "dispatched": True, "status": "answered",
+                   "reply": {"prose": "fine", "objections": [], "withdrawn": []}}]})
+        return record
+
+    dead = {"seat_id": "s1", "model": "codex=gpt-6-astra", "owner_marked": True, "dispatched": True, "status": "failed",
+            "failure_code": "run_failed", "error": prose, "reported_cause": WORDS, "operation_state": "late_settled"}
+    record = _record(dead)
+    before = copy.deepcopy(record)
+    decision = plan_record.gate_projection(record, enforcement="advisory", cyber_pro=False, hurry=False, force_plan=False)
+    text = render_record(record, decision)
+    assert record == before and "nextActions" in record["asks"][0]["participants"][0]["error"], "a display substitution never rewrites the stored row"
+    assert f'- ask a1 on revision 1: s1 (codex=gpt-6-astra): failed[run_failed] — reported cause: "{WORDS}"; s2 (m): answered' in text
+    for coach in ("nextActions", "Retry the run", "Inspect the run", "safeMessage", "harness_error"):
+        assert coach not in text, coach
+    # Other direction: a row that reported no words renders a bounded first line of the prose, no "reported cause".
+    wordless = render_record(_record({**dead, "reported_cause": ""}), decision)
+    assert "s1 (codex=gpt-6-astra): failed[run_failed] — delegated review session run-e23 ended failed:" in wordless
+    assert "reported cause" not in wordless and "Retry the run" not in wordless
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "Open organ gap found while deleting the retired engine (W2, 2026-10-15): the plan record "
-    "keeps a failed participant's raw error and plan_task's read view prints it, so an engine's "
-    "nextActions retry coach reaches the model while the typed code and the reported cause are "
-    "not shown (the retired wave renderer showed them instead). Strict, so the fix is a visible "
-    "XPASS, never a silent change."))
-def test_the_mind_reads_a_failed_participants_typed_facts_and_never_the_engines_retry_coach(harness):  # noqa: F811
-    """What the model reads back for an ask with a dead participant: the typed facts (code,
-    model) and the engine's reported sentence, never its ``nextActions`` retry coach."""
+def test_a_dead_participants_typed_facts_reach_the_record_and_its_read_view_end_to_end(harness):  # noqa: F811
+    """End to end through ``plan_task``: a substrate row's typed failure facts reach the plan
+    record and its read view (code and the engine's reported sentence), never the engine's
+    ``nextActions`` retry coach."""
     from tests.test_plan_task_tool import _call, _write
 
     prose = "delegated review session run-e23 ended failed: " + json.dumps(INCIDENT_FAILURE, ensure_ascii=False)

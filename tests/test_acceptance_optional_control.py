@@ -134,6 +134,23 @@ def test_invalid_completion_retains_answer_then_allows_explicit_reselection(tmp_
     assert registry._ctx._delivery_candidate.full_text == ANSWER
 
 
+def test_a_strict_schema_empty_twin_field_names_nothing(tmp_path, monkeypatch):
+    """Strict tool schemas make a model fill the field it did not choose with "": an answer
+    beside an empty selector is that answer, and an empty answer beside a real selector is that
+    selection. Both empty, or an empty selector alone, still name nothing."""
+    registry, ctx, trace, candidate = _feedback(tmp_path, monkeypatch)
+    assert _select(registry, ctx, trace, answer=ANSWER, answer_sha256="")
+    assert registry._ctx._delivery_candidate.full_text == ANSWER
+    registry, ctx, trace, candidate = _feedback(tmp_path, monkeypatch)
+    assert _select(registry, ctx, trace, answer="", answer_sha256=candidate.content_sha256)
+    assert registry._ctx._delivery_candidate.full_text == ANSWER
+    for arguments in ({"action": "finish", "answer": "", "answer_sha256": ""},
+                      {"action": "finish", "answer_sha256": "  "}):
+        registry, ctx, trace, candidate = _feedback(tmp_path, monkeypatch)
+        assert "ERROR: COMPLETION_ARGUMENT:" in _finish_task(registry._ctx, **arguments)
+        assert getattr(registry._ctx, "_completion_request", None) is None
+
+
 def test_changed_owner_source_still_requires_an_exact_current_acknowledgement(tmp_path, monkeypatch):
     registry, ctx, trace, old = _feedback(tmp_path, monkeypatch)
     stale_source = registry._ctx._acceptance_observation["owner_source_sha256"]

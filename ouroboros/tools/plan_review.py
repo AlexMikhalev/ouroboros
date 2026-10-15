@@ -321,6 +321,27 @@ def _render_done_when(rows: List[Mapping[str, Any]]) -> str:
                      for r in rows)
 
 
+def _failure_tag(participant: Mapping[str, Any]) -> str:
+    """A failed seat by its TYPED facts — the code, the reset instant, the engine's reported
+    sentence — never the raw error prose with its retry coach (BIBLE P5: the host puts no
+    engine template in the mind's mouth). A row that reported nothing typed keeps a bounded
+    first line of the error."""
+    from ouroboros.utils import truncate_review_artifact
+
+    code = str(participant.get("failure_code") or "")
+    cause = str(participant.get("reported_cause") or "")
+    reset = str(participant.get("reset_at") or "")
+    tag = "failed" + (f"[{code}]" if code else "")
+    if cause:
+        tag += f' — reported cause: "{cause}"'
+    elif participant.get("error"):
+        first_line = str(participant["error"]).strip().splitlines()[0] if str(participant["error"]).strip() else ""
+        tag += " — " + truncate_review_artifact(first_line, limit=160)
+    if reset:
+        tag += f" (reset at {reset})"
+    return tag
+
+
 def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = None) -> str:
     """The read view as text: current revision, council, open objections, gate facts."""
     view = plan_record.read_view(record, legacy)
@@ -348,8 +369,10 @@ def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy
             tag = p["status"]
             if p["status"] == "not_dispatched":
                 tag = f"not sent — {p.get('not_dispatched_reason') or 'not sendable'}"
-            elif p["status"] in ("failed", "unparseable"):
-                tag = f"{p['status']}" + (f" — {p.get('error') or p.get('parse_error')}" if (p.get("error") or p.get("parse_error")) else "")
+            elif p["status"] == "failed":
+                tag = _failure_tag(p)
+            elif p["status"] == "unparseable":
+                tag = "unparseable" + (f" — {p.get('parse_error')}" if p.get("parse_error") else "")
             parts.append(f"{p['seat_id']} ({p.get('model') or '?'}{'' if p.get('owner_marked') else ', added'}): {tag}")
         lines.append(f"- ask {ask['ask_id']} on revision {ask['revision']}" + (f" — «{ask['message']}»" if ask.get("message") else "")
                      + ": " + "; ".join(parts))

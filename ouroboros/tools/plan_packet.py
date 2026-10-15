@@ -45,20 +45,24 @@ never hold anything. You cannot withdraw another participant's objection — agr
 in prose. A reply the host cannot read as this object changes nothing and is reported as unreadable.
 """
 
+# Strict structured-output providers (OpenAI strict mode) require EVERY property and reject
+# an omitted optional key, so the two optional lists are required-but-nullable: a participant
+# with nothing to object or withdraw sends ``null`` or ``[]`` and ``parse_reply`` reads both as
+# empty. Nested objects are closed too, as strict mode demands.
 PLAN_REPLY_SESSION_OUTPUT_SCHEMA: dict = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["prose"],
+    "required": ["prose", "objections", "withdrawn"],
     "properties": {
         "prose": {"type": "string"},
         "objections": {
-            "type": "array",
-            "items": {"type": "object", "required": ["id", "text"],
+            "type": ["array", "null"],
+            "items": {"type": "object", "required": ["id", "text"], "additionalProperties": False,
                       "properties": {"id": {"type": "string"}, "text": {"type": "string"}}},
         },
         "withdrawn": {
-            "type": "array",
-            "items": {"type": "object", "required": ["id", "why"],
+            "type": ["array", "null"],
+            "items": {"type": "object", "required": ["id", "why"], "additionalProperties": False,
                       "properties": {"id": {"type": "string"}, "why": {"type": "string"}}},
         },
     },

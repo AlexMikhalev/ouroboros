@@ -542,7 +542,8 @@ def read_view(record: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = N
         "revisions": len(record.get("revisions") or []),
         "asks": [{"ask_id": a.get("ask_id"), "ts": a.get("ts"), "revision": a.get("revision"), "message": a.get("message"),
                   "participants": [{k: p.get(k) for k in ("seat_id", "model", "owner_marked", "status", "dispatched",
-                                                            "not_dispatched_reason", "error", "parse_error")}
+                                                            "not_dispatched_reason", "error", "parse_error",
+                                                            "failure_code", "reported_cause", "reset_at")}
                                    for p in a.get("participants") or []],
                   "record_id": a.get("record_id")} for a in record.get("asks") or []],
         "participants": views,

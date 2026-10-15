@@ -220,12 +220,8 @@ def _head(clone) -> str:
 # ===========================================================================
 
 
-# The ONE system frame the retired plan-review engine wrote into the task's mailbox
-# when the last released slot of a wave settled (S28's planner still waits for it),
-# and the task identity the host states in every prompt (the scripted agent waits
-# on its OWN id).
-_SETTLED_FRAME_RE = re.compile(
-    r"Plan review wave ([0-9a-f?]+): \d+ of \d+ reviewer slot\(s\) settled")
+# The task identity the host states in every prompt (the scripted agent waits on
+# its OWN id).
 _ROOT_TASK_ID_RE = re.compile(r'"root_task_id":\s*"([0-9a-f]{8,})"')
 # Bounded so a wave that never settles fails LOUDLY inside the scenario
 # (the E2E_SCRIPT_ERROR final answer below) instead of running the task out
@@ -246,9 +242,9 @@ class _Again:
 class _HoldingStubModel(ScriptedStubModel):
     """``ScriptedStubModel`` whose callable steps may HOLD the script index.
 
-    The asynchronous plan-review route needs a step that repeats until a
-    precondition is visible in the transcript: the agent waits for the settled-
-    wave mailbox frame and only then resubmits the identical envelope. A blind
+    A review released at the dispatch barrier needs a step that repeats until a
+    precondition is visible in the transcript: the agent waits for the settlement
+    frame in its mailbox and only then acts again. A blind
     sleep inside the step is not an option — ``_answer`` runs under the model's
     call lock, so sleeping there would also block the reviewer-slot calls whose
     settlement it is waiting for. A callable step therefore returns ``_Again``
@@ -266,37 +262,6 @@ class _HoldingStubModel(ScriptedStubModel):
                 self._script_index = index
                 step = step.step
         return step
-
-
-def _after_wave_settled(wave_ordinal: int, then: dict):
-    """Hold the script until the host says plan-review wave ``wave_ordinal``
-    settled, then emit ``then``.
-
-    Until the frame is visible the step waits on this task's own id
-    (``wait_task`` returns early on ``owner_mailbox_pending``) — the route the
-    plan-review contract text names. Acting on an in-flight wave instead would
-    either re-read DEGRADED (a collection) or be refused as
-    ``PLAN_REVIEW_IN_FLIGHT`` (a revision), so the wait is what makes either
-    next move deterministic rather than a race with the reviewer slots.
-    """
-    waits = {"rounds": 0}
-
-    def step(body: dict) -> dict:
-        text = body_text(body)
-        settled = list(dict.fromkeys(_SETTLED_FRAME_RE.findall(text)))
-        if len(settled) >= wave_ordinal:
-            return then
-        waits["rounds"] += 1
-        task_ids = _ROOT_TASK_ID_RE.findall(text)
-        if not task_ids or waits["rounds"] > _WAIT_ROUNDS_MAX:
-            return {"final": (
-                "E2E_SCRIPT_ERROR: no settled-wave frame for plan-review wave "
-                f"{wave_ordinal} after {waits['rounds']} round(s); "
-                f"frames seen: {settled}; own task id visible: {bool(task_ids)}")}
-        return _Again({"tool": "wait_task", "arguments": {
-            "task_id": task_ids[-1], "timeout_sec": _WAIT_WINDOW_SEC}})
-
-    return step
 
 
 # ===========================================================================
