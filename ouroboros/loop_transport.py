@@ -729,18 +729,19 @@ def finalize_now_transport_terminal(
 
 def end_episode_budget(
     episode: TransportWaitEpisode, drive_logs: pathlib.Path, task_id: str, model: str,
+    *, detail: str = "budget_exhausted",
 ) -> None:
-    """Close an active episode when the budget rail fires mid-wait.
+    """Close an active episode when an admission rail fires mid-wait.
 
     A free redial spends $0 itself, but a concurrent consumer (a child, another
-    root) can exhaust the shared budget between redials; the budget terminal
-    then owns the exit and the episode must not be left without its durable
-    ``ended`` row.
+    root) can exhaust the shared budget between redials, or the billing authority
+    can stop reading; that rail then owns the exit and the episode must not be
+    left without its durable ``ended`` row, which names the rail.
     """
     emit_network_wait_event(
         drive_logs, task_id=task_id, phase="ended",
         elapsed_sec=time.monotonic() - episode.started_monotonic,
-        redials=episode.redials, model=model, detail="budget_exhausted",
+        redials=episode.redials, model=model, detail=detail,
     )
 
 

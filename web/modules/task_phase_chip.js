@@ -33,7 +33,8 @@ const CHIP = {
 export function pausePhaseLabel(phase, cause = '', finishingReviews = false) {
     const label = phase === 'budget_pausing' ? CHIP.pausing() : CHIP.paused();
     const reasons = { budget: ['budget', 'budget limit'], owner: ['owner', 'owner pause'],
-        restart: ['restart', 'after restart'], sleep: ['sleep', 'sleep'] };
+        restart: ['restart', 'after restart'], sleep: ['sleep', 'sleep'],
+        authority: ['authority', 'technical issue'] };
     const reason = reasons[cause];
     const text = reason ? fmt('{state} · {reason}', { state: label,
         reason: tr(`task.pause_cause.${reason[0]}`, reason[1]) }) : label;

@@ -71,13 +71,14 @@ def _resume_custody_refusal(result_root, task_id, row, external):
     # ``stop_confirmed`` is the only terminal fact; every other run stays under custody.
     # An owner Pause's started critic is not the member's own writer: it finishes
     # separately and its result is collected later (owner 2026-10-08, full variant).
-    owner_paused = str(row.get("reason") or "") == "owner"
+    # The owner's Pause and an authority park leave a started panel's run to its own controller.
+    panel_owned = str(row.get("reason") or "") in {"owner", "authority"}
     unsettled = [run for run in (external.get("runs") or [])
                  if isinstance(run, dict) and str(run.get("state") or "") != EXTERNAL_STOP_CONFIRMED
-                 and not (owner_paused and run.get("review_owned"))]
-    if unsettled and row.get("reason") == "sleep":
+                 and not (panel_owned and run.get("review_owned"))]
+    if unsettled and row.get("reason") in {"sleep", "authority"}:
         from ouroboros.sleep_custody import return_allowed
-        if return_allowed(task_id, row, external):
+        if return_allowed(task_id, row, external if row.get("reason") == "sleep" else {**external, "runs": unsettled}):
             unsettled = []  # same author's retained dependency, not a stop receipt
     if unsettled:
         try:
@@ -87,7 +88,9 @@ def _resume_custody_refusal(result_root, task_id, row, external):
             log.debug("Fresh custody observation could not be recorded on %s", task_id, exc_info=True)
         return {"ok": False, "error": "external_runs_unsettled",
                 "runs": [{key: run.get(key) for key in ("run_id", "state", "stop_outcome")} for run in unsettled],
-                "action": "wait_for_delegated_runs_to_settle_or_cancel_them"}
+                # An authority pause let them finish in their own limits: waiting is the plan.
+                "action": ("wait_for_delegated_runs_to_settle" if row.get("reason") == "authority"
+                           else "wait_for_delegated_runs_to_settle_or_cancel_them")}
     return None
 
 
@@ -267,8 +270,16 @@ def _global_money_refusal(q: Any, budget_remaining: Any) -> Optional[Dict[str, A
 
 def _root_money_refusal(result_root: Any, task: Dict[str, Any], root_task_id: str) -> Optional[Dict[str, Any]]:
     from ouroboros.usage_accounting import refresh_root_accounting
-    from ouroboros.usage_admission import task_accounting_key
+    from ouroboros.usage_admission import effective_billing_fields, task_accounting_key, task_billing_fields
+    from ouroboros.usage_ledger import BillingAuthorityUnavailable
 
+    # The original group's authority is reread strictly first: unreadable or refused is
+    # named as such, never as accounting room or as an exhausted cap.
+    try:
+        effective_billing_fields(result_root, root_task_id, task_billing_fields(task, root_task_id, None, result_root))
+    except BillingAuthorityUnavailable as exc:
+        return {"ok": False, "error": "billing_authority_unavailable", "billing_authority": exc.kind, "cause": exc.cause,
+                "action": "fix_billing_authority_then_resume" if exc.kind == "unreadable" else "cancel_or_new_run"}
     # ONE fresh strict ledger read is this grant's monetary authority (a Continue's
     # successor: its whole-work GROUP under the original cap), never the display cache.
     tree = refresh_root_accounting(result_root, task_accounting_key(result_root, task, root_task_id), strict=True)
@@ -441,7 +452,8 @@ def _grant_exact_resume(task: Dict[str, Any], pause: Dict[str, Any], *, selected
         if not root_grant:
             return {"ok": False, "error": "root_resume_grant_missing",
                     "root_task_id": root_task_id, "action": "resume_root_first"}
-    if str(pause.get("scope") or "") == "root":
+    if str(pause.get("scope") or "") == "root" or row.get("reason") == "authority":
+        # A technical pause on an unreadable billing authority rereads it strictly here too.
         refusal = _root_money_refusal(result_root, task, root_task_id)
         if refusal:
             return refusal

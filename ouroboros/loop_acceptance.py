@@ -1043,7 +1043,8 @@ def _record_forced_acceptance_bypass(
     a collected one says). Reason tokens stay ledger-only (v6.61.4
     token-parroting class). Never raises."""
     rail_reason = ACCEPTANCE_BYPASS_REASON_BY_RAIL.get(str(reason_code or ""))
-    if rail_reason is None:
+    if rail_reason is None and reason_code not in {
+            "billing_authority_unreadable", "billing_authority_refused", "control_authority_unreadable"}:
         return
     # A rail that deliberately cleared the failure state (a confirmed swarm routing
     # handoff) terminalized nothing reviewable here — the admitted managed task gets
@@ -1063,9 +1064,11 @@ def _record_forced_acceptance_bypass(
         # take the pass it promised, so close it instead of leaving it dangling.
         terminalize_dangling_revision(llm_trace, rail=str(reason_code or ""))
         publish_acceptance_checkpoint(tools_ctx, llm_trace, task_id=ctx.task_id)
-        if decision.get("status") != "accepted":
+        if rail_reason is not None and decision.get("status") != "accepted":
             seed_acceptance_history(tools_ctx, llm_trace, rail_reason)
         return
+    if rail_reason is None:
+        return  # authority interruption closes an existing revision; it invents no panel/bypass verdict
     if getattr(tools_ctx, "_task_acceptance_reviewed", False):
         return
     trigger = f"bypassed_{reason_code}"

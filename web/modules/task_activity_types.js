@@ -22,7 +22,7 @@
  * @property {string=} original_task_id
  * @property {Object=} owner_wait  // the waited quiz_id, its wait state, quiz_state and optional wait_ended_at, independent of Project detail
  * @property {Object=} project_admission_hold  // accepted unstarted work waiting for original Project authority
- * @property {string=} pause_cause  // budget | owner | restart | sleep | unknown; display only
+ * @property {string=} pause_cause  // budget | owner | authority | restart | sleep | unknown; display only
  * @property {boolean=} finishing_reviews  // review work an owner Pause lets finish runs on; display only, no count
  * @property {Object=} late_work  // answered root with an open late phase (D10): title, answered_at; display only
  * @property {Object=} required_question  // read-only pointer to the current required Project quiz

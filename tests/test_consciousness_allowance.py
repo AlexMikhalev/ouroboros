@@ -183,6 +183,9 @@ def test_the_root_horizon_is_twice_the_window():
 
 def _subscription(root, monkeypatch, ts, *, session, spend, estimated=False, task="c-child",
                   root_task="c-root", category="consciousness_task"):
+    from ouroboros.task_results import load_task_result, write_task_result
+    if load_task_result(root, root_task) is None:  # the session's lineage exists, as in a real tree
+        write_task_result(root, root_task, "running", root_task_id=root_task)
     _at(monkeypatch, ts)
     return ua.record_subscription_session(
         session, drive_root=root, route="claudexor:claude", model="fable", task_id=task,
@@ -273,6 +276,8 @@ def test_a_positive_charge_and_a_descendants_charge_both_land_on_the_one_allowan
     assert window["roots"] == ["c-root", "wake-1"] and window["window_rows"] == 3
     # The same money on a root that is NOT consciousness's stays out of the window.
     _at(monkeypatch, T0 - HOUR)
+    from ouroboros.task_results import write_task_result
+    write_task_result(data_root, "owner", "running", root_task_id="owner")  # that root's lineage exists
     ua.record_subscription_session("sess-owner", drive_root=data_root, route="claudexor:claude",
                                    model="fable", task_id="owner-child", root_task_id="owner",
                                    spend_usd=9.0, reset_at="2026-09-17T00:00:00Z", category="subagent")

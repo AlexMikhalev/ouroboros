@@ -144,7 +144,7 @@ def test_the_review_wave_binds_on_the_group_when_it_is_tighter(data_root):
 
 def test_task_start_fields_for_the_successor_its_helper_and_an_unreadable_root(data_root, monkeypatch):
     from ouroboros.task_results import write_task_result
-    from ouroboros.usage_admission import UNAVAILABLE_GROUP_PREFIX, task_billing_fields
+    from ouroboros.usage_admission import task_billing_fields
 
     successor = {"id": "S", "metadata": {"continuation": {"billing_group_id": "P", "billing_group_limit_usd": 20.0}}}
     assert task_billing_fields(successor, "S", 5.0, data_root) == {
@@ -157,11 +157,15 @@ def test_task_start_fields_for_the_successor_its_helper_and_an_unreadable_root(d
     assert task_billing_fields(plain, "R", 5.0, data_root) == {
         "root_limit_usd": 5.0, "billing_group_id": "R", "billing_group_limit_usd": 5.0}
     unreadable_result(monkeypatch, "S")
-    fields = task_billing_fields(helper, "S", 5.0, data_root)
-    assert fields["billing_group_id"].startswith(UNAVAILABLE_GROUP_PREFIX)
-    with pytest.raises(ua.BudgetExceeded, match="billing group authority unavailable"):
-        _spend(data_root, _scope(data_root, "T", "S", group=fields["billing_group_id"],
-                                 group_limit=fields["billing_group_limit_usd"]), 0.01)
+    # Never a silent permission and never a money fact: no stand-in group or zero cap is
+    # produced; the refusal is the typed non-budget one, so no BudgetExceeded catcher sees it.
+    with pytest.raises(ua.BillingAuthorityUnavailable, match="billing group authority unavailable") as unread:
+        task_billing_fields(helper, "S", 5.0, data_root)
+    assert unread.value.kind == "unreadable" and not isinstance(unread.value, ua.BudgetExceeded)
+    before = len(ledger_rows(data_root))
+    with pytest.raises(ua.BillingAuthorityUnavailable):
+        _spend(data_root, _scope(data_root, "T", "S"), 0.01)
+    assert len(ledger_rows(data_root)) == before
 
 
 def test_the_continue_admission_carries_the_original_cap_and_the_resume_grant_reads_the_group(tmp_path, monkeypatch):

@@ -19,6 +19,9 @@ class Gateway:
     def remove_project(self, project_id):
         self.removed.append(project_id)
 
+    def get_run(self, run_id):  # a still-owed receipt is re-read by the ordinary collector
+        return {"summary": {"state": "cancelled", "spendUsd": 0, "spendEstimated": False}}
+
     def close(self):
         pass
 
@@ -175,7 +178,11 @@ def test_unknown_authority_or_reserved_owner_keeps_registration(tmp_path, monkey
         result(tmp_path, 'owner')
     if authority == 'unreadable':
         unreadable_result(monkeypatch, 'owner')
-    settle(tmp_path, gateway, row)
+        # Its bucket is unreadable too: the receipt stays owed in custody, never a stand-in row.
+        assert not custody.settle_run(tmp_path, gateway, row, {'summary': {
+            'state': 'cancelled', 'spendUsd': 0, 'spendEstimated': False}})['settled']
+    else:
+        settle(tmp_path, gateway, row)
     custody.reconcile_orphaned_runs(tmp_path, None if authority == 'unknown_live' else set(),
         gateway_factory=lambda: gateway,
         recoverable_task_ids={'owner'} if authority == 'reserved' else set())

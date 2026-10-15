@@ -148,7 +148,7 @@ def _review_exception_projection(
 ) -> tuple[Dict[str, Any], str, Optional[int], str, str]:
     """Project one failed actor while retaining earlier rail custody."""
     from ouroboros.review_execution import ReviewRouteUnavailable
-    from ouroboros.usage_accounting import BudgetExceeded, UsageAccountingError
+    from ouroboros.usage_accounting import BillingAuthorityUnavailable, BudgetExceeded, ControlAuthorityUnavailable, UsageAccountingError
     from ouroboros.transport_custody import stream_incomplete_on_chain
 
     failure_custody = dict(executor_custody or {})
@@ -211,7 +211,7 @@ def _review_exception_projection(
         "custody_lost" if history.unknown_outcome_seen else route_state
         or ("not_dispatched" if not dispatched and (
             capture_state in {"reserved", "released"}
-            or isinstance(exc, BudgetExceeded)
+            or isinstance(exc, (BudgetExceeded, BillingAuthorityUnavailable, ControlAuthorityUnavailable))
             or str(getattr(exc, "code", "") or "") == "deadline_exhausted"
         ) else "settled")
     )
@@ -219,7 +219,7 @@ def _review_exception_projection(
         "provider_outcome_unknown"
         if dispatched and (history.unknown_outcome_seen or physical_state in {"dispatched", "unresolved"})
         and not isinstance(http_status, int)
-        else str(getattr(exc, "code", "") or "")
+        else str((exc.cause if isinstance(exc, ControlAuthorityUnavailable) else getattr(exc, "code", "")) or "")
     )
     # Origin is a producer fact, not the rendered transport label (which can
     # contain error prose). Ledger/admission and authority refusals stay

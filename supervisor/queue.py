@@ -218,10 +218,15 @@ def prepare_root_billing(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     from ouroboros.config import runtime_setting
     from ouroboros.usage_admission import task_billing_fields
 
+    from ouroboros.usage_ledger import BillingAuthorityUnavailable
+
     limit = float(runtime_setting("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
-    return task_billing_fields(task, root_id, limit if limit > 0 else None,
-                               task.get("budget_drive_root") or DRIVE_ROOT, pin_initial=True,
-                               persist_initial=False)
+    try:
+        return task_billing_fields(task, root_id, limit if limit > 0 else None,
+                                   task.get("budget_drive_root") or DRIVE_ROOT, pin_initial=True,
+                                   persist_initial=False)
+    except BillingAuthorityUnavailable as exc:
+        return {"billing_authority_unavailable": exc.kind}  # admission blocks typed, never a group
 
 
 _UNRESOLVED = object()
@@ -370,9 +375,7 @@ def enqueue_task(
                 ADMISSION_RESERVATIONS.pop(task_id, None)
             return t
         if billing is not None:
-            from ouroboros.usage_admission import UNAVAILABLE_GROUP_PREFIX
-
-            if str(billing["billing_group_id"]).startswith(UNAVAILABLE_GROUP_PREFIX):
+            if billing.get("billing_authority_unavailable"):
                 t["_admission_blocked"] = "billing_authority_unavailable"
                 return t
             t.setdefault("metadata", {})["billing_group"] = {k: v for k, v in billing.items()

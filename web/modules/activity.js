@@ -313,6 +313,7 @@ export function initActivity({ mount, ws } = {}) {
             const sleeping = t._budget_pause?.reason === 'sleep' || warmSleeping;
             const ownerPaused = t._budget_pause?.reason === 'owner'
                 || ownerFencedRoots.has(String(t.root_task_id || t.id || q.id || ''));
+            const authorityPaused = t._budget_pause?.reason === 'authority';
             // Census addresses the current physical retry. Children use that actor's phase,
             // while a separate late-work row keeps its own identity and controls.
             const ownId = String(q.id || t.id || ''), rootId = String(t.root_task_id || ownId);
@@ -322,7 +323,8 @@ export function initActivity({ mount, ws } = {}) {
             const kindLabel = phase === 'unknown' ? 'pause status unknown'
                 : phase === 'budget_pausing' ? 'pausing' : restartHeld ? 'held after Restart'
                 : continueHeld ? 'held: earlier work not proven settled'
-                : (paused ? (ownerPaused ? 'paused' : sleeping ? 'sleeping' : 'paused (budget)') : sleeping ? 'sleeping' : kind);
+                : (paused ? (ownerPaused ? 'paused' : sleeping ? 'sleeping'
+                    : authorityPaused ? 'paused (technical)' : 'paused (budget)') : sleeping ? 'sleeping' : kind);
             // A result is still the row's own, beside its wait word.
             const outcome = ownId && ownOutcomePhase(activities.find((entry) => entry?.activity_id === ownId),
                 kindLabel === 'running' ? '' : kindLabel);

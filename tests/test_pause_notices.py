@@ -248,3 +248,14 @@ def test_the_lifecycle_import_seeds_pauses_owed_by_an_older_body(tmp_path, monke
     (root / "task_results" / "old.json").write_text(json.dumps(row), encoding="utf-8")  # as a body without the store wrote it
     prepare_startup_state(root)
     assert set(obligations.members(root, "pause_notices")) == {"old"}
+
+
+def test_an_authority_pause_says_it_is_technical_and_never_a_budget_limit(notices):
+    root, sent = notices
+    _pause(root, reason="authority")
+    pause_notices.reconcile_pause_notices(root)
+    assert len(sent) == 1
+    text = sent[0][1]
+    assert "billing or control authority could not be read" in text and "says nothing about money left" in text
+    assert "budget limit" not in text and "Fix the cause, then use Resume on the task when available" in text
+    assert "Resume rechecks that authority" not in text

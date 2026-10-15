@@ -135,7 +135,10 @@ def tree_task_ids(root, tree_id: str) -> List[str]:
 
 def tree_billing_group(root, tree_id: str) -> Optional[Dict[str, Any]]:
     """The admission bucket a tree's delegated starts carried (a bound run's request, else a
-    pending request): the late settlement's lineage when no execution scope is active."""
+    pending request): the late settlement's lineage when no execution scope is active. An
+    older start's ``unavailable:`` stand-in names no bucket and is skipped."""
+    from ouroboros.usage_admission import UNAVAILABLE_GROUP_PREFIX
+
     tree = str(tree_id or "")
     with store.open_store(root, write=False) as txn:
         carried = [json_loads(record["facts"]) for record in txn.conn.execute(
@@ -145,12 +148,13 @@ def tree_billing_group(root, tree_id: str) -> Optional[Dict[str, Any]]:
         requests = _pending_rows(txn)
     for facts in carried:
         group = facts.get("billing_group") or {}
-        if "billing_group_limit_usd" in group:
+        if "billing_group_limit_usd" in group and not str(group["billing_group_id"]).startswith(UNAVAILABLE_GROUP_PREFIX):
             return dict(group)
     for request in requests:
         group = request.get("billing_group") or {}
         if (str(request.get("root_task_id") or request.get("task_id") or "") == tree
-                and group.get("billing_group_id") and "billing_group_limit_usd" in group):
+                and group.get("billing_group_id") and "billing_group_limit_usd" in group
+                and not str(group["billing_group_id"]).startswith(UNAVAILABLE_GROUP_PREFIX)):
             return dict(group)
     return None
 
