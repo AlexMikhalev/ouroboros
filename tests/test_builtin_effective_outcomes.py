@@ -502,16 +502,18 @@ def test_acceptance_dispatch_refusal_and_successful_handoff(invoke, monkeypatch,
         if case == "pool": raise ValueError("invalid pool")
         return []
     monkeypatch.setattr("ouroboros.review_substrate.triad_delivery_slots", slots)
-    if case == "selector":
+    if case != "nomination":
         # Set lineage inside the handler: this fixture exercises publication,
         # while the escalation witness separately exercises the child allowlist.
+        # Only a child dispatches its own rows; an off-mode root buys none (#1731).
         def handler(ctx, **kw):
             ctx.task_id = "child"
             ctx.task_metadata = {"root_task_id": "root", "parent_task_id": "root", "delegation_role": "subagent"}
             return review._handle_task_acceptance_review(ctx, **kw)
     else:
         handler = review._handle_task_acceptance_review
-    result = invoke(handler, claim="candidate", goal="goal", reviewer_slot_id="missing")
+    result = invoke(handler, claim="candidate", goal="goal",
+                    reviewer_slot_id="" if case in {"pool", "slots"} else "missing")
     _assert_consumers(result, "OK" if case == "nomination" else "TOOL_ARG_ERROR" if case == "selector" else "LEGACY_UNAVAILABLE")
     payload = json.loads(result.text)
     assert payload["status"] == ("deferred_to_host_acceptance" if case == "nomination" else "not_dispatched")

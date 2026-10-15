@@ -177,12 +177,14 @@ def test_the_real_forced_rails_and_projector_decide_the_debt(tmp_path, rail):
     from ouroboros.task_finalization import prepare_terminal_send_event
     from ouroboros.utils import utc_now_iso
     from tests.test_delivery_forced_finalization import _forced_test_context
+    from tests.test_loop_acceptance_gate import _nominate_acceptance
 
     loop, registry, ctx, trace = _forced_test_context(tmp_path)
     # The rail itself stamps the typed failure before composing (the forced-bypass
     # recorder seeds history only for a rail that terminalized with a reason).
     ctx.accumulated_usage.update(execution_status="failed", reason_code="round_limit")
     answer = "A complete model-authored answer retained before newer evidence."
+    _nominate_acceptance(trace, task_id="parent1", subject=answer)  # the owed panel (#1731)
     host_words = "⚠️ Round limit reached; nothing further was produced."
     if rail.startswith("stale_candidate"):
         old = loop._replace_delivery_candidate(registry, ctx, trace, answer, control="replace")

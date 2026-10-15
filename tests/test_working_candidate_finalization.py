@@ -73,8 +73,12 @@ def test_saved_candidate_collects_the_original_pending_panel(full_loop, monkeypa
         assert f.settled.wait(10)
     calls = []
     def continued(_llm, messages, *_a, **_kw):
-        assert not settled, "settled unchanged answer needs no additional Main request"
-        assert f.waits, "real saved finalization must collect/wait before author control"
+        if settled:  # G1 #1737/D12: a settled verdict, PASS included, reaches Main before its decision
+            assert any(source.get("binding_hash") == original_run["binding_hash"] and source.get("settled")
+                       for message in messages for source in message.get("review_feedback") or []), \
+                "the collected verdict reaches Main before the unchanged answer is delivered"
+        else:
+            assert f.waits, "real saved finalization must collect/wait before author control"
         f.model_inputs.append(copy.deepcopy(messages))
         calls.append(messages)
         assert f.ctx._delivery_candidate.full_text == ANSWER
@@ -82,7 +86,7 @@ def test_saved_candidate_collects_the_original_pending_panel(full_loop, monkeypa
     monkeypatch.setattr(loop, "call_llm_with_retry", continued)
     answer, _, trace = f.run()
     assert answer == ANSWER
-    assert len(calls) <= 1
+    assert len(calls) <= 1 and (calls or not settled)
     assert len(f.review_sends) == 1, "recovery collects the paid operation without a second panel"
     run = trace["review_runs"][-1]
     assert run["request"] == original_run["request"]
@@ -121,6 +125,11 @@ def test_saved_candidate_does_not_turn_unavailable_evidence_into_acceptance(full
     assert not f.review_sends
 
 
+# The answer is nominated; no produced artifact is needed. A retry's artifact store
+# is its own, so the shared fixture's stored report would change its delivery subject
+# (G1's produced_sources): that retry then buys one panel of its own, never the old
+# PASS's authority (disclosed residual of the G1 port).
+@pytest.mark.parametrize("full_loop", [False], indirect=True)
 def test_new_execution_retains_answer_but_cannot_inherit_old_pass(full_loop, monkeypatch):
     f = full_loop
     f.release.set()

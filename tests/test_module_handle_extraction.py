@@ -353,8 +353,9 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         '_publish_delivery_candidate', '_replace_delivery_candidate', '_resolve_delivery_control',
         '_run_task_acceptance_review_once', '_service_finalization_evidence', '_set_acceptance_decision',
         '_supersede_delivery_acceptance_binding', '_supersede_task_acceptance_for_evidence_change', '_supersede_task_acceptance_for_owner_followup',
-        '_task_acceptance_eligible', '_task_acceptance_owner_generation_changed', 'get_review_enforcement',
-        'get_task_review_mode',
+        # G1 (#1731): a root's local stop keeps its author disposition without an
+        # eligibility probe, so the leaf no longer reads the eligibility/mode pair.
+        '_task_acceptance_owner_generation_changed', 'get_review_enforcement',
     })),
     "ouroboros/loop_forced_finalization.py": ("ouroboros/loop.py", "_loop", frozenset({
         'DeliveryCandidate', '_LoopExitContext', '_append_or_merge_user_message',
