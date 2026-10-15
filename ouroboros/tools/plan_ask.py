@@ -6,10 +6,11 @@ Pro) includes every owner-marked reviewer and says so when the mind named fewer;
 a mind-named enabled catalog row outside the pool is a participant whose
 objections are answered but never hold; children the mind schedules are not
 catalog rows and cannot be named. Each participant receives its own host-built
-delivery (``plan_packet``): the stable part, the owner's verbatim words and room
-snapshot, the plan whole or as the delta since the revision it last answered
-about, everything said in the council since the ask it last answered in, its own
-open objections, the mind's message, the attachments. Continuation is per
+delivery (``plan_packet``; what it is told is selected by ``plan_delivery``): the
+stable part, the owner's verbatim words and room snapshot, the plan whole or as the
+delta since the revision it last answered about, everything said in the council
+since the ask it last answered in plus the peer replies to earlier asks that settled
+after its last delivery, its own open objections, the mind's message, the attachments. Continuation is per
 participant: a packet seat continues its own exact transcript, a session seat its
 own thread; a changed roster elsewhere resets nobody.
 
@@ -36,7 +37,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
 from ouroboros import plan_record
-from ouroboros.tools import plan_packet
+from ouroboros.tools import plan_delivery, plan_packet
 from ouroboros.tools.plan_review_runtime import (
     PLAN_REVIEW_MAX_TOKENS,
     PLAN_REVIEW_SLOT_TIMEOUT_SEC,
@@ -300,54 +301,6 @@ def _prior_transcript(state_root: pathlib.Path, task_id: str, participant_row: M
     return [*messages, {"role": "assistant", "content": answer}]
 
 
-def _last_answer_row(record: Mapping[str, Any], seat_id: str) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """``(ask, participant_row)`` of this seat's latest answered ask."""
-    found = (None, None)
-    for ask in record.get("asks") or []:
-        for participant in ask.get("participants") or []:
-            if str(participant.get("seat_id") or "") == seat_id and participant.get("status") == "answered":
-                found = (ask, participant)
-    return found
-
-
-def _asks_since(record: Mapping[str, Any], last_ask_id: str) -> List[Dict[str, Any]]:
-    asks = list(record.get("asks") or [])
-    if not last_ask_id:
-        return asks
-    index = next((i for i, a in enumerate(asks) if str(a.get("ask_id") or "") == last_ask_id), None)
-    return asks if index is None else asks[index:]
-
-
-def _delivered_asks(state_root: Any, task_id: str, asks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """The council's asks as a participant is told them, every answer's prose present: prose the
-    index moved out (``plan_record._fit``) is read back from the retained reply source when it fits
-    one attachment (``EVIDENCE_PER_ITEM_BYTES``), else the omission is named with the source's address."""
-    from ouroboros.review_ledger import read_source
-    from ouroboros.tools import plan_evidence
-
-    out = copy.deepcopy(list(asks))
-    for participant in (p for ask in out for p in ask.get("participants") or []):
-        reply = participant.get("reply")
-        if not isinstance(reply, dict) or reply.get("prose_inline", True):
-            continue
-        ref = participant.get("reply_ref") if isinstance(participant.get("reply_ref"), dict) else {}
-        inner = ref.get("ref") if isinstance(ref.get("ref"), dict) else {}
-        chars, retained = int(ref.get("chars") or 0), ref.get("status") == "retained"
-        parsed = None
-        if retained and chars <= plan_evidence.EVIDENCE_PER_ITEM_BYTES:
-            try:
-                parsed, _error = plan_record.parse_reply(read_source(state_root, task_id, ref).decode("utf-8"))
-            except (OSError, ValueError, KeyError, TypeError):
-                parsed = None
-        if parsed is not None:
-            reply.update(prose=str(parsed.get("prose") or ""), prose_inline=True)
-            continue
-        reply["prose_omitted"] = {"chars": chars, "address": str(inner.get("path") or ""),
-                                  "reason": ("unreadable" if retained and chars <= plan_evidence.EVIDENCE_PER_ITEM_BYTES
-                                             else "too_large" if retained else "not_retained")}
-    return out
-
-
 def participant_content(ctx: Any, record: Mapping[str, Any], revision: Mapping[str, Any], participant: Participant, *,
                         message: str, manifest: Mapping[str, Any], dialogue_section: str,
                         legacy: Optional[Mapping[str, Any]] = None, state_root: Any = None, task_id: str = "") -> str:
@@ -355,17 +308,25 @@ def participant_content(ctx: Any, record: Mapping[str, Any], revision: Mapping[s
     it last answered about afterwards; the council since its last answer; its own open objections
     (an imported legacy one included: its raiser must see what holds the task); message; attachments."""
     seat_id = participant.seat_id
-    last_ask, _row = _last_answer_row(record, seat_id)
+    last_ask, _row = plan_delivery.last_answer_row(record, seat_id)
     first_time = last_ask is None
+    hydrate = state_root is not None and bool(task_id)
     delta = None
     if not first_time:
         seen = plan_record.revision_by_number(record, last_ask.get("revision"))
+        if seen is not None and hydrate:
+            seen = plan_delivery.delivered_revision(state_root, task_id, seen)
         delta = plan_record.revision_delta(seen, revision) if seen is not None else None
+        if delta is not None and seen.get("plan_unavailable"):
+            delta["plan_previous_unavailable"] = seen["plan_unavailable"]
     own = [o for o in plan_record.open_objections(record, legacy) if o.get("seat_id") == seat_id]
-    since = _asks_since(record, str((last_ask or {}).get("ask_id") or ""))
-    if state_root is not None and task_id:
-        since = _delivered_asks(state_root, task_id, since)
-    cross_talk = plan_packet.render_cross_talk(since, seat_id=seat_id)
+    # The council since the ask it last answered in, preceded by the peer replies to earlier asks
+    # that settled after that delivery was built (selected by answered_at, never lost to the index).
+    council = [*plan_delivery.late_peer_replies(record, seat_id, last_ask),
+               *plan_delivery.asks_since(record, str((last_ask or {}).get("ask_id") or ""))]
+    if hydrate:
+        council = plan_delivery.delivered_asks(state_root, task_id, council)
+    cross_talk = plan_packet.render_cross_talk(council, seat_id=seat_id)
     return plan_packet.build_participant_content(
         objective=_task_objective(ctx), owner_words=str(manifest.get("owner_words") or ""),
         dialogue_section=dialogue_section, revision=revision, delta=delta, cross_talk=cross_talk,
@@ -440,7 +401,7 @@ def prepare_ask(ctx: Any, *, record: Mapping[str, Any], revision: Mapping[str, A
         contents[sid] = participant_content(ctx, record, revision, participant, message=message, manifest=manifest,
                                             dialogue_section=dialogue_section, legacy=legacy, state_root=state_root, task_id=task_id)
         session_tasks[sid] = _session_task_text(session_prompt, contents[sid], str(active_root))
-        _ask, prior = _last_answer_row(record, sid)
+        _ask, prior = plan_delivery.last_answer_row(record, sid)
         if prior is None:
             continue
         if slot_is_session(participant.slot):

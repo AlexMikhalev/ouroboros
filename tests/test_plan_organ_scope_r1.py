@@ -9,7 +9,7 @@ from ouroboros import owner_hurry as oh
 from ouroboros import plan_record
 from ouroboros.review_records import ReviewActorRecord
 from ouroboros.tools import plan_ask
-from tests.test_plan_task_tool import CLEAN, _record, _reply, _slots, _user_text, _write, harness as _harness
+from tests.test_plan_task_tool import CLEAN, _call, _record, _reply, _slots, _user_text, _write, harness as _harness
 
 harness = _harness  # noqa: F811 - pytest fixture re-export
 
@@ -100,3 +100,61 @@ def test_an_exception_during_dispatch_leaves_an_attempted_ask_not_a_hold(harness
     assert rows and all(p["status"] == "failed" and p["dispatched"] is False and "substrate down" in p["error"] for p in rows)
     decision = oh.force_plan_decision(ctx, {}, enforcement="blocking")
     assert decision["asks_unroutable"] == 1 and decision["allow"] is True and decision["status"] == "force_plan_unmet"
+
+
+# ---------------------------------------------------------------- F2: a late peer reply to an earlier ask reaches the next delivery
+
+def test_a_peer_reply_to_an_earlier_ask_that_settles_late_reaches_the_recipients_next_delivery(harness):
+    """Astra F2: a1 → A, B, C with B pending; A answers; a2 → A, A answers; B's a1 reply settles;
+    a3 → A carries B's a1 reply (attributed to a1, marked late); C's a1 reply, which A saw before
+    a2 was built, is not repeated; A's own words never are."""
+    harness.state["slots"] = _slots(("A", "m/a"), ("B", "m/b"), ("C", "m/c"))
+    first = harness.install({"A": _reply("A on a1."), "B": dict(PENDING), "C": _reply("C on a1, seen in time.")})
+    ctx = harness.make_ctx()
+    _write(ctx, ask="council")
+    harness.install({"A": _reply("A on a2.")})
+    _call(ctx, ask=["A"], message="second look")
+    _settle(ctx, harness, first.calls[0]["request"], "B", _reply("B on a1, late."), roster=3)
+    third = harness.install({"A": CLEAN})
+    _call(ctx, ask=["A"], message="third look")
+    content = _content(third, 0, "A")
+    council = content.split("## THE COUNCIL SO FAR")[1].split("## YOUR OPEN OBJECTIONS")[0]
+    assert "B on a1, late." in council and "### Ask a1" in council and "answers that arrived after your last delivery" in council
+    assert council.index("### Ask a1") < council.index("### Ask a2"), "the late reply is told first, under its own ask"
+    assert "C on a1, seen in time." not in council, "a peer reply A already saw is not repeated"
+    assert "A on a1." not in council and "A on a2." not in council, "its own words are never repeated to it"
+    # The other direction: A answered a3 after B's late reply arrived, so a4 does not repeat it.
+    fourth = harness.install({"A": CLEAN})
+    _call(ctx, ask=["A"], message="fourth look")
+    council = _content(fourth, 0, "A").split("## THE COUNCIL SO FAR")[1].split("## YOUR OPEN OBJECTIONS")[0]
+    assert "B on a1, late." not in council and "### Ask a3" in council and "### Ask a1" not in council
+
+
+# ---------------------------------------------------------------- Fable 8 / Grok: the delta diffs the retained text, not a blank
+
+def test_a_repeat_participants_delta_diffs_the_retained_text_when_the_index_moved_the_prose_out(harness):
+    harness.monkeypatch.setattr(plan_record, "_PLAN_RECORD_MAX_BYTES", 6_000)
+    harness.state["slots"] = _slots(("s1", "m/a"))
+    sub = harness.install({"s1": CLEAN})
+    ctx = harness.make_ctx()
+    big = "Slide five carries the argument. " * 150
+    _write(ctx, plan=big + "\nEnd A.", ask="council")  # revision 1 and ask a1
+    _write(ctx, plan=big + "\nEnd B.")                   # revision 2: the index is past its bound, revision 1's prose moves out
+    first = _record(harness)["revisions"][0]
+    assert first["plan_inline"] is False and first["plan"] == "" and first["text_ref"]["path"]
+    _call(ctx, ask=["s1"], message="again")              # a2: s1 answered about revision 1, so the delta is against its retained text
+    delta = _content(sub, 1, "s1").split("## THE PLAN")[1].split("The current text follows whole.")[0]
+    assert "-End A." in delta and "+End B." in delta and "+Slide five carries the argument." not in delta
+    # The other direction: an unreadable retained source is named, never diffed as a blank.
+    _write(ctx, plan=big + "\nEnd C.")                   # revision 3: revision 2's prose moves out
+    second = _record(harness)["revisions"][1]
+    assert second["plan_inline"] is False
+
+    def corrupt(record):
+        record["revisions"][1]["text_ref"]["sha256"] = "0" * 64  # the retained source no longer verifies on read
+        return record
+
+    plan_record._update_plan_record(harness.drive, "task-1", corrupt)
+    _call(ctx, ask=["s1"], message="once more")          # a3: s1 answered a2 about revision 2
+    delta = _content(sub, 2, "s1").split("## THE PLAN")[1].split("The current text follows whole.")[0]
+    assert "retained source could not be read" in delta and second["text_ref"]["path"] in delta and "```diff" not in delta

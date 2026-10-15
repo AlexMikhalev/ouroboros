@@ -204,7 +204,10 @@ def _render_delta(delta: Mapping[str, Any]) -> str:
         lines.append(f"- affected path removed: {path}")
     if delta.get("body_changed"):
         lines.append("- whether the plan changes Ouroboros's own body changed")
-    if delta.get("plan_changed"):
+    if delta.get("plan_previous_unavailable"):
+        lines.append("- the prose you saw is no longer inline and its retained source could not be read "
+                     f"({delta['plan_previous_unavailable']}); it was not diffed")
+    elif delta.get("plan_changed"):
         lines.append("- the plan prose changed:\n```diff\n" + "\n".join(delta.get("plan_diff") or []) + "\n```")
     if len(lines) == 1:
         lines.append("- nothing in the recorded fields changed")
@@ -244,13 +247,16 @@ def _render_reply(entry: Mapping[str, Any]) -> str:
 
 def render_cross_talk(asks: Sequence[Mapping[str, Any]], *, seat_id: str) -> str:
     """Everything said in the council in ``asks`` (the ones since this participant last
-    answered), attributed by seat and model; the participant's own replies are not
-    repeated to it."""
+    answered, preceded by earlier asks' replies that settled after its last delivery,
+    marked ``late_replies``), attributed by seat and model; the participant's own replies
+    are not repeated to it."""
     if not asks:
         return ""
     sections = []
     for ask in asks:
         head = f"### Ask {ask.get('ask_id')} (about revision {ask.get('revision')}, {ask.get('ts') or '?'})"
+        if ask.get("late_replies"):
+            head += " — answers that arrived after your last delivery"
         message = str(ask.get("message") or "").strip()
         lines = [head, f"Ouroboros asked: {message}" if message else "Ouroboros asked for a review."]
         for participant in ask.get("participants") or []:
