@@ -404,16 +404,17 @@ def _record_skill_exec_dispatch(
         or getattr(ctx, "root_task_id", "")
         or (bound.root_task_id if bound is not None else "")
         or task_id
-        or f"skill_exec:{skill_name}"
+        or ""
     )
-    if not task_id:
-        task_id = root_task_id
     parent_task_id = str(
         meta.get("parent_task_id")
         or getattr(ctx, "parent_task_id", "")
         or (bound.parent_task_id if bound is not None else "")
         or ""
     )
+    non_task_operation = not (task_id or root_task_id or parent_task_id)
+    root_task_id = root_task_id or f"skill_exec:{skill_name}"
+    task_id = task_id or root_task_id
     drive_root = pathlib.Path(
         str(
             meta.get("budget_drive_root")
@@ -432,6 +433,7 @@ def _record_skill_exec_dispatch(
         parent_task_id=parent_task_id,
         category="external_skill",
         source=f"skill_exec:{skill_name}:{script_rel}",
+        non_task_operation=non_task_operation,
     )
 
 

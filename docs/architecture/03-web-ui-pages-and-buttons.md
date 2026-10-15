@@ -85,7 +85,7 @@ Main and Project turns own native agents without queue records, including while 
 
 #### Liveness census and the chat header
 
-`GET /api/state` lists `active_chat_activities` (§11.1): direct turns and physical root actors, plus distinct late work. Parked direct turns keep their ID and `kind="direct_chat"`; `pause_cause` names budget/owner/restart/sleep/unknown, never execution authority. Census alone inserts live entries; finals/census remove them. Only complete, supervisor-ready absence clears entries; partial reads retain positives. `chat_activity.js::createStateSnapshotSequencer` serves Main's short poll and `app.js`'s longer one.
+`GET /api/state` lists `active_chat_activities` (§11.1): direct turns and physical root actors, plus distinct late work. Parked direct turns keep their ID and `kind="direct_chat"`; `pause_cause` names the parked cause, never execution authority. Census alone inserts live entries; finals/census remove them. Only complete, supervisor-ready absence clears entries; partial reads retain positives. `chat_activity.js::createStateSnapshotSequencer` serves Main's short poll and `app.js`'s longer one.
 
 Optional `model_activity` carries the current call's observations (§6) through this census only, no new poller or durable phase log. `task_phase_chip.js` shares their presentation across card, header and sidebar; each row keeps its lifecycle/control priority. Dispatch means Sending request / waiting for response, never provider thinking. Queue/rejoin/unknown stay static; missing facts invent no cause or ETA. Brief phases need not survive until a census read.
 

@@ -313,7 +313,8 @@ def test_review_wave_admission_binds_on_the_tighter_of_root_and_global_axes(gate
 
     monkeypatch.setattr(ua, "usage_projection", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("ledger")))
     skeleton = ua.review_wave_admission(gate, root_limit_usd=4.0, global_limit_usd=4.0, **wave)
-    assert skeleton["fits"] is True and skeleton["estimated_wave_usd"] is None
+    assert skeleton["fits"] is None and skeleton["estimated_wave_usd"] is None
+    assert skeleton["admission_unknown"] == "RuntimeError"
     assert skeleton["binding_axis"] is None and skeleton["global_remaining_usd"] is None
 
 

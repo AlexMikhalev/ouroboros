@@ -58,6 +58,8 @@ def late_skill(tmp_path, monkeypatch):
             settled.set()
     monkeypatch.setattr(custody, "_settle_review_attempt", settle)
     monkeypatch.setattr(custody, "_logical_timeout", lambda *_: .05)
+    from ouroboros.task_results import write_task_result
+    write_task_result(tmp_path, "skill-root", "running", root_task_id="skill-root")  # the child's real root
     def ctx():
         value = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="skill-task")
         value.task_attempt = 1

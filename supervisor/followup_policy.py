@@ -95,7 +95,8 @@ def resolve_relation(root, origin, kind, *, declared_by):
     """Resolve money off the schedule lock from actual task/ledger authority."""
     from ouroboros.deadline_utils import parse_deadline_ts
     from ouroboros.task_results import load_task_result
-    from ouroboros.usage_admission import task_billing_fields, UNAVAILABLE_GROUP_PREFIX
+    from ouroboros.usage_admission import task_billing_fields
+    from ouroboros.usage_ledger import BillingAuthorityUnavailable
 
     if kind not in {"related", "independent"}:
         raise ValueError("followup_relation_required")
@@ -111,9 +112,11 @@ def resolve_relation(root, origin, kind, *, declared_by):
     actual_root = str(rows[0].get("root_task_id") or (rows[0].get("metadata") or {}).get("root_task_id") or task_id)
     if actual_root != root_id:
         raise ValueError("followup_origin_unavailable")
-    billing = task_billing_fields({"id": task_id}, root_id, None, root)
-    if (str(billing.get("billing_group_id") or "").startswith(UNAVAILABLE_GROUP_PREFIX)
-            or not billing.get("billing_group_limit_source") or not billing.get("billing_group_limit_revision")):
+    try:
+        billing = task_billing_fields({"id": task_id}, root_id, None, root)
+    except BillingAuthorityUnavailable as exc:
+        raise ValueError("followup_billing_authority_unavailable") from exc
+    if not billing.get("billing_group_limit_source") or not billing.get("billing_group_limit_revision"):
         raise ValueError("followup_billing_authority_unavailable")
     relation["billing_group"] = {k: v for k, v in billing.items() if k.startswith("billing_group_")}
     deadlines = []
@@ -374,7 +377,11 @@ def bind_task(root, task, record):
     meta["followup_relation"] = copy.deepcopy(record.get("followup_relation") or {"kind": relation_kind(record)})
     if relation_kind(record) != "related":
         return
-    meta["billing_group"] = task_binding(root, record)
+    from ouroboros.usage_ledger import BillingAuthorityUnavailable
+    try:
+        meta["billing_group"] = task_binding(root, record)
+    except BillingAuthorityUnavailable as exc:
+        raise ValueError("followup_billing_authority_unavailable") from exc
     relation = record["followup_relation"]
     dates = [parse_deadline_ts(raw) for raw in (relation.get("deadline_at"), task.get("deadline_at"),
              (task.get("task_contract") or {}).get("deadline_at")) if raw]
@@ -404,14 +411,13 @@ def task_binding(root, record):
     ``None`` means the task's own root economics: independent work, and an
     unrecorded (published) relationship, which never borrows its origin's cap.
     """
-    from ouroboros.usage_admission import UNAVAILABLE_GROUP_PREFIX
+    from ouroboros.usage_admission import authority_unavailable
     kind = relation_kind(record)
     if kind == "independent" or (kind == "unknown" and legacy_unrecorded(record)):
         return None
     binding = (record.get("followup_relation") or {}).get("billing_group") or {}
     if kind != "related" or not binding.get("billing_group_limit_source"):
-        return {"billing_group_id": UNAVAILABLE_GROUP_PREFIX + str(record.get("id")),
-                "billing_group_limit_usd": 0.0}
+        raise authority_unavailable("refused", str(record.get("id")), "related_followup_unbound")  # read cleanly
     return copy.deepcopy(binding)
 
 

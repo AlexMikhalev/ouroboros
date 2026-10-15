@@ -25,7 +25,7 @@ _LOCK = threading.Lock()
 
 def notice_fields(current: dict, root: Any, task_id: str, episode_id: str, reason: str) -> dict:
     """Called inside the result writer, only for a newly confirmed pause episode."""
-    if not episode_id or reason not in {"budget", "owner"}:
+    if not episode_id or reason not in {"budget", "owner", "authority"}:
         return {}
     identity = f"pause:{task_id}:{episode_id}"
     pending = dict(current.get("pause_notices") or {})
@@ -92,9 +92,12 @@ def reconcile_pause_notices(drive_root: Any, *, stop_requested=None) -> None:
                     # Read per notice: a failed send whose row DID land (a live
                     # transport error after the append) is seen on the next pass.
                     if receipt not in obligations.members(root, "pause_notice_receipts"):
-                        cause = "the owner's Pause" if notice.get("reason") == "owner" else "its budget limit"
-                        text = (f"The task paused because of {cause}. "
-                                "Its work is retained. Use Resume on the task when available.")
+                        cause = {"owner": "the owner's Pause", "authority": (
+                            "a technical fault: its billing or control authority could not be read, which says "
+                            "nothing about money left")}.get(str(notice.get("reason")), "its budget limit")
+                        resume = ("Fix the cause, then use Resume on the task when available"
+                                  if notice.get("reason") == "authority" else "Use Resume on the task when available")
+                        text = f"The task paused because of {cause}. Its work is retained. {resume}."
                         message_bus.send_with_budget(
                             chat_id, text, task_id=task_id, role="system", system_type="task_pause_notice",
                             narration=False, require_write=True, ensure_record_boundary=True,

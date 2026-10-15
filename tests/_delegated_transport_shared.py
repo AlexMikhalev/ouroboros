@@ -179,6 +179,11 @@ def _delegating_ctx(tmp_path, *, acting: bool, task_id: str = "t-nanny"):
         ctx.workspace_mode = "self_worktree"
     ctx.task_id = task_id
     ctx.task_metadata = {"root_task_id": "t-root", "parent_task_id": "t-root"}
+    # A child's root exists before the child runs: its lineage is the delegated start's billing
+    # authority (a missing root is refused, never a stand-in bucket).
+    from ouroboros.task_results import load_task_result, write_task_result
+    if load_task_result(tmp_path, "t-root") is None:
+        write_task_result(tmp_path, "t-root", "running", root_task_id="t-root")
     return ctx
 
 
@@ -241,6 +246,9 @@ def _plain_ctx(tmp_path):
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
     ctx.task_id = "t-nanny"
     ctx.task_metadata = {"root_task_id": "t-root", "parent_task_id": "t-root"}
+    from ouroboros.task_results import load_task_result, write_task_result
+    if load_task_result(tmp_path, "t-root") is None:  # the nanny's real root
+        write_task_result(tmp_path, "t-root", "running", root_task_id="t-root")
     return ctx
 
 

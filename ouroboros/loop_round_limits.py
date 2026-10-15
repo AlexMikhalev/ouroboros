@@ -714,15 +714,21 @@ def _loop_exit_after_exception(
     exc: BaseException, ctx: Optional[_RoundLimitContext], exit_ctx: Any, llm_trace: Dict[str, Any],
     transport_episode: Optional[TransportWaitEpisode],
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """The loop's outer exception exit: a budget-pause HOLD ended by the task's own
-    controls (Stop/Panic/deadline/lifetime) raises ``ModelWaitInterrupted`` OUTSIDE
-    the model-call try, and it rejoins the SAME control rails a live wait uses (a
+    """A tool admission or budget-pause HOLD can end on the task's own controls
+    OUTSIDE the model-call try. Normalize the physical admission's typed control
+    through the same helper, then rejoin the SAME rails a live wait uses (a
     truthful no-call deadline/stop terminal), never the generic task exception. An
     interruption those rails already routed once (the model-call handler re-raises
     Stop for the supervisor's settlement) and every other exception re-raise with
     their loop evidence attached."""
-    from ouroboros.model_wait import ModelWaitInterrupted
+    from ouroboros.llm_attempt import PhysicalDispatchInterrupted
+    from ouroboros.model_wait import ModelWaitInterrupted, propagate_model_control
 
+    if isinstance(exc, PhysicalDispatchInterrupted):
+        try:
+            propagate_model_control(exc, role="main")
+        except ModelWaitInterrupted as interrupted:
+            exc = interrupted
     controlled = None
     if isinstance(exc, ModelWaitInterrupted) and ctx is not None and not getattr(exc, "control_rails_seen", False):
         controlled = _handle_model_wait_control(ctx, exc, transport_episode=transport_episode)
@@ -754,9 +760,11 @@ def _handle_model_wait_control(
     # hand the same error back here.
     error.control_rails_seen = True
     if reason == "owner_launch_authority_unavailable":
-        # Only the positively unsent handoff waits; sent effects never retry.
-        # Reuse this task's live stack and control/deadline checks, no scheduler.
-        from ouroboros.owner_pause import OwnerPauseRefused, launch_admission
+        # Only the positively unsent handoff waits, and only on positive lock contention;
+        # sent effects never retry. Reuse this task's live stack and control/deadline
+        # checks, no scheduler. Any other physical cause (permission, identity, kernel)
+        # ends the wait typed with that cause; the original unsent evidence rides along.
+        from ouroboros.owner_pause import LaunchBusy, OwnerPauseRefused, launch_admission
         from ouroboros.usage_accounting import current_usage_scope
         from ouroboros.llm_attempt import require_physical_dispatch_window
         while True:
@@ -766,13 +774,14 @@ def _handle_model_wait_control(
                     pass
                 return None
             except OwnerPauseRefused as exc:
-                if str(exc) == reason:
+                if isinstance(exc, LaunchBusy) and exc.reason == "contention":
                     import time
                     from ouroboros.budget_pause import _HOLD_POLL_SEC
 
                     time.sleep(_HOLD_POLL_SEC)
                     continue
-                error = ModelWaitInterrupted(str(exc), role=error.model_role, cause=error)
+                cause = f"{exc}:{exc.reason}" if isinstance(exc, LaunchBusy) else str(exc)
+                error = ModelWaitInterrupted(cause, role=error.model_role, cause=error)
             except Exception as exc:
                 from ouroboros.model_wait import propagate_model_control
 
@@ -804,6 +813,13 @@ def _handle_model_wait_control(
                     *(getattr(owner_ctx, "_abandoned_model_attempts", None) or []), *abandoned]))
         enter_owner_pause(ctx)
         return None
+    if reason == "owner_pause_authority_unreadable" or reason.startswith("owner_launch_authority_unavailable"):
+        # An unreadable owner-Pause fence or launch lock is neither a Stop nor money: the same work
+        # is saved on the technical rail where that capture works; otherwise this typed cause ends it.
+        from ouroboros.budget_pause import RAIL_CONTROL_AUTHORITY, request_pause
+
+        request_pause(ctx, rail=RAIL_CONTROL_AUTHORITY, scope="task", reason_text=f"control authority unreadable: {reason}")
+        raise error
     if reason not in {"cancelled", "finalize_requested", "deadline", "execution_deadline", "absolute_ceiling", "accounting_wait_expired"}:
         raise error
     owner = current_model_wait()

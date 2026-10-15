@@ -123,13 +123,15 @@ def test_host_operation_bypasses_only_task_amendments_not_global_money(tmp_path,
                                     lambda: sent.append(True))
     assert not sent
     # An ID by itself cannot confer the host-only non-task authority.
-    fields = effective_billing_fields(tmp_path, task_id, {"billing_group_id": task_id})
-    assert fields["billing_group_id"] == "unavailable:" + task_id
+    with pytest.raises(ua.BillingAuthorityUnavailable) as unavailable:
+        effective_billing_fields(tmp_path, task_id, {"billing_group_id": task_id})
+    assert unavailable.value.kind == "unreadable" and unavailable.value.cause == "amendment_unreadable:ValueError"
     foreign = ua.UsageScope(drive_root=tmp_path, task_id=task_id, root_task_id=task_id,
                            non_task_operation=True, billing_group_id="bad:foreign")
-    with ua.usage_scope(foreign), pytest.raises(ua.BudgetExceeded):
+    with ua.usage_scope(foreign), pytest.raises(ua.BillingAuthorityUnavailable) as unavailable:
         ua.execute_physical_attempt(ua.AttemptRequest(model="offline", provider="offline", reservation_usd=0.1),
                                     lambda: sent.append(True))
+    assert unavailable.value.kind == "unreadable" and unavailable.value.cause == "amendment_unreadable:ValueError"
     assert not sent
 
 
