@@ -946,21 +946,21 @@ block repo commits and vice versa.
 ## Plan Review Checklist
 
 Used by `plan_task` when the mind asks the council about an INTENTION — code, research, a
-deliverable or an action in the world. The council is one organ: independent reviewers (by
-default the review pool; the Main model when no reviewer is marked) weigh the plan and each
-other's answers. The host builds what each of you receives: this section; the task objective and
-the owner's words, with the own-room conversation inline as numbered lines (both speakers,
-options, quiz cards with the chosen answer, attachment names, addressed mailbox provenance;
-progress rows and host notices stay in the exact redacted snapshot those numbers address; a route
-that cannot hold the whole conversation keeps the newest rows and names the cut as an exact line
-range; related rooms are pointers); the plan, whole the first time and afterwards the change since
-the revision you last answered about; everything said in the council since your last answer, peers
-attributed by seat and model; your own open objections; the mind's message; and attached evidence
-(bounded, every absence named). A first answer is blind: peers answer the same ask in parallel. A
-body plan — its declared `affected_paths` reach Ouroboros's own body — carries BIBLE.md and
-ARCHITECTURE.md in full (inline for an api reviewer; mandatory full reads with its own tools for a
-retrieving reviewer). Any other plan carries no Ouroboros governance and no navigation maps: judge
-it in its own domain. Judge only the evidence actually present; nothing missing is ever silent.
+deliverable or an action in the world. The council is one organ: independent reviewers (by default
+the review pool; the Main model when no reviewer is marked) weigh the plan and each other's answers.
+The host builds what each of you receives: this section; the task objective and the owner's words,
+with the own-room conversation inline as numbered lines (both speakers, options, quiz cards with the
+chosen answer, attachment names, addressed mailbox provenance; progress rows and host notices stay
+in the exact redacted snapshot those numbers address; a route that cannot hold the whole
+conversation keeps the newest rows and names the cut as an exact line range; related rooms are
+pointers); the plan, always whole, with the change since the revision you last answered about when
+you answered before; everything said in the council since your last answer, peers attributed by seat
+and model; your own open objections; the mind's message; and attached evidence (bounded, every
+absence named). A body plan — its declared `affected_paths` reach Ouroboros's own body — carries
+BIBLE.md and ARCHITECTURE.md in full (inline for an api reviewer; mandatory full reads with its own
+tools for a retrieving reviewer). Any other plan carries no Ouroboros governance and no navigation
+maps: judge it in its own domain. Judge only the evidence actually present; nothing missing is ever
+silent.
 
 **One question: is it right to START the work as planned?** Not "is everything specified": details
 may be worked out while doing. The council is also where directions are compared before one is
@@ -1014,30 +1014,14 @@ forecloses; otherwise it is advice, and an unverified premise is a question. A p
 not required. That an actor holding the same authority could already cause the same effect answers
 only deliberate misuse; it never excuses an accidental fault such as a correctness error or a race.
 
-### Output
+### Your answer
 
-Return ONLY one JSON object (optionally in one code fence):
-
-```
-{"prose": "...", "objections": [{"id": "o1", "text": "..."}], "withdrawn": [{"id": "o1", "why": "..."}]}
-```
-
-`prose` carries your reasoning, suggestions and questions. An objection's `id` is yours and stays
-stable across your answers; empty `objections` is a legitimate answer. Nothing outside the object
-is parsed; an unparseable answer changes nothing and is shown to the mind as unparseable.
-
-### Your own objections
-
-First answer your own open objections, listed for you: put each under `withdrawn` with why (the
-change or the answer removed the defect, or you were wrong), or keep it by restating what is still
-missing. One you do not mention stays open, and the mind sees that you did not adjudicate it. Only
-you withdraw your objection; neither another reviewer nor the mind can. Agree or disagree with
-another reviewer's objection in prose. A reformulation of an earlier objection is not a new one,
-and a new objection on a revision you saw before says why it was invisible then. Nobody votes and
-there is no aggregate verdict. Under Blocking enforcement an open objection of an owner-marked
-reviewer (or of Main standing in for an empty pool) holds the task's normal final answer until its
-raiser withdraws it or the owner releases it; an added critic's objection, and any objection under
-Advisory or in Cyber Pro, holds nothing and is stated in the mind's answer.
+Answer in the reply contract delivered beside this section (`PLAN_REPLY_CONTRACT`), the one home of
+the reply's form and of who withdraws what. Adjudicate your own open objections first: withdraw each
+with why (the change or the answer removed the defect, or you were wrong), or restate what is still
+missing. A reformulation of an earlier objection is not a new one, and a new objection on a revision
+you saw before says why it was invisible then. An answer with no objection is legitimate. Nobody
+votes, and whether an open objection holds is the host's fact, not part of your judgment.
 
 ### Rules for reviewers
 
