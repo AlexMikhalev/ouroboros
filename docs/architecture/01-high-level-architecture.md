@@ -111,6 +111,7 @@ ouroboros/ — agent core and shared runtime (§6)
   presence_profile.py, presence_runtime.py, presence_capabilities.py, presence_authority.py, presence_bindings.py, presence_admission.py, presence_context.py — Presence admission: reviewed `presence:` profile parser, symbolic defaults, host-owned capability selections, the immutable positive capability ceiling, revocable room → skill bindings, per-turn snapshot and context (§12)
   presence_runner.py, presence_continuation.py, presence_observations.py, presence_delivery.py, presence_recovery.py — Presence: capped, conversation-serialized fresh agents; same-author review continuation, transport observations, delivery receipts and retained room facts (§12)
   presence_gate.py — Presence turn gate: the cross-process active cap, one live turn per conversation, the lendable lease every admitted turn holds (§12)
+  presence_call.py — Presence call mode: a binding whose runtime `execution` is `call` opens one live audio session as one long admitted turn under its ceiling; utterances become dialogue rows (§6 Live calls; §12)
   dialogue_provenance.py — exact transport-provenance rendering for history, memory and consolidation
   extension_companion.py, extension_reconcile_queue.py — host-supervised companion processes for transport skills; durable worker→server reconcile markers (§12; §13)
   event_bus.py — typed in-process event bus for skill subscriptions

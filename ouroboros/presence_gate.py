@@ -113,6 +113,7 @@ class PresenceTurnGate:
         self._conversations: dict[str, threading.Lock] = {}
         self._state_root = Path(state_root).resolve(strict=False) if state_root is not None else None
         self._claimed_slots: set[int] = set()
+        self._local_active = 0  # in-process slots held when no state root coordinates processes
 
     def _gate_file(self, name: str) -> Path:
         root = self._state_root / "presence_turn_gate"
@@ -148,7 +149,17 @@ class PresenceTurnGate:
     def _try_slot(self) -> Callable[[], None] | None:
         """Claim one free active slot without waiting: its release, or None while all are taken."""
         if self._state_root is None:
-            return self._slots.release if self._slots.acquire(blocking=False) else None
+            if not self._slots.acquire(blocking=False):
+                return None
+            with self._guard:
+                self._local_active += 1
+
+            def release_local() -> None:
+                with self._guard:
+                    self._local_active -= 1
+                self._slots.release()
+
+            return release_local
         from ouroboros.platform_layer import file_unlock
 
         for index in range(self._max_active):
@@ -264,6 +275,52 @@ class PresenceTurnGate:
     def acquire(self, conversation_key: str) -> PresenceTurnLease:
         key, _lock = self._conversation(conversation_key)
         return PresenceTurnLease(key, self.acquire_resources(key), self)
+
+    def try_acquire(self, conversation_key: str) -> PresenceTurnLease | None:
+        """One attempt at what ``acquire`` takes; None at once while any of it is busy.
+
+        A door that must answer now (a call open) uses this instead of parking a request
+        in the gate queue; whatever the attempt took before the busy resource is released.
+        """
+        key, _lock = self._conversation(conversation_key)
+        steps = self._acquisition(key)
+        try:
+            next(steps)
+        except StopIteration as done:
+            return PresenceTurnLease(key, done.value, self)
+        steps.close()
+        return None
+
+    @property
+    def max_active(self) -> int:
+        return self._max_active
+
+    def active_count(self) -> int:
+        """Active slots held right now, by this process or another; a diagnostic read for
+        a refusal message, never an admission decision (the lock attempt is that)."""
+        if self._state_root is None:
+            with self._guard:
+                return self._local_active
+        from ouroboros.platform_layer import file_unlock
+
+        with self._guard:
+            claimed = set(self._claimed_slots)
+        held = len(claimed)
+        for index in range(self._max_active):
+            if index in claimed:
+                continue
+            try:
+                fd = os.open(self._gate_file(f"slot-{index}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+            except OSError:
+                continue
+            try:
+                if _try_exclusive(fd):
+                    file_unlock(fd)
+                else:
+                    held += 1
+            finally:
+                os.close(fd)
+        return held
 
 
 _GATES_LOCK = threading.Lock()

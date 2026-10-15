@@ -27,8 +27,8 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D17 | Projects, workspaces & task results | 33 | 0 |
 | D18 | Launcher, packaging, platform & shared substrate | 26 | 0 |
 | D19 | Frozen contracts (ABI) | 11 | 0 |
-| D20 | Presence | 14 | 0 |
-| **total** | | **756** | **0** |
+| D20 | Presence | 15 | 0 |
+| **total** | | **757** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -1001,6 +1001,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/presence_admission.py`
 - `ouroboros/presence_authority.py`
 - `ouroboros/presence_bindings.py`
+- `ouroboros/presence_call.py`
 - `ouroboros/presence_capabilities.py`
 - `ouroboros/presence_context.py`
 - `ouroboros/presence_continuation.py`

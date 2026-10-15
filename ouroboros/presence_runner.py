@@ -18,8 +18,24 @@ from typing import Any, Callable, Mapping, Sequence
 
 from ouroboros.artifacts import stage_task_attachments
 from ouroboros.contracts.task_contract import attach_task_contract
-from ouroboros.presence_admission import PresenceAdmission
+from ouroboros.presence_admission import PresenceAdmission, PresenceAdmissionError
 from ouroboros.presence_authority import presence_ceiling_payload
+# The gate (cap, serialization, lease) lives in presence_gate; these names stay
+# importable here because callers and tests reach them through the runner.
+from ouroboros.presence_gate import (  # noqa: F401
+    _GATE_POLL_SEC,
+    _GATE_STOP_POLL_SEC,
+    _GATES,
+    _GATES_LOCK,
+    _LIVE_LOCK,
+    _LIVE_PRESENCE_TASKS,
+    PresenceTurnGate,
+    PresenceTurnLease,
+    _configured_gate,
+    _try_exclusive,
+    admit_configured_gate,
+    presence_turn_is_live,
+)
 from ouroboros.task_results import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
@@ -196,27 +212,67 @@ def build_presence_result_event(task: dict[str, Any], text: str, ctx: Any, *, te
     }
 
 
-# The gate (cap, serialization, lease) lives in presence_gate; these names stay
-# importable here because callers and tests reach them through the runner.
-from ouroboros.presence_gate import (  # noqa: E402,F401
-    _GATE_POLL_SEC,
-    _GATE_STOP_POLL_SEC,
-    _GATES,
-    _GATES_LOCK,
-    _LIVE_LOCK,
-    _LIVE_PRESENCE_TASKS,
-    PresenceTurnGate,
-    PresenceTurnLease,
-    _configured_gate,
-    _try_exclusive,
-    admit_configured_gate,
-    presence_turn_is_live,
-)
-
-
 def _stable_numeric_id(prefix: str, value: str) -> int:
     digest = hashlib.sha256(f"{prefix}\0{value}".encode("utf-8")).digest()
     return (1 << 40) + (int.from_bytes(digest[:6], "big") & ((1 << 40) - 1))
+
+
+def presence_chat_id(conversation_key: str) -> int:
+    """The chat id every turn of one conversation shares; a live call reuses it exactly."""
+    return _stable_numeric_id("presence-conversation", conversation_key)
+
+
+# The exact event payload the Host door and the call door accept; nothing else is a Presence event.
+PRESENCE_EVENT_FIELDS = frozenset({
+    "source_event_id", "provider", "account_id", "conversation_id", "thread_id",
+    "conversation_key", "actor", "conversation", "message", "text",
+})
+
+
+def presence_turn_event(event_payload: Any, admission: PresenceAdmission, *,
+                        delivery_reporting_version: int = 0, continuation_version: int = 0) -> PresenceTurnEvent:
+    """Build the one event shape a Presence turn runs on from a transport payload.
+
+    Shared by ``/presence/turn`` and the call door so both check the same facts: the
+    payload shape, that the provider facts match the owner-created binding, and that the
+    identity facts are present. The transport authenticates provider facts, but it does
+    not get to choose the concurrency/history identity: the conversation key is derived
+    from the binding-checked origin facts, never taken from the payload.
+    """
+    from ouroboros.presence_bindings import conversation_key
+
+    if not isinstance(event_payload, Mapping) or set(event_payload) != PRESENCE_EVENT_FIELDS:
+        raise PresenceAdmissionError("presence_event_invalid", "event", "invalid presence event")
+    provider = str(event_payload.get("provider") or "").strip()
+    account_id = str(event_payload.get("account_id") or "").strip()
+    conversation_id = str(event_payload.get("conversation_id") or "").strip()
+    thread_id = str(event_payload.get("thread_id") or "").strip()
+    if (
+        provider != admission.origin.transport
+        or account_id != admission.origin.account_id
+        or (admission.origin.conversation_id != "*" and conversation_id != admission.origin.conversation_id)
+        or (admission.origin.thread_id and thread_id != admission.origin.thread_id)
+    ):
+        raise PresenceAdmissionError("presence_origin_mismatch", "event",
+                                     "presence event does not match its owner-created binding")
+    event = PresenceTurnEvent(
+        source_event_id=str(event_payload["source_event_id"] or "").strip(),
+        provider=provider,
+        account_id=account_id,
+        conversation_id=conversation_id,
+        thread_id=thread_id,
+        conversation_key=conversation_key(provider, account_id, conversation_id, thread_id),
+        actor=dict(event_payload["actor"]) if isinstance(event_payload["actor"], Mapping) else {},
+        conversation=dict(event_payload["conversation"]) if isinstance(event_payload["conversation"], Mapping) else {},
+        message=dict(event_payload["message"]) if isinstance(event_payload["message"], Mapping) else {},
+        text=str(event_payload["text"] or ""),
+        delivery_reporting_version=delivery_reporting_version,
+        continuation_version=continuation_version,
+    )
+    if not event.source_event_id or not event.conversation_key or not event.actor:
+        raise PresenceAdmissionError("presence_identity_missing", "event",
+                                     "presence event is missing identity facts")
+    return event
 
 
 def presence_turn_task_id(binding_id: str, source_event_id: str) -> str:
@@ -727,11 +783,16 @@ def _log_dialogue(
     event: PresenceTurnEvent,
     task: Mapping[str, Any],
     task_id: str,
+    speaker: Mapping[str, Any] | None = None,
 ) -> None:
+    """Append one Presence dialogue row. ``speaker`` names who spoke when it is not the
+    event's actor (a live call's correspondent utterance); the event identity stays the
+    turn's own, so a later replay of the same event still recognizes its rows."""
     from types import SimpleNamespace
     from ouroboros import chat_chain
     from ouroboros.dialogue_provenance import presence_provenance_from_task
 
+    actor = dict(speaker) if speaker is not None else dict(event.actor)
     state = read_json_dict(drive_root / "state" / "state.json") or {}
     row = {
         "ts": utc_now_iso(),
@@ -742,8 +803,8 @@ def _log_dialogue(
         "text": text,
         "format": "markdown" if direction == "out" else "",
         "source": f"presence:{event.provider}",
-        "sender_label": str(event.actor.get("display_name") or event.actor.get("username") or ""),
-        "sender_session_id": str(event.actor.get("platform_actor_id") or event.actor.get("id") or ""),
+        "sender_label": str(actor.get("display_name") or actor.get("username") or ""),
+        "sender_session_id": str(actor.get("platform_actor_id") or actor.get("id") or ""),
         "client_message_id": event.source_event_id,
         "presence_event_identity": presence_event_identity(str(task["metadata"]["presence"]["binding_id"]), event),
         "transport": {
@@ -752,7 +813,7 @@ def _log_dialogue(
             "conversation_id": event.conversation_id,
             "thread_id": event.thread_id,
             "conversation_key": event.conversation_key,
-            "actor": dict(event.actor),
+            "actor": actor,
             "conversation": dict(event.conversation),
             "message": dict(event.message),
             **({"delivery": {"state": "authored"}} if direction == "out" else {}),
@@ -785,11 +846,14 @@ def _build_task(
     drive_root: Path,
     staged_files: Sequence[Path],
     physical_task_id: str = "",
+    live_call: Any = None,
 ) -> dict[str, Any]:
+    """The fresh task one turn runs as. ``live_call`` (a ``call_protocol.CallSpec``) marks a
+    turn that is one live audio session: the driver reads ``metadata["live_call"]``."""
     from ouroboros.config import runtime_setting
 
     task_id = physical_task_id or _task_id(admission, event)
-    chat_id = _stable_numeric_id("presence-conversation", event.conversation_key)
+    chat_id = presence_chat_id(event.conversation_key)
     actor_id = _stable_numeric_id(
         "presence-actor",
         f"{event.provider}:{event.account_id}:{event.actor.get('platform_actor_id') or event.actor.get('id') or ''}",
@@ -849,6 +913,8 @@ def _build_task(
         "inline_max_rounds": admission.inline_max_rounds,
         "presence": presence_context,
     }
+    if live_call is not None:
+        metadata["live_call"] = live_call.as_metadata()
     if admission.model_slot == "light":
         from ouroboros.config import get_light_model
 
@@ -926,12 +992,15 @@ def run_presence_turn(
     agent_factory: Callable[..., Any] | None = None,
     gate: PresenceTurnGate | None = None,
     admitted: PresenceTurnLease | None = None,
+    live_call: Any = None,
 ) -> PresenceTurnResult:
     """Run one bounded turn; adapters retain durable provider custody.
 
     ``admitted`` is a lease the caller already took for this conversation (``PresenceTurnGate.admit``):
     the turn runs under it instead of waiting on ``gate``, and the caller keeps releasing it.
     Either lease may be lent at a qualified review wait (``presence_continuation``).
+    ``live_call`` turns the task into one live audio session (``presence_call``); every
+    other step — admission record, lost-attempt refusal, pointer, dialogue rows — is the same.
     """
 
     task_id = _task_id(admission, event)
@@ -1004,6 +1073,7 @@ def run_presence_turn(
             drive_root=Path(drive_root),
             staged_files=tuple(Path(item) for item in staged_files),
             physical_task_id=task_id,
+            live_call=live_call,
         )
         chat_id = int(task["chat_id"])
         actor_id = _stable_numeric_id("presence-actor-log", str(task.get("actor_id") or ""))
@@ -1327,6 +1397,8 @@ __all__ = [
     "PresenceTurnResult",
     "admit_configured_gate",
     "build_presence_result_event",
+    "presence_chat_id",
+    "presence_turn_event",
     "presence_turn_is_live",
     "presence_turn_replay",
     "presence_turn_task_id",
