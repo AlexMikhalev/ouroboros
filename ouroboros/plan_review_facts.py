@@ -304,57 +304,23 @@ def render_plan_review_section(facts: Mapping[str, Any]) -> str:
 
 def facts_from_record(record: Mapping[str, Any], *, claims_source: str = "",
                       source_ref: Optional[Mapping[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """Pure projection of the planning organ's record, whose objections the late-settlement
-    row names: every revision's done_when text, each ask with who answered, every objection
-    with its standing (open / withdrawn / not adjudicated) and the latest contributions.
-    ``None`` when the task never wrote a plan. Bounded with every cut counted in ``omitted``."""
+    """The planning organ's record as the late-settlement row prints it: how many revisions and
+    asks there were, and every objection with its standing (``plan_record.fold_objections``:
+    open / withdrawn / not adjudicated / owner-marked). Nothing else of the record is rendered
+    anywhere, so nothing else is projected. ``None`` when the task never wrote a plan."""
     from ouroboros import plan_record
 
     if not plan_record.engaged(record):
         return None
-    objections = plan_record.fold_objections(record)
-    views = plan_record.participant_views(record)
-    facts: Dict[str, Any] = {
-        "organ": "plan_record",
-        "source_ref": dict(source_ref or {}),
-        "scope": "revisions, asks and objections come from the task's plan record; nobody voted and no verdict was computed",
-        "claims_source": claims_source or "unknown",
-        "revisions": [{"n": r.get("n"), "ts": r.get("ts"), "goal": _cut(r.get("goal"), _TEXT_CHARS), "body": bool(r.get("body")),
-                       "done_when": [{"id": c.get("id"), "claim": _cut(c.get("claim"), _TEXT_CHARS), "support": _cut(c.get("support"), _TEXT_CHARS)}
-                                     for c in r.get("done_when") or []],
-                       "affected_paths": list(r.get("affected_paths") or [])} for r in record.get("revisions") or []],
-        "asks": [{"ask_id": a.get("ask_id"), "revision": a.get("revision"), "message": _cut(a.get("message"), _TEXT_CHARS),
-                  "participants": [{"seat_id": p.get("seat_id"), "model": p.get("model"), "owner_marked": bool(p.get("owner_marked")),
-                                    "status": p.get("status")} for p in a.get("participants") or []]}
-                 for a in record.get("asks") or []],
+    return {
+        "organ": "plan_record", "source_ref": dict(source_ref or {}), "claims_source": claims_source or "unknown",
+        "revisions": len(record.get("revisions") or []), "asks": len(record.get("asks") or []),
         "objections": [{"seat_id": o.get("seat_id"), "id": o.get("id"), "text": _cut(o.get("text"), _TEXT_CHARS),
                         "raised_in": o.get("raised_in"), "open": bool(o.get("open")), "holds": bool(o.get("holds")),
                         "not_adjudicated": bool(o.get("not_adjudicated")), "withdrawn_in": o.get("withdrawn_in") or "",
-                        "why_withdrawn": _cut(o.get("why"), _TEXT_CHARS)} for o in objections if not o.get("unknown_withdrawal")],
-        "contributions": [{"seat_id": sid, "prose": _cut(v.get("latest_prose"), 400)} for sid, v in views.items() if v.get("latest_prose")],
+                        "why_withdrawn": _cut(o.get("why"), _TEXT_CHARS)}
+                       for o in plan_record.fold_objections(record) if not o.get("unknown_withdrawal")],
     }
-    return _fit_record(facts)
-
-
-def _fit_record(facts: Dict[str, Any]) -> Dict[str, Any]:
-    """Bound the record slice: contributions go first, then the oldest asks and revisions."""
-    def over() -> bool:
-        return len(render_plan_review_section(facts)) > PLAN_REVIEW_REFLECTION_CHARS
-
-    if not over():
-        return facts
-    omitted = {"contributions": 0, "asks": 0, "revisions": 0, "note": "whole rows omitted; read source_ref"}
-    facts["omitted"] = omitted
-    while over() and facts["contributions"]:
-        facts["contributions"].pop(0)
-        omitted["contributions"] += 1
-    while over() and len(facts["asks"]) > 1:
-        facts["asks"].pop(0)
-        omitted["asks"] += 1
-    while over() and len(facts["revisions"]) > 1:
-        facts["revisions"].pop(0)
-        omitted["revisions"] += 1
-    return facts
 
 
 def plan_review_reflection_slice(root: Any, task_id: str, *, task: Optional[Mapping[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -483,8 +449,8 @@ def late_settlement_reflection_entry(root: Any, task_id: str, retry_key: str) ->
     elif isinstance(facts, Mapping) and facts.get("organ") == "plan_record":
         objections = facts.get("objections") or []
         shown = objections[:_LATE_ROW_ELEMENTS_SHOWN]
-        lines.append(f"Plan record ({facts.get('claims_source')} claims; {len(facts.get('revisions') or [])} revision(s), "
-                     f"{len(facts.get('asks') or [])} ask(s); {len(shown)} of {len(objections)} objections): "
+        lines.append(f"Plan record ({facts.get('claims_source')} claims; {facts.get('revisions') or 0} revision(s), "
+                     f"{facts.get('asks') or 0} ask(s); {len(shown)} of {len(objections)} objections): "
                      + ("; ".join(f"{o['seat_id']}/{o['id']} {_standing(o)}" for o in shown) or "none raised"))
     elif isinstance(facts, Mapping) and facts.get("elements"):
         shown = facts["elements"][:_LATE_ROW_ELEMENTS_SHOWN]

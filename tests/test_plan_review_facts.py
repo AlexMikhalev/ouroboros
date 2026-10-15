@@ -349,6 +349,11 @@ def test_an_organ_task_late_row_names_each_objection_with_its_standing(tmp_path)
     assert "triad_a/o1 withdrawn" in line and "triad_a/o2 open, owner-marked, not adjudicated" in line
     assert line.endswith("critic_x/o3 open")  # an added critic's objection is open, never owner-marked
     assert "Plan review (" not in reflection
+    # Scope R1, D1: the slice carries exactly what the row prints — counts and the fold — and no unrendered projection.
+    facts = plan_review_reflection_slice(tmp_path, task_id, task={"task_contract": {}})
+    assert set(facts) == {"organ", "source_ref", "claims_source", "revisions", "asks", "objections"}
+    assert facts["revisions"] == 1 and facts["asks"] == 2 and [o["id"] for o in facts["objections"]] == ["o1", "o2", "o3"]
+    assert facts["source_ref"]["field"] == "plan_record"
 
     quiet = _late_result(tmp_path, task_id="late-2")
     pr.append_revision(tmp_path, quiet, pr.compose_revision(
