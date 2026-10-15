@@ -33,6 +33,7 @@ from ouroboros.openai_chat_custom import CustomToolProjectionError
 from ouroboros.request_wire_contract import (
     NESTED_REASONING_FIELD,
     OPTIONAL_REQUEST_FIELDS,
+    OPTIONAL_SAMPLING_FIELDS,
     PendingWireAction,
     RequestWireProfile,
     apply_effort_action,
@@ -628,6 +629,9 @@ class _WireRejection:
     allowed: Tuple[str, ...] = ()
     value_constraint: bool = False
     rejected_value: Optional[str] = None
+    # OpenRouter's typed routing receipt (``error.metadata.failed_routing_step``): the step
+    # of the endpoint funnel that emptied the roster, e.g. "filter by parameters".
+    routing_step: str = ""
 
 
 def _wire_rejection(error: Any) -> _WireRejection:
@@ -654,6 +658,8 @@ def _wire_rejection(error: Any) -> _WireRejection:
     message = str(node.get("message") or str(error or "")).lower()
     param = str(node.get("param") or getattr(error, "param", "") or "").lower()
     code = str(node.get("code") or getattr(error, "code", "") or "").lower()
+    metadata = node.get("metadata") if isinstance(node.get("metadata"), Mapping) else {}
+    routing_step = str(metadata.get("failed_routing_step") or "").strip().lower()
     values = node.get("allowed_values", node.get("enum"))
     allowed = tuple(v.lower() for v in values if isinstance(v, str)) if isinstance(values, list) else ()
     value_constraint = isinstance(values, list)
@@ -708,7 +714,7 @@ def _wire_rejection(error: Any) -> _WireRejection:
         scalar = re.search(r"\b(?:value|tier)\s+['\"]?([a-z][a-z0-9_-]*)", message)
         rejected = scalar.group(1) if scalar and scalar.group(1) in EFFORT_SCALE else None
     return _WireRejection(status, message, param, code, allowed, value_constraint,
-                          str(rejected).lower() if rejected is not None else None)
+                          str(rejected).lower() if rejected is not None else None, routing_step)
 
 
 def _status_and_message_from_exception(exc: BaseException) -> Tuple[Optional[int], str]:
@@ -812,6 +818,9 @@ def _classify_action(
     payload = candidate.physical_payload()
     profile = candidate.accepted_profile
     current_effort = payload_effort(payload)
+    filtered = _parameter_filter_drop(payload, evidence)
+    if filtered is not None:
+        return PendingWireAction(profile, filtered)
     # Rejecting the disabled carrier's native TYPE is not rejecting an effort
     # tier. Preserve the bounded omission repair without dropping a valid
     # carrier when only output_config.effort (or a scalar tier) was refused.
@@ -925,6 +934,27 @@ def _classify_action(
         "fields": named,
         "reason_code": "provider_unsupported_field",
     })
+
+
+def _parameter_filter_drop(payload: Mapping[str, Any], evidence: _WireRejection) -> Optional[Dict[str, Any]]:
+    """The drop a field-less typed routing refusal prescribes, or None.
+
+    Under ``provider.require_parameters`` OpenRouter routes only to endpoints that accept
+    EVERY requested parameter; when none is left it answers HTTP 404 with the typed receipt
+    ``error.metadata.failed_routing_step == "Filter by Parameters"`` and names no field.
+    The host sent the parameters, so the host knows which were optional: the sampling knobs
+    go first (the common case — a reasoning model whose endpoints take no ``temperature``);
+    the remaining optional carriers only if a sampling-free resend is refused the same way.
+    A rejection that names its parameter keeps the exact field logic below.
+    """
+    if evidence.status != 404 or evidence.routing_step != "filter by parameters" or evidence.param:
+        return None
+    sampling = [field for field in OPTIONAL_SAMPLING_FIELDS if _field_is_present(payload, field)]
+    fields = sampling or [field for field in (*OPTIONAL_REQUEST_FIELDS, NESTED_REASONING_FIELD)
+                          if _field_is_present(payload, field)]
+    if not fields:
+        return None
+    return {"kind": "drop_field", "fields": fields, "reason_code": "provider_unsupported_field"}
 
 
 def _plan_retry(evidence: _WireRejection) -> Optional[Dict[str, Any]]:
@@ -1066,7 +1096,8 @@ def plan_nonlearning_optional_retry(
         return None
     if _value_evidence(low):
         return None
-    named = [
+    filtered = _parameter_filter_drop(payload, _wire_rejection(error))
+    named = [field for field in filtered["fields"] if field in payload] if filtered else [
         field for field in _NON_REASONING_OPTIONAL_FIELDS
         if field in payload and (
             (field in _error_tokens(low)) if field in {"stream", "stream_options"}
