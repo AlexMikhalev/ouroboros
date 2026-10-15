@@ -1161,8 +1161,8 @@ def _attach_only_run(root: Any, request: Any, slot: Any, operation_id: str, run_
         from ouroboros.review_checking import capture_seat_evidence, checking_writers_settled
 
         # Ordinary daemon success is published after the runner and owned
-        # adapter close/drain. Failed or recovered unknown outcomes lack that
-        # boundary; this is not a claim about arbitrary detached OS descendants.
+        # adapter close/drain; a failure needs the engine's settled process
+        # scope. Neither is a claim about arbitrary detached OS descendants.
         evidence = capture_seat_evidence(root, request.task_id, operation_id,
                                          release=checking_writers_settled(detail))
     except Exception as exc:
