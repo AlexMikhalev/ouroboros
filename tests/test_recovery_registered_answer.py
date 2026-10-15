@@ -45,6 +45,10 @@ def _register(drive, tid: str, state: str) -> dict:
     assert td.register_pending_delivery(drive, evt)
     if state == "delivered":
         assert td.register_delivery(drive, evt["delivery_id"], emitted=evt)
+    if state == "exhausted":  # the host gave up: the row left pending, payload and copy kept
+        (owed,) = td.pending_deliveries(drive)
+        td._retire_exhausted(drive, [owed])
+        assert td.terminal_answer_receipts(drive, tid)["state"] == "exhausted"
     return evt
 
 
@@ -57,11 +61,12 @@ def _reaper_retry(qenv, monkeypatch, tid: str):
                                       attempt=1, terminal_reason="idle_timeout", recon_fields={})
 
 
-@pytest.mark.parametrize("state", ["owed", "delivered", "unreadable"])
+@pytest.mark.parametrize("state", ["owed", "exhausted", "delivered", "unreadable"])
 def test_timeout_retry_finalizes_a_registered_answer_instead_of_rerunning_the_prompt(qenv, monkeypatch, state):
     from ouroboros.headless import prepare_terminal_task_files
     from ouroboros.working_checkpoint import REASON_FINALIZATION_INCOMPLETE, final_answer_registered
 
+    monkeypatch.setattr("supervisor.message_bus.send_with_budget", lambda *_a, **_kw: None)
     tid = "early-answer-crash"
     write_task_result(qenv.drive, tid, "running", result="working", task_attempt=1)
     evt = _register(qenv.drive, tid, state)
@@ -76,7 +81,7 @@ def test_timeout_retry_finalizes_a_registered_answer_instead_of_rerunning_the_pr
     stored = load_task_result(qenv.drive, tid)
     assert stored["status"] == "failed" and stored["reason_code"] == REASON_FINALIZATION_INCOMPLETE
     assert stored["outcome_axes"]["execution"]["status"] == "infra_failed"
-    assert stored["finalization_recovery"] == {"cause": "idle_timeout", "answer": "owed" if state == "owed" else state,
+    assert stored["finalization_recovery"] == {"cause": "idle_timeout", "answer": state,
                                                "delivery_id": "" if state == "unreadable" else evt["delivery_id"],
                                                "attempt": 1}
     assert "not run again" in stored["terminal_host_notice"]
@@ -86,7 +91,11 @@ def test_timeout_retry_finalizes_a_registered_answer_instead_of_rerunning_the_pr
     else:
         # The outbox's exact bytes (the pending row, or the retained receipt) become the result.
         assert stored["result"] == "the authored answer" and stored["terminal_origin"] == "model_final"
-        assert ("owed" if state == "owed" else "delivered") in stored["terminal_host_notice"]
+        assert {"owed": "the outbox delivers it", "exhausted": "was given up",
+                "delivered": "delivered"}[state] in stored["terminal_host_notice"]
+        if state == "exhausted":  # never the owed sentence once the host stopped sending
+            assert "outbox delivers" not in stored["terminal_host_notice"]
+            assert "its copy is kept at" in stored["terminal_host_notice"]
     assert final_answer_registered(qenv.drive, tid), "finalizing never retires the answer's custody"
 
 

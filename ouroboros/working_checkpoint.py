@@ -305,21 +305,24 @@ REASON_FINALIZATION_INCOMPLETE = "finalization_incomplete"
 def registered_answer(root: Any, task_id: str) -> Dict[str, Any]:
     """The answer the host already holds for this task, read from the outbox owner; ``{}`` when none.
 
-    ``basis`` names the custody: ``owed`` (a pending or exhausted outbox row — its
-    exact text travels), ``delivered`` (a retained receipt whose bytes are re-read;
-    a legacy id proves no bytes, so ``text`` may be empty) or ``unreadable`` (the
-    registry could not be read: an answer may exist, which is not permission to
-    regenerate). Never the task result's prose.
+    ``basis`` names the custody: ``owed`` (a pending outbox row the replay still
+    sends — its exact text travels), ``exhausted`` (the host gave up sending it; its
+    text and any preserved copy's ``preserved_path`` travel), ``delivered`` (a retained
+    receipt whose bytes are re-read; a legacy id proves no bytes, so ``text`` may be
+    empty) or ``unreadable`` (the registry could not be read: an answer may exist, which
+    is not permission to regenerate). Never the task result's prose.
     """
     from supervisor.terminal_delivery import terminal_answer_receipts
 
     receipts = terminal_answer_receipts(root, task_id)
     if receipts.get("registry") == "unreadable":
         return {"basis": "unreadable", "text": "", "delivery_id": ""}
-    rows = [row for key in ("owed", "exhausted") for row in (receipts.get(key) or []) if isinstance(row, dict)]
-    if rows:
-        row = max(rows, key=lambda item: str(item.get("registered_at") or ""))
-        return {"basis": "owed", "text": str(row.get("text") or ""), "delivery_id": str(row.get("delivery_id") or "")}
+    for basis in ("owed", "exhausted"):  # a row the replay still sends outranks one it gave up
+        rows = [row for row in (receipts.get(basis) or []) if isinstance(row, dict)]
+        if rows:
+            row = max(rows, key=lambda item: str(item.get("registered_at") or ""))
+            return {"basis": basis, "text": str(row.get("text") or ""), "delivery_id": str(row.get("delivery_id") or ""),
+                    **({"preserved_path": str(row["preserved_path"])} if row.get("preserved_path") else {})}
     delivered = [row for row in (receipts.get("delivered") or []) if isinstance(row, dict)]
     if delivered:
         receipt = max(delivered, key=lambda item: str(item.get("sent_at") or ""))
@@ -349,8 +352,8 @@ def adopt_registered_answer(root: Any, task: Dict[str, Any], task_id: str, *, at
     delivered, or merely unreadable evidence — terminalizes the attempt in the
     lifecycle-fault vocabulary: lifecycle ``failed``, execution ``infra_failed``,
     reason ``finalization_incomplete``, the outbox's own text as the result and a
-    host notice naming what stayed incomplete. The owed row keeps replaying through
-    the outbox. Returns the stored terminal row, or None when no answer is
+    host notice naming what stayed incomplete. An owed row keeps replaying through
+    the outbox; an exhausted one is named as given up. Returns the stored terminal row, or None when no answer is
     registered (the ordinary retry proceeds). A refused write raises: the caller's
     existing no-retry fallback owns the attempt, never a second model run.
     """
@@ -362,7 +365,9 @@ def adopt_registered_answer(root: Any, task: Dict[str, Any], task_id: str, *, at
     from ouroboros.task_results import STATUS_FAILED, write_task_result
 
     ended = _CAUSES.get("worker_crash") if str(cause or "") == "worker_crash" else f"its attempt was stopped ({cause or 'unknown cause'})"
+    copy = f"; its copy is kept at {answer['preserved_path']}" if answer.get("preserved_path") else ""
     held = {"owed": "was authored and is owed to the chat (the outbox delivers it)",
+            "exhausted": f"was authored, but sending it to the chat was given up{copy}",
             "delivered": "was authored and delivered to the chat",
             "unreadable": "may already exist (the delivery registry could not be read)"}[answer["basis"]]
     notice = (f"Finalization did not complete: the final answer {held}, then {ended} before the "
