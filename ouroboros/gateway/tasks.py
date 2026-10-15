@@ -859,6 +859,29 @@ async def api_tasks_list(request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
+def _plan_objections_view(drive_root: pathlib.Path, task_id: str, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The host's objection fold for the task detail: which objections stand (an imported
+    earlier-schema finding included, with ``holds`` / ``not_adjudicated``) and every withdrawal,
+    from ``plan_record.read_view`` over the record and the one legacy loader. The panel renders
+    this and re-derives nothing (one owner of the standing rule). ``None`` when the task never
+    planned; an unreadable record or earlier state is named, never shown as "no objection"."""
+    from ouroboros import plan_record
+
+    try:
+        record = plan_record.validate_record(result.get(plan_record.PLAN_RECORD_KEY))
+    except plan_record.PlanRecordInvalid as exc:
+        return {"unreadable": f"{type(exc).__name__}: {exc}"}
+    legacy, legacy_error = plan_record.legacy_facts(drive_root, task_id)
+    if not plan_record.engaged(record) and not legacy.get("engaged"):
+        return None
+    view = plan_record.read_view(record, legacy)
+    out: Dict[str, Any] = {"open_objections": view["open_objections"], "withdrawn": view["withdrawn"],
+                           "legacy_engaged": bool(legacy.get("engaged"))}
+    if legacy_error:
+        out["legacy_unreadable"] = legacy_error
+    return out
+
+
 async def api_task_get(request: Request) -> JSONResponse:
     return await run_sync_to_completion(_task_get_response, request)
 
@@ -885,6 +908,9 @@ def _task_get_response(request: Request) -> JSONResponse:
     payload = public_task_result(data)
     from ouroboros.owner_continue import continuation_offer  # Batch4: a Continue, or its accepted successor
     payload["continuation_offer"] = continuation_offer(data, task_id)
+    objections = _plan_objections_view(drive_root, task_id, data)  # the host's fold; the browser never re-derives it
+    if objections is not None:
+        payload["plan_objections"] = objections
     if isinstance(payload.get("artifacts"), list):  # what ``?archive=<dir>`` would stream now, per top-level dir
         payload["artifact_archives"] = directory_archives(task_artifact_stores(drive_root, task_id),
                                                           payload["artifacts"], anchor=drive_root)
