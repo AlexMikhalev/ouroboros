@@ -27,7 +27,7 @@ qenv = _qenv
 
 def _event(tid: str, text: str = "the authored answer") -> dict:
     return {"type": "send_message", "task_id": tid, "chat_id": 1, "text": text,
-            "delivery_id": td.delivery_id_for(tid, text)}
+            "delivery_id": td.delivery_id_for(tid, text), "terminal_origin": "model_final"}
 
 
 def _task(tid: str) -> dict:
@@ -186,10 +186,11 @@ def test_registered_answer_reads_the_outbox_never_the_result_prose(tmp_path):
     assert registered_answer(tmp_path, tid) == {}
     evt = _event(tid, "owed bytes")
     assert td.register_pending_delivery(tmp_path, evt)
-    assert registered_answer(tmp_path, tid) == {"basis": "owed", "text": "owed bytes", "delivery_id": evt["delivery_id"]}
+    assert registered_answer(tmp_path, tid) == {"basis": "owed", "text": "owed bytes", "delivery_id": evt["delivery_id"],
+                                                "terminal_origin": "model_final"}
     assert td.register_delivery(tmp_path, evt["delivery_id"], emitted=evt)
     assert registered_answer(tmp_path, tid) == {"basis": "delivered", "text": "owed bytes",
-                                                "delivery_id": evt["delivery_id"]}
+                                                "delivery_id": evt["delivery_id"], "terminal_origin": "model_final"}
     # A legacy delivered id proves no bytes; it still refuses regeneration.
     legacy = td.delivery_id_for(tid, "legacy")
     assert td.register_delivery(tmp_path, legacy)
@@ -237,3 +238,44 @@ def test_a_final_timeout_without_retry_also_finalizes_a_registered_answer(qenv, 
     else:
         assert (stored["result"], stored["reason_code"]) == ("complete authored answer", "finalization_incomplete")
         assert salvage == [] and finished == ["failed"], "published as a terminal, never a second salvage message"
+
+
+
+@pytest.mark.parametrize("answer_state", ["owed", "delivered"])
+@pytest.mark.parametrize("origin", ["host_notice", "host_salvage"])
+def test_recovery_keeps_the_host_terminal_provenance(tmp_path, answer_state, origin):
+    """A host-written final (provider-failure notice or salvage receipt) stays host-authored after
+    recovery; a salvage receipt yields the full preserved bytes and their path, as a store would."""
+    from ouroboros.task_finalization import prepare_terminal_send_event, register_final_answer_owed
+    from ouroboros.working_checkpoint import adopt_registered_answer
+
+    tid = "host-authored-terminal"
+    task = {**_task(tid), "chat_id": 1}
+    text = "The provider is unavailable; here is the preserved intermediate work."
+    write_task_result(tmp_path, tid, "running", result="working", task_attempt=1)
+    usage = {"terminal_origin": origin}
+    event = prepare_terminal_send_event(tmp_path, task, text, usage,
+                                        {"type": "send_message", "task_id": tid, "chat_id": 1, "text": text},
+                                        presence=False)
+    assert event["terminal_origin"] == origin and event["role"] == "system"
+    assert register_final_answer_owed(task, event, env_drive_root=tmp_path) == "registered"
+    if answer_state == "delivered":
+        assert td.register_delivery(tmp_path, event["delivery_id"], emitted=event)
+    stored = adopt_registered_answer(tmp_path, task, tid, attempt=1, cause="worker_crash")
+    assert stored["terminal_origin"] == origin, "host text is never relabelled as the model's final"
+    if origin == "host_salvage":
+        assert stored["result"] == text and stored["terminal_salvage_path"] == usage["terminal_salvage_path"]
+    else:
+        assert stored["result"] == event["text"] and "terminal_salvage_path" not in stored
+
+
+def test_an_unstamped_legacy_answer_claims_no_origin(tmp_path):
+    from ouroboros.working_checkpoint import adopt_registered_answer
+
+    tid = "legacy-final"
+    write_task_result(tmp_path, tid, "running", result="working", task_attempt=1)
+    legacy = {"type": "send_message", "task_id": tid, "chat_id": 1, "text": "old bytes",
+              "delivery_id": td.delivery_id_for(tid, "old bytes")}
+    assert td.register_pending_delivery(tmp_path, legacy)
+    stored = adopt_registered_answer(tmp_path, _task(tid), tid, attempt=1, cause="worker_crash")
+    assert stored["result"] == "old bytes" and "terminal_origin" not in stored

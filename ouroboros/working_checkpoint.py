@@ -316,28 +316,31 @@ def registered_answer(root: Any, task_id: str) -> Dict[str, Any]:
 
     receipts = terminal_answer_receipts(root, task_id)
     if receipts.get("registry") == "unreadable":
-        return {"basis": "unreadable", "text": "", "delivery_id": ""}
+        return {"basis": "unreadable", "text": "", "delivery_id": "", "terminal_origin": ""}
     for basis in ("owed", "exhausted"):  # a row the replay still sends outranks one it gave up
         rows = [row for row in (receipts.get(basis) or []) if isinstance(row, dict)]
         if rows:
             row = max(rows, key=lambda item: str(item.get("registered_at") or ""))
             return {"basis": basis, "text": str(row.get("text") or ""), "delivery_id": str(row.get("delivery_id") or ""),
+                    "terminal_origin": str(row.get("terminal_origin") or ""),
                     **({"preserved_path": str(row["preserved_path"])} if row.get("preserved_path") else {})}
     delivered = [row for row in (receipts.get("delivered") or []) if isinstance(row, dict)]
     if delivered:
         receipt = max(delivered, key=lambda item: str(item.get("sent_at") or ""))
-        text = ""
+        text = origin = ""
         try:
             from ouroboros.artifacts import read_actor_source_bytes
 
             record = json.loads(read_actor_source_bytes(root, task_id, receipt.get("source_ref")).decode("utf-8"))
-            text = str(record.get("text") or "") if isinstance(record, dict) else ""
+            if isinstance(record, dict):
+                text, origin = str(record.get("text") or ""), str(record.get("terminal_origin") or "")
         except Exception:
             log.debug("Retained terminal answer of %s could not be re-read", task_id, exc_info=True)
-        return {"basis": "delivered", "text": text, "delivery_id": str(receipt.get("delivery_id") or "")}
+        return {"basis": "delivered", "text": text, "delivery_id": str(receipt.get("delivery_id") or ""),
+                "terminal_origin": origin}
     unverified = [str(did) for did in (receipts.get("unverified_delivery_ids") or [])]
     if unverified:
-        return {"basis": "delivered", "text": "", "delivery_id": unverified[-1]}
+        return {"basis": "delivered", "text": "", "delivery_id": unverified[-1], "terminal_origin": ""}
     return {}
 
 
@@ -361,7 +364,7 @@ def adopt_registered_answer(root: Any, task: Dict[str, Any], task_id: str, *, at
     if not answer:
         return None
     from ouroboros.outcomes import EXECUTION_INFRA_FAILED, terminal_outcome_axes
-    from ouroboros.task_finalization import TERMINAL_ORIGIN_MODEL_FINAL
+    from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE
     from ouroboros.task_results import STATUS_FAILED, write_task_result
 
     ended = _CAUSES.get("worker_crash") if str(cause or "") == "worker_crash" else f"its attempt was stopped ({cause or 'unknown cause'})"
@@ -382,8 +385,20 @@ def adopt_registered_answer(root: Any, task: Dict[str, Any], task_id: str, *, at
             reason_code=REASON_FINALIZATION_INCOMPLETE, review_trigger="supervisor_terminal"),
         "result": answer["text"] or notice,
     }
-    if answer["text"]:
-        fields["terminal_origin"] = TERMINAL_ORIGIN_MODEL_FINAL
+    origin = answer.get("terminal_origin") or ""
+    if origin == TERMINAL_ORIGIN_HOST_SALVAGE:
+        # The owed text is the short receipt; the full bytes the host preserved before the
+        # send are the result an ordinary store would have written, with their path.
+        from ouroboros.observability import preserved_salvage_path
+
+        path = preserved_salvage_path(pathlib.Path(registry_root if registry_root is not None else root), task_id)
+        try:
+            if path:
+                fields.update(terminal_salvage_path=path, result=pathlib.Path(path).read_text(encoding="utf-8"))
+        except OSError:
+            log.warning("Preserved host salvage of %s could not be read; the receipt stays the result", task_id)
+    if answer["text"] and origin:  # the producer's stamp travels; an unstamped legacy row claims none
+        fields["terminal_origin"] = origin
     log.warning("Task %s attempt %s: finalizing from its registered answer (%s) instead of a retry (%s)",
                 task_id, attempt, answer["basis"], cause)
     return write_task_result(pathlib.Path(root), task_id, STATUS_FAILED, **fields)
