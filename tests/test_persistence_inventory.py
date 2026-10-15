@@ -755,7 +755,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 370 -> 371 (FIXB): observability/packs/.publications, the disposable per-pass
 # reference journal documented in the existing evidence-pack row.
 # 371 -> 372: the fixed DATA server-lifetime admission lock (state/server.lock).
-EXPECTED_SCAN_PATHS = 373
+# 373 -> 372: the retired plan engine's operative-spec source (context_checkpoints/plan-spec-*.json);
+# earlier records keep theirs, nothing writes one any more.
+EXPECTED_SCAN_PATHS = 372
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

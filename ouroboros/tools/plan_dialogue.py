@@ -296,30 +296,23 @@ def session_input_limits(slots: list) -> dict:
 def dialogue_slot_inputs(slots: list, *, system_prompt: str, user_content: str,
                          session_task: str, manifest: dict, slot_messages: dict,
                          native_mandatory_chars: int, data_root: Any = "",
-                         frozen: dict | None = None, session_root: str = "", task_id: str = "",
-                         session_limits: dict | None = None, output_contract: str = "") -> dict:
-    """Project a fresh request, or reuse the recorded delivery at collection.
+                         session_root: str = "", task_id: str = "",
+                         session_limits: dict | None = None, output_contract: str) -> dict:
+    """Project one participant set's delivery for an ask.
 
     ``output_contract`` is the reply contract the request policy and every retrieving
-    seat's first send carry (the planning organ's reply object); omitted, the legacy
-    findings-array contract of the old engine applies.
+    seat's first send carry (``plan_packet.PLAN_REPLY_CONTRACT``).
 
     Each slot's fit lands in ``dialogue_delivery``; a session slot with an engine bound also
-    records ``input_limit`` (the bound, the measured ``prompt_chars``, ``fits``). A frozen
-    delivery replays the recorded inputs and never re-fits against live context.
+    records ``input_limit`` (the bound, the measured ``prompt_chars``, ``fits``).
     """
-    if frozen is not None:
-        from ouroboros.tools.plan_review_artifacts import frozen_delivery_inputs
-        return frozen_delivery_inputs(frozen, slots)
     from ouroboros.model_slots import MODEL_CONTEXT_WINDOWS_KEY, model_role_option
     from ouroboros.tools.plan_review_runtime import PLAN_REVIEW_MAX_TOKENS, slot_retrieves, slot_is_session
     from ouroboros.tools.review_synthesis import build_plan_review_messages, per_slot_input_token_limits
     from ouroboros.tools.plan_packet import plan_user_stable_len
-    from ouroboros.tools.plan_packet_legacy import plan_user_stable_len as _legacy_stable_len  # the retired engine's marker
-    from ouroboros.tools.plan_spec import PLAN_FINDINGS_ARRAY_CONTRACT
     from ouroboros.tools.scope_required_sources import source_text_identity
 
-    contract = str(output_contract or "") or PLAN_FINDINGS_ARRAY_CONTRACT
+    contract = str(output_contract)
     from ouroboros.review_native_episode import review_native_transcript_bound, native_landing_at, native_first_send_chars
     from ouroboros.reviewer_window import reviewer_window_binding
     from ouroboros.review_execution import _messages_char_count
@@ -339,8 +332,8 @@ def dialogue_slot_inputs(slots: list, *, system_prompt: str, user_content: str,
                 if own.get("source_ref") and own.get("file") else [])
     for slot in slots:
         sid = str(slot.slot_id)
-        # A shared packet cannot say "your": each slot's send ends with its own seat, after the
-        # cache-stable prefix, so a cycle-2 reviewer knows which earlier findings are its own.
+        # Each slot's send ends with its own seat, after the cache-stable prefix, so a
+        # participant always knows which seat it answers as.
         seat = f"\n## YOUR PANEL SEAT\n\n`{sid}`\n"
         if not slot_retrieves(slot):
             capacity = int(limits[sid]) * 4
@@ -361,8 +354,7 @@ def dialogue_slot_inputs(slots: list, *, system_prompt: str, user_content: str,
                     restarted[sid] = "prior_transcript_exceeds_slot_window"
             if not existing:
                 view, coverage[sid] = fit_dialogue_view(user_content, own, capacity - len(system_prompt) - len(seat))
-                messages[sid] = build_plan_review_messages(system_prompt, view + seat,
-                                                           plan_user_stable_len(view) or _legacy_stable_len(view))
+                messages[sid] = build_plan_review_messages(system_prompt, view + seat, plan_user_stable_len(view))
             lengths[sid] = _messages_char_count(messages[sid])
         elif not slot_is_session(slot):
             # Initial layout only: an irreducible brief remains sendable and

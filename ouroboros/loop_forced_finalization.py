@@ -408,11 +408,10 @@ def _enforce_swarm_actions(
     ``messages`` — the hold reminder and the release note — so it records what
     entered the MIND's context, not what this gate observed. Every other gate
     transition already reaches the mind by its own route and must not buy a round:
-    a settled reviewer slot arrives as a ``[System task message]`` through the task
-    mailbox (``plan_review_collect.announce_released_settlement`` ->
-    ``loop_round_limits`` drain), a rail release rides the forced prompt's typed
-    facts, and ``closed``/``author_stopped``/``cycles_exhausted`` are the mind's own
-    ``plan_task`` results. The one residual is the owner's hurry, which the HQ1
+    a settled ask arrives as a ``[System task message]`` through the task mailbox
+    (``plan_ask.settle_released_reply`` -> ``loop_round_limits`` drain), a rail
+    release rides the forced prompt's typed facts, and objections and withdrawals
+    are the mind's own ``plan_task`` results. The one residual is the owner's hurry, which the HQ1
     no-chat contract forbids putting into ``messages``
     (``loop_round_limits.py``) — that is the only release this fires on."""
 

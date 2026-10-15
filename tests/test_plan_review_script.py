@@ -64,9 +64,9 @@ def test_run_plan_review_script_writes_a_revision_and_asks_the_council(monkeypat
 
     async def fake_run_slots(ctx, slots, *, system_prompt, user_content, session_task="", session_root="", output_contract="",
                              slot_messages=None, slot_session_tasks=None, request_policy=None, session_threads=None,
-                             retry_key="", reconcile_only=False, reconciliation_identity=None, release_at_dispatch=False):
+                             retry_key="", reconciliation_identity=None, release_at_dispatch=False):
         captured.update(task_id=ctx.task_id, slots=[s.slot_id for s in slots], system_prompt=system_prompt,
-                        user_content=user_content, retry_key=retry_key, reconcile_only=reconcile_only,
+                        user_content=user_content, retry_key=retry_key,
                         reconciliation_identity=reconciliation_identity, release_at_dispatch=release_at_dispatch)
         return [{"slot_id": s.slot_id, "model": s.model, "request_model": s.model, "route": "api_chat",
                  "host_file_read_attestation": "host_assembled_packet",
@@ -80,7 +80,7 @@ def test_run_plan_review_script_writes_a_revision_and_asks_the_council(monkeypat
 
     assert "RESOLVED PLAN CONFIG" in output and "PLAN RECORD" in output and "PLAN TASK OUTPUT" in output
     assert captured["task_id"] == "plan-review-cli" and captured["slots"] == ["slot_1"]
-    assert captured["retry_key"] == "plan_ask:plan-review-cli:a1" and captured["reconcile_only"] is False
+    assert captured["retry_key"] == "plan_ask:plan-review-cli:a1"  # an ask is a send: the runtime has no $0 collection
     assert captured["release_at_dispatch"] is True
     assert captured["reconciliation_identity"]["plan_ask_id"] == "a1"
     assert "Implement the accepted phase." in captured["user_content"] and "tests green" in captured["user_content"]

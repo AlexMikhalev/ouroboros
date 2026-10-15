@@ -274,9 +274,6 @@ def _has_billable_usage(usage: Any) -> bool:
     )
 
 
-PLAN_REVIEW_CONTROL_PREFIX = "PLAN_REVIEW_CONTROL_JSON: "
-
-
 def quorum_input_token_limit(models: Any, slot_limits: Any) -> int:
     """Assembly budget for ONE shared prompt fanned across mixed-window slots: the largest cap that
     still leaves a review QUORUM callable, i.e. the quorum-th largest per-slot cap.

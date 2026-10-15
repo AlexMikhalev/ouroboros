@@ -389,6 +389,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/commit_admission.py`
 - `ouroboros/deep_self_review.py`
 - `ouroboros/dialogue_evidence.py`
+- `ouroboros/plan_record.py`
 - `ouroboros/plan_review_facts.py`
 - `ouroboros/preflight_node.py`
 - `ouroboros/preflight_receipts.py`
@@ -437,14 +438,13 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/test_environment.py`
 - `ouroboros/tools/governance_context.py`
 - `ouroboros/tools/parallel_review.py`
+- `ouroboros/tools/plan_ask.py`
 - `ouroboros/tools/plan_author_history.py`
 - `ouroboros/tools/plan_dialogue.py`
 - `ouroboros/tools/plan_evidence.py`
 - `ouroboros/tools/plan_packet.py`
-- `ouroboros/tools/plan_render.py`
 - `ouroboros/tools/plan_review.py`
 - `ouroboros/tools/plan_review_artifacts.py`
-- `ouroboros/tools/plan_review_collect.py`
 - `ouroboros/tools/plan_review_references.py`
 - `ouroboros/tools/plan_review_runtime.py`
 - `ouroboros/tools/plan_spec.py`

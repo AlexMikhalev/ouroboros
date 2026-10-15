@@ -432,16 +432,27 @@ def test_pending_seats_settle_from_the_custody_hook_and_wake_the_mailbox(harness
     assert _record(harness)["asks"][0]["participants"][0]["status"] == "answered"
 
 
-def test_the_legacy_wave_hook_still_goes_to_the_retired_collector(harness, monkeypatch):
-    seen = []
-    monkeypatch.setattr("ouroboros.tools.plan_review_collect.announce_released_settlement", lambda *a, **k: seen.append(k))
-    request = SimpleNamespace(surface="plan_review", reconciliation_identity={"subject_hash": "f" * 64})
-    plan_ask.settle_released_reply(harness.make_ctx(), request=request, task_id="task-1", actor=SimpleNamespace(slot_id="s1"),
-                                   settled_wave={}, roster_size=1)
-    assert len(seen) == 1
-    plan_ask.settle_released_reply(harness.make_ctx(), request=SimpleNamespace(surface="task_acceptance", reconciliation_identity={}),
-                                   task_id="task-1", actor=SimpleNamespace(slot_id="s1"), settled_wave={}, roster_size=1)
-    assert len(seen) == 1
+def test_an_earlier_schema_wave_settles_nothing_and_writes_no_frame(harness, monkeypatch):
+    """A released seat of a v2 wave (no ``plan_ask_id``) and its late result stay history in the
+    operation's custody: no collector, no plan record write, no mailbox frame. The organ's own
+    ask settles through the same hook (pinned above); another surface is never this hook's."""
+    frames = []
+    monkeypatch.setattr("ouroboros.owner_mailbox.write_task_message", lambda *a, **k: frames.append(a))
+    ctx = harness.make_ctx()
+    _write(ctx)
+    before = _record(harness)
+    for surface in ("plan_review", "task_acceptance"):
+        plan_ask.settle_released_reply(ctx, request=SimpleNamespace(surface=surface, reconciliation_identity={"subject_hash": "f" * 64}),
+                                       task_id="task-1", actor=SimpleNamespace(slot_id="s1"), settled_wave={"s1": "ok"},
+                                       roster_size=1)
+    assert frames == [] and _record(harness) == before
+    calls = []
+    monkeypatch.setattr("ouroboros.observability.read_call_payload",
+                        lambda *a, **k: calls.append(k) or ({}, {"request": {"reconciliation_identity": {"subject_hash": "f" * 64}}}, []))
+    assert plan_ask.attach_late_reply(harness.drive, {"surface": "plan_review", "task_id": "task-1", "operation_id": "op-v2"}) == 0
+    assert calls and _record(harness) == before
+    assert plan_ask.attach_late_reply(harness.drive, {"surface": "task_acceptance", "task_id": "task-1", "operation_id": "op-v2"}) == 0
+    assert len(calls) == 1  # another surface is not read at all
 
 
 # ---------------------------------------------------------------- lane health, evidence
@@ -540,3 +551,18 @@ def test_an_asks_reviewer_effort_orders_the_pool_of_that_ask_only(harness, monke
     assert seen == ["low", ""]
     asks = _record(harness)["asks"]
     assert [a["reviewer_effort"] for a in asks] == ["low", ""]
+
+
+def test_the_deadline_rail_states_facts_and_never_advises_a_plan_of_its_own(harness):
+    """The deadline rail names the remaining time and that no participant was sent; it never
+    advises the mind to proceed with a plan of its own, and no deadline is no skip."""
+    from ouroboros.deadline_utils import utc_now
+    from ouroboros.tools.plan_review_runtime import plan_deadline_skip
+
+    ctx = harness.make_ctx()
+    assert plan_deadline_skip(ctx) == ""
+    ctx.task_metadata["deadline_at"] = utc_now().isoformat()
+    text = plan_deadline_skip(ctx)
+    assert text.startswith("PLAN_TASK_SKIPPED_DEADLINE:") and "remaining time 0s" in text
+    assert "This call dispatched no reviewer" in text and "The plan record keeps its state" in text
+    assert "no plan review is open" not in text and "proceed with your own" not in text.lower()

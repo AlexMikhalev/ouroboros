@@ -26,14 +26,10 @@ from ouroboros.store import StoreError
 # its projection is a gap, never a transport failure or a malformed answer.
 AWAITING_PROJECTION = "awaiting"
 _AWAITING_REASON = "No answer recorded: the host returned at the dispatch barrier before this reviewer answered."
-# The closed vocabulary of a plan review's outcome CLASS at delivery, beside the
-# awaited case above: stamped by owner_hurry.force_plan_decision from the wave's
-# slot census and carried on outcome_axes.execution.plan_review. Nothing branches
-# on it except the two cause renderers (project_dialogue / log_events).
-PLAN_REVIEW_UNANSWERED = "unanswered"      # some answered; some failed, were refused at $0 or are unresolved
-PLAN_REVIEW_NONE_ANSWERED = "none_answered"  # nobody answered and nobody is merely awaited
-PLAN_REVIEW_ANSWERED_OPEN = "answered_open"  # everybody answered; the verdict was not closed
-PLAN_REVIEW_OBJECTIONS_OPEN = "objections_open"  # the planning organ: objections stood open at delivery
+# The plan review's outcome CLASS at delivery, stamped by owner_hurry.force_plan_decision and
+# carried on outcome_axes.execution.plan_review; the earlier engine's classes (unanswered,
+# none_answered, answered_open) survive only as the cause sentences of finished tasks.
+PLAN_REVIEW_OBJECTIONS_OPEN = "objections_open"  # objections stood open at delivery
 
 if TYPE_CHECKING:  # annotation-only names; lazy under future annotations, never imported at runtime
     from ouroboros.review_records import ReviewActorRecord, ReviewRequest

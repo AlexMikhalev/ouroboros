@@ -470,22 +470,3 @@ def book_balance_note(root: Path, paths: Iterable[str]) -> str:
     return "ℹ️ Reference book: " + "; ".join(lines) + ("; nothing owed." if measured else ".")
 
 
-def book_plan_fact(root: Path, paths: Iterable[str]) -> str:
-    """The author-facing plan fact for repository paths a plan will change; ``""`` when none applies.
-
-    A named book source, or a new ``ouroboros/``/``supervisor/`` module (the commit gate then
-    requires a staged Architecture-book source), means the work adds book text.
-    """
-    paths = [str(path).replace("\\", "/").lstrip("./") for path in paths]
-    books = sorted({book_entrypoint_for(path) for path in paths if book_path_role(path)})
-    new_modules = [path for path in paths if path.startswith(("ouroboros/", "supervisor/"))
-                   and path.endswith(".py") and not (Path(root) / path).exists()]
-    if not books and not new_modules:
-        return ""
-    named = [f"book sources of {', '.join(books)}"] if books else []
-    if new_modules:
-        named.append(f"new module(s) {', '.join(new_modules[:5])}, and the commit gate requires a "
-                     "staged Architecture-book source with a new module")
-    balances = "; ".join(render_book_balance(balance) for balance in book_balances(root))
-    return (f"FACT: affected_paths name {' and '.join(named)}. {BOOK_GROWTH_RULE}"
-            + (f" Now: {balances}." if balances else ""))

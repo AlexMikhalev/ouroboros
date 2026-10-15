@@ -36,7 +36,6 @@ from typing import Any, Dict, List, Mapping, Optional
 from ouroboros import plan_record
 from ouroboros.tools import plan_packet
 from ouroboros.tools.plan_review_runtime import (
-    PLAN_NO_SNAPSHOT,
     PLAN_REVIEW_MAX_TOKENS,
     PLAN_REVIEW_SLOT_TIMEOUT_SEC,
     _governance_text,
@@ -426,9 +425,8 @@ def prepare_ask(ctx: Any, *, record: Mapping[str, Any], revision: Mapping[str, A
         merged["request_policy"] = one.get("request_policy") or merged["request_policy"]
     for sid in merged["continuation_restarted"]:
         continued.pop(sid, None)
-    fanout = plan_fanout_inputs(slots, resume=None, replay_snapshot=PLAN_NO_SNAPSHOT,
-                                prompt_chars=max([len(system_prompt) + len(c) for c in contents.values()] or [0]),
-                                quorum=1, slot_prompt_chars=merged["slot_prompt_chars"])
+    fanout = plan_fanout_inputs(slots, prompt_chars=max([len(system_prompt) + len(c) for c in contents.values()] or [0]),
+                                slot_prompt_chars=merged["slot_prompt_chars"])
     callable_slots = list(fanout.get("callable_slots") or [])
     not_sendable = {str(row.get("slot_id") or ""): str(row.get("error") or "not sendable")
                     for row in [*fanout.get("health_skip_rows", []), *fanout.get("oversize_rows", [])]}
@@ -704,7 +702,7 @@ def dispatch_ask(ctx: Any, prepared: PreparedAsk, *, revision: Mapping[str, Any]
             session_task=prepared.session_tasks.get(first, ""), session_root=str(prepared.active_root),
             output_contract=plan_packet.PLAN_REPLY_CONTRACT, slot_messages=prepared.delivery["slot_messages"],
             slot_session_tasks=prepared.delivery["slot_session_tasks"], request_policy=prepared.delivery["request_policy"],
-            session_threads=prepared.session_threads, retry_key=prepared.retry_key, reconcile_only=False, release_at_dispatch=True,
+            session_threads=prepared.session_threads, retry_key=prepared.retry_key, release_at_dispatch=True,
             reconciliation_identity={"subject_hash": prepared.retry_key, "roster_hash": plan_reviewer_config_fingerprint(prepared.callable),
                                      "epoch": prepared.retry_key, "health_epoch": [], "plan_ask_id": prepared.ask_id,
                                      "plan_revision": revision.get("n")}))
@@ -785,16 +783,13 @@ def settle_released_reply(usage_ctx: Any, *, request: Any, task_id: str, actor: 
                           roster_size: int = 0, slot: Any = None) -> None:
     """The custody hook for a plan seat released at the dispatch barrier: settle it into
     the record, and when the whole ask has settled wake the task mailbox. A request
-    without a plan ask id is the retired engine's wave and goes to its legacy collector."""
+    without a plan ask id is an earlier-schema (v2) wave: its result stays in the
+    operation's custody as history and nothing collects it into the task."""
     if str(getattr(request, "surface", "") or "") != "plan_review":
         return
     identity = dict(getattr(request, "reconciliation_identity", {}) or {})
     ask_id = str(identity.get("plan_ask_id") or "")
     if not ask_id:
-        from ouroboros.tools.plan_review_collect import announce_released_settlement
-
-        announce_released_settlement(usage_ctx, request=request, task_id=task_id, actor=actor,
-                                     settled_wave=settled_wave, roster_size=roster_size)
         return
     if usage_ctx is None or not getattr(usage_ctx, "drive_root", None):
         return
@@ -866,7 +861,7 @@ def collect_pending(ctx: Any, record: Mapping[str, Any], *, state_root: pathlib.
 
 def attach_late_reply(state_root: Any, event: Mapping[str, Any]) -> int:
     """The supervisor's late-result hook: settle the one operation the event names into
-    its plan record; a legacy (v2) operation goes to the retired collector."""
+    its plan record; an earlier-schema (v2) operation stays history in its custody."""
     if str(event.get("surface") or "") != "plan_review":
         return 0
     from ouroboros.observability import read_call_payload
@@ -881,9 +876,7 @@ def attach_late_reply(state_root: Any, event: Mapping[str, Any]) -> int:
         return 0
     identity = (prompt.get("request") or {}).get("reconciliation_identity") or {}
     if not identity.get("plan_ask_id"):
-        from ouroboros.tools.plan_review_collect import attach_late_plan_event
-
-        return attach_late_plan_event(root, dict(event))
+        return 0
     record = plan_record.load_plan_record(root, task_id)
     before = {(a.get("ask_id"), p.get("seat_id")): p.get("status") for a in record.get("asks") or [] for p in a.get("participants") or []}
     after = collect_pending(None, record, state_root=root, task_id=task_id)
