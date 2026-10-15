@@ -647,7 +647,6 @@ def _stamp_presence_terminal_facts(
         task["metadata"] = {**metadata, "presence_unknown_outcome": unknown}
 
 
-@finalization_child_scope()
 def _task_cost_fields(env: Any, task: Dict[str, Any]) -> Dict[str, Any]:
     """The terminal frames' cost authority (the usage ledger), never the loop's own tally."""
     try:
@@ -823,6 +822,7 @@ def _record_project_letters_home(env: Any, task: Dict[str, Any], outcome_axes: D
         log.debug("project digest emission failed", exc_info=True)
 
 
+@finalization_child_scope()
 def emit_task_results(
     env: Any, memory: Any, llm: Any,
     pending_events: List[Dict[str, Any]],
