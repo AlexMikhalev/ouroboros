@@ -746,6 +746,38 @@ def test_a_settled_notice_reaches_its_room_once_its_author_ended_whether_it_was_
     assert sorted(a.reviewer.rounds) == ["m1", "m2"] and _commit_count(a) == 1
 
 
+@pytest.mark.xfail(strict=True, reason="G1 recovery §6A: a refused settled=true receipt leaves paid, "
+                   "retained answers waiting until the controller process dies")
+def test_a_failed_settled_duty_write_recovers_from_retained_seats_while_controller_lives(author, monkeypatch):
+    """A lost completion receipt must not leave paid answers waiting for this process to die."""
+    from ouroboros.late_review_marks import replay_owed_late_reviews
+    from ouroboros.review_operation import controller_state
+
+    a = author
+    real_owe, refused = review_pause._owe_left_review, []
+
+    def fail_settled(record, *, settled):
+        if settled:
+            refused.append(dict(record))
+            return False
+        return real_owe(record, settled=settled)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(review_pause, "_owe_left_review", fail_settled)
+        wait, _attempt = _leave_wave_by_mail(a)
+        a.reviewer.release()
+        until(lambda: wait.get("done"))
+    [row] = _owed_left_rows(a).values()
+    assert refused and row["settled"] is False and controller_state(row["controller"]) == "local"
+    assert _late_marks(a.data) == [], "the author has not ended"
+    write_task_result(a.data, TASK, "failed", chat_id=1, result="Ended after the notice.")
+    assert replay_owed_late_reviews(a.data) == {"settled": 1, "waiting": 0, "retired": 0, "failed": 0}
+    [mark] = _late_marks(a.data)
+    assert "outcome unknown" not in mark["text"] and "each seat's recorded state follows" in mark["text"]
+    assert _owed_left_rows(a) == {} and replay_owed_late_reviews(a.data)["settled"] == 0
+    assert sorted(a.reviewer.rounds) == ["m1", "m2"] and _commit_count(a) == 1 and not a.pushes
+
+
 def test_a_duty_whose_controller_died_before_settlement_keeps_what_was_recorded(author):
     """The process that owned the left wave dies before its settlement notice (the duty landed when the
     author left): once the task ended, maintenance composes the wave from its attempt row at $0, every
