@@ -3,7 +3,7 @@
 ``logs/chat.jsonl`` rotates verbatim into ``archive/chat_<ts>.jsonl``; the
 ordered archives plus the live file are the whole conversation. These readers
 are shared by ``chat_history``, the generation-aware chat reader in ``memory``,
-the owner-message source lens in ``project_dialogue``, reflection, the
+the owner-message source lens in ``project_dialogue``, the
 consciousness wake and the one-time legacy import in ``chronicle_import``. Callers
 use ``chat_chain.retain_memory_source`` as a module attribute, so one
 substitution reaches every caller.

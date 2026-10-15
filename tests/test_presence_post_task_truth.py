@@ -23,22 +23,24 @@ def test_live_and_recovered_synthesis_use_recorded_presence_body(
     captured = []
     launch = pipeline._run_post_task_processing_async
 
+    sealed_inputs = []
+
     def run_synchronously(*args, **kwargs):
         kwargs["blocking"] = True
+        sealed_inputs.append(kwargs["sealed_final"])
         return launch(*args, **kwargs)
 
-    def reflection(env, _llm, task, *_args, sealed_final, **_kwargs):
+    def paid_stage(env, task, *_args, **_kwargs):
         # Exercise the real claim and its durable running phase before the
-        # fake paid stage observes the exact cognitive input.
+        # fake paid stage runs on the phase that received the sealed input.
         current = load_task_result(env.drive_root, task["id"])
         assert current["root_phase_checkpoint"]["post_task_synthesis"] == "running"
-        captured.append(sealed_final)
+        captured.append(sealed_inputs[-1])
 
     monkeypatch.setattr(pipeline, "_run_post_task_processing_async", run_synchronously)
     monkeypatch.setattr("ouroboros.llm.LLMClient", lambda: SimpleNamespace())
-    monkeypatch.setattr(pipeline, "_run_memory_fallback_draft", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_run_memory_fallback_draft", paid_stage)
     monkeypatch.setattr(pipeline, "_run_scratchpad_consolidation", lambda *_a, **_k: None)
-    monkeypatch.setattr(pipeline, "_run_reflection", reflection)
     raw = "Internal terminal diagnostic" if failed else "Current authored result"
     task = {"id": "presence-synthesis", "root_task_id": "presence-synthesis", "type": "presence",
             "chat_id": 7, "text": "Read the request", "_is_direct_chat": True,

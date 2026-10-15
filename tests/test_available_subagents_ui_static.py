@@ -86,7 +86,7 @@ def test_heavy_card_is_gone_but_provider_test_contract_and_controls_remain() -> 
     assert "['Heavy'," not in ui
     assert "s-model-heavy" not in ui
     assert "OUROBOROS_MODEL_HEAVY" not in host
-    light_copy = "Fast summaries, lightweight internal work, reflections, and the default Fast scout. Empty uses Main."
+    light_copy = "Fast summaries, lightweight internal work and the default Fast scout. Empty uses Main."
     # Role labels and copy come from the shared setup contract, not a second
     # hand-maintained card table in Settings.
     assert "modelRolesHost('settings-model-roles')" in ui

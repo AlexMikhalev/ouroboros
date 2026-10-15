@@ -757,7 +757,10 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 371 -> 372: the fixed DATA server-lifetime admission lock (state/server.lock).
 # 373 -> 374: review_checking quarantines an invalid cached reader view under
 # state/review_checkouts/views/.discarded-*.* before removing it (PERSISTENCE views row).
-EXPECTED_SCAN_PATHS = 374
+# 374 -> 372: the automatic reflection writer's two literal history paths left with it
+# (memory/knowledge/patterns_history.jsonl, retained as history; memory/knowledge_history.jsonl,
+# still written by knowledge.write_knowledge_note through its address, which the scan cannot see).
+EXPECTED_SCAN_PATHS = 372
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

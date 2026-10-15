@@ -13,7 +13,6 @@ from ouroboros.knowledge import sanitize_topic as _sanitize_topic
 from ouroboros.tools.arg_feedback import ignored_argument_note
 from ouroboros.tools.registry import ToolEntry, ToolContext
 from ouroboros.tools.tool_result import ToolResult, _MAX_META_BYTES, _publish_tool_result, completed_local_read
-from ouroboros.utils import append_jsonl, utc_now_iso
 
 KNOWLEDGE_DIR = "memory/knowledge"
 BACKLOG_TOPIC = "improvement-backlog"
@@ -21,13 +20,10 @@ PATTERNS_TOPIC = "patterns"
 # Reserved shared topics with exactly one home. Whichever room asks for them,
 # they resolve to the global shelf: the backlog is the P7 SSOT, the overview is
 # the shared orientation every context loads, and the Pattern Register is
-# cross-project cognition whose only writer (post-task reflection) and only
-# readers (context, deep self-review, the headless copy) all use the canonical
-# drive. A project copy of any of them would be a second source of truth nobody
-# reads.
+# cross-project cognition whose readers (context, deep self-review, the headless
+# copy) all use the canonical drive. A project copy of any of them would be a
+# second source of truth nobody reads.
 GLOBAL_ONLY_TOPICS = knowledge_store.ALWAYS_ACTIVE_TOPICS
-# Existing consolidator and Pattern Register imports share this exact lock.
-_knowledge_write_lock = knowledge_store.knowledge_write_lock
 
 
 def _backlog_root(ctx: ToolContext) -> Path:
@@ -114,27 +110,6 @@ def _knowledge_read(ctx: ToolContext, topic: str, scope: str = "",
     return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=text, meta={**meta, "operation_outcome": "completed_no_effect"}))
 
 
-def _record_backlog_history(backlog_file: Path, topic: str, mode: str, task_id: str) -> None:
-    """Audit a backlog write to the GLOBAL knowledge history (C10.1), mirroring the
-    generic knowledge-history schema so the backlog's audit trail lives with the
-    other global knowledge, not in a project store. Best-effort; never raises."""
-    try:
-        history_path = backlog_file.parent.parent / "knowledge_history.jsonl"
-        new_content = backlog_file.read_text(encoding="utf-8") if backlog_file.exists() else ""
-        # CPL4-C17: the sidecar-locked append seam every other journal uses —
-        # a raw open("a") could tear a line under concurrent writers.
-        append_jsonl(history_path, {
-            "ts": utc_now_iso(),
-            "task_id": task_id,
-            "topic": topic,
-            "mode": f"{mode}->merge",
-            "new_sha256": hashlib.sha256(new_content.encode("utf-8")).hexdigest() if new_content else "",
-        })
-    except Exception:
-        pass
-
-
-
 def _bound_delta_meta(meta: dict) -> None:
     """Keep the tool receipt inside its existing metadata limit; history holds the full delta."""
     delta = meta.get("knowledge_delta") or {}
@@ -153,9 +128,8 @@ def _capture_previous(ctx: ToolContext, note: knowledge_store.KnowledgeNote) -> 
 
     Project history is not readable via runtime_data file tools. The ordinary
     artifact reader works on both shelves. Publish to the actor's drive and the
-    canonical drive used by post-task reflection before terminal copyback. The
-    writer calls this under its source lock, before publication; durable shelf
-    history remains authoritative.
+    canonical drive before terminal copyback. The writer calls this under its
+    source lock, before publication; durable shelf history remains authoritative.
     """
     from ouroboros.artifacts import persist_exact_text_source
 
@@ -207,16 +181,6 @@ def _knowledge_write(
         elif mode == "edit" and content is None:
             raise ValueError("mode=edit with old_str requires content, its replacement "
                              "(empty text deletes the old_str span)")
-        if sanitized == BACKLOG_TOPIC and not lifecycle:
-            if mode == "edit":
-                raise ValueError("The improvement backlog has its own merge writer; edit is not supported")
-            from ouroboros.improvement_backlog import backlog_path, merge_backlog_text
-            root = _backlog_root(ctx)
-            merged = merge_backlog_text(root, content)
-            if merged < 0:
-                raise ValueError("The improvement-backlog requires parseable ### ibl-<id> blocks with - summary: lines; the global backlog was preserved")
-            _record_backlog_history(backlog_path(root), sanitized, mode, str(getattr(ctx, "task_id", "") or ""))
-            return f"✅ Knowledge '{sanitized}' merged into the global backlog ({merged} item(s))."
         # The turn is the writer; the route stamp is the route that ANSWERED the
         # loop's last round (provider + resolved model, account when Claudexor
         # served it), recorded by the loop, otherwise honestly unknown. The host
@@ -290,7 +254,7 @@ def get_tools() -> List[ToolEntry]:
         }, _knowledge_read),
         ToolEntry("knowledge_write", {
             "name": "knowledge_write",
-            "description": "Create, revise, append or reversibly archive durable Markdown understanding. YAML carries type, optional title and an authored summary; unknown metadata survives. An active note's summary stays resident in the index; body text never replaces it. Archive hides default navigation rows while direct reads and explicit Presence topics remain available. Restore removes archive metadata, even malformed values in readable YAML, from CURRENT text including subsequent edits. Ordinary writes preserve the lifecycle-owned archive field. Legacy index prose stays until an authored global overview retires it; the improvement backlog keeps its global merge semantics.",
+            "description": "Create, revise, append or reversibly archive durable Markdown understanding. YAML carries type, optional title and an authored summary; unknown metadata survives. An active note's summary stays resident in the index; body text never replaces it. Archive hides default navigation rows while direct reads and explicit Presence topics remain available. Restore removes archive metadata, even malformed values in readable YAML, from CURRENT text including subsequent edits. Ordinary writes preserve the lifecycle-owned archive field. Legacy index prose stays until an authored global overview retires it.",
             "parameters": {"type": "object", "properties": {
                 "topic": topic, "scope": scope,
                 "content": {"type": "string", "description": "Markdown, optionally with YAML frontmatter; supplied fields merge with retained ones. Required except for a summary-only edit; omit for archive/restore. No summary is generated from the body."},

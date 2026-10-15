@@ -117,7 +117,7 @@ def test_the_real_architecture_book_navigation_exposes_all_h4_groups():
     planning_children = (
         "Plan construction and review",
         "Deep self-review",
-        "Post-task reflection",
+        "Post-task work",
         "Durable memory and project focus",
     )
     for title in (*tool_children, *planning_children):
@@ -131,7 +131,7 @@ def test_the_real_architecture_book_navigation_exposes_all_h4_groups():
 
     for parent_title, children in (
         ("Tool capability and execution", tool_children),
-        ("Planning, deep review, reflection, memory", planning_children),
+        ("Planning, deep review, post-task work, memory", planning_children),
     ):
         parent_start, parent_end = _range("  ", parent_title)
         child_ranges = [_range("    ", title) for title in children]
