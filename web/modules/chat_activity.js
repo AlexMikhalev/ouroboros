@@ -1075,7 +1075,7 @@ export function unkeyedFrameEndsTurn(row) {
 
 /**
  * One header reducer: offline > active managed work > pausing > direct turns > pending submissions
- * > finalizing wrap-up (ended work, any kind, writing its reflection) > access wait > queued work > answer
+ * > finalizing wrap-up (ended work, any kind, in its post-task work) > access wait > queued work > answer
  * wait > unknown > paused > Project hold > idle. A queued task ranks below an unacknowledged submission; neither
  * admission nor a connected socket proves execution or readiness. Idle says Starting until the supervisor confirms
  * readiness. Tasks are counted independently, so one paused task never hides another working.

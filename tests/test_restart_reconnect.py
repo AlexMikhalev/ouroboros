@@ -342,7 +342,8 @@ def test_chat_scrolls_to_bottom_after_first_history_load():
     assert "ensureLiveCardVisible(record, { reorderExisting: true });" in source, \
         "A mounted task card must be re-sorted if a later event lowers its anchor"
     assert "record._anchorOrderDirty = true;" in source
-    assert "reorderDirtyCardIfNeeded(rec);" in source, \
+    assert "if (rec?._anchorOrderDirty && !rec.isSubagent && rec.root?.isConnected) {" in source
+    assert "mountReplayedCard(record);" in source, \
         "Pass 2 must re-sort connected cards dirtied by routine history sync"
     assert "const parent = liveCardRecords.get(record.parentGroupId);" in source
     assert "seen.has(record.groupId)" in source, \
@@ -666,3 +667,55 @@ def test_only_an_owner_restart_asks_for_the_runtime_mode_to_be_re_read(tmp_path,
     finally:
         server._owner_restart_requested.clear()
         server._restart_requested.clear()
+
+
+def _owner_restart_world(tmp_path, monkeypatch, stop):
+    from types import SimpleNamespace
+
+    import ouroboros.server_restart as server_restart
+    from supervisor import queue
+
+    exits, notices = [], []
+    monkeypatch.setattr(queue, "RETURNS_NAMED", {})
+    monkeypatch.setattr(server_restart, "_LAST_RETURNING", set())
+    monkeypatch.setattr(server_restart, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(server_restart, "_safe_restart_serialized", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(server_restart, "_stop_owned_work", stop)
+    monkeypatch.setattr(server_restart, "_request_restart_exit", lambda owner=False: exits.append(owner))
+    run = lambda: server_restart._perform_owner_restart(SimpleNamespace(safe_restart=None),
+                                                        lambda text, _suffix: notices.append(text))
+    return SimpleNamespace(run=run, exits=exits, notices=notices, queue=queue,
+                           flag=tmp_path / "state" / "owner_restart_no_resume.flag")
+
+
+def test_a_raised_owner_stop_still_restarts_so_its_durable_flags_stay_true(tmp_path, monkeypatch):
+    """W05-2 (PROV_W05_POOL): a stop that raised left this generation running with automatic
+    admission closed. Reopening it instead would keep the generation running under the durable
+    no-resume flags just written, which review operations and budget pauses read as a stop and
+    follow-ups as a restart in progress. The stop may not veto: the restart follows."""
+    from supervisor import queue
+
+    def broken(_ctx):
+        queue.name_queue_returns([], "owner_restart")  # what the real stop names first
+        raise OSError("owned-work stop raised")
+
+    world = _owner_restart_world(tmp_path, monkeypatch, broken)
+    assert world.run() == (True, "")
+    assert world.exits == [True], "the owner's restart follows"
+    assert world.flag.read_text(encoding="utf-8") == "owner_restart", "the flag describes the restart that happens"
+    assert world.notices == ["New settings apply to the next message."], "no stopped task is claimed"
+
+
+def test_an_interrupted_owner_stop_reopens_admission_without_an_exit(tmp_path, monkeypatch):
+    """A BaseException (an interrupt) propagates; if this generation survives it, it keeps admitting."""
+    import pytest
+    from supervisor import queue
+
+    def interrupted(_ctx):
+        queue.name_queue_returns([], "owner_restart")
+        raise KeyboardInterrupt
+
+    world = _owner_restart_world(tmp_path, monkeypatch, interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        world.run()
+    assert world.queue.RETURNS_NAMED == {} and world.exits == []

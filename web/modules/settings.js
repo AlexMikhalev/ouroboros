@@ -459,6 +459,25 @@ export function providerTestResultIsCurrent({
     return sentGeneration === currentGeneration && sentFingerprint === currentFingerprint;
 }
 
+// The save's effect, from the gateway's honest buckets (#285). A running task keeps
+// its start snapshot, while a skill reads the keys it is granted on its next read
+// (#1122): the next-task bucket states both once, whichever keys the save carried.
+const SKILL_KEYS_READ = 'skills pick up granted keys on their next read';
+
+export function settingsSaveEffectText(data = {}) {
+    if (data.no_changes) return 'No changes detected';
+    if (data.restart_required) return 'Settings saved. Some changes require a restart to take effect';
+    if (data.restart_state?.summary || data.restart_state?.local_model?.summary) return 'Settings saved';
+    if (data.immediate_changed && data.next_task_changed) {
+        return `Settings saved. Some changes took effect immediately, others apply on the next task; ${SKILL_KEYS_READ}`;
+    }
+    if (data.immediate_changed) return 'Settings saved. Changes took effect immediately';
+    if (data.next_task_changed) return `Settings saved. Changes take effect on the next task; ${SKILL_KEYS_READ}`;
+    // Reachable when the only changed keys are retired no-ops:
+    // the warning below carries the honest story.
+    return 'Settings saved';
+}
+
 // Decision 16=A (#285): the settings "Restart now" action reuses the existing
 // owner command contract — the same WS `/restart` the chat header sends, through
 // the ONE shared confirmation both Restart buttons use (owner quiz 285597). The
@@ -1454,26 +1473,8 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             const ownerError = runtimeModeError || autoGrantError || contextModeError || safetyModeError;
             const draftKept = ownerError || sentRevision !== draftRevision || !(await loadSettings({ awaitEnrichment: false }));
             syncAutoGrantBridgeState();
-            let statusMsg;
-            let statusType = 'ok';
-            if (data.no_changes) {
-                statusMsg = 'No changes detected';
-            } else if (data.restart_required) {
-                statusMsg = 'Settings saved. Some changes require a restart to take effect';
-                statusType = 'warn';
-            } else if (data.restart_state?.summary || data.restart_state?.local_model?.summary) {
-                statusMsg = 'Settings saved';
-            } else if (data.immediate_changed && data.next_task_changed) {
-                statusMsg = 'Settings saved. Some changes took effect immediately; others apply on the next task';
-            } else if (data.immediate_changed) {
-                statusMsg = 'Settings saved. Changes took effect immediately';
-            } else if (data.next_task_changed) {
-                statusMsg = 'Settings saved. Changes take effect on the next task';
-            } else {
-                // Reachable when the only changed keys are retired no-ops:
-                // the warning below carries the honest story.
-                statusMsg = 'Settings saved';
-            }
+            let statusMsg = settingsSaveEffectText(data);
+            let statusType = data.restart_required && !data.no_changes ? 'warn' : 'ok';
             if (subagentsChanged && data.agent_task_running) {
                 statusMsg += '. Available subagents take effect for new child tasks; '
                     + 'the current task keeps its existing routes';

@@ -22,7 +22,7 @@ from ouroboros import task_pacing
 from ouroboros.context_budget import ContextReclaimRequest
 from ouroboros.context_compaction import context_reclaim_transcript_sha256
 from ouroboros.llm import LLMClient
-from ouroboros.loop_llm_call import REBOUND_PHYSICAL_CONTEXT_KEY, REFUSED_CANDIDATE_KEY, TRANSPORT_DEATHS_KEY, _TRANSPORT_DEATH_RETRIES
+from ouroboros.loop_llm_call import REBOUND_PHYSICAL_CONTEXT_KEY, REFUSED_CANDIDATE_KEY, TRANSPORT_DEATHS_KEY
 from ouroboros.loop_round_limits import _coarsen_memory_view, _run_emergency_address_pass
 from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_negative_memo, reclaim_trace_refs
 from ouroboros.observability import new_execution_id
@@ -231,8 +231,8 @@ def _run_cross_model_fallback_chain(
     """Try the configured routes other than the acting binding before any wait begins.
 
     An eligible unknown outcome moves on to the next route with facts-only recovery
-    input (a real, possibly charged generation); an ineligible one (an accepted operation still readable,
-    inline Presence) or a spent deadline stops the walk. A round whose own failure is an
+    input (a real, possibly charged generation); an ineligible one (an accepted operation still readable)
+    or a spent deadline stops the walk. A round whose own failure is an
     outage or an unknown outcome keeps that failure as its wait when none answers.
     """
     from ouroboros import fallback_cooldown as _fcd
@@ -935,10 +935,6 @@ def _dispatch_round_model(
             deadline_ts=_loop()._task_deadline_epoch(ctx.tools),
             transport_reserve_sec=task_pacing.get_finalization_grace_sec(),
             attempt_cap=attempt_cap,
-            # Inline Presence keeps its bounded typed-death repeat; every other round's new
-            # generation after an unknown outcome is the round recovery (configured routes first).
-            transport_death_retries=(_TRANSPORT_DEATH_RETRIES if attempt_cap is None
-                                     and ctx.task_type == "presence" else 0),
             stop_retry_check=(lambda: transport_repeat_stop_requested(ctx.tools._ctx, mailbox_peek=mailbox_peek)) if attempt_cap is None else None,
             allow_server_web_search=_loop()._server_web_allowed_by_task(ctx.tools._ctx),
             physical_context=(_physical_context_for_fit(disposition) if disposition is not None else None),

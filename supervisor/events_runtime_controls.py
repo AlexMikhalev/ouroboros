@@ -150,42 +150,24 @@ def _handle_cancel_task(evt: Dict[str, Any], ctx: Any) -> None:
 
 
 def _drive_cancel_task_event(evt: Dict[str, Any], ctx: Any) -> None:
-    """Drive one agent-requested cancel through custody — TYPED outcome end to end.
+    """Wake the durable intent's own driver; the event itself says nothing.
 
-    Custody publishes the settled truth itself: a cancelled child's
-    ``task_summary``/salvage row lands in the task's own thread through the
-    terminal-delivery seam, an already-settled child keeps the result it
-    already published, and the calling agent received the typed tool result.
-    A second host acknowledgement here (#624) reached the global owner chat as
-    an untyped assistant row with no task identity — duplicate presentation in
-    Main Chat, and for a pending-drop race it misstated the causal history.
-    Only the FAILED outcome still speaks: the stop is unconfirmed and its intent
-    stays open, possibly after worker death while terminal files remain unready."""
+    A ``cancel_task`` event is only the fast trigger for an intent the tool
+    already minted. Every outcome is published where it belongs: a cancelled
+    child's ``task_summary``/salvage row lands in the task's own thread through
+    the terminal-delivery seam, an already-settled child keeps the result it
+    published, a closed or claimed intent is a silent no-op, and a FAILED
+    attempt leaves the intent open for ``sweep_cancel_intents`` with its typed
+    trail in logs/supervisor.jsonl. The host sentence this used to send on
+    FAILED (#624) named a child with no lineage in the owner's chat and, for an
+    event drained long after the watchdog had settled the intent, stated a
+    failure that never happened: the card and the journal are the record."""
     task_id = str(evt.get("task_id") or "").strip()
-    requested_task_id = str(evt.get("requested_task_id") or "").strip()
-    display_task_id = requested_task_id or task_id
-    st = ctx.load_state()
-    owner_chat_id = st.get("owner_chat_id")
-    from supervisor.queue import CANCEL_FAILED, CANCEL_NOT_FOUND, drive_cancel_intent_scope
-
-    outcome = drive_cancel_intent_scope(task_id) if task_id else CANCEL_NOT_FOUND
-    if not owner_chat_id or outcome != CANCEL_FAILED:
+    if not task_id:
         return
-    incident_meta = {
-        "task_incident": "cancellation_fault",
-        "toast_once": f"{display_task_id or 'unknown'}:cancellation_fault",
-    }
-    if task_id and display_task_id != task_id:
-        incident_meta["cancel_physical_task_id"] = task_id
-    ctx.send_with_budget(
-        int(owner_chat_id),
-        # Custody failure does not prove the worker is still alive.
-        f"❌ Stopping task {display_task_id or '?'} is not yet confirmed. "
-        "The system keeps trying to complete the stop.",
-        is_progress=True,
-        task_id=display_task_id,
-        progress_meta=incident_meta,
-        role="system", system_type="cancellation_notice")
+    from supervisor.queue import drive_cancel_intent_scope
+
+    drive_cancel_intent_scope(task_id)
 
 
 EVOLUTION_CONTROL_KEYS = ("evolution_mode_enabled", "evolution_owner_stopped",

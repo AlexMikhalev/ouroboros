@@ -187,6 +187,13 @@ Replace `<model-id>` with the endpoint's model id. An empty review pool is an ex
 
 `sha` identifies the files on disk. The commit the running core actually started from is `running_sha` in `GET /api/update/status`.
 
+A quiz-bound activity may carry `owner_wait.quiz_id`, the exact question its wait
+names, in Main as well as a Project. Absence supplies no question identity.
+To open it, read `GET /api/tasks/{activity_id}`, match the task's `chat_id` and
+the exact quiz in `owner_quiz`; opening is a read, never a decision submission.
+Wait state and quiz state remain separate: a resumed task does not mean the
+question was answered. Use §7's decision contract to answer it.
+
 ### The WebSocket `/ws`
 
 **Format and liveness.** Open one socket per client. Every frame is a JSON text message with a `type`. The core sends `heartbeat` about every 15 seconds while clients are connected. If nothing arrives for about 45 seconds, treat the socket as dead and reconnect. A heartbeat proves the connection is alive, not that work is progressing. Before restarting, the core closes sockets with code 1012. The socket has no resume cursor: frames sent while it is down are not sent again.
@@ -235,7 +242,7 @@ In a Project response, `window.latest_message` names the latest eligible non-own
 - **Deliveries:** `msg_type` is `document`, `photo`, `video`, `links` or `quiz`, with `filename`, `mime`, `download_url`, `caption` and `size_bytes`; `actions` and `title` for links; `quiz` for a question (`quiz.quiz_id`, `quiz.state`, the recorded answer).
 - **Progress rows** (`is_progress: true`) carry the same task-progress facts live `chat` progress frames carry (`ChatOutbound`).
 - **Rows that are not messages.** Do not show these as bubbles:
-  - replay evidence: `system_type` `quiz_answer` or `task_evidence`, or a row with `summary_kind` and `historical_terminal`. They carry facts for cards whose rows lie on other pages.
+  - replay evidence: `system_type` `quiz_answer` or `task_evidence`, or a row with `summary_kind` and `historical_terminal`. They carry facts for cards whose rows lie on other pages. A `task_evidence` carrier may be an in-room parent's only evidence (zero tool calls included; `task_terminal_status` only when the parent is terminal): a client mints a parent card only from the parent's own rows, carrier or live state, never from a child's `parent_task_id`; a child whose parent has no such evidence here renders as its own card and re-nests when that evidence arrives.
   - `system_type: "task_model_wait"`: a model wait's latest state, in `model_waits`, for the task's card.
 - **A rebuilt row:** `lifecycle_virtual: true` describes the skill operation running now. It is rebuilt with a fresh `ts` on every read and has no `history_id`, so replace it rather than merge it.
 - **Derived and synthesized rows:** in Main a Project question appears as `system_type: "project_question_pointer"` (with `quiz_id`), carrying the question row's `history_id`. A Project's start message rebuilt from its binding (`origin_projected: true`) has no `history_id`. A synthesized `origin_omission` System notice says further archived origins were not rendered; it also has no stored `history_id`.
@@ -333,11 +340,11 @@ data: {"seq":12,"type":"task_result","task_id":"…","data":{…}}
 ## 8. Stop, pause, continue, resume
 
 **Stop.** `POST /api/tasks/{id}/cancel` takes an optional `TaskCancelRequest`: `cascade`, `stop_policy` and `stop_action_id`.
-- **Safe retries:** `stop_action_id` names one Stop action. While that action is pending, an identical request joins it and reusing the id with different arguments answers 409. An immediate Stop normally answers after teardown; once the task is no longer active, even an identical retry can answer 404. Read task detail to distinguish the recorded outcome.
-- **Graceful stop:** `202` with `cancel_state: "pending"` means a graceful stop is under way.
-- **Already stopped:** `404` for a task that is no longer active also covers repeating a Stop that already finished.
-- **Nothing cancelled:** `503 cancel_intent_write_failed` means nothing was cancelled, so retry.
-- **Stop unconfirmed:** a `503` saying "stopping the task is not yet confirmed; the system keeps trying to complete the stop" means the recorded stop has not settled. The worker may still be running, or may have ended while result publication remains unfinished. Read `GET /api/tasks/{id}` (`cancel_state`, result and outcome) before anything else; do not infer liveness from this failure.
+- **Safe retries:** `stop_action_id` names one Stop action. While that action is pending, an identical request joins it and reusing the id with different arguments answers 409. An immediate Stop records the stop first and answers after it drove the teardown; once the task is no longer active, even an identical retry can answer 404. Read task detail to distinguish the recorded outcome.
+- **Stopped:** `200` means the teardown settled (with `cascade: true` when the whole tree was stopped).
+- **Recorded, still stopping:** `202` with `cancel_state: "pending"` means the stop is recorded and the supervisor finishes it: a graceful stop under way, or an immediate one whose teardown is not confirmed yet (`reason_code: "teardown_unconfirmed"`, with the stop's `request_id`). No retry is needed: read `GET /api/tasks/{id}` (`cancel_state`) until it settles; an immediate Stop still hardens a graceful one.
+- **Nothing to stop:** `404` means the task already finished (completion wins), the id names no task, or a repeated Stop already finished. A task that was created but never started is stopped, not 404.
+- **Nothing recorded:** `503 cancel_intent_write_failed` means nothing was recorded or cancelled, so retry; `503 cancel_intent_projection_corrupt` cannot succeed until the projection file is repaired.
 - **When to offer Stop:** chat frames carry `cancelable` to say when Stop applies. Do not offer it otherwise.
 
 `stop_policy` is `immediate` (also the omitted/empty default) or `finalize_then_cancel`. A graceful request cannot soften a previously recorded immediate Stop. Task detail has `cancel_state:"pending"` while cancellation is owed, otherwise the field is absent; there is no public `cancel_state:"settled"`.
@@ -540,7 +547,8 @@ Ouroboros runs connected coding subscriptions through its bundled agent engine, 
 
 **Applying an update.** Send `POST /api/update/apply` (`UpdateApplyRequest`) with `strategy`, `expected_base_sha` and `expected_target_sha` from the preflight:
 - **Release moved:** 409 `release_moved` means the release changed since the preflight. Run the preflight again.
-- **What `200` means:** inspect `status`, not HTTP success alone. `ok` with `restarting:true` means a restart was requested, not adoption. `assisted_started` means a supervised task owns resolution. `manual` returns a plan without applying or restarting. `restart_required` means the code landed but a restart could not be requested; show its error and offer the ordinary restart control.
+- **Replacement not applied:** 409 `reason: replace_not_applied`, `abandoned: true` means Git refused the first tree-changing command because its index lock was held. The transaction is disarmed without rollback; `rescue` and `keep_branch` disclose retained preparation artifacts. The lock is untouched. Diagnose it before another deliberate attempt; age alone never authorizes removal. Other partial or unknown failures keep fenced recovery and their error.
+- **What `200` means:** inspect `status`, not HTTP success alone. `ok` with `restarting:true` means a restart was requested, not adoption. `assisted_started` means a supervised task owns resolution. `manual` returns a plan without applying or restarting. `restart_required` means the restart that finishes the apply could not be requested (a store-less replace has not moved the checkout yet); show its error and offer the ordinary restart control.
 - **Watching it:**
   - `update_progress_changed` frames mean "read the status again" (progress is kept in memory only).
   - After reconnecting, confirm the executing generation (`running_sha`) against the landed transaction/`merge_commit` identity reported by the update, not blindly against the preflight's official `target_sha`. Preserving local commits can create a distinct two-parent merge. Until the landed identity and completed startup are known, adoption remains unconfirmed.
@@ -548,7 +556,7 @@ Ouroboros runs connected coding subscriptions through its bundled agent engine, 
   - `update_status_ready` arrives after a fresh start.
 - **Retrying:** there is no idempotency key. A non-manual request can answer 409 while an update is active or its expected base/target no longer matches; `manual` may return another plan. When an outcome is unknown, read status and transaction facts before deciding—never infer failure or resend from a dropped connection.
 
-**Rollback.** `POST /api/git/rollback {target}` stops running work, switches to the given commit or tag and restarts. It has no checks and is not safe to repeat. Ask the person first; afterwards confirm `running_sha`.
+**Rollback.** `POST /api/git/rollback {target}` stops running work, switches to the given commit or tag and restarts. It has no checks and is not safe to repeat. Ask the person first; afterwards confirm `running_sha`. 409 `reason: restore_not_applied` means Git refused the reset at its held index lock, so the reset changed no checkout file, index entry or ref; the lock, and the keep branch and rescue snapshot made before the reset, are retained. No restart is requested; writers are readmitted through the aborted-update path, which keeps admission closed while an update transaction is active or the stopped work's handoff is unconfirmed.
 
 **Promote.** `POST /api/git/promote` moves the local stable branch to the current commit (nothing is pushed).
 

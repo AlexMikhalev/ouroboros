@@ -12,6 +12,8 @@ import queue as stdqueue
 import time
 from types import SimpleNamespace
 
+from tests.worker_pool_support import affirm_ready
+
 import pytest
 from starlette.applications import Starlette
 from starlette.routing import Route
@@ -34,8 +36,8 @@ def _fake_clock(monkeypatch, start=None):
 
 
 def _idle_worker(workers, sent, wid=0):
-    workers.WORKERS[wid] = SimpleNamespace(wid=wid, busy_task_id=None, reaping=False,
-                                           in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row))))
+    workers.WORKERS[wid] = affirm_ready(SimpleNamespace(wid=wid, busy_task_id=None, reaping=False,
+                                           in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row)))))
 
 
 def test_gateway_queue_wait_before_dispatch_is_not_execution(host, tmp_path, monkeypatch):  # noqa: F811

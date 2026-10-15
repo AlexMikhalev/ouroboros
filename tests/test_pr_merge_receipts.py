@@ -17,6 +17,7 @@ import pytest
 from ouroboros import merge_receipts
 from ouroboros.task_results import STATUS_COMPLETED, STATUS_RUNNING, load_task_result, write_task_result
 from ouroboros.tools import github
+from tests._cancel_intents_shared import DeliveryBus
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -466,7 +467,6 @@ def test_unsettled_and_merged_receipts_survive_disposable_history_eviction(world
 
 
 def test_card_outbox_survives_worker_exit_and_confirms_delivery_separately(world, monkeypatch):
-    from queue import Queue
     from supervisor import terminal_delivery as td
 
     _merge(world)
@@ -474,7 +474,7 @@ def test_card_outbox_survives_worker_exit_and_confirms_delivery_separately(world
     did = receipt["publication"]["card"]["delivery_id"]
     world.ctx.pending_events.clear()  # the worker died before draining its buffer
     monkeypatch.setattr(td, "_REPLAY_MIN_AGE_SEC", 0)
-    queue = Queue()
+    queue = DeliveryBus()  # replay admits a copy only through the bus's membership
     assert td.replay_pending_deliveries(world.root, event_queue=queue) == [did]
     event = queue.get_nowait()
     assert event["progress_meta"]["card_row_id"] == f"merge-receipt:{receipt['receipt_id']}"

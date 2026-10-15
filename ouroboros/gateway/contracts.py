@@ -136,7 +136,8 @@ class ChatOutbound(TypedDict):
     comment: NotRequired[str]
     host_facts: NotRequired[str]  # the mirrored card's host sentence (QuizOutbound.host_facts)
     task_incident: NotRequired[str]
-    # A cancellation fault names the PHYSICAL task it could not settle when it differs from the logical task id.
+    # Historical rows only: the retired cancellation-fault notice named the PHYSICAL task it could not
+    # settle when that differed from the logical id. Declared so stored rows keep their shape.
     cancel_physical_task_id: NotRequired[str]
     toast_once: NotRequired[str]
     # The one-shot toast's valence (warn/ok/error; the reaper's rail ``warning`` is normalizeTone's ``warn``
@@ -548,6 +549,11 @@ class UpdateApplySuccessResponse(TypedDict):
 class UpdateApplyErrorResponse(TypedDict):
     error: str
     reason: NotRequired[str]
+    abandoned: NotRequired[bool]
+    status: NotRequired[Dict[str, Any]]  # preparation observations, not the success discriminator
+    update_intent: NotRequired[Dict[str, Any]]
+    rescue: NotRequired[Dict[str, Any]]
+    keep_branch: NotRequired[str]
     blockers: NotRequired[List[str]]
     rolled_back: NotRequired[bool]
     rollback: NotRequired[str]
@@ -729,12 +735,13 @@ class ActiveChatActivity(ActiveDirectTurn):
     root_phase_checkpoint: NotRequired[Dict[str, Any]]
     timeout_retry_from: NotRequired[str]
     original_task_id: NotRequired[str]
-    owner_wait: NotRequired[Dict[str, Any]]  # quiz-bound wait facts, independent of a Project pointer
+    owner_wait: NotRequired[Dict[str, Any]]  # the waited quiz_id and its wait facts, independent of a Project pointer
     required_question: NotRequired[Dict[str, Any]]
     required_question_unavailable: NotRequired[bool]
     project_admission_hold: NotRequired[Dict[str, Any]]
     pause_cause: NotRequired[str]  # budget | owner | restart | sleep | unknown; display only
     finishing_reviews: NotRequired[bool]  # review work an owner Pause lets finish runs on; display only, no count
+    late_work: NotRequired[Dict[str, Any]]  # answered root with an open late phase (D10): title, answered_at; display only
 
 class EffortRange(TypedDict):  # min ≤ recommended ≤ max, each an EFFORT_SCALE tier (the tolerant read)
     min: str
@@ -1306,10 +1313,13 @@ class TaskCancelResponse(TypedDict, total=False):
     task_id: str
     # Cascade echoes subtree scope; immediate success follows teardown.
     cascade: bool
-    # Soft 202 keeps custody pending and echoes EFFECTIVE policy, never softening
-    # an immediate intent. Legacy immediate replies omit these additive fields.
+    # Every 202 keeps the recorded intent pending and echoes the EFFECTIVE policy,
+    # never softening an immediate intent: a soft stop, or an immediate teardown not
+    # yet confirmed (request_id, reason_code "teardown_unconfirmed"). 200 omits them.
     cancel_state: str
     stop_policy: str
+    request_id: str
+    reason_code: str
     error: str
 
 

@@ -938,7 +938,7 @@ def _record_llm_call_error(
             "request_ref": ctx.request_ref.get("manifest_ref") if ctx.request_ref else None,
             **({"same_operation_recoverable": True} if getattr(error, "same_operation_recoverable", False) else {}),
         }
-        # Only a caller with a repeat budget (inline Presence) repeats here; every other
+        # Only an explicit low-level repeat budget repeats here; each running turn's
         # new generation belongs to the round's recovery (configured routes, then the wait).
         if (
             is_retryable_transport_death(error)

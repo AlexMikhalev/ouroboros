@@ -292,8 +292,10 @@ def test_panel_chat_zero_stays_hidden_and_request_zero_still_means_main(tmp_path
 def test_panel_zero_exclusion_does_not_override_project_task_binding():
     from ouroboros.gateway.history import _make_thread_filter
 
-    project_filter = _make_thread_filter(42, {42}, [], {"root-1": 42})
-    main_filter = _make_thread_filter(1, {42}, [], {"root-1": 42})
+    from tests._room_shared import RoomsFromBindings
+
+    project_filter = _make_thread_filter(42, {42}, [], RoomsFromBindings({"root-1": 42}))
+    main_filter = _make_thread_filter(1, {42}, [], RoomsFromBindings({"root-1": 42}))
 
     row = {"task_id": "root-1"}
     assert project_filter(0, row) is True

@@ -148,9 +148,17 @@ def test_hard_or_unknown_claim_failure_never_retries_or_enters_handler(reader, m
 
     monkeypatch.setattr(task_store, "exists", refuse)
     monkeypatch.setattr(queue_observation, "_sleep", lambda _: pytest.fail("hard claim retried"))
-    with pytest.raises(type(error)) as caught:
-        registry.execute_result("read_file", {"path": "answer.txt"})
-    assert caught.value is error and attempts == [True] and calls == []
+    if isinstance(error, store.StoreError):
+        result = registry.execute_result("read_file", {"path": "answer.txt"})
+        assert result.code == "TOOL_ADMISSION_UNAVAILABLE"
+        assert result.meta["owner_pause_not_started"] is True
+        physical = getattr(error, "reason", None) or f"{type(error).__name__}: {error}"
+        assert result.meta["launch_reason"] == physical and physical in result.text
+    else:
+        with pytest.raises(type(error)) as caught:
+            registry.execute_result("read_file", {"path": "answer.txt"})
+        assert caught.value is error
+    assert attempts == [True] and calls == []
 
 
 def test_unconfirmed_rollback_does_not_replay_claim(reader, monkeypatch):

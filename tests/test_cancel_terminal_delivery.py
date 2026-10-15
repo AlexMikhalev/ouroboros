@@ -492,7 +492,7 @@ def test_cascade_receipt_dedups_the_actual_destination_and_preserves_main(qenv, 
         qenv.drive, "live-kid", "scheduled",
         parent_task_id="settled-root", root_task_id="settled-root",
     )
-    assert qenv.tl.cancel_task_by_id("settled-root", cascade=True)
+    assert qenv.tl.cancel_task_by_id("settled-root")
     event = next(e for e in queue.events if e.get("system_type") == "cancel_receipt")
     assert event["chat_id"] == 77 and text in event["text"]
     before = load_task_result(qenv.drive, "settled-root")

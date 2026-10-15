@@ -559,13 +559,11 @@ def test_globalized_promotion_view_keeps_the_contract(tmp_path, monkeypatch):
     from ouroboros.contracts.task_contract import attach_task_contract
 
     seen: list = []
-    monkeypatch.setattr(pipeline, "_update_improvement_backlog", lambda env, entry: None)
     monkeypatch.setattr("ouroboros.post_task_evolution.maybe_promote",
-                        lambda env, task, entry, llm: seen.append(task))
+                        lambda env, task, sealed, llm: seen.append(task))
     task = attach_task_contract({**_wake_task("act"), "project_id": "lab"})
     pipeline._run_global_backlog_promotion_only(
-        types.SimpleNamespace(drive_root=tmp_path), task,
-        {"backlog_candidates": [{"summary": "tidy the logs"}]}, None,
+        types.SimpleNamespace(drive_root=tmp_path), task, {"final_result_text": "Tidied."}, None,
     )
     assert seen and seen[0]["task_contract"]["disabled_tools"] == list(ca.ACT_DISABLED)
 

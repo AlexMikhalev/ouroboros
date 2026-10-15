@@ -425,10 +425,10 @@ def _collect_literal_progress_meta_keys(source_path: pathlib.Path) -> set[str]:
     keys: set[str] = set()
     meta_helper_names = {"_subagent_rejection_meta", "_subagent_progress_meta", "_subagent_scheduled_meta"}
     # A producer may build the dict under a local name and hand it over as
-    # ``progress_meta=<name>`` (events_runtime_controls: ``incident_meta``);
-    # every such name is an alias of ``progress_meta`` for the walk below, or
-    # the scan is blind to exactly those emitters and stays green when their
-    # keys drop out of the carriers.
+    # ``progress_meta=<name>`` (the retired cancellation-incident emitter did,
+    # as ``incident_meta``); every such name is an alias of ``progress_meta``
+    # for the walk below, or the scan is blind to exactly those emitters and
+    # stays green when their keys drop out of the carriers.
     meta_names = {"progress_meta"}
     for node in ast.walk(tree):
         if isinstance(node, ast.keyword) and node.arg == "progress_meta" and isinstance(node.value, ast.Name):
@@ -577,7 +577,7 @@ def test_chat_outbound_matches_message_bus_sends():
         )
 
 
-def test_chat_outbound_declares_progress_meta_keys_used_by_runtime():
+def test_chat_outbound_declares_progress_meta_keys_used_by_runtime(tmp_path):
     """Progress metadata is merged into ChatOutbound frames by message_bus."""
 
     from ouroboros.gateway.contracts import ChatOutbound
@@ -599,9 +599,19 @@ def test_chat_outbound_declares_progress_meta_keys_used_by_runtime():
         progress_keys.update(_collect_literal_progress_meta_keys(source_path))
 
     assert progress_keys, "no literal progress_meta keys found"
-    # The named-dict idiom must be seen: this key has exactly one emitter and
-    # it hands the dict over as ``progress_meta=incident_meta``.
-    assert "cancel_physical_task_id" in progress_keys, sorted(progress_keys)
+    # The named-dict idiom (``progress_meta=<local name>``) has no live emitter
+    # since the cancellation incident row was retired, so the alias walk is
+    # proven on a synthetic producer: a future named-dict emitter cannot slip
+    # past the scan unnoticed.
+    synthetic = tmp_path / "named_dict_producer.py"
+    synthetic.write_text(
+        "def emit(ctx):\n"
+        "    incident_meta = {\"task_incident\": \"synthetic_fault\"}\n"
+        "    incident_meta[\"synthetic_physical_task_id\"] = \"t\"\n"
+        "    ctx.send_with_budget(1, \"x\", progress_meta=incident_meta)\n",
+        encoding="utf-8",
+    )
+    assert {"task_incident", "synthetic_physical_task_id"} <= _collect_literal_progress_meta_keys(synthetic)
     assert progress_keys <= declared, (
         "progress_meta emits keys not declared in ChatOutbound: "
         f"{sorted(progress_keys - declared)}"

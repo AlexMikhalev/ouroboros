@@ -391,7 +391,7 @@ def test_a_slow_reconcile_block_never_holds_the_loop_tick(quiet_tick, monkeypatc
         assert tick < 2.0, f"the loop tick waited {tick:.1f}s for the reconcile block"
         assert marker[0] == 0.0, "not stamped until the pass ENDS (issue #1230)"
         sm._periodic_supervisor_maintenance([time.time()], marker)
-        assert [thread.name for thread in threads if thread.name != "cold-custody"] == ["reconcile-maintenance"], "busy => skipped"
+        assert [thread.name for thread in threads if thread.name not in {"cold-custody", "schedule-admission"}] == ["reconcile-maintenance"], "busy => skipped"
         assert threads[0].daemon and threads[0].is_alive()
     finally:
         release.set()
@@ -430,7 +430,7 @@ def test_child_ref_promotion_retries_left_the_cancel_sweep(quiet_tick, monkeypat
     for thread in threads:
         thread.join(5)
     assert [name for name, _ in done] == ["review_jobs", "orphans", "projects", "deletions", "child_refs"]
-    assert [thread.name for thread in threads if thread.name != "cold-custody"] == ["cancel_intent_sweep", "terminal_delivery_replay", "pause_notice_replay", "abandoned_usage_reconciliation", "post_task_synthesis_recovery", "reconcile-maintenance"]
+    assert [thread.name for thread in threads if thread.name not in {"cold-custody", "schedule-admission"}] == ["cancel_intent_sweep", "terminal_delivery_replay", "pause_notice_replay", "abandoned_usage_reconciliation", "post_task_synthesis_recovery", "reconcile-maintenance"]
 
 
 def test_a_closed_generation_stops_the_reconcile_block_before_its_next_mutation(quiet_tick, monkeypatch):

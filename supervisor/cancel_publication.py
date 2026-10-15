@@ -339,6 +339,12 @@ def _register_owed_terminal_delivery(
         if not deliver or str((task or {}).get("delegation_role") or "") == "subagent":
             return True
         stored_status = str((stored or {}).get("status") or "")
+        if stored_status and stored_status != STATUS_CANCELLED:
+            # The worker's own terminal row won over the Stop: the provisional
+            # salvage owed before the terminal write is not this task's answer.
+            from supervisor.terminal_delivery import withdraw_stop_episode
+
+            withdraw_stop_episode(pathlib.Path(q.DRIVE_ROOT), task_id)
         event: Optional[Dict[str, Any]] = None
         if stored_status == STATUS_CANCELLED:
             event = build_unreviewed_salvage_event(
@@ -664,7 +670,7 @@ def _finish_captured_chat_turn(
     arms the cooperative stop and waits its short bound
     (``worker_chat_lane.stop_direct_chat_turn``); custody settles the intent
     against what the turn published, or releases the claim so the sweep
-    retries — the HTTP caller then sees "not yet confirmed", never a fabricated
+    retries — the HTTP caller then sees "still live", never a fabricated
     ``cancelled`` row over a turn that is still running. A turn that ENDED
     without publishing a terminal (the lane's error path writes none) takes
     the same miss finalizer a pooled task does — ``cancelled`` with the
@@ -672,8 +678,8 @@ def _finish_captured_chat_turn(
     row that no control can reach again. A turn that was already gone before
     the stop could be armed is the pooled lane's ``already_settled`` — unless
     its paid post-task synthesis is still billing on the in-process worker
-    (``turn`` is then None): the claim is released with the typed "not yet
-    confirmed" error so the durable immediate intent stays open for the
+    (``turn`` is then None): the claim is released with the typed "still
+    live" error so the durable immediate intent stays open for the
     pipeline's per-stage gate, and the sweep settles ``already_settled``
     once the worker drops its in-flight key."""
     from supervisor.task_lifecycle import (
@@ -737,16 +743,26 @@ def stop_paused_late_phase_custody(q: Any, task_id: str, *, intent: Optional[Dic
     return True
 
 
+def live_presence_row(row: Any) -> bool:
+    """An unsettled row a live Presence turn owns: its runner settles it, not cancel custody."""
+    from supervisor.queue_transitions import settled_status_of
+
+    owner = row.get("execution_owner") if isinstance(row, dict) else None
+    return isinstance(owner, dict) and owner.get("kind") == "presence" and not settled_status_of(row)
+
+
 def _finalize_cancel_intent_on_miss(
     q: Any, task_id: str, *, intent: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Neither queued nor running: settle an open cancel intent (or a legacy
     ``cancel_requested`` latch file) as cancelled with reconstructed cost.
 
-    Two things this lane must NOT do. It must not invent a task: an intent for an
-    id that has no durable result at all names a task that never existed, and
+    Three things this lane must NOT do. It must not invent a task: an intent for
+    an id that has no durable result at all names a task that never existed, and
     fabricating a ``cancelled`` row with $0 for it would put a phantom task in the
-    ledger — it settles as ``not_found`` instead. And it must not bury a child
+    ledger — it settles as ``not_found`` instead. It must not take a row whose
+    execution owner is a live Presence turn (no supervisor map knows it): that
+    settles ``not_found`` too, the row untouched. And it must not bury a child
     that finished: when the row names a child drive, the child's own result is
     copied back BEFORE the cancelled write, so a crash of the split-drive
     copy-back window cannot cost a completed answer.
@@ -779,6 +795,14 @@ def _finalize_cancel_intent_on_miss(
             # the intent honestly rather than minting a cancelled task.
             _settle_intent(q, task_id, outcome="not_found",
                            detail="no durable task result for this id", intent=intent)
+            return CANCEL_NOT_FOUND
+        if live_presence_row(existing):
+            # A live Presence turn runs on its own thread outside every supervisor
+            # map: nothing here can capture it, and a cancelled write would only
+            # strand a turn that keeps spending. The row stays its runner's and
+            # the Stop answers "not active", as it did before intent-first minting.
+            _settle_intent(q, task_id, outcome="not_found",
+                           detail="execution owned by a live Presence turn", intent=intent)
             return CANCEL_NOT_FOUND
         # A concurrent custody attempt may have captured this task between our
         # own capture miss and here (the pending double-settle probe). If the

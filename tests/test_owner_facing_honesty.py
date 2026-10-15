@@ -76,13 +76,6 @@ def test_truncation_floor_skips_marker_longer_than_savings():
     assert cut.startswith("z" * 500) and "OMISSION NOTE" in cut
 
 
-def test_reflection_marker_uses_canonical_format():
-    from ouroboros.reflection import _truncate_with_notice as reflect_cut
-
-    out = reflect_cut("q" * 9000, 100)
-    assert "OMISSION NOTE" in out and "[+" not in out
-
-
 def test_task_contract_preserves_complete_authority_fields():
     import inspect
 
@@ -364,16 +357,6 @@ def test_system_prompt_separates_routing_annotation_from_final_reply():
 # ---------------------------------------------------------------------------
 # Round-1 adversarial-review fixes (v6.70.0)
 # ---------------------------------------------------------------------------
-
-def test_reflection_tiny_identifier_fields_get_hard_slice():
-    """A multi-line omission marker inside a one-line backlog value (kind=40,
-    priority=10) would be worse damage than the cut it discloses."""
-    from ouroboros.reflection import _truncate_with_notice as reflect_cut
-
-    out = reflect_cut("agenda_item_" + "k" * 200, 40)
-    assert out == ("agenda_item_" + "k" * 200)[:40]
-    assert "OMISSION NOTE" not in out
-
 
 def test_response_ref_projection_never_leaks_host_paths(tmp_path):
     """Feed the projection the REAL persist_call() return shape — nested refs

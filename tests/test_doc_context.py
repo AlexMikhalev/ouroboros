@@ -142,7 +142,7 @@ def test_forked_task_captures_canonical_memory_and_exact_api_context():
     assert task["task_contract"]["context"] == "never deploy; use profile X"
 
 
-def test_forked_context_uses_canonical_global_cognition_not_child_noise():
+def test_forked_context_uses_canonical_global_cognition_not_child_noise(monkeypatch):
     import json
 
     from ouroboros.agent import Env
@@ -168,40 +168,63 @@ def test_forked_context_uses_canonical_global_cognition_not_child_noise():
     )
     (child / "memory" / "deep_review.md").write_text("CHILD_DEEP_NOISE", encoding="utf-8")
     env = Env(repo_dir=canonical_env.repo_dir, drive_root=child, budget_drive_root=canonical)
+    from ouroboros.tools.registry import ToolContext, ToolRegistry
 
+    # A forked root names the canonical original under runtime_data (mode matrix: tests/test_authored_memory.py).
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "cyber_pro")
+    ctx = ToolContext(repo_dir=env.repo_dir, drive_root=child, task_id="fork-cognition", is_direct_chat=True,
+                      task_metadata={"budget_drive_root": str(canonical)})
     messages, _ = build_llm_messages(
         env=env,
         memory=Memory(child, repo_dir=env.repo_dir),
         task={"id": "fork-cognition", "text": "continue", "budget_drive_root": str(canonical)},
+        ctx=ctx,
     )
     rendered = json.dumps(messages, ensure_ascii=False)
 
     assert "CANONICAL_PATTERN_REGISTER" in rendered
-    assert "CANONICAL_DEEP_REVIEW" in rendered
     assert "CHILD_PATTERN_NOISE" not in rendered
-    assert "CHILD_DEEP_NOISE" not in rendered
+    # The report rides as a pointer to the CANONICAL source (its size, its address), never a
+    # body, with an absolute canonical read address; actual dispatch of that call opens it.
+    assert f"{len('CANONICAL_DEEP_REVIEW')} chars" in rendered
+    assert "CANONICAL_DEEP_REVIEW" not in rendered and "CHILD_DEEP_NOISE" not in rendered
+    call = {"root": "runtime_data", "path": str((canonical / "memory" / "deep_review.md").resolve())}
+    assert f"Read: read_file(root='runtime_data', path='{call['path']}')" in rendered
+    registry = ToolRegistry(repo_dir=env.repo_dir, drive_root=child)
+    registry.set_context(ctx)
+    read = registry.execute("read_file", call)
+    assert "CANONICAL_DEEP_REVIEW" in read and "CHILD_DEEP_NOISE" not in read
 
 
-def test_deep_review_is_historical_without_shrinking_its_existing_excerpt(tmp_path):
+def test_deep_review_is_a_historical_pointer_dated_only_by_its_header(tmp_path):
     import json
 
     from ouroboros.context import build_llm_messages
-    from ouroboros.utils import truncate_review_artifact
+    from ouroboros.tools.registry import ToolContext, ToolRegistry
 
     env, memory = _make_env_and_memory(tmp_path)
     path = env.drive_root / "memory" / "deep_review.md"
-    for prefix in ("LEGACY REPORT\n", "<!-- deep-review provenance: generated_at=2026-01-01T00:00:00Z, source_revision=unknown -->\n"):
+    ctx = ToolContext(repo_dir=env.repo_dir, drive_root=env.drive_root, task_id="history", is_direct_chat=True)
+    registry = ToolRegistry(repo_dir=env.repo_dir, drive_root=env.drive_root)
+    registry.set_context(ctx)
+    for prefix, provenance in (
+            ("LEGACY REPORT\n", "generated_at=unknown, source_revision=unknown (no provenance header)"),
+            ("<!-- deep-review provenance: generated_at=2026-01-01T00:00:00Z, source_revision=unknown -->\n",
+             "generated_at=2026-01-01T00:00:00Z, source_revision=unknown (its provenance header)")):
         original = prefix + "retained historical reasoning " * 400
         path.write_text(original, encoding="utf-8")
         # A recent file mtime is not a review date, even on a copied old report.
         os.utime(path, (1900000000, 1900000000))
         messages, _ = build_llm_messages(
-            env=env, memory=memory, task={"id": "history", "type": "task", "text": "continue"},
+            env=env, memory=memory, task={"id": "history", "type": "task", "text": "continue"}, ctx=ctx,
         )
         rendered = json.dumps(messages, ensure_ascii=False)
-        assert json.dumps(truncate_review_artifact(original, limit=8000), ensure_ascii=False)[1:-1] in rendered
+        assert provenance in rendered and f"{len(original)} chars" in rendered
+        assert "retained historical reasoning" not in rendered  # the report stays at its source
         assert "not a verdict on the current tree" in rendered
-        assert "unrecorded date or source revision is unknown" in rendered
+        assert "Read: read_file(root='runtime_data', path='memory/deep_review.md')" in rendered
+        assert "retained historical reasoning" in registry.execute(
+            "read_file", {"root": "runtime_data", "path": "memory/deep_review.md"})  # the call shown opens it
         assert path.read_text(encoding="utf-8") == original
 
 

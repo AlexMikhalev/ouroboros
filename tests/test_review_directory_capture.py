@@ -225,25 +225,173 @@ def test_skill_consumer_rejects_foreign_payload_hash_before_start(tmp_path, writ
     assert not list(drive.glob("state/review_checkouts/seats/*/area"))
 
 
-def test_directory_metadata_budget_gap_keeps_source_and_paid_result(
+def test_directory_link_metadata_is_retained_whole_beside_the_paid_result(
     tmp_path, writable_engine, monkeypatch,  # noqa: F811
 ):
     root, drive = _subject(tmp_path, "task_acceptance", links=True), tmp_path / "drive"
-    monkeypatch.setattr(rc, "EVIDENCE_RETAIN_BYTES", 128)
+    monkeypatch.setattr(rc, "EVIDENCE_RETAIN_BYTES", 128)  # investigations' bound; never a reviewer's
+    observed = {}
 
     def edit(area):
+        observed["area"] = area
         (area / "long-link").symlink_to("x" * 512)
         (area / rc.EVIDENCE_DIRNAME).mkdir()
         (area / rc.EVIDENCE_DIRNAME / "proof.log").write_bytes(b"proof\n")
 
     actor = _run(root, drive, "task_acceptance", _source(root, drive, "task_acceptance"),
                  monkeypatch, edit)
+    entries, evidence = _released(actor, observed["area"])
+    assert entries["long-link"]["before"] is None and entries["long-link"]["after"]["target"] == "x" * 512
+    assert (evidence / "files" / rc.EVIDENCE_DIRNAME / "proof.log").read_bytes() == b"proof\n"
+
+
+def _same_stat_rewrite(path, payload):
+    """A timestamp-preserving rewrite (``cp -p``, ``rsync -t``, an archive tool):
+    new bytes of the same length, with the file's own times put back."""
+    before = path.lstat()
+    assert len(payload) == before.st_size
+    path.write_bytes(payload)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns), follow_symlinks=False)
+
+
+def _same_stat(left, right):
+    one, two = left.lstat(), right.lstat()
+    return (one.st_mode, one.st_size, one.st_mtime_ns) == (two.st_mode, two.st_size, two.st_mtime_ns)
+
+
+def _acl_read_denial(path, *, clear=False):
+    """macOS ACL denial: mode, size and mtime stay; reading the bytes fails."""
+    import getpass
+    import subprocess
+
+    argv = ["-N"] if clear else ["+a", f"user:{getpass.getuser()} deny read"]
+    return subprocess.run(["/bin/chmod", *argv, str(path)], capture_output=True).returncode == 0
+
+
+def _require_same_stat_read_denial(tmp_path):
+    import sys
+
+    probe = tmp_path / "acl-probe"
+    probe.write_bytes(b"probe")
+    before = probe.lstat()
+    if sys.platform != "darwin" or not _acl_read_denial(probe):
+        pytest.skip("a read denial that keeps the POSIX stat needs macOS ACLs")
+    try:
+        probe.read_bytes()
+        denied = False
+    except PermissionError:
+        denied = True
+    _acl_read_denial(probe, clear=True)
+    if not denied or stat.S_IMODE(probe.lstat().st_mode) != stat.S_IMODE(before.st_mode):
+        pytest.skip("this host's ACL denial does not leave an unreadable same-mode file")
+
+
+@pytest.mark.parametrize("surface", ["skill_review", "task_acceptance"])
+def test_public_directory_consumer_retains_same_stat_content_edit_before_release(
+    tmp_path, writable_engine, monkeypatch, surface,  # noqa: F811
+):
+    root, drive = _subject(tmp_path, surface), tmp_path / "drive"
+    source = _source(root, drive, surface)
+    observed = {}
+
+    def edit(area):
+        observed["area"] = area
+        _same_stat_rewrite(area / "new-target", b"NEW\n")
+        observed["same_stat"] = _same_stat(Path(source["view"]) / "new-target", area / "new-target")
+
+    actor = _run(root, drive, surface, source, monkeypatch, edit)
+    if not observed["same_stat"]:
+        pytest.skip("this filesystem did not keep the rewritten file's size, mode and mtime")
+    entries, evidence = _released(actor, observed["area"])
+    assert "new-target" in actor["usage"]["checking_evidence"]["changed"], (
+        "a same-size, same-mtime edit read as unchanged and was released with the copy")
+    assert (evidence / "files" / "new-target").read_bytes() == b"NEW\n"
+    assert entries["new-target"]["before"] == entries["new-target"]["after"]  # only the bytes moved
+    assert (root / "new-target").read_bytes() == b"new\n"
+
+
+@pytest.mark.parametrize("surface", ["skill_review", "task_acceptance"])
+def test_public_directory_consumer_keeps_copy_when_same_stat_bytes_are_unreadable(
+    tmp_path, writable_engine, monkeypatch, surface,  # noqa: F811
+):
+    _require_same_stat_read_denial(tmp_path)
+    root, drive = _subject(tmp_path, surface), tmp_path / "drive"
+    source = _source(root, drive, surface)
+    observed = {}
+
+    def edit(area):
+        observed["area"] = area
+        _same_stat_rewrite(area / "new-target", b"NEW\n")
+        observed["denied"] = _acl_read_denial(area / "new-target")
+        observed["same_stat"] = _same_stat(Path(source["view"]) / "new-target", area / "new-target")
+
+    try:
+        actor = _run(root, drive, surface, source, monkeypatch, edit)
+    finally:
+        if (observed["area"] / "new-target").exists():
+            _acl_read_denial(observed["area"] / "new-target", clear=True)
+    assert observed["denied"] and observed["same_stat"]
     assert actor["status"] == "ok", actor
     receipt = actor["usage"]["checking_evidence"]
-    assert receipt["status"] == "partial", "link metadata must also fit the retention budget"
-    assert receipt["gaps"][0]["reason"] == "evidence_budget_exceeded"
-    assert receipt["gaps"][0]["path"] == "directory-entries"
-    assert receipt["gaps"][0]["size"] > 128
-    assert receipt["entries"] == {} and not receipt["refresh_safe"]
-    assert os.readlink(Path(receipt["area"]) / "long-link") == "x" * 512
-    assert (Path(receipt["evidence_dir"]) / "files" / rc.EVIDENCE_DIRNAME / "proof.log").read_bytes() == b"proof\n"
+    assert receipt["status"] in {"partial", "capture_failed"}, f"uncompared bytes were released as unchanged: {receipt}"
+    assert "new-target" in json.dumps([receipt.get("gaps"), receipt.get("error")]), receipt
+    assert not receipt["refresh_safe"]
+    assert (observed["area"] / "new-target").read_bytes() == b"NEW\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink privileges vary on Windows")
+@pytest.mark.parametrize("surface", ["skill_review", "task_acceptance"])
+def test_public_directory_consumer_compares_content_without_reading_through_links(
+    tmp_path, writable_engine, monkeypatch, surface,  # noqa: F811
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret"
+    secret.write_bytes(b"private\n")
+    root, drive = _subject(tmp_path, surface), tmp_path / "drive"
+    (root / "file-link").symlink_to(secret)
+    (root / "dir-link").symlink_to(outside, target_is_directory=True)
+    source = _source(root, drive, surface)
+    observed = {}
+
+    def edit(area):
+        observed["area"] = area
+        _same_stat_rewrite(secret, b"PRIVATE\n")
+        secret.chmod(0)  # a comparison that follows either link cannot even read the target
+
+    try:
+        actor = _run(root, drive, surface, source, monkeypatch, edit)
+    finally:
+        secret.chmod(0o600)
+    entries, _evidence = _released(actor, observed["area"])
+    assert "file-link" not in entries and "dir-link" not in entries
+    assert os.readlink(root / "file-link") == str(secret)
+    assert secret.read_bytes() == b"PRIVATE\n"
+
+
+@pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="needs POSIX permission bits that bind the test user")
+@pytest.mark.parametrize("surface", ["skill_review", "task_acceptance"])
+def test_public_directory_consumer_keeps_copy_when_a_subtree_cannot_be_listed(
+    tmp_path, writable_engine, monkeypatch, surface,  # noqa: F811
+):
+    root, drive = _subject(tmp_path, surface), tmp_path / "drive"
+    observed = {}
+
+    def edit(area):
+        observed["area"] = area
+        locked = area / "locked"
+        locked.mkdir()
+        (locked / "only-copy.log").write_bytes(b"written before the folder was locked\n")
+        locked.chmod(0)
+
+    try:
+        actor = _run(root, drive, surface, _source(root, drive, surface), monkeypatch, edit)
+    finally:
+        if (observed["area"] / "locked").exists():
+            (observed["area"] / "locked").chmod(0o755)
+    assert actor["status"] == "ok", actor
+    receipt = actor["usage"]["checking_evidence"]
+    assert receipt["status"] in {"partial", "capture_failed"} and not receipt["refresh_safe"]
+    assert (observed["area"] / "locked" / "only-copy.log").read_bytes() == b"written before the folder was locked\n"
+    assert (observed["area"] / "SKILL.md").is_file(), "an incomplete capture must not partially release the copy"

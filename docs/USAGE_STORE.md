@@ -291,10 +291,11 @@ restart in another process; that cross-process race remains.
 
 An exact price received before a later read, close, rejection or cancellation
 error settles money without proving
-that the response completed. The existing `stream_incomplete` fact keeps Main's
-unknown-response policy, Presence's configured bounded transport-death retry,
-revoked-control no-resend and diagnostic response outcomes independent of the
-monetary capture state. Timeout, local-route, Stop and deadline exclusions
+that the response completed. The existing `stream_incomplete` fact keeps running
+turns' shared unknown-response recovery (Presence included), revoked-control
+no-resend and diagnostic response outcomes independent of monetary capture state.
+The low-level opt-in transport-death repeat API and old records remain a
+compatibility surface, not production Presence policy. Timeout, local-route, Stop and deadline exclusions
 remain in their existing consumers. Diagnostic events carry `stream_incomplete`
 beside monetary custody state; typed terminal local rejection keeps its existing
 provider-error policy. Async first-generation binding runs in a joined worker;

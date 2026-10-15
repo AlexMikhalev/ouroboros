@@ -404,6 +404,9 @@ def test_periodic_bulk_work_does_not_block_drain_or_duplicate_sweep(roots, monke
     calls, threads = [], []
     monkeypatch.setattr(maintenance, "_CANCEL_INTENT_SWEEP_LOCK", cancel_lock)
     monkeypatch.setattr(maintenance, "_RECONCILE_SWEEP_LOCK", reconcile_lock)
+    schedule_pass = threading.Lock()
+    schedule_pass.acquire()  # a schedule pass already runs: this test pins the other cadences
+    monkeypatch.setattr(maintenance, "_SCHEDULE_SWEEP_LOCK", schedule_pass)
     monkeypatch.setattr(maintenance, "_LAST_CANCEL_INTENT_SWEEP", [0.0])
     monkeypatch.setattr(maintenance, "time", SimpleNamespace(time=lambda: clock[0]))
 
@@ -483,7 +486,8 @@ def test_real_supervisor_orders_custody_recovery_before_prune(roots, monkeypatch
     monkeypatch.setattr(queue, "restore_pending_from_snapshot",
                         lambda **_kw: order.append("restore") or 0)
     monkeypatch.setattr(workers, "kill_workers", lambda **k: order.append("kill"))
-    monkeypatch.setattr(workers, "spawn_workers", lambda n: order.append("spawn"))
+    # The boot starts ONE ready worker (no count); an explicit count would not match.
+    monkeypatch.setattr(workers, "spawn_workers", lambda *n: order.append(("spawn", *n) if n else "spawn"))
     monkeypatch.setattr(server, "_startup_custody_sweep", lambda: order.append("custody"))
     def recover(root, repo, **kw):
         assert kw["prior_worker_pids"] == {777}

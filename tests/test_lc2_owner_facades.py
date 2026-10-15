@@ -34,10 +34,8 @@ LC2_LEAF_OWNERS: dict[str, tuple[str, str]] = {
     ),
     "ouroboros.post_task_synthesis": (
         "ouroboros.agent_task_pipeline",
-        "build_trace_summary _update_improvement_backlog _apply_reflection_memory_actions "
-        "_child_task_evidence _pre_synthesis_usage_snapshot _compact_review_projection "
-        "_record_task_facts _run_memory_fallback_draft "
-        "_run_scratchpad_consolidation _run_reflection"
+        "build_trace_summary _pre_synthesis_usage_snapshot _compact_review_projection "
+        "_record_task_facts _run_memory_fallback_draft _run_scratchpad_consolidation"
     ),
 }
 # The third L-C2 leaf (ouroboros/usage_legacy_import.py) was retired with the

@@ -267,6 +267,9 @@ def _row_kind(row: Dict[str, Any]) -> str:
     from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 
     kind, direction = str(row.get("type") or ""), str(row.get("direction") or "")
+    if (kind == "task_summary" and row.get("summary_kind") == "host_task_facts"
+            and isinstance(row.get("presence_recovery"), dict)):
+        return "presence_observation"
     if kind in _SYSTEM_ROW_KINDS:
         return _SYSTEM_ROW_KINDS[kind]
     if direction != "in" or is_a2a_chat_id(row.get("chat_id")):
@@ -291,6 +294,7 @@ _KIND_WORDS = {  # (one, many)
     "card_state": ("card closed unanswered", "cards closed unanswered"),
     "outstanding_card": ("outstanding card", "outstanding cards"),
     "memory_change": ("memory change", "memory changes"),
+    "presence_observation": ("retained Presence observation", "retained Presence observations"),
 }
 
 
@@ -321,6 +325,10 @@ def _event_line(kind: str, row: Dict[str, Any], results: Dict[str, Dict[str, Any
         return f"- late review announced for task {task_id}, {when}: {_clip_preview(row.get('text'), 240)}"
     if kind == "task_error":
         return f"- task {task_id} runner failed, {when}: {_clip_preview(row.get('text'), 160)}"
+    if kind == "presence_observation":
+        from ouroboros.dialogue_provenance import render_row_text
+
+        return f"- retained Presence observation in {rooms.label(row)}, {when}: {render_row_text(row)}"
     result = results.get(task_id) or {}
     metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
     status = str(row.get("status") or result.get("status") or "settled")
@@ -332,6 +340,15 @@ def _event_line(kind: str, row: Dict[str, Any], results: Dict[str, Dict[str, Any
     if kind == "direct_turn":
         return f"- {'wake' if is_consciousness_origin(metadata) else 'direct turn'} {task_id} {status}{where}, {when}"
     if is_presence_task(result):
+        if isinstance(metadata.get("presence_unknown_outcome"), dict):
+            from ouroboros.dialogue_provenance import render_row_text
+            from ouroboros.presence_recovery import retained_turn_facts
+
+            presence = metadata.get("presence") or {}
+            retained = {"task_id": task_id, "type": "task_summary", "text": "",
+                        "presence_recovery": retained_turn_facts(result, task_id),
+                        "source_event": presence.get("event"), "source_text": presence.get("observed_text")}
+            return f"- Presence turn {task_id} {status}{where}, {when}; {render_row_text(retained)}"
         outcome = str(metadata.get("presence_outcome") or "unknown")
         work = str(metadata.get("presence_work_ref") or "")
         return (f"- Presence turn {task_id} {status}{where}, {when}; Presence outcome={outcome}; see get_task_result"

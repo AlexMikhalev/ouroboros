@@ -609,7 +609,11 @@ Some settings keys are protected: `OPENROUTER_API_KEY`,
 `GITHUB_TOKEN`, `OUROBOROS_NETWORK_PASSWORD`. These keys are NEVER
 forwarded to a skill by default, even when listed in
 `env_from_settings`. Custom secret keys stored in Settings → Secrets
-are treated the same way. Host permissions such as `inject_chat`, `presence`,
+are treated the same way. A granted key is read as currently saved: each
+`api.get_settings` call, script run, out-of-process call and companion start sees a
+value the owner saved, rotated or deleted during a running task, while that task keeps
+its own model, account and review settings; a value your code already copied or cached,
+a running companion's environment included, is not refreshed for you. Host permissions such as `inject_chat`, `presence`,
 `notify_owner` and chat event subscriptions also require explicit, content-hash-bound owner
 consent. The desktop launcher's owner-grant bridge records these grants.
 
@@ -750,16 +754,24 @@ A turn's source identity is its binding, source event ID, provider/account,
 conversation/thread, actor ID and text. Keep those facts stable on retry;
 `staged_files` paths and delivery-reporting negotiation may change. A collision
 returns HTTP 409 `presence_event_identity_conflict` with `disposition: rejected`,
-not another room's answer. HTTP 409 `presence_attempt_outcome_unknown` and
-`presence_resources_unavailable` carry `disposition: retry` and no external
-text: retain the original event in the transport. A refusal may carry a
-previously admitted child's `work_ref`; poll it through `/presence/work`,
-not as a completed reply to the original event. A failed durable start is
-also retryable; no agent effect began unless its start was recorded. A quota
-refusal after a terminal task does not itself prove safe regeneration on the
-same ID; if prior effects remain unproven the conversation may need explicit
-owner recovery. Never treat these refusals as `completed/silent` or resend a
-confirmed provider effect merely because a Host receipt failed.
+not another room's answer. Admitted attempts with an unknown outcome, lost local
+stack or cancellation return `disposition: retained`, `turn_ref` for the original,
+optional `work_ref` for a real admitted child, and `delivery_reporting_version`.
+Persist the full receipt and source event, release the input FIFO, and observe
+both references independently through `/presence/work`; never resubmit the event
+as new work. An unresolved work view has `status: unresolved`, the retained code
+and references, no authored outcome/text, and any already released continuation
+outputs. Keep observing for canonical late evidence without erasing the retained
+receipt when a child finishes. Deduplicate output by its original source identity.
+Cancelled attempts remain observed without new generation. A live turn's model
+recovery keeps its conversation under existing controls until it finishes or
+returns a retained refusal; input custody is not released merely by a stream loss.
+`retry` preserves temporary failures and quota refusals with a source-bound
+pre-dispatch retry certificate; `blocked` needs configuration repair, whereas
+`rejected` is an event-specific permanent refusal. HTTP status alone decides none
+of these. Missing or unknown dispositions remain retryable for compatibility.
+Older Host/consumer pairs may still hold input queues until both are upgraded.
+Never project a retained refusal as `completed/silent` or as a successful handoff.
 
 #### Presence continuation
 
@@ -774,20 +786,26 @@ both independently. `status: "completed"` (with `continuation_ref: ""`) means th
 within the request. A retry of the same event returns the identical stored envelope, never a rerun;
 `continuing` releases text to you and is not proof of provider delivery.
 
-Poll `GET /presence/work/{continuation_ref}?binding_id=...` like other late work. Every continuation
-poll carries `work_ref` and `continuation_ref` naming the author, and `child_work_ref` naming its
-current promoted independent work (empty if none). Discover and retain that child before handling
-the author's status, and poll it independently. A child promoted after the first yield is retained
-at the next park even though the original event's immutable envelope still has an empty `work_ref`.
+Poll `GET /presence/work/{continuation_ref}?binding_id=...` like other late work. Ordinary pending
+and terminal continuation views carry `work_ref` and `continuation_ref` naming the author, plus
+`child_work_ref` for its promoted independent work (empty if none). An unresolved retained view
+names the author with `turn_ref` and any retained `continuation_ref`; its optional `work_ref`
+names the actual child, and any `child_work_ref` is retained too. Discover and retain the child
+before handling author status; poll it independently. A child promoted after the first yield
+appears at the next park even if the immutable initial envelope has an empty `work_ref`.
 While the author lives it answers HTTP 202 `pending` with `outputs`: the ordered
 `{output_ref, outcome, text}` the author released so far. Its terminal answers 200 with
 `outcome`/`text`/`output_ref` holding only a new terminal output (a re-finalized released selection
 yields `silent` and empty text), the child reference, and the same `outputs`.
-A lost author answers 200 `status: "interrupted"` with the retained child reference when its retained
-process identity proves it dead; a missing or unobservable identity alone does not prove a crash.
-It is never restarted automatically and its original event is not regenerated. An explicit new
-event can request manual continuation after checking prior effects; it creates a new turn and
-retains the interrupted reference, rather than resuming the dead stack. Send each `output_ref` at most once:
+A retained lost author answers HTTP 200 `status: "unresolved"`, `disposition: "retained"` and a
+typed `code`, with no authored `outcome` or `text`. The view preserves released `outputs` and
+the actual child references. Loss is established under the conversation gate or by the retained
+controller's absence; missing or unobservable identity alone proves no crash. Polling starts no
+new generation and never regenerates the original event. An explicit new event may request
+continuation after checking prior effects; it creates a new turn and retains the original reference.
+Old consumers accepting only `interrupted` for a lost author can reject the unresolved view and
+miss a child first discovered there until upgraded; `interrupted` remains the legacy wire shape
+on hosts without retained-work support. Send each `output_ref` at most once:
 deduplicate by `output_ref`, never by text, since an identical correction is new speech. Without
 `continuation_version` the legacy shape is unchanged and the request waits for the author's terminal.
 
@@ -880,9 +898,7 @@ exact `text`, `format`, provider facts in `message`, and
 sets kind explicitly. A tool handler may use its supported first `ctx` argument
 to retain compact task provenance; never serialize the full context or secrets.
 The Host establishes source identity, and a task reference grants no authority.
-A reflection written for that task's root after the report arrives shows it labelled
-`skill_claimed` unless the Host itself bound the row to a Presence turn of the same
-transport (`host_bound`); a report arriving later stays in chat history only.
+Reports stay in chat history, where the room view names them as delivery facts.
 
 Report physical parts separately. Preserve resolved DM IDs, actual chunk or
 fallback text, captions and provider message IDs in the receipt snapshot.

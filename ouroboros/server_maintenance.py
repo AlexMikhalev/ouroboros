@@ -48,6 +48,7 @@ _COLD_CUSTODY_SWEEP_LOCK = threading.Lock()
 _LAST_COLD_CUSTODY_SWEEP = [0.0]
 _CUSTODY_SWEEP_LOCK = threading.Lock()
 _RECONCILE_SWEEP_LOCK = threading.Lock()
+_SCHEDULE_SWEEP_LOCK = threading.Lock()
 
 
 def bind_body_lifespan(drive_root: Any, stop_event: Any):
@@ -181,6 +182,25 @@ def _run_terminal_duty(drive_root: pathlib.Path, step: str, latch: Any,
         latch.release()
 
 
+def _run_schedule_duty(stop_event: Any, latch: Any) -> None:
+    """One automatic schedule pass (``queue_schedules.check_scheduled_tasks``) off the loop:
+    discovery, preparation, billing and allowance reads wait here, never under Q, and its
+    Q-held steps try each acquisition once. The generation token stops it mutating."""
+    try:
+        from supervisor.queue_schedules import automatic_acquisitions, check_scheduled_tasks
+
+        with automatic_acquisitions():
+            check_scheduled_tasks(stop=lambda: _stop_requested(stop_event))
+        _step_recovered("schedule_admission")
+    except Exception as exc:
+        from supervisor.schedule_occurrence import contention
+
+        if not contention(exc):  # a held table or store: the next tick's pass retries
+            _step_failed("schedule_admission")
+    finally:
+        latch.release()
+
+
 def _reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
     """Compatibility seam for the existing terminal-maintenance duty."""
     from ouroboros.terminal_cost_reconciliation import reconcile_abandoned_usage
@@ -284,7 +304,8 @@ def _periodic_supervisor_maintenance(
     last_custody_reap: list, last_review_reconcile: list, *, stop_event: Any = None,
 ) -> None:
     """Throttled upkeep on the supervisor tick, nothing history-sized inline (INV-24).
-    The 20 s cadence independently starts cancel, delivery, notice, usage and synthesis duties; every 600 s
+    Each tick starts the schedule duty when its previous pass ended;
+    the 20 s cadence independently starts cancel, delivery, notice, usage and synthesis duties; every 600 s
     the custody block; every 300 s the reconcile block (zombie heal, then pending
     child-ref promotion retry). The first two stamp here before handing off; the
     reconcile pass stamps when it ENDS (issue #1230). A due cadence whose latch is still
@@ -342,6 +363,12 @@ def _periodic_supervisor_maintenance(
         elif not _start_maintenance_thread(latch, "reconcile-maintenance", _run_periodic_reconcile_sweep,
                                            (last_review_reconcile, stop_event, latch)):
             last_review_reconcile[0] = time.time()  # a start that failed still waits out a cadence
+    # Every tick, as the inline pass ran before; a pass still running (a slow preparation) skips this one.
+    if _SCHEDULE_SWEEP_LOCK.acquire(blocking=False):
+        _start_maintenance_thread(_SCHEDULE_SWEEP_LOCK, "schedule-admission", _run_schedule_duty,
+                                  (stop_event, _SCHEDULE_SWEEP_LOCK))
+    else:
+        _duty_busy(_SCHEDULE_SWEEP_LOCK, BODY_MAINTENANCE_INTERVAL_SEC)
 
 
 def _run_periodic_custody_sweep(stop_event: Any = None, latch: Any = None) -> None:

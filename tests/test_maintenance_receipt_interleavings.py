@@ -11,7 +11,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import json
-from queue import Empty, Queue
+from queue import Empty
 from threading import Event
 from types import SimpleNamespace
 
@@ -24,6 +24,7 @@ from ouroboros.startup_migrations import prepare_startup_state
 from ouroboros.task_results import load_task_result, write_task_result
 from ouroboros.utils import append_jsonl
 from supervisor import cancel_publication as cancel
+from tests._cancel_intents_shared import DeliveryBus
 from supervisor import events_chat_delivery, message_bus, queue, terminal_delivery as delivery, workers
 
 pytestmark = pytest.mark.serial
@@ -97,6 +98,7 @@ def _drain(event_queue, records):
             return events
         events.append(event)
         events_chat_delivery._handle_send_message(event, records.ctx)
+        event_queue.release_delivery(str(event.get("delivery_id") or ""))  # the consumer's finally
 
 
 def _replay_clock(monkeypatch, owed):
@@ -122,7 +124,7 @@ def test_cancel_publication_and_replay_keep_one_episode(
             raise OSError("cancel receipt storage unavailable")
         monkeypatch.setattr(delivery, "patch_document", unavailable)
     registered, resume = Event(), Event()
-    events = Queue()
+    events = DeliveryBus()
 
     def cancel_owner():
         assert cancel._register_owed_terminal_delivery(
@@ -179,15 +181,17 @@ def test_replay_rechecks_owed_row_after_cancel_delivery(records, monkeypatch):
     clock = _replay_clock(monkeypatch, owed)
     clock[0] += 2
     selected, resume = Event(), Event()
-    actual_bump = delivery._bump_replay_attempts
+    selection = delivery._replay_due  # the clock-aware selection read installed above
 
-    def after_snapshot(root, ids):
-        selected.set()
-        assert resume.wait(10), "test did not release replay claim"
-        return actual_bump(root, ids)
+    def select_then_wait(row):
+        due = selection(row)
+        if due and not selected.is_set():
+            selected.set()
+            assert resume.wait(10), "test did not release replay claim"
+        return due
 
-    monkeypatch.setattr(delivery, "_bump_replay_attempts", after_snapshot)
-    replay_queue, publish_queue = Queue(), Queue()
+    monkeypatch.setattr(delivery, "_replay_due", select_then_wait)
+    replay_queue, publish_queue = DeliveryBus(), DeliveryBus()
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(delivery.replay_pending_deliveries, records.root, event_queue=replay_queue)
         try:
@@ -208,7 +212,7 @@ def test_replay_rechecks_owed_row_after_cancel_delivery(records, monkeypatch):
 @pytest.mark.parametrize("status", ["completed", "cancelled"])
 def test_terminal_delivery_without_stop_keeps_ordinary_final_identity(records, status):
     stored = write_task_result(records.root, "task", status, result="ordinary terminal text")
-    events = Queue()
+    events = DeliveryBus()
 
     def publish():
         if status == "completed":

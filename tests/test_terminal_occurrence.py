@@ -304,14 +304,14 @@ def test_unknown_fact_cannot_be_upgraded_by_untyped_or_mismatched_metadata():
 
 def published_terminal_fixture(root, monkeypatch):
     """Real producer/outbox replay/bus rows for backend and browser qualification."""
-    from queue import Queue
+    from tests._cancel_intents_shared import DeliveryBus
     import supervisor.message_bus as bus
     import supervisor.terminal_delivery as delivery
     from ouroboros.project_dialogue import enqueue_project_completion_summary
     from ouroboros.projects_registry import create_project, bind_task_to_project
 
     project = create_project(root, 'terminal-times', name='Terminal times')
-    queue = Queue()
+    queue = DeliveryBus()
     bridge = bus.LocalChatBridge({})
     frames = []
     bridge._broadcast_fn = frames.append
@@ -336,6 +336,7 @@ def published_terminal_fixture(root, monkeypatch):
             {'id':task_id, 'project_id':project['id'], 'chat_id':project['chat_id']}, row,
             {'status':row['status']})
         queued = queue.get_nowait()  # lost before delivery, as on restart
+        queue.release_delivery(queued['delivery_id'])  # a restart replaces the bus: no membership survives
         assert queued['progress_meta']['terminal_time'] == row['terminal_time']
         assert delivery.replay_pending_deliveries(root, event_queue=queue) == [queued['delivery_id']]
         replay = queue.get_nowait()

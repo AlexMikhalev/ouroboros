@@ -19,6 +19,7 @@ from ouroboros.task_results import STATUS_RUNNING, STATUS_SCHEDULED, load_task_r
 from supervisor.events_budget import HOLD_SAVED_WORK, budget_hold_fact
 from tests._budget_pause_exact_helpers import _install_queue, _loop_ctx
 from tests.test_restart_retention import _pool_events, _queued
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -228,7 +229,7 @@ def test_runnable_saved_successor_waiting_for_capacity_follows_the_next_stop(tmp
     ctx, _limit = _loop_ctx(tmp_path, "saved-root", attempt=2)
     assert wc.load_recovery(ctx, handoff)["working"]["boundary"] == "pre_effect"
     commands = stdqueue.Queue()
-    workers.WORKERS[0] = workers.Worker(0, InertProcess(), commands)
+    workers.WORKERS[0] = affirm_ready(workers.Worker(0, InertProcess(), commands))
     monkeypatch.setattr(workers, "repo_writer_task_allowed", lambda _task: True)
     workers.assign_tasks()
     if door == "restart":
@@ -276,7 +277,7 @@ def test_restart_does_not_return_a_saved_successor_without_current_admission(tmp
     _ack(tmp_path, "controlled")
     _stop_and_boot(queue, workers)
     commands = stdqueue.Queue()
-    workers.WORKERS[0] = workers.Worker(0, InertProcess(), commands)
+    workers.WORKERS[0] = affirm_ready(workers.Worker(0, InertProcess(), commands))
     workers.assign_tasks()
     assert commands.empty() and not workers.RUNNING
     if control == "prior_hold":
