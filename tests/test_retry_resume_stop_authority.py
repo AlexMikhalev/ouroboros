@@ -14,12 +14,12 @@ from ouroboros import budget_pause, cancel_intents, owner_pause, owner_wait
 from supervisor import queue, workers
 from supervisor.owner_pause_control import request_owner_pause, refresh_owner_pause_tree
 from tests._budget_pause_exact_helpers import _loop_ctx
-from tests.test_execution_clock_resume_handover import clock  # noqa: F401
+from tests.test_execution_clock_resume_handover import clock as clock
 from tests.test_retry_pause_generations import _park, _running_actor
-from tests.test_retry_pause_identity import (  # noqa: F401
-    _assign, _fresh_plan, _loop_once, _ordinary_retry, _reap, reaper,
+from tests.test_retry_pause_identity import (
+    _assign, _fresh_plan, _loop_once, _ordinary_retry, _reap, reaper as reaper,
 )
-from tests.test_swarm_host_admission import host  # noqa: F401
+from tests.test_swarm_host_admission import host as host
 
 pytestmark = pytest.mark.serial
 
