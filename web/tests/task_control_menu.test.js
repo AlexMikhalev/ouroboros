@@ -180,11 +180,11 @@ test('Chat and Activity both wire the shared dropdown', () => {
     // Chat and its room header share the record-aware adapter. Activity still
     // calls the same lower-level dropdown; the adapter owns its effect wiring.
     assert.match(chat, /openTaskControls\(/);
-    for (const source of [menuSrc, activity]) {
-        assert.match(source, /openTaskControlMenu\(/);
-        assert.match(source, /hurryTaskAction\(/);
-        assert.match(source, /requestStop\(/);
-    }
+    // Exact adapter effects are exercised in test_room_work_review_browser.py;
+    // finding its own function names inside the adapter would prove nothing.
+    assert.match(activity, /openTaskControlMenu\(/);
+    assert.match(activity, /hurryTaskAction\(/);
+    assert.match(activity, /requestStop\(/);
     // The trigger renders the shared label on both surfaces.
     assert.match(chat, /TASK_CONTROL_TRIGGER_LABEL/);
     assert.match(activity, /TASK_CONTROL_TRIGGER_LABEL/);

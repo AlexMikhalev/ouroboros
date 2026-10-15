@@ -86,7 +86,7 @@ test('the mounted list holds its order while open, settles ended work and only n
         const node = (className, parent) => { const el = doc.createElement('div'); el.className = className; parent.appendChild(el); return el; };
         const page = node('page', mount);
         const input = doc.createElement('textarea');
-        input.id = 'chat-input';
+        input.id = 'chat-input'; // Main has the id; only namespaced Project inputs gain its mirror class.
         page.appendChild(input);
         const header = node('chat-page-header', page);
         const group = node('app-page-actions ui-chrome-group', header);
@@ -150,4 +150,47 @@ test('the mounted list holds its order while open, settles ended work and only n
         work?.destroy();
         restoreDom(prior);
     }
+});
+
+// A progress card can be painted before the slow census identifies the same send.
+test('a pending send never replaces an already represented turn or leaves a ghost node', () => {
+    const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));
+    let work;
+    try {
+        const node = (tag, cls, parent) => {
+            const el = document.createElement(tag); el.className = cls; parent.appendChild(el); return el;
+        };
+        const page = node('div', 'page', mount);
+        const header = node('div', 'chat-page-header', page);
+        const group = node('div', 'app-page-actions ui-chrome-group', header);
+        const badge = node('span', 'status-badge thinking', group);
+        const messages = node('div', 'chat-messages', page);
+        const activities = new Map(), records = new Map();
+        const pending = new Map([['send-1', { timestamp: 1000 }]]);
+        work = createRoomWork({ page, statusBadge: badge, messagesDiv: messages,
+            ws: { isConnected: () => true }, reading: { cancel() {}, scroll() {} },
+            activeDirectActivities: activities, liveCardRecords: records, pendingSubmissions: pending,
+            stopEligible: () => true });
+        const trigger = group.children.find(el => el.classList.contains('rw-trigger'));
+        const list = header.children.find(el => el.classList.contains('rw-surface')).children[0];
+        const turns = () => list.children.filter(el => el.dataset.id === 'turn-1');
+        trigger.click();
+        const card = node('div', 'chat-live-block', messages);
+        records.set('turn-1', { root: card, groupId: 'turn-1', direct: true, phase: 'working' });
+        work.update();
+        assert.equal(turns().length, 1);
+        const existing = turns()[0];
+        existing.querySelector('.rw-main').focus();
+        activities.set('turn-1', { activity_id: 'turn-1', kind: 'direct_chat', phase: 'working',
+            chat_id: 1, client_message_id: 'send-1', task_attempt: 1 });
+        pending.clear();
+        work.update();
+        assert.equal(turns().length, 1, 'the send and existing card converge to one tracked view');
+        assert.equal(turns()[0], existing, 'keep the already represented turn node');
+        assert.equal(existing.dataset.settled, '0');
+        assert.ok(existing.contains(document.activeElement));
+        trigger.click(); trigger.click();
+        assert.equal(turns().length, 1, 'reopening leaves no orphan Working row');
+        assert.equal(turns()[0].dataset.settled, '0');
+    } finally { work?.destroy(); restoreDom(prior); }
 });

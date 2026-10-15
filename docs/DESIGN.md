@@ -1678,6 +1678,7 @@ has migrated. Migrated today:
 - `web/settings.css` (settings shell, model/effort cards, MCP cards)
 - `web/onboarding.css` (the whole first-run wizard)
 - `web/model_roles.css` (shared role editor)
+- `web/room_work.css` (room work disclosure, rows and reading return)
 - `web/style.css` regions paired by `design-system:migrated-begin` /
   `design-system:migrated-end`: harness accounts; Dashboard → Updates (status
   card, one action row, collapsed Recovery with one restore list) and Storage;

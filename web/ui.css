@@ -153,6 +153,9 @@
     /* Floating chrome (the recipe at the end): one height for a floating group's text controls, and the
        group's inset, which its negative margin cancels so grouping moves no control. */
     --chrome-control-h: 30px;
+    --chrome-sheet-shadow: 0 18px 22px -16px rgba(0, 0, 0, 0.6);
+    --chrome-shade-shadow: 0 16px 20px -16px rgba(40, 18, 48, 0.34);
+    --chrome-navigation-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
     --chrome-inset: calc(var(--space-1) + 1px);
     --widget-fault-status-max-width: min(240px, 35vw);
     /* App shell: persistent desktop sidebar + optional project detail pane. */
@@ -198,6 +201,7 @@
 }
 
 :root[data-theme="light"] {
+    --chrome-sheet-shadow: 0 18px 22px -18px rgba(24, 16, 32, 0.38);
     --native-color-scheme: light;
     --neutral-rgb: 32, 35, 43;
     --shell-rgb: 255, 255, 255;
@@ -679,6 +683,5 @@ textarea.ui-control { resize: vertical; }
     border: 1px solid var(--chrome-edge);
     border-top: 0;
     border-radius: 0 0 var(--radius-lg) var(--radius-lg);
-    box-shadow: 0 18px 22px -16px rgba(0, 0, 0, 0.6);
+    box-shadow: var(--chrome-sheet-shadow);
 }
-:root[data-theme="light"] .ui-chrome-sheet { box-shadow: 0 18px 22px -18px rgba(24, 16, 32, 0.38); }

@@ -316,7 +316,10 @@ export function createRoomWork({
             let fresh = byKey.get(key);
             if (!fresh && kept.row.kind === 'pending' && kept.row.cmid) {
                 // The owner's send that the host turned into a turn takes the same place.
-                fresh = [...byKey.values()].find((row) => row.kind !== 'pending' && row.cmid === kept.row.cmid);
+                // A progress card may already own the turn's slot before its census arrives.
+                // In that case keep that view; the old send settles normally until close.
+                fresh = [...byKey.values()].find((row) => row.kind !== 'pending'
+                    && row.cmid === kept.row.cmid && !order.includes(row.key));
                 if (fresh) {
                     order[order.indexOf(key)] = fresh.key;
                     frozen.delete(key);
@@ -712,7 +715,7 @@ export function createRoomWork({
         render();
         if (restoreFocus && trigger.isConnected && !trigger.hidden) {
             if (!trigger.disabled) trigger.focus?.({ preventScroll: true });
-            else page.querySelector('#chat-input')?.focus?.({ preventScroll: true });
+            else (page.querySelector('#chat-input') || page.querySelector('.chat-input'))?.focus?.({ preventScroll: true });
         }
     }
 
