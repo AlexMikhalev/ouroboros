@@ -561,11 +561,20 @@ def test_a_refusal_leaves_a_receipt_that_skips_the_same_input_on_the_same_route(
         assert receipt["response_ref"] is None
     unit = {u.record_id: u for u in mi.legacy_units(ChronicleStore(tmp_path), tmp_path)}[alpha_unit]
     assert unit.refusal["kind"] == kind and not unit.folded
-    # Same input, same route: alpha is not paid for again; the next unit is drafted instead.
+    # Same input/route never repeats. A refused fitted prefix leaves an untouched
+    # suffix eligible before the next legacy unit, even when the window is tiny.
+    first_row = run.unit.segment.rows[0][0]
     light.labels.clear()
     again = _Light("still not json") if case == "not_json" else llm
     again.prompts.clear()
     run = _run(tmp_path, again)
+    if case == "context_overflow":
+        assert run.unit.record_id == alpha_unit and run.unit.key != alpha_unit
+        assert run.unit.segment.from_addr != first_row and len(run.unit.segment.rows) == 1
+        assert _receipts(tmp_path)[run.unit.key]["input_sha256"] != receipt["input_sha256"]
+        assert light.labels == ["memory_fallback_page"] and not again.prompts
+        light.labels.clear()
+        run = _run(tmp_path, again)
     assert run.unit.record_id == beta_unit and light.labels == ["memory_fallback_page"]
     assert all("Project Alpha" not in prompt for prompt in again.prompts)
     # Another Light route: alpha is drafted again.

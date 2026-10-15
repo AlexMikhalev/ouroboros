@@ -7,8 +7,8 @@ owner's turns, so after a root task the Light helper drafts ONE unit, chosen fro
 1. The task's view showed this room's open rows only by address (``shortage_from_trace``,
    ``open_rows``): the room's oldest open segment, up to the newest addressed row (a
    later one when an older one is unreadable to the helper or already refused).
-2. Else the view showed old narrative only by pointer (``narrative``): the oldest adjacent
-   unfolded records of one kind of one room among those pointers, folded into a part.
+2. Else the view showed old narrative only by pointer (``narrative``): adjacent unfolded
+   runs of one kind of one room among those pointers, oldest first, folded into a part.
 3. Else, only after a root that was not a direct turn (the late phase of a direct turn
    blocks the owner's next message), the oldest unfolded period of the old memory,
    blocks 1-22 (block 0 is already a retelling of two months the mind folds itself):
@@ -244,7 +244,7 @@ def _legacy_units(root: pathlib.Path, store: ChronicleStore) -> Iterator[Fallbac
 
 def candidate_units(root: Any, store: ChronicleStore, shortage: Optional[ShortageFact], *,
                     allow_legacy: bool) -> Iterator[FallbackUnit]:
-    """Units in the order the writer considers them: the shortage's unit, then old periods."""
+    """Units in consideration order: the shortage's disjoint runs, then old periods."""
     root = pathlib.Path(root)
     if shortage is not None and shortage.kind == "open_rows":
         # Oldest run first; a later run only when an older one has no readable input or a receipt.
@@ -266,13 +266,13 @@ def _refusals(store: ChronicleStore) -> Dict[str, Any]:
 def select_unit(root: Any, store: ChronicleStore, shortage: Optional[ShortageFact], *, allow_legacy: bool,
                 binding: Mapping[str, Any], fit: Callable[[], Tuple[Optional[int], Callable[[str], int]]],
                 ) -> Optional[Tuple[FallbackUnit, "WriterInput"]]:
-    """The first candidate with a readable input that no receipt refused on this input and route."""
+    """First readable input/route not already refused, kept or rejected, including untouched suffixes."""
     refusals = _refusals(store)
     part_rooms = {}
     part_units = None
     for unit in candidate_units(root, store, shortage, allow_legacy=allow_legacy):
         budget, measure = fit()
-        records = None
+        records, part_cache = None, None
         if unit.kind == "part":
             if part_units is None:
                 part_units = {u.record_id: u for u in memory_inventory.legacy_units(store, root)}
@@ -280,11 +280,11 @@ def select_unit(root: Any, store: ChronicleStore, shortage: Optional[ShortageFac
             # Publication still checks the selected head after the model call.
             key = (unit.room_id, unit.head_sequence)
             if key not in part_rooms:
-                part_rooms[key] = {r["id"]: r for r in store.room_records(unit.room_id)}
-            records = part_rooms[key]
+                part_rooms[key] = ({r["id"]: r for r in store.room_records(unit.room_id)}, {})
+            records, part_cache = part_rooms[key]
         while True:
             draft = build_writer_input(root, store, unit, budget_tokens=budget, measure=measure,
-                                       part_records=records, part_units=part_units)
+                                       part_records=records, part_units=part_units, part_cache=part_cache)
             if draft is None:
                 break
             receipt = refusals.get(unit.key)
@@ -294,11 +294,28 @@ def select_unit(root: Any, store: ChronicleStore, shortage: Optional[ShortageFac
                 return unit, draft
             # Only the fitted prefix was attempted. Never retry its overlapping
             # subsets; the untouched suffix can still be useful in this pass.
-            suffix = unit.member_ids[len(draft.member_ids):] if unit.kind == "part" else ()
-            if not suffix:
+            unit = _untouched_suffix(unit, draft)
+            if unit is None:
                 break
-            unit = replace(unit, key=f"part:{unit.room_id}:{suffix[0]}", member_ids=suffix)
     return None
+
+
+def _untouched_suffix(unit: FallbackUnit, draft: "WriterInput") -> Optional[FallbackUnit]:
+    """Advance past the fitted input, not merely its sealed rows (some words were only addressed)."""
+    if unit.kind == "part":
+        suffix = unit.member_ids[len(draft.member_ids):]
+        return replace(unit, key=f"part:{unit.room_id}:{suffix[0]}", member_ids=suffix) if suffix else None
+    if unit.segment is None or draft.fitted_to is None:
+        return None
+    rows = unit.segment.rows
+    end = next((i for i, (address, _row, _pos) in enumerate(rows)
+                if memory_inventory._is_row(address, draft.fitted_to)), len(rows))
+    suffix = rows[end + 1:]
+    if not suffix:
+        return None
+    first = suffix[0][0]["row_sha256"][:12]
+    key = f"{unit.record_id}:from:{first}" if unit.kind == "legacy" else f"open:{unit.room_id}:{first}"
+    return replace(unit, key=key, segment=replace(unit.segment, rows=suffix, from_addr=suffix[0][0]))
 
 
 # --- what the helper reads -------------------------------------------------------------------------
@@ -314,6 +331,7 @@ class WriterInput:
     addressed_rows: Tuple[str, ...] = ()  # shown only by address: not read, so not covered; they stay open
     stamp: Optional[Dict[str, Any]] = None  # a page's host stamp, a part's ``part_stamp``
     member_ids: Tuple[str, ...] = ()  # a part's members (a prefix of the unit's when the window is short)
+    fitted_to: Optional[Dict[str, Any]] = None  # last row in a page input, including address-only rows
 
 
 def _remembering(root: pathlib.Path) -> str:
@@ -530,12 +548,13 @@ def _page_input(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, b
                        measure(prompt) if budget is not None else None, covers=covers,
                        positions={item.entry[0]["row_sha256"]: item.entry[2] for item in items},
                        addressed_rows=tuple(chat_chain.format_address(items[i].entry[0]) for i in sorted(addressed)),
-                       stamp=stamp)
+                       stamp=stamp, fitted_to=items[n - 1].entry[0])
 
 
 def _part_input(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, budget: Optional[int],
                 measure: Callable[[str], int], records: Optional[Mapping[str, Any]] = None,
-                units: Optional[Mapping[str, Any]] = None) -> Optional[WriterInput]:
+                units: Optional[Mapping[str, Any]] = None,
+                cache: Optional[Dict[str, Any]] = None) -> Optional[WriterInput]:
     from ouroboros.terminal_projection import part_stamp  # D15->D17 is lazy-only
 
     if records is None:
@@ -547,9 +566,19 @@ def _part_input(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, b
                  answer=_ANSWER + _KEEP_ORIGINAL)
     if units is None:
         units = {u.record_id: u for u in memory_inventory.legacy_units(store, root)}
+    if cache is None:
+        cache = {}
+    # Scope is one room/head in one selection pass. Include rejected nested
+    # records in period sources; the acting room view intentionally omits them.
+    if "period_records" not in cache:
+        cache["period_records"] = {r["id"]: r for r in store.records(unit.room_id)}
+    rendered = cache.setdefault("blocks", {})
     label, blocks = _room_label(root, unit.room_id), []
     for member in members:
-        period = memory_inventory.record_period(store, member, units)
+        if member["id"] in rendered:
+            blocks.append(rendered[member["id"]])
+            continue
+        period = memory_inventory.record_period(store, member, units, records=cache["period_records"])
         span = period.span or {}
         dated = (f"{span.get('start') or '?'} → {span.get('end') or '?'}{period.note()}"
                  + ("; incomplete" if span.get("incomplete") else "")) if span else "unknown"
@@ -561,6 +590,7 @@ def _part_input(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, b
                       + "\n" + _indented(member.get("current_text"))
                       + "".join(f"\nquote ({q.get('speaker')}, {q.get('address')}): {q.get('text')}"
                                 for q in member.get("quotes") or ()))
+        rendered[member["id"]] = blocks[-1]
 
     def compose(k: int) -> Tuple[str, Dict[str, Any]]:
         stamp = part_stamp(member.get("host_stamp") for member in members[:k])
@@ -573,17 +603,10 @@ def _part_input(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, b
 
     k = len(members)
     prompt, stamp = compose(k)
-    if budget is not None and k > 1 and measure(prompt) > budget:
-        # Search prefix lengths, as the page fitter does; measure the selected
-        # prompt itself. A single oversized member still reaches the transport.
-        low, high = 1, k - 1
-        while low < high:
-            middle = (low + high + 1) // 2
-            if measure(compose(middle)[0]) <= budget:
-                low = middle
-            else:
-                high = middle - 1
-        k = low
+    # Later terminal stamps can remove earlier details: prefix sizes are not
+    # monotonic. Keep the longest fitting prefix, reusing rendered source blocks.
+    while budget is not None and k > 1 and measure(prompt) > budget:
+        k -= 1
         prompt, stamp = compose(k)
     return WriterInput(prompt, hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                        measure(prompt) if budget is not None else None, stamp=stamp,
@@ -593,11 +616,12 @@ def _part_input(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, b
 def build_writer_input(root: Any, store: ChronicleStore, unit: FallbackUnit, *, budget_tokens: Optional[int],
                        measure: Callable[[str], int] = _chars_measure,
                        part_records: Optional[Mapping[str, Any]] = None,
-                       part_units: Optional[Mapping[str, Any]] = None) -> Optional[WriterInput]:
+                       part_units: Optional[Mapping[str, Any]] = None,
+                       part_cache: Optional[Dict[str, Any]] = None) -> Optional[WriterInput]:
     """The helper's input for one unit within the Light window, or ``None`` when nothing of it is readable."""
     root = pathlib.Path(root)
     if unit.kind == "part":
-        return _part_input(root, store, unit, budget_tokens, measure, part_records, part_units)
+        return _part_input(root, store, unit, budget_tokens, measure, part_records, part_units, part_cache)
     return _page_input(root, store, unit, budget_tokens, measure)
 
 
