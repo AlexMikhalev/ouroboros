@@ -39,8 +39,8 @@ artifact / a recorded WIRE fact / the byte truth of the worktree:
   ``cancel_receipt`` block on the stored result, and the same
   requested→claimed→settled forensics.
 * S22 — EVOLUTION ABSORB KILL-RECOVERY: a REAL evolution cycle (campaign seeded,
-  supervisor mints the task, the scripted agent lands a reviewed commit through
-  the blocking triad+scope organ) settles with auto-restart disabled, which (W4-F3,
+  supervisor mints the task, the scripted Cyber Pro agent explicitly authors
+  in place through the review organ) settles with auto-restart disabled, which (W4-F3,
   owner 5 = A) skips ONLY the restart: generation A pins that the exact
   restart-verify marker IS still written and the tree stays up, then SIGKILLs the
   tree and removes the marker — the durable state a crash between the campaign's
@@ -780,6 +780,7 @@ def test_s21_chat_lineage_cancel_delivers_receipt_to_outbox_and_chat(
 S22_DOC_PATH = "docs/notes/system_e2e_s22_evolution.md"
 S22_COMMIT_MESSAGE = "docs: system_e2e S22 evolution cycle note"
 S22_SCRIPT = [
+    {"tool": "prepare_self_change", "arguments": {"in_place": True}},
     {"tool": "write_file", "arguments": {
         "root": "system_repo",
         "path": S22_DOC_PATH,
@@ -790,7 +791,7 @@ S22_SCRIPT = [
         "paths": [S22_DOC_PATH],
         "skip_advisory_review": True,
         "skip_tests": True,
-        "goal": "Land the S22 evolution note through the blocking review organ.",
+        "goal": "Land the S22 evolution note through the review organ in the serving checkout.",
         "scope": f"{S22_DOC_PATH} only.",
     }},
 ]
@@ -853,8 +854,8 @@ def test_s22_absorb_kill_recovery_absorbs_once_and_never_twice(
     monkeypatch.setenv("OUROBOROS_EVOLUTION_AUTO_RESTART", "false")
 
     settings_kwargs = dict(
-        OUROBOROS_RUNTIME_MODE="advanced",       # light hard-blocks evolution
-        OUROBOROS_REVIEW_ENFORCEMENT="blocking",  # the landed commit PROVES the organ passed
+        OUROBOROS_RUNTIME_MODE="cyber_pro",  # explicit in-place authoring is Cyber Pro only (#1620)
+        OUROBOROS_REVIEW_ENFORCEMENT="blocking",  # the panel still runs; S16 proves enforcement
     )
     marker_glob = "pending_restart_verify*"
     state_dir = data_root / "state"
@@ -906,6 +907,10 @@ def test_s22_absorb_kill_recovery_absorbs_once_and_never_twice(
             assert server.proc.poll() is None, "auto-restart off must not restart the tree"
             assert "triad_review" in stub.kinds() and "two_part_review" in stub.kinds(), (
                 stub.kinds())
+            # Cyber Pro permits an override: independently prove this panel passed.
+            records = ArtifactOracle(data_root).task_drive(str(tx["task_id"])).review_ledger_records()
+            commits = [row for row in records if row.get("surface") == "commit_gate"]
+            assert commits and commits[-1]["verdict"]["per_question"] == {"change": "PASS", "coupling": "PASS"}, commits
 
             # HARD CRASH in the window.
             _sigkill_server_tree(server)

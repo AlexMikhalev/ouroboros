@@ -21,8 +21,8 @@ window.connection=value=>{connected=value;window.emit(value?'open':'close');};
 window.chat=createChatInstance({ws,state:{activePage:'chat',projectChatIds:new Set([7,8]),unreadCount:0},
     updateUnreadBadge(){},openSettingsTab(){},openDashboardTab(){},chatId:1,
     mountEl:document.getElementById('content'),stateSnapshots:{begin:()=>({generation:1,requestedAt:Date.now()}),
-    gate(){return Promise.resolve(this.begin());},isCurrent:()=>true,
-    apply(request,data){window.chat?.hydrateStateSnapshot(data);}}});
+    gate(){window.censusAsked=(window.censusAsked||0)+1;return Promise.resolve(this.begin());},isCurrent:()=>true,
+    apply(request,data){window.chat?.hydrateStateSnapshot(data);window.censusRead=(window.censusRead||0)+1;}}});
 document.getElementById('reconnect-overlay').hidden=true;
 document.getElementById('reconnect-overlay').style.display='none';
 window.openCount=0;
@@ -430,7 +430,13 @@ def test_project_work_entries_share_live_phase_title_and_motion(project_chat, tm
     assert secondary.evaluate("e=>getComputedStyle(e).animationName") == "none"
     expect(child_chip).to_have_text("Activity unconfirmed")
     page.evaluate("connection(true)")
+    # The reconnect reads the census at once (chat.js onWs 'open') and this harness applies
+    # each read whenever it lands: an incomplete census marks every held activity unconfirmed
+    # (chat_activity.js), so a read landing after the snapshot below would rightly undo it.
+    page.wait_for_function("() => window.censusRead === window.censusAsked")
     expect(secondary).to_have_text("Activity unconfirmed")
+    # The host's census is complete again; every later read (the 3 s Main poll) says so too.
+    state.update(active_chat_activities=[fact], active_chat_activities_complete=True)
     page.evaluate("a=>chat.hydrateStateSnapshot({supervisor_ready:true,active_chat_activities_complete:true,active_chat_activities:[a]})", fact)
     expect(secondary).to_have_text("Finalizing…")
     assert secondary.get_attribute("data-motion") == "1"
@@ -500,6 +506,8 @@ def test_project_glyph_is_a_tinted_mark_never_a_solid_tile(project_chat):
         const {projectReference} = await import('/static/modules/project_reference.js');
         card.append(projectReference({id: 'alpha', name: 'Project Alpha'}, {layout: 'footer'}));
     }""")
+    # The two entries come from the initial history read, which can land after the live rows.
+    expect(page.locator('.project-handoff [data-intent="open-project"]')).to_have_count(2)
     marks = page.locator('[data-intent="open-project"]').evaluate_all(_MARK_MATERIAL)
     assert sorted(mark["host"] for mark in marks) == ["capsule", "capsule", "entry", "entry", "footer"]
     for mark in marks:

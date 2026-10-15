@@ -42,8 +42,8 @@ def held_lock(root, timeout=5):
 
     thread = threading.Thread(target=hold)
     thread.start()
-    assert acquired.wait(2)
     try:
+        assert acquired.wait(2)
         yield release
     finally:
         release.set()
@@ -93,6 +93,7 @@ def test_async_first_generation_real_writer_contention_keeps_loop_and_custody(ro
     from tests.test_openrouter_transport_evidence import Wire, frame, target
 
     acquired, release, entered, expired = (threading.Event() for _ in range(4))
+    send_or_finish = asyncio.Event()
     original, bindings, threads = ua.bind_provider_generation, [], []
 
     def observe(generation, **kwargs):
@@ -109,6 +110,7 @@ def test_async_first_generation_real_writer_contention_keeps_loop_and_custody(ro
     monkeypatch.setattr(ua, "bind_provider_generation", observe)
 
     async def send():
+        send_or_finish.set()
         holder = threading.Thread(target=hold)
         threads.append(holder)
         holder.start()
@@ -121,7 +123,12 @@ def test_async_first_generation_real_writer_contention_keeps_loop_and_custody(ro
         req = ua.AttemptRequest(model="vendor/fixture", provider="openrouter", reservation_usd=2,
                                 drive_root=root, provider_receipt_binding=binding_for_target(target()))
         task = asyncio.create_task(ua.execute_physical_attempt_async(req, send))
+        task.add_done_callback(lambda done: send_or_finish.set())
         try:
+            # Preparation is outside the contended-binder responsiveness oracle.
+            await asyncio.wait_for(send_or_finish.wait(), 10)
+            if task.done():
+                await task  # Surface an early preparation failure, not an entered timeout.
             for _ in range(200):
                 if entered.is_set():
                     break
@@ -169,8 +176,8 @@ def held_name_lock(root, timeout=5):
 
     thread = threading.Thread(target=hold)
     thread.start()
-    assert acquired.wait(2)
     try:
+        assert acquired.wait(2)
         yield release
     finally:
         release.set()
@@ -178,9 +185,44 @@ def held_name_lock(root, timeout=5):
         assert not thread.is_alive()
 
 
+@pytest.mark.parametrize("factory, lock_owner", [(held_lock, ua), (held_name_lock, ledger)])
+def test_hold_setup_failure_still_releases_its_thread(tmp_path, monkeypatch, factory, lock_owner):
+    real_event, real_thread = threading.Event, threading.Thread
+    events, threads = [], []
+
+    def event():
+        result = real_event()
+        if not events:
+            # Deterministically fail the setup observation, without stranding the test process.
+            monkeypatch.setattr(result, "wait", lambda timeout=None: False)
+        events.append(result)
+        return result
+
+    def thread(*args, **kwargs):
+        result = real_thread(*args, **kwargs)
+        threads.append(result)
+        return result
+
+    monkeypatch.setattr(threading, "Event", event)
+    monkeypatch.setattr(threading, "Thread", thread)
+    monkeypatch.setattr(lock_owner, "_locked", lambda root: contextlib.nullcontext())
+    released_by_helper = False
+    try:
+        with pytest.raises(AssertionError):
+            with factory(tmp_path, timeout=None):
+                pytest.fail("failed setup must not yield")
+        released_by_helper = events[1].is_set()
+    finally:
+        events[1].set()  # Rescue the intentionally broken negative variant too.
+        for worker in threads:
+            worker.join(3)
+            assert not worker.is_alive()
+    assert released_by_helper, "setup failure abandoned an untimed producer"
+
+
 @pytest.mark.parametrize("stage", ["reserve", "dispatch"])
 @pytest.mark.parametrize("interactive", [False, True])
-def test_same_chain_preparation_stamp_claim_and_one_send(root, short_acquisitions, stage, interactive):
+def test_same_chain_preparation_stamp_claim_and_one_send(root, short_acquisitions, monkeypatch, stage, interactive):
     calls, prepared, stamps = [], [], []
     with contextlib.ExitStack() as stack:
         events = stack.enter_context(owner(root, task={"_is_direct_chat": interactive, "_presence_turn": interactive}))
@@ -188,10 +230,29 @@ def test_same_chain_preparation_stamp_claim_and_one_send(root, short_acquisition
         stack.enter_context(bind_api_review_paid_stamp(ReviewPaidStamp(lambda: stamps.append(1), fail_closed=True)))
 
         def start_hold():
-            release = stack.enter_context(held_lock(root))
-            timer = threading.Timer(.18, release.set)
-            timer.start()
-            stack.callback(timer.join, 2)
+            # Only the attempt's first contended slice (or the cleanup watchdog) releases the
+            # hold: a fixed 0.18 s timer raced it, and on a throttled host one 25 ms busy wait
+            # (SQLite counts its planned sleeps) outlasted the timer, so no wait was disclosed.
+            release = stack.enter_context(held_lock(root, timeout=None))
+            shortened = ua._locked
+
+            @contextlib.contextmanager
+            def observed_lock(*args, **kwargs):
+                held = contextlib.ExitStack()
+                try:
+                    heartbeat = held.enter_context(shortened(*args, **kwargs))
+                except ledger.UsageLockUnavailable as exc:
+                    if exc.reason == "contention":
+                        release.set()
+                    raise
+                with held:
+                    yield heartbeat
+
+            monkeypatch.setattr(ua, "_locked", observed_lock)
+            watchdog = threading.Timer(5, release.set)
+            watchdog.start()
+            stack.callback(watchdog.join, 2)
+            stack.callback(watchdog.cancel)
 
         def before(held):
             prepared.append(held.attempt_id)

@@ -23,7 +23,7 @@ from ouroboros import launcher_bootstrap, platform_layer
 
 @pytest.fixture
 def mounted_tree(tmp_path, monkeypatch):
-    parent = tmp_path / "volume with space's and \\slash"
+    parent = tmp_path / "volume with space's and\\slash"  # no trailing-space component on Windows
     repo = parent / "body" / "repo"
     repo.mkdir(parents=True)
     (repo / "keep.txt").write_text("keep\n")

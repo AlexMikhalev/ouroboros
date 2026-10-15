@@ -18,6 +18,7 @@ import subprocess
 import sys
 import uuid
 import venv
+from importlib import metadata
 from types import SimpleNamespace
 
 import pytest
@@ -33,11 +34,51 @@ SECTION = "## Preflight test execution (host fact)"
 
 
 @pytest.fixture(autouse=True)
-def gate_env(monkeypatch):
+def gate_env(monkeypatch, receipt_python):
     monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
     monkeypatch.setenv("OUROBOROS_PREFLIGHT_TEST_WORKERS", "2")
-    for key in ("OUROBOROS_PREFLIGHT_SERIAL", "OUROBOROS_PREFLIGHT_TIMEOUT_SEC", "OUROBOROS_AGENT_PYTHON"):
+    monkeypatch.setenv("OUROBOROS_AGENT_PYTHON", receipt_python)
+    for key in ("OUROBOROS_PREFLIGHT_SERIAL", "OUROBOROS_PREFLIGHT_TIMEOUT_SEC"):
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(scope="session")
+def receipt_python(tmp_path_factory):
+    """Real dependency-only lane interpreter, even when CI installed this checkout
+    editable. Copy the installed pytest dependency closure without installing or
+    changing the caller's environment. The production installation probe remains real;
+    the explicit editable-decline test below uses its own deliberately editable venv.
+    """
+    from packaging.requirements import Requirement
+
+    root = tmp_path_factory.mktemp("receipt-python")
+    venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(root)
+    python = str(root / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
+    purelib = pathlib.Path(subprocess.run(
+        [python, "-I", "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+        capture_output=True, text=True, check=True).stdout.strip())
+    pending, copied = ["pytest", "pytest-xdist", "pytest-timeout"], set()
+    while pending:
+        dist = metadata.distribution(pending.pop())
+        name = dist.metadata["Name"].lower().replace("_", "-")
+        if name in copied:
+            continue
+        copied.add(name)
+        direct = json.loads(dist.read_text("direct_url.json") or "{}")
+        assert not direct.get("dir_info", {}).get("editable"), f"editable test dependency: {name}"
+        assert dist.files is not None, f"missing installed file inventory: {name}"
+        for file in dist.files:
+            # Console entrypoints outside site-packages are unnecessary for python -m pytest.
+            if file.is_absolute() or ".." in file.parts or "__pycache__" in file.parts:
+                continue
+            target = purelib / file
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(dist.locate_file(file), target)
+        for text in dist.requires or ():
+            requirement = Requirement(text)
+            if requirement.marker is None or requirement.marker.evaluate({"extra": ""}):
+                pending.append(requirement.name)
+    return python
 
 
 def _git(repo, *args) -> str:
@@ -515,7 +556,7 @@ def test_the_installation_identity_separates_venvs_and_same_version_reinstalls_a
 
 
 @pytest.mark.skipif(os.name == "nt", reason="a POSIX shell shim")
-def test_a_git_shim_whose_own_file_never_changes_is_identified_by_its_version(tmp_path):
+def test_a_git_shim_whose_own_file_never_changes_is_identified_by_its_version(tmp_path, receipt_python):
     temp, env = _gate_env(tmp_path)
     shim_dir = tmp_path / "shim"
     shim_dir.mkdir()
@@ -526,10 +567,10 @@ def test_a_git_shim_whose_own_file_never_changes_is_identified_by_its_version(tm
                     f'exec "{shutil.which("git")}" "$@"\n', encoding="utf-8")
     shim.chmod(0o755)
     env = {**env, "PATH": f"{shim_dir}{os.pathsep}{env['PATH']}"}
-    before, why = receipts._installation_identity(sys.executable, env, temp)
+    before, why = receipts._installation_identity(receipt_python, env, temp)
     assert before is not None, why
     toolchain.write_text("git version 2.99.1 (toolchain B)\n", encoding="utf-8")
-    after, _ = receipts._installation_identity(sys.executable, env, temp)
+    after, _ = receipts._installation_identity(receipt_python, env, temp)
     assert before["git"][0] == after["git"][0]  # the shim file is byte- and stat-identical
     assert (before["git"][1], after["git"][1]) == ("git version 2.99.0 (toolchain A)", "git version 2.99.1 (toolchain B)")
     assert receipts._digest(before) != receipts._digest(after)

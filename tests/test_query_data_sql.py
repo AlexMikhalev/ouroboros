@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -25,6 +26,24 @@ def run(ctx, query, **kwargs):
                 snapshot=False, timeout_sec=1.0)
     args.update(kwargs)
     return sql.run_sql(ctx, ctx.drive_root, **args)
+
+
+def test_sql_child_keeps_windows_systemroot(ctx, monkeypatch):
+    from ouroboros import process_custody
+
+    # Windows enumerates os.environ keys in uppercase, including SystemRoot.
+    system_root = os.environ.get("SystemRoot", str(ctx.drive_root / "Windows"))
+    monkeypatch.setenv("SYSTEMROOT", system_root)
+    monkeypatch.setenv("QUERY_TEST_SECRET", "fixture-only")
+    original_spawn = process_custody.spawn_supervised
+
+    def spawn(cmd, **kwargs):
+        assert kwargs["env"].get("SYSTEMROOT") == system_root
+        assert "QUERY_TEST_SECRET" not in kwargs["env"]
+        return original_spawn(cmd, **kwargs)
+
+    monkeypatch.setattr(process_custody, "spawn_supervised", spawn)
+    assert run(ctx, "SELECT 42")["data"]["rows"] == [[42]]
 
 
 @pytest.mark.parametrize("query", [

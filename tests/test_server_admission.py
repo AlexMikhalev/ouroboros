@@ -54,7 +54,11 @@ def _probe(tmp_path, root, *, wait=0.0, mode="exit"):
     script = tmp_path / "admission_probe.py"
     script.write_text(_PROBE, encoding="utf-8")
     env = {**os.environ, "PYTHONPATH": str(REPO)}
-    return subprocess.Popen([sys.executable, str(script), str(root), str(wait), mode], cwd=str(REPO), env=env,
+    # A Windows venv redirector has a different PID from the interpreter holding the lock.
+    executable = (getattr(sys, "_base_executable", None) or sys.executable) if sys.platform == "win32" else sys.executable
+    if executable != sys.executable:
+        env["__PYVENV_LAUNCHER__"] = sys.executable
+    return subprocess.Popen([executable, str(script), str(root), str(wait), mode], cwd=str(REPO), env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 

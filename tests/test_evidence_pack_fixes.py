@@ -1,12 +1,16 @@
 """Regressions for the dispositioned S5 pack and reader findings."""
 from __future__ import annotations
 
+import builtins
+import errno
 import gzip
 import hashlib
 import json
+import lzma
 import os
 import pathlib
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -219,7 +223,7 @@ def test_old_index_schema_rebuilds_without_rewriting_sidecars(root):
     packer.run_pass(root)
     directory = packs.packs_dir(root)
     sidecar = (directory / "indexed.members.json").read_bytes()
-    with sqlite3.connect(directory / packs.INDEX_NAME) as conn:
+    with closing(sqlite3.connect(directory / packs.INDEX_NAME)) as conn, conn:
         conn.execute("DROP TABLE members")
         conn.execute("CREATE TABLE members (sha256 TEXT, task_id TEXT, generation INTEGER, offset INTEGER, "
                      "size INTEGER, kind TEXT, PRIMARY KEY (sha256, task_id, generation))")
@@ -522,6 +526,37 @@ def test_unpacker_is_published_before_unlink_and_write_failure_keeps_loose(root,
     monkeypatch.setattr(os, "unlink", unlink)
     assert packer.run_pass(root)["faults"] == 0
     assert not any(path.exists() for path in loose)
+
+
+def test_archive_fsync_uses_a_writable_handle(root, monkeypatch):
+    source = root / "archive/usage_ledger/segment_ep1.jsonl"
+    source.parent.mkdir(parents=True)
+    raw = b'{"attempt_id":"example"}\r\n'
+    source.write_bytes(raw)
+    opened, synced = {}, []
+    original_fsync = os.fsync
+
+    def tracked_open(*args, **kwargs):
+        handle = builtins.open(*args, **kwargs)
+        opened[handle.fileno()] = handle
+        return handle
+
+    def windows_fsync(fd):
+        handle = opened.get(fd)
+        if handle is not None and not handle.closed:
+            # Windows FlushFileBuffers requires GENERIC_WRITE; POSIX accepts rb.
+            if not handle.writable():
+                raise OSError(errno.EBADF, "fsync requires a writable handle")
+            synced.append(pathlib.Path(handle.name))
+        return original_fsync(fd)
+
+    monkeypatch.setattr(packs, "open", tracked_open, raising=False)
+    monkeypatch.setattr(os, "fsync", windows_fsync)
+    assert packs.archive_usage_segments(root)["archived"] == 1
+    assert synced and not source.exists()
+    assert lzma.decompress(source.with_suffix(".jsonl.xz").read_bytes()) == raw
+    meta = json.loads(source.with_suffix(".jsonl.xz.json").read_text(encoding="utf-8"))
+    assert (meta["size"], meta["sha256"]) == (len(raw), hashlib.sha256(raw).hexdigest())
 
 
 def test_exporting_phase_keeps_loose_evidence_until_published_again(root):

@@ -6,7 +6,7 @@
 # Tier 2.5 (Integration): Manual / tag (branch pushes: provider-canary-push.yml)       → Real-provider tests, reusable provider-canary.yml (~2 min)
 # Tier 2.6 (Skill smoke): Push to ouroboros-stable / manual / tag                     → LIVE OuroborosHub official-skill install smoke (3-OS, ~5 min) + review→grant→enable-persistence flow on one cheap reviewer slot (ubuntu-only step, OPENROUTER_API_KEY, ~$1.2/run)
 # Tier 3 (Build+Release): Tag v*                                                       → PyInstaller + GitHub Release (~15 min)
-# Opt-in (System E2E):    Manual / tag (no schedule)                                     → KEYLESS tests/system_e2e/ scenario lane (Ubuntu, ≤40 min)
+# Opt-in (System E2E):    Manual / tag (no schedule)                                     → KEYLESS tests/system_e2e/ scenario lane (Ubuntu, ≤60 min)
 # Manual (Live E2E):      Dispatch input e2e_live=true only (no schedule)                → PAID devtools/e2e_live stand, $30 cap, OUROBOROS_E2E_LIVE_OPENROUTER_KEY (skipped honestly without it)
 #
 # Tier 2.5 requires OPENROUTER_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY.
@@ -261,7 +261,7 @@ jobs:
   # in this repository only: an install that pushes its own commits to a private copy
   # would pay Windows and macOS minutes for every self-modification.
   # ──────────────────────────────────────────────────────────────────
-  full-test:
+  full-test-runs:
     if: |
       github.ref == 'refs/heads/ouroboros-stable'
       || github.event_name == 'workflow_dispatch'
@@ -275,7 +275,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/ouroboros')) && '["windows-latest","macos-latest"]' || '["ubuntu-latest","windows-latest","macos-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/ouroboros')) && '["macos-latest"]' || '["ubuntu-latest","macos-latest"]') }}
+        shard: [0]  # Unsharded macOS/Ubuntu; Windows alone is split by whole file.
+        include:
+          - {os: windows-latest, shard: 1}
+          - {os: windows-latest, shard: 2}
+          - {os: windows-latest, shard: 3}
+          - {os: windows-latest, shard: 4}
     runs-on: ${{ matrix.os }}
     env:
       # Same contract as quick-test: this job provisions the parallel-pass
@@ -313,7 +319,7 @@ jobs:
       # The hermetic commit gate runs this exact suite (ouroboros/preflight_node.py);
       # `shell: bash` keeps the glob working on the Windows runner too.
       - name: Run browser-module tests (node --test — mirrored by the hermetic commit gate)
-        if: ${{ !cancelled() && steps.setup_node.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) }}
+        if: ${{ !cancelled() && steps.setup_node.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) && matrix.shard <= 1 }}
         shell: bash
         run: cd web && node --test tests/*.test.js
       # ESLint `no-undef` is the second, independent layer of the browser no-undef
@@ -321,26 +327,44 @@ jobs:
       # acorn walker in the suite above; this layer is CI-only, lockfile-frozen
       # (`npm ci` on web/package-lock.json) and exact-pinned in web/package.json.
       - name: Lint browser modules (ESLint no-undef — CI-only second layer of the acorn gate)
-        if: ${{ !cancelled() && steps.setup_node.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) }}
+        if: ${{ !cancelled() && steps.setup_node.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) && matrix.shard <= 1 }}
         shell: bash
         run: cd web && npm ci --no-audit --no-fund && npm run lint:undef
+      # Independent unsharded witnesses, in fresh processes on Windows shard 1.
+      # These and the two executed passes have identical marker expressions.
+      - name: Collect the Windows parallel manifest
+        id: manifest_parallel
+        timeout-minutes: 20
+        if: ${{ !cancelled() && runner.os == 'Windows' && matrix.shard == 1 && steps.setup_python.outcome == 'success' && steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success' }}
+        run: >-
+          python -m pytest tests/ -m "not serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet"
+          --collect-only -q --default-suite-manifest
+          --ci-evidence-dir="${{ runner.temp }}/ci-evidence/default-manifest/parallel"
+      - name: Collect the Windows serial manifest
+        id: manifest_serial
+        timeout-minutes: 20
+        if: ${{ !cancelled() && runner.os == 'Windows' && matrix.shard == 1 && steps.setup_python.outcome == 'success' && steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success' }}
+        run: >-
+          python -m pytest tests/ -m "serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet"
+          --collect-only -q --default-suite-manifest
+          --ci-evidence-dir="${{ runner.temp }}/ci-evidence/default-manifest/serial"
       # A command-line `-m` REPLACES the pyproject addopts markexpr, so repeat the default
       # marker-lane exclusions and AND them with the serial split. --timeout guards hangs.
       - name: Run tests (parallel — excludes the costly marker lanes AND the serial real-process suites)
         id: tests_parallel
         timeout-minutes: 90
         if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) }}
-        run: python -m pytest tests/ -m "not serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/parallel"
+        run: python -m pytest tests/ -m "not serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/parallel" ${{ runner.os == 'Windows' && format('--default-suite-shard={0}/4', matrix.shard) || '' }}
       - name: Run tests (serial — real subprocess/port/global-state suites that flake under -n)
         id: tests_serial
         timeout-minutes: 60
         if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) }}
-        run: python -m pytest tests/ -m "serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/serial"
+        run: python -m pytest tests/ -m "serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/serial" ${{ runner.os == 'Windows' && format('--default-suite-shard={0}/4', matrix.shard) || '' }}
       # Whom the reference-book rule binds (scripts/book_growth_mode.py): the size
       # lane below blocks, warns or passes a grown book by this mode.
       - name: Decide the reference-book growth mode
         id: book_mode
-        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && matrix.shard <= 1 }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -359,13 +383,13 @@ jobs:
       - name: Run tests (size-ratchet lane — blocking here, warning-only locally)
         id: tests_size
         timeout-minutes: 20
-        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) }}
+        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) && matrix.shard <= 1 }}
         env:
           OURO_SIZE_RATCHET_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           OURO_BOOK_GROWTH_MODE: ${{ steps.book_mode.outputs.mode }}
         run: python -m pytest tests/ -m size_ratchet -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/size"
       - name: Guard extracted transport imports stay out of core
-        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) }}
+        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) && matrix.shard <= 1 }}
         run: python -m pytest tests/test_no_core_a2a_telegram_imports.py -q
       # The owner-attachment path on real Windows (confined handle reads behind
       # `/api/files/download?upload=`): this one module's Chromium cases on the Windows
@@ -381,7 +405,7 @@ jobs:
       - name: Install the dependency-only env and Chromium for the Windows owner-attachment browser test
         id: attachment_browser_install
         timeout-minutes: 20
-        if: ${{ !cancelled() && runner.os == 'Windows' && steps.setup_python.outcome == 'success' && steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.setup_python.outcome == 'success' && steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success' && matrix.shard <= 1 }}
         shell: bash
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/attachment-browsers
@@ -393,7 +417,7 @@ jobs:
       - name: Run the owner-attachment browser test on Windows (Chromium)
         id: attachment_browser
         timeout-minutes: 30
-        if: ${{ !cancelled() && runner.os == 'Windows' && steps.attachment_browser_install.outcome == 'success' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.attachment_browser_install.outcome == 'success' && matrix.shard <= 1 }}
         shell: bash
         env:
           OUROBOROS_RUN_UI_SMOKE: "1"
@@ -409,7 +433,7 @@ jobs:
       - name: Run the message-field sizing browser test on Windows (Chromium)
         id: composer_browser
         timeout-minutes: 20
-        if: ${{ !cancelled() && runner.os == 'Windows' && steps.attachment_browser_install.outcome == 'success' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.attachment_browser_install.outcome == 'success' && matrix.shard <= 1 }}
         shell: bash
         env:
           OUROBOROS_RUN_UI_SMOKE: "1"
@@ -421,7 +445,7 @@ jobs:
           python -c "import sys, xml.etree.ElementTree as E; s = next(E.parse(sys.argv[1]).getroot().iter('testsuite')); n, k = int(s.get('tests')), int(s.get('skipped')); print(f'{n} ran, {k} skipped'); sys.exit(n == 0 or k > 0)" "$RUNNER_TEMP/ci-private/composer-browser.xml"
           python -c "import os, sys; sys.exit(os.path.getsize(sys.argv[1]) == 0)" "$OUROBOROS_UI_EVIDENCE_DIR/composer-sizing-chromium.json"
       - name: Upload the Windows message-field sizing evidence (geometry, screenshots)
-        if: ${{ !cancelled() && runner.os == 'Windows' && steps.attachment_browser_install.outcome == 'success' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.attachment_browser_install.outcome == 'success' && matrix.shard <= 1 }}
         continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -430,6 +454,37 @@ jobs:
           path: ${{ runner.temp }}/ci-evidence/composer/
           if-no-files-found: warn
           retention-days: 30
+      # Mandatory Windows proof; the ordinary diagnostic upload below remains advisory.
+      - name: Require both Windows shard projections
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          test -s "${{ runner.temp }}/ci-evidence/parallel/results.json"
+          test -s "${{ runner.temp }}/ci-evidence/serial/results.json"
+      - name: Upload the Windows shard proof
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: default-ci-shard-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ci-evidence/parallel/
+            ${{ runner.temp }}/ci-evidence/serial/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Require both Windows manifest projections
+        if: ${{ !cancelled() && runner.os == 'Windows' && matrix.shard == 1 }}
+        shell: bash
+        run: |
+          test -s "${{ runner.temp }}/ci-evidence/default-manifest/parallel/results.json"
+          test -s "${{ runner.temp }}/ci-evidence/default-manifest/serial/results.json"
+      - name: Upload the Windows manifests
+        if: ${{ !cancelled() && runner.os == 'Windows' && matrix.shard == 1 }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: default-ci-manifest-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-evidence/default-manifest/
+          retention-days: 30
+          if-no-files-found: error
       # Names the failed, crashed and in-flight tests in the job summary and as
       # annotations; a killed step still reports through its incremental journal.
       - name: Publish test evidence
@@ -437,8 +492,56 @@ jobs:
         continue-on-error: true
         uses: ./.github/actions/test-evidence
         with:
-          name: full-test-${{ matrix.os }}
+          name: full-test-${{ matrix.os }}${{ runner.os == 'Windows' && format('-shard-{0}', matrix.shard) || '' }}
           passes: parallel=${{ steps.tests_parallel.outcome }} serial=${{ steps.tests_serial.outcome }} size=${{ steps.tests_size.outcome }}
+
+  # Preserve the release contract: full-test is green only after every OS/shard
+  # succeeded AND the two Windows passes reconcile against independent collections.
+  full-test:
+    needs: full-test-runs
+    if: ${{ !cancelled() && needs.full-test-runs.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Require every full-test matrix leg
+        env:
+          MATRIX_RESULT: ${{ needs.full-test-runs.result }}
+        shell: bash
+        run: |
+          if [[ "$MATRIX_RESULT" != success ]]; then
+            echo "::error::Full-test matrix did not succeed: $MATRIX_RESULT"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        if: ${{ !cancelled() }}
+      - name: Download the Windows manifests
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: default-ci-manifest-${{ github.sha }}-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/default-proof/manifest
+      - name: Download every Windows shard proof
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: default-ci-shard-*-${{ github.sha }}-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/default-proof/shards
+      - name: Reconcile the Windows parallel pass
+        if: ${{ !cancelled() }}
+        run: >-
+          python3 -I -S tests/ci_evidence.py reconcile-shards --lane default_parallel
+          --manifest "${{ runner.temp }}/default-proof/manifest"
+          --shards "${{ runner.temp }}/default-proof/shards"
+          --count 4 --sha "${{ github.sha }}" --run-id "${{ github.run_id }}"
+          --summary "$GITHUB_STEP_SUMMARY"
+      - name: Reconcile the Windows serial pass
+        if: ${{ !cancelled() }}
+        run: >-
+          python3 -I -S tests/ci_evidence.py reconcile-shards --lane default_serial
+          --manifest "${{ runner.temp }}/default-proof/manifest"
+          --shards "${{ runner.temp }}/default-proof/shards"
+          --count 4 --sha "${{ github.sha }}" --run-id "${{ github.run_id }}"
+          --summary "$GITHUB_STEP_SUMMARY"
 
   # Fork-safe PR proof for the one native secret-scanner dependency. This job
   # carries no provider or repository secret: it exercises the explicit pinned
@@ -485,10 +588,10 @@ jobs:
   # result. Branch pushes are deliberately NOT matched here:
   # `provider-canary-push.yml` owns that trigger and shares the job, so a
   # provider outage on a landed commit never reddens this workflow.
-  # Confirmed provider-contract failures block release-preflight. A
-  # quota/rate-limit/5xx/timeout outcome is a typed inconclusive skip: a manual
-  # run on a branch reports it, and on a `v*` tag in the official repository the shared
-  # job's release floor fails unless every required canary passed.
+  # Required failures block release-preflight; optional qualification is a separate
+  # strict job outside that dependency graph, never a forgiven mixed producer exit.
+  # Required inconclusive skips fail the official tag floor. Before tagging a branch
+  # qualified by dispatch, inspect every required canary, not aggregate workflow status.
   # ──────────────────────────────────────────────────────────────────
   integration-test:
     # A scheduled run is neither a manual run nor a tag. The leading guard keeps
@@ -499,6 +602,30 @@ jobs:
       && (github.event_name == 'workflow_dispatch'
       || startsWith(github.ref, 'refs/tags/v'))
     uses: ./.github/workflows/provider-canary.yml
+    with:
+      scope: required
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      CLOUDRU_FOUNDATION_MODELS_API_KEY: ${{ secrets.CLOUDRU_FOUNDATION_MODELS_API_KEY }}
+      CLOUDRU_FOUNDATION_MODELS_BASE_URL: ${{ secrets.CLOUDRU_FOUNDATION_MODELS_BASE_URL }}
+      GIGACHAT_CREDENTIALS: ${{ secrets.GIGACHAT_CREDENTIALS }}
+    permissions:
+      contents: read
+
+  # Same paid matrix, disjoint subset. Its real failures stay visible and may make
+  # this workflow red; never add this job to release-preflight/release dependencies.
+  integration-optional:
+    if: |
+      github.event_name != 'schedule'
+      && (github.event_name == 'workflow_dispatch'
+      || startsWith(github.ref, 'refs/tags/v'))
+    uses: ./.github/workflows/provider-canary.yml
+    with:
+      scope: optional
     secrets:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -726,11 +853,14 @@ jobs:
     # (owner decision, batch №13 item 4, 2026-09-02).
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # 94 scenarios plus the cancellation E-suite measured ~45 min end to end (2026-10-12).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-python-env
         id: setup_python
+        with:
+          install-project: 'false'  # candidate servers must import their own checkout (#1644)
       # -o addopts="" replaces the pyproject default markexpr wholesale: the
       # lane's own `integration` marker is exactly what that default excludes.
       - name: Run the keyless system E2E scenario lane (real isolated servers)
@@ -1635,7 +1765,8 @@ jobs:
       # Unprivileged handoff, never a release asset: windows-sign signs and
       # repacks it when ESIGNER_CERT_SHA1 is set, otherwise windows-proof
       # proves it as the explicitly unsigned release ZIP. Both check the
-      # job-output digest before extracting.
+      # job-output digest before extracting. Seven days, so a signing stop
+      # that waits for the owner can resume with a rerun of the failed job.
       - name: Transfer unsigned Windows archive
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1644,7 +1775,7 @@ jobs:
           path: ${{ steps.release_asset.outputs.path }}
           overwrite: true
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
       - name: Smoke final macOS DMG
         id: smoke_macos
@@ -2153,7 +2284,7 @@ jobs:
           path: ${{ steps.release_asset.outputs.path }}
           overwrite: true
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   # No eSigner secrets on this fresh runner, in either mode: it checks the
   # final ZIP against its producer's job-output digest before extracting,

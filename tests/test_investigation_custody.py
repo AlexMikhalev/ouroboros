@@ -227,7 +227,7 @@ def _retained_files(block):
     from pathlib import Path
 
     root = Path(block["named_evidence"]["evidence_dir"]) / "files"
-    return {str(path.relative_to(root)): path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
+    return {path.relative_to(root).as_posix(): path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
 
 
 def test_a_real_capture_retains_named_evidence_the_patch_excludes_then_releases(tmp_path, monkeypatch):

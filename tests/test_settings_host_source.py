@@ -8,11 +8,20 @@ import sys
 
 import pytest
 
-from ouroboros import config, local_model, server_process
+from ouroboros import config, local_model, server_control, server_process
 from ouroboros.gateway import settings
 from ouroboros.server_control import restart_current_process
 from ouroboros.server_entrypoint import parse_server_args
 from tests.test_server_shutdown import _stop_restart_watcher
+
+
+def _assert_restart_argv(argv, env, original):
+    expected = sys.executable
+    if server_control.IS_WINDOWS:
+        expected = getattr(sys, "_base_executable", None) or sys.executable
+        if expected != sys.executable:
+            assert env["__PYVENV_LAUNCHER__"] == sys.executable
+    assert argv == [expected, *original]
 
 
 @pytest.fixture
@@ -140,7 +149,7 @@ def test_two_settings_restarts_do_not_invent_environment_authority(monkeypatch, 
         saved["OUROBOROS_SERVER_HOST"] = desired
         restart_current_process(actual, 8765, repo_dir=tmp_path, log=logging.getLogger("test"))
         executable, reexec_argv, env = calls[-1]
-        assert reexec_argv == [sys.executable, *argv]
+        _assert_restart_argv(reexec_argv, env, argv)
         assert env.get("OUROBOROS_SERVER_HOST") == original_host
         # Simulate the child's actual argument/default selection with the exec boundary held.
         monkeypatch.setattr(sys, "argv", reexec_argv[1:])
@@ -158,5 +167,5 @@ def test_public_cli_reexec_argv_and_environment_override_remain_intact(monkeypat
     monkeypatch.setattr("ouroboros.process_custody.spawn_supervised",
                         lambda argv, **kw: captured.append((argv, kw["env"])))
     restart_current_process("0.0.0.0", 8765, repo_dir=tmp_path, log=logging.getLogger("test"))
-    assert captured[0][0] == [sys.executable, *argv]
+    _assert_restart_argv(captured[0][0], captured[0][1], argv)
     assert captured[0][1]["OUROBOROS_SERVER_HOST"] == "0.0.0.0"

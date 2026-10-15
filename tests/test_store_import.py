@@ -469,8 +469,9 @@ def test_the_reconciliation_reads_only_stat_changed_files_and_compares_them_by_c
     assert read == []  # the budget: one listing plus one stat per file, no reads while nothing moved
     path = task_result_path(root, "done1")
     os.utime(path, ns=(5, 5))  # touched, same bytes: read once, compared by digest, the stored stat refreshed
+    touched_mtime = path.stat().st_mtime_ns  # the filesystem may round to its own resolution
     assert ensure_current_store(root, with_children=False)["status"] == "unchanged"
-    assert read == ["done1"] and meta(root, "baseline")["done1"]["mtime_ns"] == 5
+    assert read == ["done1"] and meta(root, "baseline")["done1"]["mtime_ns"] == touched_mtime
     read.clear()
     assert ensure_current_store(root, with_children=False)["status"] == "unchanged" and read == []
     text = path.read_text(encoding="utf-8")

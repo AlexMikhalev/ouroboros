@@ -1,6 +1,8 @@
 """Backend cwd aliases use the shared authority binding on every process door."""
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from ouroboros import workspace_executor as executor
@@ -10,8 +12,16 @@ from ouroboros.tools.registry import ToolContext, ToolRegistry
 pytestmark = pytest.mark.serial
 
 
+def _shared_absolute(path):
+    """A container-rooted spelling that also names the host path on the current drive."""
+    text = path.as_posix().removeprefix(path.drive)
+    assert text.startswith("/") and pathlib.Path(text).resolve() == path.resolve()
+    return text
+
+
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # rooted Windows paths inherit this fixture's drive
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
     active, data, system = [tmp_path / name for name in ("active", "data", "system")]
     for path in (active / "sub", data, system):
@@ -92,7 +102,7 @@ def test_file_and_process_consumers_pick_one_target_for_a_colliding_spelling(wor
 
     ctx, active = workspace
     parent = active.parent
-    ctx.executor_ref["workspace_backend_path"] = parent.as_posix()
+    ctx.executor_ref["workspace_backend_path"] = _shared_absolute(parent)
     host, shadow, alias = active / "sub", active / active.name / "sub", active / "only"
     for directory, marker in ((host, "host"), (shadow, "shadow"), (alias, "alias")):
         directory.mkdir(parents=True, exist_ok=True)
@@ -110,7 +120,7 @@ def test_file_and_process_consumers_pick_one_target_for_a_colliding_spelling(wor
     monkeypatch.setattr(executor, "execute", effect)
     monkeypatch.setattr(services, "executor_start_service", lambda _ctx, **kw: (
         effect(_ctx, kw["cmd"], kw["host_cwd"], 5) and {"state": "running", "service_id": "cwd-test:preview"}))
-    for text, expected in ((str(host), "host"), (f"{parent.as_posix()}/only", "alias")):
+    for text, expected in ((_shared_absolute(host), "host"), (f"{_shared_absolute(parent)}/only", "alias")):
         read = registry.execute("read_file", {"path": f"{text}/marker.txt"})
         shown = {marker for marker in ("host", "shadow", "alias") if f"\t{marker}" in read}
         assert shown == {expected}, read
@@ -139,7 +149,7 @@ def test_identity_mount_keeps_permitted_host_root_on_every_process_door(workspac
     scratch = active.parent / "scratch"
     scratch.mkdir()
     ctx.executor_ref["path_mappings"] = [
-        {"host_path": str(scratch), "backend_path": str(scratch)},
+        {"host_path": str(scratch), "backend_path": _shared_absolute(scratch)},
         {"host_path": str(ctx.drive_root / "task_drives" / ctx.task_id), "backend_path": "/task"},
     ]  # run_script also needs its existing task-drive staging mount.
     ctx.executor_ref["type"] = "local"
@@ -157,7 +167,7 @@ def test_identity_mount_keeps_permitted_host_root_on_every_process_door(workspac
 
     def effect(_ctx, cmd, cwd, timeout_sec, **kwargs):
         assert cwd == scratch.resolve()
-        assert executor.map_host_path(executor.executor_ref_from_ctx(ctx), cwd) == scratch.as_posix()
+        assert executor.map_host_path(executor.executor_ref_from_ctx(ctx), cwd) == _shared_absolute(scratch)
         calls.append(cwd)
         return executor.ExecutorResult(0, "bound\n", operation_outcome="completed")
 
@@ -166,26 +176,26 @@ def test_identity_mount_keeps_permitted_host_root_on_every_process_door(workspac
     monkeypatch.setattr(executor, "execute", effect)
     monkeypatch.setattr(services, "executor_start_service", lambda _ctx, **kw: (
         effect(_ctx, kw["cmd"], kw["host_cwd"], 5) and {"state": "running", "service_id": "cwd-test:preview"}))
-    result = registry.execute(surface, {**arguments, "cwd": str(scratch)})
+    result = registry.execute(surface, {**arguments, "cwd": _shared_absolute(scratch)})
     assert calls == [scratch.resolve()], result
 
 
 def test_host_workspace_precedence_and_other_host_roots_do_not_bypass_alias(workspace):
     ctx, active = workspace
-    ctx.executor_ref["workspace_backend_path"] = active.parent.as_posix()
-    physical = bind(ctx, operation="shell", process_cwd=str(active / "sub"))
+    ctx.executor_ref["workspace_backend_path"] = _shared_absolute(active.parent)
+    physical = bind(ctx, operation="shell", process_cwd=_shared_absolute(active / "sub"))
     assert physical.target_path == (active / "sub").resolve()
     # An identity mount cannot grant process access to the runtime data root.
-    ctx.executor_ref["path_mappings"] = [{"host_path": str(ctx.drive_root), "backend_path": str(ctx.drive_root)}]
+    ctx.executor_ref["path_mappings"] = [{"host_path": str(ctx.drive_root), "backend_path": _shared_absolute(ctx.drive_root)}]
     with pytest.raises(ValueError):
-        bind(ctx, operation="shell", process_cwd=str(ctx.drive_root))
+        bind(ctx, operation="shell", process_cwd=_shared_absolute(ctx.drive_root))
     # copy_apply_refusal uses operation=write: its physical copy target is unchanged.
     copy_target = active.parent / "physical-copy"
     copy_target.mkdir()
-    ctx.executor_ref["path_mappings"].append({"host_path": str(ctx.drive_root), "backend_path": str(copy_target)})
+    ctx.executor_ref["path_mappings"].append({"host_path": str(ctx.drive_root), "backend_path": _shared_absolute(copy_target)})
     with pytest.raises(ValueError, match="outside active_workspace"):
-        bind(ctx, operation="shell", process_cwd=str(copy_target))
-    write = bind(ctx, operation="write", process_cwd=str(copy_target))
+        bind(ctx, operation="shell", process_cwd=_shared_absolute(copy_target))
+    write = bind(ctx, operation="write", process_cwd=_shared_absolute(copy_target))
     assert write.target_path == copy_target.resolve()
 
 
@@ -287,17 +297,18 @@ def test_declared_output_refuses_matched_traversal_instead_of_host_file(workspac
     # The backend spelling is also a real host path, so a host reinterpretation
     # of the traversal would silently select active/out.txt; the container wrote
     # <backend>/active/out.txt, which is active/active/out.txt on the host.
-    ctx.executor_ref["workspace_backend_path"] = active.parent.as_posix()
+    ctx.executor_ref["workspace_backend_path"] = _shared_absolute(active.parent)
     (active / "out.txt").write_text("decoy")
-    source, reason = _resolve_declared_output(ctx, f"{active.parent.as_posix()}/x/../active/out.txt", active)
+    source, reason = _resolve_declared_output(ctx, f"{_shared_absolute(active.parent)}/x/../active/out.txt", active)
     assert source is None and "not a usable backend path" in reason
-    mapped, reason = _resolve_declared_output(ctx, f"{active.parent.as_posix()}/out.txt", active)
+    mapped, reason = _resolve_declared_output(ctx, f"{_shared_absolute(active.parent)}/out.txt", active)
     assert (mapped, reason) == ((active / "out.txt").resolve(), "")
 
 
 def test_output_audit_ignores_matched_traversal_but_keeps_unmapped_host_output(tmp_path, monkeypatch):
     from ouroboros.tools.shell_audit import _mentioned_user_file_outputs_without_declaration
 
+    monkeypatch.chdir(tmp_path)
     home = tmp_path / "home"
     desktop, work = home / "Desktop", tmp_path / "work"
     for path in (desktop, work, tmp_path / "repo", tmp_path / "data"):
@@ -306,11 +317,11 @@ def test_output_audit_ignores_matched_traversal_but_keeps_unmapped_host_output(t
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     ctx = ToolContext(repo_dir=tmp_path / "repo", drive_root=tmp_path / "data", task_id="audit", executor_ref={
         "type": "docker_exec", "container_name": "fixture",
-        "workspace_host_path": str(work), "workspace_backend_path": f"{home.as_posix()}/mount"})
+        "workspace_host_path": str(work), "workspace_backend_path": f"{_shared_absolute(home)}/mount"})
     for name in ("decoy.txt", "real.txt"):
         (desktop / name).write_text("fresh")
     mentioned = _mentioned_user_file_outputs_without_declaration(ctx, [
-        "touch", f"{home.as_posix()}/mount/../Desktop/decoy.txt", f"{home.as_posix()}/Desktop/real.txt",
+        "touch", f"{_shared_absolute(home)}/mount/../Desktop/decoy.txt", f"{_shared_absolute(home)}/Desktop/real.txt",
     ], None, cwd=work)
     assert str((desktop / "real.txt").resolve()) in mentioned
     assert not any("decoy" in item for item in mentioned)
