@@ -63,6 +63,8 @@ KIND_HURRY = "hurry"
 # chosen option label (plus an optional owner comment) — delivered inside a
 # structural frame, never as forged free-form owner dialogue.
 KIND_QUIZ_ANSWER = "quiz_answer"
+# Explicit owner closure carries no answer, selected option, or approval.
+KIND_QUIZ_CLOSED = "quiz_closed"
 # The owner's Pause of a whole tree (``owner_pause.py``): a WAKE signal, never
 # dialogue and never the authority — the root's durable fence decides. It wakes
 # a warm owner wait so the member reaches its safe boundary without buying a

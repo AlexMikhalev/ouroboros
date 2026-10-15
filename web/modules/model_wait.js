@@ -90,6 +90,7 @@ export function isModelWaitReference(value) {
  */
 export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn(),
     onChange = () => {}, openSettings = () => {}, login = startLogin,
+    includeWait = () => true,
     read = fetchJson, send = (body) => jsonPost('/api/decisions', body, { rejectOkFalse: true }),
     store = claudexorStatus, doc = () => document } = {}) {
     const tasks = new Map();
@@ -184,7 +185,8 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
         const task = tasks.get(taskId);
         if (!task) return false;
         const record = getRecord(taskId, false);
-        const active = activeModelWaits(task.waits, task.finished || record?.finished, task.attempt);
+        const active = activeModelWaits(task.waits, task.finished || record?.finished, task.attempt)
+            .filter(row => includeWait(taskId, row));
         if (!active.length) { clearViews(task); syncPhase(taskId, false); return true; }
         const card = record || getRecord(taskId);
         if (!card?.root) { clearViews(task); return false; }
@@ -354,6 +356,7 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
 
     return {
         adopt,
+        refresh(taskId) { return onDomWrite(() => paint(taskId)); },
         observe(taskId, value) {
             const attempt = Number.isInteger(value?.task_attempt) ? value.task_attempt : 0;
             if (attempt && attempt < (tasks.get(taskId)?.attempt || 0)) return false;

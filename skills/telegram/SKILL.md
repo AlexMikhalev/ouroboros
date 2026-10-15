@@ -1,7 +1,7 @@
 ---
 name: telegram
 description: Owner-only Telegram text bridge and Mini App gateway for the existing Ouroboros interface.
-version: 1.2.13
+version: 1.2.14
 type: extension
 entry: plugin.py
 plugin_api: "2.0"
@@ -53,15 +53,15 @@ waiting line after an answer submitted through Telegram.
 Version 1.2.3 serves the stored settings on GET settings/save so the Settings
 form shows saved values before Save, and shortens the four long option labels.
 Version 1.2.4 introduced a non-clean completion notice even with the task toggle off;
-version 1.2.13 replaces that policy with a true opt-out (below).
+version 1.2.14 replaces that policy with a true opt-out (below).
 Version 1.2.5 shows the whole quiz card: its project, the host's facts about the
 asking task, and every option's detail, with localized field names; a card too
 long for one Telegram message arrives as ordered parts followed by the keyboard
 message, and nothing authored is cut.
-Version 1.2.6 edits a sent question card when the host publishes its lifecycle
-(`chat.quiz_state`): an answer given on the web settles it, a closed wait drops the
-waiting line while the buttons stay, and a finished task says a late answer still
-counts as your message. The card only moves forward — nothing reopens an answer.
+Version 1.2.6 edits a sent question card on its lifecycle (`chat.quiz_state`): a
+web answer settles it, a closed wait drops the waiting line yet keeps buttons,
+a finished task says a late answer still counts, and (1.2.13) a question closed
+unanswered states that and its reason without buttons. Answers and closures are final.
 An open question (no options) is the same whole card without buttons; it asks for
 a reply in your own words.
 
@@ -85,13 +85,14 @@ Version 1.2.12 starts the Mini App when the Ouroboros server is a container's
 PID 1 without an init. PID 1 counts as the server only when the host named
 itself so; a companion adopted by init or a subreaper still stops.
 
-Version 1.2.13 makes `TELEGRAM_NOTIFY_TASKS=off` suppress every additional task
+Version 1.2.14 makes `TELEGRAM_NOTIFY_TASKS=off` suppress every additional task
 completion notice, failures and cancellations included. On sends completion
 notices with the host's material causes; pure review provenance and missing
 host-verification receipts stay in task details, without declaring success.
 Required, unresolved or unknown review obligations remain disclosed. Previously
 stored Off values now mean no extra notices; no setting is migrated or added.
-Ordinary replies, files, questions and project mirrors are independent, as is
+The status-only Main mirror follows this toggle too; preserved intermediate
+content still arrives. Ordinary replies, files and questions are independent, as is
 `TELEGRAM_SILENT_MODE` (editing consecutive replies). IDs observed while Off
 remain seen, so enabling does not replay that backlog. Older summary rows without
 the host's compact cause projection retain their original reason text when On.

@@ -105,10 +105,13 @@ def test_daemon_post_task_uses_injected_bus_or_keeps_delivery_owed(tmp_path, mon
             else:
                 with pytest.raises(queue.Empty):
                     event_queue.get(timeout=0.05)
-                # Only the replay pacing is bypassed; the real outbox and its
-                # locked due recheck, queue and receipt writer stay in the path.
-                monkeypatch.setattr(td, "_REPLAY_MIN_AGE_SEC", 0)
-                assert td.replay_pending_deliveries(tmp_path, event_queue=event_queue) == [expected["delivery_id"]]
+                # No attached bus means unknown membership, not a failed put. Cache debt
+                # remains discoverable and replay can offer it immediately on a known bus.
+                from ouroboros.task_results import load_task_result
+                ready = load_task_result(tmp_path, task["id"])["canonical_terminal_projection_ready"]
+                assert ready["main_delivery"]["attempts"] == 0
+                assert not ready["main_delivery"].get("last_attempt_at")
+                assert td.replay_pending_deliveries(tmp_path, event_queue=event_queue) == []
                 sent = event_queue.get(timeout=5)
                 assert sent["progress_meta"] == expected["progress_meta"]
             registry = json.loads((tmp_path / "state/terminal_deliveries.json").read_text(encoding="utf-8"))

@@ -69,6 +69,8 @@ TECHNICAL_REASON_CODES = frozenset({
     # is not retried automatically (replaying would repeat effects), and its saved
     # source is retained: an explicit Continue is exactly its manual path (#1543).
     "worker_crash_owner_wait", "worker_crash_budget_pausing",
+    # A billing or dispatch-fence authority that could not be read, where no exact pause was saved.
+    "billing_authority_unreadable", "control_authority_unreadable",
 })
 # The loop's forced-finalization rails that are technical limits: an extracted
 # best-effort answer settles ``completed``, the host fallback ``failed``
@@ -77,7 +79,7 @@ EXECUTION_LIMIT_RAILS = frozenset({"round_limit", "finalization_grace"})
 # The work's own hard bounds (its deadline, its money): a new task id never
 # extends them, so a task they ended is not offered Continue.
 HARD_LIMIT_REASON_CODES = frozenset({"deadline", "deadline_local", "budget_exhausted"})
-OWNER_SOURCE_KINDS = frozenset({"owner_text", "quiz_answer"})
+OWNER_SOURCE_KINDS = frozenset({"owner_text", "quiz_answer", "quiz_closed"})
 # The retained owner corpus (``review_evidence.task_inputs``) labels each row
 # by its recorder's typed ``source`` (``loop_messages._record_owner_directive``):
 # owner-authored rows (the successor's seeding set), the run's first text (a
@@ -124,6 +126,8 @@ def continuation_eligibility(result: Dict[str, Any], task_id: str) -> Dict[str, 
     reason = str(result.get("reason_code") or "")
     if reason in HARD_LIMIT_REASON_CODES:
         return {"eligible": False, "cause": reason, "refusal": "hard_limit_reached"}
+    if reason == "billing_authority_refused":  # missing/foreign lineage: Continue cannot supply one
+        return {"eligible": False, "cause": reason, "refusal": "billing_lineage_refused"}
     if status == "completed" and reason not in EXECUTION_LIMIT_RAILS:
         return {"eligible": False, "cause": "finished", "refusal": "author_finished"}
     origin = result.get("cancel_origin") if isinstance(result.get("cancel_origin"), dict) else {}

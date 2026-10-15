@@ -463,8 +463,8 @@ def _run_historical_acceptance(ctx: Any, *, task_id: str, debt_id: str,
                     prompt_chars=[_messages_char_count(_request_messages(request, slot)) for slot in paid_slots],
                     categories='task_acceptance_review', slot_ids=[slot.slot_id for slot in paid_slots],
                     processing_preferences=[slot.processing_preference for slot in paid_slots])
-                if not wave.get('fits'):
-                    return refused('review_wave_budget_insufficient')
+                if wave.get('fits') is False:
+                    return refused(wave.get('reason') or 'review_wave_budget_insufficient')
             refusal = task_acceptance_preclaim_refusal(admission)
             if refusal is not None:
                 return refused(refusal.degraded_reasons[0])

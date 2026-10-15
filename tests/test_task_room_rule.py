@@ -302,3 +302,35 @@ def test_converting_a_middle_task_moves_its_subtrees_earlier_rows_out_of_the_old
     facts = memory_inventory.membership_facts(tmp_path)  # the registry facts of the moment, as a capture takes them
     assert memory_inventory.rooms_of_row({"chat_id": native["chat_id"], "task_id": "born-1"}, facts) == {str(native["chat_id"])}
     assert memory_inventory.rooms_of_row({"chat_id": 1, "task_id": "direct-9"}, facts) == {"1"}
+
+
+def test_new_quiz_uses_the_same_nearest_ancestor_room_then_keeps_its_publication(tmp_path):
+    from supervisor.log_addressing import resolve_quiz_publication
+
+    rooms = _world(tmp_path)
+    write_task_result(tmp_path, 'great-1', 'running', parent_task_id='grand-1',
+                      root_task_id='root-1', chat_id=1, delegation_role='subagent')
+    assert resolve_quiz_publication(tmp_path, 'great-1', {}, 1, 'grand-1', 'root-1') == rooms['b']
+    assert resolve_quiz_publication(tmp_path, 'born-1', {}, 1) == rooms['native']
+    assert resolve_quiz_publication(tmp_path, 'direct-1', {}, 1) == 1
+    pinned = {'publication_chat_id': 1, 'publication_evidence': 'pre_exposure'}
+    assert resolve_quiz_publication(tmp_path, 'great-1', pinned, rooms['b']) == 1
+    # An outage may not silently select Main for a new publication; an already-bound one needs no resolver.
+    from ouroboros.projects_registry import _bindings_path
+    _bindings_path(tmp_path).write_text('{')
+    with pytest.raises(ValueError):
+        resolve_quiz_publication(tmp_path, 'great-1', {}, 1)
+    assert resolve_quiz_publication(tmp_path, 'great-1', pinned, 0) == 1
+
+
+@pytest.mark.parametrize('kind', ['quiz', 'quiz_answer', 'quiz_closed'])
+def test_quiz_display_follows_current_room_without_rewriting_publication(tmp_path, kind):
+    rooms = _world(tmp_path)
+    row = {'type': kind, 'task_id': 'grand-1', 'chat_id': rooms['native'],
+           'quiz': {'quiz_id': 'accepted-before-conversion'}}
+    assert not _membership(tmp_path, rooms['native'])(rooms['native'], row)
+    assert _membership(tmp_path, rooms['b'])(rooms['native'], row)
+    assert row['chat_id'] == rooms['native'], 'membership never rewrites the publication address'
+    assert not _membership(tmp_path, 1)(rooms['native'], row)
+    # Ordinary work still obeys the public room rule.
+    assert _membership(tmp_path, rooms['b'])(rooms['native'], {**row, 'type': 'send_message'})

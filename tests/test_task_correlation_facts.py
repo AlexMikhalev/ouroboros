@@ -176,6 +176,8 @@ def test_terminal_delegation_rows_keep_existing_root_and_parent(tmp_path, monkey
     from ouroboros import delegate_custody as custody
 
     monkeypatch.setattr(custody, "_CUSTODY", {})
+    from ouroboros.task_results import write_task_result
+    write_task_result(tmp_path, "root", "running", root_task_id="root")  # the child's real root
     row = custody.RunCustody(run_id="correlated", task_id="child", root_task_id="root", parent_task_id="parent",
                              route_id="route", ledger_root=str(tmp_path))
     custody.record_started(tmp_path, row)

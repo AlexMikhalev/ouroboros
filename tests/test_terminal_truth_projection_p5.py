@@ -230,7 +230,7 @@ def test_the_event_and_the_row_render_one_reason_line_over_the_shared_fixture() 
     fixture = (pathlib.Path(__file__).resolve().parents[1]
                / "web" / "tests" / "fixtures" / "outcome_phase_parity.json")
     cases = json.loads(fixture.read_text(encoding="utf-8"))["cases"]
-    asserted = [case for case in cases if case.get("acceptance_clause")]
+    asserted = [case for case in cases if "acceptance_clause" in case]
     assert len(asserted) >= 5, "the fixture lost its cause-line cases"
     for case in asserted:
         record, clause = case["record"], case["acceptance_clause"]

@@ -113,6 +113,8 @@ def test_chat_activities_snapshot_projects_queue_roots_with_phases(tmp_path, mon
         "client_message_id": "",
         "kind": "managed_task",
         "phase": "queued",
+        "can_resume": False,
+        "cancelable": True,
         "task_attempt": 1,
     }
     assert rows["running-root"]["phase"] == "working"
@@ -154,6 +156,7 @@ def test_snapshot_rehomes_activity_without_changing_sources(tmp_path, monkeypatc
         "activity_id": "root", "chat_id": 1, "project_id": "",
         "kind": "managed_task", "phase": "working", "started_at": 9.0,
         "client_message_id": "", "task_attempt": 1,
+        "can_resume": False, "cancelable": True,
     }
     assert rows == [{**expected, **bindings.get("root", {})}]
     assert direct_rows == original_direct
@@ -256,7 +259,7 @@ def test_active_chat_activity_contract_mirrors_direct_turn_shape():
     additional_keys = {
         "required_question", "required_question_unavailable", "project_admission_hold", "pause_cause", "owner_wait",
         "status", "outcome_axes", "reason_code", "root_phase_checkpoint", "timeout_retry_from", "original_task_id",
-        "finishing_reviews", "late_work",
+        "finishing_reviews", "late_work", "can_resume", "cancelable",
     }
     assert {key: value for key, value in fields.items() if key not in additional_keys} == ActiveDirectTurn.__annotations__
     assert set(fields) - set(ActiveDirectTurn.__annotations__) == additional_keys

@@ -5,6 +5,7 @@ import {
     DEFAULT_NOTIFY_PREFS,
     NOTIFY_PREFS_KEY,
     classifyLiveFrame,
+    createNotificationActivation,
     createNotifier,
     decideNotification,
     attentionStatusText,
@@ -16,6 +17,51 @@ import {
 } from '../modules/notifications.js';
 
 const ON = { ...DEFAULT_NOTIFY_PREFS, enabled: true };
+
+test('activation resolves an addressed Project independently of the sidebar and preserves question identity', async () => {
+    const calls = [];
+    const project = { id: 'older-than-sidebar', chat_id: -77, lifecycle: 'active' };
+    const activate = createNotificationActivation({
+        resolveProject: async chatId => { calls.push(['resolve', chatId]); return project; },
+        openProject: (...args) => calls.push(['project', ...args]),
+        openMain: () => calls.push(['main']),
+        unavailable: () => calls.push(['unavailable']),
+    });
+    await activate({ chatId: -77, taskId: 'author', quizId: 'question' });
+    assert.deepEqual(calls, [['resolve', -77], ['project', project,
+        { openOnly: true, taskId: 'author', quizId: 'question' }]]);
+    calls.length = 0;
+    await activate({ chatId: 1 });
+    assert.deepEqual(calls, [['main']], 'only an explicitly Main-addressed notification opens Main');
+});
+
+test('unreadable, missing, inactive and mismatched notification destinations say unavailable without navigation', async () => {
+    for (const resolveProject of [async () => { throw new Error('503'); }, async () => null,
+        async () => ({ id: 'p', chat_id: -77, lifecycle: 'tombstoned' }),
+        async () => ({ id: 'p', chat_id: -78, lifecycle: 'active' })]) {
+        const calls = [];
+        const activate = createNotificationActivation({ resolveProject,
+            openProject: () => calls.push('project'), openMain: () => calls.push('main'),
+            unavailable: () => calls.push('unavailable') });
+        await activate({ chatId: -77 });
+        assert.deepEqual(calls, ['unavailable']);
+    }
+});
+
+test('a later Main activation supersedes an older unresolved Project notification', async () => {
+    let complete;
+    const calls = [];
+    const activate = createNotificationActivation({
+        resolveProject: () => new Promise(resolve => { complete = resolve; }),
+        openProject: () => calls.push('project'), openMain: () => calls.push('main'),
+        unavailable: () => calls.push('unavailable'),
+    });
+    const earlier = activate({ chatId: -77 });
+    await activate({ chatId: 1 });
+    complete({ id: 'p', chat_id: -77, lifecycle: 'active' });
+    await earlier;
+    assert.deepEqual(calls, ['main']);
+});
 
 function fakeStorage(initial = {}) {
     const map = new Map(Object.entries(initial));
@@ -84,7 +130,7 @@ test('a waiting question is required, an optional one is model-chosen', () => {
 });
 
 test('an answered or closed question never rings', () => {
-    for (const state of ['answered', 'expired_terminal', 'superseded']) {
+    for (const state of ['answered', 'closed', 'expired_terminal', 'superseded']) {
         assert.equal(classifyLiveFrame(
             { task_id: 't1', quiz: { quiz_id: 'q', state, wait_for_answer: true } }, { kind: 'quiz' },
         ), null, state);

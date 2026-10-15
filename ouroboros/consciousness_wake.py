@@ -156,6 +156,17 @@ def _answered_card_line(task_id: str, quiz_id: str, block: Dict[str, Any], *, no
 
 
 
+def _closed_card_line(task_id, quiz_id, block, *, now):
+    stamp = _parse_iso(block.get("closed_at"))
+    when = _ago(now - stamp) if stamp is not None else "at an unknown time"
+    actor = str(block.get("closed_actor") or "unknown actor")
+    if actor == "model" and block.get("closed_by_task_id"):
+        actor += f" task {block['closed_by_task_id']}"
+    return (f"- owner card {quiz_id} on task {task_id}: closed {when} by {actor}, without an owner answer; "
+            f"reason: {block.get('closed_reason') or 'unavailable'}; "
+            f"question: {_clip_preview(block.get('question') or 'question text unavailable')}")
+
+
 class _ChatChain(JsonlChainSnapshot):
     """One captured pass over ``logs/chat.jsonl`` + its rotated archives (``jsonl_chain_handles``).
 
@@ -252,7 +263,7 @@ def _chat_window(drive_root: pathlib.Path, boundary: Any, since: float,
     return collected, {"lower": lower, "upper": upper, "basis": basis, "boundary": accepted}
 
 
-_SYSTEM_ROW_KINDS = {"task_summary": "task_terminal", "quiz_answer": "card_answer",
+_SYSTEM_ROW_KINDS = {"task_summary": "task_terminal", "quiz_answer": "card_answer", "quiz_closed": "card_state",
                      "acceptance_late_settlement": "late_review", "task_error": "task_error"}
 
 
@@ -320,6 +331,9 @@ def _event_line(kind: str, row: Dict[str, Any], results: Dict[str, Dict[str, Any
     if kind == "card_answer":
         block = row.get("quiz") if isinstance(row.get("quiz"), dict) else {}
         return _answered_card_line(task_id, str(block.get("quiz_id") or "?"), block, now=now)
+    if kind == "card_state":
+        block = row.get("quiz") if isinstance(row.get("quiz"), dict) else {}
+        return _closed_card_line(task_id, str(block.get("quiz_id") or "?"), block, now=now)
     if kind == "late_review":
         # A chat row whose canonical fact was not found: only what the row itself says.
         return f"- late review announced for task {task_id}, {when}: {_clip_preview(row.get('text'), 240)}"
@@ -392,7 +406,7 @@ def _transition_facts(row: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     for quiz_id, block in quizzes.items():
         state = str(block.get("state") or "") if isinstance(block, dict) else ""
         if state and state != "open":
-            stamp = _parse_iso(block.get("answered_at") or block.get("reconciled_at") or "")
+            stamp = _parse_iso(block.get("closed_at") or block.get("answered_at") or block.get("reconciled_at") or "")
             facts[f"card:{task_id}:{quiz_id}:{state}"] = {
                 "kind": "card_answer" if state == "answered" else "card_state", "task_id": task_id,
                 "quiz_id": str(quiz_id), "block": block, "stamp": stamp, "proven": stamp is not None}
@@ -473,6 +487,8 @@ def _transition_line(fact: Dict[str, Any], results: Dict[str, Dict[str, Any]], r
         from ouroboros.project_dialogue import owner_wait_projection, question_status
 
         block = fact["block"]
+        if block.get("state") == "closed":
+            return kind, _closed_card_line(task_id, fact["quiz_id"], block, now=now)
         label = question_status(str(block.get("state") or ""), owner_wait_projection(
             fact["quiz_id"], (results.get(task_id) or {}).get("owner_wait"), block), False)
         when = f", closed {ago}" if stamp is not None else ""
@@ -674,6 +690,7 @@ def observe_wake(drive_root: Any, *, boundary: Any, since: float, now: float, re
         key = next((key for key, fact in facts.items() if (
             kind == "task_terminal" and fact["kind"] == "task_terminal")
             or (kind == "card_answer" and key == f"card:{row.get('task_id')}:{quiz.get('quiz_id')}:answered")
+            or (kind == "card_state" and key == f"card:{row.get('task_id')}:{quiz.get('quiz_id')}:closed")
             or (kind == "late_review" and fact["kind"] == "late_review" and retry and retry == str(
                 ((fact["fact"].get("late_settlement") or {}).get("reviewed_subject") or {}).get("retry_key") or ""))),
             None)

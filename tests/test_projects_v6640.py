@@ -517,16 +517,20 @@ def test_project_lifecycle_rows_render_design_system_action_static_contract():
     app = (root / "web" / "app.js").read_text(encoding="utf-8")
 
     # One shared set drives render, history replay, and live fan-out.
-    assert (
-        "const PROJECT_ROW_TYPES = new Set(['project_started', 'project_handoff', 'project_completion_summary']);"
-        in chat
-    )
-    # Compact Main entries own their shell; the remaining lifecycle rows use the
-    # shared action composition. Both renderers reuse the one Project reference.
-    assert "if (projectEntry) handoffs.mount(bubble, {" in chat
-    assert "if (!projectEntry && PROJECT_ROW_TYPES.has(systemType)) decorateProjectRow(bubble, { role, projectId, projectName," in chat
-    assert "terminalTime: opts.terminalTime, addedAt: ts, completion: systemType === 'project_completion_summary'" in chat
     render = (root / "web" / "modules" / "project_answer.js").read_text(encoding="utf-8")
+    assert (
+        "export const PROJECT_ROW_TYPES = new Set(['project_started', 'project_handoff', 'project_completion_summary']);"
+        in render
+    )
+    assert "import { appendProjectRow, decorateProjectRow, PROJECT_ROW_TYPES, syncSavedProjectContext } from './project_answer.js';" in chat
+    assert "const PROJECT_ROW_TYPES" not in chat
+    # Compact Main entries own their shell; the remaining lifecycle rows only delegate:
+    # the lifecycle-row module puts the one Project reference (web/modules/project_reference.js)
+    # into the shared action composition.
+    assert "if (projectEntry) handoffs.mount(bubble, {" in chat
+    assert "if (!projectEntry && PROJECT_ROW_TYPES.has(systemType)) decorateProjectRow(bubble, { ...meta, ...opts, role," in chat
+    assert "completion = systemType === 'project_completion_summary'" in render
+    assert "terminalTime: msg.terminal_time || null" in render
     assert "createSystemMessageActions(projectReference(" in render
     assert "row.className = 'system-message-actions'" in helpers
     # The Main mirror of a Project question carries no system action: its Project chip is the way there.

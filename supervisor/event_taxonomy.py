@@ -155,6 +155,11 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),
     "send_quiz": _handled(
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),
+    "send_quiz_state": _handled(
+        "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py",
+        "ouroboros/gateway/task_decision.py",
+        note="persists an explicit closure reason and discharges its delivery; "
+             "the live quiz_state frame is a separate transport discriminator"),
     "send_video": _handled(
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),
     "skill_exec_failed": _handled(
@@ -199,6 +204,9 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         note="the commit gate's money admission raised: the wave dispatched unadmitted (fail-open)"),
     "review_wave_budget_insufficient": _telemetry(
         "ouroboros/tools/review_helpers.py"),
+    "review_wave_billing_authority_unavailable": _telemetry(
+        "ouroboros/tools/review_helpers.py",
+        note="not money: the precheck fails open and each seat refuses typed and unsent"),
     "review_wave_budget_partial_unknown": _telemetry(
         "ouroboros/tools/review_helpers.py",
         note="the v6.69.0-class omission: the fix registered one branch of "

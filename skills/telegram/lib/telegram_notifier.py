@@ -206,6 +206,29 @@ def _announce_summary(row: Dict[str, Any], *, notify_all: bool) -> bool:
     return notify_all
 
 
+def _completion_text(row: Dict[str, Any], tid: str, lang: str, parts=()) -> str:
+    """Render the host's compact view on both existing completion transports."""
+    parts = list(parts)
+    notice = row.get("completion_notice")
+    notice = notice if isinstance(notice, dict) and isinstance(notice.get("neutral"), bool) and isinstance(notice.get("detail"), str) else None
+    phase = str((notice or {}).get("phase") or row.get("outcome_phase") or "")
+    if phase in _PHASE_WORDS:
+        icon, word = _PHASE_ICONS[phase], _phase_word(phase, lang)
+    else:
+        outcome = _axis_status(row.get("outcome_axes"), "lifecycle")
+        degraded = _axis_status(row.get("outcome_axes"), "execution").lower() in ("degraded", "best_effort")
+        healthy = outcome in ("", "completed", "done") and not degraded
+        icon, word = ("✅" if healthy else "⚠️"), _phase_word("done", lang)
+        if outcome and outcome not in ("completed", "done"):
+            parts.append(outcome)
+    tail = (" · " + " · ".join(parts)) if parts else ""
+    message = (_NOTIFY[lang].format("task_finished_details", id=tid[:8], tail=tail)
+               if notice is not None and notice["neutral"] else
+               _NOTIFY[lang].format("task_finished", icon=icon, id=tid[:8], word=word, tail=tail))
+    reason = notice["detail"] if notice is not None else str(row.get("reason_detail") or "")
+    return "\n".join(part for part in (message, reason, str((notice or {}).get("salvage") or "")) if part)
+
+
 async def _check_tasks_notify(
     api, settings: Dict[str, Any], chat_id: int, state: Dict[str, Any], lang: str,
     *, trust_env: bool = False,
@@ -245,33 +268,7 @@ async def _check_tasks_notify(
                 parts.append(f"${float(tr.get('cost_usd')):.2f}")
         except (TypeError, ValueError):
             pass
-        oa = e.get("outcome_axes")
-        outcome = _axis_status(oa, "lifecycle")
-        degraded = _axis_status(oa, "execution").lower() in ("degraded", "best_effort")
-        # The host stamps one status phase on its own task rows; consume it
-        # instead of re-deriving a third status ladder from the axes: the phase
-        # picks the icon AND the completion word (#538), so a failed or
-        # cancelled task is never announced as "done". Legacy rows and
-        # pre-finalization "working" rows keep the axes rule.
-        phase = str(e.get("outcome_phase") or "")
-        if phase in _PHASE_WORDS:
-            icon, word = _PHASE_ICONS[phase], _phase_word(phase, lang)
-        else:
-            healthy = outcome in ("", "completed", "done") and not degraded
-            icon, word = ("✅" if healthy else "⚠️"), _phase_word("done", lang)
-            if outcome and outcome not in ("completed", "done"):
-                parts.append(outcome)
-        tail = (" · " + " · ".join(parts)) if parts else ""
-        msg = _NOTIFY[lang].format("task_finished", icon=icon, id=tid[:8], word=word, tail=tail)
-        # The producer still has cancellation/custody facts omitted from this row.
-        # Consume its compact view; never reconstruct it or filter flattened prose.
-        notice = e.get("completion_notice")
-        notice = notice if isinstance(notice, dict) and isinstance(notice.get("neutral"), bool) and isinstance(notice.get("detail"), str) else None
-        reason = notice["detail"] if notice is not None else str(e.get("reason_detail") or "")
-        if notice is not None and notice["neutral"]:
-            msg = _NOTIFY[lang].format("task_finished_details", id=tid[:8], tail=tail)
-        if reason:
-            msg += "\n" + reason
+        msg = _completion_text(e, tid, lang, parts)
         send_outcome, exc = await _push_notification(api, chat_id, msg, trust_env=trust_env)
         if send_outcome == "transient":
             # Stop the batch on the first transient failure: every further

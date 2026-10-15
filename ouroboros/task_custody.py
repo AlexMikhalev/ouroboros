@@ -89,8 +89,8 @@ _MAILBOX_DIR = pathlib.Path(_OWNER_MAILBOX_DIR)
 _STAGING_DIR = pathlib.Path("state") / "custody_staging"
 _TRASH_DIR = pathlib.Path("state") / "custody_trash"
 # The addressed words a sender is owed; controls (hurry, finalize_now, ...) are not mail.
-UNREAD_MAIL_KINDS = frozenset({"owner_text", "task_message", "quiz_answer"})
-OWNER_MAIL_KINDS = frozenset({"owner_text", "quiz_answer"})  # what the owner authored
+UNREAD_MAIL_KINDS = frozenset({"owner_text", "task_message", "quiz_answer", "quiz_closed"})
+OWNER_MAIL_KINDS = frozenset({"owner_text", "quiz_answer", "quiz_closed"})  # what the owner authored
 # A store's own bookkeeping and non-deliverable subtrees (inputs, media, sources).
 _STORE_BOOKKEEPING = frozenset({".artifact_manifest.json", ".artifact_manifest.json.lock",
                                 ".scratch_manifest.json", "verification_receipts.jsonl"})

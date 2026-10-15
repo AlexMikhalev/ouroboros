@@ -989,6 +989,33 @@ class LocalChatBridge:
             payload = validate_quiz_payload(question, options, stake, assumption, wait_for_answer=wait_for_answer)
         except QuizValidationError as exc:
             return False, str(exc)
+        from ouroboros.owner_quiz import CLOSURE_FIELDS, question_delivery_projection, quiz_states, record_publication
+        from supervisor.log_addressing import resolve_quiz_publication
+
+        prior = quiz_states(DATA_DIR, str(task_id)).get(qid) or {}
+        chat_id = resolve_quiz_publication(DATA_DIR, str(task_id), prior, chat_id)
+        block = record_publication(DATA_DIR, str(task_id), qid, chat_id)
+        if not block or "publication_chat_id" not in block:
+            return False, "canonical quiz publication could not be persisted"
+        chat_id = int(block["publication_chat_id"])
+        state = str(block.get("state") or state)
+        # A queued ask may arrive after answer, close or resumed waiting. Render
+        # the same canonical card the decision ingress now validates.
+        details = block.get("option_details") or []
+        payload = {
+            "question": str(block.get("question") or ""),
+            "options": [{"label": str(label),
+                         **({"detail": str(details[index])} if index < len(details) and details[index] else {}),
+                         **({"recommended": True} if block.get("recommended_index") == index else {})}
+                        for index, label in enumerate(block.get("options") or [])],
+            "stake": str(block.get("stake") or ""), "assumption": str(block.get("assumption") or ""),
+        }
+        wait_for_answer = bool(block.get("wait_for_answer"))
+        host_facts = str(block.get("host_facts") or host_facts or "")
+        lifecycle = {key: block[key] for key in ("answered_index", "comment", *CLOSURE_FIELDS) if key in block}
+        if delivery := question_delivery_projection(block):
+            lifecycle["question_delivery"] = delivery
+        materials = list(block.get("materials") or [])
         ts = utc_now_iso()
         msg = {
             "type": "quiz",
@@ -1004,6 +1031,9 @@ class LocalChatBridge:
             "chat_id": int(chat_id or 0),
             "task_id": str(task_id or ""),
         }
+        msg.update(lifecycle)
+        if materials:
+            msg["materials"] = materials
         if host_facts:
             msg["host_facts"] = str(host_facts)  # the envelope literal keeps constant keys (contract scan)
         stamp_project_thread(DATA_DIR, msg)
@@ -1016,6 +1046,35 @@ class LocalChatBridge:
                                 if row.get("chat_id") == int(chat_id)), None)
             except Exception:
                 log.debug("Quiz project lookup failed", exc_info=True)
+        try:
+            owner_id = int(load_state().get("owner_id") or 0)
+        except Exception:
+            owner_id = 0
+        if log_chat(
+            "out", int(chat_id or 0), owner_id, payload["question"], ts=ts,
+            task_id=str(task_id or ""), record_type="quiz",
+            client_message_id=f"quiz_publication:{task_id}:{qid}",
+            require_write=True,
+            quiz={
+                "quiz_id": qid,
+                **lifecycle,
+                **({"materials": materials} if materials else {}),
+                "wait_for_answer": bool(wait_for_answer),
+                "options": payload["options"],
+                "stake": payload["stake"],
+                "assumption": payload["assumption"],
+                "state": str(state or "open"),
+                **({"host_facts": str(host_facts)} if host_facts else {}),
+            },
+        ):
+            from ouroboros.owner_quiz import mark_published
+            mark_published(DATA_DIR, str(task_id), qid)
+            # The durable ask now exists. Expose its settled delivery fact, not
+            # the pre-append snapshot carried by the history write above.
+            if delivery := question_delivery_projection(quiz_states(DATA_DIR, str(task_id)).get(qid)):
+                lifecycle["question_delivery"] = delivery
+                msg["question_delivery"] = delivery
+            _advance_project_visible_revision(chat_id)
         if self._broadcast_fn:
             self._broadcast_fn(msg)
         quiz_transport = dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
@@ -1031,27 +1090,11 @@ class LocalChatBridge:
             "assumption": payload["assumption"],
             "state": str(state or "open"),
             "ts": ts,
+            **lifecycle,
+            **({"materials": materials} if materials else {}),
             **({"host_facts": str(host_facts)} if host_facts else {}),
             **({"project_name": str(project["name"])} if project and project.get("name") else {}),
         })
-        try:
-            owner_id = int(load_state().get("owner_id") or 0)
-        except Exception:
-            owner_id = 0
-        if log_chat(
-            "out", int(chat_id or 0), owner_id, payload["question"], ts=ts,
-            task_id=str(task_id or ""), record_type="quiz",
-            quiz={
-                "quiz_id": qid,
-                "wait_for_answer": bool(wait_for_answer),
-                "options": payload["options"],
-                "stake": payload["stake"],
-                "assumption": payload["assumption"],
-                "state": str(state or "open"),
-                **({"host_facts": str(host_facts)} if host_facts else {}),
-            },
-        ):
-            _advance_project_visible_revision(chat_id)
         if self._broadcast_fn and msg.get("project_thread"):
             try:
                 from ouroboros.owner_quiz import quiz_states
@@ -1072,7 +1115,7 @@ class LocalChatBridge:
                     # The complete pointer row (ChatOutbound mirrors): present only when known.
                     for key in ("question", "options", "option_details", "stake", "assumption", "recommended_index",
                                 "answered_index", "comment", "wait_for_answer", "wait_ended_at",
-                                "owner_wait_resume_reason", "host_facts"):
+                                "owner_wait_resume_reason", "host_facts", "materials", "closed_reason", "question_delivery"):
                         if key in pointer:
                             frame[key] = pointer[key]
                     self._broadcast_fn(frame)
@@ -1091,6 +1134,12 @@ class LocalChatBridge:
         chat_id: int = 0,
         comment: Optional[str] = None,
         wait_for_answer: Optional[bool] = None,
+        closed_reason: Optional[str] = None,
+        closed_at: Optional[str] = None,
+        closed_actor: Optional[str] = None,
+        closed_request_id: Optional[str] = None,
+        closed_by_task_id: Optional[str] = None,
+        question_delivery: Optional[Dict[str, str]] = None,
     ) -> None:
         """Broadcast a quiz lifecycle update to already-rendered cards.
 
@@ -1109,6 +1158,18 @@ class LocalChatBridge:
             "state": str(state or ""),
             "ts": utc_now_iso(),
         }
+        if closed_reason:
+            msg["closed_reason"] = str(closed_reason)
+        if closed_at:
+            msg["closed_at"] = str(closed_at)
+        if closed_actor:
+            msg["closed_actor"] = str(closed_actor)
+        if closed_request_id:
+            msg["closed_request_id"] = str(closed_request_id)
+        if closed_by_task_id:
+            msg["closed_by_task_id"] = str(closed_by_task_id)
+        if question_delivery:
+            msg["question_delivery"] = dict(question_delivery)
         if answered_index is not None:
             msg["answered_index"] = int(answered_index)
         if str(comment or ""):
@@ -1351,6 +1412,11 @@ def log_chat(
         # Speech rows persist only the compact identity required to route a
         # child final after progress retention/rotation has removed its cards.
         meta = dict(message_meta or {})
+        if meta.get("late_answer"):
+            from ouroboros.owner_quiz import late_answer_ref
+            accepted_answer = late_answer_ref(meta["late_answer"])
+            if accepted_answer:
+                record["late_answer"] = accepted_answer
         if meta.get("attachments"):  # owner attachments: server-measured refs, never paths or bytes
             record["attachments"] = stored_refs(meta["attachments"])
         if meta.get("text_placeholder") is True and text:  # the host wrote TEXT; the sender sent no words
@@ -1361,9 +1427,11 @@ def log_chat(
         if "narration" in meta:
             record["narration"] = bool(meta["narration"])
         if record_type in ("project_started", "project_handoff", "project_completion_summary"):
-            for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer", "handoff_id", "terminal_time"):
+            for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer", "completion_reason", "completion_notice", "handoff_id", "terminal_time"):
                 if key in meta:
                     record[key] = meta[key]
+        if meta.get("delivery_id"):
+            record["delivery_id"] = str(meta["delivery_id"])
         if "task_terminal_status" in meta:
             record["task_terminal_status"] = str(meta.get("task_terminal_status") or "")
         # The turn's origin label (a consciousness wake-up) survives the row
@@ -1409,7 +1477,7 @@ def log_chat(
             record["size_bytes"] = int(size_bytes)
         written = append_jsonl(
             root / "logs" / "chat.jsonl", record,
-            require_lock=require_write, ensure_record_boundary=ensure_record_boundary,
+            require_lock=require_write, ensure_record_boundary=ensure_record_boundary or require_write,
         )
         if written:
             from ouroboros.notice_receipts import record as record_notice_receipt
@@ -1443,6 +1511,10 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
     durable record and the live bridge receive; an explicit value from the caller
     (or one already on ``progress_meta``) is preserved, and stored rows written
     before the fact keep their legacy reading.
+
+    ``require_write`` requires a durable row. A bound ``delivery_id`` also
+    requires a transport receipt before its caller may acknowledge delivery;
+    ordinary notices retain their existing write-only bookkeeping contract.
     """
     st = load_state()
     owner_id = int(st.get("owner_id") or 0)
@@ -1511,27 +1583,12 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
     # Budget footers belong in dashboard/status flows, not every chat reply.
     full = _text
 
+    transport = dict(ts=msg_ts, is_progress=is_progress, task_id=task_id, progress_meta=progress_meta)
     if fmt == "markdown":
-        ok, err = _send_markdown(
-            chat_id,
-            full,
-            ts=msg_ts,
-            is_progress=is_progress,
-            task_id=task_id,
-            progress_meta=progress_meta,
-            role=role,
-            system_type=system_type,
-        )
-        return
-
-    bridge = get_bridge()
-    bridge.send_message(
-        chat_id,
-        full,
-        ts=msg_ts,
-        is_progress=is_progress,
-        task_id=task_id,
-        progress_meta=progress_meta,
-        role=role,
-        system_type=system_type,
-    )
+        receipt = _send_markdown(chat_id, full, **transport, role=role, system_type=system_type)
+    else:
+        receipt = get_bridge().send_message(chat_id, full, **transport, role=role, system_type=system_type)
+    if meta.get("delivery_id"):
+        ok, err = receipt
+        if not ok:
+            raise RuntimeError(f"message transport refused: {err}")

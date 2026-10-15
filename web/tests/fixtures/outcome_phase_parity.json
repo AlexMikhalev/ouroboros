@@ -109,7 +109,7 @@
       },
       "phase": "cancelled",
       "headline": "Cancelled",
-      "acceptance_clause": ""
+      "acceptance_clause": "Some result files are missing or could not be preserved."
     },
     {
       "name": "legacy cancel_requested event spelling",
@@ -841,6 +841,20 @@
       "phase": "error",
       "headline": "Failed",
       "acceptance_clause": "The task made no progress for too long."
+    },
+    {
+      "name": "a rail also names current delegated custody",
+      "record": {"status": "completed", "reason_code": "round_limit", "delegated_runs_unreconciled": ["run-1"], "outcome_axes": {"execution": {"status": "best_effort", "reason_code": "round_limit"}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The task hit its round limit before it could finish cleanly · Some delegated work was never reconciled."
+    },
+    {
+      "name": "a rail does not resurrect healed custody",
+      "record": {"status": "completed", "reason_code": "round_limit", "delegated_runs_unreconciled": [], "outcome_axes": {"execution": {"status": "best_effort", "reason_code": "round_limit"}, "objective": {"warnings": ["delegated_custody_unreconciled"]}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The task hit its round limit before it could finish cleanly."
     },
     {
       "name": "a provider failure says its own sentence",

@@ -188,6 +188,41 @@ test('reading to the oldest page hides the button; ↓ returns to the present wi
     assert.equal(new Set(ids).size, ids.length, 'a replayed page mounts no duplicate row');
 });
 
+test('a Project final whose page was released mounts again with its Files; a mounted one absorbs a retry', async (t) => {
+    offScreen(t);
+    // The Project reference sits after the message (`Element.after`), which this stub lacks.
+    ElementStub.prototype.after = function (node) {
+        this.parentNode?.insertBefore(node, this.parentNode.children[this.parentNode.children.indexOf(this) + 1] || null);
+    };
+    t.after(() => { delete ElementStub.prototype.after; });
+    const final = row('chat:800', 'Launch › Ship · Completed', { role: 'system', system_type: 'project_completion_summary',
+        completion_answer: 'Done: PR #7 merged.', project_id: 'launch', project_name: 'Launch', task_id: 'final-task',
+        delivery_id: 'completion:final-task', ts: '2026-09-12T11:00:00.000Z' });
+    const pages = [page([row('chat:900', 'Newest saved message')], 'page:recent', 'before:1'), page([final], 'page:1', 'before:2'),
+        ...[2, 3, 4].map(index => page([row(`chat:${500 - index}`, `Older ${index}`)], `page:${index}`, index < 4 ? `before:${index + 1}` : null))];
+    const f = fixture(t, pages[0], (cursor) => pages[Number(cursor.split(':')[1])]);
+    const finals = () => f.bubbles().filter(node => node.dataset.deliveryId === final.delivery_id);
+    await f.refresh();
+    await scrollEdge(f);
+    assert.equal(finals().length, 1);
+    for (let n = 0; n < 3; n += 1) await scrollEdge(f);
+    assert.deepEqual(f.calls, [null, 'before:1', 'before:2', 'before:3', 'before:4']);
+    assert.equal(finals().length, 0, 'four older pages released the page holding the final');
+    globalThis.document.byId.get('chat-scroll-bottom').click();
+    for (let n = 0; n < 20; n += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    await scrollEdge(f);
+    assert.deepEqual(f.calls.slice(5), [null, 'before:1'], 'the return reads the final page back');
+    const [again] = finals();
+    assert.ok(again, 'the read-back page mounts its final again');
+    assert.match(again.innerHTML, /Done: PR #7 merged\./);
+    assert.deepEqual(again.querySelector('.system-message-actions').children.slice(1).map(node => node.textContent),
+        ['Files', 'Show full']);
+    // A transport retry of the mounted delivery is the same bubble at its original time.
+    f.emit({ ...final, content: final.text, history_id: undefined, ts: '2026-09-12T11:05:00.000Z' });
+    assert.deepEqual(finals(), [again]);
+    assert.equal(again.dataset.ts, String(Date.parse(final.ts)));
+});
+
 test('Load more history only ever reads older pages, however deep the reader goes', async (t) => {
     // The livelock of 2026-10-02: a 3-page cache released page zero, the button
     // then read it back as "newer", the next press re-read the deep page, forever.

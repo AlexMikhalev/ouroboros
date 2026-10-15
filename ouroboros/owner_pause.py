@@ -500,6 +500,44 @@ def consumed_member_resume(root_drive: Any, root_task_id: str, task_id: str, *, 
     return {"fence_id": fence_id, "grant_id": str(grant.get("grant_id") or "")}
 
 
+def interrupted_member_resume(root_drive: Any, root_task_id: str, task_id: str, *, attempt: int) -> Optional[bool]:
+    """Whether the owner's own Resume of this member was consumed, then interrupted (read only).
+
+    Not the owner's deliberate Pause, so Main offers the member's existing Resume
+    (#1660): its consumed, unrevoked, owner-selected explicit grant from ``attempt``
+    names the still-closed fence of its terminal root, which has not selected it yet
+    (``consumed_member_resume``) or selected it on that same grant. A newer Pause
+    (another fence), another attempt, a revoked or model grant or a live root answers
+    False; ``None`` when a fact it needs cannot be read, which the census keeps as
+    unknown. A current root retry is a root actor, never this member exception.
+    The Resume itself rechecks all of it.
+    """
+    from ouroboros.budget_pause import STATE_RESUMED, budget_pause_row
+    from ouroboros.task_results import _TRULY_TERMINAL_STATUSES, load_task_result
+
+    try:
+        if root_actor(root_drive, root_task_id, task_id, strict=True):
+            return False
+        row = budget_pause_row(pathlib.Path(root_drive), task_id)
+        grant = row.get("grant") or {}
+        own = bool(row.get("state") == STATE_RESUMED and int(row.get("task_attempt") or 0) == int(attempt)
+                   and grant.get("grant_id") and grant.get("consumed_at") and not grant.get("revoked_at")
+                   and grant.get("authority") == "explicit_resume" and grant.get("selected_by") == "owner")
+    except Exception:
+        return None
+    if not own:  # the member's own facts already say no: its root is never read
+        return False
+    try:
+        fence = read_fence(root_drive, root_task_id)
+        root = load_task_result(root_drive, root_task_id, strict=True) or {}
+    except Exception:
+        return None
+    selected = (fence.get("selected_members") or {}).get(task_id)
+    return bool(root.get("status") in _TRULY_TERMINAL_STATUSES
+                and fence_closed(fence) and grant.get("owner_pause_fence_id") == fence.get("fence_id")
+                and (selected is None or isinstance(selected, dict) and selected.get("grant_id") == grant["grant_id"]))
+
+
 def complete_consumed_member_resume(root_drive: Any, root_task_id: str, task_id: str, consumed: Dict[str, str],
                                     publish: Any, withdraw: Any) -> str:
     """Release one owner-selected member on its consumed Resume's fence; ``""`` or why not.
@@ -540,12 +578,24 @@ def admit_delegated_start(drive_root: Any, payload: Dict[str, Any]) -> bool:
     from ouroboros._usage_wait import retry_presend
     from ouroboros.delegate_custody import emit, START_REQUESTED
     from ouroboros.model_wait import current_model_wait
-    from ouroboros.usage_admission import task_billing_fields
+    from ouroboros.usage_admission import effective_billing_fields, task_billing_fields
     from ouroboros.utils import utc_now_iso
 
     source = SimpleNamespace(drive_root=drive_root, task_id=str(payload.get("task_id") or ""),
                              root_task_id=str(payload.get("root_task_id") or payload.get("task_id") or ""))
-    binding = task_billing_fields({"id": source.task_id}, source.root_task_id, None, drive_root)
+    # START custody is this session's paid admission and its late receipt's bucket: an
+    # unestablished authority raises typed here, before any row or POST (owner 2026-10-14).
+    # A host operation its caller bound explicitly as non-task (no task lineage) is its own
+    # uncapped group on the global axis, exactly as its reservations are; never a prefix guess.
+    from ouroboros.usage_accounting import current_usage_scope
+    bound = current_usage_scope()
+    if not source.root_task_id:  # no task identity at all: an unattributed host start, no group to guess
+        binding = {}
+    elif bound is not None and bound.non_task_operation is True and str(bound.root_task_id or "") == source.root_task_id:
+        binding = {"billing_group_id": source.root_task_id, "billing_group_limit_usd": None}
+    else:
+        binding = effective_billing_fields(drive_root, source.root_task_id,
+            task_billing_fields({"id": source.task_id}, source.root_task_id, None, drive_root))
     payload = {"ts": utc_now_iso(), "event_id": uuid.uuid4().hex, **payload}
     payload["billing_group"] = {k: v for k, v in binding.items() if k.startswith("billing_group_")}
     retrying = False

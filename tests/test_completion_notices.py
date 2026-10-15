@@ -103,7 +103,8 @@ def test_recorded_author_completion_and_review_obligations(trigger, enforcement,
         "status": "finalized_unaccepted", "reason": "author_finish", "enforcement": enforcement,
         "open_obligations": obligations}}
     before = copy.deepcopy(record)
-    neutral, detail = dialogue.completion_notice_detail(record)
+    notice = terminal_projection.completion_notice(record)
+    neutral, detail = notice["neutral"], notice["detail"]
     assert neutral is expected_neutral
     assert bool(detail) is not expected_neutral
     assert record == before
@@ -115,7 +116,8 @@ def test_unavailable_review_without_an_author_completion_is_not_guessed_optional
     record["outcome_axes"]["review"] = {"status": "degraded", "trigger": "auto_effect", "acceptance_decision": {
         "status": "finalized_unaccepted", "reason": "infra_failure", "enforcement": "advisory"}}
     record["outcome_axes"]["objective"] = {"status": "degraded", "source": "task_acceptance_review"}
-    neutral, detail = dialogue.completion_notice_detail(record)
+    notice = terminal_projection.completion_notice(record)
+    neutral, detail = notice["neutral"], notice["detail"]
     assert not neutral and "infrastructure failure" in detail
 
 
@@ -124,7 +126,7 @@ def test_cancellation_and_custody_are_projected_before_the_summary_drops_them():
     record.update(status="cancelled", cancel_origin={"source": "owner_restart", "reason": "Owner restart"})
     record["outcome_axes"]["lifecycle"]["status"] = "cancelled"
     summary = terminal_projection._project_row("cancel", record, {}, {"chat_id": 1})
-    assert summary["completion_notice"] == {"neutral": False, "detail": "Stopped by the Restart command."}
+    assert summary["completion_notice"] == {"neutral": False, "detail": "Stopped by the Restart command.", "phase": "cancelled"}
     record = _record("custody")
     record.update(reason_code="delegated_custody_unreconciled", delegated_runs_unreconciled=["run-one"])
     summary = terminal_projection._project_row("custody", record, {}, {"chat_id": 1})
@@ -157,7 +159,7 @@ def test_earlier_approval_does_not_hide_current_open_obligations():
 
 @pytest.mark.parametrize("notify", ["off", "on"])
 @pytest.mark.parametrize("mirror", ["all", "telegram_only"])
-def test_files_questions_and_project_mirrors_are_independent(tmp_path, monkeypatch, notify, mirror):
+def test_files_questions_and_project_replies_are_independent(tmp_path, monkeypatch, notify, mirror):
     import base64
     import json
     from tests.test_telegram_format_parity import _load_skill, _Client, _Api

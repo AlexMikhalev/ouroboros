@@ -373,6 +373,8 @@ def test_budget_fence_prevents_provider_dispatch(monkeypatch, ctx):
     # A real zero remaining bound, enforced by the existing task-tree fence. The
     # refusal is the loop's own budget rail (loop.py `except BudgetExceeded`),
     # not an image-tool text: the tool never swallows it as a billed unknown.
+    from ouroboros.task_results import write_task_result
+    write_task_result(ctx.drive_root, "parent-task", "running", root_task_id="parent-task")  # the child's real root
     scope = ua.UsageScope(drive_root=ctx.drive_root, task_id=ctx.task_id, root_task_id="parent-task", root_limit_usd=0)
     with ua.usage_scope(scope), pytest.raises(ua.BudgetExceeded):
         ig._generate_image(ctx, "paint", "openai::model-x")

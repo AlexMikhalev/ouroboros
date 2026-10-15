@@ -282,7 +282,7 @@ def test_authority_lock_unavailability_is_unsent_infrastructure_not_owner_pause(
     @contextmanager
     def recovered(*_a, **_k):
         if len(checks) == 1:
-            raise owner_pause.OwnerPauseRefused('owner_launch_authority_unavailable')
+            raise owner_pause.LaunchBusy('contention')
         yield
     monkeypatch.setattr(owner_pause, 'launch_admission', recovered)
     error = model_wait.ModelWaitInterrupted('owner_launch_authority_unavailable')

@@ -52,6 +52,8 @@ def _start_with_contract(
     )
     ctx.task_id = "t-nanny"
     ctx.task_metadata = {"root_task_id": "t-root", "parent_task_id": "t-root"}
+    from ouroboros.task_results import write_task_result
+    write_task_result(tmp_path, "t-root", "running", root_task_id="t-root")  # the child's real root
     ctx.task_contract = dict(contract)
 
     seen = {}

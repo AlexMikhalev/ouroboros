@@ -34,7 +34,9 @@ from ouroboros.context_compaction import compact_tool_history_llm, context_recla
 from ouroboros.deadline_utils import parse_deadline_ts, utc_now  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 from ouroboros.utils import estimate_tokens, sanitize_tool_result_for_log, truncate_review_artifact  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 from ouroboros.usage_accounting import (
+    BillingAuthorityUnavailable,
     BudgetExceeded,
+    ControlAuthorityUnavailable,
     PhysicalAttemptContext,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
     PhysicalAttemptPreconditionFailed,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
     invalidate_task_cache_splits,
@@ -776,10 +778,12 @@ def run_llm_loop(
                              round_idx, tool_schemas, _owner_msg_seen)
             # Every completed batch rejoins one control/budget tail, warm or cold.
             pending_tool_budget = True
-    except BudgetExceeded as exc:
-        _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id, detail="budget")
+    except (BudgetExceeded, BillingAuthorityUnavailable, ControlAuthorityUnavailable) as exc:  # only the first is money
+        money = isinstance(exc, BudgetExceeded)
+        _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id, detail="budget" if money else "authority")
+        handle = _handle_budget_exceeded if money else _handle_authority_unavailable
         try:
-            return _handle_budget_exceeded(exc, exit_ctx, limit_ctx=limit_ctx, episode=transport_wait)
+            return handle(exc, exit_ctx, limit_ctx=limit_ctx, episode=transport_wait)
         except ModelWaitInterrupted as interrupted:  # a refused-dispatch HOLD ended by control: the sibling clause below never sees it
             return _loop_exit_after_exception(interrupted, limit_ctx, exit_ctx, llm_trace, transport_wait)
     except Exception as exc:
@@ -931,6 +935,7 @@ from ouroboros.loop_budget import (  # noqa: E402, F401 -- intentional public re
     _service_finalization_evidence,
     _LoopExitContext,
     _handle_budget_exceeded,
+    _handle_authority_unavailable,
     _cleanup_loop_resources,
     _service_identity_projection,
     _finalize_task_services,

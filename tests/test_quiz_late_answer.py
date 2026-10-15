@@ -29,8 +29,15 @@ LATE_HEAD = "[Late answer to a question asked by task {}, which had finished]"
 
 
 def _late_bridge(tmp_path, monkeypatch):
-    """A real bridge for the late-answer path: named ingress plus the WS echo."""
+    """A real bridge and explicit fixture publication witnesses for named late delivery."""
     import supervisor.message_bus as mb
+    from ouroboros.owner_quiz import record_publication
+    from ouroboros.task_store import task_facts
+
+    for task_id in task_facts(tmp_path):
+        for quiz_id, block in quiz_states(tmp_path, task_id).items():
+            if "chat_id" in block:
+                record_publication(tmp_path, task_id, quiz_id, block["chat_id"])
 
     bridge = mb.LocalChatBridge()
     frames = []
@@ -54,6 +61,16 @@ def _accepted_rows(tmp_path, client_message_id):
                             (tmp_path / "logs" / "chat.jsonl").read_text().splitlines())
             if row.get("client_message_id") == client_message_id]
 
+
+
+def _assert_host_snapshot(ref, task_id, quiz_id):
+    assert set(ref) == {"task_id", "quiz_id", "answer_snapshot"}
+    assert (ref["task_id"], ref["quiz_id"]) == (task_id, quiz_id)
+    snapshot = ref["answer_snapshot"]
+    assert snapshot["task_id"] == task_id
+    assert snapshot["quiz"]["quiz_id"] == quiz_id
+    assert snapshot["quiz"]["state"] == STATE_ANSWERED
+    assert snapshot["quiz"]["answered_after_terminal"] is True
 
 def test_ingress_late_answer_is_accepted_and_delivered_as_an_owner_message(tmp_path, monkeypatch):
     """Owner decision В17a=A (retiring 30=A): the card outlives its author.
@@ -86,7 +103,7 @@ def test_ingress_late_answer_is_accepted_and_delivered_as_an_owner_message(tmp_p
     # transport's client_surface is never substituted.
     assert queued["text"] == "prod parity"
     assert "[Owner quiz answer]" not in queued["text"]
-    assert queued["task_metadata"]["late_answer"] == {"task_id": "task-1", "quiz_id": "q1"}
+    _assert_host_snapshot(queued["task_metadata"]["late_answer"], "task-1", "q1")
     assert "client_surface" not in queued["task_metadata"]
     # The same user bubble the owner's own typing produces.
     echo = [f for f in frames if f.get("type") == "chat" and f.get("role") == "user"]
@@ -172,9 +189,8 @@ def test_ingress_heals_an_unreconciled_quiz_of_a_dead_task(tmp_path, monkeypatch
     assert not drain_owner_entries(tmp_path, "task-1", set())
 
 
-def test_late_answer_addresses_the_task_row_when_the_block_predates_chat_ids(tmp_path, monkeypatch):
-    """An older block has no stored chat_id: the delivery falls back to the same
-    addressing the answer's own history row already uses."""
+def test_legacy_late_answer_without_publication_proof_retains_a_routing_gap(tmp_path, monkeypatch):
+    """Today's task chat does not prove where an older card was published."""
     from ouroboros.task_results import write_task_result
 
     write_task_result(tmp_path, "task-1", "completed", chat_id=1)
@@ -185,9 +201,10 @@ def test_late_answer_addresses_the_task_row_when_the_block_predates_chat_ids(tmp
     app = _decision_app(tmp_path, monkeypatch, live_task=None)
     resp = _post(app, {"request_id": "r1", "decision_id": "quiz:task-1:q1",
                        "option_index": 0})
-    assert resp.status_code == 200 and resp.json()["forwarded"] is True
-    [queued] = _inbox(bridge)
-    assert queued["chat_id"] == 1
+    assert resp.status_code == 200 and resp.json()["forwarded"] is False
+    assert resp.json()["reason_code"] == "publication_address_unknown"
+    assert resp.json()["question_delivery"]["state"] == "owed"
+    assert _inbox(bridge) == []
 
 
 @pytest.mark.parametrize("chat_id,reason", [(-1001, "a2a_chat"), (0, "hidden_chat")])
@@ -282,7 +299,7 @@ def test_an_answer_during_settled_post_work_takes_the_late_path_not_the_dead_mai
         assert mailbox == []  # nothing is labelled delivered into a mailbox nobody drains
         [queued] = _inbox(bridge)
         assert queued["client_message_id"] == "quiz_late_answer:task-3:q1"
-        assert queued["task_metadata"]["late_answer"] == {"task_id": "task-3", "quiz_id": "q1"}
+        _assert_host_snapshot(queued["task_metadata"]["late_answer"], "task-3", "q1")
         # The sibling card healed here is told now: the task-done seam announces
         # only what it expires itself.
         assert quiz_states(tmp_path, "task-3")["q2"]["state"] == "expired_terminal"
@@ -328,7 +345,8 @@ def test_a_retry_of_a_late_answer_accepted_with_the_old_frame_text_rejoins(tmp_p
     app = _decision_app(tmp_path, monkeypatch, live_task=None)
     resp = _post(app, {"request_id": "r1", "decision_id": "quiz:task-1:q1", "option_index": 1})
     assert resp.status_code == 200, resp.text
-    assert resp.json()["forwarded"] is True
+    assert resp.json()["forwarded"] is False
+    assert resp.json()["reason_code"] == "late_answer_delivery_unknown"
     assert _inbox(bridge) == [] and not [f for f in frames if f.get("type") == "chat"]
     assert len(_accepted_rows(tmp_path, "quiz_late_answer:task-1:q1")) == 1
 
@@ -503,7 +521,7 @@ def test_a_late_answer_routed_into_a_project_rooms_live_root_carries_its_provena
 
     [entry] = drain_owner_entries(tmp_path, "pending-root", set(), include_acknowledged=True)
     assert entry["text"] == "prod parity"
-    assert entry["late_answer"] == {"task_id": "task-1", "quiz_id": "q1"}
+    _assert_host_snapshot(entry["late_answer"], "task-1", "q1")
     owner_ctx = SimpleNamespace()
     messages = [{"role": "user", "content": "Initial requirement"}]
     _drain_incoming_messages(messages, queue_mod.Queue(), tmp_path, "pending-root", None, set(),
@@ -585,6 +603,6 @@ def test_supervisor_tick_delivers_a_late_web_answer_as_an_owner_turn(tmp_path, m
     assert captured["chat_id"] == 1 and captured["text"] == "2. postgres"
     ref = captured["metadata"]["origin_message_ref"]
     assert ref["client_message_id"] == source_id and ref["ts"] == accepted["ts"]
-    assert captured["metadata"]["late_answer"] == {"task_id": "task-1", "quiz_id": "q1"}
+    _assert_host_snapshot(captured["metadata"]["late_answer"], "task-1", "q1")
     assert len(_accepted_rows(tmp_path, source_id)) == 1
     assert bridge.get_updates(offset=0, timeout=0) == []  # consumed, nothing handed back

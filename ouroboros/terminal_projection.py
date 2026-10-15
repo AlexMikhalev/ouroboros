@@ -4,8 +4,10 @@ The first root terminal transition records provenance; readiness precedes all
 effects and the Project receipt retains Main disposition after readiness retires.
 A separate short-lived projection
 lock serializes callbacks, never holding the result lock across reentrant IO.
-The chat row's token heals append/receipt-write crashes. Main uses the existing
-bounded outbox; its external send/register crash gap remains at-least-once.
+The chat row's token heals append/receipt-write crashes. Main retains its exact addressed event and retry schedule in readiness until
+the strict sender acknowledges it. The existing bounded outbox remains a
+transport cache; its eviction/retry limits never discharge canonical debt.
+External send/register crash gaps remain at-least-once.
 
 The same rows are the source of a memory page's host stamp (``stamp_facts``,
 ``part_stamp``): read and copied, never written or interpreted here.
@@ -164,6 +166,27 @@ def _prepare(root: Any, tid: str, task: dict, event: dict) -> tuple[dict, bool]:
                              _field_projector=prepare), minted
 
 
+def completion_notice(record: dict) -> dict:
+    """Compact transport view computed before projection loses custody/cancel facts.
+
+    Neutral means a finished, execution-ok record has only technical caveats,
+    never success or reviewer approval. Unknown/partial rows retain their causes.
+    """
+    from ouroboros import project_dialogue as dialogue
+
+    axes = record.get("outcome_axes") or {}
+    execution, objective = axes.get("execution") or {}, axes.get("objective") or {}
+    delivery = record.get("terminal_delivery") or {}
+    detail = dialogue._join_cause_clauses([
+        dialogue._completion_verdict(record, {}, include_review_details=False),
+        dialogue.terminal_delivery_clause(delivery.get("state", ""), delivery.get("preserved_path", "")),
+    ])
+    full, phase = dialogue._completion_verdict(record, {}), dialogue.outcome_phase(record, {})
+    neutral = (not detail and bool(full) and execution.get("status") == "ok"
+               and objective.get("status") in {"pass", "not_evaluated"} and phase in {"done", "warn"})
+    return {"neutral": neutral, "detail": detail or ("" if full else str(record.get("reason_detail") or "")), "phase": phase}
+
+
 def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dict | None = None) -> dict:
     from ouroboros import project_dialogue as dialogue
     from ouroboros.project_facts import resolve_project_id
@@ -197,7 +220,7 @@ def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dic
         dialogue._completion_verdict(row, event),
         dialogue.terminal_delivery_clause(delivery.get("state", ""), delivery.get("preserved_path", "")),
     ])
-    neutral_notice, notice_detail = dialogue.completion_notice_detail({**event, **row, "terminal_delivery": delivery})
+    notice = completion_notice({**event, **row, "terminal_delivery": delivery})
     excerpt = dialogue._completion_excerpt(row, chat_id=chat_id, salvage_only=True)
     text += "".join(f" {part}" for part in (verdict, excerpt) if part)
     from ouroboros.dialogue_provenance import presence_provenance_fields
@@ -217,7 +240,7 @@ def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dic
         "outcome_axes": row.get("outcome_axes") or {}, "reason_code": str(row.get("reason_code") or ""),
         "result_ref": {"kind": "task_result", "task_id": tid, "reader": "get_task_result"}, "text": text,
         **({"reason_detail": verdict} if verdict else {}),
-        "completion_notice": {"neutral": neutral_notice, "detail": notice_detail},
+        "completion_notice": notice,
         **({"terminal_projection_token": ready["token"]} if ready.get("token") else {}),
         # The typed delivery disposition the browser card renders (log_events.terminalDeliveryClause).
         **({"terminal_delivery": delivery} if delivery else {}),
@@ -371,9 +394,124 @@ def append_terminal_projection(root: Any, tid: str, task: dict, event: dict, *, 
         return _append_project(root, tid, task or {}, event or {})
 
 
+def retain_main_delivery(root: Any, tid: str, event: dict) -> dict:
+    """Keep the exact Main publication and its address in canonical readiness.
+
+    The bounded transport outbox is a cache. This existing result obligation
+    owns recovery until the sender confirms the durable chat append.
+    """
+    stored = load_task_result(root, tid, strict=True) or {}
+    ready = stored.get("canonical_terminal_projection_ready")
+    if not isinstance(ready, dict):
+        return event  # legacy caller; normal terminal settlement has readiness
+    saved = ready.get("main_delivery")
+    if isinstance(saved, dict) and isinstance(saved.get("event"), dict):
+        return dict(saved["event"])
+    retained = {**event, "ts": event.get("ts") or utc_now_iso(), "terminal_projection_token": ready["token"]}
+
+    def retain(current, _patch):
+        if current.get("canonical_terminal_projection_ready") != ready:
+            return None
+        return {"status": current["status"], "canonical_terminal_projection_ready": {
+            **ready, "main_delivery": {"event": retained, "attempts": 0}}}
+
+    updated = write_task_result(root, tid, stored["status"], strict_existing_dict=True,
+                                _field_projector=retain)
+    saved = (updated.get("canonical_terminal_projection_ready") or {}).get("main_delivery")
+    if not isinstance(saved, dict) or not isinstance(saved.get("event"), dict):
+        raise RuntimeError("Main publication readiness changed before retention")
+    return dict(saved["event"])
+
+
+def claim_main_delivery(root: Any, event: dict) -> bool:
+    """Persist retry timing before queue exposure; caps delay, never erases debt.
+
+    This schedule survives outbox eviction, restart and five failed transport
+    attempts. A failed queue put also consumes its slot, preventing busy loops.
+    """
+    from datetime import datetime, timezone
+
+    token = event.get("terminal_projection_token")
+    if not token:
+        return True
+    tid = str(event.get("task_id") or "")
+    claimed = False
+
+    def claim(current, _patch):
+        nonlocal claimed
+        ready = current.get("canonical_terminal_projection_ready")
+        delivery = ready.get("main_delivery") if isinstance(ready, dict) else None
+        if (not isinstance(delivery, dict) or ready.get("token") != token
+                or delivery.get("event", {}).get("delivery_id") != event.get("delivery_id")):
+            return None
+        attempts = int(delivery.get("attempts") or 0)
+        last = str(delivery.get("last_attempt_at") or "")
+        if last:
+            stamped = datetime.fromisoformat(last.replace("Z", "+00:00"))
+            if stamped.tzinfo is None:
+                stamped = stamped.replace(tzinfo=timezone.utc)
+            delay = min(3600, 60 * 2 ** min(max(attempts - 1, 0), 6))
+            if (datetime.now(timezone.utc) - stamped).total_seconds() < delay:
+                return None
+        claimed = True
+        return {"status": current["status"], "canonical_terminal_projection_ready": {
+            **ready, "main_delivery": {**delivery, "attempts": attempts + 1,
+                                      "last_attempt_at": utc_now_iso()}}}
+
+    stored = load_task_result(root, tid, strict=True) or {}
+    if stored:
+        write_task_result(root, tid, stored["status"], strict_existing_dict=True, _field_projector=claim)
+    return claimed
+
+
+def main_delivery_recorded(root: Any, delivery_id: str, *, task_id: Any, publication_token: Any = None) -> bool:
+    """Canonical receipt outlives the bounded delivered-id registry; the caller names the task
+    (the event's typed ``task_id``), never the outbox parsing an id."""
+    if not str(task_id or ""):
+        return False
+    row = load_task_result(root, str(task_id), strict=True) or {}
+    marker = row.get("canonical_terminal_projection")
+    return (isinstance(marker, dict) and marker.get("main_disposition") == "delivered"
+            and marker.get("main_delivery_id") == delivery_id
+            and (publication_token is None or marker.get("token") == publication_token))
+
+
+def main_delivery_current(root: Any, task_id: str, publication_token: str) -> bool:
+    """An obsolete queued attempt cannot publish into a newer logical outcome."""
+    row = load_task_result(root, task_id, strict=True) or {}
+    ready = row.get("canonical_terminal_projection_ready")
+    current = ready if isinstance(ready, dict) else row.get("canonical_terminal_projection")
+    return isinstance(current, dict) and current.get("token") == publication_token
+
+
+def acknowledge_main_delivery(root: Any, delivery_id: str, *, task_id: Any, chat_id: Any = None,
+                              publication_token: Any = None) -> None:
+    """Retire canonical debt only after the strict sender returned successfully."""
+    tid = str(task_id or "")
+    if not tid or chat_id not in (None, 1) or not publication_token:
+        return
+    stored = load_task_result(root, tid, strict=True) or {}
+    if not stored:
+        return
+
+    def acknowledge(current, _patch):
+        ready, marker = current.get("canonical_terminal_projection_ready"), current.get("canonical_terminal_projection")
+        delivery = ready.get("main_delivery") if isinstance(ready, dict) else None
+        if (not isinstance(delivery, dict) or not isinstance(marker, dict)
+                or marker.get("token") != ready.get("token")
+                or ready.get("token") != publication_token
+                or delivery.get("event", {}).get("delivery_id") != delivery_id):
+            return None
+        return {"status": current["status"], "canonical_terminal_projection_ready": None,
+                "canonical_terminal_projection": {**marker, "main_disposition": "delivered",
+                    "main_delivery_id": delivery_id, "main_delivered_at": utc_now_iso(), "main_chat_id": 1}}
+
+    write_task_result(root, tid, stored["status"], strict_existing_dict=True, _field_projector=acknowledge)
+
+
 def clear_terminal_projection_obligation(root: Any, tid: str, expected: dict, disposition: str) -> bool:
     """CAS the complete readiness token and canonical attempt/checkpoint witness."""
-    if disposition not in {"owed", "ineligible"}:
+    if disposition != "ineligible":
         return False
     cleared = False
 
@@ -432,25 +570,22 @@ def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | No
             stored = load_task_result(drive_root, tid, strict=True) or {}
             ready = stored.get("canonical_terminal_projection_ready")
             marker = stored.get("canonical_terminal_projection")
+            source_delivery = _delivery_disposition(drive_root, tid)
             if (not isinstance(ready, dict) or not isinstance(marker, dict)
                     or marker.get("token") != ready.get("token") or _open(stored)
                     or not _settled(stored)
-                    or _delivery_disposition(drive_root, tid).get("state") == "owed"
+                    or source_delivery.get("state") == "owed"
                     or not _files_ready(drive_root, tid, {**(task or {}), **stored})):
                 return SETTLEMENT_DEFERRED
             effective = {**(task or {}), **stored, "id": tid}
             done = {**(event or {}), **stored, "ts": ready["task_done_ts"], "chat_id": ready["chat_id"]}
-            retired = False
-
-            def retire_owed() -> bool:
-                nonlocal retired
-                retired = clear_terminal_projection_obligation(drive_root, tid, stored, "owed")
-                return retired
-
             disposition, _queued = dialogue.project_completion_delivery_outcome(
-                drive_root, done, tid, effective, stored, done, _on_owed=retire_owed,
-                event_queue=event_queue)
-            if retired or clear_terminal_projection_obligation(drive_root, tid, stored, disposition):
+                drive_root, done, tid, effective, stored, done, event_queue=event_queue,
+                source_delivery=source_delivery)
+            if clear_terminal_projection_obligation(drive_root, tid, stored, disposition):
+                return SETTLEMENT_SETTLED
+            # Owed remains discoverable until the strict sender acknowledges it.
+            if main_delivery_recorded(drive_root, f"project-completion:{tid}", task_id=tid):
                 return SETTLEMENT_SETTLED
             return SETTLEMENT_DEFERRED
     except Exception:
