@@ -1,7 +1,7 @@
 """Checkout and reset: what it is allowed to destroy, and when it must block instead.
 
 Split verbatim out of ``tests/test_git_ops_recovery.py`` by theme. This module owns the
-stale index lock it clears, the fetch failure it survives, the rescue snapshot it will not
+index lock it waits on but never removes, the fetch failure it survives, the rescue snapshot it will not
 proceed without, the local head it preserves across a managed restart, the merge states and
 unreadable reads it blocks on, and the explicit update intent it applies without ever
 falling back to a branch tip.
@@ -20,7 +20,9 @@ import supervisor.git_ops as git_ops
 from tests._git_ops_recovery_shared import _git
 
 
-def test_checkout_and_reset_removes_stale_index_lock(monkeypatch, tmp_path):
+def test_checkout_and_reset_retries_an_old_index_lock_without_removing_it(monkeypatch, tmp_path):
+    """The lock's age proves no owner gone: the retry waits for its holder (here, released
+    after one refusal) and the file stays theirs (real holders: tests/test_git_lock_owners.py)."""
     git_dir = tmp_path / ".git"
     git_dir.mkdir()
     lock_path = git_dir / "index.lock"
@@ -64,7 +66,7 @@ def test_checkout_and_reset_removes_stale_index_lock(monkeypatch, tmp_path):
     assert ok
     assert message == "ok"
     assert calls["checkout"] == 2
-    assert not lock_path.exists()
+    assert lock_path.read_text(encoding="utf-8") == "lock"
     assert saved_state["current_branch"] == "ouroboros"
     assert saved_state["current_sha"] == "abc123"
 
