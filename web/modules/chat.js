@@ -11,7 +11,7 @@ import { createProjectHandoffs, receiptNotice } from './project_handoff.js';
 import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
 import { attachmentCaption, attachmentViews, composerText, createComposerAttachments, createUnconfirmedSends } from './chat_attachments.js';
 import { createChatDecision } from './chat_decision.js';
-import { bindProjectWorkPointer } from './project_work_pointer.js';
+import { createRoomWork } from './room_work.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
 import { clientSurfaceField } from './client_surface.js';
 import { syncSettledItems } from './settled_card.js';
@@ -39,18 +39,13 @@ import {
 } from './log_events.js';
 import {
     ACTION_FINALIZE,
-    ACTION_HURRY,
     REUSABLE_TASK_IDS,
-    ACTION_RESUME,
     TASK_CONTROL_TRIGGER_LABEL,
     cancelRunEligibility,
     resumeRunEligibility,
     createTaskResumeButton,
-    hurryTaskAction,
-    openTaskControlMenu,
+    openTaskControls,
     requestStop,
-    resumeTaskAction,
-    taskControlBusy,
 } from './task_control_menu.js';
 import { openConfirmDialog } from './confirm_dialog.js';
 import { chooseAndSendReview } from './review_command.js';
@@ -237,12 +232,13 @@ export function createChatInstance({
             icon: PAGE_ICONS.chat,
             variant: 'overlay',
             className: 'chat-page-header',
+            toolbarClass: 'ui-chrome-group',
             actionsHtml: `
                 <div class="chat-header-actions" id="chat-header-actions">
-                    <button class="chat-header-btn" type="button" data-chat-command="restart" title="Restart agent">Restart</button>
-                    <button class="chat-header-btn danger" type="button" data-chat-command="panic" title="Stop all workers">Panic</button>
+                    <button class="chat-header-btn ui-chrome-control" type="button" data-chat-command="restart" title="Restart agent">Restart</button>
+                    <button class="chat-header-btn danger ui-chrome-control" type="button" data-chat-command="panic" title="Stop all workers">Panic</button>
                     <details class="chat-header-more">
-                        <summary class="chat-header-btn" title="More agent controls">More</summary>
+                        <summary class="chat-header-btn ui-chrome-control" title="More agent controls">More</summary>
                         <div class="chat-header-menu">
                             <button class="chat-header-menu-item" type="button" data-chat-command="bg" title="Toggle background consciousness">Consciousness</button>
                             <button class="chat-header-menu-item" type="button" data-chat-command="evolve" title="Toggle evolution mode">Evolve</button>
@@ -250,7 +246,7 @@ export function createChatInstance({
                         </div>
                     </details>
                 </div>
-                <button class="chat-budget-pill" id="chat-budget-pill" type="button" title="Open budget controls" aria-label="Open budget controls">
+                <button class="chat-budget-pill ui-chrome-control" id="chat-budget-pill" type="button" title="Open budget controls" aria-label="Open budget controls">
                     <span class="chat-budget-text" id="chat-budget-text">Loading…</span>
                     <div class="chat-budget-bar">
                         <div class="chat-budget-bar-fill" id="chat-budget-bar-fill"></div>
@@ -414,15 +410,8 @@ export function createChatInstance({
     const LIVE_CARD_CAP = 200;
     const liveCardBound = createLiveCardBound(LIVE_CARD_CAP);
     const liveCardRecords = new Map();
-    const workPointer = asPanel ? bindProjectWorkPointer(page.querySelector('.chat-panel-statusbar'), {
-        records: liveCardRecords,
-        onNavigate: (root) => {
-            reading.cancel();
-            messagesDiv.scrollTop += root.getBoundingClientRect().top - messagesDiv.getBoundingClientRect().top;
-            reading.stick = false;
-            reading.scroll();
-        },
-    }) : null;
+    // The room's work status in its header (room_work.js), mounted once the owners it reads exist.
+    let roomWork = null;
     // A wait materializes the real task record; its open/closed state is one
     // input of the block predicate, so the block appears with the controls and
     // leaves with them (the record and its no-reopen wait ledger stay).
@@ -543,6 +532,7 @@ export function createChatInstance({
         if (!statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
         statusBadge.textContent = text;
+        roomWork?.update();
     }
 
     function syncHeaderControlState(data) {
@@ -661,7 +651,7 @@ export function createChatInstance({
         createTimelineAnchors({ messagesDiv, liveCardRecords });
     const reading = createChatReadingPosition({
         feed: messagesDiv, alive: () => !destroyed,
-        afterWrite: () => workPointer?.update(), activity: () => { _hasNewActivity = true; },
+        afterWrite: () => roomWork?.update(), activity: () => { _hasNewActivity = true; },
         updateButton: updateScrollButton,
         visible: () => !destroyed && isInstanceVisible(),
         ready: () => historyLoaded && anchorOwnersReady(reading.target?.historyAnchor, reviewHydrator.ready),
@@ -935,17 +925,8 @@ export function createChatInstance({
         // Pending cancel offers only hard escalation; dismiss keeps the run.
         btn.addEventListener('click', (event) => {
             event.stopPropagation();
-            openTaskControlMenu(btn, {
-                cancelPending: Boolean(record.cancelPendingPolicy),
-                budgetPaused: activeDirectActivities.get(record.groupId)?.phase === 'budget_paused',
-                resumeVisible: canResume(),
-                busy: taskControlBusy(record.groupId),
-                onAction: (action) => {
-                    if (action === ACTION_HURRY) return hurryTaskAction(record.groupId);
-                    if (action === ACTION_RESUME) return resumeTaskAction(record.groupId);
-                    return cancelRunFromCard(record, action);
-                },
-            });
+            openTaskControls(btn, record.groupId, { record, activity: activeDirectActivities.get(record.groupId),
+                cancelPending: Boolean(record.cancelPendingPolicy), stop: (action) => cancelRunFromCard(record, action) });
         });
         actions.appendChild(btn);
         record.cancelRunBtn = btn;
@@ -3815,6 +3796,14 @@ export function createChatInstance({
         syncHeaderControlState({ accounting: { available: false } });
     });
 
+    const revealQuestion = (taskId, quizId, options) => chatDecision.revealQuestion(
+        taskId, quizId, projectId, chatId, appendQuizMessage, isInstanceVisible,
+        () => { const current = reading.claim(); reading.stick = false; return current; }, reading.scroll, options);
+    roomWork = createRoomWork({ page, asPanel, ws, statusBadge, messagesDiv, reading, stateSnapshots, revealQuestion,
+        activeDirectActivities, liveCardRecords, pendingSubmissions, pendingSuggestedNames, modelWaits, stopEligible,
+        cancelRunFromCard, refreshHeaderControlState, captureVisibleTimelineAnchor, restoreVisibleTimelineAnchor,
+        hostReady: () => hostReady });
+
     return {
         page,
         chatId,
@@ -3823,9 +3812,7 @@ export function createChatInstance({
         // newest message (owner decision 2026-10-05).
         showLatest,
         refreshHistory: readReceipt.refresh,
-        revealQuestion: (taskId, quizId) => chatDecision.revealQuestion(
-            taskId, quizId, projectId, chatId, appendQuizMessage, isInstanceVisible,
-            () => { const current = reading.claim(); reading.stick = false; return current; }, reading.scroll),
+        revealQuestion,
         cancelHistoryPaint: readReceipt.cancel,
         // app.js fans its already-existing /api/state refresh to every open
         // thread; panels gain convergence without acquiring their own poll.
@@ -3840,7 +3827,7 @@ export function createChatInstance({
         // app.js, when this room leaves the screen without being destroyed: the
         // modal a file card opened (reader, file dialog) closes and its read
         // stops; staged attachments and uploads are untouched.
-        closeTransient: () => chatMedia.closeTransient(),
+        closeTransient: () => { roomWork?.leave(); chatMedia.closeTransient(); },
         // Full teardown (P3): release every resource this instance acquired —
         // ws subscriptions, window/document listeners, the ResizeObserver, all
         // timers — then drop the buffered collections and remove the DOM last.
@@ -3862,7 +3849,7 @@ export function createChatInstance({
             disposeReadingGestures();
             document.removeEventListener('selectionchange', retryHistoricalUpserts);
             chatMedia.destroy();
-            workPointer?.destroy();
+            roomWork?.destroy();
             chatDecision.destroy();
             modelWaits.destroy();
             handoffs?.destroy();

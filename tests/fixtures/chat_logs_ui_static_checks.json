@@ -1071,7 +1071,7 @@
     "id": "test_cancel_run_confirm_and_cascade",
     "path": "web/modules/chat.js",
     "kind": "contains",
-    "value": "openTaskControlMenu(btn, {"
+    "value": "openTaskControls(btn, record.groupId, {"
   },
   {
     "id": "test_cancel_run_confirm_and_cascade",
