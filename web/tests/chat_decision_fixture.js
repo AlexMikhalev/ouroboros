@@ -99,7 +99,8 @@ export function countPropertyWrites(target, key) {
 }
 
 export function fixture({ fetchImpl, renderMarkdown, enhanceMarkdown, onDomWrite, fetchDetail, isMain = false,
-    frameNode = (_msg, node) => node, insertMessageNode = null, removeMessageNode = null, focusAfterRemoval = null } = {}) {
+    frameNode = (_msg, node) => node, insertMessageNode = null, removeMessageNode = null, focusAfterRemoval = null,
+    currentQuestionHost = null, onQuestionsChanged, rawDetail = false } = {}) {
     const prior = { document: globalThis.document, crypto: globalThis.crypto, window: globalThis.window };
     globalThis.document = { createElement: (tag) => new NodeStub(tag) };
     const opened = [];
@@ -123,11 +124,22 @@ export function fixture({ fetchImpl, renderMarkdown, enhanceMarkdown, onDomWrite
         enhanceMarkdown: enhanceMarkdown || (renderMarkdown ? () => {} : null),
         showToast: (text, tone) => toasts.push({ text, tone }),
         onDomWrite,
-        fetchDetail,
+        // Legacy unit mocks declare their room with project_id/chat_id. Emit the additive wire
+        // projection for them; real producer and absent-proof tests opt out with rawDetail.
+        fetchDetail: !fetchDetail || rawDetail ? fetchDetail : async (...args) => {
+            const detail = await fetchDetail(...args);
+            if (!detail || Object.hasOwn(detail, 'question_rooms')) return detail;
+            const room = detail.project_id ? { state: 'known', project_id: detail.project_id, chat_id: 23 }
+                : Number.isInteger(detail.chat_id) ? { state: 'known', project_id: '', chat_id: detail.chat_id }
+                    : { state: 'unknown' };
+            return { ...detail, question_rooms: Object.fromEntries(Object.keys(detail.owner_quiz || {}).map(id => [id, room])) };
+        },
         isMain,
         insertMessageNode,
         removeMessageNode,
         focusAfterRemoval,
+        currentQuestionHost,
+        onQuestionsChanged,
     });
     return { decision, toasts, calls, opened, restore: () => {
         globalThis.document = prior.document;

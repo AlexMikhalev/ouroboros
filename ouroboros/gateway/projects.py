@@ -409,6 +409,8 @@ async def api_projects_list(request: Request) -> JSONResponse:
         )
 
         drive_root = request_drive_root(request)
+        if "chat_id" in request.query_params:
+            return JSONResponse({"projects": projects_summary(drive_root, chat_id=request.query_params["chat_id"])})
         return JSONResponse({"projects": projects_summary(drive_root, limit=200)})
     except Exception as exc:
         return json_exception(exc)

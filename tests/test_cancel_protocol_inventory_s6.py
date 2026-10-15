@@ -107,6 +107,12 @@ TERMINAL_WRITERS = {
     # primitive's required placeholder.
     ('ouroboros/terminal_projection.py::_prepare', 'stored["status"]'): 'dynamic',
     ('ouroboros/terminal_projection.py::_append_project', 'stored["status"]'): 'dynamic',
+    # Main publication retention, retry claims and durable-chat acknowledgement
+    # update readiness/receipt fields under the result lock. Each projector
+    # returns CURRENT status unchanged; none originates a lifecycle transition.
+    ('ouroboros/terminal_projection.py::retain_main_delivery', 'stored["status"]'): 'dynamic',
+    ('ouroboros/terminal_projection.py::claim_main_delivery', 'stored["status"]'): 'dynamic',
+    ('ouroboros/terminal_projection.py::acknowledge_main_delivery', 'stored["status"]'): 'dynamic',
     ('ouroboros/terminal_projection.py::append_terminal_projection', 'status'): 'dynamic',
     ('ouroboros/terminal_projection.py::clear_terminal_projection_obligation', 'str(expected.get("status") or "completed")'): 'terminal',
     ('ouroboros/project_naming.py::spawn_turn_namer._work', 'status'): 'dynamic',

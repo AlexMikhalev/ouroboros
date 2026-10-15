@@ -287,16 +287,20 @@ def test_producer_to_wire_consumers_keep_tree_scope_and_late_unknown_price(data_
         const rows = JSON.parse(fs.readFileSync(0, 'utf8'));
         const projections = rows.map((row, i) => taskCostProjection(cardMetaKeys(row), `2026-09-20T00:0${i}:00Z`));
         const sticky = mergeStickyCostMeta(projections[0], projections[3]);
-        console.log(JSON.stringify({meta: rows.map(taskCostMeta), sticky: sticky.meta,
-            late: mergeStickyCostMeta(sticky, projections[4]).meta}));
+        console.log(JSON.stringify({meta: rows.map(taskCostMeta), sticky: sticky.meta, why: sticky.detail || '',
+            late: mergeStickyCostMeta(sticky, projections[4]).meta,
+            lateWhy: mergeStickyCostMeta(sticky, projections[4]).detail || ''}));
     """
     result = subprocess.run(['node', '--input-type=module', '-e', script],
                             cwd=Path(__file__).parents[1], input=json.dumps([terminal, heartbeat, history, own, late]),
                             capture_output=True, text=True, check=True)
     browser = json.loads(result.stdout)
-    assert browser['meta'] == [['Tracked: up to $2.00', 'some steps have no price']] * 3 + [['$0.00'], ['$0.35']]
-    assert browser['sticky'] == ['Tracked: up to $2.00', 'some steps have no price']
-    assert browser['late'] == ['$0.35']
+    # Owner 2026-10-12 (option B): the amount keeps its honest "Tracked:" word; the reason is
+    # the card's detail, carried with the amount it explains and gone once prices are known.
+    assert browser['meta'] == [['Tracked: up to $2.00']] * 3 + [['$0.00'], ['$0.35']]
+    assert browser['sticky'] == ['Tracked: up to $2.00']
+    assert browser['why'] == 'Cost: some steps have no price, so Tracked counts only the priced steps.'
+    assert browser['late'] == ['$0.35'] and browser['lateWhy'] == ""
 
 
 def test_first_terminal_root_frame_preserves_money_on_tree_failure(monkeypatch):

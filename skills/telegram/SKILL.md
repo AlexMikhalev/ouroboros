@@ -1,7 +1,7 @@
 ---
 name: telegram
 description: Owner-only Telegram text bridge and Mini App gateway for the existing Ouroboros interface.
-version: 1.2.12
+version: 1.2.13
 type: extension
 entry: plugin.py
 plugin_api: "2.0"
@@ -59,10 +59,10 @@ Version 1.2.5 shows the whole quiz card: its project, the host's facts about the
 asking task, and every option's detail, with localized field names; a card too
 long for one Telegram message arrives as ordered parts followed by the keyboard
 message, and nothing authored is cut.
-Version 1.2.6 edits a sent question card when the host publishes its lifecycle
-(`chat.quiz_state`): an answer given on the web settles it, a closed wait drops the
-waiting line while the buttons stay, and a finished task says a late answer still
-counts as your message. The card only moves forward — nothing reopens an answer.
+Version 1.2.6 edits a sent question card on its lifecycle (`chat.quiz_state`): a
+web answer settles it, a closed wait drops the waiting line yet keeps buttons,
+a finished task says a late answer still counts, and (1.2.13) a question closed
+unanswered states that and its reason without buttons. Answers and closures are final.
 An open question (no options) is the same whole card without buttons; it asks for
 a reply in your own words.
 

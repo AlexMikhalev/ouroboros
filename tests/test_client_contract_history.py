@@ -19,6 +19,7 @@ from ouroboros.gateway.contracts import ChatOutbound
 from ouroboros.gateway.history import make_chat_history_endpoint
 from ouroboros.gateway.history_contracts import ChatHistoryMessage, ChatHistoryResponse
 from ouroboros.gateway.schema import validate_ingress
+from ouroboros.owner_quiz import record_asked
 from supervisor import message_bus
 
 TS = "2026-10-13T09:00:00.000001+00:00"
@@ -60,8 +61,13 @@ def _produce(chat) -> None:
                          mime="application/pdf", task_id="t1")
     bridge.send_photo(1, b"\x89PNG\r\n\x1a\n" + b"0" * 16, caption="map", task_id="t1")
     bridge.send_links(1, [{"label": "Tickets", "url": "https://example.com/tickets"}], title="Book", task_id="t1")
-    bridge.send_quiz(1, quiz_id="q1", question="Train or plane?", options=[{"label": "Train"}, {"label": "Plane"}],
-                     assumption="train meanwhile", task_id="t1")
+    # A card is published only for a question its task recorded first (the production ask order).
+    record_asked(chat.root, "t1", quiz_id="q1", question="Train or plane?", options=["Train", "Plane"],
+                 assumption="train meanwhile")
+    ok, detail = bridge.send_quiz(1, quiz_id="q1", question="Train or plane?",
+                                  options=[{"label": "Train"}, {"label": "Plane"}], assumption="train meanwhile",
+                                  task_id="t1")
+    assert ok, detail
 
 
 def _live_key(frame: dict):
@@ -78,7 +84,8 @@ def _live_key(frame: dict):
 
 
 def _row_key(row: dict):
-    """The same identity, read from a history row."""
+    """The same identity, read from a history row; the owner row is the `role: "user"` one (a question
+    card also stores its publication receipt as `client_message_id`)."""
     if row.get("role") == "user" and row.get("client_message_id"):
         return ("owner", row["client_message_id"])
     if row.get("msg_type") == "quiz":

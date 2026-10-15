@@ -8,7 +8,8 @@ directory fsync, the generation stamp after; a published but unstamped store is
 accepted by its own ``meta``; the lock tier is re-probed on every boot and governs an
 EXISTING store too: a header naming the other tier is re-tiered in place (application id
 and ``meta.lock_tier``) under the import lock before any writer opens it, so the open
-mode follows what the kernel enforces today; every own child drive down the tree (``descendant_drives``,
+mode follows what the kernel enforces today, and every underived flag (a missing column, a row an
+older body wrote) is derived (``_derive_flag_columns``); every own child drive down the tree (``descendant_drives``,
 over ``task_custody.own_child_drives``) gets its own store by the same code; inadmissible rows are quarantined at import
 through the existing emitter; the cancel-latch migration runs as the first pass.
 Reconciliation (a published store found at boot) is per row against the baseline: a
@@ -81,8 +82,9 @@ def descendant_drives(root: Any) -> List[pathlib.Path]:
     return found
 
 
-def ensure_current_store(root: Any, *, with_children: bool = True) -> Dict[str, Any]:
-    """Idempotent boot import; returns its logs/supervisor.jsonl report. Details above."""
+def ensure_current_store(root: Any, *, with_children: bool = True, rederive: bool = False) -> Dict[str, Any]:
+    """Idempotent boot import; returns its logs/supervisor.jsonl report. Details above.
+    ``rederive`` (the explicit rebuild) derives every nullable flag again from its document."""
     root = pathlib.Path(root)
     path = store.store_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,10 +94,10 @@ def ensure_current_store(root: Any, *, with_children: bool = True) -> Dict[str, 
             if name.startswith(path.name + ".import-"):
                 with contextlib.suppress(OSError):
                     (path.parent / name).unlink()  # an unfinished import never published: redone from scratch
-        report, quarantined = _ensure(root, path)
+        report, quarantined = _ensure(root, path, rederive=rederive)
     emit_quarantine_event(root, quarantined)
     if with_children:
-        report["drives"] = {str(drive): ensure_current_store(drive, with_children=False)["status"]
+        report["drives"] = {str(drive): ensure_current_store(drive, with_children=False, rederive=rederive)["status"]
                             for drive in descendant_drives(root)}
     report["duration_seconds"] = round(time.monotonic() - started, 3)
     supervisor_row(root, "current_store_import", {"phase": report["status"],
@@ -103,7 +105,7 @@ def ensure_current_store(root: Any, *, with_children: bool = True) -> Dict[str, 
     return report
 
 
-def _ensure(root: pathlib.Path, path: pathlib.Path) -> Tuple[Dict[str, Any], list]:
+def _ensure(root: pathlib.Path, path: pathlib.Path, *, rederive: bool = False) -> Tuple[Dict[str, Any], list]:
     from ouroboros.platform_layer import kernel_file_locks_enforced
     from ouroboros.startup_migrations import stamp
 
@@ -115,6 +117,7 @@ def _ensure(root: pathlib.Path, path: pathlib.Path) -> Tuple[Dict[str, Any], lis
             if retiered:
                 txn.conn.execute(f"PRAGMA application_id = {store._APPLICATION_ID[tier]}")
                 txn.set_meta("lock_tier", tier)
+            flags = _derive_flag_columns(txn, rederive=rederive)  # before any row write needs the column
             phase = txn.phase()
             if phase == PUBLISHED:
                 report, quarantined = _reconcile(root, txn)
@@ -123,7 +126,7 @@ def _ensure(root: pathlib.Path, path: pathlib.Path) -> Tuple[Dict[str, Any], lis
             if not store.generation_stamped(root):
                 stamp(root, **{GENERATION_KEY: GENERATION})  # the stamp a crash after publication never wrote
             _latches_into_intents(root, report.pop("latched", []))
-            return {**report, "lock_tier": tier, **retiered}, quarantined
+            return {**report, "lock_tier": tier, **retiered, **flags}, quarantined
         if export.get("status") != "completed":
             return {"status": "switch_pending", "phase": phase, "lock_tier": tier, **retiered}, []  # the seam resumes it
         stamp(root, **{GENERATION_KEY: None})  # before the rename: absent + stamped is always a loss
@@ -131,6 +134,41 @@ def _ensure(root: pathlib.Path, path: pathlib.Path) -> Tuple[Dict[str, Any], lis
     elif store.generation_stamped(root):
         raise StoreLost(f"current store missing beside its completed stamp: {path}")
     return _build_and_publish(root, path, tier)
+
+
+def _derive_flag_columns(txn: Txn, *, rederive: bool = False) -> Dict[str, Any]:
+    """Derive every nullable flag (``store.FLAG_COLUMNS``) left NULL, "not derived": a store
+    published before the column gains it NULL with its index, and a row a body that predates the
+    column wrote through its own column list (``INSERT OR REPLACE``: a rollback's writes, its new
+    tasks) holds NULL whatever ``meta.schema_version`` says. Each such row takes the predicate
+    every later write applies (``result_memberships``) over its document; an undecodable body is
+    owed (unknown is never absence) until its next write recomputes it. Cost: one narrow pass over
+    ``tasks`` per boot, a body decode per underived row; ``rederive`` (the explicit rebuild)
+    forgets every nullable flag first, so it decodes every body."""
+    columns = {record["name"]: record["notnull"] for record in txn.conn.execute("PRAGMA table_info(tasks)")}
+    added = sorted(name for name, column in store.FLAG_COLUMNS.items() if column not in columns)
+    for name in added:
+        column = store.FLAG_COLUMNS[name]
+        txn.conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} INTEGER")
+        txn.conn.execute(f"CREATE INDEX tasks_{column} ON tasks({column}) WHERE {column}=1")
+    nullable = {name: column for name, column in store.FLAG_COLUMNS.items() if not columns.get(column)}
+    if not nullable:
+        return {}
+    if rederive:
+        txn.conn.execute(f"UPDATE tasks SET {', '.join(f'{column}=NULL' for column in nullable.values())}")
+    underived = [record["task_id"] for record in txn.conn.execute(
+        f"SELECT task_id FROM tasks WHERE {' OR '.join(f'{column} IS NULL' for column in nullable.values())}")]
+    for task_id in underived:
+        try:
+            names = o.result_memberships(txn.load(task_id) or {})
+        except ValueError:
+            names = set(nullable)
+        txn.conn.execute(f"UPDATE tasks SET {', '.join(f'{column}=?' for column in nullable.values())} WHERE task_id=?",
+                         (*(int(name in names) for name in nullable), task_id))
+    if added:
+        txn.set_meta("schema_version", store.SCHEMA_VERSION)
+    return {**({"flag_columns_added": added} if added else {}),
+            **({"flag_rows_derived": len(underived)} if underived else {})}
 
 
 def _build_and_publish(root: pathlib.Path, path: pathlib.Path, tier: str) -> Tuple[Dict[str, Any], list]:

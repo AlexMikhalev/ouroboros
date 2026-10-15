@@ -5,6 +5,7 @@
 import { taskArtifactArchiveUrl, taskArtifactDownloadUrl } from './api_client.js';
 import { isTerminalTaskDetail } from './log_events.js';
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
+import { tr } from './i18n.js';
 
 const RESULT_FILE_ROWS = 8;
 const FOLDER_TOOLTIP_PATHS = 20;
@@ -119,7 +120,7 @@ function folderTooltip(folder) {
 }
 
 // Rows use the markdown list markup (`md-li`, `md-link`) this body already styles.
-function resultArtifactsHtml(view) {
+function resultArtifactsHtml(view, limit = RESULT_FILE_ROWS) {
     const rows = [
         ...view.files.map((file) => ({
             files: 1,
@@ -143,8 +144,8 @@ function resultArtifactsHtml(view) {
                 + '</span>',
         })),
     ];
-    const hidden = rows.slice(RESULT_FILE_ROWS).reduce((sum, row) => sum + row.files, 0);
-    return rows.slice(0, RESULT_FILE_ROWS).map((row) => `<span class="md-li">• ${row.html}</span>`).join('')
+    const hidden = rows.slice(limit).reduce((sum, row) => sum + row.files, 0);
+    return rows.slice(0, limit).map((row) => `<span class="md-li">• ${row.html}</span>`).join('')
         + (hidden ? `<span class="md-li">+${fileCountText(hidden).replace(/ (files?)$/, ' more $1')}</span>` : '');
 }
 
@@ -159,4 +160,134 @@ export function resultFilesItemHtml(item) {
             <div class="chat-live-line-body">${resultArtifactsHtml(item.resultArtifacts)}</div>
         </div>
     `;
+}
+
+/** Complete individual inventory; directory ZIPs supplement the existing file reader. */
+function mountInventory(body, taskId, detail, render) {
+    const doc = body.ownerDocument;
+    body.textContent = '';
+    const heading = doc.createElement('div');
+    heading.className = 'msg-provenance';
+    heading.textContent = tr('result.files_available', 'Available files');
+    body.append(heading);
+    const folders = new Map();
+    for (const row of detail.artifacts) {
+        if (!row || typeof row !== 'object') continue;
+        const relpath = String(row.relpath || '');
+        const name = String(row.name || relpath.split('/').at(-1) || '');
+        if (!name) continue;
+        const status = String(row.status || '').toLowerCase();
+        const available = (!status || status === 'ready') && !row.errors?.length && !row.copy_status;
+        const url = available ? taskArtifactDownloadUrl(taskId, name, relpath) : '';
+        let host = body;
+        if (relpath.includes('/')) {
+            const folder = relpath.split('/')[0];
+            if (!folders.has(folder)) {
+                const group = doc.createElement('details');
+                const summary = doc.createElement('summary');
+                summary.textContent = `${folder}/`;
+                group.append(summary);
+                const archive = folderArchive(taskId, folder, detail.artifact_archives);
+                if (archive?.available) {
+                    const zip = doc.createElement('a');
+                    zip.className = 'md-link'; zip.href = archive.url; zip.download = archive.name;
+                    zip.textContent = `${archive.name} · ZIP`;
+                    group.append(zip);
+                }
+                body.append(group); folders.set(folder, group);
+            }
+            host = folders.get(folder);
+        }
+        const entry = doc.createElement('div');
+        entry.className = 'project-answer-file';
+        const label = relpath || name;
+        entry.dataset.resultFile = label;
+        const extension = name.split('.').at(-1).toLowerCase();
+        const image = ({ png: 'png', jpg: 'jpeg', jpeg: 'jpeg', gif: 'gif', webp: 'webp', avif: 'avif' })[extension];
+        const media = url && render?.({ task_id: taskId, filename: label, size_bytes: row.size,
+            download_url: url, mime: image ? `image/${image}` : 'application/octet-stream' });
+        const content = media && media.querySelector('.message');
+        if (content) entry.append(content);
+        else if (url) {
+            const link = doc.createElement('a');
+            link.className = 'md-link'; link.href = url; link.download = name; link.textContent = label;
+            entry.append(link);
+        } else entry.textContent = `${label} · ${status || 'unavailable'}`;
+        host.append(entry);
+    }
+    if (body.children.length === 1) heading.textContent = tr('result.files_none', 'No available files are recorded.');
+}
+
+/** Main's final reads the same retained inventory on demand, without claiming delivery. Every
+ * height change goes through `write`, the feed's stable-viewport writer: an inventory landing
+ * above the reader keeps the message they are on, and the live edge keeps following. */
+export function mountResultFilesReader(bubble, actions, taskId, read, render = null, write = (mutate) => mutate()) {
+    const doc = bubble.ownerDocument;
+    const button = doc.createElement('button');
+    button.type = 'button';
+    button.className = 'btn btn-xs btn-default';
+    button.textContent = tr('result.files', 'Files');
+    button.setAttribute('aria-expanded', 'false');
+    const body = doc.createElement('div');
+    body.className = 'project-answer-files';
+    body.hidden = true;
+    actions.append(button);
+    bubble.append(body);
+    let loaded = false;
+    let loading = false;
+    button.addEventListener('click', async () => {
+        if (loading) return;
+        const expanded = body.hidden;
+        const fetching = expanded && !loaded;
+        write(() => {
+            body.hidden = !expanded;
+            button.setAttribute('aria-expanded', String(expanded));
+            if (fetching) body.textContent = tr('result.files_loading', 'Loading available files…');
+            return true;
+        });
+        if (!fetching) return;
+        loading = true;
+        button.disabled = true;
+        try {
+            const detail = await read(taskId);
+            if (!bubble.isConnected) return;
+            if (!detail || String(detail.task_id || detail.id || '') !== String(taskId)
+                || !Array.isArray(detail.artifacts)) throw new Error('Inventory unavailable');
+            write(() => { mountInventory(body, taskId, detail, render); return true; });
+            loaded = true;
+        } catch {
+            if (bubble.isConnected) write(() => {
+                body.textContent = tr('result.files_unavailable', 'Available files could not be loaded. Close and reopen Files to retry.');
+                return true;
+            });
+        } finally { loading = false; button.disabled = false; }
+    });
+    return button;
+}
+
+/** Explicit question materials share the retained result artifact address authority. */
+export function syncQuestionMaterials(card, records, render = null) {
+    if (!records.length || card.querySelector('.chat-quiz-materials')) return;
+    const materials = document.createElement('div');
+    materials.className = 'chat-quiz-materials';
+    for (const item of records) {
+        if (!item?.task_id || !item.name || !item.sha256) continue;
+        const url = taskArtifactDownloadUrl(item.task_id, item.name);
+        if (!url) continue;
+        const label = item.label || item.name;
+        // Reuse the ordinary file reader and photo preview with only a canonical custody URL.
+        const extension = String(label).split('.').at(-1).toLowerCase();
+        const image = ({ png: 'png', jpg: 'jpeg', jpeg: 'jpeg', gif: 'gif', webp: 'webp', avif: 'avif' })[extension];
+        const rendered = render?.({ task_id: item.task_id, filename: label, size_bytes: item.size,
+            download_url: url, mime: image ? `image/${image}` : 'application/octet-stream' });
+        const content = rendered?.querySelector('.message');
+        if (content) { materials.append(content); continue; }
+        const link = document.createElement('a');
+        link.className = 'md-link';
+        link.textContent = item.label || item.name;
+        link.href = url;
+        link.download = item.label || item.name;
+        materials.append(link);
+    }
+    if (materials.children.length) card.append(materials);
 }
