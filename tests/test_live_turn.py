@@ -791,3 +791,12 @@ def test_the_call_view_opens_with_memory_the_web_and_the_room_chat():
     from ouroboros.tool_capabilities import COGNITIVE_MEMORY_TOOL_NAMES
 
     assert set(CALL_INITIAL_TOOL_NAMES) == set(COGNITIVE_MEMORY_TOOL_NAMES) | {"web_search", "send_user_message"}
+
+
+def test_a_call_nobody_attaches_to_ends_after_the_rejoin_grace(harness, monkeypatch, tmp_path):
+    monkeypatch.setattr(live_turn, "PEER_GRACE_S", 0.2)
+    h = harness()
+    h.hub.present = []
+    h.start()
+    text, usage, _trace = h.finish()
+    assert usage["live_call"]["ended"] == "peers_left"

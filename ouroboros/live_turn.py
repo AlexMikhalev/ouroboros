@@ -285,6 +285,10 @@ class _LiveCall:
         self.hub.set_engine_rates(self.route.engine.input_rate, self.route.engine.output_rate)
         self.state = STATE_LIVE
         self.hub.send_state(STATE_LIVE)
+        if self.empty_since is None and not self.hub.peers():
+            # A call nobody attached to yet runs the same rejoin grace as one everyone left:
+            # a peer whose socket never arrived must not hold the session (or a Presence slot).
+            self.empty_since = time.monotonic()
         asyncio.create_task(self._pump_engine(engine, self.epoch))
 
     def _history_view(self) -> Tuple[Dict[str, Any], ...]:
