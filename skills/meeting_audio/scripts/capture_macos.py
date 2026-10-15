@@ -316,12 +316,16 @@ class MacCapture:
             if block is None:
                 return
             length = int(core_media.CMBlockBufferGetDataLength(block))
-            status, data = core_media.CMBlockBufferCopyDataBytes(block, 0, length, None)
-            if status != 0 or data is None:
+            # PyObjC's supported way to read a block buffer (its pointer accessors are not
+            # available from Python); it either fills the given buffer or returns a copy.
+            buffer = bytearray(length)
+            result = core_media.CMBlockBufferCopyDataBytes(block, 0, length, buffer)
+            status, data = (result[0], result[1]) if isinstance(result, tuple) else (result, buffer)
+            if status != 0:
                 self.stats["unreadable"] += 1
                 return
             channels, planar, is_float = self._audio_format(sample_buffer)
-            raw = bytes(data)
+            raw = bytes(data if data is not None else buffer)
             pcm = float32_mono(raw, channels, planar) if is_float else int16_mono(raw, channels)
         except Exception:
             self.stats["unreadable"] += 1

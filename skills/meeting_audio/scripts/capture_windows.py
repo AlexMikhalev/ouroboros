@@ -244,7 +244,8 @@ class _ProcessLoopbackStream:  # pragma: no cover - Windows only (driven through
         self._thread.start()
         if not self.ready.wait(ACTIVATION_TIMEOUT_SEC + 2):
             self.failure = self.failure or "Windows did not activate process loopback in time"
-            self._stop.set()
+        if self.failure:
+            self.stop()  # a failed stream never waits for a start that will not come
 
     def start(self, on_pcm: OnPcm, on_error: OnError) -> None:
         self._on_pcm, self._on_error = on_pcm, on_error
@@ -295,17 +296,23 @@ class _ProcessLoopbackStream:  # pragma: no cover - Windows only (driven through
             return
         self.ready.set()
         self._go.wait()
+        started = False
         try:
             if not self._stop.is_set():
                 com.call(client, 10)
+                started = True
             while not self._stop.is_set():
                 com.kernel32.WaitForSingleObject(event, 200)
                 self._drain(com, capture)
-            com.call(client, 11)
         except OSError as exc:
             if self._on_error is not None and not self._stop.is_set():
                 self._on_error(f"Windows stopped the process loopback capture: {exc}")
         finally:
+            if started:
+                try:
+                    com.call(client, 11)
+                except OSError:
+                    pass
             self._cleanup(com, client, capture, event)
 
     def _drain(self, com: _Com, capture: Any) -> None:
@@ -362,6 +369,9 @@ class ProcessLoopbackCapture:
             stream.prepare()
         self.backend.clear_attempt()
         failures = [stream.failure for stream in self.streams if stream.failure]
+        for stream in self.streams:
+            if stream.failure:
+                stream.stop()
         self.streams = [stream for stream in self.streams if not stream.failure]
         if not self.streams:
             raise CaptureFailed("MEETING_CAPTURE_FAILED", "; ".join(failures))

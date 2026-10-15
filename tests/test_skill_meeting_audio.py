@@ -612,7 +612,7 @@ class FakeAccess:
         return False
 
 
-def fake_frameworks(running):
+def fake_frameworks(running, copy_fills_buffer=False):
     FakeStream.created = []
     FakeContentSource.calls = 0
     FakeContentSource.content = SimpleNamespace(
@@ -625,7 +625,9 @@ def fake_frameworks(running):
         CMTimeMake=lambda value, scale: (value, scale),
         CMSampleBufferGetDataBuffer=lambda buffer: buffer["block"],
         CMBlockBufferGetDataLength=lambda block: len(block),
-        CMBlockBufferCopyDataBytes=lambda block, offset, length, out: (0, block[offset:offset + length]),
+        CMBlockBufferCopyDataBytes=(
+            (lambda block, offset, length, out: out.__setitem__(slice(0, length), block[offset:offset + length]) or 0)
+            if copy_fills_buffer else (lambda block, offset, length, out: (0, block[offset:offset + length]))),
         CMSampleBufferGetFormatDescription=lambda buffer: "description",
         CMAudioFormatDescriptionGetStreamBasicDescription=lambda description: SimpleNamespace(
             mSampleRate=48000.0, mFormatFlags=capture_macos.K_AUDIO_FORMAT_FLAG_IS_FLOAT | (1 << 5),
@@ -664,10 +666,11 @@ def test_macos_missing_consent_shows_the_prompt_and_lists_nothing(tmp_path):
     assert access.requests == 1 and FakeContentSource.calls == 0
 
 
-def test_macos_capture_includes_only_the_meeting_app_and_converts_audio(tmp_path):
+@pytest.mark.parametrize("copy_fills_buffer", [False, True], ids=["returns-copy", "fills-buffer"])
+def test_macos_capture_includes_only_the_meeting_app_and_converts_audio(tmp_path, copy_fills_buffer):
     from array import array
 
-    fw = fake_frameworks(MAC_RUNNING)
+    fw = fake_frameworks(MAC_RUNNING, copy_fills_buffer)
     backend = capture_macos.MacBackend(tmp_path, frameworks=fw, access=FakeAccess(True), macos_version="14.5")
     capture = backend.open_capture(meeting_apps.choose(backend.running_apps()))
     received, errors = [], []
@@ -746,9 +749,12 @@ def test_windows_lists_one_root_per_program_tree():
 
 
 class FakeLoopStream:
+    created = []
+
     def __init__(self, pid, stream, failure=""):
         self.pid, self.stream, self._failure, self.failure = pid, stream, failure, ""
         self.started = self.stopped = False
+        FakeLoopStream.created.append(self)
 
     def prepare(self):
         self.failure = self._failure
@@ -804,9 +810,11 @@ def test_windows_prefers_process_loopback_of_the_meeting_tree(tmp_path):
 def test_windows_falls_back_to_the_device_loopback_and_says_it_hears_the_whisper(tmp_path):
     from array import array
 
+    FakeLoopStream.created = []
     backend = windows_backend(tmp_path, failure="activation refused (HRESULT 0x80070057)")
     capture = backend.open_capture(meeting_apps.choose(backend.running_apps()))
     assert isinstance(capture, capture_windows.EndpointLoopbackCapture)
+    assert [stream.stopped for stream in FakeLoopStream.created] == [True]  # its thread is released
     facts = capture.describe()
     assert facts["includes_own_voice"] is True and "0x80070057" in facts["fallback_reason"]
     assert capture.rate == 44100
