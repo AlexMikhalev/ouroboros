@@ -85,7 +85,7 @@ def test_protocol_facts_state_the_latch_without_marker_instructions():
                                _execution_trace={"tool_calls": []})
     assert _final_answer_fact(protocol) == "FINAL ANSWER line latched: none"
     protocol._execution_trace["best_valid_final_answer"] = "42"
-    assert _final_answer_fact(protocol) == "FINAL ANSWER line latched: yes"
+    assert _final_answer_fact(protocol) == "FINAL ANSWER line latched: yes, current"
 
 
 # --- 4.2 blocking widening --------------------------------------------------------
