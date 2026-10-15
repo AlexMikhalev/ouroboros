@@ -276,7 +276,9 @@ def test_gate_subject_binding_mismatch_blocks_commit(tmp_path, monkeypatch):
         ctx, commit_message="binding ok", commit_start=0.0,
         skip_advisory_pre_review=True,
     )
-    assert outcome["status"] == "passed"
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
+    # No mismatch block; nonblocking enforcement returns the outcome before Git (#1741).
+    assert outcome["status"] == ("passed" if review_enforcement_blocks() else "reviewed")
 
 
 def test_non_managed_capture_is_byte_identical(tmp_path, monkeypatch):

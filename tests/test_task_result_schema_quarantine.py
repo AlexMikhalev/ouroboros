@@ -90,13 +90,14 @@ def test_lifecycle_write_stamps_a_live_unstamped_row(tmp_path):
     assert not _quarantine_files(tmp_path)
 
 
-def test_plan_review_writer_stamps_the_row(tmp_path):
-    from ouroboros.task_results import PLAN_REVIEW_STATE_KEY, _update_plan_review_state
+def test_plan_record_writer_stamps_the_row(tmp_path):
+    from ouroboros import plan_record
 
-    _update_plan_review_state(tmp_path, "t2", lambda state: state)
+    plan_record.append_revision(tmp_path, "t2", plan_record.compose_revision(
+        None, goal="g", plan="p", done_when=[], affected_paths=[]), body=False)
     raw = read_result(tmp_path, "t2")
     assert raw[SCHEMA_VERSION_KEY] == TASK_RESULT_SCHEMA_VERSION
-    assert PLAN_REVIEW_STATE_KEY in raw
+    assert plan_record.PLAN_RECORD_KEY in raw
 
 
 def test_owner_hurry_writer_stamps_the_row(tmp_path):

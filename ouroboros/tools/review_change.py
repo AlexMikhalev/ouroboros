@@ -784,10 +784,9 @@ def system_review_row(reviewer: str = "", effort: str = "") -> Any:
     handle, pool member or not, else the direct Main row; ``effort`` is the call's
     order (a compound route keeps its own)."""
     from ouroboros import reviewer_slot_config as slots
-    from ouroboros.deep_self_review import main_review_row
 
     if not reviewer:
-        row = main_review_row()  # Main's own failure (an invalid pin document) is not a catalog refusal
+        row = slots.main_review_row()  # Main's own failure (an invalid pin document) is not a catalog refusal
     else:
         try:
             row = slots.catalog_review_row(None, reviewer)
@@ -939,7 +938,8 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
                              head=request.head, governance_root=str(governance), surface=request.surface,
                              body_fact=str(fact.body), body_how=str(fact.how), layer=layer)
     # The gate's own subject (the body's staged index against HEAD) is read on its live
-    # root exactly as the gate reads it; every other subject is materialized in an
+    # root exactly as the gate reads it unless its interactive author may leave the wave
+    # on an addressed message (``_read_subject``); every other subject is materialized in an
     # isolated checkout, where every delivery reads the frozen tree, at the path of this
     # TASK's custody of its ROUND (identity c plus the task that keys attempt rows): a
     # rerun of the round reads the checkout its open operation still may, another
@@ -947,10 +947,8 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
     # it (review_subject.isolated_checkout).
     retention: Dict[str, Any] = {}
     task_id = str(getattr(ctx, "task_id", "") or "")
-    frozen_subject = (contextlib.nullcontext(freeze_subject(ctx, spec)) if is_gate_subject(spec)
-                      else isolated_checkout(ctx, spec, retain=lambda: retention, token=lambda identity: checkout_token(
-                          review_retry_key(identity, round_sha=_round_sha(request, identity)), task_id=task_id)))
-    with frozen_subject as frozen:
+    unfrozen: List[str] = []
+    with _read_subject(ctx, spec, request, retention, task_id, unfrozen) as frozen:
         if not str(getattr(frozen, "diff_text", "") or "").strip():
             raise ReviewChangeArgumentError(f"subject={request.subject} of {root} has no change to review")
         # Locate an already-paid round before consulting mutable pool settings.
@@ -981,8 +979,42 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
             with _wave_context(ctx, wave):
                 outcome = _dispatch(ctx, wave)
                 forensic = _forensic(ctx)
+                forensic["degraded_reasons"] = [*forensic["degraded_reasons"], *unfrozen]
                 retention.update(_checkout_custody(ctx, forensic))
+                from ouroboros import review_pause
+
+                review_pause.watch_left_review(ctx, surface="change", retry_key=wave.retry_key, record_id=wave.record_id,
+                                               reissue="the same unchanged review_change call")
             return _settle(ctx, wave, wave_facts(ctx, wave, outcome=outcome, forensic=forensic), outcome, retention)
+
+
+@contextlib.contextmanager
+def _read_subject(ctx: ToolContext, spec: Any, request: ReviewChangeRequest, retention: Dict[str, Any],
+                  task_id: str, unfrozen: List[str]) -> Iterator[Any]:
+    """Every subject but the gate's own is read in this round's isolated checkout. A
+    receptive author (``review_pause``) may leave the wave, so its gate subject is read
+    there too; a checkout that cannot be prepared keeps the live synchronous read, disclosed."""
+    from ouroboros import review_pause
+
+    def isolated() -> Any:
+        return isolated_checkout(ctx, spec, retain=lambda: retention, token=lambda identity: checkout_token(
+            review_retry_key(identity, round_sha=_round_sha(request, identity)), task_id=task_id))
+    if not is_gate_subject(spec):
+        with isolated() as frozen:
+            yield frozen
+        return
+    if review_pause.receptive_active():
+        with contextlib.ExitStack() as stack:
+            try:
+                frozen = stack.enter_context(isolated())
+            except Exception as exc:
+                unfrozen.append(f"receptive_wait_unavailable: the reviewed subject could not be frozen "
+                                f"({type(exc).__name__}: {exc}); this wave kept the synchronous wait on the live index")
+            else:
+                yield frozen
+                return
+    with review_pause.receptive_author(None):
+        yield freeze_subject(ctx, spec)
 
 
 def _handle_review_change(
@@ -992,15 +1024,25 @@ def _handle_review_change(
     coupling_only: Optional[List[str]] = None, reviewer_effort: str = "", review_rebuttal: str = "",
     treat_as_body: bool = False, _resolved_binding: Any = None,
 ) -> str:
+    from ouroboros import review_pause
+
+    ctx._left_review_wait = None  # a new review act is the author's explicit next choice
     try:
-        result = run_review_change(
-            ctx, root=root, workspace_root=workspace_root, subject=subject, base=base, head=head, surface=surface,
-            goal=goal, scope=scope, author_questions=author_questions, reviewers=reviewers, reason=reason,
-            coupling_only=coupling_only, reviewer_effort=reviewer_effort, review_rebuttal=review_rebuttal,
-            treat_as_body=treat_as_body, _resolved_binding=_resolved_binding)
+        # The tool's interactive author may leave the wave on an addressed message (the
+        # operator script's synchronous entry binds nothing).
+        with review_pause.receptive_author(review_pause.receptive_binding(ctx)):
+            result = run_review_change(
+                ctx, root=root, workspace_root=workspace_root, subject=subject, base=base, head=head, surface=surface,
+                goal=goal, scope=scope, author_questions=author_questions, reviewers=reviewers, reason=reason,
+                coupling_only=coupling_only, reviewer_effort=reviewer_effort, review_rebuttal=review_rebuttal,
+                treat_as_body=treat_as_body, _resolved_binding=_resolved_binding)
     except ReviewChangeArgumentError as exc:
         return argument_refusal(ctx, "TOOL_ARG_ERROR (review_change)", [str(exc)], effect="No reviewer was dispatched.")
     result.pop("usage", None)
+    if (getattr(ctx, "_left_review_wait", None) or {}).get("surface") == "change":
+        result["message"] = ("An addressed message reached you while the reviewers ran: this call returned and their "
+                             "paid work continues separately; a [Review settled] notice follows the whole wave. "
+                             + str(result.get("message") or ""))
     text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
     return f"{result['message']}\n\n{text}" if result.get("message") else text
 
@@ -1018,8 +1060,10 @@ _DESCRIPTION = (
     "written to the review ledger. commit_reviewed stays the only landing in the system repository; use "
     "review_change by judgment for any other root (it never starts on its own and never runs tests: "
     "tests.policy=NOT_RUN). Subjects: base..head (commits), index (staged) or worktree (live) against base "
-    "(default HEAD); every subject but the body's own staged index is frozen and read in an isolated checkout of "
-    "its tree. Rules follow the subject: the body is read against the body "
+    "(default HEAD), frozen and read in an isolated checkout of its tree (only a synchronous caller reads the body's "
+    "own staged index live). An addressed message while the wave runs returns its pending outcome: the reviewers "
+    "continue, a [Review settled] notice follows, and the same unchanged call collects it at $0. "
+    "Rules follow the subject: the body is read against the body "
     "layer, anything else against the universal core checklist. Panel: for a body subject outside Cyber Pro the "
     "review pool stands and reviewers only add seats; otherwise reviewers IS the panel (omitted = the whole pool) "
     "and reason records why — its counted seats are pool rows, an enabled row outside the pool is an added "

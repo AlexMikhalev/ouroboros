@@ -93,12 +93,16 @@ def test_max_mode_inlines_architecture_and_development_in_full():
     assert "## DEVELOPMENT.md" in text
 
 
-def test_plan_review_docs_pin_fail_closed_exact_artifact_custody():
+def test_plan_review_docs_pin_honest_continuation_from_retained_sources():
+    """A plan participant continues only from its own retained delivery and reply; an
+    unreadable source is a fresh send the ask row discloses (`continued`), never a borrowed
+    transcript. Both books state it; the retired engine's refusal code is not live text."""
     repo = pathlib.Path(__file__).resolve().parents[1]
 
     for relative in ("docs/ARCHITECTURE.md", "docs/DEVELOPMENT.md"):
         text = governance_doc_text(relative, repo)
-        assert "plan_review_exact_artifact_unavailable" in text, relative
+        assert "an unreadable source means a fresh send" in text and "`continued`" in text, relative
+        assert "plan_review_exact_artifact_unavailable" not in text, relative
 
 
 def test_forked_task_captures_canonical_memory_and_exact_api_context():

@@ -117,9 +117,14 @@ def test_a_finish_acknowledgement_is_not_a_review_either():
     trace = _capture(ack, args=args)
     assert "review_runs" not in trace
     assert _task_acceptance_eligible("auto", trace, False) == (False, "skipped_conversation")
-    # The configured policy still reviews: effects, contract or a queued ``required`` task.
-    assert _task_acceptance_eligible("required", trace, False) == (True, "required_nondirect")
-    assert _task_acceptance_eligible("auto", trace, False, task_contract={"expected_output": "x"}) == (True, "auto_contract")
+    # The configured policy still reviews its own triggers beside the acknowledgement:
+    # Required reviews observed effects and produced material. Queue membership and
+    # declared outputs prove no production (#1731), so they stay quiet.
+    assert _task_acceptance_eligible("required", trace, False) == (False, "skipped_conversation")
+    assert _task_acceptance_eligible("auto", trace, False, task_contract={"expected_output": "x"}) == (False, "skipped_conversation")
+    effect = {"tool": "write_file", "args": {"path": "export.py"}, "is_error": False, "status": "ok"}
+    assert _task_acceptance_eligible("required", {**trace, "tool_calls": [*trace["tool_calls"], effect]}, False) == (True, "required_effect")
+    assert _task_acceptance_eligible("required", {**trace, "acceptance_material": {"produced": True}}, False) == (True, "required_material")
 
 
 @pytest.mark.parametrize("control", ["amend_cap", "historical_summary", "no_review_slots",

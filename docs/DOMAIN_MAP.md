@@ -13,7 +13,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D03 | Context assembly, fit & compaction | 20 | 0 |
 | D04 | Tool execution: registry, access & typed results | 22 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 38 | 0 |
-| D06 | Review stack | 82 | 0 |
+| D06 | Review stack | 85 | 0 |
 | D07 | Delegation, subagents & Claudexor | 66 | 0 |
 | D08 | Supervisor: queue, workers, events & runtime control | 62 | 0 |
 | D09 | Cancellation, owner control & process custody | 20 | 0 |
@@ -22,13 +22,13 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D12 | Settings & configuration | 20 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
 | D14 | Skills & extensions | 58 | 0 |
-| D15 | Memory, knowledge, consciousness & self-evolution | 28 | 0 |
+| D15 | Memory, knowledge, consciousness & self-evolution | 29 | 0 |
 | D16 | Observability, usage accounting & cost | 21 | 0 |
 | D17 | Projects, workspaces & task results | 33 | 0 |
 | D18 | Launcher, packaging, platform & shared substrate | 25 | 0 |
 | D19 | Frozen contracts (ABI) | 11 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **734** | **0** |
+| **total** | | **738** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -386,9 +386,12 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 
 ### D06 — Review stack
 
+- `ouroboros/acceptance_material.py`
 - `ouroboros/commit_admission.py`
 - `ouroboros/deep_self_review.py`
 - `ouroboros/dialogue_evidence.py`
+- `ouroboros/plan_intention_ledger.py`
+- `ouroboros/plan_record.py`
 - `ouroboros/plan_review_facts.py`
 - `ouroboros/preflight_node.py`
 - `ouroboros/preflight_receipts.py`
@@ -437,14 +440,14 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/test_environment.py`
 - `ouroboros/tools/governance_context.py`
 - `ouroboros/tools/parallel_review.py`
+- `ouroboros/tools/plan_ask.py`
 - `ouroboros/tools/plan_author_history.py`
+- `ouroboros/tools/plan_delivery.py`
 - `ouroboros/tools/plan_dialogue.py`
 - `ouroboros/tools/plan_evidence.py`
 - `ouroboros/tools/plan_packet.py`
-- `ouroboros/tools/plan_render.py`
 - `ouroboros/tools/plan_review.py`
 - `ouroboros/tools/plan_review_artifacts.py`
-- `ouroboros/tools/plan_review_collect.py`
 - `ouroboros/tools/plan_review_references.py`
 - `ouroboros/tools/plan_review_runtime.py`
 - `ouroboros/tools/plan_spec.py`
@@ -857,6 +860,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/evolution_fingerprint.py`
 - `ouroboros/improvement_backlog.py`
 - `ouroboros/knowledge.py`
+- `ouroboros/late_review_marks.py`
 - `ouroboros/memory.py`
 - `ouroboros/memory_fallback.py`
 - `ouroboros/memory_inventory.py`

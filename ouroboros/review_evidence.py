@@ -217,8 +217,7 @@ def build_task_acceptance_evidence(
         "parent_task_id": str(meta.get("parent_task_id") or ""),
         "project_id": str(meta.get("project_id") or getattr(ctx, "project_id", "") or ""),
     }
-    prov["canonical_payload"] = "host_attested"
-    prov["aliases"] = "host_attested"
+    prov["canonical_payload"] = prov["aliases"] = "host_attested"
     supplied_section = accept_agent_supplied_section(agent_evidence)
     if supplied_section:
         # Demoted repo_diff + structural redaction, through the ONE helper the
@@ -226,12 +225,9 @@ def build_task_acceptance_evidence(
         ev["agent_supplied"] = supplied_section
         prov["agent_supplied"] = "agent_supplied"
     contract = _accept_task_contract(ctx)
-    # W2: resolve the claims that bind this task through the ONE seam — ingress
-    # first, plan-frozen only when ingress is empty. The packet VIEW carries them;
-    # the durable/live contract is never mutated.
-    claims, claims_source, plan_exhibit = _accept_effective_claims(
-        ctx, contract, drive_root, task_id,
-    )
+    # Ingress claims win; plan-frozen claims fill only an empty ingress. This
+    # changes the packet view, never the durable/live contract.
+    claims, claims_source, plan_exhibit = _accept_effective_claims(ctx, contract, drive_root, task_id)
     if claims_source in {"plan_review", "author_plan"}:
         contract = {**contract, "acceptance_claims": claims}
     receipts = read_context_verification_receipts(ctx, task_id, fallback_root=drive_root) if task_id else []
@@ -316,19 +312,30 @@ def build_task_acceptance_evidence(
             ev["skill_lifecycle_history_coverage"] = skill_history_coverage
             prov["skill_lifecycle_history_coverage"] = "host_attested"
             ev["skill_lifecycle_complete"] = bool(skill_history_coverage.get("complete"))
-    repo_diff, diff_meta = _accept_repo_diff(
-        ctx, include_recent_commit=include_recent_commit, drive_root=drive_root, task_id=task_id)
+    material = (llm_trace or {}).get("acceptance_material") or {}
+    workspace = material.get("workspace") or {}
+    if material:
+        ev["acceptance_material"] = {**material, **({"workspace": {
+            key: value for key, value in workspace.items() if key != "repo_diff"}} if workspace else {})}
+        prov["acceptance_material"] = "host_attested"
+    if workspace:
+        repo_diff, diff_meta = workspace["repo_diff"], {
+            "source_ref": workspace["repo_diff_source_ref"], "capture_disclosure": workspace["repo_diff_capture"]}
+    else:
+        repo_diff, diff_meta = _accept_repo_diff(
+            ctx, include_recent_commit=include_recent_commit, drive_root=drive_root, task_id=task_id)
     ev["repo_diff"] = repo_diff
     prov["repo_diff"] = "host_attested"
-    # Identity/size/gaps of the private source this text was projected from.
-    # The raw bytes and their host-private ref deliberately stay out of the packet.
+    # Disclose capture identity/size/gaps; private raw bytes/refs stay outside the packet.
     if diff_meta.get("capture_disclosure"):
         ev["repo_diff_capture"] = redact_projection(diff_meta["capture_disclosure"]).value
         prov["repo_diff_capture"] = "host_attested"
     if diff_meta.get("source_ref"):
         ev["repo_diff_source_ref"] = redact_projection(diff_meta["source_ref"]).value
         prov["repo_diff_source_ref"] = "host_attested"
-    partial_sources: List[Dict[str, Any]] = [dict(diff_meta["issue"])] if diff_meta.get("issue") else []
+    partial_sources: List[Dict[str, Any]] = list(material.get("issues") or [])
+    if diff_meta.get("issue"):
+        partial_sources.append(dict(diff_meta["issue"]))
     if subtree_statuses is not None:
         ev["terminal_subtree_statuses"] = [dict(row) for row in subtree_statuses if isinstance(row, dict)]
         from ouroboros.depth_evidence import build_depth_summary
@@ -399,13 +406,9 @@ def build_task_acceptance_evidence(
         # rebuttal → acceptance loops. Host facts only; the disposition reason stays
         # under agent_supplied (clean provenance, BIBLE P3).
         obligations = [o for o in (llm_trace.get("acceptance_obligations") or []) if isinstance(o, dict)]
-        # Count cap (v6.71.1): OPEN obligations are ACTIVE BLOCKING STATE — the panel
-        # adjudicates them and a clean PASS closes them, so clipping an open row would
-        # let the loop close obligations the reviewers never saw (triad r4, P1/P3).
-        # Every open row therefore always ships; only HISTORICAL disposed rows are
-        # capped (most-recent fill up to _ACCEPT_OBLIGATIONS_MAX total), disclosed.
-        # An open set too large to fit fails closed downstream via the packet budget
-        # (__immutable_core_overflow__ → DEGRADED), never via silent hiding.
+        # Every open obligation ships: reviewers cannot close unseen blocking
+        # state. Only disposed history is count-capped, with omissions disclosed.
+        # Oversized open sets fail downstream (__immutable_core_overflow__), never hide.
         if len(obligations) > _ACCEPT_OBLIGATIONS_MAX:
             open_rows = [o for o in obligations if obligation_is_pending(o)]
             disposed_rows = [o for o in obligations if not obligation_is_pending(o)]
@@ -419,9 +422,7 @@ def build_task_acceptance_evidence(
                 })
             obligations = kept
         if obligations:
-            ev["acceptance_obligations"] = [
-                _accept_obligation_row(o) for o in obligations
-            ]
+            ev["acceptance_obligations"] = [_accept_obligation_row(o) for o in obligations]
             prov["acceptance_obligations"] = "host_attested"
     if drive_root is not None and task_id:
         arts = _accept_artifact_manifest(drive_root, task_id, _accept_protected_set(ctx))
@@ -440,8 +441,7 @@ def build_task_acceptance_evidence(
                                 "reason": "bounded_history_projection", "source_ref": coverage.get("source_ref") or {}})
     if partial_sources:
         ev["__unresolved_partial_artifacts__"] = partial_sources
-    # Set task_type BEFORE budget enforcement so the whole packet stays deterministically
-    # bounded — callers must NOT mutate the packet after the builder returns (review round-4).
+    # Add task type before fitting; callers cannot mutate the returned bounded packet.
     if str(task_type).strip():
         ev["task_type"] = str(task_type)
         prov["task_type"] = "host_attested"

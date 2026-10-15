@@ -186,6 +186,7 @@ def runtime_reads(root):
         ("read_document", lambda: task_store.read_document(root, "t5")),
         ("signature", lambda: task_store.signature(root, "t5")),
         ("owner-held members", lambda: obligations.members(root, "custody_open")),
+        ("review collection candidates", lambda: list(task_store.review_collection_candidates(root))),
     ]
 
 
@@ -218,13 +219,6 @@ def test_the_captured_plan_guard_catches_a_broken_where_and_a_dropped_index(popu
 
 def test_the_plan_guard_catches_a_table_scan(populated):
     plan = _plan(populated, "SELECT task_id FROM tasks WHERE child_drive_root=?", ("/x",))
-    assert _scans(plan)
-
-
-def test_the_body_marker_sweep_is_the_one_declared_scan(populated):
-    """``ids_with_fields`` (the acceptance settlement sweep) reads every body once with LIKE;
-    it replaced a directory listing plus a full read of every file and stays a declared scan."""
-    plan = _plan(populated, "SELECT task_id FROM task_bodies WHERE body LIKE ? ORDER BY task_id", ('%"x":%',))
     assert _scans(plan)
 
 

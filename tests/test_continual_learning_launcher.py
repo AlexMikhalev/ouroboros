@@ -621,7 +621,12 @@ def test_fidelity_follows_the_execution_clone_not_the_pinned_commit_constant(tmp
         encoding="utf-8")
 
     patched = _fidelity_of()
-    assert patched["declared_only_pinned_adapter_gap"] == {}
+    # Only the Required request stays a gap on every clone (#1731, O4): the launcher renders
+    # and exports it but cannot attest the external adapter's executing settings.
+    unattested = {"OUROBOROS_TASK_REVIEW_MODE"}
+    assert set(patched["declared_only_pinned_adapter_gap"]) == unattested
+    assert patched["declared_only_pinned_adapter_gap"]["OUROBOROS_TASK_REVIEW_MODE"]["declared"] == "required"
+    assert not unattested & set(patched["enforced_via_operator_patch"])
     for knob in ("OUROBOROS_SAFETY_MODE", "OUROBOROS_REVIEW_ENFORCEMENT", "OUROBOROS_SUBAGENTS",
                  "CLBENCH_SOLVE_DISABLED_TOOLS"):
         assert knob in patched["enforced_via_operator_patch"]
@@ -642,7 +647,7 @@ def test_fidelity_follows_the_execution_clone_not_the_pinned_commit_constant(tmp
     )
     host_patched = _fidelity_of("--no-docker")
     assert "OUROBOROS_SUBAGENTS" in host_patched["enforced_via_operator_patch"]
-    assert host_patched["declared_only_pinned_adapter_gap"] == {}
+    assert set(host_patched["declared_only_pinned_adapter_gap"]) == unattested
 
 
 def test_seed_gate_binds_to_the_execution_clone_and_records_the_launcher_separately(tmp_path):

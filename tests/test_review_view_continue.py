@@ -43,7 +43,8 @@ def test_successor_startup_short_view_exact_read_and_new_gate_unchanged(harness,
     from ouroboros.tools.core_file_tools import _read_file
     from ouroboros.tools.registry import ToolContext
 
-    ctx, sub = first_plan(harness)
+    ctx = first_plan(harness)
+    sub = harness.install({})
     _, receipt, _ = _apply(ctx, _capture(ctx), note=NOTE, review_notes=notes_for(ctx))
     assert receipt['status'] == 'applied'
     env, task = successor(ctx)
@@ -64,7 +65,7 @@ def test_successor_startup_short_view_exact_read_and_new_gate_unchanged(harness,
     assert SELECTED_VIEW_FIELD not in load_task_result(ctx.drive_root, task['id'])
     assert load_plan_review_state(ctx.drive_root, task['id']) == new_gate
     assert load_plan_review_state(ctx.drive_root, ctx.task_id) == old_gate
-    assert len(sub.calls) == 1
+    assert sub.calls == []
     assert task == canonical_task and OWNER in messages[1]['content']
     assert all(result_signature(ctx.drive_root, tid) == raw for tid, raw in before.items())
     # A task-local relative reader would resolve to the successor's empty store.
@@ -90,7 +91,7 @@ def test_continue_lost_selected_source_discloses_gap_without_copying_authority(h
     from ouroboros.context import _task_authority_projection
     from ouroboros.task_results import load_plan_review_state, load_task_result
     from ouroboros.review_history_view import SELECTED_VIEW_FIELD
-    ctx, _ = first_plan(harness)
+    ctx = first_plan(harness)
     _, receipt, _ = _apply(ctx, _capture(ctx), review_notes=notes_for(ctx))
     env, task = successor(ctx)
     ref = receipt['selected_review_history_view']['source_ref']
@@ -109,7 +110,7 @@ def test_two_successive_continues_keep_first_account_without_reauthoring(harness
     from ouroboros.task_results import load_task_result, load_plan_review_state
     from ouroboros.tools.core_file_tools import _read_file
     from ouroboros.tools.registry import ToolContext
-    ctx, _ = first_plan(harness)
+    ctx = first_plan(harness)
     _apply(ctx, _capture(ctx), note=NOTE, review_notes=notes_for(ctx))
     _, second = successor(ctx)
     second_ctx = ToolContext(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root, task_id=second['id'],

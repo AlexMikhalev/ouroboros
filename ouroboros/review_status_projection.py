@@ -392,12 +392,12 @@ def _review_status_message(projection: Dict[str, Any]) -> str:
     current = f"Current advisory: {projection['effective_status']}"
     if ca and ca.status in ("blocked", "failed"):
         from ouroboros.review_ledger import NOT_PERFORMED_PHRASES
-        from ouroboros.tools.review_helpers import REVIEW_POOL_EMPTY_SENTENCE
 
         counts_only = "The commit gate counts only a PASS/FAIL answer"
         reason_map = {
             "no_advisory": "Held by the retired advisory gate (history); commits no longer wait for a preflight.",
-            "pool_empty": f"Review NOT_PERFORMED: {REVIEW_POOL_EMPTY_SENTENCE}",
+            "pool_empty": ("Review NOT_PERFORMED (history): no row was marked Reviewer; an empty review pool "
+                           "now reviews on the Main model alone, so retrying the commit runs that review."),
             "coupling_not_performed": (
                 f"Review NOT_PERFORMED: {NOT_PERFORMED_PHRASES['coupling_not_performed']}. {counts_only}; "
                 "retry the commit or configure a retrieving reviewer seat (Settings → Agents, a Reviewer row that reads the work itself)."),

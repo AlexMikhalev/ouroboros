@@ -157,12 +157,12 @@ fresh agent session. Reviewing in the authoring conversation does not count.
 The main review path is an **agentic checklist review**: the reviewer reads
 the repository with its own tools and covers the "Coupling questions"
 section of [`docs/CHECKLISTS.md`](docs/CHECKLISTS.md) — every one of its
-eight items (`intent_alignment`, `forgotten_touchpoints`,
-`cross_surface_consistency`, `regression_surface`, `prompt_doc_sync`,
-`architecture_fit`, `cross_module_bugs`, `implicit_contracts`) — following
-that checklist's output contract: one JSON array covering all eight items,
-PASS rows mandatory and justified with a concrete artifact, FAIL rows with
-severity (a critical FAIL names an exact file/symbol).
+items (`intent_alignment`, `forgotten_touchpoints`,
+`cross_surface_consistency`, `regression_surface`, `architecture_fit`,
+`implicit_contracts`) — following that checklist's output contract: one JSON
+array covering every item, PASS rows as a one-line pointer to what was checked
+(or `N/A — <reason>`), FAIL rows with severity (a critical FAIL names an exact
+file/symbol).
 
 Give the reviewer the issue or goal, non-goals, exact base and head SHAs, and
 repository access. The reviewer must not edit the candidate. Use this compact
@@ -178,9 +178,9 @@ Inspect the complete diff, touched files, relevant callers, tests, and docs.
 
 Cover the Coupling questions from docs/CHECKLISTS.md exactly:
 output a JSON array of objects with the keys "item", "verdict" (PASS/FAIL),
-"severity" (critical/advisory), and "reason", covering all eight checklist
-items per its output contract — PASS rows are mandatory and justified with a
-concrete artifact; a critical FAIL names an exact file/symbol. Then report
+"severity" (critical/advisory), and "reason", covering every checklist
+item per its output contract — a PASS row is a one-line pointer to what was
+checked; a critical FAIL names an exact file/symbol. Then report
 any further findings with severity and file/line references, checks
 performed, coverage limitations, and one verdict: PASS, NEEDS_CHANGES, or
 INCOMPLETE. Do not report PASS when required material was unavailable.

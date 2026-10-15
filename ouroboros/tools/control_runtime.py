@@ -827,6 +827,14 @@ def stage_completion_request(ctx: ToolContext, request: dict, *, source: str = "
     from ouroboros.task_results import resolve_task_lineage
 
     action, answer, selector = request.get("action"), request.get("answer"), request.get("answer_sha256")
+    # Strict tool schemas make a model fill the field it did not choose with "": an empty
+    # selector beside an answer (or an empty answer beside a selector) names nothing.
+    if isinstance(selector, str) and not selector.strip() and answer is not None:
+        selector = None
+        request = {**request, "answer_sha256": None}
+    elif isinstance(answer, str) and not answer.strip() and isinstance(selector, str) and selector.strip():
+        answer = None
+        request = {**request, "answer": None}
     error = ""
     if action not in {"finish", "stop"}:
         error = "action must be finish or stop"
@@ -836,7 +844,7 @@ def stage_completion_request(ctx: ToolContext, request: dict, *, source: str = "
         error = "select exactly one of answer and answer_sha256"
     elif not reply_later and answer is not None and (not isinstance(answer, str) or (not allow_empty and not answer.strip())):
         error = "answer must be complete nonempty text"
-    elif selector is not None and (not isinstance(selector, str) or not selector):
+    elif selector is not None and (not isinstance(selector, str) or not selector.strip()):
         error = "answer_sha256 must name an offered answer"
     elif request.get("pending_review") not in {None, "wait", "finish"}:
         error = "pending_review must be wait or finish"

@@ -55,8 +55,8 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tupl
 
 from ouroboros import chat_chain, memory_inventory
 from ouroboros.chronicle_import import LEGACY_ROOM_ID, row_lineage
-from ouroboros.chronicle_store import (SPEAKERS, ChronicleStore, PublishResult, correction_line, draft_signer,
-                                       source_time_span, verify_quotes)
+from ouroboros.chronicle_store import (DELEGATED_FOCUS_ROLES, SPEAKERS, ChronicleStore, PublishResult, correction_line,
+                                       draft_signer, source_time_span, verify_quotes)
 from ouroboros.dialogue_provenance import memory_row_header, render_row_text, row_author
 from ouroboros.knowledge import focus_signature
 from ouroboros.memory_view_account import source_change_lines
@@ -416,7 +416,7 @@ _WRITERS = {"page": _write_page, "part": _write_part, "note": _write_note,
 # A delegated focus is not the integrating mind: it drafts pages and parts under its own
 # signature (a part over legacy sections and its own drafts only, ``_write_part``), and the mind
 # accepts or rejects them; notes, corrections and decisions stay the mind's.
-_DRAFTING_ROLES = frozenset({"child", "nanny"})
+_DRAFTING_ROLES = DELEGATED_FOCUS_ROLES
 _DRAFT_KINDS = frozenset({"page", "part"})
 
 

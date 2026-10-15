@@ -536,10 +536,10 @@ def test_local_only_preview_materializes_only_local_routes_without_daemon_read(o
     items = response.json()["available_subagents"]["items"]
     targets = [row["route"]["target_id"] for row in items if not row.get("review_eligible")]
     assert targets == ["owner-main (local)", "owner-light (local)"]
-    # The factory pool of a local-only install is its one reachable model, run three
-    # times (I3-1), never a remote panel.
+    # The factory pool of a local-only install is its one reachable model, run once
+    # (I3-1 after owner Q5=A: copies of it would only multiply the cost), never a remote panel.
     reviewers = [row for row in items if row.get("review_eligible") is True]
-    assert [row["minted_from"] for row in reviewers] == ["factory_default"] * 3
+    assert [row["minted_from"] for row in reviewers] == ["factory_default"]
     assert {row["route"]["target_id"] for row in reviewers} <= {"owner-main", "owner-main (local)"}
     assert onboarding.calls["snapshot"] == 0
     assert not onboarding.settings_path.exists()

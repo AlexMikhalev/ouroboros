@@ -115,7 +115,7 @@ decision reads it. A wrapper carries its inner producer's failure forward, and a
 supervising wake is acknowledged on the published `supervision_wake_id`, never on the
 tool's name (ARCHITECTURE §6 "Delegated subagents").
 
-Enforcement: CHECKLISTS item 15(b) scores the prompt-edit discipline;
+Enforcement: CHECKLISTS item 14(a) scores the prompt-edit discipline;
 `tests/test_typed_tool_refusals.py` is the shrink-only source lint over returned
 literals in `ouroboros/tools/`, its per-file allowlist the disclosure of the
 identifier-less residual; the owner-judgment and recoverable-failure boundaries are

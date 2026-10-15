@@ -199,3 +199,26 @@ def exact_recovery_join(executor: Any, custody_root: Any, retry_state: Optional[
     if isinstance(stored, dict) and isinstance(stored.get("prompt"), str):
         executor._session_prompt = stored["prompt"]
     return True
+
+
+def validate_producer_invocation(root: Any, token: str, expected: dict, payload: dict,
+                                outcome: dict, *, error_source: bool) -> None:
+    """Session-specific proof behind a complete, already-bound producer outcome.
+
+    Only positive preparation provenance needs no START_REQUESTED row. An absent
+    token, contradictory start facts or a legacy source never establish that proof.
+    """
+    from ouroboros.delegate_custody import invocation_record
+
+    usage = payload.get("usage") or {}
+    if (error_source and usage.get("delegated_start_unrequested") is True
+            and outcome.get("status") == "error" and bool(outcome.get("error"))
+            and not (token or usage.get("delegated_run_id") or usage.get("delegated_run_started"))):
+        return
+    invocation = invocation_record(root, token) if token else None
+    if not invocation or any(str(invocation.get(k) or "") != str(expected[k] or "")
+                             for k in ("task_id", "root_task_id", "surface", "slot_id", "operation_id")):
+        raise ValueError("completed producer has no exact delegated invocation")
+    run_id = str(usage.get("delegated_run_id") or "")
+    if run_id and run_id != str(invocation.get("run_id") or ""):
+        raise ValueError("completed producer delegated run mismatch")

@@ -32,7 +32,9 @@ CI runs the default suite in two passes (`.github/workflows/ci.yml`, runners `qu
 
 ### The local battery entry point
 
-`python scripts/run_tests.py` (also `make test`) is the documented local run: the node lane (a missing node is a red `NOT_RUN`), then every default-lane test, never skipping a test on the strength of an earlier run; extra arguments are forwarded to pytest as a focused run. It imports `LANE_EXCLUSION_EXPR` and `PARALLEL_PASS_FLAGS` from the gate rather than restating them. Its default mode is one xdist run in which every serial file is pinned to one of a few file-sharded groups (`--serial-shards`, `tests/conftest.py::_pin_lane_groups`), so serial tests overlap the parallel ones and also get the parallel flags' per-test timeout; `--sequential` keeps the gate's two-pass split. CI and the commit gate keep that split and stay the authority: a failure seen only in overlapped mode is re-checked with `--sequential` before it is believed. Enforcement: `tests/test_run_tests_script.py`.
+`python scripts/run_tests.py` (`make test`) runs Node (missing = red `NOT_RUN`), then all default tests, even after a pass; extra pytest args select focused work. It imports the gate's lane exclusions/parallel flags. Default xdist pins serial files to `--serial-shards` groups (`_pin_lane_groups`) under the parallel timeout; `--sequential` restores CI/gate's authoritative split. Recheck overlap-only failures sequentially. `tests/test_run_tests_script.py` enforces this; local feedback mints no hermetic proof.
+
+`--evidence-dir DIR` passes explicit pytest `--ci-evidence-dir` paths under one absolute root: `overlapped`, `parallel`/`serial`, or `focused`; Node is unchanged. Never export the path in `PYTEST_ADDOPTS`: nested pytest could overwrite the parent's `events.jsonl`/`results.json`. A child may name its own directory; sequential reuse after producer exit remains allowed.
 
 ### Safe local verification and dirty browser candidates
 

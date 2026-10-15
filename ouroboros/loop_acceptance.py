@@ -49,13 +49,9 @@ def _task_acceptance_eligible(
 ) -> tuple[bool, str]:
     """Return ``(host_should_review, trigger_reason)``.
 
-    Both modes review observable effects and typed deliverables/criteria.
-    ``auto`` also honors an agent's recorded NOMINATION (the typed root deferral,
-    never the review tool's name alone), so read-only research remains
-    reviewable without classifying its prose or tool counts.
-    Queue membership alone qualifies only in ``required``. Child reviews stay
-    advisory, and ``off`` never reviews.
-    Eligibility uses typed contracts and runtime facts, never message content.
+    Auto is the author's typed nomination. Required also reviews observed effects
+    and retained produced material. Requests, inputs and queue labels prove no
+    production; child critics and collection of paid panels have separate owners.
     """
     if mode == "off":
         return False, "off"
@@ -63,20 +59,13 @@ def _task_acceptance_eligible(
         return False, "skipped_child_advisory"
     if mode in {"auto", "required"}:
         prefix = "required" if mode == "required" else "auto"
-        if turn_has_reviewable_effects(llm_trace):
-            return True, f"{prefix}_effect"
-        if mode == "required" and not is_direct_chat:
-            return True, f"{prefix}_nondirect"
-        contract = task_contract if isinstance(task_contract, dict) else {}
-        if (
-            str(contract.get("expected_output") or "").strip()
-            or bool(contract.get("acceptance_criteria"))
-            or bool(contract.get("success_criteria"))
-            or bool(contract.get("acceptance_claims"))
-        ):
-            return True, f"{prefix}_contract"
         if recorded_acceptance_nomination(llm_trace):
             return True, f"{prefix}_agent_request"
+        if mode == "required":
+            if turn_has_reviewable_effects(llm_trace, observed_only=True):
+                return True, "required_effect"
+            if (llm_trace.get("acceptance_material") or {}).get("produced") is True:
+                return True, "required_material"
         return False, "skipped_conversation"
     return False, "skipped_unknown_mode"
 
@@ -379,10 +368,9 @@ def _supersede_task_acceptance_for_owner_followup(
     )
     ctx._task_acceptance_reviewed = False
     ctx._task_acceptance_fence_generation_mismatch = False
-    # The panel in flight reviewed the answer to the OLD requirements: it stays
-    # custodied and its verdicts still arrive as advice, but the answer Main writes
-    # for the follow-up is not a delivery under it — the ordinary path decides.
-    ctx._task_acceptance_pending = ""
+    # A new message changes delivery premises, not physical review identity or
+    # the author's wait choice. The old verdict can inform the next decision
+    # without authorizing an answer to changed requirements.
     llm_trace.pop("root_phase_checkpoint", None)
     llm_trace["review_decision"] = {**dict(llm_trace.get("review_decision") or {}),
         "eligibility": "pending_owner_followup",
@@ -605,6 +593,10 @@ def _latch_final_answer_marker(
         pass
     answer = extract_final_answer(text)
     if not answer:
+        from ouroboros.outcomes import FINAL_ANSWER_MARKER
+        if any(line.strip().startswith(FINAL_ANSWER_MARKER) for line in text.splitlines()):
+            llm_trace.pop("best_valid_final_answer", None)
+            llm_trace.pop("best_valid_final_answer_tools", None)
         return
     llm_trace["best_valid_final_answer"] = answer
     del current_tool_calls
@@ -1055,6 +1047,22 @@ def _record_forced_acceptance_bypass(
     if tools_ctx is None:
         return
     from ouroboros.acceptance_history import seed_acceptance_history
+    from ouroboros.acceptance_material import retain_acceptance_material
+
+    # Finalization collects paid facts even when a prior decision or Off forbids
+    # fresh review. Collection failure proves no new verdict and permits no resend.
+    try:
+        from ouroboros.review_dispatch import reconcile_pending_acceptance_runs
+        reconcile_pending_acceptance_runs(llm_trace, drive_root=tools_ctx.drive_root, usage_ctx=tools_ctx)
+    except Exception:
+        log.debug("Forced finalization could not collect paid feedback", exc_info=True)
+    # A forced replacement still owns its exact selection. Capture is fallible;
+    # an unavailable reader cannot resurrect the previous answer or abort salvage.
+    try:
+        retain_acceptance_material(tools_ctx, llm_trace)
+    except Exception as exc:
+        llm_trace["acceptance_material"] = {"produced": False, "sources": [], "issues": [
+            {"status": "source_unavailable", "tool": "forced_material", "reason": str(exc)}]}
     # A recorded host decision (canonical status, NOT the status-less agent
     # stance merged on a deferral) wins; the bypass record exists only for the
     # no-host-verdict shape; `_set_acceptance_decision` stamps.
@@ -1093,7 +1101,8 @@ def _record_forced_acceptance_bypass(
         log.debug("Forced acceptance-bypass eligibility probe failed", exc_info=True)
         llm_trace["review_decision"] = {"eligibility": "unknown", "trigger": trigger}
         return
-    if not eligible:
+    if not eligible and not any(isinstance(run, dict) and run.get("authority") == "host_root"
+                                for run in llm_trace.get("review_runs") or []):
         # Explicitly "no panel warranted" — now distinguishable from "not evaluated".
         llm_trace["review_decision"] = {"eligibility": "not_eligible", "trigger": probe_trigger}
         return

@@ -530,7 +530,6 @@ def _outside_the_lock(root, monkeypatch, probes):
     """Every mutator input is prepared with NO write transaction open: each prepared input first
     takes and releases the store's write lock itself, which ``StoreBusy``-fails under a mutator."""
     from ouroboros import swarm_rollup, task_custody
-    from ouroboros.tools import plan_author_history
 
     def guard(name, real):
         def probe(*args, **kwargs):
@@ -541,30 +540,16 @@ def _outside_the_lock(root, monkeypatch, probes):
         return probe
 
     for module, name in ((task_custody, "capture_unread_mail"), (task_custody, "capture_owner_mail"),
-                         (swarm_rollup, "initial_swarm_rollup"), (plan_author_history, "_read"),
-                         (plan_author_history, "_persist")):
+                         (swarm_rollup, "initial_swarm_rollup")):
         monkeypatch.setattr(module, name, guard(name, getattr(module, name)))
 
 
-def _author_subject(root, task_id, fingerprint, rationale):
-    import json
-    from ouroboros.artifacts import store_actor_source_bytes
-    from ouroboros.review_records import build_author_disposition
-
-    value = {"kind": "plan_author_subject", "fingerprint": fingerprint, "spec": {"goal": "Ship"}, "plan_prose": "Chosen"}
-    ref = store_actor_source_bytes(root, task_id, category="context_checkpoints", source_id=f"sel-{fingerprint[:4]}",
-                                   data=json.dumps(value).encode(), extension="json")
-    author = build_author_disposition(disposition="partial", rationale=rationale, subject_hash=fingerprint)
-    return {"source_ref": ref, "author_disposition": author, "review_fingerprint": "c" * 64}
-
-
 def test_mutator_inputs_are_prepared_before_begin_and_reprepared_outside_when_the_row_moved(tmp_path, monkeypatch):
-    """S3 fix 13 (Grok MINOR, Astra M11): the mailbox captures, the swarm rollup and the author
-    selection's source read/write run before ``BEGIN``; a mutator that finds its input missing
-    (a projector turning the row terminal, a first row, a moved attempt) rolls back empty and the
-    whole write repeats with the input prepared outside the lock."""
+    """S3 fix 13 (Grok MINOR, Astra M11): the mailbox captures and the swarm rollup run before
+    ``BEGIN``; a mutator that finds its input missing (a projector turning the row terminal, a
+    first row) rolls back empty and the whole write repeats with the input prepared outside the
+    lock."""
     from ouroboros import store_import, task_results
-    from ouroboros.tools import plan_author_history
 
     store_import.ensure_current_store(tmp_path)
     probes: list = []
@@ -578,33 +563,6 @@ def test_mutator_inputs_are_prepared_before_begin_and_reprepared_outside_when_th
     stored = task_results.write_task_result(tmp_path, "t1", "running",
                                             _field_projector=lambda existing, fields: {**fields, "status": "completed"})
     assert stored["status"] == "completed" and sorted(probes) == ["capture_owner_mail", "capture_unread_mail"]
-    # An author selection: its source is read and the retained copy written before the lock.
-    probes.clear()
-    fp = "a" * 64
-    state = task_results.record_plan_review_attempt(tmp_path, "t1", fingerprint=fp,
-                                                    author_subject=_author_subject(tmp_path, "t1", fp, "first stance"))
-    assert probes == ["_read", "_persist"]
-    assert state["current_attempt"]["author_subject"]["source_ref"] == state["author_history_head"]
-    assert plan_author_history._read(tmp_path, "t1", state["author_history_head"])["author_disposition"]["rationale"] == "first stance"
-    # Another writer moves the attempt between the preparation and the lock: the prepared
-    # retention is dropped, the write repeats from a fresh preparation, nothing runs inline.
-    probes.clear()
-    calls: list = []
-    real = plan_author_history.retain_previous_selection
-
-    def racing(root, task_id, state_):
-        real(root, task_id, state_)
-        calls.append(task_id)
-        if len(calls) == 1:
-            task_results.record_plan_review_attempt(tmp_path, "t1", fingerprint="f" * 64)
-
-    monkeypatch.setattr(plan_author_history, "retain_previous_selection", racing)
-    final = task_results.record_plan_review_attempt(tmp_path, "t1", fingerprint="b" * 64)
-    assert len(calls) == 3  # the first preparation, the racing writer's, the repeated one
-    assert final["current_attempt"]["fingerprint"] == "b" * 64 and "author_subject" not in final["current_attempt"]
-    retained = plan_author_history._read(tmp_path, "t1", final["author_history_head"])
-    assert retained["author_disposition"]["rationale"] == "first stance"
-    assert all(name in {"_read", "_persist"} for name in probes)
 
 
 def _read_store_file_in_this_process(kind, root, path):

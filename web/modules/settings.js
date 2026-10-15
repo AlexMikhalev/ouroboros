@@ -33,6 +33,7 @@ import { collectSafeFieldValues, normalizeTone, renderSafeField, setInlineStatus
 import { extensionActionStatus } from './extension_status_text.js';
 import { bindLanguageSettings } from './settings_language.js';
 import { resetSecretReveals } from './settings_secrets.js';
+import { syncPolicyState } from './settings_policy.js';
 
 let markSettingsDirty = () => {};
 const BASE_SECRET_KEYS = new Set(SECRET_KEYS.map(([key]) => key));
@@ -149,32 +150,6 @@ function setButtonBusy(button, busy) {
     button.disabled = busy;
     if (busy) button.setAttribute('aria-busy', 'true');
     else button.removeAttribute('aria-busy');
-}
-
-function policyValueLabel(value) {
-    const labels = {
-        light: 'Light', advanced: 'Advanced', pro: 'Pro', cyber_pro: 'Cyber Pro',
-        full: 'Full', off: 'Off', advisory: 'Advisory', blocking: 'Blocking',
-    };
-    return labels[String(value || '').trim().toLowerCase()] || String(value || 'Unknown');
-}
-
-function syncPolicyState(root, meta) {
-    const state = meta?.policy_state;
-    if (!state) return;
-    const render = (key, text) => {
-        const node = root?.querySelector(`[data-policy-state="${key}"]`);
-        if (node) node.textContent = text;
-    };
-    const access = state.access || {};
-    render('access', access.restart_required
-        ? `Saved: ${policyValueLabel(access.configured)} · Current process: ${policyValueLabel(access.current_process || access.effective)} · After restart: ${policyValueLabel(access.configured)} · Restart required`
-        : `Current process: ${policyValueLabel(access.current_process || access.effective)} · After restart: ${policyValueLabel(access.configured)}`);
-    const suffix = (item) => item.active_task_snapshot
-        ? `Saved: ${policyValueLabel(item.configured)} · Current process: ${policyValueLabel(item.current_process || item.effective)} · Next task: ${policyValueLabel(item.next_task || item.configured)} · Current task keeps its start snapshot`
-        : `Current process: ${policyValueLabel(item.current_process || item.effective)} · Next task: ${policyValueLabel(item.next_task || item.configured)}`;
-    render('supervisor', suffix(state.supervisor || {}));
-    render('review', suffix(state.review || {}));
 }
 
 function readInt(id, fallback) {
@@ -1238,6 +1213,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         if (event.target.closest('[data-effort-value], .secret-clear, [data-row-secret-clear], [data-custom-secret-remove]')) {
             queueMicrotask(() => {
                 syncPostTaskEvolutionUi();
+                syncPolicyState(page, currentSettings?._meta);
                 onSettingsEdited();
             });
         }

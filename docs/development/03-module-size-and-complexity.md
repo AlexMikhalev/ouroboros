@@ -21,12 +21,11 @@ Methods over 150 lines or eight parameters are decomposition signals, not gates
 (CHECKLISTS item 11(c); BIBLE P7). Runtime function totals are descriptive, with no
 aggregate ceiling, because a repository-wide count penalizes useful decomposition.
 
-Enforcement: the official repository's CI runs the `size_ratchet` pytest lane as a
-blocking step (`OURO_SIZE_RATCHET_BASE_REF` names the event base; ARCHITECTURE §8 "CI
-topology"). Local surfaces never block on size: default lanes exclude the marker, and
-`check_worktree_readiness` and `codebase_health` report `validate_size_ratchet`
-findings as "official CI will enforce" warnings, so a locally evolved fork is never
-trapped by inherited debt.
+Enforcement: official-repository CI runs the blocking `size_ratchet` lane (ARCHITECTURE
+§8 "CI topology"). Locally nothing blocks on size (BIBLE P3): default lanes exclude the
+marker, `check_worktree_readiness` and `codebase_health` report `validate_size_ratchet`
+findings as "official CI will enforce" warnings, and the diff pulse shows growth since
+the contribution base while a change is made (ARCHITECTURE §6 "Commit preflight").
 
 ### Paying down a size cap
 
@@ -38,12 +37,13 @@ that would stay correct with the parent far below the cap: its own reason to cha
 explicit contract, a real caller. A cap-driven bucket, a one-caller passthrough, or
 bytes bought by deleting contract-bearing comments, docstrings, messages or tests is a
 defect to report, not paydown (BIBLE P7 «first simplify what exists»). Enforcement:
-CHECKLISTS item 31 `size_cap_paydown`, advisory when applicable.
+CHECKLISTS item 27 `size_cap_paydown`, advisory when applicable.
 
 ### Pragmatic SOLID
 
-SOLID is a direction for making changes legible to future agents, not a demand for
-classes or framework surface:
+SOLID serves the body's health, not minimalism for its own sake: fewer moving parts and
+one owner per fact leave fewer places for bugs and a body Ouroboros can still
+understand. It is a direction, not a demand for classes or framework surface:
 
 - **SRP — Single Responsibility Principle:** one coherent reason and one authority for
   a unit to change.
@@ -57,10 +57,8 @@ classes or framework surface:
   contracts, not provider-specific or concrete details.
 
 No class hierarchy, DI container, numeric score, AST analyzer or new review pass
-follows. A SOLID or minimalism finding names the exact symbol or authority, the
-concrete duplication or coupling, and a smaller alternative that still satisfies the
-contract. Diff size, line count, and file count alone are not findings. Enforcement:
-review-only; CHECKLISTS item 11(d).
+follows. Diff size, line count and file count alone are not findings; CHECKLISTS item
+11(d) says what a finding names (review-only).
 
 ### Shared behavior and data-flow changes
 
@@ -71,7 +69,7 @@ semantics across live and recovery paths at comparable freshness, and make legit
 differences explicit. Verify with falsifiable checks at real consumer boundaries, not
 helper outputs or matching field names, choosing the paths from the change and its
 dependencies rather than a fixed inventory. Enforcement: review-only, through the
-scope-review `cross_module_bugs` and `implicit_contracts` items.
+coupling `implicit_contracts` item.
 
 ### Invariant: Projection over replay (hot readers of growing stores)
 
@@ -133,7 +131,7 @@ invalid output contracts and delivery failures may affect review authority; wind
 sizing and reading diagnostics alone may not (BIBLE P3). Neither case blanks, rewrites
 or relabels the artifact.
 
-Enforcement: CHECKLISTS item 21 `source_completeness` (critical when applicable).
+Enforcement: CHECKLISTS item 20 `source_completeness` (critical when applicable).
 
 #### Review presentation adapters
 

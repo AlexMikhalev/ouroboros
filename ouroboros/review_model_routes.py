@@ -19,8 +19,6 @@ from ouroboros.provider_models import (
 from ouroboros.settings_defaults import SETTINGS_DEFAULTS
 from ouroboros.settings_integrity import runtime_setting
 
-_DIRECT_PROVIDER_REVIEW_RUNS = 3
-
 
 def _exclusive_direct_remote_provider_env() -> str:
     has_openrouter = bool(str(runtime_setting("OPENROUTER_API_KEY", "") or "").strip())
