@@ -245,6 +245,18 @@ def task_ids(root: Any) -> List[str]:
         return txn.task_ids()
 
 
+def ids_with_fields(root: Any, markers: Iterable[str]) -> List[str]:
+    """Task ids whose body names any of the top-level ``markers`` (the late-review sweep's
+    candidates, found with one body scan inside the store instead of a directory read)."""
+    patterns = [f'%"{marker}":%' for marker in markers]
+    if not patterns:
+        return []
+    with open_store(root, write=False) as txn:
+        where = " OR ".join("body LIKE ?" for _ in patterns)
+        return [record["task_id"] for record in
+                txn.conn.execute(f"SELECT task_id FROM task_bodies WHERE {where} ORDER BY task_id", patterns)]
+
+
 _REVIEW_COLLECTION_BATCH = 64  # bounds selection/materialization and one classification commit
 
 
