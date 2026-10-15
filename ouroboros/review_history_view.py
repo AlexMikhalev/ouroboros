@@ -616,7 +616,10 @@ def project_review_history(history: dict, *, operative_subject: Any = None,
                    "source_ref": copy.deepcopy(selection["source_ref"]),
                    "rule": "Author's account of named earlier sources, not a new reviewer verdict."}
         answer["actor_account"] = account
-        shown["authored_view"] = copy.deepcopy(account)
+        # Reviewer text carries every selected authored text, in order, with its
+        # attribution; private capsule bookkeeping stays in actor_account above.
+        shown["authored_view"] = {"authorship": "actor", "texts": [c["content"][0]["text"] for c in capsules],
+                                  "source_ref": copy.deepcopy(selection["source_ref"]), "rule": account["rule"]}
     return answer
 
 

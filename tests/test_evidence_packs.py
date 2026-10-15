@@ -205,6 +205,27 @@ def test_retained_child_root_packs_serve_predecessor_lookups(root):
     assert target is not None and target.read_bytes().startswith(b"# focus")
 
 
+def test_admission_sees_every_physical_blob_source_and_its_refusal_is_never_a_miss(root):
+    child = root / "task_drives" / "task-a"
+    child.mkdir(parents=True)
+    refs, _ = _task(child, "task-a", blobs=1)
+    _result(root, "task-a", child_drive_root=str(child))
+    _run(child)
+    seen = []
+    assert obs.read_blob_ref(root, refs[0], admit=seen.append)["message"]["content"].startswith("answer")
+    loose = pathlib.Path("observability", "blobs", f"{refs[0]['sha256']}.json.gz")
+    assert seen == [root / loose, child / loose, child / "observability" / "packs" / "task-a.xz"]
+    for refused in seen:  # raised outside the OSError handlers: never absence, corruption or a later candidate
+
+        def admit(path, refused=refused):
+            if path == refused:
+                raise PermissionError(f"refused {path}")
+
+        with pytest.raises(PermissionError, match="refused"):
+            obs.read_blob_ref(root, refs[0], admit=admit)
+    assert obs.read_blob_ref(root, refs[0])["message"]["content"].startswith("answer")  # no callback: unchanged
+
+
 # ---- damage, index cache, kill matrix --------------------------------------------
 
 def test_damaged_pack_is_explicit_evidence_corrupt_and_neighbours_unaffected(root):

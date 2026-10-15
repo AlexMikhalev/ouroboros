@@ -34,8 +34,8 @@ LANE_EXCLUSION_EXPR = (
     "and not portable_detail and not skill_smoke and not size_ratchet"
 )
 
-# Mirrors ci.yml `quick-test`/`full-test` exactly, including the per-test timeout
-# that converts a silent hang into a named failure.
+# Shared flags for ci.yml `quick-test`/`full-test-runs`, including hang timeout.
+# Windows appends `--default-suite-shard`; the local full run is unsharded.
 PARALLEL_PASS_FLAGS = [
     "-n", "auto",
     "--dist", "loadscope",

@@ -380,8 +380,12 @@ def read_loose_gzip(path: pathlib.Path, max_bytes: Optional[int] = None) -> byte
     return raw
 
 
-def blob_bytes(root: Any, ref: Any, *, expected_kind: Optional[str] = None, max_bytes: Optional[int] = None) -> bytes:
-    """Verified loose bytes, then every pack placement, then admissible retained roots."""
+def blob_bytes(root: Any, ref: Any, *, expected_kind: Optional[str] = None, max_bytes: Optional[int] = None,
+               admit: Optional[Callable[[pathlib.Path], None]] = None) -> bytes:
+    """Verified loose bytes, then every pack placement, then admissible retained roots.
+
+    ``admit`` (optional) sees each loose or pack file before it is opened; what it
+    raises propagates, so a refusal never becomes a miss, corruption or fallback."""
     root = pathlib.Path(root)
     sha256, kind, size = blob_ref_fields(ref)
     if expected_kind is not None and kind != expected_kind:
@@ -391,6 +395,8 @@ def blob_bytes(root: Any, ref: Any, *, expected_kind: Optional[str] = None, max_
     failure: Optional[Exception] = None
     for candidate in _blob_roots(root, ref, sha256, kind):
         loose = candidate / "observability" / "blobs" / f"{sha256}.{kind}.gz"
+        if admit is not None:
+            admit(loose)
         try:
             raw = read_loose_gzip(loose, max_bytes)
             if size in (-1, len(raw)) and hashlib.sha256(raw).hexdigest() == sha256:
@@ -408,6 +414,8 @@ def blob_bytes(root: Any, ref: Any, *, expected_kind: Optional[str] = None, max_
             failure = exc
             continue
         for located in placements:
+            if admit is not None:
+                admit(located[0])
             try:
                 if max_bytes is not None and int(located[1]["size"]) > max_bytes:
                     raise ValueError("blob exceeds byte limit")
