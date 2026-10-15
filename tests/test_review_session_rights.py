@@ -218,5 +218,3 @@ def test_common_review_consumer_preserves_seat_access_and_evidence(
     else:
         assert "checking_evidence" not in actor["usage"]
     assert (repo / "f.txt").read_text() == "A staged\nB unstaged\n"
-
-

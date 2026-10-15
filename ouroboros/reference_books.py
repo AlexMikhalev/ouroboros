@@ -468,5 +468,3 @@ def book_balance_note(root: Path, paths: Iterable[str]) -> str:
         return "ℹ️ Reference books:\n" + "\n".join(lines) + "\n" + BOOK_GROWTH_RULE
     measured = not unavailable and all(balance.vs_upstream is not None for balance in balances)
     return "ℹ️ Reference book: " + "; ".join(lines) + ("; nothing owed." if measured else ".")
-
-

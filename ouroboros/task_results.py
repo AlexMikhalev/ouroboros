@@ -1112,5 +1112,3 @@ def plan_review_authority_core(state: Dict[str, Any], *, source_ref: Optional[Di
     from ouroboros.tools.plan_review_artifacts import plan_review_authority_core as project
 
     return project(state, source_ref=source_ref)
-
-

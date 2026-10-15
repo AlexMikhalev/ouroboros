@@ -78,5 +78,3 @@ def _emit_review_reference(
     emit_log_event(
         event_queue, payload, log_label=f"{surface.replace('_', '-')} state reference",
     )
-
-

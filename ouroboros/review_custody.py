@@ -1553,5 +1553,3 @@ def _run_custodied_review_slots(
                                                   operation=operation) if detached and entry is not None else
                       _late_or_timeout_actor(slot, entry, timeout, error_actor, released_early=slot_id in released_ids))
     return actors
-
-

@@ -113,5 +113,3 @@ def test_census_of_a_malformed_roster_classifies_nothing_and_never_raises(roster
 
 
 # ------------------------------------------------------------------ the floor, through the real substrate
-
-
