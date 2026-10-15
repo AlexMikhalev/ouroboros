@@ -367,7 +367,7 @@ def watch_left_review(ctx: Any, *, surface: str, retry_key: str, reissue: str, a
         from ouroboros.owner_mailbox import mailbox_drain_ended, write_task_message
 
         record.update(unknown_seats=int(unknown))
-        status ="[Review custody] The local wait ended for" if unknown else "[Review settled] The reviewers finished"
+        status = "[Review custody] The local wait ended for" if unknown else "[Review settled] The reviewers finished"
         text = (f"{status} the paid {surface} review ({named}) you left for an addressed message. "
                 f"That review call committed or applied nothing. Re-issue {reissue} to collect its outcome at $0 "
                 "(no second dispatch), or choose another course.")
