@@ -164,7 +164,8 @@ def _derive_flag_columns(txn: Txn, *, rederive: bool = False) -> Dict[str, Any]:
     every later write applies (``result_memberships``) over its document; an undecodable body is
     owed (unknown is never absence) until its next write recomputes it. Cost: one narrow pass over
     ``tasks`` per boot, a body decode per underived row; ``rederive`` (the explicit rebuild)
-    forgets every nullable flag first, so it decodes every body."""
+    forgets every nullable flag first, so it decodes every body. Only complete schema
+    preparation publishes the version; this flag-only step may also run during export."""
     columns = {record["name"]: record["notnull"] for record in txn.conn.execute("PRAGMA table_info(tasks)")}
     added = sorted(name for name, column in store.FLAG_COLUMNS.items() if column not in columns)
     for name in added:
@@ -185,8 +186,6 @@ def _derive_flag_columns(txn: Txn, *, rederive: bool = False) -> Dict[str, Any]:
             names = set(nullable)
         txn.conn.execute(f"UPDATE tasks SET {', '.join(f'{column}=?' for column in nullable.values())} WHERE task_id=?",
                          (*(int(name in names) for name in nullable), task_id))
-    if added:
-        txn.set_meta("schema_version", store.SCHEMA_VERSION)
     return {**({"flag_columns_added": added} if added else {}),
             **({"flag_rows_derived": len(underived)} if underived else {})}
 
