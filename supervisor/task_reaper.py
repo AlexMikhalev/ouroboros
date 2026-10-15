@@ -1329,7 +1329,19 @@ def reap_timed_out_task(job: Dict[str, Any]) -> None:
         except Exception:
             log.debug("Reaper: retry reset failed for killed task %s", task_id, exc_info=True)
 
-        if not will_retry:
+        adopted_answer: Dict[str, str] = {}
+        if not will_retry:  # a retry admission adopts in _enqueue_retry; a final stop adopts here
+            try:
+                from ouroboros.working_checkpoint import adopt_registered_answer
+
+                adopted = adopt_registered_answer(
+                    _q.DRIVE_ROOT, task, task_id, attempt=attempt, cause=terminal_reason,
+                    registry_root=pathlib.Path(task.get("budget_drive_root") or _q.DRIVE_ROOT))
+                if adopted:
+                    adopted_answer = {"kind": "terminal_result", "target": task_id, "status": str(adopted.get("status") or "")}
+            except Exception:
+                log.error("Reaper: registered-answer finalization failed for %s", task_id, exc_info=True)
+        if not will_retry and not adopted_answer:
             try:
                 write_task_result(
                     _q.DRIVE_ROOT, task_id,
@@ -1359,7 +1371,7 @@ def reap_timed_out_task(job: Dict[str, Any]) -> None:
         # 4. Retry ONLY now (original is dead); an enqueue failure cannot abort the respawn.
         requeued = False
         new_attempt = attempt
-        retry_suppression: Dict[str, str] = {}
+        retry_suppression: Dict[str, str] = dict(adopted_answer)  # an adopted answer publishes as a terminal
         cancel_handoff_outcomes: Dict[str, str] = {}
         if will_retry:
             try:

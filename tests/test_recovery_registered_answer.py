@@ -199,3 +199,41 @@ def test_registered_answer_reads_the_outbox_never_the_result_prose(tmp_path):
     registry.write_text(json.dumps(data), encoding="utf-8")
     assert registered_answer(tmp_path, tid)["basis"] == "delivered"
     assert registered_answer(tmp_path, tid)["text"] == ""
+
+
+@pytest.mark.parametrize("state", ["owed", "delivered", "none"])
+def test_a_final_timeout_without_retry_also_finalizes_a_registered_answer(qenv, monkeypatch, state):
+    """A hard deadline, ceiling or spent retry allowance (no retry) adopts the held answer the same
+    way; without a registered answer the ordinary timeout row and salvage still happen."""
+    from supervisor import task_reaper as reaper, worker_health, workers
+
+    tid = "answer-at-deadline"
+    task = {**_task(tid), "_attempt": 1}
+    write_task_result(qenv.drive, tid, "running", result="working", task_attempt=1)
+    if state != "none":
+        evt = _event(tid, "complete authored answer")
+        assert td.register_pending_delivery(qenv.drive, evt)
+        if state == "delivered":
+            assert td.register_delivery(qenv.drive, evt["delivery_id"], emitted=evt)
+    monkeypatch.setattr(reaper, "_kill_and_confirm_worker_dead", lambda *a: True)
+    monkeypatch.setattr(workers, "_reconcile_confirmed_dead_review_owner", lambda *a: None)
+    monkeypatch.setattr(worker_health, "_retire_dead_model_consumers", lambda *a, **k: None)
+    monkeypatch.setattr("ouroboros.tools.services.archive_task_service_logs", lambda *a: None)
+    monkeypatch.setattr("supervisor.cancel_publication._audit_delegated_runs_on_kill", lambda *a, **k: {})
+    monkeypatch.setattr(qenv.q, "reconstruct_task_cost", lambda *a, **k: {})
+    monkeypatch.setattr("ouroboros.owner_hurry.retry_reset", lambda *a, **k: None)
+    monkeypatch.setattr(reaper, "send_with_budget", lambda *a, **k: None)
+    salvage, finished = [], []
+    monkeypatch.setattr(reaper, "_deliver_reap_salvage", lambda *a: salvage.append(a))
+    monkeypatch.setattr(reaper, "_emit_reap_task_done", lambda *a, **k: None)
+    monkeypatch.setattr(reaper, "_finish_self_finalized_task", lambda *a, **k: finished.append(a[5]))
+    reaper.reap_timed_out_task({"worker_id": 0, "worker": None, "proc": SimpleNamespace(pid=0),
+                                "drive_root": str(qenv.drive), "task_id": tid, "task": task, "task_type": "task",
+                                "attempt": 1, "terminal_reason": "hard_deadline", "runtime_sec": 300,
+                                "deadline_reached": True, "will_retry": False})
+    stored = load_task_result(qenv.drive, tid)
+    if state == "none":
+        assert stored["reason_code"] == "hard_deadline" and len(salvage) == 1 and finished == []
+    else:
+        assert (stored["result"], stored["reason_code"]) == ("complete authored answer", "finalization_incomplete")
+        assert salvage == [] and finished == ["failed"], "published as a terminal, never a second salvage message"
