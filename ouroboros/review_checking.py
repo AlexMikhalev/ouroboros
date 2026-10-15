@@ -25,11 +25,12 @@ Nothing a seat changes is applied anywhere. When its run is terminal,
 changed files, same-stat ones compared by content, and typed entry metadata for a
 folder) and the reviewer's files under ``.review-evidence/``, with no byte bound
 (investigations pass their own). A path it cannot list or read leaves it incomplete.
-A completed capture may release a one-shot copy only when
-its caller has observed normal success in the exact run's daemon detail; thread
-copies remain at their bound path and refresh after successful capture. An incomplete capture keeps the
-copy and names the gap. Git's inventory omits untracked special entries and
-ignored outputs outside ``.review-evidence/``; the latter are listed, not retained.
+A completed capture may release a one-shot copy only when its caller has observed,
+in the exact run's daemon detail, normal success or a failure whose engine process
+scope settled; thread copies remain at their bound path and refresh after such a
+capture. An incomplete capture keeps the copy and names the gap. Git's inventory
+omits untracked special entries and ignored outputs outside ``.review-evidence/``;
+the latter are listed, not retained.
 Frozen ``.review-drive`` inputs are excluded too: reviewer edits there are not kept.
 Unbounded capture can increase peak storage and delay the answer; a full volume
 leaves failed generations beside the copy. A full-access copy is not an OS sandbox.
@@ -596,11 +597,21 @@ def checking_writers_settled(detail: Mapping[str, Any]) -> bool:
     adapter completion and cleanup. Early answers/runFacts and generic terminal
     states do not establish this boundary. No universal native exit code is
     required: Codex's ordinary app-server teardown deliberately stops its process.
-    This covers engine-owned writers, not arbitrary detached processes or OS
-    containment. Failed, interrupted and unobserved runs keep their copies.
+    A failed, cancelled or interrupted run has no such boundary: only the engine's
+    own ``summary.processScope`` with ``settled: true`` proves its writers ended
+    (owner choice, 2026-10-14). An absent, null or unsettled scope keeps the
+    copy, as do nonterminal and unobserved runs. This covers
+    engine-owned writers, not arbitrary detached processes or OS containment.
     """
     summary = detail.get("summary")
-    return isinstance(summary, Mapping) and summary.get("state") == "succeeded"
+    if not isinstance(summary, Mapping):
+        return False
+    if summary.get("state") == "succeeded":
+        return True
+    scope = summary.get("processScope")
+    # A tuple compares a malformed (even unhashable) state instead of raising.
+    return (summary.get("state") in ("failed", "cancelled", "interrupted")
+            and isinstance(scope, Mapping) and scope.get("settled") is True)
 
 
 def capture_seat_evidence(data_root: Any, task_id: str, operation_id: str, *,
@@ -719,7 +730,7 @@ def thread_seat_area(data_root: Any, task_id: str, seat: str, source: Mapping[st
     The engine binds this exact root at creation. No synthetic commits or engine
     worktrees: HEAD, index, working bytes and ignored inputs remain host-owned.
     Refresh is allowed only after the preceding operation's complete capture
-    and normal-success settlement. Recovery of that operation reuses it.
+    and settled writers (``checking_writers_settled``). Recovery of that operation reuses it.
     """
     home = seat_dir(data_root, task_id, f"thread:{seat}")
     area = home / "area"
@@ -886,11 +897,12 @@ def wave_checking_source(session_root: Any, slots: Any, *, data_root: Any,
 
 def terminal_seat_evidence(data_root: Any, task_id: str, operation_id: str,
                            detail: Any) -> Dict[str, Any]:
-    """Capture only an observed terminal; release only at exact normal success.
+    """Capture only an observed terminal; release only once its writers settled.
 
     Normal results and timeout/interaction cancellation receipts share this
     boundary. An unknown writer retains its original copy even when a terminal
-    failure supplies enough evidence to capture its current contents.
+    failure supplies enough evidence to capture its current contents; a later
+    settled read recaptures into a new generation before release.
     """
     from ouroboros.delegate_custody import is_terminal
 
