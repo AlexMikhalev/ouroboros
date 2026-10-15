@@ -119,7 +119,7 @@ def controller_state(identity: Any) -> str:
     return "alive" if live_birth == birth else "dead"
 
 
-def _operation_stop_state(root: pathlib.Path, task_id: str) -> str:
+def operation_stop_state(root: pathlib.Path, task_id: str) -> str:
     """Panic, immediate/settled cancellation, clear or unknown; unreadable authority is never clear."""
     try:
         if any((root / "state" / name).exists() for name in ("panic_stop.flag", "owner_restart_no_resume.flag")):
@@ -247,7 +247,7 @@ class ReviewOperation:
         now = time.monotonic()
         if not self._control and (control_probe_requires_current() or now - self._checked_at >= _CONTROL_RECHECK_SEC):
             try:
-                self.control_state = _operation_stop_state(self.result_root, self.task_id)
+                self.control_state = operation_stop_state(self.result_root, self.task_id)
                 if self.historical_purpose and self.control_state != "unknown":
                     from ouroboros.acceptance_late import historical_operation_controls, owner_paused_only
                     blocked = historical_operation_controls(self.result_root, self.historical_purpose,
@@ -817,7 +817,7 @@ def _remote_waiting_row(root: Any, task_id: str, wait_id: str) -> Optional[Dict[
         return None
     identity = block.get("controller") or {}
     if (controller_state(identity) != "alive" or str(identity.get("session") or "") != current_custody_session_id()
-            or _operation_stop_state(pathlib.Path(root), str(task_id))):
+            or operation_stop_state(pathlib.Path(root), str(task_id))):
         return None
     return row
 

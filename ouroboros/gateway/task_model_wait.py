@@ -189,10 +189,10 @@ def _decide(root: Any, body: dict) -> JSONResponse:
         2026-10-14); Stop now, Panic, a cancelled result or an unreadable state withhold it. Any other wait
         keeps it only while no Stop intent at all (Wrap up included) is recorded."""
         from ouroboros.cancel_intents import cancel_pending, resolve_owner_stop_intent
-        from ouroboros.review_operation import _operation_stop_state
+        from ouroboros.review_operation import operation_stop_state
 
         try:
-            stopped = _operation_stop_state(pathlib.Path(root), task_id)
+            stopped = operation_stop_state(pathlib.Path(root), task_id)
             if operation_wait:
                 return not stopped
             return not (stopped or cancel_pending(root, task_id, strict=True)
