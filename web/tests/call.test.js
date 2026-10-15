@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { apiClient } from '../modules/api_client.js';
+import { SETTINGS_INPUT_FIELDS, SECRET_KEYS, renderSettingsPage } from '../modules/settings_ui.js';
 import { CallSession, callAvailability, mediaFailure, statePresentation } from '../modules/call.js';
 import { decodeFrame, encodeFrame, newerEpoch, pcm16, PlaybackBuffer, playedMilliseconds,
     MAX_FRAME_PAYLOAD, MAX_BUFFER_SECONDS } from '../modules/call_worklet.js';
@@ -14,6 +15,24 @@ test('PCM uses the frozen 16-byte little-endian header, signed mono samples and 
         stream: 0x5678, pcm: new Int16Array([-32768, -1, 0, 32767]) });
     const wrapped = decodeFrame(encodeFrame({ epoch: 65536, seq: 2 ** 32, rate: 44100, pcm: new Int16Array() }));
     assert.equal(wrapped.epoch, 0); assert.equal(wrapped.seq, 0); assert.equal(wrapped.rate, 44100);
+});
+
+test('call settings use normal draft fields, preserve arbitrary routes and ship no duration ceiling', () => {
+    const html = renderSettingsPage();
+    const fields = SETTINGS_INPUT_FIELDS.filter(([, key]) => key.includes('CALL_'));
+    assert.equal(fields.length, 8);
+    for (const [id, key, fallback] of fields) {
+        assert.equal(html.split(`id="${id}"`).length - 1, 1, key);
+        if (key.endsWith('MAX_MINUTES')) {
+            assert.equal(fallback, undefined);
+            assert.match(html, new RegExp(`id="${id}"[^>]*min="1"[^>]*step="1"`));
+        }
+        if (key.includes('_MODEL_') || key.includes('_VOICE_'))
+            assert.match(html, new RegExp(`<input id="${id}"[^>]*type="text"`));
+    }
+    assert.ok(SECRET_KEYS.some(([key]) => key === 'GOOGLE_API_KEY'));
+    assert.equal(html.split('data-secret-setting="GOOGLE_API_KEY"').length - 1, 2);
+    assert.match(html, /data-secret-setting="GOOGLE_API_KEY"[^>]*type="password"/);
 });
 
 test('framing rejects bad magic, version, kind, rate, lengths and oversized audio', () => {

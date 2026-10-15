@@ -303,6 +303,7 @@ ouroboros/ — agent core and shared runtime (§6)
   launcher_appearance.py — A desktop window's native Windows caption takes the light or dark tint of its page's painted palette (§3)
   launcher_tray.py, launcher_tray_macos.py — Windows notification-area icon; macOS menu-bar item, Dock reopen, quit marking (§9)
   desktop_notifications.py — Desktop system notifications, one adapter per platform; submitted/unknown/typed refusal, click token back to the page (§3; DESIGN §9)
+  desktop_media.py — GTK microphone permission requests bound to the desktop's own loopback origin (§3)
   desktop_autostart.py, windows_autostart.py — Host sign-in adapter table: Windows registry, macOS LaunchAgent, Linux systemd/XDG state (Runtime topology below)
   plan_review_facts.py — Bounded plan-review facts for the late-settlement reflection-log row, with a source pointer and named omissions, never a score (§6 Post-task work)
   provider_models.py — Model-ID helpers; `ACTIVE_MODEL_SETTING_KEYS` / `LEGACY_MODEL_SETTING_KEYS` keeps Heavy out of live route selection
