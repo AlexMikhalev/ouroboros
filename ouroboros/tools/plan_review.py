@@ -220,6 +220,7 @@ def _handle_plan_task(ctx: ToolContext, **params) -> str:
         record = plan_record.load_plan_record(state_root, task_id)
     except plan_record.PlanRecordInvalid as exc:
         return _refuse(ctx, "TOOL_ERROR", f"ERROR: PLAN_RECORD_UNREADABLE: {exc}. Nothing was written; the recorded plan state stands.")
+    legacy = _legacy_facts(state_root, task_id)
     latest = plan_record.latest_revision(record)
     revision_fields: Optional[Dict[str, Any]] = None
     body, body_note = False, ""
@@ -250,9 +251,12 @@ def _handle_plan_task(ctx: ToolContext, **params) -> str:
             prepared = plan_ask.prepare_ask(
                 ctx, record=record, revision=candidate, ask=given["ask"], message=str(given.get("message") or ""),
                 attach=list(given.get("attach") or []), reviewer_effort=str(given.get("reviewer_effort") or ""),
-                state_root=state_root, task_id=task_id)
+                state_root=state_root, task_id=task_id, legacy=legacy)
         except plan_ask.PlanAskRefused as exc:
-            return _refuse(ctx, exc.code, exc.text)
+            if exc.attempt is None:
+                return _refuse(ctx, exc.code, exc.text)
+            return _refuse_unroutable(ctx, exc, revision_fields=revision_fields, body=body, body_note=body_note,
+                                      state_root=state_root, task_id=task_id)
         except Exception as exc:
             log.error("plan_task ask preparation failed: %s", exc, exc_info=True)
             return _refuse(ctx, "TOOL_ERROR", f"ERROR: PLAN_ASK_FAILED: {exc}. Nothing was written and nobody was called.")
@@ -278,7 +282,30 @@ def _handle_plan_task(ctx: ToolContext, **params) -> str:
             record = plan_ask.collect_pending(ctx, record, state_root=state_root, task_id=task_id)
         except Exception:
             log.warning("plan_task read: pending seats could not be collected", exc_info=True)
-    return _publish(ctx, record, effect=effect, notes=notes)
+    return _publish(ctx, record, effect=effect, notes=notes, legacy=legacy)
+
+
+def _refuse_unroutable(ctx: ToolContext, exc: Any, *, revision_fields: Optional[Dict[str, Any]], body: bool, body_note: str,
+                       state_root: Any, task_id: str) -> str:
+    """The one refusal that leaves a fact: the mind asked and NO named route could take the
+    ask. The revision the call carried is recorded first (the plan exists), then the typed
+    attempt (nobody called, nothing held); a Swarm obligation reads it as attempted."""
+    written = ""
+    revision = plan_record.latest_revision(plan_record.load_plan_record(state_root, task_id))
+    try:
+        if revision_fields is not None:
+            record, revision, created = plan_record.append_revision(state_root, task_id, revision_fields, body=body, body_note=body_note)
+            written = f" Revision {revision.get('n')} {'was recorded' if created else 'stands (identical content)'}."
+            if created:
+                plan_ask._progress(ctx, f"📐 Plan: revision {revision.get('n')} recorded" + (" (body plan)" if body else "") + ".")
+        record = plan_record.append_attempt(state_root, task_id, {**exc.attempt, "revision": (revision or {}).get("n")})
+    except (plan_record.PlanRecordInvalid, OSError, ValueError) as err:
+        return _refuse(ctx, "TOOL_ERROR", f"ERROR: PLAN_RECORD_WRITE_FAILED: {err}.")
+    plan_ask._progress(ctx, f"📐 Plan: ask on revision {(revision or {}).get('n')} reached nobody — "
+                            + "; ".join(f"{sid}: {why}" for sid, why in (exc.attempt.get("not_sendable") or {}).items()) + ".")
+    plan_ask._reference(ctx, task_id, record, state_root)
+    return _refuse(ctx, exc.code, exc.text + written + " The attempt is on the plan record (asked, no route): a planning "
+                   "obligation reads it as attempted — disclosed in your final answer, not held. Ask again when a route is available.")
 
 
 def _ask_summary(prepared: Any, record: Mapping[str, Any]) -> str:
@@ -376,6 +403,9 @@ def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy
             parts.append(f"{p['seat_id']} ({p.get('model') or '?'}{'' if p.get('owner_marked') else ', added'}): {tag}")
         lines.append(f"- ask {ask['ask_id']} on revision {ask['revision']}" + (f" — «{ask['message']}»" if ask.get("message") else "")
                      + ": " + "; ".join(parts))
+    for attempt in view.get("attempts") or []:  # asks no route could take: nobody was called, nothing holds
+        lines.append(f"- attempt at {attempt.get('ts')} on revision {attempt.get('revision')}: no route — "
+                     + "; ".join(f"{sid}: {why}" for sid, why in (attempt.get("not_sendable") or {}).items()) + " (nobody was called)")
     seen = [f"{sid}: saw revision {v['last_seen_revision']}" + (f", last answered in ask {v['last_answered_ask']}" if v["last_answered_ask"] else ", never answered")
             for sid, v in view["participants"].items() if v.get("last_seen_revision") is not None]
     if seen:
@@ -420,6 +450,10 @@ def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy
         lines.append("Open objections are disclosed in your final answer; nothing holds it.")
     elif status == "awaiting":
         lines.append(f"Answers still on their way for ask(s) {', '.join(decision.get('pending_asks') or view['pending_asks'])}; silence never holds.")
+    elif status == "force_plan_unmet" and decision.get("allow") and decision.get("asks_unroutable"):
+        lines.append("This task was admitted with a planning obligation; your ask reached nobody (no route could take it, "
+                     f"{decision['asks_unroutable']} attempt{'' if decision['asks_unroutable'] == 1 else 's'} recorded) — disclosed in "
+                     "your final answer, not held. Ask again when a route is available.")
     elif status == "force_plan_unmet":
         lines.append("This task was admitted with a planning obligation: ask the council before you finish.")
     else:
@@ -427,9 +461,10 @@ def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy
     return "\n".join(lines)
 
 
-def _publish(ctx: ToolContext, record: Mapping[str, Any], *, effect: str, notes: List[str]) -> str:
+def _publish(ctx: ToolContext, record: Mapping[str, Any], *, effect: str, notes: List[str],
+             legacy: Optional[Dict[str, Any]] = None) -> str:
     state_root, task_id = plan_ask.state_location(ctx)
-    legacy = _legacy_facts(state_root, task_id)
+    legacy = _legacy_facts(state_root, task_id) if legacy is None else legacy
     decision = _decision(ctx, record, legacy)
     text = ("\n".join(notes) + "\n\n" if notes else "") + render_record(record, decision, legacy)
     latest = plan_record.latest_revision(record)

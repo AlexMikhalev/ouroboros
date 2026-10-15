@@ -818,9 +818,11 @@ def _classify_action(
     payload = candidate.physical_payload()
     profile = candidate.accepted_profile
     current_effort = payload_effort(payload)
-    filtered = _parameter_filter_drop(payload, evidence)
-    if filtered is not None:
-        return PendingWireAction(profile, filtered)
+    if _parameter_filter_refusal(evidence):
+        # The typed refusal never falls through to the prose heuristics: the sampling knobs
+        # go, or the provider's error stands.
+        filtered = _parameter_filter_drop(payload, evidence)
+        return PendingWireAction(profile, filtered) if filtered is not None else None
     # Rejecting the disabled carrier's native TYPE is not rejecting an effort
     # tier. Preserve the bounded omission repair without dropping a valid
     # carrier when only output_config.effort (or a scalar tier) was refused.
@@ -936,25 +938,30 @@ def _classify_action(
     })
 
 
-def _parameter_filter_drop(payload: Mapping[str, Any], evidence: _WireRejection) -> Optional[Dict[str, Any]]:
-    """The drop a field-less typed routing refusal prescribes, or None.
+def _parameter_filter_refusal(evidence: _WireRejection) -> bool:
+    """OpenRouter's field-less typed routing refusal: under ``provider.require_parameters``
+    it routes only to endpoints that accept EVERY requested parameter; when none is left it
+    answers HTTP 404 with the typed receipt ``error.metadata.failed_routing_step ==
+    "Filter by Parameters"`` and names no field."""
+    return evidence.status == 404 and evidence.routing_step == "filter by parameters" and not evidence.param
 
-    Under ``provider.require_parameters`` OpenRouter routes only to endpoints that accept
-    EVERY requested parameter; when none is left it answers HTTP 404 with the typed receipt
-    ``error.metadata.failed_routing_step == "Filter by Parameters"`` and names no field.
-    The host sent the parameters, so the host knows which were optional: the sampling knobs
-    go first (the common case — a reasoning model whose endpoints take no ``temperature``);
-    the remaining optional carriers only if a sampling-free resend is refused the same way.
-    A rejection that names its parameter keeps the exact field logic below.
+
+def _parameter_filter_drop(payload: Mapping[str, Any], evidence: _WireRejection) -> Optional[Dict[str, Any]]:
+    """The drop the field-less typed routing refusal prescribes, or None.
+
+    The host sent the parameters, so the host knows which were optional HINTS: only the
+    sampling knobs (``temperature``, ``top_p``, ``top_k``) go — the common case is a reasoning
+    model whose endpoints take no ``temperature``. Reasoning, ``response_format`` and tools
+    shape the answer and are never dropped on this refusal; when it persists once the knobs
+    are gone the provider's typed error stands (an honest failure, nothing learned). A
+    rejection that names its parameter keeps the exact field logic of the classifier.
     """
-    if evidence.status != 404 or evidence.routing_step != "filter by parameters" or evidence.param:
+    if not _parameter_filter_refusal(evidence):
         return None
     sampling = [field for field in OPTIONAL_SAMPLING_FIELDS if _field_is_present(payload, field)]
-    fields = sampling or [field for field in (*OPTIONAL_REQUEST_FIELDS, NESTED_REASONING_FIELD)
-                          if _field_is_present(payload, field)]
-    if not fields:
+    if not sampling:
         return None
-    return {"kind": "drop_field", "fields": fields, "reason_code": "provider_unsupported_field"}
+    return {"kind": "drop_field", "fields": sampling, "reason_code": "provider_unsupported_field"}
 
 
 def _plan_retry(evidence: _WireRejection) -> Optional[Dict[str, Any]]:
@@ -1096,14 +1103,20 @@ def plan_nonlearning_optional_retry(
         return None
     if _value_evidence(low):
         return None
-    filtered = _parameter_filter_drop(payload, _wire_rejection(error))
-    named = [field for field in filtered["fields"] if field in payload] if filtered else [
-        field for field in _NON_REASONING_OPTIONAL_FIELDS
-        if field in payload and (
-            (field in _error_tokens(low)) if field in {"stream", "stream_options"}
-            else (field in low or field.replace("_", ".") in low)
-        )
-    ]
+    evidence = _wire_rejection(error)
+    if _parameter_filter_refusal(evidence):
+        filtered = _parameter_filter_drop(payload, evidence)
+        if filtered is None:
+            return None  # the typed refusal persists with no sampling knob left: the provider's error stands
+        named = [field for field in filtered["fields"] if field in payload]
+    else:
+        named = [
+            field for field in _NON_REASONING_OPTIONAL_FIELDS
+            if field in payload and (
+                (field in _error_tokens(low)) if field in {"stream", "stream_options"}
+                else (field in low or field.replace("_", ".") in low)
+            )
+        ]
     if "stream" in named and "stream_options" in payload and "stream_options" not in named:
         named.append("stream_options")
     if not named:

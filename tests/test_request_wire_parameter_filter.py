@@ -6,9 +6,10 @@ requested parameter; when none is left it answers HTTP 404 with the typed receip
 the planning trials: every default Opus review seat (plan review and commit review alike) sent
 ``temperature=0.2`` to a model none of whose eleven endpoints takes ``temperature``, and the
 field-less 404 left the driver with nothing to drop, so the seat failed on both builds. The
-driver now reads the typed step: the optional sampling knobs go first, the remaining optional
-carriers only if a sampling-free resend is refused the same way; a model that accepts
-``temperature`` keeps it, and a refusal of another kind is not touched. Live probe 2026-10-15
+driver now reads the typed step: ONLY the optional sampling knobs (temperature, top_p, top_k) go;
+reasoning, ``response_format`` and tools are never dropped on it, and a refusal that persists
+once the knobs are gone propagates as the provider's typed error (nothing learned). A model that
+accepts ``temperature`` keeps it, and a refusal of another kind is not touched. Live probe 2026-10-15
 (``anthropic/claude-opus-5.5``, max_tokens 16, require_parameters true): with temperature 0.2
 → 404 + this typed step; without → 200, "ok", cost $0.000152."""
 from __future__ import annotations
@@ -120,19 +121,43 @@ def test_sampling_stays_where_endpoints_accept_it_and_other_refusals_are_untouch
         assert len(sent) == 1, label  # one send, no blind resend
 
 
-def test_the_remaining_optional_carriers_go_only_when_a_sampling_free_resend_is_refused_the_same_way(evidence_root, tmp_path):
+def test_a_refusal_that_persists_without_the_knobs_propagates_and_never_drops_reasoning_shape_or_tools(evidence_root, tmp_path):
+    """Owner decision (Codex audit, point 1): the field-less typed 404 drops ONLY the sampling
+    knobs; reasoning, ``response_format`` and tools are never dropped on it. When the refusal
+    persists after the knobs are gone the provider's typed error stands — one resend, no
+    blind third send, nothing learned for a route that never succeeded."""
     sent = []
 
     def create(**candidate):
         sent.append(copy.deepcopy(candidate))
-        if "temperature" in candidate or "top_p" in candidate or "reasoning" in (candidate.get("extra_body") or {}):
+        raise _RoutedOut()  # refused with and without the sampling knobs alike
+
+    with pytest.raises(_RoutedOut):
+        _run(create, _review_payload(top_p=0.9, response_format={"type": "json_object"}), tmp_path, "persists")
+    assert len(sent) == 2, "one sampling-free resend, then the provider's typed error"
+    assert "temperature" not in sent[1] and "top_p" not in sent[1]
+    assert sent[1]["extra_body"]["reasoning"] == sent[0]["extra_body"]["reasoning"]
+    assert sent[1]["response_format"] == sent[0]["response_format"] and sent[1]["tools"] == sent[0]["tools"]
+    assert _learned_fields(evidence_root) == [], "a route that never succeeded teaches nothing"
+    # The other direction: the knobs alone are learned, and only after the exact success.
+    accepted = []
+
+    def accept_without_knobs(**candidate):
+        accepted.append(copy.deepcopy(candidate))
+        if "temperature" in candidate or "top_p" in candidate:
             raise _RoutedOut()
         return _Response()
 
-    _run(create, _review_payload(top_p=0.9), tmp_path, "staged")
-    assert len(sent) == 3
-    assert "temperature" not in sent[1] and "top_p" not in sent[1] and "reasoning" in sent[1]["extra_body"]
-    assert "reasoning" not in sent[2]["extra_body"] and sent[2]["tools"] == sent[0]["tools"]
+    _run(accept_without_knobs, _review_payload(top_p=0.9, response_format={"type": "json_object"}), tmp_path, "knobs-only")
+    assert len(accepted) == 2 and accepted[1]["response_format"] == accepted[0]["response_format"]
+    assert _learned_fields(evidence_root) == ["temperature", "top_p"]
+
+
+def _learned_fields(root):
+    """Every field the learning store now names in a drop/set action (never the profile's own words)."""
+    store = _store(root) or {"profiles": {}}
+    return sorted({field for entry in store["profiles"].values() for record in entry.get("records") or []
+                   for field in (record["action"].get("fields") or [record["action"].get("field")]) if field})
 
 
 def test_the_non_learning_path_reads_the_same_typed_step():

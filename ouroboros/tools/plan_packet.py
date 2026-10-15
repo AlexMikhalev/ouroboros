@@ -220,12 +220,22 @@ def _render_reply(entry: Mapping[str, Any]) -> str:
     reply = entry.get("reply") or {}
     lines = [f"- {who} answered:"]
     prose = str(reply.get("prose") or "").strip()
+    omitted = reply.get("prose_omitted")
     if prose:
         lines.append("  " + prose.replace("\n", "\n  "))
+    elif isinstance(omitted, dict):  # the index moved the prose out; the retained source did not fit or could not be read
+        why = {"too_large": "larger than one attachment", "unreadable": "its retained source could not be read"}.get(
+            str(omitted.get("reason") or ""), "no retained source")
+        lines.append(f"  (prose not delivered: {omitted.get('chars') or '?'} chars, {why}"
+                     + (f"; retained at {omitted['address']}" if omitted.get("address") else "") + ")")
+    elif not reply.get("prose_inline", True):
+        lines.append("  (prose not inline: moved to its retained source, not delivered here)")
     for item in reply.get("objections") or []:
         lines.append(f"  objection {item.get('id')}: {item.get('text')}")
     for item in reply.get("withdrawn") or []:
         lines.append(f"  withdrew {item.get('id')}: {item.get('why')}")
+    if len(lines) == 1:
+        lines.append("  (no prose, no objection, no withdrawal)")
     return "\n".join(lines)
 
 
@@ -255,7 +265,9 @@ def render_own_objections(objections: Sequence[Mapping[str, Any]]) -> str:
              "One you do not mention stays open and is flagged as not adjudicated.\n"]
     for item in objections:
         flag = " (flagged: not adjudicated in your last reply)" if item.get("not_adjudicated") else ""
-        lines.append(f"- {item.get('id')} (raised in ask {item.get('raised_in')} about revision {item.get('revision')}){flag}: {item.get('text')}")
+        where = ("your blocking finding in this task's previous plan review, imported; it holds the task until you withdraw it"
+                 if item.get("legacy") else f"raised in ask {item.get('raised_in')} about revision {item.get('revision')}")
+        lines.append(f"- {item.get('id')} ({where}){flag}: {item.get('text')}")
     return "\n".join(lines) + "\n"
 
 

@@ -153,8 +153,8 @@ def validate_record(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict) or value.get("schema_version") != PLAN_RECORD_VERSION:
         raise PlanRecordInvalid("PLAN_RECORD_INVALID: unsupported or malformed schema")
     revisions, asks = value.get("revisions"), value.get("asks")
-    if not isinstance(revisions, list) or not isinstance(asks, list):
-        raise PlanRecordInvalid("PLAN_RECORD_INVALID: revisions and asks must be lists")
+    if not isinstance(revisions, list) or not isinstance(asks, list) or not isinstance(value.get("attempts", []), list):
+        raise PlanRecordInvalid("PLAN_RECORD_INVALID: revisions, asks and attempts must be lists")
     for index, revision in enumerate(revisions, start=1):
         if not isinstance(revision, dict) or revision.get("n") != index:
             raise PlanRecordInvalid("PLAN_RECORD_INVALID: revisions must be numbered 1..N in order")
@@ -357,6 +357,11 @@ def engaged(record: Mapping[str, Any]) -> bool:
     return bool(record.get("revisions") or record.get("asks"))
 
 
+def unroutable_asks(record: Mapping[str, Any]) -> int:
+    """How many asks the mind made that no route could take (recorded attempts, nobody called)."""
+    return len(record.get("attempts") or [])
+
+
 # ------------------------------------------------------------------ gate
 
 def gate_projection(record: Mapping[str, Any], *, enforcement: str, cyber_pro: bool, hurry: bool,
@@ -368,9 +373,11 @@ def gate_projection(record: Mapping[str, Any], *, enforcement: str, cyber_pro: b
     raised by an owner-marked reviewer of the ask it answered — for any task. Silence,
     pending asks, refusals and mind-added critics never hold. A Swarm ``force_plan``
     stays unmet until one ask reached at least one reviewer: under Blocking that holds
-    the final answer; Advisory, the owner's hurry and Cyber Pro disclose it instead once
-    a plan exists (a task that wrote no plan at all is still held to write one). An
-    unreadable record is engaged, never absent.
+    the final answer while the mind never asked; an ask that no route could take (a
+    recorded attempt) counts as attempted — disclosed, not held, outages never hold.
+    Advisory, the owner's hurry and Cyber Pro disclose an unmet obligation once a plan
+    exists (a task that wrote no plan at all is still held to write one). An unreadable
+    record is engaged, never absent.
     """
     policy = "blocking" if str(enforcement or "").lower() == "blocking" else "advisory"
     legacy_engaged = bool((legacy or {}).get("engaged"))
@@ -387,7 +394,7 @@ def gate_projection(record: Mapping[str, Any], *, enforcement: str, cyber_pro: b
         "open_objections": [{k: o.get(k) for k in ("seat_id", "id", "text", "holds", "not_adjudicated", "ask_id",
                                                      "revision", "owner_marked", "legacy")} for o in objections],
         "holding": [f"{o['seat_id']}:{o['id']}" for o in holding],
-        "pending_asks": pending, "asks_dispatched": dispatched,
+        "pending_asks": pending, "asks_dispatched": dispatched, "asks_unroutable": unroutable_asks(record),
         "force_plan_met": not force_plan or dispatched > 0,
         "revision": int(latest.get("n") or 0) if latest else 0,
         "unreadable": bool(unreadable), "reason": str(hard_rail or ""),
@@ -405,11 +412,12 @@ def gate_projection(record: Mapping[str, Any], *, enforcement: str, cyber_pro: b
     elif unreadable:
         status, allow = "unreadable", False  # a gate that cannot read its authority is engaged, not absent
     elif force_plan and dispatched == 0:
-        # Blocking holds until one ask reached a reviewer. Advisory and the owner's hurry never
-        # hold a plan that exists: an unasked (or refused) plan is disclosed; a task that wrote no
-        # plan at all is still held to write one (the Swarm admitted it on that condition).
+        # Blocking holds while the mind never asked; an ask no route could take (a recorded
+        # attempt) is disclosed, not held — outages never hold. Advisory and the owner's hurry
+        # never hold a plan that exists; a task that wrote no plan at all is still held to write
+        # one (the Swarm admitted it on that condition).
         tried = engaged(record) or legacy_engaged
-        status, allow = "force_plan_unmet", not ((policy == "blocking" and not hurry) or not tried)
+        status, allow = "force_plan_unmet", tried and (unroutable_asks(record) > 0 or policy != "blocking" or hurry)
     elif holding and policy == "blocking" and not hurry:
         status, allow = "held", False
     elif objections:
@@ -552,6 +560,7 @@ def read_view(record: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = N
                       for o in objections if not o.get("open") and not o.get("unknown_withdrawal")],
         "unknown_withdrawals": [{k: o.get(k) for k in ("seat_id", "id", "ask_id", "why")} for o in objections if o.get("unknown_withdrawal")],
         "pending_asks": [str(a.get("ask_id") or "") for a in pending_asks(record)],
+        "attempts": [{k: a.get(k) for k in ("ts", "revision", "kind", "ask", "not_sendable")} for a in record.get("attempts") or []],
     }
 
 
@@ -661,6 +670,17 @@ def next_ask_id(record: Mapping[str, Any]) -> str:
     return f"a{n}"
 
 
+def append_attempt(root: Any, task_id: str, attempt: Mapping[str, Any]) -> Dict[str, Any]:
+    """Record one ask that could reach nobody (typed, $0): the mind asked and every named
+    route was unavailable, so no participant was called. Not an ask — it dispatches nobody,
+    raises no objection and holds nothing; the Swarm obligation reads it as attempted."""
+    def _append(record: Dict[str, Any]) -> Dict[str, Any]:
+        record["attempts"] = [*record.get("attempts", []), {"ts": utc_now_iso(), **copy.deepcopy(dict(attempt))}]
+        return record
+
+    return _update_plan_record(root, task_id, _append)
+
+
 def append_ask(root: Any, task_id: str, ask: Mapping[str, Any]) -> Dict[str, Any]:
     """Record one dispatched ask (participants with their typed dispatch state)."""
     def _append(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -673,13 +693,18 @@ def append_ask(root: Any, task_id: str, ask: Mapping[str, Any]) -> Dict[str, Any
 
 
 def update_participant(root: Any, task_id: str, *, ask_id: str, seat_id: str, facts: Mapping[str, Any]) -> Dict[str, Any]:
-    """Merge settlement facts (status, reply, error, cost, refs…) into one participant row."""
+    """Merge settlement facts (status, reply, error, cost, refs…) into one participant row.
+    A ``pending`` echo never re-opens a seat already settled: the custody hook settles a
+    released seat on its own thread while the dispatcher is still writing the barrier's
+    rows, so the check happens HERE, under the record's lock, never against a caller's copy."""
     def _merge(record: Dict[str, Any]) -> Dict[str, Any]:
         for ask in record.get("asks", []):
             if str(ask.get("ask_id") or "") != str(ask_id):
                 continue
             for participant in ask.get("participants") or []:
                 if str(participant.get("seat_id") or "") == str(seat_id):
+                    if facts.get("status") == "pending" and str(participant.get("status") or "pending") != "pending":
+                        return record
                     participant.update(copy.deepcopy(dict(facts)))
                     return record
         raise PlanRecordInvalid(f"PLAN_RECORD_INVALID: no participant {seat_id!r} in ask {ask_id!r}")
