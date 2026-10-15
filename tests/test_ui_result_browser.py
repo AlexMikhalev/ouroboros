@@ -92,6 +92,86 @@ def _seed_early_failure(root):
              task_id="known-failure", message_meta=early["progress_meta"], drive_root=root)
 
 
+@pytest.mark.parametrize("engine", ["chromium", "webkit"])
+def test_main_current_optional_question_survives_history_horizon_and_reload(wait_clone, tmp_path, engine):
+    """A real candidate serves a terminal optional ask absent from initial Main history."""
+    from playwright.sync_api import sync_playwright
+    from ouroboros.gateway.history import _DEFAULT_N_HUMAN
+    from ouroboros.owner_quiz import record_asked, record_publication, reconcile_terminal, quiz_states, mark_published
+    from ouroboros.project_dialogue import project_question_pointer
+    from ouroboros.projects_registry import create_project
+    from ouroboros.task_results import write_task_result
+    from supervisor.message_bus import log_chat
+
+    root = tmp_path / "instance" / "data"
+    root.mkdir(parents=True)
+    project = create_project(root, "old-optional", name="Older optional decision")
+    task_id, quiz_id = "old-optional-task", "old-optional-question"
+    write_task_result(root, task_id, "completed", project_id=project["id"], chat_id=project["chat_id"],
+                      result="The draft uses HTML while the format decision remains open.")
+    record_asked(root, task_id, quiz_id=quiz_id, question="Which format should the next edition use?",
+                 options=["PDF", "HTML"], option_details=["Printable edition", "Accessible web edition"],
+                 assumption="HTML for the current draft", chat_id=project["chat_id"])
+    record_publication(root, task_id, quiz_id, project["chat_id"])
+    reconcile_terminal(root, task_id)
+    block = quiz_states(root, task_id)[quiz_id]
+    log_chat("out", project["chat_id"], 1, block["question"], task_id=task_id, record_type="quiz",
+             quiz=block, drive_root=root, require_write=True)
+    mark_published(root, task_id, quiz_id)
+    block = quiz_states(root, task_id)[quiz_id]
+    pointer = project_question_pointer({"task_id": task_id, "quiz_id": quiz_id}, block, project)
+    log_chat("out", 1, 1, pointer["text"], task_id=task_id, message_meta=pointer, drive_root=root, require_write=True)
+    for index in range(_DEFAULT_N_HUMAN + 12):
+        log_chat("in", 1, 1, f"Later Main history row {index}", drive_root=root)
+
+    evidence = Path(os.environ.get("OUROBOROS_BROWSER_EVIDENCE_OUT") or tmp_path / "screenshots")
+    evidence.mkdir(parents=True, exist_ok=True)
+    with ScriptedStubModel([{"final": "Future editions will use PDF."}]) as stub:
+        settings_path = root / "settings.json"
+        write_settings_file(settings_path, keyless_settings(stub, OUROBOROS_MAX_WORKERS=1))
+        server = KeylessIsolatedServer(wait_clone, root, settings_path)
+        server.start(ready_timeout=120)
+        try:
+            history = _api(server.base_url, "GET", "/api/chat/history?chat_id=1")["messages"]
+            assert not any(row.get("quiz_id") == quiz_id for row in history)
+            canonical = _api(server.base_url, "GET", "/api/state")
+            assert canonical["current_questions_complete"]
+            assert any(row["quiz_id"] == quiz_id for row in canonical["current_questions"])
+            with sync_playwright() as pw:
+                browser = getattr(pw, engine).launch()
+                page = browser.new_page(viewport={"width": 1100, "height": 900}, reduced_motion="reduce")
+                try:
+                    page.goto(server.base_url, wait_until="domcontentloaded")
+                    card = page.locator(f'.main-attention .project-question-card[data-quiz-id="{quiz_id}"]')
+                    page.locator('.main-attention-summary').click(timeout=30000)
+                    card.get_by_text("Unanswered · the task finished; a late answer is accepted as your message", exact=True).wait_for()
+                    assert card.locator('.chat-quiz-comment').count() == 1
+                    page.reload()
+                    page.locator('.main-attention-summary').click(timeout=30000)
+                    card.get_by_text("Accessible web edition", exact=True).wait_for()
+                    page.screenshot(path=str(evidence / f"{engine}-main-old-optional.png"), animations="disabled")
+                    with page.expect_response(lambda response: response.url.endswith('/api/decisions')
+                                              and response.request.method == 'POST') as answer:
+                        card.get_by_role("button", name="PDF Printable edition").click()
+                    confirmation = answer.value.json()
+                    assert confirmation["ok"] and confirmation["answered_after_terminal"] and confirmation["forwarded"]
+                    card.get_by_text("You answered", exact=True).wait_for()
+                    page.screenshot(path=str(evidence / f"{engine}-main-old-optional-answered.png"), animations="disabled")
+                    stored = _api(server.base_url, "GET", f"/api/tasks/{task_id}")["owner_quiz"][quiz_id]
+                    assert stored["state"] == "answered" and stored["answered_index"] == 0
+                    assert stored["publication_chat_id"] == project["chat_id"]
+                    card.wait_for(state="detached", timeout=15000)
+                    (evidence / f"{engine}-main-old-optional.json").write_text(json.dumps({
+                        "task_id": task_id, "quiz_id": quiz_id, "project": project,
+                        "initial_history_rows": len(history), "confirmation": confirmation,
+                        "server_pid": server.proc.pid, "server_url": server.base_url,
+                    }, indent=2))
+                finally:
+                    browser.close()
+        finally:
+            server.stop()
+
+
 def test_ui_results_and_required_question_journey(wait_clone, tmp_path, monkeypatch):
     from playwright.sync_api import sync_playwright
 
@@ -161,11 +241,12 @@ def test_ui_results_and_required_question_journey(wait_clone, tmp_path, monkeypa
                         assert task
                         wait = wait_until(lambda: (block if (block := oracle.task_result(task["id"]).get("owner_wait", {})).get("state") == "waiting" else None), 90)
                         assert wait
-                        pointer = page.locator(f'#chat-messages .project-question-card[data-task-id="{task["id"]}"]')
+                        pointer = page.locator(f'.main-attention .project-question-card[data-task-id="{task["id"]}"]')
+                        page.locator('.main-attention-summary').click()
                         pointer.get_by_text("Waiting for your answer", exact=True).wait_for(timeout=30000)
                         # Main mirrors the Project's own form: the options with their details, the
                         # stake and the own-answer field, plus the chip that opens the Project.
-                        main_question = page.locator('#chat-messages .chat-bubble.project-question').filter(
+                        main_question = page.locator('.main-attention .chat-bubble.project-question').filter(
                             has=page.locator(f'.project-question-card[data-task-id="{task["id"]}"]'))
                         assert main_question.locator('.chat-quiz-option').count() == 2
                         assert main_question.locator('.chat-quiz-comment').count() == 1
@@ -224,7 +305,7 @@ def test_ui_results_and_required_question_journey(wait_clone, tmp_path, monkeypa
                         page.goto(server.base_url, wait_until="domcontentloaded")
                         # An answered question never enters Main again; its Project replays the record.
                         page.locator('#chat-messages .chat-live-card[data-task-id="parent1"]').wait_for(timeout=30000)
-                        assert page.locator('#chat-messages .project-question-card').count() == 0
+                        assert page.locator('.main-attention .project-question-card').count() == 0
                         page.evaluate("""([project, task, quiz]) => window.dispatchEvent(new CustomEvent('ouro:open-project',
                             {detail: {project, task_id: task, quiz_id: quiz}}))""", [project, task["id"], wait["quiz_id"]])
                         replay_quiz = page.locator('.chat-quiz-card').filter(has_text="Which evidence should the report use?")

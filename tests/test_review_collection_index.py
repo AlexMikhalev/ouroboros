@@ -12,6 +12,9 @@ from ouroboros.task_results import load_task_result, write_task_result
 from tests.test_store import document, publish
 from tests.test_store_cutover import _plan, captured_statements
 
+_SCHEMA_SHAPES = {"v1": (), "owner-v2": ("has_owner_questions",),
+                  "review-v2": ("review_collection_pending",)}
+
 
 def _operation(state="dispatched", **fields):
     return {"surface": "task_acceptance", "state": state, "retry_key": "wave", **fields}
@@ -84,21 +87,30 @@ def test_unknown_review_shapes_never_certify_no_work(tmp_path, fields):
     assert _flag(tmp_path, "unknown")[0] == 1
 
 
-def _legacy_store(root, *rows, owned_root, tier=store.TIER_ENFORCED):
-    """The preceding schema/writer: no new column, explicit column-list replacement."""
+def _legacy_store(root, *rows, owned_root, tier=store.TIER_ENFORCED, shape="v1"):
+    """Actual v1 or either independently published v2, with that writer's column list."""
     assert root.resolve().is_relative_to(owned_root.resolve()), "fixture store must stay inside its tmp_path"
     path = store.store_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    schema = store._SCHEMA.replace(",\n  review_collection_pending INTEGER", "").replace(store.REVIEW_COLLECTION_INDEX, "")
+    known = _SCHEMA_SHAPES[shape]
+    schema = store._SCHEMA
+    for column, index in (
+        ("has_owner_questions", "CREATE INDEX tasks_has_owner_questions ON tasks(has_owner_questions) WHERE has_owner_questions=1;\n"),
+        ("review_collection_pending", store.REVIEW_COLLECTION_INDEX),
+    ):
+        if column not in known:
+            schema = schema.replace(f",\n  {column} INTEGER", "").replace(index, "")
     conn = store.connect(path, tier, create=True)
     try:
         conn.executescript(schema)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+        assert columns & {"has_owner_questions", "review_collection_pending"} == set(known)
         conn.execute(f"PRAGMA application_id={store._APPLICATION_ID[tier]}")
         conn.execute("BEGIN IMMEDIATE")
         for row in rows:
-            _old_replace(conn, row)
+            _old_replace(conn, row, known=known)
         txn = store.Txn(conn)
-        txn.set_meta("schema_version", 1)
+        txn.set_meta("schema_version", 1 if shape == "v1" else 2)
         txn.set_meta("lock_tier", tier)
         txn.set_meta("phase", store.PUBLISHED)
         store.commit(conn)
@@ -106,9 +118,11 @@ def _legacy_store(root, *rows, owned_root, tier=store.TIER_ENFORCED):
         conn.close()
 
 
-def _old_replace(conn, row):
+def _old_replace(conn, row, *, known=()):
     columns = store.typed_columns(row)
-    columns.pop("review_collection_pending")
+    for column in ("has_owner_questions", "review_collection_pending"):
+        if column not in known:
+            columns.pop(column)
     previous = conn.execute("SELECT write_seq FROM tasks WHERE task_id=?", (row["task_id"],)).fetchone()
     columns["write_seq"] = (previous[0] if previous else 0) + 1
     conn.execute("INSERT OR REPLACE INTO task_bodies(task_id,body) VALUES (?,?)",
@@ -123,17 +137,31 @@ def _flag(root, task_id):
         return txn.row(task_id, "review_collection_pending", "write_seq")
 
 
+def _combined_schema(txn):
+    assert txn.meta("schema_version") == store.SCHEMA_VERSION
+    columns = {row["name"]: row for row in txn.conn.execute("PRAGMA table_info(tasks)")}
+    assert all(columns[name]["notnull"] == 0 for name in ("has_owner_questions", "review_collection_pending"))
+    indexes = {row["name"] for row in txn.conn.execute("PRAGMA index_list(tasks)")}
+    assert {"tasks_has_owner_questions", "tasks_review_collection"} <= indexes
+
+
+def _question_document(task_id):
+    return document(task_id, result="The complete answer stays intact", owner_quiz={"q": {
+        "quiz_id": "q", "state": "open", "question": "Keep this format?", "options": ["Yes", "No"]}})
+
+
 @pytest.mark.parametrize("tier", [store.TIER_ENFORCED, store.TIER_NAME])
-def test_upgrade_then_old_writer_resets_unknown_without_history_loss(tmp_path, tier):
+@pytest.mark.parametrize("shape", ["v1", "owner-v2"])
+def test_upgrade_then_old_writer_resets_unknown_without_history_loss(tmp_path, tier, shape):
     closed = document("closed", review_operations={"op": _operation("collected")}, result="full old answer")
-    _legacy_store(tmp_path, closed, owned_root=tmp_path, tier=tier)
+    _legacy_store(tmp_path, closed, owned_root=tmp_path, tier=tier, shape=shape)
     store_import.upgrade_current_schema(tmp_path)
     assert _flag(tmp_path, "closed") == (None, 1)
     assert list(task_store.review_collection_candidates(tmp_path)) == []
     assert _flag(tmp_path, "closed") == (0, 1)
     newer = {**closed, "review_operations": {"op": _operation("unpublished")}}
     with store.open_store(tmp_path, write=True) as txn:
-        _old_replace(txn.conn, newer)
+        _old_replace(txn.conn, newer, known=_SCHEMA_SHAPES[shape])
     assert _flag(tmp_path, "closed") == (None, 2)
     store_import.upgrade_current_schema(tmp_path)
     assert list(task_store.review_collection_candidates(tmp_path)) == ["closed"]
@@ -141,50 +169,114 @@ def test_upgrade_then_old_writer_resets_unknown_without_history_loss(tmp_path, t
     assert task_store.read_document(tmp_path, "closed") == newer
 
 
-def test_passive_read_leaves_old_schema_and_first_child_write_upgrades_before_mutator(tmp_path, monkeypatch):
+@pytest.mark.parametrize("shape", _SCHEMA_SHAPES)
+def test_passive_read_leaves_old_schema_and_first_child_write_upgrades_before_mutator(tmp_path, monkeypatch, shape):
     child = tmp_path / "child"
-    _legacy_store(child, document("child", result="kept"), owned_root=tmp_path)
+    original = _question_document("child")
+    _legacy_store(child, original, owned_root=tmp_path, shape=shape)
     before = store.store_path(child).read_bytes()
-    assert task_store.read_document(child, "child")["result"] == "kept"
+    assert task_store.read_document(child, "child") == original
     assert store.store_path(child).read_bytes() == before
     monkeypatch.setattr(store_import, "_reconcile", lambda *_: pytest.fail("first write must not replay/import history"))
     calls = []
     def mutate(row):
         calls.append(row["result"])
         with store.open_store(child, write=False) as txn:
-            assert txn.meta("schema_version") == store.SCHEMA_VERSION
+            _combined_schema(txn)
+            assert txn.row("child", "has_owner_questions", "write_seq") == (1, 1)
         return {**row, "review_operations": {"op": _operation()}}
     task_store.patch_document(child, "child", mutate)
-    assert calls == ["kept"] and _flag(child, "child") == (1, 2)
+    assert calls == [original["result"]] and _flag(child, "child") == (1, 2)
+    assert task_store.read_document(child, "child")["owner_quiz"] == original["owner_quiz"]
+    assert set(obligations.members(child, "owner_questions")) == {"child"}
 
 
-def test_interrupted_schema_upgrade_rolls_back_and_retries(tmp_path, monkeypatch):
-    _legacy_store(tmp_path, document("task"), owned_root=tmp_path)
-    real = store.Txn.set_meta
-    def fail(txn, key, value):
-        if key == "schema_version":
-            raise OSError("interrupted before metadata publication")
-        return real(txn, key, value)
+@pytest.mark.parametrize("shape", _SCHEMA_SHAPES)
+def test_interrupted_schema_upgrade_rolls_back_and_retries(tmp_path, monkeypatch, shape):
+    _legacy_store(tmp_path, _question_document("task"), owned_root=tmp_path, shape=shape)
+    with store.open_store(tmp_path, write=False) as txn:
+        columns = {r["name"] for r in txn.conn.execute("PRAGMA table_info(tasks)")}
+        indexes = {r["name"] for r in txn.conn.execute("PRAGMA index_list(tasks)")}
+        raw = txn.body_text("task")
+    real = store_import._upgrade_review_collection
+    def fail(txn):
+        real(txn)  # the preceding owner-flag derivation and both DDLs must roll back together
+        _combined_schema(txn)
+        assert txn.row("task", "has_owner_questions") == 1
+        raise OSError("interrupted before the combined transaction commits")
     with monkeypatch.context() as patch:
-        patch.setattr(store.Txn, "set_meta", fail)
+        patch.setattr(store_import, "_upgrade_review_collection", fail)
         with pytest.raises(OSError):
             store_import.upgrade_current_schema(tmp_path)
     with store.open_store(tmp_path, write=False) as txn:
-        assert txn.meta("schema_version") == 1
-        assert "review_collection_pending" not in {r["name"] for r in txn.conn.execute("PRAGMA table_info(tasks)")}
+        assert txn.meta("schema_version") == (1 if shape == "v1" else 2)
+        assert {r["name"] for r in txn.conn.execute("PRAGMA table_info(tasks)")} == columns
+        assert {r["name"] for r in txn.conn.execute("PRAGMA index_list(tasks)")} == indexes
+        assert txn.body_text("task") == raw and txn.row("task", "write_seq") == 1
     store_import.upgrade_current_schema(tmp_path)
     store_import.upgrade_current_schema(tmp_path)
-    assert _flag(tmp_path, "task") == (None, 1)
+    assert _flag(tmp_path, "task") == (0 if shape == "review-v2" else None, 1)
+    with store.open_store(tmp_path, write=False) as txn:
+        _combined_schema(txn)
+        assert txn.row("task", "has_owner_questions") == 1 and txn.body_text("task") == raw
 
 
-def test_first_touch_schema_owner_honors_zero_wait_and_never_calls_mutator(tmp_path, monkeypatch):
-    _legacy_store(tmp_path, document("task"), owned_root=tmp_path)
+@pytest.mark.parametrize("shape", _SCHEMA_SHAPES)
+def test_first_touch_schema_owner_honors_zero_wait_and_never_calls_mutator(tmp_path, monkeypatch, shape):
+    _legacy_store(tmp_path, document("task"), owned_root=tmp_path, shape=shape)
     with store.open_store(tmp_path, write=True):
         with store.acquisition_budget(0), pytest.raises(store.StoreBusy):
             store_import.upgrade_current_schema(tmp_path)
         with store.acquisition_budget(0), pytest.raises(store.StoreBusy):
             task_store.patch_document(tmp_path, "task", lambda _: pytest.fail("not acquired"))
     assert task_store.patch_document(tmp_path, "task", lambda row: row)["task_id"] == "task"
+
+
+@pytest.mark.parametrize("shape", _SCHEMA_SHAPES)
+@pytest.mark.parametrize("boot", [False, True], ids=["first-touch-upgrade", "boot"])
+def test_combined_upgrade_keeps_question_duty_and_lazy_review_selection(tmp_path, shape, boot):
+    from ouroboros import evidence_packs
+
+    asked, quiet = _question_document("asked"), document("quiet", result="closed history")
+    _legacy_store(tmp_path, asked, quiet, owned_root=tmp_path, shape=shape)
+    with store.open_store(tmp_path, write=False) as txn:
+        bodies = {tid: txn.body_text(tid) for tid in ("asked", "quiet")}
+    if boot:
+        store_import.ensure_current_store(tmp_path, with_children=False)
+    else:
+        store_import.upgrade_current_schema(tmp_path)
+    with store.open_store(tmp_path, write=False) as txn:
+        _combined_schema(txn)
+        assert txn.row("asked", "has_owner_questions") == 1
+        assert txn.row("quiet", "has_owner_questions") == 0
+        for tid, raw in bodies.items():
+            assert txn.body_text(tid) == raw and txn.row(tid, "write_seq") == 1
+            assert txn.row(tid, "review_collection_pending") == (0 if shape == "review-v2" else None)
+    assert set(obligations.members(tmp_path, "owner_questions")) == {"asked"}
+    assert "owner_questions" in obligations.DUTY_SETS
+    assert "review_collection_pending" not in {*store.FLAG_COLUMNS.values(), *obligations.DUTY_SETS}
+    # A conservative selector alone, even 1, grants no new authority to block packing.
+    with store.open_store(tmp_path, write=True) as txn:
+        txn.conn.execute("UPDATE tasks SET review_collection_pending=1 WHERE task_id='quiet'")
+    assert evidence_packs.task_settled(tmp_path, "quiet")
+    assert not evidence_packs.task_settled(tmp_path, "asked")
+    task_store.patch_document(tmp_path, "asked", lambda row: {**row, "owner_quiz": {"q": {"state": "closed"}}})
+    assert obligations.members(tmp_path, "owner_questions") == {}
+    assert evidence_packs.task_settled(tmp_path, "asked")
+
+
+@pytest.mark.parametrize("shape", _SCHEMA_SHAPES)
+def test_first_collector_upgrades_either_v2_shape_and_preserves_question_obligations(tmp_path, shape):
+    asked = _question_document("asked")
+    pending = document("review", review_operations={"op": _operation("dispatched")})
+    _legacy_store(tmp_path, asked, pending, owned_root=tmp_path, shape=shape)
+    assert list(task_store.review_collection_candidates(tmp_path)) == ["review"]
+    assert _flag(tmp_path, "asked") == (0, 1) and _flag(tmp_path, "review") == (1, 1)
+    assert set(obligations.members(tmp_path, "owner_questions")) == {"asked"}
+    assert task_store.read_document(tmp_path, "asked") == asked
+    assert task_store.read_document(tmp_path, "review") == pending
+    with store.open_store(tmp_path, write=False) as txn:
+        _combined_schema(txn)
 
 
 def test_classification_is_off_read_lock_batched_and_cas_preserves_current_writer(tmp_path, monkeypatch):

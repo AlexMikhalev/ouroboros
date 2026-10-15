@@ -737,6 +737,12 @@ class TaskModelWait:
             self.revision += 1
             row["revision"] = self.revision
             row["updated_at"] = utc_now_iso()
+            # The live owner knows whether this call has a non-generating access
+            # observer. A reset forecast alone cannot resume an API-only call;
+            # mixed auth/quota with a viable automatic route needs no human.
+            row["requires_owner_action"] = bool(row["state"] == "waiting" and (
+                row.get("reason") == "auth" or row.get("auto_continue") is False
+                or not row.get("source") or row.get("_unproven_account")))
             if applied_request_id:
                 row["applied_request_id"] = applied_request_id
             if applied_request_id or row["state"] == "resolved":
@@ -857,6 +863,7 @@ class TaskModelWait:
             reason == "quota" and not account_intent and getattr(error, "status_code", 0)
             and getattr(getattr(error, "physical_attempt_capture", None), "state", None) == "settled"
             and not (problem_context.get("resetsAt") or problem_context.get("retryAfterMs"))) else ""
+        row["_unproven_account"] = unproven
         with self.lock:
             self.waits[wait_id] = row
         if quota_wait:

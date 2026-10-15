@@ -883,6 +883,8 @@ def _task_get_response(request: Request) -> JSONResponse:
     if not data:
         return json_error("task result is unavailable", 503)
     payload = public_task_result(data)
+    from ouroboros.gateway.main_decisions import question_display_rooms
+    payload["question_rooms"] = question_display_rooms(drive_root, task_id, payload.get("owner_quiz"))
     from ouroboros.owner_continue import continuation_offer  # Batch4: a Continue, or its accepted successor
     payload["continuation_offer"] = continuation_offer(data, task_id)
     if isinstance(payload.get("artifacts"), list):  # what ``?archive=<dir>`` would stream now, per top-level dir

@@ -244,7 +244,7 @@
 
 /**
  * The question card of a `msg_type: "quiz"` history row (the question itself is the row's `text`).
- * `state`: open | answered | expired_terminal | superseded, merged at read time.
+ * `state`: open | answered | closed | expired_terminal | superseded, merged at read time.
  * @typedef {Object} ChatHistoryQuiz
  * @property {string} quiz_id
  * @property {Object[]=} options  // QuizOption rows {label, detail?, recommended?}
@@ -263,7 +263,7 @@
 /**
  * One `GET /api/chat/history` row (live frames call `text` `content`). A row may also carry the
  * task-progress and outcome fields of a live `chat` frame (`ChatOutbound`). Replay-evidence rows
- * (`quiz_answer`, `task_evidence`, or `summary_kind` + `historical_terminal`) are never shown.
+ * (`quiz_answer`, `quiz_closed`, `task_evidence`, or `summary_kind` + `historical_terminal`) are never shown.
  * @typedef {Object} ChatHistoryMessage
  * @property {string} text
  * @property {'user'|'assistant'|'system'} role
@@ -277,7 +277,7 @@
  * @property {string=} source
  * @property {string=} sender_label
  * @property {string=} sender_session_id
- * @property {string=} client_message_id
+ * @property {string=} client_message_id  // correlation id, not proof of owner authorship; use role
  * @property {boolean=} ingress_accepted
  * @property {boolean=} ingress_dispatched
  * @property {boolean=} ingress_pending

@@ -135,6 +135,13 @@ class ChatOutbound(TypedDict):
     answered_index: NotRequired[int]
     comment: NotRequired[str]
     host_facts: NotRequired[str]  # the mirrored card's host sentence (QuizOutbound.host_facts)
+    closed_reason: NotRequired[str]
+    closed_at: NotRequired[str]
+    closed_by_task_id: NotRequired[str]
+    closed_actor: NotRequired[str]
+    closed_request_id: NotRequired[str]
+    materials: NotRequired[List[Dict[str, Any]]]  # validated existing task artifact references
+    question_delivery: NotRequired[Dict[str, Any]]  # canonical kind/state; pending stays current
     task_incident: NotRequired[str]
     # Historical rows only: the retired cancellation-fault notice named the PHYSICAL task it could not
     # settle when that differed from the logical id. Declared so stored rows keep their shape.
@@ -248,6 +255,8 @@ class ChatOutbound(TypedDict):
     handoff_id: NotRequired[str]  # immutable origin/destination receipt identity
     terminal_time: NotRequired[Dict[str, Any]]  # host-owned occurrence, separate from publication ts
     completion_answer: NotRequired[str]  # a Project root's model-authored final answer, mirrored into Main (DESIGN)
+    completion_reason: NotRequired[str]  # one recorded nonclean-outcome fact beside the answer
+    delivery_id: NotRequired[str]  # stable logical publication identity across transport retries
     set_at: NotRequired[str]  # a `reminder` row's provenance, live frame only (its text carries the signature): when written
     scheduled_for: NotRequired[str]  # the due point it was written for
     delivered_at: NotRequired[str]  # when the host showed it (later than due after downtime)
@@ -389,6 +398,13 @@ class QuizOutbound(TypedDict):
     answered_index: NotRequired[int]
     comment: NotRequired[str]
     host_facts: NotRequired[str]  # host-written, never the model's: asking task, run start, owner's last message
+    materials: NotRequired[List[Dict[str, Any]]]
+    question_delivery: NotRequired[Dict[str, Any]]
+    closed_reason: NotRequired[str]
+    closed_at: NotRequired[str]
+    closed_by_task_id: NotRequired[str]
+    closed_actor: NotRequired[str]
+    closed_request_id: NotRequired[str]
     chat_id: NotRequired[int]
     task_id: NotRequired[str]
     project_thread: NotRequired[bool]
@@ -404,6 +420,7 @@ class QuizStateOutbound(TypedDict):
     """
 
     type: Literal["quiz_state"]
+    question_delivery: NotRequired[Dict[str, Any]]
     quiz_id: str
     task_id: str
     state: str
@@ -414,6 +431,11 @@ class QuizStateOutbound(TypedDict):
     # when empty) so the open card renders `Owner's answer:` as replay does.
     comment: NotRequired[str]
     chat_id: NotRequired[int]
+    closed_reason: NotRequired[str]
+    closed_at: NotRequired[str]
+    closed_by_task_id: NotRequired[str]
+    closed_actor: NotRequired[str]
+    closed_request_id: NotRequired[str]
 
 
 class TypingOutbound(TypedDict):
@@ -742,6 +764,8 @@ class ActiveChatActivity(ActiveDirectTurn):
     pause_cause: NotRequired[str]  # budget | owner | restart | sleep | authority | unknown; display only
     finishing_reviews: NotRequired[bool]  # review work an owner Pause lets finish runs on; display only, no count
     late_work: NotRequired[Dict[str, Any]]  # answered root with an open late phase (D10): title, answered_at; display only
+    can_resume: NotRequired[bool]
+    cancelable: NotRequired[bool]
 
 class EffortRange(TypedDict):  # min ≤ recommended ≤ max, each an EFFORT_SCALE tier (the tolerant read)
     min: str
@@ -799,6 +823,12 @@ class StateResponse(TypedDict):
     # compatibility; new clients hydrate from this field.
     active_chat_activities: NotRequired[List[ActiveChatActivity]]
     active_chat_activities_complete: NotRequired[bool]
+    current_questions: NotRequired[List[Dict[str, Any]]]  # canonical forms independent of history window
+    current_questions_complete: NotRequired[bool]
+    current_questions_gaps: NotRequired[List[Dict[str, Any]]]  # typed source gaps, no read-side repair
+    main_attention: NotRequired[List[Dict[str, Any]]]  # live human recovery owners, including children; census stays root-only
+    main_attention_complete: NotRequired[bool]
+    main_attention_gaps: NotRequired[List[Dict[str, Any]]]
     served_ui: NotRequired[ServedUiState]  # this generation's main interface; absent on older cores
 
 
@@ -1118,6 +1148,14 @@ class HistoryRetentionProjection(TypedDict):
     problem_reasons: NotRequired[List[Dict[str, Any]]]  # Optional grouped {reason: str, count: int} rows.
 
 
+class QuestionRoom(TypedDict, total=False):
+    """Current display proof for one exact owner_quiz key; not publication or task context."""
+
+    state: Required[Literal["known", "unknown"]]
+    chat_id: int
+    project_id: str
+
+
 class TaskDetailResponse(TypedDict, total=False):
     """Open ``GET /api/tasks/{task_id}`` result: stored keys pass through beside typed projections."""
 
@@ -1127,6 +1165,7 @@ class TaskDetailResponse(TypedDict, total=False):
     cost_breakdown: TaskCostBreakdown
     history_retention: HistoryRetentionProjection
     model_waits: Dict[str, Any]
+    question_rooms: Dict[str, QuestionRoom]
     # Open cancel intent/teardown: "pending" drives "Cancelling…", not lifecycle status.
     # Absent for settled or unrequested cancellation; running/scheduled status stays truthful.
     cancel_state: str
@@ -1467,22 +1506,13 @@ WS_MESSAGE_TYPES: tuple[str, ...] = (
 
 __all__ = [
     "CostPresentation",
-    "ChatInbound",
-    "TaskConstraintInbound",
-    "CommandInbound",
-    "ExtensionInbound",
+    "ChatInbound", "TaskConstraintInbound", "CommandInbound", "ExtensionInbound",
     "TransportMetadata",
     "ChatOutbound",
-    "PhotoOutbound",
-    "VideoOutbound",
-    "DocumentOutbound",
-    "LinkAction",
-    "LinksOutbound",
-    "QuizOption",
-    "QuizOutbound",
-    "QuizStateOutbound",
-    "DecisionRequest",
-    "DecisionResponse",
+    "PhotoOutbound", "VideoOutbound", "DocumentOutbound",
+    "LinkAction", "LinksOutbound",
+    "QuizOption", "QuizOutbound", "QuizStateOutbound",
+    "DecisionRequest", "DecisionResponse",
     "TypingOutbound",
     "LogOutbound",
     "HeartbeatOutbound",
@@ -1490,40 +1520,32 @@ __all__ = [
     "ProjectsChangedOutbound",
     "MessageAnnotationOutbound",
     "UpdateMergePlan",
-    "UpdatePreflightRequest",
-    "UpdatePreflightResponse",
+    "UpdatePreflightRequest", "UpdatePreflightResponse",
     "UpdateApplyRequest",
-    "UpdateApplySuccessResponse",
-    "UpdateApplyErrorResponse",
+    "UpdateApplySuccessResponse", "UpdateApplyErrorResponse",
     "UpdateStatusReadyOutbound",
     "UpdateProgressChangedOutbound",
     "ProjectCreateRequest",
     "ProjectEntry",
     "ProjectDeleteResponse",
-    "FsDirsEntry",
-    "FsDirsResponse",
+    "FsDirsEntry", "FsDirsResponse",
     "TaskNamedOutbound",
     "ErrorResponse",
     "StatusResponse",
     "HealthResponse",
     "StateResponse",
-    "ActiveDirectTurn",
-    "ActiveChatActivity",
+    "ActiveDirectTurn", "ActiveChatActivity",
     "EvolutionStateSnapshot",
     "SettingsNetworkMeta",
     "AvailableSubagentsSettingsMeta",
-    "SettingsPolicyAxis",
-    "SettingsPolicyState",
-    "SettingsMeta",
+    "SettingsPolicyAxis", "SettingsPolicyState", "SettingsMeta",
     "SettingsSaveResponse",
     "OwnerRuntimeModeResponse",
     "OwnerAutoGrantResponse",
     "OwnerContextModeResponse",
     "OwnerSafetyModeResponse",
-    "OwnerSkillPresenceRuntimeRequest",
-    "OwnerSkillPresenceRuntimeResponse",
-    "OnboardingCompleteRequest",
-    "OnboardingCompleteResponse",
+    "OwnerSkillPresenceRuntimeRequest", "OwnerSkillPresenceRuntimeResponse",
+    "OnboardingCompleteRequest", "OnboardingCompleteResponse",
     "OnboardingSubagentsPreviewResponse",
     "OnboardingPresetFailureResponse",
     "OnboardingPresetProjection",
@@ -1532,10 +1554,7 @@ __all__ = [
     "UiPreferencesResponse", "DesktopAutostartResponse",
     "GitLogResponse",
     "EvolutionDataResponse",
-    "ScheduledTasksResponse",
-    "ScheduleUpsertResponse",
-    "ScheduleDeleteResponse",
-    "ScheduleActionResponse",
+    "ScheduledTasksResponse", "ScheduleUpsertResponse", "ScheduleDeleteResponse", "ScheduleActionResponse",
     "UploadResponse",
     "ExtensionsIndexResponse",
     "ExtensionLiveSnapshot",
@@ -1548,19 +1567,15 @@ __all__ = [
     "LocalModelStatusResponse",
     "McpStatusResponse",
     "ModelCatalogResponse", "OpenAICompatibleModelsResponse",
-    "ProviderTestRequest",
-    "ProviderTestResponse",
+    "ProviderTestRequest", "ProviderTestResponse",
     "FileBrowserListResponse",
     "ChatHistoryResponse",
     "AttachmentManifestEntry",
     "ChatAttachmentInbound",
     "ChatAttachmentView",
     "ExecutorRef",
-    "TaskCreateRequest",
-    "TaskCreateResponse",
-    "TaskListResponse",
-    "TaskCostBreakdown",
-    "TaskDetailResponse",
+    "TaskCreateRequest", "TaskCreateResponse",
+    "TaskListResponse", "TaskCostBreakdown", "TaskDetailResponse", "QuestionRoom",
     "ClaudexorReadState",
     "ClaudexorStatusReads", "ClaudexorPassiveReadError", "ClaudexorQuotaResponse",
     "ClaudexorStatusResponse",
@@ -1568,15 +1583,12 @@ __all__ = [
     "ClaudexorLoginJobProblem",
     "ClaudexorVendorCredentialDisposition",
     "ClaudexorCredentialProfileDeleteResponse",
-    "TaskEvent",
-    "TaskEventCursor",
+    "TaskEvent", "TaskEventCursor",
     "TaskEventsRequest",
-    "TaskCancelResponse",
-    "TaskCancelRequest",
+    "TaskCancelResponse", "TaskCancelRequest",
     "TaskPauseRequest", "TaskPauseResponse",
     "TaskContinueRequest", "TaskContinueResponse", "ContinuationOffer",
-    "TaskHurryRequest",
-    "TaskHurryResponse",
+    "TaskHurryRequest", "TaskHurryResponse",
     "OwnerHurryProjection",
     "EffortRange", "OwnerEffortRangeResponse",
     "LogTailResponse",

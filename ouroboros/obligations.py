@@ -20,11 +20,11 @@ from ouroboros.store import StoreError
 
 BOOT_SETS = ("nonterminal", "synthesis", "terminal_projection", "delegated_runs",
              "promotions", "custody_open", "pending_drives", "upgrade_notices", "unknowns",
-             "pause_notices", "pause_notice_receipts")
+             "pause_notices", "pause_notice_receipts", "owner_questions")
 # Owed work: a task with a row here is not settled (the evidence packer's predicate). A stored set declared
 # in neither tuple owes too (an older or newer body's duty, an imported set file): an unknown duty never packs.
 DUTY_SETS = ("nonterminal", "synthesis", "terminal_projection", "delegated_runs", "promotions", "custody_open",
-             "pending_drives", "unknowns", "pause_notices", "local_custody_witnesses")
+             "pending_drives", "unknowns", "pause_notices", "local_custody_witnesses", "owner_questions")
 # Kept facts, never owed: chat notice receipts, custody marks, definite start refusals.
 RECORD_SETS = ("upgrade_notices", "pause_notice_receipts", "custody_marks", "custody_refused")
 ObligationsUnavailable = store.StoreError  # the sets are rows: unavailable exactly when the store is
@@ -174,6 +174,11 @@ def result_memberships(row: dict) -> set[str]:
             names.add("promotions")
     if row.get("pause_notices"):
         names.add("pause_notices")
+    quizzes = row.get("owner_quiz")
+    if isinstance(quizzes, dict):
+        from ouroboros.owner_quiz import quiz_needs_retention
+        if any(quiz_needs_retention(block) for block in quizzes.values()):
+            names.add("owner_questions")
     return names
 
 

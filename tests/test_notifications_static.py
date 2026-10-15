@@ -118,6 +118,16 @@ def test_policy_has_one_canonical_home():
     assert "web/modules/notifications.js" in architecture
 
 
+def test_activation_is_wired_to_addressed_registry_lookup_not_sidebar_fallback():
+    app = _read("web/app.js")
+    activation = app[app.index("onActivate: createNotificationActivation({"):
+                     app.index("function closeNotificationReaders()")]
+    assert "/api/projects?chat_id=" in activation
+    assert "lastProjectRows" not in activation
+    assert "unavailable:" in activation
+    assert "openProjectPanel(project, options)" in activation
+
+
 def test_importance_uses_the_existing_discriminator():
     source = _read("web/modules/notifications.js")
     assert "proactive_message" in source

@@ -427,7 +427,15 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
     page.route('**/api/projects', lambda r: r.fulfill(json={'projects': [project]}))
     # A stable served SHA: a reconnect re-reads history in place instead of reloading the window.
     page.route('**/api/state', lambda r: r.fulfill(json={'sha': 'browser-fixture', 'supervisor_ready': True,
-        'active_chat_activities': activities, 'projects': [project], 'project_chat_ids': [42]}))
+        'active_chat_activities': activities, 'projects': [project], 'project_chat_ids': [42],
+        # These deliberately synthetic canonical fields exercise the real SPA
+        # projection. The stale-reconnect branch withholds settled sources so
+        # the existing canonical task-detail recovery assertions still apply.
+        'current_questions': [pointer(qid, block) for qid, block in blocks.items()
+                           if not mode['stale'] or qid in ('second', 'replaced')]
+                          + ([a['required_question'] for a in activities
+                              if a['activity_id'] == 'late-task'] if not mode['stale'] else []),
+        'current_questions_complete': not mode['stale'], 'main_attention': [], 'main_attention_complete': True}))
 
     def detail(route):
         # The canonical record (GET /api/tasks/{id}) the Project form and a revalidating Main read.
@@ -435,6 +443,9 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
         detail_reads.append(task_id)
         quizzes = blocks if task_id == 'proof-task' else {'late-form': late}
         route.fulfill(json={'task_id': task_id, 'project_id': project['id'],
+            # Exact-quiz room proof, as returned by the real detail consumer tests.
+            'question_rooms': {qid: {'state': 'known', 'chat_id': 42, 'project_id': project['id']}
+                               for qid in quizzes},
             'owner_quiz': {qid: {'quiz_id': qid, **block} for qid, block in quizzes.items()},
             'owner_wait': wait if task_id == 'proof-task' else {'quiz_id': 'late-form', 'state': 'resumed'}})
     page.route('**/api/tasks/proof-task', detail)
@@ -479,12 +490,13 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
         route.fulfill(json={'messages': rows, 'progress': []})
     page.route('**/api/chat/history*', history)
     open_app(ui)
-    mirrors = page.locator('#chat-messages .chat-bubble.project-question')
-    card = lambda qid: page.locator(f'#chat-messages .project-question-card[data-quiz-id="{qid}"]')
+    mirrors = page.locator('.main-attention .chat-bubble.project-question')
+    card = lambda qid: page.locator(f'.main-attention .project-question-card[data-quiz-id="{qid}"]')
     ids = lambda: mirrors.evaluate_all("els => els.map(el => el.querySelector('.chat-quiz-card').dataset.quizId)")
+    page.locator('.main-attention-summary').click()
     card('waiting').wait_for()
     assert ids() == ['second', 'passed', 'finished', 'replaced', 'waiting'], 'an answered question never enters Main'
-    forms = page.evaluate("""() => [...document.querySelectorAll('#chat-messages .project-question-card')].map(el => ({
+    forms = page.evaluate("""() => [...document.querySelectorAll('.main-attention .project-question-card')].map(el => ({
         id: el.dataset.quizId, status: el.querySelector('.chat-quiz-status-text').textContent,
         chip: el.querySelector('.chat-quiz-project .chat-live-project-name')?.textContent,
         question: el.querySelector('.chat-quiz-question').textContent.trim().slice(0, 24),
@@ -509,8 +521,8 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
         "el => [getComputedStyle(el).fontWeight, getComputedStyle(el.querySelector('strong')).fontWeight]")
     assert weights == ['400', '600'], 'the question reads as text; only its own emphasis is semibold'
     geometry = page.evaluate("""() => {
-        const scroller = document.querySelector('#chat-messages');
-        const cards = [...document.querySelectorAll('#chat-messages .project-question-card')];
+        const scroller = document.querySelector('.main-attention-body');
+        const cards = [...document.querySelectorAll('.main-attention .project-question-card')];
         const box = el => el.getBoundingClientRect();
         const question = document.querySelector('[data-quiz-id="waiting"] .chat-quiz-question');
         const list = question.querySelector('ul');
@@ -572,7 +584,7 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
     # Main copy goes. A duplicate live frame and the census's own answer never restart it.
     card('waiting').locator('.chat-quiz-comment').fill(owner_comment)
     card('waiting').locator('.chat-quiz-option').nth(1).click()
-    page.locator('#chat-messages .project-question-card[data-quiz-id="waiting"][data-state="answered"]').wait_for()
+    page.locator('.main-attention .project-question-card[data-quiz-id="waiting"][data-state="answered"]').wait_for()
     confirmed = page.evaluate('performance.now()')
     assert card('waiting').locator('.chat-quiz-option.chosen').inner_text().startswith('Wait for written permission')
     assert card('waiting').locator('.chat-quiz-status-text').inner_text() == 'You answered'
@@ -587,7 +599,7 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
     sockets[-1].send(json.dumps({'type': 'quiz_state', 'task_id': 'proof-task', 'quiz_id': 'waiting', 'state': 'answered',
                                  'answered_index': 1, 'ts': '2026-09-16T00:04:00Z'}))
     assert card('waiting').count() == 1, 'the result stays readable for the whole moment'
-    page.wait_for_function("() => !document.querySelector('#chat-messages [data-quiz-id=\"waiting\"]')", timeout=10000)
+    page.wait_for_function("() => !document.querySelector('.main-attention [data-quiz-id=\"waiting\"]')", timeout=10000)
     elapsed = page.evaluate('performance.now()') - confirmed
     assert 4700 <= elapsed <= 6500, elapsed
     setup_browser.capture(page, f'question-mirror-removed-{width}')
@@ -597,14 +609,12 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
     own.locator('.chat-quiz-option.chosen').filter(has_text='Wait for written permission').wait_for()
     page.locator('#project-panel-close').click()
 
-    # The Project form answers another question while the owner reads further down: the copy
-    # above the reader settles and leaves without moving the reading position. Closing the
-    # Project returns Main to its newest message a frame or more later (showLatest), and
-    # reading on supersedes that return (DESIGN "A room always opens at its newest message"),
-    # so the owner turns back with the wheel before reading further down.
-    page.evaluate("""() => document.querySelector('#chat-messages').addEventListener(
+    # The Project form answers another question while the owner reads further down.
+    # Keep the public wheel/paint barrier, targeting the questions' current scroller:
+    # Main's Needs you host owns their reading position independently of the timeline.
+    page.evaluate("""() => document.querySelector('.main-attention-body').addEventListener(
         'wheel', () => { window.__turnedBack = true; }, {once: true, passive: true})""")
-    feed = page.locator('#chat-messages').bounding_box()
+    feed = page.locator('.main-attention-body').bounding_box()
     page.mouse.move(feed['x'] + feed['width'] / 2, feed['y'] + min(feed['height'], height) / 2)
     page.mouse.wheel(0, -120)
     page.wait_for_function('() => window.__turnedBack')
@@ -619,7 +629,7 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
     started = page.evaluate('performance.now()')
     page.wait_for_timeout(2500)
     sockets[-1].send(json.dumps(frame))
-    page.wait_for_function("() => !document.querySelector('#chat-messages [data-quiz-id=\"passed\"]')", timeout=10000)
+    page.wait_for_function("() => !document.querySelector('.main-attention [data-quiz-id=\"passed\"]')", timeout=10000)
     elapsed = page.evaluate('performance.now()') - started
     assert 4500 <= elapsed <= 6500, elapsed
     assert abs(card('finished').evaluate('el => el.getBoundingClientRect().top') - anchor) <= 2
@@ -630,9 +640,9 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
     assert page.evaluate("document.activeElement.classList.contains('chat-quiz-option')"), \
         page.evaluate('document.activeElement.outerHTML')
     page.keyboard.press('Enter')
-    page.locator('#chat-messages .project-question-card[data-quiz-id="finished"][data-state="answered"]').wait_for()
+    page.locator('.main-attention .project-question-card[data-quiz-id="finished"][data-state="answered"]').wait_for()
     assert page.evaluate("document.activeElement.closest('.chat-quiz-card')?.dataset.quizId") == 'finished'
-    page.wait_for_function("() => !document.querySelector('#chat-messages [data-quiz-id=\"finished\"]')", timeout=10000)
+    page.wait_for_function("() => !document.querySelector('.main-attention [data-quiz-id=\"finished\"]')", timeout=10000)
     assert page.evaluate("document.activeElement.closest('.chat-quiz-card')?.dataset.quizId") == 'replaced'
     assert ids() == ['second', 'replaced']
 
@@ -654,7 +664,7 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
         'markdown': False, **base, **{key: late[key] for key in ('question', 'options', 'option_details', 'stake',
                                                                     'answered_index')},
         'quiz_state': 'answered', 'owner_wait_state': 'resumed'}))
-    page.locator('#chat-messages .project-question-card[data-quiz-id="late-form"][data-state="answered"]'
+    page.locator('.main-attention .project-question-card[data-quiz-id="late-form"][data-state="answered"]'
                  ' .chat-quiz-option.chosen').wait_for()
     started = page.evaluate('performance.now()')
     assert card('late-form').locator('.chat-quiz-option').count() == 2
@@ -663,7 +673,7 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
     assert card('late-form').locator('.chat-quiz-stake').inner_text() == 'At stake: The cover layout.'
     card('late-form').evaluate("el => el.scrollIntoView({block: 'center'})")
     setup_browser.capture(page, f'question-mirror-late-form-answered-{width}')
-    page.wait_for_function("() => !document.querySelector('#chat-messages [data-quiz-id=\"late-form\"]')", timeout=10000)
+    page.wait_for_function("() => !document.querySelector('.main-attention [data-quiz-id=\"late-form\"]')", timeout=10000)
     elapsed = page.evaluate('performance.now()') - started
     assert 4500 <= elapsed <= 6500, elapsed
     assert ids() == ['second', 'replaced']
@@ -716,6 +726,7 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
     activities[1]['required_question'].update(quiz_state='answered', answered_index=1, owner_wait_state='resumed')
     page.reload()
     page.wait_for_selector('#chat-input', state='attached')
+    page.locator('.main-attention-summary').click()
     card('replaced').wait_for()
     assert ids() == ['second', 'replaced']
     card('second').scroll_into_view_if_needed()

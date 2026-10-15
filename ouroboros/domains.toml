@@ -274,6 +274,7 @@ D20 = "Presence"
 "ouroboros/gateway/skill_publish.py" = "D11"
 "ouroboros/gateway/state.py" = "D11"
 "ouroboros/gateway/storage.py" = "D11"
+"ouroboros/gateway/main_decisions.py" = "D11"  # addressed canonical Main questions and human recovery controls
 "ouroboros/gateway/task_events.py" = "D11"
 "ouroboros/gateway/task_archive.py" = "D11"
 "ouroboros/gateway/task_hurry.py" = "D11"
