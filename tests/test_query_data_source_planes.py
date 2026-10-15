@@ -108,15 +108,10 @@ def test_canonical_queue_reads_follow_the_same_actors_read_file_admission(planes
         admitted = _read_admitted(registry, target)
         status, result = _query(registry, op="json", kind="queue_snapshot")
         observed[name] = admitted
-        if admitted:
-            assert status == "ok" and result["data"]["plane"] == "canonical", (name, result)
-            assert result["source"]["plane"] == "canonical"
-            status, dispatch = _query(registry, op="json", kind="queue_dispatch")
-            assert dispatch["data"] == {"plane": "canonical-dispatch"} and dispatch["source"]["plane"] == "canonical"
-        else:
-            assert status == "blocked" and result["code"] == "access_denied", (name, result)
-            assert result["plane"] == "canonical" and "no grant is inferred" in result["message"]
-            assert "canonical" not in json.dumps(result.get("data"))
+        assert admitted and status == "ok" and result["data"]["plane"] == "canonical", (name, result)
+        assert result["source"]["plane"] == "canonical"
+        status, dispatch = _query(registry, op="json", kind="queue_dispatch")
+        assert dispatch["data"] == {"plane": "canonical-dispatch"} and dispatch["source"]["plane"] == "canonical"
     # The upstream read alias covers ordinary roots as well as helpers in every mode.
     # query_data follows that existing physical authority rather than adding a grant.
     assert observed == {"root": True, "forked_root": True, "helper": True, "acting": True}
@@ -151,6 +146,7 @@ def test_presence_ceiling_narrows_the_canonical_plane_like_read_file(planes, mon
         assert status == expected, result
         if expected == "blocked":
             assert "Presence resource ceiling" in result["message"] and result["plane"] == "canonical"
+            assert "data" not in result and "canonical bytes" not in json.dumps(result)
 
 
 def test_explicit_child_queue_logs_and_sql_keep_their_local_planes(planes, monkeypatch):
@@ -196,6 +192,7 @@ def test_blobs_fall_back_to_the_owner_only_after_a_proven_local_miss(planes, mon
     assert not _read_admitted(restricted, owner_path)
     status, refused = _query(restricted, op="blob", sha256=digest)
     assert status == "blocked" and refused["plane"] == "canonical", refused
+    assert "data" not in refused and "canonical bytes" not in json.dumps(refused)
     assert refused["message"].startswith("blob not found in the caller plane; the canonical plane is not readable")
     # Same digest present locally: local bytes win and are labelled as such.
     _, local_path = _blob(planes["helper"], owner_raw)
@@ -297,11 +294,7 @@ def test_a_selected_owned_child_is_a_local_blob_plane(planes, monkeypatch, mode)
         admitted = _read_admitted(forked, physical)
         assert admitted is True
         status, blob = _query(forked, op="blob", sha256=digest, child_task_id="forked-child")
-        if admitted:
-            assert status == "ok" and blob["data"] == expected and blob["source"]["plane"] == "canonical", blob
-        else:
-            assert status == "blocked" and blob["plane"] == "canonical" and "data" not in blob, blob
-            assert blob["message"].startswith("blob not found in the child plane; the canonical plane is not readable")
+        assert status == "ok" and blob["data"] == expected and blob["source"]["plane"] == "canonical", blob
     # A drive outside the caller's lineage is refused before any of its bytes are read.
     foreign, _ = _blob(planes["helper"], b'{"foreign": "child"}')
     status, refused = _query(forked, op="blob", sha256=foreign, child_task_id="helper")
