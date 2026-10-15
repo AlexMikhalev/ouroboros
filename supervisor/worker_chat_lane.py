@@ -92,15 +92,16 @@ def wake_gate_open() -> bool:
     return not reason or conversation_admitted_during_update(reason)
 
 
-def owner_conversation_admitted(chat_id: int) -> bool:
+def owner_conversation_admitted(chat_id: int, client_message_id: str = "") -> bool:
     """Admit one owner chat turn: open gate, or a resolver-held update.
 
-    A refused turn gets the pool's existing lock notice (``_repo_writer_turn_allowed``).
+    A refused turn gets the pool's existing lock notice (``_repo_writer_turn_allowed``),
+    naming the submission it answers.
     """
     reason = _pool().repo_writer_admission_closed()
     if not reason or conversation_admitted_during_update(reason):
         return True
-    return bool(_pool()._repo_writer_turn_allowed(chat_id))
+    return bool(_pool()._repo_writer_turn_allowed(chat_id, client_message_id))
 
 
 def preload_owner_control_path() -> list[str]:
@@ -155,7 +156,7 @@ def handle_chat_direct(
     task_constraint: Optional[dict] = None,
     task_metadata: Optional[dict] = None,
 ) -> None:
-    if not owner_conversation_admitted(chat_id):
+    if not owner_conversation_admitted(chat_id, str((task_metadata or {}).get("client_message_id") or "")):
         return
     _handle_chat_direct_locked(
         chat_id, text, image_data,
@@ -191,12 +192,14 @@ def _handle_chat_direct_locked(
 
 
 def _host_operation_failure(metadata: Optional[dict]) -> dict:
-    """Optional terminal correlation for the host's preaccepted skill messages."""
+    """A refusal's correlation: the owner submission it answers (only that
+    ``Sending...`` settles) and, for the host's preaccepted skill messages,
+    their terminal correlation."""
     from ouroboros.task_finalization import host_operation_reply_kwargs
 
-    if (metadata or {}).get("_host_operation"):
-        return host_operation_reply_kwargs((metadata or {}).get("origin_message_ref"), "failed")
-    return {}
+    meta = metadata or {}
+    source = meta.get("origin_message_ref") if meta.get("_host_operation") else None
+    return host_operation_reply_kwargs(source, "failed", str(meta.get("client_message_id") or ""))
 
 
 def _rejected_rows(manifest: Any) -> list:
@@ -293,7 +296,7 @@ def _admit_chat_task(
 
     quiet = is_consciousness_origin(task_metadata)  # a wake: the alarm reports the refusal, not the chat
     with _pool()._repo_writer_gate_lock:
-        if not (wake_gate_open() if quiet else owner_conversation_admitted(chat_id)):
+        if not (wake_gate_open() if quiet else owner_conversation_admitted(chat_id, client_msg_id)):
             return None
         activity = registry.register(
             task["id"], chat_id,
@@ -600,10 +603,11 @@ def _report_direct_chat_error(admitted: Dict[str, Any], e: BaseException) -> Non
                 )
             except Exception:
                 log.debug("Failed-turn typing announce failed", exc_info=True)
-        failure_meta = _host_operation_failure(task_metadata)
+        # The keyed final concludes its own turn and linked Sending; it keeps only the host-operation source.
+        correlation = _host_operation_failure(task_metadata).get("progress_meta", {})
         progress_meta = {"task_terminal_status": "failed"}
-        if failure_meta:
-            progress_meta["origin_message_ref"] = failure_meta["progress_meta"]["origin_message_ref"]
+        if "origin_message_ref" in correlation:
+            progress_meta["origin_message_ref"] = correlation["origin_message_ref"]
         initiator = str((task_metadata or {}).get("initiator") or "")
         if initiator:
             progress_meta["initiator"] = initiator

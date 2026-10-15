@@ -128,9 +128,13 @@ SHOWN = """mode => {
     const seg = el.querySelector(`.chat-seg[data-mode="${mode}"]`);
     const s = strip.getBoundingClientRect();
     const m = seg.getBoundingClientRect();
+    const word = seg.querySelector('.chat-seg-text').getBoundingClientRect();
     return {
         fit: el.dataset.fit || '', scroll: strip.dataset.scroll || '', scrollLeft: strip.scrollLeft, word: seg.textContent,
-        strip: [s.left, s.right], seg: [m.left, m.right], whole: m.left >= s.left - 0.5 && m.right <= s.right + 0.5,
+        strip: [s.left, s.right], seg: [m.left, m.right], wordBox: [word.left, word.right],
+        // offsetLeft/clientWidth/scrollWidth round to CSS pixels: an end can clip <1 px of
+        // button padding while every glyph stays visible. Never excuse clipped text.
+        whole: m.left >= s.left - 1 && m.right <= s.right + 1 && word.left >= s.left && word.right <= s.right,
         focused: document.activeElement?.dataset?.mode || '', docScroll: document.documentElement.scrollWidth > innerWidth + 1,
         fade: getComputedStyle(strip).maskImage || getComputedStyle(strip).webkitMaskImage || '',
     };
@@ -201,6 +205,12 @@ def _row(page) -> dict:
 
 def _until(page, predicate: str, timeout: int = 5_000) -> None:
     page.wait_for_function(f"() => {{ const r = ({ROW})(); return {predicate}; }}", timeout=timeout)
+
+
+def _wait_for_transitions(page, selector: str) -> None:
+    # A busy renderer can reach the wall-clock deadline before the opening's final frame.
+    page.wait_for_function("""sel => document.querySelector(sel).getAnimations({subtree: true})
+        .every(animation => !animation.pending && animation.playState !== 'running')""", arg=selector, timeout=5_000)
 
 
 def _record(tmp_path, name: str, facts) -> None:
@@ -348,7 +358,7 @@ def test_the_max_bracket_keeps_clear_of_the_rounded_end(direct_server_with_data,
             # Context's thumb at Max, the last mode: a pill concentric with the rounded end.
             (page.tap if phone else page.click)(f"{CONTEXT} .chat-capsule-head")
             _until(page, "r.ctx.open === 'true'")
-            page.wait_for_timeout(450)
+            _wait_for_transitions(page, CONTEXT)
             thumb = page.evaluate(CLEARANCE, CONTEXT)["thumb"]
             assert abs(thumb["gutter"] - thumb["top"]) <= 1 and abs(thumb["top"] - thumb["bottom"]) <= 1, thumb
             measured["context-thumb-max"] = thumb
@@ -365,9 +375,10 @@ def test_the_max_bracket_keeps_clear_of_the_rounded_end(direct_server_with_data,
             page.wait_for_timeout(200)
             at_end = page.evaluate(CLEARANCE, EFFORT)
             measured["effort-max-ultra"] = at_end
-            expected_fit = {1440: "inline", 390: "solo", 360: "solo", 320: "overflow"}[width]
-            assert at_end["fit"] == expected_fit, at_end
-            if expected_fit == "overflow":
+            # Fonts decide when a phone needs internal scrolling; the contour must clear in
+            # either measured mode. Wide desktop and the dedicated scroll cases cover both ends.
+            assert at_end["fit"] in (("inline",) if not phone else ("solo", "overflow")), at_end
+            if at_end["fit"] == "overflow":
                 assert at_end["scroll"] == "end", at_end
             cap = at_end["cap"]
             # The square bracket clears the rounded end: its corners stand off the contour, and the
@@ -396,13 +407,16 @@ def test_the_max_bracket_keeps_clear_of_the_rounded_end(direct_server_with_data,
             browser.close()
 
 
-def test_closed_names_reduced_motion_and_a_resize_that_refits(direct_server_with_data, tmp_path):  # noqa: F811
+@pytest.mark.parametrize("engine", ["chromium", "webkit"])
+def test_closed_names_reduced_motion_and_a_resize_that_refits(direct_server_with_data, engine, tmp_path):  # noqa: F811
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import sync_playwright
 
     url = direct_server_with_data["url"]
     with sync_playwright() as pw:
-        browser, page = _launch(pw, "chromium", viewport={"width": 1440, "height": 900}, reduced_motion="reduce")
+        browser, page = _launch(pw, engine, viewport={"width": 1440, "height": 900}, reduced_motion="reduce")
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
         try:
             _open_chat(page, url, width=1440)
             durations = page.evaluate(f"""() => [...document.querySelectorAll('{EFFORT} .chat-capsule-body, {EFFORT} .chat-capsule-value, {CONTEXT} .chat-context-thumb')]
@@ -413,20 +427,30 @@ def test_closed_names_reduced_motion_and_a_resize_that_refits(direct_server_with
             facts = {"wide": _row(page)}
             # The window narrows to a phone's width with the strip open: it refits alone, one line.
             page.set_viewport_size({"width": 390, "height": 900})
-            _until(page, "r.eff.fit === 'solo' && r.solo === 'effort'")
+            _until(page, "['solo', 'overflow'].includes(r.eff.fit) && r.solo === 'effort'")
             facts["narrow"] = _row(page)
             assert facts["narrow"]["oneLine"] and not facts["narrow"]["docScroll"], facts
             assert facts["narrow"]["eff"]["right"] <= facts["narrow"]["rowRight"] + 1, facts
             page.set_viewport_size({"width": 1440, "height": 900})
             _until(page, "r.eff.fit === 'inline' && r.solo === '' && r.ctx.shown && r.swarmShown")
             page.keyboard.press("Escape")
-            # Closed, the names stay while the line holds them and give way on a narrower one.
-            for width, names in ((390, [True, True]), (340, [False, False]), (1440, [True, True])):
-                page.set_viewport_size({"width": width, "height": 900})
-                _until(page, f"r.namesShown.join() === '{','.join('true' if n else 'false' for n in names)}' && r.oneLine")
-                facts[f"closed-{width}"] = _row(page)
-                _shot(page, tmp_path, f"capsules-closed-names-{width}")
-            _record(tmp_path, "capsules-names-motion-resize", facts)
+            # Probe both sides of the actual named row's width. System fonts differ between
+            # Linux and macOS; 390/340 are not product breakpoints (DESIGN).
+            _until(page, "r.eff.open === 'false' && r.namesShown.every(Boolean) && r.oneLine")
+            page.wait_for_function("""sel => !document.querySelector(sel).style.getPropertyValue('--capsule-body-width')""", arg=EFFORT)
+            named_width = page.evaluate("""() => {
+                const row = document.querySelector('#page-chat .chat-toolbar-row'), css = getComputedStyle(row);
+                const kids = [...row.children].filter(n => getComputedStyle(n).display !== 'none');
+                return Math.ceil(kids.reduce((sum, n) => sum + n.getBoundingClientRect().width, 0)
+                    + parseFloat(css.columnGap) * (kids.length - 1) + parseFloat(css.paddingLeft) + parseFloat(css.paddingRight));
+            }""")
+            for index, (width, names) in enumerate(((named_width + 4, True), (named_width - 4, False), (named_width + 4, True))):
+                page.locator('#page-chat .chat-toolbar-row').evaluate('(row, width) => row.style.width = width + "px"', width)
+                _until(page, f"r.namesShown.every(n => n === {str(names).lower()}) && r.oneLine")
+                facts[f"closed-{index}-{width}"] = _row(page)
+                _shot(page, tmp_path, f"capsules-closed-names-{engine}-{index}-{width}")
+            assert not errors, errors
+            _record(tmp_path, f"capsules-names-motion-resize-{engine}", facts)
         finally:
             browser.close()
 
@@ -632,14 +656,24 @@ def test_right_to_left_strips_that_scroll_keep_the_moved_mode_and_bracket_in_vie
             page.wait_for_timeout(100)
             seen["Enter"] = page.evaluate(SHOWN, "max")
             assert seen["Enter"]["whole"] and seen["Enter"]["scroll"] == "end", seen
-            for key, mode, edge in (("Home", "nano", "start"), ("End", "max", "end")):
-                with page.expect_response(lambda r: r.url.endswith("/api/owner/context-mode"), timeout=30_000):
-                    page.keyboard.press(key)
-                _until(page, f"r.ctx.mode === '{mode}' && r.ctx.disabled === 'false' && r.ctx.focused === '{mode}'")
-                page.wait_for_timeout(100)
-                seen[key] = page.evaluate(SHOWN, mode)
-                _shot(page, tmp_path, f"capsules-rtl-context-{key.lower()}-{engine}-320")
-                assert seen[key]["whole"] and seen[key]["scroll"] == edge and not seen[key]["docScroll"], seen
+            row = page.locator('#page-chat .chat-toolbar-row')
+            row_width = row.evaluate('node => node.getBoundingClientRect().width')
+            # Fractional columns expose the browser's integer scroll coordinates even with the
+            # same font. Keep the text whole at both ends; a mode left offscreen must fail it.
+            for fraction in (0, 0.2, 0.4, 0.6, 0.8):
+                row.evaluate('(node, width) => node.style.width = width + "px"', row_width - fraction)
+                for key, mode, edge in (("Home", "nano", "start"), ("End", "max", "end")):
+                    with page.expect_response(lambda r: r.url.endswith("/api/owner/context-mode"), timeout=30_000):
+                        page.keyboard.press(key)
+                    _until(page, f"r.ctx.mode === '{mode}' && r.ctx.disabled === 'false' && r.ctx.focused === '{mode}'")
+                    page.wait_for_timeout(100)
+                    sample = f"{fraction}-{key}"
+                    seen[sample] = page.evaluate(SHOWN, mode)
+                    _shot(page, tmp_path, f"capsules-rtl-context-{sample.lower()}-{engine}-320")
+                    assert seen[sample]["whole"] and seen[sample]["scroll"] == edge and not seen[sample]["docScroll"], seen
+                    if key == "Home":
+                        assert not page.evaluate(SHOWN, "max")["whole"], "the offscreen word must not count as whole"
+            row.evaluate("node => node.style.removeProperty('width')")
             # The owner swipes back to the start (scrollLeft 0, Nano on the right); a relayout that
             # keeps the strip scrolling leaves it there.
             page.evaluate(f"() => {{ document.querySelector('{CONTEXT} .chat-context-strip').scrollLeft = 0; }}")

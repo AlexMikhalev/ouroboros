@@ -191,7 +191,7 @@ def get_tools() -> List[ToolEntry]:
             "parameters": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["finish", "stop"]}, "answer": {"type": "string", "description": "The complete answer, including a short correction."},
                 "answer_sha256": {"type": "string", "description": "Exact offered retained or whole held response hash."},
-                "rationale": {"type": "string", "description": "For stop, what remains unfinished."}, "acceptance_subject": {"type": "object", "properties": {"owner_source_sha256": {"type": "string"},
+                "rationale": {"type": "string", "description": "For stop, what remains unfinished; the owner reads it as the stop's cause on the task row."}, "acceptance_subject": {"type": "object", "properties": {"owner_source_sha256": {"type": "string"},
                     "effective_criteria": {"type": "string"}, "material_tool_indices": {"type": "array", "items": {"type": "integer"}},
                 }, "required": ["owner_source_sha256"]},
                 "pending_review": {"type": "string", "enum": ["wait", "finish"], "default": "wait"},
@@ -216,7 +216,7 @@ def get_tools() -> List[ToolEntry]:
                 "type": "object",
                 "properties": {
                     "objective": {"type": "string", "description": "What the task must accomplish."},
-                    "title": {"type": "string", "description": "Human-readable task name, <=80 chars; also used as the Project name if the owner later converts the task.", "default": ""},
+                    "title": {"type": "string", "description": "Short task name the owner sees on its card and on the Main receipt, <=80 chars; also the Project name if the owner converts the task. The objective is not shown in its place."},
                     "project_name": {"type": "string", "description": "Display name of a NEW Project for the NEW task; its filesystem id is derived. Use ensure_project_scope to move THIS task instead.", "default": ""},
                     "expected_output": {"type": "string", "description": "What done looks like.", "default": ""},
                     "project_id": {"type": "string", "description": "Optional EXISTING project scope (filesystem-clean id).", "default": ""},
@@ -227,7 +227,7 @@ def get_tools() -> List[ToolEntry]:
                     "predecessor_task_id": {"type": "string", "description": "Required: empty for fresh work, or one settled result id from the host manifest/recent_tasks/get_task_result. Any settled status/project; lists are hints. Name the root for a helper's result. Live roots and pending promotes refuse."},
                     "reasoning_effort": _ROOT_EFFORT_PARAM,
                 },
-                "required": ["objective", "predecessor_task_id"],
+                "required": ["objective", "title", "predecessor_task_id"],
             },
         }, _promote_chat_to_task),
         ToolEntry("ensure_project_scope", {
@@ -271,6 +271,7 @@ def get_tools() -> List[ToolEntry]:
             "parameters": {"type": "object", "properties": {
                 "project_id": {"type": "string", "default": "", "description": "Target project id (filesystem-clean; see list_projects), or empty to emit typed needs_manual_target."},
                 "message": {"type": "string", "description": "The owner message / work to route into the project."},
+                "title": {"type": "string", "description": "Short task name the owner sees on the new root's card, <=80 chars. Required when an existing project is targeted; no title is needed for the manual picker (blank or invalid target), which starts no task."},
                 "reason": {"type": "string", "default": "", "description": "Optional short why-this-project note (provenance)."},
                 "predecessor_task_id": {"type": "string", "description": "Required explicit selector: pass an empty string for fresh work, or the id of a settled result (any settled status; any project, the host list is a hint; a helper's result is continued with its root named) to continue it. A live root or a pending promote is refused."},
                 "candidates": {"type": "array", "items": {"type": "string"}, "description": "Optional, ONLY with project_id='': the task/project ids you consider plausible, in preference order. The typed picker shows them first; ids not in the host-built option list are ignored."},

@@ -124,6 +124,7 @@ def test_the_lane_runs_the_keyless_suite_on_a_throwaway_root():
     assert [step.get("uses") for step in steps][:2] == [
         "actions/checkout@v4", "./.github/actions/setup-python-env",
     ]
+    assert steps[1]["with"]["install-project"] == "false"
     run_steps = [step for step in steps if "run" in step]
     assert len(run_steps) == 2
     expected = [("tests/system_e2e/", "OUROBOROS_E2E_DEEP"),
@@ -191,7 +192,8 @@ def test_a_schedule_would_not_wake_the_paid_provider_lane():
     """A scheduled run would report the default branch in github.ref. The leading
     event guard keeps any schedule off the paid lane whatever ref conditions
     follow it; the push workflow that serves branch pushes has no schedule."""
-    condition = " ".join(str(_workflow()["jobs"]["integration-test"]["if"]).split())
-    assert condition.startswith("github.event_name != 'schedule'"), condition
+    for name in ("integration-test", "integration-optional"):
+        condition = " ".join(str(_workflow()["jobs"][name]["if"]).split())
+        assert condition.startswith("github.event_name != 'schedule'"), condition
     push = yaml.safe_load((CI_PATH.parent / "provider-canary-push.yml").read_text(encoding="utf-8"))
     assert list(push.get("on", push.get(True))) == ["push"]

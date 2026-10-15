@@ -44,7 +44,8 @@ def dispatch_accepted_restart(bridge, text: str, *, callback=None, **message) ->
     def reply(body, status=""):
         bridge.activate_update_transport(message)
         send_with_budget(message["chat_id"], body, role="system", system_type="command_reply",
-                         **host_operation_reply_kwargs(message.get("accepted_source_ref"), status))
+                         **host_operation_reply_kwargs(message.get("accepted_source_ref"), status,
+                                                       str(message.get("client_message_id") or "")))
 
     identity = {key: message[key] for key in ("source", "user_id", "chat_id")}
     action = callback(text, **identity, reply=reply,

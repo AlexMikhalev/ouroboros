@@ -294,16 +294,19 @@ async def _dispatch_extension_message(
     return True
 
 
-def _initialization_notice() -> str:
+def _initialization_notice(client_message_id: str = "", chat_id: int = 1) -> str:
+    """The refusal of this socket's frame; it names that frame so only its Sending settles."""
     return json.dumps({
-        "type": "chat",
+        "type": "chat", "chat_id": chat_id,
         "role": "system", "system_type": "initialization_notice",
         "content": "⚠️ System is still initializing. Please wait a moment and try again.",
         "ts": utc_now_iso(),
+        **({"client_message_id": client_message_id} if client_message_id else {}),
     })
 
 
-async def _accept_chat_after(websocket: WebSocket, previous: asyncio.Task | None, accept) -> None:
+async def _accept_chat_after(websocket: WebSocket, previous: asyncio.Task | None, accept,
+                             client_message_id: str = "", chat_id: int = 1) -> None:
     """Run one chat frame's acceptance once this socket's previous one settled.
 
     The web acceptance takes the single host's ingress lock and a locked durable
@@ -319,7 +322,7 @@ async def _accept_chat_after(websocket: WebSocket, previous: asyncio.Task | None
         await run_sync_to_completion(accept)
     except Exception:
         try:
-            await websocket.send_text(_initialization_notice())
+            await websocket.send_text(_initialization_notice(client_message_id, chat_id))
         except Exception:
             log.debug("WebSocket closed before its chat failure notice", exc_info=True)
 
@@ -372,6 +375,10 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             payload = msg.get("content", "") if msg_type == "chat" else msg.get("cmd", "")
             if msg_type in ("chat", "command") and (payload or (msg_type == "chat" and msg.get("attachments"))):
                 try:
+                    thread_id = int(msg.get("chat_id") or 1) if msg_type == "chat" else 1
+                except (TypeError, ValueError):
+                    thread_id = 1
+                try:
                     from ouroboros.client_surface import normalize_client_surface
                     from supervisor.message_bus import try_get_bridge
 
@@ -385,10 +392,6 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                             continue
                         force_plan = bool(msg.get("force_plan"))
                         client_surface = normalize_client_surface(msg.get("client_surface"))
-                        try:
-                            thread_id = int(msg.get("chat_id") or 1)
-                        except (TypeError, ValueError):
-                            thread_id = 1
                         task_metadata: dict[str, Any] = {
                             "force_plan": force_plan,
                             "force_plan_source": "swarm" if force_plan else "",
@@ -424,7 +427,8 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                         if action is not None:
                             # A slow checkout cannot hold this socket's Panic behind
                             # Restart. Retain accepted control work through disconnect.
-                            control = asyncio.create_task(_accept_chat_after(websocket, None, action))
+                            control = asyncio.create_task(_accept_chat_after(
+                                websocket, None, action, str(send_kwargs.get("client_message_id") or ""), thread_id))
                             controls.add(control)
                             control.add_done_callback(controls.discard)
                             continue
@@ -434,11 +438,12 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                         accept = (functools.partial(_accept_with_attachments, bridge, payload, send_kwargs,
                                                     msg["attachments"]) if msg.get("attachments")
                                   else functools.partial(bridge.ui_send, payload, **send_kwargs))
-                        accepting = asyncio.create_task(_accept_chat_after(websocket, accepting, accept))
+                        accepting = asyncio.create_task(_accept_chat_after(
+                            websocket, accepting, accept, send_kwargs["client_message_id"], thread_id))
                     else:
                         bridge.ui_send(payload, **send_kwargs)
                 except Exception:
-                    await websocket.send_text(_initialization_notice())
+                    await websocket.send_text(_initialization_notice(str(msg.get("client_message_id") or ""), thread_id))
     except WebSocketDisconnect:
         pass
     except Exception as exc:

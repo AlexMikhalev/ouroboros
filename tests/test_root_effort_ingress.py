@@ -73,8 +73,8 @@ def _promoted(tmp_path, monkeypatch, **promote_kwargs):
     _q, _state, workers = _install_queue(tmp_path, monkeypatch)
     _pool_ready(monkeypatch, workers)
     sup = _supervisor_ctx(tmp_path, workers)
-    out = _promote_chat_to_task(_tool_ctx(tmp_path, sup), "Research the market", workspace="none",
-                                predecessor_task_id="", **promote_kwargs)
+    out = _promote_chat_to_task(_tool_ctx(tmp_path, sup), "Research the market", title="Market research",
+                                workspace="none", predecessor_task_id="", **promote_kwargs)
     assert out.startswith("OK: task"), out
     [task] = workers.PENDING
     return task, load_task_result(tmp_path, task["id"]), workers
@@ -178,7 +178,7 @@ def test_route_to_project_carries_it_and_the_picker_discloses_new_vs_existing_be
     _pool_ready(monkeypatch, workers)
     create_project(tmp_path, "racer", name="Racer")
     ctx = _tool_ctx(tmp_path, _supervisor_ctx(tmp_path, workers))
-    out = _route_to_project(ctx, project_id="racer", message="continue the racer", predecessor_task_id="",
+    out = _route_to_project(ctx, project_id="racer", message="continue the racer", title="Project work", predecessor_task_id="",
                             reasoning_effort="max")
     assert out.startswith("✉️ Routed to project"), out
     [task] = workers.PENDING

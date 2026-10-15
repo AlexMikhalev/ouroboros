@@ -3,6 +3,7 @@ back, the tri-state open, the lock tiers, the phase inside the write seam, the d
 round trip and the SQLite 3.24 floor the CI floor job proves on a 3.37 system engine."""
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import pathlib
@@ -270,27 +271,30 @@ def test_every_public_write_refuses_in_the_window_and_outside_published_while_se
 
 def test_a_straggler_after_the_retirement_is_told_retired_not_migrating(tmp_path):
     """The seam commits ``phase=retired`` into the store, clears the stamp and renames it aside.
-    A writer that opened the file earlier reads that phase inside its own transaction; a writer
+    A writer that opened the file earlier reads that phase inside its own transaction (before
+    the rename on Windows, which requires its handle closed; after the rename on POSIX); a writer
     that opens by path now (``update_task``, a reader) is told ``StoreRetired`` by the sibling,
     never «not published yet»."""
     from ouroboros.startup_migrations import stamp
 
     path = publish(tmp_path, document("t1"))
-    straggler = store.connect(path, store.TIER_ENFORCED)  # opened before the seam ran
-    with store.open_store(tmp_path, write=True) as txn:
-        txn.set_meta("phase", store.RETIRED)
-    stamp(tmp_path, **{store.GENERATION_KEY: None})
     retired = path.with_name(path.name + ".exported-test")
-    os.replace(path, retired)
-    with store.transaction(straggler, write=True):
-        assert store.Txn(straggler).phase() == store.RETIRED  # the retired inode, read inside the transaction
-    straggler.close()
+    with contextlib.closing(store.connect(path, store.TIER_ENFORCED)) as straggler:  # opened before the seam ran
+        with store.open_store(tmp_path, write=True) as txn:
+            txn.set_meta("phase", store.RETIRED)
+        stamp(tmp_path, **{store.GENERATION_KEY: None})
+        if os.name != "nt":
+            os.replace(path, retired)
+        with store.transaction(straggler, write=True):
+            assert store.Txn(straggler).phase() == store.RETIRED
+    if os.name == "nt":
+        os.replace(path, retired)
     with pytest.raises(StoreRetired):
         store.update_task(tmp_path, "t1", lambda current: {**current, "note": "late"})
     with pytest.raises(StoreRetired):
         with store.open_store(tmp_path, write=False):
             pass
-    with sqlite3.connect(retired) as conn:
+    with contextlib.closing(sqlite3.connect(retired)) as conn:
         assert "late" not in conn.execute("SELECT body FROM task_bodies WHERE task_id='t1'").fetchone()[0]
     retired.unlink()  # no sibling, no stamp: a never-imported root again, imported on the first write
     with store.open_store(tmp_path, write=True) as txn:

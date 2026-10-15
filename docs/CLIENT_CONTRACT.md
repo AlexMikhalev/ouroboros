@@ -226,7 +226,7 @@ Send `{"type": "chat", "content": "...", "client_message_id": "<unique id>", "ch
 - **What is lost.** A frame sent while the socket is down is lost unless your client keeps it. The core keeps no outbox for clients.
 - **Commands.** Slash commands go as `{"type": "command", "cmd": "/restart"}` and so on, or through `POST /api/command` (§15).
 
-**Chat refusals are not correlated acknowledgements.** Schema rejection sends `{type:"log", data:{level:"warning", message:…}}`. Acceptance failures, including reusing an accepted id for different content, can send transient `chat` notices with `role:"system"` and `system_type:"initialization_notice"`, without the refused message's id. No accepted echo is not proof of refusal: keep the operation unresolved and read history.
+**Refusals and submission correlation.** Schema rejection sends `{type:"log", data:{level:"warning", message:…}}`, without guaranteed correlation. Acceptance failures, including reusing an accepted id for different content, can send transient `chat` notices with `role:"system"`, `system_type:"initialization_notice"`, the submitting `chat_id` and, when supplied, its `client_message_id`. Command, admission, update and review System replies can also name the submission they answer. Settle only that submission's Sending indicator, in that room; a System row alone establishes neither acceptance nor task completion. If the id is absent, do not guess which submission was answered. Without an accepted echo, keep the operation unresolved and read history.
 
 **Origin correlation.** Optional `origin_message_ref` is `{chat_id, client_message_id, ts, text_sha256}` and names the accepted owner row. Its hash checks that row's text, not reply text. Match its thread and owner-message id, then track `task_id`; an absent reference establishes no causation. `task_id_pending:true` is a transient repair/admission receipt, not proof a durable task is already readable.
 
@@ -259,7 +259,7 @@ The core writes each stored row and sends its live frame with an identical `ts` 
 | `photo`, `video`, `document` or `links` | `msg_type` equal to the frame's `type` | `task_id` and `ts` are equal |
 | any other `chat` | a row with the same `is_progress`, `role` and `system_type` | `task_id`, `ts` and `content` = `text` are all equal |
 
-Never match on `ts` or `task_id` alone: one task writes many rows with close timestamps, and the same words can come from different tasks.
+Only `role:"user"` rows merge by `client_message_id`. On a System frame that field correlates the answered submission, not the System row's identity; it is not persisted on that row. Use the other-chat rule for stored System replies. Never match on `ts` or `task_id` alone: one task writes many rows with close timestamps, and the same words can come from different tasks.
 
 **On every connect and reconnect:**
 1. Open the socket and keep the frames it delivers.

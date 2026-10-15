@@ -710,7 +710,7 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
     root = _drive_root(scope.drive_root)
 
     _check_dispatch_fences(scope, root)
-    acquire = send_acquisition(lambda: _check_dispatch_fences(scope, root))
+    acquire = send_acquisition(lambda: _check_dispatch_fences(scope, root, retry=False))
     # Pricing I/O stays outside the monetary transaction.
     bound = _reservation_cost(request)
     pricing_known, attempt_id = bound is not None, uuid.uuid4().hex
@@ -980,7 +980,7 @@ def _transition_once(reservation: AttemptReservation, state: str, **fields: Any)
     from ouroboros.usage_ledger import is_abandoned_settlement
 
     def check_fences():
-        _check_dispatch_fences(reservation.scope or current_usage_scope() or UsageScope(), reservation.drive_root)
+        _check_dispatch_fences(reservation.scope or current_usage_scope() or UsageScope(), reservation.drive_root, retry=False)
     if state == "dispatched":
         check_fences()
     acquire = transition_acquisition(state, check_fences)

@@ -102,7 +102,10 @@ def test_ui_two_cards_one_origin_convert_into_one_project(direct_server_with_dat
             page.screenshot(path=str(shots / "02_first_converted.png"), full_page=True)
             projects = page.request.get(f"{url}/api/projects").json()["projects"]
             assert len(projects) == 1, projects
-            first_name = c1.inner_text().strip().splitlines()[0]
+            # A converted card leads with its own work title and names its Project in the one
+            # reference (DESIGN "Project work entries", #1706): adoption shares the reference.
+            first = (c1.get_attribute("data-project-id"), c1.locator(".chat-live-project-name").inner_text())
+            assert first[0] == projects[0]["id"], (first, projects)
 
             # The sibling card: its button is still there (this task is completed, so
             # the sibling claim never bound it), and converting it must ADOPT.
@@ -116,8 +119,8 @@ def test_ui_two_cards_one_origin_convert_into_one_project(direct_server_with_dat
             page.screenshot(path=str(shots / "03_second_adopted.png"), full_page=True)
             projects = page.request.get(f"{url}/api/projects").json()["projects"]
             assert len(projects) == 1, [p.get("id") for p in projects]
-            second_name = c2.inner_text().strip().splitlines()[0]
-            assert first_name == second_name, (first_name, second_name)
+            second = (c2.get_attribute("data-project-id"), c2.locator(".chat-live-project-name").inner_text())
+            assert first == second, (first, second)
 
             # A card that is already bound can STILL have its button on screen (a phone
             # that missed the refresh, the Telegram mini app, a second tab). Replay the

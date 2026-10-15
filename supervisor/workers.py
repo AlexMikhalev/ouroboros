@@ -312,14 +312,17 @@ def drain_repo_writers(timeout: float = 30.0) -> List[str]:
     return get_direct_activity_registry().wait_until_empty(float(timeout))
 
 
-def _repo_writer_turn_allowed(chat_id: int) -> bool:
+def _repo_writer_turn_allowed(chat_id: int, client_message_id: str = "") -> bool:
     reason = repo_writer_admission_closed()
     if not reason:
         return True
     try:
+        from ouroboros.task_finalization import host_operation_reply_kwargs
+
         send_with_budget(
             chat_id,
             "🔒 An update is using the repository. Try this message again when it finishes.",
+            **host_operation_reply_kwargs(None, "", client_message_id),
             role="system", system_type="managed_update_notice")
     except Exception:
         log.debug("Could not report managed-update writer gate", exc_info=True)

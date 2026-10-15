@@ -249,11 +249,11 @@ class ReviewOperation:
             try:
                 self.control_state = _operation_stop_state(self.result_root, self.task_id)
                 if self.historical_purpose and self.control_state != "unknown":
-                    from ouroboros.acceptance_late import historical_operation_controls, owner_paused_only
-                    blocked = historical_operation_controls(self.result_root, self.historical_purpose,
+                    from ouroboros.acceptance_late import owner_paused_controls
+                    blocked, paused = owner_paused_controls(self.result_root, self.historical_purpose,
                                                             unstarted=not self._dispatched)
                     # An owner Pause defers unsent work until Resume (D10); it is never a Stop.
-                    if blocked and not owner_paused_only(self.result_root, self.historical_purpose, blocked):
+                    if blocked and not paused:
                         self.control_state = "cancelled"
             except StoreBusy:
                 if control_probe_requires_current():
@@ -1161,8 +1161,8 @@ def _attach_only_run(root: Any, request: Any, slot: Any, operation_id: str, run_
         from ouroboros.review_checking import capture_seat_evidence, checking_writers_settled
 
         # Ordinary daemon success is published after the runner and owned
-        # adapter close/drain. Failed or recovered unknown outcomes lack that
-        # boundary; this is not a claim about arbitrary detached OS descendants.
+        # adapter close/drain; a failure needs the engine's settled process
+        # scope. Neither is a claim about arbitrary detached OS descendants.
         evidence = capture_seat_evidence(root, request.task_id, operation_id,
                                          release=checking_writers_settled(detail))
     except Exception as exc:
