@@ -146,7 +146,8 @@ class LatePhaseRun:
     """What one root late phase already holds, carried across an owner Pause.
 
     Stage-owned facts, never request replay: ``marks`` name completed steps
-    whose effects must not repeat (a backlog append, a promotion step).
+    whose effects must not repeat (a promotion step); a mark an earlier version
+    saved for a retired step (its backlog append) names nothing that still runs.
     ``drafts`` held the retired dialogue writer's confirmed room drafts; no stage
     writes it any more, and it stays only so a phase parked by an earlier
     version still loads.

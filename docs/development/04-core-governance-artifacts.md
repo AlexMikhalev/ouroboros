@@ -22,7 +22,7 @@ The context-delivery registry:
 | Background consciousness wake-up (`consciousness.py` → `handle_wake_direct`) | = Main task context | = Main task context | = Main task context |
 | Preflight (`review_change(surface=preflight)`: one named row over the system repository's worktree) | the `review_change` body row | as BIBLE | as BIBLE |
 | The coupling question (Part 2 of the retrieving seat's brief, `tools/review_brief_coupling.py`) | full tier 1 beside the `Coupling questions` section, in every context mode | tier 3 navigation | tier 2 within the usable-window share |
-| Skill review (`skill_review.py`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | same two classes | same two classes |
+| Skill review (`skill_review.py`) | full inline (packet) / declared mandatory full read (retrieving) | same two classes | same two classes |
 | Plan review (`tools/plan_review.py`) | full for a self-modification plan (`api_chat` inline, `agent_session` mandatory full read); otherwise a navigation map plus a named on-demand pointer, never a copy | as BIBLE | not delivered or pointed at; reachable only through a generic `need_evidence` locator |
 | Deep self-review (`deep_self_review.py`) | full tier 1 on both deliveries | tier 3 navigation | tier 2 within the row's share (ARCHITECTURE §6 "Deep self-review") |
 
@@ -62,7 +62,7 @@ Disclosed truncation (the `⚠️ OMISSION NOTE` marker) protects **LLM context 
 
 - **Owner/UI-bound surfaces** (chat, task_results projections, review verdicts shown to a person) present the complete text or a reference to a durable full copy (an observability `response_ref`): reviewer rationale is a cognitive artifact (BIBLE P1), and truncating it beside an unreferenced full copy is partial memory loss. Terminal text asserts only recovery facts the round record carries, never a route mechanism the selected transport cannot perform.
 - **Model-bound projections** (review packs, context sections, tool-result transport) keep their disclosed-truncation budgets.
-- **A cut cheaper than its own marker is forbidden everywhere** (the shared primitive's floor); the one exception, an identifier-shaped single-line field under a tiny limit, is `reflection._truncate_with_notice`.
+- **A cut cheaper than its own marker is forbidden everywhere** (the shared primitive's floor).
 
 Enforcement: `tests/test_owner_facing_honesty.py`.
 

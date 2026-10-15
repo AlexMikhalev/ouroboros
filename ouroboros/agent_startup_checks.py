@@ -1063,19 +1063,6 @@ def verify_restart(env: Any, git_sha: str) -> None:
         tx_history.append(dict(tx))
         campaign["transaction_history"] = tx_history[-50:]
 
-    def _close_post_task_backlog(campaign: Dict[str, Any]) -> None:
-        backlog_id = str(campaign.get("post_task_backlog_id") or "").strip()
-        if not backlog_id:
-            return
-        try:
-            from ouroboros.improvement_backlog import close_backlog_items
-
-            drive_root = getattr(env, "drive_root", None) or env.drive_path("memory").parent
-            close_backlog_items(drive_root, ids=[backlog_id])
-        except Exception:
-            log.debug("Post-task backlog close-on-absorb failed", exc_info=True)
-        campaign.pop("post_task_backlog_id", None)
-
     def _commit_reachable(commit_sha: str, observed_sha: str) -> bool:
         if commit_sha and observed_sha and commit_sha == observed_sha:
             return True
@@ -1212,7 +1199,7 @@ def verify_restart(env: Any, git_sha: str) -> None:
                             campaign["last_boot_reconcile_gen"] = gen
                         campaign["updated_at"] = utc_now_iso()
                         return campaign
-                # Capture before the absorbed branch pops it via _close_post_task_backlog.
+                # Capture before the absorbed branch pops the campaign's link.
                 outcome_snapshot["backlog_id"] = str(campaign.get("post_task_backlog_id") or "")
                 if not commit_sha or bool(tx.get("restart_verified")):
                     # Nothing to reconcile this generation — record it so a later
@@ -1286,7 +1273,9 @@ def verify_restart(env: Any, git_sha: str) -> None:
                         tx["absorbed_counted"] = True
                     _append_unique_transaction(campaign, tx)
                     campaign.pop("active_transaction", None)
-                    _close_post_task_backlog(campaign)
+                    # Absorption is evidence, not proof an authored intention is met: the
+                    # backlog note stays its author's; the link lives on in the ledger row.
+                    campaign.pop("post_task_backlog_id", None)
                     from supervisor.evolution_lifecycle import _clear_objective_repeat_count
                     _clear_objective_repeat_count(campaign, tx)  # BUG3: absorb clears this fp
                     campaign["progress_notes"] = (
@@ -1384,7 +1373,7 @@ def verify_restart(env: Any, git_sha: str) -> None:
                 return False
             prior_gen = str(campaign.get("last_boot_reconcile_gen") or "")
             gen = _boot_reconcile_generation()
-            # Captured before the absorbed branch pops it via _close_post_task_backlog.
+            # Captured before the absorbed branch pops the campaign's link.
             backlog_id_before_close = str(campaign.get("post_task_backlog_id") or "")
             commit_sha = str(tx.get("commit_sha") or "").strip()
             authority_error = _restart_authority_error(
@@ -1456,11 +1445,9 @@ def verify_restart(env: Any, git_sha: str) -> None:
                 tx["cycle_outcome"] = "absorbed"
                 _append_unique_transaction(campaign, tx)
                 campaign.pop("active_transaction", None)
-                # Close-on-commit (Phase 2 C): only NOW — when the reviewed self-mod
-                # commit is restart-verified and absorbed — mark the promoted backlog
-                # item done. Doing this earlier (at commit_sha time) could close an
-                # item whose commit later fails restart verification.
-                _close_post_task_backlog(campaign)
+                # Absorption is evidence, not proof an authored intention is met: the
+                # backlog note stays its author's; the link lives on in the ledger row.
+                campaign.pop("post_task_backlog_id", None)
                 from supervisor.evolution_lifecycle import _clear_objective_repeat_count
                 _clear_objective_repeat_count(campaign, tx)  # BUG3: absorb clears this fp
                 campaign["progress_notes"] = (
@@ -1471,9 +1458,7 @@ def verify_restart(env: Any, git_sha: str) -> None:
                 tx["restart_no_commit"] = True
                 _append_unique_transaction(campaign, tx)
                 campaign.pop("active_transaction", None)
-                # This cycle absorbed no reviewed commit, so the promoted item was
-                # NOT addressed: clear the stale link WITHOUT closing it, so a later
-                # unrelated absorbed commit cannot close the wrong backlog item.
+                # This cycle absorbed no reviewed commit: the link has no outcome to ride.
                 campaign.pop("post_task_backlog_id", None)
                 from supervisor.evolution_lifecycle import _bump_objective_repeat_count
                 _bump_objective_repeat_count(campaign, tx)  # BUG3: verified-but-no-absorb counts

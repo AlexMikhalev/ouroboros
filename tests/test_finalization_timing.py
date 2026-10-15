@@ -578,10 +578,10 @@ def test_late_phase_checkpoint_omits_clocks_but_live_delivery_keeps_them(
     trace = {"tool_calls": []}
     late = SimpleNamespace(marks={"facts_recorded"}, drafts={})
     assert pipeline.park_late_phase(
-        env, task, "scratchpad_consolidation", ["scratchpad_consolidation", "reflection"],
+        env, task, "scratchpad_consolidation", ["scratchpad_consolidation", "promotion"],
         ["memory_fallback_draft"], late=late,
-        inputs=(usage, snapshot, trace, {}, {"text": "Answer."}, tmp_path / "logs", None),
-        state={"result": {}, "free_actions_applied": False, "stage_errors": False},
+        inputs=(usage, snapshot, trace, {"text": "Answer."}, tmp_path / "logs", None),
+        state={"stage_errors": False},
     )
     stored = load_task_result(tmp_path, task["id"], strict=True)
     record = late_phase_pause_record(stored)

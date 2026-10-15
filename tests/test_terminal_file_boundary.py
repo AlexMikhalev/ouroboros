@@ -161,12 +161,11 @@ def test_post_task_cleanup_waits_for_pooled_files_only(tmp_path, monkeypatch, po
     monkeypatch.setattr(pipeline, "_pre_synthesis_usage_snapshot", lambda *_a: {})
     monkeypatch.setattr("ouroboros.llm.LLMClient", lambda: object())
     monkeypatch.setattr("ouroboros.memory.Memory", lambda **_kw: object())
-    for name in ("_run_scratchpad_consolidation", "_record_task_facts",
-                 "_run_reflection", "_update_improvement_backlog", "_apply_reflection_memory_actions"):
+    for name in ("_run_scratchpad_consolidation", "_record_task_facts"):
         monkeypatch.setattr(pipeline, name, lambda *_a, **_kw: None)
     monkeypatch.setattr("ouroboros.post_task_evolution.maybe_promote", lambda *_a: None)
     env = SimpleNamespace(drive_root=root, repo_dir=tmp_path, drive_path=lambda rel: root / rel)
-    pipeline._run_post_task_processing_async(env, task, {}, {}, {}, root / "logs", blocking=True)
+    pipeline._run_post_task_processing_async(env, task, {}, {}, root / "logs", blocking=True)
     assert mailbox.exists() is pooled
     if pooled:
         cleanup_settled_owner_mailbox(root, task["id"], task)
@@ -214,12 +213,11 @@ def test_pooled_post_work_preserves_real_followup_until_copyback(tmp_path, monke
     monkeypatch.setattr(pipeline, "_pre_synthesis_usage_snapshot", lambda *_a: {})
     monkeypatch.setattr("ouroboros.llm.LLMClient", lambda: object())
     monkeypatch.setattr("ouroboros.memory.Memory", lambda **_kw: object())
-    for name in ("_run_scratchpad_consolidation", "_record_task_facts",
-                 "_run_reflection", "_update_improvement_backlog", "_apply_reflection_memory_actions"):
+    for name in ("_run_scratchpad_consolidation", "_record_task_facts"):
         monkeypatch.setattr(pipeline, name, lambda *_a, **_kw: None)
     monkeypatch.setattr("ouroboros.post_task_evolution.maybe_promote", lambda *_a: None)
     env = SimpleNamespace(drive_root=child, repo_dir=tmp_path, drive_path=lambda rel: child / rel)
-    pipeline._run_post_task_processing_async(env, task, {}, {}, {}, child / "logs", blocking=True)
+    pipeline._run_post_task_processing_async(env, task, {}, {}, child / "logs", blocking=True)
     mailbox = owner_mailbox._mailbox_path(child, task_id)
     assert mailbox.is_file(), "post-task completion must not erase copyback's accepted input source"
     result = headless.copy_child_task_result(parent, task)

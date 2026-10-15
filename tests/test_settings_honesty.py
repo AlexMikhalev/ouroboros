@@ -97,6 +97,20 @@ def test_tool_timeout_is_immediate_the_outer_cap_reads_settings_live(monkeypatch
     assert not data.get("next_task_changed")
 
 
+def test_a_float_setting_resent_as_text_is_not_a_change(monkeypatch, isolated_settings):
+    """The Settings page sends every float field as its input text on each save;
+    "20" against the loaded 20.0 must not report a next-task change, or every
+    immediate-only save would also promise the next task (and its skill-key rule)."""
+    isolated_settings.write_text(json.dumps({"OUROBOROS_CONSCIOUSNESS_DAILY_USD": "20",
+                                             "OUROBOROS_POST_TASK_EVOLUTION_BUDGET_USD": "0"}), encoding="utf-8")
+    resent = {"OUROBOROS_CONSCIOUSNESS_DAILY_USD": "20", "OUROBOROS_POST_TASK_EVOLUTION_BUDGET_USD": "0"}
+    data = _save(monkeypatch, isolated_settings, {**resent, "OUROBOROS_TOOL_TIMEOUT_SEC": "120"})
+    assert data.get("immediate_changed") is True and not data.get("next_task_changed")
+    assert _save(monkeypatch, isolated_settings, resent).get("no_changes") is True
+    data = _save(monkeypatch, isolated_settings, {**resent, "OUROBOROS_CONSCIOUSNESS_DAILY_USD": "20.5"})
+    assert data.get("next_task_changed") is True  # a real value change still counts
+
+
 def test_skills_repo_path_requires_a_restart_for_pooled_workers(monkeypatch, isolated_settings):
     """Pooled workers load the extension registry once at spawn and never
     reload it per task; the server-side hot reload alone cannot make the key

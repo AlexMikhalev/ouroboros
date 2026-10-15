@@ -806,6 +806,7 @@ def tool_handoff(source: Any, name: str):
     outcome["registry_entered"] = True
     token = _TOOL_OPERATION.set((source, name, outcome))
     root_drive, root_id, task_id = _member_coordinates(source)
+    refusal = None
     try:
         handed = _HANDED_TOOL.get()
         with _CACHE_LOCK:
@@ -823,8 +824,15 @@ def tool_handoff(source: Any, name: str):
                     retain_invocation(outcome)
             retry_presend(claim_once, check=False)
         yield outcome
+    except (OwnerPauseRefused, StoreError) as exc:
+        refusal = exc
+        raise
     finally:
-        outcome["closed"] = True
+        with outcome["phase_lock"]:
+            outcome["closed"] = True
+            if refusal is not None:
+                # Snapshot with closure, not before a competing admitted start.
+                refusal.invocation_not_started = outcome.get("not_started") is True
         _TOOL_OPERATION.reset(token)
         if outcome.get("future_row") is None:
             settle_invocation(outcome)
@@ -858,11 +866,21 @@ def operation_start(source: Any = None):
     source = source if source is not None else (active[0] if active else None)
     with launch_admission(source):
         if active and active[0] is source:
-            if active[2].get("closed"):
-                raise OwnerPauseRefused("operation_already_returned")
-            active[2]["not_started"] = False
+            _mark_tool_start(active[2])
         yield
         arm_review_episode(source)  # the submission inside succeeded under this same lock
+
+
+def _mark_tool_start(outcome: dict) -> None:
+    """Order admission against closure; never hold this lock across I/O.
+
+    Called after root admission. The durable RLock remains independent: taking
+    it here could make Pause wait for another thread's custody write.
+    """
+    with outcome["phase_lock"]:
+        if outcome.get("closed"):
+            raise OwnerPauseRefused("operation_already_returned")
+        outcome["not_started"] = False
 
 
 def submit_tool(source: Any, name: str, submit: Any, function: Any, *args: Any):
@@ -921,9 +939,7 @@ def run_tool_handler(source: Any, function: Any, /, *args: Any, **kwargs: Any):
                     if reason or remaining is not None and remaining <= 0:
                         raise PhysicalDispatchInterrupted(reason or "deadline")
                     if outcome is not None:
-                        if outcome.get("closed"):
-                            raise OwnerPauseRefused("operation_already_returned")
-                        outcome["not_started"] = False
+                        _mark_tool_start(outcome)
                     arm_review_episode(source)
             # Validate the inherited caller controls, not this tool's soft wait
             # envelope. Its retry owner must use that same context. The body
@@ -968,11 +984,12 @@ def submit_async_preparation(function: Any, *args: Any, source: Any = None, **kw
     async def invoke():
         return await function(*args, **kwargs)
 
-    with launch_admission(source if source is not None else active[0] if active else None):
+    source = source if source is not None else active[0] if active else None
+    with launch_admission(source):
+        if active and active[0] is source:
+            _mark_tool_start(active[2])  # preparation can open a process/socket
         with physical_acquisition():
             task = asyncio.create_task(invoke())
-        if active:
-            active[2]["not_started"] = False  # this transport can open a process/socket
         return task
 
 
