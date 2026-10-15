@@ -56,4 +56,3 @@ def settlement_fields(reservation, usage, cost_usd, cost_final, *, estimate_cost
         **{key: copy.deepcopy(normalized[key]) for key in ("effort", "effort_resolution", "processing", "speed", "service_tier", "cost_basis", "cost_evidence")
            if key in normalized},
     )
-

@@ -71,13 +71,16 @@ def get_pricing(
 ) -> Dict[str, Tuple[Optional[float], ...]]:
     """Return pricing from the exact provider route's live catalog.
 
-    Direct/OpenAI-compatible/GigaChat routes have no automatic catalog here and
-    therefore return an empty mapping. A cold/expired fetch is bounded to five
+    Direct OpenAI/Anthropic/Google routes use the public LiteLLM catalog.
+    Other uncatalogued routes return an empty mapping. A cold/expired fetch is bounded to five
     seconds; failures expose unknown pricing rather than a fabricated fallback.
     An exact OpenRouter model selects its endpoint-tagged tariff catalog lazily,
     sharing this cache's TTL and in-flight owner. It never fetches all endpoints.
     """
     provider = str(provider or "").strip().lower()
+    from ouroboros.pricing_catalog import DIRECT_PROVIDERS, get_text_pricing
+    if provider in DIRECT_PROVIDERS:
+        return get_text_pricing(provider=provider, model=model, allow_live_fetch=allow_live_fetch)
     if provider not in {"openrouter", "cloudru"} or (model and provider != "openrouter"):
         return {}
     model = normalize_model_identity(model) if model else ""
@@ -145,7 +148,10 @@ def estimate_cost_optional(model: str, prompt_tokens: int, completion_tokens: in
     """
     raw_model = str(model or "").strip()
     normalized = normalize_model_identity(raw_model)
-    route = str(provider or provider_for_model(raw_model) or "openrouter").strip().lower()
+    from ouroboros.pricing_catalog import DIRECT_PROVIDERS, catalog_id
+    direct_prefix = raw_model.partition("::")[0] if "::" in raw_model else ""
+    route = str(provider or (direct_prefix if direct_prefix in DIRECT_PROVIDERS else
+                            provider_for_model(raw_model)) or "openrouter").strip().lower()
     if route == "local":
         return 0.0
     if processing_mode:
@@ -164,6 +170,15 @@ def estimate_cost_optional(model: str, prompt_tokens: int, completion_tokens: in
         costs = [_cost_from_pricing(row, prompt_tokens, completion_tokens, cache_usage, exact_cache_tiers=True)
                  for row in endpoints.values() if row.source.get("service_tier") in eligible]
         return max(costs) if costs and all(cost is not None for cost in costs) else None
+    if route in DIRECT_PROVIDERS:
+        identity = catalog_id(raw_model, route)
+        if identity is None:
+            return None
+        name = identity.removeprefix("gemini/") if route == "google" else identity
+        rows = get_pricing(provider=route, model=raw_model, allow_live_fetch=allow_live_fetch)
+        pricing = rows.get(f"{route}/{name}")
+        return (_cost_from_pricing(pricing, prompt_tokens, completion_tokens, cache_usage,
+                                   exact_cache_tiers=True) if pricing else None)
     model_pricing = get_pricing(provider=route, allow_live_fetch=allow_live_fetch)
     pricing = model_pricing.get(normalized)
     if not pricing:
@@ -226,7 +241,7 @@ def infer_api_key_type(model: str, provider: Optional[str] = None) -> str:
     ``claudexor`` is explicit route evidence (#1578): a session's seat or observed
     model text never relabels it as an OpenRouter or Anthropic key, empty model included."""
     provider_name = str(provider or "").strip().lower()
-    if provider_name in {"local", "openrouter", "openai", "anthropic", "openai-compatible", "cloudru", "gigachat",
+    if provider_name in {"local", "openrouter", "openai", "anthropic", "google", "openai-compatible", "cloudru", "gigachat",
                          "minimax", "deepseek", "zai", "claudexor"}:
         return provider_name
     raw_model = str(model or "").strip()
