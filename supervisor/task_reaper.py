@@ -694,6 +694,19 @@ def _discard_retry_inputs(q: Any, task: Dict[str, Any], task_id: str, retry_task
     shutil.rmtree(task_artifact_dir_path(drive, retry_task_id), ignore_errors=True)
 
 
+def _adopt_held_answer(q: Any, task: Dict[str, Any], task_id: str, attempt: int, cause: str) -> Dict[str, str]:
+    """The terminal-result suppression for an attempt finalized from its registered answer, else {}."""
+    try:
+        from ouroboros.working_checkpoint import adopt_registered_answer
+
+        adopted = adopt_registered_answer(q.DRIVE_ROOT, task, task_id, attempt=attempt, cause=cause,
+                                          registry_root=pathlib.Path(task.get("budget_drive_root") or q.DRIVE_ROOT))
+    except Exception:
+        log.error("Reaper: registered-answer finalization failed for %s", task_id, exc_info=True)
+        return {}
+    return {"kind": "terminal_result", "target": task_id, "status": str(adopted.get("status") or "")} if adopted else {}
+
+
 def _enqueue_retry(
     q: Any,
     task: Dict[str, Any],
@@ -1294,6 +1307,12 @@ def reap_timed_out_task(job: Dict[str, Any]) -> None:
             worker_id=worker_id, files_prepared_attempt=attempt,
         )
     else:
+        # Answer first: an attempt whose answer the host already holds is finalized from the
+        # outbox, retry or not, BEFORE the history salvage below can replace the preserved copy
+        # a held host salvage points at (both live at salvaged/<task>.txt).
+        adopted_answer = _adopt_held_answer(_q, task, task_id, attempt, terminal_reason)
+        if adopted_answer and will_retry:
+            _discard_retry_inputs(_q, task, task_id, retry_task_id)
         # 3. Reconstruct real cost/rounds from durable llm_usage (the killed worker never
         #    finalized; the event would otherwise carry zeros and understate metrics).
         #    A failure here cannot abort teardown before the slot is respawned.
@@ -1310,10 +1329,11 @@ def reap_timed_out_task(job: Dict[str, Any]) -> None:
         salvage_note = ""
         try:
             from ouroboros.observability import salvaged_output_note
-            salvage_note = salvaged_output_note(
-                _q._task_drive_for_task(task, task_id), task_id,
-                preserve_root=pathlib.Path(_q.DRIVE_ROOT),
-            )
+            if not adopted_answer:
+                salvage_note = salvaged_output_note(
+                    _q._task_drive_for_task(task, task_id), task_id,
+                    preserve_root=pathlib.Path(_q.DRIVE_ROOT),
+                )
         except Exception:
             log.debug("Reaper: failed to salvage last LLM response for %s", task_id, exc_info=True)
 
@@ -1329,18 +1349,6 @@ def reap_timed_out_task(job: Dict[str, Any]) -> None:
         except Exception:
             log.debug("Reaper: retry reset failed for killed task %s", task_id, exc_info=True)
 
-        adopted_answer: Dict[str, str] = {}
-        if not will_retry:  # a retry admission adopts in _enqueue_retry; a final stop adopts here
-            try:
-                from ouroboros.working_checkpoint import adopt_registered_answer
-
-                adopted = adopt_registered_answer(
-                    _q.DRIVE_ROOT, task, task_id, attempt=attempt, cause=terminal_reason,
-                    registry_root=pathlib.Path(task.get("budget_drive_root") or _q.DRIVE_ROOT))
-                if adopted:
-                    adopted_answer = {"kind": "terminal_result", "target": task_id, "status": str(adopted.get("status") or "")}
-            except Exception:
-                log.error("Reaper: registered-answer finalization failed for %s", task_id, exc_info=True)
         if not will_retry and not adopted_answer:
             try:
                 write_task_result(
@@ -1373,7 +1381,7 @@ def reap_timed_out_task(job: Dict[str, Any]) -> None:
         new_attempt = attempt
         retry_suppression: Dict[str, str] = dict(adopted_answer)  # an adopted answer publishes as a terminal
         cancel_handoff_outcomes: Dict[str, str] = {}
-        if will_retry:
+        if will_retry and not adopted_answer:
             try:
                 requeued, new_attempt, terminal_reason, retry_suppression = _enqueue_retry(
                     _q,

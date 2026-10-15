@@ -279,3 +279,56 @@ def test_an_unstamped_legacy_answer_claims_no_origin(tmp_path):
     assert td.register_pending_delivery(tmp_path, legacy)
     stored = adopt_registered_answer(tmp_path, _task(tid), tid, attempt=1, cause="worker_crash")
     assert stored["result"] == "old bytes" and "terminal_origin" not in stored
+
+
+@pytest.mark.parametrize("will_retry", [False, True], ids=["final-stop", "retry"])
+@pytest.mark.parametrize("answer_state", ["owed", "delivered"])
+def test_a_timeout_keeps_the_registered_host_salvage_not_a_later_intermediate(qenv, monkeypatch, answer_state, will_retry):
+    """The reaper adopts a held answer BEFORE its history salvage: a later long intermediate response
+    must not replace the preserved copy a registered host salvage points at (both are salvaged/<task>.txt)."""
+    from pathlib import Path
+
+    from ouroboros import observability
+    from ouroboros.task_finalization import prepare_terminal_send_event, register_final_answer_owed
+    from supervisor import task_reaper as reaper, worker_health, workers
+    from tests.test_delivery_forced_finalization import _forced_test_context
+
+    loop, registry, ctx, trace = _forced_test_context(qenv.drive)
+    tid = "parent1"
+    task = {**_task(tid), "_attempt": 1}
+    answer = "Complete useful answer retained before the provider failed."
+    loop._replace_delivery_candidate(registry, ctx, trace, answer, control="replace")
+    registry._ctx._owner_directives = [{"content": "Late answer constraint"}]
+    latest = "I will revise the answer after checking the new constraint.\n" + "Intermediate notes. " * 400
+    observability.persist_call(qenv.drive, task_id=tid, call_id="llm_2_response",
+                               call_type="llm_response", payload={"message": {"content": latest}})
+    monkeypatch.setattr(loop, "call_llm_with_retry", lambda *a, **k: (None, 0.0))
+    text, usage, _ = loop._handle_provider_unavailable(ctx)
+    assert text == answer and usage["terminal_origin"] == "host_salvage"
+    write_task_result(qenv.drive, tid, "running", result="working", task_attempt=1)
+    event = prepare_terminal_send_event(qenv.drive, task, text, usage,
+                                        {"type": "send_message", "task_id": tid, "chat_id": 1, "text": text},
+                                        presence=False)
+    assert register_final_answer_owed(task, event, env_drive_root=qenv.drive) == "registered"
+    if answer_state == "delivered":
+        assert td.register_delivery(qenv.drive, event["delivery_id"], emitted=event)
+    preserved = Path(usage["terminal_salvage_path"])
+    monkeypatch.setattr(reaper, "_kill_and_confirm_worker_dead", lambda *a: True)
+    monkeypatch.setattr(workers, "_reconcile_confirmed_dead_review_owner", lambda *a: None)
+    monkeypatch.setattr(worker_health, "_retire_dead_model_consumers", lambda *a, **k: None)
+    monkeypatch.setattr("ouroboros.tools.services.archive_task_service_logs", lambda *a: None)
+    monkeypatch.setattr("supervisor.cancel_publication._audit_delegated_runs_on_kill", lambda *a, **k: {})
+    monkeypatch.setattr(qenv.q, "reconstruct_task_cost", lambda *a, **k: {})
+    monkeypatch.setattr("ouroboros.owner_hurry.retry_reset", lambda *a, **k: None)
+    monkeypatch.setattr(reaper, "send_with_budget", lambda *a, **k: None)
+    monkeypatch.setattr(reaper, "_deliver_reap_salvage", lambda *a: pytest.fail("no second salvage"))
+    monkeypatch.setattr(reaper, "_emit_reap_task_done", lambda *a, **k: None)
+    monkeypatch.setattr(reaper, "_finish_self_finalized_task", lambda *a, **k: None)
+    reaper.reap_timed_out_task({"worker_id": 0, "worker": None, "proc": SimpleNamespace(pid=0),
+                                "drive_root": str(qenv.drive), "task_id": tid, "task": task, "task_type": "task",
+                                "attempt": 1, "terminal_reason": "hard_deadline", "runtime_sec": 300,
+                                "deadline_reached": True, "will_retry": will_retry, "retry_task_id": tid + "-retry"})
+    stored = load_task_result(qenv.drive, tid)
+    assert stored["terminal_origin"] == "host_salvage" and stored["reason_code"] == "finalization_incomplete"
+    assert stored["result"] == answer, "the history salvage replaced the registered answer's preserved bytes"
+    assert preserved.read_text(encoding="utf-8") == answer and qenv.q.PENDING == []
