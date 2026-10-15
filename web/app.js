@@ -12,7 +12,7 @@ import {
     summarizeProjectActivities,
 } from './modules/project_activity.js';
 import { initFiles } from './modules/files.js';
-import { getNotifier } from './modules/notifications.js';
+import { createNotificationActivation, getNotifier } from './modules/notifications.js';
 import { showToast } from './modules/toast.js';
 import { apiClient } from './modules/api_client.js';
 import { openNewProjectDialog, openProjectRowMenu } from './modules/project_create.js';
@@ -239,7 +239,10 @@ const stateSnapshots = createStateSnapshotSequencer((data, requestedAt, generati
         data.project_chat_ids ?? (data.projects ? undefined : Array.from(state.projectChatIds)), projectActivityIndex);
     applyTaskBindings(data.task_bindings || {});
     hydrateOpenChatsFromState(data, requestedAt, generation);
-}, undefined, markProjectActivityUnknown);
+}, undefined, (requestedAt) => {
+    markProjectActivityUnknown();
+    hydrateOpenChatsFromState(null, requestedAt);
+});
 
 const ctx = {
     ws,
@@ -272,26 +275,28 @@ getNotifier().attach({
 });
 getNotifier().configure({
     showToast,
-    onActivate: (target) => {
-        // A notification leads to its message: no document stays open over it,
-        // in Main or in any room, whichever chat it names.
-        mainChat?.closeTransient?.();
-        for (const inst of projectInstances.values()) inst.closeTransient?.();
-        const chatId = Number(target?.chatId);
-        const project = Array.isArray(lastProjectRows)
-            ? lastProjectRows.find((row) => Number(row?.chat_id) === chatId)
-            : null;
-        if (project) {
-            void openProjectPanel(project, {
-                openOnly: true,
-                taskId: String(target?.taskId || ''),
-                quizId: String(target?.quizId || ''),
-            });
-            return;
-        }
-        void showPage('chat');
-    },
+    onActivate: createNotificationActivation({
+        resolveProject: async (chatId) => {
+            const data = await fetchJson(`/api/projects?chat_id=${encodeURIComponent(chatId)}`);
+            return data?.projects?.length === 1 ? data.projects[0] : null;
+        },
+        openProject: (project, options) => {
+            closeNotificationReaders();
+            return openProjectPanel(project, options);
+        },
+        unavailable: () => showToast('This notification’s destination is unavailable.'),
+        openMain: () => {
+            closeNotificationReaders();
+            return showPage('chat');
+        },
+    }),
 });
+
+function closeNotificationReaders() {
+    // A resolved notification leads to its message, with no document over it.
+    mainChat?.closeTransient?.();
+    for (const inst of projectInstances.values()) inst.closeTransient?.();
+}
 
 mainChat = initChat(ctx);
 initFiles(ctx);
@@ -922,13 +927,15 @@ ws.on('ui_i18n_updated', () => { refreshDictionary(); });
 
 ws.on('open', () => {
     activitySocketDisconnected = false;
-    stateSnapshots.fail(stateSnapshots.begin());
+    stateSnapshots.retire();
+    markProjectActivityUnknown();
     refreshProjectsNav(true); // the in-flight read predates the socket: one coalesced post-open read
     pendingBootRead().then(refreshDictionary); // every open, the first too: a frame sent before this subscription was missed (behind the boot read, whose older answer must not land last)
 });
 ws.on('close', () => {
     activitySocketDisconnected = true;
-    stateSnapshots.fail(stateSnapshots.begin());
+    stateSnapshots.retire();
+    markProjectActivityUnknown();
 });
 // A backend-created project (e.g. the agent's promote_chat_to_task tool) pushes
 // this so the live WS fan-out learns the new project chat_id immediately, instead

@@ -60,7 +60,6 @@ _MAX_N_PROGRESS = 600
 # Bound subagent lineage so a huge swarm fan-out can't balloon the response.
 _LINEAGE_CAP = 300
 
-
 _PROGRESS_META_FIELDS = (
     "subagent_event",
     "subagent_task_id",
@@ -685,7 +684,7 @@ def _make_thread_filter(
         return belongs(entry_chat, entry)
 
     def _question_project_chat(entry):
-        if thread_id != 1 or not isinstance(entry, dict) or entry.get("type") not in {"quiz", "quiz_answer"}:
+        if thread_id != 1 or not isinstance(entry, dict) or entry.get("type") not in {"quiz", "quiz_answer", "quiz_closed"}:
             return 0
         quiz = entry.get("quiz")
         if not isinstance(quiz, dict):
@@ -715,10 +714,8 @@ def _collect_chat_rows(
     """Project selected chat entries (or the legacy recent read), with quota/gaps."""
     from supervisor.message_ingress import delivery_facts
 
-    # Quiz lifecycle merge (#Q-2b): the chat row froze the card at ask time
-    # ("open"); the durable truth lives in the owner_quiz task-result
-    # projection. One projection read per distinct asking task, cached for
-    # this call.
+    # Quiz lifecycle merge (#Q-2b): the chat row froze the card at ask time ("open"); the durable
+    # truth is the owner_quiz task-result projection, read once per asking task in this call.
     quiz_projection_cache: Dict[str, Dict[str, Any]] = {}
     question_projects = None
     question_keys = set()
@@ -749,20 +746,18 @@ def _collect_chat_rows(
         _chat_entries, stream_gaps = read_result if include_gaps else (read_result, set())
         # Window accounting for the response's truncation metadata: how many
         # read rows satisfy the SAME quota predicate the reader stopped on.
-        chat_quota_rows = sum(
-            1 for entry in _chat_entries if _chat_counts_toward_quota(entry)
-        )
+        chat_quota_rows = sum(1 for entry in _chat_entries if _chat_counts_toward_quota(entry))
         # These facts are durable evidence, not another visible message. Reuse
         # the already-read window to recover old cards after lifecycle GC.
         answered = {(str(row.get("task_id") or ""), str(row["quiz"].get("quiz_id") or "")): row["quiz"]
-                    for row in _chat_entries if row.get("type") == "quiz_answer"
+                    for row in _chat_entries if row.get("type") in {"quiz_answer", "quiz_closed"}
                     and isinstance(row.get("quiz"), dict)}
         for entry in _chat_entries:
-            if entry.get("type") == "quiz_answer":
+            if entry.get("type") in {"quiz_answer", "quiz_closed"}:
                 if (replay_evidence is not None and isinstance(entry.get("quiz"), dict)
                         and row_matches_thread(_stored_chat_id(entry.get("chat_id"), 1), entry)):
                     replay_evidence.append({"text": "", "role": "system", "is_progress": False,
-                                            "system_type": "quiz_answer", "quiz": dict(entry["quiz"]),
+                                            "system_type": entry["type"], "quiz": dict(entry["quiz"]),
                                             "task_id": str(entry.get("task_id") or ""),
                                             "ts": str(entry.get("ts") or ""), **_history_identity(entry)})
                 continue
@@ -840,7 +835,8 @@ def _collect_chat_rows(
                 rec["text"] = strip_markdown(rec["text"])
                 if isinstance(entry.get("terminal_time"), dict):
                     rec["terminal_time"] = dict(entry["terminal_time"])
-                for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer", "handoff_id"):
+                for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer",
+                            "completion_reason", "delivery_id", "handoff_id"):
                     if key in entry:
                         rec[key] = str(entry.get(key) or "")
             annotation = _user_annotation(role, rec["client_message_id"], chat_annotations)
@@ -893,8 +889,11 @@ def _collect_chat_rows(
                     _qid = str(quiz.get("quiz_id") or "")
                     _live = _quiz_source(_qtid)["quizzes"].get(_qid) or answered.get((_qtid, _qid))
                     if isinstance(_live, dict):
+                        from ouroboros.owner_quiz import CLOSURE_FIELDS, question_delivery_projection
+                        if delivery := question_delivery_projection(_live):
+                            quiz["question_delivery"] = delivery
                         quiz["state"] = str(_live.get("state") or quiz.get("state") or "open")
-                        for key in ("answered_index", "comment", "wait_ended_at"):  # the answer, the closed bound
+                        for key in ("answered_index", "comment", "wait_ended_at", *CLOSURE_FIELDS, "materials"):
                             if key in _live:
                                 quiz[key] = _live[key]
                         if _live.get("host_facts") and not quiz.get("host_facts"):

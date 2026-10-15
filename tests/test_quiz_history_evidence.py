@@ -205,13 +205,17 @@ def test_competing_answers_preserve_only_the_recorded_winner(runtime, monkeypatc
     # Concurrent healing may append the same source twice; the dialogue reader
     # owns identity deduplication, while every physical row must keep the winner.
     facts = _facts(runtime)
-    assert facts and all(fact["quiz"] == winner for fact in facts)
+    # The decision bytes are exact; discharge is later delivery bookkeeping,
+    # recorded only after this immutable evidence row and the mailbox succeed.
+    decision = lambda block: {key: value for key, value in block.items() if key not in {"discharged_at", "delivery"}}
+    assert winner.get("discharged_at")
+    assert facts and all(decision(fact["quiz"]) == decision(winner) for fact in facts)
     assert {fact["client_message_id"] for fact in facts} == {"quiz_answer:task-quiz:race"}
     if force_overlap:
         assert len(facts) == 2
     source = read_room_source(runtime.root, 1, task_id=runtime.task["id"])
     [fact] = [row for row in source["rows"] if row.get("type") == "quiz_answer"]
-    assert fact["quiz"] == winner
+    assert decision(fact["quiz"]) == decision(winner)
     assert fact["quiz"]["comment"] == f"Owner choice {winner['answered_index']}"
     response = asyncio.run(make_chat_history_endpoint(runtime.root)(
         SimpleNamespace(query_params={"n_human": "100", "thread": "1"})))

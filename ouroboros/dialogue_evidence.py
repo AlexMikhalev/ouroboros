@@ -135,7 +135,7 @@ def read_room_source(drive_root: Any, chat_id: int, *, task_id: str = "",
     # currently open merely because its lifecycle projection was evicted.
     from ouroboros.owner_quiz import quiz_states
     answered = {(str(row.get("task_id") or ""), str((row.get("quiz") or {}).get("quiz_id") or ""))
-                for row in rows if row.get("type") == "quiz_answer"}
+                for row in rows if row.get("type") in {"quiz_answer", "quiz_closed"}}
     states = {}
     quiz_gaps = []
     for row in rows:
@@ -149,10 +149,13 @@ def read_room_source(drive_root: Any, chat_id: int, *, task_id: str = "",
         block = states[tid].get(qid)
         if not block:
             quiz_gaps.append({"kind": "quiz_lifecycle_unavailable", "task_id": tid, "quiz_id": qid})
-        elif block.get("state") == "answered":
-            source_rows.append(_row_projection({"task_id": tid, "quiz": block, "type": "quiz_answer",
-                "direction": "system", "source": "owner_quiz_answer", "ts": block.get("answered_at"),
-                "client_message_id": f"quiz_answer:{tid}:{qid}"}, "retained_quiz_projection", len(source_rows) + 1, root))
+        elif block.get("state") in {"answered", "closed"}:
+            kind = "quiz_answer" if block["state"] == "answered" else "quiz_closed"
+            source_rows.append(_row_projection({"task_id": tid, "quiz": block, "type": kind,
+                "direction": "system", "source": ("owner_quiz_answer" if kind == "quiz_answer"
+                    else "owner_question_close" if block.get("closed_actor") == "owner" else "model_question_close"),
+                "ts": block.get("answered_at", block.get("closed_at")),
+                "client_message_id": f"{kind}:{tid}:{qid}"}, "retained_quiz_projection", len(source_rows) + 1, root))
             answered.add((tid, qid))
     coverage["gaps"].extend(quiz_gaps)
     for origin in project_origin_rows(root, chat_id):
@@ -168,17 +171,18 @@ def read_room_source(drive_root: Any, chat_id: int, *, task_id: str = "",
                         if row.get("direction") == "in" and row.get("client_message_id")}
     if task_id:
         from ouroboros.owner_mailbox import (
-            KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_TASK_MESSAGE,
+            KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_QUIZ_CLOSED, KIND_TASK_MESSAGE,
             deliver_task_message, drain_owner_entries,
         )
         entries = drain_owner_entries(pathlib.Path(mailbox_root or root), task_id, include_acknowledged=True,
-                                      kinds={KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_TASK_MESSAGE}, _read_status=mailbox_coverage)
+                                      kinds={KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_QUIZ_CLOSED, KIND_TASK_MESSAGE}, _read_status=mailbox_coverage)
         for i, entry in enumerate(entries, 1):
             row = {**entry, "task_id": task_id}
-            if entry.get("kind") == KIND_QUIZ_ANSWER:
+            if entry.get("kind") in {KIND_QUIZ_ANSWER, KIND_QUIZ_CLOSED}:
                 # New canonical facts and the old mailbox use the same typed
                 # quiz id; a duplicated physical delivery is one source answer.
-                source_id = f"quiz_answer:{task_id}:" + str(entry.get("msg_id") or "").removeprefix("quiz_answer:")
+                prefix = str(entry["kind"]) + ":"
+                source_id = f"{prefix}{task_id}:" + str(entry.get("msg_id") or "").removeprefix(prefix)
                 if any(r.get("client_message_id") == source_id for r in source_rows):
                     continue
             if entry.get("kind") == KIND_TASK_MESSAGE:

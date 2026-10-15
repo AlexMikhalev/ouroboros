@@ -22,12 +22,14 @@
  * @property {string=} original_task_id
  * @property {Object=} owner_wait  // the waited quiz_id, its wait state, quiz_state and optional wait_ended_at, independent of Project detail
  * @property {Object=} project_admission_hold  // accepted unstarted work waiting for original Project authority
+ * @property {boolean=} can_resume Positive current queue/grant authority, never derived from a label.
+ * @property {boolean=} cancelable
  * @property {string=} pause_cause  // budget | owner | restart | sleep | unknown; display only
  * @property {boolean=} finishing_reviews  // review work an owner Pause lets finish runs on; display only, no count
  * @property {Object=} late_work  // answered root with an open late phase (D10): title, answered_at; display only
  * @property {Object=} required_question  // read-only pointer to the current required Project quiz
  * @property {boolean=} required_question_unavailable  // a recorded owner-question wait whose detail could not be read: possibly blocked, never "no question"
- * @property {Object.<string,Object>=} model_waits
+ * @property {Object.<string,{requires_owner_action?:boolean,revision:number,task_attempt:number}>=} model_waits Current owner facts; missing action evidence is unavailable.
  * @property {Object=} model_activity  // exact-call transport observation; never quota wait or task liveness
  * @property {number=} task_attempt
  * @property {string} activity_id

@@ -155,6 +155,11 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),
     "send_quiz": _handled(
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),
+    "send_quiz_state": _handled(
+        "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py",
+        "ouroboros/gateway/task_decision.py",
+        note="persists an explicit closure reason and discharges its delivery; "
+             "the live quiz_state frame is a separate transport discriminator"),
     "send_video": _handled(
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),
     "skill_exec_failed": _handled(

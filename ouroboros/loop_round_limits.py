@@ -108,10 +108,10 @@ def _drain_incoming_messages(
 ) -> Dict[str, Any]:
     """Injects dialogue; returns typed controls.
 
-    ``defer_content_ack``: an owner/peer CONTENT entry is acknowledged only once
+    ``defer_content_ack``: transcript content (including closure reasons) is ACKed once
     a saved state holds it (``working_checkpoint``: the next ``ready`` save, a
     returned result's final save, or the published exact pause), so a crash in
-    between delivers it again instead of losing it. Control kinds are
+    between delivers it again instead of losing it. Non-content controls are
     acknowledged at once.
     """
     controls: Dict[str, Any] = {}
@@ -164,7 +164,7 @@ def _drain_incoming_messages(
             break
 
     if drive_root is not None and task_id:
-        from ouroboros.owner_mailbox import CONTEXT_ONLY_TASK_PROVENANCES, KIND_FINALIZE_NOW, KIND_HURRY, KIND_OWNER_PAUSE, KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_TASK_MESSAGE, acknowledge_transcript_entry, deliver_quiz_answer, deliver_task_message, drain_owner_entries
+        from ouroboros.owner_mailbox import CONTEXT_ONLY_TASK_PROVENANCES, KIND_FINALIZE_NOW, KIND_HURRY, KIND_OWNER_PAUSE, KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_QUIZ_CLOSED, KIND_TASK_MESSAGE, acknowledge_transcript_entry, deliver_quiz_answer, deliver_task_message, drain_owner_entries
 
         if owner_ctx:
             owner_ctx._loop_mailbox_seen_ids = _owner_msg_seen
@@ -218,6 +218,12 @@ def _drain_incoming_messages(
                 )
                 if provenance == "system" and isinstance(entry.get("review_feedback"), dict) and messages:
                     messages[-1].setdefault("review_feedback", []).append(dict(entry["review_feedback"]))
+                ack_content(entry)
+                continue
+            if kind == KIND_QUIZ_CLOSED:
+                _loop()._record_owner_directive(owner_ctx, source="owner_mailbox",
+                    content=dmsg, msg_id=str(entry.get("msg_id") or ""))
+                _loop()._append_or_merge_user_message(messages, dmsg, slot=owner_ctx)
                 ack_content(entry)
                 continue
             if kind == KIND_QUIZ_ANSWER:

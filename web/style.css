@@ -364,7 +364,7 @@ body.resizing-panels { user-select: none; }
 /* A Project root's final answer in Main is an ordinary Ouroboros message (docs/DESIGN.md
    "Project completion mirror"): folded when it is long, with the Project chip under it. The
    clamp is unconditional CSS over the complete text (never a cut, the text stays selectable);
-   `is-folded` adds the fade only when the fold really hides something. */
+   `is-folded` adds the fade only when the fold really hides something; Show full sets `is-expanded`. */
 .chat-bubble.project-answer {
     --project-answer-fold: calc(var(--type-section) * var(--line-body) * 7);
 }
@@ -373,8 +373,33 @@ body.resizing-panels { user-select: none; }
     -webkit-mask-image: linear-gradient(180deg, black 60%, transparent 100%);
     mask-image: linear-gradient(180deg, black 60%, transparent 100%);
 }
+.chat-bubble.project-answer.is-expanded > .message { max-height: none; }
 .chat-bubble.project-answer > .message > :first-child { margin-top: 0; }
 .chat-bubble.project-answer > .system-message-actions { align-items: center; padding-block: var(--space-2) var(--space-1); }
+.project-answer-limitation { color: var(--text-meta); white-space: normal; overflow-wrap: anywhere; }
+.project-answer-files { padding-block: var(--space-2); }
+.main-attention {
+    /* Scroll-bounded above the composer; with the keyboard up it keeps the composer's reserve. */
+    --main-attention-max: 45dvh;
+    --main-attention-keyboard-min: 96px;
+    --main-attention-composer-reserve: 240px;
+    border: 1px solid var(--divider);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+.main-attention[hidden] { display: none; }
+.main-attention-summary { padding: var(--space-2) var(--space-3); cursor: pointer; font-size: var(--type-meta); color: var(--text-primary); }
+.main-attention-summary:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
+.main-attention-body { max-height: var(--main-attention-max); overflow: auto; padding: var(--space-2); overscroll-behavior: contain; }
+body.keyboard-open .main-attention-body {
+    max-height: max(var(--main-attention-keyboard-min), calc(var(--vvh, 100dvh) - var(--main-attention-composer-reserve)));
+}
+.main-attention-questions, .main-attention-actions { display: flex; flex-direction: column; gap: var(--space-2); }
+.main-attention .chat-bubble { width: 100%; max-width: 100%; box-sizing: border-box; }
+.main-attention-task { padding: var(--space-2); border-top: 1px solid var(--divider); }
+.main-attention-reason { margin-block: var(--space-2); font-size: var(--type-meta); color: var(--text-meta); }
+.chat-quiz-materials { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-block: var(--space-2); }
 /* Under any message the reference has the row to itself, so its name may run longer than in a quiz head. */
 .system-message-actions .chat-quiz-project { margin-inline-end: 0; max-width: min(100%, 44ch); }
 /* === design-system:migrated-end === */
@@ -2083,6 +2108,20 @@ body.resizing-panels { user-select: none; }
 .chat-live-card:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-meta {
     min-height: 1.35em;
 }
+
+/* Why a chip word or an amount reads as it does: part of the expanded card, which the
+   summary button opens by pointer, touch and keyboard (never a hover-only title); selectable. */
+.chat-live-details {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    color: var(--text-meta);
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
+    overflow-wrap: anywhere;
+}
+.chat-live-details > div { padding: 0 14px var(--space-1); }
+.chat-live-card:not([data-expanded="1"]) > .chat-live-details { display: none; }
 
 /* The secondary status fact beside the outcome chip (a running finalization).
    Neutral by rule: the outcome owns the status colour, this only says the task
@@ -8392,6 +8431,8 @@ textarea.chat-input {
     resize: vertical;
 }
 .chat-quiz-comment::placeholder { color: var(--text-meta); }
+/* Main's removal of an unknown late answer: a secondary action at its natural width. */
+.chat-quiz-card > .chat-quiz-dismiss { align-self: flex-start; }
 .chat-quiz-send {
     align-self: flex-start;
     padding: var(--space-1, 4px) var(--space-3, 12px);

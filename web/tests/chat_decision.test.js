@@ -1000,3 +1000,71 @@ test('Main reveals its own question by exact task and room, never a Project or a
         assert.equal(await project.decision.revealQuestion('main', 'qz-1', '', 23, () => {}, () => true), false);
     } finally { project.restore(); }
 });
+
+test('Main Header reads crossing a socket close cannot observe or reveal stale authority after reopen', { timeout: 3000 }, async () => {
+    const pending = [];
+    const fx = fixture({ isMain: true, fetchDetail: () => new Promise(resolve => pending.push(resolve)) });
+    const detail = state => ({ task_id: 'main', chat_id: 1, owner_quiz: { 'qz-1': { ...WS_MSG, state } } });
+    const appended = [];
+    try {
+        const read = fx.decision.revealQuestion('main', 'qz-1', '', 1,
+            row => { appended.push(row); fx.decision.buildQuizCard(row); }, () => true);
+        await Promise.resolve();
+        fx.decision.setConnected(false);
+        let offlineSettled = false;
+        const offline = fx.decision.readQuestion('main', 'qz-1', '').then(value => { offlineSettled = true; return value; });
+        await Promise.resolve(); await Promise.resolve();
+        assert.equal(offlineSettled, true, 'offline reads return without joining an old request');
+        assert.equal(await offline, null);
+        fx.decision.setConnected(true);
+        const fresh = fx.decision.readQuestion('main', 'qz-1', '');
+        await Promise.resolve();
+        assert.equal(pending.length, 2, 'the reopen does not join the retired read');
+        pending[0](detail('closed'));
+        assert.equal(await read, false);
+        assert.deepEqual(appended, []);
+        pending[1](detail('open'));
+        assert.equal((await fresh).state, 'open', 'the obsolete read never enters lifecycle memory');
+        assert.equal(fx.calls.length, 0);
+    } finally { fx.decision.destroy(); fx.restore(); }
+});
+
+test('Main native question withdraws every input on close and canonical reread keeps its draft and node', { timeout: 3000 }, async () => {
+    const fx = fixture({ isMain: true, fetchDetail: async () => ({ task_id: 't-1', chat_id: 1,
+        owner_quiz: { 'qz-1': WS_MSG } }) });
+    try {
+        const bubble = fx.decision.buildQuizCard(WS_MSG);
+        const card = bubble.querySelector('.chat-quiz-card') || bubble;
+        const field = card.querySelector('.chat-quiz-comment');
+        field.value = 'Keep this draft';
+        fx.decision.setConnected(false);
+        assert.equal(field.disabled, true);
+        assert.ok(card.querySelectorAll('.chat-quiz-option').every(button => button.disabled));
+        fx.decision.buildQuizCard(WS_MSG);
+        assert.equal(field.disabled, true, 'an older history row cannot restore controls');
+        fx.decision.setConnected(true);
+        assert.equal(field.disabled, true, 'the reopen alone is no observation');
+        await fx.decision.readQuestion('t-1', 'qz-1', '');
+        assert.equal(card.querySelector('.chat-quiz-comment'), field);
+        assert.equal(field.value, 'Keep this draft');
+        assert.equal(field.disabled, false);
+        assert.equal(fx.calls.length, 0);
+    } finally { fx.decision.destroy(); fx.restore(); }
+});
+
+test('settled native history needs no recovery reads, and missing exact room proof authorizes nothing', async () => {
+    let reads = 0;
+    const fx = fixture({ isMain: true, rawDetail: true, currentQuestionHost: new NodeStub(), fetchDetail: async () => {
+        reads++;
+        return { task_id: 't-1', chat_id: 1, owner_quiz: { 'qz-1': WS_MSG } };
+    } });
+    try {
+        fx.decision.buildQuizCard({ ...WS_MSG, state: 'answered', answered_index: 0 });
+        fx.decision.setConnected(false);
+        fx.decision.setConnected(true);
+        for (let n = 0; n < 3; n++) { fx.decision.syncCurrentQuestions([], true); await turn(); }
+        assert.equal(reads, 0);
+        assert.equal(await fx.decision.readQuestion('t-1', 'qz-1', ''), null);
+        assert.equal(fx.calls.length, 0);
+    } finally { fx.decision.destroy(); fx.restore(); }
+});

@@ -50,6 +50,7 @@ from ouroboros.gateway.contracts import (
     TaskCreateRequest,
     TaskCreateResponse,
     TaskDetailResponse,
+    QuestionRoom,
     TaskEvent,
     TaskEventCursor,
     TaskEventsRequest,
@@ -209,6 +210,10 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     text = (modules / "api_types.js").read_text(encoding="utf-8")
     assert "import('./task_activity_types.js').ActiveChatActivity" in text
     text += "\n" + (modules / "task_activity_types.js").read_text(encoding="utf-8")
+    # The owner-decision ingress twin (gateway/decision_contracts.py) is re-exported the same way.
+    for name in ("DecisionRequest", "DecisionResponse"):
+        assert f"import('./decision_types.js').{name}" in text
+    text += "\n" + (modules / "decision_types.js").read_text(encoding="utf-8")
     version = (pathlib.Path(__file__).resolve().parent.parent / "VERSION").read_text(encoding="utf-8").strip()
     assert f"GATEWAY_CONTRACT_VERSION = '{version}'" in text
     settings_meta_fields = {
@@ -300,7 +305,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
                 StateResponse, UpdateMergePlan,
                 UpdatePreflightRequest, UpdatePreflightResponse, UpdateApplyRequest,
                 UpdateApplySuccessResponse, UpdateApplyErrorResponse,
-                UpdateStatusReadyOutbound, TaskCostBreakdown, TaskDetailResponse,
+                UpdateStatusReadyOutbound, TaskCostBreakdown, TaskDetailResponse, QuestionRoom,
                 TaskCancelRequest, TaskPauseRequest, TaskPauseResponse,
                 TaskContinueRequest, TaskContinueResponse, ContinuationOffer,
                 TaskHurryRequest, TaskHurryResponse, OwnerHurryProjection,
@@ -416,12 +421,12 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     assert _notrequired_fields(ActiveChatActivity) == {
         "model_waits", "model_activity", "task_attempt", "required_question", "required_question_unavailable", "project_admission_hold", "pause_cause", "owner_wait",
         "status", "outcome_axes", "reason_code", "root_phase_checkpoint", "timeout_retry_from", "original_task_id",
-        "finishing_reviews", "late_work",
+        "finishing_reviews", "late_work", "can_resume", "cancelable",
     }, "ActiveChatActivity adds optional outcome/retry/review evidence without changing required activity facts"
     activity_fields = get_type_hints(ActiveChatActivity, include_extras=True)
     question_keys = {"required_question", "required_question_unavailable", "project_admission_hold", "pause_cause", "owner_wait"}
     question_keys |= {"status", "outcome_axes", "reason_code", "root_phase_checkpoint", "timeout_retry_from", "original_task_id"}
-    question_keys |= {"finishing_reviews", "late_work"}
+    question_keys |= {"finishing_reviews", "late_work", "can_resume", "cancelable"}
     assert {key: value for key, value in activity_fields.items() if key not in question_keys} == get_type_hints(ActiveDirectTurn, include_extras=True), (
         "ActiveChatActivity must mirror ActiveDirectTurn's field shape so one client reducer hydrates both"
     )
@@ -433,6 +438,8 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     assert activity_schema["properties"].pop("project_admission_hold")["type"] == "object"
     assert activity_schema["properties"].pop("pause_cause")["type"] == "string"
     assert activity_schema["properties"].pop("owner_wait")["type"] == "object"
+    for field in ("can_resume", "cancelable"):
+        assert activity_schema["properties"].pop(field)["type"] == "boolean"
     for field in ("status", "reason_code", "timeout_retry_from", "original_task_id"):
         assert activity_schema["properties"].pop(field)["type"] == "string"
     for field in ("outcome_axes", "root_phase_checkpoint", "late_work"):
@@ -696,9 +703,12 @@ def test_decision_comment_limit_and_optional_index_pinned_across_python_and_js()
         name for name, annotation in DecisionRequest.__annotations__.items()
         if (getattr(annotation, "__forward_arg__", None) or str(annotation)).startswith("NotRequired[")
     }
-    assert optional == {"option_index", "comment", "revision", "action", "auto_continue",
+    assert optional == {"option_index", "comment", "reason", "revision", "action", "auto_continue",
                         "model", "credential_profile_id", "use_local", "persist_role"}
-    request_decl = re.search(r"@typedef \{Object\} DecisionRequest\b([\s\S]*?)\*/", text)
+    decisions = (pathlib.Path(__file__).resolve().parent.parent / "web" / "modules" / "decision_types.js").read_text(
+        encoding="utf-8"
+    )
+    request_decl = re.search(r"@typedef \{Object\} DecisionRequest\b([\s\S]*?)\*/", decisions)
     assert request_decl
     assert "@property {number=} option_index" in request_decl.group(1)
     assert "@property {string=} comment" in request_decl.group(1)

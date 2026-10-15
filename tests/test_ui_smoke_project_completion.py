@@ -256,3 +256,138 @@ def test_ui_project_completion_mirror_folds_after_mounting_on_a_hidden_page(dire
         if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
             pytest.skip(str(exc))
         raise
+
+
+@pytest.mark.ui_browser
+@pytest.mark.parametrize("engine", ["chromium", "webkit"])
+@pytest.mark.parametrize("width", [1280, 390])
+def test_ui_project_completion_show_full_reads_the_whole_answer_in_main(direct_server_with_data, engine, width):  # noqa: F811
+    """A long final is readable whole in Main: Show full/Show less in place, keyboard stops only on
+    visible text, the reason and Files outside the fold, Copy the answer alone, default fold on reload."""
+    import os
+    from pathlib import Path
+
+    pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
+    from playwright.sync_api import sync_playwright
+
+    from ouroboros.projects_registry import create_project
+    from ouroboros.utils import append_jsonl
+
+    evidence = Path(os.environ.get("OUROBOROS_BROWSER_EVIDENCE_OUT") or "evidence") / f"show-full-{engine}-{width}"
+    evidence.mkdir(parents=True, exist_ok=True)
+    data_dir = direct_server_with_data["data_dir"]
+    project = create_project(data_dir, f"show-full-{engine}-{width}", name="Long report")
+    answer = _LONG_ANSWER + "\n\nThe [deep link](https://example.com/deep) and `TAIL_MARKER` end it."
+    # Main history around the answer: folding it must keep its control where the reader is.
+    for index in range(30):
+        append_jsonl(data_dir / "logs" / "chat.jsonl", {
+            "direction": "in", "chat_id": 1, "user_id": 1, "ts": f"2026-08-22T11:{index + 1:02d}:00+00:00",
+            "client_message_id": f"before-{index}", "text": f"An earlier Main note {index}."})
+    append_jsonl(data_dir / "logs" / "chat.jsonl", {
+        "direction": "system", "chat_id": 1, "user_id": 1, "type": "project_completion_summary",
+        "project_id": project["id"], "project_name": project["name"], "status": "completed",
+        "ts": "2026-08-22T12:00:00+00:00", "task_id": f"root-show-{engine}-{width}",
+        "text": "Show full › Long · Done with warnings\nOpen the Project for details.",
+        "target_label": "Show full › Long", "completion_answer": answer,
+        "completion_reason": "Done with warnings"})
+    for index in range(30):
+        append_jsonl(data_dir / "logs" / "chat.jsonl", {
+            "direction": "in", "chat_id": 1, "user_id": 1, "ts": f"2026-08-22T12:{index + 1:02d}:00+00:00",
+            "client_message_id": f"after-{index}", "text": f"A later Main note {index}."})
+    # WebKit, like Safari, leaves links out of plain Tab; Alt+Tab includes them.
+    tab = "Alt+Tab" if engine == "webkit" else "Tab"
+    facts = """row => {
+        const m = row.querySelector('.message'), clip = m.getBoundingClientRect(), a = document.activeElement;
+        const tail = [...m.querySelectorAll('code')].find(c => c.textContent === 'TAIL_MARKER').getBoundingClientRect();
+        const t = row.querySelector('[data-answer-fold]');
+        return {expanded: row.classList.contains('is-expanded'), folded: row.classList.contains('is-folded'),
+                whole: m.scrollHeight <= m.clientHeight + 1, tailShown: tail.bottom <= clip.bottom + 1,
+                label: t.textContent, aria: t.getAttribute('aria-expanded'), hidden: t.hidden,
+                stops: [...m.querySelectorAll('a[href], button, [tabindex]')].filter(n => n.tabIndex >= 0).length,
+                focusInMessage: m.contains(a), reasonOutside: !m.contains(row.querySelector('.project-answer-limitation')),
+                filesOutside: [...row.querySelectorAll(':scope > .system-message-actions > button')].some(b => b.textContent === 'Files')
+                    && !m.querySelector('[data-answer-fold]')};
+    }"""
+    with sync_playwright() as pw:
+        browser = getattr(pw, engine).launch(headless=True)
+        page = browser.new_page(viewport={"width": width, "height": 900}, has_touch=width < 980)
+        page.add_init_script("""(() => { window.__copied = [];
+            Object.defineProperty(navigator, 'clipboard', {configurable: true,
+                value: {writeText: async text => { window.__copied.push(text); }}}); })()""")
+        try:
+            page.goto(direct_server_with_data["url"], wait_until="domcontentloaded", timeout=30_000)
+            _wait_status(page, "Online", timeout=30_000)
+            page.locator("#chat-messages .chat-bubble.project-answer.is-folded").wait_for(state="attached", timeout=30_000)
+            row = page.locator(f'#chat-messages .chat-bubble.project-answer[data-task-id="root-show-{engine}-{width}"]')
+            row.scroll_into_view_if_needed()
+            toggle = row.locator("[data-answer-fold]")
+            toggle.wait_for(state="visible", timeout=10_000)
+            collapsed = row.evaluate(facts)
+            assert collapsed["label"] == "Show full" and collapsed["aria"] == "false", collapsed
+            assert not collapsed["whole"] and not collapsed["tailShown"] and collapsed["stops"] == 0, collapsed
+            assert collapsed["reasonOutside"] and collapsed["filesOutside"], collapsed
+            row.screenshot(path=str(evidence / "collapsed.png"))
+
+            # Keyboard: no stop inside the clipped answer; the toggle is reachable and opens it in place.
+            row.locator(".sender").click()
+            seen = []
+            for _ in range(8):
+                page.keyboard.press(tab)
+                seen.append(page.evaluate("() => document.activeElement?.dataset?.answerFold !== undefined"))
+                assert not row.evaluate(facts)["focusInMessage"], "focus reached clipped text"
+                if seen[-1]:
+                    break
+            assert seen[-1], "the Show full control is not reachable by keyboard"
+            page.keyboard.press("Enter")
+            expanded = row.evaluate(facts)
+            assert expanded["expanded"] and not expanded["folded"] and expanded["whole"], expanded
+            assert expanded["label"] == "Show less" and expanded["aria"] == "true" and expanded["stops"] >= 1, expanded
+            page.evaluate("() => document.activeElement.blur()")
+            row.locator(".sender").click()
+            for _ in range(8):
+                page.keyboard.press(tab)
+                if page.evaluate("() => document.activeElement?.textContent === 'deep link'"):
+                    break
+            assert page.evaluate("() => document.activeElement?.textContent === 'deep link'")
+            row.screenshot(path=str(evidence / "expanded-deep-link-focused.png"))
+
+            # Pointer or touch folds it again; the control stays under the pointer. Center it first:
+            # a control left under the composer would make the click itself scroll.
+            toggle.evaluate("t => t.scrollIntoView({block: 'center'})")
+            before = toggle.bounding_box()
+            (toggle.tap if width < 980 else toggle.click)()
+            refolded = row.evaluate(facts)
+            assert refolded["folded"] and not refolded["expanded"] and refolded["stops"] == 0, refolded
+            assert refolded["label"] == "Show full" and refolded["aria"] == "false", refolded
+            after = toggle.bounding_box()
+            assert after and abs(after["y"] - before["y"]) <= 4, (before, after)
+            assert page.evaluate("() => { const r = document.querySelector('[data-answer-fold]').getBoundingClientRect();"
+                                 " return r.top >= 0 && r.bottom <= innerHeight; }")
+            (toggle.tap if width < 980 else toggle.click)()
+            assert row.evaluate(facts)["whole"]
+
+            # Copy copies the answer alone, never the control or the reason.
+            row.locator(".chat-message-copy").click()
+            page.wait_for_function("() => window.__copied.length === 1")
+            assert page.evaluate("() => window.__copied[0]") == answer
+            page.screenshot(path=str(evidence / "expanded-page.png"))
+
+            # A reload starts folded again.
+            page.reload(wait_until="domcontentloaded")
+            _wait_status(page, "Online", timeout=30_000)
+            page.locator("#chat-messages .chat-bubble.project-answer.is-folded").wait_for(state="attached", timeout=30_000)
+            row.scroll_into_view_if_needed()
+            reloaded = row.evaluate(facts)
+            assert not reloaded["expanded"] and reloaded["label"] == "Show full" and reloaded["stops"] == 0, reloaded
+            row.screenshot(path=str(evidence / "reloaded-collapsed.png"))
+
+            # A stop added after the last measure (a late Markdown region): keyboard focus opens the answer.
+            row.evaluate("""r => { const late = document.createElement('a'); late.href = '#late';
+                late.textContent = 'late stop'; r.querySelector('.message').append(late); }""")
+            row.locator(".sender").click()
+            page.keyboard.press(tab)
+            assert page.evaluate("() => document.activeElement?.textContent === 'late stop'")
+            opened = row.evaluate(facts)
+            assert opened["expanded"] and opened["whole"] and opened["label"] == "Show less", opened
+        finally:
+            browser.close()

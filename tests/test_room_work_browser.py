@@ -142,7 +142,10 @@ def waited(quiz_id):
 
 
 def quiz_detail(task_id, quiz_id, question, **stamp):
+    room = stamp.pop("question_room", {"state": "known", "chat_id": stamp["chat_id"],
+                     "project_id": stamp.get("project_id", "")} if "chat_id" in stamp else {"state": "unknown"})
     return {"task_id": task_id, "status": "running", **stamp,
+            "question_rooms": {quiz_id: room},
             "owner_quiz": {quiz_id: {"quiz_id": quiz_id, "state": "open", "question": question,
                                      "options": ["The primary notes", "The replication"], "wait_for_answer": True,
                                      "asked_at": _ts(40)}},
@@ -711,7 +714,8 @@ def test_cardless_controls_never_open_after_close_leave_or_offline(room_ui, leav
 
 def test_view_question_reaches_the_exact_question_and_proves_its_room(room_ui):
     rows = [owner(ASK_TEXT, "cm-ask", 0), *reading(12, 1)]
-    stamped = {"rw-nostamp": {}, "rw-elsewhere": {"chat_id": 2}, "rw-project-stamp": {"chat_id": 1, "project_id": "x"}}
+    stamped = {"rw-nostamp": {}, "rw-elsewhere": {"chat_id": 2}, "rw-project-stamp": {"chat_id": 1, "project_id": "x",
+               "question_room": {"state": "known", "chat_id": 99, "project_id": "x"}}}  # converted, not contextual
     transport = Transport(room_ui["page"], history={1: rows, 42: reading(4, 0, "Project")}, projects=[PROJECT], details={
         "rw-ask": quiz_detail("rw-ask", "q-main", "Which evidence should the weekly summary cite first?", chat_id=1),
         **{task_id: quiz_detail(task_id, f"q-{task_id}", f"Question of {task_id}", **stamp)
@@ -791,7 +795,7 @@ def test_view_question_reaches_the_exact_question_and_proves_its_room(room_ui):
 # A late question read: after a gesture it never steals reading; after leaving it never reveals or
 # offers Back to reading (parent hypothesis 3).
 
-@pytest.mark.parametrize("interrupt", ["wheel", "project", "project-and-back"])
+@pytest.mark.parametrize("interrupt", ["wheel", "project", "project-and-back", "socket-reopen"])
 def test_late_question_read_never_steals_reading_or_offers_back(room_ui, interrupt):
     rows = [owner(ASK_TEXT, "cm-ask", 0), *reading(14, 1)]
     transport = Transport(room_ui["page"], history={1: rows, 42: reading(3, 0, "Project")}, projects=[PROJECT], details={
@@ -807,7 +811,10 @@ def test_late_question_read_never_steals_reading_or_offers_back(room_ui, interru
     page.locator("#page-chat .rw-row[data-id='rw-ask'] .rw-pill-question").click()
     page.wait_for_timeout(200)
     assert any(task_id == "rw-ask" for task_id, _ in transport.held), "the question read is in flight"
-    if interrupt == "wheel":
+    if interrupt == "socket-reopen":
+        count = transport.disconnect()
+        transport.await_reconnect(count)
+    elif interrupt == "wheel":
         box = feed.bounding_box()
         page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
         page.mouse.wheel(0, -500)
@@ -831,6 +838,15 @@ def test_late_question_read_never_steals_reading_or_offers_back(room_ui, interru
     assert result["facts"]["back"] == "", ("a late read offered Back to reading", result)
     assert "chat-quiz-question" not in result["active_after"], ("a late read took focus", result)
     assert abs(result["after"] - result["before"]) <= 2, ("a late read moved the reader", result)
+    if interrupt == "socket-reopen":
+        assert result["cards"] == 0, ("a prior connection's Header read created an answer form", result)
+        if facts(page)["surfaceHidden"]:
+            trigger(page).click()
+        page.locator("#page-chat .rw-row[data-id='rw-ask'] .rw-pill-question").click()
+        page.locator('.chat-quiz-card[data-quiz-id="q-main"]').wait_for(state="visible")
+        page.wait_for_function("() => document.activeElement?.classList.contains('chat-quiz-question')")
+        assert page.locator('.chat-quiz-card[data-quiz-id="q-main"]').count() == 1
+        capture(page, "header-fresh-question-after-reopen")
     assert transport.decision_posts() == []
 
 

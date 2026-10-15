@@ -21,7 +21,7 @@ const waitingModel = row => activeModelWaits(mergeModelWaits({}, row.model_waits
 const flattened = view => [view.text, view.secondary].filter(Boolean).join(' · ');
 
 for (const [patch, text, motion, waiting] of [
-    [{ phase: 'preparing' }, 'Preparing request', true, false],
+    [{ phase: 'preparing' }, 'Preparing', true, false],
     [{ phase: 'working' }, 'Working', true, false],
     [{ phase: 'thinking' }, 'Thinking', true, false],
     [{ phase: 'queued' }, 'Queued', false, false],
@@ -63,14 +63,16 @@ for (const [patch, text, motion, waiting] of [
     });
 }
 
-for (const [phase, text, motion] of [
-    ['queued', 'Request accepted · waiting for admission', false],
-    ['dispatching', 'Preparing request dispatch', true],
-    ['awaiting_response', 'Sending request / waiting for response', true],
-    ['response_ready', 'Response available', true],
-    ['response_received', 'Response received · processing', true],
-    ['rejoining', 'Rejoining the same model operation', false],
-    ['unknown', 'Model operation unconfirmed', false],
+// Owner 2026-10-12 (option B): the chip says the call's state in a word that keeps its
+// meaning; the exact phase is the card's detail, read in its expanded details.
+for (const [phase, text, motion, detail] of [
+    ['queued', 'Queued', false, 'Request accepted · waiting for admission'],
+    ['dispatching', 'Sending', true, 'Preparing request dispatch'],
+    ['awaiting_response', 'Sending', true, 'Sending request / waiting for response'],
+    ['response_ready', 'Working', true, 'Response available'],
+    ['response_received', 'Working', true, 'Response received · processing'],
+    ['rejoining', 'Rejoining', false, 'Rejoining the same model operation'],
+    ['unknown', 'Activity unconfirmed', false, 'Model operation unconfirmed'],
 ]) {
     test(`observed model ${phase} reaches the same task presenters and loses to lifecycle controls`, () => {
         const row = { activity_id: 'root', phase: 'working', model_activity: { phase, operation_id: 'same' } };
@@ -79,6 +81,7 @@ for (const [phase, text, motion] of [
         assert.equal(full.phaseEl.textContent, text);
         assert.equal(censusTaskPhase(row).text, text);
         assert.equal(summarizeProjectActivities([row]).label, text);
+        assert.equal(desiredLiveCardPhase(full).detail, detail);
         assert.equal(full.phaseEl.dataset.motion, motion ? '1' : '0');
         assert.equal(censusTaskPhase(row, null, false).text, 'Activity unconfirmed');
         assert.equal(censusTaskPhase(row, null, true, true).text, 'Waiting for access');

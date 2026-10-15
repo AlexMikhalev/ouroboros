@@ -459,6 +459,43 @@ def consumed_member_resume(root_drive: Any, root_task_id: str, task_id: str, *, 
     return {"fence_id": fence_id, "grant_id": str(grant.get("grant_id") or "")}
 
 
+def interrupted_member_resume(root_drive: Any, root_task_id: str, task_id: str, *, attempt: int) -> Optional[bool]:
+    """Whether the owner's own Resume of this member was consumed, then interrupted (read only).
+
+    Not the owner's deliberate Pause, so Main offers the member's existing Resume
+    (#1660): its consumed, unrevoked, owner-selected explicit grant from ``attempt``
+    names the still-closed fence of its terminal root, which has not selected it yet
+    (``consumed_member_resume``) or selected it on that same grant. A newer Pause
+    (another fence), another attempt, a revoked or model grant or a live root answers
+    False; ``None`` when a fact it needs cannot be read, which the census keeps as
+    unknown. The Resume itself rechecks all of it.
+    """
+    from ouroboros.budget_pause import STATE_RESUMED, budget_pause_row
+    from ouroboros.task_results import _TRULY_TERMINAL_STATUSES, load_task_result
+
+    if task_id == root_task_id:
+        return False
+    try:
+        row = budget_pause_row(pathlib.Path(root_drive), task_id)
+        grant = row.get("grant") or {}
+        own = bool(row.get("state") == STATE_RESUMED and int(row.get("task_attempt") or 0) == int(attempt)
+                   and grant.get("grant_id") and grant.get("consumed_at") and not grant.get("revoked_at")
+                   and grant.get("authority") == "explicit_resume" and grant.get("selected_by") == "owner")
+    except Exception:
+        return None
+    if not own:  # the member's own facts already say no: its root is never read
+        return False
+    try:
+        fence = read_fence(root_drive, root_task_id)
+        root = load_task_result(root_drive, root_task_id, strict=True) or {}
+    except Exception:
+        return None
+    selected = (fence.get("selected_members") or {}).get(task_id)
+    return bool(root.get("status") in _TRULY_TERMINAL_STATUSES
+                and fence_closed(fence) and grant.get("owner_pause_fence_id") == fence.get("fence_id")
+                and (selected is None or isinstance(selected, dict) and selected.get("grant_id") == grant["grant_id"]))
+
+
 def complete_consumed_member_resume(root_drive: Any, root_task_id: str, task_id: str, consumed: Dict[str, str],
                                     publish: Any, withdraw: Any) -> str:
     """Release one owner-selected member on its consumed Resume's fence; ``""`` or why not.

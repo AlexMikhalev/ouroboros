@@ -65,10 +65,14 @@ QUESTION_STATUS = {
     "resumed": "Unanswered · the task continued; an answer is still accepted",
     "expired_terminal": "Unanswered · the task finished; a late answer is accepted as your message",
     "answered": "You answered",
+    "answer_pending": "Answer recorded · delivery pending",
+    "answer_unknown": "Answer recorded · delivery unknown",
+    "closure_pending": "Question closed · update pending",
     "superseded": "Replaced by a newer question",
+    "closed": "Question closed",
     "unknown": "Status unavailable",
 }
-_QUIZ_LIFECYCLE = {"open", "answered", "expired_terminal", "superseded"}
+_QUIZ_LIFECYCLE = {"open", "answered", "expired_terminal", "superseded", "closed"}
 
 
 def owner_wait_projection(quiz_id: str, owner_wait: Any, block: Any) -> Dict[str, Any]:
@@ -112,6 +116,7 @@ def project_question_pointer(row: Dict[str, Any], block: Any, project: Any,
     answer and the wait facts ride with the pointer, so the browser paints the Project's own form
     from history, the live frame or the census alone; task detail only opens the original."""
     from ouroboros.contracts.chat_id_policy import WEB_UI_CHAT_ID
+    from ouroboros.owner_quiz import CLOSURE_FIELDS, question_delivery_projection
 
     quiz = row.get("quiz") if isinstance(row.get("quiz"), dict) else row
     task_id, quiz_id = str(row.get("task_id") or ""), str(quiz.get("quiz_id") or "")
@@ -126,6 +131,11 @@ def project_question_pointer(row: Dict[str, Any], block: Any, project: Any,
     still_required = bool(block.get("wait_for_answer")) if block else bool(quiz.get("wait_for_answer"))
     name = str(project.get("name") or "Project")
     lead = question_status(state if known else "unknown", facts, still_required)
+    delivery = question_delivery_projection(block)
+    if known and state in {"answered", "closed"} and delivery.get("state") == "owed":
+        # An accepted late answer whose dispatch witness ended with its process: no retry knows more.
+        lead = QUESTION_STATUS["closure_pending" if state == "closed" else "answer_unknown"
+                               if delivery.get("reason_code") == "late_answer_delivery_unknown" else "answer_pending"]
     options = next((value for value in (quiz.get("options"), block.get("options")) if isinstance(value, list)), [])
     labels = [str(option.get("label") if isinstance(option, dict) else option or "") for option in options]
     # Aligned details from the row's option objects or the block's own list (a legacy ask has none).
@@ -164,6 +174,11 @@ def project_question_pointer(row: Dict[str, Any], block: Any, project: Any,
         pointer["answered_index"] = int(block["answered_index"])
     if str(block.get("comment") or ""):
         pointer["comment"] = str(block["comment"])
+    for key in (*CLOSURE_FIELDS, "materials"):
+        if block.get(key):
+            pointer[key] = block[key]
+    if delivery:
+        pointer["question_delivery"] = delivery
     return pointer
 
 
@@ -1346,10 +1361,40 @@ def _run_lives_in_its_project(
 MAIN_MIRROR_OWED, MAIN_MIRROR_INELIGIBLE, MAIN_MIRROR_UNKNOWN = "owed", "ineligible", "unknown"
 
 
+def _enqueue_main_completion(drive_root: Any, tid: str, event: Dict[str, Any], *, event_queue: Any = None) -> tuple:
+    from ouroboros.terminal_projection import retain_main_delivery, claim_main_delivery
+    from supervisor.event_observation import delivery_outstanding
+    from supervisor.terminal_delivery import enqueue_terminal_delivery, register_pending_delivery
+
+    event = retain_main_delivery(drive_root, tid, event)
+    if event.get("terminal_projection_token"):
+        if event_queue is None:
+            from supervisor.workers import get_event_q
+            try:
+                event_queue = get_event_q(create=False)
+            except Exception:
+                event_queue = None  # unattached daemon: cached debt still reaches boot/tick replay
+        outstanding = delivery_outstanding(event_queue, event.get("delivery_id"))
+        if outstanding is not False:  # queued, handler-inflight or unobservable: no copy or retry-clock spend
+            if outstanding is None:
+                register_pending_delivery(pathlib.Path(drive_root), event)  # boot/tick can discover unattached debt
+            return (MAIN_MIRROR_OWED if outstanding else MAIN_MIRROR_UNKNOWN), False
+    if not claim_main_delivery(drive_root, event):
+        return MAIN_MIRROR_OWED, False
+    if not register_pending_delivery(pathlib.Path(drive_root), event):
+        return MAIN_MIRROR_UNKNOWN, False
+    try:
+        queued = bool(enqueue_terminal_delivery(drive_root, event, event_queue=event_queue))
+    except Exception:
+        log.warning("Main mirror remains owed after queue failure for %s", tid, exc_info=True)
+        queued = False
+    return MAIN_MIRROR_OWED, queued
+
+
 def project_completion_delivery_outcome(
     drive_root: Any, evt: Dict[str, Any], task_id: str, task: Dict[str, Any],
     result: Dict[str, Any], task_done_event: Dict[str, Any],
-    *, _on_owed: Optional[Callable[[], bool]] = None, event_queue: Any = None,
+    *, event_queue: Any = None, source_delivery: Optional[dict] = None,
 ) -> tuple:
     """Owe Main's answer for Project roots, including conversations moved from Main.
 
@@ -1361,9 +1406,9 @@ def project_completion_delivery_outcome(
     ``MAIN_MIRROR_INELIGIBLE`` / ``MAIN_MIRROR_UNKNOWN``, resting on the OWED
     registration and never on the live queue (a registered row the queue refused
     is replayed from the outbox; a send the registry could not record is not
-    durable at all), plus the long-standing boolean below, which a duplicate
-    answers False without the answer ceasing to be owed. The bounded outbox and
-    at-least-once external delivery stay exactly as disclosed.
+    available), plus the live-queue boolean. Canonical readiness retains the
+    exact event, destination and retry timing until strict chat delivery returns;
+    a bounded outbox eviction cannot retire it. External delivery is at-least-once.
     """
     tid = str(task_id or "").strip()
     task = task if isinstance(task, dict) else {}
@@ -1373,6 +1418,13 @@ def project_completion_delivery_outcome(
     try:
         from ouroboros.projects_registry import mirrored_answer, project_binding_for_task, task_presentation_snapshot
 
+        # Once publication was addressed, later Project deletion/rebinding cannot
+        # invalidate the already accepted Main debt or change its exact content.
+        ready = result.get("canonical_terminal_projection_ready")
+        retained = ready.get("main_delivery") if isinstance(ready, dict) else None
+        if isinstance(retained, dict) and isinstance(retained.get("event"), dict):
+            return _enqueue_main_completion(drive_root, tid, retained["event"], event_queue=event_queue)
+
         if any(bool(row.get("_is_direct_chat")) for row in (evt, task, result, task_done_event)
                if isinstance(row, dict)):
             binding = project_binding_for_task(drive_root, tid, strict=True) or {}
@@ -1381,8 +1433,6 @@ def project_completion_delivery_outcome(
                 return MAIN_MIRROR_INELIGIBLE, False
         from ouroboros.task_results import resolve_task_lineage
         from ouroboros.task_status import SETTLED_STATUSES
-        from supervisor.terminal_delivery import enqueue_terminal_delivery, register_pending_delivery
-
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
         lineage = resolve_task_lineage(
             tid, metadata=metadata,
@@ -1421,7 +1471,10 @@ def project_completion_delivery_outcome(
         # invitation, so a salvage may never displace it — preserved bytes named
         # with no way to reach them are worse than the plain invitation.
         excerpt = _completion_excerpt(result, chat_id=1, salvage_only=True)
-        verdict = _completion_verdict(result, task_done_event)
+        delivery = source_delivery or {}
+        clause = terminal_delivery_clause(delivery.get("state", ""), delivery.get("preserved_path", ""))
+        verdict = _join_cause_clauses([_completion_verdict(result, task_done_event),
+                                      f"Source Project: {clause}" if clause else ""])
         lead = f"{verdict} " if verdict else ""
         if excerpt:
             excerpt = f"{excerpt} Open the Project for details."
@@ -1439,25 +1492,12 @@ def project_completion_delivery_outcome(
                 "project_name": snapshot["project_name"],
                 "target_label": snapshot["target_label"], "status": status,
                 "terminal_time": terminal_time_fact(result),
+                **({"completion_reason": verdict or OUTCOME_PHASE_HEADLINE[outcome_phase(result, task_done_event)]}
+                   if verdict or outcome_phase(result, task_done_event) != "done" else {}),
                 **mirrored_answer(result, outcome_phase(result, task_done_event)),
             },
         }
-        # Owed BEFORE the live send: the enqueue below is idempotent on the same
-        # delivery_id, so a queue refusal after registration recovers from the outbox.
-        owed = register_pending_delivery(pathlib.Path(drive_root), dict(event))
-        if not owed:
-            return MAIN_MIRROR_UNKNOWN, False
-        # The settlement owner retires readiness to a durable result disposition
-        # before the live send. Published history then outlives registry eviction.
-        if _on_owed is not None and not _on_owed():
-            return MAIN_MIRROR_UNKNOWN, False
-        # A live queue exception cannot undo an already durable outbox row.
-        try:
-            queued = bool(enqueue_terminal_delivery(drive_root, event, event_queue=event_queue))
-        except Exception:
-            log.warning("Main mirror remains owed after queue failure for %s", tid, exc_info=True)
-            queued = False
-        return MAIN_MIRROR_OWED, queued
+        return _enqueue_main_completion(drive_root, tid, event, event_queue=event_queue)
     except Exception:
         log.warning("Failed to enqueue Project completion summary for %s", tid, exc_info=True)
         return MAIN_MIRROR_UNKNOWN, False

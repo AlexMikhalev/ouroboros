@@ -1039,3 +1039,42 @@ def _warm_root_resume_grant(result_root: pathlib.Path, root_task_id: str) -> Dic
     if fence_closed(fence) or not str(grant.get("grant_id") or "").strip() or grant.get("revoked_at"):
         return {}
     return {"grant_id": str(grant["grant_id"]), "generation": int(grant.get("generation") or 0), "pause_id": ""}
+
+
+def explicit_resume_required(q: Any, task: Dict[str, Any], *, owner_paused: bool) -> bool:
+    """Whether this parked queued row continues only through the owner's explicit Resume.
+
+    Read from the release rules, never from a hold's name. The owner's own Pause
+    over the tree, or the member row it saved, comes first: its Resume releases
+    whatever lies beneath (``resume_budget_paused_task`` reads the same overlay). An
+    exact checkpoint is granted by an explicit Resume (``grant_exact_budget_resume``),
+    except an unheld cold sleep, which its own readiness wakes (``sleep_wake``).
+    An unselected hold is released only by an explicit selection
+    (``select_held_budget_row``), except the writer hold its reconciliation
+    releases (``release_settled_continuations``). A member whose root is itself
+    parked, or holds a live Resume grant (its model selects it, owner Q9), needs
+    no separate owner action. ``q`` may be a snapshot of the queue registries.
+    """
+    from supervisor.queue_transitions import budget_pause_fact
+
+    fences = q.BUDGET_ROOT_FENCES
+    pause = task.get("_budget_pause") if isinstance(task.get("_budget_pause"), dict) else {}
+    if owner_paused or pause.get("reason") == "owner" or budget_pause_fact(task, fences) is None:
+        return False
+    hold = budget_hold_fact(task)
+    if pause.get("exact_continuation"):
+        if hold is None and pause.get("reason") == "sleep":
+            return False
+    elif hold is not None and (hold.get("reason") == HOLD_CONTINUATION_WRITER
+                               or hold.get("reason") not in SELECTABLE_HOLD_REASONS):
+        return False
+    task_id = str(task.get("id") or "")
+    root_id = str(task.get("root_task_id") or task_id)
+    if root_id == task_id:
+        return True
+    fence = fences.get(root_id)
+    root_parked = (isinstance(fence, dict) and str(fence.get("status") or "") in {"active", "paused"}) or any(
+        isinstance(row, dict) and str(row.get("id") or "") == root_id and budget_pause_fact(row, fences) is not None
+        for row in q.PENDING)
+    return not root_parked and not live_root_resume_grant(
+        q, root_id, pathlib.Path(task.get("budget_drive_root") or q.DRIVE_ROOT))

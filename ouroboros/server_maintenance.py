@@ -1,8 +1,6 @@
-"""Upkeep a supervisor generation owes the drive: the once-per-generation startup
-sweep (process custody, delegated runs, legacy cancel latches, owed terminal
-deliveries, orphaned running results, pending post-task synthesis), the throttled
-periodic cadences of the same surfaces — every history-sized one off the loop
-thread — and the delegated-snapshot GC that fails closed on an unreadable log."""
+"""Generation startup and periodic upkeep: custody, delegated runs, cancel latches,
+owed deliveries, orphaned results and post-task synthesis. History-sized work runs
+off-loop; delegated-snapshot GC fails closed on an unreadable log."""
 
 from __future__ import annotations
 
@@ -21,8 +19,7 @@ from ouroboros.utils import utc_now_iso
 
 def _installed_skill_names():
     """Disk-derived skill owners for companion reaping; unknown means KEEP.
-    Reload timing and failed discovery must never mass-reap live companions.
-    """
+    Reload timing and failed discovery must never mass-reap live companions."""
     try:
         from ouroboros.config import get_skills_repo_path
         from ouroboros.skill_loader import discover_skills
@@ -40,6 +37,7 @@ def _installed_skill_names():
 _LAST_CANCEL_INTENT_SWEEP = [0.0]
 _CANCEL_INTENT_SWEEP_LOCK = threading.Lock()
 _DELIVERY_SWEEP_LOCK = threading.Lock()
+_QUESTION_SWEEP_LOCK = threading.Lock()
 _PAUSE_NOTICE_SWEEP_LOCK = threading.Lock()
 _USAGE_SWEEP_LOCK = threading.Lock()
 _SYNTHESIS_SWEEP_LOCK = threading.Lock()
@@ -130,16 +128,14 @@ def orphan_reconcile_write_guard(task_id: str, *, stop_event: Any = None):
 
 def _stop_requested(stop_event: Any = None) -> bool:
     """Closed generation, stop or restart: no mutation or daemon start afterward.
-    The per-generation token also keeps an old off-loop pass from writing.
-    """
+    The per-generation token also keeps an old off-loop pass from writing."""
     return bool(_restart_requested.is_set() or _supervisor_stop.is_set()
                 or (stop_event is not None and stop_event.is_set()))
 
 
 def _live_task_ids() -> set:
     """Fresh in-memory owners for custody and cursor refresh, never result rows.
-    Passed as a callable so consumers recheck after collecting candidates.
-    """
+    Passed as a callable so consumers recheck after collecting candidates."""
     return _startup_live_task_ids(DATA_DIR)
 
 
@@ -157,6 +153,10 @@ def _run_terminal_duty(drive_root: pathlib.Path, step: str, latch: Any,
         elif step == "terminal_delivery_replay":
             from supervisor.terminal_delivery import replay_pending_deliveries
             replay_pending_deliveries(drive_root)
+        elif step == "question_delivery_replay":
+            import asyncio
+            from ouroboros.gateway.task_decision import recover_question_deliveries
+            asyncio.run(recover_question_deliveries(drive_root))
         elif step == "pause_notice_replay":
             from ouroboros.pause_notices import reconcile_pause_notices
             reconcile_pause_notices(drive_root, stop_requested=lambda: _stop_requested(stop_event))
@@ -208,9 +208,8 @@ def _reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
     reconcile_abandoned_usage(drive_root)
 
 
-# Memory only: consecutive failures per periodic step, so a failure that recurs every cadence
-# is a WARNING with its traceback on failures 1, 2, 4, 8, ... and DEBUG in between, and its
-# recovery is one INFO naming the streak (never a silent DEBUG death, never a wall of WARNINGs).
+# Memory-only failure streaks per periodic step: WARNING with traceback on failures
+# 1, 2, 4, 8, ...; DEBUG in between; one recovery INFO naming the streak.
 _STEP_FAILURES: Dict[str, int] = {}
 
 
@@ -227,12 +226,10 @@ def _step_recovered(step: str) -> None:
         log.info("%s recovered after %d failure(s)", step, streak)
 
 
-# Memory only: the off-loop pass each latch is running (its thread, start stamp, whether its
-# stall was journaled), so a cadence whose next tick finds the latch still held names the duty
-# and the line its thread stands on: ``host_duty_stall`` once, ``host_duty_stall_end`` when
-# the pass ends. The threshold is the duty's OWN cadence measured from the pass's start, never
-# the loop deadline and never the tick alone: a marker stamped when a pass ENDS stays old while
-# the next pass starts, so a due tick proves nothing about how long the current pass has run.
+# Memory only: each latched off-loop pass's thread, start and stall-journal flag.
+# After its own cadence from START, a held latch records host_duty_stall with the
+# duty and current stack line; completion records host_duty_stall_end. Neither the
+# loop deadline nor the previous completion marker measures this pass's duration.
 _DUTIES: Dict[int, Dict[str, Any]] = {}
 
 
@@ -305,7 +302,7 @@ def _periodic_supervisor_maintenance(
 ) -> None:
     """Throttled upkeep on the supervisor tick, nothing history-sized inline (INV-24).
     Each tick starts the schedule duty when its previous pass ended;
-    the 20 s cadence independently starts cancel, delivery, notice, usage and synthesis duties; every 600 s
+    the 20 s cadence independently starts cancel, delivery, question, notice, usage and synthesis duties; every 600 s
     the custody block; every 300 s the reconcile block (zombie heal, then pending
     child-ref promotion retry). The first two stamp here before handing off; the
     reconcile pass stamps when it ENDS (issue #1230). A due cadence whose latch is still
@@ -322,6 +319,7 @@ def _periodic_supervisor_maintenance(
         for step, latch in (
             ("cancel_intent_sweep", _CANCEL_INTENT_SWEEP_LOCK),
             ("terminal_delivery_replay", _DELIVERY_SWEEP_LOCK),
+            ("question_delivery_replay", _QUESTION_SWEEP_LOCK),
             ("pause_notice_replay", _PAUSE_NOTICE_SWEEP_LOCK),
             ("abandoned_usage_reconciliation", _USAGE_SWEEP_LOCK),
             ("post_task_synthesis_recovery", _SYNTHESIS_SWEEP_LOCK),

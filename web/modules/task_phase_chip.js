@@ -23,6 +23,9 @@ const CHIP = {
     unconfirmed: () => tr('task.chip.activity_unconfirmed', 'Activity unconfirmed'),
     waitingAccess: () => tr('task.chip.waiting_for_access', 'Waiting for access'),
     working: () => tr('task.chip.working', 'Working'),
+    preparing: () => tr('task.chip.preparing', 'Preparing'),
+    sending: () => tr('task.chip.sending', 'Sending'),
+    rejoining: () => tr('task.chip.rejoining', 'Rejoining'),
     thinking: () => tr('task.chip.thinking', 'Thinking'),
     queued: () => tr('task.chip.queued', 'Queued'),
     ownerWait: () => tr('task.chip.waiting_for_answer', 'Waiting for your answer'),
@@ -46,7 +49,7 @@ export function pausePhaseLabel(phase, cause = '', finishingReviews = false) {
 export function activityWaitPhase(activity = {}) {
     const question = activity.owner_wait ?? activity.required_question;
     if (question?.owner_wait_state === 'resumed' || question?.wait_ended_at
-        || ['answered', 'expired_terminal', 'superseded'].includes(question?.quiz_state || question?.state)) return '';
+        || ['answered', 'expired_terminal', 'superseded', 'closed'].includes(question?.quiz_state || question?.state)) return '';
     if (waitFacts(question || {}).waiting) return 'owner_wait';
     if (activity.required_question_unavailable || question) return 'unknown';
     return '';
@@ -63,12 +66,15 @@ function outcomeView(outcome) {
 
 // Facts from the active call, not provider reasoning or task lifecycle. The
 // transport sends no prompt, model/account details or inferred queue position.
+// The chip names the call's state in one short word that keeps its meaning (Sending is
+// not Working); ``detail`` keeps the exact phase and admission blockers for the card's details.
 export function modelActivityPresentation(activity) {
     const labels = {
-        preparing: 'Preparing request', queued: 'Request accepted · waiting for admission',
-        dispatching: 'Preparing request dispatch', awaiting_response: 'Sending request / waiting for response',
-        response_ready: 'Response available', response_received: 'Response received · processing',
-        rejoining: 'Rejoining the same model operation', unknown: 'Model operation unconfirmed',
+        preparing: [CHIP.preparing, 'Preparing request'], queued: [CHIP.queued, 'Request accepted · waiting for admission'],
+        dispatching: [CHIP.sending, 'Preparing request dispatch'],
+        awaiting_response: [CHIP.sending, 'Sending request / waiting for response'],
+        response_ready: [CHIP.working, 'Response available'], response_received: [CHIP.working, 'Response received · processing'],
+        rejoining: [CHIP.rejoining, 'Rejoining the same model operation'], unknown: [CHIP.unconfirmed, 'Model operation unconfirmed'],
     };
     const phase = activity?.phase;
     if (!Object.hasOwn(labels, phase)) return null;
@@ -76,10 +82,10 @@ export function modelActivityPresentation(activity) {
     const reasons = { global_limit: 'shared capacity limit', class_limit: 'model capacity limit',
         thread_busy: 'conversation busy', stopping: 'engine stopping' };
     const blockers = phase === 'queued' && Array.isArray(activity.blockers) ? activity.blockers : [];
-    const text = [tr(`task.model_activity.${phase}`, labels[phase]), ...blockers
+    const detail = [tr(`task.model_activity.${phase}`, labels[phase][1]), ...blockers
         .filter(row => Object.hasOwn(reasons, row?.kind))
         .map(row => tr(`task.model_activity.${row.kind}`, reasons[row.kind]))].join(' · ');
-    return phaseView('working', text, waiting ? 'working waiting' : 'working', !waiting, waiting);
+    return { ...phaseView('working', labels[phase][0](), waiting ? 'working waiting' : 'working', !waiting, waiting), detail };
 }
 
 // One pure presentation over task facts, shared by cards, receipts and project
@@ -169,7 +175,7 @@ function recordPhase(record = {}, terminalPhase = 'done') {
 export function desiredLiveCardPhase(record = {}, terminalPhase = 'done') {
     const view = recordPhase(record, terminalPhase);
     return { phase: view.phase, text: view.text, className: view.className,
-        ...(view.secondary ? { secondary: view.secondary } : {}) };
+        ...(view.secondary ? { secondary: view.secondary } : {}), ...(view.detail ? { detail: view.detail } : {}) };
 }
 
 /**
@@ -278,7 +284,34 @@ export function setLiveCardPhase(record, phase = 'working', text = '', className
         motion: active && view.phase === phase && view.motion,
         secondaryMotion: active && view.secondaryMotion,
     }, phaseSecondaryElement(record), record.isSubagent);
-    return setLiveCardTypingVisible(record, !record.finished) || changed;
+    // The exact phase rides with the chip word it explains, never beside another one.
+    const detail = view.detail && view.text === text ? fmt('Model call: {detail}', { detail: view.detail }) : '';
+    const detailChanged = paintLiveDetail(record, 'livePhaseDetail', detail);
+    return setLiveCardTypingVisible(record, !record.finished) || changed || detailChanged;
+}
+
+// One line of a card's OWN details block (a nested child card carries its own): what the
+// expanded card says about its chip or amount.
+function ownLiveDetail(record, key) {
+    const own = node => Boolean(node?.dataset && key in node.dataset);
+    for (const node of record?.root?.children || []) {
+        if (own(node)) return node;
+        if (node.classList?.contains('chat-live-details')) {
+            const line = [...(node.children || [])].find(own);
+            if (line) return line;
+        }
+    }
+    return null;
+}
+
+// Paint one details line (shown with the expanded card, which its summary toggles by pointer,
+// touch and keyboard); compact rows and the sidebar keep the chip word or amount alone.
+export function paintLiveDetail(record, key, text = '') {
+    const el = ownLiveDetail(record, key);
+    if (!el || (el.textContent === text && el.hidden === !text)) return false;
+    el.textContent = text;
+    el.hidden = !text;
+    return true;
 }
 
 function phaseSecondaryElement(record) {

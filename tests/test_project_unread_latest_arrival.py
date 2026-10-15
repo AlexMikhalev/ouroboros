@@ -451,8 +451,13 @@ def test_a_photo_a_child_delivers_is_shown_alone_and_is_the_newest_arrival(room)
 
 
 def test_a_question_a_child_asked_before_the_recent_selection_is_named_by_the_bounded_search(room, narrow_recent):
+    from ouroboros.owner_quiz import record_asked
+
     durable_child(room)
     room.deliver("root answer", 5)
+    # Publication consumes the accepted canonical ask, as the escalation tool does.
+    record_asked(room.root, "kid-1", quiz_id="q-kid", question="Ship it?", options=["Yes", "No"],
+                 assumption="I ship after review", chat_id=room.chat_id)
     assert room.host.bridge.send_quiz(room.chat_id, "q-kid", "Ship it?", ["Yes", "No"],
                                       assumption="I ship after review", task_id="kid-1")[0]
     child_words(room, 6)
