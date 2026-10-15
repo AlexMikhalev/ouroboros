@@ -558,10 +558,9 @@ def assign_tasks() -> None:
         _WORKER_LIFECYCLE_LOCK.release()
     _tick_parked_work(queue)  # custody observation may wait on a remote operation
     with _queue_lock:
-        if _pool()._WORKER_POOL_DISABLED_REASON:
-            return
         st = _pool().load_state()
-        # Custody wins; quarantine malformed depth before budget/lease filters.
+        # Custody wins; quarantine malformed depth before budget/lease filters. This queue
+        # hygiene runs under a fenced pool too: only assignment and growth wait for Restart.
         if not _pool()._drop_cancelled_pending():
             log.error("Task assignment blocked: cancellation authority or custody state is indeterminate")
             queue.persist_queue_snapshot(reason="cancellation_authority_indeterminate")
@@ -580,6 +579,8 @@ def assign_tasks() -> None:
                 "Invalid-depth rows deferred until terminal custody is available; continuing assignment for other tasks: %s",
                 ", ".join(unresolved_invalid_ids),
             )
+        if _pool()._WORKER_POOL_DISABLED_REASON:
+            return
         try:  # every loop tick: ride the snapshot; a refusal re-reads exactly, reserve_attempt is the gate
             evolution_queued = any(str(row.get("type") or "") == "evolution" for row in _pool().PENDING)
             remaining = budget_remaining(  # this tick refuses at zero AND, for evolution, at its reserve

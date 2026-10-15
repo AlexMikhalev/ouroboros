@@ -491,6 +491,23 @@ def test_enabled_pool_still_replaces_a_captured_dead_slot(assigning):
     assert fresh.booting and fresh.reaping and fresh.active_capacity
 
 
+@pytest.mark.parametrize("reason", ["worker_crash_storm", "worker_readiness_exhausted"])
+def test_a_fenced_pool_still_runs_queue_hygiene_but_assigns_and_grows_nothing(assigning, monkeypatch, reason):
+    """Under a fence only assignment and growth wait for Restart: a pending task the owner
+    cancels is still settled, terminalization retries and Project holds still run."""
+    from supervisor import task_admission
+    seen = []
+    monkeypatch.setattr(workers, "_drop_cancelled_pending", lambda: seen.append("cancelled") or True)
+    monkeypatch.setattr(workers, "_retry_terminalization_pending_for_assignment",
+                        lambda _queue: seen.append("terminalization"))
+    monkeypatch.setattr(task_admission, "revalidate_project_holds", lambda: seen.append("holds"))
+    monkeypatch.setattr(workers, "_WORKER_POOL_DISABLED_REASON", reason)
+    workers.PENDING.append(task("queued"))
+    workers.assign_tasks()
+    assert seen == ["cancelled", "terminalization", "holds"]
+    assert [row["id"] for row in workers.PENDING] == ["queued"] and not assigning.created
+
+
 @pytest.mark.parametrize("reason", ["worker_crash_storm", "managed_update", "worker_readiness_exhausted"])
 def test_a_fence_leaves_a_dead_lent_slot_to_its_stop_owner(assigning, monkeypatch, reason):
     park(assigning)
