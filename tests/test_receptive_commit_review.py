@@ -674,9 +674,15 @@ def test_a_left_wave_that_settles_after_its_author_ended_stays_in_its_room_once(
     from ouroboros.artifacts import read_actor_source_bytes
     from tests.test_late_review_marks import _release
 
+    from ouroboros.late_review_marks import replay_owed_late_reviews
+
     a = author
     wait, attempt = _leave_wave_by_mail(a)
     write_task_result(a.data, TASK, "completed", chat_id=1, result="Finished without the commit.")
+    # Ended, but its live controller may still settle seats that have no retained outcome: nothing is
+    # composed early and no seat is called unknown.
+    assert replay_owed_late_reviews(a.data) == {"settled": 0, "waiting": 1, "retired": 0, "failed": 0}
+    assert _late_marks(a.data) == []
     a.reviewer.release()
     [mark] = until(lambda: _late_marks(a.data))
     assert mark["room_id"] == "1" and mark["review"]["surface"] == "commit_gate"
@@ -720,17 +726,18 @@ def test_a_settled_notice_reaches_its_room_once_its_author_ended_whether_it_was_
 
     def observed(root, text, task_id, **facts):  # the duty's durable state at the lossy notice boundary
         if str(facts.get("msg_id") or "").startswith("commit-review-settled:"):
-            at_notice.append([row.get("settled") for row in _owed_left_rows(a).values()])
+            at_notice.append(dict(_owed_left_rows(a)))
         return real_write(root, text, task_id, **facts)
 
     with monkeypatch.context() as observing:
         observing.setattr(owner_mailbox, "write_task_message", observed)
         wait, _attempt = _leave_wave_by_mail(a)
-        [row] = _owed_left_rows(a).values()  # owed when the author left, before any settlement
-        assert row["settled"] is False and row["after_end"] is True and row["left_review"]["retry_key"] == wait["retry_key"]
+        [(duty_id, row)] = _owed_left_rows(a).items()  # owed when the author left, before any settlement
+        assert row["after_end"] is True and row["left_review"]["retry_key"] == wait["retry_key"]
+        assert "settled" not in row, "settlement is read from the wave's records, never a second receipt"
         a.reviewer.release()
         [notice] = until(lambda: _notices(a))
-    assert at_notice == [[True]], "the settled duty is durable before the notice is written"
+    assert at_notice == [{duty_id: row}], "the duty is durable before the notice and the settlement rewrites nothing"
     until(lambda: replay_owed_late_reviews(a.data)["waiting"] == 1)  # owed for the moment the author ends
     assert _late_marks(a.data) == []
     if read:
@@ -746,29 +753,34 @@ def test_a_settled_notice_reaches_its_room_once_its_author_ended_whether_it_was_
     assert sorted(a.reviewer.rounds) == ["m1", "m2"] and _commit_count(a) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="G1 recovery §6A: a refused settled=true receipt leaves paid, "
-                   "retained answers waiting until the controller process dies")
 def test_a_failed_settled_duty_write_recovers_from_retained_seats_while_controller_lives(author, monkeypatch):
-    """A lost completion receipt must not leave paid answers waiting for this process to die."""
+    """A lost completion receipt must not leave paid answers waiting for this process to die (G1 §6A).
+
+    The store serves the duty written when the author left and refuses every later write of it. Once the
+    task ended, the replay reads the wave's own attempt row and its producers' retained outcomes (local
+    reads only) and keeps the paid answers in the room while their controller still lives: no resend,
+    no "outcome unknown" for a seat whose outcome is on disk, and no second receipt is ever written."""
+    from ouroboros import late_review_marks
     from ouroboros.late_review_marks import replay_owed_late_reviews
     from ouroboros.review_operation import controller_state
 
     a = author
-    real_owe, refused = review_pause._owe_left_review, []
+    real_owe, written, refused = late_review_marks.owe_after_end, [], []
 
-    def fail_settled(record, *, settled):
-        if settled:
-            refused.append(dict(record))
+    def refuse_rewrites(drive_root, duty_id, duty):
+        if duty_id in written:
+            refused.append(dict(duty))
             return False
-        return real_owe(record, settled=settled)
+        written.append(duty_id)
+        return real_owe(drive_root, duty_id, duty)
 
     with monkeypatch.context() as fault:
-        fault.setattr(review_pause, "_owe_left_review", fail_settled)
+        fault.setattr(late_review_marks, "owe_after_end", refuse_rewrites)
         wait, _attempt = _leave_wave_by_mail(a)
         a.reviewer.release()
         until(lambda: wait.get("done"))
     [row] = _owed_left_rows(a).values()
-    assert refused and row["settled"] is False and controller_state(row["controller"]) == "local"
+    assert len(written) == 1 and controller_state(row["controller"]) == "local"
     assert _late_marks(a.data) == [], "the author has not ended"
     write_task_result(a.data, TASK, "failed", chat_id=1, result="Ended after the notice.")
     assert replay_owed_late_reviews(a.data) == {"settled": 1, "waiting": 0, "retired": 0, "failed": 0}
@@ -776,6 +788,7 @@ def test_a_failed_settled_duty_write_recovers_from_retained_seats_while_controll
     assert "outcome unknown" not in mark["text"] and "each seat's recorded state follows" in mark["text"]
     assert _owed_left_rows(a) == {} and replay_owed_late_reviews(a.data)["settled"] == 0
     assert sorted(a.reviewer.rounds) == ["m1", "m2"] and _commit_count(a) == 1 and not a.pushes
+    assert refused == [], "settlement writes no second receipt"
 
 
 def test_a_duty_whose_controller_died_before_settlement_keeps_what_was_recorded(author):

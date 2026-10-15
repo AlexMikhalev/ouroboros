@@ -361,14 +361,13 @@ def watch_left_review(ctx: Any, *, surface: str, retry_key: str, reissue: str, a
     record = {key: wait[key] for key in ("surface", "task_id", "attempt", "record_id", "retry_key", "msg_id")}
     # The late mark's root and the author's drive, bound by value; the duty lands before this call returns.
     record.update(unknown_seats=0, drive_root=str(drive_root), canonical_root=str(canonical_data_root(ctx)))
-    _owe_left_review(record, settled=False)
+    _owe_left_review(record)
 
     def notify(unknown: int) -> None:
         from ouroboros.owner_mailbox import mailbox_drain_ended, write_task_message
 
         record.update(unknown_seats=int(unknown))
-        _owe_left_review(record, settled=True)  # durable before the lossy notice
-        status = "[Review custody] The local wait ended for" if unknown else "[Review settled] The reviewers finished"
+        status ="[Review custody] The local wait ended for" if unknown else "[Review settled] The reviewers finished"
         text = (f"{status} the paid {surface} review ({named}) you left for an addressed message. "
                 f"That review call committed or applied nothing. Re-issue {reissue} to collect its outcome at $0 "
                 "(no second dispatch), or choose another course.")
@@ -439,25 +438,79 @@ def _left_mark_id(record: Dict[str, Any]) -> str:
                                f"{surface}-late:{record.get('record_id') or record['retry_key']}:{attempt_no}")
 
 
-def _owe_left_review(record: Dict[str, Any], *, settled: bool) -> bool:
-    """The left wave's room duty as one owed row keyed by its mark id: written when the author leaves (its
-    live controller, this process, may still settle it) and again once its roster settled, each time
-    before anything process-local is lost; the mark that discharges it follows the author's task end."""
+def _owe_left_review(record: Dict[str, Any]) -> bool:
+    """The left wave's room duty as one owed row keyed by its mark id, written once, when the author leaves
+    (its live controller, this process, may still settle it) and before anything process-local can be lost.
+    Nothing rewrites it on settlement: the replay reads settlement from the wave's own records
+    (``settle_left_review``), so a refused write cannot strand answers already paid for. The mark that
+    discharges it follows the author's task end."""
     from ouroboros.late_review_marks import owe_after_end  # D06->D15 is lazy-only
     from ouroboros.review_operation import controller_identity
 
     return owe_after_end(record.get("canonical_root") or record["drive_root"], _left_mark_id(record), {
-        "left_review": dict(record), "settled": bool(settled), "controller": controller_identity()})
+        "left_review": dict(record), "controller": controller_identity()})
 
 
 def settle_left_review(drive_root: Any, row: Dict[str, Any]) -> str:
-    """The owed duty of a left wave whose author's task ended: ``waiting`` while its controller may still
-    settle the roster, else its mark (``ended_left_review``); a controller proven dead never settles it."""
+    """The owed duty of a left wave whose author's task ended: its mark (``ended_left_review``) once every
+    seat of the wave's recorded roster has a terminal outcome on disk or its controller is proven dead,
+    else ``waiting`` (a live controller may still settle a seat that has none)."""
     from ouroboros.review_operation import controller_state
 
-    if not row.get("settled") and controller_state(row.get("controller")) != "dead":
+    record = dict(row["left_review"])
+    if controller_state(row.get("controller")) != "dead" and not _left_roster_settled(record):
         return "waiting"
-    return ended_left_review(dict(row["left_review"]))
+    return ended_left_review(record)
+
+
+def _left_attempt(record: Dict[str, Any]) -> Any:
+    """The left wave's own attempt row, the whole roster its author left; ``LookupError`` when it is gone."""
+    from ouroboros.review_state import load_state
+
+    surface, task_id, retry_key = str(record["surface"]), str(record["task_id"]), str(record["retry_key"])
+    attempt_no = int(record.get("attempt") or 0)
+    attempt = next((row for row in reversed(load_state(pathlib.Path(record["drive_root"])).attempts)
+                    if row.tool_name == _LEFT_TOOLS.get(surface) and row.task_id == task_id
+                    and row.review_retry_key == retry_key and attempt_no in (0, int(row.attempt or 0))), None)
+    if attempt is None:
+        raise LookupError("its attempt row is not in the review state")
+    return attempt
+
+
+def _left_rows(attempt: Any) -> Iterable[Tuple[str, str, Dict[str, Any]]]:
+    """``(surface, slot_id, row)`` of every seat the attempt row records, frozen as the gate reconciles them."""
+    from ouroboros.review_custody import prepare_frozen_review_reconciliation
+
+    holder = SimpleNamespace()
+    prepare_frozen_review_reconciliation(holder, attempt)
+    for kind, rows in holder._review_frozen_rows.items():
+        for slot_id, row in rows.items():
+            yield kind, slot_id, row
+
+
+def _left_roster_settled(record: Dict[str, Any]) -> bool:
+    """Whether every seat of the left wave has a terminal outcome on disk: settled in its attempt row, or the
+    producer's own retained CAS under its recorded assignment (``recover_review_producer``). Local reads
+    only, never a send or a remote poll; an unreadable record proves no settlement."""
+    from ouroboros.review_custody import _row_is_pending
+    from ouroboros.review_operation import recorded_review_assignment, recover_review_producer
+
+    drive = pathlib.Path(record["drive_root"])
+    try:
+        attempt = _left_attempt(record)
+        for kind, _slot_id, row in _left_rows(attempt):
+            if not _row_is_pending(row):
+                continue
+            request, slot = recorded_review_assignment(
+                drive, task_id=str(record["task_id"]), surface=kind, row=row, retry_key=str(record["retry_key"]),
+                root_task_id=str(attempt.root_task_id or ""), review_contract=str(attempt.review_contract_fingerprint or ""))
+            actor = recover_review_producer(drive, request, slot, row)
+            if actor is None or actor.operation_state == "in_flight":
+                return False
+        return True
+    except Exception:
+        log.debug("left review %s: settlement unreadable; its duty keeps waiting", record.get("retry_key"), exc_info=True)
+        return False
 
 
 def ended_left_review(record: Dict[str, Any]) -> str:
@@ -484,32 +537,24 @@ def ended_left_review(record: Dict[str, Any]) -> str:
 def _left_review_mark(record: Dict[str, Any]) -> Dict[str, Any]:
     """The late-review record of one left wave, composed from its attempt row and retained source."""
     from ouroboros.artifacts import store_actor_source_bytes
-    from ouroboros.review_custody import _row_is_pending, prepare_frozen_review_reconciliation
+    from ouroboros.review_custody import _row_is_pending
     from ouroboros.review_operation import collect_recorded_review_actor
-    from ouroboros.review_state import load_state
 
     surface, task_id, retry_key = str(record["surface"]), str(record["task_id"]), str(record["retry_key"])
     drive, attempt_no = pathlib.Path(record["drive_root"]), int(record.get("attempt") or 0)
     attempt, seats, gap = None, [], ""
     try:
-        attempt = next((row for row in reversed(load_state(drive).attempts)
-                        if row.tool_name == _LEFT_TOOLS.get(surface) and row.task_id == task_id
-                        and row.review_retry_key == retry_key and attempt_no in (0, int(row.attempt or 0))), None)
-        if attempt is None:
-            raise LookupError("its attempt row is not in the review state")
-        holder = SimpleNamespace()
-        prepare_frozen_review_reconciliation(holder, attempt)
-        for kind, rows in holder._review_frozen_rows.items():
-            for slot_id, row in rows.items():
-                actor = (collect_recorded_review_actor(
-                    drive, task_id=task_id, surface=kind, row=row, retry_key=retry_key,
-                    root_task_id=str(attempt.root_task_id or ""),
-                    review_contract=str(attempt.review_contract_fingerprint or "")) if _row_is_pending(row) else row)
-                parts = row.get("parts") or (row.get("review_plan") or {}).get("parts") or ()
-                seats.append({"surface": kind, "slot_id": slot_id, "parts": list(parts),
-                              **{key: actor.get(key) for key in _SEAT_FACTS},
-                              "model": actor.get("model") or actor.get("model_id"),
-                              "raw_text": actor.get("raw_text") or actor.get("text") or ""})
+        attempt = _left_attempt(record)
+        for kind, slot_id, row in _left_rows(attempt):
+            actor = (collect_recorded_review_actor(
+                drive, task_id=task_id, surface=kind, row=row, retry_key=retry_key,
+                root_task_id=str(attempt.root_task_id or ""),
+                review_contract=str(attempt.review_contract_fingerprint or "")) if _row_is_pending(row) else row)
+            parts = row.get("parts") or (row.get("review_plan") or {}).get("parts") or ()
+            seats.append({"surface": kind, "slot_id": slot_id, "parts": list(parts),
+                          **{key: actor.get(key) for key in _SEAT_FACTS},
+                          "model": actor.get("model") or actor.get("model_id"),
+                          "raw_text": actor.get("raw_text") or actor.get("text") or ""})
     except Exception as exc:  # an unreadable record: every seat stays unknown, said in the mark itself
         gap = f"{type(exc).__name__}: {exc}"
     source = {"kind": "left_review_settlement", "gap": gap, "seats": seats,
