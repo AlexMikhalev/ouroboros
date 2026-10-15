@@ -195,19 +195,25 @@ def capture_directory_result(drive, entry, gateway):
     detail = gateway.get_run(entry.run_id)
     product = detail.get("workProduct") or {}
     if product.get("kind") != "files":
-        # The engine's answer for a finished run is final: no file work product is a
-        # finished run with no changes, never a capture to retry every sweep pass.
+        # The engine's answer for a finished run is final, never a capture to retry every
+        # sweep pass. Only a successful run without a file work product made no changes;
+        # after any other end the absence proves nothing, and the note says so.
+        state = str((detail.get("summary") or {}).get("state") or entry.terminal_state or "")
+        succeeded = state in custody.SUCCEEDED_STATES
+        note = ("The finished run produced no file work product: it made no changes to capture." if succeeded else
+                f"The run ended {state or 'without success'} and published no file work product: "
+                "changes, if any, were not captured."
+                + (" In-place effects, if any, are already in the folder." if entry.resource_ref["strategy"] == "direct" else ""))
         manifest = {
-            "schema_version": 1, "capture_kind": "engine_directory", "status": "ready", "no_changes": True,
-            "workspace_root": "", "authority_target_root": entry.target_root,
-            "engine_manifest": None, "engine_manifest_sha256": "", "complete": True, "scope_paths": None,
-            "strategy": entry.resource_ref["strategy"], "file_outputs": [], "apply_state": None,
-            "note": "The finished run produced no file work product: it made no changes to capture.",
+            "schema_version": 1, "capture_kind": "engine_directory", "status": "ready", "no_changes": succeeded,
+            "work_product": "absent", "workspace_root": "", "authority_target_root": entry.target_root,
+            "engine_manifest": None, "engine_manifest_sha256": "", "complete": succeeded, "scope_paths": None,
+            "strategy": entry.resource_ref["strategy"], "file_outputs": [], "apply_state": None, "note": note,
         }
         cap_dir.mkdir(parents=True, exist_ok=True)
         atomic_write_json(manifest_path, manifest, trailing_newline=True)
         custody.record_patch_captured(drive, entry, status="ready", sha256="", capture_dir=str(cap_dir),
-                                     execution_root="", no_changes=True)
+                                     execution_root="", no_changes=succeeded)
         return manifest
     source = (product.get("files") or {}).get("manifest")
     digest = str((product.get("meta") or {}).get("manifest_sha256") or "").removeprefix("sha256:")
@@ -280,7 +286,13 @@ def integrate_directory_result(ctx, entry, decision, reason, gateway, *, acknowl
     if admission_check and (refusal := admission_check()):
         return refusal
     receipt: dict = {}
-    if manifest.get("no_changes"):
+    absent = manifest.get("work_product") == "absent" and not manifest.get("no_changes")
+    if absent and decision == "apply":
+        # An unsuccessful run's missing work product is not "no changes": nothing is applied
+        # and the engine copy is kept; Reject is the disposition that releases it.
+        return ("⚠️ INTEGRATE_DELEGATED_NOTHING_CAPTURED: " + manifest["note"]
+                + " Nothing was applied and the engine copy is kept; reject the run to release it.")
+    if manifest.get("no_changes") or absent:
         # Nothing to apply or undo; an envelope copy is still discarded so the engine releases it.
         if manifest["strategy"] != "direct":
             key = sha256(f"discard:{entry.run_id}:no_changes".encode()).hexdigest()
