@@ -323,6 +323,41 @@ def test_the_late_row_passes_the_result_so_the_claims_source_sees_the_task_contr
     assert "Plan review (ingress_contract claims; 3 of 3 elements)" in entry["reflection"]
 
 
+def _organ_participant(seat, *, reply, owner_marked=True):
+    return {"seat_id": seat, "model": "m/x", "route": "api_chat", "owner_marked": owner_marked, "dispatched": True,
+            "status": "answered", "reply": {"prose": "", "objections": [], "withdrawn": [], **reply}}
+
+
+def test_an_organ_task_late_row_names_each_objection_with_its_standing(tmp_path):
+    """An organ task has no legacy elements: its late row names every objection of the plan
+    record and whether its raiser withdrew it; a plan nobody objected to says so."""
+    from ouroboros import plan_record as pr
+
+    task_id = _late_result(tmp_path)
+    pr.append_revision(tmp_path, task_id, pr.compose_revision(
+        None, goal="ship", plan="outline, then draft", done_when=["five slides"], affected_paths=[]), body=False)
+    pr.append_ask(tmp_path, task_id, {"ask_id": "a1", "ts": "t1", "revision": 1, "message": "look", "participants": [
+        _organ_participant("triad_a", reply={"objections": [{"id": "o1", "text": "no export"}, {"id": "o2", "text": "too long"}]}),
+        _organ_participant("critic_x", owner_marked=False, reply={"objections": [{"id": "o3", "text": "dated"}]})]})
+    pr.append_ask(tmp_path, task_id, {"ask_id": "a2", "ts": "t2", "revision": 1, "message": "export added", "participants": [
+        _organ_participant("triad_a", reply={"withdrawn": [{"id": "o1", "why": "added"}]})]})
+
+    reflection = late_settlement_reflection_entry(tmp_path, task_id, "rk-1")["reflection"]
+
+    (line,) = [row for row in reflection.splitlines() if row.startswith("Plan record (")]
+    assert "1 revision(s), 2 ask(s); 3 of 3 objections" in line
+    assert "triad_a/o1 withdrawn" in line and "triad_a/o2 open, owner-marked, not adjudicated" in line
+    assert line.endswith("critic_x/o3 open")  # an added critic's objection is open, never owner-marked
+    assert "Plan review (" not in reflection
+
+    quiet = _late_result(tmp_path, task_id="late-2")
+    pr.append_revision(tmp_path, quiet, pr.compose_revision(
+        None, goal="ship", plan="outline", done_when=["five slides"], affected_paths=[]), body=False)
+    pr.append_ask(tmp_path, quiet, {"ask_id": "a1", "ts": "t1", "revision": 1, "message": "look",
+                                    "participants": [_organ_participant("triad_a", reply={"prose": "fine"})]})
+    assert "1 ask(s); 0 of 0 objections): none raised" in late_settlement_reflection_entry(tmp_path, quiet, "rk-1")["reflection"]
+
+
 def test_a_failing_plan_fact_read_still_leaves_the_late_row_with_its_verdict(tmp_path, monkeypatch):
     monkeypatch.setattr(facts_mod, "plan_review_reflection_slice",
                         lambda root, tid, task=None: (_ for _ in ()).throw(ValueError("dialogue source torn")))

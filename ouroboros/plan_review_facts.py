@@ -1,16 +1,18 @@
 """Host-recorded plan-review facts for a review panel that settled after its task ended.
 
-What the PLAN review found, how the author answered, whether the element survived in
-the plan the author finally selected, and which reviewers never answered would vanish
-at task end. This leaf reads the recorded plan-review state and projects those facts,
-bounded and with a source pointer, into the one host row a late acceptance settlement
-appends to the reflection log. It scores nothing and decides nothing: which advice
-mattered is the mind's judgement (BIBLE P5/P13); the host only keeps the facts in front
-of it.
+What the plan's reviewers objected to and whether each raiser withdrew it (for an
+earlier-schema wave: what it found, how the author answered, whether the element
+survived in the plan the author finally selected, and which reviewers never answered)
+would vanish at task end. This leaf reads the task's plan record, else its recorded
+plan-review state, and projects those facts, bounded and with a source pointer, into
+the one host row a late acceptance settlement appends to the reflection log. It scores
+nothing and decides nothing: which advice mattered is the mind's judgement (BIBLE
+P5/P13); the host only keeps the facts in front of it.
 
-One builder for the whole slice (``plan_review_reflection_slice``), one pure core over
-an already-loaded state (``facts_from_state``) so tests need no drive, and one bounded
-row for a panel that settled after the task ended (``late_settlement_reflection_entry``).
+One builder for the whole slice (``plan_review_reflection_slice``), pure cores over an
+already-loaded record or state (``facts_from_record``, ``facts_from_state``) so tests
+need no drive, and one bounded row for a panel that settled after the task ended
+(``late_settlement_reflection_entry``).
 Every cut the fit makes is counted in ``omitted``; an unreadable recorded source is a
 named ``unavailable`` fact, never rendered as "nothing was there".
 """
@@ -302,10 +304,10 @@ def render_plan_review_section(facts: Mapping[str, Any]) -> str:
 
 def facts_from_record(record: Mapping[str, Any], *, claims_source: str = "",
                       source_ref: Optional[Mapping[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """Pure projection of the planning organ's record for the learning surfaces: every
-    revision's done_when text, each ask with who answered, every objection with its
-    standing (open / withdrawn / not adjudicated) and the latest contributions. ``None``
-    when the task never wrote a plan. Bounded with every cut counted in ``omitted``."""
+    """Pure projection of the planning organ's record, whose objections the late-settlement
+    row names: every revision's done_when text, each ask with who answered, every objection
+    with its standing (open / withdrawn / not adjudicated) and the latest contributions.
+    ``None`` when the task never wrote a plan. Bounded with every cut counted in ``omitted``."""
     from ouroboros import plan_record
 
     if not plan_record.engaged(record):
@@ -437,15 +439,24 @@ def _late_panel(result: Mapping[str, Any], retry_key: str) -> Optional[Dict[str,
     return None
 
 
+def _standing(objection: Mapping[str, Any]) -> str:
+    """An objection's standing in the late row: withdrawn, or open (raised by an
+    owner-marked seat of its ask, not yet adjudicated by its raiser)."""
+    if not objection.get("open"):
+        return "withdrawn"
+    return ", ".join(["open"] + (["owner-marked"] if objection.get("holds") else [])
+                     + (["not adjudicated"] if objection.get("not_adjudicated") else []))
+
+
 def late_settlement_reflection_entry(root: Any, task_id: str, retry_key: str) -> Optional[Dict[str, Any]]:
     """One bounded reflection row for a panel that settled after its task ended.
 
     The task ended over a still-running panel; this row puts the settled verdict (the
-    host's own sentence), each reviewer's output and the plan findings of the touched
-    elements into the reflection log, whose host rows integrating contexts render whole
-    (``context.build_recent_sections``). No model call and no lesson: what it means is
-    the mind's to judge. The source pointer comes right after the verdict, so a bounded
-    row never loses it.
+    host's own sentence), each reviewer's output and the plan's objections (for an
+    earlier-schema wave, the findings of its touched elements) into the reflection log,
+    whose host rows integrating contexts render whole (``context.build_recent_sections``).
+    No model call and no lesson: what it means is the mind's to judge. The source
+    pointer comes right after the verdict, so a bounded row never loses it.
     """
     from ouroboros.task_results import load_task_result
     from ouroboros.utils import truncate_within_limit
@@ -469,6 +480,12 @@ def late_settlement_reflection_entry(root: Any, task_id: str, retry_key: str) ->
         facts = {"unavailable": str(exc)}
     if isinstance(facts, Mapping) and facts.get("unavailable"):
         lines.append(f"Plan-review facts unavailable: {_cut(facts['unavailable'], 200)}")
+    elif isinstance(facts, Mapping) and facts.get("organ") == "plan_record":
+        objections = facts.get("objections") or []
+        shown = objections[:_LATE_ROW_ELEMENTS_SHOWN]
+        lines.append(f"Plan record ({facts.get('claims_source')} claims; {len(facts.get('revisions') or [])} revision(s), "
+                     f"{len(facts.get('asks') or [])} ask(s); {len(shown)} of {len(objections)} objections): "
+                     + ("; ".join(f"{o['seat_id']}/{o['id']} {_standing(o)}" for o in shown) or "none raised"))
     elif isinstance(facts, Mapping) and facts.get("elements"):
         shown = facts["elements"][:_LATE_ROW_ELEMENTS_SHOWN]
         lines.append(f"Plan review ({facts.get('claims_source')} claims; {len(shown)} of {len(facts['elements'])} elements): "
