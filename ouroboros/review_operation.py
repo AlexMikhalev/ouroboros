@@ -960,11 +960,9 @@ def collect_recorded_review_actor(root: Any, *, task_id: str, surface: str, row:
 
 
 def recover_review_producer(root: Any, request: Any, slot: Any, row: dict) -> Any:
-    """Resolve one known operation from its complete existing CAS, never dispatch.
-
-    The caller retains its own wave writer and aggregator. A missing terminal
-    artifact is still in flight; an unreadable or differently bound artifact is
-    custody loss with the original full source attached, never a semantic PASS.
+    """Read complete, bound producer CAS; the caller owns aggregation, never a new send.
+    Missing is pending; unreadable/differently bound is custody loss with its
+    full source, never PASS. Positive pre-start evidence needs no invocation.
     """
     from ouroboros.observability import read_call_payload
     from ouroboros.review_custody import finalize_review_actor
@@ -1013,14 +1011,8 @@ def recover_review_producer(root: Any, request: Any, slot: Any, row: dict) -> An
         if frozen_tokens and frozen_tokens != {token}:
             raise ValueError("recorded pending invocation mismatch")
         if str(getattr(slot.route, "value", slot.route)) == "agent_session":
-            from ouroboros.delegate_custody import invocation_record
-            invocation = invocation_record(root, token) if token else None
-            if not invocation or any(str(invocation.get(k) or "") != str(expected[k] or "")
-                                     for k in ("task_id", "root_task_id", "surface", "slot_id", "operation_id")):
-                raise ValueError("completed producer has no exact delegated invocation")
-            run_id = str((payload.get("usage") or {}).get("delegated_run_id") or "")
-            if run_id and run_id != str(invocation.get("run_id") or ""):
-                raise ValueError("completed producer delegated run mismatch")
+            from ouroboros.review_session_custody import validate_producer_invocation
+            validate_producer_invocation(root, token, expected, payload, outcome, error_source=suffix == "error")
         if outcome.get("operation_id") != operation or outcome.get("slot_id") != slot.slot_id:
             raise ValueError("producer actor identity mismatch")
         # The outcome is stamped before its failure is logged; this verified operation's row holds the receipt (#1578).

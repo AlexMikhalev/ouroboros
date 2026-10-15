@@ -202,11 +202,9 @@ def _review_exception_projection(
     ):
         http_status = history.provider_status_code
     physical_state = str(failure_custody.get("physical_attempt_state") or "").strip().lower()
-    route_state = ""
-    if not dispatched and isinstance(exc, ReviewRouteUnavailable):
-        route_state = _worker_exception_operation_state(
-            exc, {**(retry_state or {}), **failure_custody},
-        )
+    route_state = "not_dispatched" if not dispatched and failure_custody.get("delegated_start_unrequested") is True else ""
+    if not dispatched and not route_state and isinstance(exc, ReviewRouteUnavailable):
+        route_state = _worker_exception_operation_state(exc, {**(retry_state or {}), **failure_custody})
     operation_state = (
         "custody_lost" if history.unknown_outcome_seen else route_state
         or ("not_dispatched" if not dispatched and (
