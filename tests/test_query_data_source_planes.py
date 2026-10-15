@@ -2,9 +2,9 @@
 
 The matrix uses the real registry consumers. For every actor shape the decision
 to read the installation owner's (canonical) queue file uses the same physical
-resource permission as read_file, not that tool's availability: helpers
-inherit the canonical runtime alias, ordinary forked roots do not, Cyber Pro's
-user_files read exemption does, and a Presence ceiling narrows it. Native
+resource permission as read_file, not that tool's availability: ordinary roots
+and helpers inherit the canonical runtime alias; explicit resource restrictions
+and a Presence ceiling still narrow it. Native
 reviewers stay on their pinned plane even though read_file could reach live
 data. Blobs are caller/child-local first; the owner plane is tried only when the
 local bytes are proven absent, never after a denied or corrupt local read.
@@ -98,7 +98,7 @@ def _pack(root, task_id, raw):
     return digest, pack_path
 
 
-@pytest.mark.parametrize("mode", ["advanced", "cyber_pro"])
+@pytest.mark.parametrize("mode", ["light", "advanced", "pro", "cyber_pro"])
 def test_canonical_queue_reads_follow_the_same_actors_read_file_admission(planes, monkeypatch, mode):
     monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: mode)
     target = planes["canonical"] / "state/queue_snapshot.json"
@@ -117,9 +117,9 @@ def test_canonical_queue_reads_follow_the_same_actors_read_file_admission(planes
             assert status == "blocked" and result["code"] == "access_denied", (name, result)
             assert result["plane"] == "canonical" and "no grant is inferred" in result["message"]
             assert "canonical" not in json.dumps(result.get("data"))
-    # The matrix is the existing authority, not a broadened one: helpers inherit the
-    # canonical runtime alias; an ordinary forked root reads it only under Cyber Pro.
-    assert observed == {"root": True, "forked_root": mode == "cyber_pro", "helper": True, "acting": True}
+    # The upstream read alias covers ordinary roots as well as helpers in every mode.
+    # query_data follows that existing physical authority rather than adding a grant.
+    assert observed == {"root": True, "forked_root": True, "helper": True, "acting": True}
 
 
 def test_presence_ceiling_narrows_the_canonical_plane_like_read_file(planes, monkeypatch):
@@ -185,7 +185,16 @@ def test_blobs_fall_back_to_the_owner_only_after_a_proven_local_miss(planes, mon
     owner_bytes = owner_path.read_bytes()
     status, result = _query(helper, op="blob", sha256=digest)
     assert status == "ok" and result["data"] == {"owner": "canonical bytes"} and result["source"]["plane"] == "canonical"
-    status, refused = _query(forked, op="blob", sha256=digest)  # no existing read of the owner's file
+    assert _read_admitted(forked, owner_path)
+    status, served = _query(forked, op="blob", sha256=digest)
+    assert status == "ok" and served["data"] == {"owner": "canonical bytes"} and served["source"]["plane"] == "canonical"
+    # A real task restriction, not the obsolete absence of a root read alias, denies fallback.
+    restricted_ctx = _contexts(planes)["forked_root"]
+    restricted_ctx.task_contract = {"resource_policy": {"protected_artifacts": [
+        {"paths": [str(owner_path)], "role": "black_box_reference"}]}}
+    restricted = _registry(restricted_ctx)
+    assert not _read_admitted(restricted, owner_path)
+    status, refused = _query(restricted, op="blob", sha256=digest)
     assert status == "blocked" and refused["plane"] == "canonical", refused
     assert refused["message"].startswith("blob not found in the caller plane; the canonical plane is not readable")
     # Same digest present locally: local bytes win and are labelled as such.
@@ -255,9 +264,9 @@ def test_packed_blobs_need_the_actors_read_of_the_pack_file_itself(planes, monke
 @pytest.mark.parametrize("mode", ["light", "advanced", "pro", "cyber_pro"])
 def test_a_selected_owned_child_is_a_local_blob_plane(planes, monkeypatch, mode):
     """child_task_id selects an owned descendant's drive through the caller's lineage, the
-    admission its logs and queue already use, so a forked parent reads that child's loose and
-    packed blobs where its read_file cannot reach the drive. Only the owner fallback asks for the
-    actor's read of each exact file, and a drive outside the lineage stays refused."""
+    admission its logs and queue already use. The canonical read alias also admits read_file,
+    but does not select a child's plane. Owner fallback checks each exact file, and an explicit
+    child selector outside the lineage stays refused despite the broader read alias."""
     monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: mode)
     canonical, own = planes["canonical"], planes["forked"]
     store.update_task(canonical, "forked", lambda _: {"status": "running", "root_task_id": "forked"})
@@ -271,7 +280,7 @@ def test_a_selected_owned_child_is_a_local_blob_plane(planes, monkeypatch, mode)
     own_loose, _ = _blob(own, b'{"caller": "loose"}')
     own_packed, _ = _pack(own, "forked", b'{"caller": "packed"}')
     forked = _registry(_contexts(planes)["forked_root"])
-    assert _read_admitted(forked, child_path) is (mode == "cyber_pro")  # lineage, not read_file, selects it
+    assert _read_admitted(forked, child_path)  # the alias grants a read, not a child selector
     status, logs = _query(forked, op="jsonl", kind="tools_log", child_task_id="forked-child")
     assert status == "ok" and logs["data"] == [{"child": True}] and logs["source"]["plane"] == "child", logs
     for digest, child_task_id, expected, plane in (
@@ -286,7 +295,7 @@ def test_a_selected_owned_child_is_a_local_blob_plane(planes, monkeypatch, mode)
     for digest, physical, expected in ((owner_loose, owner_path, {"owner": "loose"}),
                                        (owner_packed, owner_pack, {"owner": "packed"})):
         admitted = _read_admitted(forked, physical)
-        assert admitted is (mode == "cyber_pro")
+        assert admitted is True
         status, blob = _query(forked, op="blob", sha256=digest, child_task_id="forked-child")
         if admitted:
             assert status == "ok" and blob["data"] == expected and blob["source"]["plane"] == "canonical", blob
