@@ -535,7 +535,8 @@ def _directory_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pa
     def entries(root: pathlib.Path) -> Dict[str, Dict[str, Any]]:
         # The copy preserved every file's size, mode and mtime: an entry whose stat
         # moved is one the reviewer wrote, and a same-stat file is compared by content
-        # (a timestamp-preserving rewrite keeps its stat).
+        # (a timestamp-preserving rewrite keeps its stat). Symlink mtime is
+        # comparable only where copystat supports no-follow utime.
         found = {}
         for current, dirs, files in os.walk(root, onerror=_raise_walk_error, followlinks=False):
             for name in dirs + files:
@@ -543,7 +544,9 @@ def _directory_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pa
                 info = path.lstat()
                 entry: Dict[str, Any] = {"mode": stat.S_IMODE(info.st_mode)}
                 if stat.S_ISLNK(info.st_mode):
-                    entry.update(kind="symlink", target=os.readlink(path), mtime_ns=info.st_mtime_ns)
+                    entry.update(kind="symlink", target=os.readlink(path))
+                    if os.utime in os.supports_follow_symlinks:
+                        entry["mtime_ns"] = info.st_mtime_ns
                 elif stat.S_ISDIR(info.st_mode):
                     entry.update(kind="directory")
                 elif stat.S_ISREG(info.st_mode):

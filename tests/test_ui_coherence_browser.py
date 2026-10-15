@@ -598,7 +598,17 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
     page.locator('#project-panel-close').click()
 
     # The Project form answers another question while the owner reads further down: the copy
-    # above the reader settles and leaves without moving the reading position.
+    # above the reader settles and leaves without moving the reading position. Closing the
+    # Project returns Main to its newest message a frame or more later (showLatest), and
+    # reading on supersedes that return (DESIGN "A room always opens at its newest message"),
+    # so the owner turns back with the wheel before reading further down.
+    page.evaluate("""() => document.querySelector('#chat-messages').addEventListener(
+        'wheel', () => { window.__turnedBack = true; }, {once: true, passive: true})""")
+    feed = page.locator('#chat-messages').bounding_box()
+    page.mouse.move(feed['x'] + feed['width'] / 2, feed['y'] + min(feed['height'], height) / 2)
+    page.mouse.wheel(0, -120)
+    page.wait_for_function('() => window.__turnedBack')
+    page.evaluate("() => new Promise(r => requestAnimationFrame(()=>requestAnimationFrame(r)))")
     card('finished').evaluate("el => el.scrollIntoView({block: 'start'})")
     anchor = card('finished').evaluate('el => el.getBoundingClientRect().top')
     frame = {'type': 'quiz_state', 'task_id': 'proof-task', 'quiz_id': 'passed', 'state': 'answered', 'answered_index': 0,

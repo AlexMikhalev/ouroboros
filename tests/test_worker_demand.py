@@ -11,8 +11,7 @@ from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
-# The pool fixture stubs readiness-watcher threads and the custody ledger; the
-# contention and ledger tests below need the real ones, bound before it runs.
+# Bind real threads/ledger before the pool fixture stubs them for contention/ledger tests.
 _REAL_THREAD = threading.Thread
 _REAL_RECORD = lifecycle._record_worker_processes
 
@@ -88,8 +87,7 @@ def test_held_rows_do_not_grow_the_pool(assigning, monkeypatch, hold):
 
 
 def test_zero_budget_resumes_owner_wait_and_keeps_parked_evolution_across_forecasts(assigning, monkeypatch):
-    """At zero only the owner-wait continuation dispatches; the row the pause block parks
-    is no over-budget cleanup for the forecast, with or without a free worker."""
+    """At zero dispatch only owner-wait; never clean paused work, with or without a free slot."""
     from supervisor import state
     monkeypatch.setattr(state, "budget_remaining", lambda *a, **kw: 0)
     monkeypatch.setattr(workers, "MAX_WORKERS", 3)

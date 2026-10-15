@@ -246,7 +246,9 @@ def test_shared_drive_is_kept_while_a_successor_is_live_or_unknown(tmp_path, gua
     blob.write_bytes(exact)
     assert successor in observability.retry_pending_child_ref_promotions(parent)["completed"]
     if guard == "unknown_occupant":
-        (child / "task_results" / "not a task id!.json").write_text("{}", encoding="utf-8")
+        # JSON result files are inert after import; an unowned artifact directory
+        # is still an occupant that the current custody census must retain.
+        (child / "task_results" / "artifacts" / "not a task id!").mkdir(parents=True)
     probe = {"live": lambda task: True if task == successor else False,
              "liveness_unknown": lambda task: None if task == successor else False}.get(guard, lambda _task: False)
 
@@ -255,4 +257,4 @@ def test_shared_drive_is_kept_while_a_successor_is_live_or_unknown(tmp_path, gua
     assert not report["pruned"] and child.exists(), report
     reason = {"live": "task_live", "liveness_unknown": "liveness_unknown"}.get(guard, "drive_occupant_unknown")
     assert {"task_id": "shared-owner", "reason": reason} in report["custody_pending"], report
-    assert (child / "task_results" / f"{successor}.json").is_file()
+    assert load_task_result(child, successor)["result"] == "successor answer"

@@ -165,11 +165,19 @@ def test_a_predecessor_without_an_operative_spec_is_unresolved_history_not_a_cha
 
 
 def test_the_last_paid_wave_survives_hot_index_eviction(harness, monkeypatch):
-    """The hot index keeps at most 64 waves; eviction drops the oldest entries but never the
-    newest PAID wave, so after 64 unpaid revisions the next revision still judges against A
-    and a refused objector carries A's finding (the 63/64 boundary)."""
-    from ouroboros.task_results import _PLAN_REVIEW_MAX_WAVES
+    """The hot index keeps at most ``_PLAN_REVIEW_MAX_WAVES`` waves; eviction drops the oldest
+    entries but never the newest PAID wave, so after a full index of unpaid revisions the next
+    revision still judges against A and a refused objector carries A's finding (the cap-1/cap
+    boundary). The rule does not depend on the cap's value, so the cap is lowered here (still
+    above ``_PLAN_REVIEW_FULL_WAVES``: A is compact when eviction starts, as at the real cap).
+    Every dispatch reads the whole dispute history (#1690), so walking the real 64-wave cap
+    through the engine is quadratic: 190-250 s and 2 GB, which CI's 300 s per-test thread timeout
+    turned into a worker crash (#1699). The real cap stays pinned at the record level by
+    tests/test_plan_review.py::test_bounded_wave_history_compacts_older_waves_and_counts_omissions."""
+    from ouroboros import task_results
 
+    cap = task_results._PLAN_REVIEW_FULL_WAVES + 4
+    monkeypatch.setattr(task_results, "_PLAN_REVIEW_MAX_WAVES", cap)
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "20")
     _patch_health(monkeypatch, lambda slots: {})
     _effort_aware_builder(harness, monkeypatch)
@@ -177,12 +185,12 @@ def test_the_last_paid_wave_survives_hot_index_eviction(harness, monkeypatch):
     ctx = harness.make_ctx()
     assert _control(_call(ctx)) == {"outcome": "REVIEW_REQUIRED", "closed": False}
     a_fp = _state(harness)["waves"][-1]["request_fingerprint"]
-    for n in range(_PLAN_REVIEW_MAX_WAVES):
+    for n in range(cap):
         _install_barrier_substrate(monkeypatch, [], refused={"s1", "s2", "s3"})
         _call(ctx, plan=f"Revision {n}: outline, then draft.")
         _collect(ctx, _state(harness)["waves"][-1]["request_fingerprint"])
     state = _state(harness)
-    assert state["waves_omitted"] >= 1 and len(state["waves"]) == _PLAN_REVIEW_MAX_WAVES
+    assert state["waves_omitted"] >= 1 and len(state["waves"]) == cap
     assert any(w["request_fingerprint"] == a_fp and w.get("paid") for w in state["waves"])
     _install_barrier_substrate(monkeypatch, [], refused={"s1"})
     _call(ctx, plan="The final revision: draft, then outline.")

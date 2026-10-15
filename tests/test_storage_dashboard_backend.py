@@ -276,8 +276,11 @@ def test_a_folder_swapped_for_a_link_mid_walk_is_never_listed_through_it(tmp_pat
 
 def _identityless(info, *, nlink=0):
     """A Windows-shaped stat: ``DirEntry.stat()`` there carries no inode, device or link count."""
+    # Preserve Windows' reparse metadata; the ten-field constructor leaves it None.
+    extra = {name: getattr(info, name) for name in ("st_file_attributes", "st_reparse_tag")
+             if hasattr(info, name)}
     return os.stat_result((info.st_mode, 0, 0, nlink, info.st_uid, info.st_gid, info.st_size,
-                           int(info.st_atime), int(info.st_mtime), int(info.st_ctime)))
+                           int(info.st_atime), int(info.st_mtime), int(info.st_ctime)), extra)
 
 
 def test_link_identity_missing_from_the_listing_is_read_from_the_file_or_left_out(tmp_path, monkeypatch):

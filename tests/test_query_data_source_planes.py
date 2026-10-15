@@ -222,6 +222,8 @@ def test_blobs_fall_back_to_the_owner_only_after_a_proven_local_miss(planes, mon
 def test_packed_blobs_need_the_actors_read_of_the_pack_file_itself(planes, monkeypatch):
     """Packed bytes are read from the pack, never the digest's loose name: each file the reader
     opens is admitted like read_file of that file, so a protected pack refuses the blob too."""
+    from ouroboros import evidence_packs as packs
+
     monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "advanced")
     canonical = planes["canonical"]
     raw = b'{"packed": "protected owner pack"}'
@@ -249,6 +251,9 @@ def test_packed_blobs_need_the_actors_read_of_the_pack_file_itself(planes, monke
     assert status == "ok" and served["source"]["plane"] == "caller", served
     local.unlink()
     outside = planes["home"].parent / "outside.xz"  # a pack linked outside its plane is refused like a loose link
+    # Finish this fixture's read before moving its open file (required on Windows).
+    with packs._READERS_LOCK:
+        packs._READERS.pop(str(pack_path))._stream.close()
     pack_path.rename(outside)
     pack_path.symlink_to(outside)
     status, escaped = _query(helper, op="blob", sha256=digest)
@@ -335,4 +340,5 @@ def test_native_reviewers_stay_on_their_pinned_plane(planes, monkeypatch):
         assert status == "unavailable" and blob["message"] == "blob not found in the caller plane", blob
         (pin / "state/queue_snapshot.json").unlink()
         status, gone = _query(registry, op="json", kind="queue_snapshot")
-        assert status == "unavailable" and gone["plane"] == "native_pin" and str(canonical) not in json.dumps(gone)
+        assert status == "unavailable" and gone["plane"] == "native_pin" and "data" not in gone
+        assert str(canonical) not in gone["message"]  # decoded text, not JSON-escaped Windows paths
