@@ -584,8 +584,9 @@ def _bootstrap_supervisor_repo(settings: dict, git_ops_module=None):
             _managed_update_active = False
         block = _has_active_evolution_transaction() or _managed_update_active
         policy = "rescue_and_block" if block else "rescue_and_reset"
+        from ouroboros.server_restart import _noticed_bootstrap  # its failure, not a deferral, is told
         ok, msg = _safe_restart_serialized(
-            git_ops_module.safe_restart,
+            _noticed_bootstrap(git_ops_module.safe_restart),
             reason="bootstrap",
             unsynced_policy=policy,
         )

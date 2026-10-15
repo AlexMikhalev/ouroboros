@@ -150,12 +150,20 @@ test('a landed-but-unrestarted transaction keeps the Restart continuation across
     const landed = updateVerdict({ managed: true, update_tx: { active: true, phase: 'pending_boot_smoke' } }, '');
     assert.match(landed.headline, /waiting for a restart/);
     assert.equal(landed.action?.id, 'restart');
-    const blocked = updateVerdict({ managed: true, update_tx: { active: true, phase: 'gate_blocked' } }, '');
-    assert.equal(blocked.tone, 'error');
-    assert.doesNotMatch(blocked.headline, /update landed/i);
-    assert.equal(blocked.action?.id, 'restart');
-    const cleanup = updateVerdict({ managed: true, update_tx: { active: true, phase: 'marker_cleanup_retry' } }, '');
-    assert.equal(cleanup.action?.id, 'restart');
+});
+
+test('a recovery the in-app Restart defers points at quitting and reopening, never at Restart', () => {
+    // server_restart._safe_restart_serialized restarts only pending_boot_smoke and applying_replace.
+    for (const txPhase of ['gate_blocked', 'marker_cleanup_retry']) {
+        for (const phase of ['', 'restart_needed', 'restart_required']) {
+            const view = updateVerdict({ managed: true, update_tx: { active: true, phase: txPhase } }, phase);
+            assert.equal(view.tone, 'error');
+            assert.doesNotMatch(view.headline, /update landed/i);
+            assert.deepEqual(view.action, { id: 'check', label: 'Check again' });
+            assert.match(view.hint, /Quit and reopen the desktop app, or restart the server process/);
+            assert.match(view.hint, /in-app Restart is deferred/);
+        }
+    }
 });
 
 test('restart_needed is honest: no "update landed" claim, restart continuation kept', () => {
@@ -163,4 +171,20 @@ test('restart_needed is honest: no "update landed" claim, restart continuation k
     assert.doesNotMatch(v.headline, /update landed/i);
     assert.match(v.headline, /needs a restart/);
     assert.equal(v.action?.id, 'restart');
+});
+
+test('restart verdicts are true for an applied update and for a deferred store-less replace alike', () => {
+    // A store-less replace moves its checkout only at the restart exit, so no restart verdict may
+    // claim the version already landed; each keeps the Restart continuation.
+    const phase = updateVerdict({ managed: true }, 'restart_required');
+    const progress = updateVerdict({ managed: true, update_progress: {
+        operation_id: 'op-1', active: false, result: 'restart_required', error: '' } }, '');
+    const pending = updateVerdict({ managed: true, update_tx: { active: true, phase: 'pending_boot_smoke' } }, '');
+    assert.equal(phase.headline, 'The update needs a restart that could not be requested automatically.');
+    assert.equal(progress.headline, phase.headline);
+    assert.equal(pending.headline, 'An update is waiting for a restart to finish.');
+    for (const view of [phase, progress, pending]) {
+        assert.doesNotMatch(view.headline, /landed|restored/i);
+        assert.equal(view.action?.id, 'restart');
+    }
 });

@@ -547,7 +547,8 @@ Ouroboros runs connected coding subscriptions through its bundled agent engine, 
 
 **Applying an update.** Send `POST /api/update/apply` (`UpdateApplyRequest`) with `strategy`, `expected_base_sha` and `expected_target_sha` from the preflight:
 - **Release moved:** 409 `release_moved` means the release changed since the preflight. Run the preflight again.
-- **What `200` means:** inspect `status`, not HTTP success alone. `ok` with `restarting:true` means a restart was requested, not adoption. `assisted_started` means a supervised task owns resolution. `manual` returns a plan without applying or restarting. `restart_required` means the code landed but a restart could not be requested; show its error and offer the ordinary restart control.
+- **Replacement not applied:** 409 `reason: replace_not_applied`, `abandoned: true` means Git refused the first tree-changing command because its index lock was held. The transaction is disarmed without rollback; `rescue` and `keep_branch` disclose retained preparation artifacts. The lock is untouched. Diagnose it before another deliberate attempt; age alone never authorizes removal. Other partial or unknown failures keep fenced recovery and their error.
+- **What `200` means:** inspect `status`, not HTTP success alone. `ok` with `restarting:true` means a restart was requested, not adoption. `assisted_started` means a supervised task owns resolution. `manual` returns a plan without applying or restarting. `restart_required` means the restart that finishes the apply could not be requested (a store-less replace has not moved the checkout yet); show its error and offer the ordinary restart control.
 - **Watching it:**
   - `update_progress_changed` frames mean "read the status again" (progress is kept in memory only).
   - After reconnecting, confirm the executing generation (`running_sha`) against the landed transaction/`merge_commit` identity reported by the update, not blindly against the preflight's official `target_sha`. Preserving local commits can create a distinct two-parent merge. Until the landed identity and completed startup are known, adoption remains unconfirmed.
@@ -555,7 +556,7 @@ Ouroboros runs connected coding subscriptions through its bundled agent engine, 
   - `update_status_ready` arrives after a fresh start.
 - **Retrying:** there is no idempotency key. A non-manual request can answer 409 while an update is active or its expected base/target no longer matches; `manual` may return another plan. When an outcome is unknown, read status and transaction facts before deciding—never infer failure or resend from a dropped connection.
 
-**Rollback.** `POST /api/git/rollback {target}` stops running work, switches to the given commit or tag and restarts. It has no checks and is not safe to repeat. Ask the person first; afterwards confirm `running_sha`.
+**Rollback.** `POST /api/git/rollback {target}` stops running work, switches to the given commit or tag and restarts. It has no checks and is not safe to repeat. Ask the person first; afterwards confirm `running_sha`. 409 `reason: restore_not_applied` means Git refused the reset at its held index lock, so the reset changed no checkout file, index entry or ref; the lock, and the keep branch and rescue snapshot made before the reset, are retained. No restart is requested; writers are readmitted through the aborted-update path, which keeps admission closed while an update transaction is active or the stopped work's handoff is unconfirmed.
 
 **Promote.** `POST /api/git/promote` moves the local stable branch to the current commit (nothing is pushed).
 
