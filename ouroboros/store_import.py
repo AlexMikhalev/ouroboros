@@ -138,11 +138,14 @@ def _ensure(root: pathlib.Path, path: pathlib.Path, *, rederive: bool = False) -
 
 
 def _upgrade_review_collection(txn: Txn) -> None:
-    """Schema only: old bodies stay unknown until the ordinary collector visits them.
+    """Schema only: old bodies stay unknown until their ordinary collector visits them.
     DDL and its version commit together; an interrupted upgrade is retried in place."""
-    if "review_collection_pending" not in {row["name"] for row in txn.conn.execute("PRAGMA table_info(tasks)")}:
-        txn.conn.execute("ALTER TABLE tasks ADD COLUMN review_collection_pending INTEGER")
-    txn.conn.execute(store.REVIEW_COLLECTION_INDEX)
+    columns = {row["name"] for row in txn.conn.execute("PRAGMA table_info(tasks)")}
+    for column, index in (("review_collection_pending", store.REVIEW_COLLECTION_INDEX),
+                          ("plan_collection_pending", store.PLAN_COLLECTION_INDEX)):
+        if column not in columns:
+            txn.conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} INTEGER")
+        txn.conn.execute(index)
     if int(txn.meta("schema_version") or 1) < store.SCHEMA_VERSION:
         txn.set_meta("schema_version", store.SCHEMA_VERSION)
 
