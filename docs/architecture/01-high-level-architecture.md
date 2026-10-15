@@ -455,7 +455,7 @@ ouroboros/ — agent core and shared runtime (§6)
     arg_feedback.py — What a tool says about an argument it did not obey: the one-line ignored disclosure and the typed refusal naming field, value and repair (DEVELOPMENT "LLM-first affordances")
     review_response.py — Response-envelope projection for multi-model review rows
     shell_process.py, shell_effects.py, shell_outputs.py — The command-running substrate: process execution, working-tree effects and their throwaway share, declared process outputs and per-path export eligibility
-    plan_review_artifacts.py, plan_author_history.py — Earlier-schema waves and author lineage for history views, the importer and the retired engine
+    plan_review_artifacts.py, plan_author_history.py — Earlier-schema waves and author lineage for history views and the importer
     evolution_stats.py — evolution.json metrics from sampled git history
     owner_delivery.py — Owner event delivery: live queue or the `pending_events` fallback with sticky deferral
     deliverables_shell.py — cp/mv/ln into deliverables with symlink checks
@@ -476,13 +476,10 @@ ouroboros/ — agent core and shared runtime (§6)
     plan_review_references.py — Reference projection that writes its own provenance rows (`logs/progress.jsonl`), never a second plan authority
     plan_review.py — `plan_task` entry: free write and read, the paid ask, typed `PLAN_*` refusals (§6 Plan construction and review)
     plan_ask.py — One ask: participants, body predicate, delivery, continuation, dispatch, `intention` ledger record, settlement
-    plan_review_runtime.py — Review-slot runtime both engines share (`run_plan_review_slots`, `plan_review_slots`, fit, deadline); the retired packet assembly
-    plan_review_legacy.py, plan_packet_legacy.py — The retired plan engine and packet builder, kept until the trials, unreachable from the live tool
-    plan_review_collect.py — The retired engine's wave settlement, reached only by `plan_ask`'s forwarding
-    plan_spec.py — `resolve_constitutional` and path normalization; the retired spec parser; no I/O
+    plan_review_runtime.py — Review-slot runtime of an ask (`run_plan_review_slots`, `plan_review_slots`, fit, deadline)
+    plan_spec.py — `resolve_constitutional` and path normalization; earlier-schema spec reads; no I/O
     plan_evidence.py — Bounded plan-evidence manifest; the runtime data plane is denied
     plan_packet.py — Delivery builder and `PLAN_REPLY_CONTRACT`
-    plan_render.py — The retired engine's wave view
     review.py — Acceptance review and multi-review adapters
     review_multi_model.py, review_file_pack.py, review_prompt_text.py — Commit-wave packet fan-out, working-tree file packs and prompt vocabulary; `span_only_release_carriers` is the packet's carrier cut, `triad_pack_exclusions` avoids inline governance duplicates (§6 Guaranteed-fit ladder)
     review_checklist.py — The layered change-review checklist as the review surfaces read it: one `## Header` section of docs/CHECKLISTS.md, the layers a subject is judged by, `checklist_fingerprint` on every review ledger record (§6 Change review on any root)
