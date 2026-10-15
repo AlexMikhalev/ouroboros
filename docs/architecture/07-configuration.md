@@ -150,7 +150,7 @@ A registry of `config.SETTINGS_DEFAULTS` (defaults canonical in `settings_defaul
 | OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC | 2700 | LLM transport read timeout |
 | OUROBOROS_PLAN_TASK_DEADLINE_MIN_SEC | 300 | `plan_task` deadline floor |
 | OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC | 200 | Spendable seconds above the finalization reserve needed to start a critic panel, else `review_skipped_deadline_reserve` (§6 Task lifecycle) |
-| OUROBOROS_REVIEW_MAX_CYCLES | "2" | Shared paid review-cycle cap over the plan/acceptance/commit/skill gates; `unlimited` = no local count cap (`review_cycles.py`; §6 Review stack) |
+| OUROBOROS_REVIEW_MAX_CYCLES | "2" | Shared paid review-cycle cap over the acceptance/commit/skill gates (plan asks stand outside it); `unlimited` = no local count cap (`review_cycles.py`; §6 Review stack) |
 | OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES | (none) | Alias only: a stored value is MIGRATED into `OUROBOROS_REVIEW_MAX_CYCLES` (passes + 1) at load; an environment value is inert |
 | OUROBOROS_ACCEPTANCE_RESERVE_PCT | 5 | Acceptance budget reserve percentage |
 | OUROBOROS_REVIEW_MODEL_TIMEOUT_SEC | unset | Env-only: logical review timeout (absent = route-owned; late results stay in custody) |

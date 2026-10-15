@@ -51,8 +51,6 @@ _ACCEPTANCE_REVIEW_CHECKLIST = (
     "A DISCLOSED, task-justified cut is honest best_effort; an unjustified "
     "or silent cut is a finding — name it with severity high and a concrete "
     "recommendation (under blocking enforcement it becomes an obligation). "
-    "Replacing a means the author may change is not itself a scope cut when the requirement "
-    "stays verified; an owner- or parent-fixed method is not the author's to drop. "
     "If the task asks for a specific "
     "value or short answer, check the FINAL ANSWER line matches the "
     "requested format exactly."
