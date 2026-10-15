@@ -625,7 +625,8 @@ def restore_stash_with_marker(tx: Dict[str, Any], context: str) -> StashRestoreR
     ``stash_restored`` still means a successful recorded apply, never its intent.
     An interrupted apply/cleanup is NOT replayed: once the store works again the
     saved backup is handed back with an honest unknown-outcome note, preserving
-    both the current files and any subsequent owner edits.
+    both the current files and any subsequent owner edits. A fresh restore does not start
+    while this checkout's ``index.lock`` exists; the caller's transaction keeps the work gated.
     """
     from supervisor import update_merge as _um
 
@@ -656,6 +657,11 @@ def restore_stash_with_marker(tx: Dict[str, Any], context: str) -> StashRestoreR
                 {"interrupted": record},
             )
             persist({"status": result.status, "note": result.note, "evidence": result.evidence})
+        elif (_g._git_dir() / "index.lock").exists():
+            # `git stash apply` needs that lock: starting now would only spend this one-shot
+            # restore on Git's refusal. Nothing is recorded; the transaction waits and retries.
+            return StashRestoreResult("incomplete", "Git's index lock is held, so the restore waits for it; "
+                                      + _stash_recovery_note(stash_sha))
         else:
             persist({"status": "applying"})
             result = restore_update_stash(stash_sha, context, before_cleanup=persist)

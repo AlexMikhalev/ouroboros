@@ -305,7 +305,7 @@ def rollback_through_door(target: str, *, door: str, request_restart: Callable[[
         try:
             restarting = request_restart()
         except Exception:
-            log.warning("rollback landed but restart request failed", exc_info=True)
+            log.warning("rollback restart request failed", exc_info=True)
             restarting = False
         return 200, {"status": "ok" if restarting else "restart_required", "message": msg,
                      "restarting": restarting, "switch_deferred": deferred}
@@ -599,7 +599,7 @@ def _restart_response(request: Request, *, strategy: str, plan: dict) -> JSONRes
     try:
         restarting = _request_restart(request)
     except Exception as exc:
-        log.warning("managed update landed but restart request failed", exc_info=True)
+        log.warning("managed update restart request failed", exc_info=True)
         restarting = False
         restart_error = f"{type(exc).__name__}: {exc}"
     else:

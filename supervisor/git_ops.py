@@ -360,6 +360,8 @@ def _maybe_repair_git_index(stderr: str, *, timeout: Optional[float] = None) -> 
     A held ``index.lock`` (its age proves no owner gone) or an index Git cannot
     open, stat or map is returned to the caller as Git's own refusal; so is a
     rebuild that fails, after the original index is put back beside its backup.
+    While the lock exists the index is not touched at all: the rebuild needs that
+    lock, and every read would otherwise leave one more backup behind.
     """
     error_lower = str(stderr or "").lower()
     if not any(marker in error_lower for marker in ("index file smaller than expected", "index file corrupt")):
@@ -367,7 +369,7 @@ def _maybe_repair_git_index(stderr: str, *, timeout: Optional[float] = None) -> 
 
     repo = current_repo_dir()
     git_dir = repo / ".git"
-    if not git_dir.exists():
+    if not git_dir.exists() or (git_dir / "index.lock").exists():
         return False
 
     backup_path = None

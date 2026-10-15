@@ -428,10 +428,10 @@ def rollback_managed_update(
     """Roll a failed managed update back to the pre-update SHA in the tx marker. Preserves
     the failed candidate — an uncommitted resolution included — on the deterministic
     branch ``failed-update-<target12>`` for inspection and retry, hard-resets the branch
-    to pre_update_sha, cleans, and logs. Boot recovery retains a clear-only transaction
-    until the restored process starts, protecting returned work from bootstrap reset.
-    Other callers clear it immediately. Does NOT push (unlike
-    rollback_to_version, which can push origin — wrong for an internal recovery).
+    to pre_update_sha and cleans unless that verified target already holds, and logs. Boot
+    recovery retains a clear-only transaction until the restored process starts, protecting
+    returned work from bootstrap reset; other callers clear it immediately. Does NOT push
+    (unlike rollback_to_version, which can push origin — wrong for an internal recovery).
 
     Marker admission is STRICT (F14): a FUTURE-schema marker was recorded by a newer
     release — this code cannot interpret its semantics, so the rollback refuses typed
@@ -497,47 +497,48 @@ def rollback_managed_update(
     if failed_ref:
         tx["failed_update_ref"] = failed_ref
         write_update_tx(tx)
-    rc0, _o0, e0 = _g.git_capture(["git", "reset", "--hard", "HEAD"])
-    if rc0 != 0:
-        return _fail(f"rollback reset failed before checkout: {e0}")
-    rc_clean0, _co0, ce0 = _g.git_capture(["git", "clean", "-fd"])
-    if rc_clean0 != 0:
-        return _fail(f"rollback clean failed before checkout: {ce0}")
-    rc1, _o1, e1 = _g.git_capture(["git", "checkout", "-B", branch, pre])
-    if rc1 != 0:
-        return _fail(f"rollback checkout -B {branch} {pre[:12]} failed: {e1}")
-    rc2, _o2, e2 = _g.git_capture(["git", "reset", "--hard", pre])
-    if rc2 != 0:
-        return _fail(f"rollback reset --hard {pre[:12]} failed: {e2}")
-    rc_clean, _co, clean_error = _g.git_capture(["git", "clean", "-fd"])
-    if rc_clean != 0:
-        return _fail(f"rollback clean failed: {clean_error}")
-    rc_h2, restored_head, head_error = _g.git_capture(["git", "rev-parse", "--verify", "HEAD"])
-    rc_b2, restored_branch, branch_error = _g.git_capture(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"]
-    )
-    rc_s2, restored_status, status_error = _g.git_capture(["git", "status", "--porcelain"])
-    if (
-        rc_h2 != 0
-        or restored_head != pre
-        or rc_b2 != 0
-        or restored_branch != branch
-        or rc_s2 != 0
-        or bool(restored_status.strip())
-        or bool(_merge_head_sha())
-        or not managed_update_constitution_present("HEAD")
-    ):
-        detail = head_error or branch_error or status_error or "rollback verification mismatch"
-        return _fail(f"rollback could not be verified: {detail}")
+    # These commands only reach the verified target below. A checkout that already IS it
+    # (read directly, never inferred from a refused first step) is left alone, so an index
+    # lock Git cannot take stops only a rollback that still has tree work to do.
+    in_place = not _rollback_target_unmet(pre, branch)
+    if not in_place:
+        for cmd, failure in (
+                (["git", "reset", "--hard", "HEAD"], "rollback reset failed before checkout"),
+                (["git", "clean", "-fd"], "rollback clean failed before checkout"),
+                (["git", "checkout", "-B", branch, pre], f"rollback checkout -B {branch} {pre[:12]} failed"),
+                (["git", "reset", "--hard", pre], f"rollback reset --hard {pre[:12]} failed"),
+                (["git", "clean", "-fd"], "rollback clean failed")):
+            rc, _out, error = _g.git_capture(cmd)
+            if rc != 0:
+                return _fail(f"{failure}: {error}")
+        detail = _rollback_target_unmet(pre, branch)
+        if detail:
+            return _fail(f"rollback could not be verified: {detail}")
     result = restore_stash_with_marker(tx, "rollback")
-    return _finish_rollback(tx, pre, branch, reason, result, reopen_writer_admission)
+    return _finish_rollback(tx, pre, branch, reason, result, reopen_writer_admission, in_place=in_place)
+
+
+def _rollback_target_unmet(pre: str, branch: str) -> str:
+    """Why the checkout is not the rollback target (``""`` when it is: HEAD at ``pre`` on ``branch``, clean
+    tree and index, no unfinished Git operation, constitution present). A clean index can still belong
+    to an empty cherry-pick; skipping reset then would leave that operation active."""
+    rc_h, head, head_error = _g.git_capture(["git", "rev-parse", "--verify", "HEAD"])
+    rc_b, current, branch_error = _g.git_capture(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    rc_s, status, status_error = _g.git_capture(["git", "status", "--porcelain"])
+    if (rc_h != 0 or head != pre or rc_b != 0 or current != branch or rc_s != 0 or status.strip()
+            or _merge_head_sha() or any((_g._git_dir() / name).exists() for name in (
+                "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer", "rebase-merge", "rebase-apply"))
+            or not managed_update_constitution_present("HEAD")):
+        return head_error or branch_error or status_error or "rollback verification mismatch"
+    return ""
 
 
 def _finish_rollback(
     tx: Dict[str, Any], pre: str, branch: str, reason: str,
-    result: StashRestoreResult, reopen_writer_admission: bool,
+    result: StashRestoreResult, reopen_writer_admission: bool, *, in_place: bool = False,
 ) -> Tuple[bool, str]:
-    """Finish the effect, retaining boot custody until the restored process starts."""
+    """Finish the effect, retaining boot custody until the restored process starts.
+    ``in_place``: the checkout was verified already at ``pre``; no rollback command rewrote it."""
     if not result.complete:
         return False, result.note
     from supervisor.git_ops_reset import _record_checkout_facts
@@ -559,7 +560,7 @@ def _finish_rollback(
     rescue = tx.get("rollback_rescue") if isinstance(tx.get("rollback_rescue"), dict) else {}
     if not _log_supervisor(
         {"type": "managed_update_rolled_back", "reason": reason,
-         "pre_update_sha": pre, "branch": branch,
+         "pre_update_sha": pre, "branch": branch, **({"checkout_already_restored": True} if in_place else {}),
          "stash_note": stash_note, "stash_restore_status": result.status,
          **({"failed_update_ref": tx["failed_update_ref"]} if tx.get("failed_update_ref") else {}),
          **{f"rescue_{key}": rescue[key] for key in ("path", "ref", "ts") if rescue.get(key)},
@@ -589,7 +590,8 @@ def _finish_rollback(
         except Exception:
             _g.log.warning("rollback restored the repository but could not reopen writer admission", exc_info=True)
             return False, "rollback restored the repository but could not reopen writer admission; " + stash_note
-    message = f"rolled back to {pre[:12]}"
+    message = f"rolled back to {pre[:12]}" + (
+        "; the checkout already matched it and needed no reset/checkout" if in_place else "")
     if tx.get("failed_update_ref"):
         message += f"; the attempt is preserved on branch {tx['failed_update_ref']}"
     if stash_note:
@@ -900,7 +902,8 @@ def _finalize_pending_boot_smoke(tx: Dict[str, Any], supervisor_ready: bool) -> 
     head_resolved = rc_h == 0 and bool(merge_commit)
     merge_in_head = head_resolved and (
         head == merge_commit
-        or _g.git_capture(["git", "merge-base", "--is-ancestor", merge_commit, "HEAD"])[0] == 0
+        or (tx.get("strategy") != "replace"  # a replace lands exactly; an older target is often HEAD's ancestor
+            and _g.git_capture(["git", "merge-base", "--is-ancestor", merge_commit, "HEAD"])[0] == 0)
     )
     if (
         bool(supervisor_ready)

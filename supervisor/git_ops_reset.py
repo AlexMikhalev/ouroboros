@@ -349,6 +349,13 @@ def _admission_gate_for_unsynced_tree(
     return None
 
 
+def _target_lacks_store(sha: str) -> bool:
+    """Whether ``sha`` is a tree the store switch must reach (``store_switch.switch_needs``)."""
+    from ouroboros.store_switch import switch_needs
+
+    return switch_needs(_go().REPO_DIR, sha)["facts"]
+
+
 def checkout_and_reset(branch: str, reason: str = "unspecified",
                        unsynced_policy: str = "ignore") -> Tuple[bool, str]:
     before_head = _go().git_capture(["git", "rev-parse", "HEAD"])[1].strip()
@@ -387,9 +394,12 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
                 )
             )
             if constitution_ok:
-                update_intent_target = intent_sha
-                target_ref = intent_sha
-                intent_keep_branch = str(update_intent.get("keep_branch") or "").strip()
+                # Only the authority switch's own door checkout reaches a store-less target, after its
+                # export; a bootstrap or restart replay leaves the armed intent to the boot finalizer.
+                if str(reason or "") == "ui_update_apply" or not _target_lacks_store(intent_sha):
+                    update_intent_target = intent_sha
+                    target_ref = intent_sha
+                    intent_keep_branch = str(update_intent.get("keep_branch") or "").strip()
             else:
                 cleared = _go()._clear_update_intent()
                 _go().append_jsonl(
@@ -635,8 +645,7 @@ def _checkout_outcome(branch: str, reason: str, unsynced_policy: str) -> Tuple[b
     """``checkout_and_reset`` whose Git refusal is a failed outcome, never a raise.
 
     Git explains the refusal (e.g. an ``index.lock`` another process holds or a
-    crash left); it is recorded once and returned in Git's own words. Earlier
-    commands of the same checkout may already have run.
+    crash left); it is recorded once and returned in Git's own words (``refusal_text``).
     """
     try:
         return _go().checkout_and_reset(branch, reason=reason, unsynced_policy=unsynced_policy)
@@ -650,20 +659,27 @@ def _checkout_outcome(branch: str, reason: str, unsynced_policy: str) -> Tuple[b
         return False, refusal_text(exc)
 
 
+def _git_said(exc: subprocess.CalledProcessError) -> str:
+    output = exc.stderr or exc.output or ""
+    return output.decode("utf-8", "replace") if isinstance(output, bytes) else str(output)
+
+
 def refusal_parts(exc: subprocess.CalledProcessError) -> Tuple[str, str]:
     """The refused command and Git's own stderr, each on one line."""
     cmd = " ".join(map(str, exc.cmd)) if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd)
-    output = exc.stderr or exc.output or ""
-    return cmd, " ".join((output.decode("utf-8", "replace") if isinstance(output, bytes) else str(output)).split())
+    return cmd, " ".join(_git_said(exc).split())
 
 
 def refusal_text(exc: BaseException) -> str:
-    """A checkout refusal in Git's words, claiming nothing about steps before it."""
+    """A checkout refusal: a headline line (the step, Git's own first line, what is known of the
+    tree), then Git's whole output on the next line. Owner notices show the headline only."""
     if not isinstance(exc, subprocess.CalledProcessError):
         return str(exc)
     cmd, detail = refusal_parts(exc)
-    return (f"`{cmd}` failed (exit {exc.returncode}); earlier checkout steps may already have "
-            f"changed the working tree. Git: {detail or 'no output'}")
+    first = next((" ".join(line.split()) for line in _git_said(exc).splitlines() if line.strip()), "no output")
+    scope = ("no checkout step had changed the working tree" if getattr(exc, "before_tree_effects", False)
+             else "earlier checkout steps may already have changed the working tree")
+    return f"`{cmd}` failed (exit {exc.returncode}): {first}; {scope}.\nGit: {detail or 'no output'}"
 
 
 def safe_restart(

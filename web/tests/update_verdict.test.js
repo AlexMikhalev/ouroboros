@@ -164,3 +164,19 @@ test('restart_needed is honest: no "update landed" claim, restart continuation k
     assert.match(v.headline, /needs a restart/);
     assert.equal(v.action?.id, 'restart');
 });
+
+test('restart verdicts are true for an applied update and for a deferred store-less replace alike', () => {
+    // A store-less replace moves its checkout only at the restart exit, so no restart verdict may
+    // claim the version already landed; each keeps the Restart continuation.
+    const phase = updateVerdict({ managed: true }, 'restart_required');
+    const progress = updateVerdict({ managed: true, update_progress: {
+        operation_id: 'op-1', active: false, result: 'restart_required', error: '' } }, '');
+    const pending = updateVerdict({ managed: true, update_tx: { active: true, phase: 'pending_boot_smoke' } }, '');
+    assert.equal(phase.headline, 'The update needs a restart that could not be requested automatically.');
+    assert.equal(progress.headline, phase.headline);
+    assert.equal(pending.headline, 'An update is waiting for a restart to finish.');
+    for (const view of [phase, progress, pending]) {
+        assert.doesNotMatch(view.headline, /landed|restored/i);
+        assert.equal(view.action?.id, 'restart');
+    }
+});

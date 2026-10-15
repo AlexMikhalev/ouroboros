@@ -84,7 +84,7 @@ function progressVerdict(data, base) {
     }
     if (progress.result === 'restart_required') {
         return { ...base, state: 'restart_required', tone: 'warn',
-            headline: 'The update landed, but the automatic restart failed.',
+            headline: 'The update needs a restart that could not be requested automatically.',
             hint: progress.error || 'Restart Ouroboros to finish.',
             action: { id: 'restart', label: 'Restart now' } };
     }
@@ -165,10 +165,11 @@ export function updateVerdict(data = {}, phase = '') {
     if (phase === 'preflighting') return { ...base, state: 'preflighting', tone: 'neutral', headline: 'Preparing the update…', hint: '', action: { id: 'update', label: 'Preparing…', disabled: true } };
     if (phase === 'updating') return { ...base, state: 'updating', tone: 'neutral', headline: 'Applying the update…', hint: '', action: { id: 'update', label: 'Updating…', disabled: true } };
     if (phase === 'restarting') return { ...base, state: 'restarting', tone: 'ok', headline: 'Restarting the server…', hint: 'This page updates itself when the server is back.', action: { id: 'restart', label: 'Restarting…', disabled: true } };
-    if (phase === 'restart_required') return { ...base, state: 'restart_required', tone: 'warn', headline: 'The update landed, but the automatic restart failed.', hint: 'Restart Ouroboros to finish.', action: { id: 'restart', label: 'Restart now' } };
-    // Distinct from restart_required ("the update landed"): the operation did
-    // NOT land — the runtime just cannot continue without a restart (failed
-    // writer fence, failed rollback, rollback landed without its restart).
+    if (phase === 'restart_required') return { ...base, state: 'restart_required', tone: 'warn', headline: 'The update needs a restart that could not be requested automatically.', hint: 'Restart Ouroboros to finish.', action: { id: 'restart', label: 'Restart now' } };
+    // Distinct from restart_required (the update is applied, or recorded for the restart exit when
+    // its target lacks the store, and only its restart is missing): here the operation did NOT
+    // complete — the runtime just cannot continue without a restart (failed writer fence, failed
+    // rollback, rollback landed without its restart).
     if (phase === 'restart_needed') return { ...base, state: 'restart_needed', tone: 'warn', headline: 'Ouroboros needs a restart before updates can continue.', hint: 'The last operation could not complete cleanly; restart, then retry.', action: { id: 'restart', label: 'Restart now' } };
 
     const unmanaged = data.managed === false
@@ -203,7 +204,7 @@ export function updateVerdict(data = {}, phase = '') {
             return {
                 ...base,
                 state: 'resolving', tone: 'warn',
-                headline: 'An update landed and is waiting for a restart to finish.',
+                headline: 'An update is waiting for a restart to finish.',
                 hint: 'Restart Ouroboros to run the post-update checks and complete it.',
                 action: { id: 'restart', label: 'Restart now' },
             };
@@ -881,12 +882,12 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
             });
             const data = await resp.json();
             if (data.status === 'ok') {
-                showToast(`Rollback successful: ${data.message}. Server is restarting...`, 'success');
+                showToast(`Rollback ${data.switch_deferred ? 'requested' : 'successful'}: ${data.message}. Server is restarting...`, 'success');
                 enterRestarting();
             } else if (data.status === 'restart_required') {
-                // A ROLLBACK landed, not an update: the update-specific
-                // restart_required headline would lie here.
-                showToast(`Rollback completed: ${data.message}. Restart Ouroboros to finish.`, 'error');
+                // A ROLLBACK, not an update: the update-specific restart_required headline
+                // would lie here. A store-less target moves only at the restart exit.
+                showToast(`Rollback ${data.switch_deferred ? 'recorded' : 'completed'}: ${data.message}. Restart Ouroboros to finish.`, 'error');
                 restartNeeded = true;
                 setPhase('restart_needed');
             } else {
@@ -974,10 +975,12 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
             }
             const data = await apiClient.updateApply('replace', plan, { confirmRecovery: true });
             if (data.status === 'restart_required') {
-                showToast('Recovery landed, but automatic restart failed. Restart Ouroboros to finish.', 'error');
+                showToast('Recovery needs a restart that could not be requested. Restart Ouroboros to finish.', 'error');
                 setPhase('restart_required');
             } else {
-                showToast('Official version restored. Server is restarting.', 'success');
+                // Neither outcome claims the version landed: a store-less target is checked out only
+                // at the restart exit, and boot smoke may still roll it back.
+                showToast('Restart requested to finish recovery with the official version.', 'success');
                 enterRestarting();
             }
         } catch (err) {

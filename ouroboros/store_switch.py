@@ -103,7 +103,8 @@ def report_outcomes(root: pathlib.Path, owner_chat_id: int) -> None:
         door = doors.get(intent.get("door"), "Version switch")
         target = intent.get("target_ref") or intent.get("target_sha") or "the requested version"
         reason = outcome.get("reason") or outcome.get("message") or "the app stopped before changing versions"
-        reason = " ".join(str(reasons.get(reason, reason)).split()).rstrip(".")
+        # The headline line only: Git's whole output stays in the receipt and progress record.
+        reason = " ".join((str(reasons.get(reason, reason)).splitlines() or [""])[0].split()).rstrip(".")
         msg = (f"{door} to {target} did not happen: {reason}. The app is running the current version. "
                "You can press that door again.")
         send_with_budget(owner_chat_id, msg, role="system", system_type="storage_switch_notice", require_write=True)
