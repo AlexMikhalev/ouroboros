@@ -238,7 +238,7 @@ def test_review_reference_producer_history_and_chat_reconnect_keep_tool_evidence
     import subprocess
     from ouroboros.gateway.history import make_chat_history_endpoint
     from ouroboros.tool_call_log import append_call_row
-    from ouroboros.tools.plan_review_references import _emit_plan_review_reference
+    from ouroboros.tools.plan_review_references import _emit_review_reference
     from ouroboros.utils import append_jsonl
 
     task_id = "turn-a"
@@ -250,7 +250,7 @@ def test_review_reference_producer_history_and_chat_reconnect_keep_tool_evidence
             "invocation_id": invocation, "tool_call_id": "reused-provider-id", "tool": "read_file",
             "is_error": event == "tool_call_timeout", "status": "ok"})["task_log"]
     owner = SimpleNamespace(drive_root=tmp_path, current_chat_id=1, task_metadata={}, event_queue=None)
-    _emit_plan_review_reference(owner, task_id, {"current_attempt": {"fingerprint": "plan-1"}})
+    _emit_review_reference(owner, task_id, {"asks": [{"ask_id": "a1"}]}, surface="plan_review", fingerprint="plan-1")
     response = asyncio.run(make_chat_history_endpoint(tmp_path)(SimpleNamespace(query_params={"limit": "10"})))
     payload = json.loads(response.body)
     latest = payload["messages"][-1]

@@ -264,17 +264,6 @@ def test_the_triad_session_task_addresses_chapters_never_the_membership_page():
     assert "## ARCHITECTURE.md (navigation map)" in without
 
 
-def test_a_non_constitutional_plan_pointer_maps_the_chapters(tmp_path):
-    from ouroboros.tools.plan_review_runtime import _architecture_navigation
-
-    mapped = _architecture_navigation(REPO, "unused")
-    assert "Source: `docs/architecture/01-high-level-architecture.md`" in mapped
-    # An unreadable book falls back to mapping the supplied text rather than
-    # dropping the architecture pointer entirely.
-    fallback = _architecture_navigation(tmp_path, "# Doc\n\n## Section\n\nBody\n")
-    assert "## ARCHITECTURE.md (navigation map)" in fallback and "Section" in fallback
-
-
 def test_the_scope_session_governance_map_addresses_chapters():
     from ouroboros.tools.governance_context import governance_context
 

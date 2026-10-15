@@ -259,6 +259,55 @@ def test_legacy_closed_wave_and_advisory_author_selection_bind_as_done_when():
 
 
 
+def test_only_an_advisory_author_finish_binds_and_a_blocking_one_waits_for_its_wave():
+    """The old organ honoured an author's ``finish`` selection only under Advisory; under
+    Blocking the claims bind only once the wave the attempt names had closed."""
+    plan = {"spec": {"acceptance_claims": ["selected by the author"]}}
+    blocking = pr.import_legacy_v2(_v2_state(closed=False), author_plan={
+        **plan, "author_disposition": {"action": "finish", "enforcement": "blocking"}})
+    assert blocking["done_when"] == [] and blocking["done_when_source"] == ""
+    advisory = pr.import_legacy_v2(_v2_state(closed=False), author_plan={
+        **plan, "author_disposition": {"action": "finish", "enforcement": "advisory"}})
+    assert advisory["done_when_source"] == "legacy_author_plan"
+    stopped = pr.import_legacy_v2(_v2_state(closed=True), author_plan={
+        **plan, "author_disposition": {"action": "stop", "enforcement": "advisory"}})
+    assert stopped["done_when_source"] == "legacy_closed_wave" and [c["claim"] for c in stopped["done_when"]] == ["a", "b"]
+
+
+def _v1_state(kind, claims=None):
+    fp = "a" * 64
+    state = {"schema_version": 1, "current_attempt": {}, "latest_review_fingerprint": "", "waves": []}
+    if kind == "absent":
+        return state
+    state["current_attempt"] = {"fingerprint": fp, "status": "open", "reason": ""}
+    state["latest_review_fingerprint"] = fp
+    state["waves"] = [{"request_fingerprint": fp, "phase": "reviewed", "review_evidence_status": "integrated",
+                       "review": {"aggregate_signal": "GREEN" if kind == "closed" else "REVIEW_REQUIRED", "closed": kind == "closed"},
+                       **({"acceptance_claims": claims} if claims else {})}]
+    return state
+
+
+def test_a_v1_record_reads_as_kept_history_and_imports_read_only(tmp_path):
+    """A schema-1 record loads wrapped (``legacy_v1``, never migrated); the importer reads it: an
+    open v1 wave is engaged and binds nothing, a closed one binds its claims with legacy
+    provenance, an absent one is not engaged."""
+    from ouroboros.task_results import PLAN_REVIEW_STATE_KEY, load_plan_review_state
+
+    seed_result(tmp_path, "v1", {"task_id": "v1", "status": "completed", PLAN_REVIEW_STATE_KEY: _v1_state("closed", ["old claim"])})
+    state = load_plan_review_state(tmp_path, "v1")
+    assert state["schema_version"] == 2 and state["legacy_v1"]["schema_version"] == 1 and state["waves"] == []
+    closed = pr.import_legacy_v2(state)
+    assert closed["engaged"] is True and closed["done_when_source"] == "legacy_closed_wave"
+    claims, source, exhibit = pr.acceptance_view(pr.empty_record(), [], legacy=closed)
+    assert [c["claim"] for c in claims] == ["old claim"] and source == "plan_review" and exhibit["binding"] == "legacy_closed_wave"
+    seed_result(tmp_path, "v1-open", {"task_id": "v1-open", "status": "running", PLAN_REVIEW_STATE_KEY: _v1_state("open", ["unreviewed"])})
+    opened = pr.import_legacy_v2(load_plan_review_state(tmp_path, "v1-open"))
+    assert opened["engaged"] is True and opened["done_when"] == [] and opened["open_objections"] == []
+    assert pr.acceptance_view(pr.empty_record(), [], legacy=opened)[2]["binding"] == "none"
+    seed_result(tmp_path, "v1-absent", {"task_id": "v1-absent", "status": "running", PLAN_REVIEW_STATE_KEY: _v1_state("absent")})
+    assert pr.import_legacy_v2(load_plan_review_state(tmp_path, "v1-absent"))["engaged"] is False
+
+
 def test_legacy_in_flight_wave_is_one_pending_ask_that_discloses_and_never_holds():
     """An in-flight v2 wave at upgrade: its unanswered reviewers are ONE pending ask the final
     answer discloses (silence never holds); a blocking finding already landed still holds."""

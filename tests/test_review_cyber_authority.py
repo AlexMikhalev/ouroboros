@@ -6,12 +6,12 @@ import json
 import pytest
 
 from ouroboros import config
-from ouroboros.tools import git, plan_review_legacy as plan_review
+from ouroboros.tools import git
 from ouroboros.tools.parallel_review import aggregate_review_verdict
 from ouroboros.tools.review_helpers import review_enforcement_blocks
 from ouroboros.review_ledger import CouplingOutcome
 from tests.test_git_review_preflight_gate import candidate  # noqa: F401
-from tests.test_plan_review_engine import harness, _call, _state  # noqa: F401
+from tests.test_plan_task_tool import harness  # noqa: F401 — the planning organ's fixture
 
 
 @pytest.fixture(params=["pro", "cyber_pro"])
@@ -183,45 +183,6 @@ def test_skill_author_can_finish_without_fabricating_first_feedback(tmp_path, ac
     save_enabled(ctx.drive_root, "demo", True)
     actual = json.loads(skill_exec._handle_skill_exec(ctx, skill="demo", script="hello.py"))
     assert actual["exit_code"] == 0 and "hello from skill" in actual["stdout"]
-
-
-def test_plan_author_finish_preserves_degraded_wave(harness, access, monkeypatch):  # noqa: F811
-    from ouroboros.tools.plan_review_artifacts import read_wave
-
-    sub = harness.install({"s1": "", "s2": "", "s3": ""})
-    ctx = harness.make_ctx()
-    _call(ctx)
-    before = _state(harness)["waves"][-1]
-    fingerprint = before["request_fingerprint"]
-    result = plan_review._apply_disposition(ctx, {
-        "review_fingerprint": fingerprint, "items": [],
-        "author_disposition": {"disposition": "deferred", "rationale": "Proceed with available evidence."},
-    })
-    after = _state(harness)["waves"][-1]
-    assert len(sub.calls) == 1
-    assert after["aggregate"] == before["aggregate"] == "DEGRADED"
-    assert after["closed"] is False
-    if access == "cyber_pro":
-        exact = read_wave(harness.drive, ctx.task_id, after["wave_artifact"])
-        assert exact["author_disposition"]["enforcement"] == "blocking"
-        assert "Cyber Pro" in result
-    else:
-        assert "DISPOSITION_INVALID" in result
-
-
-@pytest.mark.parametrize("state", [None, {}, {"schema_version": 2, "current_attempt": {"fingerprint": "fp", "status": "open"}}])
-def test_plan_projection_preserves_unknown_evidence(access, state):
-    from ouroboros.task_results import plan_review_gate_projection
-
-    before = copy.deepcopy(state)
-    result = plan_review_gate_projection(state, "blocking")
-    assert result["allow"] == (access == "cyber_pro")
-    assert result["enforcement"] == "blocking"
-    assert result["outcome"] == "" and not result["closed"]
-    assert state == before
-    if access == "cyber_pro":
-        assert result["decision_authority"] == "cyber_pro"
-        assert result["review_status"] in {"invalid", "absent", "open"}
 
 
 def test_real_force_plan_decision_uses_cyber_authority(harness, access):  # noqa: F811

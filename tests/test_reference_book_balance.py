@@ -1,7 +1,7 @@
 """The reference-book balance: a fact on every local surface, never a gate (BIBLE P3 c5).
 
 The official CI lane (tests/test_reference_book_budgets.py) is what refuses a grown book;
-here the same measurement reaches Ouroboros when it writes book text, plans book work,
+here the same measurement reaches Ouroboros when it writes book text,
 runs the commit gate's free checks before a paid reviewer and asks for codebase health.
 """
 from __future__ import annotations
@@ -17,20 +17,17 @@ from ouroboros.reference_books import (
     BOOK_GROWTH_RULE,
     book_balance_note,
     book_balances,
-    book_plan_fact,
     book_source_sizes,
     compose_book,
     composed_size,
     load_reference_book,
     render_book_balance,
 )
-from tests.test_plan_review_engine import CLEAN, DECK_SPEC, _call, harness as _engine_harness
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 CHAPTER = "docs/architecture/01-one.md"
 ENTRY = "# Architecture\n\nThe map.\n\n## Chapters\n\n- [One](architecture/01-one.md)\n"
 BODY = "# One\n\nThe first chapter.\n\nP1 honest and long enough to shorten.\n"
-harness = _engine_harness
 
 
 def _git(root, *args):
@@ -319,49 +316,6 @@ def test_a_foreign_project_or_a_non_book_path_gets_no_balance(tmp_path, monkeypa
              "edit_batch": {"edits": [{"path": "notes.md", "old_str": "notes", "new_str": "notes, more"}]}}[tool]
     body = str(_registry(tmp_path / "b", external=False).execute(tool, plain))
     assert body.startswith("✅") and "Reference book" not in body, body[:300]
-
-
-def test_plan_fact_names_book_sources_and_new_modules_only(tmp_path):
-    repo = _book_repo(tmp_path)
-    chapter = book_plan_fact(repo, [CHAPTER])
-    assert chapter.startswith("FACT:") and "docs/ARCHITECTURE.md" in chapter and BOOK_GROWTH_RULE in chapter
-    module = book_plan_fact(repo, ["ouroboros/new_module.py"])
-    assert "new module(s) ouroboros/new_module.py" in module and "Architecture-book source" in module
-    assert book_plan_fact(repo, ["ouroboros/loop.py", "notes.md", "tests/test_new.py"]) == ""
-
-
-def test_plan_task_carries_the_book_fact_for_a_system_repo_plan_only(harness):
-    harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
-    chapter = {**DECK_SPEC, "affected_paths": [str(harness.system / "docs" / "architecture" / "06-agent-core.md")]}
-    assert "FACT: affected_paths name book sources of docs/ARCHITECTURE.md" in _call(harness.make_ctx(), spec=chapter)
-    module = {**DECK_SPEC, "affected_paths": [str(harness.system / "ouroboros" / "brand_new.py")]}
-    assert "new module(s) ouroboros/brand_new.py" in _call(harness.make_ctx(task_id="task-2"), spec=module)
-    existing = {**DECK_SPEC, "affected_paths": [str(harness.system / "ouroboros" / "loop.py")]}
-    assert "FACT: affected_paths" not in _call(harness.make_ctx(task_id="task-3"), spec=existing)
-    workspace = {**DECK_SPEC, "affected_paths": [str(harness.workspace / "docs" / "architecture" / "01-x.md")]}
-    assert "FACT: affected_paths" not in _call(harness.make_ctx(task_id="task-4"), spec=workspace)
-
-
-def test_plan_task_measures_a_bound_body_candidate(harness):
-    import shutil
-
-    harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
-    candidate = harness.system.parent / "candidate"
-    shutil.copytree(harness.system, candidate)
-
-    def bound(task_id):
-        ctx = harness.make_ctx(active_workspace=False, task_id=task_id)
-        ctx.serving_repo_dir = harness.system
-        ctx.repo_dir = ctx.system_repo_dir = candidate
-        ctx.task_metadata["body_candidate"] = {"path": str(candidate)}
-        return ctx
-
-    chapter = {**DECK_SPEC, "affected_paths": ["docs/architecture/01-one.md"]}
-    assert "FACT: affected_paths name book sources of docs/ARCHITECTURE.md" in _call(bound("c-1"), spec=chapter)
-    module = {**DECK_SPEC, "affected_paths": ["supervisor/brand_new.py"]}
-    assert "new module(s) supervisor/brand_new.py" in _call(bound("c-2"), spec=module)
-    existing = {**DECK_SPEC, "affected_paths": ["ouroboros/loop.py"]}
-    assert "FACT: affected_paths" not in _call(bound("c-3"), spec=existing)
 
 
 @pytest.mark.serial

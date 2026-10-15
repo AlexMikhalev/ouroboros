@@ -396,24 +396,23 @@ def test_run_llm_loop_enforces_swarm_force_plan_before_final(tmp_path, monkeypat
         if tool_calls[0]["function"]["name"] != "plan_task":
             return real_handle_tool_calls(tool_calls, _tools, _drive_logs, _task_id, _executor, request_messages, trace, _progress,
                                           fit_candidate=fit_candidate, tool_schemas=tool_schemas)
-        from ouroboros.task_results import STATUS_RUNNING, record_plan_review_wave, write_task_result
+        from ouroboros import plan_record
+        from ouroboros.task_results import STATUS_RUNNING, write_task_result
 
-        fingerprint = "a" * 64
+        # The plan was written and asked: one participant answered (the obligation is met).
         write_task_result(tmp_path, "task1", STATUS_RUNNING, result="running")
-        record_plan_review_wave(tmp_path, "task1", {
-            "schema_version": 2, "cycle_index": 1, "request_fingerprint": fingerprint,
-            "spec": {"goal": "g"}, "spec_hash": "b" * 64, "findings": [], "aggregate": "GREEN",
-            "closed": True, "dispositions": [], "paid": True,
-        })
+        plan_record.append_revision(tmp_path, "task1", plan_record.compose_revision(
+            None, goal="g", plan="p", done_when=["ship"], affected_paths=[]), body=False)
+        plan_record.append_ask(tmp_path, "task1", {"ask_id": "a1", "ts": "t", "revision": 1, "message": "", "participants": [
+            {"seat_id": "s1", "model": "m", "owner_marked": True, "dispatched": True, "status": "answered",
+             "reply": {"prose": "fine", "objections": [], "withdrawn": []}}]})
         trace["tool_calls"].append({
             "tool": tool_calls[0]["function"]["name"],
             "args": {},
-            "result": "## Plan Review Results\n\nAGGREGATE: GREEN",
+            "result": "Ask a1 on revision 1: sent to s1 (m).",
             "is_error": False,
-            "plan_review_outcome": "GREEN",
-            "plan_review_closed": True,
         })
-        request_messages.append({"role": "tool", "tool_call_id": tool_calls[0]["id"], "content": "## Plan Review Results\n\nAGGREGATE: GREEN"})
+        request_messages.append({"role": "tool", "tool_call_id": tool_calls[0]["id"], "content": "Ask a1 on revision 1: sent to s1 (m)."})
         return 0
 
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
@@ -495,10 +494,13 @@ def test_run_llm_loop_does_not_accept_failed_plan_task_for_swarm_force_plan(tmp_
         if tool_calls[0]["function"]["name"] != "plan_task":
             return real_handle_tool_calls(tool_calls, _tools, _drive_logs, _task_id, _executor, request_messages, trace, _progress,
                                           fit_candidate=fit_candidate, tool_schemas=tool_schemas)
-        from ouroboros.task_results import STATUS_RUNNING, record_plan_review_attempt, write_task_result
+        from ouroboros import plan_record
+        from ouroboros.task_results import STATUS_RUNNING, write_task_result
 
+        # A plan exists, but its ask reached no reviewer (the planning call failed).
         write_task_result(tmp_path, "task1", STATUS_RUNNING, result="running")
-        record_plan_review_attempt(tmp_path, "task1", fingerprint="d" * 64)
+        plan_record.append_revision(tmp_path, "task1", plan_record.compose_revision(
+            None, goal="g", plan="p", done_when=["ship"], affected_paths=[]), body=False)
         trace["tool_calls"].append({
             "tool": tool_calls[0]["function"]["name"],
             "args": {},

@@ -46,6 +46,21 @@ def _content(**over):
     return plan_packet.build_participant_content(**fields)
 
 
+def test_the_cache_stable_prefix_is_byte_identical_across_asks_while_the_plan_and_council_change():
+    """The cache boundary must be real: the objective, the owner's words and the room snapshot are
+    byte-identical between a first ask and a later one even though the revision, its delta, the
+    council's talk and the participant's own objections all differ (they do on every later ask)."""
+    first = _content()
+    later = _content(revision={**REVISION, "n": 2, "plan": "a different approach"}, first_time=False,
+                     delta={"first": False, "from": 1, "to": 2, "plan_changed": True, "plan_diff": ["-old", "+new"]},
+                     cross_talk="### Ask a1\nOuroboros asked: look\n- s2 answered:\n  fine\n",
+                     own_objections=[{"id": "o1", "text": "the bar", "raised_in": "a1", "revision": 1}], message="Second look.")
+    a, b = plan_packet.plan_user_stable_len(first), plan_packet.plan_user_stable_len(later)
+    assert a > 0 and first[:a] == later[:b], "the cached prefix must not depend on the plan or the council's talk"
+    assert "make it good" in first[:a] and "rows" in first[:a]
+    assert first != later and "a different approach" in later[b:] and "a different approach" not in first
+
+
 def test_first_time_content_is_whole_and_ordered():
     content = _content()
     order = ["## TASK OBJECTIVE", "## OWNER WORDS", "## OWN ROOM DIALOGUE", "## THE PLAN", "### Goal", "### done_when",
@@ -133,3 +148,33 @@ def test_the_shipped_checklist_speaks_the_reply_contract_and_rides_the_stable_pr
     prompt = plan_packet.build_stable_prompt(checklist_section=section, body=False, enforcement="blocking")
     assert section in prompt and "## Reply contract" in prompt and '"withdrawn"' in prompt
 
+
+
+def test_the_seat_line_follows_the_cache_stable_prefix_on_every_packet_seat(monkeypatch):
+    """Each packet seat's send ends with its own seat AFTER the cache-stable prefix (which stays
+    byte-identical across seats), and the recorded cache split is that same boundary."""
+    from types import SimpleNamespace
+
+    from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.tools import review_synthesis
+    from ouroboros.tools.plan_dialogue import dialogue_slot_inputs
+    from tests._review_substrate_shared import user_text
+
+    packet = _content()
+
+    def slot(name):
+        return SimpleNamespace(slot_id=name, model="same/model", role_hint="plan reviewer", use_local=False,
+                               session_profile=name, route=ReviewRouteKind.API_CHAT, retrieves=False, native_retrieval=False)
+
+    monkeypatch.setattr(review_synthesis, "per_slot_input_token_limits", lambda *a, **k: {"a": 200000, "b": 200000})
+    delivery = dialogue_slot_inputs([slot("a"), slot("b")], system_prompt="stable part", user_content=packet,
+                                    session_task=packet, manifest={}, slot_messages={}, native_mandatory_chars=len(packet),
+                                    task_id="task-1", output_contract=plan_packet.PLAN_REPLY_CONTRACT)
+    sent = {sid: user_text(delivery["slot_messages"][sid][-1]["content"]) for sid in ("a", "b")}
+    boundary = plan_packet.plan_user_stable_len(packet)
+    assert boundary > 0 and sent["a"][:boundary] == sent["b"][:boundary] == packet[:boundary]
+    assert sent["a"].endswith("\n## YOUR PANEL SEAT\n\n`a`\n") and sent["b"].endswith("\n## YOUR PANEL SEAT\n\n`b`\n")
+    assert sent["a"].index("## YOUR PANEL SEAT") > sent["a"].index("## THE PLAN")
+    blocks = delivery["slot_messages"]["a"][-1]["content"]
+    assert isinstance(blocks, list) and blocks[0]["text"] == packet[:boundary] and blocks[-1]["text"].endswith("`a`\n")
+    assert delivery["request_policy"]["output_contract"] == plan_packet.PLAN_REPLY_CONTRACT

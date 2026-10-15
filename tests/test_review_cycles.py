@@ -575,3 +575,62 @@ def test_docs_describe_shared_key_and_new_module_size():
     assert len(module_lines) <= 200
     config_lines = (REPO / "ouroboros" / "config.py").read_text(encoding="utf-8").splitlines()
     assert len(config_lines) <= 1600
+
+
+# ------------------------------------------------- acceptance at the shared cap (D27)
+
+
+def _acceptance_ctx(tmp_path, *, passes_done, events=None):
+    import ouroboros.loop as loop_mod
+
+    tool_ctx = types.SimpleNamespace(
+        _task_acceptance_reviewed=False, _task_acceptance_improvement_passes=passes_done,
+        drive_root=str(tmp_path), budget_drive_root=str(tmp_path), task_id="acc-1",
+        task_metadata={}, task_contract={}, is_direct_chat=False, event_queue=events,
+        end_acceptance_fence=lambda **_k: {"ok": True}, _task_acceptance_fence_token="tok",
+    )
+    return loop_mod._TaskAcceptanceContext(
+        tools=types.SimpleNamespace(_ctx=tool_ctx), content="done", task_id="acc-1", task_type="task",
+        llm_trace={"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}, drive_root=None,
+        messages=[{"role": "user", "content": "goal"}], emit_progress=lambda _m, *, incident=None: None, mode="required",
+        subtree_statuses=[], budget_profile={}, passes_done=passes_done,
+    )
+
+
+def _fail_result():
+    import ouroboros.review_substrate as rs
+
+    return rs.ReviewRunResult(
+        request={"surface": "task_acceptance", "policy": {"min_successful_slots": 1}},
+        actors=[{"slot_id": "s0", "signal": "FAIL", "parsed": {
+            "verdict": "FAIL", "outcome_tier": "best_effort", "completion_coach": "fix it",
+            "dialogue_status": "continue_actionable"}}],
+        parsed_findings=[{"slot_id": "s0", "severity": "critical", "item": "broken",
+                          "recommendation": "fix", "verdict": "FAIL"}],
+        aggregate_signal="FAIL",
+    )
+
+
+@pytest.mark.parametrize("enforcement", ["blocking", "advisory"])
+def test_last_paid_acceptance_result_returns_to_author(tmp_path, monkeypatch, enforcement):
+    import ouroboros.loop as loop_mod
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
+    monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: enforcement)
+    ctx = _acceptance_ctx(tmp_path, passes_done=1)
+    assert loop_mod._apply_task_acceptance_result(ctx, _fail_result(), record_run=True) is True
+    assert ctx.llm_trace["acceptance_decision"]["status"] == "revision_requested"
+    assert ctx.llm_trace["review_runs"][-1]["aggregate_signal"] == "FAIL"
+    assert ctx.messages[-1]["review_feedback"]
+
+
+def test_explicit_author_limit_still_binds(monkeypatch):
+    from ouroboros import task_pacing
+    from ouroboros.contracts.task_contract import normalize_budget_profile
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
+    snap = task_pacing.BudgetSnapshot(has_deadline=False)
+    shared = normalize_budget_profile({})
+    assert task_pacing.improvement_pass_allowed(snap, 1, shared, required_blocking=True) == (True, "")
+    explicit = normalize_budget_profile({"max_improvement_passes": 0})
+    assert task_pacing.improvement_pass_allowed(snap, 0, explicit, required_blocking=True) == (False, "improvement_passes_exhausted")

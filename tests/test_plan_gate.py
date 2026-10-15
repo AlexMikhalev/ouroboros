@@ -119,6 +119,17 @@ def test_an_unreadable_record_is_engaged_not_absent(tmp_path, monkeypatch):
     assert "cannot be read" in oh.plan_review_reminder(decision)
 
 
+def test_an_unreadable_legacy_state_is_engaged_not_absent(tmp_path, monkeypatch):
+    """I-17 fail-closed symmetry for the earlier-schema authority: a gate that cannot read a task's
+    v1/v2 ``plan_review_state`` is engaged, never absent; the same task read cleanly needs nothing."""
+    _seed(tmp_path)
+    assert oh.force_plan_decision(_ctx(tmp_path), {}, enforcement="blocking")["status"] == "not_required"
+    monkeypatch.setattr("ouroboros.task_results.load_plan_review_state",
+                        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("PLAN_REVIEW_STATE_INVALID: corrupt")))
+    decision = oh.force_plan_decision(_ctx(tmp_path), {}, enforcement="blocking")
+    assert decision["required"] is True and decision["allow"] is False and decision["status"] == "unreadable"
+
+
 # ---------------------------------------------------------------- legacy v2 records
 
 def _v2(fingerprint="f" * 64, *, closed, blocking=("triad_old",)):

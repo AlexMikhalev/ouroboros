@@ -504,22 +504,14 @@ def test_packet_budget_is_memoised_once_per_task(tmp_path, monkeypatch):
 # ── AP5: ONE binder — ingress claims win, else the plan's latest promises; an open legacy wave binds nothing ──
 
 def _record_wave(root: Path, task_id: str, *, closed: bool, cycle: int = 1) -> None:
-    from ouroboros.task_results import record_plan_review_wave
+    """A legacy (v2) wave as finished installs hold it, planted directly (the retired writer is gone)."""
+    from tests import _legacy_plan_shared as legacy
 
-    record_plan_review_wave(root, task_id, {
-        "schema_version": 2,
-        "cycle_index": cycle,
-        "request_fingerprint": f"{cycle:064x}",
-        "spec": {"goal": "g", "acceptance_claims": [
+    legacy.seed_plan_review_state(root, task_id, legacy.v2_state(legacy.wave(
+        cycle, spec={"goal": "g", "acceptance_claims": [
             {"id": "claim_1", "claim": "the widget renders", "priority": "must"},
             {"id": "claim_2", "claim": "the counter increments", "priority": "should"},
-        ]},
-        "findings": [],
-        "aggregate": "GREEN" if closed else "REVISE_PLAN",
-        "closed": closed,
-        "paid": True,
-        "dispositions": [],
-    })
+        ]}, aggregate="GREEN" if closed else "REVISE_PLAN", closed=closed)))
 
 
 def test_an_open_plan_wave_is_disclosed_as_binding_nothing():

@@ -241,14 +241,14 @@ def test_budget_exhaustion_projects_deferred_child_before_forced_return(
 def test_blocking_open_plan_round_rail_preserves_useful_candidate(tmp_path, monkeypatch):
     from ouroboros.task_results import (
         STATUS_RUNNING,
-        record_plan_review_attempt,
         write_task_result,
     )
+    from tests import _legacy_plan_shared as legacy
 
     loop, registry, limit_ctx, trace = _forced_test_context(tmp_path)
     registry._ctx.task_metadata["force_plan"] = True
     write_task_result(tmp_path, "parent1", STATUS_RUNNING, result="running")
-    record_plan_review_attempt(tmp_path, "parent1", fingerprint="a" * 64)
+    legacy.seed_plan_review_state(tmp_path, "parent1", legacy.v2_state(current="a" * 64))
     loop._replace_delivery_candidate(
         registry,
         limit_ctx,

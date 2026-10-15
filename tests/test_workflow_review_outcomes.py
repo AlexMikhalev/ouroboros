@@ -69,32 +69,6 @@ def test_commit_finish_requires_received_outcome(candidate, monkeypatch, basis):
 
 
 from types import SimpleNamespace
-from tests.test_plan_review_engine import harness, _call  # noqa: F401
-from ouroboros.task_results import load_plan_review_state
-from ouroboros.tools import plan_review_legacy as pr
-
-
-def test_no_feedback_pending_plan_cannot_author_finish(harness, monkeypatch):  # noqa: F811
-    h = harness
-    h.state['enforcement'] = 'advisory'
-    monkeypatch.setenv('OUROBOROS_REVIEW_ENFORCEMENT', 'advisory')
-    monkeypatch.setenv('OUROBOROS_REVIEW_MAX_CYCLES', '1')
-    import ouroboros.review_substrate as review_substrate
-    def substrate(request, *, slots, drive_root, llm, usage_ctx=None):
-        return SimpleNamespace(actors=[{
-            'slot_id':slot.slot_id,'model':slot.model,'status':'error','raw_text':'',
-            'error':'logical wait expired','usage':{'physical_attempt_state':'dispatched'},
-            'prompt_ref':{},'response_ref':{},'operation_id':f'op-{slot.slot_id}',
-            'operation_state':'in_flight','late_result_pending':True} for slot in slots])
-    monkeypatch.setattr(review_substrate, 'run_review_request', substrate)
-    ctx = h.make_ctx()
-    _call(ctx)
-    wave = load_plan_review_state(h.drive, ctx.task_id)['waves'][-1]
-    assert wave['custody_pending'] and not wave['findings']
-    second = pr._handle_plan_task(ctx, review_disposition={
-        'review_fingerprint':wave['request_fingerprint'],'items':[], 'author_action':'finish',
-        'author_disposition':{'disposition':'accepted','rationale':'Proceed without reviewer feedback.'}})
-    assert 'Advisory author finish permits proceeding' not in second, 'Accepted plan with every reviewer unresolved and no feedback'
 
 
 def test_unavailable_triad_requires_author_handback(candidate, monkeypatch):  # noqa: F811
@@ -140,34 +114,6 @@ def test_received_outcome_keeps_live_custody_distinct(rows, terminal, expected):
     assert rows == before
 
 
-@pytest.mark.parametrize("action", ["finish", "stop"])
-def test_plan_all_pending_retains_custody_and_allows_stop(harness, monkeypatch, action):  # noqa: F811
-    import ouroboros.review_substrate as substrate
-    h = harness
-    h.state["enforcement"] = "advisory"
-    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
-    def running(request, *, slots, **kwargs):
-        return SimpleNamespace(actors=[{"slot_id": slot.slot_id, "status": "error", "raw_text": "",
-            "operation_state": "pending_dispatch", "operation_id": "held-" + slot.slot_id,
-            "late_result_pending": True, "error": "No response yet"} for slot in slots])
-    monkeypatch.setattr(substrate, "run_review_request", running)
-    ctx = h.make_ctx()
-    _call(ctx)
-    before = load_plan_review_state(h.drive, ctx.task_id)
-    wave = before["waves"][-1]
-    result = pr._handle_plan_task(ctx, review_disposition={
-        "review_fingerprint": wave["request_fingerprint"], "items": [], "author_action": action,
-        "author_disposition": {"disposition": "deferred", "rationale": "Keep all original review operations."}})
-    after = load_plan_review_state(h.drive, ctx.task_id)
-    assert ("Current author plan saved" in result) is (action == "stop")
-    from ouroboros.tools.plan_review_artifacts import authority_wave
-    assert len(after["waves"]) == len(before["waves"])
-    for old, new in zip(before["waves"], after["waves"]):
-        assert old["wave_artifact"] == new["wave_artifact"]
-        assert authority_wave(h.drive, ctx.task_id, old) == authority_wave(h.drive, ctx.task_id, new)
-    assert after["cycles_paid"] == before["cycles_paid"]
-
-
 def test_invalid_task_author_action_publishes_typed_error(tmp_path, monkeypatch):
     from ouroboros.tools.registry import ToolRegistry
     from ouroboros.tools.tool_result import ToolResult
@@ -196,54 +142,6 @@ def test_clean_commit_path_and_structured_advice_are_distinct(candidate, monkeyp
     assert result["status"] == ("passed" if kind == "clean" else "reviewed")
     # Every dispatched wave leaves one durable review ledger record the result names.
     assert (result if kind == "clean" else result["review_reference"])["review_record_id"]
-
-
-@pytest.mark.parametrize("basis", ["partial", "custody_lost", "explicit_prior", "unrelated_prior"])
-def test_plan_choice_uses_only_its_named_outcome(harness, monkeypatch, basis):  # noqa: F811
-    import ouroboros.review_substrate as substrate
-    from tests.test_plan_review_engine import _finding
-    h = harness
-    h.state["enforcement"] = "advisory"
-    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
-    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "unlimited")
-    ctx = h.make_ctx()
-    criticism = json.dumps([_finding("amount", "blocking", breaks="claim_1")])
-    prior_fp = ""
-    if basis in {"explicit_prior", "unrelated_prior"}:
-        h.install({slot: criticism for slot in ("s1", "s2", "s3")})
-        _call(ctx)
-        prior_fp = load_plan_review_state(h.drive, ctx.task_id)["waves"][-1]["request_fingerprint"]
-    calls = []
-    def current(request, *, slots, **kwargs):
-        calls.append(request)
-        actors = []
-        for index, slot in enumerate(slots):
-            received = basis == "partial" and index == 0
-            state = "settled" if received else "custody_lost" if basis == "custody_lost" else "in_flight"
-            actors.append({"slot_id": slot.slot_id, "status": "ok" if received else "error",
-                "raw_text": criticism if received else "", "error": "" if received else "Outcome unavailable",
-                "operation_id": "current-" + slot.slot_id, "operation_state": state,
-                "late_result_pending": not received})
-        return SimpleNamespace(actors=actors)
-    monkeypatch.setattr(substrate, "run_review_request", current)
-    _call(ctx, plan="A distinct plan whose review is still being collected.")
-    before = load_plan_review_state(h.drive, ctx.task_id)
-    wave = before["waves"][-1]
-    if basis == "partial":
-        assert wave["custody_pending"] and wave["counts"]["parseable"] == 1
-        assert wave["actors"][0]["ok"] is True and wave["findings"]
-    result = _call(ctx, plan="Current author-selected revised plan.", review_disposition={
-        "review_fingerprint": prior_fp if basis == "explicit_prior" else wave["request_fingerprint"],
-        "items": [], "author_action": "finish",
-        "author_disposition": {"disposition": "partial", "rationale": "I am responding to the explicitly named outcome."}})
-    assert ("Current author plan saved" in result) is (basis != "unrelated_prior"), result
-    after = load_plan_review_state(h.drive, ctx.task_id)
-    assert len(calls) == 1 and after["cycles_paid"] == before["cycles_paid"]
-    from ouroboros.tools.plan_review_artifacts import authority_wave
-    assert len(after["waves"]) == len(before["waves"])
-    for old, new in zip(before["waves"], after["waves"]):
-        assert old["wave_artifact"] == new["wave_artifact"]
-        assert authority_wave(h.drive, ctx.task_id, old) == authority_wave(h.drive, ctx.task_id, new)
 
 
 @pytest.mark.parametrize("prior_feedback", [False, True])

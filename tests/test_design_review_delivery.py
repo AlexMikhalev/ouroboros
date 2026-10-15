@@ -11,9 +11,10 @@ import pytest
 # review_helpers.REPO_ROOT; a lazy registry import would retain the fake root.
 from ouroboros.tools import review as _review  # noqa: F401
 from ouroboros.tools.governance_context import governance_context
+from tests._review_substrate_shared import user_text as _user_text
 from tests.test_governance_context import repo as _governance_repo
-from tests.test_plan_review_engine import CLEAN, DECK_SPEC, _call, _slots, _user_text
-from tests.test_plan_review_engine import harness as _harness
+from tests.test_plan_task_tool import CLEAN, _record, _slots, _write
+from tests.test_plan_task_tool import harness as _harness
 
 governance_repo = _governance_repo
 harness = _harness
@@ -230,12 +231,30 @@ def test_native_registry_reads_installed_design_outside_home(tmp_path, monkeypat
     assert "NOT_FOUND" in result.text and "Proposed rule." not in result.text
 
 
-def _plan_request(harness, ctx, spec):
+# The planning organ (``plan_task``): which subjects are Ouroboros's own body is ONE fact,
+# ``plan_ask.plan_is_body``, recorded on the revision. A body plan's stable prompt
+# (``plan_ask.stable_prompt``) carries BIBLE.md, ARCHITECTURE.md and the installed DESIGN
+# navigation map to every participant; a non-body plan carries none of them (owner 4.3=A).
+# The retired engine kept a separate "constitutional" gate and sent a body copy or declared
+# own-body research only the map; by the organ's design (body plan = the installed body, a
+# recognized body copy, or declared own-body research) both are body plans with the whole pack.
+
+_PACKET_SENTENCE = "This participant has no repository tools"
+_SESSION_SENTENCE = "Read relevant original DESIGN sections with your own tools"
+
+
+def _plan_ask(harness, ctx, *, affected_paths, attach=None):
+    """One ``plan_task`` write+ask to an API seat and a session seat, through the organ:
+    ``(revision, api system prompt, api user content, session task)`` as each seat received it."""
     harness.state["slots"] = _slots(("api1", "m/a"), ("sess1", "cursor=grok", "session"))
     substrate = harness.install({"api1": CLEAN, "sess1": CLEAN})
-    _call(ctx, spec=spec)
-    assert substrate.calls
-    return substrate.calls[0]["request"]
+    text, result = _write(ctx, affected_paths=affected_paths, ask="council", **({"attach": attach} if attach else {}))
+    assert result.status == "ok", text
+    assert len(substrate.calls) == 1 and [s.slot_id for s in substrate.calls[0]["slots"]] == ["api1", "sess1"]
+    request = substrate.calls[0]["request"]
+    api = request.slot_messages["api1"]
+    revision = _record(harness, ctx.task_id)["revisions"][-1]
+    return revision, _user_text(api[0]["content"]), _user_text(api[-1]["content"]), request.slot_session_tasks["sess1"]
 
 
 def test_plan_api_and_session_receive_same_map_without_rule_content(harness, monkeypatch):
@@ -245,15 +264,20 @@ def test_plan_api_and_session_receive_same_map_without_rule_content(harness, mon
     source = _design(harness.system)
     _design(harness.workspace, "## Proposed DESIGN\nCandidate rule.\n")
     monkeypatch.setattr(review_helpers, "REPO_ROOT", harness.system)
-    request = _plan_request(harness, harness.make_ctx(), {
-        **DECK_SPEC, "affected_paths": [str(harness.system / "ouroboros/loop.py")]})
-    api = _user_text(request.messages[0]["content"])
-    for text in (api, request.session_task):
+    revision, api, api_user, session = _plan_ask(
+        harness, harness.make_ctx(), affected_paths=[str(harness.system / "ouroboros/loop.py")])
+    assert revision["body"] is True
+    for text in (api, session):
         assert "Interaction meaning" in text and str(source) in text
-        assert "Original interaction rule." not in text
+        assert "Original interaction rule." not in text and "Candidate rule." not in text
         assert "availability is not evidence of reading or application" in text
-    assert "need_evidence" in api and "::lines=A-B" in api
-    assert "Read relevant original DESIGN sections with your own tools" in request.session_task
+        assert "DESIGN.md source unavailable" not in text
+    assert "Interaction meaning" not in api_user  # the map rides the stable part, not the plan's content
+    # Each delivery class is told how it reaches the original text. (The retired engine also named its
+    # reviewers' `need_evidence` request with a `::lines=A-B` locator; the organ's reply object has no such
+    # channel: a packet participant needs the excerpts attached.)
+    assert _PACKET_SENTENCE in api and _PACKET_SENTENCE not in session
+    assert _SESSION_SENTENCE in session and _SESSION_SENTENCE not in api
     registry, reader, _ = inspection_registry(str(harness.workspace), harness.drive)
     result = registry.execute_result("read_file", {"path": str(source), "start_line": 3, "max_lines": 4})
     assert "Original interaction rule." in result.text and "Candidate rule." not in result.text
@@ -262,39 +286,46 @@ def test_plan_api_and_session_receive_same_map_without_rule_content(harness, mon
     assert "Candidate rule." in result.text and "Original interaction rule." not in result.text
 
 
+def _git_origin(harness, subject):
+    """The workspace becomes a git checkout whose origin is the system repo (candidate) or foreign."""
+    if (harness.workspace / ".git").exists():
+        return
+    subprocess.run(["git", "init", "-q"], cwd=harness.workspace, check=True, capture_output=True)
+    origin = str(harness.system) if subject == "candidate" else "https://example.invalid/foreign.git"
+    subprocess.run(["git", "remote", "add", "origin", origin], cwd=harness.workspace,
+                   check=True, capture_output=True)
+
+
 @pytest.mark.parametrize("subject, affected", [
     ("candidate", "event.py"), ("candidate", "."), ("foreign", "event.py"),
     ("unknown", "event.py"), ("folderless", ""),
 ])
-def test_plan_navigation_respects_body_identity_without_changing_gate(harness, subject, affected):
-    from ouroboros.tools.plan_review_legacy import _PlanRequest, build_plan_review_packet_for_dry_run
-
+def test_plan_navigation_and_pack_follow_body_identity(harness, subject, affected):
     source = _design(harness.system)
     _design(harness.workspace, "# Workspace\n\n## Workspace design\n\nWorkspace rule.\n")
     if subject in {"candidate", "foreign"}:
-        subprocess.run(["git", "init", "-q"], cwd=harness.workspace, check=True, capture_output=True)
-        origin = str(harness.system) if subject == "candidate" else "https://example.invalid/foreign.git"
-        subprocess.run(["git", "remote", "add", "origin", origin], cwd=harness.workspace,
-                       check=True, capture_output=True)
+        _git_origin(harness, subject)
     ctx = harness.make_ctx(active_workspace=subject != "folderless")
-    spec = {**DECK_SPEC, "affected_paths": [affected] if affected else []}
-    packet = build_plan_review_packet_for_dry_run(ctx, _PlanRequest(goal="change", plan="change it", spec=spec))
+    revision, api, _user, session = _plan_ask(harness, ctx, affected_paths=[affected] if affected else [])
 
-    assert packet["constitutional"] is False  # The existing gate is out of scope.
-    assert ("Interaction meaning" in packet["system_prompt"]) == (subject == "candidate")
-    assert (str(source) in packet["system_prompt"]) == (subject == "candidate")
-    assert "Workspace design" not in packet["system_prompt"]
+    # The retired engine asserted `constitutional is False` with the map present for a candidate copy;
+    # in the organ the candidate copy is a body plan (a recognized copy of the body at the active root).
+    body = subject == "candidate"
+    assert revision["body"] is body
+    for text in (api, session):
+        assert ("Interaction meaning" in text) is body
+        assert (str(source) in text) is body
+        assert "Workspace design" not in text  # a workspace's own DESIGN never stands in for the body's
+    assert ("## BIBLE.md (constitution" in api) is body
+    assert ("## Governance pack (this plan touches Ouroboros's own body)" in session) is body
 
 
-def _research_context(harness, subject):
-    ctx = harness.make_ctx(active_workspace=subject not in {"main", "folderless"})
+def _research_context(harness, subject, task_id="task-1"):
+    ctx = harness.make_ctx(active_workspace=subject not in {"main", "folderless"}, task_id=task_id)
     if subject == "folderless":
         ctx.project_id = "folderless-research"
     elif subject in {"candidate", "foreign"}:
-        subprocess.run(["git", "init", "-q"], cwd=harness.workspace, check=True, capture_output=True)
-        origin = str(harness.system) if subject == "candidate" else "https://example.invalid/foreign.git"
-        subprocess.run(["git", "remote", "add", "origin", origin], cwd=harness.workspace,
-                       check=True, capture_output=True)
+        _git_origin(harness, subject)
     elif subject in {"body_copy", "foreign_copy"}:
         ctx.workspace_mode = "self_worktree"
         ctx.task_metadata["workspace_copy"] = {
@@ -311,11 +342,9 @@ def _research_context(harness, subject):
     ("foreign_copy", True, False), ("main", None, False), ("main", False, False),
     ("candidate", None, False), ("folderless", None, False), ("unknown", None, False),
 ])
-def test_empty_path_plan_api_and_session_require_declared_body_subject(
+def test_empty_path_plan_is_a_body_plan_only_for_a_declared_body_subject(
     harness, subject, flag, expected, flag_location,
 ):
-    from tests.test_plan_review_engine import _state
-
     source = _design(harness.system)
     _design(harness.workspace, "# Workspace\n\n## Workspace design\n\nWorkspace rule.\n")
     ctx = _research_context(harness, subject)
@@ -324,51 +353,58 @@ def test_empty_path_plan_api_and_session_require_declared_body_subject(
         declaration["context_requires_self_body_docs"] = flag
     # Neither prose nor a DESIGN lookalike supplies body identity or subject.
     ctx.task_contract["objective"] = "Research and brainstorm Ouroboros DESIGN"
-    request = _plan_request(harness, ctx, {**DECK_SPEC, "affected_paths": []})
+    revision, api, _user, session = _plan_ask(harness, ctx, affected_paths=[])
 
-    assert _state(harness)["waves"][-1]["constitutional"] is False
-    for text in (_user_text(request.messages[0]["content"]), request.session_task):
+    # The retired engine kept `constitutional is False` here and delivered the map alone; in the organ
+    # declared own-body research with a recognized body source IS a body plan, whole pack included.
+    assert revision["body"] is expected
+    for text in (api, session):
         assert ("Interaction meaning" in text) is expected
         assert (str(source) in text) is expected
         assert "Workspace design" not in text and "Original interaction rule." not in text
-        if expected:
-            assert "availability is not evidence of reading or application" in text
-    if expected:
-        assert "This reviewer has no repository tools" in _user_text(request.messages[0]["content"])
-        assert "Read relevant original DESIGN sections with your own tools" in request.session_task
+        assert ("availability is not evidence of reading or application" in text) is expected
+    assert (_PACKET_SENTENCE in api) is expected
+    assert (_SESSION_SENTENCE in session) is expected
+    assert ("## BIBLE.md (constitution" in api) is expected
 
 
 @pytest.mark.parametrize("subject", ["main", "candidate", "body_copy", "folderless"])
 def test_declared_body_research_flag_cannot_override_actual_foreign_file_target(harness, subject):
-    from tests.test_plan_review_engine import _state
-
     source = _design(harness.system)
+    # The declaration makes this subject's plan a body plan while it names no file ...
+    declared = _research_context(harness, subject, task_id="task-declared")
+    declared.task_contract["context_requires_self_body_docs"] = True
+    revision, api, _user, session = _plan_ask(harness, declared, affected_paths=[])
+    assert revision["body"] is True and "Interaction meaning" in api and str(source) in session
+    # ... and never turns an actual foreign file target into Ouroboros's body.
     ctx = _research_context(harness, subject)
     ctx.task_contract["context_requires_self_body_docs"] = True
     foreign_target = harness.drive / "foreign-product" / "event.py"
-    request = _plan_request(harness, ctx, {**DECK_SPEC, "affected_paths": [str(foreign_target)]})
+    revision, api, _user, session = _plan_ask(harness, ctx, affected_paths=[str(foreign_target)])
 
-    assert _state(harness)["waves"][-1]["constitutional"] is False
-    for text in (_user_text(request.messages[0]["content"]), request.session_task):
+    assert revision["body"] is False
+    for text in (api, session):
         assert "Interaction meaning" not in text and str(source) not in text
+    assert "## BIBLE.md (constitution" not in api
 
 
 def test_plan_missing_design_is_explicit_without_new_refusal(harness):
-    request = _plan_request(harness, harness.make_ctx(), {
-        **DECK_SPEC, "affected_paths": [str(harness.system / "ouroboros/loop.py")]})
-    for text in (_user_text(request.messages[0]["content"]), request.session_task):
+    revision, api, _user, session = _plan_ask(
+        harness, harness.make_ctx(), affected_paths=[str(harness.system / "ouroboros/loop.py")])
+    assert revision["body"] is True  # the body plan was asked (``_plan_ask`` checks the dispatch), not refused
+    for text in (api, session):
         assert "DESIGN.md source unavailable" in text
         assert str(harness.system / "docs/DESIGN.md") in text
+        assert "No DESIGN content or navigation delivered" in text and "Interaction meaning" not in text
 
 
 def test_plan_selected_design_excerpt_is_content_in_evidence(harness):
     source = _design(harness.system)
     locator = f"{source}::lines=3-5"
-    request = _plan_request(harness, harness.make_ctx(), {
-        **DECK_SPEC, "affected_paths": [str(harness.system / "ouroboros/loop.py")], "evidence": [locator]})
-    api_system = _user_text(request.messages[0]["content"])
-    api_user = _user_text(request.messages[1]["content"])
+    _revision, api_system, api_user, session = _plan_ask(
+        harness, harness.make_ctx(), affected_paths=[str(harness.system / "ouroboros/loop.py")], attach=[locator])
     assert "Original interaction rule." not in api_system
     assert "Original interaction rule." in api_user and locator in api_user
-    assert "Original appearance rule." not in api_user
-    assert "Original interaction rule." in request.session_task
+    assert "Original appearance rule." not in api_user and "Original appearance rule." not in session
+    assert session.index("## ATTACHED EVIDENCE") < session.index("Original interaction rule.")
+    assert [item["locator"] for item in _record(harness)["asks"][0]["attached"]] == [locator]

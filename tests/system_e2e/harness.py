@@ -94,10 +94,9 @@ SCENARIOS = {
     # hot-adoption variant that removes the restart (W3B-F1) — enable after boot
     # must reach the workers already running, not only the pool's next generation.
     "S13": ("skills lifecycle E2E: payload -> stub review -> grants -> enable -> dispatch -> disable/delete + Model Experience; hot-adoption variant: enable after boot dispatches in an ALREADY-SPAWNED worker with no restart", LANE_MOCK),
-    # Ф4 wave 3a (plan §8: plan review; commit triad+scope BOTH enforcement
-    # classes + stale-rejection; acceptance loop). Renumbered S14-S17 at
-    # integration: the parallel wave-3b lane claimed S11-S13 first.
-    "S14": ("plan review: scripted REVISE->ACCEPT cycle, honest durable chronicle, cycle-cap refusal", LANE_MOCK),
+    # Ф4 wave 3a (plan §8: commit triad+scope BOTH enforcement classes +
+    # stale-rejection; acceptance loop). Renumbered at integration: the parallel
+    # wave-3b lane claimed S11-S13 first; S14 (plan review) retired with its engine.
     "S15": ("commit triad+scope, ADVISORY class: red verdicts recorded + waved through with durable override, commit lands", LANE_MOCK),
     "S16": ("commit triad+scope, BLOCKING class: red blocks (HEAD unmoved), identical resubmit refused free, green lands; post-verdict revalidation", LANE_MOCK),
     "S17": ("acceptance loop (required+blocking): reject -> rework -> accept; paid-identity / free-replay invariants", LANE_MOCK),
@@ -136,11 +135,6 @@ SCENARIOS = {
     # FOUR tests: executor starvation alone, a held Host authentication alone,
     # both together, and the owner's Panic under the combined load.
     "S33": ("Presence waits keep owner controls answering: 12 events (2 held at the model, slot and same-conversation waits) on a 12-thread default executor and/or one held Host authentication; while held, /api/state, a v1 receipt and the owner's Stop (durable cancel intent, cancelled terminal) answer inside 10s/15s windows (health alone never passes); a disconnected turn and its retry are ONE model call and a later replay answers the same projection; Panic under the combined load ends the whole tree", LANE_MOCK),
-    # Plan review's ANSWER CHANNEL under blocking enforcement at the shipped cycle cap,
-    # over the asynchronous barrier route with three DISTINCT keyless reviewer models
-    # (the stub answers per seat by the wire model id).
-    "S34": ("plan review addressed answer, BLOCKING at the shipped cap: t1 objects below quorum -> $0 reject -> the identical envelope with the answer re-asks t1 ALONE (t2/t3 kept at $0 as replayed rows) over the barrier route -> t1 retires -> GREEN closed, two paid cycles, the task completes under blocking", LANE_MOCK),
-    "S35": ("plan review no-need path, BLOCKING: t1 asks the author (need_evidence), t2 leaves a note; a $0 accept closes the wave GREEN with no second panel (three reviewer calls, one paid cycle) and the task completes under blocking", LANE_MOCK),
     # #1539 own-body candidates: the smallest real consumer of the authoring seam.
     "S36": ("own-body candidate on a real server: the root's first body write in the installation's spelling binds a candidate, later repo/… and absolute serving spellings reach the same candidate files, the serving clone is byte-identical, a refused resume is the typed CANDIDATE_MISSING in the tool log, and a process in the candidate sees its isolated data root", LANE_MOCK),
     "S37": ("restart-bound adoption on one real server: a reviewed candidate commit, request_restart(adopt_commit) arms on the stop evidence, the in-place re-exec switches the clean serving checkout before its imports, generation B settles it adopted and verifies the restart on the serving SHA", LANE_MOCK),

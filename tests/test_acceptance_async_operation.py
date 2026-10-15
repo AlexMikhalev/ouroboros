@@ -138,8 +138,7 @@ def test_a_settled_acceptance_run_is_never_collected_twice(tmp_path, monkeypatch
 
 
 def test_an_uncollectable_pending_run_is_left_alone_and_never_raises(tmp_path, monkeypatch):
-    """Fail-soft like ``plan_review_collect.collect_before_gate``: the pass
-    continues, the run stays pending, and nothing dispatches."""
+    """Fail-soft: the pass continues, the run stays pending, and nothing dispatches."""
     from ouroboros import review_dispatch
 
     monkeypatch.setattr("ouroboros.review_substrate.run_review_request",

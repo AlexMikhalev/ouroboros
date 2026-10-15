@@ -426,8 +426,8 @@ def test_chat_remote_no_proxy_uses_warm_capabilities_without_a_rejection(monkeyp
 # ---------------------------------------------------------------------------
 
 def test_plan_review_slots_use_no_proxy(tmp_path):
-    """plan_review's shared ReviewCoordinator path must pass no_proxy=True."""
-    from ouroboros.tools import plan_review_legacy as plan_review, plan_review_runtime
+    """The plan ask's shared review-substrate path must pass no_proxy=True."""
+    from ouroboros.tools import plan_review_runtime
 
     captured_kwargs = []
 
@@ -448,13 +448,13 @@ def test_plan_review_slots_use_no_proxy(tmp_path):
         "event_queue": None,
     })()
 
-    # The slot runner (and its LLMClient construction site) moved to
-    # plan_review_runtime; patch the owning module, not the re-exporting one.
+    # The slot runner (and its LLMClient construction site) lives in
+    # plan_review_runtime; patch the owning module.
     from ouroboros.review_substrate import ReviewSlot
 
     with patch.object(plan_review_runtime, "LLMClient", return_value=FakeLLMClient()):
         result = _asyncio.run(
-            plan_review._run_plan_review_slots(
+            plan_review_runtime.run_plan_review_slots(
                 fake_ctx,
                 [ReviewSlot(slot_id="slot_1", model="openai/gpt-5.5", effort="high")],
                 system_prompt="system prompt",

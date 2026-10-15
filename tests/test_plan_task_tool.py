@@ -232,6 +232,34 @@ def test_body_plan_is_computed_at_write_from_affected_paths(harness):
     assert _record(harness, "task-2")["revisions"][0]["body"] is False
 
 
+def test_a_declared_new_source_file_is_a_body_plan_before_it_exists(harness):
+    """A file the work will CREATE has no bytes and no parent directory on disk yet; writing
+    `ouroboros/new/deep/module.py` IS self-modification, so the plan is a body plan and the
+    constitutional pack rides (owner 8=A / 9=A, after a live wave)."""
+    target = harness.system / "ouroboros" / "new" / "deep" / "module.py"
+    assert not target.exists() and not target.parent.exists()
+    sub = harness.install({})
+    _write(harness.make_ctx(), affected_paths=[str(target)], ask=["s1"])
+    revision = _record(harness)["revisions"][0]
+    assert revision["body"] is True and "affected_paths" in revision["body_note"] and str(target) in revision["body_note"]
+    system_prompt = _user_text(sub.calls[0]["request"].slot_messages["s1"][0]["content"])
+    assert "## BIBLE.md (constitution" in system_prompt and "## ARCHITECTURE.md" in system_prompt
+
+
+def test_reading_a_repository_file_is_not_changing_it(harness):
+    """Owner 16=A. The same locator, twice: attached as evidence alone the plan stays ordinary and
+    carries no pack; declared as a change target it is a body plan with the pack."""
+    bible = str(harness.system / "BIBLE.md")
+    sub = harness.install({})
+    _write(harness.make_ctx(), affected_paths=[], attach=[bible], ask=["s1"])
+    assert _record(harness)["revisions"][0]["body"] is False
+    assert "## BIBLE.md (constitution" not in _user_text(sub.calls[0]["request"].slot_messages["s1"][0]["content"])
+    sub = harness.install({})
+    _write(harness.make_ctx(task_id="task-2"), affected_paths=[bible], ask=["s1"])
+    assert _record(harness, "task-2")["revisions"][0]["body"] is True
+    assert "## BIBLE.md (constitution" in _user_text(sub.calls[0]["request"].slot_messages["s1"][0]["content"])
+
+
 # ---------------------------------------------------------------- ask
 
 def test_ask_council_sends_each_participant_its_own_delivery_and_settles_replies(harness):
@@ -414,3 +442,101 @@ def test_the_legacy_wave_hook_still_goes_to_the_retired_collector(harness, monke
     plan_ask.settle_released_reply(harness.make_ctx(), request=SimpleNamespace(surface="task_acceptance", reconciliation_identity={}),
                                    task_id="task-1", actor=SimpleNamespace(slot_id="s1"), settled_wave={}, roster_size=1)
     assert len(seen) == 1
+
+
+# ---------------------------------------------------------------- lane health, evidence
+
+def test_a_structurally_dead_seat_is_not_dispatched_and_unknown_health_dispatches_everyone(harness, monkeypatch):
+    """Positive structural evidence (a spent window with a future reset, a dead pool) keeps a seat
+    out of the dispatch as a typed $0 not-dispatched participant; a snapshot that could not be
+    taken (None) is unknown health and every named participant is sent."""
+    import ouroboros.tools.plan_review_runtime as runtime
+
+    dead = {"s2": {"failure_code": "subscription_window_exhausted", "reset_at": "2030-01-02T00:00:00+00:00"},
+            "s3": {"failure_code": "credential_pool_exhausted", "reset_at": "2030-01-01T00:00:00+00:00"}}
+    monkeypatch.setattr(runtime, "plan_panel_health_snapshot", lambda slots: dict(dead))
+    sub = harness.install({"s1": CLEAN})
+    text, result = _write(harness.make_ctx(), ask="council")
+    assert [s.slot_id for s in sub.calls[0]["slots"]] == ["s1"]
+    rows = {p["seat_id"]: p for p in _record(harness)["asks"][0]["participants"]}
+    assert rows["s1"]["dispatched"] is True and rows["s1"]["status"] == "answered"
+    for sid, code in (("s2", "subscription_window_exhausted"), ("s3", "credential_pool_exhausted")):
+        assert rows[sid]["dispatched"] is False and rows[sid]["status"] == "not_dispatched"
+        assert f"health_skip[{code}]" in rows[sid]["not_dispatched_reason"]
+    assert "not sent: s2 — health_skip[subscription_window_exhausted]" in text and result.meta["plan_holding"] == 0
+
+    monkeypatch.setattr(runtime, "plan_panel_health_snapshot", lambda slots: None)
+    sub = harness.install({})
+    _write(harness.make_ctx(task_id="task-2"), ask="council")
+    assert [s.slot_id for s in sub.calls[0]["slots"]] == ["s1", "s2", "s3"]
+    assert all(p["dispatched"] for p in _record(harness, "task-2")["asks"][0]["participants"])
+
+
+def test_a_typed_lane_refusal_reaches_the_participant_record_and_an_untyped_failure_stays_absent(harness):
+    """A typed lane refusal (code, reset) rides substrate -> plan row -> participant record; a
+    prose-only failure (an engine emitting no code) records no code: absence stays absence."""
+    harness.install({"s2": {"status": "error", "raw_text": "", "error": "delegated review session run-9 ended failed",
+                            "failure_code": "subscription_window_exhausted", "reset_at": "2030-01-01T00:00:00Z"},
+                     "s3": {"status": "error", "raw_text": "", "error": "transport died"}})
+    _write(harness.make_ctx(), ask="council")
+    rows = {p["seat_id"]: p for p in _record(harness)["asks"][0]["participants"]}
+    assert rows["s1"]["status"] == "answered" and rows["s1"]["failure_code"] == ""
+    assert (rows["s2"]["status"], rows["s2"]["failure_code"], rows["s2"]["reset_at"]) == (
+        "failed", "subscription_window_exhausted", "2030-01-01T00:00:00Z")
+    assert (rows["s3"]["status"], rows["s3"]["failure_code"], rows["s3"]["reset_at"]) == ("failed", "", "")
+    assert rows["s3"]["error"] == "transport died"
+
+
+def test_a_session_participant_reads_the_same_redacted_evidence_inline_never_raw_locators(harness):
+    """A retrieving session seat sees the SAME redacted evidence bytes a packet seat sees and is
+    told not to re-read the raw locators (4e133c8a); a secret in the attached file reaches nobody."""
+    (harness.workspace / "notes.md").write_text(
+        "plan notes\nANTHROPIC_API_KEY=sk-ant-FAKEFIXTURE-not-a-real-key-ABCDEFGHIJKLMNOP\n", encoding="utf-8")
+    harness.state["slots"] = _slots(("api1", "m/a"), ("sess1", "cursor=grok", "session"))
+    sub = harness.install({})
+    _write(harness.make_ctx(), ask="council", attach=["notes.md"])
+    request = sub.calls[0]["request"]
+    session = str(request.slot_session_tasks["sess1"])
+    assert request.session_root == str(harness.workspace)
+    assert "RETRIEVING REVIEWER" in session and "REDACTED snapshot" in session
+    assert "do NOT re-read the raw evidence locators" in session and "plan notes" in session
+    packet = _user_text(request.slot_messages["api1"][-1]["content"])
+    assert "plan notes" in packet and "secrets_redacted=true" in packet
+    assert "sk-ant-FAKEFIXTURE" not in session + packet
+    assert request.policy["output_contract"].startswith("Return ONE JSON object")
+
+
+def test_the_runtime_data_plane_is_never_attached_whatever_root_the_ask_names(harness, monkeypatch):
+    """The live data root and settings file are denied as evidence (``plan_ask._evidence_deny_paths``
+    is wired into the attachment manifest); an ordinary workspace file still attaches."""
+    from ouroboros import config as cfg
+
+    data_root = harness.workspace / "live_data"
+    data_root.mkdir()
+    (data_root / "settings.json").write_text('{"OPENROUTER_API_KEY": "sk-live-x"}', encoding="utf-8")
+    monkeypatch.setattr(cfg, "DATA_DIR", data_root, raising=False)
+    monkeypatch.setattr(cfg, "SETTINGS_PATH", data_root / "settings.json", raising=False)
+    ctx = harness.make_ctx()
+    assert any(str(data_root) in path for path in plan_ask._evidence_deny_paths(ctx))
+    sub = harness.install({})
+    _write(ctx, ask="council", attach=["live_data/settings.json", "notes.md"])
+    ask = _record(harness)["asks"][0]
+    assert {"locator": "live_data/settings.json", "reason": "denied_path"} in ask["omissions"]
+    assert [a["locator"] for a in ask["attached"]] == ["notes.md"]
+    assert "sk-live-x" not in json.dumps([c["request"].slot_messages for c in sub.calls], default=str)
+
+
+def test_an_asks_reviewer_effort_orders_the_pool_of_that_ask_only(harness, monkeypatch):
+    """``reviewer_effort`` reaches the review pool's builder as the order of THIS ask (its
+    clamping and pin rules are ``plan_review_slots``' own) and the ask row records it; an ask
+    without one leaves every row at its own level."""
+    seen = []
+    monkeypatch.setattr(plan_ask, "plan_review_slots",
+                        lambda default_effort="": seen.append(default_effort) or list(harness.state["slots"]))
+    harness.install({})
+    ctx = harness.make_ctx()
+    _write(ctx, ask="council", reviewer_effort="low")
+    _call(ctx, ask="council")
+    assert seen == ["low", ""]
+    asks = _record(harness)["asks"]
+    assert [a["reviewer_effort"] for a in asks] == ["low", ""]

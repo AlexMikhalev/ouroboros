@@ -26,9 +26,8 @@ def test_an_unbound_start_rejoins_for_what_remains_of_its_requested_window(tmp_p
     assert 2900 < window < 3100  # ~3000s of the original hour remain, not the 30s margin
 
 
-def test_released_frames_count_unknown_outcomes_as_unresolved(tmp_path, monkeypatch):
+def test_released_frames_count_unknown_outcomes_as_unresolved():
     from ouroboros.acceptance_settlement import acceptance_settlement_message
-    from ouroboros.tools import plan_review_collect
 
     assert released_slot_unresolved(SimpleNamespace(operation_state="in_flight"))
     assert released_slot_unresolved({"operation_state": "custody_lost"})
@@ -36,11 +35,3 @@ def test_released_frames_count_unknown_outcomes_as_unresolved(tmp_path, monkeypa
     wave = {"slots": {"a": "ok", "b": RELEASED_UNRESOLVED, "c": "error"}, "total": 3, "verdicts": {}}
     head = acceptance_settlement_message(SimpleNamespace(retry_key="rk"), wave).splitlines()[0]
     assert "2 of 3 reviewer slot(s) have answered" in head
-    written = []
-    monkeypatch.setattr("ouroboros.owner_mailbox.write_task_message", lambda root, text, *a, **k: written.append(text))
-    plan_review_collect.announce_released_settlement(
-        SimpleNamespace(drive_root=str(tmp_path)), request=SimpleNamespace(surface="plan_review",
-        reconciliation_identity={"subject_hash": "f" * 16}), task_id="t", actor=SimpleNamespace(operation_id=""),
-        settled_wave=dict(wave["slots"]), roster_size=3)
-    assert written and "2 of 3 reviewer slot(s) settled (1 ok, 1 failed); 1 unresolved" in written[0]
-    assert "neither a failure nor a verdict" in written[0]
