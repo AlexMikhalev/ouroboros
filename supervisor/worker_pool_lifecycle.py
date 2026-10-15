@@ -244,8 +244,8 @@ def _first_worker_event_since(
 
 
 def _slot_pid(slot: Any) -> int:
-    try:
-        return int(getattr(slot.proc, "pid", 0) or 0)
+    try:  # a slot without a process (a placeholder) has no pid, never an accounting error
+        return int(getattr(getattr(slot, "proc", None), "pid", 0) or 0)
     except (TypeError, ValueError):
         return 0
 
