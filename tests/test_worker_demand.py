@@ -969,3 +969,34 @@ def test_contended_launch_commits_stay_demand_and_retire_no_ready_worker(assigni
     assert queue._reap_queue.empty() and not any(slot.retiring for slot in workers.WORKERS.values())
     workers.assign_tasks()  # released: the same first dispatches, one per ready worker
     assert sorted(workers.RUNNING) == ["a", "b", "c"] and len(workers.WORKERS) == 3
+
+
+@pytest.mark.parametrize("outcome", [None, False], ids=["unknown", "refused"])
+def test_an_unresolved_launch_commit_stays_demand_but_a_refusal_does_not(assigning, monkeypatch, outcome):
+    """An unknown commit outcome is retried by this same process next tick (its witness keeps the
+    row), so it is residual demand and retires no ready worker; a refused commit is not demand."""
+    from ouroboros.task_results import write_task_result
+    from supervisor import task_admission
+    from supervisor.worker_assignment import _COMMITTED_UNSENT
+
+    monkeypatch.setattr(workers, "MAX_WORKERS", 3)
+    workers.RUNNING.clear()
+    assigning.original.busy_task_id = None
+    for wid in (1, 2):
+        workers.WORKERS[wid] = affirm_ready(workers.Worker(wid, Process(42 + wid), InputQueue()))
+    for slot in workers.WORKERS.values():
+        acknowledge(slot)
+    for tid in ("a", "b", "c"):
+        write_task_result(assigning.root, tid, "scheduled")
+        workers.PENDING.append(task(tid, _project_scope_none=True))
+    monkeypatch.setattr(task_admission, "commit_dispatch_marks", lambda *a, **k: outcome)
+    forecasts = []
+    real_reconcile = lifecycle.reconcile_worker_capacity
+    monkeypatch.setattr(lifecycle, "reconcile_worker_capacity",
+                        lambda residual: forecasts.append(residual()) or real_reconcile(residual))
+    workers.assign_tasks()
+    retiring = [slot.wid for slot in workers.WORKERS.values() if slot.retiring]
+    if outcome is None:
+        assert sorted(_COMMITTED_UNSENT) == ["a", "b", "c"] and forecasts == [3] and retiring == []
+    else:
+        assert not _COMMITTED_UNSENT and forecasts == [0] and len(retiring) == 2

@@ -273,8 +273,9 @@ def _forget_departed_launches(pending) -> None:
             _COMMITTED_UNSENT.pop(task_id, None)
 
 
-def _commit_launch(queue, candidate, unsubmitted=None) -> Optional[list]:
-    """The durable steps before the put: the committed marks' projections, else None.
+def _commit_launch(queue, candidate, unsubmitted=None):
+    """The durable steps before the put: the committed marks' projections; None when the launch is
+    unresolved (an unknown commit or an unpersisted snapshot: this process retries it), False when refused.
 
     A locator snapshot first keeps the row restorable with its own dispatch fact.
     Then ONE task-result write carries the Project and schedule marks
@@ -309,7 +310,7 @@ def _commit_launch(queue, candidate, unsubmitted=None) -> Optional[list]:
             return None
         committed = commit_dispatch_marks(candidate, projections)
         if committed is False:
-            return None
+            return False
         candidate["admitted_dispatch"] = "possible"
         witness = _COMMITTED_UNSENT[task_id] = {"row": candidate, "attempt": candidate.get("_attempt"),
                                                 "projections": projections, "unsubmitted": unsubmitted}
@@ -320,9 +321,10 @@ def _commit_launch(queue, candidate, unsubmitted=None) -> Optional[list]:
         from ouroboros.task_results import load_task_result
 
         stored = load_task_result(queue.DRIVE_ROOT, task_id, strict=True) or {}
-        if (not all(projection.verify(stored) for projection in witness["projections"])
-                and commit_dispatch_marks(candidate, witness["projections"]) is not True):
-            return None  # unresolved or refused now (terminal, Stop, owner hold): no put; the row stays in custody
+        if not all(projection.verify(stored) for projection in witness["projections"]):
+            recommitted = commit_dispatch_marks(candidate, witness["projections"])
+            if recommitted is not True:  # refused now (terminal, Stop, owner hold) or unresolved: no put;
+                return recommitted       # the row stays in custody
     if queue.persist_queue_snapshot(reason="worker_launch_claimed") is not True:
         return None
     return witness["projections"]
@@ -387,7 +389,9 @@ def _claim_worker_launch(queue, candidate, worker, *, deferred: Optional[set] = 
                     unsubmitted = copy.deepcopy({"task_id": candidate["id"], "task_attempt": candidate["_attempt"],
                         "source": candidate["_working_recovery"], "claim": _deadline_launch_claim(stored)})
                 projections = _commit_launch(queue, candidate, unsubmitted)
-                if projections is None:
+                if projections is None or projections is False:
+                    if projections is None and deferred is not None:  # unresolved: retried here, still demand
+                        deferred.add(str(candidate.get("id") or ""))
                     return False
                 from ouroboros.obligations import drive_started
                 drive_started(_pool().DRIVE_ROOT, candidate)
@@ -395,6 +399,8 @@ def _claim_worker_launch(queue, candidate, worker, *, deferred: Optional[set] = 
                 if _deadline_refuses_launch(queue, candidate, unsubmitted=unsubmitted):  # positively before any put
                     return False
                 if not _mark_launch_row(candidate, projections):
+                    if deferred is not None:  # committed, row mark unwritten: this process retries it
+                        deferred.add(str(candidate.get("id") or ""))
                     return False
                 continuation = candidate.get("_owner_wait_resume") or candidate.get("_budget_pause_resume") or candidate.get("_working_recovery") or {}
                 launched = _settled_running_task(candidate, continuation)

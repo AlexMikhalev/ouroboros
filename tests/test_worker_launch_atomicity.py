@@ -548,7 +548,7 @@ def test_an_unknown_project_commit_never_resolves_on_an_earlier_mark(world, monk
     with queue._queue_lock:
         assert worker_assignment._commit_launch(queue, row_) is None
         write_task_result(root, row_["id"], "running", owner_wait={"state": "answered", "wait_id": "w1"})
-        assert worker_assignment._commit_launch(queue, row_) is None, "the stale handoff is refused, never put"
+        assert worker_assignment._commit_launch(queue, row_) is False, "the stale handoff is refused, never put"
     assert worker_assignment._unsent(row_) is not None
 
 
