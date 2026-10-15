@@ -105,11 +105,11 @@ def test_a_task_without_a_room_records_no_snapshot_carrier(harness):
 def test_the_settled_frame_names_an_unresolved_seat_instead_of_calling_everyone_settled(harness):
     rows = [{"seat_id": "s1", "status": "answered"}, {"seat_id": "s2", "status": "failed"},
             {"seat_id": "s3", "status": "pending", "unresolved": True}]
-    text = plan_ask.settled_frame("a1", rows, [])
+    text = plan_packet.settled_frame("a1", rows, [])
     assert text == ("Plan ask a1: custody has nothing more to deliver — 1 answered, 1 failed, 1 unresolved (s3: outcome unknown — "
                     "neither a failure nor a reply; nothing waits on it, a new ask may pay twice); no open objection from this ask. "
                     "plan_task() reads the answers.")
-    clean = plan_ask.settled_frame("a1", [{"seat_id": "s1", "status": "answered"}, {"seat_id": "s2", "status": "answered"}],
+    clean = plan_packet.settled_frame("a1", [{"seat_id": "s1", "status": "answered"}, {"seat_id": "s2", "status": "answered"}],
                                    [{"ask_id": "a1", "id": "o1"}, {"ask_id": "a0", "id": "old"}])
     assert clean == "Plan ask a1: every participant settled — 2 answered; 1 open objection from this ask. plan_task() reads the answers."
     # Through the custody hook: the lost seat stays pending and unresolved in the record, and the frame says so.

@@ -382,3 +382,89 @@ def test_a_missing_original_assignment_keeps_that_seat_unknown_and_the_other_ans
     assert decision["status"] == "awaiting" and decision["allow"] is True and decision["unknown_outcome"] == ["a1"]
     assert decision["force_plan_met"] is True, "the ask was handed off; an unknown outcome is never 'nobody reached'"
     assert barrier.calls == [["s1", "s2", "s3"], ["s1", "s2", "s3"]]
+
+
+# ---------------------------------------------------------------- the last settlement's frame counts every seat custody settled
+
+def _drive_released_wave(tmp_path, monkeypatch, *, delay_s2=0.0, fail_s2=""):
+    """Three seats released at the barrier through the REAL custody (the event-route helpers):
+    s1 and s2 settle first, s3 last. ``delay_s2`` holds s2's record write so s3's settlement
+    runs ahead of it; ``fail_s2="once"`` makes s2's OWN hook write (its worker thread) raise a
+    store error once, ``"always"`` makes every s2 answered write fail. Returns (frames, statuses, progress)."""
+    import threading
+    import time
+
+    from ouroboros.review_substrate import ReviewSlot
+    from ouroboros.store import StoreError
+    from tests.test_plan_review_event_route import _TASK, _custody_kwargs, _held_worker, _mailbox_entries, _plant_ask
+
+    slots = [ReviewSlot(slot_id=f"s{index}", model=f"m/{index}", timeout_sec=30.0) for index in (1, 2, 3)]
+    _plant_ask(tmp_path, slots)
+    release = {slot.slot_id: threading.Event() for slot in slots}
+    entered = {slot.slot_id: threading.Event() for slot in slots}
+    _calls, run_slot = _held_worker(slots, {}, release, entered)
+    progress: list = []
+    ctx = SimpleNamespace(drive_root=tmp_path, emit_progress_fn=progress.append)
+    request, kwargs = _custody_kwargs(tmp_path, surface="plan_review", retry_key=f"plan_ask:{_TASK}:a1", slots=slots,
+                                      run_slot=run_slot, ctx=ctx, plan_ask_id="a1")
+    request.drain_deadline = time.monotonic()
+    real_update, left = plan_record.update_participant, {"once": fail_s2 == "once"}
+
+    def interfered_update(root, task_id, *, ask_id, seat_id, facts):
+        if seat_id == "s2" and facts.get("status") == "answered":
+            if delay_s2:
+                time.sleep(delay_s2)
+            own_hook = threading.current_thread().name.endswith("-s2")  # custody names a worker thread after its seat
+            if fail_s2 == "always" or (left["once"] and own_hook):
+                left["once"] = False
+                raise StoreError("store busy (fixture)")
+        return real_update(root, task_id, ask_id=ask_id, seat_id=seat_id, facts=facts)
+
+    monkeypatch.setattr(plan_record, "update_participant", interfered_update)
+    import ouroboros.review_custody as custody
+
+    deadline = time.time() + 15
+    try:
+        first = custody.run_custodied_review_slots(**kwargs)
+        assert {actor.operation_state for actor in first} == {"pending_dispatch"}
+        assert all(entered[slot.slot_id].wait(10) for slot in slots)
+        release["s1"].set()
+        release["s2"].set()
+        while not all(any(f"reviewer m/{n} answered" in line for line in progress) for n in ("1", "2")) and time.time() < deadline:
+            time.sleep(0.01)
+        release["s3"].set()  # custody's progress line precedes the record write: s3 now races s2's hook
+        while not _mailbox_entries(tmp_path, _TASK) and time.time() < deadline:
+            time.sleep(0.01)
+        time.sleep(max(delay_s2, 0.05) + 0.3)  # let the delayed hook land before reading the record
+    finally:
+        for event in release.values():
+            event.set()
+    frames = [frame["text"] for frame in _mailbox_entries(tmp_path, _TASK)]
+    statuses = {p["seat_id"]: (p["status"], bool(p.get("unresolved")))
+                for p in plan_record.load_plan_record(tmp_path, _TASK)["asks"][0]["participants"]}
+    return frames, statuses, progress
+
+
+def test_the_frame_counts_a_sibling_whose_record_write_is_still_in_flight(tmp_path, monkeypatch):
+    """The three red battery runs: custody emits "reviewer m/2 answered" BEFORE s2's hook writes the
+    record, so s3's settlement — the one that composes the frame — read s2 as still owed while
+    custody had it settled. The frame-composing hook must absorb, from custody's own copies, every
+    seat the record has not taken yet; the frame is then true and the mailbox wakes once."""
+    frames, statuses, _progress = _drive_released_wave(tmp_path, monkeypatch, delay_s2=0.6)
+    assert frames == [frames[0]] and frames[0].startswith("Plan ask a1: every participant settled — 3 answered"), frames
+    assert statuses == {"s1": ("answered", False), "s2": ("answered", False), "s3": ("answered", False)}
+
+
+def test_a_record_write_lost_to_a_store_failure_is_absorbed_or_named_never_still_owed(tmp_path, monkeypatch):
+    """A transient store failure on s2's write: the frame-composing hook absorbs s2 from custody
+    ($0, never a send) and the frame counts it. A failure that persists is NAMED — settled in
+    custody, not yet in the plan record, plan_task() collects it — never "still owed"; the owner
+    sees the failed write on the progress line; nothing is silently lost."""
+    frames, statuses, progress = _drive_released_wave(tmp_path, monkeypatch, fail_s2="once")
+    assert frames == [frames[0]] and frames[0].startswith("Plan ask a1: every participant settled — 3 answered"), frames
+    assert statuses["s2"] == ("answered", False)
+    assert any("s2" in line and "plan record could not take it" in line for line in progress), progress
+    frames, statuses, progress = _drive_released_wave(tmp_path / "persistent", monkeypatch, fail_s2="always")
+    assert len(frames) == 1 and "still owed" not in frames[0], frames
+    assert "2 answered, 1 settled in custody but not yet in the plan record (s2" in frames[0] and "plan_task() collects" in frames[0]
+    assert statuses["s2"] == ("pending", False) and statuses["s1"] == ("answered", False) and statuses["s3"] == ("answered", False)

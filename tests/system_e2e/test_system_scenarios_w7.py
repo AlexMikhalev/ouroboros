@@ -242,7 +242,7 @@ def _child_ids(text: str) -> dict:
 
 
 # The ONE mailbox frame the planning organ writes when custody has nothing more to deliver
-# for an ask (plan_ask.settled_frame): every participant answered, failed or was lost.
+# for an ask (plan_packet.settled_frame): every participant answered, failed or was lost.
 _ASK_SETTLED_RE = re.compile(r"Plan ask (a\d+): (?:every participant settled|custody has nothing more to deliver)")
 
 

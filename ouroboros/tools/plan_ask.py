@@ -844,11 +844,14 @@ def record_reply(ctx: Any, *, state_root: pathlib.Path, task_id: str, ask_id: st
 
 
 def settle_released_reply(usage_ctx: Any, *, request: Any, task_id: str, actor: Any, settled_wave: Dict[str, str],
-                          roster_size: int = 0, slot: Any = None) -> None:
+                          roster_size: int = 0, slot: Any = None, settled_actors: Optional[Mapping[str, Any]] = None) -> None:
     """The custody hook for a plan seat released at the dispatch barrier: settle it into
-    the record, and when the whole ask has settled wake the task mailbox. A request
-    without a plan ask id is an earlier-schema (v2) wave: its result stays in the
-    operation's custody as history and nothing collects it into the task."""
+    the record, and when the whole ask has settled wake the task mailbox. The hook that
+    composes the frame first absorbs, from custody's own copies (``settled_actors``), every
+    seat whose record write has not landed — a sibling's hook still running, or a write lost
+    to a store failure — at $0, never a send; what it still cannot record the frame names as
+    settled in custody, never as still owed. A request without a plan ask id is an
+    earlier-schema (v2) wave: its result stays in the operation's custody as history."""
     if str(getattr(request, "surface", "") or "") != "plan_review":
         return
     identity = dict(getattr(request, "reconciliation_identity", {}) or {})
@@ -857,14 +860,20 @@ def settle_released_reply(usage_ctx: Any, *, request: Any, task_id: str, actor: 
         return
     if usage_ctx is None or not getattr(usage_ctx, "drive_root", None):
         return
+    seat_id = str(getattr(actor, "slot_id", "") or "")
     try:
         state_root, _ = state_location(usage_ctx)
-        seat_id = str(getattr(actor, "slot_id", "") or "")
+    except Exception:
+        log.warning("plan ask %s: no state root to settle %s into", ask_id, seat_id, exc_info=True)
+        return
+    record = None
+    try:
         record = record_reply(usage_ctx, state_root=state_root, task_id=task_id, ask_id=ask_id, seat_id=seat_id,
                               row=_actor_row(actor, slot))
-    except Exception:
-        log.warning("plan ask %s: reply of %s could not be settled", ask_id, getattr(actor, "slot_id", "?"), exc_info=True)
-        return
+    except Exception as exc:  # the reply is safe in custody; the owner hears it, nothing is lost silently
+        log.warning("plan ask %s: reply of %s could not be settled", ask_id, seat_id, exc_info=True)
+        _progress(usage_ctx, f"📐 Plan: {seat_id}'s reply reached custody, but the plan record could not take it "
+                             f"({type(exc).__name__}); plan_task() collects it at $0.")
     if slot is not None and record is not None:
         try:  # D22: the seat's «runs as» row, recorded when it settles (the barrier skipped it as pending)
             from ouroboros.reviewer_slot_config import record_reviewer_slot_executions
@@ -872,38 +881,37 @@ def settle_released_reply(usage_ctx: Any, *, request: Any, task_id: str, actor: 
             record_reviewer_slot_executions("plan_review", [actor], {seat_id: slot}, keep_on=usage_ctx)
         except Exception:
             log.debug("plan ask %s: last-execution row for %s not recorded", ask_id, seat_id, exc_info=True)
-    if not settled_wave or record is None:
+    if not settled_wave:
         return
-    ask, _ = _ask_and_participant(record, ask_id, "")
-    participants = (ask or {}).get("participants") or []
+    participants: List[Mapping[str, Any]] = []
+    objections: List[Mapping[str, Any]] = []
+    try:
+        record = plan_record.load_plan_record(state_root, task_id)
+        ask, _ = _ask_and_participant(record, ask_id, "")
+        for participant in list((ask or {}).get("participants") or []):
+            sid = str(participant.get("seat_id") or "")
+            held = (settled_actors or {}).get(sid)
+            if participant.get("status") != "pending" or participant.get("unresolved") or not isinstance(held, Mapping):
+                continue
+            try:  # $0: custody's copy of a seat the record has not taken yet (its own hook announces it when it lands)
+                settled = record_reply(None, state_root=state_root, task_id=task_id, ask_id=ask_id, seat_id=sid,
+                                       row=_actor_row(held.get("actor"), held.get("slot")))
+                if settled is not None:
+                    record = settled
+            except Exception:
+                log.warning("plan ask %s: custody's copy of %s could not be recorded", ask_id, sid, exc_info=True)
+        ask, _ = _ask_and_participant(record, ask_id, "")
+        participants = (ask or {}).get("participants") or []
+        objections = plan_record.open_objections(record)
+    except Exception:
+        log.warning("plan ask %s: the record could not be read for the settled frame", ask_id, exc_info=True)
     from ouroboros.owner_mailbox import write_task_message
 
     try:
-        write_task_message(pathlib.Path(str(usage_ctx.drive_root)), settled_frame(ask_id, participants, plan_record.open_objections(record)),
+        write_task_message(pathlib.Path(str(usage_ctx.drive_root)), plan_packet.settled_frame(ask_id, participants, objections, custody=settled_wave),
                            task_id, source_task_id=task_id, provenance="system")
     except Exception:
         log.warning("plan ask %s settled-wave frame failed for %s", ask_id, task_id, exc_info=True)
-
-
-def settled_frame(ask_id: str, participants: List[Mapping[str, Any]], objections: List[Mapping[str, Any]]) -> str:
-    """The mailbox frame when custody has nothing more to deliver for an ask: who answered,
-    who could not be read, who failed — and a seat whose outcome is UNKNOWN (custody lost, or
-    the dispatch lost after the hand-off) is named as unresolved (neither a failure nor a
-    reply), never counted as settled; a new ask to it may pay twice."""
-    answered = sum(1 for p in participants if p.get("status") == "answered")
-    unread = sum(1 for p in participants if p.get("status") == "unparseable")
-    failed = sum(1 for p in participants if p.get("status") == "failed")
-    unresolved = [str(p.get("seat_id") or "?") for p in participants if p.get("status") == "pending" and p.get("unresolved")]
-    waiting = [str(p.get("seat_id") or "?") for p in participants if p.get("status") == "pending" and not p.get("unresolved")]
-    own = [o for o in objections if o.get("ask_id") == ask_id]
-    head = (f"Plan ask {ask_id}: every participant settled" if not unresolved and not waiting
-            else f"Plan ask {ask_id}: custody has nothing more to deliver")
-    return (f"{head} — {answered} answered" + (f", {unread} unreadable" if unread else "") + (f", {failed} failed" if failed else "")
-            + (f", {len(unresolved)} unresolved ({', '.join(unresolved)}: outcome unknown — neither a failure nor a reply; nothing waits on it, "
-               "a new ask may pay twice)" if unresolved else "")
-            + (f", {len(waiting)} still owed ({', '.join(waiting)})" if waiting else "")
-            + (f"; {len(own)} open objection{'' if len(own) == 1 else 's'} from this ask" if own else "; no open objection from this ask")
-            + ". plan_task() reads the answers.")
 
 
 def collect_pending(ctx: Any, record: Mapping[str, Any], *, state_root: pathlib.Path, task_id: str) -> Dict[str, Any]:

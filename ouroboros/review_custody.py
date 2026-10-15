@@ -1044,6 +1044,13 @@ def _settle_review_attempt(
                 roster.setdefault("verdicts", {})[slot_id] = _settled_slot_verdict(actor)
             if all(roster["slots"].values()):
                 released_wave = _RELEASED_WAVES.pop(entry.wave_key)
+                # Custody's own copy of every settled seat: the hook that composes the wave's frame absorbs
+                # the seats whose record write has not landed yet (a sibling's hook still running, or a
+                # store failure) at $0 instead of reporting them as still owed.
+                released_wave["actors"] = {
+                    sid: {"actor": copy.deepcopy(live.actor), "slot": (released_wave.get("slot_objects") or {}).get(sid)}
+                    for sid, key in (released_wave.get("keys") or {}).items()
+                    if (live := _ACTIVE.get(key)) is not None and live.actor is not None}
             elif _released_quorum_reached(request, roster):
                 roster["quorum_announced"] = True
                 quorum_wave = copy.deepcopy(roster)
@@ -1066,7 +1073,8 @@ def _settle_review_attempt(
         from ouroboros.tools.plan_ask import settle_released_reply
 
         settle_released_reply(usage_ctx, request=request, task_id=task_id, actor=actor, slot=slot,
-                              settled_wave=dict(released_wave.get("slots") or {}), roster_size=int(released_wave.get("total") or 0))
+                              settled_wave=dict(released_wave.get("slots") or {}), roster_size=int(released_wave.get("total") or 0),
+                              settled_actors=released_wave.get("actors") or {})
         if getattr(request, "surface", "") == "task_acceptance" and (released_wave or quorum_wave):
             from ouroboros.acceptance_settlement import announce_acceptance_settlement
 
@@ -1180,8 +1188,12 @@ def _register_released_roster(
             # slot through the drain, and an id in the roster is never counted twice.
             roster["answered_before_release_ids"] = sorted(
                 set(roster.get("answered_before_release_ids") or ()) | set(answered_before_release))
+            by_id = {str(getattr(slot, "slot_id", "") or ""): slot for slot in slots}
             for slot_id in released_ids:
                 roster["slots"].setdefault(slot_id, "")
+                # The settled seats' custody copies reach the frame-composing hook through these.
+                roster.setdefault("keys", {})[slot_id] = slot_entries[slot_id].key
+                roster.setdefault("slot_objects", {})[slot_id] = by_id.get(slot_id)
     return released_ids
 
 
