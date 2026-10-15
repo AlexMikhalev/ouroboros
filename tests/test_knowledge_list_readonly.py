@@ -89,3 +89,19 @@ def test_first_write_into_indexless_store_seeds_the_full_index(tmp_path):
     for topic in ("alpha", "beta", "gamma"):
         assert topic in listing, (topic, listing)
     assert (kdir / INDEX_FILE).exists()
+
+
+def test_written_index_keeps_underscore_notes_and_never_lists_itself(tmp_path):
+    """A filename is not a knowledge taxonomy; only the generated index is excluded."""
+    from ouroboros.tools.knowledge import _knowledge_write
+
+    ctx = _Ctx(tmp_path / "drive")
+    kdir = ctx.drive_root / "memory" / "knowledge"
+    kdir.mkdir(parents=True)
+    (kdir / "_draft.md").write_text("# Draft\n\nA useful provisional note.\n", encoding="utf-8")
+
+    _knowledge_write(ctx, topic="visible", content="# Visible\n\nShown.\n")
+
+    index = (kdir / INDEX_FILE).read_text(encoding="utf-8")
+    assert "**_draft**" in index and "**visible**" in index
+    assert "**index-full**" not in index

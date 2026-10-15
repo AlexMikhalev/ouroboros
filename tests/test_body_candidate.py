@@ -241,7 +241,9 @@ def test_candidate_environment_failure_refuses_the_process_and_never_uses_the_se
 
     for result in (started, command, executor):
         assert (result.status, result.code) == ("blocked", "CANDIDATE_ENVIRONMENT_UNAVAILABLE"), result
-        assert result.meta.get("operation_outcome") == "completed_no_effect", result
+        # A missing process is not whole-call no-effect: a service replacement
+        # may already have retired its previous instance before this refusal.
+        assert "operation_outcome" not in result.meta, result
     assert unknown.status == "error" and "registry unreadable" in unknown.text, unknown  # fails closed
     assert not (candidate / "ran.txt").exists()
     assert not list((data / "services").rglob("env-refused.executor.log"))

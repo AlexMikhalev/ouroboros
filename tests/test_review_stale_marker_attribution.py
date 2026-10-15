@@ -255,7 +255,6 @@ def test_registered_writer_persists_identity_without_changing_shared_freshness(t
     import subprocess
 
     import ouroboros.safety as safety
-    from ouroboros.review_evidence import format_review_evidence_for_prompt
     from ouroboros.tools.registry import ToolRegistry
 
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
@@ -311,12 +310,10 @@ def test_registered_writer_persists_identity_without_changing_shared_freshness(t
     assert state.advisory_runs[0].status == "stale"
     panel = _panel(drive, shared, "task-b")
     assert panel["stale_attribution"] == "other_task" and panel["stale_reason"]
+    assert panel["stale_task_id"] == "task-a"
     # The marker is disclosed, never a hold: no advisory freshness gates a commit (3A),
     # and no readiness verdict is projected next to the marker.
     assert "repo_commit_ready" not in panel
-    prompt = format_review_evidence_for_prompt(
-        collect_review_evidence(drive, task_id="task-b", repo_dir=shared))
-    assert '"stale_task_id": "task-a"' in prompt and '"stale_attribution": "other_task"' in prompt
     other_checkout = _panel(drive, separate, "task-b")
     assert not other_checkout["stale_reason"]
     assert all(other_checkout[key] == "" for key in _ATTRIBUTION_KEYS)

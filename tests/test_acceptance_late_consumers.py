@@ -516,7 +516,8 @@ def test_terminal_http_stop_reaches_the_live_historical_operation(late, tmp_path
     app.state.drive_root = f.root
     with TestClient(app) as client:
         response = client.post(f'/api/tasks/{target}/cancel', json={})
-    assert response.status_code == 503, response.text  # still owned, never a false 404 or completed cancellation
+    assert response.status_code == 202, response.text  # still owned, never a false 404 or completed cancellation
+    assert response.json()['cancel_state'] == 'pending'
     assert cancel_pending(f.root, ctx.task_id if stopped == 'caller' else f.tid, strict=True)
     operation = next(op for op in review_operation._LIVE.values() if op.task_id == f.tid)
     until(lambda: operation.control() == 'cancelled')

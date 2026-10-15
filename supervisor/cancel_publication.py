@@ -339,6 +339,12 @@ def _register_owed_terminal_delivery(
         if not deliver or str((task or {}).get("delegation_role") or "") == "subagent":
             return True
         stored_status = str((stored or {}).get("status") or "")
+        if stored_status and stored_status != STATUS_CANCELLED:
+            # The worker's own terminal row won over the Stop: the provisional
+            # salvage owed before the terminal write is not this task's answer.
+            from supervisor.terminal_delivery import withdraw_stop_episode
+
+            withdraw_stop_episode(pathlib.Path(q.DRIVE_ROOT), task_id)
         event: Optional[Dict[str, Any]] = None
         if stored_status == STATUS_CANCELLED:
             event = build_unreviewed_salvage_event(
@@ -737,16 +743,26 @@ def stop_paused_late_phase_custody(q: Any, task_id: str, *, intent: Optional[Dic
     return True
 
 
+def live_presence_row(row: Any) -> bool:
+    """An unsettled row a live Presence turn owns: its runner settles it, not cancel custody."""
+    from supervisor.queue_transitions import settled_status_of
+
+    owner = row.get("execution_owner") if isinstance(row, dict) else None
+    return isinstance(owner, dict) and owner.get("kind") == "presence" and not settled_status_of(row)
+
+
 def _finalize_cancel_intent_on_miss(
     q: Any, task_id: str, *, intent: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Neither queued nor running: settle an open cancel intent (or a legacy
     ``cancel_requested`` latch file) as cancelled with reconstructed cost.
 
-    Two things this lane must NOT do. It must not invent a task: an intent for an
-    id that has no durable result at all names a task that never existed, and
+    Three things this lane must NOT do. It must not invent a task: an intent for
+    an id that has no durable result at all names a task that never existed, and
     fabricating a ``cancelled`` row with $0 for it would put a phantom task in the
-    ledger — it settles as ``not_found`` instead. And it must not bury a child
+    ledger — it settles as ``not_found`` instead. It must not take a row whose
+    execution owner is a live Presence turn (no supervisor map knows it): that
+    settles ``not_found`` too, the row untouched. And it must not bury a child
     that finished: when the row names a child drive, the child's own result is
     copied back BEFORE the cancelled write, so a crash of the split-drive
     copy-back window cannot cost a completed answer.
@@ -779,6 +795,14 @@ def _finalize_cancel_intent_on_miss(
             # the intent honestly rather than minting a cancelled task.
             _settle_intent(q, task_id, outcome="not_found",
                            detail="no durable task result for this id", intent=intent)
+            return CANCEL_NOT_FOUND
+        if live_presence_row(existing):
+            # A live Presence turn runs on its own thread outside every supervisor
+            # map: nothing here can capture it, and a cancelled write would only
+            # strand a turn that keeps spending. The row stays its runner's and
+            # the Stop answers "not active", as it did before intent-first minting.
+            _settle_intent(q, task_id, outcome="not_found",
+                           detail="execution owned by a live Presence turn", intent=intent)
             return CANCEL_NOT_FOUND
         # A concurrent custody attempt may have captured this task between our
         # own capture miss and here (the pending double-settle probe). If the

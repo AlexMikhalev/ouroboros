@@ -162,8 +162,11 @@ def reconcile_orphaned_runs(
         return []  # the snapshot could not be taken: still UNKNOWN, still touch nothing
     live_or_reserved = set(live) | set(recoverable_task_ids or ())
     orphans = [c for c in candidates if c.task_id and c.task_id not in live_or_reserved]
+    # A review surface's pending invocation belongs to its panel, which rejoins it by
+    # its exact key (#1006): this sweep would only re-report "retained" every pass.
     stray = [record for record in unbound
-             if record["task_id"] and record["task_id"] not in live_or_reserved]
+             if record["task_id"] and record["task_id"] not in live_or_reserved
+             and not _custody().review_owned_source(record.get("source"))]
     return _reconcile_each(drive_root, orphans, gateway_factory, pending=stray, live_task_ids=live_or_reserved)
 
 

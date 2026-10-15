@@ -147,12 +147,15 @@ export function createTask(payload) {
 }
 
 /**
- * Cancel a task. With {cascade:true} the server also cancels the task's live
- * subtree and answers only once that teardown has finished; without it the
- * request stays the synchronous single-task cancel (no body — headless compat).
- * S3 (Q1/Q2): stopPolicy "finalize_then_cancel" requests the soft
- * finalize-then-stop episode (202 acknowledgement, cancel_state "pending");
- * "immediate" (or absent) keeps today's hard cancel byte-identical.
+ * Cancel a task. The server records the durable Stop first, then drives it;
+ * with {cascade:true} the task's live subtree is torn down too. Without
+ * options no body is sent (headless compat). Every answer with ok:true is an
+ * accepted Stop: 200 once the teardown settled, 202 cancel_state "pending"
+ * while it is still being finished — the soft finalize-then-stop episode of
+ * stopPolicy "finalize_then_cancel" (S3, Q1/Q2), or an "immediate" (or
+ * absent) Stop whose teardown is not confirmed yet (reason_code
+ * "teardown_unconfirmed"); the supervisor finishes it and task detail shows
+ * the pending state. 404 means there is nothing to stop.
  * Shared by the Chat live-card stop control and the Activity tab.
  * @param {string} taskId
  * @param {{cascade?: boolean, stopPolicy?: string, stopActionId?: string}} [options]
@@ -465,7 +468,9 @@ export const apiClient = {
      * @returns {Promise<import('./storage_types.js').StorageResponse>}
      */
     measureStorage: () => jsonPost('/api/storage/measure', {}),
+    /** @returns {Promise<import('./management_contract_types.js').UpdateStatusResponse>} */
     updateStatus: () => fetchJson('/api/update/status', { cache: 'no-store' }),
+    /** @returns {Promise<import('./management_contract_types.js').UpdateStatusResponse>} */
     updateCheck: () => jsonPost('/api/update/check', {}),
     /** @returns {Promise<import('./api_types.js').UpdatePreflightResponse>} */
     updatePreflight: () => jsonPost('/api/update/preflight', {}),

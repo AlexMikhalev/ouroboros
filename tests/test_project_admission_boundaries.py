@@ -11,6 +11,7 @@ from tests.test_project_hold_recovery import accepted, restore_unreadable, resum
 from tests.test_project_semantic_admission import room, task  # noqa: F401
 from tests.test_schedule_occurrence import q  # noqa: F401
 from tests.test_swarm_host_admission import host  # noqa: F401
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -123,15 +124,13 @@ def test_failed_head_proof_keeps_custody_without_starving_other_work(host, tmp_p
         queue.enqueue_task({"id": f"main-{i}", "type": "task", "chat_id": 1, "text": "Independent work"})
     sent = worker(host, monkeypatch)
     for i in range(1, worker_count):
-        workers.WORKERS[i] = SimpleNamespace(wid=i, busy_task_id=None, reaping=False,
-            in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row))))
+        workers.WORKERS[i] = affirm_ready(SimpleNamespace(wid=i, busy_task_id=None, reaping=False,
+            in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row)) if row.get("type") != "worker_quiescence" else None)))
     attempts = []
     persist, write, read = queue.persist_queue_snapshot, task_admission.write_task_result, task_admission.load_task_result
 
     def snapshot(**kwargs):
-        if (kwargs.get("reason") == "worker_launch_claimed"
-                and not any(row["id"].startswith("main-") and row.get("admitted_dispatch") == "possible"
-                            for row in host.pending)):
+        if kwargs.get("reason") == "worker_launch_locator" and not attempts:  # the head's, before any mark
             attempts.append("held")
             return False
         return persist(**kwargs)
@@ -150,8 +149,8 @@ def test_failed_head_proof_keeps_custody_without_starving_other_work(host, tmp_p
             raise OSError("synthetic unavailable proof readback")
         return read(root, tid, **kwargs)
 
-    def schedule_readback(tid):
-        attempts.append(tid)
+    def schedule_row(candidate, **_kwargs):  # the occurrence row, the last step before the put
+        attempts.append(candidate["id"])
         raise OSError("synthetic unavailable schedule proof")
 
     with monkeypatch.context() as patch:
@@ -162,7 +161,7 @@ def test_failed_head_proof_keeps_custody_without_starving_other_work(host, tmp_p
         elif boundary == "readback":
             patch.setattr(task_admission, "load_task_result", readback)
         else:
-            patch.setattr(schedule_occurrence, "_read_back", schedule_readback)
+            patch.setattr(schedule_occurrence, "mark_occurrence_row", schedule_row)
         workers.assign_tasks()
     assert [row["id"] for row in sent] == [f"main-{i}" for i in range(worker_count)]
     assert attempts == ["held"]
@@ -255,7 +254,7 @@ def test_global_snapshot_failure_blocks_every_candidate_without_dropping_rows(ho
     with monkeypatch.context() as patch:
         patch.setattr(queue, "persist_queue_snapshot", unavailable)
         workers.assign_tasks()
-    assert attempts == ["worker_launch_claimed", "worker_launch_claimed"]
+    assert attempts == ["worker_launch_locator", "worker_launch_locator"]
     assert not sent and not queue.RUNNING and workers.WORKERS[0].busy_task_id is None
     assert [row["id"] for row in host.pending] == [head["id"], "main"]
     workers.assign_tasks()

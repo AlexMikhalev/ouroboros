@@ -112,30 +112,32 @@ def test_finalization_keeps_delivery_and_step_order(completed_turn):
     assert order.index("custody_end") < order.index("cleanup_end") < order.index("store_start")
     assert order.index("store_start") < order.index("store_end") < order.index("sender_return")
     if turn.kind != "child":
-        assert order.index("outbox_end") < order.index("store_start")
-        assert order.index("store_end") < order.index("enqueue") < order.index("post_task")
+        # Answer first (owner 1A(1)): owed in the outbox, on the live bus, THEN the
+        # result store; the buffered task_done still trails the store and post-task.
+        assert order.index("outbox_end") < order.index("enqueue") < order.index("store_start")
+        assert order.index("store_end") < order.index("post_task")
         assert len([event for event in turn.queued if event["type"] == "send_message"]) == 1
     else:
         assert "post_task" not in order
 
 
-def timing_rows(root):
+def timing_rows(root, basis=None):
     path = root / "logs" / "events.jsonl"
-    return [row for line in path.read_text(encoding="utf-8").splitlines()
+    rows = [row for line in path.read_text(encoding="utf-8").splitlines()
             if (row := json.loads(line)).get("type") == "task_finalization_timing"]
+    return rows if basis is None else [row for row in rows if row.get("basis") == basis]
 
 
 def test_finalization_records_one_ordered_tail_on_every_task_surface(completed_turn):
     turn = completed_turn
-    row, = timing_rows(turn.root)
+    row, = timing_rows(turn.root, "send_handler_returned")
     assert row["task_id"] == "turn" and row["task_attempt"] == 1
-    assert row["basis"] == "send_handler_returned"
     assert row["is_direct_chat"] is (turn.kind in {"direct", "wake"})
     assert row["initiator"] == ("consciousness" if turn.kind == "wake" else "")
     assert row["delegation_role"] == ("subagent" if turn.kind == "child" else "")
     phases = row["phases"]
     assert {"source_ack", "child_lookup", "admission_wait", "admission_close", "cleanup",
-            "release_task_runs", "custody_reconcile", "custody_audit", "result_store", "sender"} <= phases.keys()
+            "release_task_runs", "custody_reconcile", "custody_audit", "sender"} <= phases.keys()
     assert "acceptance" not in phases, "review mode off buys no panel"
     assert "custody_daemon_request" not in phases and "custody_run" not in phases
     assert phases["child_lookup"]["count"] >= 8
@@ -143,18 +145,123 @@ def test_finalization_records_one_ordered_tail_on_every_task_surface(completed_t
     assert phases["admission_wait"]["finished_sec"] <= phases["admission_close"]["started_sec"]
     assert phases["admission_close"]["finished_sec"] <= phases["cleanup"]["started_sec"]
     assert phases["custody_reconcile"]["finished_sec"] <= phases["custody_audit"]["started_sec"]
-    assert phases["cleanup"]["finished_sec"] <= phases["result_store"]["started_sec"]
-    assert phases["result_store"]["finished_sec"] <= phases["sender"]["started_sec"]
     for phase in phases.values():
         assert phase["count"] >= 1 and phase["errors"] == 0
         assert phase["seconds"] >= 0
         assert 0 <= phase["started_sec"] <= phase["finished_sec"] <= row["total_sec"]
         assert row["last_answer_at"] <= phase["started_at"] <= phase["finished_at"] <= row["ts"]
     if turn.kind != "child":
-        assert phases["result_store"]["finished_sec"] <= row["enqueued_sec"] <= phases["sender"]["started_sec"]
+        # The live copy's snapshot is frozen at its enqueue, BEFORE the store: the
+        # sender's row cannot hold a store span that had not started yet, and the
+        # answer's own path ends at the sender.
+        assert "result_store" not in phases
+        assert phases["cleanup"]["finished_sec"] <= row["enqueued_sec"] <= phases["sender"]["started_sec"]
         assert row["enqueue_to_sender_sec"] >= 0
+        # The packaging that ran after the answer left is journaled as its own
+        # correlated row (same task, same delivery id), internally ordered.
+        store_row, = timing_rows(turn.root, "post_answer_store")
+        assert store_row["task_id"] == "turn" and store_row["delivery_id"] == row["delivery_id"]
+        store = store_row["phases"]["result_store"]
+        assert row["enqueued_sec"] <= store["started_sec"] <= store["finished_sec"] == store_row["total_sec"]
+        assert store_row["phases"]["cleanup"]["finished_sec"] <= store["started_sec"]
+        assert "enqueued_sec" not in store_row, "the buffered dict never borrows the live copy's enqueue"
     else:
+        # The buffered copy carries the live dict, so the handler sees the store span.
+        assert phases["cleanup"]["finished_sec"] <= phases["result_store"]["started_sec"]
+        assert phases["result_store"]["finished_sec"] <= phases["sender"]["started_sec"]
         assert row["enqueue_to_sender_sec"] is None  # this fixture calls the buffered handler directly
+        assert timing_rows(turn.root, "post_answer_store") == []
+
+
+@pytest.mark.parametrize("kind", ["direct", "queued", "stopped_direct"])
+def test_answer_reaches_the_chat_while_the_store_is_blocked_and_the_card_follows(tmp_path, monkeypatch, kind):
+    """Owner 1A(1)/Fork 2: the answer is in the chat while ``_store_task_result`` is
+    still running, no Done card exists yet, and after the store the card follows the
+    answer (the frame's pre-store status is the one the row settles to, W10)."""
+    from ouroboros.project_dialogue import append_terminal_task_projection
+    from ouroboros.terminal_projection import SETTLEMENT_NONE, settle_terminal_projection
+    from supervisor import terminal_delivery as td
+
+    root = tmp_path / "data"
+    logs = root / "logs"
+    logs.mkdir(parents=True)
+    chat_path = logs / "chat.jsonl"
+    task = {"id": "barrier", "type": "task", "chat_id": 1, "text": "Say hello.", "_attempt": 1,
+            "budget_drive_root": str(root), "_is_direct_chat": kind != "queued"}
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setattr(pipeline, "in_worker_process", lambda: kind == "queued")
+    monkeypatch.setattr(pipeline, "_run_post_task_processing_async", lambda *args, **kwargs: None)
+    monkeypatch.setattr(delivery, "_DELIVERED_MESSAGE_IDS", deque(maxlen=256))
+    store_gate, store_entered, enqueued = threading.Event(), threading.Event(), threading.Event()
+    original_store = pipeline._store_task_result
+
+    def blocked_store(*args, **kwargs):
+        store_entered.set()
+        assert store_gate.wait(timeout=10), "the test never released the store"
+        return original_store(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "_store_task_result", blocked_store)
+    live = []
+
+    class Events:
+        def put(self, event):
+            live.append(json.loads(json.dumps(event)))
+            enqueued.set()
+
+    def send(chat_id, body, **kwargs):
+        append_jsonl(chat_path, {"ts": "2026-10-15T00:00:00Z", "chat_id": chat_id, "direction": "out",
+                                 "text": body, "task_id": kwargs.get("task_id"),
+                                 **({"progress_meta": kwargs["progress_meta"]} if kwargs.get("progress_meta") else {})})
+
+    host = SimpleNamespace(DRIVE_ROOT=root, RUNNING={}, append_jsonl=append_jsonl, send_with_budget=send)
+    ctx = SimpleNamespace(pending_restart_reason=None, _skip_post_task_synthesis=kind == "stopped_direct")
+    pending, usage = [], {"cost": 0.0, "rounds": 1, "prompt_tokens": 1, "completion_tokens": 1}
+    worker = threading.Thread(target=pipeline.emit_task_results, kwargs=dict(
+        env=SimpleNamespace(drive_root=root, repo_dir=tmp_path), memory=None, llm=None,
+        pending_events=pending, task=task, text="Hello.", usage=usage,
+        llm_trace={"tool_calls": [], "reasoning_notes": []}, start_time=0.0, drive_logs=logs,
+        ctx=ctx, event_queue=Events()), daemon=True)
+    worker.start()
+    try:
+        assert enqueued.wait(timeout=10), "the answer never reached the live bus"
+        assert store_entered.wait(timeout=10)
+        # The store is blocked; the real supervisor handler consumes the live copy.
+        (answer,) = [event for event in live if event["type"] == "send_message"]
+        assert answer["text"] == "Hello." and answer["delivery_id"].startswith("final:barrier:")
+        assert td.terminal_answer_receipts(root, "barrier")["state"] == "owed"
+        delivery._handle_send_message(answer, host)
+        rows = [json.loads(line) for line in chat_path.read_text(encoding="utf-8").splitlines()]
+        assert [row["text"] for row in rows] == ["Hello."], "the answer is in the chat before the store"
+        assert td.terminal_answer_receipts(root, "barrier")["state"] == "delivered"
+        assert not any(row.get("type") == "task_summary" for row in rows), "no Done card before the row"
+        stored = pipeline.load_task_result(root, "barrier") or {}
+        assert stored.get("status") not in {"completed", "failed"}
+        assert settle_terminal_projection(root, "barrier") == SETTLEMENT_NONE
+    finally:
+        store_gate.set()
+        worker.join(timeout=20)
+    assert not worker.is_alive()
+    stored = pipeline.load_task_result(root, "barrier")
+    assert stored["status"] == "completed" and stored["result"] == "Hello."
+    # The frame's pre-store conclusion (a finalizing root's typed status, a stopped
+    # direct turn's own final word) is the status the row settled to: the early
+    # live card never contradicts the store, so no extra "finalizing" phase is owed.
+    assert answer["progress_meta"]["task_terminal_status"] == "completed"
+    assert answer["progress_meta"].get("task_phase") == (None if kind == "stopped_direct" else "finalizing")
+    done, = [event for event in pending if event["type"] == "task_done"]
+    assert done["status"] == "completed"
+    if kind != "stopped_direct":
+        # Post-task synthesis (stubbed here) is still open: the card stays deferred
+        # behind "Finalizing" until the post-task callback closes the checkpoint.
+        assert not append_terminal_task_projection(root, "barrier", task, stored, {**done, "chat_id": 1})
+        stored = pipeline.write_task_result(root, "barrier", "completed",
+                                            root_phase_checkpoint={"post_task_synthesis": "completed"})
+    assert append_terminal_task_projection(root, "barrier", task, stored, {**done, "chat_id": 1})
+    rows = [json.loads(line) for line in chat_path.read_text(encoding="utf-8").splitlines()]
+    assert [row.get("text") for row in rows][0] == "Hello."
+    card = rows[-1]
+    assert card["summary_kind"] == "terminal_root_projection" and card["outcome_phase"] == "done"
+    assert rows.index(card) > 0, "the Done card strictly follows the answer"
 
 
 def test_last_answer_replaces_prior_rounds_without_cross_thread_leaks(tmp_path):
@@ -471,10 +578,10 @@ def test_late_phase_checkpoint_omits_clocks_but_live_delivery_keeps_them(
     trace = {"tool_calls": []}
     late = SimpleNamespace(marks={"facts_recorded"}, drafts={})
     assert pipeline.park_late_phase(
-        env, task, "scratchpad_consolidation", ["scratchpad_consolidation", "reflection"],
+        env, task, "scratchpad_consolidation", ["scratchpad_consolidation", "promotion"],
         ["memory_fallback_draft"], late=late,
-        inputs=(usage, snapshot, trace, {}, {"text": "Answer."}, tmp_path / "logs", None),
-        state={"result": {}, "free_actions_applied": False, "stage_errors": False},
+        inputs=(usage, snapshot, trace, {"text": "Answer."}, tmp_path / "logs", None),
+        state={"stage_errors": False},
     )
     stored = load_task_result(tmp_path, task["id"], strict=True)
     record = late_phase_pause_record(stored)

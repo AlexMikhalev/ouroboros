@@ -43,7 +43,7 @@ log = logging.getLogger(__name__)
 # refusal — the daemon, the engine, custody or the run itself said no — is
 # recorded and never degrading (`_outcome_tool_errors._POLICY_DENIAL_STATUSES`
 # holds `tool_reported_failure`). An AGENT fault — the call itself was
-# malformed or self-contradictory — degrades and feeds reflection. Neither is
+# malformed or self-contradictory — degrades the execution axis. Neither is
 # `TOOL_TIMEOUT` (nothing here timed out) nor `TOOL_ERROR` (which would hide
 # which of the two this was).
 SUBSTRATE_REFUSAL_CODE = "TOOL_REPORTED_FAILURE"

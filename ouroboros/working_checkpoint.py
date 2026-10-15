@@ -295,8 +295,113 @@ def final_answer_registered(root: Any, task_id: str) -> bool:
     from supervisor.terminal_delivery import terminal_answer_receipts
 
     receipts = terminal_answer_receipts(root, task_id)
-    return (receipts.get("state") in {"delivered", "owed"}
+    return (receipts.get("state") in {"delivered", "owed", "exhausted"}
             or bool(receipts.get("unverified_delivery_ids")) or receipts.get("registry") == "unreadable")
+
+
+REASON_FINALIZATION_INCOMPLETE = "finalization_incomplete"
+
+
+def registered_answer(root: Any, task_id: str) -> Dict[str, Any]:
+    """The answer the host already holds for this task, read from the outbox owner; ``{}`` when none.
+
+    ``basis`` names the custody: ``owed`` (a pending outbox row the replay still
+    sends — its exact text travels), ``exhausted`` (the host gave up sending it; its
+    text and any preserved copy's ``preserved_path`` travel), ``delivered`` (a retained
+    receipt whose bytes are re-read; a legacy id proves no bytes, so ``text`` may be
+    empty) or ``unreadable`` (the registry could not be read: an answer may exist, which
+    is not permission to regenerate). Never the task result's prose.
+    """
+    from supervisor.terminal_delivery import terminal_answer_receipts
+
+    receipts = terminal_answer_receipts(root, task_id)
+    if receipts.get("registry") == "unreadable":
+        return {"basis": "unreadable", "text": "", "delivery_id": "", "terminal_origin": ""}
+    for basis in ("owed", "exhausted"):  # a row the replay still sends outranks one it gave up
+        rows = [row for row in (receipts.get(basis) or []) if isinstance(row, dict)]
+        if rows:
+            row = max(rows, key=lambda item: str(item.get("registered_at") or ""))
+            return {"basis": basis, "text": str(row.get("text") or ""), "delivery_id": str(row.get("delivery_id") or ""),
+                    "terminal_origin": str(row.get("terminal_origin") or ""),
+                    **({"preserved_path": str(row["preserved_path"])} if row.get("preserved_path") else {})}
+    delivered = [row for row in (receipts.get("delivered") or []) if isinstance(row, dict)]
+    if delivered:
+        receipt = max(delivered, key=lambda item: str(item.get("sent_at") or ""))
+        text = origin = ""
+        try:
+            from ouroboros.artifacts import read_actor_source_bytes
+
+            record = json.loads(read_actor_source_bytes(root, task_id, receipt.get("source_ref")).decode("utf-8"))
+            if isinstance(record, dict):
+                text, origin = str(record.get("text") or ""), str(record.get("terminal_origin") or "")
+        except Exception:
+            log.debug("Retained terminal answer of %s could not be re-read", task_id, exc_info=True)
+        return {"basis": "delivered", "text": text, "delivery_id": str(receipt.get("delivery_id") or ""),
+                "terminal_origin": origin}
+    unverified = [str(did) for did in (receipts.get("unverified_delivery_ids") or [])]
+    if unverified:
+        return {"basis": "delivered", "text": "", "delivery_id": unverified[-1], "terminal_origin": ""}
+    return {}
+
+
+def adopt_registered_answer(root: Any, task: Dict[str, Any], task_id: str, *, attempt: int, cause: str,
+                            registry_root: Any = None) -> Optional[Dict[str, Any]]:
+    """Finalize a dead attempt whose answer the host already holds, instead of running its prompt again.
+
+    Both recovery owners (timeout reaping, dead-worker recovery) consult this before
+    admitting a fresh model attempt. With the answer out before the result store
+    (owner 1A(1)) a death inside the store is an ordinary window; the authored answer
+    must not be generated a second time. A registered answer — owed, exhausted,
+    delivered, or merely unreadable evidence — terminalizes the attempt in the
+    lifecycle-fault vocabulary: lifecycle ``failed``, execution ``infra_failed``,
+    reason ``finalization_incomplete``, the outbox's own text as the result and a
+    host notice naming what stayed incomplete. An owed row keeps replaying through
+    the outbox; an exhausted one is named as given up. Returns the stored terminal row, or None when no answer is
+    registered (the ordinary retry proceeds). A refused write raises: the caller's
+    existing no-retry fallback owns the attempt, never a second model run.
+    """
+    answer = registered_answer(registry_root if registry_root is not None else root, task_id)
+    if not answer:
+        return None
+    from ouroboros.outcomes import EXECUTION_INFRA_FAILED, terminal_outcome_axes
+    from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE
+    from ouroboros.task_results import STATUS_FAILED, write_task_result
+
+    ended = _CAUSES.get("worker_crash") if str(cause or "") == "worker_crash" else f"its attempt was stopped ({cause or 'unknown cause'})"
+    copy = f"; its copy is kept at {answer['preserved_path']}" if answer.get("preserved_path") else ""
+    held = {"owed": "was authored and is owed to the chat (the outbox delivers it)",
+            "exhausted": f"was authored, but sending it to the chat was given up{copy}",
+            "delivered": "was authored and delivered to the chat",
+            "unreadable": "may already exist (the delivery registry could not be read)"}[answer["basis"]]
+    notice = (f"Finalization did not complete: the final answer {held}, then {ended} before the "
+              "result, review evidence, artifacts and cost accounting were stored. The prompt was "
+              "not run again; those facts are incomplete.")
+    fields: Dict[str, Any] = {
+        "reason_code": REASON_FINALIZATION_INCOMPLETE, "terminal_host_notice": notice,
+        "finalization_recovery": {"cause": str(cause or ""), "answer": answer["basis"],
+                                  "delivery_id": answer["delivery_id"], "attempt": int(attempt or 0)},
+        "outcome_axes": terminal_outcome_axes(
+            lifecycle=STATUS_FAILED, execution=EXECUTION_INFRA_FAILED,
+            reason_code=REASON_FINALIZATION_INCOMPLETE, review_trigger="supervisor_terminal"),
+        "result": answer["text"] or notice,
+    }
+    origin = answer.get("terminal_origin") or ""
+    if origin == TERMINAL_ORIGIN_HOST_SALVAGE:
+        # The owed text is the short receipt; the full bytes the host preserved before the
+        # send are the result an ordinary store would have written, with their path.
+        from ouroboros.observability import preserved_salvage_path
+
+        path = preserved_salvage_path(pathlib.Path(registry_root if registry_root is not None else root), task_id)
+        try:
+            if path:
+                fields.update(terminal_salvage_path=path, result=pathlib.Path(path).read_text(encoding="utf-8"))
+        except OSError:
+            log.warning("Preserved host salvage of %s could not be read; the receipt stays the result", task_id)
+    if answer["text"] and origin:  # the producer's stamp travels; an unstamped legacy row claims none
+        fields["terminal_origin"] = origin
+    log.warning("Task %s attempt %s: finalizing from its registered answer (%s) instead of a retry (%s)",
+                task_id, attempt, answer["basis"], cause)
+    return write_task_result(pathlib.Path(root), task_id, STATUS_FAILED, **fields)
 
 
 def prepare_recovery(root: Any, task_id: str, *, from_attempt: int, cause: str) -> Dict[str, Any]:

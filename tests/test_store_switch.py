@@ -120,7 +120,6 @@ def test_every_door_calls_its_own_owner_bound_to_the_intent(target_repo, monkeyp
     reason; the update doors refuse, without calling it, when the managed update record
     they would act on names another commit."""
     import supervisor.git_ops as git_ops
-    import supervisor.git_ops_reset as git_ops_reset
     import supervisor.update_merge as update_merge
     import supervisor.update_recovery as update_recovery
 
@@ -137,7 +136,7 @@ def test_every_door_calls_its_own_owner_bound_to_the_intent(target_repo, monkeyp
 
     monkeypatch.setattr(update_recovery, "rollback_to_version", fake("rollback_to_version"))
     monkeypatch.setattr(update_merge, "rollback_managed_update", fake("rollback_managed_update"))
-    monkeypatch.setattr(git_ops_reset, "checkout_and_reset", fake("checkout_and_reset"))
+    monkeypatch.setattr(git_ops, "checkout_and_reset", fake("checkout_and_reset"))
     monkeypatch.setattr(update_merge, "read_update_tx_strict", lambda: ("valid", records["tx"]))
     monkeypatch.setattr(git_ops, "_read_update_intent", lambda: records["update_intent"])
     expected = {

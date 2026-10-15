@@ -44,3 +44,27 @@ def test_oversized_skill_result_reaches_the_tool_consumer_without_retyping_histo
     assert "fixture-job" in result.text
     assert result.code == ("OK" if historical else "LEGACY_BLOCKED")
     assert result.status == ("ok" if historical else "blocked")
+
+
+@pytest.mark.parametrize("arm,expected", [("over_budget", "LEGACY_BLOCKED"), ("binary", ""), ("unreadable", "")])
+def test_payload_refusal_marker_preserves_each_arm(monkeypatch, arm, expected):
+    """Relocating refusals into one return must not reclassify binary/unreadable inputs."""
+    from ouroboros import skill_review
+
+    raised = {
+        "over_budget": skill_review._SkillFileOverBudget("scripts/table.py", 5000, 300),
+        "binary": skill_review._SkillBinaryPayload("lib/native.so", 1024, "ELF"),
+        "unreadable": skill_review._SkillFileUnreadable("scripts/x.py", PermissionError("denied")),
+    }[arm]
+
+    def refuse(*_args, **_kwargs):
+        raise raised
+
+    monkeypatch.setattr(skill_review, "_build_skill_file_packs", refuse)
+    skill = SimpleNamespace(name="fixture", skill_dir="/nonexistent",
+                            manifest=SimpleNamespace(entry="", scripts=[]))
+    packs, same_skill, refusal = skill_review._skill_payload_packs(
+        skill, None, "content-hash", split=True, packet_seats=["review-1"])
+    assert packs == [] and same_skill is skill
+    assert refusal.status == "pending" and refusal.content_hash == "content-hash" and refusal.error
+    assert refusal.dispatch_refusal_code == expected

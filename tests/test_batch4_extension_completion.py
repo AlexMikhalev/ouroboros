@@ -264,7 +264,6 @@ def test_process_proxy_requires_host_exit_and_valid_protocol(tmp_path, monkeypat
     monkeypatch.setattr(runner, "_skill_for_dispatch", lambda *_a: skill)
     monkeypatch.setattr(runner, "_base_env_for_skill", lambda *_a: {})
     monkeypatch.setattr(runner, "_extension_has_model_credentials", lambda *_a: False)
-    monkeypatch.setattr(runner, "_task_settings_for_skill", lambda *_a: {})
     drain_release, drains = threading.Event(), []
     if not drained:
         real_drain = runner._drain

@@ -7,7 +7,7 @@ from typing import Any
 
 from ouroboros.dialogue_evidence import own_room_chat, read_room_source, task_room_record
 from ouroboros.owner_words import owner_words_text
-from ouroboros.projects_registry import all_task_bindings, list_reserved_projects
+from ouroboros.projects_registry import all_task_bindings, list_reserved_projects, RoomResolver
 from ouroboros.task_results import load_plan_review_state
 
 
@@ -15,13 +15,13 @@ def related_rooms(ctx: Any, root: pathlib.Path, own_chat: int | None) -> list[di
     """Only Main and task-lineage rooms, using existing registry activity facts."""
     task_id = str(getattr(ctx, "task_id", "") or "")
     task = {**(task_room_record(root, task_id)), **(getattr(ctx, "task_metadata", {}) or {}), "task_id": task_id}
-    bindings = all_task_bindings(root)
+    bindings, rooms = all_task_bindings(root), RoomResolver(root)
     chats = {1} if own_chat != 1 else set()
     for field in ("task_id", "parent_task_id", "root_task_id"):
         tid = str(task.get(field) or "")
         if tid:
             source = task_room_record(root, tid)
-            chat = bindings.get(tid) or source.get("chat_id")
+            chat = rooms(tid) or source.get("chat_id")
             if chat is not None:
                 chats.add(int(chat))
     from ouroboros.task_results import resolve_task_lineage

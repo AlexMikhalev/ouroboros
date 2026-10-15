@@ -156,8 +156,65 @@ def test_default_reader_and_producer_keep_unknown_without_a_retry_owner(env):
     contract = _parent(env)
     with database_reader(env.data, exclusive=True), store.acquisition_budget(0):
         assert durable_direct_child_count(env.data, "parent") is None
-        assert "delegation_rights_child_count_unknown" in schedule_delegation_refusal(contract, env.data, "parent")
+        # Unknown is not a refusal at the worker's pre-check: the host's interlock decides.
+        assert schedule_delegation_refusal(contract, env.data, "parent") == ""
         with pytest.raises(store.StoreBusy) as caught:
             durable_direct_child_count(env.data, "parent", propagate_contention=True)
         assert caught.value.reason == "contention"
     assert durable_direct_child_count(env.data, "parent") == 0
+
+
+# ---------------------------------------------------------------------------
+# Owner promise (14 Oct): brief SQLite contention never refuses a subagent launch.
+# Both pre-checks (the worker tool, the supervisor's early read) leave an unknown
+# count to the interlocked re-check, which defers contention and refuses a hard unknown.
+# ---------------------------------------------------------------------------
+
+def _contended_parent_rows(monkeypatch, *, when):
+    """Raise real-shaped store contention on the parent-rows count read while ``when()`` holds."""
+    original, gaps = task_store.task_facts, []
+
+    def facts(root, *args, **kwargs):
+        if kwargs.get("where") == _PARENT_ROWS and when():
+            gaps.append(queue._queue_lock._is_owned())
+            raise store.StoreBusy("current store busy: database is locked", reason="contention")
+        return original(root, *args, **kwargs)
+
+    monkeypatch.setattr(task_store, "task_facts", facts)
+    return gaps
+
+
+def test_worker_tool_under_count_contention_schedules_instead_of_refusing(tmp_path, monkeypatch):
+    from ouroboros.tools.control_scheduling import _schedule_task
+    from ouroboros.tools.registry import ToolContext
+    from tests._shared import configure_test_subagent
+
+    configure_test_subagent(monkeypatch)
+    budget = {"may_delegate": True, "depth_remaining": 2, "max_children": 3}
+    write_task_result(tmp_path, "parent", "running", root_task_id="parent", task_contract={"delegation_budget": budget})
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, current_task_type="task")
+    ctx.task_id, ctx.event_queue = "parent", stdqueue.Queue()
+    ctx.task_metadata, ctx.task_contract = {"root_task_id": "parent"}, {"delegation_budget": budget}
+    gaps = _contended_parent_rows(monkeypatch, when=lambda: True)
+
+    result = _schedule_task(ctx, subagent_id="api-scout", objective="Collect the figures",
+                            expected_output="figures", memory_mode="empty")
+
+    assert not result.startswith("⚠️"), result
+    assert gaps == [False], "the worker's own count read hit the contention"
+    event = ctx.event_queue.get_nowait()
+    assert event["type"] == "schedule_subagent" and event["parent_task_id"] == "parent"
+
+
+def test_supervisor_early_count_contention_is_no_rejection_and_admits_after_release(env, monkeypatch):
+    _parent(env, "cap")
+    event = env.request("early-busy")
+    gaps = _contended_parent_rows(monkeypatch, when=lambda: not queue._queue_lock._is_owned() and not gaps)
+
+    assert env.dispatch_returns(event) and env.gen.wait_idle(_WAIT_SEC)
+
+    assert gaps == [False], "only the early (off-Q) count was contended"
+    row = env.row("early-busy")
+    assert row["status"] == "scheduled" and env.pending_ids() == ["early-busy"], row
+    assert row.get("delegation_admission", {}).get("status") != "rejected"
+

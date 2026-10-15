@@ -852,7 +852,10 @@ class UpdateTransactionState(TypedDict, total=False):
 class UpdateStatusResponse(TypedDict, total=False):
     """``GET /api/update/status`` (no network) and ``POST /api/update/check`` (fetches first, may write
     the update letter and broadcasts ``update_progress_changed``). ``running_sha`` is the commit the
-    running core started from; ``current_sha`` is the checkout's. ``check_ok`` is null on status."""
+    running core started from; ``current_sha`` is the checkout's. ``check_ok`` is null on status.
+    ``ahead``/``behind`` count commits (history); ``local_changes`` says whether the checkout holds
+    content of its own, omitted when no comparison was attempted: ``present`` is a tree delta since
+    the shared base, not authorship or upstream equivalence, and never replaces the apply merge plan."""
 
     running_sha: Required[str]
     current_version: str
@@ -875,6 +878,9 @@ class UpdateStatusResponse(TypedDict, total=False):
     latest_message: str
     ahead: int
     behind: int
+    local_changes: Literal["absent", "present", "unknown"]
+    local_changes_base: str
+    local_changes_reason: Literal["unresolved_sha", "shallow_history", "git_error", "several_bases", "no_shared_base"]
     dirty: bool
     dirty_count: int
     dirty_preview: List[str]

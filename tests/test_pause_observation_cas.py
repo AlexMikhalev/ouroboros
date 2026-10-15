@@ -19,6 +19,7 @@ import pytest
 
 from tests._budget_pause_exact_helpers import _fast_hold, _install_queue, _loop_ctx, _mock_pause_observation
 from tests.test_owner_wait_pool import pool  # noqa: F401
+from tests.worker_pool_support import affirm_ready
 
 RUNNING_RUN = [{"run_id": "run-1", "state": "running", "stop_outcome": ""}]
 
@@ -132,8 +133,8 @@ def test_owner_pause_settlement_never_overwrites_a_newer_resume_or_pause(tmp_pat
     assert row["state"] == budget_pause.STATE_RESUME_GRANTED and not row["grant"].get("revoked_at")
     assert workers.PENDING[0]["_budget_pause_resume"]["grant_id"] == grant_id
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                         in_q=SimpleNamespace(put=lambda task: sent.append(dict(task))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                         in_q=SimpleNamespace(put=lambda task: sent.append(dict(task)))))
     workers.assign_tasks()
     assert [(task["id"], task["_budget_pause_resume"]["grant_id"]) for task in sent] == [("solo", grant_id)]
 

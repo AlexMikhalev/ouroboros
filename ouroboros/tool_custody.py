@@ -2,7 +2,8 @@
 
 An invocation that unwound cannot launch again. Its known executor or supervisor
 receipt can still be pending. These readers preserve that distinction for Pause,
-Continue and cold sleep without a second ledger or business-status classification.
+Continue, cold sleep and idle-worker retirement without a second ledger or
+business-status classification.
 Untracked descendants/remote effects remain the same disclosed gap as exit zero.
 """
 from __future__ import annotations
@@ -11,6 +12,7 @@ from contextvars import copy_context
 import logging
 import os
 import threading
+import time
 import uuid
 from typing import Any
 
@@ -43,6 +45,8 @@ def invocation_outcome(source: Any, name: str, operation_id: str = "", *, future
             "local_owner": ({"pid": os.getpid(), "process_birth": owner.answer_owner_birth,
                              "task_attempt": owner.attempt} if bound else {}),
             "memory_owned": future_owned and bound, "lock": threading.RLock(),
+            # Phase transitions never wait for the durable lock's store I/O.
+            "phase_lock": threading.Lock(),
             "admission_context": copy_context()}
 
 
@@ -101,28 +105,47 @@ def retain_invocation(outcome: dict, update=None) -> None:
 
 
 def settle_invocation(outcome: dict) -> None:
-    """Local completion cannot retire independent pending effects."""
+    """Retry only this idempotent completion within one store budget, never work.
+
+    Store acquisitions do not wait; the durable lock is released between tries.
+    A permanent refusal keeps the result and its unresolved durable custody.
+    """
     from ouroboros.task_store import DELETE_ROW, patch_handoff
     from ouroboros.utils import utc_now_iso
+    from ouroboros.store import StoreBusy, STORE_WAIT_SEC, acquisition_budget
+    from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
 
-    with outcome["lock"]:
-        if not outcome.get("durable_attempted") or outcome.get("local_holds", 0):
-            return
-        if not any(outcome.get(key) is True for key in
-                   ("not_started", "settled", "local_extension_returned", "mcp_call_returned")):
-            return
-        def settle(claim):
-            if claim is None:
-                return None
-            pending = {key: value for key, value in (claim.get("external_pending") or {}).items()
-                       if key not in outcome.get("confirmed_external", set())}
-            claim = {**claim, "state": "returned", "returned_at": utc_now_iso(), "external_pending": pending}
-            return claim if claim_still_owns_effect(outcome["claim_root"], claim) else DELETE_ROW
+    end = time.monotonic() + STORE_WAIT_SEC
+    while True:
         try:
-            patch_handoff(outcome["claim_root"], outcome["claim_task"], "launch_handoffs",
-                          outcome["operation_id"], settle)
+            with outcome["lock"], acquisition_budget(0):
+                if not outcome.get("durable_attempted") or outcome.get("local_holds", 0):
+                    return
+                if not any(outcome.get(key) is True for key in
+                           ("not_started", "settled", "local_extension_returned", "mcp_call_returned")):
+                    return
+                returned_at = outcome.setdefault("returned_at", utc_now_iso())
+                def settle(claim):
+                    if claim is None:
+                        return None
+                    pending = {key: value for key, value in (claim.get("external_pending") or {}).items()
+                               if key not in outcome.get("confirmed_external", set())}
+                    claim = {**claim, "state": "returned", "returned_at": claim.get("returned_at", returned_at),
+                             "external_pending": pending}
+                    return claim if claim_still_owns_effect(outcome["claim_root"], claim) else DELETE_ROW
+                patch_handoff(outcome["claim_root"], outcome["claim_task"], "launch_handoffs",
+                              outcome["operation_id"], settle)
+            return
+        except StoreBusy as exc:
+            remaining = end - time.monotonic()
+            if exc.reason == "contention" and remaining > 0:
+                time.sleep(min(ACQUISITION_SLICE_SEC, remaining))
+                continue
+            log.warning("Invocation custody settlement retained for %s", outcome["operation_id"], exc_info=True)
+            return
         except Exception:
             log.warning("Invocation custody settlement retained for %s", outcome["operation_id"], exc_info=True)
+            return
 
 
 def _update_active_claim(update) -> None:
@@ -157,6 +180,8 @@ def external_handoff(kind: str):
                 return
             def remove(claim):
                 pending = dict(claim.get("external_pending") or {})
+                if token not in pending:
+                    return None  # confirmation cannot manufacture an absent duty
                 pending.pop(token, None)
                 return {**claim, "external_pending": pending}
             try:
@@ -164,8 +189,26 @@ def external_handoff(kind: str):
                 discharged = True
             except Exception:
                 log.warning("External custody confirmation retained for %s", token, exc_info=True)
+        if outcome.get("closed"):
+            # This receipt ends only its external duty, not a live runner or
+            # callback owned by the enclosing Future.
+            row = outcome.get("future_row")
+            if row is not None:
+                from ouroboros.budget_pause import _finish_tool_row
+                _finish_tool_row(row)
+            else:
+                settle_invocation(outcome)
     try:
-        retry_presend(lambda: retain_invocation(outcome, add), check=False)
+        def publish():
+            # Existing DB exclusion orders this new duty against settlement,
+            # without denying legitimate late updates to earlier duties.
+            with outcome["lock"]:
+                with outcome["phase_lock"]:
+                    if outcome.get("closed"):
+                        from ouroboros.owner_pause import OwnerPauseRefused
+                        raise OwnerPauseRefused("operation_already_returned")
+                retain_invocation(outcome, add)
+        retry_presend(publish, check=False)
     except BaseException:
         confirmed()  # no caller acquired this external start
         raise
@@ -188,9 +231,28 @@ def hold_invocation():
     def release():
         with outcome["lock"]:
             outcome["local_holds"] -= 1
-            if outcome.get("closed"):
-                settle_invocation(outcome)
+            closed = outcome.get("closed")
+        if closed:
+            settle_invocation(outcome)
     return release
+
+
+def local_producers_settled() -> bool:
+    """The idle-retirement probe's non-review half, process-wide and O(live rows).
+
+    Every registered tool future, including one its finished attempt forgot, has
+    reached its final ``settled`` event: callback/runner holds released and its
+    durable invocation settled (``budget_pause._finish_tool_row`` sets the event
+    only after ``settle_invocation``, outside the lock). No sender an owner Pause
+    abandoned still settles its paid answer. A returned task is not proof of either.
+    """
+    from ouroboros import budget_pause
+    from ouroboros._usage_wait import _ABANDONED_SENDS
+
+    with budget_pause._TOOL_LOCK:
+        unsettled = any(not row["settled"].is_set()
+                        for rows in budget_pause._TOOL_FUTURES.values() for row in rows.values())
+    return not unsettled and not _ABANDONED_SENDS
 
 
 def retain_unconfirmed_host_operation(reason: str) -> None:

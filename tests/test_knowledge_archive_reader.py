@@ -1,12 +1,12 @@
-"""Reflection must read the archive receipt through its own file tool.
+"""A Light memory reader reads the archive receipt through its own file tool.
 
 This complements archive lifecycle tests: the historical source still names the
-pre-archive bytes after edits and restore, while current reading stays current.
+pre-archive bytes after edits and restore, while current reading stays current, and
+a reader on the canonical drive finds it before a forked task's copyback.
 """
 import hashlib
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -22,7 +22,7 @@ def _write(registry, **arguments):
 
 
 @pytest.mark.parametrize("scope", ["global", "project:reader-check"])
-def test_reflection_reads_exact_previous_source_after_restore(tmp_path, scope):
+def test_a_light_reader_reads_exact_previous_source_after_restore(tmp_path, scope):
     canonical = tmp_path / "canonical"
     execution = tmp_path / "execution"
     canonical.mkdir()
@@ -43,7 +43,7 @@ def test_reflection_reads_exact_previous_source_after_restore(tmp_path, scope):
                      old_str="Earlier facts.", content="Later corrected facts.")
     _write(registry, topic="reader-source", scope=scope, mode="restore",
            expected_revision=changed["knowledge_source"]["revision"])
-    reader = KnowledgeReadContext(ctx, "reflection")
+    reader = KnowledgeReadContext(ctx, "memory_consolidation")
     allowed = {item["function"]["name"] for item in reader.tools}
     assert ref["read"]["tool"] == "read_file" and "read_file" in allowed
     observed = reader.read_call({"id": "historical-source", "function": {
@@ -61,8 +61,7 @@ def test_reflection_reads_exact_previous_source_after_restore(tmp_path, scope):
 
 @pytest.mark.parametrize("scope", ["global", "project:reader-check"])
 @pytest.mark.parametrize("mode", ["archive", "restore"])
-def test_run_reflection_reads_previous_source_before_copyback(tmp_path, monkeypatch, scope, mode):
-    from ouroboros import consolidator, post_task_synthesis
+def test_a_canonical_reader_reads_previous_source_before_copyback(tmp_path, scope, mode):
     from ouroboros.artifacts import read_actor_source_bytes
     from tests.test_knowledge_archive import setup, transition
 
@@ -81,37 +80,20 @@ def test_run_reflection_reads_previous_source_before_copyback(tmp_path, monkeypa
     _write(registry, topic=address.topic, scope=scope, mode="edit",
            expected_revision=json.loads(reply.split("\n", 1)[1])["knowledge_source"]["revision"],
            old_str="Старый берег.", content="LATER CURRENT BODY")
-    monkeypatch.setattr(consolidator, "_consolidation_route", lambda: ("test/model", False))
-    observed = []
-
-    class Reader:
-        def chat(self, *, messages, **kwargs):
-            import copy
-            observed.append(copy.deepcopy(messages))
-            if len(observed) == 1:
-                return {"tool_calls": [{"id": "previous-source", "type": "function", "function": {
-                    "name": ref["read"]["tool"], "arguments": json.dumps(ref["read"]["arguments"]),
-                }}]}, {}
-            return {"content": "The recorded previous bytes are available.\nMEMORY_ACTIONS_JSON: []"}, {}
-
-    task = {"id": ctx.task_id, "type": "task", "text": "Archive and preserve the earlier source.",
-            "budget_drive_root": str(tmp_path), "project_id": ctx.project_id}
-    trace = {"tool_calls": [{"tool": "knowledge_write", "status": "ok", "result": reply}]}
-    entry = post_task_synthesis._run_reflection(
-        SimpleNamespace(repo_dir=tmp_path, drive_root=ctx.drive_root), Reader(), task,
-        {"rounds": 15}, trace, {"task_id": ctx.task_id, "has_evidence": True,
-                                "tool_trajectory": trace["tool_calls"]})
-    assert entry and len(observed) == 2, entry
-    assert ref["path"] in json.dumps(observed[0]), "the real prompt advertises the previous reader"
-    delivered = [row["content"] for row in observed[1] if row.get("role") == "tool"]
-    assert len(delivered) == 1 and "old_content" in delivered[0], delivered
+    # A reader on the CANONICAL drive (the forked task has not copied back yet).
+    canonical = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id=ctx.task_id)
+    observed = KnowledgeReadContext(canonical, "memory_consolidation").read_call({
+        "id": "previous-source", "function": {"name": ref["read"]["tool"], "arguments": json.dumps(ref["read"]["arguments"])}})
+    assert observed["status"] == "ok", observed
+    delivered = observed["result"]
+    assert "old_content" in delivered
     view = {}  # the delivered numbered display, mapped by the renderer that produced it
     _render_line_slice(ref["path"], exact.decode("utf-8"), extent=view)
-    view["body_start"] = delivered[0].find("\n") + 1
-    payload = json.loads(delivered_source_prefix(view, delivered[0], len(delivered[0])))
+    view["body_start"] = delivered.find("\n") + 1
+    payload = json.loads(delivered_source_prefix(view, delivered, len(delivered)))
     assert payload["old_content"].encode("utf-8") == original
     assert payload["revision"] == hashlib.sha256(original).hexdigest()
-    assert "LATER CURRENT BODY" not in delivered[0]
+    assert "LATER CURRENT BODY" not in delivered
     assert read_actor_source_bytes(tmp_path, ctx.task_id, ref) == exact
 
 

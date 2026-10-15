@@ -1433,18 +1433,6 @@ def rotate_jsonl_log_if_needed(
         return
     if path.stat().st_size < max_bytes:
         return
-    ts = utc_now_iso().replace("-", "").replace(":", "").split(".")[0]
-    archive_path = drive_root / "archive" / f"{archive_prefix}_{ts}.jsonl"
-    # Second-resolution names can collide when a fast writer forces two rotations
-    # within one second; os.replace onto an existing archive would destroy it. The
-    # "_<n>" suffix sorts lexicographically AFTER "<ts>.jsonl" ("_" > "."), so
-    # name-ordered readers keep the true chronological chain.
-    suffix = 0
-    while archive_path.exists():
-        suffix += 1
-        archive_path = drive_root / "archive" / f"{archive_prefix}_{ts}_{suffix}.jsonl"
-    archive_path.parent.mkdir(parents=True, exist_ok=True)
-
     from ouroboros.utils import jsonl_append_lock_path
 
     lock_path = jsonl_append_lock_path(path)
@@ -1455,6 +1443,21 @@ def rotate_jsonl_log_if_needed(
     try:
         if not path.exists() or path.stat().st_size < max_bytes:
             return
+        # The archive's name is its rotation time, taken UNDER the append lock: every
+        # row already in the file was appended before this stamp, so a reader that
+        # bounds its archive scan by a time it recorded earlier (the terminal
+        # projection's readiness mint) can stop at the first older segment.
+        ts = utc_now_iso().replace("-", "").replace(":", "").split(".")[0]
+        archive_path = drive_root / "archive" / f"{archive_prefix}_{ts}.jsonl"
+        # Second-resolution names can collide when a fast writer forces two rotations
+        # within one second; os.replace onto an existing archive would destroy it. The
+        # "_<n>" suffix sorts lexicographically AFTER "<ts>.jsonl" ("_" > "."), so
+        # name-ordered readers keep the true chronological chain.
+        suffix = 0
+        while archive_path.exists():
+            suffix += 1
+            archive_path = drive_root / "archive" / f"{archive_prefix}_{ts}_{suffix}.jsonl"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
         os.replace(path, archive_path)
         path.touch()
     finally:

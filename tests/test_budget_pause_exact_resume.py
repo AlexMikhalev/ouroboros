@@ -18,6 +18,7 @@ import pytest
 from tests._budget_pause_exact_helpers import (
     _install_queue, _loop_ctx, _parked, _pause, _running_row, _supervisor_ctx,
 )
+from tests.worker_pool_support import affirm_ready
 
 
 # --------------------------------------------------------------------------- supervisor: park
@@ -309,8 +310,8 @@ def test_grant_is_revoked_when_money_vanishes_before_dispatch(tmp_path, monkeypa
     assert task["_budget_pause_resume"]["grant_generation"] == 1
     monkeypatch.setattr(state, "budget_remaining", lambda _st, **_k: 0.0)
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                         in_q=SimpleNamespace(put=lambda t: sent.append(t)))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                         in_q=SimpleNamespace(put=lambda t: sent.append(t))))
     workers.assign_tasks()
     assert sent == []
     assert task.get("_budget_pause", {}).get("exact_continuation") is True
@@ -330,8 +331,8 @@ def test_granted_task_dispatches_with_original_started_at_and_paused_carrier(tmp
     task, row = _parked(tmp_path, monkeypatch, task_id="dispatch-1")
     assert queue.resume_budget_paused_task("dispatch-1")["ok"] is True
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                         in_q=SimpleNamespace(put=lambda t: sent.append(dict(t))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                         in_q=SimpleNamespace(put=lambda t: sent.append(dict(t)))))
     workers.assign_tasks()
     assert [t["id"] for t in sent] == ["dispatch-1"]
     meta = workers.RUNNING["dispatch-1"]

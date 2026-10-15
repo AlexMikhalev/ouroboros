@@ -13,7 +13,8 @@ import uuid
 from subprocess import Popen
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from ouroboros.config import get_skills_repo_path, load_settings, runtime_settings
+from ouroboros.config import get_skills_repo_path, load_settings
+from ouroboros.settings_integrity import skill_settings
 from ouroboros.contracts.plugin_api import FORBIDDEN_SKILL_SETTINGS
 from ouroboros.platform_layer import merge_hidden_kwargs, subprocess_new_group_kwargs
 from ouroboros.provider_models import MODEL_PROVIDER_CREDENTIAL_KEYS
@@ -136,7 +137,9 @@ def _scrub_env(
         if val is not None:
             env[key] = val
     if manifest_env_keys:
-        settings = runtime_settings(settings_reader=load_settings)
+        # What the skill's PluginAPI reads now: a key saved or cleared mid-task reaches the next
+        # script or companion; grants still filter it.
+        settings = skill_settings(load_settings)
         from ouroboros.skill_loader import requested_core_setting_keys
         protected_upper = {k.upper() for k in _FORBIDDEN_ENV_FORWARD_KEYS}
         protected_upper.update(requested_core_setting_keys(list(manifest_env_keys or [])))

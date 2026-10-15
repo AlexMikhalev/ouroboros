@@ -166,7 +166,7 @@ TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
             "use an authority permitted by the task contract",
         ),
         # ``body_candidate.CandidateRefused``: the task's own-body candidate could not be
-        # prepared, resumed or isolated; nothing was changed and no process started.
+        # prepared, resumed or isolated; prior invocation effects are not erased.
         **{code: _code_spec("blocked", "blocked", "warning", "inspect or repair the retained body candidate")
            for code in (
             "CANDIDATE_UNAVAILABLE", "CANDIDATE_PATH_OCCUPIED", "CANDIDATE_MISSING",
@@ -370,11 +370,10 @@ TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
             "warning",
             "follow the refusal text",
         ),
-        # The owner paused the tree before this call's launch handoff
-        # (ouroboros/owner_pause.py): nothing ran — distinct from a timeout or an
-        # interrupted call whose execution is unknown.
+        # Refusal codes preserve authority and phase separately. Only the
+        # positive pre-entry variant proves that this handler never ran.
         "OWNER_LAUNCH_AUTHORITY_UNAVAILABLE": _code_spec(
-            "unavailable", "unavailable", "warning", "retry when launch authority is available",
+            "unavailable", "unavailable", "warning", "follow the reported phase and reconcile prior effects before retry",
         ),
         "STOP_ACTION_CONFLICT": _code_spec(
             "blocked", "blocked", "warning", "retry the original Stop action unchanged",
@@ -384,6 +383,12 @@ TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
             "blocked",
             "info",
             "issue the call again after the owner resumes the task",
+        ),
+        "OWNER_OPERATION_REFUSED": _code_spec(
+            "blocked", "blocked", "warning", "reconcile prior effects before repeating the call",
+        ),
+        "TOOL_ADMISSION_UNAVAILABLE": _code_spec(
+            "unavailable", "unavailable", "warning", "inspect the reported admission cause",
         ),
         "CAPABILITY_UNAVAILABLE": _code_spec(
             "unavailable",
@@ -753,26 +758,41 @@ def completed_local_read(handler):
     return read
 
 
-def launch_refusal_result(reason: str, *, completed_no_effect: bool = False) -> ToolResult:
-    """An unsent operation; only its producer can attest completed preparation."""
-    from ouroboros.owner_pause import NOT_STARTED_TEXT
+def launch_refusal_result(reason: str | Exception, *, not_started: bool | None = None) -> ToolResult:
+    """A refused submission does not erase earlier effects of its invocation."""
+    from ouroboros.owner_pause import LaunchBusy, NOT_STARTED_TEXT, _TOOL_OPERATION
+    from ouroboros.store import StoreError
 
-    unavailable = reason == "owner_launch_authority_unavailable"
-    code = "OWNER_LAUNCH_AUTHORITY_UNAVAILABLE" if unavailable else "OWNER_PAUSE_NOT_STARTED"
-    if unavailable:
-        text = ("⚠️ OWNER_LAUNCH_AUTHORITY_UNAVAILABLE: NOT STARTED — launch authority is temporarily "
-                "unavailable. Nothing was submitted; retry when authority is available.")
-    elif reason in {"owner_pause_authority_unreadable", "model_sleep_authority_unreadable"}:
-        text = ("⚠️ OWNER_PAUSE_NOT_STARTED: NOT STARTED — pause/sleep authority could not be read. "
-                "Nothing was submitted; repair the authority before retrying.")
-    elif reason == "operation_already_returned":
-        text = "⚠️ OWNER_PAUSE_NOT_STARTED: NOT STARTED — this operation has ended; it cannot submit more work."
-    else:
-        text = NOT_STARTED_TEXT
+    if not_started is None:
+        not_started = getattr(reason, "invocation_not_started", None)
+        active = _TOOL_OPERATION.get()
+        if not_started is None and active:
+            with active[2]["phase_lock"]:
+                not_started = active[2].get("not_started")
+    store_refusal = isinstance(reason, StoreError)
+    physical = (getattr(reason, "reason", None) or f"{type(reason).__name__}: {reason}"
+                if isinstance(reason, (LaunchBusy, StoreError)) else None)
+    semantic = "store_unavailable" if store_refusal else str(reason)
+    unavailable = store_refusal or semantic == "owner_launch_authority_unavailable"
+    code = ("TOOL_ADMISSION_UNAVAILABLE" if store_refusal else
+            "OWNER_LAUNCH_AUTHORITY_UNAVAILABLE" if unavailable else
+            "OWNER_PAUSE_NOT_STARTED" if not_started is True else "OWNER_OPERATION_REFUSED")
+    phase = ("NOT STARTED — the tool handler was not entered." if not_started is True else
+             "This submission was refused; the invocation may already have effects. "
+             "Reconcile those effects before repeating the call.")
+    if not_started is True and semantic in {"owner_pause_authority_unreadable", "model_sleep_authority_unreadable"}:
+        phase = ("NOT STARTED — pause/sleep authority could not be read. The tool handler was not entered; "
+                 "repair the authority before retrying.")
+    elif not_started is True and semantic == "operation_already_returned":
+        phase = "NOT STARTED — this invocation has ended; it cannot submit more work."
+    detail = f"{semantic}; launch reason: {physical}" if physical is not None else semantic
+    text = (NOT_STARTED_TEXT if not_started is True and semantic == "owner_pause"
+            else f"⚠️ {code}: {phase}")
     return ToolResult(status="unavailable" if unavailable else "blocked", code=code,
-                      text=f"{text} ({reason})", meta={"owner_pause_not_started": True,
-                      "control_reason": reason, **({"operation_outcome": "completed_no_effect"}
-                                                   if completed_no_effect else {})})
+                      text=f"{text} ({detail})",
+                      meta={"owner_pause_not_started": not_started is True,
+                            "control_reason": semantic,
+                            **({"launch_reason": physical} if physical is not None else {})})
 
 
 def _publish_process_result(
@@ -856,6 +876,8 @@ _EXACT_IDENTIFIER_CODES = MappingProxyType(
         "USER_FILES_PATH_BLOCKED": "USER_FILES_PATH_BLOCKED",
         "OWNER_PAUSE_NOT_STARTED": "OWNER_PAUSE_NOT_STARTED",
         "OWNER_LAUNCH_AUTHORITY_UNAVAILABLE": "OWNER_LAUNCH_AUTHORITY_UNAVAILABLE",
+        "OWNER_OPERATION_REFUSED": "OWNER_OPERATION_REFUSED",
+        "TOOL_ADMISSION_UNAVAILABLE": "TOOL_ADMISSION_UNAVAILABLE",
         "STOP_ACTION_CONFLICT": "STOP_ACTION_CONFLICT",
         "COGNITIVE_TOOL_REQUIRED": "COGNITIVE_TOOL_REQUIRED",
         "RESOURCE_CONSTRAINT_BLOCKED": "RESOURCE_CONSTRAINT_BLOCKED",
