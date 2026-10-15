@@ -557,29 +557,21 @@ def _accept_effective_claims(
         return claims, source, {}
     try:
         record = plan_record.load_plan_record(pathlib.Path(str(root)), str(task_id))
-        legacy = _legacy_plan_facts(pathlib.Path(str(root)), str(task_id))
-    except PlanReviewSourceUnavailable:
-        raise
     except plan_record.PlanRecordInvalid as exc:
         raise PlanReviewSourceUnavailable(f"PLAN_RECORD_UNAVAILABLE: {exc}") from exc
     except Exception:
         return claims, source, {}
+    legacy, legacy_error = plan_record.legacy_facts(pathlib.Path(str(root)), str(task_id))
+    if legacy_error and plan_record.latest_revision(record) is None:
+        # Never judge without the bar: an earlier-schema state (or the author plan it names) that cannot
+        # be read, with no organ revision to bind instead, is acceptance's typed infrastructure failure.
+        raise PlanReviewSourceUnavailable(f"PLAN_REVIEW_STATE_UNAVAILABLE: {legacy_error['source']}: {legacy_error['error']}")
     if not plan_record.engaged(record) and not legacy.get("engaged"):
         return claims, source, {}
-    return plan_record.acceptance_view(record, claims, legacy=legacy)
-
-
-def _legacy_plan_facts(root: pathlib.Path, task_id: str) -> Dict[str, Any]:
-    """The read-only projection of a v1/v2 ``plan_review_state`` for the binder."""
-    from ouroboros import plan_record
-    from ouroboros.task_results import load_plan_review_state
-    from ouroboros.tools.plan_review_artifacts import current_author_plan
-
-    state = load_plan_review_state(root, task_id)
-    author_plan = None
-    if state.get("current_attempt"):
-        author_plan = current_author_plan(root, task_id, state)  # an unreadable author source raises: never "no author plan"
-    return plan_record.import_legacy_v2(state, author_plan=author_plan)
+    claims, source, exhibit = plan_record.acceptance_view(record, claims, legacy=legacy)
+    if legacy_error:
+        exhibit["legacy_unreadable"] = dict(legacy_error)  # the latest revision binds; the unread earlier state is named
+    return claims, source, exhibit
 
 
 def _accept_claim_support_refs(contract: Dict[str, Any], receipts: list) -> list[Dict[str, Any]]:

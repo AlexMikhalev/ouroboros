@@ -530,6 +530,30 @@ def import_legacy_v2(state: Any, *, author_plan: Optional[Mapping[str, Any]] = N
                                    or w.get("custody_pending"))}
 
 
+def legacy_facts(root: Any, task_id: str) -> tuple[Dict[str, Any], Dict[str, str]]:
+    """``(legacy, error)`` — the ONE loader of the earlier-schema ``plan_review_state`` behind
+    ``import_legacy_v2``: the state, the author plan its current attempt names, the projection.
+    ``error`` is ``{}`` or names the read that failed (``source`` = ``plan_review_state`` or
+    ``author_plan``, plus the message); the projection is then built without that piece. Each
+    caller chooses its policy in one line: the gate holds as unreadable, the tool's read says
+    so, the acceptance binder refuses to bind without the bar, the task detail names it."""
+    from ouroboros.task_results import load_plan_review_state
+
+    try:
+        state = load_plan_review_state(root, task_id)
+    except (OSError, TimeoutError, ValueError, StoreError) as exc:
+        return import_legacy_v2(None), {"source": "plan_review_state", "error": f"{type(exc).__name__}: {exc}"}
+    author_plan, error = None, {}
+    if state.get("current_attempt"):
+        from ouroboros.tools.plan_review_artifacts import current_author_plan
+
+        try:
+            author_plan = current_author_plan(root, task_id, state)
+        except (OSError, ValueError) as exc:
+            error = {"source": "author_plan", "error": f"{type(exc).__name__}: {exc}"}
+    return import_legacy_v2(state, author_plan=author_plan), error
+
+
 # ------------------------------------------------------------------ read view
 
 def read_view(record: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:

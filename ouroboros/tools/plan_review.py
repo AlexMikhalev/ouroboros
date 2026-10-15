@@ -128,27 +128,6 @@ def get_tools():
     return [ToolEntry(name="plan_task", schema=_SCHEMA, handler=_handle_plan_task, timeout_sec=_plan_task_tool_timeout_sec())]
 
 
-def _legacy_facts(state_root: Any, task_id: str) -> Dict[str, Any]:
-    """The read-only projection of a v1/v2 ``plan_review_state`` (an in-flight task at
-    upgrade keeps its open blocking findings as objections of their seats)."""
-    from ouroboros.task_results import load_plan_review_state
-
-    try:
-        state = load_plan_review_state(state_root, task_id)
-    except Exception:
-        log.debug("legacy plan state unreadable for %s", task_id, exc_info=True)
-        return {}
-    author_plan = None
-    if state.get("current_attempt"):
-        from ouroboros.tools.plan_review_artifacts import current_author_plan
-
-        try:
-            author_plan = current_author_plan(state_root, task_id, state)
-        except (OSError, ValueError):
-            author_plan = None
-    return plan_record.import_legacy_v2(state, author_plan=author_plan)
-
-
 # ------------------------------------------------------------------ refusals
 
 def _refuse(ctx: ToolContext, code: str, text: str) -> str:
@@ -220,7 +199,7 @@ def _handle_plan_task(ctx: ToolContext, **params) -> str:
         record = plan_record.load_plan_record(state_root, task_id)
     except plan_record.PlanRecordInvalid as exc:
         return _refuse(ctx, "TOOL_ERROR", f"ERROR: PLAN_RECORD_UNREADABLE: {exc}. Nothing was written; the recorded plan state stands.")
-    legacy = _legacy_facts(state_root, task_id)
+    legacy, legacy_error = plan_record.legacy_facts(state_root, task_id)
     latest = plan_record.latest_revision(record)
     revision_fields: Optional[Dict[str, Any]] = None
     body, body_note = False, ""
@@ -282,7 +261,7 @@ def _handle_plan_task(ctx: ToolContext, **params) -> str:
             record = plan_ask.collect_pending(ctx, record, state_root=state_root, task_id=task_id)
         except Exception:
             log.warning("plan_task read: pending seats could not be collected", exc_info=True)
-    return _publish(ctx, record, effect=effect, notes=notes, legacy=legacy)
+    return _publish(ctx, record, effect=effect, notes=notes, legacy=legacy, legacy_error=legacy_error)
 
 
 def _refuse_unroutable(ctx: ToolContext, exc: Any, *, revision_fields: Optional[Dict[str, Any]], body: bool, body_note: str,
@@ -330,7 +309,8 @@ def _ask_summary(prepared: Any, record: Mapping[str, Any]) -> str:
 
 # ------------------------------------------------------------------ rendering
 
-def _decision(ctx: ToolContext, record: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+def _decision(ctx: ToolContext, record: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = None, *,
+              unreadable: bool = False) -> Dict[str, Any]:
     from ouroboros.owner_hurry import latched
     from ouroboros.tools.review_helpers import review_enforcement_blocks
 
@@ -338,7 +318,7 @@ def _decision(ctx: ToolContext, record: Mapping[str, Any], legacy: Optional[Mapp
     metadata = metadata if isinstance(metadata, Mapping) else {}
     return plan_record.gate_projection(
         record, enforcement=str(get_review_enforcement() or ""), cyber_pro=not review_enforcement_blocks("blocking"),
-        hurry=latched(ctx) is not None, force_plan=metadata.get("force_plan") is True, legacy=legacy)
+        hurry=latched(ctx) is not None, force_plan=metadata.get("force_plan") is True, legacy=legacy, unreadable=unreadable)
 
 
 def _render_done_when(rows: List[Mapping[str, Any]]) -> str:
@@ -369,7 +349,8 @@ def _failure_tag(participant: Mapping[str, Any]) -> str:
     return tag
 
 
-def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = None) -> str:
+def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = None,
+                  legacy_error: Optional[Mapping[str, str]] = None) -> str:
     """The read view as text: current revision, council, open objections, gate facts."""
     view = plan_record.read_view(record, legacy)
     revision = view.get("revision")
@@ -444,7 +425,11 @@ def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy
     lines.append("")
     lines.append("## Gate")
     status = str(decision.get("status") or "")
-    if status == "held":
+    if status == "unreadable":  # the same fact the finalization gate reads (I-17): engaged, not absent
+        lines.append("HELD: this task's earlier plan-review state cannot be read"
+                     + (f" ({(legacy_error or {}).get('error')})" if (legacy_error or {}).get("error") else "")
+                     + ", so the gate holds until it can; finish_task(action='stop') ends honestly with unfinished work.")
+    elif status == "held":
         lines.append("HELD: under Blocking the open objections marked above hold your normal final answer until their raisers withdraw "
                      "them, the owner hurries or changes enforcement, or you stop honestly with unfinished work (finish_task action=stop).")
     elif status == "objections_open":
@@ -463,11 +448,15 @@ def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy
 
 
 def _publish(ctx: ToolContext, record: Mapping[str, Any], *, effect: str, notes: List[str],
-             legacy: Optional[Dict[str, Any]] = None) -> str:
+             legacy: Optional[Dict[str, Any]] = None, legacy_error: Optional[Dict[str, str]] = None) -> str:
     state_root, task_id = plan_ask.state_location(ctx)
-    legacy = _legacy_facts(state_root, task_id) if legacy is None else legacy
-    decision = _decision(ctx, record, legacy)
-    text = ("\n".join(notes) + "\n\n" if notes else "") + render_record(record, decision, legacy)
+    if legacy is None:
+        legacy, legacy_error = plan_record.legacy_facts(state_root, task_id)
+    legacy_error = dict(legacy_error or {})
+    # An earlier-schema state that cannot be read holds the finalization gate (owner_hurry._plan_facts);
+    # the tool's read says the same, never "nothing holds".
+    decision = _decision(ctx, record, legacy, unreadable=legacy_error.get("source") == "plan_review_state")
+    text = ("\n".join(notes) + "\n\n" if notes else "") + render_record(record, decision, legacy, legacy_error)
     latest = plan_record.latest_revision(record)
     return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=text, meta={
         "plan_effect": effect,

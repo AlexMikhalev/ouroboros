@@ -74,3 +74,27 @@ def test_an_unreadable_plan_record_reaches_the_infrastructure_failure_path(tmp_p
     # Generic lookup failures stay fail-soft.
     monkeypatch.setattr("ouroboros.plan_record.load_plan_record", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")))
     assert _accept_effective_claims(_ctx(tmp_path, "acc"), {"requirements": "do X"}, tmp_path, "acc") == ([], "", {})
+
+
+def test_an_unreadable_earlier_state_never_drops_the_latest_revisions_bar(tmp_path):
+    """Scope R1, Fable 4 (+ the one legacy loader): the earlier-schema state's own ValueError used to
+    fall into the binder's fail-soft branch, dropping the readable record's latest done_when so
+    acceptance judged without the bar. Now the latest revision binds and the unread state is a
+    typed fact on the exhibit; with no revision to bind, the typed infrastructure failure speaks."""
+    from ouroboros.review_evidence_sections import _accept_effective_claims
+    from ouroboros.task_result_schema import stamp_task_result_schema
+    from ouroboros.task_store import patch_document
+    from ouroboros.tools.plan_review_artifacts import PlanReviewSourceUnavailable
+
+    _plan(tmp_path, "acc", [{"id": "c1", "claim": "five slides", "support": "count"}])
+    patch_document(tmp_path, "acc", lambda doc: stamp_task_result_schema({**doc, "plan_review_state": {"schema_version": 99}}))
+    claims, source, exhibit = _accept_effective_claims(_ctx(tmp_path, "acc"), {"requirements": "do X"}, tmp_path, "acc")
+    assert source == "plan_review" and [c["claim"] for c in claims] == ["five slides"] and exhibit["binding"] == "latest_revision:1"
+    assert exhibit["legacy_unreadable"]["source"] == "plan_review_state" and "PLAN_REVIEW_STATE_INVALID" in exhibit["legacy_unreadable"]["error"]
+    write_task_result(tmp_path, "bare", STATUS_RUNNING, result="running")
+    patch_document(tmp_path, "bare", lambda doc: stamp_task_result_schema({**doc, "plan_review_state": {"schema_version": 99}}))
+    with pytest.raises(PlanReviewSourceUnavailable, match="PLAN_REVIEW_STATE_UNAVAILABLE: plan_review_state"):
+        _accept_effective_claims(_ctx(tmp_path, "bare"), {"requirements": "do X"}, tmp_path, "bare")
+    # The other direction: a readable earlier state carries no such fact.
+    _plan(tmp_path, "clean", [{"id": "c1", "claim": "x", "support": ""}])
+    assert "legacy_unreadable" not in _accept_effective_claims(_ctx(tmp_path, "clean"), {"requirements": "do X"}, tmp_path, "clean")[2]

@@ -9,6 +9,8 @@ from ouroboros import owner_hurry as oh
 from ouroboros import plan_record
 from ouroboros.review_records import ReviewActorRecord
 from ouroboros.tools import plan_ask
+from tests._store_shared import seed_result
+from tests.test_plan_gate import _v2
 from tests.test_plan_task_tool import CLEAN, _call, _record, _reply, _slots, _user_text, _write, harness as _harness
 
 harness = _harness  # noqa: F811 - pytest fixture re-export
@@ -158,3 +160,20 @@ def test_a_repeat_participants_delta_diffs_the_retained_text_when_the_index_move
     _call(ctx, ask=["s1"], message="once more")          # a3: s1 answered a2 about revision 2
     delta = _content(sub, 2, "s1").split("## THE PLAN")[1].split("The current text follows whole.")[0]
     assert "retained source could not be read" in delta and second["text_ref"]["path"] in delta and "```diff" not in delta
+
+
+# ---------------------------------------------------------------- Fable 3 / D2: the tool's read and the gate agree on an unreadable earlier state
+
+def test_the_tools_read_and_the_gate_agree_that_an_unreadable_earlier_state_holds(harness):
+    seed_result(harness.drive, "task-1", {"task_id": "task-1", "status": "running", "plan_review_state": {"schema_version": 99}})
+    harness.install({})
+    ctx = harness.make_ctx()
+    text, _result = _write(ctx)
+    assert "HELD: this task's earlier plan-review state cannot be read" in text and "PLAN_REVIEW_STATE_INVALID" in text
+    assert "Nothing holds your final answer." not in text
+    assert oh.force_plan_decision(ctx, {}, enforcement="blocking")["status"] == "unreadable"
+    # The other direction: a readable, closed earlier state holds nothing, in the tool and at the gate alike.
+    seed_result(harness.drive, "task-2", {"task_id": "task-2", "status": "running", "plan_review_state": _v2(closed=True)})
+    other = harness.make_ctx(task_id="task-2")
+    text, _result = _write(other)
+    assert "Nothing holds your final answer." in text and oh.force_plan_decision(other, {}, enforcement="blocking")["status"] == "clear"

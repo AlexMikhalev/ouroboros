@@ -623,3 +623,23 @@ def test_a_pending_echo_never_reopens_a_settled_seat_under_the_records_lock(tmp_
     merged = pr.update_participant(root, task, ask_id="a1", seat_id=SEAT_A, facts={"reply_ref": {"status": "empty"}})
     assert merged["asks"][0]["participants"][0]["reply_ref"] == {"status": "empty"}, "status-less facts still merge"
     assert pr.open_objections(merged)[0]["holds"] is True
+
+
+def test_the_one_legacy_loader_names_the_read_that_failed_and_projects_the_rest(tmp_path, monkeypatch):
+    """Scope R1, Fable 3 / D2: one loader behind import_legacy_v2; callers choose their policy."""
+    from ouroboros.tools import plan_review_artifacts as artifacts
+    from ouroboros.tools.plan_review_artifacts import PlanReviewSourceUnavailable
+
+    seed_result(tmp_path, "t-ok", {"task_id": "t-ok", "status": "running",
+                                   "plan_review_state": _v2_state(closed=False, blocking_findings=("s1",))})
+    legacy, error = pr.legacy_facts(tmp_path, "t-ok")
+    assert error == {} and legacy["engaged"] is True and [o["id"] for o in legacy["open_objections"]] == ["s1:f1"]
+    seed_result(tmp_path, "t-bad", {"task_id": "t-bad", "status": "running", "plan_review_state": {"schema_version": 99}})
+    legacy, error = pr.legacy_facts(tmp_path, "t-bad")
+    assert legacy["engaged"] is False and error["source"] == "plan_review_state" and "PLAN_REVIEW_STATE_INVALID" in error["error"]
+    monkeypatch.setattr(artifacts, "current_author_plan",
+                        lambda root, tid, st: (_ for _ in ()).throw(PlanReviewSourceUnavailable("PLAN_AUTHOR_SOURCE_UNAVAILABLE: gone")))
+    legacy, error = pr.legacy_facts(tmp_path, "t-ok")
+    assert error["source"] == "author_plan" and "gone" in error["error"] and [o["id"] for o in legacy["open_objections"]] == ["s1:f1"]
+    absent, error = pr.legacy_facts(tmp_path, "t-none")
+    assert absent["engaged"] is False and absent["open_objections"] == [] and error == {}

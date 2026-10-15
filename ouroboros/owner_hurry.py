@@ -450,7 +450,6 @@ def _plan_facts(ctx: Any) -> tuple[Dict[str, Any], Dict[str, Any], bool]:
     authority could not be read — a gate that cannot read its authority is engaged, not
     absent (I-17). Pending seats whose producer completed are settled at $0 first."""
     from ouroboros import plan_record
-    from ouroboros.task_results import load_plan_review_state
 
     root = _canonical_root(ctx)
     task_id = str(getattr(ctx, "task_id", "") or "").strip()
@@ -462,20 +461,10 @@ def _plan_facts(ctx: Any) -> tuple[Dict[str, Any], Dict[str, Any], bool]:
     except (plan_record.PlanRecordInvalid, OSError, TimeoutError, ValueError, StoreError):
         log.warning("Unable to read the durable plan record", exc_info=True)
         record, unreadable = plan_record.empty_record(), True
-    try:
-        state = load_plan_review_state(root, task_id)
-        author_plan = None
-        if state.get("current_attempt"):
-            from ouroboros.tools.plan_review_artifacts import current_author_plan
-
-            try:
-                author_plan = current_author_plan(root, task_id, state)
-            except (OSError, ValueError):
-                author_plan = None
-        legacy = plan_record.import_legacy_v2(state, author_plan=author_plan)
-    except (OSError, TimeoutError, ValueError, StoreError):
-        log.warning("Unable to read the durable legacy plan-review state", exc_info=True)
-        legacy, unreadable = {}, True
+    legacy, legacy_error = plan_record.legacy_facts(root, task_id)
+    if legacy_error.get("source") == "plan_review_state":  # an unreadable author plan is "no author plan" for the gate
+        log.warning("Unable to read the durable legacy plan-review state: %s", legacy_error.get("error"))
+        unreadable = True
     if not unreadable and plan_record.pending_asks(record):
         try:
             from ouroboros.tools.plan_ask import collect_pending
