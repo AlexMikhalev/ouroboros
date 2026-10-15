@@ -19,6 +19,7 @@ from typing import NamedTuple, Optional, Sequence
 # candidate's web/tests/*.test.js — see ouroboros/preflight_node.py. Imported
 # by name so tests/operators can stub `preflight_runner.run_node_tests`.
 from ouroboros.preflight_node import run_node_tests
+from ouroboros.test_environment import default_temp_parent
 
 
 DEFAULT_PYTEST_ARGS = ["tests/", "-q", "--tb=line", "--no-header"]
@@ -1284,7 +1285,6 @@ def run_hermetic_pytest(
     source_index_tree, source_index_error = _capture_source_index_tree(repo, max_output)
     if source_index_error is not None:
         return source_index_error
-    from ouroboros.test_environment import default_temp_parent
     temp_root_path = tempfile.mkdtemp(prefix="ouroboros-preflight-", dir=default_temp_parent())
     temp_root = pathlib.Path(temp_root_path).resolve(strict=False)
     worktree = temp_root / "repo"
