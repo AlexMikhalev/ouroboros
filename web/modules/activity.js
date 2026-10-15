@@ -10,6 +10,8 @@ import { fetchJson, isStoreMigrating } from './api_client.js';
 import { setInlineStatus } from './ui_helpers.js';
 import { openConfirmDialog } from './confirm_dialog.js';
 import { taskCancelPending } from './log_events.js';
+import { waitingModel } from './project_activity.js';
+import { censusTaskFacts, censusTaskPhase, paintTaskPhase } from './task_phase_chip.js';
 import {
     ACTION_HURRY,
     ACTION_RESUME,
@@ -32,6 +34,25 @@ function esc(value) {
 
 const getJson = (url) => fetchJson(url, { cache: 'no-store' });
 
+// Census phases that only say the task is still active.
+const ACTIVE_PHASES = new Set(['working', 'thinking', 'finalizing']);
+
+/** The shared chip for a row whose OWN census facts (its activity_id, never its root's: a
+ * child must not borrow a parent's result) know its outcome; null keeps the row's own word.
+ * The outcome is the status and an unfinished fact its quieter second one (DESIGN "Status and
+ * chips"). A queue row passes its own wait or hold word (`queueFact`, '' for plain running),
+ * which outranks a merely active census phase; membership and controls stay with the queue
+ * and census. Activity shows no model-call telemetry, so `model_activity` never reaches it. */
+export function ownOutcomePhase(activity, queueFact = null) {
+    const facts = activity ? censusTaskFacts(activity) : null;
+    if (!facts?.outcome || !(facts.ended || facts.finalizing)) return null;
+    const { model_activity: _telemetry, ...own } = activity;
+    if (queueFact !== null) delete own.project_admission_hold;  // the queue line already names it
+    const view = censusTaskPhase(own, null, true, waitingModel(own));
+    return queueFact && (!view.secondary || (ACTIVE_PHASES.has(own.phase) && !view.waiting))
+        ? { ...view, secondary: queueFact, secondaryMotion: false } : view;
+}
+
 /** An answered root whose late work remains (D10) names its own work, when it answered,
  * and that only the work left after the delivered answer waits — never a generic turn. */
 function lateWorkHtml(a, late) {
@@ -45,16 +66,18 @@ function lateWorkHtml(a, late) {
 }
 
 /** A census-only live root (a direct turn, or an answered root whose late work the owner
- * paused, D10): its phase, and the shared control — Resume once the census says Paused. */
-export function liveActivityRowHtml(a, nowMs = Date.now()) {
+ * paused, D10): its phase, and the shared control — Resume once the census says Paused.
+ * `slot` marks where the caller paints a known outcome (`ownOutcomePhase`). */
+export function liveActivityRowHtml(a, nowMs = Date.now(), slot = null) {
     const names = { direct_chat: 'Direct turn', managed_task: 'Managed task' };
     const started = Number(a.started_at) || 0;
     const elapsed = started > 0 ? ` · ${Math.max(0, Math.round(nowMs / 1000 - started))}s` : '';
     const late = a.late_work && typeof a.late_work === 'object' ? lateWorkHtml(a, a.late_work) : null;
+    const outcome = !late && slot && ownOutcomePhase(a);
     return `<div class="activity-row">
                 <div class="activity-row-main">
                     <span class="activity-name">${late ? late.name : esc(names[a.kind] || 'Live turn')}</span>
-                    <span class="activity-sub">${late ? late.sub : `${esc(a.phase || '')}${elapsed}`}</span>
+                    <span class="activity-sub">${late ? late.sub : `${outcome ? slot(outcome) : esc(a.phase || '')}${elapsed}`}</span>
                 </div>
                 <div class="activity-row-actions">
                     <button type="button" class="btn btn-xs btn-danger" data-act="task-control" data-id="${esc(a.activity_id || '')}" data-root="1"${a.phase === 'budget_paused' ? ' data-budget-paused="1"' : ''}>${esc(TASK_CONTROL_TRIGGER_LABEL)}</button>
@@ -236,10 +259,17 @@ export function initActivity({ mount, ws } = {}) {
         root.append(status, content);
         return { root, status, content, loaded: false };
     });
+    // Known-outcome chips of the last queue render; paintTaskPhase writes them into
+    // their slots once the markup is mounted. The words come from the translation seam.
+    let phaseViews = [];
+    const phaseSlot = (view) => `<span class="activity-phase" data-i18n-skip><span data-activity-phase="${
+        phaseViews.push(view) - 1}"></span><span class="chat-live-phase-secondary" hidden></span></span>`;
 
     function renderQueue(queue, census) {
         if (!Array.isArray(queue?.running) || !Array.isArray(queue?.pending)) throw new Error('Queue unavailable');
         const { running, pending } = queue;
+        const activities = Array.isArray(census?.active_chat_activities) ? census.active_chat_activities : [];
+        phaseViews = [];
         // #322: the snapshot already carries the pause truth — a member's own
         // _budget_pause row, or a root fence covering its tree.
         const liveFences = ((queue && queue.budget_root_fences) || [])
@@ -274,13 +304,17 @@ export function initActivity({ mount, ws } = {}) {
             const sleeping = t._budget_pause?.reason === 'sleep' || warmSleeping;
             const ownerPaused = t._budget_pause?.reason === 'owner'
                 || ownerFencedRoots.has(String(t.root_task_id || t.id || q.id || ''));
-            const phase = (census?.active_chat_activities || []).find((entry) =>
-                entry.activity_id === String(t.root_task_id || t.id || q.id || ''))?.phase;
+            const phase = activities.find((entry) =>
+                entry?.activity_id === String(t.root_task_id || t.id || q.id || ''))?.phase;
             const resumable = paused && (!ownerPaused || phase === 'budget_paused');
             const kindLabel = phase === 'unknown' ? 'pause status unknown'
                 : phase === 'budget_pausing' ? 'pausing' : restartHeld ? 'held after Restart'
                 : (paused ? (ownerPaused ? 'paused' : sleeping ? 'sleeping' : 'paused (budget)') : sleeping ? 'sleeping' : kind);
-            const meta = `${esc(kindLabel)}${q.type ? ` · ${esc(q.type)}` : ''}${rt}`;
+            // Pause follows the tree's root above; a result is the row's own, beside its wait word.
+            const ownId = String(q.id || t.id || '');
+            const outcome = ownId && ownOutcomePhase(activities.find((entry) => entry?.activity_id === ownId),
+                kindLabel === 'running' ? '' : kindLabel);
+            const meta = `${outcome ? phaseSlot(outcome) : esc(kindLabel)}${q.type ? ` · ${esc(q.type)}` : ''}${rt}`;
             const hold = t.project_admission_hold;
             const projectWait = hold?.label ? ` · ${esc(hold.label)}: ${esc(hold.detail || hold.reason)}` : '';
             return `<div class="activity-row">
@@ -296,10 +330,9 @@ export function initActivity({ mount, ws } = {}) {
         // Queue facts keep their runtime/budget controls. The census adds only
         // missing identities; queued direct turns can appear in both sources.
         const known = new Set([...running, ...pending].map((q) => String(q.id || q.task?.id || '')));
-        const live = (Array.isArray(census?.active_chat_activities) ? census.active_chat_activities : [])
-            .filter((a) => a && !known.has(String(a.activity_id || '')));
+        const live = activities.filter((a) => a && !known.has(String(a.activity_id || '')));
         const parts = [...running.map((q) => row(q, 'running')), ...pending.map((q) => row(q, 'pending')),
-            ...live.map((a) => liveActivityRowHtml(a))];
+            ...live.map((a) => liveActivityRowHtml(a, Date.now(), phaseSlot))];
         if (parts.length) return parts.join('');
         return census?.active_chat_activities_complete === true
             ? '<div class="activity-empty">Nothing running or queued.</div>'
@@ -422,6 +455,8 @@ export function initActivity({ mount, ws } = {}) {
                 // while a poll is pending is not undone by a stale snapshot.
                 if (index === 2) rememberDisclosure();
                 content.innerHTML = renderers[index](result.value);
+                content.querySelectorAll('[data-activity-phase]').forEach((el) => paintTaskPhase(
+                    el, phaseViews[Number(el.dataset.activityPhase)], el.nextElementSibling));
                 section.loaded = true;
                 setInlineStatus(status, '');
             } catch (error) {

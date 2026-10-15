@@ -13,6 +13,8 @@ import json
 import time
 from types import SimpleNamespace
 
+from tests.worker_pool_support import affirm_ready
+
 import pytest
 
 from ouroboros.model_wait import execution_elapsed_seconds
@@ -33,8 +35,8 @@ def _fake_clock(monkeypatch):
 
 def _assign_one(workers, state, monkeypatch, wid=7):
     sent = []
-    workers.WORKERS[wid] = SimpleNamespace(wid=wid, busy_task_id=None, reaping=False,
-                                           in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row))))
+    workers.WORKERS[wid] = affirm_ready(SimpleNamespace(wid=wid, busy_task_id=None, reaping=False,
+                                           in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row)))))
     monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 5.0)
     monkeypatch.setattr(workers, "repo_writer_task_allowed", lambda task: True)  # no repository writer here
     import supervisor.queue as q

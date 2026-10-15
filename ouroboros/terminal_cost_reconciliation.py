@@ -230,10 +230,42 @@ def imported_projection_debt(root, buckets, *, degraded=False):
         yield owner
 
 
+def _contended(exc) -> bool:
+    """Store contention, possibly wrapped: a busy reader proves neither change nor absence."""
+    from ouroboros.store import StoreBusy
+
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, StoreBusy) and getattr(exc, "reason", "") == "contention":
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _absent_task_ids(root, task_ids) -> set:
+    """Task ids whose result row is proven absent, in one statement; an unanswered query proves nothing."""
+    from ouroboros.task_results import validate_task_id
+    from ouroboros.task_store import task_facts
+
+    ids = set()
+    for task_id in task_ids:
+        try:
+            ids.add(validate_task_id(task_id))
+        except ValueError:
+            pass  # System accounting scopes own no task result.
+    if not ids:
+        return set()
+    try:
+        return ids - set(task_facts(root, where="task_id IN (SELECT value FROM json_each(?))",
+                                    params=(json.dumps(sorted(ids)),)))
+    except Exception:
+        return set()  # Only proven absence skips a read; the ownership read reports the rest.
+
+
 def _refresh_costs(root: pathlib.Path, reads) -> None:
     from ouroboros import usage_store
     from ouroboros.task_results import validate_task_id
-    from ouroboros.task_store import task_facts
     from ouroboros.task_status import SETTLED_STATUSES
     from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
     from supervisor.events_task_done import _refresh_terminal_task_cost
@@ -260,21 +292,17 @@ def _refresh_costs(root: pathlib.Path, reads) -> None:
             ids[owner] = validate_task_id(owner)
         except ValueError:
             pass  # System accounting scopes own no task result.
-    try:
-        # Presence precedes the ownership read, for every owner in one statement: an
-        # absent row keeps this exact revision without the fence's authority read, and
-        # the next pass projects a row copied back after the last ledger write.
-        present = set(task_facts(root, where="task_id IN (SELECT value FROM json_each(?))",
-                                 params=(json.dumps(sorted(set(ids.values()))),))) if ids else set()
-    except Exception:
-        present = None  # Only proven absence skips the read; the ownership read reports the rest.
+    # Presence precedes the ownership read, for every owner in one statement: an
+    # absent row keeps this exact revision without the fence's authority read, and
+    # the next pass projects a row copied back after the last ledger write.
+    absent = _absent_task_ids(root, ids.values())
     acknowledged, pending, failures, faults = [], set(), {}, {}
     for owner, revision in owners:
         task_id = ids.get(owner)
         if task_id is None:
             continue
         pending.add(task_id)
-        if present is not None and task_id not in present:
+        if task_id in absent:
             failures[task_id] = "result_absent"
             continue
         try:
@@ -290,6 +318,8 @@ def _refresh_costs(root: pathlib.Path, reads) -> None:
                 acknowledged.append((owner, revision))
                 pending.discard(task_id)
         except Exception as exc:
+            if _contended(exc):
+                continue  # Busy is not a change: the owner keeps its last observation, read again next pass.
             failures[task_id], faults[task_id] = _reason(exc), exc
     if acknowledged:
         # One short acknowledgement transaction after all result I/O. A crash
@@ -319,6 +349,8 @@ def reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
     with usage_store.read(root) as txn:
         rows = txn.attempts(f"{usage_store._OPEN_PREDICATE} AND {_RECOVERABLE}")
     reads, eligible, observations, faults = TaskOwnershipRead(root), {}, {}, {}
+    # A task whose row is proven absent cannot be eligible: one statement, not 3-4 reads per task per pass.
+    eligible.update(dict.fromkeys(_absent_task_ids(root, {str(row.get("task_id") or "") for row in rows}), False))
     # An open attempt keeps its last reason unless this pass observes a new one or
     # proves an outcome: a recovered receipt, a release, a terminal settlement or
     # terminal remote custody. Skipped, live or lost-race outcomes prove nothing.

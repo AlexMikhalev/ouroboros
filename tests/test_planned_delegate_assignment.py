@@ -16,11 +16,12 @@ from ouroboros.task_results import load_task_result
 from ouroboros.utils import atomic_write_json
 from supervisor import queue, workers
 from tests.test_available_subagents_runtime import _session_row, _settings, _snapshot
-from tests.test_owner_wait_restart import InertProcess, windows_successor
+from tests.test_owner_wait_restart import InertProcess, kill_inert, windows_successor
 from tests.test_project_hold_recovery import accepted, worker
 from tests.test_swarm_host_admission import host  # noqa: F401
 from tests.test_windows_restart_proof import Gateway
 from tests.test_pending_deadline_continuations import expiry  # noqa: F401
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -56,6 +57,9 @@ def prepared(host, tmp_path, monkeypatch, request):  # noqa: F811
     assert task["admitted_dispatch"] == "possible"
     assert load_task_result(host.root, "child1")["admitted_dispatch"] == "possible"
     process = InertProcess()
+    from supervisor import worker_pool_lifecycle
+    for module in (workers, worker_pool_lifecycle):  # an inert handle's fake PID reaches no OS process
+        monkeypatch.setattr(module, "kill_worker_tree", kill_inert)
     monkeypatch.setattr(workers, "WORKERS", {
         0: workers.Worker(0, process, SimpleNamespace(), busy_task_id="child1", active_capacity=False),
     })
@@ -426,8 +430,8 @@ def _free_workers(host, monkeypatch, count=4):  # noqa: F811
     sent = []
     monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=lambda _event: None))
     monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 5.0)
-    monkeypatch.setattr(workers, "WORKERS", {wid: SimpleNamespace(
-        wid=wid, busy_task_id=None, reaping=False, in_q=SimpleNamespace(put=sent.append)) for wid in range(count)})
+    monkeypatch.setattr(workers, "WORKERS", {wid: affirm_ready(SimpleNamespace(
+        wid=wid, busy_task_id=None, reaping=False, in_q=SimpleNamespace(put=lambda row: sent.append(row) if row.get("type") != "worker_quiescence" else None))) for wid in range(count)})
     return sent
 
 

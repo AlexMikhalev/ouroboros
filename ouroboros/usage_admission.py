@@ -473,7 +473,11 @@ def current_usage_projection(
     """The global projection, or one root's or one whole-work group's, from the
     store's summary rows. ``include_roots`` adds the per-root map (every root
     summary: an explicit request, never the default). ``allow_stale``: DISPLAY
-    readers only (the short wait, then unavailable), never money."""
+    readers only (the short wait, then unavailable), never money — and a display
+    read returns the stored projection as is, without the owner-amendment overlay
+    that reads the current task-result store (``amended_projection``): the root
+    heartbeat runs this on the supervisor drain for every running root, and the
+    amended cap is admission's concern, never a live figure's."""
     from ouroboros import usage_accounting as ua
     from ouroboros import usage_store
     from ouroboros._usage_rows import projection_view
@@ -483,6 +487,8 @@ def current_usage_projection(
         with usage_store.read(root, allow_stale=allow_stale) as txn:
             projection = projection_view(txn, root_task_id=root_task_id, billing_group_id=billing_group_id,
                                          degraded=usage_store.integrity_degraded(root))
+        if allow_stale:
+            return projection
         return amended_projection(root, billing_group_id or root_task_id, projection, group=bool(billing_group_id))
     if global_limit_usd is None:
         from ouroboros.settings_setup_contract import resolve_total_budget_usd

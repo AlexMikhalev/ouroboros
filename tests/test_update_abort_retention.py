@@ -74,8 +74,16 @@ def _system(tmp_path, monkeypatch):
         proc = process(wid, commands)
         launches.append(commands)
         append_jsonl(root / "logs" / "events.jsonl", {
-            "type": "worker_ready", "worker_id": wid, "pid": proc.pid, "git_sha": "test-sha"})
+            "type": "worker_ready", "worker_id": wid, "pid": proc.pid,
+            "process_birth": f"birth-{proc.pid}", "git_sha": "test-sha"})
         return proc
+
+    # The parent measures the same birth its fake child reports (process ledger).
+    from ouroboros import process_custody
+    for name in ("process_start_time", "process_start_time_legacy"):
+        measured = getattr(process_custody, name)
+        monkeypatch.setattr(process_custody, name, lambda pid, measured=measured:
+                            f"birth-{pid}" if pid in processes else measured(pid))
 
     for module in (workers, worker_pool_lifecycle):
         monkeypatch.setattr(module, "kill_worker_tree", lambda pid, **_kw: processes[pid].terminate())

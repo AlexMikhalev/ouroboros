@@ -198,6 +198,7 @@ def test_api_edit_preserves_accepted_or_unprovable_occurrence(q, monkeypatch, ev
 def test_worker_crash_retry_survives_settlement_and_successor(q, monkeypatch, cron, successor):  # noqa: F811
     from supervisor import state, worker_health, workers
     from tests.test_worker_crash_retry import _make_worker
+    from tests.worker_pool_support import affirm_ready
 
     monkeypatch.setattr(workers, "DRIVE_ROOT", q.root)
     monkeypatch.setattr(workers, "REPO_DIR", q.root.parent / "repo")
@@ -220,7 +221,7 @@ def test_worker_crash_retry_survives_settlement_and_successor(q, monkeypatch, cr
     _row(q, cron=cron, intent={"kind": "system_repo"})
     q.queue.check_scheduled_tasks()
     [original] = copy.deepcopy(q.pending)
-    worker = _make_worker(alive=True, busy_task_id=None, exitcode=1)
+    worker = affirm_ready(_make_worker(alive=True, busy_task_id=None, exitcode=1))
     workers.WORKERS[0] = worker
     workers.assign_tasks()
     assert worker.in_q.put.call_count == 1
@@ -240,7 +241,7 @@ def test_worker_crash_retry_survives_settlement_and_successor(q, monkeypatch, cr
     [retry] = q.pending
     assert retry["id"] == original["id"] and retry["_attempt"] == 2
     assert not occurrence.restore_allowed(copy.deepcopy(original)), "unknown snapshot is never retry authority"
-    replacement = _make_worker(alive=True, busy_task_id=None, exitcode=1)
+    replacement = affirm_ready(_make_worker(alive=True, busy_task_id=None, exitcode=1))
     workers.WORKERS[0] = replacement
     workers.assign_tasks()
     assert replacement.in_q.put.call_count == 1, "custody retry cannot depend on a retired row token"

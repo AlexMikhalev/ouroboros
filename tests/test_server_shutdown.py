@@ -301,7 +301,7 @@ def test_supervisor_startup_restores_queue_before_worker_reset():
     source = inspect.getsource(server._run_supervisor)
     restore = source.index("restored_pending = restore_pending_from_snapshot(")
     reset = source.index("kill_workers(preserve_pending=True)")
-    spawn = source.index("spawn_workers(max_workers)")
+    spawn = source.index("spawn_workers()")  # one ready worker; demand grows the rest
     assert restore < reset < spawn
 
 

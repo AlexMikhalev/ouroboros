@@ -21,6 +21,7 @@ _PROGRESS_ID_UNSET = object()
 
 from ouroboros.utils import (
     append_jsonl,
+    atomic_write_json,
     emit_log_event,
     get_git_info,
     read_json_dict,
@@ -38,6 +39,7 @@ from ouroboros.memory import Memory
 from ouroboros.context import build_llm_messages
 from ouroboros.loop import run_llm_loop
 from ouroboros.observability import task_timing_scope
+from ouroboros.process_custody import current_custody_session_id
 from ouroboros.config import EFFORT_SCALE, resolve_effort  # noqa: F401 -- the agent module keeps its historical import surface for the dispatch leaf
 from ouroboros.agent_startup_checks import (
     persist_early_origin_stub as _persist_early_origin_stub_impl,  # noqa: F401 -- the agent module keeps its historical import surface for the dispatch leaf
@@ -257,26 +259,20 @@ def _emit_budget_pause_checkpoint(
 ) -> None:
     """Publish the owner-visible budget-pause checkpoint on the registered path.
 
-    The enveloped log_event route is the ONE registered checkpoint channel
-    (_handle_log_event persists task_checkpoint rows and pushes them live);
-    a bare task_checkpoint on _pending_events has no handler and died as
-    unknown_worker_event, silently losing the owner-visible toast.
+    The enveloped log_event route is the ONE registered checkpoint channel: the
+    producer appends the durable events.jsonl row itself and then emits the one
+    live frame (``loop_messages._emit_checkpoint_event``); a bare task_checkpoint
+    on _pending_events has no handler and died as unknown_worker_event, silently
+    losing the owner-visible toast.
     """
-    checkpoint = {
-        "type": "task_checkpoint",
-        "task_id": task_id,
+    from ouroboros.loop_messages import _emit_checkpoint_event
+
+    _emit_checkpoint_event(event_queue, task_id, drive_logs, {
         "checkpoint_kind": "budget_scope_paused",
         "owner_visible": True,
         "toast_once": f"{task_id}:budget-paused:{resource_limit['scope']}",
         **resource_limit,
-    }
-    if event_queue is not None:
-        emit_log_event(event_queue, checkpoint)
-    elif drive_logs:
-        try:
-            append_jsonl(drive_logs / "events.jsonl", {"ts": utc_now_iso(), **checkpoint})
-        except Exception:
-            log.debug("budget-pause checkpoint append failed", exc_info=True)
+    })
 
 
 class OuroborosAgent:
@@ -432,6 +428,13 @@ class OuroborosAgent:
             ("released", "sealed"), action="end", token=str(token), outcome=str(outcome), **generation)
 
     def _log_worker_boot_once(self) -> None:
+        """A ``worker_boot`` row per process; the startup verification once per server generation (P1).
+
+        Workers inherit the server's custody session id: the first process of a generation (and of
+        each checked-out code version) runs ``verify_restart`` and ``verify_system_state`` and stamps
+        ``state/startup_verification.json``; later ones, a pool re-grow, honour that stamp. A missing,
+        unreadable or different stamp runs both again; a failed run stamps nothing.
+        """
         global _worker_boot_logged
         try:
             with _worker_boot_lock:
@@ -443,8 +446,14 @@ class OuroborosAgent:
                 'ts': utc_now_iso(), 'type': 'worker_boot',
                 'pid': os.getpid(), 'git_branch': git_branch, 'git_sha': git_sha,
             })
-            verify_restart(self.env, git_sha)
-            verify_system_state(self.env, git_sha)
+            env, stamp = self.env, {'generation': current_custody_session_id(), 'git_sha': git_sha}
+            receipt = pathlib.Path(env.drive_root) / "state" / "startup_verification.json"
+            seen = read_json_dict(receipt) or {}
+            if stamp['generation'] and all(seen.get(key) == value for key, value in stamp.items()):
+                return
+            verify_restart(env, git_sha)
+            verify_system_state(env, git_sha)
+            atomic_write_json(receipt, {**stamp, 'pid': os.getpid(), 'verified_at': utc_now_iso()})
         except Exception:
             log.warning("Worker boot logging failed", exc_info=True)
             return

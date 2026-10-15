@@ -123,6 +123,7 @@ def persist_queue_snapshot(reason: str = "") -> bool:
         # count so the context queue digest never falsely advertises a free worker slot.
         try:
             from supervisor import workers as _workers_mod
+            from supervisor.worker_pool_lifecycle import worker_ready
 
             _ws = list(_workers_mod.WORKERS.values())
             worker_total = len(_ws)
@@ -134,8 +135,8 @@ def persist_queue_snapshot(reason: str = "") -> bool:
             reaping_count = sum(1 for _w in _ws if getattr(_w, "reaping", False))
             assignable_idle_workers = sum(
                 1 for _w in _ws
-                if (getattr(_w, "busy_task_id", None) is None and not getattr(_w, "reaping", False)
-                    and getattr(_w, "active_capacity", True))
+                if (getattr(_w, "busy_task_id", None) is None and worker_ready(_w)
+                    and getattr(_w, "active_capacity", True) and not getattr(_w, "resume_hold", ""))
             )
         except Exception:
             worker_total = 0
@@ -351,13 +352,13 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
     from ouroboros.project_admission import host_unscoped
     from ouroboros.task_results import load_task_result
     from supervisor.budget_resume import revoke_exact_budget_resume
-    from supervisor.events_budget import (HOLD_OWNER_RESTART, HOLD_PANIC, HOLD_RESTORE_REFUSED_PREFIX,
-                                          hold_budget_row, hold_restored_budget_pause)
+    from supervisor.events_budget import (BUDGET_HOLD_KEY, HOLD_OWNER_RESTART, HOLD_PANIC, HOLD_RESTORE_REFUSED_PREFIX,
+                                          budget_hold_fact, hold_budget_row, hold_restored_budget_pause)
     from supervisor.restart_retention import (fresh_return_transaction, hold_after_stop, hold_for_owner_restart,
                                               hold_stopped_queue, never_started, panic_recorded, pause_ids,
                                               recover_saved_running,
                                               retained_pending, saved_sleep_hold_reason, unseen_pause)
-    from supervisor.schedule_occurrence import restore_allowed
+    from supervisor.schedule_occurrence import first_attempt, first_dispatch_unsent, restore_verdict
 
     sleep_hold_reason = saved_sleep_hold_reason(_queue().DRIVE_ROOT)
     owner_restart, panic = sleep_hold_reason == HOLD_OWNER_RESTART, sleep_hold_reason == HOLD_PANIC
@@ -438,7 +439,17 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
             continue
         # Import opaque owner/cap carriers even for an exact saved Pause. Its
         # single-use Resume is a separate authority from ordinary queue replay.
-        schedule_replay = restore_allowed(task)
+        verdict = restore_verdict(task)
+        schedule_replay = verdict == "replay"
+        if schedule_replay and task.get("admitted_dispatch") == "possible" and first_dispatch_unsent(task):
+            # Its receipt proves no first handoff: never started, under this stop's own rule.
+            task["admitted_dispatch"] = "none"
+            if (budget_hold_fact(task) or {}).get("reason") == "dispatch_outcome_unknown":
+                task.pop(BUDGET_HOLD_KEY, None)
+        # Busy at boot proves neither way: this stop's rule for an unsent row, under Project
+        # custody that re-reads the receipt each tick (``revalidate_project_holds``).
+        recheck = (verdict == "busy" and task.get("admitted_dispatch") == "possible" and first_attempt(task)
+                   and budget_hold_fact(task) is None)
         if isinstance(task.get("_budget_pause_consumed"), dict):
             consumed.append(str(task.get("id") or ""))
             continue
@@ -472,21 +483,25 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
             elif not project_hold and host_unscoped(task) and not stale and dispatch != "none" and schedule_replay:
                 project_hold = {"reason": "project_routing_fence_lookup_failed",
                                 "detail": "The task may already have reached a worker; automatic recovery is not authorized."}
+            elif not project_hold and recheck:
+                project_hold = {"reason": "project_routing_fence_lookup_failed", "detail": (
+                    "The schedule receipt was busy at restore; recovery is checked automatically when it is readable.")}
             saved_or_accepted = never_started(task) or isinstance(task.get("_working_recovery"), dict)
             if retained_pending(task, sleep_hold_reason=sleep_hold_reason):
                 row = task
-            elif str(task.get("id") or "") in returning_queue and saved_or_accepted and schedule_replay:
+            elif str(task.get("id") or "") in returning_queue and (saved_or_accepted and schedule_replay or recheck):
                 row = task  # the fresh Restart returns it: ordinary admission, at any age
-            elif owner_restart and never_started(task) and schedule_replay:
+            elif owner_restart and (never_started(task) and schedule_replay or recheck):
                 row = hold_for_owner_restart(dict(task), _queue().DRIVE_ROOT)
-            elif owner_restart and (not schedule_replay or not never_started(task)) or dispatch == "possible" and not project_hold:
-                row = dict(task)
+            elif (owner_restart and (not schedule_replay or not never_started(task))
+                  or (dispatch == "possible" or verdict == "possible") and not project_hold):
+                row = dict(task)  # a committed mark under a stale snapshot is held as visibly as its own
                 hold_budget_row(row, reason="dispatch_outcome_unknown",
                                 detail="an assignment may have reached a worker; reconcile its receipt before resuming",
                                 result_root=_queue().DRIVE_ROOT)
             elif not project_hold and not schedule_replay:
-                continue  # a possibly-dispatched/unprovable schedule-born row is never replayed
-            elif saved_or_accepted:
+                continue  # settled, contended or unprovable: the occurrence reconcile owns it
+            elif saved_or_accepted or recheck:
                 # Quit/crash retain ALL accepted work for explicit Resume (#1563).
                 # Project verification is independent: healing it cannot release
                 # the owner's application-stop hold, even for a fresh snapshot.

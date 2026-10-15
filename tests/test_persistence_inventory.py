@@ -760,7 +760,8 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 374 -> 372: the automatic reflection writer's two literal history paths left with it
 # (memory/knowledge/patterns_history.jsonl, retained as history; memory/knowledge_history.jsonl,
 # still written by knowledge.write_knowledge_note through its address, which the scan cannot see).
-EXPECTED_SCAN_PATHS = 372
+# 372 -> 373: the generation's startup verification stamp (state/startup_verification.json).
+EXPECTED_SCAN_PATHS = 373
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

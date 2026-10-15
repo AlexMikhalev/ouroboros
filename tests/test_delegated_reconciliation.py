@@ -154,7 +154,7 @@ def test_both_custody_surfaces_see_the_same_live_task_set(tmp_path, monkeypatch,
     try:
         sm._periodic_supervisor_maintenance([0.0], [time.time()])
         assert entered.wait(2)
-        assert [thread.name for thread in threads if thread.name != "cold-custody"] == ["cancel_intent_sweep", "terminal_delivery_replay", "pause_notice_replay", "abandoned_usage_reconciliation", "post_task_synthesis_recovery", "custody-maintenance"]
+        assert [thread.name for thread in threads if thread.name not in {"cold-custody", "schedule-admission"}] == ["cancel_intent_sweep", "terminal_delivery_replay", "pause_notice_replay", "abandoned_usage_reconciliation", "post_task_synthesis_recovery", "custody-maintenance"]
         assert threads[0].is_alive(), "the 20 s sweep is still inside its delayed work"
         next(thread for thread in threads if thread.name == "custody-maintenance").join(5)
         assert seen["processes"] is seen["delegated"] is sm._live_task_ids
@@ -704,10 +704,13 @@ def test_a_terminal_review_run_still_settles_through_the_sweep(tmp_path):
     dc._CUSTODY.clear()
 
 
-def test_a_pending_review_invocation_is_retained_rather_than_re_posted(tmp_path):
+def test_a_pending_review_invocation_is_left_to_its_panel_never_re_posted(tmp_path):
     """The review substrate rejoins its own pending invocation by its exact key
     (``review_session_custody``); a delegation sweep that re-POSTed it here would
-    bind a second reviewer nobody on this task asked for."""
+    bind a second reviewer nobody on this task asked for. The periodic sweep leaves
+    it alone entirely (owner Q2=A: 9 871 identical "retained" rows a day, each a
+    store commit, an fsynced append and an archive scan, were the old cost); the
+    kill path still names it once."""
     import ouroboros.delegate_custody as dc
 
     dc._CUSTODY.clear()
@@ -721,9 +724,13 @@ def test_a_pending_review_invocation_is_retained_rather_than_re_posted(tmp_path)
         def start_run(self, request, *, idempotency_key=""):
             pytest.fail("the review substrate owns this invocation's rejoin")
 
-    outcomes = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=_NeverStarts)
+    for _ in range(3):
+        assert dc.reconcile_orphaned_runs(
+            tmp_path, set(), gateway_factory=lambda: pytest.fail("no sweep work opens a gateway")) == []
+    assert _event_types(tmp_path).count("delegate_run_reconciled") == 0
+    assert [record["invocation_id"] for record in dc.pending_invocations(tmp_path)] == ["inv-panel"]
 
-    assert outcomes == [{
+    assert dc.reconcile_task_runs(tmp_path, "t-reviewed", gateway_factory=_NeverStarts) == [{
         "invocation_id": "inv-panel", "task_id": "t-reviewed",
         "action": "invocation_retained",
         "reason": "review_panel_owns_invocation"}]

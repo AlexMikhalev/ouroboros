@@ -12,12 +12,16 @@ The same rows are the source of a memory page's host stamp (``stamp_facts``,
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import pathlib
+import re
 import uuid
 from collections import Counter
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
@@ -25,7 +29,7 @@ from ouroboros.task_results import (
     _TRULY_TERMINAL_STATUSES,
     is_reconciled_presence_placeholder, load_task_result, resolve_task_lineage, task_result_path, write_task_result,
 )
-from ouroboros.utils import jsonl_chain_handles, utc_now_iso
+from ouroboros.utils import JsonlChainUnreadable, jsonl_archive_segments, utc_now_iso
 from ouroboros.store import StoreError
 
 log = logging.getLogger(__name__)
@@ -83,9 +87,45 @@ def _publication_lock(root: Any, tid: str):
             release_exclusive_file_lock(path, fd)
 
 
-def _prepare(root: Any, tid: str, task: dict, event: dict) -> dict:
-    """Durably record readiness from canonical terminal authority, before IO."""
+def _delivery_disposition(root: Any, tid: str) -> dict:
+    """What the outbox says about this task's terminal message (owner Fork 2, 20:48).
+
+    ``state`` is ``owed`` while any terminal message (model final, Stop/reap
+    salvage receipt, cascade digest) is still owed — debt outranks every older or
+    technical receipt — ``exhausted`` when the host gave up delivering one,
+    ``unknown`` when the delivery registry cannot be read, ``delivered`` with
+    proven bytes, else ``""`` (no terminal message known). Only ``owed`` holds the
+    Done card; unknown and exhausted are SHOWN on it, never hidden. Nothing here is
+    recomputed from stored prose, and no read failure turns into a silent hold.
+    A settle that runs between the terminal row and the send sees ``owed`` and waits;
+    the delivery acknowledgement re-enters ``settle_terminal_projection``
+    (``events_chat_delivery._handoff_delivered_review``), so the held card follows its
+    answer without a sweep.
+    """
+    from supervisor.terminal_delivery import terminal_answer_receipts
+
+    receipts = terminal_answer_receipts(root, tid)
+    if receipts.get("registry") == "unreadable":
+        return {"state": "unknown"}
+    state = str(receipts.get("state") or "")
+    disposition = {"state": state if state in {"owed", "exhausted", "delivered"} else ""}
+    if state == "exhausted":
+        row = max(receipts["exhausted"], key=lambda item: str(item.get("exhausted_at") or ""))
+        disposition["delivery_id"] = str(row.get("delivery_id") or "")
+        disposition["preserved_path"] = str(row.get("preserved_path") or "")
+    return disposition
+
+
+def _prepare(root: Any, tid: str, task: dict, event: dict) -> tuple[dict, bool]:
+    """Durably record readiness from canonical terminal authority, before IO.
+
+    Returns ``(stored, minted)``: ``minted`` says THIS call recorded the readiness,
+    so no chat row can carry its token yet and the duplicate scan is skipped.
+    """
+    minted = False
+
     def prepare(current: dict, _patch: dict):
+        nonlocal minted
         if not _settled(current):
             return None
         effective = {**task, **current}
@@ -108,6 +148,7 @@ def _prepare(root: Any, tid: str, task: dict, event: dict) -> dict:
         chat_id = effective.get("chat_id")
         if chat_id is None:
             chat_id = event.get("chat_id", 0)
+        minted = True
         return {"status": current["status"], "canonical_terminal_projection_ready": {
             "summary_id": f"task-terminal:{tid}", "token": uuid.uuid4().hex,
             "attempt": _attempt(current), "task_done_ts": utc_now_iso(),
@@ -118,12 +159,12 @@ def _prepare(root: Any, tid: str, task: dict, event: dict) -> dict:
     # Absence is not a terminal authority, and must never create a completed row.
     stored = load_task_result(root, tid, strict=True)
     if not stored or not _settled(stored):
-        return stored or {}
+        return stored or {}, False
     return write_task_result(root, tid, stored["status"], strict_existing_dict=True,
-                             _field_projector=prepare)
+                             _field_projector=prepare), minted
 
 
-def _project_row(tid: str, row: dict, event: dict, ready: dict) -> dict:
+def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dict | None = None) -> dict:
     from ouroboros import project_dialogue as dialogue
     from ouroboros.project_facts import resolve_project_id
 
@@ -131,12 +172,31 @@ def _project_row(tid: str, row: dict, event: dict, ready: dict) -> dict:
     is_root = lineage["is_root_task"]
     role = str(row.get("role") or ("root" if is_root else "child"))
     parent = str(lineage["parent_task_id"] or "")
+    chat_id = int(ready.get("chat_id", row.get("chat_id", event.get("chat_id", 0))) or 0)
+    delivery = {key: str(value or "") for key, value in (delivery or {}).items()
+                if key in ("state", "delivery_id", "preserved_path")}
+    if delivery.get("state") in {"exhausted", "unknown"}:
+        # Honest delivery state (owner 20:48): an exhausted or unknown delivery is a
+        # ROW-LEVEL warning — the same objective.warning the browser reads for its
+        # pill — never a durable change to the task's own axes (the registry may be
+        # repaired, the copy delivered later), plus one plain sentence and the
+        # saved-answer pointer when a copy exists.
+        from ouroboros.outcomes import _merge_objective_warning
+
+        axes = dict(row.get("outcome_axes") or {}) if isinstance(row.get("outcome_axes"), dict) else {}
+        objective = dict(axes.get("objective") or {}) if isinstance(axes.get("objective"), dict) else {}
+        _merge_objective_warning(objective, f"terminal_delivery_{delivery['state']}")
+        row = {**row, "outcome_axes": {**axes, "objective": objective}}
+    else:
+        delivery = {}
     phase = dialogue.outcome_phase(row, event)
     outcome = dialogue.OUTCOME_PHASE_HEADLINE[phase]
-    chat_id = int(ready.get("chat_id", row.get("chat_id", event.get("chat_id", 0))) or 0)
     text = (f"{outcome}. Root task {tid}." if is_root
             else f"{outcome}. {role} (child {tid} of {parent or 'unknown'}).")
-    verdict = dialogue._completion_verdict(row, event)
+    verdict = dialogue._join_cause_clauses([
+        dialogue._completion_verdict(row, event),
+        dialogue.terminal_delivery_clause(delivery.get("state", ""), delivery.get("preserved_path", "")),
+    ])
     excerpt = dialogue._completion_excerpt(row, chat_id=chat_id, salvage_only=True)
     text += "".join(f" {part}" for part in (verdict, excerpt) if part)
     from ouroboros.dialogue_provenance import presence_provenance_fields
@@ -157,6 +217,8 @@ def _project_row(tid: str, row: dict, event: dict, ready: dict) -> dict:
         "result_ref": {"kind": "task_result", "task_id": tid, "reader": "get_task_result"}, "text": text,
         **({"reason_detail": verdict} if verdict else {}),
         **({"terminal_projection_token": ready["token"]} if ready.get("token") else {}),
+        # The typed delivery disposition the browser card renders (log_events.terminalDeliveryClause).
+        **({"terminal_delivery": delivery} if delivery else {}),
     }
     if isinstance(row.get("model_execution"), dict):
         result["model_execution"] = dict(row["model_execution"])
@@ -168,12 +230,64 @@ def _project_row(tid: str, row: dict, event: dict, ready: dict) -> dict:
     return result
 
 
-def _already_in_chat(root: Any, row: dict) -> dict | None:
+_ARCHIVE_STAMP = re.compile(r"chat_(?P<stamp>\d{8}T\d{6})(?:_\d+)?\.jsonl")
+
+
+def _rotation_stamp(ts: str) -> str:
+    """An ISO timestamp at second resolution in the rotator's archive-name spelling (UTC)."""
+    raw = str(ts or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.strftime("%Y%m%dT%H%M%S")
+
+
+def _already_in_chat(root: Any, row: dict, *, since_ts: str = "") -> dict | None:
+    """The row's own earlier publication (append/receipt crash), bounded by rotation time.
+
+    The live segment is always read in full. Archives are read newest first and only
+    while their rotation stamp is at or after the second the readiness was minted
+    (``since_ts``, inclusive): a row carrying this readiness token was appended after
+    the mint, so it can only sit in the live segment or in a segment rotated at or
+    after that second (the rotator takes its stamp under the append lock). An
+    unparsable archive name is read. Row timestamps are their writers' clocks and
+    never bound the scan (a delayed worker row can sit behind a newer summary).
+    """
     path = pathlib.Path(root) / "logs" / "chat.jsonl"
-    # Pin the live inode before enumerating archives: rotation between append
-    # and receipt persistence must not turn an existing row into an absence.
-    with jsonl_chain_handles(path, strict=True) as handles:
-        for segment, stream in handles:
+    cutoff = _rotation_stamp(since_ts)
+    with contextlib.ExitStack() as stack:
+        # Pin the live inode before enumerating archives: rotation between append
+        # and receipt persistence must not turn an existing row into an absence.
+        live_identity = None
+        segments: list = []
+        try:
+            live = stack.enter_context(path.open("rb"))
+            stat = os.fstat(live.fileno())
+            live_identity = (stat.st_dev, stat.st_ino)
+            segments.append((path, live))
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise JsonlChainUnreadable(f"cannot open {path}: {exc}") from exc
+        for segment in reversed(jsonl_archive_segments(path, strict=True)):
+            stamp_match = _ARCHIVE_STAMP.fullmatch(segment.name)
+            if cutoff and stamp_match and stamp_match.group("stamp") < cutoff:
+                break  # rotated before the readiness existed: no older segment can hold the row
+            try:
+                stat = segment.stat()
+                if live_identity is not None and (stat.st_dev, stat.st_ino) == live_identity:
+                    continue  # the live generation's renamed alias, already open above
+                segments.append((segment, stack.enter_context(segment.open("rb"))))
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise JsonlChainUnreadable(f"cannot read {segment}: {exc}") from exc
+        for segment, stream in segments:
             for line_number, line in enumerate(stream, 1):
                 if not line.strip():
                     continue
@@ -191,10 +305,15 @@ def _already_in_chat(root: Any, row: dict) -> dict | None:
     return None
 
 
-def _append_project(root: Any, tid: str, task: dict, event: dict) -> bool:
+def _append_project(root: Any, tid: str, task: dict, event: dict, *,
+                    prepare: bool = True, minted_now: bool = False) -> bool:
     from ouroboros import project_dialogue as dialogue
 
-    stored = _prepare(root, tid, task, event)
+    if prepare:
+        stored, minted = _prepare(root, tid, task, event)
+        minted_now = minted_now or minted
+    else:
+        stored = load_task_result(root, tid, strict=True) or {}
     if not stored or not _settled(stored):
         return False
     effective = {**task, **stored}
@@ -203,11 +322,17 @@ def _append_project(root: Any, tid: str, task: dict, event: dict) -> bool:
     marker = stored.get("canonical_terminal_projection")
     if isinstance(marker, dict) and (not ready or marker.get("token") == ready.get("token")):
         return False
-    if is_root and (not ready or _open(stored) or not _files_ready(root, tid, effective)):
+    # The Done card follows the answer: the outbox's own debt holds it (owner Fork 2).
+    delivery = _delivery_disposition(root, tid) if is_root else {}
+    if is_root and (not ready or _open(stored) or delivery.get("state") == "owed"
+                    or not _files_ready(root, tid, effective)):
         return False
-    row = _project_row(tid, effective, {key: event[key] for key in ("ts", "chat_id") if key in event}, ready)
+    row = _project_row(tid, effective, {key: event[key] for key in ("ts", "chat_id") if key in event}, ready,
+                       delivery=delivery)
     appended = False
-    existing_row = _already_in_chat(root, row) if is_root else None
+    # A readiness minted in this very call has no row yet: nothing to scan for.
+    existing_row = (None if minted_now or not is_root
+                    else _already_in_chat(root, row, since_ts=str(ready.get("task_done_ts") or "")))
     if existing_row:
         row = existing_row  # append/receipt crash: retain actual publication time
     else:
@@ -271,7 +396,14 @@ def clear_terminal_projection_obligation(root: Any, tid: str, expected: dict, di
 
 
 def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | None = None,
-                               event: dict | None = None, event_queue: Any = None) -> str:
+                               event: dict | None = None, event_queue: Any = None,
+                               prepare: bool = True) -> str:
+    """Run both halves of a root's owed terminal projection once its conditions hold.
+
+    ``prepare=False`` is the delivery lanes' word (a delivery acknowledged or given
+    up on): readiness is task_done's to mint, so the settle only proceeds when an
+    earlier terminal transition already recorded it.
+    """
     from ouroboros import project_dialogue as dialogue
 
     tid = str(task_id or "").strip()
@@ -281,14 +413,18 @@ def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | No
         with _publication_lock(drive_root, tid) as acquired:
             if not acquired:
                 return SETTLEMENT_DEFERRED
-            stored = _prepare(drive_root, tid, task or {}, event or {})
+            if prepare:
+                stored, minted_now = _prepare(drive_root, tid, task or {}, event or {})
+            else:
+                stored, minted_now = load_task_result(drive_root, tid, strict=True) or {}, False
             if (not isinstance(stored.get("canonical_terminal_projection_ready"), dict)
                     or is_reconciled_presence_placeholder(stored)):  # readiness an earlier release recorded
                 return SETTLEMENT_NONE
             if (_open(stored) or not _settled(stored)
+                    or _delivery_disposition(drive_root, tid).get("state") == "owed"
                     or not _files_ready(drive_root, tid, {**(task or {}), **stored})):
                 return SETTLEMENT_DEFERRED
-            _append_project(drive_root, tid, task or {}, event or {})
+            _append_project(drive_root, tid, task or {}, event or {}, prepare=False, minted_now=minted_now)
             # IO may have advanced canonical state. Render Main from the NEW
             # result, never the task_done snapshot passed to this continuation.
             stored = load_task_result(drive_root, tid, strict=True) or {}
@@ -297,6 +433,7 @@ def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | No
             if (not isinstance(ready, dict) or not isinstance(marker, dict)
                     or marker.get("token") != ready.get("token") or _open(stored)
                     or not _settled(stored)
+                    or _delivery_disposition(drive_root, tid).get("state") == "owed"
                     or not _files_ready(drive_root, tid, {**(task or {}), **stored})):
                 return SETTLEMENT_DEFERRED
             effective = {**(task or {}), **stored, "id": tid}

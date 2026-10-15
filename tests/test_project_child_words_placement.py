@@ -205,7 +205,7 @@ def test_a_routing_notice_for_a_child_stands_alone_and_the_childs_words_stay_in_
     assert all(row.get("delegation_role") == "subagent" for row in words)
 
     (worktree / "chart.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 200)
-    assert "photo sent" in registry.execute("send_photo", {"file_path": str(worktree / "chart.png"),
+    assert "photo accepted for delivery" in registry.execute("send_photo", {"file_path": str(worktree / "chart.png"),
                                                            "caption": "CHILD_PHOTO"})
     assert deliver(ctx.event_queue.pop()) == 1, "what a child delivers is shown alone and counts"
     assert say("CHILD_FINAL: root listed.", task_id="kid-1") == 0

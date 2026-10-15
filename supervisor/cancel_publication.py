@@ -339,6 +339,12 @@ def _register_owed_terminal_delivery(
         if not deliver or str((task or {}).get("delegation_role") or "") == "subagent":
             return True
         stored_status = str((stored or {}).get("status") or "")
+        if stored_status and stored_status != STATUS_CANCELLED:
+            # The worker's own terminal row won over the Stop: the provisional
+            # salvage owed before the terminal write is not this task's answer.
+            from supervisor.terminal_delivery import withdraw_stop_episode
+
+            withdraw_stop_episode(pathlib.Path(q.DRIVE_ROOT), task_id)
         event: Optional[Dict[str, Any]] = None
         if stored_status == STATUS_CANCELLED:
             event = build_unreviewed_salvage_event(

@@ -338,14 +338,20 @@ def stamp_depth_provenance(
 def schedule_delegation_refusal(
     parent_contract: Dict[str, Any], status_root: Any, parent_task_id: Any,
 ) -> str:
-    """Return the typed direct-child rights refusal, or an empty string."""
+    """Return the typed direct-child rights refusal, or an empty string.
+
+    An unknown count (a busy store included) refuses nothing here: the host's interlocked
+    re-check reads it again, defers contention and refuses only a hard unknown.
+    """
 
     budget = parent_contract.get("delegation_budget") if isinstance(parent_contract, dict) else {}
     decision = check_delegation_admission(
         budget if isinstance(budget, dict) else {},
         direct_child_count=durable_direct_child_count(status_root, parent_task_id),
     )
-    if decision.ok:
+    # An unknown count (a busy store included) is not decided here: the host's
+    # interlocked re-check reads it again and defers contention or refuses.
+    if decision.ok or decision.reason_code == "delegation_rights_child_count_unknown":
         return ""
     return f"⚠️ TOOL_ERROR (schedule_subagent): {decision.reason_code}: {decision.detail}"
 

@@ -10,6 +10,7 @@ from ouroboros import projects_registry as registry
 from ouroboros.task_results import load_task_result
 from tests.test_project_semantic_admission import room, task  # noqa: F401
 from tests.test_schedule_occurrence import q, _row, _rows  # noqa: F401
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -301,8 +302,8 @@ def test_restored_invalid_basis_never_reaches_worker_and_main_sibling_runs(tmp_p
     workers.PENDING.clear()
     queue.restore_pending_from_snapshot()
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                         in_q=SimpleNamespace(put=lambda t: sent.append(dict(t))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                         in_q=SimpleNamespace(put=lambda t: sent.append(dict(t)))))
     workers.assign_tasks()
     assert [r["id"] for r in sent] == ["main"]
     assert [r["id"] for r in workers.PENDING] == ["held"]

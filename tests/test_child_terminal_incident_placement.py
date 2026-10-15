@@ -157,14 +157,14 @@ def test_root_salvage_row_stays_an_ordinary_system_row_end_to_end(tmp_path, monk
 def test_owed_outbox_replay_keeps_the_same_row_identity(tmp_path):
     """A crash between the settle and the send replays the owed row: the
     replayed event names the same card row, so the card never grows a twin."""
-    import queue
+    from tests._cancel_intents_shared import DeliveryBus
 
     event = _worker_final(tmp_path, CHILD_TASK)
     assert register_pending_delivery(tmp_path, event)
     (owed,) = pending_deliveries(tmp_path)
     assert owed["progress_meta"]["card_row_id"] == ROW_ID
 
-    events = queue.Queue()
+    events = DeliveryBus()
     registry = tmp_path / "state" / "terminal_deliveries.json"
     data = json.loads(registry.read_text(encoding="utf-8"))
     data["pending"][event["delivery_id"]]["registered_at"] = "2026-01-01T00:00:00+00:00"

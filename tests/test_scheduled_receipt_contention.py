@@ -13,6 +13,7 @@ from ouroboros.task_results import write_task_result
 from supervisor import queue, task_admission, task_lifecycle, workers
 from tests.test_admission_contention import database_reader
 from tests.test_workspace_preparation import env as env, spy_provisions, _WAIT_SEC
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -30,7 +31,9 @@ def install_worker(env, monkeypatch):
     state.init(env.data, total_budget_limit=1000)
     state.init_state()
     delivered = []
-    worker = SimpleNamespace(wid=0, busy_task_id=None, in_q=SimpleNamespace(put=lambda task: delivered.append(dict(task))))
+    # Assignment opens only a ready slot of a live process birth (on-demand pool).
+    worker = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None,
+                                          in_q=SimpleNamespace(put=lambda task: delivered.append(dict(task)))))
     monkeypatch.setattr(workers, "DRIVE_ROOT", env.data)
     monkeypatch.setattr(workers, "REPO_DIR", env.system)
     monkeypatch.setattr(workers, "PENDING", queue.PENDING)
