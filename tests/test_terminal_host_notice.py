@@ -23,8 +23,10 @@ NOTICE = "Plan review remained open.\n\n⚠️ Deferred child result: child1."
 # The owner's incident decision, fed to the real producer
 # (ouroboros/owner_hurry.py plan_review_disclosure) rather than to a copied string.
 ADVISORY_PLAN_DECISION = {
-    "required": True, "status": "open", "outcome": "DEGRADED",
-    "enforcement": "advisory", "allow": True,
+    "required": True, "status": "objections_open", "enforcement": "advisory", "allow": True,
+    "open_objections": [{"seat_id": "triad_a", "id": "o1", "text": "the bar is too low", "holds": True,
+                         "not_adjudicated": False, "ask_id": "a1", "revision": 1}],
+    "holding": ["triad_a:o1"], "pending_asks": [], "asks_dispatched": 1, "force_plan_met": True, "revision": 1,
 }
 
 

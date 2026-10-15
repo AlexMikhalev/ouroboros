@@ -741,7 +741,7 @@ def test_ensure_keeps_the_obligation_and_a_met_one_transfers_nothing(_projects_r
     assert unmet_force_plan_obligation(ctx) == {"unmet": True, "source": "swarm"}
     monkeypatch.setattr(task_results, "load_plan_review_state",
                         lambda _root, _tid: {"schema_version": 2, "waves": [{"request_fingerprint": "f1"}]})
-    assert unmet_force_plan_obligation(ctx) == {"unmet": False, "reason": "plan_review_engaged"}
+    assert unmet_force_plan_obligation(ctx) == {"unmet": False, "reason": "plan_asked"}
     assert unmet_force_plan_obligation(_owner_turn_ctx(tmp_path)) == {"unmet": False, "reason": "not_required"}
 
 

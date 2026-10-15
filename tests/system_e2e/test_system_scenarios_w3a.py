@@ -118,15 +118,16 @@ def test_w3a_classification_plan_and_native_episode_branches():
 
 def test_w3a_canned_plan_and_advisory_answers_parse_under_the_trees_own_parsers():
     """The canned clean answers must be verified-clean under the REAL parsers:
-    plan_spec.parse_findings for the plan packet, the advisory clean predicate
-    (shared empty_array_is_verified_clean) for the native episode."""
-    from ouroboros.tools.plan_spec import parse_findings
+    plan_record.parse_reply for a plan ask (the reply contract: prose, no objection,
+    nothing withdrawn), the advisory clean predicate (shared
+    empty_array_is_verified_clean) for the native episode."""
+    from ouroboros.plan_record import parse_reply
     from ouroboros.triad_review import empty_array_is_verified_clean
 
     _kind, plan_msg = scripted_completion(_plan_body(), 1, lambda _b: None, "x")
     assert _kind == "plan_review"
-    findings, parse_error = parse_findings(plan_msg["content"])
-    assert findings == [] and parse_error is None
+    reply, parse_error = parse_reply(plan_msg["content"])
+    assert parse_error == "" and reply["objections"] == [] and reply["withdrawn"] == [] and reply["prose"]
 
     _kind, adv_msg = scripted_completion(_advisory_episode_body(), 1, lambda _b: None, "x")
     assert _kind == "advisory_review"
@@ -144,7 +145,7 @@ def test_w3a_review_script_consumes_in_order_then_falls_back_to_canned():
     assert (kind, msg["content"]) == ("plan_review", "RED-2:mock-model")
     # Queue exhausted -> canned clean, and assert_consumed is now green.
     kind, msg = scripted_completion(_plan_body(), 3, lambda _b: None, "x", review_next=script)
-    assert kind == "plan_review" and msg["content"].startswith("[]")
+    assert kind == "plan_review" and msg["content"].startswith('{"prose"')
     with pytest.raises(AssertionError, match="never served"):
         script.assert_consumed()
     triad_body = {"messages": [{"role": "user", "content":

@@ -114,3 +114,22 @@ def test_the_plan_surface_session_schema_is_the_reply_contract_and_can_carry_an_
     assert error == "" and reply["objections"] == [{"id": "o1", "text": "the bar is too low"}]
     assert review_session_output_schema("triad") is not schema
 
+
+def test_the_shipped_checklist_speaks_the_reply_contract_and_rides_the_stable_prompt():
+    """The live ``## Plan Review Checklist`` is placed whole in every participant's stable prompt,
+    so it must speak the organ's own vocabulary — objections a raiser withdraws, prose for the
+    rest, nobody votes — and none of the retired engine's (findings array, classes, breaks,
+    GREEN, the subtraction row)."""
+    from ouroboros.tools.review_checklist import load_checklist_section
+
+    section = load_checklist_section("Plan Review Checklist")
+    assert section.startswith("## Plan Review Checklist") and len(section) > 500
+    lowered = section.lower()
+    for word in ("objection", "withdraw", "prose", "nobody votes", "done_when", "affected_paths"):
+        assert word in lowered, word
+    for retired in ("no_findings", "need_evidence", "breaks", "json array", "| 6 | subtraction |", "aggregate: green",
+                    "review_disposition", "acceptance_claims"):
+        assert retired not in lowered, retired
+    prompt = plan_packet.build_stable_prompt(checklist_section=section, body=False, enforcement="blocking")
+    assert section in prompt and "## Reply contract" in prompt and '"withdrawn"' in prompt
+

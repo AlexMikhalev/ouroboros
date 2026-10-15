@@ -556,7 +556,7 @@ def unmet_force_plan_obligation(ctx: Any) -> Dict[str, Any]:
 
     A Swarm-admitted root carries ``force_plan`` in its metadata; the obligation is
     MET once one ask of its plan reached at least one reviewer (the same fact
-    ``force_plan_decision`` reads; a legacy v2 wave of an in-flight task counts).
+    ``force_plan_decision`` reads; a dispatched legacy v2 wave of an in-flight task counts).
     Only an UNMET obligation follows the work a promote moves elsewhere. An
     unreadable record is not proof of anything and transfers nothing (I-17).
     """
@@ -575,7 +575,7 @@ def unmet_force_plan_obligation(ctx: Any) -> Dict[str, Any]:
     record, legacy, unreadable = _plan_facts(ctx)
     if unreadable:
         return {"unmet": False, "reason": "plan_record_unreadable"}
-    if plan_record.asks_dispatched(record) or legacy.get("engaged"):
+    if plan_record.asks_dispatched(record) + int(legacy.get("asks_dispatched") or 0) > 0:
         return {"unmet": False, "reason": "plan_asked"}
     return {
         "unmet": True,
@@ -663,7 +663,10 @@ def plan_review_disclosure(decision: Dict[str, Any], forced_reason: str = "") ->
         return ("\n\n⚠️ Plan review: the answers of ask(s) " + ", ".join(pending)
                 + " had not arrived when the task ended; silence holds nothing and is not agreement.")
     if unmet and decision.get("allow"):
-        return "\n\n⚠️ Plan review: this task's planning obligation was not met; no ask reached a reviewer."
+        why = ("released by the owner's hurry request" if decision.get("owner_hurry_local_advisory") else
+               "Cyber Pro: Ouroboros proceeded by its own judgment" if decision.get("decision_authority") == "cyber_pro" else
+               "work proceeded under the owner-selected advisory enforcement")
+        return f"\n\n⚠️ Plan review: this task's planning obligation was not met — no ask reached a reviewer; {why}."
     return ""
 
 

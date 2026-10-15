@@ -164,7 +164,7 @@ DISTINCT_MOCK_MODEL_IDS = tuple(f"mock-model-t{i}" for i in (1, 2, 3))
 #   TRIAD_USER_MARKER      — ouroboros/tools/review.py::_dispatch_unified_review
 #   TWO_PART_SURFACE       — ouroboros/triad_review.py::REVIEW_OUTPUT_SHAPES (the commit gate's
 #                            native inspection episode names it on its "Surface:" line)
-#   PLAN_REVIEW_MARKER     — ouroboros/tools/plan_packet.py::build_plan_review_system_prompt
+#   PLAN_REVIEW_MARKER     — ouroboros/tools/plan_packet.py::_ROLE (the stable prompt's first line)
 #   NATIVE_EPISODE_MARKER  — ouroboros/review_native_episode.py::episode_prompt
 # The default-lane marker-pin test greps them out of the source files so drift is a
 # named test failure, not a silently mute stub.
@@ -177,8 +177,7 @@ TRIAD_USER_MARKER = "Review the staged diff and context provided in the instruct
 TWO_PART_SURFACE = "multi_model_review"
 SKILL_REVIEW_MARKER = "You are performing a SKILL review, not a repo-commit review."
 PLAN_REVIEW_MARKER = (
-    "You are one independent reviewer of an INTENTION — a plan spec — "
-    "before the work starts."
+    "You are one independent participant of the council that weighs an INTENTION before the work"
 )
 # Deliberately the FIRST source line of the two-literal prompt head only: the
 # marker-pin test greps the SOURCE file, where the concatenated sentence is
@@ -338,11 +337,15 @@ def canned_review_answer(kind: str) -> dict | None:
         return {"role": "assistant", "content": TRIAD_CLEAN_TEXT}
     if kind in ("acceptance", "reviewer_slot"):
         return {"role": "assistant", "content": reviewer_slot_clean_text(kind)}
-    if kind in ("plan_review", "advisory_review", "native_episode"):
-        # One shared clean shape: the plan-review findings contract
-        # (plan_spec.parse_findings) and the advisory episode's clean predicate
-        # (triad_review.empty_array_is_verified_clean) both accept the bare
-        # empty array + NO_FINDINGS sentinel as a verified-clean verdict.
+    if kind == "plan_review":
+        # The planning organ's reply contract (plan_packet.PLAN_REPLY_CONTRACT, parsed by
+        # plan_record.parse_reply): prose plus the participant's own objections and
+        # withdrawals; a clean answer raises nothing. Nobody votes, so no verdict token.
+        return {"role": "assistant", "content": json.dumps(
+            {"prose": "Stub participant: no objection to starting as planned.", "objections": [], "withdrawn": []})}
+    if kind in ("advisory_review", "native_episode"):
+        # The advisory episode's clean predicate (triad_review.empty_array_is_verified_clean)
+        # accepts the bare empty array + NO_FINDINGS sentinel as a verified-clean verdict.
         return {"role": "assistant", "content": TRIAD_CLEAN_TEXT}
     return None
 

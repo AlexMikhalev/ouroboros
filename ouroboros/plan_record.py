@@ -367,8 +367,10 @@ def gate_projection(record: Mapping[str, Any], *, enforcement: str, cyber_pro: b
     ``held`` ⟺ Blocking, not Cyber Pro, no owner hurry, and some open objection was
     raised by an owner-marked reviewer of the ask it answered — for any task. Silence,
     pending asks, refusals and mind-added critics never hold. A Swarm ``force_plan``
-    stays unmet until one ask reached at least one reviewer (that hold releases only
-    in Cyber Pro or on a hard rail). An unreadable record is engaged, never absent.
+    stays unmet until one ask reached at least one reviewer: under Blocking that holds
+    the final answer; Advisory, the owner's hurry and Cyber Pro disclose it instead once
+    a plan exists (a task that wrote no plan at all is still held to write one). An
+    unreadable record is engaged, never absent.
     """
     policy = "blocking" if str(enforcement or "").lower() == "blocking" else "advisory"
     legacy_engaged = bool((legacy or {}).get("engaged"))
@@ -403,7 +405,11 @@ def gate_projection(record: Mapping[str, Any], *, enforcement: str, cyber_pro: b
     elif unreadable:
         status, allow = "unreadable", False  # a gate that cannot read its authority is engaged, not absent
     elif force_plan and dispatched == 0:
-        status, allow = "force_plan_unmet", False
+        # Blocking holds until one ask reached a reviewer. Advisory and the owner's hurry never
+        # hold a plan that exists: an unasked (or refused) plan is disclosed; a task that wrote no
+        # plan at all is still held to write one (the Swarm admitted it on that condition).
+        tried = engaged(record) or legacy_engaged
+        status, allow = "force_plan_unmet", not ((policy == "blocking" and not hurry) or not tried)
     elif holding and policy == "blocking" and not hurry:
         status, allow = "held", False
     elif objections:
@@ -510,7 +516,11 @@ def import_legacy_v2(state: Any, *, author_plan: Optional[Mapping[str, Any]] = N
     elif legacy_v1.get("status") == "closed":
         done_when, source = normalize_done_when(legacy_v1.get("acceptance_claims")), "legacy_closed_wave"
     return {"engaged": engaged_fact, "open_objections": objections, "done_when": done_when, "done_when_source": source,
-            "fingerprint": fingerprint, "asks_dispatched": sum(1 for w in waves if w.get("paid")), "pending_asks": pending}
+            "fingerprint": fingerprint, "pending_asks": pending,
+            # a wave reached its reviewers unless the old engine marked it unpaid with nothing to show
+            # for it (a free replay, an all-skipped dispatch); roster rows, findings or owed custody prove the send
+            "asks_dispatched": sum(1 for w in waves if w.get("paid") is not False or w.get("actors") or w.get("findings")
+                                   or w.get("custody_pending"))}
 
 
 # ------------------------------------------------------------------ read view
