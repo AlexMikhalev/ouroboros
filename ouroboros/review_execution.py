@@ -638,7 +638,7 @@ def review_session_output_schema(surface: str) -> Optional[Dict[str, Any]]:
     shape = review_output_shape(surface)
     if shape in ("report", "object", "two_part"):
         return {"object": ACCEPTANCE_SESSION_OUTPUT_SCHEMA, "two_part": TWO_PART_SESSION_OUTPUT_SCHEMA}.get(shape)
-    if surface == "plan_review":
+    if shape == "plan_reply":
         # The planning organ's reply object (prose, the participant's own objections and
         # withdrawals): the generic item/verdict shape would conform-and-launder it.
         from ouroboros.tools.plan_packet import PLAN_REPLY_SESSION_OUTPUT_SCHEMA
