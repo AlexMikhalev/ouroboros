@@ -218,8 +218,8 @@ def _drive_hard_timeout(tmp_path, monkeypatch, *, evolution_enabled):
                        "BUDGET_ROOT_FENCES": {}}.items():
         monkeypatch.setattr(q, key, value)
     real_enqueue = q.enqueue_task
-    def enqueue(task, front=False):
-        admitted = real_enqueue(task, front=front)
+    def enqueue(task, front=False, timeout_retry=False):
+        admitted = real_enqueue(task, front=front, timeout_retry=timeout_retry)
         assert not admitted.get("_admission_blocked"), admitted
         assert any(row is admitted for row in q.PENDING)
         enqueued.append(admitted)

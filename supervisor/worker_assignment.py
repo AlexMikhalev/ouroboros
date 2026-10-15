@@ -472,7 +472,10 @@ def _choose_candidate(queue, remaining, unresolved_invalid_id_set, refused_this_
             root_task_id = str(candidate.get("root_task_id") or "").strip()
             from supervisor.events_budget import budget_resume_dispatch_allowed
 
-            if not budget_resume_dispatch_allowed(queue, candidate):
+            resume_allowed = budget_resume_dispatch_allowed(queue, candidate)
+            if resume_allowed is None:
+                continue  # unknown authority holds both assignment and residual-demand forecast
+            if not resume_allowed:
                 if isinstance(candidate.get("_budget_pause_resume"), dict):
                     from supervisor.budget_resume import revoke_exact_budget_resume
 

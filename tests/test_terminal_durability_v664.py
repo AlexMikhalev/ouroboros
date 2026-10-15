@@ -154,7 +154,7 @@ def _patch_reaper(tmp_path, monkeypatch):
     monkeypatch.setattr(queue, "QUEUE_MAX_RETRIES", 1)
     monkeypatch.setattr(queue, "reconstruct_task_cost", lambda *_a, **_k: _available_cost_fields())
 
-    def _enqueue_task(task, front=False):
+    def _enqueue_task(task, front=False, timeout_retry=False):
         admitted = dict(task)
         pending.append(admitted)
         enqueued.append((admitted, front))

@@ -144,3 +144,43 @@ def admit_child_start_folder(ctx: Any, value: Any, params: dict) -> str:
     binding = _access().build_resolved_resource_binding(
         ctx, root=root or "user_files", operation="read", path=folder)
     return str(binding.target_path)
+
+
+def scheduled_origin(ctx: Any) -> str:
+    """The task a scheduled follow-up was registered from, for READS only (#1488, owner 2026-10-13 A).
+
+    Related and independent schedules alike: the origin's materials, not its money,
+    deadline, controls, candidate or Git paths. Named only by the HOST-written
+    occurrence receipt (``schedule_admission``) of this actor's root, never by task
+    metadata an ordinary admission may carry, so its retry and its children read
+    that root's origin and nothing further back. Absent or malformed grants nothing.
+    An unreadable receipt grants nothing NOW and is read again next time: only what a
+    completed read showed is remembered for this actor, never a transient fault.
+    Disclosed cost: a folderless readonly helper copies every permitted lineage file
+    (``delegate_readonly_inputs``), so each such start copies the origin's whole
+    ``task_drive``/``artifact_store``, and one unreadable origin file refuses it.
+    """
+    meta = getattr(ctx, "task_metadata", None)
+    root_id = str((meta if isinstance(meta, dict) else {}).get("root_task_id") or getattr(ctx, "task_id", "") or "")
+    cached = getattr(ctx, "_scheduled_origin", None)  # (root it was read for, origin)
+    if isinstance(cached, tuple) and cached[0] == root_id:
+        return cached[1]
+    try:
+        from ouroboros.task_results import load_task_result, validate_task_id
+
+        row = load_task_result(_access().canonical_data_root(ctx), validate_task_id(root_id), strict=True) or {}
+    except Exception:
+        return ""  # unknown is not absence: deny this read, ask the receipt again on the next one
+    origin = ""
+    try:
+        receipt = row.get("schedule_admission") if isinstance(row.get("schedule_admission"), dict) else {}
+        frozen = receipt.get("task") if isinstance(receipt.get("task"), dict) else {}
+        if receipt.get("status") == "accepted" and receipt.get("token") and str(frozen.get("id") or "") == root_id:
+            origin = str(((frozen.get("metadata") or {}).get("followup_origin") or {}).get("task_id") or "")
+    except Exception:
+        origin = ""  # a malformed receipt proves no origin
+    try:
+        setattr(ctx, "_scheduled_origin", (root_id, origin))
+    except Exception:
+        pass
+    return origin

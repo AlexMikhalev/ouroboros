@@ -173,13 +173,14 @@ def get_tools() -> List[ToolEntry]:
                     "when you wrote it and when it was due. A note is right when its text will still be true "
                     "at that time; if the words depend on what happens by then, schedule a wake-up instead. "
                     "Explicitly choose related work (original "
-                    "verified money/deadline and Stop controls) or independent work. Root tasks only; subagents report "
-                    "the proposed follow-up to their parent. Supply exactly one trigger: run_at "
+                    "verified money/deadline and Stop controls) or independent work; a task of either relation may "
+                    "read this task's task_drive/artifact_store (read-only, one hop), so name the paths it needs. "
+                    "Root tasks only; subagents report the proposed follow-up to their parent. Supply exactly one "
+                    "trigger: run_at "
                     "for a one-shot ISO 8601 instant (naive = UTC), or cron for a recurring "
                     "5-field expression with an optional IANA timezone. Write the objective "
                     "in your own words — it becomes each future task's text verbatim. The "
-                    "record is durable in state/scheduled_tasks.json, and the owner can "
-                    "disable or delete it from the Schedules surface. A task may hold at "
+                    "owner can disable or delete the record from the Schedules surface. A task may hold at "
                     f"most {_MAX_PENDING_FOLLOWUPS} pending follow-ups."
                 ),
                 "parameters": {
@@ -603,14 +604,17 @@ def _register_followup(ctx: ToolContext, task_id: str, drive_root: Any,
     # The same Presence carrier a promote keeps: a speaker's metadata, or the binding a
     # promoted descendant root acts for; the ceiling rides by value and no Project is chosen.
     # A new root authors its own objective, context and acceptance premises;
-    # only the origin's authority and general constraints survive by value.
+    # only the origin's authority and general constraints survive by value. The
+    # origin's own predecessor is not this root's: it reads its direct origin
+    # only (``tool_access.scheduled_origin``, #1488), never a second hop.
     contract = getattr(ctx, "task_contract", None)
     carrier = presence_root_carrier(metadata_src, task_contract=contract)
     if carrier and isinstance(contract, dict):
         record["task"]["metadata"].update(carrier)
         record["task"]["task_contract"] = {
             key: value for key, value in contract.items()
-            if key not in {"objective", "context", "expected_output", "acceptance_claims", "success_criteria"}}
+            if key not in {"objective", "context", "expected_output", "acceptance_claims", "success_criteria",
+                           "predecessor_authority"}}
         record["task"].pop("project_id", None)
     from supervisor.queue import ScheduleRefused, ScheduleStoreUnreadable
 

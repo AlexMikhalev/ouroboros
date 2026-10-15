@@ -377,7 +377,7 @@ def test_s26_direct_chat_turn_owner_stop_mid_round_is_typed_and_ends_the_turn(
                 assert control_reason == REASON_OWNER_STOPPED_DIRECT_TURN, controls
                 # The durable intent: minted by the legacy immediate shape (the
                 # tree's own reader says IMMEDIATE), claim released back to
-                # ``requested`` for the sweep with the typed "still live" error.
+                # ``requested`` for the sweep with the typed 202 pending answer.
                 intent = oracle.cancel_intents().get(task_id) or {}
                 assert intent, oracle.cancel_intents()
                 assert first_body.get("request_id") == intent.get("request_id"), (first_body, intent)

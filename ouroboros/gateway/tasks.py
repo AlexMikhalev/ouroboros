@@ -1317,7 +1317,7 @@ async def api_task_resume(request: Request) -> JSONResponse:
         # exact-continuation refusals (#1196): the task stays paused
         "budget_still_exhausted", "root_hard_cap_exhausted", "cancel_intent_active",
         "deadline_passed", "lifetime_exhausted", "root_still_paused", "resume_already_granted",
-        "restart_no_resume", "pause_record_missing", "pause_source_unreadable",
+        "restart_no_resume", "pause_record_missing", "pause_source_missing", "pause_source_unreadable",
         "pause_record_unreadable", "grant_not_recorded", "snapshot_not_persisted",
         "monetary_authority_unavailable", "cancellation_authority_unavailable", "task_terminal",
         # holds and root-grant refusals (#1196, owner Q9): the row stays paused/held
@@ -1328,8 +1328,11 @@ async def api_task_resume(request: Request) -> JSONResponse:
         # terminal keeps the task paused; a marker/attempt drift is typed too
         "external_runs_unsettled", "pause_attempt_mismatch",
         "owner_pause_effects_unsettled", "owner_pause_custody_unreadable", "selection_authority_changed",
+        # a held Continue's observed blockers (#1721): an existing successor, never Not Found
+        "predecessor_writers_unsettled", "selection_owner_held",
     } else 404
-    return json_error(error, status, task_id=task_id, **({"action": result["action"]} if result.get("action") else {}))
+    return json_error(error, status, task_id=task_id, **{key: result[key] for key in ("action", "blockers")
+                                                          if result.get(key)})
 
 
 # The task-event SSE endpoint and its follower live in gateway/task_events.py
