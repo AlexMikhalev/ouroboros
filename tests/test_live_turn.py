@@ -323,16 +323,17 @@ def test_the_route_window_is_recorded_as_sourced_evidence_before_the_fit(tmp_pat
     assert unknown.fact is None and unknown.window_tokens is None and window_evidence(tmp_path, _spec(model="gpt-realtime-future")) is None
 
 
-def test_call_context_plan_passes_the_window_only_to_a_fit_that_takes_it(monkeypatch, tmp_path):
+def test_call_context_plan_passes_the_known_window_and_the_call_view(monkeypatch, tmp_path):
     from ouroboros import live_call_route
 
     monkeypatch.setattr(live_call_route, "initial_call_schemas", lambda tools: [_schema("web_search")])
     task = {"id": "t", "metadata": {"live_call": _spec().as_metadata()}}
-    assert live_call_route.call_context_plan({"id": "t", "metadata": {}}, None, tmp_path, lambda **kw: None) is None
-    with_window = live_call_route.call_context_plan(task, None, tmp_path, lambda *, known_window_tokens=None, **kw: None)
+    assert live_call_route.call_context_plan({"id": "t", "metadata": {}}, None, tmp_path) is None
+    with_window = live_call_route.call_context_plan(task, None, tmp_path)
     assert with_window.fit_kwargs == {"known_window_tokens": 128_000}
     assert [s["function"]["name"] for s in with_window.tool_schemas] == ["web_search"]
-    without = live_call_route.call_context_plan(task, None, tmp_path, lambda **kw: None)
+    unknown = {"id": "t", "metadata": {"live_call": _spec(model="gpt-realtime-future").as_metadata()}}
+    without = live_call_route.call_context_plan(unknown, None, tmp_path)
     assert without.fit_kwargs == {} and without.spec.call_id == "call-1"
 
 
@@ -373,6 +374,10 @@ def test_audio_flows_both_ways_and_a_muted_peer_is_not_heard(harness, monkeypatc
     assert engine.sent_of(AudioIn)[0] == AudioIn(pcm=b"\x01\x02" * 100, rate=24000)
     engine.push(AudioOut(pcm=b"\x09" * 50, rate=24000, item_id="item-a"))
     assert _wait_for(lambda: h.hub.played == [("item-a", b"\x09" * 50)])
+    engine.push(AudioOut(pcm=b"\x0a" * 50, rate=24000, item_id="item-a"))
+    assert _wait_for(lambda: len(h.hub.played) == 2)
+    # Frames carry no item id: the item is named once, by an empty caption, before its audio.
+    assert h.hub.captions == [(SPEAKER_OUROBOROS, "", False, "item-a")]
     h.hub.control("mute", muted=True)
     time.sleep(0.05)
     h.hub.feed(PeerAudio(peer_id="owner-1", role="owner", pcm=b"\x03" * 10))
@@ -394,6 +399,7 @@ def test_final_captions_become_rows_of_the_room_without_an_owner_turn(harness, m
     row = h.chat_rows()[0]
     assert row["direction"] == "in" and row["text"] == "what is the weather" and row["source"] == "call"
     assert row["task_id"] == "t-call" and row["client_message_id"] == "call:call-1:u1" and row["sender_label"] == "voice"
+    assert _wait_for(lambda: h.broadcasts)  # the echo follows the row on the call's thread
     assert h.broadcasts[0]["role"] == "user" and h.broadcasts[0]["source"] == "call" and h.broadcasts[0]["content"] == "what is the weather"
     assert h.events.empty() and h.incoming.empty()  # the owner's words opened no turn
     engine.push(ResponseStarted(item_id="a1", response_id="resp-1"))
@@ -695,7 +701,8 @@ def test_typed_mailbox_words_reach_the_session_and_are_acknowledged_after_the_ch
     item = [c for c in engine.sent_of(ContextItem) if c.source == "mailbox"][0]
     assert "also check tomorrow" in item.text
     assert _wait_for(lambda: "owner-typed-1" in (h.task_row().get("live_call") or {}).get("consumed_mailbox_ids", []))
-    assert list(drain_owner_entries(tmp_path, "t-call", set(), 1)) == []  # acknowledged after the checkpoint
+    # Acknowledged after the checkpoint: the ACK follows the checkpoint write on the call's thread.
+    assert _wait_for(lambda: list(drain_owner_entries(tmp_path, "t-call", set(), 1)) == [])
     h.stop()
     h.finish()
 

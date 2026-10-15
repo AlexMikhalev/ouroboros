@@ -836,7 +836,7 @@ class OuroborosAgent:
 
         # A live call resolves its engine route BEFORE the context is fitted, so the
         # fit measures against the realtime window and the call's initial tool view.
-        live_plan = call_context_plan(task, self.tools, self.env.drive_root, build_llm_messages)
+        live_plan = call_context_plan(task, self.tools, self.env.drive_root)
         messages, cap_info = build_llm_messages(
             env=self.env,
             memory=self.memory,

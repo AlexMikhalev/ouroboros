@@ -13,10 +13,9 @@ so the agent (context preparation) and the driver (the session) read one answer.
 
 from __future__ import annotations
 
-import inspect
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.call_protocol import CallSpec
 from ouroboros.gateways.realtime_engine import ENGINE_GOOGLE, ENGINE_OPENAI, EngineRoute
@@ -119,25 +118,18 @@ def initial_call_schemas(tools: Any) -> List[Dict[str, Any]]:
     return initial_tool_schemas(tools, context_mode="nano", schema_names=CALL_INITIAL_TOOL_NAMES)
 
 
-def call_context_plan(task: Dict[str, Any], tools: Any, drive_root: Any, prepare: Callable[..., Any]) -> Optional[CallContextPlan]:
+def call_context_plan(task: Dict[str, Any], tools: Any, drive_root: Any) -> Optional[CallContextPlan]:
     """Resolve the route BEFORE the context is fitted; ``None`` for a text turn.
 
-    ``prepare`` is the context builder the agent is about to call: the engine
-    window rides as its ``known_window_tokens`` when it takes one (the context
-    lane's entry); otherwise the fit runs as today and the window still bounds
-    the driver's own view.
+    The engine's documented window rides into the ordinary preparation as its
+    ``known_window_tokens``, so the fit measures against the realtime window; an
+    unknown window leaves the fit as for any route without capacity evidence.
     """
     spec = call_spec_of(task)
     if spec is None:
         return None
     route = resolve_call_route(spec, drive_root)
-    fit_kwargs: Dict[str, Any] = {}
-    try:
-        accepts_window = "known_window_tokens" in inspect.signature(prepare).parameters
-    except (TypeError, ValueError):
-        accepts_window = False
-    if route.window_tokens and accepts_window:
-        fit_kwargs["known_window_tokens"] = route.window_tokens
+    fit_kwargs: Dict[str, Any] = {"known_window_tokens": route.window_tokens} if route.window_tokens else {}
     return CallContextPlan(spec, route, initial_call_schemas(tools), fit_kwargs)
 
 

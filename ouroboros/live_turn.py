@@ -430,6 +430,10 @@ class _LiveCall:
     async def _on_engine_event(self, event: Any) -> None:
         if isinstance(event, AudioOut):
             if event.item_id not in self.cancelled_items:
+                if event.item_id and event.item_id != self.speaking_item:
+                    # Frames carry no item id: an empty, non-final caption names the item
+                    # before its first frame, so played acknowledgements bind to it.
+                    self.hub.send_caption(SPEAKER_OUROBOROS, "", False, event.item_id)
                 self.speaking_item = event.item_id
                 self.hub.play(event.pcm, event.item_id)
         elif isinstance(event, Caption):
