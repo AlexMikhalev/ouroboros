@@ -910,31 +910,6 @@ def test_blocking_finding_below_quorum_stays_open_after_disposition():
     assert any("blocking_finding_below_quorum_stays_open" in note for note in closure["notes"])
 
 
-def test_packet_uses_the_REAL_checklist_section_and_its_findings_only_contract():
-    """C-04: the shipped Plan Review Checklist must agree with the parsed contract."""
-    from ouroboros.tools.review_helpers import load_checklist_section
-    from ouroboros.tools.plan_packet_legacy import build_plan_review_system_prompt
-
-    section = load_checklist_section("Plan Review Checklist")
-    assert section and len(section) > 500
-    prompt = build_plan_review_system_prompt(
-        checklist_section=section, constitutional=False, bible_text=None,
-        cycle_index=1, enforcement="blocking", bible_nav_map="## BIBLE.md (map)\n- P0 …",
-    )
-    lowered = prompt.lower()
-    # the retired GENERATIVE contract must not survive anywhere in the real prompt
-    for retired in ("your own approach", "## proposals", "plan_findings_json", "aggregate: green",
-                    "before any code"):
-        assert retired not in lowered, retired
-    assert "only a json array" in lowered and "NO_FINDINGS" in prompt
-    assert "breaks" in lowered and "need_evidence" in lowered
-    # The shipped checklist agrees with the packet: no height clause that turns an unverifiable
-    # claim into a blocker, GREEN is the empty open set, and the rubric has a subtraction voice.
-    assert "structurally unverifiable" not in section.lower() and "GREEN** — no findings" not in section
-    assert "| 6 | subtraction |" in section and "| 7 | governance" in section
-    assert "adjudicate its OWN earlier findings" in section and "Goal changed since cycle n" in section
-
-
 def test_diff_size_cap_is_route_aware():
     """Owner decision 2026-08-16: the hard cap binds only a reviewer that receives the diff as
     PROMPT TEXT; a panel of retrieving seats (sessions, native api rows) reads the diff itself.

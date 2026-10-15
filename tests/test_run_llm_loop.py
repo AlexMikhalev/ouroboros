@@ -436,7 +436,8 @@ def test_run_llm_loop_enforces_swarm_force_plan_before_final(tmp_path, monkeypat
     assert calls["count"] == 3
     assert sum(row.get("role") == "assistant" and row.get("content") == "premature final"
                for row in seen_second_request["messages"]) == 1
-    assert any("Call plan_task" in str(item.get("content") or "") for item in seen_second_request["messages"])
+    assert any("[PLAN_REVIEW_HOLD]" in str(item.get("content") or "") and "planning obligation" in str(item.get("content") or "")
+               for item in seen_second_request["messages"])
     assert trace["tool_calls"][0]["tool"] == "plan_task"
 
 def test_force_plan_decision_does_not_treat_trace_marker_as_authority(tmp_path, monkeypatch):
@@ -458,7 +459,7 @@ def test_force_plan_decision_does_not_treat_trace_marker_as_authority(tmp_path, 
     })
 
     assert decision["allow"] is False
-    assert decision["status"] == "absent"
+    assert decision["status"] == "force_plan_unmet" and decision["force_plan_met"] is False
 
 def test_run_llm_loop_does_not_accept_failed_plan_task_for_swarm_force_plan(tmp_path, monkeypatch):
     from ouroboros.tools.registry import ToolRegistry

@@ -509,7 +509,8 @@ def _plan_record(kind: str) -> dict:
     ("kind", "hurry_allows"),
     [
         ("held", True), ("awaiting", True),        # locally advisory / proceed
-        ("absent", False), ("unsent", False),      # the Swarm obligation stays unmet: hold
+        ("unsent", True),                          # a plan that reached nobody: unmet, disclosed, released by the hurry
+        ("absent", False),                         # no plan at all: the Swarm admitted the task to write one — held
     ],
 )
 def test_enforce_swarm_actions_task_local_advisory_matrix(tmp_path, monkeypatch, kind, hurry_allows):

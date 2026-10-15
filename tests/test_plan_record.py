@@ -173,8 +173,14 @@ def test_advisory_cyber_and_hurry_disclose_instead_of_holding():
 def test_force_plan_is_met_only_by_an_ask_that_reached_a_reviewer():
     absent = _gate(pr.empty_record(), force_plan=True)
     assert absent["required"] is True and absent["allow"] is False and absent["status"] == "force_plan_unmet"
-    assert _gate(pr.empty_record(), force_plan=True, enforcement="advisory")["allow"] is False  # the obligation follows the work
+    assert _gate(pr.empty_record(), force_plan=True, enforcement="advisory")["allow"] is False  # no plan at all: write one
     assert _gate(pr.empty_record(), force_plan=True, cyber_pro=True)["allow"] is True
+    # A plan that exists but reached nobody: Blocking holds; Advisory and the owner's hurry disclose.
+    unasked = _record(revisions=1)
+    assert _gate(unasked, force_plan=True)["allow"] is False
+    advisory = _gate(unasked, force_plan=True, enforcement="advisory")
+    assert advisory["allow"] is True and advisory["status"] == "force_plan_unmet" and advisory["force_plan_met"] is False
+    assert _gate(unasked, force_plan=True, hurry=True)["allow"] is True
     nobody = _record([_participant(SEAT_A, dispatched=False, status="not_dispatched")])
     assert _gate(nobody, force_plan=True)["status"] == "force_plan_unmet"
     reached = _record([_participant(SEAT_A)])
