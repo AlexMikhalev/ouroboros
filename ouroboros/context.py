@@ -326,37 +326,25 @@ def _task_authority_projection(env: Any, task: Dict[str, Any]) -> Dict[str, Any]
         "arguments": {"task_id": task_id, "include_authority": True},
     }
     try:
-        from ouroboros import plan_record as _plan_record
-
-        record = _plan_record.load_plan_record(canonical_root, task_id)
-        if _plan_record.engaged(record):
-            view = _plan_record.read_view(record)
-            projection["plan_record"] = {
-                "revision": view["revision"], "revisions": view["revisions"], "asks": view["asks"],
-                "open_objections": view["open_objections"], "pending_asks": view["pending_asks"],
-                "participants": view["participants"], "source": source,
-            }
-    except Exception as exc:
-        from ouroboros.tools.plan_review_artifacts import plan_review_source_gap
-
-        projection["plan_record"] = plan_review_source_gap(task_id, exc, source=source)
-    try:
+        # One plan authority: the task's plan record (and any earlier-schema waves it still
+        # holds) as review history; capture moves it into the resident review index.
         from ouroboros.task_results import current_plan_review_wave, load_plan_review_state
         from ouroboros.review_history_view import current_plan_history
         from types import SimpleNamespace
 
         state = load_plan_review_state(canonical_root, task_id)
-        wave = current_plan_review_wave(state)
-        if state.get("waves") or state.get("current_attempt") or state.get("legacy_v1"):
-            history, operative = current_plan_history(SimpleNamespace(drive_root=canonical_root, task_id=task_id), state=state)
+        history, operative = current_plan_history(SimpleNamespace(drive_root=canonical_root, task_id=task_id), state=state)
+        legacy = bool(state.get("waves") or state.get("current_attempt") or state.get("legacy_v1"))
+        if legacy or history.get("rounds") or history.get("decision_rows") or history.get("gaps") or operative:
+            wave = current_plan_review_wave(state)
             projection["plan_review_authority"] = {
-                "current_attempt": state.get("current_attempt") or {},
-                "current_wave": {key: wave[key] for key in (
-                    "cycle_index", "request_fingerprint", "spec_hash", "aggregate", "closed", "paid",
-                    "custody_pending", "wave_artifact") if key in wave} if wave is not None else None,
+                **({"current_attempt": state.get("current_attempt") or {},
+                    "current_wave": {key: wave[key] for key in (
+                        "cycle_index", "request_fingerprint", "spec_hash", "aggregate", "closed", "paid",
+                        "custody_pending", "wave_artifact") if key in wave} if wave is not None else None} if legacy else {}),
                 "dispute_history": history, "operative_subject": operative,
-                "legacy_v1_projection": state.get("legacy_v1_projection") or {},
-                "waves_omitted": int(state.get("waves_omitted") or 0),
+                **({"legacy_v1_projection": state.get("legacy_v1_projection") or {},
+                    "waves_omitted": int(state.get("waves_omitted") or 0)} if legacy else {}),
                 "source": source,
             }
     except Exception as exc:

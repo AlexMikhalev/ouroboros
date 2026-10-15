@@ -353,3 +353,111 @@ def test_oversize_index_moves_the_oldest_prose_out_and_keeps_the_latest_whole(tm
     exact = json.loads((root / "artifacts" / "tasks" / task / record["revisions"][0]["text_ref"]["path"]).read_text(encoding="utf-8")) \
         if (root / "artifacts" / "tasks" / task / record["revisions"][0]["text_ref"]["path"]).exists() else None
     assert exact is None or exact["plan"] == big + "1"
+
+
+# ---------------------------------------------------------------- review history (context views)
+
+def _answered_record(root, task, *, objections, withdrawn=(), retained=True):
+    """A durable record with one revision and one ask: SEAT_A answered (its exact reply retained
+    in the ask's ledger sources unless ``retained`` is off), SEAT_B still pending."""
+    from ouroboros.review_ledger import retain_text_source
+
+    seed_result(root, task, {"task_id": task, "status": "running"})
+    record, _rev, _ = pr.append_revision(root, task, pr.compose_revision(
+        None, goal="ship", plan="outline, then draft", done_when=["five slides"], affected_paths=[]), body=False)
+    pr.append_ask(root, task, {"ask_id": "a1", "ts": "t", "revision": 1, "message": "look", "record_id": "rec-a1",
+                               "participants": [_participant(SEAT_A), _participant(SEAT_B)]})
+    raw = json.dumps({"prose": "the bar is too low", "objections": [dict(o) for o in objections],
+                      "withdrawn": [dict(w) for w in withdrawn]})
+    reply, _ = pr.parse_reply(raw)
+    facts = {"status": "answered", "reply": reply}
+    if retained:
+        facts["reply_ref"] = retain_text_source(root, task, record_id="rec-a1", seat_id=SEAT_A, role="response",
+                                                part="intention", text=raw)
+    return pr.update_participant(root, task, ask_id="a1", seat_id=SEAT_A, facts=facts), raw
+
+
+def test_record_history_binds_each_reply_to_its_source_and_rows_carry_the_objection_standing(tmp_path):
+    record, raw = _answered_record(tmp_path, "task-h", objections=[{"id": "o1", "text": "no export"}])
+    history = pr.record_history(tmp_path, "task-h", record)
+    assert history["status"] == "complete" and history["gaps"] == [] and history["rule"] == pr.RECORD_HISTORY_RULE
+    (round_,) = history["rounds"]
+    assert round_["plan_ask"] == "a1" and round_["revision"] == 1 and round_["review_record_id"] == "rec-a1"
+    answered, pending = round_["reviewers"]
+    reply_ref = record["asks"][0]["participants"][0]["reply_ref"]
+    assert answered["response"] == {"text": raw, "source": reply_ref} and "reply" not in answered
+    assert pending["status"] == "pending" and "response" not in pending
+    (row,) = history["decision_rows"]
+    assert row["decision_kind"] == "plan_objection" and row["seat_id"] == SEAT_A and row["objection_id"] == "o1"
+    assert row["remark"] == "no export" and row["history_role"] == "open" and row["source"] == reply_ref
+    assert row["status"]["open"] is True and row["status"]["holds"] is True and row["status"]["withdrawn_in"] == ""
+    assert pr.operative_revision(record)["kind"] == "plan_revision" and pr.operative_revision(pr.empty_record()) is None
+    # The raiser withdrawing it makes the row history, sourced at the withdrawing reply.
+    later = pr.append_ask(tmp_path, "task-h", {"ask_id": "a2", "ts": "t2", "revision": 1, "message": "fixed",
+                                               "participants": [_participant(SEAT_A, reply={"withdrawn": [{"id": "o1", "why": "added"}]})]})
+    (row,) = pr.record_history(tmp_path, "task-h", later)["decision_rows"]
+    assert row["history_role"] == "historical" and row["status"]["withdrawn_in"] == "a2" and row["reason"] == "added"
+
+
+def test_record_history_names_a_reply_without_a_retained_source_and_shows_its_typed_projection(tmp_path):
+    record, _raw = _answered_record(tmp_path, "task-g", objections=[{"id": "o1", "text": "no export"}], retained=False)
+    history = pr.record_history(tmp_path, "task-g", record)
+    answered = history["rounds"][0]["reviewers"][0]
+    assert "response" not in answered and answered["reply"]["objections"] == [{"id": "o1", "text": "no export"}]
+    assert history["status"] == "source_unavailable" and history["gaps"][0]["source"]["seat_id"] == SEAT_A
+    assert history["decision_rows"][0]["source"] is None
+
+
+def test_plan_history_views_read_the_record_and_still_read_a_finished_v2_wave(tmp_path):
+    """The context views (``current_plan_history`` → the task authority projection →
+    compaction's capture) carry an organ plan, a finished earlier-schema wave, both together,
+    and nothing for a task without a plan."""
+    from types import SimpleNamespace
+
+    from ouroboros.context import _task_authority_projection
+    from ouroboros.review_history_view import (REVIEW_CONTEXT_INDEX_KEY, REVIEW_HISTORY_MESSAGE_KEY,
+                                               capture_review_history_messages, current_plan_history)
+    from tests import _legacy_plan_shared as legacy
+
+    def views(task):
+        runtime = _task_authority_projection(SimpleNamespace(drive_root=tmp_path, repo_dir=None), {"id": task})
+        prefix, tail = capture_review_history_messages(runtime, task_id=task, drive_root=tmp_path)
+        index = [json.loads(m["content"].partition("\n")[2])["current"] for m in tail if REVIEW_CONTEXT_INDEX_KEY in m]
+        bodies = [m["content"] for m in tail if REVIEW_HISTORY_MESSAGE_KEY in m]
+        return runtime, prefix, index, bodies
+
+    # an organ plan: the record is the plan family's history, compaction moves it to the resident index
+    _answered_record(tmp_path, "organ", objections=[{"id": "o1", "text": "no export"}])
+    history, operative = current_plan_history(SimpleNamespace(drive_root=tmp_path, task_id="organ"))
+    assert [r["plan_ask"] for r in history["rounds"]] == ["a1"] and operative["n"] == 1 and operative["kind"] == "plan_revision"
+    runtime, prefix, index, bodies = views("organ")
+    authority = runtime["plan_review_authority"]
+    assert set(authority) == {"dispute_history", "operative_subject", "source"} and "plan_record" not in runtime
+    assert prefix["plan_review_authority"]["dispute_history"]["representation"] == "resident_review_index"
+    assert [row["objection_id"] for row in index[-1]["decision_rows"]] == ["o1"]
+    assert index[-1]["operative_subject"]["plan"] == "outline, then draft"
+    assert any("the bar is too low" in body for body in bodies)
+
+    # a task with no plan at all: no plan authority and no plan index
+    seed_result(tmp_path, "plain", {"task_id": "plain", "status": "running"})
+    runtime, _prefix, index, bodies = views("plain")
+    assert "plan_review_authority" not in runtime and index == [] and bodies == []
+
+    # a finished v2 record keeps reading from its exact wave artifact
+    closed = legacy.with_artifact(tmp_path, "old", legacy.wave(
+        1, aggregate="GREEN", closed=True, findings=[{"finding_id": "s1:f", "class": "note", "slot": "s1", "summary": "use charts"}]))
+    legacy.seed_plan_review_state(tmp_path, "old", legacy.v2_state(closed), status="completed")
+    history, operative = current_plan_history(SimpleNamespace(drive_root=tmp_path, task_id="old"))
+    assert [r["aggregate"] for r in history["rounds"]] == ["GREEN"] and operative["spec"]["goal"] == "Ship the deck"
+    assert history["decision_rows"][0]["decision_kind"] == "plan_finding"
+    runtime, _prefix, index, _bodies = views("old")
+    assert runtime["plan_review_authority"]["current_attempt"]["fingerprint"] == closed["request_fingerprint"]
+    assert index[-1]["decision_rows"][0]["finding_id"] == "s1:f"
+
+    # an in-flight v2 task that went on with the organ: its waves first, then the record's asks
+    _answered_record(tmp_path, "both", objections=[{"id": "o1", "text": "no export"}])
+    legacy.seed_plan_review_state(tmp_path, "both", legacy.v2_state(legacy.with_artifact(tmp_path, "both", legacy.wave(1))))
+    history, operative = current_plan_history(SimpleNamespace(drive_root=tmp_path, task_id="both"))
+    assert [r.get("plan_ask") or r.get("aggregate") for r in history["rounds"]] == ["REVIEW_REQUIRED", "a1"]
+    assert [r["decision_kind"] for r in history["decision_rows"]] == ["plan_objection"] and operative["kind"] == "plan_revision"
+    assert pr.RECORD_HISTORY_RULE in history["rule"] and len(history["rule"]) > len(pr.RECORD_HISTORY_RULE)

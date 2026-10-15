@@ -17,8 +17,9 @@ Everything else is derived here and never stored: the open objections (a fold ov
 EACH SEAT'S OWN replies — an objection stands until the same seat lists it under
 ``withdrawn``; omission keeps it and flags ``not_adjudicated``; an unparseable reply
 changes nothing), who last saw which revision, the gate projection
-(``gate_projection``) and the acceptance view (``acceptance_view``). There is no
-cycle counter, no quorum, no aggregate and no fingerprint routing for plans.
+(``gate_projection``), the acceptance view (``acceptance_view``) and the review
+history the context views read (``record_history``). There is no cycle counter, no
+quorum, no aggregate and no fingerprint routing for plans.
 
 Durable form: the task result's ``plan_record`` key (schema 3). The exact text of
 every revision is retained once in the task's artifact store (``retain_revision``);
@@ -552,6 +553,70 @@ def read_view(record: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = N
         "unknown_withdrawals": [{k: o.get(k) for k in ("seat_id", "id", "ask_id", "why")} for o in objections if o.get("unknown_withdrawal")],
         "pending_asks": [str(a.get("ask_id") or "") for a in pending_asks(record)],
     }
+
+
+# ------------------------------------------------------------------ review history
+
+RECORD_HISTORY_RULE = (
+    "An objection stands until the participant that raised it withdraws it: a revision or the author's "
+    "answer does not close it and nobody votes. Each reply is its participant's own words from its "
+    "retained source; silence is neither agreement nor an objection."
+)
+
+
+def operative_revision(record: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """The latest revision as the plan family's current subject (``None`` before the first)."""
+    latest = latest_revision(record)
+    return {"kind": "plan_revision", **copy.deepcopy(latest)} if latest else None
+
+
+def record_history(drive_root: Any, task_id: str, record: Mapping[str, Any]) -> Dict[str, Any]:
+    """The plan record as review history for the context views (the resident review index,
+    compaction, a Continue's predecessor view), read-only: one round per ask whose
+    participants carry their exact reply read from its retained source (a selectable body),
+    one decision row per objection with its standing now, and a gap for every source that
+    cannot be read. A reply with no retained source keeps its typed projection inline."""
+    from ouroboros.review_history import _gap, _source_text
+
+    gaps: List[Dict[str, Any]] = []
+    seen: Dict[str, Any] = {}
+    replies: Dict[tuple, Any] = {}
+    rounds = []
+    for ask in record.get("asks") or []:
+        reviewers = []
+        for participant in ask.get("participants") or []:
+            seat = {key: copy.deepcopy(participant[key]) for key in (
+                "seat_id", "model", "owner_marked", "host_added", "status", "error", "parse_error",
+                "not_dispatched_reason") if participant.get(key) not in (None, "")}
+            source = participant.get("reply_ref")
+            if isinstance(source, dict) and source.get("status") == "retained":
+                seat["response"] = _source_text(drive_root, task_id, source, seen, gaps)
+                replies[(str(ask.get("ask_id") or ""), str(participant.get("seat_id") or ""))] = source
+            elif isinstance(participant.get("reply"), dict):
+                seat["reply"] = {key: copy.deepcopy(participant["reply"].get(key)) for key in ("prose", "objections", "withdrawn")}
+                gaps.append(_gap("reply has no retained source; its typed projection is shown",
+                                 plan_ask=ask.get("ask_id"), seat_id=participant.get("seat_id")))
+            reviewers.append(seat)
+        rounds.append({"plan_ask": ask.get("ask_id"), "revision": ask.get("revision"), "ts": ask.get("ts"),
+                       "message": ask.get("message"), "review_record_id": ask.get("record_id"),
+                       "attached": copy.deepcopy(ask.get("attached") or []), "reviewers": reviewers})
+    decision_rows = []
+    for objection in fold_objections(record):
+        if objection.get("unknown_withdrawal"):
+            continue
+        decision_rows.append({
+            "decision_kind": "plan_objection", "plan_ask": objection.get("raised_in"),
+            "seat_id": objection.get("seat_id"), "objection_id": objection.get("id"), "remark": objection.get("text"),
+            "status": {"open": bool(objection.get("open")), "holds": bool(objection.get("holds")),
+                       "owner_marked": bool(objection.get("owner_marked")),
+                       "not_adjudicated": bool(objection.get("not_adjudicated")),
+                       "last_restated_in": objection.get("ask_id"), "withdrawn_in": objection.get("withdrawn_in") or ""},
+            "reason": objection.get("why") or "", "history_role": "open" if objection.get("open") else "historical",
+            "source": replies.get((str(objection.get("withdrawn_in") or objection.get("ask_id") or ""),
+                                   str(objection.get("seat_id") or ""))),
+        })
+    return {"status": "source_unavailable" if gaps else "complete", "rule": RECORD_HISTORY_RULE,
+            "rounds": rounds, "decision_rows": decision_rows, "gaps": gaps}
 
 
 # ------------------------------------------------------------------ durable index
