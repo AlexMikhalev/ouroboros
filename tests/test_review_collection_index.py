@@ -221,6 +221,41 @@ def test_interrupted_schema_upgrade_rolls_back_and_retries(tmp_path, monkeypatch
         assert txn.row("task", "has_owner_questions") == 1 and txn.body_text("task") == raw
 
 
+@pytest.mark.parametrize("resume", ["writer", "collector", "boot"])
+def test_partial_export_upgrade_does_not_publish_a_complete_schema_version(tmp_path, resume):
+    original = {**_question_document("task"), "review_operations": {"op": _operation()}}
+    _legacy_store(tmp_path, original, owned_root=tmp_path)
+    with store.open_store(tmp_path, write=True) as txn:
+        txn.set_meta("phase", store.EXPORTING)
+    assert store_import.ensure_current_store(tmp_path, with_children=False)["status"] == "switch_pending"
+    with store.open_store(tmp_path, write=False, service=True) as txn:
+        columns = {row["name"] for row in txn.conn.execute("PRAGMA table_info(tasks)")}
+        assert "has_owner_questions" in columns and "review_collection_pending" not in columns
+        assert txn.meta("schema_version") == 1
+        assert txn.load("task") == original and txn.row("task", "write_seq") == 1
+    with pytest.raises(store.StoreRetired):
+        task_store.patch_document(tmp_path, "task", lambda _: pytest.fail("export is not writable"))
+    assert list(task_store.review_collection_candidates(tmp_path)) == []
+    with store.open_store(tmp_path, write=True, service=True) as txn:
+        txn.set_meta("phase", store.PUBLISHED)
+    calls = []
+    if resume == "writer":
+        def mutate(row):
+            with store.open_store(tmp_path, write=False) as txn:
+                _combined_schema(txn)
+            calls.append(row)
+            return row
+        assert task_store.patch_document(tmp_path, "task", mutate) == original
+        assert calls == [original]
+    elif resume == "boot":
+        store_import.ensure_current_store(tmp_path, with_children=False)
+    assert list(task_store.review_collection_candidates(tmp_path)) == ["task"]
+    with store.open_store(tmp_path, write=False) as txn:
+        _combined_schema(txn)
+        assert txn.load("task") == original
+        assert txn.row("task", "has_owner_questions", "write_seq") == (1, 2 if resume == "writer" else 1)
+
+
 @pytest.mark.parametrize("shape", _SCHEMA_SHAPES)
 def test_first_touch_schema_owner_honors_zero_wait_and_never_calls_mutator(tmp_path, monkeypatch, shape):
     _legacy_store(tmp_path, document("task"), owned_root=tmp_path, shape=shape)
