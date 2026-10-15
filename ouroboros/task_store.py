@@ -245,47 +245,34 @@ def task_ids(root: Any) -> List[str]:
         return txn.task_ids()
 
 
-def ids_with_fields(root: Any, markers: Iterable[str]) -> List[str]:
-    """Task ids whose body names any of the top-level ``markers`` (the late-review sweep's
-    candidates, found with one body scan inside the store instead of a directory read)."""
-    patterns = [f'%"{marker}":%' for marker in markers]
-    if not patterns:
-        return []
-    with open_store(root, write=False) as txn:
-        where = " OR ".join("body LIKE ?" for _ in patterns)
-        return [record["task_id"] for record in
-                txn.conn.execute(f"SELECT task_id FROM task_bodies WHERE {where} ORDER BY task_id", patterns)]
+_COLLECTION_BATCH = 64  # bounds selection/materialization and one classification commit
 
 
-_REVIEW_COLLECTION_BATCH = 64  # bounds selection/materialization and one classification commit
-
-
-def _review_collection_ids(root: Any, pending: Optional[int], after: str) -> List[str]:
+def _collection_ids(root: Any, column: str, pending: Optional[int], after: str) -> List[str]:
     where = "IS NULL" if pending is None else "=1"
     with open_store(root, write=False) as txn:
         return [record[0] for record in txn.conn.execute(
-            f"SELECT task_id FROM tasks WHERE review_collection_pending {where} AND task_id>? "
-            "ORDER BY task_id LIMIT ?", (after, _REVIEW_COLLECTION_BATCH))]
+            f"SELECT task_id FROM tasks WHERE {column} {where} AND task_id>? "
+            "ORDER BY task_id LIMIT ?", (after, _COLLECTION_BATCH))]
 
 
-def _classify_review_collection(root: Any, task_ids: List[str], stop: Callable[[], bool]) -> List[str]:
+def _classify_collection(root: Any, column: str, predicate: Callable[[dict], bool],
+                        task_ids: List[str], stop: Callable[[], bool]) -> List[str]:
     """Decode each legacy body after its coherent read; batch still-NULL sequence CAS updates.
     Classification changes no body/write_seq. A racing body writer or handoff wins."""
-    from ouroboros.obligations import review_collection_pending
-
     classified, candidates = [], []
     for task_id in task_ids:
         if stop():
             break
         try:
             with open_store(root, write=False) as txn:
-                stamp = txn.row(task_id, "write_seq", "review_collection_pending")
+                stamp = txn.row(task_id, "write_seq", column)
                 body = txn.body_text(task_id) if stamp is not None and stamp[1] is None else None
             if body is None:
                 if stamp is not None and stamp[1] == 1:
                     candidates.append(task_id)
                 continue
-            pending = int(review_collection_pending(json.loads(body)))
+            pending = int(predicate(json.loads(body)))
             classified.append((pending, task_id, stamp[0]))
             if pending:
                 candidates.append(task_id)
@@ -293,14 +280,16 @@ def _classify_review_collection(root: Any, task_ids: List[str], stop: Callable[[
             candidates.append(task_id)  # unreadable stays unknown; the collector retains its diagnostics
     if classified and not stop():
         with open_store(root, write=True) as txn:
-            txn.conn.executemany("UPDATE tasks SET review_collection_pending=? WHERE task_id=? AND write_seq=? "
-                                 "AND review_collection_pending IS NULL", classified)
+            txn.conn.executemany(f"UPDATE tasks SET {column}=? WHERE task_id=? AND write_seq=? "
+                                 f"AND {column} IS NULL", classified)
     return candidates
 
 
-def review_collection_candidates(root: Any, *, stop: Optional[Callable[[], bool]] = None) -> Iterable[str]:
+def _collection_candidates(root: Any, column: str, predicate: Callable[[dict], bool],
+                           stop: Optional[Callable[[], bool]]) -> Iterable[str]:
     """Known work first, then bounded legacy classification through the existing maintenance owner.
-    No transaction spans a yield; every candidate's authority is re-read by the collector."""
+    Column/predicate belong to the two callers below. No transaction spans a yield;
+    every candidate's authority is re-read by its collector."""
     stopped = stop or (lambda: False)
     try:
         with open_store(root, write=False) as txn:
@@ -311,13 +300,28 @@ def review_collection_candidates(root: Any, *, stop: Optional[Callable[[], bool]
         for pending in (1, None):
             after = ""
             while not stopped():
-                identities = _review_collection_ids(root, pending, after)
+                identities = _collection_ids(root, column, pending, after)
                 if not identities:
                     break
                 after = identities[-1]
-                yield from identities if pending == 1 else _classify_review_collection(root, identities, stopped)
+                yield from identities if pending == 1 else _classify_collection(root, column, predicate, identities, stopped)
     except store.StoreError:
         return  # failed acquisition/classification leaves the same candidates owed
+
+
+def review_collection_candidates(root: Any, *, stop: Optional[Callable[[], bool]] = None) -> Iterable[str]:
+    """Possible acceptance collection/late-notice work; unrelated plans stay out."""
+    from ouroboros.obligations import review_collection_pending
+
+    yield from _collection_candidates(root, "review_collection_pending", review_collection_pending, stop)
+
+
+def plan_collection_candidates(root: Any, *, stop: Optional[Callable[[], bool]] = None) -> Iterable[str]:
+    """Possible pending plan seats; their record and ended-task reader keep authority."""
+    from ouroboros.plan_record import PLAN_RECORD_KEY, collection_pending
+
+    yield from _collection_candidates(root, "plan_collection_pending",
+                                     lambda row: collection_pending(row.get(PLAN_RECORD_KEY)), stop)
 
 
 def inventory(root: Any) -> List[Dict[str, Any]]:

@@ -223,12 +223,12 @@ def _collect_ended_plan_asks(drive_root: Any, stop: Any) -> int:
     keeps the reply in its room. The ask's pending seat is the duty, so nothing else is written for it; a seat
     with no retained outcome stays pending and is never cleaned."""
     from ouroboros import plan_record  # D15->D06 is lazy-only
-    from ouroboros.task_store import ids_with_fields  # D15->D17 is lazy-only
+    from ouroboros.task_store import plan_collection_candidates  # D15->D17 is lazy-only
     from ouroboros.tools.plan_ask import collect_pending  # D15->D06 is lazy-only
 
     root, settled = pathlib.Path(drive_root), 0
     try:
-        candidates = ids_with_fields(root, (plan_record.PLAN_RECORD_KEY,))
+        candidates = plan_collection_candidates(root, stop=stop)
     except Exception:
         log.warning("plan records are unreadable; their pending seats stay pending", exc_info=True)
         return 0
