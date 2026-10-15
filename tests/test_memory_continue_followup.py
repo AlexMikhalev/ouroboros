@@ -196,7 +196,7 @@ def test_owner_continue_sends_two_local_notes_grouped_reviews_and_exact_dialogue
     recovered = []
     for source in historical["source_reads"]:
         arguments = source["read"]["arguments"]
-        assert arguments["path"] in text
+        assert json.dumps(arguments["path"], ensure_ascii=False) in text
         recovered.append(_read_file(successor, **{**arguments, "max_chars": 200_000}))
     assert any(RATIONALE in source for source in recovered)
     assert all(read_actor_source_bytes(ctx.drive_root, ctx.task_id, item["source_ref"])

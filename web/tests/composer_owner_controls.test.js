@@ -614,9 +614,11 @@ test('destroy removes the element, its document listeners and its timers', async
 });
 
 /* Both capsules in one composer row, as chat.js builds it: the pills, then the context anchor. */
-function mountPair({ hover = false, reply, win } = {}) {
+function mountPair({ hover = false, reply, win, withBox = false } = {}) {
     const doc = stubDocument();
+    const box = doc.createElement('section');
     const row = doc.createElement('div');
+    box.appendChild(row);
     row.className = 'chat-toolbar-row';
     row.getBoundingClientRect = () => ({ top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 });  // not laid out: no fit
     const pills = doc.createElement('div');
@@ -631,7 +633,7 @@ function mountPair({ hover = false, reply, win } = {}) {
     const refreshes = [];
     const answer = { value: reply || { ok: true } };
     const controls = createComposerOwnerControls({
-        row, doc, win: win || hoverWindow(hover), byId: (suffix) => (suffix === 'context-mode' ? contextEl : null),
+        row, box: withBox ? box : null, doc, win: win || hoverWindow(hover), byId: (suffix) => (suffix === 'context-mode' ? contextEl : null),
         apiFetch: async (url, init) => { posts.push([url, JSON.parse(init.body)]); return answer.value; },
         saveEffortRange: async (triple) => ({ effort_range: triple }),
         showToast: (message, tone) => toasts.push([message, tone]),
@@ -641,7 +643,7 @@ function mountPair({ hover = false, reply, win } = {}) {
     const effortEl = controls.effort.el;
     const seg = (mode) => contextEl.querySelectorAll('.chat-seg').find((node) => node.dataset.mode === mode);
     return {
-        controls, row, doc, contextEl, effortEl, posts, toasts, refreshes, answer, seg,
+        controls, row, box, doc, contextEl, effortEl, posts, toasts, refreshes, answer, seg,
         contextHead: contextEl.querySelector('.chat-context-head'), effortHead: effortEl.querySelector('.chat-effort-head'),
         press: (head, detail = 1) => fire(head, 'click', { detail }),
         choose: (mode) => fire(contextEl, 'click', { target: { closest: (selector) => (selector === '.chat-seg' ? seg(mode) : null) } }),
@@ -802,6 +804,110 @@ test('closed, the capsules keep their names while the line holds them; a narrowe
     m.controls.syncState({});
     assert.equal(m.row.dataset.ownerCompact, undefined, 'never decided while a strip is open');
     m.controls.destroy();
+});
+
+test('row/strip resize delivery defers feedback, coalesces work and cancels it on destroy', () => {
+    const observers = [], frames = new Map();
+    let nextFrame = 0;
+    const win = {
+        ...hoverWindow(false),
+        ResizeObserver: class {
+            constructor(callback) { this.callback = callback; observers.push(this); }
+            observe() {}
+            disconnect() { this.disconnected = true; }
+        },
+        requestAnimationFrame(callback) { frames.set(++nextFrame, callback); return nextFrame; },
+        cancelAnimationFrame(id) { frames.delete(id); },
+    };
+    const deliver = () => observers.forEach((observer) => observer.callback());
+    const paint = () => { const pending = [...frames.values()]; frames.clear(); pending.forEach((callback) => callback()); };
+    const m = mountPair({ win });
+    const thumb = m.contextEl.querySelector('.chat-context-thumb');
+    const chosen = m.seg('max');
+    Object.assign(chosen, { offsetLeft: 80, offsetWidth: 40 });
+    m.controls.syncState({ context_mode: 'max' });
+    chosen.offsetLeft = 120;
+    m.effortEl.getBoundingClientRect = () => ({ top: 40, bottom: 72, width: 130 });
+    deliver();
+    deliver();
+    assert.equal(thumb.style.left, '80px', 'resize delivery cannot write the observed layout');
+    assert.equal(m.row.dataset.ownerCompact, undefined, 'the row cannot wrap and unwrap during delivery');
+    assert.equal(frames.size, observers.length, 'duplicate deliveries share each pending frame');
+    paint();
+    assert.equal(thumb.style.left, '120px', 'the next frame aligns the mark with the resized word');
+    assert.equal(m.row.dataset.ownerCompact, 'true', 'the next frame fits the closed names');
+    m.effortEl.getBoundingClientRect = () => ({ top: 0, bottom: 32, width: 130 });
+    deliver();
+    paint();
+    assert.equal(m.row.dataset.ownerCompact, undefined, 'names return when room returns');
+    deliver();
+    assert.ok(frames.size > 0);
+    m.controls.destroy();
+    assert.equal(frames.size, 0, 'destroy cancels every pending layout');
+    assert.ok(observers.every((observer) => observer.disconnected));
+});
+
+test('docking-box geometry and changed text settle descendants before paint, with full disposal', () => {
+    const sizes = [], texts = [], frames = new Map();
+    let nextFrame = 0;
+    const win = {
+        ...hoverWindow(false),
+        ResizeObserver: class {
+            constructor(callback) { this.callback = callback; this.nodes = []; sizes.push(this); }
+            observe(node) { this.nodes.push(node); }
+            disconnect() { this.disconnected = true; }
+        },
+        MutationObserver: class {
+            constructor(callback) { this.callback = callback; texts.push(this); }
+            observe(node, options) { this.node = node; this.options = options; }
+            disconnect() { this.disconnected = true; }
+        },
+        requestAnimationFrame(callback) { frames.set(++nextFrame, callback); return nextFrame; },
+        cancelAnimationFrame(id) { frames.delete(id); },
+    };
+    const m = mountPair({ win, withBox: true });
+    const boxObserver = sizes.find((observer) => observer.nodes.includes(m.box));
+    assert.ok(boxObserver, 'chat supplies the independently sized docking box');
+    assert.deepEqual(boxObserver.nodes, [m.box], 'not the descendant whose fit we change');
+    const thumb = m.contextEl.querySelector('.chat-context-thumb');
+    const chosen = m.seg('max');
+    Object.assign(chosen, { offsetLeft: 120, offsetWidth: 40 });
+    m.effortEl.getBoundingClientRect = () => ({ top: 40, bottom: 72, width: 130 });
+    boxObserver.callback();
+    assert.equal(thumb.style.left, '120px');
+    assert.equal(m.row.dataset.ownerCompact, 'true', 'fits on the initial box delivery, without syncState');
+    assert.equal(frames.size, 0, 'no one-frame deferral for independent geometry');
+    assert.equal(texts.length, 1);
+    assert.equal(texts[0].node, m.row);
+    assert.deepEqual(texts[0].options, { childList: true, characterData: true, subtree: true });
+    chosen.offsetLeft = 160;
+    m.effortEl.getBoundingClientRect = () => ({ top: 0, bottom: 32, width: 130 });
+    texts[0].callback();
+    assert.equal(thumb.style.left, '160px', 'new words realign the mark in the text microtask');
+    assert.equal(m.row.dataset.ownerCompact, undefined);
+    // The value is what a gesture's renderer changes. Its MO must fit a closed line without
+    // settling the strip and cancelling the thumb's own transition (real motion: browser test).
+    chosen.offsetLeft = 180;
+    const value = m.contextEl.querySelector('.chat-capsule-value');
+    value.nodeType = 1;
+    value.closest = (selector) => value.matches(selector) ? value : null; // The shared stub only knows .page.active.
+    m.effortEl.getBoundingClientRect = () => ({ top: 40, bottom: 72, width: 130 });
+    texts[0].callback([{ target: value }]);
+    assert.equal(thumb.style.left, '160px');
+    assert.equal(m.row.dataset.ownerCompact, 'true');
+    texts[0].callback([{ target: { nodeType: 3, parentNode: value } }]);
+    assert.equal(thumb.style.left, '160px', 'i18n changes the existing value text node');
+    texts[0].callback([{ target: value }, { target: chosen }]);
+    assert.equal(thumb.style.left, '180px', 'a mixed batch with a strip word still realigns');
+    sizes.filter((observer) => observer !== boxObserver).forEach((observer) => observer.callback());
+    assert.ok(frames.size > 0, 'feedback from the changed row/strips is still deferred');
+    m.controls.destroy();
+    assert.equal(frames.size, 0);
+    assert.ok([...sizes, ...texts].every((observer) => observer.disconnected));
+    chosen.offsetLeft = 200;
+    boxObserver.callback();
+    texts[0].callback();
+    assert.equal(thumb.style.left, '180px', 'already queued deliveries after destroy cannot write');
 });
 
 /* The refit of a wrapped row shrinks the composer that chat.js observes higher in the tree. Inside ResizeObserver

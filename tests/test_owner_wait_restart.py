@@ -106,8 +106,13 @@ def restart_case(tmp_path, monkeypatch):
     monkeypatch.setattr(workers, "WORKERS", {
         0: affirm_ready(workers.Worker(0, process, SimpleNamespace(), busy_task_id=task_id, active_capacity=False)),
     })
-    return SimpleNamespace(root=tmp_path, task_id=task_id, attempt=attempt, started=started,
-                           task=task, ctx=ctx, wait=wait, process=process, transaction_id="native-restart-tx")
+    # Each case owns its event frames. The process-lifetime bus is a SyncManager child that an
+    # earlier test's real stop path can leave dead in this worker; a terminal frame that cannot
+    # publish keeps its task in custody by design, which then reads as a stop that did not happen.
+    events = stdqueue.Queue()
+    monkeypatch.setattr(workers, "get_event_q", lambda: events)
+    return SimpleNamespace(root=tmp_path, task_id=task_id, attempt=attempt, started=started, task=task,
+                           ctx=ctx, wait=wait, process=process, transaction_id="native-restart-tx", events=events)
 
 
 def first_cleanup(case):
@@ -299,6 +304,9 @@ def test_preserved_question_parent_keeps_its_saved_running_child(restart_case, m
         assert load_task_result(case.root, "saved-child")["status"] == "cancelled"
     else:
         assert load_task_result(case.root, "saved-child")["status"] == "running"
+    terminal = [frame["status"] for frame in list(case.events.queue)
+                if frame.get("type") == "task_done" and frame.get("task_id") == "saved-child"]
+    assert terminal == (["cancelled"] if control == "stop_child" else [])
     # The lifespan's second cleanup sees the parent already queued and the child
     # still carried in RUNNING for recovery from its last working checkpoint.
     assert workers.kill_workers(

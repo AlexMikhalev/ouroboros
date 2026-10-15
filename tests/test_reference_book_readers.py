@@ -157,20 +157,26 @@ def test_a_touched_chapter_is_withheld_when_the_prefix_carries_its_book(tmp_path
 
 # --- the documentation gate ------------------------------------------------
 
-def test_the_new_module_gate_takes_the_chapter_that_documents_the_module():
+def test_the_new_module_gate_takes_the_chapter_that_documents_the_module(monkeypatch, tmp_path):
+    from ouroboros import commit_admission
     from ouroboros.tools import review
 
+    # Synthetic staged paths need matching synthetic blobs. Reading the actual
+    # checkout's index makes this unit test depend on an in-flight version bump.
+    values = {"VERSION": "1.2.3\n", "docs/ARCHITECTURE.md": "# Ouroboros v1.2.3 — Architecture\n"}
+    monkeypatch.setattr(review, "_git_show_staged", lambda repo, path: values.get(path))
+    monkeypatch.setattr(commit_admission, "_head_text", lambda repo, path: values.get(path))
     staged = "A  ouroboros/brand_new_owner.py\n"
-    blocked = review._preflight_check("add an owner", staged, REPO)
+    blocked = review._preflight_check("add an owner", staged, tmp_path)
     assert blocked and "Architecture book" in blocked
 
     for documented in ("docs/ARCHITECTURE.md", "docs/architecture/01-high-level-architecture.md"):
         assert review._preflight_check(
-            "add an owner", staged + f"M  {documented}\n", REPO,
+            "add an owner", staged + f"M  {documented}\n", tmp_path,
         ) is None, documented
 
     assert review._preflight_check(
-        "add an owner", staged + "M  docs/reference-books-migration.md\n", REPO,
+        "add an owner", staged + "M  docs/reference-books-migration.md\n", tmp_path,
     ) is not None, "a docs file outside the book documents no module"
 
 

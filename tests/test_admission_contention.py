@@ -218,7 +218,7 @@ def test_unconfirmed_rollback_is_not_retried(root, monkeypatch):
 
 
 @pytest.mark.parametrize("strict", [False, True])
-@pytest.mark.parametrize("failure_at", ["stop", "historical", "pause"])
+@pytest.mark.parametrize("failure_at", ["stop", "historical", "pause_before", "pause_after"])
 def test_real_review_controller_preserves_busy_probe_without_cancelling_paid_work(root, monkeypatch, strict, failure_at):
     from types import SimpleNamespace
     from ouroboros import acceptance_history, task_results
@@ -234,21 +234,22 @@ def test_real_review_controller_preserves_busy_probe_without_cancelling_paid_wor
         result_root=root, task_id="root")
     monkeypatch.setattr(acceptance_history, "read_acceptance_history", lambda *_a, **_k: {"task_contract": {}})
     monkeypatch.setattr(acceptance_history, "historical_review_controls",
-                        lambda *_a, **_k: ["root_budget_fence"] if failure_at == "pause" else [])
+                        lambda *_a, **_k: ["root_budget_fence"] if failure_at.startswith("pause_") else [])
     original, reads = task_results.load_task_result, []
     failed = [True]
     def load(*args, **kwargs):
         reads.append(True)
-        if failed[0] and len(reads) == (1 if failure_at == "stop" else 3) and failure_at != "pause":
+        if failed[0] and len(reads) == (1 if failure_at == "stop" else 3) and not failure_at.startswith("pause_"):
             raise store.StoreBusy("current fact contended", reason="contention")
         return original(*args, **kwargs)
     monkeypatch.setattr(task_results, "load_task_result", load)
-    original_fence = owner_pause.read_fence
+    original_fence, fence_reads = owner_pause.read_fence, []
     def fence(*args, **kwargs):
-        if failed[0]:
+        fence_reads.append(True)
+        if failed[0] and len(fence_reads) == (1 if failure_at == "pause_before" else 2):
             raise store.StoreBusy("pause fact contended", reason="contention")
         return original_fence(*args, **kwargs)
-    if failure_at == "pause":
+    if failure_at.startswith("pause_"):
         monkeypatch.setattr(owner_pause, "read_fence", fence)
     before = operation._checked_at
     if strict:

@@ -257,9 +257,11 @@ def test_panic_requests_every_physical_stop_before_any_persistence_and_never_wai
     from supervisor import evolution_lifecycle as lifecycle
 
     # Production exits permanently; this in-process exit stub must not leave
-    # its terminal admission latches set for subsequent consumer tests.
+    # its terminal admission latches set for subsequent consumer tests, nor kill
+    # this worker's own multiprocessing children (the shared supervisor event bus).
     for owner in (workspace_executor, services, shell_process):
         monkeypatch.setattr(owner, "_panic_requested", False)
+    monkeypatch.setattr("multiprocessing.active_children", lambda: [])
     _write(state.STATE_PATH, _prior())
     order: list = []
     release = threading.Event()

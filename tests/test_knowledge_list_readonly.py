@@ -61,7 +61,7 @@ def test_list_retains_legacy_index_prose_without_treating_it_as_current_inventor
     ctx = _Ctx(tmp_path / "drive")
     kdir = ctx.drive_root / "memory" / "knowledge"
     kdir.mkdir(parents=True)
-    (kdir / INDEX_FILE).write_text("# Knowledge Base Index\n\n- **a**: alpha\n", encoding="utf-8")
+    (kdir / INDEX_FILE).write_bytes(b"# Knowledge Base Index\n\n- **a**: alpha\n")
     before = {p: p.read_bytes() for p in kdir.iterdir()}
     listing = _knowledge_list(ctx)
     assert "# Knowledge Base Index\n\n- **a**: alpha\n" in listing

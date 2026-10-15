@@ -653,7 +653,9 @@ export function createTimelineAnchors({ messagesDiv, liveCardRecords }) {
             if (!isRendered(node)) return false;
             const currentOffset = node.getBoundingClientRect().top
                 - messagesDiv.getBoundingClientRect().top;
-            messagesDiv.scrollTop += currentOffset - offset;
+            // A node still in place leaves the feed alone: even a write of the
+            // same scrollTop stops a scroll the engine animates (WebKit's End).
+            if (currentOffset !== offset) messagesDiv.scrollTop += currentOffset - offset;
             return true;
         };
 
