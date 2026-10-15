@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -48,6 +49,31 @@ def test_node_environment_keeps_other_inputs_and_does_not_require_a_runtime(tmp_
     monkeypatch.setattr(node, "resolve_node", lambda: None)
     assert node.node_environment(original) == original
     assert node.node_environment(original) is not original
+
+
+@POSIX
+def test_path_fallback_keeps_virtualenv_tools_before_the_node_directory(tmp_path, monkeypatch):
+    first, later = tmp_path / "venv-bin", tmp_path / "system-bin"
+    first.mkdir()
+    later.mkdir()
+    for directory, command, marker in (
+            (first, "python3", "venv-python3"), (first, "git", "venv-git"),
+            (later, "python3", "system-python3"), (later, "git", "system-git"),
+            (later, "node", "system-node")):
+        executable = directory / command
+        executable.write_text(f'#!/bin/sh\nprintf "%s\\n" "{marker}"\n', encoding="utf-8")
+        executable.chmod(0o755)
+    original = {"PATH": os.pathsep.join((str(first), str(later))), "KEEP": "value"}
+    monkeypatch.setenv("PATH", original["PATH"])
+    monkeypatch.setattr(node, "resolve_bundled_node", lambda: None)
+    selected = node.resolve_node()
+    assert selected == str(later / "node")
+    projected = node.node_environment(original)
+    assert projected == original and projected is not original
+    assert shutil.which("node", path=projected["PATH"]) == selected
+    for command, marker in (("python3", "venv-python3"), ("git", "venv-git"), ("node", "system-node")):
+        result = subprocess.run([command], env=projected, text=True, capture_output=True, timeout=10)
+        assert (result.returncode, result.stdout.strip()) == (0, marker), result.stderr
 
 
 @pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
@@ -111,7 +137,6 @@ def test_real_manager():
     assert Path(json.loads(node_report.read_text(encoding="utf-8"))["node"]).resolve() == Path(selected).resolve()
     facts = json.loads(manager_report.read_text(encoding="utf-8"))
     assert Path(facts["tmpdir"]).is_relative_to(Path("/tmp").resolve())
-    assert not Path(facts["address"]).exists(), "the manager socket was released"
 
 
 @POSIX

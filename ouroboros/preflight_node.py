@@ -84,6 +84,9 @@ def node_environment(env: dict) -> dict:
     projected = dict(env)
     node = resolve_node()
     if node:
+        current = shutil.which("node", path=env.get("PATH", os.defpath))
+        if pathlib.Path(node).is_absolute() and os.path.normcase(node) == os.path.normcase(current or ""):
+            return projected  # The selected Node is already reachable; keep other tool precedence.
         directory = str(pathlib.Path(node).absolute().parent)
         entries = env.get("PATH", "").split(os.pathsep) if env.get("PATH") else []
         projected["PATH"] = os.pathsep.join([directory, *(entry for entry in entries
