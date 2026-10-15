@@ -88,6 +88,7 @@ class BrowserSession:
         self._commands: "queue.Queue" = queue.Queue()
         self._opened = threading.Event()
         self._stopping = False
+        self._closing = False
         self._closed_reason = ""
         self._granted = {origin}
         self._pending_origins: List[str] = []
@@ -109,7 +110,8 @@ class BrowserSession:
             raise self.failure
 
     def feed(self, pcm: bytes, epoch: Optional[int]) -> None:
-        self._commands.put(("feed", epoch, pcm))
+        if not self._closing:  # a closed window takes no more call audio
+            self._commands.put(("feed", epoch, pcm))
 
     def flush(self, epoch: int) -> None:
         self.epoch = epoch
@@ -126,6 +128,7 @@ class BrowserSession:
         return box.get("value")
 
     def close(self, reason: str = "closed") -> None:
+        self._closing = True
         self._commands.put(("close", reason, b""))
         if self._thread.is_alive() and self._thread is not threading.current_thread():
             self._thread.join(timeout=15.0)

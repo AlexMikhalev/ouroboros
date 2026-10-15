@@ -146,7 +146,9 @@ def pw_own_node(objects: Sequence[Dict[str, Any]], pid: int) -> int:
 
 def pw_default_sink(objects: Sequence[Dict[str, Any]]) -> str:
     for obj in objects:
-        if obj.get("type") != "PipeWire:Interface:Metadata" or _props(obj).get("metadata.name") != "default":
+        # pw-dump keeps a Metadata object's props at its top level, not under "info".
+        props = obj.get("props") if isinstance(obj.get("props"), dict) else _props(obj)
+        if obj.get("type") != "PipeWire:Interface:Metadata" or props.get("metadata.name") != "default":
             continue
         for entry in obj.get("metadata") or []:
             if isinstance(entry, dict) and entry.get("key") == "default.audio.sink":
@@ -285,7 +287,11 @@ class LinuxBackend:
 
 
 class LinuxCapture:
-    """One capture of the selected applications at ``CAPTURE_RATE`` mono."""
+    """One capture of the selected applications at ``CAPTURE_RATE`` mono.
+
+    ``stop`` is final and waits for a ``start`` in progress, so a call that ends
+    while the capture is starting never leaves a recorder running.
+    """
 
     rate = CAPTURE_RATE
 
@@ -301,6 +307,8 @@ class LinuxCapture:
         self._stop = threading.Event()
         self._relinker: Optional[threading.Thread] = None
         self._node = 0
+        self._lifecycle = threading.Lock()
+        self._closed = False
 
     def describe(self) -> Dict[str, Any]:
         return {"backend": self.stack, "source": self.source, "device": self.device,
@@ -316,15 +324,17 @@ class LinuxCapture:
 
     # -- start/stop ---------------------------------------------------------------
     def start(self, on_pcm: OnPcm, on_error: OnError) -> None:
-        if self.source == "application streams":
-            try:
-                self._start_linked(on_pcm, on_error)
-                return
-            except CaptureFailed:
-                self.stop()
-                self._stop.clear()
-                self.source = "device monitor"
-        self._start_monitor(on_pcm, on_error)
+        with self._lifecycle:
+            if self._closed:
+                raise CaptureFailed("MEETING_CAPTURE_STOPPED", "listening stopped before the capture started")
+            if self.source == "application streams":
+                try:
+                    self._start_linked(on_pcm, on_error)
+                    return
+                except CaptureFailed:
+                    self._teardown()
+                    self.source = "device monitor"
+            self._start_monitor(on_pcm, on_error)
 
     def _record_argv(self, target: str, properties: Dict[str, Any]) -> List[str]:
         return ["pw-record", "--raw", "--target", target, "--rate", str(self.rate), "--channels", "1",
@@ -346,7 +356,8 @@ class LinuxCapture:
                                 f"could not link {self.selection.label}'s audio to the capture")
         self._reader = PipeReader(self._helper, self.rate, on_pcm, on_error, name="pw-record")
         self._reader.start()
-        self._relinker = threading.Thread(target=self._relink_loop, name="meeting-relink", daemon=True)
+        self._relinker = threading.Thread(target=self._relink_loop, args=(self._stop,), name="meeting-relink",
+                                          daemon=True)
         self._relinker.start()
 
     def _matches(self, app: RunningApp) -> bool:
@@ -369,8 +380,8 @@ class LinuxCapture:
                         self._linked.add((out_port, in_port))
         return len(self._linked)
 
-    def _relink_loop(self) -> None:
-        while not self._stop.wait(RELINK_SEC):
+    def _relink_loop(self, stop: threading.Event) -> None:
+        while not stop.wait(RELINK_SEC):
             try:
                 self._link_new()
             except CaptureFailed:
@@ -414,6 +425,11 @@ class LinuxCapture:
         self._reader.start()
 
     def stop(self) -> None:
+        with self._lifecycle:
+            self._closed = True
+            self._teardown()
+
+    def _teardown(self) -> None:
         self._stop.set()
         if self._reader is not None:
             self._reader.stop()
@@ -423,6 +439,7 @@ class LinuxCapture:
             self._reader.join()
         self._helper, self._reader, self._node = None, None, 0
         self._linked.clear()
+        self._stop = threading.Event()  # the next attempt's relinker gets its own stop
 
 
 class VoiceFailed(CaptureFailed):
@@ -430,7 +447,13 @@ class VoiceFailed(CaptureFailed):
 
 
 class VirtualMicrophone:
-    """The user-space "Ouroboros" microphone: two pactl modules tracked by their own ids."""
+    """The user-space "Ouroboros" microphone: two pactl modules tracked by their own ids.
+
+    A record leaves ``speak_modules.json`` only once its module is unloaded, or once
+    the audio server shows that id no longer carries that module (a restarted server
+    reuses ids). When the server does not answer, the record is kept for the next try,
+    so a module this companion created is never forgotten while it may still exist.
+    """
 
     def __init__(self, backend: LinuxBackend):
         self.backend = backend
@@ -471,6 +494,7 @@ class VirtualMicrophone:
         if not self.backend.has("pactl"):
             raise VoiceFailed("MEETING_AUDIO_TOOLS_MISSING",
                               "Speaking mode needs pactl (PulseAudio or PipeWire's pipewire-pulse); not found.")
+        self.cleanup()  # this companion's own leftovers go first, matched by id, name and arguments
         taken = self._names_taken()
         if taken:
             raise VoiceFailed(
@@ -488,13 +512,13 @@ class VirtualMicrophone:
             raise
 
     def remove(self) -> List[int]:
+        """Unload this companion's modules, newest first; a failed unload stays recorded."""
         unloaded = []
         for record in list(reversed(self.records)):
-            result = self.backend.run(["pactl", "unload-module", str(record["id"])])
-            if result.returncode == 0:
+            if self.backend.run(["pactl", "unload-module", str(record["id"])]).returncode == 0:
                 unloaded.append(record["id"])
-            self.records.remove(record)
-            self._persist()
+                self.records.remove(record)
+                self._persist()
         return unloaded
 
     def cleanup(self) -> List[int]:
@@ -503,21 +527,21 @@ class VirtualMicrophone:
             saved = json.loads(self.path.read_text(encoding="utf-8")).get("modules") or []
         except (OSError, ValueError, AttributeError):
             saved = []
-        if not saved:
+        saved = [record for record in saved if isinstance(record, dict)]
+        if not saved or not self.backend.has("pactl"):
             return []
-        if not self.backend.has("pactl"):
+        listing = self.backend.run(["pactl", "list", "modules", "short"])
+        if listing.returncode != 0:  # the server did not answer: keep every record for the next try
             return []
         loaded = {}
-        for row in parse_short(self.backend.run(["pactl", "list", "modules", "short"]).stdout):
+        for row in parse_short(listing.stdout):
             if len(row) >= 2:
                 loaded[_int(row[0])] = (row[1], " ".join((row[2] if len(row) > 2 else "").split()))
-        self.records = [record for record in saved if isinstance(record, dict)
-                        and loaded.get(_int(record.get("id"))) == (record.get("name"),
+        self.records = [record for record in saved
+                        if loaded.get(_int(record.get("id"))) == (record.get("name"),
                                                                   " ".join(str(record.get("argument") or "").split()))]
-        unloaded = self.remove()
-        self.records = []
-        self._persist()
-        return unloaded
+        self._persist()  # ids that no longer carry our modules are dropped here
+        return self.remove()
 
 
 class LinuxVoice:
@@ -534,6 +558,9 @@ class LinuxVoice:
         self._cond = threading.Condition()
         self._stopping = False
         self._writer: Optional[threading.Thread] = None
+        self._on_error: Optional[OnError] = None
+        self._player = ""
+        self.failure = ""
         self.stats = {"played_bytes": 0, "dropped_bytes": 0}
 
     def player_argv(self) -> List[str]:
@@ -546,8 +573,11 @@ class LinuxVoice:
                     "--format", "s16", "--latency", "60ms", "-"]
         raise VoiceFailed("MEETING_AUDIO_TOOLS_MISSING", "Speaking mode needs pacat or pw-play; neither was found.")
 
-    def start(self) -> None:
+    def start(self, on_error: Optional[OnError] = None) -> None:
+        """Create the microphone and its player; ``on_error`` hears it if the player dies."""
+        self._on_error = on_error
         argv = self.player_argv()
+        self._player = argv[0]
         self.mic.create()
         try:
             self._helper = Helper(argv, popen=self.backend.popen, env=self.backend.env, stdin=True)
@@ -558,7 +588,7 @@ class LinuxVoice:
         self._writer.start()
 
     def play(self, pcm: bytes, rate: int, epoch: int) -> None:
-        if rate != self.rate:
+        if rate != self.rate or self.failure:
             self.stats["dropped_bytes"] += len(pcm)
             return
         with self._cond:
@@ -590,10 +620,17 @@ class LinuxVoice:
                 while not self._queue and not self._stopping:
                     if not self._cond.wait(0.5):
                         started = 0.0
+                        if self._helper is not None and self._helper.proc.poll() is not None:
+                            break  # the player died while idle
                 if self._stopping:
                     return
-                epoch, pcm = self._queue.popleft()
-                self._queued -= len(pcm)
+                item = self._queue.popleft() if self._queue else None
+                if item is not None:
+                    self._queued -= len(item[1])
+            if item is None:
+                self._player_died()
+                return
+            epoch, pcm = item
             if not started:
                 started, written = time.monotonic(), 0
             ahead = written / self.rate - (time.monotonic() - started)
@@ -611,9 +648,23 @@ class LinuxVoice:
                 stream.write(pcm)
                 stream.flush()
             except (OSError, ValueError, AttributeError):
+                self._player_died()
                 return
             written += len(pcm) // 2
             self.stats["played_bytes"] += len(pcm)
+
+    def _player_died(self) -> None:
+        with self._cond:
+            if self._stopping:
+                return
+            helper = self._helper
+            code = helper.proc.poll() if helper is not None else None
+            tail = helper.tail() if helper is not None else ""
+            self.failure = f"the {self._player} player stopped (exit {code}){': ' + tail if tail else ''}"
+            self._queue.clear()
+            self._queued = 0
+        if self._on_error is not None:
+            self._on_error(self.failure)
 
     def close(self) -> List[int]:
         with self._cond:

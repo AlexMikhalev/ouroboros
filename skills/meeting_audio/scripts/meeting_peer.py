@@ -106,8 +106,10 @@ class DoorPeer:
     ``open()`` asks the door for the grant once; ``attach(speaker=...)`` opens a
     socket and says hello; ``reattach`` replaces the socket when the speaking
     direction changes (a hello can only narrow the grant, so the grant is asked
-    with the widest direction this platform can use). Callbacks run on the
-    socket's reader thread and must not block on the caller's locks.
+    with the widest direction this platform can use). ``close()`` is final: an
+    attach that is still connecting when it happens closes its new socket instead
+    of staying in the call. Callbacks run on the socket's reader thread and must
+    not block on the caller's locks.
     """
 
     def __init__(self, host_url: str, token: str, call_id: str, *, rate: int, label: str,
@@ -141,6 +143,7 @@ class DoorPeer:
         self._epoch: Optional[int] = None
         self._epoch_ready = threading.Event()
         self._seq = 0
+        self._closed = False
 
     @property
     def attachment(self) -> int:
@@ -161,6 +164,8 @@ class DoorPeer:
         self.peer_path = payload["peer_path"]
 
     def attach(self, *, speaker: bool) -> None:
+        if self._closed:
+            raise PeerRefused("peer_closed", "the meeting peer was closed")
         if not self.peer_path:
             raise PeerRefused("not_opened", "attach requires a granted call")
         if speaker and not self.speaker_grant:
@@ -175,17 +180,24 @@ class DoorPeer:
             raise PeerRefused("peer_socket_failed", f"could not open the call socket: {exc}") from None
         hello = {"type": "hello", "protocol": PROTOCOL_VERSION, "role": PEER_MEETING, "mic": True,
                  "speaker": bool(speaker), "rate": self.rate, "label": self.label}
-        ws.send(json.dumps(hello, separators=(",", ":")))
+        try:
+            ws.send(json.dumps(hello, separators=(",", ":")))
+        except Exception as exc:
+            self._close_socket(ws, "attach_failed")
+            raise PeerRefused("peer_socket_failed", f"the call socket closed during hello: {exc}") from None
         self._ws, self.speaker = ws, bool(speaker)
         self._reader = threading.Thread(target=self._read_loop, args=(ws, attachment),
                                         name="meeting-peer-reader", daemon=True)
         self._reader.start()
-        if not self._epoch_ready.wait(ATTACH_TIMEOUT_SEC) or self._epoch is None or self._ws is not ws:
-            reason = self.closed_reason or "the call did not answer the hello"
-            self._attachment += 1  # a refused hello is reported here, not by the reader
+        answered = self._epoch_ready.wait(ATTACH_TIMEOUT_SEC)
+        if self._closed or not answered or self._epoch is None or self._ws is not ws:
+            closed = self._closed
+            reason = ("the meeting peer was closed" if closed
+                      else self.closed_reason or "the call did not answer the hello")
+            self._attachment += 1  # a refused or abandoned hello is reported here, not by the reader
             self._ws = None
-            self._close_socket(ws, "attach_failed")
-            raise PeerRefused("peer_attach_failed", reason)
+            self._close_socket(ws, "closed" if closed else "attach_failed")
+            raise PeerRefused("peer_closed" if closed else "peer_attach_failed", reason)
 
     def reattach(self, *, speaker: bool) -> None:
         self.detach("direction_change")
@@ -226,6 +238,11 @@ class DoorPeer:
             except Exception:
                 return False
         return True
+
+    def close(self, reason: str = "stopped") -> None:
+        """Leave the call for good: no later or in-flight attach keeps a socket."""
+        self._closed = True
+        self.detach(reason)
 
     def detach(self, reason: str = "stopped") -> None:
         """Say bye and close the current socket; the grant stays with the call."""

@@ -26,7 +26,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.test_skill_meeting_audio import FakeAPI, FakeDoor, out_frame, serve_fake_door, until
+from tests.test_skill_meeting_audio import FakeAPI, FakeDoor, RacingPeer, out_frame, serve_fake_door, until
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SKILL_DIR = REPO_ROOT / "skills" / "meeting_browser"
@@ -410,6 +410,39 @@ def test_leave_and_a_closed_window_end_the_participation(tmp_path, fake_door):
     second.on_closed("the browser window was closed")
     assert until(lambda: companion.status()["state"] == "idle")
     assert "the browser window was closed" in companion.status()["message"]
+
+
+def test_join_leaves_nothing_behind_when_the_call_closes_while_attaching(tmp_path):
+    vendors.record_probe(tmp_path, "meet", vendors.PASS, {})
+    FakeSession.instances = []
+    companion = meeting_participant.ParticipantCompanion(tmp_path, "http://127.0.0.1:9", "token",
+                                                         session_factory=FakeSession, peer_factory=RacingPeer)
+    reply = companion.join("call-1", MEET)
+    assert reply["code"] == "MEETING_CALL_GONE" and "the call ended (finished)" in reply["message"]
+    [session] = FakeSession.instances
+    assert session.closed and session.alive is False
+    assert companion.status()["state"] == "idle" and companion.leave()["message"] == "not in a meeting"
+
+
+@pytest.mark.serial
+def test_a_dropped_participant_socket_is_not_called_the_end_of_the_call(tmp_path, fake_door):
+    vendors.record_probe(tmp_path, "meet", vendors.PASS, {})
+    companion = participant(tmp_path, fake_door)
+    assert companion.join("call-1", MEET)["ok"]
+    fake_door.drop_peer("peer_send_timeout")
+    assert until(lambda: companion.status()["state"] == "idle")
+    message = companion.status()["message"]
+    assert "closed the participant's call socket (peer_send_timeout)" in message and "call ended" not in message
+    assert FakeSession.instances[-1].closed
+
+
+def test_a_closed_window_takes_no_more_call_audio(tmp_path):
+    session = participant_browser.BrowserSession(
+        tmp_path, MEET, "https://meet.google.com", on_remote_pcm=lambda *a: None, on_closed=lambda reason: None,
+        belongs=lambda address: True, playwright_factory=FakePlaywright())
+    session.close("left")
+    session.feed(b"\x01\x00" * 4, 1)
+    assert session._commands.qsize() == 1  # only the close command; the audio was not queued
 
 
 def test_probe_records_pass_only_when_every_fact_held(tmp_path, monkeypatch):

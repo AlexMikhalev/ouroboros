@@ -104,8 +104,11 @@ null sink `ouroboros_voice` and a remapped source `ouroboros_mic` (shown as
 meeting application once. It works under PulseAudio and PipeWire's
 pipewire-pulse. The module ids loaded are recorded in `speak_modules.json`
 before use, and exactly those ids are unloaded on stop, when the call ends, when
-the companion exits, and at the next start after a crash; a device of the same
-name that this skill did not create is left untouched and reported.
+the companion exits, and at the next start after a crash or a refused unload; a
+record is dropped only once its module is gone, never while the audio server is
+not answering. A device of the same name that this skill did not create is left
+untouched and reported. If the player stops, speaking mode ends and the status
+says so; listening continues.
 
 On macOS and Windows speaking mode is not offered: it would need an audio driver.
 The `meeting_browser` participant (Ouroboros's own browser window joining the
@@ -131,13 +134,16 @@ to other participants (sharing, unmuting).
 
 State lives in `data/state/skills/meeting_audio/`: `control.json` (the private
 control channel: loopback port and token, owner-only), `speak_modules.json`
-(Linux modules this companion loaded), `capture_attribution.json` (macOS),
-`process_loopback.json` (Windows: process loopback turned off and why). Audio is
-never written to disk by this skill; it goes to the call only.
+(Linux modules this companion loaded), `capture_attribution.json` and
+`permission_requested.json` (macOS: who the permission belongs to, and that its
+one-time prompt was shown), `process_loopback.json` (Windows: process loopback
+turned off and why). Audio is never written to disk by this skill; it goes to
+the call only.
 
 - `MEETING_NO_CALL`: not inside a live call; the owner presses Call first.
-- `MEETING_PERMISSION_PENDING` / `MEETING_PERMISSION_DENIED`: the macOS consent
-  is missing; the owner allows it in System Settings, macOS may ask to reopen the app.
+- `MEETING_PERMISSION_PENDING`: macOS is showing its one-time prompt now.
+  `MEETING_PERMISSION_DENIED`: it was asked before and is still not allowed; the
+  owner turns it on in System Settings (macOS may ask to reopen the app).
 - `MEETING_APP_NOT_FOUND` / `MEETING_APP_AMBIGUOUS`: name one of the listed
   applications with `app`.
 - `MEETING_COMPANION_UNAVAILABLE`: the skill is disabled, its dependencies are

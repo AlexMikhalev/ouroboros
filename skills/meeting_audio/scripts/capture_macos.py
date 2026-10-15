@@ -24,9 +24,11 @@ actually requested and consent is missing.
 from __future__ import annotations
 
 import ctypes
+import json
 import pathlib
 import platform as _platform
 import threading
+import time
 import types
 from typing import Any, Callable, Dict, List, Optional
 
@@ -50,6 +52,14 @@ PERMISSION_PENDING = (
     "Privacy & Security > Screen & System Audio Recording). Once the owner allows it, ask me to "
     "listen again; macOS may ask to reopen Ouroboros first."
 )
+PERMISSION_NOT_GRANTED = (
+    "macOS has not allowed Ouroboros to record system audio, and it shows its prompt only once. If "
+    "the prompt is still open, the owner answers it; otherwise the owner turns Ouroboros on in "
+    "System Settings > Privacy & Security > Screen & System Audio Recording. Then ask me to listen "
+    "again; macOS may ask to reopen Ouroboros first."
+)
+# The prompt was shown once on this computer: macOS will not show it again.
+REQUESTED_FILE = "permission_requested.json"
 
 
 def load_frameworks() -> types.SimpleNamespace:
@@ -157,13 +167,19 @@ class MacBackend:
                                 f"Listening on macOS needs macOS 13 or later; this Mac runs {self._version}.")
 
     def permission(self) -> tuple:
+        """granted, pending (never asked here: the prompt can show) or denied (asked, still no)."""
         self._require_version()
         if self._access.granted():
             return "granted", ""
+        if (self.state_dir / REQUESTED_FILE).exists():
+            return "denied", PERMISSION_NOT_GRANTED
         return "pending", PERMISSION_PENDING
 
     def request_permission(self) -> None:
         self._access.request()
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / REQUESTED_FILE).write_text(
+            json.dumps({"requested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}), encoding="utf-8")
 
     def running_apps(self) -> List[RunningApp]:
         workspace = self.fw.AppKit.NSWorkspace.sharedWorkspace()
@@ -201,7 +217,11 @@ class MacBackend:
 
 
 class MacCapture:
-    """One ScreenCaptureKit audio stream of the selected applications, mono at 48 kHz."""
+    """One ScreenCaptureKit audio stream of the selected applications, mono at 48 kHz.
+
+    ``stop`` is final and waits for a ``start`` in progress, so a call that ends while
+    macOS is still starting the stream never leaves it recording.
+    """
 
     rate = CAPTURE_RATE
 
@@ -214,6 +234,8 @@ class MacCapture:
         self._on_pcm: Optional[OnPcm] = None
         self._on_error: Optional[OnError] = None
         self._format: Optional[tuple] = None
+        self._lifecycle = threading.Lock()
+        self._closed = False
 
     def describe(self) -> Dict[str, Any]:
         return {"backend": "screencapturekit", "source": "application audio", "device": "",
@@ -248,6 +270,12 @@ class MacCapture:
         return content
 
     def start(self, on_pcm: OnPcm, on_error: OnError) -> None:
+        with self._lifecycle:
+            if self._closed:
+                raise CaptureFailed("MEETING_CAPTURE_STOPPED", "listening stopped before the capture started")
+            self._start(on_pcm, on_error)
+
+    def _start(self, on_pcm: OnPcm, on_error: OnError) -> None:
         content = self._content()
         wanted_ids = {app.ident for app in self.selection.apps if app.ident}
         wanted_pids = {app.pid for app in self.selection.apps if app.pid}
@@ -340,6 +368,11 @@ class MacCapture:
             on_error(f"macOS stopped the capture: {_error_text(error)}")
 
     def stop(self) -> None:
+        with self._lifecycle:
+            self._closed = True
+            self._teardown()
+
+    def _teardown(self) -> None:
         stream, self._stream = self._stream, None
         self._on_pcm = None
         if stream is None:

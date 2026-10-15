@@ -278,7 +278,15 @@ def test_candidate_lists_name_what_they_leave_out():
 # ---- the call peer against a fake Host Service door ------------------------------------------------
 
 class FakeDoor:
-    """The Host Service call door's rules, on a real local socket."""
+    """A local stand-in for the Host Service call door that enforces the hub's peer rules.
+
+    The rules are the real hub's (``call_peers.LiveCallHub`` behind ``host_call``): a
+    grant is fixed per skill token, so a re-open may not change its directions; the
+    first message is a meeting ``hello`` that may only narrow the grant; every audio
+    frame carries the hello rate; a frame of another epoch than the current one is
+    stale and dropped; ``played`` needs a speaker. A broken rule closes the socket
+    with 1008 and the rule's code, as the real door does.
+    """
 
     token = "skill-token"
 
@@ -286,15 +294,22 @@ class FakeDoor:
         self.calls = set(calls)
         self.epoch = epoch
         self.opened, self.hellos, self.frames, self.controls = [], [], [], []
+        self.grants = {}
+        self.stale = 0
+        self.closed_with = []
         self.outbox: "queue.Queue" = queue.Queue()
         self.url = ""
-        self.sockets = 0
 
     def send(self, message) -> None:
         self.outbox.put(("bytes", message) if isinstance(message, bytes) else ("text", json.dumps(message)))
 
     def end_call(self, reason="finished") -> None:
+        """The hub closes: state closed, then the socket closes normally."""
         self.outbox.put(("close", reason))
+
+    def drop_peer(self, reason="peer_send_timeout") -> None:
+        """The door drops this peer while the call goes on (no closed state)."""
+        self.outbox.put(("drop", reason))
 
     def app(self):
         from starlette.applications import Starlette
@@ -304,22 +319,34 @@ class FakeDoor:
         door = self
 
         async def open_call(request):
-            if request.headers.get("x-skill-token") != door.token:
+            token = request.headers.get("x-skill-token")
+            if token != door.token:
                 return JSONResponse({"ok": False, "code": "call_peer_forbidden", "error": "forbidden"}, 403)
             body = await request.json()
             door.opened.append(body)
             if body.get("call_id") not in door.calls:
                 return JSONResponse({"ok": False, "code": "call_not_found", "error": "call_not_found"}, 404)
+            grant = (bool(body.get("mic", True)), bool(body.get("speaker", False)))
+            if door.grants.setdefault(token, grant) != grant:
+                return JSONResponse({"ok": False, "code": "peer_direction_mismatch",
+                                     "error": "peer_direction_mismatch"}, 400)
             return JSONResponse({"call_id": body["call_id"], "peer_path": f"/call/{body['call_id']}/peer"})
 
         async def peer(websocket):
-            if websocket.headers.get("x-skill-token") != door.token:
-                await websocket.close(code=1008)
+            token = websocket.headers.get("x-skill-token")
+            if token != door.token or token not in door.grants:
+                await websocket.close(code=1008, reason="call_peer_forbidden")
                 return
+            mic, speaker = door.grants[token]
             await websocket.accept()
-            door.sockets += 1
             hello = json.loads(await websocket.receive_text())
             door.hellos.append(hello)
+            if hello.get("type") != "hello" or hello.get("role") != "meeting":
+                await refuse(websocket, "peer_role_forbidden")
+                return
+            if (hello.get("mic") and not mic) or (hello.get("speaker") and not speaker):
+                await refuse(websocket, "audio_direction_forbidden")
+                return
             await websocket.send_text(json.dumps({"type": "state", "state": "live", "reason": ""}))
             await websocket.send_text(json.dumps({"type": "flush", "epoch": door.epoch}))
 
@@ -335,6 +362,9 @@ class FakeDoor:
                             await websocket.send_text(payload)
                         elif kind == "bytes":
                             await websocket.send_bytes(payload)
+                        elif kind == "drop":
+                            await refuse(websocket, payload)
+                            return
                         else:
                             await websocket.send_text(json.dumps({"type": "state", "state": "closed",
                                                                   "reason": payload}))
@@ -349,42 +379,61 @@ class FakeDoor:
                         return
                     if event.get("bytes") is not None:
                         frame = meeting_peer.decode_frame(event["bytes"])
-                        assert frame["rate"] == hello["rate"], "frames must carry the hello rate"
+                        if frame["rate"] != hello["rate"]:
+                            await refuse(websocket, "audio_rate_mismatch")
+                            return
+                        if frame["epoch"] != door.epoch:
+                            door.stale += 1
+                            continue
                         door.frames.append(frame)
                     elif event.get("text") is not None:
                         message = json.loads(event["text"])
                         door.controls.append(message)
+                        if message.get("type") == "played" and not hello.get("speaker"):
+                            await refuse(websocket, "audio_direction_forbidden")
+                            return
                         if message.get("type") == "bye":
                             await websocket.close(code=1000)
                             return
             except RuntimeError:
-                return  # the call was ended from the sender side
+                return  # the sender side already closed the socket
             finally:
                 sender.cancel()
+
+        async def refuse(websocket, code):
+            door.closed_with.append(code)
+            await websocket.close(code=1008, reason=code)
 
         return Starlette(routes=[Route("/call/open", open_call, methods=["POST"]),
                                  WebSocketRoute("/call/{call_id}/peer", peer)])
 
 
 @contextlib.contextmanager
-def serve_fake_door():
-    """Run a FakeDoor on a real loopback socket for the duration of the block."""
+def serve_app(app):
+    """Run an ASGI app on a real loopback socket for the duration of the block; yields its URL."""
     import uvicorn
 
-    door = FakeDoor()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
-    server = uvicorn.Server(uvicorn.Config(door.app(), log_level="warning", lifespan="off"))
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", lifespan="off"))
     thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
     thread.start()
     assert until(lambda: server.started, 10.0)
-    door.url = f"http://127.0.0.1:{sock.getsockname()[1]}"
     try:
-        yield door
+        yield f"http://127.0.0.1:{sock.getsockname()[1]}"
     finally:
         server.should_exit = True
         thread.join(10.0)
         sock.close()
+
+
+@contextlib.contextmanager
+def serve_fake_door():
+    """Run a FakeDoor on a real loopback socket for the duration of the block."""
+    door = FakeDoor()
+    with serve_app(door.app()) as url:
+        door.url = url
+        yield door
 
 
 @pytest.fixture
@@ -428,6 +477,7 @@ def test_peer_says_hello_sends_true_rate_follows_flush_and_says_bye(fake_door):
     assert fake_door.controls[0] == {"type": "context", "text": "This meeting audio is everything playing on "
                                      "Speakers.", "source": "meeting_audio"}
     assert closed == [] or closed[0][0] != peer.attachment  # an intended bye is not "the call ended"
+    assert fake_door.stale == 0 and fake_door.closed_with == []  # every frame carried the current epoch
 
 
 @pytest.mark.serial
@@ -460,8 +510,80 @@ def test_peer_refusals_are_typed(fake_door):
                                    speaker_grant=False)
     narrow.open()
     with pytest.raises(meeting_peer.PeerRefused) as widened:
-        narrow.attach(speaker=True)
+        narrow.attach(speaker=True)  # refused before any socket: the grant has no speaker
     assert widened.value.code == "audio_direction_forbidden"
+
+
+@pytest.mark.serial
+def test_the_doors_own_direction_rules_reach_the_client_as_typed_refusals(fake_door):
+    first = meeting_peer.DoorPeer(fake_door.url, FakeDoor.token, "call-1", rate=16000, label="x",
+                                  speaker_grant=False)
+    first.open()
+    wider = meeting_peer.DoorPeer(fake_door.url, FakeDoor.token, "call-1", rate=16000, label="x",
+                                  speaker_grant=True)
+    with pytest.raises(meeting_peer.PeerRefused) as mismatch:
+        wider.open()  # a re-open may not change the directions of this token's grant
+    assert mismatch.value.code == "peer_direction_mismatch"
+    wider.peer_path = first.peer_path  # skip the client's own guard: the door must refuse the hello itself
+    with pytest.raises(meeting_peer.PeerRefused) as widened:
+        wider.attach(speaker=True)
+    assert widened.value.code == "peer_attach_failed" and "audio_direction_forbidden" in widened.value.message
+    assert fake_door.closed_with == ["audio_direction_forbidden"]
+
+
+@pytest.mark.serial
+def test_peer_against_the_real_call_hub_when_it_is_present():
+    """The same client against the audio lane's real hub and socket pump, once both are in this tree."""
+    call_peers = pytest.importorskip("ouroboros.call_peers", reason="the live call hub is not in this tree yet")
+    call_ws = pytest.importorskip("ouroboros.gateway.call_ws", reason="the call socket pump is not in this tree yet")
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route, WebSocketRoute
+
+    from ouroboros import call_protocol as cp
+
+    spec = cp.CallSpec("call-real", 1, "openai", "gpt-realtime")
+    hub = call_peers.open_hub(spec)
+
+    async def open_call(request):
+        body = await request.json()
+        try:
+            hub.grant_peer("meeting_audio", "digest", mic=body.get("mic", True), speaker=body.get("speaker", False))
+        except call_peers.CallPeerError as exc:
+            return JSONResponse({"ok": False, "code": exc.code, "error": exc.code}, 400)
+        return JSONResponse({"call_id": spec.call_id, "peer_path": f"/call/{spec.call_id}/peer"})
+
+    async def peer_socket(websocket):
+        grant = hub.peer_grant("meeting_audio", "digest")
+        await call_ws.serve_peer(websocket, hub, role=cp.PEER_MEETING, skill="meeting_audio",
+                                 mic=grant.mic, speaker=grant.speaker)
+
+    app = Starlette(routes=[Route("/call/open", open_call, methods=["POST"]),
+                            WebSocketRoute("/call/{call_id}/peer", peer_socket)])
+    heard, closed = [], []
+    try:
+        with serve_app(app) as url:
+            peer = meeting_peer.DoorPeer(url, "token", spec.call_id, rate=16000, label="Zoom (meeting audio)",
+                                         speaker_grant=True, on_audio_out=lambda pcm, rate, epoch: heard.append(
+                                             (rate, epoch)), on_closed=lambda attachment, reason: closed.append(reason))
+            peer.open()
+            peer.attach(speaker=True)
+            joined = hub.next_event(5.0)
+            assert isinstance(joined, cp.PeerJoined) and joined.peer.role == cp.PEER_MEETING and joined.peer.speaker
+            peer.send_audio(b"\x10\x00" * 320)  # 20 ms at the declared 16 kHz
+            first = hub.next_event(5.0)
+            assert isinstance(first, cp.PeerAudio) and first.role == cp.PEER_MEETING
+            epoch = hub.flush()
+            assert until(lambda: peer.epoch == epoch)
+            peer.send_audio(b"\x10\x00" * 320)
+            assert isinstance(hub.next_event(5.0), cp.PeerAudio)
+            assert hub.stats()["stale_frames"] == 0
+            hub.play(b"\x20\x00" * 480, "item-1")  # engine output at 24 kHz, delivered at the peer's 16 kHz
+            assert until(lambda: heard) and heard[0] == (16000, epoch)
+            call_peers.close_hub(spec.call_id, "finished")
+            assert until(lambda: closed) and peer.state == "closed"
+    finally:
+        call_peers.close_hub(spec.call_id, "test over")
 
 
 # ---- the companion: one session from listen to the end of the call ---------------------------------
@@ -490,9 +612,10 @@ class FakeCapture:
 class FakeVoice:
     def __init__(self):
         self.played, self.flushes, self.closed, self.started = [], [], False, False
+        self.on_error = None
 
-    def start(self):
-        self.started = True
+    def start(self, on_error=None):
+        self.started, self.on_error = True, on_error
 
     def play(self, pcm, rate, epoch):
         self.played.append((pcm, rate, epoch))
@@ -508,9 +631,10 @@ class FakeVoice:
 class FakeBackend:
     platform = "test"
 
-    def __init__(self, speaking=True, notes=()):
+    def __init__(self, speaking=True, notes=(), capture_class=FakeCapture):
         self.speaking_supported = speaking
         self.notes = notes
+        self.capture_class = capture_class
         self.captures, self.voices = [], []
 
     def permission(self):
@@ -523,7 +647,7 @@ class FakeBackend:
         return [RunningApp("zoom.us", "us.zoom.xos", 10), RunningApp("Google Chrome", "com.google.chrome", 11)]
 
     def open_capture(self, selection):
-        self.captures.append(FakeCapture(selection, self.notes))
+        self.captures.append(self.capture_class(selection, self.notes))
         return self.captures[-1]
 
     def cleanup_leftovers(self):
@@ -601,3 +725,92 @@ def test_companion_without_speaking_support_refuses_it(tmp_path, fake_door):
     companion.shutdown()
     assert until(lambda: any(c.get("type") == "context" and "stopped" in c.get("text", "")
                              for c in fake_door.controls))
+
+
+class RacingPeer:
+    """A DoorPeer stand-in whose attach completes only after the host closed it meanwhile."""
+
+    def __init__(self, *args, on_closed=None, **kwargs):
+        self.on_closed, self.attachment, self.state, self.closed = on_closed, 1, "", False
+        self.stats = {"frames_sent": 0}
+
+    def open(self):
+        pass
+
+    def attach(self, *, speaker):
+        self.state = "closed"
+        self.on_closed(self.attachment, "finished")  # the host ends the call while this peer joins
+        assert until(lambda: self.closed)  # the companion closes the peer before attach returns
+
+    def close(self, reason=""):
+        self.closed = True
+
+    def send_context(self, text, source="meeting_audio"):
+        return True
+
+
+def test_companion_leaves_nothing_running_when_the_call_closes_while_joining(tmp_path):
+    backend = FakeBackend()
+    companion = meeting_capture.MeetingCompanion(tmp_path, "http://127.0.0.1:9", "token", backend,
+                                                 peer_factory=RacingPeer)
+    reply = companion.listen_start("call-1", "zoom")
+    assert reply["code"] == "MEETING_CALL_GONE" and "the call ended (finished)" in reply["message"]
+    assert backend.captures[0].stopped and backend.captures[0].on_pcm is None  # never started
+    assert companion.status()["state"] == "idle"
+
+
+@pytest.mark.serial
+def test_companion_stops_a_capture_that_finished_starting_after_the_call_ended(tmp_path, fake_door):
+    holder = {}
+
+    class SlowCapture(FakeCapture):
+        def start(self, on_pcm, on_error):
+            super().start(on_pcm, on_error)
+            fake_door.end_call("finished")  # the call ends while the capture is still starting
+            assert until(lambda: holder["companion"].status()["state"] == "idle")
+
+    backend = FakeBackend(capture_class=SlowCapture)
+    holder["companion"] = companion = meeting_capture.MeetingCompanion(tmp_path, fake_door.url, FakeDoor.token,
+                                                                       backend)
+    reply = companion.listen_start("call-1", "zoom")
+    assert reply["code"] == "MEETING_CALL_GONE"
+    assert backend.captures[0].stopped and companion.status()["state"] == "idle"
+
+
+@pytest.mark.serial
+def test_companion_discloses_what_the_capture_became_once_started(tmp_path, fake_door):
+    class FallbackCapture(FakeCapture):
+        def start(self, on_pcm, on_error):  # like Linux falling back to a device monitor at start
+            super().start(on_pcm, on_error)
+            self.notes = ["This meeting audio is everything playing on Built-in Speakers."]
+
+    companion = meeting_capture.MeetingCompanion(tmp_path, fake_door.url, FakeDoor.token,
+                                                 FakeBackend(capture_class=FallbackCapture))
+    assert companion.listen_start("call-1", "zoom")["ok"] is True
+    assert until(lambda: fake_door.controls)
+    assert "Built-in Speakers" in fake_door.controls[0]["text"]
+
+
+@pytest.mark.serial
+def test_companion_stops_claiming_speech_when_the_player_dies(tmp_path, fake_door):
+    backend = FakeBackend()
+    companion = meeting_capture.MeetingCompanion(tmp_path, fake_door.url, FakeDoor.token, backend)
+    assert companion.listen_start("call-1", "zoom")["ok"] is True
+    assert companion.speak_start("call-1")["state"] == "speaking"
+    voice = backend.voices[0]
+    voice.on_error("the pacat player stopped (exit 1)")
+    assert until(lambda: voice.closed)
+    assert until(lambda: [hello["speaker"] for hello in fake_door.hellos] == [False, True, False])
+    assert companion.status()["state"] == "listening"
+    assert companion.last_event == "speaking stopped: the pacat player stopped (exit 1)"
+
+
+@pytest.mark.serial
+def test_companion_tells_a_dropped_socket_from_an_ended_call(tmp_path, fake_door):
+    companion = meeting_capture.MeetingCompanion(tmp_path, fake_door.url, FakeDoor.token, FakeBackend())
+    assert companion.listen_start("call-1", "zoom")["ok"] is True
+    fake_door.drop_peer("peer_send_timeout")
+    assert until(lambda: companion.status()["state"] == "idle")
+    message = companion.status()["message"]
+    assert "the host closed the meeting audio socket (peer_send_timeout)" in message
+    assert "call ended" not in message

@@ -49,6 +49,9 @@ VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK = "VAD\\Process_Loopback"
 S_OK = 0
 E_NOINTERFACE = -2147467262
 TH32CS_SNAPPROCESS = 0x2
+# Completion handlers of activations that timed out: Windows still holds their pointers and may
+# call them later, so Python must never free them. One small object per timed-out attempt.
+_ABANDONED_ACTIVATIONS: List[Any] = []
 
 
 class GUID(ctypes.Structure):
@@ -192,6 +195,7 @@ class _CompletionHandler:  # pragma: no cover - Windows only
         self.com = com
         self.done = threading.Event()
         self.result: Tuple[int, Any] = (-1, None)
+        self.abandoned = False
 
         class Vtbl(ctypes.Structure):
             _fields_ = [("QueryInterface", com.QueryInterface), ("AddRef", com.RefCount),
@@ -217,6 +221,11 @@ class _CompletionHandler:  # pragma: no cover - Windows only
                 self.result = (int(status.value), unknown)
             except OSError as exc:
                 self.result = (int(getattr(exc, "winerror", -1) or -1), None)
+            if self.abandoned and unknown:  # nobody waits for this late client any more
+                try:
+                    com.release(unknown)
+                except OSError:
+                    pass
             self.done.set()
             return S_OK
 
@@ -269,6 +278,8 @@ class _ProcessLoopbackStream:  # pragma: no cover - Windows only (driven through
                                                      ctypes.byref(IID_IAUDIO_CLIENT), ctypes.byref(variant),
                                                      handler.pointer, ctypes.byref(operation))
             if not handler.done.wait(ACTIVATION_TIMEOUT_SEC):
+                handler.abandoned = True
+                _ABANDONED_ACTIVATIONS.append((handler, operation))  # Windows may still call it
                 raise OSError("activation did not complete")
             status, unknown = handler.result
             com.release(operation)
@@ -353,6 +364,7 @@ class ProcessLoopbackCapture:
         self.selection = selection
         pids = list(dict.fromkeys(app.pid for app in selection.apps if app.pid))
         self.streams = [stream_factory(pid, index) for index, pid in enumerate(pids)]
+        self._closed = False
 
     def describe(self) -> Dict[str, Any]:
         return {"backend": "wasapi-process-loopback", "source": "application process tree", "device": "",
@@ -377,10 +389,13 @@ class ProcessLoopbackCapture:
             raise CaptureFailed("MEETING_CAPTURE_FAILED", "; ".join(failures))
 
     def start(self, on_pcm: OnPcm, on_error: OnError) -> None:
+        if self._closed:
+            raise CaptureFailed("MEETING_CAPTURE_STOPPED", "listening stopped before the capture started")
         for stream in self.streams:
             stream.start(on_pcm, on_error)
 
     def stop(self) -> None:
+        self._closed = True  # a stopped stream never starts, even if start() races with this
         for stream in self.streams:
             stream.stop()
 
@@ -392,6 +407,8 @@ class EndpointLoopbackCapture:
         self.selection = selection
         self.reason = reason
         self._pyaudio = pyaudio
+        self._lifecycle = threading.Lock()
+        self._closed = False
         self._audio = pyaudio.PyAudio()
         try:
             self.device = dict(self._audio.get_default_wasapi_loopback())
@@ -420,25 +437,32 @@ class EndpointLoopbackCapture:
             on_pcm(int16_mono(in_data or b"", channels), 0)
             return None, self._pyaudio.paContinue
 
-        try:
-            self._stream = self._audio.open(
-                format=self._pyaudio.paInt16, channels=channels, rate=self.rate, input=True,
-                input_device_index=int(self.device["index"]), frames_per_buffer=self.rate * CHUNK_MS // 1000,
-                stream_callback=callback, start=False)
-            self._stream.start_stream()
-        except Exception as exc:
-            raise CaptureFailed("MEETING_CAPTURE_FAILED", f"Windows loopback capture failed: {exc}") from None
+        with self._lifecycle:
+            if self._closed:
+                raise CaptureFailed("MEETING_CAPTURE_STOPPED", "listening stopped before the capture started")
+            try:
+                self._stream = self._audio.open(
+                    format=self._pyaudio.paInt16, channels=channels, rate=self.rate, input=True,
+                    input_device_index=int(self.device["index"]), frames_per_buffer=self.rate * CHUNK_MS // 1000,
+                    stream_callback=callback, start=False)
+                self._stream.start_stream()
+            except Exception as exc:
+                raise CaptureFailed("MEETING_CAPTURE_FAILED", f"Windows loopback capture failed: {exc}") from None
 
     def stop(self) -> None:
-        stream, self._stream = self._stream, None
-        try:
-            if stream is not None:
-                stream.stop_stream()
-                stream.close()
-        except Exception:
-            pass
-        finally:
-            self._audio.terminate()
+        with self._lifecycle:
+            if self._closed:
+                return
+            self._closed = True
+            stream, self._stream = self._stream, None
+            try:
+                if stream is not None:
+                    stream.stop_stream()
+                    stream.close()
+            except Exception:
+                pass
+            finally:
+                self._audio.terminate()
 
 
 def _load_pyaudio() -> Any:

@@ -180,9 +180,11 @@ class MeetingCompanion:
             self._end(current, "replaced by a new listening request", tell_call=True)
         try:
             state, message = self.backend.permission()
-            if state != "granted":
+            if state == "pending":  # never asked on this computer: macOS shows its prompt now
                 self.backend.request_permission()
                 return _refusal("MEETING_PERMISSION_PENDING", message)
+            if state != "granted":  # asked before and still not allowed: no prompt will come
+                return _refusal("MEETING_PERMISSION_DENIED", message)
             selection = choose(self.backend.running_apps(), app)
             capture = self.backend.open_capture(selection)
         except TargetRefused as exc:
@@ -192,6 +194,13 @@ class MeetingCompanion:
         return self._attach(call_id, app, selection, capture)
 
     def _attach(self, call_id: str, app: str, selection: Selection, capture: Any) -> Dict[str, Any]:
+        """Join the call, then capture; a call that closes meanwhile leaves nothing running.
+
+        The session exists before its socket does, so a close that arrives while
+        joining or while the capture starts always finds it: ``_end`` marks it and
+        stops the capture (a capture's stop is final, even mid-start), and every
+        step here re-checks that mark before going on.
+        """
         holder: Dict[str, ListenSession] = {}
         peer = self.peer_factory(
             self.host_url, self.host_token, call_id, rate=capture.rate,
@@ -201,31 +210,45 @@ class MeetingCompanion:
             on_flush=lambda epoch: self._flush(holder.get("session"), epoch),
             on_closed=lambda attachment, reason: self._peer_closed(holder.get("session"), attachment, reason),
         )
+        session = ListenSession(call_id, app, selection, capture, peer)
+        holder["session"] = session
         try:
             peer.open()
             peer.attach(speaker=False)
         except PeerRefused as exc:
+            with self._lock:
+                session.ending = True
+            peer.close("refused")
             self._stop_capture(capture)
             code, message = _DOOR_REFUSALS.get(exc.code, ("MEETING_DOOR_REFUSED",
                                                           f"The host refused the meeting peer: {exc.message}"))
             return _refusal(code, message)
-        session = ListenSession(call_id, app, selection, capture, peer)
-        holder["session"] = session
-        for text in [*capture.disclosures(), same_browser_note(selection)]:
-            if text:
-                peer.send_context(text)
         with self._lock:
-            if session.ending:  # the call closed while joining
-                return _refusal("MEETING_CALL_GONE", f"The call closed while joining: {self.last_event}")
-            self._session = session
-            self.last_event = ""
+            if not session.ending:
+                self._session = session
+                self.last_event = ""
+        if session.ending:
+            return self._closed_while_joining(session)
         try:
             capture.start(lambda pcm, stream=0: peer.send_audio(pcm, stream),
                           lambda reason: self._later(self._capture_failed, session, reason))
         except CaptureFailed as exc:
+            if session.ending:
+                return self._closed_while_joining(session)
             self._end(session, f"capture could not start: {exc.message}", tell_call=True)
             return _refusal(exc.code, exc.message)
+        if session.ending:
+            return self._closed_while_joining(session)
+        # Disclosures describe what the capture really became (a fallback picks its source at start).
+        for text in [*capture.disclosures(), same_browser_note(selection)]:
+            if text:
+                peer.send_context(text)
         return {**self.status(), "message": f"listening to {selection.label}"}
+
+    def _closed_while_joining(self, session: ListenSession) -> Dict[str, Any]:
+        session.peer.close("stopped")
+        self._stop_capture(session.capture)
+        return _refusal("MEETING_CALL_GONE", f"The call closed while listening started: {self.last_event}")
 
     def listen_stop(self) -> Dict[str, Any]:
         with self._lock:
@@ -247,14 +270,22 @@ class MeetingCompanion:
             return {**self.status(), "message": "already speaking into the meeting"}
         try:
             voice = self.backend.open_voice(session.capture.rate)
-            voice.start()
+            voice.start(lambda reason: self._later(self._voice_failed, session, voice, reason))
         except CaptureFailed as exc:
             return _refusal(exc.code, exc.message)
-        session.voice = voice
+        with self._lock:
+            ended = session.ending
+            if not ended:
+                session.voice = voice
+        if ended:  # listening ended while the microphone was being created
+            voice.close()
+            return _refusal("MEETING_NOT_LISTENING", f"Listening stopped meanwhile: {self.last_event}")
         try:
             session.peer.reattach(speaker=True)
         except PeerRefused as exc:
-            session.voice = None
+            with self._lock:
+                if session.voice is voice:
+                    session.voice = None
             voice.close()
             return self._restore_listening(session, f"the call refused the speaking direction: {exc.message}")
         return {**self.status(), "message": (
@@ -264,9 +295,12 @@ class MeetingCompanion:
     def speak_stop(self) -> Dict[str, Any]:
         with self._lock:
             session = self._session
-        if session is None or session.voice is None:
+        with self._lock:
+            voice = session.voice if session is not None else None
+            if voice is not None:
+                session.voice = None
+        if voice is None:
             return {**self.status(), "message": "not speaking into the meeting"}
-        voice, session.voice = session.voice, None
         try:
             session.peer.reattach(speaker=False)
         except PeerRefused as exc:
@@ -300,8 +334,24 @@ class MeetingCompanion:
     def _peer_closed(self, session: Optional[ListenSession], attachment: int, reason: str) -> None:
         if session is None or attachment != session.peer.attachment:
             return
-        text = reason if reason.startswith("the call") else f"the call ended ({reason})" if reason else "the call ended"
+        if session.peer.state == "closed":  # the host announced the end of the call
+            text = reason if reason.startswith("the call") else f"the call ended ({reason})"
+        else:  # the call may go on; only this peer's socket is gone
+            text = f"the host closed the meeting audio socket ({reason or 'no reason given'})"
         self._later(self._end, session, text, False)
+
+    def _voice_failed(self, session: ListenSession, voice: Any, reason: str) -> None:
+        """The player died: stop claiming speech, keep listening if the call takes it back."""
+        with self._lock:
+            if session.ending or session.voice is not voice:
+                return
+            session.voice = None
+            self.last_event = f"speaking stopped: {reason}"
+        voice.close()
+        try:
+            session.peer.reattach(speaker=False)
+        except PeerRefused:
+            self._end(session, f"speaking stopped ({reason}) and the call refused listening alone", tell_call=False)
 
     def _capture_failed(self, session: ListenSession, reason: str) -> None:
         self._end(session, f"capture stopped: {reason}", tell_call=True)
@@ -314,11 +364,11 @@ class MeetingCompanion:
             if self._session is session:
                 self._session = None
             self.last_event = f"{reason} (was listening to {session.selection.label})"
+            voice, session.voice = session.voice, None
         if tell_call:
             session.peer.send_context(f"Meeting audio from {session.selection.label} stopped: {reason}.")
-        session.peer.detach("stopped")
+        session.peer.close("stopped")
         self._stop_capture(session.capture)
-        voice, session.voice = session.voice, None
         if voice is not None:
             voice.close()
 

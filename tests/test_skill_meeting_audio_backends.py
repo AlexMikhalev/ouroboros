@@ -51,7 +51,7 @@ class FakePactl:
     """A stateful fake of pactl/pw-dump/pw-link for one desktop session."""
 
     def __init__(self, *, pipewire=False, graph=None, sink_inputs="", sinks="1\talsa_output.pci\tmodule\n",
-                 modules=None):
+                 modules=None, link_ok=True):
         self.pipewire = pipewire
         self.graph = graph or []
         self.sink_inputs = sink_inputs
@@ -60,6 +60,9 @@ class FakePactl:
         self.modules = dict(modules or {})
         self.next_id = 536870913
         self.calls = []
+        self.link_ok = link_ok
+        self.server_down = False  # pactl reaches no server
+        self.unload_refused = set()  # module ids whose unload fails
 
     def run(self, argv, **kwargs):
         self.calls.append(list(argv))
@@ -68,15 +71,17 @@ class FakePactl:
         if argv[0] == "pw-dump":
             return ok(json.dumps(self.graph)) if self.pipewire else subprocess.CompletedProcess(argv, 1, "", "no pw")
         if argv[0] == "pw-link":
-            return ok()
+            return ok() if self.link_ok else subprocess.CompletedProcess(argv, 1, "", "failed to link ports")
+        if argv[0] == "pactl" and self.server_down:
+            return subprocess.CompletedProcess(argv, 1, "", "Connection failure: Connection refused")
         if argv[:2] == ["pactl", "info"]:
             return ok("Server Name: pulseaudio\n")
         if argv[:3] == ["pactl", "list", "sink-inputs"]:
             return ok(self.sink_inputs)
         if argv[:4] == ["pactl", "list", "sinks", "short"]:
-            return ok(self.sinks)
+            return ok(self.sinks + self._devices("module-null-sink", "sink_name="))
         if argv[:4] == ["pactl", "list", "sources", "short"]:
-            return ok(self.sources)
+            return ok(self.sources + self._devices("module-remap-source", "source_name="))
         if argv[:4] == ["pactl", "list", "modules", "short"]:
             return ok("".join(f"{mid}\t{name}\t{args}\t\n" for mid, (name, args) in self.modules.items()))
         if argv[:2] == ["pactl", "load-module"]:
@@ -84,8 +89,19 @@ class FakePactl:
             self.modules[module_id] = (argv[2], " ".join(argv[3:]))
             return ok(f"{module_id}\n")
         if argv[:2] == ["pactl", "unload-module"]:
+            if int(argv[2]) in self.unload_refused:
+                return subprocess.CompletedProcess(argv, 1, "", "Failure: Invalid argument")
             return ok() if self.modules.pop(int(argv[2]), None) else subprocess.CompletedProcess(argv, 1, "", "no")
         raise AssertionError(f"unexpected command {argv}")
+
+    def _devices(self, module, key):
+        """The devices loaded modules create, as `pactl list ... short` rows."""
+        rows = []
+        for module_id, (name, args) in self.modules.items():
+            for arg in args.split():
+                if name == module and arg.startswith(key):
+                    rows.append(f"{module_id}\t{arg[len(key):]}\t{module}.c\n")
+        return "".join(rows)
 
 
 class FakeProc:
@@ -257,6 +273,92 @@ def test_voice_drops_audio_of_older_epochs_on_flush(tmp_path):
     assert [item[0] for item in voice._queue] == [2]
 
 
+def test_linux_capture_stop_is_final(tmp_path):
+    fake, procs = FakePactl(sink_inputs=SINK_INPUTS), []
+    backend = linux_backend(tmp_path, fake, {"parec", "pactl"}, procs)
+    capture = backend.open_capture(meeting_apps.choose(backend.running_apps(), "zoom"))
+    capture.stop()  # the call ended before the capture started
+    with pytest.raises(capture_common.CaptureFailed) as stopped:
+        capture.start(lambda *a: None, lambda reason: None)
+    assert stopped.value.code == "MEETING_CAPTURE_STOPPED" and procs == []
+
+
+def test_linux_pipewire_falls_back_to_the_sink_monitor_and_says_so_after_start(tmp_path):
+    graph = [obj for obj in PW_GRAPH] + [
+        {"id": 30, "type": "PipeWire:Interface:Metadata", "props": {"metadata.name": "default"},
+         "metadata": [{"subject": 0, "key": "default.audio.sink", "value": {"name": "alsa_output.analog"}}]},
+    ]
+    fake, procs = FakePactl(pipewire=True, graph=graph, link_ok=False), []
+    backend = linux_backend(tmp_path, fake, {"pw-record", "pw-dump", "pw-link"}, procs)
+    capture = backend.open_capture(meeting_apps.choose(backend.running_apps()))
+    assert capture.disclosures() == []  # before start: application streams are still the plan
+    capture.start(lambda *a: None, lambda reason: None)
+    try:
+        assert len(procs) == 2 and procs[0].returncode is not None  # the linked recorder was stopped
+        assert procs[1].argv[3] == "alsa_output.analog"
+        assert json.loads(procs[1].argv[13])["stream.capture.sink"] is True
+        assert capture.describe()["source"] == "device monitor"
+        [note] = capture.disclosures()
+        assert "everything playing on alsa_output.analog" in note
+    finally:
+        capture.stop()
+
+
+def test_module_records_survive_a_silent_audio_server(tmp_path):
+    null_args = "sink_name=ouroboros_voice sink_properties=device.description=Ouroboros-voice"
+    record = {"modules": [{"id": 25, "name": "module-null-sink", "argument": null_args}], "pid": 1}
+    (tmp_path / capture_linux.MODULES_FILE).write_text(json.dumps(record), encoding="utf-8")
+    fake = FakePactl(modules={25: ("module-null-sink", null_args)})
+    fake.server_down = True
+    backend = linux_backend(tmp_path, fake, {"pactl"}, [])
+    assert backend.cleanup_leftovers() == []
+    assert json.loads((tmp_path / capture_linux.MODULES_FILE).read_text(encoding="utf-8")) == record
+    fake.server_down = False
+    assert backend.cleanup_leftovers() == [25] and fake.modules == {}
+
+
+def test_a_refused_unload_stays_recorded_and_the_next_start_heals_it(tmp_path):
+    fake, procs = FakePactl(), []
+    backend = linux_backend(tmp_path, fake, {"pactl", "pacat"}, procs)
+    voice = backend.open_voice(48000)
+    voice.start()
+    sink_id, source_id = sorted(fake.modules)
+    fake.unload_refused = {source_id}
+    assert voice.close() == [sink_id]
+    kept = json.loads((tmp_path / capture_linux.MODULES_FILE).read_text(encoding="utf-8"))["modules"]
+    assert [entry["id"] for entry in kept] == [source_id]
+    fake.unload_refused = set()
+    healed = backend.open_voice(48000)
+    healed.start()  # its own recorded leftover goes first (it still carries our name), then fresh modules
+    assert source_id not in fake.modules and len(fake.modules) == 2
+    healed.close()
+
+
+def test_a_dead_player_is_reported_once_and_stops_taking_audio(tmp_path):
+    class BrokenPipe(__import__("io").BytesIO):
+        def write(self, data):
+            raise BrokenPipeError("the player exited")
+
+    procs, errors = [], []
+
+    def popen(argv, **kwargs):
+        proc = FakeProc(argv)
+        proc.stdin, proc.returncode = BrokenPipe(), 1
+        procs.append(proc)
+        return proc
+
+    backend = capture_linux.LinuxBackend(tmp_path, which=lambda name: f"/usr/bin/{name}",
+                                         run=FakePactl().run, popen=popen, env={"PATH": "/usr/bin"})
+    voice = backend.open_voice(24000)
+    voice.start(on_error=errors.append)
+    voice.play(b"\x01\x00" * 480, 24000, 0)
+    assert until(lambda: errors)
+    assert errors == ["the pacat player stopped (exit 1)"] and voice.failure == errors[0]
+    voice.play(b"\x01\x00" * 480, 24000, 0)
+    assert list(voice._queue) == [] and voice.stats["dropped_bytes"] == 960
+    voice.close()
+
+
 # ---- macOS backend (fake pyobjc) --------------------------------------------------------------
 
 class FakeNSObject:
@@ -408,7 +510,7 @@ def test_macos_lists_regular_apps_and_requires_macos_13(tmp_path):
     assert failed.value.code == "MEETING_PLATFORM_UNSUPPORTED"
 
 
-def test_macos_missing_consent_shows_the_prompt_and_lists_nothing(tmp_path):
+def test_macos_missing_consent_shows_the_prompt_once_then_points_to_settings(tmp_path):
     access = FakeAccess(False)
     backend = capture_macos.MacBackend(tmp_path, frameworks=fake_frameworks(MAC_RUNNING), access=access,
                                        macos_version="15.1")
@@ -416,6 +518,21 @@ def test_macos_missing_consent_shows_the_prompt_and_lists_nothing(tmp_path):
     reply = companion.listen_start("call-1", "")
     assert reply["code"] == "MEETING_PERMISSION_PENDING" and "Screen & System Audio Recording" in reply["message"]
     assert access.requests == 1 and FakeContentSource.calls == 0
+    again = companion.listen_start("call-1", "")
+    assert again["code"] == "MEETING_PERMISSION_DENIED" and "shows its prompt only once" in again["message"]
+    assert access.requests == 1  # macOS would not show the prompt again; no request pretends it does
+    access.granted_value = True
+    assert backend.permission() == ("granted", "")
+
+
+def test_macos_capture_stop_is_final(tmp_path):
+    fw = fake_frameworks(MAC_RUNNING)
+    backend = capture_macos.MacBackend(tmp_path, frameworks=fw, access=FakeAccess(True), macos_version="14.5")
+    capture = backend.open_capture(meeting_apps.choose(backend.running_apps()))
+    capture.stop()
+    with pytest.raises(capture_common.CaptureFailed) as stopped:
+        capture.start(lambda *a: None, lambda reason: None)
+    assert stopped.value.code == "MEETING_CAPTURE_STOPPED" and FakeStream.created == []
 
 
 @pytest.mark.parametrize("copy_fills_buffer", [False, True], ids=["returns-copy", "fills-buffer"])
@@ -581,6 +698,22 @@ def test_windows_falls_back_to_the_device_loopback_and_says_it_hears_the_whisper
     assert array("h", received[0]).tolist() == [20, -20]
     capture.stop()
     assert FakePyAudio.instances[0].terminated
+
+
+def test_windows_capture_stops_are_final(tmp_path):
+    backend = windows_backend(tmp_path)
+    process = backend.open_capture(meeting_apps.choose(backend.running_apps()))
+    process.stop()
+    with pytest.raises(capture_common.CaptureFailed):
+        process.start(lambda *a: None, lambda reason: None)
+    assert process.streams[0].started is False
+    endpoint = windows_backend(tmp_path / "endpoint", failure="refused").open_capture(
+        meeting_apps.choose(backend.running_apps()))
+    endpoint.stop()
+    endpoint.stop()  # idempotent: PyAudio is terminated once
+    with pytest.raises(capture_common.CaptureFailed) as stopped:
+        endpoint.start(lambda *a: None, lambda reason: None)
+    assert stopped.value.code == "MEETING_CAPTURE_STOPPED" and FakePyAudio.instances[0].opened == []
 
 
 def test_windows_crash_during_activation_turns_process_loopback_off(tmp_path):

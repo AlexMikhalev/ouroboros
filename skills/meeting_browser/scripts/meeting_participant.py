@@ -183,14 +183,23 @@ class ParticipantCompanion:
         try:
             peer.attach(speaker=True)
         except PeerRefused as exc:
+            with self._lock:
+                participation.ending = True
+            peer.close("refused")
             session.close("the call refused the participant")
             return _refusal("MEETING_DOOR_REFUSED", f"The call refused the participant: {exc.message}")
         with self._lock:
-            self._current = participation
-            self.last_event = ""
-        if not session.alive:  # the window closed while the call socket was being attached
-            self._end(participation, "the browser window closed while joining")
-            return _refusal("MEETING_BROWSER_FAILED", "The browser window closed while joining.")
+            published = not participation.ending and session.alive
+            if published:
+                self._current = participation
+                self.last_event = ""
+        if not published:  # the call ended or the window closed while joining: leave nothing behind
+            call_ended = participation.ending
+            self._end(participation, "the browser window closed while joining")  # no-op if already ended
+            peer.close("left")
+            session.close("closed")
+            return _refusal("MEETING_CALL_GONE" if call_ended else "MEETING_BROWSER_FAILED",
+                            f"The meeting could not be joined: {self.last_event}.")
         return {**self.status(), "state": "joining", "message": (
             f"opened {name} in Ouroboros's browser window; if the page asks, join from that window (sign in "
             "once with Ouroboros's own account; a screenshot and a click on 'Join' with the computer-use tools "
@@ -220,7 +229,10 @@ class ParticipantCompanion:
     def _peer_closed(self, participation: Optional[Participation], attachment: int, reason: str) -> None:
         if participation is None or participation.peer is None or attachment != participation.peer.attachment:
             return
-        text = reason if reason.startswith("the call") else f"the call ended ({reason})" if reason else "the call ended"
+        if participation.peer.state == "closed":  # the host announced the end of the call
+            text = reason if reason.startswith("the call") else f"the call ended ({reason})"
+        else:  # the call may go on; only this participant's socket is gone
+            text = f"the host closed the participant's call socket ({reason or 'no reason given'})"
         self._later(self._end, participation, text)
 
     def _session_closed(self, participation: Optional[Participation], reason: str) -> None:
@@ -236,7 +248,7 @@ class ParticipantCompanion:
                 self._current = None
             self.last_event = f"{reason} (was in {VENDORS[participation.vendor][0]})"
         if participation.peer is not None:
-            participation.peer.detach("left")
+            participation.peer.close("left")
         participation.session.close(reason)
 
     # -- owner-run probe -------------------------------------------------------------------
