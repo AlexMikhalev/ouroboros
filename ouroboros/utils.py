@@ -513,7 +513,7 @@ def assert_test_data_path(path: pathlib.Path) -> None:
 
 def append_jsonl(
     path: pathlib.Path, obj: Dict[str, Any], *, ensure_record_boundary: bool = False,
-    require_lock: bool = False,
+    require_lock: bool = False, lock_timeout_sec: float = 2.0,
 ) -> bool:
     """Append a JSON object as a line to a JSONL file (concurrent-safe).
 
@@ -523,6 +523,8 @@ def append_jsonl(
     whole-file reconciliation: unlike high-volume observational logs, they may
     not fall back to an unlocked append after lock timeout. Both lanes take the
     shared owner-aware lock primitive, so a live holder is never displaced.
+    ``lock_timeout_sec=0`` takes one attempt without a contention wait, for
+    shutdown callers whose grace has expired; unlocked fallback is unchanged.
     Runtime ``logs/*.jsonl`` rows are streamed to the ``set_log_sink`` sink, minus
     types with a dedicated live owner (``WORKER_LOG_SINK_SUPPRESSED_TYPES``, server
     superset ``SERVER_LOG_SINK_SUPPRESSED_TYPES``): one event, one live frame.
@@ -557,7 +559,7 @@ def append_jsonl(
         # non-required lane then appends unlocked.
         lock_fd = acquire_exclusive_file_lock(
             lock_path,
-            timeout_sec=2.0,
+            timeout_sec=lock_timeout_sec,
             stale_sec=10.0,
             poll_sec=0.01,
             owner_aware_stale=True,

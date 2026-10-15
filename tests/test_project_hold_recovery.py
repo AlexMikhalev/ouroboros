@@ -61,6 +61,9 @@ def resume_after_app_stop(host, *task_ids):  # noqa: F811
 
 def worker(host, monkeypatch):  # noqa: F811
     sent = []
+    # These consumers finish each task on slot 0 before assigning the next one.
+    # Keep demand reconciliation inside this one-slot fake pool.
+    monkeypatch.setattr(workers, "MAX_WORKERS", 1)
     monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=lambda _event: None))
     monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 5.0)
     workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,

@@ -74,7 +74,7 @@ def _bootstrap_repo(repo: Path, *, files: dict[str, str] | None = None) -> str:
     for rel, text in (files or {"small.py": "x = 1\n"}).items():
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        path.write_bytes(text.encode("utf-8"))
     _git(repo, "add", ".")
     _git(repo, "commit", "-qm", "base")
     return _git(repo, "rev-parse", "HEAD")

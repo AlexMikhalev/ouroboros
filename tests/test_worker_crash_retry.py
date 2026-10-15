@@ -33,6 +33,10 @@ def _isolate_worker_crash_state(tmp_path, monkeypatch):
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(workers, "REPO_DIR", tmp_path / "repo")
     monkeypatch.setattr(workers, "WORKERS", {})
+    # Real retry admission appends to PENDING; isolate both aliases so imported
+    # consumers cannot leave their retry in the next test's activity census.
+    monkeypatch.setattr(workers, "PENDING", [])
+    monkeypatch.setattr(q, "PENDING", workers.PENDING)
     monkeypatch.setattr(workers, "RUNNING", {})
     monkeypatch.setattr(q, "RUNNING", workers.RUNNING)
     monkeypatch.setattr(workers, "_LAST_SPAWN_TIME", 0)
