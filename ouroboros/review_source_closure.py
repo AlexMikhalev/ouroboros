@@ -88,7 +88,7 @@ def source_carrier(value: dict, key: str, carrier: str) -> str:
     if carrier == 'plan_revisions':
         return 'metadata' if key == 'text_ref' else ''
     if carrier == 'plan_asks':
-        return 'plan_participants' if key == 'participants' else ''
+        return {'participants': 'plan_participants', 'dialogue_ref': 'plan_source_entry'}.get(key, '')
     if carrier == 'plan_participants':
         return {'delivery_ref': 'plan_source_entry', 'reply_ref': 'plan_source_entry',
                 'prompt_ref': 'metadata', 'response_ref': 'metadata'}.get(key, '')

@@ -456,7 +456,7 @@ async def run_plan_review_slots(
 
     request = ReviewRequest(
         surface="plan_review",
-        goal="Review the proposed plan spec before the work starts.",
+        goal="Weigh the plan — an intention, not a verdict — before the work starts.",
         messages=build_plan_review_messages(
             system_prompt, user_content, plan_user_stable_len(user_content) or _legacy_stable_len(user_content),
         ),
@@ -578,6 +578,8 @@ def _plan_row_from_actor(actor: Dict[str, Any], slot: Any) -> dict:
         "physical_attempt_state": physical_attempt_state,
         "provider_status_code": provider_status_code,
         "capability_delta": usage.get("capability_delta") or [],
+        # The engine's own word on the model it ran, kept apart from the requested one.
+        "resolved_model": str(usage.get("resolved_model") or ""),
         "review_thread_id": str(usage.get("review_thread_id") or ""),
         "review_turn_id": str(usage.get("review_turn_id") or ""),
         "review_thread_receipt": usage.get("review_thread_receipt") or {},

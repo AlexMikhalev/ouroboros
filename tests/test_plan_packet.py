@@ -106,9 +106,13 @@ def test_the_plan_surface_session_schema_is_the_reply_contract_and_can_carry_an_
     schema = review_session_output_schema("plan_review")
     assert schema is plan_packet.PLAN_REPLY_SESSION_OUTPUT_SCHEMA
     props = schema["properties"]
-    assert set(props) == {"prose", "objections", "withdrawn"} and schema["required"] == ["prose"]
-    assert set(props["objections"]["items"]["properties"]) == {"id", "text"}
-    assert set(props["withdrawn"]["items"]["properties"]) == {"id", "why"}
+    # Strict providers require every key: the optional lists are required-but-nullable, nested objects closed.
+    assert set(props) == {"prose", "objections", "withdrawn"} and schema["required"] == ["prose", "objections", "withdrawn"]
+    assert props["objections"]["type"] == ["array", "null"] and props["withdrawn"]["type"] == ["array", "null"]
+    assert set(props["objections"]["items"]["properties"]) == {"id", "text"} and props["objections"]["items"]["additionalProperties"] is False
+    assert set(props["withdrawn"]["items"]["properties"]) == {"id", "why"} and props["withdrawn"]["items"]["additionalProperties"] is False
+    null_reply, null_error = parse_reply('{"prose": "Nothing to object.", "objections": null, "withdrawn": null}')
+    assert null_error == "" and null_reply["objections"] == [] and null_reply["withdrawn"] == []
     assert "findings" not in props and "verdict" not in props and "class" not in str(schema)
     reply, error = parse_reply('{"prose": "No.", "objections": [{"id": "o1", "text": "the bar is too low"}], "withdrawn": []}')
     assert error == "" and reply["objections"] == [{"id": "o1", "text": "the bar is too low"}]
