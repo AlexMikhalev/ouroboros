@@ -14,7 +14,7 @@ from ouroboros.gateways import realtime_gemini as gemini, realtime_openai as ope
 from ouroboros.gateways.realtime_engine import (
     AudioIn, AudioOut, Caption, Close, Closed, ContextItem, EngineError, EngineRoute,
     GoAway, Interrupt, PlayedAudio, Ready, ResponseDone, ResponseStarted,
-    ResumeCheckpoint, SessionConfig, SpeechStarted, ToolCall, ToolCallCancelled,
+    SessionConfig, SpeechStarted, ToolCall, ToolCallCancelled,
     ToolResult, ToolsApplied, TranscriptionUsage, UpdateTools, USAGE_KEYS,
 )
 from ouroboros.gateways.realtime_transport import LiveEngineRefusal, transport_error
