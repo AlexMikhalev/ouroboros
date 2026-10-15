@@ -848,6 +848,21 @@ def test_call_opens_through_a_real_door_with_the_true_rate_and_carries_audio_bot
     assert bot.state == "idle" and fake.calls[-3:] == ["Leave", "unSubscribe", "CleanUPSDK"]
 
 
+def test_hello_and_voice_pacing_follow_the_rate_zoom_actually_delivers(zoom, tmp_path):
+    fake = FakeZoom()
+    pacers = []
+    bot, loop, peers, _bodies = make_bot(zoom, tmp_path, fake,
+                                         pacer_factory=lambda send, rate: pacers.append(FakePacer(send, rate))
+                                         or pacers[-1])
+    bot.handle_control("join", join_args(zoom))
+    drive_to_audio(fake, loop)
+    fake.mixed(b"\x01\x00" * 480, rate=48000)
+    loop.pump(lambda: bot.state == "in_call")
+    assert peers[0].hello["rate"] == 48000 and pacers[0].rate == 48000
+    fake.mixed(b"\x02\x00" * 480, rate=48000)
+    assert peers[0].audio == [(b"\x02\x00" * 480, 48000)]
+
+
 def test_server_hang_up_ends_the_meeting_and_a_refusal_never_attaches(zoom, tmp_path, door):
     fake = FakeZoom()
     bot, loop, _peers, _bodies = make_bot(zoom, tmp_path, fake, door=door.url, open_call=zoom.meeting_peer.open_call,
