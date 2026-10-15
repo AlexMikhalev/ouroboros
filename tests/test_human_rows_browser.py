@@ -137,6 +137,7 @@ def test_unrelated_system_rows_keep_working_and_sending(subscription_ui, tmp_pat
 @pytest.mark.parametrize("theme,width", [("light", 1360), ("dark", 1360), ("light", 390)])
 def test_reworded_host_rows_live_and_after_reload(subscription_ui, tmp_path, monkeypatch, theme, width):
     import supervisor.queue as q
+    from ouroboros.cancel_intents import active_intent, request_cancel
     from ouroboros.server_owner_routing import _record_routing_receipt
     from ouroboros.task_finalization import prepare_terminal_send_event
     from ouroboros.task_results import STATUS_RUNNING, write_task_result
@@ -183,16 +184,23 @@ def test_reworded_host_rows_live_and_after_reload(subscription_ui, tmp_path, mon
                           detail="Subagent not scheduled: the worker pool is currently unavailable. It was NOT "
                                  "left scheduled — do the work inline yourself, or retry after /restart.",
                           fallback_message="⚠️ Task kid12345 not scheduled: worker pool unavailable.")
-    # 4. A Stop that has not taken effect yet, in owner words.
+    # 4. A cancel_task event drives an already recorded intent; even a failed
+    # teardown emits no chat row. The card/detail and durable intent own its state.
+    monkeypatch.setattr(q, "DRIVE_ROOT", tmp_path)
+    request_cancel(tmp_path, "t-stop", source="test")
     monkeypatch.setattr(q, "cancel_task_custody", lambda task_id, **_k: q.CANCEL_FAILED)
+    before_frames = list(frames)
+    before_history = (tmp_path / "logs" / "chat.jsonl").read_bytes()
     _drive_cancel_task_event({"task_id": "t-stop"}, sender)
+    assert frames == before_frames
+    assert (tmp_path / "logs" / "chat.jsonl").read_bytes() == before_history
+    assert active_intent(tmp_path, "t-stop") is not None
     sent = _push(mounted, frames)
 
     texts = {
         "custody": "Confirmed delegated terminal receipts: run-7c1: failed on leaf-model.",
         "cancel": "Task t-cancel was cancelled.",
         "helper": "Task kid12345 not scheduled: worker pool unavailable.",
-        "stop": "Stopping task t-stop is not yet confirmed. The system keeps trying to complete the stop.",
     }
     for text in texts.values():
         page.get_by_text(text, exact=False).first.wait_for(state="attached")
@@ -218,7 +226,8 @@ def test_reworded_host_rows_live_and_after_reload(subscription_ui, tmp_path, mon
         found = {key: text in body for key, text in texts.items()}
         found["mailbox"] = "Message saved for task · Docs task" in body
         for gone in ("none recorded by the current audit", "Below is the last persisted", "inline yourself",
-                     "/restart", "durable cancel intent", "watchdog", "Delivered to task"):
+                     "/restart", "durable cancel intent", "watchdog", "Delivered to task",
+                     "Stopping task t-stop", "cancel t-stop did not settle"):
             assert gone not in body, (phase, gone)
         page.screenshot(path=str(out / f"rows-{phase}-{theme}-{width}.png"), full_page=True, animations="disabled")
         # Each reworded row as painted, in its own carrier (a card or a bubble), for human inspection.
@@ -245,15 +254,30 @@ def test_reworded_host_rows_live_and_after_reload(subscription_ui, tmp_path, mon
 
 
 @pytest.mark.parametrize("theme,width", [("light", 1360), ("dark", 1360), ("light", 390)])
-def test_stop_unconfirmed_toast_from_cancel_endpoint(subscription_ui, tmp_path, monkeypatch, theme, width):
-    from ouroboros.task_results import load_task_result, write_task_result
-    from tests.test_task_cancel_endpoint_v682 import _client, _isolate_queue
+@pytest.mark.parametrize("outcome", ["pending", "write_failure"])
+def test_stop_response_reaches_card_from_real_endpoints(subscription_ui, tmp_path, monkeypatch, theme, width, outcome):
+    from playwright.sync_api import expect
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from ouroboros.cancel_intents import active_intent
+    from ouroboros.gateway.tasks import api_task_cancel, api_task_get
+    from ouroboros.task_results import write_task_result
+    from tests.test_task_cancel_endpoint_v682 import _isolate_queue
 
     page = subscription_ui["page"]
-    tid = "stop-toast"
+    tid = "stop-consumer"
     queue, _pending = _isolate_queue(monkeypatch, tmp_path, [{"id": tid, "chat_id": 1}])
-    monkeypatch.setattr(queue, "cancel_task_custody", lambda *_a, **_kw: queue.CANCEL_FAILED)
+    custody_calls = []
+    monkeypatch.setattr(queue, "cancel_task_custody",
+                        lambda task_id, **_kw: custody_calls.append(task_id) or queue.CANCEL_FAILED)
+    if outcome == "write_failure":
+        def fail_write(*_a, **_kw):
+            raise OSError("synthetic intent write failure")
+        monkeypatch.setattr("ouroboros.cancel_intents.request_cancel", fail_write)
     write_task_result(tmp_path, tid, "running", chat_id=1, result="Checking the report.")
+    _host(tmp_path, monkeypatch)
     _serve_history(page, tmp_path)
     mounted = mount_sidebar(subscription_ui, width, theme, False, ROOM, [activity(tid)])
     if width < 700:
@@ -262,26 +286,64 @@ def test_stop_unconfirmed_toast_from_cancel_endpoint(subscription_ui, tmp_path, 
     mounted["sockets"][-1].send(json.dumps({"type": "chat", "chat_id": 1, "role": "assistant",
         "task_id": tid, "is_progress": True, "narration": True, "cancelable": True,
         "content": "Checking the report."}))
-    page.route(f"**/api/tasks/{tid}", lambda route: route.fulfill(json=load_task_result(tmp_path, tid)))
-    replies = []
-    with _client(tmp_path) as client:
+    replies, details = [], []
+    app = Starlette(routes=[Route("/api/tasks/{task_id}/cancel", api_task_cancel, methods=["POST"]),
+                            Route("/api/tasks/{task_id}", api_task_get)])
+    app.state.drive_root = tmp_path
+    with TestClient(app) as client:
         def cancel(route):
             response = client.post(f"/api/tasks/{tid}/cancel", json=route.request.post_data_json)
             replies.append({"status": response.status_code, "body": response.json()})
             route.fulfill(status=response.status_code, content_type="application/json", body=response.content)
 
+        def detail(route):
+            response = client.get(f"/api/tasks/{tid}")
+            details.append({"status": response.status_code, "body": response.json()})
+            route.fulfill(status=response.status_code, content_type="application/json", body=response.content)
+
+        page.route(f"**/api/tasks/{tid}", detail)
         page.route(f"**/api/tasks/{tid}/cancel", cancel)
-        page.locator("#page-chat [data-cancel-run]").click()
-        page.locator('[data-task-control="stop_now"]').click()
-        toast = page.locator(".toast").filter(has_text="Stop not confirmed:")
-        toast.wait_for(state="visible")
-        expected = "stopping the task is not yet confirmed; the system keeps trying to complete the stop"
-        assert replies == [{"status": 503, "body": {"error": expected, "task_id": tid}}]
-        assert toast.inner_text() == "Stop not confirmed: " + expected
-        assert "toast-danger" in toast.get_attribute("class") and toast.get_attribute("role") == "alert"
-        box = toast.bounding_box()
-        assert box and box["x"] >= 0 and box["x"] + box["width"] <= width
-        page.screenshot(path=str(_evidence(tmp_path) / f"stop-unconfirmed-{theme}-{width}.png"), animations="disabled")
+        button = page.locator("#page-chat [data-cancel-run]")
+        button.click()
+        with page.expect_response(lambda response: urlsplit(response.url).path == f"/api/tasks/{tid}"
+                                  and response.request.method == "GET") as fetched:
+            page.locator('[data-task-control="stop_now"]').click()
+        assert fetched.value.status == 200
+        fetched.value.finished()
+        page.evaluate(FRAMES)
+        if outcome == "pending":
+            expect(page.locator("#page-chat .chat-live-phase").filter(has_text="Cancelling…")).to_be_visible()
+            expect(button).to_be_disabled()
+        else:
+            toast = page.locator(".toast").filter(has_text="Cancel failed:")
+            expect(toast).to_be_visible()
+            expect(button).to_be_enabled()
+            expected = "durable cancel intent could not be recorded; nothing was cancelled — retry"
+            assert replies == [{"status": 503, "body": {
+                "error": expected, "task_id": tid, "reason_code": "cancel_intent_write_failed"}}]
+            assert toast.inner_text() == "Cancel failed: " + expected
+            assert "toast-danger" in toast.get_attribute("class") and toast.get_attribute("role") == "alert"
+            box = toast.bounding_box()
+            assert box and box["x"] >= 0 and box["x"] + box["width"] <= width
+            assert active_intent(tmp_path, tid) is None and custody_calls == []
+        page.evaluate(FRAMES)
+        assert details and all(row["status"] == 200 for row in details)
+        if outcome == "pending":
+            intent = active_intent(tmp_path, tid)
+            assert replies == [{"status": 202, "body": {
+                "ok": True, "task_id": tid, "cascade": True, "cancel_state": "pending",
+                "stop_policy": "immediate", "request_id": intent["request_id"],
+                "reason_code": "teardown_unconfirmed"}}]
+            assert custody_calls == [tid]
+            assert details[-1]["body"]["cancel_state"] == "pending"
+            assert page.locator(".toast").count() == 0
+        else:
+            assert details[-1]["body"].get("cancel_state") != "pending"
+            assert "Cancelling…" not in page.locator("#page-chat .chat-live-phase").all_text_contents()
+        out = _evidence(tmp_path)
+        page.screenshot(path=str(out / f"stop-{outcome}-{theme}-{width}.png"), animations="disabled")
+        (out / f"stop-{outcome}-{theme}-{width}.json").write_text(json.dumps({
+            "cancel": replies, "detail": details, "custody_calls": custody_calls}, indent=2))
     assert subscription_ui["errors"] == []
 
 

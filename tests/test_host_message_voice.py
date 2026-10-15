@@ -181,7 +181,6 @@ HOST_ROW_CLASSES = {
     "rollback_notice": ("runtime_state", 1),
     "retired_settings_notice": ("runtime_state", 2),
     "review_pool_migration_notice": ("runtime_state", 1),
-    "rollback_notice": ("runtime_state", 1),
     "runtime_liveness_notice": ("runtime_state", 1),
     "skill_lifecycle": ("card_row", 2),
     "skill_lifecycle_pointer": ("owner_act_receipt", 1),

@@ -139,8 +139,8 @@ test('Cancel run offered only on live, marker-attested root cards', () => {
 });
 
 test('both cancel surfaces report a refused cancellation', () => {
-    // The endpoint answers only after the teardown, so success needs no extra
-    // reporting — but a refusal must never read as a silent no-op click.
+    // A recorded Stop may answer 202 while teardown remains pending. A failed
+    // intent write still refuses with 503 and must not read as a silent no-op.
     // S3: both surfaces route through the SHARED requestStop (one endpoint
     // binding for the dropdown's stop actions).
     const chat = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
@@ -229,7 +229,7 @@ test('a failed cancel reconciles through the shared helper before touching the b
     // the button re-enabled.
     const chat = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8')
         .replace(/\r\n/g, '\n');
-    const failure = chat.slice(chat.indexOf('showToast(`Stop not confirmed:'));
+    const failure = chat.slice(chat.indexOf('showToast(`Cancel failed:'));
     const branch = failure.slice(0, 2200);
     // The shared seam runs BEFORE any button re-enable.
     const reconcileAt = branch.indexOf('reconcileCancelCardFromDetail(record, taskId, stored)');

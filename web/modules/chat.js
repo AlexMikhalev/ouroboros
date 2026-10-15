@@ -1009,7 +1009,7 @@ export function createChatInstance({
                 }
                 return;
             }
-            showToast(`Stop not confirmed: ${exc?.message || exc}`, 'error');
+            showToast(`Cancel failed: ${exc?.message || exc}`, 'error');
             // Reconcile durable truth before restoring any optimistic UI.
             let stored = null;
             try {

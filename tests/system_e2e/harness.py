@@ -118,7 +118,7 @@ SCENARIOS = {
     # in-process DIRECT-CHAT turn — no queue row, no worker process — stopped by
     # the owner through the same cancel endpoint the UI drives, caught MID-ROUND
     # on an event-gated model hold (ModelGate), never a timed race.
-    "S26": ("direct-chat owner stop: an in-flight direct turn is addressable (running list + activity snapshot), stop-now mid-round answers the typed 'stopping the task is not yet confirmed' with the cooperative control armed ONCE (a repeat is idempotent), the turn ends at its next step with ZERO further model rounds under the owner-stop reason, the chat concludes, custody settles already_settled against the turn's own terminal, and a later stop is the typed 404", LANE_MOCK),
+    "S26": ("direct-chat owner stop: an in-flight direct turn is addressable (running list + activity snapshot), stop-now mid-round records intent and answers 202 pending (teardown_unconfirmed) with the cooperative control armed ONCE (a repeat is idempotent), the turn ends at its next step with ZERO further model rounds under the owner-stop reason, the chat concludes, custody settles already_settled against the turn's own terminal, and a later stop is the typed 404", LANE_MOCK),
     "S27": ("ordinary Main/Project capability: real stdio MCP reads and writes, correct built-in room target, and a second native turn completes while the first model call is held", LANE_MOCK),
     # Serial addressed turns (owner 2026-09-23 21:12: the GENERAL capability of
     # continuable addressed participant turns, native children and session agents,

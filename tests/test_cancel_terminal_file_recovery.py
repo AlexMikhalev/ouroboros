@@ -86,13 +86,8 @@ def test_cancel_file_outage_retains_intent_and_retries_dead_worker(split, monkey
         assert not s.state["alive"], "the worker is already dead while file publication is unresolved"
         from supervisor.events_runtime_controls import _drive_cancel_task_event
 
-        s.ctx.load_state = lambda: {"owner_chat_id": 5}
         _drive_cancel_task_event({"task_id": s.task["id"]}, s.ctx)
-        [(args, meta)] = s.sent
-        assert args == (5, "❌ Stopping task cancel-files is not yet confirmed. "
-                           "The system keeps trying to complete the stop.")
-        assert meta["task_id"] == s.task["id"]
-        assert meta["progress_meta"]["task_incident"] == "cancellation_fault"
+        assert s.sent == [], "cancel_task drives its intent without writing a chat notice"
     assert s.child.is_dir() and s.frames == [] and s.task["id"] in s.q.RUNNING
     assert cancel_intents.cancel_pending(s.drive, s.task["id"])
     assert s.q.cancel_task_custody(s.task["id"]) == s.q.CANCEL_ALREADY_SETTLED
@@ -103,8 +98,8 @@ def test_cancel_file_outage_retains_intent_and_retries_dead_worker(split, monkey
 
 
 @pytest.mark.parametrize("cascade", [False, True])
-def test_owner_http_stop_over_a_dead_worker_says_the_stop_is_unconfirmed(split, monkeypatch, cascade):
-    """The owner's Stop button reaches the same custody: its 503 must not claim a live task."""
+def test_owner_http_stop_over_a_dead_worker_retains_pending_intent(split, monkeypatch, cascade):
+    """A dead worker with unresolved file publication keeps its recorded Stop pending."""
     from starlette.applications import Starlette
     from starlette.routing import Route
     from starlette.testclient import TestClient
@@ -120,9 +115,13 @@ def test_owner_http_stop_over_a_dead_worker_says_the_stop_is_unconfirmed(split, 
         fault.setattr(headless, "write_task_result", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("disk full")))
         response = client.post(f"/api/tasks/{s.task['id']}/cancel", json={"cascade": True} if cascade else {})
     assert not s.state["alive"], "the worker is already dead while file publication is unresolved"
-    assert response.status_code == 503, response.text
-    assert response.json()["error"] == ("stopping the task is not yet confirmed; "
-                                        "the system keeps trying to complete the stop")
+    assert response.status_code == 202, response.text
+    intent = cancel_intents.active_intent(s.drive, s.task["id"])
+    assert response.json() == {
+        "ok": True, "task_id": s.task["id"], "cancel_state": "pending", "stop_policy": "immediate",
+        "request_id": intent["request_id"], "reason_code": "teardown_unconfirmed",
+        **({"cascade": True} if cascade else {}),
+    }
     assert cancel_intents.cancel_pending(s.drive, s.task["id"])
     assert s.q.cancel_task_custody(s.task["id"]) == s.q.CANCEL_ALREADY_SETTLED
     assert load_task_result(s.drive, s.task["id"])["result"] == "Retained child answer"
