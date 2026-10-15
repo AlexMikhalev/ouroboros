@@ -15,7 +15,7 @@ from starlette.responses import JSONResponse
 from ouroboros import get_version
 from ouroboros.settings_scales import effort_range
 from ouroboros.gateway._helpers import json_exception, request_drive_root
-from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
+from ouroboros.post_task_checkpoint import post_task_synthesis_is_open, post_task_synthesis_is_terminal
 
 log = logging.getLogger(__name__)
 
@@ -301,6 +301,11 @@ def _epoch_or_zero(value: Any) -> float:
         return 0.0
 
 
+def _answer_stored(synthesis: Any) -> bool:
+    """A post-answer checkpoint state; the pre-answer cost ``refresh`` pseudo-status is not one."""
+    return post_task_synthesis_is_open(synthesis) or post_task_synthesis_is_terminal(synthesis)
+
+
 # Exact root/task path -> stat-keyed outcome, finalizing and question display facts.
 _FINALIZING_MEMO: Dict[tuple, tuple] = {}
 _FINALIZING_MEMO_MAX = 64
@@ -342,6 +347,15 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
         display["outcome_axes"] = normalize_outcome_axes(data)
     if synthesis:
         display["root_phase_checkpoint"] = {"post_task_synthesis": synthesis}
+    if _answer_stored(synthesis):
+        # An answered root whose late phase remains (D10) names its work where no
+        # card does: Activity shows it beside the saved remainder's controls.
+        from ouroboros.projects_registry import task_presentation_name
+        from ouroboros.terminal_time import terminal_time_fact
+
+        # The executor's own terminal fact or nothing: generic ts is never an answer time.
+        display["late_work"] = {"title": task_presentation_name(data),
+                                "answered_at": terminal_time_fact(data).get("occurred_at") or ""}
     facts = {"finalizing": post_task_synthesis_is_open(synthesis), "late_phase": synthesis,
              "display": display,
              # An answered root's census row (D10) carries only its own routing identity.
@@ -632,7 +646,10 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
             wait = facts.get("owner_wait", {})
             if not wait.get("quiz_id"):
                 continue
+            # The waited quiz's own id rides along: Main's work list goes to that exact question
+            # (a Main task has no Project pointer to carry it).
             activity["owner_wait"] = {**owner_wait_projection(wait["quiz_id"], wait, facts.get("quiz")),
+                                      "quiz_id": str(wait["quiz_id"]),
                                       "quiz_state": (facts.get("quiz") or {}).get("state", "unknown")}
             pointer = project_question_pointer(
                 {"task_id": activity["activity_id"], "quiz_id": wait["quiz_id"], "wait_for_answer": True},
@@ -651,6 +668,19 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
             # real, its detail is not; disclose rather than animate.
             activity["required_question_unavailable"] = True
     return activities
+
+
+def current_work_in_room(drive_root: Any, task_bindings: Any, matches: Callable[[Any, dict], bool]) -> list:
+    """Census roots a recent history page addresses as current work of its room.
+
+    An answered root whose late phase alone remains (D10: the answer stays, the owner
+    paused only its post-task work) is not current conversation: its card stays beside
+    its delivered answer and Activity offers the saved remainder, so it is never
+    re-addressed at the end of a page that no longer holds its own rows."""
+    return [str(row["activity_id"]) for row in _chat_activities_snapshot_safe(drive_root, task_bindings)
+            if row.get("activity_id") and row.get("chat_id") is not None
+            and not _answer_stored((row.get("root_phase_checkpoint") or {}).get("post_task_synthesis"))
+            and matches(row["chat_id"], {**row, "task_id": row["activity_id"]})]
 
 
 async def api_state(request: Request) -> JSONResponse:

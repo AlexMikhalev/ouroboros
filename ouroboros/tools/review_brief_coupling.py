@@ -188,13 +188,15 @@ def first_send_bound(brief: BriefInputs) -> int:
     return review_native_transcript_bound(brief.model, output_reserve=output_reserve, **binding)
 
 
-def _first_send_chars(repo_dir: pathlib.Path, brief: BriefInputs, brief_text: str) -> int:
+def _first_send_chars(repo_dir: pathlib.Path, brief: BriefInputs, brief_text: str,
+                      required_ref: Optional[Dict[str, Any]] = None) -> int:
     """The wire size of this seat's first send, measured the way it is priced.
 
     A native row is measured by the same builder the paid ledger reserves
-    against (``native_first_send_chars``: work order, message objects and the
-    inspection schemas that ride every call). This canonical serialization is
-    a layout measure, not physical token usage. A route whose schemas cannot be projected here is
+    against (``native_first_send_chars``: work order, message objects with the
+    declared manifest reference ``required_ref``, and the inspection schemas that
+    ride every call). This canonical serialization is a layout measure, not
+    physical token usage. A route whose schemas cannot be projected here is
     measured as the brief plus this build's send overhead rather than left
     unmeasured.
     """
@@ -208,7 +210,8 @@ def _first_send_chars(repo_dir: pathlib.Path, brief: BriefInputs, brief_text: st
         return native_first_send_chars(
             str(repo_dir), surface="multi_model_review", role_hint=TRIAD_ROLE_HINT,
             slot_id=brief.slot_id, session_task=brief_text,
-            output_contract=REVIEW_TWO_PART_OBJECT_CONTRACT, task_id=brief.task_id)
+            output_contract=REVIEW_TWO_PART_OBJECT_CONTRACT, task_id=brief.task_id,
+            required_sources_ref=required_ref)
     except (OSError, ValueError, RuntimeError):
         return len(brief_text) + _NATIVE_SEND_OVERHEAD_ESTIMATE_CHARS
 
@@ -608,7 +611,8 @@ def build_retrieving_brief(
         delivery.update(diff_delivery="retrieved_by_reviewer", diff_reason=unavailable)
     else:
         diff_slot = _diff_slot(brief, header, body, "")
-        measured = _first_send_chars(repo_dir, brief, _assemble(diff_slot)[0])
+        measured = _first_send_chars(repo_dir, brief, _assemble(diff_slot)[0],
+                                     required_ref if required_rows is not None else None)
         # Choose inline versus paged delivery using the initial layout hint;
         # a delegated session keeps its own conservative inline ceiling.
         from ouroboros.review_native_episode import native_landing_at
@@ -633,7 +637,8 @@ def build_retrieving_brief(
                                 diff_paging_reason=str(source.get("error") or "no_source_root"))
     task_text, part1, part2 = _assemble(diff_slot)
     if delivery.get("diff_delivery") == "paged":
-        delivery["first_send_chars"] = _first_send_chars(repo_dir, brief, task_text)
+        delivery["first_send_chars"] = _first_send_chars(
+            repo_dir, brief, task_text, required_ref if required_rows is not None else None)
 
     manifest: Dict[str, Any] = {
         "delivery": AGENTIC_RETRIEVAL_DELIVERY,

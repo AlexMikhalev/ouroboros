@@ -53,9 +53,10 @@ def test_replay_learns_subagent_lineage_before_merging_card_rows():
     src = _read("web/modules/chat.js")
     # One helper learns lineage from both replay rows and live final frames.
     assert "function learnSubagentLineage(msg)" in src
-    assert "for (const msg of messages) learnSubagentLineage(msg);" in src
+    lineage_pass = "for (const msg of messages) {\n                    learnSubagentLineage(msg);"
+    assert lineage_pass in src
     history = src[src.index("function applyHistoryMessages"):src.index("async function syncHistory")]
-    assert history.index("for (const msg of messages) learnSubagentLineage(msg);") < history.index("admitCardMetadata(msg)")
+    assert history.index(lineage_pass) < history.index("admitCardMetadata(msg)")
     # A page may contain a child whose parent is already represented elsewhere.
     # Keep those bindings during replay; only final instance disposal clears them.
     for collection in ("subagentChildParents", "subagentTerminalChildren"):
@@ -68,9 +69,10 @@ def test_replay_learns_subagent_lineage_before_merging_card_rows():
     assert fanout.index("learnSubagentLineage(msg);") < fanout.index("routeSubagentFinalMessageToCard(explicitTaskId, msg)")
     # A lineage-known child is minted as its parent's nested card by whichever
     # path reaches it first (#636) — no sticky force writer: the parent's anchor
-    # follows the child's frame and the predicate always admits a child block.
-    assert "reanchorTaskCard(getLiveCardRecord(parentId), rawTs);" in src
-    assert "const record = getSubagentCardRecord(childId, parentId, role);" in src
+    # follows the child's frame (when this room holds the parent's own card, A5)
+    # and the predicate always admits a child block.
+    assert "if (rawTs) reanchorTaskCard(liveCardRecords.get(parentId), rawTs);" in src
+    assert "const record = getSubagentCardRecord(childId, parentId, role, rawTs);" in src
     assert "if (!record || record.isSubagent) return true;" in src
     # A child is locked terminal from EITHER a terminal subagent event OR a
     # genuinely-settled server task_terminal_status; interrupted stays retryable.

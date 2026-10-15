@@ -1082,10 +1082,12 @@ class ToolRegistry:
                     return f"⚠️ TOOL_ERROR ({name}): {e}", None
                 except Exception as e:
                     from ouroboros.body_candidate import CandidateRefused
+                    from ouroboros.store import StoreError
 
+                    if isinstance(e, StoreError) and handoff and handoff.get("not_started") is True:
+                        raise  # the invocation owner retains its actual entry phase
                     if isinstance(e, CandidateRefused):  # e.g. a process inside the candidate without its isolation
-                        return ToolResult(status="blocked", code=e.code, text=f"⚠️ {e.code}: {e.text}",
-                                          meta={"operation_outcome": "completed_no_effect"}), None
+                        return ToolResult(status="blocked", code=e.code, text=f"⚠️ {e.code}: {e.text}"), None
                     return f"⚠️ TOOL_ERROR ({name}): {e}", None
         finally:
             if observed_skill is not None:
@@ -1112,6 +1114,7 @@ class ToolRegistry:
 
     def _execute_legacy_text(self, name: str, args: Dict[str, Any]) -> str | ToolResult:
         from ouroboros.owner_pause import OwnerPauseRefused, tool_handoff
+        from ouroboros.store import StoreError
 
         try:
             with tool_handoff(self._ctx, str(name or "")) as handoff:
@@ -1126,12 +1129,15 @@ class ToolRegistry:
         except OwnerPauseRefused as exc:
             from ouroboros.tools.tool_result import launch_refusal_result
 
-            return launch_refusal_result(str(exc))
+            return launch_refusal_result(exc)
+        except StoreError as exc:
+            from ouroboros.tools.tool_result import launch_refusal_result
+            if getattr(exc, "invocation_not_started", None) is True:
+                return launch_refusal_result(exc)
+            raise  # preserve the outer executor's post-entry error handling
 
     def _execute_admitted_text(self, name: str, args: Dict[str, Any],
                                handoff: Optional[Dict[str, Any]] = None) -> str | ToolResult:
-        if handoff is not None:
-            handoff["not_started"] = True
         name = str(name or "").strip()
         args, presence_arg_error = _presence_bound_args(self._ctx, name, args)
         if presence_arg_error:

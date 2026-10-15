@@ -27,6 +27,7 @@ from ouroboros.review_dispatch import collect_task_acceptance_run, reconcile_pen
 from ouroboros.review_execution import ReviewRouteKind
 from ouroboros.review_substrate import ReviewRequest, ReviewSlot, run_review_request
 from ouroboros.task_results import load_task_result, write_task_result
+from tests._cancel_intents_shared import DeliveryBus
 
 TASK = "collect-root"
 PASS = json.dumps({"verdict": "PASS", "findings": [], "summary": "Independent review passes"})
@@ -721,7 +722,7 @@ def test_an_unconfirmed_or_uncaptured_send_proves_no_bytes_and_a_replay_captures
               "delivery_id": registry.delivery_id_for(other, "answer C")}
     registry.register_pending_delivery(tmp_path, replay)
     monkeypatch.setattr(registry, "_replay_due", lambda _row: True)
-    outbox = queue.Queue()
+    outbox = DeliveryBus()  # replay admits a copy only through the bus's membership
     assert registry.replay_pending_deliveries(tmp_path, event_queue=outbox) == [replay["delivery_id"]]
     chat._handle_send_message(outbox.get_nowait(), _send_ctx(tmp_path, sends))
     replayed = emitted_answer_fact(tmp_path, other)

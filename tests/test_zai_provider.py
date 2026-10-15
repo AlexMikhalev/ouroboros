@@ -194,17 +194,18 @@ class TestEffortCarriage:
         assert kwargs["reasoning_effort"] == "high"
         assert "thinking" not in (kwargs.get("extra_body") or {})
 
-    def test_generic_compatible_lane_is_untouched(self):
-        # The same GLM model id on an owner's OpenAI-compatible endpoint keeps
-        # today's behavior: the projection is keyed on the zai provider id,
-        # never on the model name.
+    def test_generic_compatible_lane_sends_the_standard_field_unprojected(self):
+        # The same GLM model id on an owner's OpenAI-compatible endpoint gets the
+        # standard field with the requested tier, not Z.ai's table (medium would
+        # become high): the projection is keyed on the zai provider id, never on
+        # the model name.
         target = {
             "provider": "openai-compatible", "resolved_model": "glm-5.3",
             "usage_model": "openai-compatible::glm-5.3", "api_key": "",
             "base_url": "http://127.0.0.1:11434/v1", "supports_openrouter_extensions": False,
         }
         kwargs, note = _build(target, "medium")
-        assert "reasoning_effort" not in kwargs
+        assert kwargs["reasoning_effort"] == "medium"
         assert note is None
 
 

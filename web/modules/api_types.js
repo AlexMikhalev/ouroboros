@@ -278,8 +278,8 @@
  * @property {string=} task_terminal_status Typed terminal fact on a frame that IS the turn's conclusion (stamped on direct/ephemeral finals and the direct error branch).
  * @property {string=} task_incident
  * @property {string=} cancel_physical_task_id
- *   A cancellation fault names the physical task it could not settle when that
- *   differs from the displayed task id.
+ *   Historical rows only: the retired cancellation-fault notice named the
+ *   physical task it could not settle when that differed from the displayed id.
  * @property {string=} toast_once
  * @property {string=} toast_tone
  *   The incident's valence for the one-shot toast (warn/ok/error); absent =
@@ -1393,11 +1393,16 @@
  * @property {boolean} ok
  * @property {string} task_id
  * @property {boolean=} cascade
- *   Echoed only for {"cascade": true}, after subtree cancel completes; single-task envelope unchanged.
+ *   Echoed when the Stop ran as a cascade (requested, or an already recorded cascade scope); single-task envelope unchanged.
  * @property {string=} cancel_state
- *   "pending" on graceful 202 ACK: durable intent stays open during bounded finalization; absent for immediate.
+ *   "pending" on every 202: the durable intent stays open — bounded graceful finalization, or an immediate
+ *   teardown not confirmed yet that the supervisor finishes; absent on 200.
  * @property {string=} stop_policy
- *   Effective durable "immediate" | "finalize_then_cancel"; a graceful request never softens a hard intent.
+ *   On 202, the effective durable "immediate" | "finalize_then_cancel"; a graceful request never softens a hard intent.
+ * @property {string=} request_id
+ *   On an immediate 202, the open intent's custody id (distinct from the client's stop_action_id).
+ * @property {string=} reason_code
+ *   On an immediate 202, "teardown_unconfirmed".
  * @property {string=} error
  */
 /**
@@ -1522,6 +1527,11 @@
  * @typedef {Object} UpdateApplyErrorResponse
  * @property {string} error
  * @property {string=} reason
+ * @property {boolean=} abandoned
+ * @property {Object=} status Preparation observations, not the success discriminator.
+ * @property {Object=} update_intent
+ * @property {Object=} rescue
+ * @property {string=} keep_branch
  * @property {string[]=} blockers
  * @property {boolean=} rolled_back
  * @property {string=} rollback

@@ -266,7 +266,7 @@ verbs").
 ### The owner corpus archives inputs; the owner door's stamp is the only authority
 
 A task-authored objective copies only its retained owner corpus, never the draft. Other
-runs record their first user turn for acceptance, Safety and reflection, labelled by
+runs record their first user turn for acceptance and Safety, labelled by
 what the host knows: `initial_user` when owner routing stamped the run
 (`metadata.origin_message_ref` or `origin_suppressed`, inherited by value by a promoted
 root), `initial_text` otherwise. `dialogue_provenance.run_origin` mints that fact once
@@ -366,12 +366,12 @@ readiness signal, test probe or fallback.
 Provider facts that bind routing: the `-pro` suffix is an OpenRouter routing slug, not
 an OpenAI model id, so a direct OpenAI Chat slot uses the plain Sol id; direct OpenAI
 tool conversations stay on Chat Completions, and a model-name prefix is never admission
-authority; DeepSeek and Z.ai carry `reasoning_effort` through projections keyed on the
-provider id; direct Anthropic is the deliberate exception to a purely reconstructed
-provider transcript, and no effort-to-`budget_tokens` policy is synthesized
-(ARCHITECTURE §7 "LLM output token budgets"). A provider-specific optional feature may
-be unavailable elsewhere; the core loop degrades explicitly rather than crashing or
-rerouting.
+authority; each non-OpenRouter Chat route sends `reasoning_effort`, DeepSeek and Z.ai
+by provider-id projection; direct Anthropic is the deliberate exception to a purely
+reconstructed provider transcript, and no effort-to-`budget_tokens` policy is
+synthesized (ARCHITECTURE §7 "LLM output token budgets"). A provider-specific optional
+feature may be unavailable elsewhere; the core loop degrades explicitly rather than
+crashing or rerouting.
 
 Canonical assistant history and tool schemas are function-shaped across providers,
 never a second stored transcript for a provider dialect. Static, semantics-preserving

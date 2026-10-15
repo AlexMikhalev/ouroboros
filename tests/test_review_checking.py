@@ -114,16 +114,17 @@ def test_a_failed_capture_keeps_the_recoverable_copy_and_names_the_gap(author, t
     assert evidence["status"] == "capture_failed" and area.exists()
 
 
-def test_evidence_over_the_bound_keeps_the_copy(author, tmp_path, monkeypatch):
+def test_reviewer_evidence_ignores_the_investigation_bound(author, tmp_path, monkeypatch):
     data = tmp_path / "data"
-    monkeypatch.setattr(rc, "EVIDENCE_RETAIN_BYTES", 4)
+    monkeypatch.setattr(rc, "EVIDENCE_RETAIN_BYTES", 4)  # investigations' bound; it never binds a reviewer
     source = rc.freeze_checking_source(author, data_root=data, subject=rc.SUBJECT_INDEX)
     area = pathlib.Path(rc.prepare_seat_area(data, "task", "op-1", source))
     (area / rc.EVIDENCE_DIRNAME).mkdir()
     (area / rc.EVIDENCE_DIRNAME / "big.log").write_text("more than four bytes")
     evidence = rc.capture_seat_evidence(data, "task", "op-1", release=True)
-    assert evidence["status"] == "partial" and evidence["gaps"][0]["reason"] == "evidence_budget_exceeded"
-    assert area.exists() and evidence["area"] == str(area)
+    assert evidence["status"] == "retained" and evidence["gaps"] == []
+    retained = pathlib.Path(evidence["evidence_dir"]) / "files" / rc.EVIDENCE_DIRNAME / "big.log"
+    assert retained.read_text() == "more than four bytes" and not area.exists()
 
 
 def test_a_worktree_subject_freezes_the_live_tree_once(author, tmp_path):

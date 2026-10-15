@@ -218,6 +218,9 @@ def test_server_extraction_size_bounds_have_meaningful_headroom():
     # the loop and the process state they protect.
     # Body lifespan and pending-event observation remain wired by this same
     # composition root; their landed integration added two net lines.
-    assert counts["server"] <= 1772
+    # 1772 -> 1774 (automatic schedules' restart): the planned restart names its
+    # queue returns and reopens them when no exit follows a failed teardown; that
+    # reopen belongs to the restart transaction this composition root owns.
+    assert counts["server"] <= 1774
     assert counts["ouroboros.server_routing_context"] <= 1000
     assert counts["ouroboros.server_owner_routing"] <= 1000

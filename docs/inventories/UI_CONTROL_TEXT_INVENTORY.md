@@ -83,7 +83,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Install Local Runtime | `btn btn-secondary local-model-install-btn local-model-hidden` | modules/settings_ui.js | 1 |
 | Keep one per model | `btn btn-default` | modules/subagents_settings.js | 1 |
 | Load models | `btn btn-secondary` | modules/onboarding_wizard.js | 1 |
-| Loading… | `chat-budget-pill` | modules/chat.js | 1 |
+| Loading… | `chat-budget-pill ui-chrome-control` | modules/chat.js | 1 |
 | Main Chat | `nav-row nav-row-main active` | index.html | 1 |
 | Make runnable | `skills-menu-item skills-make-runnable` | modules/skill_card_renderer.js | 1 |
 | Measure now | `btn btn-default btn-sm storage-refresh` | modules/storage.js | 1 |
@@ -95,7 +95,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Open externally | `btn btn-default` | modules/files.js | 1 |
 | [icon] Open navigation | `mobile-nav-toggle` | modules/page_header.js | 1 |
 | Open Ouroboros in the current mode | `btn btn-primary` | modules/onboarding_wizard.js | 1 |
-| Panic | `chat-header-btn danger` | modules/chat.js | 1 |
+| Panic | `chat-header-btn danger ui-chrome-control` | modules/chat.js | 1 |
 | Paste | `btn btn-default` | modules/files.js | 1 |
 | Paste Here | `files-context-item` | modules/files.js | 1 |
 | Pause | `btn btn-default btn-sm evo-refresh-btn` | modules/evolution.js | 1 |
@@ -132,7 +132,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Reset All Data | `btn btn-danger` | modules/settings_ui.js | 1 |
 | [icon] Resize width: drag or use arrow keys | `widgets-card-resize` | modules/widgets.js | 1 |
 | ▸ Resources | `btn btn-default` | modules/harness_accounts.js | 1 |
-| Restart | `chat-header-btn` | modules/chat.js | 1 |
+| Restart | `chat-header-btn ui-chrome-control` | modules/chat.js | 1 |
 | Restart now | `btn btn-secondary` | modules/settings_ui.js | 1 |
 | Restore | `btn btn-danger btn-xs` | modules/updates.js | 1 |
 | Restore hold | `btn btn-xs btn-default` | modules/activity.js | 1 |

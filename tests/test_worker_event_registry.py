@@ -85,7 +85,12 @@ def _call_name(func):
     return ""
 
 
-def _emitted_types():
+def _emitted_types(*, commands=False):
+    """Supervisor events, or with ``commands`` the supervisor->worker input commands.
+
+    A put into a worker's ``in_q`` is answered by ``worker_main``, never by a
+    supervisor handler: it is neither an event nor an allowlist excuse.
+    """
     emitted = {}
     files = [REPO / "server.py"]
     files += list((REPO / "ouroboros").rglob("*.py"))
@@ -105,7 +110,11 @@ def _emitted_types():
             if isinstance(node.func, ast.Attribute):
                 attr = node.func.attr
                 receiver = _receiver_name(node.func).lower()
-                if attr == "append" and "pending_events" in receiver:
+                if receiver.endswith("in_q"):  # a worker's input queue: commands only
+                    candidates = node.args if commands and attr in ("put", "put_nowait") else []
+                elif commands:
+                    candidates = []
+                elif attr == "append" and "pending_events" in receiver:
                     candidates = node.args
                 elif attr in ("put", "put_nowait"):
                     # Receiver-AGNOSTIC (the narrow name hints missed a real
@@ -114,7 +123,7 @@ def _emitted_types():
                     # literal string `type` is scanned. A non-supervisor queue
                     # that happens to match falls to the reasoned allowlist.
                     candidates = node.args
-            if _call_name(node.func) in _WRAPPER_FUNCS:
+            if not commands and _call_name(node.func) in _WRAPPER_FUNCS:
                 candidates = node.args
             for arg in candidates:
                 event_type = _dict_type(arg, constants)
@@ -175,6 +184,14 @@ def test_allowlist_entries_stay_emitted():
     emitted = _emitted_types()
     stale = ALLOWLIST - set(emitted)
     assert not stale, f"ALLOWLIST rows no longer emitted anywhere: {stale}"
+
+
+def test_worker_input_commands_are_not_supervisor_events():
+    """The idle probe goes in on ``in_q``; only its answer is a supervisor event."""
+    commands, emitted, registered = _emitted_types(commands=True), _emitted_types(), _registered_types()
+    assert "worker_quiescence" in commands and "worker_quiescence" not in emitted
+    assert "worker_quiescence" not in registered | ALLOWLIST
+    assert "worker_quiescent" in emitted and "worker_quiescent" in registered
 
 
 def test_previously_dropped_types_are_registered():

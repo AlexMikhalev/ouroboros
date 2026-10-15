@@ -104,6 +104,18 @@ class ElementStub {
         const parent = this.parentNode;
         if (parent) parent.insertBefore(node, parent.children[parent.children.indexOf(this) + 1] || null);
     }
+    insertAdjacentElement(position, node) {
+        switch (position.toLowerCase()) {
+        case 'beforebegin': return this.parentNode?.insertBefore(node, this) || null;
+        case 'afterbegin': return this.insertBefore(node, this.children[0] || null);
+        case 'beforeend': return this.appendChild(node);
+        case 'afterend':
+            if (!this.parentNode) return null;
+            this.after(node);
+            return node;
+        default: throw new Error(`Unsupported insertion position: ${position}`);
+        }
+    }
     insertBefore(node, before) {
         if (node?.isDocumentFragment) {
             for (const child of [...node.children]) this.insertBefore(child, before);

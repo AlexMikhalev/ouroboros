@@ -609,7 +609,11 @@ Some settings keys are protected: `OPENROUTER_API_KEY`,
 `GITHUB_TOKEN`, `OUROBOROS_NETWORK_PASSWORD`. These keys are NEVER
 forwarded to a skill by default, even when listed in
 `env_from_settings`. Custom secret keys stored in Settings → Secrets
-are treated the same way. Host permissions such as `inject_chat`, `presence`,
+are treated the same way. A granted key is read as currently saved: each
+`api.get_settings` call, script run, out-of-process call and companion start sees a
+value the owner saved, rotated or deleted during a running task, while that task keeps
+its own model, account and review settings; a value your code already copied or cached,
+a running companion's environment included, is not refreshed for you. Host permissions such as `inject_chat`, `presence`,
 `notify_owner` and chat event subscriptions also require explicit, content-hash-bound owner
 consent. The desktop launcher's owner-grant bridge records these grants.
 
@@ -894,9 +898,7 @@ exact `text`, `format`, provider facts in `message`, and
 sets kind explicitly. A tool handler may use its supported first `ctx` argument
 to retain compact task provenance; never serialize the full context or secrets.
 The Host establishes source identity, and a task reference grants no authority.
-A reflection written for that task's root after the report arrives shows it labelled
-`skill_claimed` unless the Host itself bound the row to a Presence turn of the same
-transport (`host_bound`); a report arriving later stays in chat history only.
+Reports stay in chat history, where the room view names them as delivery facts.
 
 Report physical parts separately. Preserve resolved DM IDs, actual chunk or
 fallback text, captions and provider message IDs in the receipt snapshot.

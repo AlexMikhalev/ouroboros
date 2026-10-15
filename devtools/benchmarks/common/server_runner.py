@@ -654,9 +654,11 @@ class IsolatedServer:
         callers (a driver cleaning up after its own ``wait_task`` deadline) keep the
         byte-identical legacy single-task request they have always sent.
 
-        The cascade lane answers only once the subtree is actually torn down, hence the
-        wide default timeout. Returns the ``_api_status`` envelope; the refusal statuses are
-        part of the contract under test, so nothing is raised or swallowed.
+        A hard Stop records the intent first and answers 200 once the teardown was driven,
+        404 when nothing was live, or 202 ``cancel_state=pending`` while the intent is still
+        open for the watchdog; the cascade lane still waits for the kills it asked for, hence
+        the wide default timeout. Returns the ``_api_status`` envelope; the refusal statuses
+        are part of the contract under test, so nothing is raised or swallowed.
         """
         body: dict = {}
         if cascade:

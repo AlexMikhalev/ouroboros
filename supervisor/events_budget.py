@@ -48,10 +48,12 @@ def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
         if isinstance(_m, dict):
             _m["last_progress_at"] = time.time()
             # Task-tree attribution: the durable llm_usage row declares
-            # root/parent/delegation/lane fields, but worker-side emitters do
-            # not know the queue lineage. The supervisor DOES — fill the gaps
-            # from the authoritative RUNNING record so per-tree cost rollups
-            # over events.jsonl become possible (emitter-supplied values win).
+            # root/parent/delegation/lane fields. The worker's per-task endpoint
+            # (``log_addressing.task_event_queue``) stamps them by value at the
+            # producer, so a usage row handled after its task left RUNNING (the
+            # telemetry lane is served after control) keeps its attribution;
+            # the RUNNING record only fills a gap an older or partial emitter
+            # left (emitter-supplied values win).
             _task = _m.get("task") if isinstance(_m.get("task"), dict) else {}
             for _field in (
                 "root_task_id", "parent_task_id", "delegation_role",

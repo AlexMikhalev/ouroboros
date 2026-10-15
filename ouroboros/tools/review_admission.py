@@ -747,7 +747,7 @@ def commit_gate_paid_seats(prepared, exited) -> list:
     models = list(prepared.get("models") or row_plan.get("models") or [])
     routes = list(prepared.get("routes") or row_plan.get("routes") or [])
     slot_ids = list(row_plan.get("slot_ids") or [])
-    tasks = list(row_plan.get("session_tasks") or [])
+    tasks, policies = list(row_plan.get("session_tasks") or []), list(row_plan.get("session_policies") or [])
     profiles, local = list(row_plan.get("session_profiles") or []), list(row_plan.get("use_local") or [])
     seats, packet_chars = [], None
     for index, model in enumerate(models):
@@ -759,9 +759,12 @@ def commit_gate_paid_seats(prepared, exited) -> list:
             task = str(tasks[index] if index < len(tasks) else "") or str(prepared.get("session_task") or "")
             if prepared.get("task_evidence"):
                 task += "\n\n" + commit_review_evidence_section(prepared["task_evidence"], delivery="native")
+            policy = (policies[index] if index < len(policies) else None) or {}
             chars = native_first_send_chars(
                 str(prepared.get("target_repo") or ""), surface="multi_model_review", role_hint=TRIAD_ROLE_HINT,
-                slot_id=slot_id, session_task=task, output_contract=REVIEW_TWO_PART_OBJECT_CONTRACT)
+                slot_id=slot_id, session_task=task, output_contract=REVIEW_TWO_PART_OBJECT_CONTRACT,
+                required_sources_ref=(policy.get("native_required_sources_ref") or {}
+                                      if "native_required_sources" in policy else None))
         else:
             if packet_chars is None:
                 messages, _ = triad_api_messages(

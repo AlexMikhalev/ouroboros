@@ -122,6 +122,11 @@ TERMINAL_WRITERS = {
     # projector; a changed attempt basis aborts, and they never originate a transition.
     ('ouroboros/task_custody.py::_write_custody_fields', 'str(observed.get("status") or "")'): 'dynamic',
     ('ouroboros/tools/control_delegation.py::record_depth_limit_refusal', 'STATUS_FAILED'): 'terminal',
+    # Recovery of a dead attempt whose answer the host already holds (owed/delivered/unreadable
+    # registry evidence): the attempt is finalized from the outbox's bytes as failed /
+    # infra_failed / finalization_incomplete instead of re-running the prompt (both the
+    # timeout reaper's retry admission and dead-worker recovery route through it).
+    ('ouroboros/working_checkpoint.py::adopt_registered_answer', 'STATUS_FAILED'): 'terminal',
     ('supervisor/cancel_publication.py::_finalize_cancel_intent_on_miss', 'STATUS_CANCELLED'): 'terminal',
     ('supervisor/events_project_routing.py::_persist_promote_rejection', 'STATUS_FAILED'): 'terminal',
     # The promoter's force_plan transfer is a locked field projection like its

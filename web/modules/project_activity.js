@@ -23,7 +23,8 @@ function isChildActivity(row) {
     return !root || root !== activityId(row);
 }
 
-function waitingModel(row) {
+/** Whether a census row's own model waits are current (Activity reads the same rule). */
+export function waitingModel(row) {
     const waits = row?.model_waits;
     if (!waits || typeof waits !== 'object') return false;
     // The same admission rule the chat card applies: a malformed wait row is

@@ -310,7 +310,11 @@ _PRODUCER_SHAPES = (
     # tools/registry_core.py::ToolRegistry._execute_legacy_text (owner Batch4): the
     # owner paused the tree before this call's launch handoff; nothing ran.
     ("owner_pause_not_started", "knowledge_read", "⚠️ OWNER_PAUSE_NOT_STARTED: NOT STARTED — the owner paused this task tree before this operation was launched. Nothing ran; it may be issued again after Resume. (owner_pause)", "OWNER_PAUSE_NOT_STARTED", (("owner_pause_not_started", True),)),
+    # Historical emitted wording stays in the legacy corpus; current producers
+    # preserve phase/cause separately and are exercised by live round-trip tests.
     ("owner_launch_authority_unavailable", "knowledge_read", "⚠️ OWNER_LAUNCH_AUTHORITY_UNAVAILABLE: NOT STARTED — launch authority is temporarily unavailable. Nothing was submitted; retry when authority is available.", "OWNER_LAUNCH_AUTHORITY_UNAVAILABLE", (("owner_pause_not_started", True),)),
+    ("owner_operation_refused", "knowledge_read", "⚠️ OWNER_OPERATION_REFUSED: This submission was refused; the invocation may already have effects. Reconcile those effects before repeating the call. (owner_pause)", "OWNER_OPERATION_REFUSED", (("owner_pause_not_started", False),)),
+    ("tool_admission_unavailable", "knowledge_read", "⚠️ TOOL_ADMISSION_UNAVAILABLE: NOT STARTED — the tool handler was not entered. (store_unavailable; launch reason: permission_denied)", "TOOL_ADMISSION_UNAVAILABLE", (("owner_pause_not_started", True), ("launch_reason", "permission_denied"))),
     ("stop_action_conflict", "cancel_task", "⚠️ STOP_ACTION_CONFLICT: stop_action_conflict; nothing was changed.", "STOP_ACTION_CONFLICT", ()),
     ("resource_policy", "read_file", "⚠️ RESOURCE_POLICY_BLOCKED: task_contract.resource_policy protects 'blackbox'.", "RESOURCE_POLICY_BLOCKED", ()),
     ("cognitive_redirect", "write_file", "⚠️ COGNITIVE_TOOL_REQUIRED: cognitive memory is not written via 'write_file'.", "COGNITIVE_TOOL_REQUIRED", ()),

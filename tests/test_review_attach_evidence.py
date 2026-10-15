@@ -6,6 +6,7 @@ import copy
 import dataclasses
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -131,14 +132,16 @@ def test_repeat_attach_collection_reuses_the_retained_receipt_without_recreating
     assert calls == [("handshake",), ("get_run", RUN), ("close",)] * 2
 
 
-@pytest.mark.parametrize("gap", ["budget", "capture_error"])
+@pytest.mark.parametrize("gap", ["special_entry", "capture_error"])
 def test_attach_collection_exposes_capture_gap_and_keeps_recoverable_area(
         checking_run, monkeypatch, forbid_effects, gap):  # noqa: F811
     root, _subject, area, run = checking_run
     _observe(monkeypatch, _terminal())
     _started(root, run_id=RUN)
-    if gap == "budget":
-        monkeypatch.setattr(checking, "EVIDENCE_RETAIN_BYTES", 1)
+    if gap == "special_entry":
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO output requires POSIX")
+        os.mkfifo(area / "pipe")  # a reviewer output no capture can retain
     else:
         def unavailable(*_args, **_kwargs):
             raise OSError("fixture evidence read failed")
@@ -146,14 +149,14 @@ def test_attach_collection_exposes_capture_gap_and_keeps_recoverable_area(
     result = _collect(root, run)
     actor = result.actors[0]
     receipt = actor["usage"]["checking_evidence"]
-    assert receipt["status"] == ("partial" if gap == "budget" else "capture_failed")
+    assert receipt["status"] == ("partial" if gap == "special_entry" else "capture_failed")
     assert receipt["area"] == str(area) and area.is_dir()
     assert (area / "check.py").read_bytes() == REVIEWER_EDIT
     assert (area / checking.EVIDENCE_DIRNAME / "coverage.xml").read_bytes() == COVERAGE
     assert actor["parsed"]["verdict"] == "PASS", "evidence capture does not erase the paid answer"
     assert actor["recovery_binding"] == run["actors"][0]["recovery_binding"]
-    if gap == "budget":
-        assert {row["reason"] for row in receipt["gaps"]} == {"evidence_budget_exceeded"}
+    if gap == "special_entry":
+        assert receipt["gaps"] == [{"path": "pipe", "reason": "unsupported_entry_type"}]
     else:
         assert "fixture evidence read failed" in receipt["error"]
 

@@ -25,6 +25,7 @@ from ouroboros.task_results import (
 )
 
 from tests._cancel_intents_shared import qenv as _qenv
+from tests.worker_pool_support import affirm_ready
 
 # The fixture is requested by name as a test parameter, so it is re-bound through a
 # module attribute: a direct import of a name that reappears as a parameter is an F811
@@ -64,12 +65,12 @@ def test_assignment_blocks_when_cancel_intent_projection_is_unreadable(
     from supervisor import queue, state, workers
 
     delivered: list[dict] = []
-    worker = types.SimpleNamespace(
+    worker = affirm_ready(types.SimpleNamespace(
         wid=1,
         busy_task_id=None,
         reaping=False,
         in_q=types.SimpleNamespace(put=lambda task: delivered.append(dict(task))),
-    )
+    ))
     task = {
         "id": "blocked-by-intent-corruption",
         "type": "task",
@@ -117,12 +118,12 @@ def test_assignment_retains_pending_when_claim_authority_raises(qenv, monkeypatc
     task_id = "claim-authority-failure"
     pending = [{"id": task_id, "type": "task", "chat_id": 1, "depth": 0}]
     delivered: list[dict] = []
-    worker = types.SimpleNamespace(
+    worker = affirm_ready(types.SimpleNamespace(
         wid=1,
         busy_task_id=None,
         reaping=False,
         in_q=types.SimpleNamespace(put=lambda task: delivered.append(dict(task))),
-    )
+    ))
     monkeypatch.setattr(workers, "DRIVE_ROOT", qenv.drive)
     monkeypatch.setattr(workers, "PENDING", pending)
     monkeypatch.setattr(workers, "RUNNING", {})
@@ -274,12 +275,12 @@ def test_snapshot_restore_blocks_when_cancel_intent_projection_is_unreadable(
     from supervisor import state, workers
 
     delivered: list[dict] = []
-    worker = types.SimpleNamespace(
+    worker = affirm_ready(types.SimpleNamespace(
         wid=1,
         busy_task_id=None,
         reaping=False,
         in_q=types.SimpleNamespace(put=lambda row: delivered.append(dict(row))),
-    )
+    ))
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(workers, "PENDING", pending)
     monkeypatch.setattr(workers, "RUNNING", running)
@@ -319,12 +320,12 @@ def test_cancel_authority_hold_never_releases_a_terminal_row_to_dispatch(
     pending = [task]
     running: dict = {}
     delivered: list[dict] = []
-    worker = types.SimpleNamespace(
+    worker = affirm_ready(types.SimpleNamespace(
         wid=1,
         busy_task_id=None,
         reaping=False,
         in_q=types.SimpleNamespace(put=lambda row: delivered.append(dict(row))),
-    )
+    ))
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(workers, "PENDING", pending)
     monkeypatch.setattr(workers, "RUNNING", running)
@@ -698,12 +699,12 @@ def test_drop_cancelled_pending_defers_when_intent_vanishes_before_settle(
     task_id = "drop-intent-race"
     pending = [{"id": task_id, "type": "task", "chat_id": 1, "depth": 0}]
     delivered: list[dict] = []
-    worker = types.SimpleNamespace(
+    worker = affirm_ready(types.SimpleNamespace(
         wid=1,
         busy_task_id=None,
         reaping=False,
         in_q=types.SimpleNamespace(put=lambda task: delivered.append(dict(task))),
-    )
+    ))
     monkeypatch.setattr(workers, "PENDING", pending, raising=False)
     monkeypatch.setattr(workers, "RUNNING", {}, raising=False)
     monkeypatch.setattr(workers, "WORKERS", {1: worker}, raising=False)

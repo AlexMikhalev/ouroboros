@@ -76,7 +76,7 @@ def test_vision_query_default_max_tokens():
 
 
 def test_summary_and_background_token_budgets():
-    """Summary/reflection/background paths must stay above the raised floors."""
+    """Summary/background paths must stay above the raised floors."""
     from pathlib import Path
     from ouroboros import context_compaction
 
@@ -87,7 +87,6 @@ def test_summary_and_background_token_budgets():
         # The Light answer ceiling is one named constant since the memory
         # writers landed; the floor itself is pinned on the constant below.
         "ouroboros/consolidator.py": "max_tokens=LIGHT_ANSWER_CEILING_TOKENS",
-        "ouroboros/reflection.py": "max_tokens=16384",
         "ouroboros/tools/skill_publish.py": "max_tokens=8192",
     }
     for path, needle in expectations.items():
@@ -98,6 +97,8 @@ def test_summary_and_background_token_budgets():
     # facts row buys no model call, so the synthesis leaf holds no summary call.
     synthesis = Path("ouroboros/post_task_synthesis.py").read_text(encoding="utf-8")
     assert "chat_observed" not in synthesis and 'call_type="task_summary"' not in synthesis
+    # The reflection log is a store only: no automatic lesson or register call remains.
+    assert "chat_observed" not in Path("ouroboros/reflection.py").read_text(encoding="utf-8")
     assert context_compaction._SUMMARY_OUTPUT_TOKENS == 32_768
     assert context_compaction._summarizer_spec()["output_budget"] == 32_768
 
@@ -408,24 +409,6 @@ def test_tool_timeout_settings_wins_when_higher():
     assert result == 900, f"Expected 900 (settings), got {result}"
 
 
-def test_review_evidence_no_truncation_by_default():
-    """format_review_evidence_for_prompt must NOT truncate by default (max_chars=0)."""
-    from ouroboros.review_evidence import format_review_evidence_for_prompt
-    big = {"has_evidence": True, "task_id": "task-review", "data": "x" * 10000}
-    result = format_review_evidence_for_prompt(big)
-    assert "truncated" not in result.lower()
-    assert len(result) > 10000
-
-
-def test_review_evidence_bounded_with_omission_note():
-    """format_review_evidence_for_prompt truncates with explicit omission note when max_chars>0."""
-    from ouroboros.review_evidence import format_review_evidence_for_prompt
-    big = {"has_evidence": True, "task_id": "task-review", "data": "x" * 10000}
-    result = format_review_evidence_for_prompt(big, max_chars=500)
-    assert "OMISSION NOTE" in result
-    assert "truncated at 500 chars" in result
-
-
 def test_review_evidence_no_obligation_cap():
     """collect_review_evidence default max_obligations must be None (no cap)."""
     import inspect
@@ -460,18 +443,6 @@ def test_repository_index_collapses_junk_dirs():
     from ouroboros.tools.review_helpers import _FULL_REPO_SKIP_DIR_PREFIXES
     for prefix in ("assets/", "tests/", "devtools/"):
         assert prefix in _FULL_REPO_SKIP_DIR_PREFIXES, f"{prefix} not in skip list"
-
-
-def test_summary_and_reflection_callers_use_bounded_evidence():
-    """The reflection prompt builder (the one paid synthesis reader since the paid
-    summary's removal) must call format_review_evidence_for_prompt with max_chars."""
-    from pathlib import Path
-
-    for filename in ("ouroboros/reflection.py",):
-        src = Path(filename).read_text(encoding="utf-8")
-        assert "format_review_evidence_for_prompt(" in src
-        # Must pass max_chars argument (not rely on default 0)
-        assert "max_chars=" in src, f"{filename} must call format_review_evidence_for_prompt with max_chars"
 
 
 def test_obligation_context_shows_all():
@@ -782,46 +753,3 @@ def test_update_letter_max_tokens_pinned():
     from ouroboros.update_letter import UPDATE_LETTER_MAX_TOKENS
 
     assert UPDATE_LETTER_MAX_TOKENS == 1024
-
-
-def test_acceptance_panels_reach_the_synthesis_prompts():
-    """AP7/F27: the post-task summariser and the reflection were told there was
-    no review evidence even when the task bought an acceptance panel — the
-    commit/advisory lens simply does not know about it. The panels ride along,
-    and the absence statement names the lens it describes."""
-    from ouroboros.review_evidence import format_review_evidence_for_prompt
-
-    panels = [{
-        "panel_id": "panel_1", "surface": "task_acceptance", "authority": "host",
-        "aggregate_signal": "DEGRADED", "transport_status": "not_dispatched",
-        "parse_status": "malformed", "superseded": False,
-        "quorum": {"required": 2, "contributed": 0, "configured": 3},
-        "reason": "slot_1:degraded_partial_source: the exact source is unavailable",
-    }]
-    out = format_review_evidence_for_prompt({}, max_chars=8000, acceptance_panels=panels)
-    assert "TASK ACCEPTANCE PANELS" in out
-    assert "no structured review evidence" not in out
-    assert "DEGRADED" in out and "not_dispatched" in out
-    assert '"required": 2' in out and '"contributed": 0' in out
-    assert "degraded_partial_source" in out
-
-    # No lens and no panels: the sentinel names WHICH evidence is absent.
-    bare = format_review_evidence_for_prompt({}, max_chars=8000)
-    assert bare == "(no commit/advisory review evidence recorded for this task)"
-
-    # Both together, and the existing bound still applies.
-    both = format_review_evidence_for_prompt(
-        {"has_evidence": True, "task_id": "task-review", "data": "x" * 10_000}, max_chars=500,
-        acceptance_panels=panels,
-    )
-    assert "OMISSION NOTE" in both
-    assert "truncated at 500 chars" in both
-
-
-def test_summary_and_reflection_callers_pass_the_acceptance_panels():
-    from pathlib import Path
-
-    # The paid summary caller is gone (TZ-2 C5); reflection is the one caller.
-    for filename in ("ouroboros/reflection.py",):
-        src = Path(filename).read_text(encoding="utf-8")
-        assert "acceptance_panels=" in src, filename

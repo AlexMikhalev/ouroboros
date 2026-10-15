@@ -452,46 +452,6 @@ def compile_anchored_edits(text: str, pairs: Any, anchor: str = "old_str") -> st
     return text
 
 
-def _authored_edit_pairs(edits: Any) -> list[tuple[str, str]]:
-    """An automatic edit states its old text, replacement and basis; the basis is required, never judged."""
-    if not isinstance(edits, list):
-        raise ValueError("edits must be a list of {old_text, new_text, basis}")
-    for number, edit in enumerate(edits, 1):
-        fields = [edit.get(key) for key in ("old_text", "new_text", "basis")] if isinstance(edit, dict) else []
-        if len(fields) != 3 or not all(isinstance(value, str) for value in fields) or not fields[2].strip():
-            raise ValueError(f"edit {number} needs string old_text and new_text and a non-empty basis")
-    return [(edit["old_text"], edit["new_text"]) for edit in edits]
-
-
-def nomination_write_form(entry: Mapping[str, Any]) -> dict[str, Any]:
-    """The one automatic nomination contract, checked before any source is read.
-
-    Either new-note ``content`` (complete Markdown; ``edits`` absent or ``[]``)
-    or the anchored form: an ``edits`` list (empty only beside a summary) plus
-    an optional ``summary``. Present keys are judged by shape, never truthiness:
-    a non-list ``edits`` (``null``, ``""``, ``{}``) or a non-text/blank
-    ``summary`` is malformed, the legacy generic ``frontmatter`` is refused
-    rather than dropped, and non-blank content beside edits or a summary is
-    ambiguous. Returns ``write_knowledge_note`` arguments; a refusal raises
-    ``ValueError`` carrying its typed reason: ``invalid_nomination`` (``frontmatter``,
-    non-list ``edits``, non-text or blank ``summary``), ``ambiguous_nomination``
-    (content beside edits or a summary) or ``empty_nomination`` (no content)."""
-    edits, content = entry.get("edits", []), entry.get("content")
-    if "frontmatter" in entry:
-        raise ValueError("invalid_nomination: frontmatter is not an automatic field; revise the summary with summary")
-    if not isinstance(edits, list):
-        raise ValueError("invalid_nomination: edits must be a list of {old_text, new_text, basis}")
-    if "summary" in entry and (not isinstance(entry["summary"], str) or not entry["summary"].strip()):
-        raise ValueError("invalid_nomination: summary must be non-empty text")
-    if edits or "summary" in entry:
-        if content is not None and not (isinstance(content, str) and not content.strip()):
-            raise ValueError("ambiguous_nomination: content creates a new note; edits and summary change a read one")
-        return {"content": "", "mode": "edit", "edits": edits, "summary": entry.get("summary")}
-    if not isinstance(content, str) or not content.strip():
-        raise ValueError("empty_nomination")
-    return {"content": content, "mode": "overwrite"}
-
-
 def _yaml_form(metadata: Mapping[str, Any]) -> str:
     """Loaded frontmatter spelled exactly, for comparison without ``==``.
 
@@ -502,16 +462,14 @@ def _yaml_form(metadata: Mapping[str, Any]) -> str:
 
 
 def _write_content(current: KnowledgeNote | None, content: str, mode: str,
-                   old_str: str | None = None, edits: Any = None, summary: str | None = None) -> bytes:
+                   old_str: str | None = None, summary: str | None = None) -> bytes:
     proposed = content.encode("utf-8")
     if mode == "edit":
         if current is None or current.parse_error:
             raise ValueError("edit requires an existing readable note")
         body_start = current.source.body_span.start_byte
         body = current.raw[body_start:].decode("utf-8")
-        if edits is not None:
-            body = compile_anchored_edits(body, _authored_edit_pairs(edits), "old_text")
-        elif old_str is not None or summary is None:  # a summary-only revision keeps every body byte
+        if old_str is not None or summary is None:  # a summary-only revision keeps every body byte
             body = compile_anchored_edits(body, [(old_str, content)])
         if summary is None or current.metadata.get("summary") == summary:
             return current.raw[:body_start] + body.encode("utf-8")
@@ -571,26 +529,24 @@ def write_knowledge_note(
     address: KnowledgeAddress, content: str, mode: str = "overwrite",
     expected_revision: str | None = None, task_id: str = "", old_str: str | None = None,
     *, writer: str = "", route: Any = None, writer_input_ref: Any = None,
-    edits: Any = None, summary: str | None = None, focus: Any = None,
+    summary: str | None = None, focus: Any = None,
     reason: str = "", capture_previous: Callable[[KnowledgeNote], dict[str, Any]] | None = None,
 ) -> KnowledgeWriteResult:
     """Publish a note against the actual current source, with no inference lock.
 
-    ``writer`` names the seam that authored ``content`` (turn, consolidation,
-    scratchpad_consolidation, reflection, knowledge_maintenance), ``route`` the
+    ``writer`` names the seam that authored ``content`` (the acting mind's
+    ``turn``; earlier rows also name retired automatic writers), ``route`` the
     model route it ran on, ``writer_input_ref`` what it saw and ``focus`` which
     focus of the subject wrote it (``focus_signature(ctx)["focus"]``). They are
     host facts stamped on the history row, never on the note body; a caller that
     cannot name one leaves the honest ``unknown``, which is also how rows written
     before the stamp existed read.
 
-    ``edits`` (mode=edit, instead of ``old_str``/``content``) is the automatic
-    form: a list of ``{old_text, new_text, basis}`` applied to the body only by
-    the same anchored compiler. ``summary`` (mode=edit) revises that one field in
-    the same locked write through the ordinary metadata merge, beside ``edits``,
-    beside one ``old_str`` replacement, or alone with no ``old_str``/``content``.
-    History retains the authored ``edits`` and, only when supplied, ``summary``;
-    the delta carries ``old_chars``/``new_chars``/``change_chars``, the
+    ``summary`` (mode=edit) revises that one field in the same locked write
+    through the ordinary metadata merge, beside one ``old_str`` replacement or
+    alone with no ``old_str``/``content``. History retains the authored
+    ``summary`` only when supplied; the delta carries
+    ``old_chars``/``new_chars``/``change_chars``, the
     ``removed_headings`` and ``body_changed``/``summary_changed`` (heading and
     changed flags are ``None`` when a side has no parsed source). The history row
     also records ``old_chars``/``new_chars``.
@@ -611,13 +567,11 @@ def write_knowledge_note(
         raise ValueError("reason is required for archive and used only with archive")
     if mode != "edit" and old_str is not None:
         raise ValueError("old_str is used only with mode=edit")
-    if mode != "edit" and (edits is not None or summary is not None):
-        raise ValueError("edits and summary are used only with mode=edit")
-    if edits is not None and (old_str is not None or content):
-        raise ValueError("edits replace old_str and content; pass one edit form")
+    if mode != "edit" and summary is not None:
+        raise ValueError("summary is used only with mode=edit")
     if summary is not None and (not isinstance(summary, str) or not summary.strip()):
         raise ValueError("summary must be non-empty text")
-    if summary is not None and edits is None and old_str is None and content:
+    if summary is not None and old_str is None and content:
         raise ValueError("content replaces old_str; a summary-only edit passes neither")
     with knowledge_write_lock(address.shelf):
         # Re-resolve inside the lock; a changed symlink cannot redirect a write.
@@ -639,7 +593,7 @@ def write_knowledge_note(
             return KnowledgeWriteResult(False, "revision_conflict", current, revision)
         try:
             raw = (_lifecycle_content(current, mode, reason) if lifecycle
-                   else _write_content(current, content, mode, old_str, edits, summary))
+                   else _write_content(current, content, mode, old_str, summary))
         except (ValueError, yaml.YAMLError) as exc:
             return KnowledgeWriteResult(False, f"invalid_note: {exc}", current, revision)
         updated = _note(address, raw)
@@ -695,7 +649,6 @@ def write_knowledge_note(
                    "old_sha256": hashlib.sha256(current.raw).hexdigest() if current and current.raw else "",
                    "new_sha256": updated.revision if raw else "", "old_content": old_text,
                    "new_content": updated.text, "source_ref": updated.source_ref(), "delta": delta,
-                   **({"edits": edits} if edits is not None else {}),
                    **({"summary": summary} if summary is not None else {})}
         history_ref = None
         if lifecycle:

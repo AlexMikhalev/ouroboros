@@ -343,14 +343,19 @@ def test_skill_review_does_not_block_text_by_scary_filename(tmp_path):
     assert descriptor is None
 
 
-def test_skill_review_session_prompt_allows_binary_inspection():
-    """X4/В21 leg 3: the agent_session reviewer's retrieval assignment tells it
-    that descriptor-only binary files may be inspected with its own tools."""
-    from ouroboros.skill_review_passes import _SESSION_RETRIEVAL
+def test_skill_review_retrieving_assignment_allows_binary_inspection():
+    """X4/В21 leg 3: a retrieving reviewer is told that a binary file is only its
+    descriptor in the pack or index and that the frozen copy lets it inspect the
+    file itself — a descriptor never claims its bytes were inspected."""
+    from ouroboros.skill_review_passes import _PAYLOAD_INLINE, _PAYLOAD_SOURCES, _SESSION_RETRIEVAL
 
-    assert "{path,size,mime_from_name,sha256}" in _SESSION_RETRIEVAL
-    assert "your own read/search tools" in _SESSION_RETRIEVAL
-    assert "judge by the descriptor" in _SESSION_RETRIEVAL
+    assert "{{path,size,mime_from_name,sha256}}" in _PAYLOAD_INLINE
+    assert "{path,size,mime_from_name,sha256}" in _PAYLOAD_INLINE.format(
+        content_hash="h", address="the copy")
+    assert "may be inspected there" in _PAYLOAD_INLINE and "inspect it there" in _PAYLOAD_SOURCES
+    assert "say in the finding which you did" in _PAYLOAD_INLINE
+    assert "never the mutable skill_dir path" in _PAYLOAD_SOURCES
+    assert "Read the governance and host-contract sources in {repository}" in _SESSION_RETRIEVAL
 
 
 
@@ -471,8 +476,13 @@ def test_review_skill_prompt_loads_core_governance_artifacts(tmp_path, monkeypat
     """DEVELOPMENT.md 'When adding a new reasoning flow' rule requires
     ARCHITECTURE.md and DEVELOPMENT.md to appear in the assembled skill
     review prompt. Regression guard for Phase 3 round 6 finding."""
+    from tests.review_pool_rosters import pool_roster, pool_seat
+
     skills_root = _build_skill(tmp_path)
     monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
+    # One natively retrieving seat beside one packet seat: both deliveries are asserted.
+    set_review_pool(monkeypatch, pool_roster(pool_seat("review-1", "openai/gpt-5.5", delivery="native"),
+                                             pool_seat("review-2", "google/gemini-3.5-flash")))
     ctx = _make_ctx(tmp_path)
 
     captured = {}
@@ -506,10 +516,15 @@ def test_review_skill_prompt_loads_core_governance_artifacts(tmp_path, monkeypat
     assert "BIBLE.md" in prompt, (
         "skill review prompt must cite BIBLE.md for constitutional context"
     )
-    session_task = captured["delivery"]["session_task"]
-    assert prompt[captured["stable_prefix_len"]:] in session_task
-    assert "## Governance context — docs/ARCHITECTURE.md" not in session_task
-    assert "docs/CHECKLISTS.md" in session_task and "docs/CREATING_SKILLS.md" in session_task
+    # Every retrieving seat gets its own task: the dynamic tail with the whole
+    # payload (it fits), never the inlined books, plus the reading it is owed.
+    plan = captured["delivery"].get("row_plan") or {}
+    session_tasks = [task for task in plan.get("session_tasks") or [] if task]
+    assert len(session_tasks) == sum(bool(flag) for flag in plan.get("retrieves") or []) > 0
+    for session_task in session_tasks:
+        assert prompt[captured["stable_prefix_len"]:] in session_task
+        assert "## Governance context — docs/ARCHITECTURE.md" not in session_task
+        assert "docs/CHECKLISTS.md" in session_task and "docs/CREATING_SKILLS.md" in session_task
     # Minimal content-presence check: Section 10 key-invariants header is
     # referenced by label, and the actual body should appear (shipping
     # repo has the canonical text there).

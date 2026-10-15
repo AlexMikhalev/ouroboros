@@ -744,6 +744,9 @@ def test_a_finished_pass_never_drops_the_duty_its_successor_registered(monkeypat
 
     monkeypatch.setattr(sm, "_DUTIES", {})
     monkeypatch.setattr(sm, "_LAST_CANCEL_INTENT_SWEEP", [time.time()])
+    schedule_pass = threading.Lock()
+    schedule_pass.acquire()  # a schedule pass already runs: this test pins the custody duty alone
+    monkeypatch.setattr(sm, "_SCHEDULE_SWEEP_LOCK", schedule_pass)
     released, first_may_return, second_release = threading.Event(), threading.Event(), threading.Event()
     passes = []
 
