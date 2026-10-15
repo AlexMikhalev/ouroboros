@@ -197,6 +197,7 @@ def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dic
         dialogue._completion_verdict(row, event),
         dialogue.terminal_delivery_clause(delivery.get("state", ""), delivery.get("preserved_path", "")),
     ])
+    neutral_notice, notice_detail = dialogue.completion_notice_detail({**event, **row, "terminal_delivery": delivery})
     excerpt = dialogue._completion_excerpt(row, chat_id=chat_id, salvage_only=True)
     text += "".join(f" {part}" for part in (verdict, excerpt) if part)
     from ouroboros.dialogue_provenance import presence_provenance_fields
@@ -216,6 +217,7 @@ def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dic
         "outcome_axes": row.get("outcome_axes") or {}, "reason_code": str(row.get("reason_code") or ""),
         "result_ref": {"kind": "task_result", "task_id": tid, "reader": "get_task_result"}, "text": text,
         **({"reason_detail": verdict} if verdict else {}),
+        "completion_notice": {"neutral": neutral_notice, "detail": notice_detail},
         **({"terminal_projection_token": ready["token"]} if ready.get("token") else {}),
         # The typed delivery disposition the browser card renders (log_events.terminalDeliveryClause).
         **({"terminal_delivery": delivery} if delivery else {}),

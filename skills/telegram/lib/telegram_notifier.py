@@ -178,27 +178,23 @@ def _phase_word(phase: str, lang: str) -> str:
 # host's own sentence, sent as the host wrote it.
 _NOTIFY = Index("notify", {
     "task_finished": "{icon} Task {id} {word}{tail}",
+    "task_finished_details": "Task {id} finished{tail}. Review and verification details are in the app.",
     "budget": "⚠️ Budget: {pct}% (${spent} / ${total})",
 }, "push notifications about finished tasks and the budget")
 _PHASE_ICONS = {"done": "✅", "warn": "⚠️", "error": "❌", "cancelled": "🚫"}
 
-# A finish that is not clean always reaches the owner's phone. Telegram's text bridge is
-# the one owner surface with no task card, so the typed phase and its reason ARE the
-# honesty floor there (owner decision Q8). The opt-in toggle only ADDS the clean
-# finishes; it is not a switch for this floor, and it is not a second producer — one
-# lane and one ledger, so a non-clean task is announced once, never twice.
-_NON_CLEAN_PHASES = frozenset({"warn", "error", "cancelled"})
+# Completion notices are opt-in for every outcome. The task's evidence stays in
+# its details even when the owner chooses no additional phone messages.
 # Only a ROOT outcome, and only in a room the owner actually talks in. ``summary_kind``
 # is the typed root fact the host stamps, without which a twelve-child swarm pushes
 # twelve lines; the chat id keeps the hidden partition (Skill Review and headless
-# admissions, HIDDEN_CHAT_ID = 0) and synthetic A2A rooms off the phone, for the floor
-# and the toggle alike. A legacy row that predates either field never pushes.
+# admissions, HIDDEN_CHAT_ID = 0) and synthetic A2A rooms off the phone.
+# A legacy row that predates either field never pushes.
 _ROOT_SUMMARY_KIND = "terminal_root_projection"
 
 
 def _announce_summary(row: Dict[str, Any], *, notify_all: bool) -> bool:
-    """Does this settled task-summary row deserve a push? The audience comes first for both
-    lanes; the toggle then adds the clean finishes to the non-clean floor."""
+    """The existing toggle controls every extra finish notice, never ordinary replies."""
     if str(row.get("summary_kind") or "") != _ROOT_SUMMARY_KIND:
         return False
     try:
@@ -207,7 +203,7 @@ def _announce_summary(row: Dict[str, Any], *, notify_all: bool) -> bool:
         return False
     if chat_id != WEB_UI_CHAT_ID and not is_project_chat_id(chat_id):
         return False
-    return notify_all or str(row.get("outcome_phase") or "") in _NON_CLEAN_PHASES
+    return notify_all
 
 
 async def _check_tasks_notify(
@@ -218,7 +214,7 @@ async def _check_tasks_notify(
     notify_all = _notify_enabled(settings, "TELEGRAM_NOTIFY_TASKS")
     summaries = _summary_ids_in_tail(api)
     if "notified_task_ids" not in state:
-        # First run with task notifications on → treat the existing backlog as seen
+        # First observation → treat the existing backlog as seen
         # so enabling the toggle doesn't blast a notification for every old task.
         state["notified_task_ids"] = [tid for tid, _ in summaries][-300:]
         return None, False
@@ -267,12 +263,13 @@ async def _check_tasks_notify(
                 parts.append(outcome)
         tail = (" · " + " · ".join(parts)) if parts else ""
         msg = _NOTIFY[lang].format("task_finished", icon=icon, id=tid[:8], word=word, tail=tail)
-        # The card's reason line, exactly as the host composed it for this task's
-        # durable row — never a second sentence written here, and never a second
-        # rendering of the cause table. Relayed in English: the flattened sentence
-        # carries task-control words that stay English by decision and sometimes the
-        # author's own rationale, and a transport has no typed clauses to translate around.
-        reason = str(e.get("reason_detail") or "").strip()
+        # The producer still has cancellation/custody facts omitted from this row.
+        # Consume its compact view; never reconstruct it or filter flattened prose.
+        notice = e.get("completion_notice")
+        notice = notice if isinstance(notice, dict) and isinstance(notice.get("neutral"), bool) and isinstance(notice.get("detail"), str) else None
+        reason = notice["detail"] if notice is not None else str(e.get("reason_detail") or "")
+        if notice is not None and notice["neutral"]:
+            msg = _NOTIFY[lang].format("task_finished_details", id=tid[:8], tail=tail)
         if reason:
             msg += "\n" + reason
         send_outcome, exc = await _push_notification(api, chat_id, msg, trust_env=trust_env)
@@ -309,9 +306,8 @@ def _make_notifier(api, *, trust_env: bool = False):
             chat_id = _pinned_chat_id(settings)
             transient: Optional[BaseException] = None
             delivered = False
-            # The tasks lane is no longer opt-in (it carries the non-clean floor), and
-            # the budget lane self-gates on its own toggle, so a pinned owner chat is
-            # the only precondition left.
+            # Both lanes self-gate. Keep observing task IDs while OFF so enabling
+            # notices later does not replay completions from the disabled period.
             if chat_id:
                 lang = _notifier_language()
                 state = _load_notif_state(api)

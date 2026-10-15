@@ -148,7 +148,7 @@ def test_an_open_plan_review_is_stated_beside_the_child_fact() -> None:
         "review": {"status": "degraded", "acceptance_decision": {
             "status": "finalized_unaccepted", "reason": "review_skipped_deadline_reserve"}}}}
     assert _completion_verdict(reviewed, {}) == (
-        f"{TASK_CAUSE_PHRASES['review_skipped_deadline_reserve'][:-1]} · {_CHILD_CLAUSE} · "
+        f"{_CHILD_CLAUSE} · {TASK_CAUSE_PHRASES['review_skipped_deadline_reserve'][:-1]} · "
         f"{TASK_CAUSE_PHRASES['terminal_plan_review_open']}.")
 
 

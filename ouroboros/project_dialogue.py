@@ -827,6 +827,11 @@ TASK_CAUSE_PHRASES = {
     "terminal_plan_review_open": "The plan review was still open when this answer was delivered",
     "child_results_deferred": "Some sub-task results were deferred instead of being folded into this answer",
     "tool_failure": "A tool this task used failed and nothing recovered it",
+    "receipt_absent": "No host verification receipt was recorded; this does not establish whether other checks ran.",
+    "expected_output_ungrounded": "The declared output has no recorded tool work or structured final answer to support it.",
+    "residual_tool_errors_without_review": "Tool errors remain in the record and the result has not been evaluated.",
+    "artifacts_unavailable": "Some result files are missing or could not be preserved.",
+    "partial_result": "The result is partial; remaining work is described in task details.",
     "task_exception": "The task stopped on an internal error",
     # Recovery finalized a dead attempt from its already registered answer instead of a retry
     # (working_checkpoint.adopt_registered_answer): the answer stands, the packaging does not.
@@ -1229,24 +1234,29 @@ def _join_cause_clauses(clauses: List[str]) -> str:
                       for index, c in enumerate(kept))
 
 
-def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
+def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any], *, include_review_details: bool = True) -> str:
     """Every simultaneous cause this record holds, as ONE terminated host clause.
 
-    Primary cause and standing limitations each appear once. Held tasks state
-    their objective's reason. Only the author's stop rationale reaches this line; reviewer
-    prose stays in review detail. Python twin of ``taskReasonDetail``.
+    Functional causes precede independent review caveats; neither replaces the other.
+    The compact phone view leaves pure provenance in details, never rewriting axes.
+    Unknown review obligations remain visible. Python twin of ``taskReasonDetail``.
     """
     from ouroboros.outcomes import (
-        ACCEPTANCE_ACCEPTED, REASON_FINAL_MESSAGE, REASON_OWNER_REQUESTED_FINALIZATION, plan_review_awaiting,
+        ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASON_BY_RAIL, REASON_FINAL_MESSAGE,
+        REASON_OWNER_REQUESTED_FINALIZATION, plan_review_awaiting,
     )
 
     decision: Dict[str, Any] = {}
     veto: Dict[str, Any] = {}
     objective: Dict[str, Any] = {}
     completion: Dict[str, Any] = {}
+    review: Dict[str, Any] = {}
+    execution: Dict[str, Any] = {}
+    artifacts: Dict[str, Any] = {}
     for source in (event, result):
         axes = source.get("outcome_axes") if isinstance(source.get("outcome_axes"), dict) else {}
-        execution = axes.get("execution") if isinstance(axes.get("execution"), dict) else {}
+        execution = axes.get("execution") if isinstance(axes.get("execution"), dict) else execution
+        artifacts = axes.get("artifacts") if isinstance(axes.get("artifacts"), dict) else artifacts
         value = source.get("task_completion", execution.get("task_completion"))
         if isinstance(value, dict):
             completion = value
@@ -1254,25 +1264,32 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
         if isinstance(objective.get("receipt_veto"), dict):
             veto = objective["receipt_veto"]
         for holder in (source.get("review_status"), axes.get("review")):
-            if isinstance(holder, dict) and isinstance(holder.get("acceptance_decision"), dict):
-                decision = holder["acceptance_decision"]
+            if isinstance(holder, dict):
+                review = holder
+                if isinstance(holder.get("acceptance_decision"), dict):
+                    decision = holder["acceptance_decision"]
     status = str(decision.get("status") or "").strip()
     cause = str(decision.get("reason") or "")
     raw_reason = str(result.get("reason_code") or event.get("reason_code") or "")
     origin = result.get("cancel_origin") or event.get("cancel_origin")
     phase = outcome_phase(result, event)
-    # Resolved once for every branch: the custody debt is a standing limitation
-    # of the same answer, not a property of the branch that happened to fire.
     reason, custody = _custody_debt_reason(raw_reason, result, event)
+    if reason in {REASON_FINAL_MESSAGE, ""}:
+        reason = str(execution.get("reason_code") or reason)
+    review_cause = (cause if status and (status != ACCEPTANCE_ACCEPTED or cause in TASK_CAUSE_PHRASES)
+                    and (phase in {"done", "warn"} or recorded_author_stop(decision)) else "")
+    # Author-accepted completion is not reviewer approval. Required mode, explicit
+    # debts and unknown enforcement are not inferred optional from a reason string.
+    author_closed = (objective.get("status") == "pass" and objective.get("source") == "author_acceptance"
+                     and decision.get("enforcement") == "advisory"
+                     and review.get("trigger") in {"auto_effect", "auto_contract", "auto_agent_request"}
+                     and not decision.get("open_obligations") and not review.get("acceptance_obligations"))
+    if not include_review_details and (review_cause == "previous_revision_accepted"
+                                      or (review_cause == "author_finish" and author_closed and review.get("status") != "fail")):
+        review_cause = ""
     held = phase == "error" and str(objective.get("source") or "").startswith("plan_review_")
     if raw_reason == REASON_OWNER_REQUESTED_FINALIZATION:
         clause = ""  # an owner-requested stop is a success and carries its own marker
-    elif (status and (status != ACCEPTANCE_ACCEPTED or cause in TASK_CAUSE_PHRASES)
-            and (phase in {"done", "warn"} or (recorded_author_stop(decision) and phase == "error"))):
-        # An explicit author stop is the fact that ended the task (its objective is
-        # blocked, so the card is red); the decision's typed reason — its TRUE cause,
-        # not always ``author_stop`` — speaks over the delivery step.
-        clause = TASK_CAUSE_PHRASES.get(cause, cause)
     elif phase == "cancelled" and isinstance(origin, dict) and origin:
         # The recorded cause and the relation the record PROVES (#1061).
         from supervisor.cancel_publication import cancel_cause_clauses
@@ -1281,7 +1298,7 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
     elif held:
         # A task HELD by a blocking plan review states the objective's own reason.
         clause = TASK_CAUSE_PHRASES.get(str(objective.get("reason") or ""), str(objective.get("reason") or ""))
-    elif raw_reason in {REASON_FINAL_MESSAGE, ""}:
+    elif reason in {REASON_FINAL_MESSAGE, ""}:
         clause = (TASK_CAUSE_PHRASES["author_stop"] if completion.get("action") == "stop" and phase != "cancelled"
                   else TASK_CAUSE_PHRASES["plan_review_awaiting"] if plan_review_awaiting(event, result) and phase == "done" else "")
     else:
@@ -1292,7 +1309,29 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
         key = _plan_review_key(result, event, reason) if reason == "plan_review_advisory" else reason
         clause = (" ".join(strip_markdown(str(detail)).split()) if detail
                   else TASK_CAUSE_PHRASES.get(key, key))
-    line = _join_cause_clauses([clause, _author_stop_rationale(decision, completion),
+    # The bypass sentence already names its rail; do not repeat the same cause.
+    if review_cause and (reason == review_cause or ACCEPTANCE_BYPASS_REASON_BY_RAIL.get(reason) == review_cause):
+        clause = ""
+    if raw_reason == REASON_OWNER_REQUESTED_FINALIZATION:
+        review_cause = ""
+    warnings = list(objective.get("warnings") or []) if isinstance(objective.get("warnings"), list) else []
+    warnings.append(objective.get("warning") or "")
+    excluded = {"", "delegated_custody_unreconciled", "terminal_delivery_unknown", "terminal_delivery_exhausted"}
+    if not include_review_details:
+        excluded.add("receipt_absent")
+    warning_clauses = [TASK_CAUSE_PHRASES.get(str(w), str(w)) for w in warnings if str(w) not in excluded]
+    record = {**event, **result}
+    bundle = record.get("artifact_bundle") if isinstance(record.get("artifact_bundle"), dict) else {}
+    artifact_status = bundle.get("status") or record.get("artifact_status") or artifacts.get("status")
+    if artifact_status in {"failed", "missing"}:
+        warning_clauses.append(TASK_CAUSE_PHRASES["artifacts_unavailable"])
+    if decision.get("open_obligations"):
+        warning_clauses.append(TASK_CAUSE_PHRASES["open_obligations"])
+    if (objective.get("status") == "best_effort" and not clause and not objective.get("deferred_count")
+            and raw_reason != REASON_OWNER_REQUESTED_FINALIZATION and review_cause in {"", "previous_revision_accepted"}):
+        warning_clauses.append(TASK_CAUSE_PHRASES["partial_result"])
+    line = _join_cause_clauses([clause, *warning_clauses, TASK_CAUSE_PHRASES.get(review_cause, review_cause),
+                                _author_stop_rationale(decision, completion),
                                 *incident_cause_clauses(decision, reason, TASK_CAUSE_PHRASES),
                                 *_terminal_limitations(result, event, reason, held=held),
                                 TASK_CAUSE_PHRASES.get(custody, custody) if custody else ""])
@@ -1307,6 +1346,25 @@ def _author_stop_rationale(decision: Dict[str, Any], completion: Optional[Dict[s
     author = completion if (completion or {}).get("action") == "stop" else (
         decision.get("author_disposition") if recorded_author_stop(decision) else None)
     return " ".join(strip_markdown(str(author.get("rationale") or "")).split()) if isinstance(author, dict) else ""
+
+
+def completion_notice_detail(record: Dict[str, Any]) -> tuple[bool, str]:
+    """Compact transport view of the same causes, not another health verdict.
+
+    True means an otherwise finished, execution-ok record has only omitted
+    technical detail. Say 'finished', not 'successful'. Unknown/partial rows
+    keep their warning. Older rows without structured causes keep their text.
+    """
+    axes = record.get("outcome_axes") or {}
+    execution, objective = axes.get("execution") or {}, axes.get("objective") or {}
+    delivery = record.get("terminal_delivery") or {}
+    detail = _join_cause_clauses([_completion_verdict(record, {}, include_review_details=False),
+                                terminal_delivery_clause(delivery.get("state", ""), delivery.get("preserved_path", ""))])
+    full = _completion_verdict(record, {})
+    info_only = (not detail and bool(full) and execution.get("status") == "ok"
+                 and objective.get("status") in {"pass", "not_evaluated"}
+                 and outcome_phase(record, {}) in {"done", "warn"})
+    return info_only, detail or ("" if full else str(record.get("reason_detail") or ""))
 
 
 def _run_lives_in_its_project(

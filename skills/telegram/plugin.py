@@ -1469,11 +1469,11 @@ def register(api):
                          "placeholder": "on"},
                         {"name": "TELEGRAM_NOTIFY_TASKS", "label": "Notify on task completion", "type": "select",
                          "options": [
-                             {"value": "off", "label": "Off — non-clean finishes only"},
-                             {"value": "on", "label": "On — ✅ Task done · cost · rounds"},
+                             {"value": "off", "label": "Off — no extra completion messages"},
+                             {"value": "on", "label": "On — completion messages"},
                          ],
-                         "help": "A task that ends with warnings, fails or is cancelled always sends one short "
-                                 "line, because Telegram has no task card. On adds the clean finishes.",
+                         "help": "Off also suppresses extra failure and cancellation notices. Replies, files and "
+                                 "questions still arrive; task details retain all outcomes and review evidence.",
                          "placeholder": "off"},
                         {"name": "TELEGRAM_NOTIFY_BUDGET", "label": "Notify on budget thresholds", "type": "select",
                          "options": [

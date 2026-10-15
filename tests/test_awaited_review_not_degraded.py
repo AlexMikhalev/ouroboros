@@ -370,9 +370,11 @@ def test_a_task_that_finished_over_an_awaited_plan_wave_is_not_degraded(tmp_path
     # The fact is the cause sentence of a CLEAN card only: an amber or red card owes its colour to something else.
     warned = {**record, "outcome_axes": {**record["outcome_axes"], "objective": {
         "status": "not_evaluated", "warning": "residual_tool_errors_without_review"}}}
-    assert completion_status_label(warned, {}) == "Done with warnings" and _completion_verdict(warned, {}) == ""
+    assert completion_status_label(warned, {}) == "Done with warnings"
+    assert _completion_verdict(warned, {}) == TASK_CAUSE_PHRASES["residual_tool_errors_without_review"]
     failed = {**record, "outcome_axes": {**record["outcome_axes"], "artifacts": {"status": "missing"}}}
-    assert completion_status_label(failed, {}) == "Failed" and _completion_verdict(failed, {}) == ""
+    assert completion_status_label(failed, {}) == "Failed"
+    assert _completion_verdict(failed, {}) == TASK_CAUSE_PHRASES["artifacts_unavailable"]
 
 
 @pytest.mark.parametrize("facts, notice", [
