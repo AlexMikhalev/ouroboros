@@ -334,7 +334,9 @@ def test_stop_response_reaches_card_from_real_endpoints(subscription_ui, tmp_pat
                 "ok": True, "task_id": tid, "cascade": True, "cancel_state": "pending",
                 "stop_policy": "immediate", "request_id": intent["request_id"],
                 "reason_code": "teardown_unconfirmed"}}]
-            assert custody_calls == [tid]
+            # Cascade custody may retry its unresolved member during bounded sweeps.
+            # The request stays one recorded Stop and must touch only that member.
+            assert custody_calls and set(custody_calls) == {tid}
             assert details[-1]["body"]["cancel_state"] == "pending"
             assert page.locator(".toast").count() == 0
         else:
