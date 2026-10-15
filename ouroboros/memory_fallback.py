@@ -234,11 +234,13 @@ def _legacy_units(root: pathlib.Path, store: ChronicleStore) -> Iterator[Fallbac
     for block in sorted({unit.block for unit in units}):
         found = []
         for unit in (unit for unit in units if unit.block == block):
-            segment = memory_inventory.oldest_open_segment(root, store, unit.room_id, pos_range=spans[unit.record_id])
-            if segment is not None:
-                found.append((segment.rows[0][2], unit.record_id, segment))
-        for _pos, record_id, segment in sorted(found, key=lambda item: item[:2]):
-            yield FallbackUnit("legacy", segment.room_id, record_id, segment=segment, record_id=record_id,
+            for index, segment in enumerate(memory_inventory.open_segments(
+                    root, store, unit.room_id, pos_range=spans[unit.record_id])):
+                first = segment.rows[0][0]["row_sha256"][:12]
+                key = unit.record_id if index == 0 else f"{unit.record_id}:from:{first}"
+                found.append((segment.rows[0][2], unit.record_id, key, segment))
+        for _pos, record_id, key, segment in sorted(found, key=lambda item: item[:2]):
+            yield FallbackUnit("legacy", segment.room_id, key, segment=segment, record_id=record_id,
                                head_sequence=segment.head_sequence)
 
 
@@ -287,10 +289,12 @@ def select_unit(root: Any, store: ChronicleStore, shortage: Optional[ShortageFac
                                        part_records=records, part_units=part_units, part_cache=part_cache)
             if draft is None:
                 break
-            receipt = refusals.get(unit.key)
-            suppressed = (isinstance(receipt, dict) and receipt.get("input_sha256") == draft.input_sha256
-                          and receipt.get("light_binding") == dict(binding))
-            if not suppressed and not store.rejected_input(unit.room_id, unit.key, draft.input_sha256, binding):
+            keys = _suppression_keys(unit)
+            suppressed = any(isinstance(receipt := refusals.get(key), dict)
+                             and receipt.get("input_sha256") == draft.input_sha256
+                             and receipt.get("light_binding") == dict(binding) for key in keys)
+            if not suppressed and not any(store.rejected_input(unit.room_id, key, draft.input_sha256, binding)
+                                          for key in keys):
                 return unit, draft
             # Only the fitted prefix was attempted. Never retry its overlapping
             # subsets; the untouched suffix can still be useful in this pass.
@@ -298,6 +302,19 @@ def select_unit(root: Any, store: ChronicleStore, shortage: Optional[ShortageFac
             if unit is None:
                 break
     return None
+
+
+def _suppression_keys(unit: FallbackUnit) -> Tuple[str, ...]:
+    """Existing keys for these rows, not new attempt identities.
+
+    Legacy enumeration uses the record id; an untouched suffix uses its first row.
+    Sealing only the prefix makes that suffix the next head. Check both stored keys
+    in either position, still requiring the exact input and route to match.
+    """
+    if unit.kind != "legacy" or unit.segment is None or not unit.segment.rows:
+        return (unit.key,)
+    first = unit.segment.rows[0][0]["row_sha256"][:12]
+    return tuple(dict.fromkeys((unit.key, unit.record_id, f"{unit.record_id}:from:{first}")))
 
 
 def _untouched_suffix(unit: FallbackUnit, draft: "WriterInput") -> Optional[FallbackUnit]:

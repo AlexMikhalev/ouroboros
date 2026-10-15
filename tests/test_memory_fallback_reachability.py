@@ -118,13 +118,16 @@ def test_nested_part_suffixes_reuse_period_sources_and_rendered_members(tmp_path
     assert chosen is not None and "new qualification" in chosen[1].prompt
 
 
-def test_rejected_legacy_prefix_keeps_its_untouched_rows_reachable(tmp_path, monkeypatch, light):
+def _legacy_two_row_input(tmp_path, monkeypatch, *, middle=False):
     rooms = shared.world(tmp_path, activate=False)
     _consciousness(monkeypatch, False)
     # A real imported legacy segment; both source rows remain in the original archive.
     archive = tmp_path / 'archive' / shared.ARCHIVE_TWO
     rows = []
     for line in archive.read_text().splitlines(keepends=True):
+        if middle and 'beta answer' in line:
+            rows.append(json.dumps(shared.msg('2026-09-02T00:02:30+00:00',
+                'beta middle' + ' x' * 900, chat_id=rooms['beta'], client_message_id='b-middle')) + '\n')
         if 'beta question' in line or 'beta answer' in line:
             row = json.loads(line)
             row['text'] += ' x' * 900
@@ -133,14 +136,32 @@ def test_rejected_legacy_prefix_keeps_its_untouched_rows_reachable(tmp_path, mon
             line = json.dumps(row) + '\n'
         rows.append(line)
     archive.write_text(''.join(rows))
+    if middle:
+        meta_path = tmp_path / 'memory/dialogue_meta.json'
+        meta = json.loads(meta_path.read_text())
+        meta['last_consolidated_offset'] += 1  # The imported range includes the inserted source row.
+        meta_path.write_text(json.dumps(meta))
+        blocks_path = tmp_path / 'memory/dialogue_blocks.json'
+        blocks = json.loads(blocks_path.read_text())
+        blocks[1]['message_count'] += 1
+        next(room for room in blocks[1]['rooms'] if room['room_id'] == str(rooms['beta']))['message_count'] += 1
+        blocks_path.write_text(json.dumps(blocks))
     store = ChronicleStore(tmp_path)
     store.ensure_activated()
     unit = next(u for u in mf.candidate_units(tmp_path, store, None, allow_legacy=True)
                 if u.room_id == str(rooms['beta']))
-    assert unit.kind == 'legacy' and len(unit.segment.rows) == 2
+    assert unit.kind == 'legacy' and len(unit.segment.rows) == (3 if middle else 2)
     segment = mf.replace(unit.segment, rows=unit.segment.rows[:1], to_addr=unit.segment.rows[0][0])
     single = mf.build_writer_input(tmp_path, store, mf.replace(unit, segment=segment), budget_tokens=None)
-    monkeypatch.setattr(mf, '_light_fit', lambda _: (len(single.prompt) + 10, len))
+    budget = len(single.prompt) + 10
+    prefix = mf.build_writer_input(tmp_path, store, unit, budget_tokens=budget, measure=len)
+    assert prefix.covers['count'] == 1
+    return store, unit, prefix, budget
+
+
+def test_rejected_legacy_prefix_keeps_its_untouched_rows_reachable(tmp_path, monkeypatch, light):
+    store, unit, _prefix, budget = _legacy_two_row_input(tmp_path, monkeypatch)
+    monkeypatch.setattr(mf, '_light_fit', lambda _: (budget, len))
     monkeypatch.setattr(mf, 'candidate_units', lambda *a, **k: iter([unit]))
     first = _run(tmp_path, _Light())
     assert first.outcome == 'published' and store.get(first.record_id)['covers']['count'] == 1
@@ -180,3 +201,79 @@ def test_snapshot_periods_equal_live_periods_for_nested_and_missing_sources(tmp_
         assert mi.record_period(store, record, units, records=records) == mi.record_period(store, record, units)
     missing = {'kind': 'part', 'covers': {'member_ids': ['missing']}}
     assert mi.record_period(store, missing, units, records=records) == mi.record_period(store, missing, units)
+
+
+@pytest.mark.parametrize('rejected', [False, True], ids=['refusal', 'rejected-draft'])
+def test_legacy_suffix_identity_survives_the_mind_sealing_only_its_prefix(tmp_path, monkeypatch, light, rejected):
+    store, unit, prefix, budget = _legacy_two_row_input(tmp_path, monkeypatch)
+    candidates = mf.candidate_units
+    monkeypatch.setattr(mf, '_light_fit', lambda _: (budget, len))
+    monkeypatch.setattr(mf, 'candidate_units', lambda *a, **k: iter([unit]))
+    for ordinal in range(2):
+        llm = _Light() if rejected else _Light('not a memory answer')
+        run = _run(tmp_path, llm)
+        assert len(llm.prompts) == 1
+        if rejected:
+            assert run.outcome == 'published'
+            assert store.decide(run.record_id, False, shared.MIND, 'Preserve the source.').ok
+        else:
+            assert run.outcome == 'refused' and run.kind == 'invalid'
+        if ordinal == 0:
+            assert run.unit.key == unit.record_id
+        else:
+            assert run.unit.key != unit.record_id
+    suffix = run.unit
+    suffix_draft = mf.build_writer_input(tmp_path, store, suffix, budget_tokens=budget, measure=len)
+    quiet = _Light()
+    assert _run(tmp_path, quiet).outcome == 'nothing' and not quiet.prompts
+    assert store.publish_page(room_id=unit.room_id, text='The mind records the first row only.',
+                              author=shared.MIND, covers=prefix.covers, host_stamp=prefix.stamp).ok
+    # Actual enumeration rekeys the same remaining rows as the legacy record's head.
+    head = next(u for u in candidates(tmp_path, store, None, allow_legacy=True)
+                if u.kind == 'legacy' and u.room_id == unit.room_id)
+    assert head.key == unit.record_id and head.segment.rows == suffix.segment.rows
+    again = mf.build_writer_input(tmp_path, store, head, budget_tokens=budget, measure=len)
+    assert again.input_sha256 == suffix_draft.input_sha256
+    monkeypatch.setattr(mf, 'candidate_units', lambda *a, **k: iter([head]))
+    quiet = _Light()
+    assert _run(tmp_path, quiet).outcome == 'nothing' and not quiet.prompts
+    light.model = 'test/another-light'
+    changed = _Light()
+    assert _run(tmp_path, changed).outcome == 'published' and len(changed.prompts) == 1
+
+
+def test_legacy_suffix_also_honors_an_existing_bare_key_receipt(tmp_path, monkeypatch, light):
+    store, unit, prefix, budget = _legacy_two_row_input(tmp_path, monkeypatch)
+    suffix = mf._untouched_suffix(unit, prefix)
+    draft = mf.build_writer_input(tmp_path, store, suffix, budget_tokens=budget, measure=len)
+    mf._set_refusal(store, unit.record_id, {'input_sha256': draft.input_sha256,
+                                         'light_binding': mf.light_binding()})
+    monkeypatch.setattr(mf, 'candidate_units', lambda *a, **k: iter([suffix]))
+    assert mf.select_unit(tmp_path, store, None, allow_legacy=True,
+                          binding=mf.light_binding(), fit=lambda: (budget, len)) is None
+
+
+@pytest.mark.parametrize('rejected', [False, True], ids=['refusal', 'rejected-draft'])
+def test_legacy_later_open_segment_survives_a_published_middle_row(tmp_path, monkeypatch, light, rejected):
+    store, unit, _prefix, budget = _legacy_two_row_input(tmp_path, monkeypatch, middle=True)
+    candidates = mf.candidate_units
+    monkeypatch.setattr(mf, '_light_fit', lambda _: (budget, len))
+    # Keep real discovery and its sealed-row segmentation, isolating only the room.
+    monkeypatch.setattr(mf, 'candidate_units', lambda *a, **k: (
+        u for u in candidates(*a, **k) if u.room_id == unit.room_id))
+    first = _run(tmp_path, _Light() if rejected else _Light('invalid'))
+    if rejected:
+        assert first.outcome == 'published'
+        assert store.decide(first.record_id, False, shared.MIND, 'Keep this prefix.').ok
+    else:
+        assert first.outcome == 'refused'
+    middle_llm = _Light()
+    middle = _run(tmp_path, middle_llm)
+    assert middle.outcome == 'published' and len(middle_llm.prompts) == 1
+    assert 'beta middle' in middle_llm.prompts[0] and 'beta question' not in middle_llm.prompts[0]
+    assert store.get(middle.record_id)['covers']['count'] == 1
+    last_llm = _Light()
+    last = _run(tmp_path, last_llm)
+    assert last.outcome == 'published' and len(last_llm.prompts) == 1
+    assert 'beta answer' in last_llm.prompts[0] and 'beta middle' not in last_llm.prompts[0]
+    assert 'beta question' not in last_llm.prompts[0]
