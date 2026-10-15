@@ -1,9 +1,8 @@
 /** A room call owns its microphone, socket and playback for the room's visible lifetime.
- * The room-work composition keeps chat.js to one import and passes the actual chat id.
+ * One room lifecycle hook carries the actual chat id and decorates leave/destroy.
  * Captions bind output stream ids to item ids before PCM; bytes queued are never heard bytes.
  */
 import { apiClient } from './api_client.js';
-import { createRoomWork as buildRoomWork } from './room_work.js';
 import { decodeFrame, encodeFrame, newerEpoch } from './call_worklet.js';
 
 const CONNECT_TIMEOUT_MS = 15000; // Bound a dead handshake, never the conversation.
@@ -250,8 +249,9 @@ const PHONE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" strok
 export function mountCall({ page, chatId, env = globalThis }) {
     const doc = page.ownerDocument;
     const attach = page.querySelector('.chat-attach-btn');
+    const composer = attach?.closest('.chat-input-wrap');
     const available = callAvailability(env);
-    if (!attach || available.hidden) return { destroy() {}, leave() {} };
+    if (!composer || available.hidden) return { destroy() {}, leave() {} };
     if (!doc.querySelector('link[data-call-style]')) {
         const sheet = doc.createElement('link');
         sheet.rel = 'stylesheet'; sheet.href = new URL('../call.css', import.meta.url).href;
@@ -272,7 +272,7 @@ export function mountCall({ page, chatId, env = globalThis }) {
         <label class="ui-field">Engine<select class="ui-control call-engine"><option value="">Use Settings</option><option value="openai">OpenAI</option><option value="google">Google</option></select></label>
         <label class="ui-field">Model<input class="ui-control call-model" placeholder="Use Settings"></label>
         <label class="ui-field">Voice<input class="ui-control call-voice" placeholder="Use Settings"></label></div></details>`;
-    attach.closest('.chat-input-wrap').prepend(strip);
+    composer.prepend(strip);
     const status = strip.querySelector('.call-state');
     const reason = strip.querySelector('.call-reason');
     const captions = strip.querySelector('.call-captions');
@@ -314,7 +314,7 @@ export function mountCall({ page, chatId, env = globalThis }) {
     };
     button.addEventListener('click', open);
     mute.addEventListener('click', () => session.setMuted(!session.muted));
-    const end = () => session.stop();
+    const end = () => { if (available.supported) session.stop(); };
     leave.addEventListener('click', end);
     const panic = event => { if (event.target.closest?.('[data-chat-command="panic"], [data-chat-command="restart"]')) end(); };
     doc.addEventListener('click', panic, true);
@@ -348,9 +348,11 @@ export function mountCall({ page, chatId, env = globalThis }) {
     };
 }
 
-/** One existing mount/disposer seam carries both independent room controls. */
-export function createRoomWork(options) {
-    const room = buildRoomWork(options);
+/** Extend the room's existing disposers so navigation releases every call resource. */
+export function mountRoomCall({ roomWork, ...options }) {
     const call = mountCall(options);
-    return { ...room, leave() { call.leave(); room.leave(); }, destroy() { call.destroy(); room.destroy(); } };
+    const { leave, destroy } = roomWork;
+    roomWork.leave = () => { call.leave(); leave(); };
+    roomWork.destroy = () => { call.destroy(); destroy(); };
+    return call;
 }

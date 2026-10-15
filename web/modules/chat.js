@@ -11,7 +11,7 @@ import { createProjectHandoffs, receiptNotice } from './project_handoff.js';
 import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
 import { attachmentCaption, attachmentViews, composerText, createComposerAttachments, createUnconfirmedSends } from './chat_attachments.js';
 import { createChatDecision } from './chat_decision.js';
-import { createRoomWork } from './call.js';
+import { createRoomWork } from './room_work.js';
 import { createMainAttention } from './main_attention.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
 import { clientSurfaceField } from './client_surface.js';
@@ -3781,6 +3781,7 @@ export function createChatInstance({
         activeDirectActivities, liveCardRecords, pendingSubmissions, pendingSuggestedNames, modelWaits, stopEligible,
         cancelRunFromCard, refreshHeaderControlState, captureVisibleTimelineAnchor, restoreVisibleTimelineAnchor,
         hostReady: () => hostReady });
+    import('./call.js').then(({ mountRoomCall }) => { if (!destroyed) mountRoomCall({ page, chatId, roomWork }); });
 
     return {
         page,

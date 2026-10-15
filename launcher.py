@@ -1552,7 +1552,8 @@ def main(argv=()):
         background_color="#0d0b0f",
         text_select=True, hidden=background.start_hidden(options.launch_intent),
     )
-    _webview_window = attach_media_permissions(background.attach(window), url)  # Native capture is bound to this origin.
+    _webview_window = attach_media_permissions(background.attach(window), url)
+    # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.
     webview.start(func=background.run, debug=False, private_mode=False)
 
 
