@@ -247,6 +247,8 @@ def test_child_and_off_acceptance_follow_the_configured_rows(structured_env, tmp
     assert payload["reason"] == "reviewer_slot_unknown" and len(calls) == 0
     _handle_task_acceptance_review(child, claim="child done", reviewer_slot_id="t_actor")
     assert calls[-1][0] == ["t_actor"] and set(calls[-1][1]) == {"t_actor"}
+    _handle_task_acceptance_review(child, claim="child done", reviewer_slot_id="t_api")
+    assert calls[-1][0] == ["t_api"] and set(calls[-1][1]) == set()  # an API row gets no work order
 
     # A single pool row needs no name.
     structured_env.setenv("OUROBOROS_SUBAGENTS", json.dumps(_roster(_POOL_ROWS[1])))
@@ -257,7 +259,7 @@ def test_child_and_off_acceptance_follow_the_configured_rows(structured_env, tmp
     structured_env.setenv("OUROBOROS_SUBAGENTS", "{broken")
     payload = json.loads(_handle_task_acceptance_review(child, claim="child done"))
     assert payload["status"] == "not_dispatched" and "invalid review pool configuration" in payload["error"]
-    assert len(calls) == 2
+    assert len(calls) == 3
 
 
 def _consume_acceptance_results(results):
