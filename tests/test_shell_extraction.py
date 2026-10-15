@@ -120,8 +120,14 @@ def test_shell_catalog_schema_bytes_and_handler_owners_are_stable():
     # stays an exact readable source either way); the handlers' **kwargs bind them.
     # Both cwd descriptions now say Docker backend aliases inside active_workspace
     # are accepted (#1515); restoring only those two strings reproduces 47e50519….
+    # Rolled for owner decision 2A (issue #1772): a background child now lives until the
+    # TASK ends and is then ended by scope (tests/test_run_command_schema_truth.py);
+    # start_service with keep_alive=true is the path that outlives the task. Rolled again
+    # (whole review, 2026-10-13): that task-end promise names its limit, local POSIX runs
+    # only (Windows has no census; a Docker backend's children live in its container),
+    # paid for inside the same description.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "a6793fd123d719957c3058d8e8ec14d741e2546938771644426c96fc8bcca76d"
+        "57e457cc5c8689b9fe1bbda510db45cc6e2721d135b32a2f7b3cedc2304d085a"
     )
     original = json.loads(schema_bytes)
     for schema in original:
@@ -134,9 +140,11 @@ def test_shell_catalog_schema_bytes_and_handler_owners_are_stable():
         "Use for multi-line diagnostics or harness helpers; generated script files live under the task drive. "
         "The underlying command result echoes the resolved cwd."
     )
+    # The reconstruction keeps run_command's CURRENT description (the 2A background-child
+    # sentence and its local-POSIX limit), so this derived digest rolled with the one above.
     assert hashlib.sha256(json.dumps(original, sort_keys=True, ensure_ascii=False,
                                     separators=(",", ":")).encode()).hexdigest() == (
-        "dc0e1fb674853ead4d8f3b51f4d568057049075422b8287e262096dc91b49e9f"
+        "4ba056c5559b6d6766712f1235ad06d7dc2d36fd76a3103a5b3d6896cdecd0f6"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

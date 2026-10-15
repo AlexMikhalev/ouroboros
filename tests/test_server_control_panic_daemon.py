@@ -244,8 +244,10 @@ def test_accepted_panic_completes_despite_early_failure(monkeypatch, tmp_path, f
         if fault != "executor-import":
             assert set(diagnostics[0]["requests"]) == {
                 "local-model", "daemon", "commands", "executors", "services", "companions",
-                "restart-successor", "child-123", "startup-audit", "evidence-packer",
+                "restart-successor", "scope-census", "child-123", "startup-audit", "evidence-packer",
             }
+            # The installation-scope census is one more independent request; this root planted no marker.
+            assert diagnostics[0]["requests"]["scope-census"] == {"requested": False, "reason": "no installation marker planted"}
     if fault in {"audit", "packer", "model", "daemon", "request-thread"}:
         owner = {"audit": "startup-audit", "packer": "evidence-packer", "model": "local-model",
                  "daemon": "daemon", "request-thread": "commands"}[fault]

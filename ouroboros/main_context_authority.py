@@ -310,9 +310,14 @@ def project_main_task_authority(
 __all__ = ["project_main_task_authority", "project_helper_predecessor_authority"]
 
 
-def project_predecessor_review_views(runtime: dict, *, drive_root: Any, repo_roots: tuple = ()) -> dict:
+def project_predecessor_review_views(runtime: dict, *, task: Mapping[str, Any], drive_root: Any,
+                                     repo_roots: tuple = ()) -> dict:
     """Materialize an explicitly named predecessor's selected account as history.
 
+    Only a lineage root (the existing ``resolve_task_lineage`` decision, retry
+    roots included) is enriched, from a top-level or contract-only edge. A
+    helper keeps the brief and exact reader its contract already carries; its
+    own current review authority is projected by the caller, not here.
     This changes only Main's provider copy. No prior finish/verdict/selection is
     installed on the successor, and no task or history directory is enumerated.
     """
@@ -321,9 +326,13 @@ def project_predecessor_review_views(runtime: dict, *, drive_root: Any, repo_roo
     from ouroboros.agent_startup_checks import valid_task_result_authority_source
     from ouroboros.artifacts import read_actor_source_bytes
     from ouroboros.review_history import review_dispute_history
-    from ouroboros.task_results import load_task_result
+    from ouroboros.task_results import load_task_result, resolve_task_lineage
 
-    if not (runtime.get("predecessor_authority") or (runtime.get("task_contract") or {}).get("predecessor_authority")):
+    lineage = resolve_task_lineage(task.get("id") or task.get("task_id"), metadata=task.get("metadata"), **{
+        key: task.get(key) for key in (
+            "root_task_id", "parent_task_id", "delegation_role", "original_task_id", "timeout_retry_from")})
+    if not lineage["is_root_task"] or not (
+            runtime.get("predecessor_authority") or (runtime.get("task_contract") or {}).get("predecessor_authority")):
         return runtime
     result, pending, seen = copy.deepcopy(runtime), [], set()
     if isinstance(result.get("predecessor_authority"), dict):

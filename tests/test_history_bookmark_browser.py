@@ -71,6 +71,92 @@ def test_a_deep_place_with_an_open_review_and_line_reopens_at_the_newest_message
             browser.close()
 
 
+# Main's history note is header chrome on the header's own reading backing (DESIGN "History
+# edges", §5 "Floating chrome stays readable"): page ink under the whole header, so the messages
+# moving under the note never show through its words. Judged by what is painted, not by a CSS
+# spelling: with the note's words hidden, its box must paint the same while the messages beneath it
+# move by half a row; the words themselves keep the contrast floor on that backing.
+# Every layer the header paints itself with: its reading backing, and the light theme's own fill.
+_NO_HEADER_BACKING = """#page-chat .chat-page-header, #page-chat .chat-page-header::before {
+    background: transparent !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }"""
+_NOTE_GEOMETRY = """note => {
+    const feed = document.querySelector('#chat-messages'), header = note.closest('.chat-page-header');
+    const box = r => ({x: r.x, y: r.y, w: r.width, h: r.height, right: r.right, bottom: r.bottom});
+    const n = note.getBoundingClientRect(), h = header.getBoundingClientRect();
+    const middle = n.top + n.height / 2;
+    // A message's middle is moved under the note's middle; the feed scrolls, nothing else moves.
+    const bubbles = [...feed.querySelectorAll('[data-history-id]')].filter(m => m.getClientRects().length);
+    const target = bubbles.map(m => ({m, r: m.getBoundingClientRect()}))
+        .sort((a, b) => Math.abs(a.r.top + a.r.height / 2 - middle) - Math.abs(b.r.top + b.r.height / 2 - middle))[0];
+    if (target) feed.scrollTop += target.r.top + target.r.height / 2 - middle;
+    const before = getComputedStyle(header, '::before');
+    return {note: box(n), header: box(h), color: getComputedStyle(note).color, backing: before.backgroundColor,
+        headerFill: getComputedStyle(header).backgroundColor, backingContent: before.content,
+        shift: Math.round((target?.r.height || 80) / 2)};
+}"""
+# How many messages lie under the note right now.
+_UNDER_NOTE = """note => { const n = note.getBoundingClientRect();
+    return [...document.querySelectorAll('#chat-messages [data-history-id]')].filter(m => { const r = m.getBoundingClientRect();
+        return m.getClientRects().length && r.bottom > n.top && r.top < n.bottom && r.right > n.left && r.left < n.right; }).length; }"""
+
+
+def _rgb(color):
+    import re
+    parts = [float(v) for v in re.findall(r'[\d.]+', color)]
+    if color.startswith('color(srgb'):
+        return [v * 255 for v in parts[:3]], (parts[3] if len(parts) > 3 else 1.0)
+    assert color.startswith('rgb') and len(parts) in (3, 4), ('an sRGB computed colour', color)
+    return parts[:3], (parts[3] if len(parts) > 3 else 1.0)
+
+
+def _contrast(a, b):
+    def luminance(rgb):
+        lin = [(c / 255 / 12.92) if c / 255 <= 0.03928 else ((c / 255 + 0.055) / 1.055) ** 2.4 for c in rgb]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+    hi, lo = sorted((luminance(a), luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _note_backing_facts(page, note):
+    import io
+
+    from PIL import Image, ImageChops
+
+    facts = note.evaluate(_NOTE_GEOMETRY)
+    clip = {'x': facts['note']['x'], 'y': facts['note']['y'], 'width': facts['note']['w'], 'height': facts['note']['h']}
+    feed = page.locator('#chat-messages')
+    note.evaluate("n => { n.dataset.testWords = n.style.visibility; n.style.visibility = 'hidden'; }")
+    shots, under = [], []
+    try:
+        for move in (0, facts['shift']):
+            feed.evaluate('(n, d) => { n.scrollTop += d; }', move)
+            page.evaluate(_FRAMES)
+            under.append(note.evaluate(_UNDER_NOTE))
+            shots.append(Image.open(io.BytesIO(page.screenshot(clip=clip, animations='disabled'))).convert('RGB'))
+        feed.evaluate('(n, d) => { n.scrollTop -= d; }', facts['shift'])
+    finally:
+        note.evaluate("n => { n.style.visibility = n.dataset.testWords; delete n.dataset.testWords; }")
+    raw = ImageChops.difference(*shots).tobytes()
+    changed = sum(1 for i in range(0, len(raw), 3) if raw[i] + raw[i + 1] + raw[i + 2] > 24)
+    backing, alpha = _rgb(facts['backing'])
+    ink, ink_alpha = _rgb(facts['color'])  # meta ink may be translucent: judge it as painted on the backing
+    ink = [ink_alpha * c + (1 - ink_alpha) * b for c, b in zip(ink, backing)]
+    facts.update(under=under, backingAlpha=alpha, pixels=len(raw) // 3, showThrough=changed / max(1, len(raw) // 3),
+                 contrast=round(_contrast(ink, backing), 2))
+    return facts
+
+
+def _assert_note_readable(facts):
+    note, header = facts['note'], facts['header']
+    assert min(facts['under']) >= 1, ('messages move under the note, or nothing is proved', facts)
+    assert facts['backingContent'] not in ('none', 'normal') and facts['backingAlpha'] == 1, (
+        'history note reading backing: the header paints opaque page ink', facts)
+    assert header['y'] - 0.5 <= note['y'] and note['bottom'] <= header['bottom'] + 0.5, (
+        'history note reading backing: the note lies inside the backed header', facts)
+    assert facts['showThrough'] <= 0.002, ('history note reading backing: moving messages show through the note', facts)
+    assert facts['contrast'] >= 4.5, ('history note words keep the contrast floor on their backing', facts)
+
+
 @pytest.mark.parametrize('browser_engine', ['chromium', 'webkit'])
 @pytest.mark.parametrize('theme', ['light', 'dark'])
 def test_main_coverage_status_remains_readable_away_from_history_control(direct_server_with_data, browser_engine, theme, tmp_path):
@@ -98,9 +184,22 @@ def test_main_coverage_status_remains_readable_away_from_history_control(direct_
                 assert box['x'] >= 0 and box['x'] + box['width'] <= width + 1
                 assert box['y'] >= 0 and box['y'] + box['height'] < 850
                 assert page.locator('#page-chat .chat-load-older-note').count() == 1
-                style = note.evaluate('e => { const s = getComputedStyle(e); return {bg:s.backgroundColor, radius:s.borderRadius, padding:s.paddingLeft}; }')
-                assert style['bg'] != 'rgba(0, 0, 0, 0)' and style['radius'] != '0px' and style['padding'] != '0px', style
+                facts = _note_backing_facts(page, note)
+                _assert_note_readable(facts)
                 _screenshot(page, tmp_path, f'main-history-status-{theme}-{width}-{browser_engine}')
+                # Falsify the same consumer oracle: without the header's backing, the messages
+                # under the note show through it, and the oracle must say so.
+                bare_style = page.add_style_tag(content=_NO_HEADER_BACKING)
+                try:
+                    bare = _note_backing_facts(page, note)
+                    with pytest.raises(AssertionError, match='history note reading backing'):
+                        _assert_note_readable(bare)
+                    assert bare['showThrough'] > 0.002 >= facts['showThrough'], ('the painted oracle alone tells them apart', facts, bare)
+                finally:
+                    bare_style.evaluate('n => n.remove()')
+                _assert_note_readable(_note_backing_facts(page, note))
+                (tmp_path / f'main-history-status-{theme}-{width}-{browser_engine}.json').write_text(
+                    json.dumps({'backed': facts, 'bare': bare}, indent=2))
         finally:
             browser.close()
 

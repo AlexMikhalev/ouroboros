@@ -9,6 +9,7 @@
 // a second Continue — new work goes through the conversation).
 
 import { continueTask, fetchTaskDetail } from './api_client.js';
+import { heldWorkFacts } from './task_control_menu.js';
 import { ensureLiveActionsEl, ownLiveActionsEl } from './chat_activity.js';
 import { fmt, tr, tx } from './i18n.js';
 import { taskDoneIsTerminal, taskReasonPhrase } from './log_events.js';
@@ -69,8 +70,10 @@ export async function continueTaskAction(taskId, { request = continueTask, stora
             const reason = typeof ack?.error === 'string' && ack.error ? ack.error : 'no acknowledgement';
             throw Object.assign(new Error(reason), { body: {} });
         }
+        // A held successor names what the census observed (#1721), never a generic wait.
         toast(ack?.held
-            ? 'Continue accepted. Waiting for earlier work to settle; use Resume in Activity to recheck.'
+            ? `Continue accepted and held: ${heldWorkFacts(ack.blockers) || 'earlier work is not proven settled'}. `
+                + 'Resume in Activity checks it again.'
             : 'Continue accepted.', 'ok');
         return successor;
     } catch (exc) {

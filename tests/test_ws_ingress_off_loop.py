@@ -516,6 +516,7 @@ def test_a_cancelled_socket_settles_every_received_chat_in_order(bridge, mode):
 
 _LATE_ID = "quiz_late_answer:task-1:q1"
 _LATE_BODY = {"request_id": "r1", "decision_id": "quiz:task-1:q1", "option_index": 1}
+_CARD_ROWS = ["quiz_publication:task-1:q1", "quiz_answer:task-1:q1"]
 
 
 def _expired_card(bridge, monkeypatch):
@@ -526,6 +527,10 @@ def _expired_card(bridge, monkeypatch):
 
     record_asked(bridge.drive, "task-1", quiz_id="q1", question="Which db?",
                  options=["sqlite", "postgres"], assumption="sqlite meanwhile", chat_id=1)
+    # The owner answers an exposed card. Publish it to bind its immutable room;
+    # the ask-time chat alone intentionally cannot authorize a late delivery.
+    assert bridge.send_quiz(1, "q1", "Which db?", ["sqlite", "postgres"],
+                            assumption="sqlite meanwhile", task_id="task-1") == (True, "ok")
     reconcile_terminal(bridge.drive, "task-1")
     monkeypatch.setattr(td, "request_drive_root", lambda request: bridge.drive)
     monkeypatch.setattr(td, "_live_root_task", lambda task_id: (None, "task_not_live"))
@@ -609,7 +614,7 @@ def test_a_late_quiz_answer_behind_a_held_socket_acceptance_never_stalls_the_loo
             other.send_text(json.dumps({"type": "command", "cmd": "/stop"}))
             assert command_queued.wait(5) and not timed_out.is_set(), "a command queued behind the late answer"
             assert poster.is_alive() and frames == []
-            assert _row_ids(bridge.drive) == ["quiz_answer:task-1:q1"]  # the card's history row only
+            assert _row_ids(bridge.drive) == _CARD_ROWS  # the card's lifecycle rows only
             release.set()
             poster.join(10)
             assert echoed.wait(5), frames
@@ -618,7 +623,7 @@ def test_a_late_quiz_answer_behind_a_held_socket_acceptance_never_stalls_the_loo
     assert answered["response"].status_code == 200, answered["response"].text
     body = answered["response"].json()
     assert body["answered_after_terminal"] is True and body["forwarded"] is True
-    assert _row_ids(bridge.drive) == ["quiz_answer:task-1:q1", "held-1", _LATE_ID]
+    assert _row_ids(bridge.drive) == _CARD_ROWS + ["held-1", _LATE_ID]
     chats = {frame["client_message_id"]: (queued, rows) for frame, queued, rows in frames if frame.get("type") == "chat"}
     assert set(chats) == {"held-1", _LATE_ID}
     for client_message_id, (queued, rows) in chats.items():  # row → queue → echo, each in custody order
@@ -653,7 +658,7 @@ def test_a_cancelled_late_answer_request_settles_its_delivery_and_a_retry_rejoin
         task.cancel()
         await asyncio.sleep(0)
         assert not task.done(), "the cancelled request abandoned its late delivery (or blocked the loop)"
-        assert frames == [] and _row_ids(bridge.drive) == ["quiz_answer:task-1:q1"]
+        assert frames == [] and _row_ids(bridge.drive) == _CARD_ROWS
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 5)
@@ -667,11 +672,11 @@ def test_a_cancelled_late_answer_request_settles_its_delivery_and_a_retry_rejoin
     assert not timed_out.is_set()
     [(echo, queued, rows)] = frames
     assert echo["client_message_id"] == _LATE_ID and echo["ingress_accepted"] is True
-    assert queued == [_LATE_ID] and rows == ["quiz_answer:task-1:q1", _LATE_ID]
+    assert queued == [_LATE_ID] and rows == _CARD_ROWS + [_LATE_ID]
 
     status, body = asyncio.run(td.answer_decision(bridge.drive, dict(_LATE_BODY)))
     assert status == 200 and body["duplicate"] is True and body["forwarded"] is True
-    assert _row_ids(bridge.drive) == ["quiz_answer:task-1:q1", _LATE_ID]
+    assert _row_ids(bridge.drive) == _CARD_ROWS + [_LATE_ID]
     assert [frame["type"] for frame, *_ in frames] == ["chat", "quiz_state"]  # no second echo; the card settles
     [update] = bridge.get_updates(offset=0, timeout=1)
     assert update["message"]["text"] == "2. postgres"

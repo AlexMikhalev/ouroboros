@@ -311,11 +311,11 @@ def _task_authority_projection(env: Any, task: Dict[str, Any]) -> Dict[str, Any]
     canonical_root = pathlib.Path(
         task.get("budget_drive_root") or getattr(env, "budget_drive_root", None) or env.drive_root
     )
-    from ouroboros.main_context_authority import project_main_task_authority
+    from ouroboros.main_context_authority import project_main_task_authority, project_predecessor_review_views
 
     projection = project_main_task_authority(task, drive_root=canonical_root)
-    from ouroboros.main_context_authority import project_predecessor_review_views
-    projection = project_predecessor_review_views(projection, drive_root=canonical_root,
+    # Only a lineage root re-reads its named predecessor's history; a helper keeps its brief.
+    projection = project_predecessor_review_views(projection, task=task, drive_root=canonical_root,
         repo_roots=(task.get("workspace_root"), getattr(env, "repo_dir", None)))
     task_id = str(task.get("id") or "").strip()
     if not task_id:

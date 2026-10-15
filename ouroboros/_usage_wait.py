@@ -40,6 +40,7 @@ class _PresendWait:
                                   and self.owner.task.get("_is_direct_chat") else None)
         self.started = time.monotonic()
         self.publication_waited = 0.0
+        self.publication_started = None
         self.episode_id = uuid.uuid4().hex
         self.entered = False
 
@@ -49,7 +50,7 @@ class _PresendWait:
         from ouroboros.queue_observation import (
             DispatchPublicationPending, DISPATCH_PUBLICATION_WAIT_SEC, DISPATCH_PUBLICATION_POLL_SEC,
         )
-        from ouroboros.usage_ledger import UsageAccountingError
+        from ouroboros.usage_ledger import ControlAuthorityUnavailable
 
         pending = isinstance(error, DispatchPublicationPending)
         contention = (isinstance(error, (StoreBusy, LaunchBusy)) and error.reason == "contention"
@@ -57,11 +58,13 @@ class _PresendWait:
                       and getattr(error, "rollback_confirmed", False))
         if not (pending or contention) or getattr(error, "rollback_confirmed", None) is False or _CLEANUP.get():
             raise error
+        if pending and self.publication_started is None:
+            self.publication_started = time.monotonic()
         # Controls must be checked even while the storage they usually inspect is busy.
         # A positive local control wins; a transient probe gap retains this same wait.
         try:
             with admission_acquisition():
-                if self.check:
+                if self.check or self.publication_started is not None:
                     _check()
                 elif self.owner is not None:
                     reason = self.owner.control_reason()
@@ -75,14 +78,16 @@ class _PresendWait:
         if self.interactive_bound is not None and elapsed >= self.interactive_bound:
             from ouroboros.llm_attempt import PhysicalDispatchInterrupted
             raise PhysicalDispatchInterrupted("accounting_wait_expired")
-        if pending and self.publication_waited >= DISPATCH_PUBLICATION_WAIT_SEC:
-            raise UsageAccountingError(str(error)) from error
+        remaining = DISPATCH_PUBLICATION_WAIT_SEC - max(self.publication_waited,
+            time.monotonic() - self.publication_started if self.publication_started is not None else 0.0)
+        if pending and remaining <= 0:
+            raise ControlAuthorityUnavailable(str(error), cause="dispatch_publication_unconfirmed") from error
         if not self.owned and elapsed >= USAGE_LOCK_TIMEOUT_SEC:
             raise error
         if not self.entered:
             self.entered = True
             _hold(self.owner, "entered", self.started, self.episode_id)
-        delay = DISPATCH_PUBLICATION_POLL_SEC if pending else ACQUISITION_SLICE_SEC
+        delay = min(DISPATCH_PUBLICATION_POLL_SEC, remaining) if pending else ACQUISITION_SLICE_SEC
         if pending:
             self.publication_waited += delay
         return delay
@@ -107,7 +112,7 @@ def retry_presend(function, *, check=True):
         while True:
             try:
                 with admission_acquisition():
-                    if check:
+                    if check or episode.publication_started is not None:
                         _check()
                     return function()
             except Exception as exc:
@@ -126,7 +131,7 @@ async def retry_presend_async(function, *, check=True):
         while True:
             try:
                 with admission_acquisition():
-                    if check:
+                    if check or episode.publication_started is not None:
                         _check()
                     return function()
             except Exception as exc:

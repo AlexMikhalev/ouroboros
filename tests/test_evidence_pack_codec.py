@@ -2,6 +2,7 @@
 import hashlib
 import json
 import lzma
+import os
 import subprocess
 
 import pytest
@@ -56,6 +57,10 @@ def test_reader_ascending_backward_and_replaced_pack_cursors(root):
         assert read(member["offset"], member["size"]) == expected[member["offset"]:member["offset"] + member["size"]]
     replacement = path.with_suffix(".replacement")
     replacement.write_bytes(lzma.compress(b"replacement"))
+    if os.name == "nt":
+        # Windows cannot replace our open file. Keep the cached identity so the
+        # next read must still notice replacement and reopen its stale cursor.
+        reader._stream.close()
     replacement.replace(path)
     assert read(0, 11) == b"replacement"
     with pytest.raises(packs.EvidenceCorrupt, match="evidence_corrupt"):

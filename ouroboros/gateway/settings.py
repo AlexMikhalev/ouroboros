@@ -1222,6 +1222,28 @@ def _effort_range_tiers(body: Dict[str, Any]) -> tuple[Dict[str, Any], str]:
     return body, ""
 
 
+def _network_exposure_warning(current: Dict[str, Any]) -> str:
+    """Post-save notice only; validation and persistence stay with the settings writer."""
+    try:
+        from ouroboros.server_auth import is_loopback_host
+        desired_host = str(current.get("OUROBOROS_SERVER_HOST") or "").strip()
+        desired_password = str(current.get("OUROBOROS_NETWORK_PASSWORD") or "").strip()
+        if desired_host and not is_loopback_host(desired_host) and not desired_password:
+            if _trust_nonlocal_bind_without_password_enabled():
+                return (
+                    "OUROBOROS_TRUST_NONLOCAL_BIND_WITHOUT_PASSWORD=1 allows this "
+                    "non-localhost bind without Ouroboros's internal Network Password. "
+                    "Use only behind ingress auth, VPN, private networking, or an auth proxy."
+                )
+            return (
+                "Server Bind Host is non-localhost and Network Password is empty; "
+                "after restart the app will be reachable on the network without a password."
+            )
+    except Exception:
+        pass
+    return ""
+
+
 def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
     # Everything below the write is a POST-commit step. The broad handler at the
     # bottom used to answer a failure there with "400, nothing saved" while the
@@ -1432,24 +1454,9 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
             get_bridge().configure_from_settings(current)
         except Exception:
             pass
-        try:
-            from ouroboros.server_auth import is_loopback_host
-            desired_host = str(current.get("OUROBOROS_SERVER_HOST") or "").strip()
-            desired_password = str(current.get("OUROBOROS_NETWORK_PASSWORD") or "").strip()
-            if desired_host and not is_loopback_host(desired_host) and not desired_password:
-                if _trust_nonlocal_bind_without_password_enabled():
-                    warnings.append(
-                        "OUROBOROS_TRUST_NONLOCAL_BIND_WITHOUT_PASSWORD=1 allows this "
-                        "non-localhost bind without Ouroboros's internal Network Password. "
-                        "Use only behind ingress auth, VPN, private networking, or an auth proxy."
-                    )
-                else:
-                    warnings.append(
-                        "Server Bind Host is non-localhost and Network Password is empty; "
-                        "after restart the app will be reachable on the network without a password."
-                    )
-        except Exception:
-            pass
+        network_warning = _network_exposure_warning(current)
+        if network_warning:
+            warnings.append(network_warning)
         _repo_slug = current.get("GITHUB_REPO", "")
         _gh_token = current.get("GITHUB_TOKEN", "")
         if _gh_token and any(k in all_changed for k in ("GITHUB_REPO", "GITHUB_TOKEN")):

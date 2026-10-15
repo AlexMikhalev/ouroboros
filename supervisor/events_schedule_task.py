@@ -150,10 +150,12 @@ def _reject_schedule_task(
                 raise  # the same claim retains its refusal receipt and waits off Q
             log.warning("Failed to persist schedule rejection for %s", tid, exc_info=True)
             if preparation is not None:
-                detail += (" Another owner now holds this request; nothing was overwritten."
-                           if preparation.abandon() else
-                           " The refusal was not recorded (scheduled_result_authority_unknown); "
-                           "recovery keeps the request.")
+                held = " Another owner now holds this request; nothing was overwritten."
+                unrecorded = " The refusal was not recorded{}; recovery keeps the request."
+                abandoned = preparation.abandon()
+                detail += held if abandoned else unrecorded.format(" (scheduled_result_authority_unknown)")
+                if fallback_message:  # the owner's sentence carries the same fact without the code
+                    fallback_message += held if abandoned else unrecorded.format("")
     if refusal_confirmed and never_admitted:
         if preparation is not None:
             preparation.after_refusal(functools.partial(_remove_refused_child_drive, ctx, tid))
@@ -164,6 +166,8 @@ def _reject_schedule_task(
     try:
         if chat_id is not None:
             if delegation_role == "subagent":
+                # The stored result keeps ``detail`` for the parent model; the card
+                # shows the producer's owner sentence when it wrote one (#1403).
                 _send_subagent_rejection(
                     ctx,
                     chat_id,
@@ -172,7 +176,7 @@ def _reject_schedule_task(
                     root_task_id=root_task_id,
                     role=role,
                     status=status,
-                    detail=detail,
+                    detail=fallback_message.removeprefix("⚠️ ") or detail,
                 )
             elif fallback_message:
                 ctx.send_with_budget(chat_id, fallback_message, role="system", system_type="task_admission_notice")
@@ -576,7 +580,7 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any, preparation: Any = None
             parent_id=parent_id, root_task_id=root_task_id, role=role,
             result_fields=result_fields,
             detail=detail,
-            fallback_message=f"⚠️ Task rejected: subtask depth limit ({max_depth}) exceeded",
+            fallback_message=f"⚠️ Task rejected: subtask depth limit ({max_depth}) exceeded.",
         )
         return
 

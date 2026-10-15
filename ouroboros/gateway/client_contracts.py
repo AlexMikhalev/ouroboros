@@ -502,7 +502,7 @@ class ScheduleActionRequest(TypedDict):
 
 
 class TaskResumeResponse(TypedDict, total=False):
-    """``POST /api/tasks/{task_id}/resume`` for a task its budget paused. The other keys say which
+    """``POST /api/tasks/{task_id}/resume`` after budget, owner, sleep or technical authority pause. The other keys say which
     resume path ran (``same_generation``, ``owner_pause_released``, ``never_started``, ``warm``,
     ``grant_id``, ``held_siblings``, ``snapshot_persisted``, ``exact_continuation``,
     ``grant_generation``, ``paused_duration_sec``, ``eligible_descendants``, ``late_phase``).
@@ -512,6 +512,14 @@ class TaskResumeResponse(TypedDict, total=False):
     task_id: Required[str]
     root_task_id: str
     late_phase: Literal["resumed", "settled"]
+    exact_continuation: bool
+    grant_id: str
+    grant_generation: int
+    paused_duration_sec: float
+    eligible_descendants: List[str]
+    held_siblings: List[str]
+    rebound_held_siblings: List[str]
+    released_hold: str
 
 
 # Last, not first: ``contracts.py`` imports ServedUiState from this module, so the shared

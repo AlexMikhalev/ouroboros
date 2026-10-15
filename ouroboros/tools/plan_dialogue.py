@@ -163,13 +163,16 @@ def _snapshot_rows(own: dict) -> list[tuple[int, dict]]:
 
 def _is_conversation(row: dict) -> bool:
     return str(row.get("stream") or "") in _CONVERSATION_STREAMS and (
-        row.get("direction") != "system" or row.get("type") == "quiz_answer")
+        row.get("direction") != "system" or row.get("type") in {"quiz_answer", "quiz_closed"})
 
 
 def _quiz_text(row: dict) -> str:
     quiz = row.get("quiz") if isinstance(row.get("quiz"), dict) else {}
     options = [str(o) for o in quiz.get("options") or []] if isinstance(quiz.get("options"), list) else []
     qid = str(quiz.get("quiz_id") or "")
+    if row.get("type") == "quiz_closed":
+        actor = "owner" if quiz.get("closed_actor") == "owner" else f"task {quiz.get('closed_by_task_id')}"
+        return f"[question closed without answer {qid}] by {actor}: {quiz.get('closed_reason') or ''}. No approval recorded."
     if row.get("type") == "quiz_answer":
         index = quiz.get("answered_index")
         chosen = (f"chose ({index + 1}) {options[index]}" if isinstance(index, int) and 0 <= index < len(options)
@@ -183,7 +186,7 @@ def _quiz_text(row: dict) -> str:
 
 
 def _line(number: int, row: dict) -> str:
-    body = _quiz_text(row) if row.get("type") in {"quiz", "quiz_answer"} and isinstance(row.get("quiz"), dict) \
+    body = _quiz_text(row) if row.get("type") in {"quiz", "quiz_answer", "quiz_closed"} and isinstance(row.get("quiz"), dict) \
         else str(row.get("text") or "")
     names = [next((str(a[k]) for k in _ATTACHMENT_NAME_KEYS if a.get(k)), "")
              for a in (row.get("attachments") or []) if isinstance(a, dict)]

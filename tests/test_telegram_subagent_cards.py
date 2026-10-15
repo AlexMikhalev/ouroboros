@@ -493,3 +493,84 @@ def test_edit_message_not_modified_treated_as_success():
     assert asyncio.run(client.edit_message_text(42, 100, "x", parse_mode="")) is True
     client.call = call_real_error
     assert asyncio.run(client.edit_message_text(42, 100, "x", parse_mode="")) is False
+
+
+def test_helper_rejection_card_carries_the_owner_sentence(tmp_path, monkeypatch):
+    """#1403: the real rejection producer's frame, merged the way the bridge publishes
+    chat.outbound (text + progress_meta), reaches the unchanged skill's helper card with
+    the owner sentence; the parent model's instruction stays in the stored result."""
+    from types import SimpleNamespace
+
+    from supervisor.events_schedule_task import _reject_schedule_task
+    from tests._store_shared import read_result
+
+    frames = []
+    ctx = SimpleNamespace(DRIVE_ROOT=tmp_path / "drive", send_with_budget=lambda chat_id, text, **kw: frames.append(
+        {"chat_id": chat_id, "text": text, "is_progress": kw.get("is_progress", False), "task_id": kw.get("task_id", ""),
+         "role": kw["role"], "system_type": kw["system_type"], **kw.get("progress_meta", {})}))
+    detail = "Subagent not scheduled: the worker pool is unavailable. Do the work inline yourself, or retry after /restart."
+    _reject_schedule_task(ctx, tid="kid12345", chat_id=42, delegation_role="subagent", parent_id="root1",
+                          root_task_id="root1", role="researcher", result_fields={}, detail=detail,
+                          fallback_message="⚠️ Task kid12345 not scheduled: worker pool unavailable.")
+    assert read_result(tmp_path / "drive", "kid12345")["result"] == detail
+    plugin, api = _setup(tmp_path, monkeypatch)
+    asyncio.run(plugin._make_outbound(api)(frames[0]))
+    card = _Rec.sent[0][1]
+    assert "Task kid12345 not scheduled: worker pool unavailable." in card
+    assert "inline yourself" not in card and "/restart" not in card
+
+
+@pytest.mark.parametrize("owner_sentence", [False, True])
+@pytest.mark.parametrize("abandoned", [False, True])
+@pytest.mark.parametrize("persistence", ["saved", "failed", "busy"])
+@pytest.mark.parametrize("delegation_role", ["subagent", "root"])
+def test_rejection_preserves_persistence_qualification(tmp_path, monkeypatch, owner_sentence,
+                                                     abandoned, persistence, delegation_role):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from ouroboros.store import StoreBusy
+    from supervisor import events_schedule_task, task_admission
+
+    detail = "Subagent not scheduled: worker pool unavailable. Do the work inline yourself."
+    owner = "Task kid12345 not scheduled: worker pool unavailable."
+    addendum = (" Another owner now holds this request; nothing was overwritten." if abandoned else
+                " The refusal was not recorded (scheduled_result_authority_unknown); recovery keeps the request.")
+    # The owner's sentence keeps the uncertainty and the kept request, without the internal code.
+    owner_addendum = addendum.replace(" (scheduled_result_authority_unknown)", "")
+    refusal = Mock(side_effect={"saved": None, "failed": OSError("store unavailable"),
+                                "busy": StoreBusy("current store busy: database is locked", reason="contention")}[persistence])
+    monkeypatch.setattr(task_admission, "persist_never_admitted_refusal", refusal)
+    preparation = SimpleNamespace(token="claim-1", refusal_fields=lambda: {},
+                                  abandon=Mock(return_value=abandoned), after_refusal=Mock())
+    sent = []
+    ctx = SimpleNamespace(DRIVE_ROOT=tmp_path, send_with_budget=lambda *a, **kw: sent.append((a, kw)))
+    kwargs = dict(tid="kid12345", chat_id=42, delegation_role=delegation_role, parent_id="root1",
+                  root_task_id="root1", role="researcher", result_fields={}, detail=detail,
+                  fallback_message="⚠️ " + owner if owner_sentence else "", preparation=preparation)
+    if persistence == "busy":
+        with pytest.raises(StoreBusy):
+            events_schedule_task._reject_schedule_task(ctx, **kwargs)
+    else:
+        assert events_schedule_task._reject_schedule_task(ctx, **kwargs) is (persistence == "saved")
+    refusal.assert_called_once()
+    assert refusal.call_args.kwargs["result"] == detail, "the parent model keeps the full producer detail"
+    assert refusal.call_args.kwargs["admission_token"] == "claim-1"
+    assert preparation.abandon.call_count == (persistence == "failed")
+    assert preparation.after_refusal.call_count == (persistence == "saved")
+    if persistence == "busy" or (delegation_role == "root" and not owner_sentence):
+        assert sent == []
+        return
+    failed = persistence == "failed"
+    expected = owner + (owner_addendum if failed else "") if owner_sentence else detail + (addendum if failed else "")
+    ((chat_id, text), fields), = sent
+    if owner_sentence:
+        assert "scheduled_result_authority_unknown" not in text, "owner words carry no internal code"
+    assert chat_id == 42 and text == "⚠️ " + expected
+    assert fields["role"] == "system"
+    if delegation_role == "subagent":
+        assert fields["system_type"] == "subagent_admission_notice"
+        assert fields["progress_meta"]["error"] == expected, "the web card reads this public error field"
+        assert fields["task_id"] == "root1"
+    else:
+        assert fields["system_type"] == "task_admission_notice"

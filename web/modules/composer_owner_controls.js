@@ -39,6 +39,22 @@ const widthOf = (node) => {
     return Number.isFinite(width) && width > 0 ? width : Number(node?.offsetWidth) || 0;
 };
 
+// Refitting changes the observed row/strip. Leave ResizeObserver delivery before writing
+// layout, coalesce notifications, and release pending work with the composer's lifetime.
+function observeLayout(win, nodes, layout) {
+    if (!nodes[0] || typeof win?.ResizeObserver !== 'function') return () => {};
+    let frame = 0;
+    const observer = new win.ResizeObserver(() => {
+        if (!frame) frame = win.requestAnimationFrame(() => { frame = 0; layout(); });
+    });
+    nodes.forEach((node) => observer.observe(node));
+    return () => {
+        observer.disconnect();
+        if (frame) win.cancelAnimationFrame(frame);
+        frame = 0;
+    };
+}
+
 /** Each handle pushes the ones it meets: min and max carry the recommended level along, and
  *  the recommended level carries a bracket past which it moves; min and max never cross. */
 export function applyHandle(base, which, value) {
@@ -458,11 +474,7 @@ function createCapsule({
         onStripScroll();
     });
     const onResize = () => { if (state.open) relayout(); };
-    const observer = typeof win?.ResizeObserver === 'function' ? new win.ResizeObserver(() => {
-        if (!state.destroyed) relayout();
-    }) : null;
-    observer?.observe(row);
-    observer?.observe(strip);
+    const stopObserving = observeLayout(win, [row, strip], () => { if (!state.destroyed) relayout(); });
 
     head.addEventListener('click', onHeadClick);
     body.addEventListener('transitionend', onBodyTransitionEnd);
@@ -476,7 +488,7 @@ function createCapsule({
     }
 
     return Object.assign(api, {
-        setOpen, snapClosed, closeSoon, onStripScroll, reveal, measureName, isRtl,
+        setOpen, snapClosed, closeSoon, onStripScroll, reveal, measureName, isRtl, relayout,
         destroy() {
             state.destroyed = true;
             clearTimeout(hoverTimer);
@@ -488,7 +500,7 @@ function createCapsule({
             head.removeEventListener('click', onHeadClick);
             strip.removeEventListener('scroll', onStripScroll);
             win?.removeEventListener?.('resize', onResize);
-            observer?.disconnect();
+            stopObserving();
             stopTracking();
             if (row.dataset?.ownerSolo === kind) delete row.dataset.ownerSolo;
             el.removeEventListener('pointerenter', onEnter);
@@ -907,15 +919,14 @@ function createContextModeControl({ el, row, apiFetch, showToast, refreshState, 
  * @param {(message: string, tone?: string) => void} deps.showToast
  * @param {(force?: boolean) => Promise<void>|void} deps.refreshState  a forced `/api/state` re-read
  * @param {() => void} [deps.onLayout]  a strip opened or closed on its own line
+ * @param {HTMLElement} [deps.box]  independently sized page the composer docks inside
  */
-export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRange, showToast, refreshState, onLayout, win = globalThis.window, doc = globalThis.document }) {
+export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRange, showToast, refreshState, onLayout, box = null, win = globalThis.window, doc = globalThis.document }) {
     let destroyed = false;
     const capsules = [];
-    // Closed, a capsule names its setting while the line holds every control; a narrower line (a
-    // 360 px phone, a longer translation) keeps the rings and values and lets the names go, and
-    // where even that wraps, the longest values give way to one measured width (an ellipsis; the
-    // button's accessible name and the open strip keep the whole word). Probed on the settled,
-    // closed row in one task, so a name never flickers and the row never wraps.
+    // Measure the settled, closed row synchronously: keep names while it fits, else rings and
+    // values. If long translated values still wrap, cap the widest with an ellipsis; accessible
+    // names and open strips keep full words. The closed names never flicker between fits.
     const shownKids = () => Array.from(row.children || []).filter((kid) => widthOf(kid) > 0);
     function wraps() {
         const kids = shownKids();
@@ -949,20 +960,24 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
     const contextEl = byId('context-mode');
     const context = contextEl ? createContextModeControl({ el: contextEl, row: row || contextEl.parentElement, apiFetch, ...shared }) : null;
     const effort = row ? createEffortRangeControl({ row, saveEffortRange, ...shared }) : null;
-    if (context) capsules.push(context.capsule);
-    if (effort) capsules.push(effort.capsule);
+    for (const control of [context, effort]) if (control) capsules.push(control.capsule);
     // One capsule is open at a time.
     if (context && effort) { context.capsule.peer = effort.capsule; effort.capsule.peer = context.capsule; }
-    // Fitting a wrapped row can shrink the composer observed higher in the tree. Defer the
-    // ResizeObserver callback's writes out of its delivery pass, coalescing repeated notifications.
-    let fitFrame = 0;
-    const scheduleFit = () => {
-        if (!fitFrame && !destroyed) fitFrame = win.requestAnimationFrame(() => { fitFrame = 0; fitNames(); });
-    };
-    const observer = row && typeof win?.ResizeObserver === 'function' ? new win.ResizeObserver(scheduleFit) : null;
-    // Window resizing can fit immediately; the observer also covers container-only resizing.
     win?.addEventListener?.('resize', fitNames);
-    observer?.observe(row);
+    const stopObserving = observeLayout(win, [row], fitNames);
+    const relayout = () => { if (!destroyed) { fitNames(); capsules.forEach((capsule) => capsule.relayout()); } };
+    // Descendant fitting cannot resize this docking box, so mount/show/resize settle before paint.
+    // Text is observed at the microtask boundary, not our geometry attributes; unchanged words stay.
+    const boxObserver = box && typeof win?.ResizeObserver === 'function' ? new win.ResizeObserver(relayout) : null;
+    boxObserver?.observe(box);
+    // Own values only refit the closed line: realigning an open strip would cancel its motion.
+    const ownValue = (record) => {
+        const node = record.target.nodeType === 1 ? record.target : record.target.parentNode;
+        return Boolean(node?.closest?.('.chat-capsule-value'));
+    };
+    const onText = (records) => { if (records?.length && records.every(ownValue)) fitNames(); else relayout(); };
+    const textObserver = row && typeof win?.MutationObserver === 'function' ? new win.MutationObserver(onText) : null;
+    textObserver?.observe(row, { childList: true, characterData: true, subtree: true });
 
     return {
         context,
@@ -972,9 +987,10 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
         pendingSave: () => (effort ? effort.pendingSave() : Promise.resolve(true)),
         destroy() {
             destroyed = true;
-            if (fitFrame) win.cancelAnimationFrame(fitFrame);
+            stopObserving();
             win?.removeEventListener?.('resize', fitNames);
-            observer?.disconnect();
+            boxObserver?.disconnect();
+            textObserver?.disconnect();
             context?.destroy();
             effort?.destroy();
             if (row?.dataset) delete row.dataset.ownerCompact;

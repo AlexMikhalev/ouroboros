@@ -1000,6 +1000,26 @@ class ChronicleStore:
         with self._index() as db:
             return self._get(db, record_id)
 
+    def rejected_input(self, room_id: Any, unit_key: str, input_sha256: str,
+                       light_binding: Mapping[str, Any]) -> bool:
+        """A rejected helper attempt at this exact input/route, including old published drafts.
+
+        Read the addressed room's indexed draft metadata and latest decision;
+        never recreate a lost receipt or append published drafts to scan state.
+        """
+        with self._index() as db:
+            rows = db.execute(
+                "SELECT body FROM records WHERE room=? AND kind IN ('page','part') "
+                "AND json_extract(body, '$.metadata.unit.key')=? "
+                "AND json_extract(body, '$.metadata.input_sha256')=?",
+                (str(room_id), unit_key, input_sha256))
+            for (body,) in rows:
+                record = json.loads(body)
+                if ((record.get("metadata") or {}).get("light_binding") == dict(light_binding)
+                        and self._status(db, record) == "rejected"):
+                    return True
+        return False
+
     def records(self, room_id: Any = None, *, kinds: Optional[Iterable[str]] = None,
                 after_seq: int = 0) -> List[Dict[str, Any]]:
         """Records in publication order; the caller bounds a page."""

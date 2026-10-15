@@ -161,7 +161,8 @@ def _run(ctx, monkeypatch, peer, arguments, *, name="generate_image", during=Non
         peer.release = threading.Event()  # a spent release must not pre-release this call's hold
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _loopback_only)
     registry, task = _setup(ctx, monkeypatch)
-    deadline = datetime.now(timezone.utc) + timedelta(seconds=effective_finalization_reserve_sec(ctx) + _CLAMP_SEC + 1)
+    # Stay inside the integer clamp bucket even when both reads share a Windows clock tick.
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=effective_finalization_reserve_sec(ctx) + _CLAMP_SEC + 0.5)
     ctx.task_metadata["deadline_at"] = task["deadline_at"] = deadline.isoformat()
     timeout = execution._get_tool_timeout(registry, name, arguments)
     assert timeout == _CLAMP_SEC, timeout  # the near-deadline clamp, not the 360-second entry timeout

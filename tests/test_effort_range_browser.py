@@ -75,6 +75,7 @@ FACTS = """sel => {
         pill: box(el.querySelector('.chat-effort-rec')), seg: box(recSeg), word: box(recSeg?.querySelector('.chat-effort-seg-text')),
         band: box(el.querySelector('.chat-effort-band')), minCap: box(el.querySelector('.chat-effort-min')),
         maxCap: box(el.querySelector('.chat-effort-max')),
+        strip: box(strip), body: box(el.querySelector('.chat-capsule-body')),
         stripScrolls: strip.scrollWidth > strip.clientWidth + 1, stripScroll: strip.dataset.scroll || '',
     };
 }""" % HOVER_MEDIA
@@ -277,14 +278,17 @@ def test_phone_press_opens_alone_on_the_line_while_the_pills_step_aside(direct_s
             _assert_strip_geometry(_facts(page))
             page.wait_for_timeout(300)
             opened = _facts(page)
-            # Alone on the same line: the pills and the context capsule step aside, the row keeps one
-            # line, nothing scrolls.
-            assert opened["fit"] == "solo" and opened["solo"] == "effort", opened
+            # Alone on one line; wider platform fonts may require internal scrolling even at
+            # 360 px. DESIGN's fit is measured, never a viewport breakpoint.
+            assert opened["fit"] in ("solo", "overflow") and opened["solo"] == "effort", opened
             assert not opened["pillsShown"] and not opened["contextShown"], opened
             assert abs(opened["rowHeight"] - closed["rowHeight"]) <= 1, (opened, closed)
             assert abs(opened["areaHeight"] - closed["areaHeight"]) <= 1, (opened, closed)
             assert opened["right"] <= opened["rowRight"] + 1, opened
-            assert not opened["docScroll"] and not opened["areaScroll"] and not opened["stripScrolls"], opened
+            assert not opened["docScroll"] and not opened["areaScroll"], opened
+            assert opened["stripScrolls"] is (opened["fit"] == "overflow"), opened
+            assert opened["word"]["left"] >= max(opened["strip"]["left"], opened["body"]["left"]) - 0.5, opened
+            assert opened["word"]["right"] <= min(opened["strip"]["right"], opened["body"]["right"]) + 0.5, opened
             assert opened["top"] < opened["inputTop"], opened
             _assert_strip_geometry(opened)
             _shot(page, tmp_path, f"composer-phone-{width}-open-{engine}")

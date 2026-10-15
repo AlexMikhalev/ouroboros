@@ -18,7 +18,8 @@ from ouroboros.settings_integrity import skill_settings
 from ouroboros.contracts.plugin_api import FORBIDDEN_SKILL_SETTINGS
 from ouroboros.platform_layer import merge_hidden_kwargs, subprocess_new_group_kwargs
 from ouroboros.provider_models import MODEL_PROVIDER_CREDENTIAL_KEYS
-from ouroboros.tools.process_facts import publish_process_facts as _publish_process_facts
+from ouroboros.skill_catalogue import LIST_SKILLS_SCHEMA as _LIST_SCHEMA
+from ouroboros.skill_catalogue import list_skills_payload
 from ouroboros.skill_dependencies import skill_deps_not_ready as _skill_deps_not_ready
 from ouroboros.skill_loader import (
     SkillPayloadUnreadable,
@@ -31,22 +32,22 @@ from ouroboros.skill_loader import (
     skill_state_dir,
     summarize_skills,
 )
-from ouroboros.skill_catalogue import LIST_SKILLS_SCHEMA as _LIST_SCHEMA, list_skills_payload
 from ouroboros.skill_review import review_skill as _review_skill_impl
 from ouroboros.skill_review_status import executable_review_requirement, normalize_skill_review_status
-from ouroboros.tools.registry import ToolContext, ToolEntry
-from ouroboros.tools.tool_result import ToolResult, _publish_tool_result, completed_local_read
 from ouroboros.tool_access import (
     ResolvedResourceBinding,
     build_resolved_resource_binding,
     canonical_data_root,
     load_bound_skill,
 )
+from ouroboros.tools.process_facts import publish_process_facts as _publish_process_facts
+from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.shell import (
     _active_subprocesses,
     _kill_process_group,
     _subprocess_lock,
 )
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result, completed_local_read
 from ouroboros.usage_accounting import current_usage_scope, record_unmetered_external_dispatch
 from ouroboros.utils import append_jsonl, utc_now_iso
 
@@ -157,6 +158,9 @@ def _scrub_env(
             if val is None or val == "":
                 continue
             env[canonical if canonical in protected_upper else key] = str(val)
+    from ouroboros.process_scope import installation_scope_entries
+
+    env.update(installation_scope_entries())
     env["OUROBOROS_SKILL_NAME"] = skill_name
     env["OUROBOROS_SKILL_STATE_DIR"] = str(skill_state_dir_path)
     return env
@@ -191,9 +195,13 @@ def _run_skill_subprocess(
     stderr_cap: int,
     on_spawn: Optional[Callable[[], None]] = None,
 ) -> Tuple[int, bytes, bytes, bool]:
+    from ouroboros.process_scope import record_task_group, scoped_child_env, task_launch_target
+    from ouroboros.tool_custody import invocation_binding
+
+    target = task_launch_target(invocation_binding())
     popen_kwargs: Dict[str, Any] = {
         "cwd": cwd,
-        "env": env,
+        "env": scoped_child_env(env, target),
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "stdin": subprocess.DEVNULL,
@@ -225,6 +233,8 @@ def _run_skill_subprocess(
     with _subprocess_lock:
         _active_subprocesses.add(proc)
     try:
+        if target is not None:
+            record_task_group(*target, proc.pid)
         if on_spawn is not None:
             on_spawn()
     except BaseException:
@@ -394,16 +404,17 @@ def _record_skill_exec_dispatch(
         or getattr(ctx, "root_task_id", "")
         or (bound.root_task_id if bound is not None else "")
         or task_id
-        or f"skill_exec:{skill_name}"
+        or ""
     )
-    if not task_id:
-        task_id = root_task_id
     parent_task_id = str(
         meta.get("parent_task_id")
         or getattr(ctx, "parent_task_id", "")
         or (bound.parent_task_id if bound is not None else "")
         or ""
     )
+    non_task_operation = not (task_id or root_task_id or parent_task_id)
+    root_task_id = root_task_id or f"skill_exec:{skill_name}"
+    task_id = task_id or root_task_id
     drive_root = pathlib.Path(
         str(
             meta.get("budget_drive_root")
@@ -422,6 +433,7 @@ def _record_skill_exec_dispatch(
         parent_task_id=parent_task_id,
         category="external_skill",
         source=f"skill_exec:{skill_name}:{script_rel}",
+        non_task_operation=non_task_operation,
     )
 
 
@@ -641,9 +653,9 @@ def _author_finish_existing_skill_review(
                       and bool(review_state.findings or review_state.raw_actor_records or review_state.raw_result))
     basis = {"surface": "skill", "basis": "reviewed", "content_hash": review_state.reviewed_content_hash or review_state.content_hash}
     if not prior_feedback and not cyber:
-        from ouroboros.skill_review_runner import _read_review_job, review_job_state_path
-        from ouroboros.skill_review_history import load_history
         from ouroboros.review_custody import _row_is_pending
+        from ouroboros.skill_review_history import load_history
+        from ouroboros.skill_review_runner import _read_review_job, review_job_state_path
 
         job = _read_review_job(review_job_state_path(drive_root, skill_name))
         history = load_history(drive_root, skill_name, limit=1)

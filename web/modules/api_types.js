@@ -1,4 +1,4 @@
-/** Dependency-free JSDoc mirror of `ouroboros.gateway.contracts`; the interface-language envelopes (`UiI18n*`) sit in ./ui_i18n_types.js, the model-route previews in ./model_route_types.js, the Dashboard storage envelopes (`Storage*`) in ./storage_types.js, the MCP import preview in ./mcp_import_types.js, the replaceable-client envelopes (`ServedUiState`, setup bootstrap, `/api/contract`, chat history rows, journey request bodies) in ./client_contract_types.js, the product-management envelopes (skills, marketplaces, accounts, local model, MCP, update status) in ./management_contract_types.js. */
+/** Dependency-free JSDoc mirror of `ouroboros.gateway.contracts`; the interface-language envelopes (`UiI18n*`) sit in ./ui_i18n_types.js, the model-route previews in ./model_route_types.js, the Dashboard storage envelopes (`Storage*`) in ./storage_types.js, the MCP import preview in ./mcp_import_types.js, the replaceable-client envelopes (`ServedUiState`, setup bootstrap, `/api/contract`, chat history rows, journey request bodies) in ./client_contract_types.js, the product-management envelopes (skills, marketplaces, accounts, local model, MCP, update status) in ./management_contract_types.js, the owner-decision ingress in ./decision_types.js. */
 /**
  * @typedef {Object} CostPresentation
  * @property {'own'|'root_tree'} scope
@@ -43,6 +43,12 @@
  * @property {ActiveDirectTurn[]=} active_direct_turns  // active direct/ephemeral chat turns snapshot
  * @property {boolean=} active_chat_activities_complete
  * @property {ActiveChatActivity[]=} active_chat_activities  // combined snapshot: direct/ephemeral turns + root managed queue tasks
+ * @property {Array<Object>=} current_questions Canonical accepted question forms, independent of bounded history.
+ * @property {boolean=} current_questions_complete False retains previously observed questions.
+ * @property {Array<{reason:string,task_id?:string,quiz_id?:string}>=} current_questions_gaps Canonical source availability diagnostics.
+ * @property {Array<Object>=} main_attention Live human recovery owners, including children; the activity census stays root-only.
+ * @property {boolean=} main_attention_complete False retains previously observed actions.
+ * @property {Array<Object>=} main_attention_gaps Typed gaps in current action evidence.
  * @property {import('./client_contract_types.js').ServedUiState=} served_ui  // this generation's main interface; absent on older cores
  */
 /**
@@ -118,7 +124,6 @@
  * @property {boolean} enabled
  * @property {AvailableSubagentItem[]} items
  */
-
 /**
  * @typedef {Object} AvailableSubagentsSettingsMeta
  * @property {string=} source
@@ -127,7 +132,6 @@
  * @property {Object|null=} candidate
  * @property {boolean=} automatic The read's own unsaved catalog, following Main and access.
  */
-
 /**
  * @typedef {Object} SettingsMeta
  * @property {string[]=} custom_secret_keys
@@ -136,7 +140,6 @@
  * @property {SettingsPolicyState=} policy_state
  * @property {{restart_required:boolean,restart_keys:string[],restart_source_unknown_keys:string[],unknown_keys:string[],local_model:Object,summary:string}=} restart_state Component application and source uncertainty.
  */
-
 /**
  * @typedef {Object} SettingsPolicyState
  * @property {{configured:string,effective:string,current_process:string,next_task:string,restart_required:boolean,applies:string}} access
@@ -144,7 +147,6 @@
  * @property {{configured:string,effective:string,current_process:string,next_task:string,pending:boolean,applies:string,active_task_snapshot:boolean}} review
  * @property {boolean} running_task_snapshot
  */
-
 /**
  * The wizard payload plus two DECLARATIONS about the onboarding run. Settings
  * keys ride through unchanged (open shape); neither flag is authority — the
@@ -155,13 +157,11 @@
  * @property {Object=} OUROBOROS_SUBAGENTS
  * @property {boolean=} allow_empty_review_pool  // confirms saving agents that leave no review row
  */
-
 /**
  * POST /api/onboarding/subagents/preview accepts the same open provider/local draft and subscription
  * declarations as onboarding completion. It returns a canonical editable actor list without persisting anything.
  * @typedef {OnboardingCompleteRequest} OnboardingSubagentsPreviewRequest
  */
-
 /**
  * @typedef {Object} OnboardingSubagentsPreviewResponse
  * @property {boolean} ok
@@ -170,7 +170,6 @@
  * @property {string} source
  * @property {Object[]} diagnostics
  */
-
 /**
  * @typedef {Object} OnboardingPresetProjection
  * @property {boolean} applied
@@ -178,7 +177,6 @@
  * @property {string[]} harnesses
  * @property {Object} receipt  // per-seat resolution record; {} when nothing was applied
  */
-
 /**
  * Settings, mode, safety and completion persist atomically; only applied presets persist a one-shot marker.
  * @typedef {Object} OnboardingCompleteResponse
@@ -188,7 +186,6 @@
  * @property {boolean} restart_required
  * @property {OnboardingPresetProjection} preset
  */
-
 /**
  * 500 AFTER settings landed: retry the named later step, never re-save (settings/onboarding writes).
  * @typedef {Object} SettingsPostCommitFailureResponse
@@ -197,7 +194,6 @@
  * @property {boolean} saved  // always true
  * @property {string} post_commit_failed
  */
-
 /**
  * 503 settings_save_timeout: the server writer still runs; saved=null is unknown. Reload to check status before retrying.
  * @typedef {Object} SettingsSaveTimeoutResponse
@@ -205,7 +201,6 @@
  * @property {string} code  // settings_save_timeout
  * @property {null} saved
  */
-
 /**
  * 503 from POST /api/onboarding/complete: NOTHING was persisted, the wizard
  * stays open, and `can_skip` means "finish without agent defaults" will work.
@@ -216,7 +211,6 @@
  * @property {boolean} can_skip
  * @property {boolean} saved
  */
-
 /**
  * @typedef {Object} ChatInbound
  * @property {"chat"} type
@@ -229,15 +223,20 @@
  * @property {string=} project_id  // per-project memory scope (v6.32.0)
  * @property {Object=} client_surface  // raw sending-surface observables measured at send time (pywebview/ua/viewport/matchMedia/captured_at; optional IANA timezone)
  */
-
 /**
  * @typedef {Object} CommandInbound
  * @property {"command"} type
  * @property {string} cmd
  */
-
 /**
  * @typedef {Object} ChatOutbound
+ * @property {{kind:'publication'|'answer'|'closure',state:'owed'|'delivered',reason_code?:string,dismissed?:boolean}=} question_delivery Canonical settlement delivery fact.
+ * @property {string=} closed_reason
+ * @property {string=} closed_at
+ * @property {string=} closed_by_task_id
+ * @property {string=} closed_actor
+ * @property {string=} closed_request_id
+ * @property {Array<Object>=} materials Validated existing artifact references with task_id, name, sha256, size and download_url.
  * @property {string=} quiz_id
  * @property {string=} quiz_state
  * @property {number=} project_chat_id
@@ -449,13 +448,14 @@
  * @property {string=} handoff_id  // immutable origin/destination receipt identity
  * @property {Object=} terminal_time  // host-owned occurrence; ts remains publication time
  * @property {string=} completion_answer  // a Project root's model-authored final answer, mirrored into Main
+ * @property {string=} completion_reason One recorded nonclean-outcome fact beside the answer.
+ * @property {string=} delivery_id Stable logical publication identity across transport retries.
  * @property {string=} set_at  // a `reminder` row: when its words were written (live frame only; the text carries the signature)
  * @property {string=} scheduled_for  // a `reminder` row: the due point it was written for
  * @property {string=} delivered_at  // a `reminder` row: when the host showed it (later than due after downtime)
  * @property {number=} chat_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  */
-
 /**
  * @typedef {Object} TypingOutbound
  * @property {"typing"} type
@@ -467,7 +467,6 @@
  * @property {string=} phase
  * @property {string=} kind  // direct_chat | managed_task, empty for children and untracked tasks; kept for wire compatibility, no in-repo client reads it. A typing frame is a submission receipt, never liveness: only the /api/state census inserts into the header live-set
  */
-
 /**
  * @typedef {Object} PhotoOutbound
  * @property {"photo"} type
@@ -488,7 +487,6 @@
  * @property {string=} task_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  */
-
 /**
  * @typedef {Object} VideoOutbound
  * @property {"video"} type
@@ -509,7 +507,6 @@
  * @property {string=} task_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  */
-
 /**
  * @typedef {Object} LinkAction
  * @property {string} label
@@ -538,6 +535,13 @@
 
 /**
  * @typedef {Object} QuizOutbound
+ * @property {Array<Object>=} materials Validated existing artifact references.
+ * @property {{kind:'publication'|'answer'|'closure',state:'owed'|'delivered',reason_code?:string,dismissed?:boolean}=} question_delivery Canonical settlement delivery fact.
+ * @property {string=} closed_reason
+ * @property {string=} closed_at
+ * @property {string=} closed_by_task_id
+ * @property {string=} closed_actor
+ * @property {string=} closed_request_id
  * @property {"quiz"} type
  * @property {"assistant"} role
  * @property {string} quiz_id
@@ -562,6 +566,12 @@
  * a separate discriminator so a state change never dedupes as (or spawns)
  * a second card. answered_index rides only with state "answered".
  * @typedef {Object} QuizStateOutbound
+ * @property {{kind:'publication'|'answer'|'closure',state:'owed'|'delivered',reason_code?:string,dismissed?:boolean}=} question_delivery Canonical settlement delivery fact.
+ * @property {string=} closed_reason
+ * @property {string=} closed_at
+ * @property {string=} closed_by_task_id
+ * @property {string=} closed_actor
+ * @property {string=} closed_request_id
  * @property {"quiz_state"} type
  * @property {string} quiz_id
  * @property {string} task_id
@@ -575,52 +585,8 @@
  * @property {number=} chat_id
  */
 
-/**
- * POST /api/decisions body — the ONE answer ingress for owner decision cards
- * (decision families quiz:/routing:/interaction:/model_wait:). request_id is the
- * idempotency key; a replay returns the recorded confirmation. option_index is
- * optional for a quiz free answer and for typed model_wait actions. A quiz
- * free answer sends a non-empty comment; model_wait sends revision and action.
- * @typedef {Object} DecisionRequest
- * @property {string} request_id
- * @property {string} decision_id
- * @property {number=} option_index
- * @property {string=} comment
- * @property {number=} revision
- * @property {string=} action
- * @property {boolean=} auto_continue
- * @property {string=} model
- * @property {string=} credential_profile_id
- * @property {boolean=} use_local
- * @property {boolean=} persist_role
- */
-
-/**
- * Answer-ingress reply; 409 carries the card's truthful lifecycle state so a
- * late click settles the card instead of inviting retries.
- * @typedef {Object} DecisionResponse
- * @property {string=} request_id
- * @property {boolean=} applied
- * @property {(boolean|null)=} saved
- * @property {Object=} wait
- * @property {string=} reason_code
- * @property {boolean=} ok
- * @property {string=} decision_id
- * @property {string=} state
- * @property {number=} answered_index
- * @property {string=} comment
- * @property {boolean=} duplicate
- * @property {boolean=} answered_after_terminal
- * @property {boolean=} forwarded
- * @property {string=} error
- * @property {string=} dispatched
- * @property {string=} task_id
- * @property {string=} latest_status
- * @property {string=} reason
- * @property {string=} detail
- * @property {string=} cause  // the owner-facing sentence for a refused routing act (409 dispatch_rejected)
- * @property {string=} reasoning_effort  // a New task picked from the card: the start its admitted row requests; never on a steer
- */
+/** @typedef {import('./decision_types.js').DecisionRequest} DecisionRequest */
+/** @typedef {import('./decision_types.js').DecisionResponse} DecisionResponse */
 
 /**
  * @typedef {Object} DocumentOutbound
@@ -1167,6 +1133,7 @@
  * intent is the SOFT stop ("finalize_then_cancel") — the UI shows
  * "Finalizing…" and offers the hard escalation; absent on immediate intents.
  * @typedef {Object} TaskDetailResponse
+ * @property {Object.<string,QuestionRoom>=} question_rooms Current display proof keyed by exact owner_quiz id.
  * @property {Array<{name:string, path?:string, relpath?:string, size?:number, measured?:boolean, status?:string, errors?:string[]}>=} artifacts
  *   Recorded result rows; a nested file keeps its store-relative `relpath`, and `measured: false`
  *   marks a stat-only listing, not a verified capture.
@@ -1186,6 +1153,13 @@
  * @property {{reason?:string, detail?:string, label?:string}=} project_admission_hold  // while the queue snapshot lists the row: its wait for original Project/scope evidence, or {}
  * @property {string=} error
  * @property {ContinuationOffer=} continuation_offer
+ */
+/**
+ * Current question display proof; never a publication address or contextual Project association.
+ * @typedef {Object} QuestionRoom
+ * @property {'known'|'unknown'} state
+ * @property {number=} chat_id
+ * @property {string=} project_id
  */
 /**
  * PROVENANCE for each independent facet of GET /api/claudexor/status. An empty collection
@@ -1583,6 +1557,6 @@ export const MAX_QUIZ_OPTIONS = 6;
 // Mirror task_decision._COMMENT_MAX: ingress refuses longer comments, never
 // truncates; cards must offer only comments the ingress can deliver verbatim.
 export const MAX_DECISION_COMMENT = 2000;
-export const GATEWAY_CONTRACT_VERSION = '7.6.0';
+export const GATEWAY_CONTRACT_VERSION = '7.7.0';
 /** @typedef {import('./client_contract_types.js').ChatHistoryPosition} ChatHistoryPosition */
 /** @typedef {import('./client_contract_types.js').ChatHistoryResponse} ChatHistoryResponse */

@@ -242,6 +242,15 @@ def test_full_loop_explicit_batch_owner_status_and_free_collection(full_loop, mo
 
 def test_new_criterion_same_answer_gets_one_new_panel_and_keeps_prior_request(full_loop, monkeypatch):
     f = full_loop
+    def park(ctx, checkpoint):
+        f.park(ctx, checkpoint)
+        # This case asserts collection of both paid panels. The ordinary park
+        # awaits only the panel for the current subject, which can finish first.
+        with f.condition:
+            assert f.condition.wait_for(
+                lambda: set(f.review_sends) <= f.settled_operations, timeout=10,
+            ), "both paid panels must settle before checking their collection"
+    f.ctx.owner_wait_callback = park
     criterion = "Show the budget as an explicit section."
     def main(_llm, messages, *_a, **_kw):
         f.model_inputs.append(copy.deepcopy(messages))

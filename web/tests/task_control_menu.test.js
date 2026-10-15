@@ -14,6 +14,7 @@ import {
     ACTION_STOP_NOW,
     TASK_CONTROL_LABELS,
     TASK_CONTROL_TRIGGER_LABEL,
+    heldWorkFacts,
     hurryRequestId,
     isRootTaskRow,
     pauseTaskAction,
@@ -260,7 +261,8 @@ test('isRootTaskRow mirrors the server lineage rule (task_results.resolve_task_l
 });
 
 test('Activity marks root rows and hides Pause for a child; Chat cards stay root-only', () => {
-    assert.match(activity, /isRootTaskRow\(t, q\.id \|\| t\.id\) \? ' data-root="1"' : ''/);
+    // A compact retry row can omit lineage; its own root-only census identity still counts.
+    assert.match(activity, /phases\.has\(ownId\) \|\| isRootTaskRow\(t, ownId\)/);
     assert.match(activity, /wholeTree: btn\.dataset\.root === '1'/);
     // Census rows are roots (the census lists root activities only).
     assert.match(activity, /data-id="\$\{esc\(a\.activity_id \|\| ''\)\}" data-root="1"/);
@@ -291,4 +293,43 @@ test('Stop producer reuses uncertain action identity and distinguishes acknowled
         assert.equal(calls[1].stop_policy, undefined); // immediate legacy encoding
         assert.ok(calls.every(call => call.cascade === true));
     } finally { globalThis.fetch = oldFetch; }
+});
+
+// --- #1721: a held Continue names what the census observed ---
+
+const UNBOUND = { kind: 'delegated_run', task_id: 'pred-1', run_id: '', invocation_id: 'inv-1', review_owned: false,
+    state: 'stop_unknown', stop_outcome: 'pending_invocation_unbound', source: 'delegated_subagent' };
+const RUNNING = { kind: 'delegated_run', task_id: 'pred-1', run_id: 'run-leaf', invocation_id: '', review_owned: false,
+    state: 'running', stop_outcome: '', source: 'delegated_subagent' };
+
+test('held-work facts say what is known, and an unknown start is never called running', () => {
+    assert.equal(heldWorkFacts([UNBOUND]), 'a delegated start has an unknown outcome (no run was recorded)');
+    assert.equal(heldWorkFacts([RUNNING]), 'delegated run run-leaf is running');
+    assert.equal(heldWorkFacts([{ kind: 'running_member', task_id: 'c-1' }, { kind: 'custody_unreadable', task_id: 'x' },
+        { kind: 'attempt_custody_unreadable' }]), 'task c-1 is still running; its custody record could not be read');
+    assert.equal(heldWorkFacts([{ kind: 'some_future_kind' }]), 'some_future_kind', 'a kind with no sentence stays raw');
+    assert.equal(heldWorkFacts([1, 2, 3, 4].map((n) => ({ kind: 'running_member', task_id: `c-${n}` }))),
+        'task c-1 is still running; task c-2 is still running; task c-3 is still running; and 1 more');
+    // The server sends the whole census: a model request listed after 21 running runs is counted.
+    const census = [...Array.from({ length: 21 }, (_, n) => ({ kind: 'delegated_run', run_id: `run-${n}`, state: 'running' })),
+        { kind: 'model_handoff' }];
+    assert.equal(heldWorkFacts(census),
+        'delegated run run-0 is running; delegated run run-1 is running; delegated run run-2 is running; and 19 more');
+    assert.ok(heldWorkFacts(census, 22).endsWith('; a model request has no recorded result'));
+    assert.equal(heldWorkFacts(null), '');
+});
+
+test('a refused Resume of a held Continue toasts its facts, with wait-or-stop only for running work', async () => {
+    const toasts = [];
+    const toast = (text, kind) => toasts.push([text, kind]);
+    const refuse = (body) => async () => { throw Object.assign(new Error(body.error), { status: 409, body }); };
+    await resumeTaskAction('succ-1', { resume: refuse({ error: 'predecessor_writers_unsettled', blockers: [UNBOUND] }), toast });
+    await resumeTaskAction('succ-2', { resume: refuse({ error: 'predecessor_writers_unsettled', blockers: [RUNNING],
+        action: 'wait_or_stop_the_previous_work' }), toast });
+    await resumeTaskAction('succ-3', { resume: refuse({ error: 'replay_unsafe' }), toast });
+    assert.deepEqual(toasts, [
+        ['Resume refused: a delegated start has an unknown outcome (no run was recorded).', 'error'],
+        ['Resume refused: delegated run run-leaf is running. Wait for that work or stop it.', 'error'],
+        ['Resume refused: replay_unsafe', 'error'],
+    ]);
 });

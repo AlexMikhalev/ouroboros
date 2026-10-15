@@ -31,7 +31,7 @@ SECOND = "I retain the second argument separately, including its different assum
 OPEN_REQUIREMENT = "CURRENT OPEN REQUIREMENT"
 
 
-def apply_local(ctx, messages, note, *, remove=(), all_units=False, **options):
+def apply_local(ctx, messages, note, *, remove=(), all_units=False, fit_check=None, **options):
     messages = deepcopy(messages)
     ctx.messages, ctx.active_context_mode = messages, "max"
     record_context_view(ctx, messages, [])
@@ -46,7 +46,7 @@ def apply_local(ctx, messages, note, *, remove=(), all_units=False, **options):
 
     def fit(candidate, schemas):
         fits.append(deepcopy(candidate))
-        return {"accepted": True, "strict_bound_proven": False}
+        return {"accepted": True if fit_check is None else fit_check(candidate), "strict_bound_proven": False}
 
     process_tool_results([{"fn_name": "compact_context", "is_error": False,
         "tool_call_id": "compact-local", "result": response, "args_for_log": args, "trace_ref": {}}],
@@ -157,6 +157,10 @@ def test_bad_optional_transfer_keeps_its_attachment_while_valid_transfer_and_not
     assert receipt["status"] == "applied" and FIRST in str(after)
     assert len(receipt["review_transfers"]["applied"]) == len(receipt["review_transfers"]["unapplied"]) == 1
     assert "stale" in receipt["review_transfers"]["unapplied"][0]["reason"]
+    notice = json.loads(after[-1]["content"].partition("\n")[2])
+    assert notice["request_exceptions"] == receipt["request_exceptions"]
+    assert notice["request_exceptions"][0]["field"] == "review_transfers"
+    assert notice["request_exceptions"][0]["index"] == 1
     current = _index(after)[-1]
     assert "FIRST ATTACHMENT" not in str(current) and "SECOND ATTACHMENT" in str(current)
 
@@ -299,6 +303,9 @@ def test_compact_decision_ref_selects_only_observed_version_not_reused_position(
     assert [n["bound_decision"] for n in receipt["review_notes"]["applied"]] == [entry["bound_decision"]]
     assert "NEW SOURCE-BOUND REASON" in str(_index(after)[-1])
     assert any(g["reason"] == "Invalid review body binding" for g in receipt["review_notes"]["unshortened"])
+    notice = json.loads(after[-1]["content"].partition("\n")[2])
+    assert notice["request_exceptions"] == [{"field": "review_notes", "index": 1,
+                                               "reason": "Invalid review body binding"}]
 
 
 def test_obsolete_index_helper_keeps_latest_and_unknown_rows():
@@ -456,3 +463,36 @@ def test_changed_group_prose_gets_new_source_and_model_cannot_supply_old_anchor(
     with pytest.raises(ValueError, match="exact authored payload"):
         view.load_review_history_view({**pointer, "source_ref": invalid_ref},
             lambda ref: read_actor_source_bytes(ctx.drive_root, ctx.task_id, ref))
+
+
+def test_exception_detail_fit_falls_back_to_count_without_undoing_valid_view(harness, monkeypatch):
+    ctx, _, _ = _three(harness, monkeypatch)
+    source = _capture(ctx)
+    rows = [{"bound_decision": "decision_1", "remark": "Unavailable exact binding.", "reason": "No positional alias."}]
+    detailed, receipt, _ = apply_local(ctx, source, FIRST, all_units=True, review_notes=rows)
+    detailed_length = len(json.dumps(detailed, ensure_ascii=False))
+    assert receipt["request_exceptions"]
+    # Use a real length boundary one character below the complete detailed view,
+    # not a predicate that silently permits arbitrary smaller fake candidates.
+    after, compact, fits = apply_local(ctx, source, FIRST, all_units=True, review_notes=rows,
+        fit_check=lambda candidate: len(json.dumps(candidate, ensure_ascii=False)) < detailed_length)
+    assert compact["status"] == "applied"
+    notice = json.loads(after[-1]["content"].partition("\n")[2])
+    assert notice["request_exceptions_omitted"] == 1 and "request_exceptions" not in notice
+    retained = json.loads(read_actor_source_bytes(ctx.drive_root, ctx.task_id, notice["receipt_source"]))
+    assert retained["receipt"]["request_exceptions"] == compact["request_exceptions"]
+    assert actor_notes(after) and FIRST in str(after)
+
+
+def test_validation_origin_does_not_call_inherited_or_unselected_rows_current_failures(harness, monkeypatch):
+    ctx, _, _ = _three(harness, monkeypatch)
+    entry = next(e for e in view.review_note_options(ctx)["entries"] if e["groupable"])
+    good = {"bound_decision": entry["bound_decision"], "remark": "Keep meaning.", "reason": "Closed historical branch."}
+    bad = {"bound_decision": "decision_1", "remark": "No binding.", "reason": "Invalid positional identifier."}
+    chosen, gaps, options = view._available_review_notes(ctx, [bad, good, bad], requested_from=2)
+    assert chosen == [good]
+    assert "request_index" not in gaps[0] and gaps[1]["request_index"] == 0
+    assert len(options["entries"]) > len(gaps)
+    history, operative = view.current_plan_history(ctx)
+    _, transfer_gaps = view.available_attachment_transfers(history, operative, [{}, {}], requested_from=1)
+    assert "request_index" not in transfer_gaps[0] and transfer_gaps[1]["request_index"] == 0

@@ -27,7 +27,7 @@ from ouroboros.usage_accounting import (
     PhysicalAttemptCapture, PhysicalAttemptContext, adopt_physical_attempt_capture,
     capture_attempt_ids, current_usage_scope, last_physical_attempt_capture,
 )
-from ouroboros.utils import atomic_write_json
+from ouroboros.utils import atomic_write_json, read_text_across_replace
 
 log = logging.getLogger(__name__)
 
@@ -160,7 +160,7 @@ def child_main(payload_path: str) -> None:
 
     def control():
         try:
-            value = json.loads(payload_file.with_name("control.json").read_text(encoding="utf-8"))
+            value = json.loads(read_text_across_replace(payload_file.with_name("control.json")))
             if set(value) != {"receipt_id", "reason"} or value["receipt_id"] != receipt_id or not isinstance(value["reason"], str):
                 return "child_control_invalid"
             return value["reason"] or None

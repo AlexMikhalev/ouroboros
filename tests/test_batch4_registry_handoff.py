@@ -96,7 +96,7 @@ def test_registry_and_predispatch_wait_disclose_unreadable_pause_authority(tmp_p
     from ouroboros.model_wait import ModelWaitInterrupted
 
     checkpoints = []
-    monkeypatch.setattr(budget_pause, "request_pause", lambda *_a, **_kw: checkpoints.append(True))
+    monkeypatch.setattr(budget_pause, "request_pause", lambda *_a, **kw: checkpoints.append(kw.get("rail")))
     limit_ctx = SimpleNamespace(tools=registry, accumulated_usage={})
     with pytest.raises(ModelWaitInterrupted) as boundary:
         budget_pause.enter_owner_pause(limit_ctx)
@@ -104,4 +104,6 @@ def test_registry_and_predispatch_wait_disclose_unreadable_pause_authority(tmp_p
     with pytest.raises(ModelWaitInterrupted) as routed:
         _handle_model_wait_control(limit_ctx, boundary.value)
     assert routed.value is boundary.value
-    assert checkpoints == [] and not hasattr(registry._ctx, "_owner_pause_fence_id")
+    # An unreadable fence is neither Stop nor money: only the technical capture is attempted at the
+    # boundary; when none is saved the same typed cause ends the work, and no fence id is invented.
+    assert checkpoints == [budget_pause.RAIL_CONTROL_AUTHORITY] and not hasattr(registry._ctx, "_owner_pause_fence_id")

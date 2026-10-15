@@ -434,7 +434,8 @@ def test_project_mixed_media_live_replay_restart_and_phone(direct_server_with_da
             _assert_inside(small, f"{engine} project, phone after restart")
             _phone_fits(mobile, f"{engine} project, phone")
             if engine == "chromium":
-                assert all(a["width"] >= 36 and a["height"] >= 36 for a in shape["actions"]), shape["actions"]
+                # 36 px targets; at device scale 2 a fractional position reports exactly 36 as 35.999996.
+                assert all(min(a["width"], a["height"]) >= 36 - 1e-3 for a in shape["actions"]), shape["actions"]
             small.locator(".chat-photo-actions summary").first.tap()
             mobile.locator(".chat-photo-menu:not([hidden])").wait_for(state="visible")
             mobile.keyboard.press("Escape")

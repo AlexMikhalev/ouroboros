@@ -41,7 +41,7 @@ def late_skill(tmp_path, monkeypatch):
     rows[-1]["reason"] = "full source " * 4000 + "EOF-SKILL-VERDICT"
     result_text = json.dumps(rows)
     behavior = SimpleNamespace(before_wait=lambda: None, text=result_text,
-                               wait=lambda kwargs: release.wait(10), expected_completions=2)
+                               wait=lambda kwargs: release.wait(), expected_completions=2)
     class Slow:
         def chat(self, **kwargs):
             invoke_bound_api_review_paid_stamp()
@@ -58,6 +58,8 @@ def late_skill(tmp_path, monkeypatch):
             settled.set()
     monkeypatch.setattr(custody, "_settle_review_attempt", settle)
     monkeypatch.setattr(custody, "_logical_timeout", lambda *_: .05)
+    from ouroboros.task_results import write_task_result
+    write_task_result(tmp_path, "skill-root", "running", root_task_id="skill-root")  # the child's real root
     def ctx():
         value = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="skill-task")
         value.task_attempt = 1
@@ -254,7 +256,7 @@ def test_all_completed_chunks_reaggregate_once_without_a_new_paid_stamp(late_ski
     monkeypatch.setattr(custody, "_logical_timeout",
                         lambda slot, request, meta: 2 if "chunk a" in str(request.messages) else .05)
     h.behavior.expected_completions = 4
-    h.behavior.wait = lambda kwargs: "chunk a" in str(kwargs["messages"]) or h.release.wait(10)
+    h.behavior.wait = lambda kwargs: "chunk a" in str(kwargs["messages"]) or h.release.wait()
     _handle_review_skill(h.ctx(), skill="late")
     old = h.history.read_bytes()
     h.release.set()
@@ -281,7 +283,7 @@ def _seat_a_fails_while_seat_b_is_in_flight(h, monkeypatch, seat_b_error=""):
     def wait(kwargs):
         if kwargs["model"] == "fake/one":
             raise RuntimeError("seat-a: provider HTTP 503")
-        assert h.release.wait(10)
+        assert h.release.wait()
         if seat_b_error:
             raise RuntimeError(seat_b_error)
         return True

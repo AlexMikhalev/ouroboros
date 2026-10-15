@@ -18,7 +18,7 @@ keeps the tree in place and marks it for every enclosing cleanup layer.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -28,6 +28,7 @@ import secrets
 import stat
 import subprocess
 import sys
+import tempfile
 import urllib.request
 
 from ouroboros.test_environment import retain_tree, retention_markers
@@ -137,10 +138,16 @@ def assert_served_candidate(url, checkout, data_dir, pid, candidate):
 def _git(repo: Path, *args: str, data=None) -> bytes:
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
-    result = subprocess.run(
-        ["git", "-c", "core.fsmonitor=false", *args], cwd=repo, env=env,
-        input=data, capture_output=True, timeout=120,
-    )
+    # File-backed input removes the observed parent/Git mutual pipe-write wait.
+    # Keep temporary bytes outside either observed checkout, including on Windows.
+    with tempfile.TemporaryFile() if data is not None else nullcontext() as stdin:
+        if stdin is not None:
+            stdin.write(data)
+            stdin.seek(0)
+        result = subprocess.run(
+            ["git", "-c", "core.fsmonitor=false", *args], cwd=repo, env=env,
+            stdin=stdin, capture_output=True, timeout=120,
+        )
     if result.returncode:
         raise CandidateError(f"CANDIDATE_GIT_FAILED {args[0]}: {os.fsdecode(result.stderr)}")
     return result.stdout

@@ -622,7 +622,10 @@ def project_review_history(history: dict, *, operative_subject: Any = None,
                    "source_ref": copy.deepcopy(selection["source_ref"]),
                    "rule": "Author's account of named earlier sources, not a new reviewer verdict."}
         answer["actor_account"] = account
-        shown["authored_view"] = copy.deepcopy(account)
+        # Reviewer text carries every selected authored text, in order, with its
+        # attribution; private capsule bookkeeping stays in actor_account above.
+        shown["authored_view"] = {"authorship": "actor", "texts": [c["content"][0]["text"] for c in capsules],
+                                  "source_ref": copy.deepcopy(selection["source_ref"]), "rule": account["rule"]}
     return answer
 
 
@@ -679,14 +682,18 @@ def apply_attachment_transfers(history: dict, transfers: list, operative_subject
     return applied
 
 
-def available_attachment_transfers(history: dict, operative: Any, transfers: Sequence[dict]) -> tuple[list, list]:
+def available_attachment_transfers(history: dict, operative: Any, transfers: Sequence[dict], *,
+                                  requested_from: int | None = None) -> tuple[list, list]:
     """Independent optional declarations: one stale attachment vetoes no other work."""
     accepted, gaps = [], []
-    for row in transfers:
+    for index, row in enumerate(transfers):
         try:
             accepted.extend(validate_attachment_transfers(history, operative, [row]))
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
-            gaps.append({"source": row.get("source") if isinstance(row, dict) else None, "reason": str(exc)})
+            gap = {"source": row.get("source") if isinstance(row, dict) else None, "reason": str(exc)}
+            if requested_from is not None and index >= requested_from:
+                gap["request_index"] = index - requested_from
+            gaps.append(gap)
     return list({_sha(row): row for row in accepted}.values()), gaps
 
 
@@ -924,11 +931,11 @@ def _group_note_payload(note: dict) -> dict:
     return {"bound_decisions": _note_bindings(note), "remark": note["remark"], "reason": note["reason"]}
 
 
-def _available_review_notes(ctx, notes):
+def _available_review_notes(ctx, notes, *, requested_from=None):
     options = review_note_options(ctx)
     current = {_sha(e["bound_decision"]): e for e in options["entries"] if e["bound_decision"]}
     accepted, gaps = [], []
-    for note in notes or []:
+    for index, note in enumerate(notes or []):
         try:
             bindings = _note_bindings(note)
             if any(_sha(binding) not in current for binding in bindings):
@@ -940,8 +947,10 @@ def _available_review_notes(ctx, notes):
             accepted.append({**({"bound_decisions": bindings} if "bound_decisions" in note else {"bound_decision": bindings[0]}),
                              "remark": note["remark"], "reason": note["reason"]})
         except (ValueError, TypeError, AttributeError) as exc:
-            gaps.append({"selection": copy.deepcopy(note),
-                         "reason": str(exc)})
+            gap = {"selection": copy.deepcopy(note), "reason": str(exc)}
+            if requested_from is not None and index >= requested_from:
+                gap["request_index"] = index - requested_from
+            gaps.append(gap)
     # Explicit later selections replace earlier equal or fully covered groups.
     # Disjoint and partially overlapping accounts retain their authored meaning.
     latest = {}
@@ -989,11 +998,22 @@ def prepare_review_view(ctx: Any, candidate: list, receipt: dict, transfers: Seq
         except (OSError, ValueError, KeyError, TypeError):
             pass  # full bodies + visible selection gap remain the reader's fallback
     accepted = []
+    transfer_gaps = []
     if transfers or inherited:
         history, operative = current_plan_history(ctx)
-        accepted, transfer_gaps = available_attachment_transfers(history, operative, [*inherited, *transfers])
+        accepted, transfer_gaps = available_attachment_transfers(
+            history, operative, [*inherited, *transfers], requested_from=len(inherited))
         receipt["review_transfers"] = {"applied": accepted, "unapplied": transfer_gaps}
-    chosen_notes, note_gaps, options = _available_review_notes(ctx, [*old_notes, *review_notes])
+    chosen_notes, note_gaps, options = _available_review_notes(
+        ctx, [*old_notes, *review_notes], requested_from=len(old_notes))
+    # Origin is stamped at validation, before inherited and unselected entries
+    # become the historical receipt. Never infer a request failure from that list.
+    receipt["request_exceptions"] = [
+        {"field": field, "index": gap["request_index"], "reason": gap["reason"]}
+        for field, gaps in (("review_notes", note_gaps), ("review_transfers", transfer_gaps))
+        for gap in gaps if "request_index" in gap]
+    receipt["inherited_selections_unapplied"] = sum(
+        "request_index" not in gap for gap in [*note_gaps, *transfer_gaps])
     for note in chosen_notes:
         if "bound_decisions" in note and (source := group_sources.get(_sha(_group_note_payload(note)))):
             # Only verified inherited text supplies this anchor. Tool-supplied

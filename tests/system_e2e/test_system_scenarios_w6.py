@@ -334,11 +334,16 @@ def test_s26_direct_chat_turn_owner_stop_mid_round_is_typed_and_ends_the_turn(
 
                 # 1. IN FLIGHT inside a model round — and ADDRESSABLE.
                 assert gate.arrived.wait(180), "the direct turn never reached its first model round"
+                # The provider gate and supervisor event consumer are separate:
+                # the registered Preparing row may precede consumption of the
+                # main_llm_call_state event that projects Working (#1740).
                 activity = wait_until(
-                    lambda: (_direct_activities(server, client_message_id) or [None])[0], 30)
-                assert activity, "the direct turn is not in /api/state.active_chat_activities"
+                    lambda: next((row for row in _direct_activities(server, client_message_id)
+                                  if row.get("phase") == "working"), None), 30)
+                assert activity, "the direct turn never became Working in /api/state.active_chat_activities"
                 task_id = str(activity.get("activity_id") or "")
-                assert task_id and activity.get("phase") == "thinking", activity
+                # #1740 uses neutral Working once a physical model call starts.
+                assert task_id and activity.get("phase") == "working", activity
                 assert wait_until(lambda: task_id in _running_task_ids(server), 30), (
                     "the live direct turn is not listed by GET /api/tasks?status=running")
                 assert task_id not in oracle.running_ids(), "a direct turn must have no queue row"
@@ -372,7 +377,7 @@ def test_s26_direct_chat_turn_owner_stop_mid_round_is_typed_and_ends_the_turn(
                 assert control_reason == REASON_OWNER_STOPPED_DIRECT_TURN, controls
                 # The durable intent: minted by the legacy immediate shape (the
                 # tree's own reader says IMMEDIATE), claim released back to
-                # ``requested`` for the sweep with the typed "still live" error.
+                # ``requested`` for the sweep with the typed 202 pending answer.
                 intent = oracle.cancel_intents().get(task_id) or {}
                 assert intent, oracle.cancel_intents()
                 assert first_body.get("request_id") == intent.get("request_id"), (first_body, intent)

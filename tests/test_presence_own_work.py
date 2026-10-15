@@ -552,7 +552,7 @@ def test_an_unconfirmed_presence_promote_is_readable_as_pending_by_its_own_bindi
         task_contract={"capability_ceiling": presence_ceiling_payload(_ceiling())},
     )
 
-    out = _promote_chat_to_task(ctx, "Compile the figures", predecessor_task_id="")
+    out = _promote_chat_to_task(ctx, "Compile the figures", title="Figure compilation", predecessor_task_id="")
 
     assert out.startswith("⚠️ PROMOTE_UNCONFIRMED")
     task_id = emitted[0]["task_id"]
@@ -574,7 +574,7 @@ def test_an_unconfirmed_presence_promote_is_readable_as_pending_by_its_own_bindi
         pending_events=[], event_queue=types.SimpleNamespace(put_nowait=owner_emitted.append), current_chat_id=1,
         drive_root=tmp_path, budget_drive_root=str(tmp_path), project_id="", task_metadata={}, task_id="",
     )
-    _promote_chat_to_task(owner_ctx, "Owner work", workspace="none", predecessor_task_id="")
+    _promote_chat_to_task(owner_ctx, "Owner work", title="Owner work", workspace="none", predecessor_task_id="")
     owner_stub = load_task_result(tmp_path, owner_emitted[0]["task_id"])
     assert "presence" not in (owner_stub.get("metadata") or {}) and "delegation_role" not in owner_stub
 

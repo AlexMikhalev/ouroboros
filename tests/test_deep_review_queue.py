@@ -64,6 +64,26 @@ def test_a_row_that_is_not_enabled_is_refused_in_the_asking_chat(door, monkeypat
     assert text.startswith(f"Deep self-review could not be queued: reviewer {name!r} is not an enabled catalog row")
 
 
+@pytest.mark.parametrize("blocked", ["worker_pool_unavailable", "billing_authority_unavailable"])
+def test_only_a_disabled_worker_pool_is_answered_with_restart(door, monkeypatch, blocked):
+    """Restart restores a disabled worker pool and nothing else: an unreadable money
+    ledger refuses the review with its own reason and no ``/restart`` advice."""
+    if blocked == "worker_pool_unavailable":
+        monkeypatch.setattr("supervisor.workers._worker_pool_execution_state",
+                            lambda: {"available": False, "disabled_reason": "worker_readiness_exhausted"})
+        expected = ("Deep self-review could not be queued: worker_readiness_exhausted. "
+                    "Use /restart to restore the worker pool.")
+    else:
+        def unreadable(*_a, **_k):
+            raise OSError("simulated unreadable money ledger")
+
+        monkeypatch.setattr("ouroboros.usage_admission.ledger_billing_binding", unreadable)
+        expected = "Deep self-review could not be queued: billing_authority_unavailable."
+    assert door.queue.queue_deep_self_review_task("owner:/review", force=True, chat_id=7) is None
+    assert door.pending == []
+    assert door.sent == [(7, expected, "deep_self_review_unavailable")]
+
+
 def test_the_tool_event_hands_the_reviewer_to_the_queue():
     from supervisor.events_runtime_controls import _handle_deep_self_review_request
 
@@ -91,9 +111,12 @@ def test_every_owner_entry_reaches_the_one_queue_door(monkeypatch, source, chat,
         load_state=lambda: dict(state), update_state=lambda fn: fn(dict(state)),
         send_with_budget=lambda *_a, **_k: pytest.fail("no reply: the queue door answers"),
         queue_deep_self_review_task=lambda **kw: handed.append(kw), consciousness=None, kill_workers=None)
-    update = {"update_id": 1, "message": {"chat": {"id": chat}, "from": {"id": 5}, "text": text, "source": source}}
+    update = {"update_id": 1, "message": {"chat": {"id": chat}, "from": {"id": 5}, "text": text, "source": source,
+                                          "client_message_id": "cm-review"}}
     server._handle_bridge_update_batch(types.SimpleNamespace(), [update], 0, ctx, [0])
-    assert handed == [{"reason": "owner:/review", "force": True, "chat_id": chat, "reviewer": reviewer}]
+    # The submission rides along so the door's rows settle only this message's Sending.
+    assert handed == [{"reason": "owner:/review", "force": True, "chat_id": chat, "reviewer": reviewer,
+                       "client_message_id": "cm-review"}]
 
 
 def test_the_worker_runs_the_named_row_and_links_its_record(tmp_path, monkeypatch):

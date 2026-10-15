@@ -273,6 +273,8 @@ def test_a_recovery_that_raced_a_settlement_leaves_it_authoritative(root):
 
 
 def test_one_shots_compare_identity_not_payload(root):
+    from ouroboros.task_results import write_task_result
+    write_task_result(root, "r", "running", root_task_id="r")  # the session's real root
     first = ua.record_subscription_session("session", drive_root=root, route="r", model="first",
                                            task_id="t", root_task_id="r", spend_usd=1.0)
     before = ledger_rows(root)

@@ -1190,6 +1190,10 @@ def stream_artifact_file(path: Any, sink: Any = None, *, expected: Any = None) -
                 observation.st_mtime_ns, observation.st_ctime_ns)
     from ouroboros.store import open_for_read  # a held store file keeps its locks (no new descriptor to close)
 
+    # Reject pipes/devices before opening: the descriptor check alone comes too
+    # late for a FIFO with no writer. Keep the post-open checks for path changes.
+    if source_path is not None and not stat.S_ISREG(source_path.stat().st_mode):
+        raise OSError(f"artifact source is not a regular file: {path}")
     with open_for_read(source_path) if source_path is not None else nullcontext(path) as handle:
         before = os.fstat(handle.fileno())
         if not stat.S_ISREG(before.st_mode):

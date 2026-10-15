@@ -51,10 +51,14 @@ def _value(expression, *, event, ref, base="", schedule="", cancelled=False, att
 def test_ordinary_matrix_covers_prs_and_landed_pushes_and_keeps_other_events(event, ref, base, quick, platforms):
     facts = {"event": event, "ref": ref, "base": base}
     assert bool(_value(WORKFLOW["jobs"]["quick-test"]["if"], **facts)) is quick
-    job = WORKFLOW["jobs"]["full-test"]
+    job = WORKFLOW["jobs"]["full-test-runs"]
     admitted = _value(job["if"], **facts)
     actual = _value(job["strategy"]["matrix"]["os"], **facts) if admitted else []
-    assert actual == platforms
+    if admitted:
+        actual += [row["os"] for row in job["strategy"]["matrix"]["include"]]
+    assert sorted(set(actual)) == sorted(platforms)
+    assert actual.count("windows-latest") == (4 if "windows-latest" in platforms else 0)
+    assert all(actual.count(os) == 1 for os in platforms if os != "windows-latest")
     assert job["strategy"]["fail-fast"] is False
     assert job["runs-on"] == "$" + "{{ matrix.os }}"
 
@@ -64,7 +68,7 @@ def test_desktop_pr_matrix_keeps_merge_checkout_and_pr_base_evidence_secret_free
     assert triggers["pull_request"]["branches"] == ["ouroboros"]
     assert "pull_request_target" not in triggers
     assert WORKFLOW["permissions"] == {"contents": "read"}
-    job = WORKFLOW["jobs"]["full-test"]
+    job = WORKFLOW["jobs"]["full-test-runs"]
     assert "secrets." not in json.dumps(job)
     # The book-growth exception reads PR label events, without any write grant.
     assert job["permissions"] == {"contents": "read", "pull-requests": "read"}
@@ -81,7 +85,7 @@ def test_desktop_pr_matrix_keeps_merge_checkout_and_pr_base_evidence_secret_free
 # cron, current or stale, admits no ordinary job.
 @pytest.mark.parametrize("cron", ["37 4 * * *", pytest.param("17 3 * * *", id="foreign-cron")])
 def test_scheduled_main_runs_do_not_enter_the_ordinary_matrix(cron):
-    for name in ("quick-test", "full-test"):
+    for name in ("quick-test", "full-test-runs"):
         assert not _value(
             WORKFLOW["jobs"][name]["if"], event="schedule", ref="refs/heads/main", schedule=cron,
         )
@@ -106,7 +110,7 @@ def test_the_paid_live_stand_runs_only_on_a_dispatch_that_opts_in(event, ref, sc
 
 
 @pytest.mark.parametrize("name", [
-    "integration-test", "skill-smoke", "system-e2e-mock", "e2e-live",
+    "integration-test", "integration-optional", "skill-smoke", "system-e2e-mock", "e2e-live",
     "marker-guards", "docker-ui-smoke", "docker-portable-test",
     "release-preflight", "build", "release", "vendor-package-smoke",
 ])
@@ -128,9 +132,13 @@ def test_desktop_pr_coverage_does_not_admit_provider_or_release_jobs(name):
 def test_provider_canaries_join_this_workflow_only_for_manual_runs_and_tags(event, ref, schedule, called):
     """Branch pushes reach the canaries through provider-canary-push.yml, so a
     provider outage on a landed commit leaves this workflow's result to the code."""
-    job = WORKFLOW["jobs"]["integration-test"]
-    assert job["uses"] == "./.github/workflows/provider-canary.yml"
-    assert bool(_value(job["if"], event=event, ref=ref, base="ouroboros", schedule=schedule)) is called
+    for name, scope in (("integration-test", "required"), ("integration-optional", "optional")):
+        job = WORKFLOW["jobs"][name]
+        assert job["uses"] == "./.github/workflows/provider-canary.yml"
+        assert job["with"] == {"scope": scope}
+        for repository in ("razzant/ouroboros", "someone/private-copy"):
+            assert bool(_value(job["if"], event=event, ref=ref, base="ouroboros",
+                               schedule=schedule, repository=repository)) is called
 
 
 @pytest.mark.parametrize(("event", "cancelled", "expected"), [
@@ -161,7 +169,7 @@ def test_only_a_new_pull_request_head_cancels_a_run(event, attempt, group, cance
 
 def test_landed_push_desktop_matrix_runs_in_this_repository_only():
     """A private copy that pushes its own commits keeps the Ubuntu quick job and pays no desktop minutes."""
-    job = WORKFLOW["jobs"]["full-test"]
+    job = WORKFLOW["jobs"]["full-test-runs"]
     push = {"event": "push", "ref": "refs/heads/ouroboros"}
     assert _value(job["if"], **push)
     assert not _value(job["if"], **push, repository="someone/private-copy")
@@ -184,7 +192,7 @@ def test_the_windows_leg_runs_its_browser_modules_and_refuses_a_skip(tmp_path, r
     import subprocess
     import sys
 
-    job = WORKFLOW["jobs"]["full-test"]
+    job = WORKFLOW["jobs"]["full-test-runs"]
     steps = {step.get("id"): step for step in job["steps"] if step.get("id")}
     install, run = steps["attachment_browser_install"], steps[run_id]
     for step in (install, run):
@@ -214,7 +222,9 @@ def test_the_windows_leg_runs_its_browser_modules_and_refuses_a_skip(tmp_path, r
     assert command.startswith('"$ATTACHMENT_PYTHON" -I -S scripts/safe_test.py -- "$ATTACHMENT_PYTHON" -m pytest '
                               + module)
     assert " -m ui_browser -k chromium " in command and "--require-ui-browser" not in command
-    assert "matrix" not in json.dumps(run) and job["strategy"]["matrix"].keys() == {"os"}
+    assert "matrix" not in run["run"]
+    assert "matrix.shard <= 1" in install["if"] and "matrix.shard <= 1" in run["if"]
+    assert job["strategy"]["matrix"].keys() == {"os", "shard", "include"}
     # The skip guard, run as written against a junit report of each shape.
     for tests, skipped, ok in ((3, 0, True), (3, 1, False), (0, 0, False)):
         report = tmp_path / "attachment-browser.xml"

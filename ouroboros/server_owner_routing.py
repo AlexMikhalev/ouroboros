@@ -581,16 +581,19 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
         from supervisor.events import _handle_promote_chat_to_task
         from ouroboros.gateway.routing_decision import _derived_identity
 
-        if not owner_conversation_admitted(chat_id):
+        from ouroboros.task_finalization import host_operation_reply_kwargs
+
+        if not owner_conversation_admitted(chat_id, client_message_id):
             return
+        answers = host_operation_reply_kwargs(None, "", client_message_id)  # the refusal settles only this Sending
         try:  # bridge intake runs on the supervisor loop: same pre-check contract as assignment
             remaining = budget_remaining(load_state(), strict=True, allow_stale=True)
         except Exception:
-            ctx.send_with_budget(chat_id, "⚠️ Cost accounting is unavailable. Task was not dispatched; retry after ledger recovery.", role="system", system_type="task_admission_notice")
+            ctx.send_with_budget(chat_id, "⚠️ Cost accounting is unavailable. Task was not dispatched; retry after ledger recovery.", **answers, role="system", system_type="task_admission_notice")
             return
         if remaining <= 0:
             try:
-                ctx.send_with_budget(chat_id, "🚫 Budget exhausted. Task rejected. Please increase TOTAL_BUDGET in settings.", role="system", system_type="task_admission_notice")
+                ctx.send_with_budget(chat_id, "🚫 Budget exhausted. Task rejected. Please increase TOTAL_BUDGET in settings.", **answers, role="system", system_type="task_admission_notice")
             except Exception:
                 pass
             return

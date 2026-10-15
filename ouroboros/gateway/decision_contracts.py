@@ -20,7 +20,10 @@ class DecisionRequest(TypedDict):
     recorded confirmation instead of acting twice. ``comment`` is the owner's
     optional verbatim remark on quiz/routing decisions.
 
-    ``option_index`` is optional for the quiz family: an owner who takes none
+    Quiz ``action=close`` instead requires a non-empty ``reason`` and conveys
+    neither an answer nor approval; ``action=dismiss`` carries neither and only removes
+    an accepted late answer of unknown delivery from current questions (never delivered,
+    never resent). ``option_index`` is optional for answers: an owner who takes none
     of the offered options answers with a non-empty comment and no index.
     Routing requires the integer — its choice IS the option. Model waits
     instead require revision and action, with the matching action fields;
@@ -33,7 +36,8 @@ class DecisionRequest(TypedDict):
     option_index: NotRequired[int]
     comment: NotRequired[str]
     revision: NotRequired[int]
-    action: NotRequired[Literal["auto_continue", "switch", "retry"]]
+    action: NotRequired[Literal["auto_continue", "switch", "retry", "close", "dismiss"]]
+    reason: NotRequired[str]  # explicit quiz closure; never an answer/comment
     auto_continue: NotRequired[bool]
     model: NotRequired[str]
     credential_profile_id: NotRequired[str]
@@ -43,12 +47,15 @@ class DecisionRequest(TypedDict):
 
 class DecisionResponse(TypedDict, total=False):
     """Answer-ingress reply. 2xx carries the card's lifecycle state
-    (quiz: answered; duplicate marks an idempotent replay). A LATE quiz answer
+    (quiz: answered or explicitly closed; duplicate marks an idempotent replay).
+    Closure carries actor, request identity, reason and time plus its delivery
+    disposition; an owed delivery remains canonical until recovery confirms it.
+    A LATE quiz answer
     — the card's task already finished — is also 2xx, adding
     answered_after_terminal and forwarded: the answer is recorded and delivered
     into the card's chat as an ordinary owner message, and forwarded=false with
     a reason_code says when that chat is a machine or hidden destination with no
-    owner turn to start. 409 is left for a card that was already answered (and
+    owner turn to start. 409 carries the winning answered/closed disposition (and
     for a non-root addressee). Routing adds dispatched
     (confirmed durable receipt), task_id (derived promoted id), latest_status
     (superseding status on 409), reason/detail diagnostics, and cause (the
@@ -72,6 +79,11 @@ class DecisionResponse(TypedDict, total=False):
     state: str
     answered_index: int
     comment: str
+    closed_reason: str
+    closed_at: str
+    closed_actor: Literal["owner", "model"]
+    closed_request_id: str
+    question_delivery: Dict[str, Any]
     duplicate: bool
     answered_after_terminal: bool
     forwarded: bool

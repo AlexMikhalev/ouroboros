@@ -38,7 +38,7 @@ from ouroboros.review_slot_cancel import (  # noqa: F401 — re-exported seam su
     _slot_cancel_outcome,
 )
 from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_paid_stamp
-from ouroboros.usage_accounting import POSITIVE_PHYSICAL_ATTEMPT_STATES
+from ouroboros.usage_accounting import POSITIVE_PHYSICAL_ATTEMPT_STATES, BillingAuthorityUnavailable
 from ouroboros.delegate_custody_usage import (
     observe_failed_review_send, observe_review_usage, session_usage_once,
 )
@@ -884,7 +884,7 @@ def run_delegated_review_session(
                 # fresh start AND a pending-invocation replay are both a new
                 # POST. The invocation row stays pending for the resumed task.
                 raise ReviewRouteUnavailable(
-                    "the owning task is entering an exact budget pause; no delegated "
+                    "the owning task is entering an exact pause; no delegated "
                     "review is started or re-posted while it pauses",
                     code="budget_pausing_no_send")
             if (not recovering and invocation.owner_deadline_at and owner_deadline_exhausted(
@@ -894,22 +894,24 @@ def run_delegated_review_session(
                                       default=timeout_sec if timeout_sec is not None else 300)
             unrequested = False  # neither a paid stamp nor an ambiguous write can be undone
             invoke_review_paid_stamp(invocation.dispatch_stamp)
-            requested = custody.record_start_requested(
-                custody_drive, run_id="", task_id=task_id,
-                idempotency_key=key, invocation_id=invocation_id,
-                operation_id=str(invocation.operation_id or ""),
-                max_seconds=seconds, request=run_request, project_id=project_id,
-                project_owned=bool(project_id) and not existing_project, route=route.route_id,
-                surface=surface, slot_id=slot_id,
-                # #112: pending recovery replays the request row's lineage.
-                root_task_id=root_task_id, parent_task_id=parent_task_id,
-                review_source_delivery=dict(invocation.source_delivery or {}),
-                **usage_custody, **checking.get("custody", {}),
-            )
+            try:
+                requested = custody.record_start_requested(
+                    custody_drive, run_id="", task_id=task_id, idempotency_key=key, invocation_id=invocation_id,
+                    operation_id=str(invocation.operation_id or ""),
+                    max_seconds=seconds, request=run_request, project_id=project_id,
+                    project_owned=bool(project_id) and not existing_project, route=route.route_id,
+                    surface=surface, slot_id=slot_id,
+                    # #112: pending recovery replays the request row's lineage.
+                    root_task_id=root_task_id, parent_task_id=parent_task_id,
+                    review_source_delivery=dict(invocation.source_delivery or {}),
+                    **usage_custody, **checking.get("custody", {}),
+                )
+            except BillingAuthorityUnavailable as exc:  # Outer pre-start boundary owns cleanup; nothing sent.
+                raise ReviewRouteUnavailable(f"{exc}; the delegated review session was NOT started",
+                                             code="billing_authority_unavailable") from exc
             if not requested:  # no POST was sent, but a False write may still have landed
-                raise ReviewRouteUnavailable(
-                    "the durable start-request row could not be written; the "
-                    "delegated review session was NOT started", code="start_request_row_unwritable")
+                raise ReviewRouteUnavailable("the durable start-request row could not be written; the delegated "
+                                             "review session was NOT started", code="start_request_row_unwritable")
             state["pending_invocation_id"] = invocation_id
             checkpoint_pending_invocation(
                 checkpoint=invocation.pending_invocation_checkpoint, invocation_id=invocation_id,

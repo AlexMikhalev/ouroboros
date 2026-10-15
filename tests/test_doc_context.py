@@ -501,8 +501,9 @@ def test_promoted_self_body_requirement_reaches_the_contract_and_context_without
     # A later task in the SAME project must not inherit the first task's choice.
     for flag in (True, None, False):
         kwargs = {} if flag is None else {field: flag}
-        result = entry.handler(tool_ctx, "Inspect this working copy", predecessor_task_id="",
-                               project_id=project["id"], workspace_root=str(workspace), **kwargs)
+        result = entry.handler(tool_ctx, "Inspect this working copy", title="Working copy inspection",
+                               predecessor_task_id="", project_id=project["id"],
+                               workspace_root=str(workspace), **kwargs)
         assert result.startswith("OK: task"), result
         task = copy.deepcopy(host.pending[-1])
         assert events[-1][field] is bool(flag)

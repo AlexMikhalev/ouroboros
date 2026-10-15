@@ -218,10 +218,15 @@ def prepare_root_billing(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     from ouroboros.config import runtime_setting
     from ouroboros.usage_admission import task_billing_fields
 
+    from ouroboros.usage_ledger import BillingAuthorityUnavailable
+
     limit = float(runtime_setting("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
-    return task_billing_fields(task, root_id, limit if limit > 0 else None,
-                               task.get("budget_drive_root") or DRIVE_ROOT, pin_initial=True,
-                               persist_initial=False)
+    try:
+        return task_billing_fields(task, root_id, limit if limit > 0 else None,
+                                   task.get("budget_drive_root") or DRIVE_ROOT, pin_initial=True,
+                                   persist_initial=False)
+    except BillingAuthorityUnavailable as exc:
+        return {"billing_authority_unavailable": exc.kind}  # admission blocks typed, never a group
 
 
 _UNRESOLVED = object()
@@ -247,7 +252,7 @@ def prepared_root_billing(task: Dict[str, Any], *, resolved: Any = _UNRESOLVED):
 def enqueue_task(
     task: Dict[str, Any], front: bool = False, *, restoring_snapshot: bool = False,
     consciousness_window: Optional[Dict[str, Any]] = None, continuation: bool = False,
-    project_admission: Optional[Dict[str, Any]] = None,
+    project_admission: Optional[Dict[str, Any]] = None, timeout_retry: bool = False,
 ) -> Dict[str, Any]:
     """Add task to PENDING (thread-safe: HTTP handlers enqueue concurrently
     with the supervisor main loop, so the mutation must hold the queue lock).
@@ -259,7 +264,8 @@ def enqueue_task(
     ``consciousness_window``: an allowance the caller already read OFF the queue lock
     (the scheduler). ``continuation``: host-derived only (a follow-up row's own
     ``continuation_of``) — a named continuation is not a spontaneous start, so it is
-    outside the consciousness concurrency cap; money (the allowance) still applies."""
+    outside the consciousness concurrency cap; money (the allowance) still applies.
+    ``timeout_retry``: the reaper's own retry admission (``apply_budget_root_admission_fence``)."""
     t = dict(task)
     if not restoring_snapshot:
         t.pop("_project_scope_none", None)  # Only this host admission can attest absence.
@@ -355,7 +361,8 @@ def enqueue_task(
             t["_admission_blocked"] = "admission_reservation_lost"
             return t
         root_id = str(t.get("root_task_id") or "").strip()
-        if root_id and not restoring_snapshot and apply_budget_root_admission_fence(t, root_id):
+        if root_id and not restoring_snapshot and apply_budget_root_admission_fence(
+                t, root_id, timeout_retry=timeout_retry):
             if ADMISSION_RESERVATIONS.get(task_id) == admission_token:
                 ADMISSION_RESERVATIONS.pop(task_id, None)
             return t
@@ -368,9 +375,7 @@ def enqueue_task(
                 ADMISSION_RESERVATIONS.pop(task_id, None)
             return t
         if billing is not None:
-            from ouroboros.usage_admission import UNAVAILABLE_GROUP_PREFIX
-
-            if str(billing["billing_group_id"]).startswith(UNAVAILABLE_GROUP_PREFIX):
+            if billing.get("billing_authority_unavailable"):
                 t["_admission_blocked"] = "billing_authority_unavailable"
                 return t
             t.setdefault("metadata", {})["billing_group"] = {k: v for k, v in billing.items()
@@ -681,7 +686,8 @@ from supervisor.queue_transitions import (  # noqa: E402, F401 -- intentional pu
 
 
 def queue_deep_self_review_task(reason: str, model: str = "", force: bool = False, chat_id: Optional[int] = None,
-                                origin: Optional[Dict[str, Any]] = None, reviewer: str = "") -> Optional[str]:
+                                origin: Optional[Dict[str, Any]] = None, reviewer: str = "",
+                                client_message_id: str = "") -> Optional[str]:
     """Queue a deep self-review task.
 
     ``chat_id`` targets a specific chat (e.g. the external transport chat that ran
@@ -692,7 +698,11 @@ def queue_deep_self_review_task(reason: str, model: str = "", force: bool = Fals
     ``reviewer`` is the one enabled catalog row the requester named (id or handle,
     pool member or not); empty runs the Main model (decision 3A). A name that is not
     an enabled row is refused in the requester's chat before any worker is held.
+    ``client_message_id`` is the owner's ``/review`` submission these rows answer.
     """
+    from ouroboros.task_finalization import host_operation_reply_kwargs
+
+    answers = host_operation_reply_kwargs(None, "", client_message_id)
     # Membership, not truthiness: a review asked for from the hidden partition
     # is answered there, not silently re-routed to the owner's main chat.
     target_chat_id = notification_chat_route(chat_id, load_state().get("owner_chat_id"))
@@ -706,7 +716,7 @@ def queue_deep_self_review_task(reason: str, model: str = "", force: bool = Fals
             system_review_row(reviewer)
         except ReviewChangeArgumentError as exc:
             send_with_budget(int(target_chat_id), f"Deep self-review could not be queued: {exc}.",
-                             role="system", system_type="deep_self_review_unavailable")
+                             **answers, role="system", system_type="deep_self_review_unavailable")
             return None
     if (not force) and queue_has_task_type("deep_self_review"):
         return None
@@ -724,17 +734,20 @@ def queue_deep_self_review_task(reason: str, model: str = "", force: bool = Fals
     if admitted.get("_admission_blocked"):
         reason = admitted.get("_worker_pool_disabled_reason") or admitted["_admission_blocked"]
         detail = str(admitted.get("_admission_detail") or "")
-        hint = f" {detail}." if detail else " Use /restart to restore the worker pool."
+        # Restart restores a disabled worker pool and nothing else: a billing,
+        # lookup or fence refusal keeps its own reason without that advice.
+        restart = admitted["_admission_blocked"] == "worker_pool_unavailable"
+        hint = f" {detail}." if detail else " Use /restart to restore the worker pool." if restart else ""
         send_with_budget(
             int(target_chat_id),
             f"Deep self-review could not be queued: {reason}.{hint}",
-            role="system", system_type="deep_self_review_unavailable",
+            **answers, role="system", system_type="deep_self_review_unavailable",
         )
         return None
     persist_queue_snapshot(reason="deep_self_review_enqueued")
     # Typed SYSTEM row: an acknowledgement is never a task's answer, and the bench
     # trajectory reader takes the last UNTYPED outbound row as one.
-    send_with_budget(int(target_chat_id), f"🔎 Deep self-review queued: {tid} ({reason}; reviewer: {reviewer or 'Main'})", role="system", system_type="deep_self_review_queued")
+    send_with_budget(int(target_chat_id), f"🔎 Deep self-review queued: {tid} ({reason}; reviewer: {reviewer or 'Main'})", **answers, role="system", system_type="deep_self_review_queued")
     return tid
 
 

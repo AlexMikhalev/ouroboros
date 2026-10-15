@@ -10,7 +10,7 @@ import { createSystemMessageActions } from './ui_helpers.js';
 import { projectReference } from './project_reference.js';
 import { delegatedActivityBodyHtml, delegatedHeadline, delegatedLineView } from './delegated_activity.js';
 import { REUSABLE_TASK_IDS } from './task_control_menu.js';
-import { activityWaitPhase, pausePhaseLabel, modelActivityPresentation, taskActivityPresentation } from './task_phase_chip.js';
+import { activityWaitPhase, pausePhaseLabel, modelActivityPresentation, paintLiveDetail, taskActivityPresentation } from './task_phase_chip.js';
 import { currentLanguage, fmt, isEnglish, tr, tx } from './i18n.js';
 import { hostRowDisplayText } from './host_notice_text.js';
 import {
@@ -373,7 +373,7 @@ export function isNonTerminalMediaHistoryRow(msg) {
  * distinction for the replay passes and the pager's page-row count.
  */
 export function isReplayEvidenceRow(row) {
-    return ['quiz_answer', 'task_evidence'].includes(row?.system_type) || Boolean(row?.summary_kind && row?.historical_terminal);
+    return ['quiz_answer', 'quiz_closed', 'task_evidence'].includes(row?.system_type) || Boolean(row?.summary_kind && row?.historical_terminal);
 }
 
 export function isForegroundLiveCard(record) {
@@ -648,11 +648,8 @@ export function headerBudgetPresentation(data) {
 }
 
 /**
- * Render task money without conflating unknown/non-final values with a final
- * zero.  The returned strings are card metadata, not another cost authority.
- */
-/**
- * Project the producer's scoped carrier (#498) into card meta. The carrier
+ * Project the producer's scoped carrier (#498) into card meta: strings, not another cost
+ * authority, never conflating unknown/non-final values with a final zero. The carrier
  * answers the whole question in one fact — which scope the number describes,
  * whether a zero is EVIDENCED, whether anything in that scope is unpriced — so
  * a frame that has one never re-derives it from two half-matching fields.
@@ -670,14 +667,13 @@ export function costPresentationMeta(presentation) {
         return ['Cost unknown'];
     }
     const money = `$${Number(amount).toFixed(2)}`;
-    if (presentation.has_unpriced) {
-        // Mixed: this is only the tracked subtotal. The reason is stated in WORDS
-        // beside it — a title attribute is invisible on touch, to assistive
-        // technology, and in a copied line.
-        return [`Tracked: ${presentation.tracked_final ? money : `up to ${money}`}`, 'some steps have no price'];
-    }
+    if (presentation.has_unpriced) return [`Tracked: ${presentation.tracked_final ? money : `up to ${money}`}`];
     return [presentation.tracked_final ? money : `up to ${money}`];
 }
+
+/** Why a mixed subtotal reads `Tracked:`: said in the card's details, never a hover-only title. */
+export const costPresentationDetail = (presentation) => (costPresentationMeta(presentation)?.[0]?.startsWith('Tracked: ')
+    ? 'Cost: some steps have no price, so Tracked counts only the priced steps.' : '');
 
 export function taskCostMeta(payload = {}) {
     // Presence means a VALUE, exactly as in `resolveCostPair`: a browser
@@ -750,12 +746,14 @@ export function taskCostMeta(payload = {}) {
 export function taskCostProjection(payload = {}, rawTs = '') {
     const meta = taskCostMeta(payload);
     if (!meta.length) return null;
+    const detail = costPresentationDetail(payload.cost_presentation);
     const unavailable = payload.cost_accounting_status === 'unavailable' || payload.cost_presentation === null;
     const presentation = payload.cost_presentation;
     const legacyRollup = payload.cost_presentation === null && (
         payload.accounted_upper_bound_usd_with_children !== undefined || payload.cost_usd_with_children !== undefined);
     return {
         meta,
+        ...(detail ? { detail } : {}),
         ts: rawTimestampEpoch(rawTs),
         ...(presentation?.scope ? { scope: presentation.scope } : legacyRollup ? { scope: 'rollup' } : {}),
         // Only a SETTLED ledger value is final. "unavailable" is an honest
@@ -922,8 +920,8 @@ export function isTerminalTaskPhase(phase = '', terminal = false) {
  * caller that lands mid-flight is coalesced with every other forced caller
  * into ONE follow-up read that starts when the in-flight read settles — the
  * first forced caller receives that request, the others resolve to null once
- * the follow-up has applied or failed. `begin()` stays the ungated clock for
- * synthetic generation bumps. A gated request settles through `apply`/`fail`.
+ * the follow-up has applied or failed. Gated requests settle via `apply`/`fail` even if a callback throws.
+ * Only `fail` (a read failed, in any window) fans out `onUnavailable`; socket open/close `retire()` older bodies.
  */
 export function createStateSnapshotSequencer(onApply, now = () => Date.now(), onUnavailable = () => {}) {
     let requestedGeneration = 0;
@@ -946,6 +944,7 @@ export function createStateSnapshotSequencer(onApply, now = () => Date.now(), on
     };
     return {
         begin,
+        retire() { appliedGeneration = begin().generation; latest = null; },
         gate(force = false) {
             if (!inflight) return Promise.resolve(open());
             if (!force) return settled.promise.then(() => null);
@@ -971,7 +970,7 @@ export function createStateSnapshotSequencer(onApply, now = () => Date.now(), on
                 if (!generation || generation <= appliedGeneration) return false;
                 appliedGeneration = generation;
                 latest = null;
-                onUnavailable();
+                onUnavailable(request.requestedAt, generation);
                 return true;
             } finally { settle(request); }
         },
@@ -1065,12 +1064,12 @@ export function positiveTaskTerminalFact(row) {
 }
 
 /**
- * Whether an unkeyed live row ends the unscoped Main turn, by its typed kind. An
- * incident report, a note Ouroboros left for this moment and a skill's notice arrive
- * in the middle of a conversation and conclude nothing.
+ * Whether an unkeyed live row ends the unscoped Main turn: only a legacy model final does.
+ * Voice confers no finality (DESIGN), so a System row concludes nothing; one answering a
+ * submission names its `client_message_id`, and only that `Sending...` settles.
  */
 export function unkeyedFrameEndsTurn(row) {
-    return !['terminal_incident', 'reminder', 'skill_notice'].includes(String(row?.system_type || ''));
+    return String(row?.role || '') !== 'system';
 }
 
 /**
@@ -1292,7 +1291,7 @@ export function routingAnnotationText(annotation) {
     }
     if (status === 'project_unavailable') return tr('routing.project_unavailable', 'Project is unavailable');
     const labels = {
-        mailbox_delivery: 'Delivered to task',
+        mailbox_delivery: 'Message saved for task',  // a recorded mailbox write, never a read receipt
         steer_task: 'Steered task',
         promote_chat_to_task: 'Started task',
         route_to_project: 'Routed to project',
@@ -1570,7 +1569,8 @@ export function renderLiveCardMeta(record, { agentModel = record?.agentModel || 
             record.latestActivityTs ? `updated ${record.latestActivityTs}` : '',
         ].filter(Boolean).map((item) => `<span class="chat-live-meta-text">${escapeHtml(item)}</span>`),
     ]);
-    if (record.metaEl.innerHTML === html) return false;
+    const detailChanged = paintLiveDetail(record, 'liveCostDetail', String(record.costMeta?.detail || ''));
+    if (record.metaEl.innerHTML === html) return detailChanged && Boolean(record.metaEl.isConnected);
     record.metaEl.innerHTML = html;
     return Boolean(record.metaEl.isConnected);
 }

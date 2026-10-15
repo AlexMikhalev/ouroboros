@@ -206,7 +206,7 @@ def test_promotion_and_scheduled_followup_keep_admitted_folder_and_shared_memory
     _confirm_promote(monkeypatch)
     monkeypatch.setattr(workers, "DRIVE_ROOT", installed.data)
     monkeypatch.setattr(workers, "REPO_DIR", installed.repo)
-    result = _promote_chat_to_task(ctx, "Finish the report", workspace_root="/unselected",
+    result = _promote_chat_to_task(ctx, "Finish the report", title="Report finish", workspace_root="/unselected",
                                    project_name="Unselected", predecessor_task_id="")
     assert result.startswith("OK: task"), result
     event = ctx.pending_events[0]
@@ -274,7 +274,7 @@ def test_promotion_with_an_unusable_presence_folder_returns_the_typed_repair_and
     _confirm_promote(monkeypatch)
     monkeypatch.setattr(workers, "DRIVE_ROOT", installed.data)
     monkeypatch.setattr(workers, "REPO_DIR", installed.repo)
-    result = _promote_chat_to_task(ctx, "Finish the report", predecessor_task_id="")
+    result = _promote_chat_to_task(ctx, "Finish the report", title="Report finish", predecessor_task_id="")
     assert result.startswith("OK: task"), result
     event = ctx.pending_events[0]
     shutil.rmtree(installed.workspace)  # the admitted folder disappears before admission

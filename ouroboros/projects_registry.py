@@ -1,12 +1,7 @@
-"""Durable owner Project registry in ``data/state/projects.json``.
-
-Rooms have an id, name, memory under ``data/projects/<id>/``, a positive chat id
-and an optional working folder. File-less rooms are valid; only the owner
-archives/deletes them, never age pruning. Tombstones preserve history/data and
-prevent rediscovery while the registry survives. Recovery from store markers
-creates fresh execution incarnations; lost folders/tombstones are not recovered
-(PERSISTENCE.md). This bookkeeping does not split Ouroboros's identity (BIBLE P1).
-"""
+"""Project registry (data/state/projects.json): id/name/memory/positive chat id, optional folder.
+Only owners archive/delete, never age pruning; tombstones preserve history/data and prevent
+rediscovery. Store-marker recovery creates fresh incarnations, not lost folders/tombstones
+(PERSISTENCE); rooms share one identity (BIBLE P1)."""
 
 from __future__ import annotations
 
@@ -48,14 +43,8 @@ PROJECT_LIFECYCLES = frozenset({PROJECT_ACTIVE, PROJECT_DELETING, PROJECT_TOMBST
 
 @contextmanager
 def _file_write_lock(target_path: pathlib.Path, *, timeout_sec: float = 4.0) -> Iterator[None]:
-    """Cross-process exclusive lock for a registry/bindings read-modify-write.
-
-    The registry is written from BOTH the server process (project create/bind,
-    digest touch) AND worker processes (``project_journal`` touch_project), so a
-    process-local ``threading.Lock`` cannot prevent lost updates. Flock a sidecar
-    so the load→modify→atomic-write sequence is exclusive across processes; the
-    in-process ``_LOCK`` is nested inside for thread-level serialization too.
-    """
+    """Server create/bind and worker journal share a sidecar flock for load→modify→atomic-write;
+    nested _LOCK serializes threads. A process-local lock alone permits lost updates."""
     from ouroboros.platform_layer import (
         acquire_exclusive_file_lock,
         release_exclusive_file_lock,
@@ -685,25 +674,25 @@ def _read_lineage(drive_root: Any, task_ids: Any) -> Optional[Dict[str, Dict[str
 
 
 class RoomResolver:
-    """``room(task)``, the one rule live routing, history and cognition share: the
-    nearest explicit «Turn into project» binding on task → parent → … (the root
-    only after the parent chain: converting a sub-task moves its own subtree);
-    else the task's own admitted chat when it is a registered Project chat (never
-    ``project_id``, which a Main direct turn can carry too); else 0 and the caller
-    keeps its address. Lineage is the caller's or the store's. Answers hold per
-    task id for one bindings snapshot (a conversion invalidates them, a commit does
-    not), never one reached while an ancestor's read was unavailable (retried next
-    call); an id the store has no row for is read once per resolver (request, frame)."""
+    """One rule for live/history/cognition: nearest explicit binding on task→parent→…,
+    then root; else own admitted registered Project chat (never project_id), else 0
+    preserves the caller's address. Caller/store lineage is shared. Answers cache per
+    bindings snapshot: conversion invalidates, commit does not; unavailable ancestors
+    retry, absent ids read once per resolver. Strict publication uses fresh bindings
+    and propagates unreadable authority instead of pinning a guessed room."""
 
-    __slots__ = ("root", "bindings", "answers", "misses", "_projects")
+    __slots__ = ("root", "bindings", "answers", "misses", "_projects", "strict")
 
-    def __init__(self, drive_root: Any) -> None:
-        self.root = drive_root
-        self.bindings = _bindings_lens(drive_root)  # one ``stat`` per resolver
+    def __init__(self, drive_root: Any, *, strict: bool = False) -> None:
+        self.root, self.strict = drive_root, strict
+        self.bindings = (_load_bindings(drive_root, strict=True)["bindings"] if strict
+                         else _bindings_lens(drive_root))  # one ``stat`` per resolver
         key = str(_bindings_path(drive_root))
-        cached = _ROOM_ANSWERS.get(key)
+        cached = None if strict else _ROOM_ANSWERS.get(key)
         if cached is None or cached[0] is not self.bindings:
-            cached = _ROOM_ANSWERS[key] = (self.bindings, {})
+            cached = (self.bindings, {})
+            if not strict:
+                _ROOM_ANSWERS[key] = cached
         self.answers: Dict[str, int] = cached[1]
         self.misses: set = set()
         self._projects: Optional[frozenset] = None
@@ -714,6 +703,8 @@ class RoomResolver:
         if facts is None and task_id not in self.misses:
             read = _read_lineage(self.root, [task_id])
             if read is None:
+                if self.strict:
+                    raise ValueError("project_source_unknown")
                 return None
             facts = read.get(task_id)
             if facts is None:
@@ -726,7 +717,12 @@ class RoomResolver:
         return (self._facts(tid) if tid else None) or {}
 
     def _bound(self, task_id: str) -> int:
-        row = self.bindings.get(task_id)
+        row = project_binding_for_task(self.root, task_id, strict=self.strict, bindings_snapshot=self.bindings)
+        if self.strict and row:
+            project = get_reserved_project(self.root, row["project_id"], strict=True)
+            if not project or type(project.get("chat_id")) is not int:
+                raise ValueError("project_source_unknown")
+            return project["chat_id"]
         try:
             return int(row.get("project_chat_id") or 0) if isinstance(row, dict) else 0
         except (TypeError, ValueError):
@@ -758,7 +754,8 @@ class RoomResolver:
             chat = self._bound(root) if root and root not in chain else 0
             if not chat and own.get("chat_id"):
                 if self._projects is None:
-                    self._projects = project_thread_chat_ids(self.root)
+                    self._projects = (frozenset(reserved_project_chat_ids(self.root, strict=True)) if self.strict
+                                      else project_thread_chat_ids(self.root))
                 chat = own["chat_id"] if own["chat_id"] in self._projects else 0
         if (chat or own) and None not in reads:  # an incomplete ancestry read is never memoized
             self.answers[tid] = chat
@@ -1477,10 +1474,19 @@ def ensure_project_workspace(drive_root: Any, project_id: str, repo_dir: Any,
     return str((entry or {}).get("working_dir") or "")
 
 
-def projects_summary(drive_root: Any, *, limit: int = 50) -> List[Dict[str, Any]]:
-    """Compact list for /api/state and the sidebar."""
+def projects_summary(drive_root: Any, *, limit: int = 50, chat_id: Any = None) -> List[Dict[str, Any]]:
+    """Sidebar list or strict addressed room, independent of sidebar caps/activity.
+    Missing/inactive yields no room; unreadable/ambiguous authority raises."""
     out: List[Dict[str, Any]] = []
     bindings = _load_bindings(drive_root).get("bindings", {})
+    if chat_id is not None:
+        address = int(chat_id)
+        projects = [row for row in list_reserved_projects(drive_root, strict=True)
+                    if row.get("chat_id") == address and row.get("lifecycle") == PROJECT_ACTIVE]
+        if len(projects) > 1:
+            raise ValueError("Project chat identity is ambiguous")
+    else:
+        projects = list_sidebar_projects(drive_root)[: max(1, int(limit))]
 
     def _has_thread_activity(project: Dict[str, Any]) -> bool:
         # Registry-facts derivation ONLY — the GET path never scans logs and
@@ -1504,7 +1510,7 @@ def projects_summary(drive_root: Any, *, limit: int = 50) -> List[Dict[str, Any]
             return True
         return bool(project.get("thread_activity_seen"))
 
-    for project in list_sidebar_projects(drive_root)[: max(1, int(limit))]:
+    for project in projects:
         out.append({
             "id": project.get("id"),
             "name": project.get("name"),

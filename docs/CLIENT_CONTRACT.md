@@ -181,6 +181,7 @@ Replace `<model-id>` with the endpoint's model id. An empty review pool is an ex
 - **Readiness:** `supervisor_ready` and `supervisor_error`.
 - **Activity:** `active_chat_activities`. The older `active_direct_turns` is kept for compatibility.
 - **Projects:** `projects` (a compact feed that may be capped) and `project_chat_ids` (the complete set).
+- **Current decisions:** `current_questions` exposes outstanding questions independently of the recent history page; `main_attention` exposes human-required task actions. Their `*_complete` flags and `*_gaps` distinguish a complete empty set from unavailable evidence. Retain earlier content on incomplete reads, without granting stale controls.
 - **Modes and budget:** the access and context modes, and money figures in which `null` means unknown.
 - **Checkout:** `sha` is the first 8 characters of the checkout's commit; `branch` is `null` for a detached HEAD or unknown branch.
 - **`served_ui`.**
@@ -189,8 +190,14 @@ Replace `<model-id>` with the endpoint's model id. An empty review pool is an ex
 
 A quiz-bound activity may carry `owner_wait.quiz_id`, the exact question its wait
 names, in Main as well as a Project. Absence supplies no question identity.
-To open it, read `GET /api/tasks/{activity_id}`, match the task's `chat_id` and
-the exact quiz in `owner_quiz`; opening is a read, never a decision submission.
+To open it, read `GET /api/tasks/{activity_id}` and match the exact task and quiz in
+`owner_quiz`. Its `question_rooms[quiz_id]` proves current display membership:
+`state:known` supplies `chat_id` and `project_id` (empty for Main); `unknown` or
+absent proof permits no form. Match Main's chat or the named Project (including
+its Main mirror). This is the shared room resolver's projection, not the task's
+contextual `project_id` or immutable publication/reply address. Hidden chat 0
+proves Main only through that exact quiz's recorded Main publication (§7).
+Opening is a read, never a decision submission; stale socket epochs authorize nothing.
 Wait state and quiz state remain separate: a resumed task does not mean the
 question was answered. Use §7's decision contract to answer it.
 
@@ -226,7 +233,7 @@ Send `{"type": "chat", "content": "...", "client_message_id": "<unique id>", "ch
 - **What is lost.** A frame sent while the socket is down is lost unless your client keeps it. The core keeps no outbox for clients.
 - **Commands.** Slash commands go as `{"type": "command", "cmd": "/restart"}` and so on, or through `POST /api/command` (§15).
 
-**Chat refusals are not correlated acknowledgements.** Schema rejection sends `{type:"log", data:{level:"warning", message:…}}`. Acceptance failures, including reusing an accepted id for different content, can send transient `chat` notices with `role:"system"` and `system_type:"initialization_notice"`, without the refused message's id. No accepted echo is not proof of refusal: keep the operation unresolved and read history.
+**Refusals and submission correlation.** Schema rejection sends `{type:"log", data:{level:"warning", message:…}}`, without guaranteed correlation. Acceptance failures, including reusing an accepted id for different content, can send transient `chat` notices with `role:"system"`, `system_type:"initialization_notice"`, the submitting `chat_id` and, when supplied, its `client_message_id`. Command, admission, update and review System replies can also name the submission they answer. Settle only that submission's Sending indicator, in that room; a System row alone establishes neither acceptance nor task completion. If the id is absent, do not guess which submission was answered. Without an accepted echo, keep the operation unresolved and read history.
 
 **Origin correlation.** Optional `origin_message_ref` is `{chat_id, client_message_id, ts, text_sha256}` and names the accepted owner row. Its hash checks that row's text, not reply text. Match its thread and owner-message id, then track `task_id`; an absent reference establishes no causation. `task_id_pending:true` is a transient repair/admission receipt, not proof a durable task is already readable.
 
@@ -238,11 +245,11 @@ In a Project response, `window.latest_message` names the latest eligible non-own
 
 `GET /api/chat/history?chat_id=<thread>` returns `ChatHistoryResponse`. The selected conversation rows are oldest first; replay evidence can follow them regardless of its timestamp and recur on other pages. Apply that evidence to the keyed card or question rather than counting it as another conversation message. Each row of `messages` is a `ChatHistoryMessage`:
 - **Always present:** `text` (live frames call it `content`), `role` (`user`, `assistant` or `system`), `ts`, `is_progress`, `system_type` (the row's kind; `""` for an ordinary message) and `task_id`.
-- **Identity:** a row read from storage has `history_id` (`"<chat|progress>:<offset>"`) and `history_position` (`{source, offset}`). Re-reading the same stored row returns the same `history_id`. Owner messages also carry `client_message_id`.
+- **Identity:** a row read from storage has `history_id` (`"<chat|progress>:<offset>"`) and `history_position` (`{source, offset}`). Re-reading the same stored row returns the same `history_id`. `client_message_id` correlates owner messages and some quiz publications; use `role: "user"`, not this field's presence, to identify an owner row.
 - **Deliveries:** `msg_type` is `document`, `photo`, `video`, `links` or `quiz`, with `filename`, `mime`, `download_url`, `caption` and `size_bytes`; `actions` and `title` for links; `quiz` for a question (`quiz.quiz_id`, `quiz.state`, the recorded answer).
 - **Progress rows** (`is_progress: true`) carry the same task-progress facts live `chat` progress frames carry (`ChatOutbound`).
 - **Rows that are not messages.** Do not show these as bubbles:
-  - replay evidence: `system_type` `quiz_answer` or `task_evidence`, or a row with `summary_kind` and `historical_terminal`. They carry facts for cards whose rows lie on other pages. A `task_evidence` carrier may be an in-room parent's only evidence (zero tool calls included; `task_terminal_status` only when the parent is terminal): a client mints a parent card only from the parent's own rows, carrier or live state, never from a child's `parent_task_id`; a child whose parent has no such evidence here renders as its own card and re-nests when that evidence arrives.
+  - replay evidence: `system_type` `quiz_answer`, `quiz_closed` or `task_evidence`, or a row with `summary_kind` and `historical_terminal`. They carry facts for cards whose rows lie on other pages. A `task_evidence` carrier may be an in-room parent's only evidence (zero tool calls included; `task_terminal_status` only when the parent is terminal): a client mints a parent card only from the parent's own rows, carrier or live state, never from a child's `parent_task_id`; a child whose parent has no such evidence here renders as its own card and re-nests when that evidence arrives.
   - `system_type: "task_model_wait"`: a model wait's latest state, in `model_waits`, for the task's card.
 - **A rebuilt row:** `lifecycle_virtual: true` describes the skill operation running now. It is rebuilt with a fresh `ts` on every read and has no `history_id`, so replace it rather than merge it.
 - **Derived and synthesized rows:** in Main a Project question appears as `system_type: "project_question_pointer"` (with `quiz_id`), carrying the question row's `history_id`. A Project's start message rebuilt from its binding (`origin_projected: true`) has no `history_id`. A synthesized `origin_omission` System notice says further archived origins were not rendered; it also has no stored `history_id`.
@@ -259,7 +266,7 @@ The core writes each stored row and sends its live frame with an identical `ts` 
 | `photo`, `video`, `document` or `links` | `msg_type` equal to the frame's `type` | `task_id` and `ts` are equal |
 | any other `chat` | a row with the same `is_progress`, `role` and `system_type` | `task_id`, `ts` and `content` = `text` are all equal |
 
-Never match on `ts` or `task_id` alone: one task writes many rows with close timestamps, and the same words can come from different tasks.
+Only `role:"user"` rows merge by `client_message_id`. On a System frame that field correlates the answered submission, not the System row's identity; it is not persisted on that row. Use the other-chat rule for stored System replies. Never match on `ts` or `task_id` alone: one task writes many rows with close timestamps, and the same words can come from different tasks.
 
 **On every connect and reconnect:**
 1. Open the socket and keep the frames it delivers.
@@ -326,14 +333,18 @@ data: {"seq":12,"type":"task_result","task_id":"…","data":{…}}
 
 ## 7. Questions and decisions
 
-**How a question arrives.** A task asks the owner through a `quiz` frame (`QuizOutbound`). It also appears in history as a `msg_type: "quiz"` row. `quiz_state` frames update it. Its state is `open`, `answered`, `expired_terminal` (the task finished; an answer can still be recorded) or `superseded`.
+**How a question arrives.** A task asks the owner through a `quiz` frame (`QuizOutbound`). It also appears in history as a `msg_type: "quiz"` row. `quiz_state` frames update it. Its state is `open`, `answered`, `closed` (explicitly closed without answering), `expired_terminal` (the task finished; an answer can still be recorded) or `superseded`.
 
 **Answering.** Send `POST /api/decisions` with `DecisionRequest` and a `decision_id` of `quiz:<task_id>:<quiz_id>`:
 - **What to send:** `option_index`, `comment`, or both. A comment alone must be nonempty. `option_index`, `answered_index` and `recommended_index` are zero-based positions in `options`. Negative/non-integer indices answer `400 option_index_invalid`; an index beyond an open card's options answers `400` with `error:"option_out_of_range"`. No index and no comment answers `400 option_index_required`. An already closed card can instead return its recorded 409 state; an absent quiz is `404 quiz_not_found`.
 - **Safe retries:** the same `request_id` returns the already recorded answer with `duplicate: true`, even if the retry's payload differs. Display that returned recorded answer, not the retry's input: a successful replay does not accept a changed answer. This also lets the existing delivery-recovery path finish after a partial failure.
 - **First answer wins.** A different answer to an already answered question answers `409` with the recorded state.
-- **Late answers.** An answer that arrives after the task ended is still recorded (`answered_after_terminal`). `forwarded:true` confirms it entered the ordinary owner-message path. `forwarded:false` with `reason_code:hidden_chat`, `a2a_chat` or `chat_unresolved` is not delivery. Headless API tasks retain a hidden destination even when their question was displayed in Main; their late answer can therefore be recorded without starting a Main turn. Show this returned outcome rather than infer delivery from the visible card's room.
+- **Late answers.** An answer that arrives after the task ended is still recorded (`answered_after_terminal`) and goes to the card's recorded publication chat, not its ask-time chat. The core records that `publication_chat_id` before first showing the card and never changes it: a question asked in the hidden partition (0) and shown in Main is answered in Main (1), and a converted task keeps that delivery address while history displays its card in the current resolved room. `forwarded:true` confirms the answer entered the ordinary owner-message path there. `forwarded:false` is not delivery: `hidden_chat` and `a2a_chat` have no owner turn; `publication_address_unknown` (an older card without a proven address) stays recorded and owed, and the core never guesses a room; `late_answer_delivery_unknown` means proof of dispatch was lost, and the core never sends it again. Show this returned outcome rather than infer delivery from the room the card appears in.
 - **Recorded but not delivered.** `503 quiz_history_write_failed`, `mailbox_write_failed` or `late_answer_not_delivered` mean the answer is recorded but not yet delivered. Retry with the same `request_id`.
+
+**Closing without answering.** For a root task's quiz, use the same endpoint and `decision_id`, with a `request_id`, `action: "close"` and a nonempty `reason` of at most 2000 characters. Omit `option_index` and `comment`. Closure shares the first-winner rule with answers; show the returned `state`, `closed_reason` and `question_delivery` rather than treating a recorded closure as proof its author received it.
+
+**Removing unknown late delivery from current decisions.** For an answered quiz with unknown late-answer delivery, send `action: "dismiss"` with `decision_id` and `request_id`, and no answer, comment or reason. This removes only the outstanding delivery item; the recorded answer and unknown outcome stay in history. It neither resends the answer nor marks it delivered. A different, ineligible state is refused; read the returned facts.
 
 **Other decisions.** Routing choices (`routing:<client_message_id>:<token>`) and model-wait choices (`model_wait:<task_id>:<wait_id>`) use the same endpoint and the same idempotency rule.
 
@@ -354,7 +365,7 @@ data: {"seq":12,"type":"task_result","task_id":"…","data":{…}}
 **Pause, continue, resume, hurry:**
 - **Pause:** `POST /api/tasks/{id}/pause` takes exactly `{request_id}`. `202` with `latch_pending` means the pause is recorded and still taking hold; repeat the same `request_id`.
 - **Continue:** `POST /api/tasks/{id}/continue` takes exactly `{action_nonce}`. A timeout does not mean it failed: retry with the same nonce. The successor task's id is derived from the nonce, so it cannot start twice.
-- **Resume:** `POST /api/tasks/{id}/resume` resumes a task paused by its budget (`TaskResumeResponse`). It is not idempotent: a repeat is refused (409 or 404). After an unclear answer, read the task.
+- **Resume:** `POST /api/tasks/{id}/resume` returns saved work from a budget, owner or technical pause (`TaskResumeResponse`), after fresh control and money checks. Unreadable billing conditions refuse with HTTP 409, `code=billing_authority_unavailable`, the cause in `reason_code`, and explanatory `error`; this is not a missing task or exhausted money. It is not idempotent: a repeat is refused (409 or 404). After an unclear answer, read the task.
 - **Hurry:** `POST /api/tasks/{id}/hurry` takes exactly `{request_id}`.
 
 ## 9. Settings

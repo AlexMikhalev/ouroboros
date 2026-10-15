@@ -1356,7 +1356,7 @@ def _make_quiz(api):
                     "message_id": int(message_id or 0), "options": labels,
                     "text": settled_text,
                 })
-                await telegram_quiz.apply_retained_fact(api, token, lang, client_factory=lambda: client)
+                await telegram_quiz.apply_retained_fact(api, token, lang, client_factory=lambda: client, published=event)
         except Exception as exc:
             api.log("error", f"Telegram quiz error: {exc}")
     return handle

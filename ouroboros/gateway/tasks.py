@@ -906,6 +906,8 @@ def _task_get_response(request: Request) -> JSONResponse:
     if not data:
         return json_error("task result is unavailable", 503)
     payload = public_task_result(data)
+    from ouroboros.gateway.main_decisions import question_display_rooms
+    payload["question_rooms"] = question_display_rooms(drive_root, task_id, payload.get("owner_quiz"))
     from ouroboros.owner_continue import continuation_offer  # Batch4: a Continue, or its accepted successor
     payload["continuation_offer"] = continuation_offer(data, task_id)
     objections = _plan_objections_view(drive_root, task_id, data)  # the host's fold; the browser never re-derives it
@@ -1312,7 +1314,7 @@ async def api_task_cancel(request: Request) -> JSONResponse:
 
 
 async def api_task_resume(request: Request) -> JSONResponse:
-    """Explicit owner Resume of a budget-paused task.
+    """Explicit owner Resume of a saved budget, owner or technical pause.
 
     A replay-safe zero-dispatch row is released; an exact mid-run continuation
     (#1196) receives ONE single-use grant and continues under the same task id.
@@ -1338,12 +1340,19 @@ async def api_task_resume(request: Request) -> JSONResponse:
     if result.get("ok"):
         return JSONResponse(result)
     error = str(result.get("error") or "resume_refused")
+    if error == "billing_authority_unavailable":
+        message = ("This task's billing lineage does not authorize a return; repair it or cancel the task."
+                   if result.get("billing_authority") == "refused" else
+                   "This task's billing conditions could not be read. Fix that cause, then try Resume again.")
+        return json_error(message + " The task stays paused; budget exhaustion was not established.", 409,
+                          code=error, reason_code=result.get("cause", ""), task_id=task_id,
+                          **({"action": result["action"]} if result.get("action") else {}))
     status = 409 if error in {
         "task_not_budget_paused", "replay_unsafe", "root_budget_fence_missing",
         # exact-continuation refusals (#1196): the task stays paused
         "budget_still_exhausted", "root_hard_cap_exhausted", "cancel_intent_active",
         "deadline_passed", "lifetime_exhausted", "root_still_paused", "resume_already_granted",
-        "restart_no_resume", "pause_record_missing", "pause_source_unreadable",
+        "restart_no_resume", "pause_record_missing", "pause_source_missing", "pause_source_unreadable",
         "pause_record_unreadable", "grant_not_recorded", "snapshot_not_persisted",
         "monetary_authority_unavailable", "cancellation_authority_unavailable", "task_terminal",
         # holds and root-grant refusals (#1196, owner Q9): the row stays paused/held
@@ -1354,8 +1363,11 @@ async def api_task_resume(request: Request) -> JSONResponse:
         # terminal keeps the task paused; a marker/attempt drift is typed too
         "external_runs_unsettled", "pause_attempt_mismatch",
         "owner_pause_effects_unsettled", "owner_pause_custody_unreadable", "selection_authority_changed",
+        # a held Continue's observed blockers (#1721): an existing successor, never Not Found
+        "predecessor_writers_unsettled", "selection_owner_held",
     } else 404
-    return json_error(error, status, task_id=task_id, **({"action": result["action"]} if result.get("action") else {}))
+    return json_error(error, status, task_id=task_id, **{key: result[key] for key in ("action", "blockers")
+                                                          if result.get(key)})
 
 
 # The task-event SSE endpoint and its follower live in gateway/task_events.py

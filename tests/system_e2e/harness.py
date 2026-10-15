@@ -89,7 +89,7 @@ SCENARIOS = {
     "S10": ("managed update rollback: typed future/null-marker refusals + byte-for-byte tree restore", LANE_MOCK),
     # Ф4 wave 3b (plan §8: delegated transport + skills lifecycle).
     "S11": ("delegated transport: full nanny run over FakeClaudexorDaemon, wire/custody truth, typed refusals", LANE_MOCK),
-    "S12": ("delegated no-orphans: SIGKILL mid-run -> restart -> boot custody sweep settles the run, one physical attempt", LANE_MOCK),
+    "S12": ("delegated no-orphans: SIGKILL mid-run -> boot holds saved parent and preserves live run -> later boot settles its completion once, one physical attempt", LANE_MOCK),
     # S13 carries TWO tests: the full lifecycle across a restart, and the
     # hot-adoption variant that removes the restart (W3B-F1) — enable after boot
     # must reach the workers already running, not only the pool's next generation.
@@ -106,7 +106,7 @@ SCENARIOS = {
     "S19": ("managed update conflicting: typed budget refusal at the assisted gate, tree byte-identical, dirty work restored", LANE_MOCK),
     "S20": ("managed update crash mid-apply: boot-finalize honesty across stash-crash / half-written tx / applied-but-unrestarted", LANE_MOCK),
     "S21": ("cancellation with chat lineage: outbox-delivered receipt, chat.jsonl row, cancel_receipt block, intent forensics", LANE_MOCK),
-    "S22": ("evolution absorb kill-recovery: SIGKILL after the reviewed commit, markerless boot reconcile absorbs once, never twice", LANE_MOCK),
+    "S22": ("evolution absorb kill-recovery: explicit Cyber Pro in-place authoring, SIGKILL after the reviewed commit, markerless boot reconcile absorbs once, never twice", LANE_MOCK),
     "S23": ("delegated interactive answer: waiting_on_user -> delegate_answer -> run continues; wire + custody truth", LANE_MOCK),
     # Ф4 wave 5: the MUTATING delegated runs the earlier waves carried and never
     # landed (ADOPTION row DEFER-E2E-DELEG-MUT). The one delegation branch that
@@ -117,7 +117,7 @@ SCENARIOS = {
     # in-process DIRECT-CHAT turn — no queue row, no worker process — stopped by
     # the owner through the same cancel endpoint the UI drives, caught MID-ROUND
     # on an event-gated model hold (ModelGate), never a timed race.
-    "S26": ("direct-chat owner stop: an in-flight direct turn is addressable (running list + activity snapshot), stop-now mid-round answers the typed 'still live' with the cooperative control armed ONCE (a repeat is idempotent), the turn ends at its next step with ZERO further model rounds under the owner-stop reason, the chat concludes, custody settles already_settled against the turn's own terminal, and a later stop is the typed 404", LANE_MOCK),
+    "S26": ("direct-chat owner stop: an in-flight direct turn is addressable (running list + activity snapshot), stop-now mid-round records intent and answers 202 pending (teardown_unconfirmed) with the cooperative control armed ONCE (a repeat is idempotent), the turn ends at its next step with ZERO further model rounds under the owner-stop reason, the chat concludes, custody settles already_settled against the turn's own terminal, and a later stop is the typed 404", LANE_MOCK),
     "S27": ("ordinary Main/Project capability: real stdio MCP reads and writes, correct built-in room target, and a second native turn completes while the first model call is held", LANE_MOCK),
     # Serial addressed turns (owner 2026-09-23 21:12: the GENERAL capability of
     # continuable addressed participant turns, native children and session agents,
@@ -129,7 +129,7 @@ SCENARIOS = {
     # real consumer: priced stub, tiny wallet, the ledger fence pauses the task
     # nonterminally under its own id; an increase wakes nothing; Resume grants once.
     "S30": ("exact budget pause -> owner Resume, MANAGED root: priced rounds hit the global ledger fence, the task parks nonterminal under its SAME id (durable paused row + PENDING _budget_pause carrier, no task_done, no paid wrap-up, /api/state budget_paused); Resume while exhausted is the typed 409; raising TOTAL_BUDGET alone wakes nothing (bounded watch); Resume after the increase mints ONE single-use grant, the loop consumes it, the task completes with cumulative rounds/spend and task_done exactly once; a repeated Resume is the typed 404", LANE_MOCK),
-    "S31": ("exact budget pause -> owner Resume, DIRECT owner-chat turn: a WS chat turn hits its graceful in-task ceiling mid-turn, the live actor ends and its own record parks inline as the PENDING _budget_pause carrier with _is_direct_chat under the SAME id (no second actor, no task_done, no paid wrap-up; census direct_chat/budget_paused); a budget increase wakes nothing; Resume mints one grant, a pooled worker continues the checkpoint with the Q10 threshold refresh, and the turn concludes in the chat (durable chat row + keyed final frame over the same /ws); a repeated Resume is the typed 404", LANE_MOCK),
+    "S31": ("exact budget pause -> owner Resume, DIRECT owner-chat turn: an ordinary WS chat turn hits the known-spend dispatch fence mid-turn, the live actor ends and its own record parks inline as the PENDING _budget_pause carrier with _is_direct_chat under the SAME id (no second actor, no task_done, no paid wrap-up; census direct_chat/budget_paused); a budget increase wakes nothing; Resume mints one grant, a pooled worker continues the checkpoint without a graceful-threshold refresh, and the turn concludes in the chat (durable chat row + keyed final frame over the same /ws); a repeated Resume is the typed 404", LANE_MOCK),
     "S32": ("exact budget pause survives the physical epoch: a paused MANAGED root rides a GRACEFUL server SIGTERM (the lifespan teardown's kill_workers ran: server_shutdown row) untouched — no task_done, no cancel, the same paused row and PENDING _budget_pause carrier in the final snapshot; the next boot parks the SAME id again unheld and un-dispatched (census budget_paused, public detail scheduled/budget_paused, Resume still the typed 409 while exhausted); after the increase one Resume grant completes the same id with cumulative rounds/spend", LANE_MOCK),
     # Presence resilience: Host responsiveness and turn custody under real waits.
     # FOUR tests: executor starvation alone, a held Host authentication alone,
@@ -141,6 +141,8 @@ SCENARIOS = {
     "S38": ("evolution crash between the candidate commit and its receipts: the supervisor's cycle commits in its candidate under blocking review, the tree is SIGKILLed and the post-commit receipts removed; a fresh boot recovers the exact commit and its reviewed provenance at worker boot and does not absorb it (the serving checkout never held it)", LANE_MOCK),
     # Deployment: both container modes on real Docker, keyless (stub models through an exec relay).
     "S39": ("container lifecycle: the managed image boots a released seed into a body checkout and runtime venv on volumes (parent and split layouts), keeps code, packages and data across recreation, stays stopped after Panic until an owner start, refuses a mounted repository and a second container on shared data; the immutable image admits one server per data volume and, networkless, serves onboarding, a project, a task with a child and an artifact across a restart; an Update adding a local-wheel dependency survives an offline recreation, a task imports it, and rollback restores the old lock with the package disclosed", LANE_CONTAINER),
+    # #1729/#1730 in real processes: one worker frozen past the idle window is reaped by a real kill.
+    "S40": ("idle retry under the owner's Pause: after a Pause and a consumed Resume (and without them) a real worker frozen past the idle window is reaped by a real kill; its new-ID retry dispatches with no spent Resume and continues the saved work; a Pause of that running retry fences its logical root, a model write served after the acceptance never lands while one before it did, one Resume reopens the tree and Stop ends it", LANE_MOCK),
 }
 
 MOCK_SLUG = "openai-compatible::mock-model"
@@ -527,6 +529,16 @@ class ModelGate:
                 f"ModelGate: the scenario never released the held round within {self.timeout:.0f}s")
 
 
+class StubHttpError(Exception):
+    """A scenario's deliberate provider failure: the model answers this HTTP status
+    instead of a completion (a 503 is the provider's own transient refusal), never
+    the loud ``e2e_script_error`` 500 of a broken step."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = int(status)
+
+
 class LoopbackModelServer:
     """Shared HTTP plumbing of the loopback OpenAI-compatible model servers.
 
@@ -576,6 +588,8 @@ class LoopbackModelServer:
                     time.sleep(outer.latency_sec)
                 try:
                     completion = outer._completion(body)
+                except StubHttpError as exc:
+                    return self._send({"error": {"message": str(exc), "type": "server_error"}}, status=exc.status)
                 except Exception as exc:  # a scenario-script bug must fail LOUDLY, never hang the client
                     import traceback
 
@@ -1345,22 +1359,17 @@ class ArtifactOracle:
         from ouroboros.task_results import load_task_result
         return load_task_result(self.data_root, task_id) or {}
 
-    def task_result_bytes(self, task_id: str) -> bytes:
-        return (self.data_root / "task_results" / f"{task_id}.json").read_bytes()
-
     def child_task_ids(self, parent_task_id: str) -> list:
-        """Direct children of *parent_task_id* per the durable task_results rows.
+        """Direct children from the canonical current-facts store (#1733)."""
+        from ouroboros.task_store import task_facts
+        return list(task_facts(self.data_root, where="parent_task_id=?", params=(str(parent_task_id),)))
 
-        The parent's own stored row deliberately does NOT list children ids (only a
-        derived swarm rollup), so lineage enumeration reads the children's rows —
-        the same truth ``find_child_tasks`` derives from.
-        """
-        from ouroboros.task_results import list_task_results
-
-        # The store-aware reader (the rows moved out of per-task JSON files): a glob over
-        # ``task_results/*.json`` saw nothing and made every lineage assertion vacuous.
-        return [str(row.get("task_id") or "") for row in list_task_results(self.data_root)
-                if isinstance(row, dict) and str(row.get("parent_task_id") or "") == str(parent_task_id) and row.get("task_id")]
+    def body_candidate(self, task_id: str = "") -> dict:
+        """One authoring candidate; callbacks before submit returns may omit its owner."""
+        rows = [row for row in self._json("state/subagent_worktrees.json").get("worktrees", [])
+                if row.get("kind") == "body_candidate" and (not task_id or row.get("task_id") == task_id)]
+        assert len(rows) == 1, rows
+        return rows[0]
 
     def tree_blackboard(self, root_task_id: str) -> list:
         """Rows of the task-tree ledger (task_trees/<root>/blackboard.jsonl)."""

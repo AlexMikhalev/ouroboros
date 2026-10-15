@@ -353,13 +353,17 @@ def _git_source_snapshot(repo_dir: pathlib.Path, ref: str) -> Iterator[tuple[pat
                 raise ValueError(f"gated source at {ref} must be a regular file: {path}")
             entries.append((path, object_id))
 
-        batch = subprocess.run(
-            ["git", "cat-file", "--batch"],
-            cwd=root,
-            check=True,
-            input=b"".join(object_id + b"\n" for _path, object_id in entries),
-            capture_output=True,
-        ).stdout
+        # Avoid the observed parent/Git mutual pipe-write wait; blob validation stays below.
+        with tempfile.TemporaryFile() as source_ids:
+            source_ids.write(b"".join(object_id + b"\n" for _path, object_id in entries))
+            source_ids.seek(0)
+            batch = subprocess.run(
+                ["git", "cat-file", "--batch"],
+                cwd=root,
+                check=True,
+                stdin=source_ids,
+                capture_output=True,
+            ).stdout
         cursor = 0
         paths: list[str] = []
         for path, expected_id in entries:

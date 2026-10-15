@@ -208,23 +208,31 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
             _handle_send_message(row, ctx)
             return
         delivery_id = str(evt.get("delivery_id") or "")
-        if delivery_id and delivery_id in _DELIVERED_MESSAGE_IDS:
+        publication_token = str(evt.get("terminal_projection_token") or "")
+        if publication_token:
+            from ouroboros.terminal_projection import main_delivery_current
+            if not main_delivery_current(ctx.DRIVE_ROOT, str(evt.get("task_id") or ""), publication_token):
+                return
+        memory_id = f"{delivery_id}:{publication_token}" if publication_token else delivery_id
+        if delivery_id and memory_id in _DELIVERED_MESSAGE_IDS:
             log.debug("send_message suppressed as duplicate (delivery_id=%s)", delivery_id)
             # This copy is suppressed because the FIRST one was sent, so record
             # that durably: it also clears any pending-outbox row, which would
             # otherwise be replayed (and suppressed again) until it gave up.
-            _register_delivered(ctx, delivery_id, task_id=str(evt.get('task_id') or ''))
+            _register_delivered(ctx, delivery_id, emitted=evt if publication_token else None,
+                                task_id=str(evt.get('task_id') or ''))
             return
         if delivery_id:
             try:
                 from supervisor.terminal_delivery import already_delivered
 
-                if already_delivered(ctx.DRIVE_ROOT, delivery_id):
+                if already_delivered(ctx.DRIVE_ROOT, delivery_id, task_id=str(evt.get("task_id") or ""),
+                                     publication_token=publication_token or None):
                     log.debug(
                         "send_message suppressed as durably delivered (delivery_id=%s)",
                         delivery_id,
                     )
-                    _handoff_delivered_review(ctx, str(evt.get('task_id') or ''), delivery_id)
+                    _register_delivered(ctx, delivery_id, task_id=str(evt.get('task_id') or ''))
                     return
             except Exception:
                 # Fail open toward delivery — never lose an answer to a dedupe read.
@@ -335,6 +343,9 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
             retained_chat = supplement_chat(ctx.DRIVE_ROOT, evt)
             if retained_chat is not None:
                 chat_id = retained_chat
+        if delivery_id:
+            progress_meta = dict(progress_meta or {})
+            progress_meta["delivery_id"] = delivery_id
         with timed_phase("sender", timing=evt.get("_finalization_timing") or {}):
             ctx.send_with_budget(
                 chat_id,
@@ -348,14 +359,16 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
                 # S3 (Q4): a typed system receipt keeps its role/type end to end.
                 role=str(evt.get("role") or ""),
                 system_type=system_type,
+                **({"require_write": True} if delivery_id else {}),
             )
         # Register only after send; a failed first copy must not suppress retry.
         if delivery_id:
-            _DELIVERED_MESSAGE_IDS.append(delivery_id)
+            _DELIVERED_MESSAGE_IDS.append(memory_id)
             _register_delivered(ctx, delivery_id, emitted={
                 "text": str(evt.get("text") or ""), "chat_id": chat_id, "task_id": task_id, "format": fmt,
                 "role": str(evt.get("role") or ""), "system_type": system_type,
                 "terminal_origin": str(evt.get("terminal_origin") or ""),
+                "terminal_projection_token": publication_token,
                 "routing": {"basis": "terminal_sender_bound_project", "intended_chat_id": int(evt["chat_id"]),
                             "routed_chat_id": chat_id} if bound_chat == chat_id else None})
             if system_type == "cancel_receipt":
@@ -486,17 +499,33 @@ def _handle_send_links(evt: Dict[str, Any], ctx: Any) -> None:
 
 
 def _handle_send_quiz(evt: Dict[str, Any], ctx: Any) -> None:
-    """Send an owner quiz card to the owner's chat."""
+    """Attempt the canonical publication debt with its persisted retry clock."""
+    from ouroboros.owner_quiz import claim_quiz_delivery, quiz_states, record_quiz_delivery_failure
+    from supervisor.log_addressing import resolve_quiz_publication
+
+    tid, qid = str(evt.get("task_id") or ""), str(evt.get("quiz_id") or "")
     try:
-        chat_id = _delivery_chat_id(evt, ctx)
+        block = quiz_states(ctx.DRIVE_ROOT, tid).get(qid) or {}
+        if (block.get("delivery") or {}).get("kind") != "publication":
+            return  # A stale ask must not consume the answer/closure retry clock.
+        if not claim_quiz_delivery(ctx.DRIVE_ROOT, tid, qid):
+            return
+        try:
+            chat_id = resolve_quiz_publication(ctx.DRIVE_ROOT, tid, block, evt.get("chat_id"),
+                str(evt.get("parent_task_id") or ""), str(evt.get("root_task_id") or ""))
+        except (OSError, ValueError) as exc:
+            reason = str(exc) if str(exc) in {"chat_unresolved", "publication_address_unknown"} else "project_source_unknown"
+            record_quiz_delivery_failure(ctx.DRIVE_ROOT, tid, qid, reason)
+            return
         options = evt.get("options")
         if chat_id is None or not isinstance(options, list):
+            record_quiz_delivery_failure(ctx.DRIVE_ROOT, tid, qid,
+                                         "chat_unresolved" if chat_id is None else "publication_payload_invalid")
             return
-        if chat_id == 0:
-            # Deliberate exception to the "0 is a real hidden session" policy:
-            # an interactive card in the hidden panel can never be seen or
-            # answered, so a headless author's quiz goes to Main.
-            chat_id = 1
+        from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
+        if is_a2a_chat_id(chat_id):
+            record_quiz_delivery_failure(ctx.DRIVE_ROOT, tid, qid, "a2a_chat")
+            return
         ok, err = ctx.bridge.send_quiz(
             chat_id,
             quiz_id=str(evt.get("quiz_id") or ""),
@@ -510,9 +539,80 @@ def _handle_send_quiz(evt: Dict[str, Any], ctx: Any) -> None:
             **({"wait_for_answer": True} if evt.get("wait_for_answer") is True else {}),
         )
         if not ok:
+            record_quiz_delivery_failure(ctx.DRIVE_ROOT, tid, qid, "publication_send_failed")
             _log_error(ctx, "send_quiz_error", chat_id=chat_id, error=err)
     except Exception as exc:
+        record_quiz_delivery_failure(ctx.DRIVE_ROOT, tid, qid, "publication_write_failed")
         _log_error(ctx, "send_quiz_event_error", error=repr(exc))
+
+
+def _handle_send_quiz_state(evt: Dict[str, Any], ctx: Any) -> None:
+    """An explicit closure discharges only after its reason reaches durable history."""
+    from ouroboros.gateway.task_decision import _late_answer_destination
+    from ouroboros.owner_quiz import (
+        claim_quiz_delivery, mark_discharged, mark_quiz_history_written,
+        question_delivery_projection, quiz_states, record_quiz_delivery_failure,
+    )
+    from supervisor.message_bus import log_chat
+
+    tid, qid = str(evt.get("task_id") or ""), str(evt.get("quiz_id") or "")
+    block = quiz_states(ctx.DRIVE_ROOT, tid).get(qid) or {}
+    if not block or block.get("state") != "closed":
+        return
+    block = claim_quiz_delivery(ctx.DRIVE_ROOT, tid, qid, force=evt.get("owner_retry") is True)
+    if not block:
+        return
+    try:
+        if (block.get("delivery") or {}).get("publication_pending") and "publication_chat_id" not in block:
+            from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
+            from ouroboros.owner_quiz import record_publication
+            from ouroboros.task_results import load_task_result
+            from supervisor.log_addressing import resolve_quiz_publication
+
+            task = load_task_result(ctx.DRIVE_ROOT, tid, strict=True) or {}
+            chat_id = resolve_quiz_publication(ctx.DRIVE_ROOT, tid, block, block.get("chat_id"),
+                str(task.get("parent_task_id") or ""), str(task.get("root_task_id") or ""))
+            if is_a2a_chat_id(chat_id):
+                record_quiz_delivery_failure(ctx.DRIVE_ROOT, tid, qid, "a2a_chat")
+                return
+            block = record_publication(ctx.DRIVE_ROOT, tid, qid, chat_id)
+        chat_id, reason = _late_answer_destination(ctx.DRIVE_ROOT, tid, block)
+        if chat_id is None:  # only the history row waits on the address; a live author still learns
+            record_quiz_delivery_failure(ctx.DRIVE_ROOT, tid, qid, reason)
+        elif not (block.get("delivery") or {}).get("history_at"):
+            log_chat("system", chat_id, 0, str(block.get("closed_reason") or ""),
+                     task_id=tid, record_type="quiz_closed", quiz=block, ts=block.get("closed_at"),
+                     source="owner_question_close" if block.get("closed_actor") == "owner" else "model_question_close",
+                     client_message_id=f"quiz_closed:{tid}:{qid}", drive_root=ctx.DRIVE_ROOT,
+                     require_write=True)
+            mark_quiz_history_written(ctx.DRIVE_ROOT, tid, qid)
+        if block.get("closed_actor") == "owner" and not (block.get("delivery") or {}).get("mailbox_at"):
+            from ouroboros.gateway.task_decision import _live_root_task
+            from ouroboros.owner_mailbox import KIND_QUIZ_CLOSED, write_owner_message
+            from supervisor.queue import _task_drive_for_task
+
+            task, _refusal = _live_root_task(tid)
+            if task is not None:
+                frame = (f"[Owner question closed without answer] quiz {qid} — "
+                         f"closed {block['closed_at']}. Reason: {block['closed_reason']}\n"
+                         "This closes the question; no option was chosen and no approval was given.")
+                if not write_owner_message(_task_drive_for_task(task, tid), frame, tid,
+                                           msg_id=f"quiz_closed:{qid}", kind=KIND_QUIZ_CLOSED):
+                    record_quiz_delivery_failure(ctx.DRIVE_ROOT, tid, qid, "mailbox_write_failed")
+                    return
+                mark_quiz_history_written(ctx.DRIVE_ROOT, tid, qid, receipt="mailbox_at")
+        if chat_id is None:
+            return
+        block = mark_discharged(ctx.DRIVE_ROOT, tid, qid) or block
+        ctx.bridge.send_quiz_state(quiz_id=qid, task_id=tid, state="closed", chat_id=chat_id,
+                                  closed_reason=str(block.get("closed_reason") or ""),
+                                  closed_at=block.get("closed_at"), closed_actor=block.get("closed_actor"),
+                                  closed_request_id=block.get("closed_request_id"),
+                                  closed_by_task_id=block.get("closed_by_task_id"),
+                                  question_delivery=question_delivery_projection(block))
+    except Exception:
+        record_quiz_delivery_failure(ctx.DRIVE_ROOT, tid, qid, "closure_write_failed")
+        raise
 
 
 # Merged into supervisor.events.EVENT_HANDLERS (the `**_CEH` pattern): the
@@ -523,4 +623,5 @@ EVENT_HANDLERS = {
     "send_document": _handle_send_document,
     "send_links": _handle_send_links,
     "send_quiz": _handle_send_quiz,
+    "send_quiz_state": _handle_send_quiz_state,
 }

@@ -37,7 +37,7 @@ def test_design_map_reaches_all_author_modes_and_keeps_common_prefix(tmp_path, r
         assert "## DESIGN.md (navigation map)" in text
         assert "- Attention — lines 2-8" in text
         assert "- Signals — lines 7-8" in text
-        assert str(path) in text
+        assert json.dumps(str(path), ensure_ascii=False)[1:-1] in text
         assert "BODY_RULE_NOT_DELIVERED" not in text and "DETAIL_NOT_DELIVERED" not in text
         assert "- Fake" not in text
         assert "availability is not evidence of reading or application" in text
@@ -65,7 +65,7 @@ def test_selected_copy_bytes_win_and_default_false_cannot_hide_body(tmp_path):
             "metadata": {"workspace_copy": {"execution_root": str(copy), "source_is_system_repo": True}}}
     core = context._capture_context_core(env, memory, task, None, None)
     text = json.dumps(_plan(env, core, task, "max").messages_for("max"), ensure_ascii=False)
-    assert str(copy / "docs/DESIGN.md") in text and "- Attention" in text
+    assert json.dumps(str(copy / "docs/DESIGN.md"), ensure_ascii=False)[1:-1] in text and "- Attention" in text
     assert "Installed heading" not in text
 
 
@@ -96,7 +96,7 @@ def test_missing_design_is_a_visible_source_gap_in_actual_author_input(tmp_path)
     core = context._capture_context_core(env, memory, task, None, None)
     text = json.dumps(_plan(env, core, task, "max").messages_for("max"))
     assert "DESIGN.md source unavailable" in text
-    assert str(env.repo_dir / "docs/DESIGN.md") in text
+    assert json.dumps(str(env.repo_dir / "docs/DESIGN.md"))[1:-1] in text
     assert "No DESIGN content or navigation delivered" in text
 
 
@@ -147,7 +147,7 @@ def test_folderless_prepared_candidate_survives_restore_in_author_and_session_de
         core = context._capture_context_core(env, memory, task, None, bound)
         for mode in ("max", "low", "nano"):
             text = json.dumps(_plan(env, core, task, mode).messages_for(mode))
-            assert str(source) in text and "- Attention" in text
+            assert json.dumps(str(source))[1:-1] in text and "- Attention" in text
             assert "BODY_RULE_NOT_DELIVERED" not in text
         text = session_design_navigation(bound, target_root=str(scratch), source_root=str(scratch))
         assert str(source) in text and "- Attention" in text

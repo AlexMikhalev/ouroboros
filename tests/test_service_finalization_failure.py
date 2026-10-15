@@ -50,7 +50,7 @@ def test_pending_stop_reaches_evidence_and_checkpoint_then_success_is_fresh(tmp_
         while not ctx.event_queue.empty():
             events.append(ctx.event_queue.get_nowait()["data"])
     else:
-        events = [json.loads(line) for line in (ctx.drive_logs / "events.jsonl").read_text().splitlines()]
+        events = [json.loads(line) for line in (ctx.drive_logs / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [event["checkpoint_kind"] for event in events] == [event["kind"] for event in evidence]
 
 

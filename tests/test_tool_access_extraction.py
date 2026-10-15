@@ -18,6 +18,7 @@ from ouroboros import (
     tool_access,
     tool_access_paths,
     tool_access_roots,
+    tool_access_reads,
     tool_access_types,
     tool_access_user_files,
 )
@@ -29,10 +30,12 @@ _LEAVES = (
     tool_access_types,
     tool_access_paths,
     tool_access_roots,
+    tool_access_reads,
     tool_access_user_files,
 )
 
 _MOVED_OWNERS = {
+    "scheduled_origin": tool_access_reads,
     "Operation": tool_access_types,
     "ResolvedResourceBinding": tool_access_types,
     "ResourceRoot": tool_access_types,

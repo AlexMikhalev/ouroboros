@@ -103,8 +103,10 @@ def golden_pool(*extra_rows: dict) -> str:
 def git(repo: pathlib.Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-c", "core.autocrlf=false", "-c", "commit.gpgsign=false", *args],
-        cwd=str(repo), capture_output=True, text=True, check=True, env={**os.environ, **GIT_ENV},
+        cwd=str(repo), capture_output=True, text=True, env={**os.environ, **GIT_ENV},
     )
+    # git's own reason: a CalledProcessError message drops stderr, so a fixture's exit 128 named nothing.
+    assert result.returncode == 0, f"git {' '.join(args)} exited {result.returncode}: {result.stderr.strip()}"
     return result.stdout.strip()
 
 

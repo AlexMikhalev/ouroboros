@@ -189,6 +189,36 @@ export async function pauseTaskAction(taskId, { pause = pauseTask, toast = showT
     }
 }
 
+// A held Continue's observed blockers in the owner's words (#1721), from the
+// server's census (supervisor/continuation_admission.py). Facts only: a start
+// with an unknown outcome is not called running or stoppable, and a kind with no
+// sentence yet stays raw (DESIGN §4). The machine record keeps the codes.
+const HELD_FACTS = {
+    running_member: (b) => `task ${b.task_id} is still running`,
+    dispatchable_member: (b) => `task ${b.task_id} is queued to run`,
+    owned_process: (b) => `a process of task ${b.task_id} is still alive`,
+    model_handoff: () => 'a model request has no recorded result',
+    tool_handoff: (b) => `a tool call of task ${b.task_id} has not returned`,
+    merge_operation: (b) => `a merge of task ${b.task_id} is not settled`,
+    workspace_executor: (b) => `a workspace process of task ${b.task_id} is not settled`,
+    delegated_run: (b) => (b.state === 'running' ? `delegated run ${b.run_id} is running`
+        : b.stop_outcome === 'pending_invocation_unbound'
+            ? 'a delegated start has an unknown outcome (no run was recorded)'
+            : b.state === 'stop_requested' ? `delegated run ${b.run_id}: its stop is requested, not confirmed`
+                : `delegated run ${b.run_id || b.invocation_id}: its outcome is unknown`),
+};
+
+/** @returns {string} the distinct observed facts, '' when the census named none */
+export function heldWorkFacts(blockers, limit = 3) {
+    const facts = [...new Set((Array.isArray(blockers) ? blockers : []).filter((b) => b && typeof b === 'object')
+        .map((b) => (HELD_FACTS[b.kind] ? HELD_FACTS[b.kind](b)
+            : /_unreadable$/.test(String(b.kind)) ? 'its custody record could not be read'
+                : String(b.kind || '').startsWith('late_phase_') ? `its work after the answer is ${b.kind.slice(11)}`
+                    : String(b.kind || 'unknown'))))];
+    return facts.length > limit
+        ? `${facts.slice(0, limit).join('; ')}; and ${facts.length - limit} more` : facts.join('; ');
+}
+
 export async function resumeTaskAction(taskId, { resume = resumeTask, toast = showToast } = {}) {
     const id = String(taskId || '').trim();
     if (!id || inFlight.has(id)) return;
@@ -202,9 +232,12 @@ export async function resumeTaskAction(taskId, { resume = resumeTask, toast = sh
             : 'Resuming: the task returns to the queue.', 'info');
     } catch (exc) {
         // The server names the refusal (replay_unsafe / fence missing /
-        // not budget-paused): show it verbatim instead of a generic failure.
+        // not budget-paused): show it verbatim instead of a generic failure,
+        // and a held Continue's observed blockers as facts (#1721).
         // Handled here, never rethrown: the menu callback is fire-and-forget.
-        toast(`Resume refused: ${exc?.message || exc}`, 'error');
+        const facts = heldWorkFacts(exc?.body?.blockers);
+        toast(facts ? `Resume refused: ${facts}.${exc.body.action === 'wait_or_stop_the_previous_work'
+            ? ' Wait for that work or stop it.' : ''}` : `Resume refused: ${exc?.message || exc}`, 'error');
     } finally {
         inFlight.delete(id);
     }

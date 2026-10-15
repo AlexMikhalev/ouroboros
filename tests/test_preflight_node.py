@@ -420,7 +420,7 @@ def _ci_job_block(job: str) -> str:
     return block.group(1)
 
 
-@pytest.mark.parametrize("job", ["quick-test", "full-test"])
+@pytest.mark.parametrize("job", ["quick-test", "full-test-runs"])
 def test_each_ci_job_runs_the_node_suite_the_gate_runs(job):
     """Both CI jobs carry the exact suite the gate runs, derived from the
     module's own WEB_DIR/TESTS_GLOB constants so the three surfaces (gate, CI,
@@ -437,7 +437,7 @@ def test_each_ci_job_runs_the_node_suite_the_gate_runs(job):
 
 
 def test_full_test_provisions_node_pinned_by_sha():
-    block = _ci_job_block("full-test")
+    block = _ci_job_block("full-test-runs")
     setup = re.search(r"uses: actions/setup-node@([0-9a-f]{40})", block)
     assert setup, "full-test must provision node via a SHA-pinned actions/setup-node"
     assert "node-version: '22'" in block
@@ -458,7 +458,7 @@ def test_package_json_script_matches_the_gate_glob():
 _ESLINT_STEP = "run: cd web && npm ci --no-audit --no-fund && npm run lint:undef"
 
 
-@pytest.mark.parametrize("job", ["quick-test", "full-test"])
+@pytest.mark.parametrize("job", ["quick-test", "full-test-runs"])
 def test_each_ci_job_runs_the_eslint_second_layer_after_the_node_suite(job):
     block = _ci_job_block(job)
     node_suite = f"run: cd {pn.WEB_DIR} && node --test {pn.TESTS_GLOB}"

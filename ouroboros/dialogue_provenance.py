@@ -329,6 +329,12 @@ def dialogue_text(entry: Mapping[str, Any]) -> str:
     evidence = entry.get("late_evidence")
     if entry.get("type") == "acceptance_late_settlement" and isinstance(evidence, Mapping):
         text += "\n[Late review evidence: " + json.dumps(dict(evidence), ensure_ascii=False, sort_keys=True) + "]"
+    source = entry.get("context_source_ref")
+    if entry.get("direction") == "in" and isinstance(source, Mapping):
+        locator = {key: value for key, value in source.items() if key not in {"read", "canonical_root"}}
+        text += ("\n[Context recorded with this event, not new speech or current provider truth: "
+                 "memory_read(source_ref=" + json.dumps(locator, ensure_ascii=False, sort_keys=True,
+                                                      separators=(",", ":")) + ")]")
     return text
 
 
@@ -402,7 +408,8 @@ def row_author(row: Mapping[str, Any], *, pos: int | None = None, lineage_epoch:
     ``pos`` such a row raises ``TypeError``. Without an epoch (the chain was
     empty at activation, or the chronicle is not active) ``pos`` is not needed.
     """
-    if row.get("type") == "quiz_answer":
+    if row.get("type") == "quiz_answer" or (row.get("type") == "quiz_closed"
+            and (row.get("quiz") or {}).get("closed_actor") == "owner"):
         return {"kind": "human", "label": "Owner", "via": "quiz"}
     direction = _direction(row)
     if direction == "in":
@@ -485,7 +492,7 @@ def render_row_text(row: Mapping[str, Any]) -> str:
     if row.get("type") == "presence_delivery" and message:
         return str(row.get("text", "")) + f"\n[Delivery details: {_detail_words(message, '; ')}]"
     quiz = row.get("quiz")
-    if row.get("type") == "quiz_answer" and isinstance(quiz, dict):
+    if row.get("type") in {"quiz_answer", "quiz_closed"} and isinstance(quiz, dict):
         from ouroboros.tools.plan_dialogue import _quiz_text  # D15->D06 is allowed only as a lazy import
 
         return _quiz_text(dict(row))

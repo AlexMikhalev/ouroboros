@@ -763,8 +763,13 @@ def _transport_factory(cfg: MCPServerConfig):
         # environment and its context-managed process shutdown sequence.
         # The SDK merges a plain dict onto its defaults. Windows env names are
         # case-insensitive: canonical names prevent a second Path/PATH entry.
-        env = {key.upper() if IS_WINDOWS else key: value for key, value in cfg.env.items()}
-        selected = {"env": env} if cfg.env else {}
+        from ouroboros.process_scope import installation_scope_entries
+
+        # The installation scope marker rides every stdio server (a long-lived shared
+        # helper belongs to the installation, never to the task that first touched it).
+        env = {**installation_scope_entries(),
+               **{key.upper() if IS_WINDOWS else key: value for key, value in cfg.env.items()}}
+        selected = {"env": env} if env else {}
         if cfg.cwd:
             selected["cwd"] = cfg.cwd
         params = StdioServerParameters(command=cfg.command, args=list(cfg.args), **selected)

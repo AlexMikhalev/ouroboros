@@ -85,6 +85,32 @@ def test_a_bare_call_never_means_a_subset(run_tests, monkeypatch):
     calls.clear()
     assert run_tests.main(["tests/test_x.py", "-k", "one"]) == 0
     assert calls == [("focused", [run_tests.sys.executable, "-m", "pytest", "tests/test_x.py", "-k", "one"])]
+    calls.clear()
+    explicit = ["tests/test_x.py", "--ci-evidence-dir", "my-exact-pytest-directory"]
+    assert run_tests.main(explicit) == 0
+    assert calls == [("focused", [run_tests.sys.executable, "-m", "pytest", *explicit])]
+
+
+@pytest.mark.parametrize("arguments, phases", [([], ["overlapped"]), (["--sequential"], ["parallel", "serial"]),
+                                              (["tests/test_x.py", "-k", "one"], ["focused"])])
+def test_evidence_option_keeps_selection_and_gives_each_pytest_phase_its_own_argv(
+    run_tests, monkeypatch, tmp_path, arguments, phases,
+):
+    calls, node = [], []
+    monkeypatch.setattr(run_tests, "_node_lane", lambda: node.append(True) or 0)
+    monkeypatch.setattr(run_tests, "_run", lambda label, argv, cwd: calls.append((label, argv)) or 0)
+    monkeypatch.chdir(tmp_path)
+    assert run_tests.main(["--evidence-dir", "diagnostics", *arguments]) == 0
+    assert [label for label, _ in calls] == phases
+    assert node == ([] if phases == ["focused"] else [True])
+    for label, command in calls:
+        offset = command.index("--ci-evidence-dir")
+        assert command[offset + 1] == str(tmp_path / "diagnostics" / label)
+        selection = command[:offset] + command[offset + 2:]
+        if label == "focused":
+            assert selection == [run_tests.sys.executable, "-m", "pytest", *arguments]
+        else:
+            assert selection == dict(run_tests.battery_commands("--sequential" in arguments))[label]
 
 
 def test_a_missing_node_is_a_red_not_run_never_a_silent_skip(run_tests, monkeypatch):
@@ -139,3 +165,62 @@ def test_the_documented_command_is_the_script():
     assert "test:\n\tuv run --locked python scripts/run_tests.py\n" in makefile
     for doc in ("CONTRIBUTING.md", "README.md", "docs/development/14-build-and-ci.md", "prompts/SYSTEM.md"):
         assert "scripts/run_tests.py" in (REPO / doc).read_text(encoding="utf-8"), doc
+
+
+@pytest.mark.serial
+def test_runner_evidence_stays_with_its_controller_across_nested_and_sequential_pytest(tmp_path):
+    """Exercise the runner's real argv; inheriting PYTEST_ADDOPTS used to truncate both files."""
+    import json
+    import subprocess
+    import sys
+    import textwrap
+    from tests.test_ci_evidence import _results, _started
+
+    outer, inner = tmp_path / "outer", tmp_path / "inner"
+    outer.mkdir()
+    inner.mkdir()
+    (inner / "test_child.py").write_text("def test_child():\n    assert True\n", encoding="utf-8")
+    evidence, child_evidence = tmp_path / "diagnostics", tmp_path / "child-diagnostics"
+    public = evidence / "focused"
+    public.mkdir(parents=True)
+    child_args = ["-p", "tests.conftest", "-o", "addopts=", "--rootdir", str(inner),
+                  "--confcutdir", str(inner), "-q", str(inner)]
+    (outer / "test_parent.py").write_text(textwrap.dedent(f"""
+        import os, subprocess, sys
+        from pathlib import Path
+        def test_parent():
+            assert "--ci-evidence-dir" not in os.environ.get("PYTEST_ADDOPTS", "")
+            public = Path({str(public)!r})
+            before = {{name: (public / name).read_bytes() for name in ("events.jsonl", "results.json")}}
+            for explicit in ([], ["--ci-evidence-dir", {str(child_evidence)!r}]):
+                result = subprocess.run([sys.executable, "-m", "pytest", *{child_args!r}, *explicit],
+                                        cwd={str(REPO)!r}, capture_output=True, text=True,
+                                        encoding="utf-8", timeout=60)
+                assert result.returncode == 0, result.stdout + result.stderr
+                assert {{name: (public / name).read_bytes() for name in before}} == before
+        """), encoding="utf-8")
+    arguments = ["--evidence-dir", str(evidence), "-p", "tests.conftest", "-o", "addopts=",
+                 "--rootdir", str(outer), "--confcutdir", str(outer), "-q", str(outer)]
+    entry = tmp_path / "run_parent.py"
+    entry.write_text(
+        "import runpy\n"
+        f"runner = runpy.run_path({str(REPO / 'scripts/run_tests.py')!r})\n"
+        f"raise SystemExit(runner['main']({arguments!r}))\n", encoding="utf-8")
+    command = [sys.executable, "-I", "-S", str(REPO / "scripts/safe_test.py"),
+               "--temp-parent", str(tmp_path), "--", sys.executable, str(entry)]
+    # Reuse after the preceding controller exited is valid, without stale ownership locks.
+    for previous in range(2):
+        (public / "results.json").write_text(json.dumps({"previous": previous}), encoding="utf-8")
+        result = subprocess.run(command, cwd=REPO, capture_output=True, text=True,
+                                encoding="utf-8", timeout=180)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert _results(public)["tests_collected"] == 1
+        assert _results(public)["session_exit_code"] == 0
+        assert {row["nodeid"] for row in _results(public)["reports"]} == {"test_parent.py::test_parent"}
+        raw = (public / "events.jsonl").read_text(encoding="utf-8")
+        assert "\x00" not in raw
+        rows = [json.loads(line) for line in raw.splitlines()]
+        assert _started(rows) == ["test_parent.py::test_parent"]
+        assert rows[-1]["event"] == "finish"
+        assert _results(child_evidence)["session_exit_code"] == 0
+        assert {row["nodeid"] for row in _results(child_evidence)["reports"]} == {"test_child.py::test_child"}

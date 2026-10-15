@@ -16,6 +16,7 @@ from ouroboros import deliverables_paths as _deliverables_paths
 from ouroboros.shell_parse import is_absolute_path_text
 from ouroboros.task_results import validate_task_id
 from ouroboros.utils import safe_relpath
+from ouroboros.tool_access_reads import scheduled_origin  # re-export the read-authority owner
 
 _deliverables_root_lexical = _deliverables_paths._deliverables_root_lexical
 _deliverables_root_lexical_alias = _deliverables_paths._deliverables_root_lexical_alias
@@ -69,9 +70,6 @@ from ouroboros.tool_access_user_files import (  # noqa: F401 — re-exported mov
 )
 
 
-# Readable roots are shared by ordinary parents and children; write authority
-# remains profile-specific. Physical ancestor bindings are derived, never grants.
-
 def summarize_subagent_profile(profile: ToolProfile, *, effective_lane: str = "") -> str:
     """Compact, human-readable summary of a subagent's EFFECTIVE tool profile
     (v6.57.0, 1.6): shell yes/no, writable roots, and model lane — derived from the
@@ -104,16 +102,17 @@ def summarize_subagent_profile(profile: ToolProfile, *, effective_lane: str = ""
 
 def lineage_task_ids(ctx: Any) -> tuple[str, ...]:
     """Task ids whose ``task_drive``/``artifact_store`` this actor may READ: its own, its parent's
-    and its root's (own lineage fields, T4=A #1105) and the ONE predecessor its contract names
+    and its root's (own lineage fields, T4=A #1105), the ONE predecessor its contract names
     (``task_contract.predecessor_authority.source.task_id``, one hop, #1232; a child carrying the
-    envelope reads it too) — never a sibling's, nothing found by walking the disk, malformed ids dropped."""
+    envelope reads it too) and the direct origin of a scheduled root (``scheduled_origin``, #1488)
+    — never a sibling's, nothing found by walking the disk, malformed ids dropped."""
     meta, contract = (v if isinstance(v, dict) else {} for v in (
         getattr(ctx, "task_metadata", None), getattr(ctx, "task_contract", None)))
     authority = (contract or meta).get("predecessor_authority")
     source = authority.get("source") if isinstance(authority, dict) else None
     ids = [task_id_for_artifacts(ctx)]
     for raw in (meta.get("parent_task_id"), meta.get("root_task_id"),
-                source.get("task_id") if isinstance(source, dict) else None):
+                source.get("task_id") if isinstance(source, dict) else None, scheduled_origin(ctx)):
         try:
             ids.append(validate_task_id(raw))
         except ValueError:

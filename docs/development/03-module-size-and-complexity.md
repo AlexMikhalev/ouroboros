@@ -180,30 +180,26 @@ for the omitted evidence. Enforcement: `tests/test_continuation_context_authorit
 
 ### Invariant: notifications ring for live events only
 
-Owner-facing notification policy is `docs/DESIGN.md` §9, one canonical section, never
-re-derived here. The engineering rules:
+`docs/DESIGN.md` §9 owns notification policy. `notifications.js::attach()` subscribes
+once to the shared socket in `app.js`; `chat.js` holds no notification code, since a
+closed Project disposes its handlers. Only live frames reach the notifier; that
+boundary, not a persisted ledger, makes replay safe. History and reconnect readers
+never call it; no notification state survives reload.
 
-The subscription is client-level and never moves into a chat instance: an instance dies
-with its room (closing a Project panel disposes its `ws.on` handlers), so a notifier
-inside one is silent in exactly the case notifications exist for, the owner gone and
-the room closed. `notifications.js::attach()` takes one subscription on the shared
-socket in `app.js`; `chat.js` holds no notification code.
+The room gate refuses hidden, A2A and unknown chats. Each task ending has one key;
+a direct ending is an ordinary reply. Frame lineage excludes child banners.
+Activation resolves exact Project identity through `GET /api/projects?chat_id=…`,
+independent of the capped sidebar. Missing, inactive or unreadable destinations show
+unavailable without navigating. Established Main notices, including Telegram, open Main.
+A later click supersedes an unfinished lookup; hydration stays silent.
 
-Only live frames reach it; history and reconnect backfill run through the instances'
-own readers, which never call it. That boundary, not a persisted ledger, makes replay
-safe, so no notification state survives a reload. The room gate is the client's
-owner-visible chat set (hidden partition, A2A ids and unknown chats refused); one
-ending is one key per task (a direct turn's ending is an ordinary reply, not a
-finished task); lineage comes from the delegation facts frames carry, so a child never
-reaches the owner's banner.
-
-Classification and gating are pure over one frame and stored preferences, testable
-without a DOM or socket. Preferences are client-local: no `s-` field, excluded from the
-settings-dirty tracker, never sent to `/api/settings`. Delivery degrades instead of
-disappearing and never asks for OS permission itself; importance adds no host field,
-text heuristic or second model call (mechanism: the `web/modules/notifications.js`
-header). Enforcement: `tests/test_notifications_static.py` asserts these causes, not
-just effects.
+Classification and gating are pure over a frame and stored preferences, testable
+without DOM or socket. Preferences stay client-local, outside `s-`, settings-dirty
+tracking and `/api/settings`. Delivery degrades rather than disappearing and never
+requests OS permission. Importance adds no host field, text heuristic or model call
+(mechanism: `web/modules/notifications.js` header). Enforcement:
+`tests/test_notifications_static.py`, `tests/test_notification_destination.py`,
+`web/tests/notifications.test.js`.
 
 ### Invariant: UI resources carry a disposer
 

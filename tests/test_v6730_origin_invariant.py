@@ -169,6 +169,7 @@ def test_promote_tool_passes_origin_by_value_despite_rewritten_objective(tmp_pat
     out = _promote_chat_to_task(
         ctx,
         objective="Create a standalone 3D browser game about a robot (LLM-rewritten)",
+        title="Robot browser game",
         project_name="Robot City Adventure",
         predecessor_task_id="",
     )

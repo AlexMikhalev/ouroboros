@@ -105,11 +105,14 @@ for (const chatId of [1, 7]) {
                 assert.equal(fx.status(), expected);
                 assert.equal(fx.card(row.activity_id).querySelector('[data-live-phase]').textContent, expected);
             };
+            const detail = () => fx.card(row.activity_id).querySelector('[data-live-phase-detail]');
             show({}, 'Working');
             show({ phase: 'thinking' }, 'Thinking');
-            show({ phase: 'preparing' }, 'Preparing request');
-            show({ model_activity: { phase: 'response_received' } }, 'Response received · processing');
+            show({ phase: 'preparing' }, 'Preparing');
+            show({ model_activity: { phase: 'response_received' } }, 'Working');
+            assert.equal(detail().textContent, 'Model call: Response received · processing');
             show({}, 'Working'); // finished call cleared its observation, not the task's work
+            assert.equal(detail().hidden, true);
             fx.census([row, { ...row, activity_id: 'another-call', phase: 'preparing' }], true);
             assert.equal(fx.status(), 'Working', 'different active phases never imply provider reasoning');
         } finally { fx.instance.destroy(); restoreDom(fx.prior); }
@@ -126,14 +129,13 @@ for (const chatId of [1, 7]) {
             fx.census([{ ...row, model_activity: undefined }, other], true);
             assert.equal(fx.status(), 'Pausing…', 'adding an observation must not reorder control priority');
             fx.census([row], true);
-            assert.equal(fx.status(), 'Request accepted · waiting for admission');
+            assert.equal(fx.status(), 'Queued');
             fx.census([{ ...row, phase: 'budget_paused', pause_cause: 'owner' }], true);
             assert.equal(fx.status(), 'Paused · owner pause', 'same-row Pause outranks stale model facts');
             fx.census([row, { ...other, phase: 'working' }], true);
             assert.equal(fx.status(), 'Working...', 'managed work keeps its existing priority');
             fx.census([{ ...row, kind: 'managed_task' }, { ...other, kind: 'direct_chat' }], true);
-            assert.equal(fx.status(), 'Request accepted · waiting for admission',
-                'an active managed observation stays in the managed priority branch');
+            assert.equal(fx.status(), 'Queued', 'an active managed observation stays in the managed priority branch');
         } finally { fx.instance.destroy(); restoreDom(fx.prior); }
     });
 
@@ -144,16 +146,18 @@ for (const chatId of [1, 7]) {
         try {
             fx.handlers.get('chat')({ task_id: row.activity_id, chat_id: chatId, role: 'assistant',
                 is_progress: true, content: 'Inspecting current work', ts: '2026-10-11T00:00:00Z' });
-            for (const [phase, expected] of [
-                ['queued', 'Request accepted · waiting for admission'],
-                ['dispatching', 'Preparing request dispatch'],
-                ['awaiting_response', 'Sending request / waiting for response'],
-                ['rejoining', 'Rejoining the same model operation'],
-                ['response_received', 'Response received · processing'],
+            for (const [phase, expected, exact] of [
+                ['queued', 'Queued', 'Request accepted · waiting for admission'],
+                ['dispatching', 'Sending', 'Preparing request dispatch'],
+                ['awaiting_response', 'Sending', 'Sending request / waiting for response'],
+                ['rejoining', 'Rejoining', 'Rejoining the same model operation'],
+                ['response_received', 'Working', 'Response received · processing'],
             ]) {
                 show(phase);
                 assert.equal(fx.status(), expected);
                 assert.equal(fx.card(row.activity_id).querySelector('[data-live-phase]').textContent, expected);
+                // The exact phase waits in the card's details, the same card the chip names.
+                assert.equal(fx.card(row.activity_id).querySelector('[data-live-phase-detail]').textContent, `Model call: ${exact}`);
                 assert.equal(fx.card(row.activity_id).querySelector('[data-wait-id]'), null);
             }
             fx.close();
@@ -162,7 +166,7 @@ for (const chatId of [1, 7]) {
                 content: 'Done', system_type: 'task_summary', task_terminal_status: 'completed', ts: '2026-10-11T00:00:01Z' });
             show('queued');
             assert.equal(fx.card(row.activity_id).querySelector('[data-live-phase]').textContent, 'Done');
-            assert.notEqual(fx.status(), 'Request accepted · waiting for admission');
+            assert.notEqual(fx.status(), 'Queued');
         } finally { fx.instance.destroy(); restoreDom(fx.prior); }
     });
 }
@@ -585,6 +589,40 @@ test('a typing frame is a receipt: Sending... steps to the census verdict, never
         await fx.settle();
         fx.state.fail = false;
         assert.equal(fx.status(), 'Online', 'a failed census read still retires the send');
+    } finally { fx.instance.destroy(); restoreDom(fx.prior); }
+});
+
+test('#1403: an unrelated System row keeps Working and Sending; a refusal settles only its own submission', async () => {
+    const fx = makeInstance();
+    const notice = (extra = {}) => fx.handlers.get('chat')({ chat_id: 1, role: 'system', system_type: 'budget_notice',
+        task_id: '', content: '🚫 Model budget reached. Unrelated runtime fact.', ts: '2026-10-13T09:00:00Z', ...extra });
+    const send = async (text, cmid) => {
+        fx.state.messageId = cmid;
+        globalThis.document.byId.get('chat-input').value = text;
+        globalThis.document.byId.get('chat-send').listeners.get('click')[0]();
+        await fx.settle();
+    };
+    try {
+        fx.census([{ activity_id: 'turn-1', chat_id: 1, kind: 'direct_chat', phase: 'working' }], true);
+        assert.equal(fx.status(), 'Working');
+        notice();
+        assert.equal(fx.status(), 'Working', 'a runtime notice concludes no turn');
+        fx.census([], true);
+        await send('first', 'cm-first');
+        await send('second', 'cm-second');
+        assert.equal(fx.status(), 'Sending...');
+        notice();
+        assert.equal(fx.status(), 'Sending...', 'nor retires a submission it does not name');
+        // A host refusal names the submission it answers: only that one settles.
+        notice({ system_type: 'task_admission_notice', content: '🚫 Budget exhausted. Task rejected.',
+            client_message_id: 'cm-first' });
+        assert.equal(fx.status(), 'Sending...', 'the other submission is still unanswered');
+        notice({ system_type: 'command_reply', content: '🧠 Background consciousness: on', client_message_id: 'cm-second' });
+        assert.equal(fx.status(), 'Online');
+        // A legacy unkeyed model final still ends the unscoped turn, as documented.
+        await send('third', 'cm-third');
+        fx.handlers.get('chat')({ chat_id: 1, role: 'assistant', task_id: '', content: 'Done.', ts: '2026-10-13T09:01:00Z' });
+        assert.equal(fx.status(), 'Online');
     } finally { fx.instance.destroy(); restoreDom(fx.prior); }
 });
 

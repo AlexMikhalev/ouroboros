@@ -56,7 +56,7 @@ def test_provider_diagnostics_stay_outside_test_and_release_authority():
     producer = steps["provider_tests"]
     assert "continue-on-error" not in job and "continue-on-error" not in producer
     assert "continue-on-error" not in workflow["jobs"]["integration-test"]
-    assert "pytest tests/test_provider_integration.py -m integration -q -rs --tb=short" in producer["run"]
+    assert 'pytest tests/test_provider_integration.py -m "$selection" -q -rs --tb=short' in producer["run"]
     assert "--ci-evidence-dir=" in producer["run"] and "--junitxml=" in producer["run"]
     assert "ci-private/provider/results.xml" in producer["run"]
     assert "ci-evidence/provider" in producer["run"]
@@ -70,6 +70,7 @@ def test_provider_diagnostics_stay_outside_test_and_release_authority():
     assert upload["with"]["path"] == "${{ runner.temp }}/ci-evidence/provider/"
     assert upload["with"]["retention-days"] == 30
     assert "github.sha" in upload["with"]["name"] and "github.run_attempt" in upload["with"]["name"]
+    assert "${{ inputs.scope }}" in upload["with"]["name"]
     assert summary["env"]["PRODUCER_OUTCOME"] == "${{ steps.provider_tests.outcome }}"
     assert summary["env"]["ARTIFACT_URL"] == "${{ steps.provider_evidence.outputs.artifact-url }}"
     assert "python -m tests.ci_evidence summarize" in summary["run"]
@@ -77,6 +78,9 @@ def test_provider_diagnostics_stay_outside_test_and_release_authority():
     assert workflow["jobs"]["release-preflight"]["needs"] == ["full-test", "integration-test", "system-e2e-mock"]
     release = workflow["jobs"]["release"]
     assert "needs.release-preflight.result == 'success'" in release["if"]
+    optional = workflow["jobs"]["integration-optional"]
+    assert "continue-on-error" not in optional
+    assert not any("integration-optional" in job.get("needs", []) for job in workflow["jobs"].values())
 
 
 def test_only_informational_steps_tolerate_errors_and_report_missing_uploads():
@@ -108,26 +112,34 @@ def _triggers(workflow):
 
 
 def _canary_wiring_faults(ci, shared, push):
-    """Name every way the canary body and its two callers can drift apart."""
+    """One body, two disjoint release groups and the unchanged all-canary push."""
     faults = []
     passed = {name: f"${{{{ secrets.{name} }}}}" for name in PROVIDER_SECRETS}
-    for label, jobs in (("ci.yml", ci["jobs"]), (CANARY_PUSH, push["jobs"])):
-        caller = jobs["integration-test"]
+    for label, caller, scope in (("ci.yml", ci["jobs"]["integration-test"], {"scope": "required"}),
+                                ("ci.yml optional", ci["jobs"]["integration-optional"], {"scope": "optional"}),
+                                (CANARY_PUSH, push["jobs"]["integration-test"], {})):
         if caller.get("uses") != f"./.github/workflows/{CANARY}":
             faults.append(f"{label} does not call the shared job")
         if caller.get("secrets") != passed:
             faults.append(f"{label} does not pass exactly the eight provider secrets by name")
         if caller.get("permissions") != {"contents": "read"}:
             faults.append(f"{label} widens the called job's permissions")
-    # Exact key sets: a condition or a group on any of the three jobs changes how often the paid job runs.
-    for label, job, keys in (("ci.yml", ci["jobs"]["integration-test"], {"if", "uses", "secrets", "permissions"}),
+        if caller.get("with", {}) != scope:
+            faults.append(f"{label} does not select its disjoint canary scope")
+    if ci["jobs"]["integration-test"].get("if") != ci["jobs"]["integration-optional"].get("if"):
+        faults.append("required/optional callers do not share the manual/tag admission")
+    # Exact key sets keep an added condition/group from silently changing paid admission.
+    for label, job, keys in (("ci.yml", ci["jobs"]["integration-test"], {"if", "uses", "with", "secrets", "permissions"}),
+                             ("ci.yml optional", ci["jobs"]["integration-optional"], {"if", "uses", "with", "secrets", "permissions"}),
                              (CANARY_PUSH, push["jobs"]["integration-test"], {"uses", "secrets", "permissions"}),
                              (CANARY, shared["jobs"]["integration-test"], {"runs-on", "steps"})):
         if set(job) != keys:
             faults.append(f"{label} canary job carries keys other than {sorted(keys)}")
     declared = {name: {"required": False} for name in PROVIDER_SECRETS}
-    if _triggers(shared) != {"workflow_call": {"secrets": declared}}:
-        faults.append("the shared job is not call-only with eight optional secrets")
+    inputs = {"scope": {"description": "Canary subset: all, required or optional; failures remain visible",
+                        "type": "string", "default": "all"}}
+    if _triggers(shared) != {"workflow_call": {"secrets": declared, "inputs": inputs}}:
+        faults.append("the shared job is not call-only with scoped input and eight optional secrets")
     # One paid run per push that touches the canary path list, on the three shared branches only.
     if _triggers(push) != {"push": {"branches": SHARED_BRANCHES, "paths": CANARY_PUSH_PATHS}}:
         faults.append("the push wrapper's trigger is not the three shared branches with the canary path list")
@@ -153,8 +165,9 @@ def test_provider_canaries_share_one_body_between_the_code_workflow_and_the_push
             assert job.get("secrets") != "inherit", path.name  # Would hand over signing and live-stand keys.
             if str(job.get("uses", "")).endswith(f"/{CANARY}"):
                 callers.append((path.name, name))
-    # A third caller is a second paid run for some event.
-    assert callers == [("ci.yml", "integration-test"), (CANARY_PUSH, "integration-test")]
+    # Two release groups partition one matrix; a further caller could duplicate paid tests.
+    assert callers == [("ci.yml", "integration-test"), ("ci.yml", "integration-optional"),
+                       (CANARY_PUSH, "integration-test")]
 
 
 def test_provider_canary_workflows_are_editable_while_ci_yml_stays_protected():
@@ -177,6 +190,9 @@ def test_provider_canary_workflows_are_editable_while_ci_yml_stays_protected():
 
 
 CANARY_DRIFTS = {
+    "optional repeats required": lambda w: w.ci["jobs"]["integration-optional"]["with"].update(scope="required"),
+    "required repeats all": lambda w: w.ci["jobs"]["integration-test"]["with"].update(scope="all"),
+    "optional admission diverges": lambda w: w.ci["jobs"]["integration-optional"].update({"if": "true"}),
     "wrapper also fires on tags": lambda w: _triggers(w.push)["push"].update(tags=["v*"]),
     "wrapper gains a second trigger": lambda w: _triggers(w.push).update(workflow_dispatch=None),
     "wrapper drops a branch": lambda w: _triggers(w.push)["push"]["branches"].remove("main"),
@@ -335,14 +351,17 @@ def test_ui_producers_have_distinct_reports_and_only_the_public_parent_is_upload
     assert "ci-evidence/ui/host" in annotate and "ci-evidence/ui/tools" in annotate
 
 
-def _run_shell(step, tmp_path, *, diagnostic="viewport", result=0):
+def _run_shell(step, tmp_path, *, diagnostic="viewport", result=0, scope="all"):
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("workflow shell unavailable on this host")
     args = tmp_path / "args"
     command = step["run"].replace("${{ runner.temp }}", str(tmp_path)).replace("${{ matrix.shard }}", "2")
+    command = command.replace("${{ runner.os == 'Windows' && format('--default-suite-shard={0}/4', matrix.shard) || '' }}",
+                              "--default-suite-shard=2/4")
     stub = 'python() { printf "%s\\n" "$@" > "$ARGV_FILE"; return "$PRODUCER_EXIT"; }\n'
-    env = {**os.environ, "ARGV_FILE": str(args), "PRODUCER_EXIT": str(result), "DIAGNOSTIC": diagnostic}
+    env = {**os.environ, "ARGV_FILE": str(args), "PRODUCER_EXIT": str(result),
+           "DIAGNOSTIC": diagnostic, "SCOPE": scope}
     completed = subprocess.run([bash, "-e", "-o", "pipefail", "-c", stub + command],
                                env=env, capture_output=True, text=True, encoding="utf-8", timeout=10)
     return completed, args.read_text(encoding="utf-8").splitlines() if args.exists() else []
@@ -355,7 +374,7 @@ def _run_shell(step, tmp_path, *, diagnostic="viewport", result=0):
     (*PARTIAL, "ui_diagnostic"),
     ("ui-browser.yml", "ui-shard", "browser_tools"),
     ("ui-browser.yml", "ui-manifest", "ui_manifest"),
-    *[("ci.yml", job, f"tests_{label}") for job in ("quick-test", "full-test")
+    *[("ci.yml", job, f"tests_{label}") for job in ("quick-test", "full-test-runs")
       for label in ("parallel", "serial", "size")],
 ])
 def test_actual_producer_shell_preserves_success_and_failure_exit(tmp_path, workflow, job, step, result):
@@ -385,8 +404,9 @@ def test_release_floor_is_the_last_canary_step_and_enforces_only_on_an_official_
     job = _workflow(CANARY)["jobs"]["integration-test"]
     floor = job["steps"][-1]
     assert floor["name"] == "Release floor for required provider canaries"
-    # Its exit IS the floor: a tolerated or conditional step would let a tag release past it.
-    assert set(floor) == {"name", "if", "env", "run"} and floor["if"] == "${{ !cancelled() }}"
+    # Its exit IS the floor for required/all; optional-only contains no required results.
+    assert set(floor) == {"name", "if", "env", "run"}
+    assert floor["if"] == "${{ !cancelled() && inputs.scope != 'optional' }}"
     assert "secrets." not in str(floor) and list(floor["env"]) == ["FLOOR_ENFORCE"]
     # It reads the report the producer wrote, by the same path string.
     produced = re.search(r'--junitxml=("[^"]+")', _steps(CANARY, "integration-test")["provider_tests"]["run"])
@@ -679,7 +699,7 @@ def _evidence_action():
 
 
 @pytest.mark.parametrize("jobname,artifact", [
-    ("quick-test", "quick-test"), ("full-test", "full-test-${{ matrix.os }}"),
+    ("quick-test", "quick-test"), ("full-test-runs", "full-test-${{ matrix.os }}${{ runner.os == 'Windows' && format('-shard-{0}', matrix.shard) || '' }}"),
 ])
 def test_ordinary_jobs_name_their_failures_without_owning_the_result(jobname, artifact):
     job = _workflow("ci.yml")["jobs"][jobname]

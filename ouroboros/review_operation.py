@@ -249,11 +249,11 @@ class ReviewOperation:
             try:
                 self.control_state = operation_stop_state(self.result_root, self.task_id)
                 if self.historical_purpose and self.control_state != "unknown":
-                    from ouroboros.acceptance_late import historical_operation_controls, owner_paused_only
-                    blocked = historical_operation_controls(self.result_root, self.historical_purpose,
+                    from ouroboros.acceptance_late import owner_paused_controls
+                    blocked, paused = owner_paused_controls(self.result_root, self.historical_purpose,
                                                             unstarted=not self._dispatched)
                     # An owner Pause defers unsent work until Resume (D10); it is never a Stop.
-                    if blocked and not owner_paused_only(self.result_root, self.historical_purpose, blocked):
+                    if blocked and not paused:
                         self.control_state = "cancelled"
             except StoreBusy:
                 if control_probe_requires_current():
@@ -1150,13 +1150,12 @@ def _attach_only_run(root: Any, request: Any, slot: Any, operation_id: str, run_
              "invocation_id": str(invocation.get("invocation_id") or ""),
              "collection": "attach_only_observation", "cost": None, "run_state": state}
     try:
-        from ouroboros.review_checking import capture_seat_evidence, checking_writers_settled
+        from ouroboros.review_checking import terminal_seat_evidence
 
-        # Ordinary daemon success is published after the runner and owned
-        # adapter close/drain. Failed or recovered unknown outcomes lack that
-        # boundary; this is not a claim about arbitrary detached OS descendants.
-        evidence = capture_seat_evidence(root, request.task_id, operation_id,
-                                         release=checking_writers_settled(detail))
+        # The exact-detail policy retains unknown writers; failed runs need the
+        # engine's literal settled scope. Windows copy-use compatibility is success-only,
+        # not proof about arbitrary detached OS descendants.
+        evidence = terminal_seat_evidence(root, request.task_id, operation_id, detail)
     except Exception as exc:
         # The paid verdict remains collectible even if retaining its checking
         # artifacts fails; leave the original area in custody and name the gap.
@@ -1423,16 +1422,12 @@ def recover_orphaned_acceptance_operations(drive_root: Any, *, stop: Optional[Ca
     from ouroboros.acceptance_settlement import acceptance_actor_ended, settle_acceptance_operation
     from ouroboros.store import StoreError
     from ouroboros.task_results import load_task_result
-    from ouroboros.task_store import ids_with_fields
+    from ouroboros.task_store import review_collection_candidates
 
     local_reviews_settled()  # a direct turn's closed operation needs no worker probe to publish
     root = pathlib.Path(drive_root)
     report: Dict[str, Any] = {"settled": [], "pending": [], "deferred": [], "errors": []}
-    try:
-        candidates = ids_with_fields(root, (OPERATIONS_FIELD, "review_projection"))
-    except StoreError:
-        return report
-    for task_id in candidates:
+    for task_id in review_collection_candidates(root, stop=stop):
         if stop is not None and stop():
             break
         try:

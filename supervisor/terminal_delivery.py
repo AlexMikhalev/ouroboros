@@ -214,15 +214,18 @@ def delivery_id_for(task_id: str, text: str) -> str:
     return f"final:{task_id}:{digest}"
 
 
-def already_delivered(drive_root: Any, delivery_id: str) -> bool:
-    """Read-only durable dedupe check (registration happens AFTER a real send)."""
+def already_delivered(drive_root: Any, delivery_id: str, *, task_id: str = "", publication_token: Any = None) -> bool:
+    """Read-only durable dedupe check (registration happens AFTER a real send). A canonical Main
+    publication answers from its own receipt, by the event's typed task and publication token."""
     did = str(delivery_id or "").strip()
     if not did:
         return False
     try:
-        from ouroboros.utils import read_json_dict
+        from ouroboros.terminal_projection import main_delivery_recorded
 
-        data = read_json_dict(pathlib.Path(drive_root) / "state" / "terminal_deliveries.json") or {}
+        if publication_token:  # the bounded id cache cannot attest a different attempt
+            return main_delivery_recorded(drive_root, did, task_id=task_id, publication_token=publication_token)
+        data = _read_registry(drive_root)
         delivered = data.get("delivered")
         return isinstance(delivered, list) and did in delivered
     except Exception:
@@ -262,6 +265,11 @@ def register_delivery(drive_root: Any, delivery_id: str, *, emitted: Optional[Di
     did = str(delivery_id or "").strip()
     if not did:
         return True
+    from ouroboros.terminal_projection import acknowledge_main_delivery
+
+    acknowledge_main_delivery(drive_root, did, task_id=(emitted or {}).get("task_id"),
+                              chat_id=(emitted or {}).get("chat_id"),
+                              publication_token=(emitted or {}).get("terminal_projection_token"))
     fresh = {"value": False}
     receipt = _capture_emitted_answer(drive_root, did, emitted) if isinstance(emitted, dict) else None
 
@@ -598,6 +606,11 @@ def _disclose_exhausted_delivery(
 
     did = str(row.get("delivery_id") or "")
     tid = str(row.get("task_id") or "")
+    if row.get("terminal_projection_token"):
+        # The canonical readiness retains bytes, destination and retry timing.
+        # Evicting its transport cache slot is not an exhausted owner message.
+        log.info("Main delivery %s left transport cache; canonical obligation remains", did)
+        return
     text = str(row.get("text") or "")
     capacity = reason == "outbox_capacity"
     try:
@@ -697,10 +710,12 @@ def replay_pending_deliveries(drive_root: Any, *, event_queue: Any = None) -> Li
     """
     # GR5-6: the replay lane is an enforcement read — a corrupt registry is
     # disclosed through the typed corruption event, not read as "nothing owed".
-    owed = [
-        row for row in pending_deliveries(drive_root, disclose_corruption=True)
-        if _replay_due(row)
-    ]
+    rows = pending_deliveries(drive_root, disclose_corruption=True)
+    # Cached Main debt goes through its settlement (supervisor queue): the canonical claim is its one retry clock.
+    from ouroboros.terminal_projection import settle_terminal_projection
+    for task_id in sorted({str(r.get("task_id") or "") for r in rows if r.get("terminal_projection_token")} - {""}):
+        settle_terminal_projection(drive_root, task_id, event_queue=event_queue)
+    owed = [row for row in rows if not row.get("terminal_projection_token") and _replay_due(row)]
     if not owed:
         return []
     if event_queue is None:
@@ -973,9 +988,8 @@ def enqueue_terminal_delivery_outcome(
 ) -> str:
     """Dedupe, register as owed (idempotent), enqueue; answer one typed word.
 
-    The enqueue half of the seam: safe to call after the same event was already
-    registered by the owed-before-settle ordering — registration is keyed by
-    ``delivery_id`` and no-ops on a repeat. Four facts a caller may branch on:
+    Safe after owed-before-settle: registration is keyed by ``delivery_id``
+    and repeat-safe. Four facts a caller may branch on:
     ``queued`` (owed row written, live send queued), ``already_delivered``
     (this id already went out — nothing is owed, nothing failed),
     ``queued_unregistered`` (the live send is queued but the owed row could not
@@ -988,7 +1002,8 @@ def enqueue_terminal_delivery_outcome(
     tid = str((event or {}).get("task_id") or "")
     if not event:
         return ENQUEUE_UNAVAILABLE
-    if already_delivered(pathlib.Path(drive_root), did):
+    if already_delivered(pathlib.Path(drive_root), did, task_id=tid,
+                         publication_token=event.get("terminal_projection_token")):
         return ENQUEUE_ALREADY_DELIVERED
     registered = register_pending_delivery(pathlib.Path(drive_root), event)
     try:
@@ -996,7 +1011,11 @@ def enqueue_terminal_delivery_outcome(
             from supervisor import workers
 
             event_queue = workers.get_event_q(create=False)
-        event_queue.put(dict(event))
+        # After Main's clock claim, admit atomically; ordinary final/cancel retain their first put.
+        if not event.get("terminal_projection_token"):
+            event_queue.put(dict(event))
+        elif not _put_unless_outstanding(event_queue, dict(event)):
+            return ENQUEUE_UNAVAILABLE
     except Exception:
         log.warning("terminal-delivery enqueue failed for %s", tid, exc_info=True)
         return ENQUEUE_UNAVAILABLE
@@ -1440,16 +1459,16 @@ def build_unreviewed_salvage_event(
     descendants = (
         f" {len(children)} descendant task(s) were settled with it." if children else ""
     )
+    # Only a receipt with a preview promises one below (new fallback ids; owed rows keep their bytes).
     if str(settled_status or "").strip().lower() == STATUS_COMPLETED:
         # Completion-wins (owner 4=A): the kept result is the real answer, not a
         # salvage — but it still bypassed the normal delivery path, so say so.
-        lines = [f"✅ Task {tid} {outcome_text}. Its completed result is preserved below." + descendants]
+        lines = [f"✅ Task {tid} {outcome_text}." + (" Its completed result is preserved below." if preview else "")
+                 + descendants]
     else:
-        lines = [
-            f"⚠️ Task {tid} was {outcome_text}. Below is the last persisted "
-            "intermediate model message, preserved WITHOUT review (salvaged "
-            "best-effort; NOT a final answer)." + descendants,
-        ]
+        lines = [f"⚠️ Task {tid} was {outcome_text}." + (
+            " Below is the last persisted intermediate model message, preserved WITHOUT review (salvaged "
+            "best-effort; NOT a final answer)." if preview else "") + descendants]
     lines += ["", preview, "", _preview_note_line(preserved_path, omitted)] if preview else [
         "", "(no salvageable agent output was found for this task)"]
     # TZ-2 C2: "no salvageable text" never implies "no files": the stat-only store count

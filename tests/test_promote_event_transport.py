@@ -280,6 +280,7 @@ def test_tool_snapshot_precheck_skips_source_side_effects(monkeypatch, tmp_path)
     out = control._promote_chat_to_task(
         ctx,
         "Build",
+        title="Project build",
         project_name="Must Not Exist",
         source="/tmp/must-not-attach",
         predecessor_task_id="",
@@ -344,7 +345,8 @@ def test_real_event_queue_reaches_dispatch_and_confirms_durable_admission(
     )
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(control._promote_chat_to_task, tool_ctx, "Build the racer", predecessor_task_id="")
+            future = executor.submit(control._promote_chat_to_task, tool_ctx, "Build the racer", title="Racer build",
+                                     predecessor_task_id="")
             event = queue.get(timeout=10)
             assert event["type"] == "promote_chat_to_task"
             outcome = _handle_promote_chat_to_task(event, handler_ctx)
@@ -390,6 +392,8 @@ def test_route_to_project_waits_for_same_durable_admission(monkeypatch, tmp_path
     monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_POLL_SEC", 0.01)
     create_project(tmp_path, "racer", name="Racer")
     pending = []
+    named = []
+    monkeypatch.setattr(workers, "_broadcast_task_named", named.append)
 
     def enqueue(task):
         admitted = dict(task)
@@ -428,7 +432,7 @@ def test_route_to_project_waits_for_same_durable_admission(monkeypatch, tmp_path
                 "racer",
                 "Continue the racer",
                 "belongs there",
-                predecessor_task_id="",
+                title="**Racer tuning**", predecessor_task_id="",
             )
             event = queue.get(timeout=10)
             outcome = _handle_promote_chat_to_task(event, handler_ctx)
@@ -439,7 +443,11 @@ def test_route_to_project_waits_for_same_durable_admission(monkeypatch, tmp_path
         task = next(row for row in pending if row["id"] == event["task_id"])
         assert task["budget_drive_root"] == str(tmp_path)
         assert task["drive_root"] != str(tmp_path)
+        assert event["title"] == "**Racer tuning**"
+        assert (task["title"], task["suggested_name"]) == ("Racer tuning", "Racer tuning")
         stored = load_task_result(tmp_path, event["task_id"])
+        assert stored["suggested_name"] == "Racer tuning"
+        assert named == [{"type": "task_named", "task_id": event["task_id"], "suggested_name": "Racer tuning"}]
         assert stored["root_task_id"] == event["task_id"]
         assert stored["delegation_role"] == "root"
         assert stored["task_contract"] == task["task_contract"]
@@ -572,7 +580,7 @@ def test_stale_live_transport_returns_unconfirmed_not_ok(monkeypatch, tmp_path):
         task_metadata={},
     )
     try:
-        out = control._promote_chat_to_task(ctx, "Never drained", predecessor_task_id="")
+        out = control._promote_chat_to_task(ctx, "Never drained", title="Undrained promote", predecessor_task_id="")
         event = stale_queue.get(timeout=10)
         assert event["type"] == "promote_chat_to_task"
         assert out.startswith("⚠️ PROMOTE_UNCONFIRMED:")

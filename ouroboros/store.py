@@ -1,16 +1,10 @@
-"""The current-facts store ``state/current.sqlite`` and the SQLite core it shares with money.
-
-The connection, lock-tier, identity, commit and transaction core ``usage_store`` imports back (one protocol
-for both files: rollback journal, ``synchronous=FULL``, no WAL, one connection per
-transaction, ``BEGIN IMMEDIATE`` for writes, every name-tier access inside one
-name lock, nothing above SQLite 3.24 so the bundled engine's file opens on a
-3.37 system engine);
-the tri-state open (``probe``/``open_store``: the boot door imports a root's facts
-inside the import window, a public write imports a never-imported root on first
-touch, a read never imports — a root holding facts reads as ``StoreMigrating``
-until published, one holding none reads empty); the one write gate (the window
-and the PUBLISHED phase; ``service`` for the importer/exporter/seam).
-"""
+"""Current facts in ``state/current.sqlite`` and the SQLite protocol shared with ``usage_store``.
+Rollback journal, ``synchronous=FULL``, no WAL; one connection per transaction, ``BEGIN IMMEDIATE``
+writes, every name-tier access under its name lock. SQLite 3.24 floor supports system SQLite 3.37.
+``probe``/``open_store``: boot imports within the import window; first writes import absent stores;
+reads never import (facts present: ``StoreMigrating`` until publication; no facts: empty).
+The write gate requires a closed import window and PUBLISHED phase; ``service`` serves the
+importer/exporter/seam."""
 
 from __future__ import annotations
 
@@ -34,7 +28,7 @@ LOCK_NAME = "current.lock"  # the name-tier lock around every access
 IMPORT_LOCK_NAME = "current_import.lock"
 GENERATION = 8  # the lifecycle generation that owns the store
 GENERATION_KEY = "current_store_generation"  # in state/migrations.json
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3  # 2: owner questions; 3: pending review collection
 STORE_WAIT_SEC = 10.0
 TIER_ENFORCED, TIER_NAME = "enforced", "name"
 PUBLISHED, EXPORTING, RETIRED = "published", "exporting", "retired"
@@ -43,15 +37,20 @@ _APPLICATION_ID = {TIER_ENFORCED: 0x4F554345, TIER_NAME: 0x4F55434E}
 TYPED_COLUMNS = ("status", "parent_task_id", "root_task_id", "delegation_role", "superseded_by",
                  "retry_task_id", "project_id", "ts", "updated_at", "child_drive_root",
                  "headless_child_drive_root", "drive_root", "presence_binding_id")
-# set name -> flag column; the writer decides ``pending_drive`` (nonterminal, or terminal files not ready)
+# set name -> flag column; the writer decides ``pending_drive`` (nonterminal, or terminal files not ready).
+# A column added after schema 1 is nullable: a whole-row write by an older body (its own column list)
+# leaves NULL, "not derived", which the next boot derives (``store_import._derive_flag_columns``).
 FLAG_COLUMNS = {"synthesis": "owes_synthesis", "terminal_projection": "owes_terminal_projection",
                 "promotions": "has_pending_promotion", "pause_notices": "has_pause_notices",
-                "delegated_runs": "delegated_runs_unreconciled", "pending_drives": "pending_drive"}
+                "delegated_runs": "delegated_runs_unreconciled", "pending_drives": "pending_drive",
+                "owner_questions": "has_owner_questions"}
 # The per-operation projections of a document that live in ``task_handoffs`` rows (``kind`` = the
 # field): a claim, a wait or a retirement writes its one row, never the body. The body keeps a
 # present key as ``{}`` (its place and presence); ``load`` puts the rows back there, so a document
 # round-trips byte for byte. A key the body never had appears while it has rows.
 ROW_BACKED_FIELDS: Tuple[str, ...] = ("launch_handoffs", "model_waits", "retired_model_consumers")
+REVIEW_COLLECTION_INDEX = ("CREATE INDEX IF NOT EXISTS tasks_review_collection ON tasks(review_collection_pending, task_id) "
+                           "WHERE review_collection_pending IS NULL OR review_collection_pending=1;")
 _SCHEMA = """
 CREATE TABLE tasks (
   task_id TEXT PRIMARY KEY, status TEXT, parent_task_id TEXT, root_task_id TEXT, delegation_role TEXT,
@@ -60,7 +59,9 @@ CREATE TABLE tasks (
   presence_authority_recorded INTEGER NOT NULL DEFAULT 0, write_seq INTEGER NOT NULL DEFAULT 0,
   owes_synthesis INTEGER NOT NULL DEFAULT 0, owes_terminal_projection INTEGER NOT NULL DEFAULT 0,
   has_pending_promotion INTEGER NOT NULL DEFAULT 0, has_pause_notices INTEGER NOT NULL DEFAULT 0,
-  delegated_runs_unreconciled INTEGER NOT NULL DEFAULT 0, pending_drive INTEGER NOT NULL DEFAULT 0);
+  delegated_runs_unreconciled INTEGER NOT NULL DEFAULT 0, pending_drive INTEGER NOT NULL DEFAULT 0,
+  has_owner_questions INTEGER,
+  review_collection_pending INTEGER);
 CREATE INDEX tasks_parent ON tasks(parent_task_id); CREATE INDEX tasks_root ON tasks(root_task_id);
 CREATE INDEX tasks_status ON tasks(status); CREATE INDEX tasks_project ON tasks(project_id);
 CREATE INDEX tasks_ts ON tasks(ts, task_id); CREATE INDEX tasks_updated ON tasks(updated_at, task_id);
@@ -77,7 +78,7 @@ CREATE INDEX custody_project ON custody_runs(project_id) WHERE project_id<>'';
 CREATE INDEX custody_invocation ON custody_runs(invocation_id) WHERE invocation_id<>'';
 CREATE TABLE custody_outbox (event_id TEXT PRIMARY KEY, run_id TEXT, task_id TEXT, event TEXT NOT NULL, created_at TEXT);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-""" + "".join(f"CREATE INDEX tasks_{column} ON tasks({column}) WHERE {column}=1;\n"
+""" + REVIEW_COLLECTION_INDEX + "".join(f"CREATE INDEX tasks_{column} ON tasks({column}) WHERE {column}=1;\n"
               for column in FLAG_COLUMNS.values())
 
 
@@ -466,7 +467,6 @@ def transaction(conn: sqlite3.Connection, *, write: bool, commit_wait_sec: Optio
     (finish or (lambda: commit(conn)))()
 
 
-
 def store_path(root: Any) -> pathlib.Path:
     return pathlib.Path(root) / STORE_REL
 
@@ -753,7 +753,7 @@ def typed_columns(document: Dict[str, Any], *, pending_drive: Optional[bool] = N
     """The ``tasks`` columns of a document: top-level typed facts, the two Presence facts
     derived from their carriers, and the obligation flags from the existing predicates."""
     from ouroboros.dialogue_provenance import presence_metadata_binding, presence_record_binding
-    from ouroboros.obligations import result_memberships
+    from ouroboros.obligations import result_memberships, review_collection_pending
 
     names = result_memberships(document)
     columns: Dict[str, Any] = {}
@@ -772,6 +772,7 @@ def typed_columns(document: Dict[str, Any], *, pending_drive: Optional[bool] = N
     for name, column in FLAG_COLUMNS.items():
         columns[column] = int(name in names)
     columns["pending_drive"] = int("nonterminal" in names if pending_drive is None else pending_drive)
+    columns["review_collection_pending"] = int(review_collection_pending(document))
     return columns
 
 
@@ -981,16 +982,19 @@ class Txn:
 
 def update_task(root: Any, task_id: str, mutator: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]], *,
                 pending_drive: Any = None) -> Optional[Dict[str, Any]]:
-    """The write seam: ``BEGIN IMMEDIATE`` with the gate's phase read inside (``StoreRetired``
-    once an export began, which a straggler's older connection sees in the retired inode); the
-    mutator over the current document (``None`` = no write: the read-only transaction commits
-    empty); COMMIT. ``pending_drive`` is a value, or
-    a callable ``(txn, current, updated) -> Optional[bool]`` deciding it from the written document."""
-    with open_store(root, write=True) as txn:
-        current = txn.load(task_id) or {}
-        updated = mutator(json.loads(json.dumps(current)))
-        if updated is None:
-            return None
-        flag = pending_drive(txn, current, updated) if callable(pending_drive) else pending_drive
-        txn.store_task({**updated, "task_id": task_id}, pending_drive=flag)
-        return updated
+    """Merge CURRENT under the published write gate; ``None`` commits without a write.
+    ``pending_drive`` is a value or ``(txn, current, updated) -> Optional[bool]``.
+    Schema preparation precedes the callback, including on a first-touched old child store."""
+    while True:
+        with open_store(root, write=True) as txn:
+            if int(txn.meta("schema_version") or 1) >= SCHEMA_VERSION:
+                current = txn.load(task_id) or {}
+                updated = mutator(json.loads(json.dumps(current)))
+                if updated is None:
+                    return None
+                flag = pending_drive(txn, current, updated) if callable(pending_drive) else pending_drive
+                txn.store_task({**updated, "task_id": task_id}, pending_drive=flag)
+                return updated
+        # No callback ran: the import owner upgrades with the same acquisition budget.
+        from ouroboros.store_import import upgrade_current_schema
+        upgrade_current_schema(root)

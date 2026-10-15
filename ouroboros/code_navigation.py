@@ -12,6 +12,7 @@ from collections import Counter
 from dataclasses import dataclass, field, replace
 from typing import Callable
 
+from ouroboros import code_intelligence as ci
 from ouroboros.code_import_candidates import ImportCandidateLookup, import_candidates
 from ouroboros.code_intelligence import (
     CodeInventory,
@@ -33,6 +34,23 @@ class NavigationView:
         self.notes.append(scan.summary())
         self.limits.extend(f"{reason}: {count}" for reason, count in sorted(scan.limits.items()))
         self.incomplete |= scan.incomplete
+
+
+def _matched_facts(inventory: CodeInventory, paths: list[str], deadline: float) -> tuple[list, bool]:
+    """Outline facts of the token-matched files, parsed now only for path-only entries.
+
+    Every row and every declaration of the name lie in such a file, so these facts
+    order rows as a whole-inventory parse would. True when the deadline stopped them.
+    """
+    root, wanted, facts = pathlib.Path(inventory.repo_root), set(paths), []
+    for file in inventory.files:
+        if file.path in wanted and file.disposition == "not_parsed":
+            if time.monotonic() >= deadline:
+                return facts, True
+            file = ci._file_fact(root, root / file.path)
+        if file.path in wanted:
+            facts.append(file)
+    return facts, False
 
 
 def _candidate_label(kind: str, hits: list[str]) -> str:
@@ -216,14 +234,15 @@ def inventory_view(inventory: CodeInventory, *, op: str, query: str = "", path: 
         if op == "callers":
             view.notes.append(f"syntactic callee position, not resolved binding; {scan.occurrences} token occurrences observed before caller filtering")
         if selector and op != "callees":
-            definitions = symbol_definitions(inventory, query)
+            # Collected rows stay whole; only their files' facts are extracted, on the same deadline.
+            matched, ordering_stopped = _matched_facts(inventory, scan.matched_paths, options["deadline"])
+            definitions = symbol_definitions(replace(inventory, files=matched), query)
             competing = {f.path for f, _ in definitions}
             view.notes.append(f"{len(definitions)} outline declarations share this name; selected file {selector}")
             # Rank only; never drop competing-name evidence or synthesize aliases.
             likely = set()
             current_paths = ImportCandidateLookup(f.path for f in universe.files)
-            ordering_stopped = False
-            for file in files:
+            for file in matched:
                 if time.monotonic() >= options["deadline"]:
                     ordering_stopped = True
                     break

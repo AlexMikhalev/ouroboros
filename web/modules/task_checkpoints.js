@@ -1,5 +1,5 @@
 // Producer census: loop_model_call/round_limits/nudges/budget, task_pacing,
-// transcript_prefix, loop_forced_finalization and agent budget-pause events.
+// transcript_prefix, loop_forced_finalization, owner_pause and agent budget-pause events.
 export const CHECKPOINT_LABELS = {
     context_fit_low_retry: 'Context rebuilt in Low mode',
     context_fit_route_rebound: 'Context fit rebound the route',
@@ -19,6 +19,11 @@ export const CHECKPOINT_LABELS = {
     services_kept: 'Background services kept',
     service_finalization_error: 'Background service cleanup unconfirmed',
     forced_candidate_drift: 'Forced candidate drifted',
+};
+
+const WAIT_LABELS = {
+    usage_lock_wait: ['Waiting for accounting access', 'Accounting wait ended'],
+    control_store_wait: ['Waiting for control storage', 'Control storage wait ended'],
 };
 
 // What a cost crossing measured (the producer's typed `budget_axis`). A row without one comes
@@ -60,7 +65,7 @@ function budgetCrossingLabel(kind, evt) {
 
 export function taskCheckpointLabel(evt = {}) {
     const kind = String(evt.checkpoint_kind || '');
-    if (kind === 'usage_lock_wait') return evt.phase === 'ended' ? 'Accounting wait ended' : 'Waiting for accounting access';
+    if (Object.hasOwn(WAIT_LABELS, kind)) return WAIT_LABELS[kind][evt.phase === 'ended' ? 1 : 0];
     if (!kind && Number(evt.checkpoint_number) > 0) {
         return `Checkpoint ${evt.checkpoint_number} — periodic self-check`;
     }
@@ -72,7 +77,7 @@ export function taskCheckpointLabel(evt = {}) {
  *  it measured and the threshold it crossed (its payload carries no round, so a round could
  *  not tell 50% from 25%); a wait is its episode and phase; any other is its number or round. */
 export function taskCheckpointIdentity(evt = {}) {
-    if (evt.checkpoint_kind === 'usage_lock_wait') return `${evt.episode_id || evt.ts || ''}:${evt.phase}`;
+    if (Object.hasOwn(WAIT_LABELS, evt.checkpoint_kind)) return `${evt.episode_id || evt.ts || ''}:${evt.phase}`;
     if (evt.milestone || evt.budget_axis) return `${evt.budget_axis || ''}:${evt.milestone || ''}`;
     return evt.checkpoint_number || evt.round || '';
 }

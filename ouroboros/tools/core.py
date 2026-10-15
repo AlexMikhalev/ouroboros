@@ -855,6 +855,7 @@ from ouroboros.code_search_rg import (  # noqa: E402
     _search_wall_clock_sec,
     is_search_skippable as _is_search_skippable,  # noqa: F401 — re-exported for tests/call sites
     search_skip_reason as _search_skip_reason, matches_include,
+    MATCH_WINDOW_CHARS, match_window, search_text,
 )
 
 
@@ -1067,7 +1068,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
                 break
 
             try:
-                text = fp.read_text(encoding="utf-8", errors="replace")
+                text, decodable = search_text(fp.read_bytes())
             except Exception:
                 _drop("read_error")
                 continue
@@ -1075,9 +1076,13 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             files_searched += 1
             rel = fp.relative_to(root_path).as_posix()
 
+            # These lines are read_file's own (universal newlines, splitlines, code points).
             for lineno, line in enumerate(text.splitlines(), 1):
-                if pattern.search(line):
-                    matches.append(f"{_root_display_path(normalized, rel)}:{lineno}: {line.rstrip()}")
+                if found := pattern.search(line):
+                    shown = line.rstrip() if len(line) <= MATCH_WINDOW_CHARS else match_window(
+                        line, found.start(), found.end(), count=sum(1 for _ in pattern.finditer(line)),
+                        read_line=lineno if decodable else 0)
+                    matches.append(f"{_root_display_path(normalized, rel)}:{lineno}: {shown}")
                     if len(matches) >= max_results:
                         truncated = True
                         break
@@ -1432,7 +1437,8 @@ def get_tools() -> List[ToolEntry]:
                 "Literal search by default; set regex=True for regular expressions. "
                 "Scoped to path (default: entire active workspace). "
                 "Skips binaries, caches, vendor dirs, and files >1MB. "
-                "Returns up to max_results matches (default 200) with root:file:line context. "
+                "Returns up to max_results matches (default 200) with root:file:line context; a long matched "
+                "line shows a window around its first match with that window's read_file range. "
                 "Use this for plain-text/regex matches (prefer it over grep/find-as-search in run_command); "
                 "for symbol-aware lookups (definitions, callers, references, impact) prefer query_code."
             ),

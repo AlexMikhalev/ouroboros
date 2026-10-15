@@ -24,10 +24,9 @@ test('review-only owner anchors do not advertise foreground task activity', () =
     }), false);
 });
 
-test('unkeyed terminal incidents do not clear unrelated live turns', () => {
+test('only a legacy unkeyed model final clears unscoped state; a System row settles its own submission', () => {
     // The cleanup guard also requires positive terminal evidence. Keep this
-    // source contract resilient to the guard's explicit conjunction while
-    // still checking the carve-out below it (the typed kinds that end nothing).
+    // source contract resilient to the guard's explicit conjunction.
     const cleanupStart = chatSource.indexOf('if (!finalizing && (!explicitTaskId || typedTerminal))');
     const finalCleanup = chatSource.slice(
         cleanupStart,
@@ -35,24 +34,21 @@ test('unkeyed terminal incidents do not clear unrelated live turns', () => {
     );
     assert.match(
         finalCleanup,
-        /} else if \(unkeyedFrameEndsTurn\(msg\)\) \{[^}]*?activeDirectActivities\.clear\(\);[^}]*?pendingSubmissions\.clear\(\);\s*}\s*}/,
+        /} else if \(unkeyedFrameEndsTurn\(msg\)\) \{[^}]*?activeDirectActivities\.clear\(\);[^}]*?pendingSubmissions\.clear\(\);\s*} else pendingSubmissions\.delete\(String\(msg\.client_message_id \|\| ''\)\);\s*}/,
     );
-    // Ordinary unkeyed finals retain their existing global cleanup semantics.
-    assert.match(finalCleanup, /activeDirectActivities\.clear\(\);/);
-    assert.match(finalCleanup, /pendingSubmissions\.clear\(\);/);
 });
 
-test('a note or skill notice arriving mid-turn keeps Working/Sending; an ordinary unkeyed final still ends it', () => {
+test('System voice concludes no Main turn; an unkeyed model final still ends it (#1403)', () => {
     // What the live handler does with the unscoped turn for each frame (the branch pinned above).
     const turn = { isConnected: true, hasActiveLiveCard: false, activeDirectCount: 1, pendingSubmissionsCount: 1 };
     const after = (frame) => computeDerivedChatStatus(unkeyedFrameEndsTurn(frame)
         ? { ...turn, activeDirectCount: 0, pendingSubmissionsCount: 0 } : turn).text;
-    for (const kind of ['reminder', 'skill_notice', 'terminal_incident']) {
+    for (const kind of ['reminder', 'skill_notice', 'terminal_incident', 'budget_notice', 'startup_notice',
+        'presence_recovery_required', 'command_reply', '']) {
         assert.equal(after({ role: 'system', system_type: kind, task_id: '', content: 'Call mother' }), 'Working', kind);
     }
     assert.equal(after({ role: 'assistant', task_id: '', content: 'Done.' }), 'Online');
-    assert.equal(after({ role: 'system', system_type: 'startup_notice', task_id: '' }), 'Online');
-    // The kind decides, never the words: a reply that quotes a reminder still ends the turn.
+    // The voice decides, never the words: a reply that quotes a reminder still ends the turn.
     assert.equal(after({ role: 'assistant', task_id: '', content: 'Reminder · Ouroboros · written Oct 3 14:05' }), 'Online');
 });
 
