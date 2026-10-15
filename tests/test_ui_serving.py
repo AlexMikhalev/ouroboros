@@ -34,7 +34,7 @@ def custom_ui(tmp_path):
     (root / "modules").mkdir(parents=True)
     (root / "index.html").write_text("<!doctype html><html><head><title>custom</title></head><body>mine</body></html>",
                                      encoding="utf-8")
-    (root / "modules" / "app.js").write_text("export const owner = 'custom';\n", encoding="utf-8")
+    (root / "modules" / "app.js").write_bytes(b"export const owner = 'custom';\n")
     return root
 
 
@@ -81,6 +81,7 @@ def test_a_trusted_directory_is_served_as_is(custom_ui):
 
 def test_a_home_relative_directory_expands(custom_ui, monkeypatch):
     monkeypatch.setenv("HOME", str(custom_ui.parent))
+    monkeypatch.setenv("USERPROFILE", str(custom_ui.parent))
     assert select_ui("~/custom-ui", WEB).root == custom_ui.resolve()
 
 
