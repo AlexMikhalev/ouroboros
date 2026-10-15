@@ -507,6 +507,7 @@ def reply_facts_from_row(row: Mapping[str, Any]) -> Dict[str, Any]:
         **{k: row[k] for k in _PARTICIPANT_RECEIPT_KEYS if row.get(k)},
     }
     state = str(row.get("operation_state") or "settled")
+    facts["unresolved"] = False  # a settled row resolves an earlier unknown outcome; the pending branch below may re-raise it
     if state == "not_dispatched":
         # A typed $0 refusal before the paid boundary (a spent window, a dead route, the deadline before
         # the first send): the seat never reached a reviewer, so the dispatch flag the barrier wrote is
@@ -752,10 +753,17 @@ def dispatch_ask(ctx: Any, prepared: PreparedAsk, *, revision: Mapping[str, Any]
                                      "plan_revision": revision.get("n")}))
     except Exception as exc:
         log.error("plan ask %s dispatch failed: %s", prepared.ask_id, exc, exc_info=True)
+        # The substrate already held every sent seat: an exception after the hand-off is UNKNOWN —
+        # never proof that no send happened or that nothing was paid. The seats stay pending and
+        # unresolved (a reply that still arrives settles them through the custody hook), the barrier's
+        # dispatched fact stands, and the mind is told a new ask may pay twice. Missing state is never
+        # cleaned into "nobody reached".
+        unknown = {"status": "pending", "unresolved": True, "error": f"dispatch outcome unknown: {exc}"}
         for sid in sent:
-            record = plan_record.update_participant(state_root, task_id, ask_id=prepared.ask_id, seat_id=sid,
-                                                    facts={"status": "failed", "error": f"dispatch failed: {exc}", "dispatched": False})
-            settle_ledger_seat(state_root, task_id, record_id, sid, {"status": "failed", "error": f"dispatch failed: {exc}"})
+            record = plan_record.update_participant(state_root, task_id, ask_id=prepared.ask_id, seat_id=sid, facts=unknown)
+            settle_ledger_seat(state_root, task_id, record_id, sid, unknown)
+        _progress(ctx, f"📐 Plan: ask {prepared.ask_id} — dispatch outcome unknown ({type(exc).__name__}); the {len(sent)} sent "
+                       f"participant{'' if len(sent) == 1 else 's'} stay pending, a reply may still arrive; a new ask may pay twice.")
         _reference(ctx, task_id, record, state_root)
         return record
     for row in rows:
@@ -878,8 +886,9 @@ def settle_released_reply(usage_ctx: Any, *, request: Any, task_id: str, actor: 
 
 def settled_frame(ask_id: str, participants: List[Mapping[str, Any]], objections: List[Mapping[str, Any]]) -> str:
     """The mailbox frame when custody has nothing more to deliver for an ask: who answered,
-    who could not be read, who failed — and a seat whose custody was LOST is named as
-    unresolved (neither a failure nor a reply), never counted as settled."""
+    who could not be read, who failed — and a seat whose outcome is UNKNOWN (custody lost, or
+    the dispatch lost after the hand-off) is named as unresolved (neither a failure nor a
+    reply), never counted as settled; a new ask to it may pay twice."""
     answered = sum(1 for p in participants if p.get("status") == "answered")
     unread = sum(1 for p in participants if p.get("status") == "unparseable")
     failed = sum(1 for p in participants if p.get("status") == "failed")
@@ -889,8 +898,8 @@ def settled_frame(ask_id: str, participants: List[Mapping[str, Any]], objections
     head = (f"Plan ask {ask_id}: every participant settled" if not unresolved and not waiting
             else f"Plan ask {ask_id}: custody has nothing more to deliver")
     return (f"{head} — {answered} answered" + (f", {unread} unreadable" if unread else "") + (f", {failed} failed" if failed else "")
-            + (f", {len(unresolved)} unresolved ({', '.join(unresolved)}: custody lost — neither a failure nor a reply; nothing waits on it)"
-               if unresolved else "")
+            + (f", {len(unresolved)} unresolved ({', '.join(unresolved)}: outcome unknown — neither a failure nor a reply; nothing waits on it, "
+               "a new ask may pay twice)" if unresolved else "")
             + (f", {len(waiting)} still owed ({', '.join(waiting)})" if waiting else "")
             + (f"; {len(own)} open objection{'' if len(own) == 1 else 's'} from this ask" if own else "; no open objection from this ask")
             + ". plan_task() reads the answers.")

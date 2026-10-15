@@ -89,19 +89,44 @@ def test_a_late_pre_dispatch_refusal_through_the_custody_hook_withdraws_the_disp
     assert decision["status"] == "force_plan_unmet"
 
 
-def test_an_exception_during_dispatch_leaves_an_attempted_ask_not_a_hold(harness):
+def test_an_exception_after_the_hand_off_is_unknown_never_nobody_reached(harness):
+    """Coordinator correction (03 recovery §2 D5, probe P4): the substrate already held the seats, so an
+    exception after the fan-out proves neither "no send" nor "$0". The seats stay pending and unresolved,
+    the barrier's dispatched fact stands (force_plan met, nothing holds under Blocking), nothing is counted
+    unroutable, the read view / progress line / disclosure say "outcome unknown — a new ask may pay twice",
+    and a late reply still settles the seat as answered through the custody hook."""
     import ouroboros.review_substrate as rs
 
+    captured = {}
+
     def boom(request, **_kw):
-        raise RuntimeError("substrate down")
+        captured["request"] = request
+        raise RuntimeError("substrate down after hand-off")
 
     harness.monkeypatch.setattr(rs, "run_review_request", boom)
     ctx = harness.make_ctx(force_plan=True)
-    _write(ctx, ask="council")
+    text, _result = _write(ctx, ask="council")
     rows = _record(harness)["asks"][0]["participants"]
-    assert rows and all(p["status"] == "failed" and p["dispatched"] is False and "substrate down" in p["error"] for p in rows)
+    assert rows and all(p["status"] == "pending" and p["unresolved"] is True and p["dispatched"] is True
+                        and p["error"] == "dispatch outcome unknown: substrate down after hand-off" for p in rows)
     decision = oh.force_plan_decision(ctx, {}, enforcement="blocking")
-    assert decision["asks_unroutable"] == 1 and decision["allow"] is True and decision["status"] == "force_plan_unmet"
+    assert decision["asks_unroutable"] == 0 and decision["asks_dispatched"] == 1 and decision["force_plan_met"] is True
+    assert decision["allow"] is True and decision["status"] == "awaiting" and decision["unknown_outcome"] == ["a1"]
+    assert "Dispatch outcome unknown for s1, s2, s3" in text and "pay twice" in text and "reached nobody" not in text
+    assert "pending — outcome unknown (dispatch outcome unknown: substrate down after hand-off)" in text
+    assert any("dispatch outcome unknown (RuntimeError)" in line and "pay twice" in line for line in harness.progress)
+    assert "the dispatch outcome of ask(s) a1 is unknown — a new ask may pay twice" in oh.plan_review_disclosure(decision)
+    # A late reply still settles the unknown seat as answered through the custody hook — and holds.
+    _settle(ctx, harness, captured["request"], "s1", _reply("Late, but here.", objections=[("o1", "too thin")]), roster=3)
+    s1 = next(p for p in _record(harness)["asks"][0]["participants"] if p["seat_id"] == "s1")
+    assert s1["status"] == "answered" and s1["reply"]["objections"][0]["id"] == "o1" and s1["unresolved"] is False
+    assert pr._decision(ctx, _record(harness))["holding"] == ["s1:o1"]
+    # The other direction stays: every seat POSITIVELY refused before dispatch is attempted, disclosed, not held.
+    other = harness.make_ctx(task_id="task-2", force_plan=True)
+    harness.install({"s1": dict(REFUSED), "s2": dict(REFUSED), "s3": dict(REFUSED)})
+    _write(other, ask="council")
+    refused = oh.force_plan_decision(other, {}, enforcement="blocking")
+    assert refused["asks_unroutable"] == 1 and refused["status"] == "force_plan_unmet" and refused["allow"] is True
 
 
 # ---------------------------------------------------------------- F2: a late peer reply to an earlier ask reaches the next delivery

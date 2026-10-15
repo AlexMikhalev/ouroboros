@@ -650,7 +650,9 @@ def plan_review_disclosure(decision: Dict[str, Any], forced_reason: str = "") ->
         return f"\n\n⚠️ Plan review: {count} remain{'s' if len(objections) == 1 else ''} open — {listed}; {why}."
     if pending:
         return ("\n\n⚠️ Plan review: the answers of ask(s) " + ", ".join(pending)
-                + " had not arrived when the task ended; silence holds nothing and is not agreement.")
+                + " had not arrived when the task ended; silence holds nothing and is not agreement"
+                + (f"; the dispatch outcome of ask(s) {', '.join(decision['unknown_outcome'])} is unknown — a new ask may pay twice"
+                   if decision.get("unknown_outcome") else "") + ".")
     if unmet and decision.get("allow"):
         attempts = int(decision.get("asks_unroutable") or 0)
         reached = (f"{attempts} ask{'' if attempts == 1 else 's'} could reach no reviewer (every named route was unavailable)"

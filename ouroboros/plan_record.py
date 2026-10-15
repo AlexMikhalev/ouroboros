@@ -353,12 +353,20 @@ def engaged(record: Mapping[str, Any]) -> bool:
 
 
 def unroutable_asks(record: Mapping[str, Any]) -> int:
-    """How many asks the mind made that reached nobody: the recorded attempts (refused before any
-    row was written) plus the recorded asks whose every participant was refused before dispatch
-    or lost to a dispatch failure — asked, but no reviewer reached."""
+    """How many asks the mind made that POSITIVELY reached nobody: the recorded attempts (refused
+    before any row was written) plus the recorded asks whose every participant carries a typed
+    pre-dispatch refusal (``not_dispatched``). An ask whose dispatch outcome is unknown (an
+    exception after the hand-off) is never counted here: missing state proves no "no send"."""
     refused = sum(1 for ask in record.get("asks") or []
-                  if ask.get("participants") and not any(p.get("dispatched") for p in ask["participants"]))
+                  if ask.get("participants") and all(p.get("status") == "not_dispatched" for p in ask["participants"]))
     return len(record.get("attempts") or []) + refused
+
+
+def unknown_outcome_asks(record: Mapping[str, Any]) -> List[str]:
+    """Asks with a seat whose outcome is unknown (pending and unresolved: custody lost, or the
+    dispatch lost after the hand-off) — a new ask to them may pay twice."""
+    return [str(a.get("ask_id") or "") for a in record.get("asks") or []
+            if any(p.get("status") == "pending" and p.get("unresolved") for p in a.get("participants") or [])]
 
 
 # ------------------------------------------------------------------ gate
@@ -394,6 +402,7 @@ def gate_projection(record: Mapping[str, Any], *, enforcement: str, cyber_pro: b
                                                      "revision", "owner_marked", "legacy")} for o in objections],
         "holding": [f"{o['seat_id']}:{o['id']}" for o in holding],
         "pending_asks": pending, "asks_dispatched": dispatched, "asks_unroutable": unroutable_asks(record),
+        "unknown_outcome": unknown_outcome_asks(record),
         "force_plan_met": not force_plan or dispatched > 0,
         "revision": int(latest.get("n") or 0) if latest else 0,
         "unreadable": bool(unreadable), "reason": str(hard_rail or ""),
@@ -411,8 +420,8 @@ def gate_projection(record: Mapping[str, Any], *, enforcement: str, cyber_pro: b
     elif unreadable:
         status, allow = "unreadable", False  # a gate that cannot read its authority is engaged, not absent
     elif force_plan and dispatched == 0:
-        # Blocking holds while the mind never asked; an ask that reached nobody (a recorded attempt,
-        # or an ask whose every seat was refused) is disclosed, not held — outages never hold. Advisory and the owner's hurry
+        # Blocking holds while the mind never asked; an ask that positively reached nobody (a recorded
+        # attempt, or every seat refused before dispatch) is disclosed, not held — outages never hold. Advisory and the owner's hurry
         # never hold a plan that exists; a task that wrote no plan at all is still held to write
         # one (the Swarm admitted it on that condition).
         tried = engaged(record) or legacy_engaged
@@ -573,7 +582,7 @@ def read_view(record: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = N
         "asks": [{"ask_id": a.get("ask_id"), "ts": a.get("ts"), "revision": a.get("revision"), "message": a.get("message"),
                   "participants": [{**{k: p.get(k) for k in ("seat_id", "model", "owner_marked", "status", "dispatched",
                                                                "not_dispatched_reason", "error", "parse_error",
-                                                               "failure_code", "reported_cause", "reset_at")},
+                                                               "failure_code", "reported_cause", "reset_at", "unresolved")},
                                     "ignored_items": len((p.get("reply") or {}).get("ignored") or []) if isinstance(p.get("reply"), dict) else 0}
                                    for p in a.get("participants") or []],
                   "record_id": a.get("record_id")} for a in record.get("asks") or []],

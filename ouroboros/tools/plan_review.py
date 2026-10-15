@@ -300,7 +300,11 @@ def _ask_summary(prepared: Any, record: Mapping[str, Any]) -> str:
     if ask.get("host_added"):
         lines.append("This is the first ask on a body plan, so every owner-marked reviewer was included: the host added "
                      + ", ".join(ask["host_added"]) + " beside the participants you named.")
-    pending = [p["seat_id"] for p in sent if p.get("status") == "pending"]
+    unknown = [p["seat_id"] for p in sent if p.get("status") == "pending" and p.get("unresolved")]
+    pending = [p["seat_id"] for p in sent if p.get("status") == "pending" and not p.get("unresolved")]
+    if unknown:
+        lines.append(f"Dispatch outcome unknown for {', '.join(unknown)} ({next(p.get('error') for p in sent if p['seat_id'] == unknown[0])}): "
+                     "the substrate held them when the host lost track, so a reply may still arrive through custody; a new ask to them may pay twice.")
     if pending:
         lines.append("Answers settle in the background and arrive in your mailbox (await_messages / wait_task); plan_task() reads them. "
                      f"Still working: {', '.join(pending)}.")
@@ -361,6 +365,9 @@ def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy
                 tag = plan_packet.failure_tag(p)
             elif p["status"] == "unparseable":
                 tag = "unparseable" + (f" — {p.get('parse_error')}" if p.get("parse_error") else "")
+            elif p["status"] == "pending" and p.get("unresolved"):
+                tag = ("pending — outcome unknown" + (f" ({p['error']})" if p.get("error") else "")
+                       + "; a reply may still arrive, and a new ask to it may pay twice")
             parts.append(f"{p['seat_id']} ({p.get('model') or '?'}{'' if p.get('owner_marked') else ', added'}): {tag}")
         lines.append(f"- ask {ask['ask_id']} on revision {ask['revision']}" + (f" — «{ask['message']}»" if ask.get("message") else "")
                      + ": " + "; ".join(parts))
@@ -414,7 +421,10 @@ def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy
     elif status == "objections_open":
         lines.append("Open objections are disclosed in your final answer; nothing holds it.")
     elif status == "awaiting":
-        lines.append(f"Answers still on their way for ask(s) {', '.join(decision.get('pending_asks') or view['pending_asks'])}; silence never holds.")
+        lines.append(f"Answers still on their way for ask(s) {', '.join(decision.get('pending_asks') or view['pending_asks'])}; silence never holds."
+                     + (f" The dispatch outcome of ask(s) {', '.join(decision['unknown_outcome'])} is unknown: the substrate held the "
+                        "seats when the host lost track, so a reply may still arrive and a new ask to them may pay twice."
+                        if decision.get("unknown_outcome") else ""))
     elif status == "force_plan_unmet" and decision.get("allow") and decision.get("asks_unroutable"):
         lines.append("This task was admitted with a planning obligation; your ask reached nobody (no route could take it, "
                      f"{decision['asks_unroutable']} attempt{'' if decision['asks_unroutable'] == 1 else 's'} recorded) — disclosed in "
