@@ -505,6 +505,7 @@ def reply_facts_from_row(row: Mapping[str, Any]) -> Dict[str, Any]:
         "prompt_ref": row.get("prompt_ref") or {}, "response_ref": row.get("response_ref") or {},
         **{k: v for k, v in plan_row_typed_facts(dict(row)).items() if k in _PARTICIPANT_FACT_KEYS},
         **{k: row[k] for k in _PARTICIPANT_RECEIPT_KEYS if row.get(k)},
+        **({"review_controller": dict(row["review_controller"])} if isinstance(row.get("review_controller"), dict) and row["review_controller"] else {}),
     }
     state = str(row.get("operation_state") or "settled")
     facts["unresolved"] = False  # a settled row resolves an earlier unknown outcome; the pending branch below may re-raise it
@@ -906,35 +907,36 @@ def settled_frame(ask_id: str, participants: List[Mapping[str, Any]], objections
 
 
 def collect_pending(ctx: Any, record: Mapping[str, Any], *, state_root: pathlib.Path, task_id: str) -> Dict[str, Any]:
-    """Settle, at $0, every pending seat whose producer completed while nobody was
-    listening (a process loss after the barrier): recovered from its retained operation,
-    never resent. A seat still in flight stays pending."""
+    """Settle, at $0, every pending seat whose answer already exists — through the shared
+    recorded-actor collector (``review_operation.collect_recorded_review_actor``, the skill
+    review's precedent): the live join with the worker that still owns the seat, the settled
+    cache, the retained producer outcome, an attach-only read of a delegated run whose worker
+    is gone, and the controller check (a live controller in another process is deferred to).
+    Never a new send. An outcome still in flight or deferred stays pending; a seat whose
+    custody is lost stays pending and unresolved — never cleaned, never re-sent (03, D6)."""
     from types import SimpleNamespace
 
-    from ouroboros.observability import read_call_payload
     from ouroboros.review_execution import ReviewRouteKind
-    from ouroboros.review_operation import recover_review_producer
+    from ouroboros.review_operation import collect_recorded_review_actor
 
     current = dict(record)
     for ask, participant in list(plan_record.pending_participants(record)):
         operation = str(participant.get("operation_id") or "")
         if not operation:
             continue
-        try:
-            _manifest, prompt, _refs = read_call_payload(state_root, task_id=task_id, call_id=f"{operation}_prompt")
-            request = SimpleNamespace(**prompt["request"])
-            slot = SimpleNamespace(**prompt["slot"])
-            slot.route = ReviewRouteKind(slot.route)
-            if str(getattr(request, "surface", "") or "") != "plan_review" or str(getattr(request, "task_id", "") or "") != task_id:
-                continue
-            actor = recover_review_producer(state_root, request, slot, dict(participant))
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            log.warning("plan ask %s: pending seat %s stays pending (%s)", ask.get("ask_id"), participant.get("seat_id"), exc)
-            continue
-        if actor is None or getattr(actor, "late_result_pending", False) or getattr(actor, "operation_state", "") in {"in_flight", "pending_dispatch"}:
-            continue
+        seat = str(participant.get("seat_id") or "")
+        slot = SimpleNamespace(slot_id=seat, model=str(participant.get("model") or ""),
+                               route=ReviewRouteKind(str(participant.get("route") or "api_chat")))
+        row = {**participant, "slot_id": seat,
+               "usage": {key: participant[key] for key in ("review_controller", "pending_invocation_id", "delegated_run_id")
+                         if participant.get(key)}}
+        actor = collect_recorded_review_actor(state_root, task_id=task_id, surface="plan_review", row=row,
+                                              retry_key=str(ask.get("retry_key") or ""), usage_ctx=ctx)
+        state = str(actor.get("operation_state") or "")
+        if state in {"in_flight", "pending_dispatch"} or (actor.get("late_result_pending") and state != "custody_lost"):
+            continue  # still running, or deferred to the worker / live controller that owns it
         settled = record_reply(ctx, state_root=state_root, task_id=task_id, ask_id=str(ask.get("ask_id") or ""),
-                               seat_id=str(participant.get("seat_id") or ""), row=_actor_row(actor, slot))
+                               seat_id=seat, row=_actor_row(actor, slot))
         if settled is not None:
             current = settled
     return current

@@ -318,6 +318,9 @@ def _plan_row_from_actor(actor: Dict[str, Any], slot: Any) -> dict:
         "profile_continuity_receipt": usage.get("profile_continuity_receipt") or {},
         "applied_profile": str(usage.get("applied_profile") or ""),
         "recovery_binding": dict(actor.get("recovery_binding") or {}),
+        # The controller that still owns a released seat (``stamp_review_controller``): a cold
+        # collector defers to it while it lives instead of reading the seat as dead.
+        "review_controller": dict(usage.get("review_controller") or {}) if isinstance(usage.get("review_controller"), dict) else {},
         "operation_id": str(actor.get("operation_id") or ""),
         "operation_state": str(actor.get("operation_state") or "settled"),
         "late_result_pending": bool(actor.get("late_result_pending")),
