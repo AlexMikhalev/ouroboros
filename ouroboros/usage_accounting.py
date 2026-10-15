@@ -59,7 +59,7 @@ __all__ = (
     "execute_physical_attempt", "execute_physical_attempt_async",
     "last_physical_attempt_capture", "last_root_accounting", "physical_attempt_capture_from_exception",
     "mark_dispatched", "mark_unresolved", "physical_attempt_limit",
-    "record_subscription_session",
+    "record_subscription_session", "record_received_attempt",
     "record_unmetered_external_dispatch", "refresh_root_accounting",
     "release_attempt", "reserve_attempt", "settle_attempt",
     "apply_provider_price_receipt", "bind_provider_generation",
@@ -324,6 +324,8 @@ class AttemptRequest:
     effort: Optional[Dict[str, Any]] = None
     allow_live_fetch: bool = True  # False only for a price display: cached tariffs, never a fetch
     provider_receipt_binding: Optional[Dict[str, str]] = None
+    cost_evidence: Optional[Dict[str, Any]] = None
+    rendered_mode: str = ""
 @dataclass(frozen=True)
 class AttemptReservation:
     attempt_id: str
@@ -642,6 +644,7 @@ def _reservation_cost(request: AttemptRequest) -> Optional[float]:
                      "prompt_cache_ttl": prompt_cache_ttl},
         allow_live_fetch=request.allow_live_fetch,
         provider=request.provider,
+        **({"drive_root": request.drive_root} if request.provider in {"openai", "anthropic", "google"} else {}),
         **({"processing_mode": request.submitted_processing_mode}
            if request.submitted_processing_mode else {}),
     )
@@ -785,6 +788,9 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
                         "candidate_context_size_bytes": request.candidate_context_size_bytes,
                         "candidate_measurement_kind": request.candidate_measurement_kind,
                         "physical_context": asdict(request.physical_context) if request.physical_context else None,
+                        **({"rendered_mode": request.rendered_mode} if request.rendered_mode else {}),
+                        **({"cost_evidence": copy.deepcopy(request.cost_evidence)}
+                           if request.cost_evidence is not None else {}),
                         **({"provider_receipt_binding": copy.deepcopy(request.provider_receipt_binding)}
                            if request.provider_receipt_binding else {}),
                         **({"effort": copy.deepcopy(request.effort)} if request.effort is not None else {}),
@@ -1271,6 +1277,33 @@ def _settlement_fields(reservation, usage, cost_usd, cost_final) -> Dict[str, An
 
     return settlement_fields(reservation, usage, cost_usd, cost_final,
                              estimate_cost_optional=estimate_cost_optional)
+
+def record_received_attempt(request: AttemptRequest, usage: Dict[str, Any], *, cost_usd=None) -> str:
+    """Record an already billed receipt; admission cannot veto past provider spend.
+
+    Transcription has no start event. Its receipt still traverses the same row
+    states and reducer, without rechecking permission to send something already
+    received. Subsequent reservations see this charge under the ordinary scope.
+    """
+    request, scope = _merge_scope(request)
+    root = _drive_root(scope.drive_root)
+    reservation = AttemptReservation(uuid.uuid4().hex, root, request.model, request.provider, None, scope=scope)
+    fields = _settlement_fields(reservation, usage, cost_usd, False)
+    row = {key: value for key, value in asdict(scope).items() if key != "drive_root"}
+    row.update(kind="attempt", attempt_id=reservation.attempt_id, model=request.model, provider=request.provider,
+               reservation_upper_bound_usd=None, pricing_known=False, reservation_basis="receipt_already_received",
+               candidate_measurement_kind="opaque", rendered_mode=request.rendered_mode,
+               physical_context=asdict(request.physical_context) if request.physical_context else None)
+    with _locked(root) as view:
+        current = None
+        for state in ("reserved", "dispatched", "settled"):
+            row = {**row, "state": state, **(fields if state == "settled" else {})}
+            current = view.write(row, current)
+    collector = _ATTEMPT_COLLECTOR.get()
+    if collector is not None:
+        collector.append(reservation.attempt_id)
+    return reservation.attempt_id
+
 
 def _observe_token_density(request: AttemptRequest, usage: Optional[Dict[str, Any]]) -> None:
     # Lives beside the density store (capability_evidence) since this module's

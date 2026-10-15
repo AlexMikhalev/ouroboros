@@ -68,6 +68,7 @@ def _fetch_live_rows(provider: str, model: str = "") -> Dict[str, Tuple[Optional
 
 def get_pricing(
     *, provider: str = "openrouter", allow_live_fetch: bool = True, model: str = "",
+    drive_root=None,
 ) -> Dict[str, Tuple[Optional[float], ...]]:
     """Return pricing from the exact provider route's live catalog.
 
@@ -80,7 +81,7 @@ def get_pricing(
     provider = str(provider or "").strip().lower()
     from ouroboros.pricing_catalog import DIRECT_PROVIDERS, get_text_pricing
     if provider in DIRECT_PROVIDERS:
-        return get_text_pricing(provider=provider, model=model, allow_live_fetch=allow_live_fetch)
+        return get_text_pricing(provider=provider, model=model, allow_live_fetch=allow_live_fetch, drive_root=drive_root)
     if provider not in {"openrouter", "cloudru"} or (model and provider != "openrouter"):
         return {}
     model = normalize_model_identity(model) if model else ""
@@ -117,7 +118,7 @@ def estimate_cost_optional(model: str, prompt_tokens: int, completion_tokens: in
                            cache_usage: Optional[Dict[str, Any]] = None,
                            allow_live_fetch: bool = True,
                            provider: Optional[str] = None,
-                           processing_mode: str = "") -> Optional[float]:
+                           processing_mode: str = "", drive_root=None) -> Optional[float]:
     """Estimate cost from exact provider/model data, preserving unknown as None.
 
     ``cache_usage`` and everything after it are KEYWORD-ONLY: the 4th slot used
@@ -148,7 +149,7 @@ def estimate_cost_optional(model: str, prompt_tokens: int, completion_tokens: in
     """
     raw_model = str(model or "").strip()
     normalized = normalize_model_identity(raw_model)
-    from ouroboros.pricing_catalog import DIRECT_PROVIDERS, catalog_id
+    from ouroboros.pricing_catalog import DIRECT_PROVIDERS, CatalogEstimate, catalog_id
     direct_prefix = raw_model.partition("::")[0] if "::" in raw_model else ""
     route = str(provider or (direct_prefix if direct_prefix in DIRECT_PROVIDERS else
                             provider_for_model(raw_model)) or "openrouter").strip().lower()
@@ -175,10 +176,11 @@ def estimate_cost_optional(model: str, prompt_tokens: int, completion_tokens: in
         if identity is None:
             return None
         name = identity.removeprefix("gemini/") if route == "google" else identity
-        rows = get_pricing(provider=route, model=raw_model, allow_live_fetch=allow_live_fetch)
+        rows = get_pricing(provider=route, model=raw_model, allow_live_fetch=allow_live_fetch, drive_root=drive_root)
         pricing = rows.get(f"{route}/{name}")
-        return (_cost_from_pricing(pricing, prompt_tokens, completion_tokens, cache_usage,
-                                   exact_cache_tiers=True) if pricing else None)
+        cost = (_cost_from_pricing(pricing, prompt_tokens, completion_tokens, cache_usage,
+                                  exact_cache_tiers=True) if pricing else None)
+        return CatalogEstimate(cost, getattr(pricing, "source", None)) if cost is not None else None
     model_pricing = get_pricing(provider=route, allow_live_fetch=allow_live_fetch)
     pricing = model_pricing.get(normalized)
     if not pricing:
@@ -245,6 +247,8 @@ def infer_api_key_type(model: str, provider: Optional[str] = None) -> str:
                          "minimax", "deepseek", "zai", "claudexor"}:
         return provider_name
     raw_model = str(model or "").strip()
+    if raw_model.startswith("google::"):
+        return "google"
     direct_provider = provider_for_model(raw_model)
     # ``openrouter::``-prefixed and un-prefixed ids both bill OpenRouter and
     # fall through to the normalized-identity heuristics below.
@@ -288,7 +292,7 @@ def infer_provider_from_model(model: str) -> str:
     Used by review-pipeline emitters to ensure /api/cost-breakdown attribution
     is correct regardless of which provider the model actually routes through.
     """
-    provider = provider_for_model(model)
+    provider = "google" if str(model or "").strip().startswith("google::") else provider_for_model(model)
     # Historical billing attribution: local-suffixed ids billed as openrouter.
     return "openrouter" if provider == "local" else provider
 

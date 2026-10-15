@@ -43,6 +43,19 @@ _retry_after: dict[pathlib.Path, float] = {}
 _fetching: set[pathlib.Path] = set()
 
 
+class CatalogEstimate(float):
+    """Keep the exact tariff beside a float-compatible estimate through settlement.
+
+    Looking the quote up again after computing cost can bind a refreshed tariff
+    to an amount computed with the previous one.
+    """
+
+    def __new__(cls, amount, quote=None):
+        value = super().__new__(cls, amount)
+        value.quote = copy.deepcopy(quote)
+        return value
+
+
 def catalog_id(model: str, provider: str) -> str | None:
     """Translate route syntax only; ids and provider identity remain exact."""
     if provider not in DIRECT_PROVIDERS:
@@ -113,10 +126,7 @@ def _snapshot(*, drive_root=None, allow_live_fetch: bool = True) -> dict | None:
         _fetching.add(path)
     try:
         snapshot = _fetch_catalog()
-        try:
-            atomic_write_json(path, {key: value for key, value in snapshot.items() if key != "entries"})
-        except OSError:
-            log.warning("Could not persist LiteLLM pricing cache", exc_info=True)
+        atomic_write_json(path, {key: value for key, value in snapshot.items() if key != "entries"})
     except Exception:
         log.warning("LiteLLM pricing catalog unavailable", exc_info=True)
         snapshot = None
@@ -187,15 +197,15 @@ def text_schedule(quote: dict):
                            cache_write_1h=base.cache_write_1h, source=quote)
 
 
-def get_text_pricing(*, provider: str, model: str = "", allow_live_fetch: bool = True) -> dict:
+def get_text_pricing(*, provider: str, model: str = "", allow_live_fetch: bool = True, drive_root=None) -> dict:
     """Expose direct text tariffs through pricing.py's tuple-compatible interface."""
     if provider not in DIRECT_PROVIDERS:
         return {}
     if model:
-        quote = get_catalog_quote(model, provider=provider, allow_live_fetch=allow_live_fetch)
+        quote = get_catalog_quote(model, provider=provider, allow_live_fetch=allow_live_fetch, drive_root=drive_root)
         quotes = [quote] if quote else []
     else:
-        snapshot = _snapshot(allow_live_fetch=allow_live_fetch)
+        snapshot = _snapshot(allow_live_fetch=allow_live_fetch, drive_root=drive_root)
         quotes = []
         for name, entry in (snapshot or {}).get("entries", {}).items():
             if (isinstance(entry, dict) and entry.get("litellm_provider") == DIRECT_PROVIDERS[provider]

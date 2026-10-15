@@ -197,3 +197,34 @@ def test_openrouter_still_uses_its_own_catalog(catalog_fixture, monkeypatch):
     pricing._pricing_retry_after.clear()
     assert pricing.estimate_cost_optional("openai/gpt-realtime-2.1", 1000, 500) == .01
     fetch.assert_not_called()
+
+
+def test_direct_google_attribution_keeps_route_identity():
+    assert pricing.infer_api_key_type("google::gemini-3.8-live") == "google"
+    assert pricing.infer_provider_from_model("google::gemini-3.8-live") == "google"
+    assert pricing.infer_api_key_type("google/gemini-3.8-live") == "openrouter"
+
+
+def test_failed_cache_write_returns_unknown(catalog_fixture, monkeypatch):
+    _, _, _, fetch = catalog_fixture
+    monkeypatch.setattr(catalog, "atomic_write_json", Mock(side_effect=OSError("read-only data root")))
+    assert catalog.get_catalog_quote("gpt-realtime-2.1", provider="openai") is None
+    assert catalog.get_catalog_quote("gpt-realtime-2.1", provider="openai", allow_live_fetch=False) is None
+    assert not catalog._cache
+    fetch.assert_called_once()
+
+
+def test_estimate_carries_the_same_quote_even_when_catalog_changes(catalog_fixture, monkeypatch):
+    import copy
+    first = catalog.get_catalog_quote("gpt-realtime-2.1", provider="openai")
+    changed = copy.deepcopy(first)
+    changed["entry"]["input_cost_per_token"] = 1
+    changed["sha256"] = "f" * 64
+    lookup = Mock(side_effect=[first, changed])
+    monkeypatch.setattr(catalog, "get_catalog_quote", lookup)
+    estimate = pricing.estimate_cost_optional("openai::gpt-realtime-2.1", 100, 10)
+    assert estimate == pytest.approx(.00028)
+    assert estimate.quote == first
+    assert copy.deepcopy(estimate).quote == first
+    assert json.loads(json.dumps({"cost": estimate}))["cost"] == pytest.approx(.00028)
+    assert lookup.call_count == 1
