@@ -864,7 +864,7 @@ DIRECT_PROVIDER_CELLS = [
 
 def _exactly_the_factory_pool(loaded, document, provider, main):
     """FIX5 M1-direct: the marked rows ARE ``factory_review_rows(document)`` — the provider's
-    three direct rows around its default Main — and nothing else is marked (the wizard's Auto
+    one direct row on its default Main (owner Q5=A) — and nothing else is marked (the wizard's Auto
     helpers stand beside them unmarked); every seat routes to the provider the document holds a
     credential for, none to the credential-less OpenRouter ids."""
     from ouroboros import reviewer_slot_config as rs
@@ -873,11 +873,11 @@ def _exactly_the_factory_pool(loaded, document, provider, main):
 
     items = json.loads(loaded[SUBAGENTS])["items"]
     assert items == factory_actor_rows(document) + factory_review_rows(document), items
-    assert _marked(items) == ["review-1", "review-2", "review-3"]
-    assert [row["route"]["target_id"] for row in _reviewers(items)] == [main] * 3
+    assert _marked(items) == ["review-1"]
+    assert [row["route"]["target_id"] for row in _reviewers(items)] == [main]
     assert all(row["minted_from"] == "factory_default" and row["effort"] == "high" for row in _reviewers(items))
     pool = rs.review_pool_rows(loaded)
-    assert [(row.slot_id, row.target_id) for row in pool] == [(f"review-{n}", main) for n in (1, 2, 3)]
+    assert [(row.slot_id, row.target_id) for row in pool] == [("review-1", main)]
     assert {provider_for_model(row.target_id) for row in pool} == {provider}
     assert all(model_has_credentials_in_settings(row.target_id, dict(document)) for row in pool)
     assert not {row.target_id for row in pool} & set(OPENROUTER_REVIEW_DEFAULTS["triad"])
@@ -902,14 +902,14 @@ def test_m1_a_never_configured_direct_provider_document_reads_exactly_its_factor
     _exactly_the_factory_pool(loaded, document, provider, main)
     (outcome,) = cfg.review_pool_migrations_seen()
     assert outcome.trigger == m.TRIGGER_NEVER_CONFIGURED and not outcome.error and not outcome.noop
-    assert outcome.snapshot["summary"]["rows_marked_after"] == 3 and outcome.snapshot["summary"]["distinct_models"] == 1
+    assert outcome.snapshot["summary"]["rows_marked_after"] == 1 and outcome.snapshot["summary"]["distinct_models"] == 1
     assert document == ({key: "present", SUBAGENTS: ""} if catalog_cell == "blank-string" else {key: "present"})
     # Idempotent: the migrated document is a pool document; a second read re-mints nothing.
     assert m.migrate_review_lanes(dict(loaded)) is None
     assert _read(loaded) == loaded
     assert len(cfg.review_pool_migrations_seen()) == 1
     text = m.owner_message(outcome, "snap.json")
-    assert text.startswith("⚙️ Review pool initialized.") and "3 reviewer rows, 1 distinct models" in text
+    assert text.startswith("⚙️ Review pool initialized.") and "1 reviewer rows, 1 distinct models" in text
 
 
 @pytest.mark.parametrize("key, provider, main", DIRECT_PROVIDER_CELLS, ids=["openai-only", "anthropic-only"])
@@ -929,9 +929,9 @@ def test_m1_the_no_settings_file_path_of_a_direct_provider_reaches_exactly_its_f
     settings = cfg.load_settings_lock_held(_settings_lock_held=False)
     assert not path.exists() and not path.parent.exists(), "a read never creates the document"
     pool = rs.review_pool_rows(settings)
-    assert [(row.slot_id, row.target_id) for row in pool] == [(f"review-{n}", main) for n in (1, 2, 3)]
+    assert [(row.slot_id, row.target_id) for row in pool] == [("review-1", main)]
     items = json.loads(settings[SUBAGENTS])["items"]
-    assert _marked(items) == ["review-1", "review-2", "review-3"]
+    assert _marked(items) == ["review-1"]
     assert all(row["minted_from"] == "factory_default" for row in _reviewers(items))
     assert not {row.target_id for row in pool} & set(OPENROUTER_REVIEW_DEFAULTS["triad"])
     (outcome,) = cfg.review_pool_migrations_seen()

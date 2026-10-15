@@ -596,10 +596,10 @@ def test_factory_review_rows_mint_the_shipped_panel_for_each_install_class():
     assert [row["subagent_id"] for row in rows] == ["review-1", "review-2", "review-3"]
     assert all(row["review_eligible"] is True and row["minted_from"] == "factory_default" for row in rows)
     assert all("delivery" not in row for row in rows)  # the catalog default (native) applies
-    # One exclusive direct provider: its role panel around Main (the lane-era
-    # ``[main]×N`` fallback, minted once instead of multiplied at read time).
+    # One exclusive direct provider: its role panel around Main — Main once (owner Q5=A), while
+    # MiniMax keeps its mixed panel of two models (Main, Light, Light).
     assert _factory({"OPENAI_API_KEY": "configured", "OUROBOROS_MODEL": "openai::gpt-5.6-sol"}) == [
-        ("openai::gpt-5.6-sol", "high")] * 3
+        ("openai::gpt-5.6-sol", "high")]
     minimax = _factory({"MINIMAX_API_KEY": "configured", "OUROBOROS_MODEL": "minimax::MiniMax-M3",
                         "OUROBOROS_MODEL_LIGHT": "minimax::MiniMax-M3-light"})
     assert [effort for _target, effort in minimax] == ["high"] * 3 and len({t for t, _e in minimax}) == 2
@@ -628,6 +628,22 @@ def test_factory_review_rows_mint_the_shipped_panel_for_each_install_class():
     # access at all the shipped (router) panel stands, as the shipped defaults do.
     assert factory_review_rows({"USE_LOCAL_MAIN": True}) == []
     assert _factory({"TOTAL_BUDGET": 5.0}) == [(model, "high") for model in OPENROUTER_REVIEW_DEFAULTS["triad"]]
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic", "cloudru", "gigachat", "deepseek", "zai", "minimax"])
+def test_a_direct_provider_panel_seats_main_once_unless_it_mixes_two_models(provider):
+    """Owner Q5=A for direct providers: a panel that would repeat Main is Main once; MiniMax's
+    mixed panel (Main, Light, Light: two models) keeps its three seats. Saved catalogs are not
+    re-derived (``test_defaults_provenance``: a saved three-row pool reads back unchanged)."""
+    from ouroboros.provider_models import DIRECT_PROVIDER_DEFAULTS, compute_direct_review_seats
+
+    defaults = DIRECT_PROVIDER_DEFAULTS[provider]
+    seats = compute_direct_review_seats(provider, defaults["main"], defaults.get("light", ""))
+    if provider == "minimax":
+        assert [role for role, _model in seats] == ["main", "light", "light"]
+        assert len({model for _role, model in seats}) == 2
+    else:
+        assert [role for role, _model in seats] == ["main"]
 
 
 def test_factory_review_rows_take_the_document_effort_and_free_ids():

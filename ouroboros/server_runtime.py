@@ -11,7 +11,7 @@ from ouroboros.provider_models import (
     compute_direct_review_models_fallback,
     migrate_model_value,
 )
-from ouroboros.config import SETTINGS_DEFAULTS, _DIRECT_PROVIDER_REVIEW_RUNS, _parse_model_list
+from ouroboros.config import SETTINGS_DEFAULTS, _parse_model_list
 from ouroboros.utils import utc_now_iso
 
 
@@ -171,12 +171,7 @@ def _normalize_direct_review_models(settings: dict, provider: str) -> str:
     # single slot); expand to the stochastic fallback only when empty/foreign.
     if not migrated_models or has_foreign_models:
         user_light_raw = _setting_text(settings, "OUROBOROS_MODEL_LIGHT")
-        fallback = compute_direct_review_models_fallback(
-            provider,
-            main_model,
-            user_light_raw,
-            review_runs=_DIRECT_PROVIDER_REVIEW_RUNS,
-        )
+        fallback = compute_direct_review_models_fallback(provider, main_model, user_light_raw)
         return _serialize_model_list(fallback)
     return _serialize_model_list(migrated_models)
 
