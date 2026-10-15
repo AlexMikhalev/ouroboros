@@ -377,6 +377,42 @@ def register_pending_delivery(drive_root: Any, event: Dict[str, Any]) -> bool:
     return True
 
 
+def withdraw_stop_episode(drive_root: Any, task_id: str) -> bool:
+    """Completion won: the Stop's provisional ``cancel:`` salvage is no longer owed.
+
+    Running custody owes its salvage before the terminal write; when the monotonic
+    guard keeps the worker's own completed row instead, that undelivered row (and
+    its undelivered receipt block) would hold the Done card and later replay a
+    false "was cancelled" message. A delivered id is history and stays.
+    """
+    tid = str(task_id or "")
+    did = _stop_episode_delivery_id(pathlib.Path(drive_root), tid)
+    if not did.startswith(f"cancel:{tid}:"):
+        return True
+
+    def _mutate(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        pending = _mapping_rows(current, "pending", strict=True)
+        if did not in pending or did in _delivered_rows(current, strict=True):
+            return None
+        pending.pop(did)
+        return _registry_document(current, _delivered_rows(current, strict=True), pending,
+                                  exhausted=_mapping_rows(current, "exhausted", strict=True))
+
+    def _drop_receipt(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        receipt = row.get("cancel_receipt") if isinstance(row, dict) else None
+        if not isinstance(receipt, dict) or receipt.get("delivery_id") != did or "delivered_chat_id" in receipt:
+            return None
+        return {key: value for key, value in row.items() if key != "cancel_receipt"}
+
+    try:
+        update_json_locked(_registry_path(drive_root), _mutate, strict_existing_dict=True)
+        patch_document(pathlib.Path(drive_root), tid, _drop_receipt)
+        return True
+    except Exception:
+        log.warning("stop-episode withdrawal failed for %s", did, exc_info=True)
+        return False
+
+
 def _log_unregistered_delivery(drive_root: Any, event: Dict[str, Any], did: str) -> None:
     """Typed durable disclosure of a terminal send whose owed registration failed."""
     try:

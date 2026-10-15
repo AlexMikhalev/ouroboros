@@ -1296,8 +1296,8 @@ def _finish_captured_running(
     # sees the debt and never publishes a Done card without the answer. The build
     # is deterministic (the stop-episode id), so the publish below enqueues the
     # same row idempotently by delivery_id; a crash between the settle and the
-    # send is replayed by the boot/tick outbox. Completion-wins re-registers from
-    # the kept result after the write.
+    # send is replayed by the boot/tick outbox. Completion-wins withdraws it and
+    # owes the kept result instead (cancel_publication).
     owed_ok = _register_owed_terminal_delivery(
         q, task, task_id, {"status": STATUS_CANCELLED}, deliver=deliver,
         salvage_text=salvage_text, salvage_path=salvage_path,
