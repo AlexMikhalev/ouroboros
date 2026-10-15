@@ -6,6 +6,8 @@ Modules, devtools, gateway/CLI, host and data map. Packaged launcher recovers fa
 User → launcher.py (desktop/native) — the shared lifecycle; an immutable packaged shell, or source over an immutable seed on Android and the managed container (Runtime topology below; §2)
 launcher.py spawns server.py (Starlette+uvicorn) — HTTP + WebSocket on configurable host:port; bind host via `OUROBOROS_SERVER_HOST` (§4; §7)
 web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules not listed here (§3)
+  modules/call.js — Room call controls, microphone/socket lifetime, captions and played acknowledgements (§3)
+  modules/call_worklet.js — PCM frame codec, device-rate capture and epoch-aware jitter-buffered playback (§3)
   ui.css — the shared palette/control stylesheet of the SPA, onboarding and author pages (§3 Navigation)
   modules/ — browser modules (§3)
     ui_primitives.js — safe-field, escaping and tone/status helpers (§3 Navigation)
