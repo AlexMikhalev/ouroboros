@@ -573,6 +573,25 @@ def test_review_pool_endpoint_reports_the_pool_in_catalog_order(monkeypatch):
     assert body["config_error"] == "" and body["migration"] is None
 
 
+def test_review_pool_endpoint_lists_catalog_rows_only_when_the_main_model_reviews_alone(monkeypatch):
+    """An empty pool reviews on the Main seat, which is no catalog row: ``GET /api/review-pool``
+    keeps its frozen shape and lists none (no invented row, no credentials fact about it, no
+    error), while the same catalog with one mark lists exactly that row."""
+    settings_mod = _pool_world(monkeypatch)
+    for key in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    helper = {"subagent_id": "helper", "recommended_use": "Helps.",
+              "route": {"kind": "api_model", "target_id": "openai/gpt-5.6-luna"}}
+
+    empty = settings_mod.review_pool_payload({"OUROBOROS_SUBAGENTS": json.dumps({"enabled": True, "items": [helper]})})
+    assert (empty["pool"], empty["excluded"], empty["pool_without_credentials"], empty["config_error"]) == ([], [], [], "")
+    assert empty["catalog"] == {"present": True, "enabled": True, "rows": 1, "eligible": 0}
+
+    marked = settings_mod.review_pool_payload(
+        {"OUROBOROS_SUBAGENTS": json.dumps({"enabled": True, "items": [{**helper, "review_eligible": True}]})})
+    assert [row["subagent_id"] for row in marked["pool"]] == ["helper"] and marked["pool_without_credentials"] == ["helper"]
+
+
 def test_review_pool_endpoint_types_a_bad_catalog_and_names_the_migration_snapshot(monkeypatch):
     """A catalog package A cannot read is a typed ``config_error`` with an empty pool,
     never a 500; the newest lanes-to-pool record (package C) names its snapshot."""

@@ -135,6 +135,7 @@ def test_existing_paid_or_unknown_panel_collects_after_calendar_closes(late, tmp
     until(lambda: not review_operation._LIVE)
     assert len(late.calls) == 3
     before = ledger_rows(f.root)
+    monkeypatch.setenv('OUROBOROS_TASK_REVIEW_MODE', 'off')
     monkeypatch.setattr('ouroboros.deadline_utils.utc_now', lambda: now + timedelta(seconds=3601))
     debt = load_task_result(f.root, f.tid)['acceptance_debt']
     automatic = run_historical_acceptance(ctx, task_id=f.tid, debt_id=debt['debt_id'], automatic=True)

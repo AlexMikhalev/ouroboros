@@ -541,8 +541,9 @@ def test_off_mode_root_and_auto_mode_child_keep_existing_model_review(monkeypatc
     )
     child_payload = json.loads(_handle_task_acceptance_review(child_ctx, claim="child done"))
 
-    assert calls == [("root", "task_acceptance"), ("child", "task_acceptance")]
-    assert root_payload["aggregate_signal"] == "PASS"
+    # Off buys no new root-result panel (#1731); an auto child keeps its own model review.
+    assert calls == [("child", "task_acceptance")]
+    assert root_payload == {"status": "not_dispatched", "reason": "review_mode_off", "review_runs": []}
     assert child_payload["aggregate_signal"] == "PASS"
 
 

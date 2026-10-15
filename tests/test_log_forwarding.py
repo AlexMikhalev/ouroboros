@@ -25,7 +25,7 @@ WORKER_BASELINE_TYPES = frozenset(
 # emit_log_event sibling); the forwarded append copy is suppressed.
 WORKER_SAME_TYPE_PAIRS = frozenset({
     "provider_incomplete_response", "llm_empty_response", "provider_body_error",
-    "review_cycles_exhausted", "plan_review_advisory_open",
+    "review_cycles_exhausted",
     # #1316: the durable tool-call start / wait-ended row IS the live frame's payload.
     "tool_call_started", "tool_call_timeout",
 })
@@ -658,3 +658,13 @@ def test_llm_call_failure_reaches_the_live_log_exactly_once(
     assert frame["selected_context_mode"] == "test-context"
     rows = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
     assert rows == ([error_row] if write_succeeds else [])
+
+
+def test_the_suppressed_worker_types_name_only_events_a_producer_still_emits():
+    """Scope R1, Fable 5: the retired planning organ's advisory event has no producer; the live
+    duplicate-suppression list names only types a worker still publishes twice."""
+    from supervisor.worker_process import WORKER_LOG_SINK_SUPPRESSED_TYPES
+
+    assert "plan_review_advisory_open" not in WORKER_LOG_SINK_SUPPRESSED_TYPES
+    assert {"provider_body_error", "tool_call", "task_done"} <= WORKER_LOG_SINK_SUPPRESSED_TYPES
+    assert WORKER_LOG_SINK_SUPPRESSED_TYPES == WORKER_BASELINE_TYPES | WORKER_SAME_TYPE_PAIRS

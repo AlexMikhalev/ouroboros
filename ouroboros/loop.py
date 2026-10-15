@@ -79,7 +79,7 @@ from ouroboros.loop_transport import (
 )
 from ouroboros.pricing import estimate_cost_optional  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 from ouroboros.budget_pause import load_budget_pause, resume_paused_loop
-from ouroboros.owner_wait import load_owner_wait, resume_native_loop, wait_after_tools
+from ouroboros.owner_wait import load_owner_wait, park_for_left_review, resume_native_loop, wait_after_tools
 from ouroboros.presence_continuation import (
     conversation_lost as _presence_conversation_lost,
     lost_conversation_terminal as _presence_lost_terminal,
@@ -115,7 +115,7 @@ def _finalize_loop_candidate(content, limit_ctx, tools, emit_progress, *, after_
             _arm_delivery_control(tools, limit_ctx, limit_ctx.llm_trace, control="owner_revision_required")
         return None
     selected = bool(getattr(ctx, "_completion_selected", None)) or consume_completion_request(tools, limit_ctx, limit_ctx.llm_trace, content)
-    if after_tools and not selected:
+    if not selected and (after_tools or park_for_left_review(tools, limit_ctx, content, emit_progress)):
         return None
     if selected:
         from ouroboros.loop_messages import owner_source_sha256
@@ -414,13 +414,13 @@ def _reset_turn_state(ctx: Any) -> None:
     ctx._presence_completion, ctx._presence_completion_accepted = None, False
     ctx._presence_forced_declaration = ctx._presence_forced_pending = None
     ctx._completion_request = ctx._completion_selected = ctx._completion_observation = None
-    ctx._completion_conflict, ctx._completion_held_sha256 = False, ""
+    ctx._completion_conflict, ctx._completion_held_sha256, ctx._acceptance_pending_review_choice = False, "", ""
     ctx._delivery_candidate, ctx._delivery_candidate_revision, ctx._delivery_control_required = None, 0, False
     ctx._delivery_evidence_revision, ctx._delivery_evidence_fingerprint = 0, ""
     ctx.model_turn_state, ctx._authoring_handover, ctx._pending_model_wait_handover = ModelTurnState(), None, None
     ctx.route_wait_on_primary, ctx.active_role_override, ctx._route_facts_pending = False, None, ""
     ctx._primary_route_observation, ctx._accepted_route_binding, ctx._primary_return_requested = None, None, None
-    ctx._accepted_model_route = None
+    ctx._accepted_model_route = ctx._left_review_wait = None  # a new turn waits on no left review
 
 
 def _initial_round_route(ctx: Any, llm: LLMClient, initial_effort: str) -> tuple:

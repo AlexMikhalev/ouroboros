@@ -73,7 +73,7 @@ def test_change_findings_are_the_fail_rows_only():
 
 @pytest.mark.parametrize("raw, error", [
     (_b(coupling=_matrix()[:-1]), "missing required items"),
-    (_b(coupling=_matrix(reason="ok")), "PASS reason is too terse"),
+    (_b(coupling=_matrix(reason="")), "missing reason"),
     (_b(coupling=[{**_matrix()[0], "severity": "blocker"}, *_matrix()[1:]]), "missing or invalid severity 'blocker'"),
     (_b(coupling=[]), "missing required items"),
 ])
@@ -87,20 +87,59 @@ def test_a_defective_coupling_block_is_recorded_against_part_two_only(raw, error
     assert error in answers["coupling"]["error"], answers["coupling"]
 
 
+@pytest.mark.parametrize("reason", ["N/A — the change touches no prompt or doc", "see Part 1 development_compliance",
+                                    "callers"])
+def test_a_one_line_pass_pointer_is_a_complete_answer(reason):
+    """A PASS is one line: a pointer to what was checked, ``see Part 1 <item>`` or
+    ``N/A — <reason>``; there is no length or wording filter. The twin above: only a
+    PASS without any reason leaves the part unanswered."""
+    coupling = parse_two_part_answer(_b(coupling=_matrix(reason=reason)), BOTH)["coupling"]
+    assert coupling["status"] == "responded" and coupling["verdict"] == "PASS" and coupling["coverage"] == "full"
+    assert {item["reason"] for item in coupling["items"]} == {reason}
+
+
 def test_a_defective_matrix_keeps_its_fail_rows_as_discarded_diagnostics():
-    """A critical FAIL inside a matrix the gate cannot count (a terse PASS elsewhere)
+    """A critical FAIL inside a matrix the gate cannot count (a PASS without a reason elsewhere)
     is not counted (``findings`` empty, ``critical`` 0, the part ``unanswered``) and
     not lost: it rides beside the error as ``discarded`` with this seat's model."""
     rows = _matrix(fail="implicit_contracts")
-    rows[0] = {**rows[0], "reason": "ok"}
+    rows[0] = {**rows[0], "reason": ""}
     answers = parse_two_part_answer(_b(coupling=rows), BOTH, model_label="m", slot_id="s1")
     coupling = answers["coupling"]
     assert coupling["status"] == "unanswered" and coupling["findings"] == [] and coupling["critical"] == 0
-    assert "too terse" in coupling["error"]
+    assert "missing reason" in coupling["error"]
     assert [(d["item"], d["severity"], d["verdict"], d["model"], d["slot_id"]) for d in coupling["discarded"]] == [
         ("implicit_contracts", "critical", "FAIL", "m", "s1")]
     assert "discarded" not in parse_two_part_answer(_b(coupling=_matrix(fail="implicit_contracts")), BOTH)["coupling"]
-    assert parse_two_part_answer(_b(coupling=_matrix(reason="ok")), BOTH)["coupling"]["discarded"] == []
+    assert parse_two_part_answer(_b(coupling=_matrix(reason="")), BOTH)["coupling"]["discarded"] == []
+
+
+def test_a_retired_question_id_answers_for_its_survivor_without_voiding_the_block():
+    """An open obligation recorded before two questions merged keeps its old item id,
+    and a seat told to mark "the SAME item" answers it beside the current rows. That
+    row counts for its survivor and never duplicates or contradicts the survivor's own
+    row; an id that never was a question, a duplicate PASS or PASS+FAIL of a current
+    id still leave the part unanswered."""
+    def coupling(rows):
+        return parse_two_part_answer(_b(coupling=rows), BOTH)["coupling"]
+
+    old_pass = {"item": "prompt_doc_sync", "verdict": "PASS", "severity": "advisory", "reason": "obl-0003 is fixed"}
+    beside = coupling([*_matrix(), old_pass])
+    assert beside["status"] == "responded" and beside["coverage"] == "full" and beside["verdict"] == "PASS"
+    assert coupling([*_matrix(fail="cross_surface_consistency"), old_pass])["critical"] == 1
+    old_fail = {"item": "cross_module_bugs", "verdict": "FAIL", "severity": "critical",
+                "reason": "the caller still reads the old key", "obligation_id": "obl-0002"}
+    instead = coupling([*(row for row in _matrix() if row["item"] != "implicit_contracts"), old_fail])
+    assert instead["status"] == "responded" and instead["coverage"] == "full" and instead["critical"] == 1
+    assert [(f["item"], f["obligation_id"]) for f in instead["findings"]] == [("implicit_contracts", "obl-0002")]
+    assert coupling([*_matrix(), old_fail])["critical"] == 1
+
+    never = {**old_pass, "item": "scope_creep"}
+    assert "unexpected items: scope_creep" in coupling([*_matrix(), never])["error"]
+    assert "duplicate PASS" in coupling([*_matrix(), _matrix()[0]])["error"]
+    current_fail = next(row for row in _matrix(fail="implicit_contracts") if row["verdict"] == "FAIL")
+    contradiction = coupling([*_matrix(), current_fail])
+    assert contradiction["status"] == "unanswered" and "both PASS and FAIL" in contradiction["error"]
 
 
 def test_a_bare_array_from_a_both_part_seat_leaves_part_two_out():

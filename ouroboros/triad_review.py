@@ -273,6 +273,10 @@ REVIEW_OUTPUT_SHAPES: Dict[str, str] = {
     # one object {change, change_clean, coupling}. Packet seats on the same
     # surface answer contract A over direct chat and are never canonicalized.
     "multi_model_review": "two_part",
+    # The planning organ's participants answer ONE reply object {prose, objections,
+    # withdrawn} (tools/plan_packet.PLAN_REPLY_CONTRACT). It is no verdict: the host
+    # never extracts or aggregates it; the whole text reaches plan_record.parse_reply.
+    "plan_review": "plan_reply",
 }
 OBJECT_VERDICT_REQUIRED_KEYS = ("verdict",)
 TWO_PART_KEYS = ("change", "change_clean", "coupling")
@@ -296,7 +300,7 @@ evidence you read; mark anything you could not verify as unverified.
 
 
 def review_output_shape(surface: str) -> str:
-    """``array`` | ``object`` | ``two_part`` | ``report`` for one review surface."""
+    """``array`` | ``object`` | ``two_part`` | ``report`` | ``plan_reply`` for one review surface."""
     return REVIEW_OUTPUT_SHAPES.get(str(surface or ""), "array")
 
 
@@ -304,6 +308,10 @@ def default_output_contract(shape: str) -> str:
     """The prompt contract a retrieving row is asked for when its surface hands
     over no ``policy["output_contract"]`` — keyed by the same shape the
     canonicalizer parses, so the ask and the parse can never disagree."""
+    if str(shape or "") == "plan_reply":
+        from ouroboros.tools.plan_packet import PLAN_REPLY_CONTRACT
+
+        return PLAN_REPLY_CONTRACT
     return {
         "object": REVIEW_JSON_OBJECT_CONTRACT, "report": REVIEW_REPORT_CONTRACT,
         "two_part": REVIEW_TWO_PART_OBJECT_CONTRACT,
@@ -621,8 +629,9 @@ Each element of "change" and "coupling":
 "change" lists what you found reviewing the change itself; an empty "change"
 array is a clean answer ONLY together with "change_clean": true. "coupling"
 must carry one PASS or FAIL entry for EVERY required coupling question named in
-Part 2 (a PASS reason states what you checked, at least four words; there is no
-all-clear shortcut and no empty "coupling"). A seat asked only Part 2 returns
+Part 2 (a PASS reason is one line: a pointer to what you checked, or "N/A — <reason>";
+a FAIL names file:line and the violated invariant; there is no all-clear shortcut
+and no empty "coupling"). A seat asked only Part 2 returns
 the object with the "coupling" key alone. Prose around the object, a missing
 "coupling" block or a malformed matrix is recorded against that part; anything
 that is not the object is a non-response excluded from quorum.
@@ -796,7 +805,7 @@ def emit_review_run_errors(ctx: Any, request: Any, actors: Sequence[Any], *, dri
         if actor.error_event_logged or actor.parse_status == "awaiting" or actor.late_result_pending:
             continue
         if actor.status not in {"error", "not_dispatched", "empty"} and (
-                actor.parse_status != "malformed" or REVIEW_OUTPUT_SHAPES.get(request.surface) == "report"):
+                actor.parse_status != "malformed" or REVIEW_OUTPUT_SHAPES.get(request.surface) in ("report", "plan_reply")):
             continue
         row = asdict(actor)
         row["task_id"] = str(getattr(request, "task_id", "") or "")
@@ -912,10 +921,12 @@ TIER_CLASSIFICATION_RULES = (
         "claims is the point of this review. A real partial deliverable with honestly marked "
         "gaps is best_effort, not a failure; it does not discharge useful work still owed to the "
         "accepted goal. completion_coach is separate advice: the most useful authorized next "
-        "action under the real constraints, not necessarily a higher tier. A sufficient result "
-        "needs no invented improvement. For an incomplete tier, keep the coach nonempty: name "
-        "a reachable action or explain concretely why none remains for the author and whose "
-        "action is needed. Keep that advice consistent with DIALOGUE STATUS / REACHABILITY; "
+        "action under the real constraints, not necessarily a higher tier. Ask whether a "
+        "demanding person who made this request, seeing the result, would call it done well; "
+        "a sufficient result needs no invented improvement. For an incomplete tier, keep the "
+        "coach nonempty: name a reachable action or explain concretely why none remains for the "
+        "author and whose action is needed. Keep that advice consistent with DIALOGUE STATUS / "
+        "REACHABILITY; "
         "the coach is neither evidence of success nor authority to stop or change the goal. "
 )
 
@@ -930,8 +941,11 @@ ACCEPTANCE_SURFACE_RULES = (
         "`support` text names expected evidence; it is NOT evidence unless a receipt/tool/artifact/source "
         "ref actually supports it. "
         "Record in criteria_used which claims were supported, missing, partial, or rejected, and why. "
-        "Require per-criterion evidence: an EXECUTED check that MIRRORS what the real grader would run "
-        "(the actual test/command and its observed output) — not a narrative that it passes. "
+        "Require the evidence each criterion calls for: observed execution for runnable behaviour "
+        "(the actual test/command and its observed output, not a narrative that it passes), "
+        "inspection of the actual artifact for content or visual claims, and reasoned judgment "
+        "grounded in cited sources for qualitative claims. A simpler method that keeps the outcome "
+        "is fulfilment; an owner- or parent-fixed method stays a constraint. "
         "If the evidence covers only part of the affected surface list, do not classify solved; "
         "name the uncovered criteria/surfaces in findings or completion_coach. "
         "EVIDENCE INDEPENDENCE: from the diff and tool trace, identify which test/check files "
@@ -1035,8 +1049,8 @@ ACCEPTANCE_SURFACE_RULES = (
         "that finding: if the argument is genuinely valid, do not re-raise the same finding; if it "
         "is not, re-raise the finding and explain why the rebuttal fails. A rebuttal may dismiss or "
         "reframe an obligation, but it is NEVER itself evidence for a criterion — 'supported' still "
-        "requires an independent host/tool/artifact receipt and 'solved' still requires the real "
-        "grader-mirroring check to pass. "
+        "requires an independent host/tool/artifact receipt and 'solved' still requires the "
+        "evidence each criterion calls for. "
         "REVIEW REGISTER: you are an outside perspective helping the task land, not a gate of last "
         "resort. Concrete, reachable-now defects block; hypotheticals, style preferences, and hygiene "
         "are advisory findings, not blockers. "

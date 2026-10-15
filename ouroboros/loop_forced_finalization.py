@@ -386,14 +386,12 @@ def _maybe_enforce_child_absorption_gate(
 
 
 def _plan_gate_identity(decision: Dict[str, Any]) -> str:
-    """Typed identity of the plan-review gate as the mind was last TOLD it.
-    Existing decision fields only — never the rendered English, which cannot tell
-    two different waves apart (astra F3)."""
+    """Typed identity of the planning gate as the mind was last TOLD it: the decision's
+    own typed fields (status, the holding objections, the pending asks, the hurry
+    attribution) — never the rendered English (astra F3)."""
     return "|".join(str(decision.get(key) or "") for key in (
-        "status", "allow", "closed", "outcome", "enforcement", "cycles_paid",
-        "custody_pending", "reviewer_slots_degraded", "review_late_result_pending",
-        "quorum_unreachable", "owner_hurry_local_advisory",
-    ))
+        "status", "allow", "enforcement", "owner_hurry_local_advisory", "unreadable", "force_plan_met",
+    )) + "|" + ",".join(str(x) for x in decision.get("holding") or []) + "|" + ",".join(str(x) for x in decision.get("pending_asks") or [])
 
 
 def _enforce_swarm_actions(
@@ -410,11 +408,10 @@ def _enforce_swarm_actions(
     ``messages`` — the hold reminder and the release note — so it records what
     entered the MIND's context, not what this gate observed. Every other gate
     transition already reaches the mind by its own route and must not buy a round:
-    a settled reviewer slot arrives as a ``[System task message]`` through the task
-    mailbox (``plan_review_collect.announce_released_settlement`` ->
-    ``loop_round_limits`` drain), a rail release rides the forced prompt's typed
-    facts, and ``closed``/``author_stopped``/``cycles_exhausted`` are the mind's own
-    ``plan_task`` results. The one residual is the owner's hurry, which the HQ1
+    a settled ask arrives as a ``[System task message]`` through the task mailbox
+    (``plan_ask.settle_released_reply`` -> ``loop_round_limits`` drain), a rail
+    release rides the forced prompt's typed facts, and objections and withdrawals
+    are the mind's own ``plan_task`` results. The one residual is the owner's hurry, which the HQ1
     no-chat contract forbids putting into ``messages``
     (``loop_round_limits.py``) — that is the only release this fires on."""
 
@@ -424,10 +421,12 @@ def _enforce_swarm_actions(
     identity = _plan_gate_identity(decision) if decision.get("required") else ""
     told = str(getattr(tools._ctx, "_plan_gate_told_identity", "") or "")
     if decision.get("allow"):
+        # The one release the mind cannot see otherwise: the owner's hurry let it past
+        # objections that still hold (``holding``); a gate the mind cleared itself — a
+        # withdrawal, nothing pending — buys no round.
         if not (
             told and identity and identity != told
-            and not decision.get("closed")
-            and decision.get("status") != "author_stopped"
+            and decision.get("holding")
             and decision.get("owner_hurry_local_advisory")
             and not getattr(tools._ctx, "_plan_gate_release_told", False)
         ):
@@ -479,11 +478,15 @@ def _plan_gate_facts(decision: Dict[str, Any]) -> str:
     true on the normal rail and on every forced rail. ``owner_hurry_local_advisory``/
     ``configured_enforcement`` carry the accurate hurry-vs-advisory attribution that
     the recorded notice does not distinguish."""
-    if not decision.get("required") or decision.get("closed"):
+    if not decision.get("required"):
         return ""
-    parts = ["plan_review_open=true"]
-    if decision.get("outcome"):
-        parts.append(f"plan_review_outcome={decision['outcome']}")
+    objections, pending = decision.get("open_objections") or [], decision.get("pending_asks") or []
+    status = str(decision.get("status") or "")
+    if not objections and not pending and status not in {"force_plan_unmet", "unreadable", "held"}:
+        return ""
+    parts = ["plan_review_open=true", f"plan_gate_status={status}",
+             f"plan_open_objections={len(objections)}", f"plan_holding={len(decision.get('holding') or [])}",
+             f"plan_pending_asks={len(pending)}"]
     if decision.get("enforcement"):
         parts.append(f"plan_review_enforcement={decision['enforcement']}")
     if decision.get("decision_authority"):
@@ -491,14 +494,10 @@ def _plan_gate_facts(decision: Dict[str, Any]) -> str:
     if decision.get("owner_hurry_local_advisory"):
         parts.append("owner_hurry_local_advisory=true")
         parts.append(f"configured_enforcement={decision.get('configured_enforcement') or 'blocking'}")
-    for key in (
-        "reviewer_slots_degraded", "custody_pending",
-        "review_late_result_pending", "quorum_unreachable",
-    ):
-        if decision.get(key):
-            parts.append(f"{key}=true")
-    if decision.get("cycles_paid"):
-        parts.append(f"cycles_paid={decision['cycles_paid']}")
+    if decision.get("force_plan_met") is False:
+        parts.append("force_plan_met=false")
+    if decision.get("unreadable"):
+        parts.append("plan_record_unreadable=true")
     return " ".join(parts)
 
 

@@ -90,12 +90,17 @@ def historical_commit(tmp_path, monkeypatch):
     return ctx, ready, unknown, scope, prompt
 
 
-def test_query_model_collects_pre_rights_cas_under_current_full_slot(historical_commit, monkeypatch):
+@pytest.mark.parametrize('child_drive', [False, True])
+def test_query_model_collects_pre_rights_cas_under_current_full_slot(historical_commit, monkeypatch, child_drive):
     """Isolate the real rights mismatch before any commit packet/preflight work."""
     import asyncio
     from ouroboros.tools.review_multi_model import _query_model
 
     ctx, ready, _unknown, _scope, _prompt = historical_commit
+    if child_drive:
+        ctx.budget_drive_root = ctx.drive_root
+        ctx.drive_root = ctx.drive_root / 'child'
+        ctx.drive_root.mkdir()
     monkeypatch.setattr("ouroboros.review_substrate.run_review_request", _RUN_REVIEW_REQUEST)
     review_custody.prepare_frozen_review_reconciliation(ctx, ctx._pending_review_attempt)
 
@@ -163,7 +168,8 @@ def test_commit_collection_rejects_foreign_or_missing_original_source(historical
     assert triad["old-peer"]["status"] == "responded"  # independent paid answer survives
 
 
-def test_commit_pending_start_replays_original_token_request_and_rights(historical_commit, monkeypatch):
+@pytest.mark.parametrize('child_drive', [False, True])
+def test_commit_pending_start_replays_original_token_request_and_rights(historical_commit, monkeypatch, child_drive):
     ctx, _ready, unknown, _scope, _prompt = historical_commit
     FakeGateway.reset()
     FakeGateway.catalog_entry["id"] = "old-review"
@@ -179,6 +185,10 @@ def test_commit_pending_start_replays_original_token_request_and_rights(historic
         operation_id=unknown["operation_id"], invocation_id=unknown["pending_invocation_id"], idempotency_key="original-key",
         run_id="", project_id="old-project", project_owned=False, max_seconds=60, route="old-review", request=raw,
     )
+    if child_drive:
+        ctx.budget_drive_root = ctx.drive_root
+        ctx.drive_root = ctx.drive_root / 'child'
+        ctx.drive_root.mkdir()
     run_parallel_review(ctx, "collect only")
     starts = [(key, body) for gateway in FakeGateway.instances for key, body in zip(gateway.start_keys, gateway.start_requests)]
     assert starts == [(unknown["pending_invocation_id"], raw)]

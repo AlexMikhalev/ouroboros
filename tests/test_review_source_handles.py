@@ -513,12 +513,13 @@ def test_plan_dialogue_promotion_never_reads_a_foreign_source(tmp_path, monkeypa
 
 @pytest.mark.parametrize("missing", [False, True])
 def test_submitted_plan_source_survives_promotion_and_gates_child_cleanup(tmp_path, missing):
-    from ouroboros.task_results import record_plan_review_attempt, load_plan_review_state
+    from ouroboros.task_results import load_plan_review_state
     from ouroboros.tools.plan_author_history import current_submitted_plan
+    from tests import _legacy_plan_shared as legacy
     parent = tmp_path / "canonical"
     child = prepare_task_drive(parent, "submitted", "empty")
     proposed = {"spec": {"goal": "Keep exact submitted material"}, "plan_prose": "Current unreviewed proposal"}
-    state = record_plan_review_attempt(child, "submitted", fingerprint="b" * 64, submitted_subject=proposed)
+    state = legacy.seed_submitted_subject(child, "submitted", fingerprint="b" * 64, **proposed)
     ref = state["current_attempt"]["submitted_subject"]
     path = artifacts.task_artifact_dir_path(child, "submitted") / ref["path"]
     raw = path.read_bytes()

@@ -200,7 +200,6 @@ _MOVED_OWNERS = {
     "get_vision_model": model_slots,
     "migrate_legacy_slot_keys": model_slots,
     "parse_fallback_chain": model_slots,
-    "_DIRECT_PROVIDER_REVIEW_RUNS": review_model_routes,
     "_exclusive_direct_remote_provider_env": review_model_routes,
     "adaptive_quorum": review_model_routes,
     "get_review_enforcement": review_model_routes,

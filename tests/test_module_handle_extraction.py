@@ -353,8 +353,9 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         '_publish_delivery_candidate', '_replace_delivery_candidate', '_resolve_delivery_control',
         '_run_task_acceptance_review_once', '_service_finalization_evidence', '_set_acceptance_decision',
         '_supersede_delivery_acceptance_binding', '_supersede_task_acceptance_for_evidence_change', '_supersede_task_acceptance_for_owner_followup',
-        '_task_acceptance_eligible', '_task_acceptance_owner_generation_changed', 'get_review_enforcement',
-        'get_task_review_mode',
+        # G1 (#1731): a root's local stop keeps its author disposition without an
+        # eligibility probe, so the leaf no longer reads the eligibility/mode pair.
+        '_task_acceptance_owner_generation_changed', 'get_review_enforcement',
     })),
     "ouroboros/loop_forced_finalization.py": ("ouroboros/loop.py", "_loop", frozenset({
         'DeliveryCandidate', '_LoopExitContext', '_append_or_merge_user_message',
@@ -422,7 +423,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_commit_readiness_debts_view", "_dedupe_strings", "_filter_lifecycle_records",
         "_filter_repo_scope", "_looks_like_public_obligation_id",
         "_make_obligation_fingerprint", "_max_iso_ts", "_merge_attempt", "_min_iso_ts",
-        "_normalize_obligation_item_key", "_parse_iso_ts", "_review_roster_row_is_pending",
+        "_parse_iso_ts", "_review_roster_row_is_pending",
         "_strip_attempt_heavy_payload", "_utc_now",
     })),
     "ouroboros/review_state_records.py": ("ouroboros/review_state.py", "_rs", frozenset({

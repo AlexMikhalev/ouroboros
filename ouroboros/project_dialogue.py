@@ -806,6 +806,7 @@ TASK_CAUSE_PHRASES = {
     "plan_review_advisory": "The plan review was never closed; the work went on with what the reviewers said.",
     "plan_review_awaiting": "Not every plan reviewer had answered when the task ended.",
     "plan_review_quorum_unreachable": "Too few plan reviewers could answer, so the work was held.",
+    "plan_review_objections_open": "Objections to the plan were still open when this answer was delivered; the work went on with them disclosed.",
     "host_child_status_suffix": "A child task had not settled when the answer was delivered",
     "invalid_delivery_control_after_repair": "Ouroboros's final delivery instruction could not be read even after repair, so the answer stands as delivered.",
     "budget_exhausted": "The task ran out of budget before it could finish cleanly",
@@ -1191,7 +1192,8 @@ def _custody_debt_reason(reason: str, result: Dict[str, Any], event: Dict[str, A
 
 
 # The open-review classes that state a standing limitation (never the merely awaited case).
-PLAN_REVIEW_OPEN_CLASSES = frozenset({"plan_review_unanswered", "plan_review_none_answered", "plan_review_answered_open"})
+PLAN_REVIEW_OPEN_CLASSES = frozenset({"plan_review_unanswered", "plan_review_none_answered", "plan_review_answered_open",
+                                      "plan_review_objections_open"})
 
 
 def _plan_review_key(result: Dict[str, Any], event: Dict[str, Any], fallback: str) -> str:

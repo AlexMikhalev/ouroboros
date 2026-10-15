@@ -24,7 +24,7 @@ from ouroboros.review_source_closure import retain_review_request_sources
 from ouroboros.review_substrate import ReviewRequest, run_review_request
 from tests.test_acceptance_delivery import _CLEAN_VERDICT, _EpisodeLLM, _fake_session, _tool_call
 from tests.test_acceptance_source_first import _SOURCE_PATH, _prepared_request
-from tests.test_plan_review_engine import _user_text
+from tests._review_substrate_shared import user_text as _user_text
 from tests import test_main_authored_context as context_fixtures
 
 main_loop = context_fixtures.main_loop

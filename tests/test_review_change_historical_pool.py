@@ -79,7 +79,7 @@ def test_public_collection_keeps_paid_request_and_operation(
         if catalog_change == "malformed":
             monkeypatch.setenv("OUROBOROS_SUBAGENTS", "{broken")
         elif catalog_change == "emptied":
-            # pool_empty refuses only a NEW wave; the paid round is still collected.
+            # An emptied pool (now the Main seat) shapes only a NEW wave; the paid round is still collected.
             set_review_pool(monkeypatch, pool_roster())
         else:
             set_review_pool(monkeypatch, pool_roster(pool_seat(
@@ -210,18 +210,21 @@ def test_rejoin_keeps_the_paid_waves_history_binding_not_todays_heads(
             assert settled.wait(10)
 
 
-def test_an_empty_pool_refusal_on_a_fresh_drive_writes_no_review_state(staged_body, tmp_path, monkeypatch):  # noqa: F811
+def test_a_refused_call_on_a_fresh_drive_writes_no_review_state(staged_body, tmp_path, monkeypatch):  # noqa: F811
     """The paid-round lookup runs before the pool is consulted; with no review state
-    there is no open round to find, so the refused call leaves the drive as it was.
-    The opposite direction (state holding an open round is still collected under an
-    emptied pool) is ``test_public_collection_keeps_paid_request_and_operation``."""
+    there is no open round to find, so a refused call leaves the drive as it was. The
+    refusal is a reviewer the catalog does not hold (an empty pool reviews on the Main
+    seat, so it no longer refuses by itself). The opposite direction (state holding an
+    open round is still collected under an emptied pool) is
+    ``test_public_collection_keeps_paid_request_and_operation``."""
     from ouroboros.review_state import _STATE_RELPATH
     from ouroboros.tools.review_change import _handle_review_change
 
     ctx = ToolContext(repo_dir=Path(staged_body["repo"]), drive_root=tmp_path / "fresh", task_id="fresh-review")
     set_review_pool(monkeypatch, pool_roster())
     monkeypatch.setattr("ouroboros.claudexor_daemon.ensure_owned_gateway",
-                        lambda: pytest.fail("an empty pool started a session"))
-    text = _handle_review_change(ctx, root="system_repo", subject="index", goal="nothing to review with")
-    assert "TOOL_ARG_ERROR (review_change)" in text and "the panel has no seat" in text, text
+                        lambda: pytest.fail("a refused call started a session"))
+    text = _handle_review_change(ctx, root="system_repo", subject="index", goal="nothing to review with",
+                                 reviewers=["ghost"])
+    assert "TOOL_ARG_ERROR (review_change)" in text and "is not an enabled catalog row" in text, text
     assert not (Path(ctx.drive_root) / _STATE_RELPATH).exists()

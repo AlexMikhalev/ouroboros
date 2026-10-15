@@ -80,10 +80,7 @@ _OPENROUTER_MIN_REMAINING_USD = 10.0
 # retired advisory gate carried); retrieving actors read the files and are not bound by it.
 _PACKET_DIFF_CHARS_CAP = 500_000
 _CONTRIBUTOR_DEFAULT_BASE_REF = "upstream/ouroboros"
-_CONTRIBUTOR_LANDING_OBLIGATION_ITEMS = frozenset({
-    "version_bump",
-    "changelog_and_badge",
-})
+_CONTRIBUTOR_LANDING_OBLIGATION_ITEMS = frozenset({"version_bump"})
 # EVIDENCE ONLY, never a gate (D31): the lane always executes the installed
 # body's review flow and rules, never the proposal's copy, so nothing classifies
 # a diff before deciding whose review code runs. This hand-list survives purely
@@ -145,7 +142,7 @@ _CONTRIBUTOR_CONTRACT = {
     "release_metadata_owner": "maintainer_final_landing",
     "version_checklist_rule": (
         "When the proposal leaves release-version values unchanged, treat "
-        "version_bump and changelog_and_badge as PASS/Not applicable for this "
+        "version_bump as PASS/Not applicable for this "
         "non-committing readiness review. Do not relax any other checklist item. "
         "If the proposal changes release metadata or release machinery, review "
         "those changes normally."

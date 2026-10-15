@@ -508,7 +508,7 @@ def _frozen_deep_default(document: Mapping[str, Any]) -> str:
 def factory_lanes(document: Mapping[str, Any]) -> ReviewLanes:
     """The shipped default panel as frozen lanes, from the ONE factory source: the triad
     is ``factory_review_rows(document)`` seat by seat (the provider the document holds
-    credentials for; a one-model install repeats Main), no scope seat and no authored
+    credentials for; a one-model install seats Main once), no scope seat and no authored
     advisory (the pool asks every retrieving row the coupling question), and NO deep
     row (the legacy model key stood for it). A seat's effort is the document's surface
     effort, as the panel ran it — the row's own ``effort`` is that same value minted.

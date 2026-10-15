@@ -498,6 +498,7 @@ _PUBLISHED_CHILD_REF_FIELDS = (
     "verification_ledger",
     "root_phase_checkpoint",
     "plan_review_state",
+    "plan_record",
     "artifacts",
     "artifact_bundle",
     "task_contract", "attachment_manifest", "attachment_manifest_ref",

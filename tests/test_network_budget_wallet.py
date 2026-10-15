@@ -149,8 +149,10 @@ def test_forced_prompt_facts_are_priced_before_the_wrap_up_is_admitted(tmp_path,
     from ouroboros import loop
     from tests.test_tree_cost_ceiling import _ctx
 
-    decision = {"required": True, "status": "advisory_open", "allow": True, "closed": False,
-                "outcome": "DEGRADED", "enforcement": "advisory", "reviewer_slots_degraded": True}
+    decision = {"required": True, "status": "objections_open", "allow": True, "enforcement": "advisory",
+                "open_objections": [{"seat_id": "triad_a", "id": "o1", "text": "the bar is too low", "holds": True,
+                                     "ask_id": "a1", "revision": 1}],
+                "holding": ["triad_a:o1"], "pending_asks": [], "asks_dispatched": 1, "force_plan_met": True}
     ctx = _ctx(active_use_local=True, drive_root=tmp_path, drive_logs=tmp_path / "logs",
                llm=SimpleNamespace(), llm_trace={"force_plan_decision": decision})
     priced = []
@@ -167,7 +169,7 @@ def test_forced_prompt_facts_are_priced_before_the_wrap_up_is_admitted(tmp_path,
     assert "[BUDGET LIMIT]" in str(last["content"])
     # Nothing to state, nothing priced: a closed gate adds no block to the probe.
     priced.clear()
-    ctx.llm_trace = {"force_plan_decision": {**decision, "status": "closed", "closed": True}}
+    ctx.llm_trace = {"force_plan_decision": {**decision, "status": "clear", "open_objections": [], "holding": []}}
     with accounting.usage_scope(scope):
         loop._soft_land_exhausted_ceiling(ctx, ceiling)
     assert "[TASK_STATE_FACTS]" not in str(next(m for m in reversed(priced[0]) if m["role"] == "user")["content"])
