@@ -49,7 +49,7 @@ def test_helpers_keep_the_brief_and_reader_while_their_own_review_authority_stay
     from ouroboros.task_results import load_task_result
     from ouroboros.tools.control import _get_task_result
     from ouroboros.tools.registry import ToolContext
-    from tests.test_plan_review_engine import CLEAN, _call
+    from tests.test_plan_task_tool import _call
 
     ctx, sub, env, root = _continued(harness)
     assert NOTE in str(_task_authority_projection(env, root)) and _historical(_task_authority_projection(env, root))
@@ -70,9 +70,9 @@ def test_helpers_keep_the_brief_and_reader_while_their_own_review_authority_stay
     assert payload["status"] == "available" and payload["source"]["task_id"] == ctx.task_id
     assert payload["authority"]["task_contract"] and payload["authority"]["status"] == "failed"
     # A helper's OWN current plan authority is still projected for it.
-    harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
     own = {**child, "id": "helper-own-plan"}
-    _call(harness.make_ctx(task_id=own["id"]))
+    _call(harness.make_ctx(task_id=own["id"]), goal="The helper's own plan.", affected_paths=[],
+          plan="A free planning-organ revision of the helper's own work.")
     own_runtime = _task_authority_projection(env, own)
     assert own_runtime["plan_review_authority"]["source"]["arguments"]["task_id"] == own["id"]
     assert NOTE not in json.dumps(own_runtime, ensure_ascii=False) and not _historical(own_runtime)

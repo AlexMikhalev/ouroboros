@@ -48,7 +48,10 @@ def _direct_paused(tmp_path, monkeypatch, *, park="inline", rail="budget", chang
     write_task_result(tmp_path, TASK, "running", root_task_id=TASK, _is_direct_chat=True)
     write_task_result(tmp_path, "child", "running", parent_task_id=TASK, root_task_id=TASK)
     workers.PENDING.append({"id": "child", "root_task_id": TASK, "parent_task_id": TASK})
-    trace = {"tool_calls": []}
+    # Required reviews what the host observed this turn produce (#1731); the
+    # expected_output above is a declaration, not production.
+    trace = {"tool_calls": [{"tool": "write_file", "args": {"path": "deliverable.md"},
+                             "is_error": False, "status": "ok"}]}
     assert loop._run_task_acceptance_review_once(
         tools=SimpleNamespace(_ctx=ctx), content="Complete deliverable", task_id=TASK, task_type="task",
         llm_trace=trace, drive_root=tmp_path, messages=limit.messages, emit_progress=lambda *_a: None)

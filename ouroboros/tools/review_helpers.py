@@ -42,17 +42,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # non-blocking skip gate leaves headroom for default 1M-context reviewer models.
 REVIEW_PROMPT_TOKEN_BUDGET = 920_000
 
-# The empty review pool is a configured fact, the one the ``## Review`` context block
-# states as ``pool_empty`` and the settings panel promises as "reviews will not run and
-# will report not performed": the commit gate says the same, typed ``pool_empty``, and
-# never blames a provider key for it.
-REVIEW_POOL_EMPTY_REASON = "pool_empty"
-REVIEW_POOL_EMPTY_SENTENCE = (
-    "the review pool is empty (pool_empty): no enabled catalog row is marked Reviewer, so no review "
-    "wave ran and the review is NOT_PERFORMED. Mark a row as Reviewer in Settings → Agents (or run "
-    "the wizard), then retry the commit."
-)
-
 
 def review_enforcement_blocks(enforcement: str | None = None) -> bool:
     """Project action authority without changing configured policy or review facts."""
@@ -617,6 +606,7 @@ def build_goal_section(
     commit_message: str = "",
     owner_words: str = "",
     preflight_execution: str = "",
+    diff_pulse: str = "",
 ) -> str:
     """Format the 'Intended transformation' section.
 
@@ -631,7 +621,9 @@ def build_goal_section(
     intent: what was asked, beside the author's account of the change. Empty
     keeps the section byte-identical to a review without it.
     ``preflight_execution`` is the wave's frozen test execution exhibit
-    (``preflight_receipts.execution_section``), placed after them on the same terms.
+    (``preflight_receipts.execution_section``), placed after them on the same terms,
+    and ``diff_pulse`` the subject's growth since its contribution base
+    (``review_subject_pulse``) after that.
     """
     resolved_text, source = resolve_intent(goal, scope, commit_message)
     sections = [
@@ -646,6 +638,8 @@ def build_goal_section(
         sections.append(f"\n\n{owner_words}")
     if preflight_execution.strip():
         sections.append(f"\n\n{preflight_execution}")
+    if diff_pulse.strip():
+        sections.append(f"\n\n{diff_pulse}")
 
     commit_text = commit_message.strip()
     if commit_text and commit_text != resolved_text:
@@ -658,6 +652,18 @@ def build_goal_section(
         )
 
     return "\n".join(sections)
+
+
+def review_subject_pulse(review_root: Any, layer: str, managed: Any = None) -> str:
+    """The diff pulse a review brief carries: ``review.diff_pulse`` over the reading root's
+    index, which holds the subject. Only the body has a contribution base to grow from, and
+    a managed resolution is reviewed as its declared delta rather than as that growth, so
+    neither another root's subject nor a managed one carries a pulse."""
+    if layer != "body" or managed is not None:
+        return ""
+    from ouroboros.review import diff_pulse
+
+    return diff_pulse(Path(review_root), staged=True)
 
 
 def review_history_with_obligations(history: Any, *, drive_root: Any, repo_root: Any, task_id: str = "") -> str:
@@ -747,27 +753,7 @@ def check_worktree_readiness(
     except Exception:
         pass
 
-    # 4. Diff size.
-    try:
-        diff_path_args = (["--"] + list(paths)) if paths else []
-        staged = subprocess.run(
-            ["git", "diff", "--cached"] + diff_path_args,
-            cwd=str(repo_dir), capture_output=True, text=True, timeout=10,
-        )
-        unstaged = subprocess.run(
-            ["git", "diff"] + diff_path_args,
-            cwd=str(repo_dir), capture_output=True, text=True, timeout=10,
-        )
-        combined_len = len(staged.stdout or "") + len(unstaged.stdout or "")
-        if combined_len > 400_000:
-            warnings.append(
-                f"Large diff detected ({combined_len:,} chars). "
-                "Consider splitting into smaller commits for better advisory coverage."
-            )
-    except Exception:
-        pass
-
-    # 5. Size-ratchet findings. Never blocking here: the official repository's
+    # 4. Size-ratchet findings. Never blocking here: the official repository's
     # CI ``size_ratchet`` lane is the enforcing surface; this warning lets the
     # agent regenerate the manifest or shrink the debt before the official
     # line rejects the same finding. Cheap since the history replay retired
@@ -794,15 +780,6 @@ def check_worktree_readiness(
                 f"size-ratchet validator unavailable ({type(exc).__name__}); "
                 "the official CI lane still enforces"
             )
-
-    try:  # 6. Touched reference books' balance: a warning; official CI refuses a grown book.
-        from ouroboros.reference_books import BOOK_GROWTH_RULE, book_balances, render_book_balance
-        if status_result is not None and (repo_dir / "ouroboros" / "reference_books.py").is_file():
-            touched = parse_changed_paths_from_porcelain(status_result.stdout or "")
-            warnings.extend(f"official CI will enforce: {render_book_balance(b)}. {BOOK_GROWTH_RULE}"
-                            for b in book_balances(repo_dir, touched) if b.owed)
-    except Exception:
-        pass
 
     return warnings
 

@@ -206,7 +206,10 @@ A segmented choice row gives every choice the same width. Up to four fill their
 row; a longer scale wraps into equal columns of four and leaves its last row partly
 empty rather than stretching a lone choice; a narrow card stacks two; one-glyph
 values such as review cycles stay one row. An empty inherit choice is as real as
-any other, and the focused choice wears the one focus ring.
+any other, and the focused choice wears the one focus ring. A choice the running
+Access suspends — Blocking under Cyber Pro — stays selected; the note beside it
+names its effect for the current process and for the selected next start, from
+the draft before Save.
 
 Short fixed choices keep native selects, including the platform's own popup.
 A control never widens its column: a select shows its chosen label on one
@@ -1017,8 +1020,20 @@ not child-task cards and never prove execution by themselves.
 - Disclosure is user-owned. Review results, retries, failures, terminal task
   state, reconnect, and lazy-detail loading update content in place but never
   open or close the task, Reviews section, or group.
-- A plan wave whose reviewers may still answer reads as work in progress only
-  while its own task is running: the working tone, `in progress · k of n
+- The Plan group is the plan record (nobody votes, so it carries no verdict
+  word): its line reads `N objections may hold` (an owner-marked reviewer's
+  objection, warning tone), `N open objections` (only added critics', warning
+  tone), `awaiting answers` (working tone while its task runs), `no open
+  objection` (done tone) or `not asked yet`; `objections not projected` in the
+  neutral tone when the detail lacks the host's fold, which the panel never
+  re-derives. The revision row shows the latest revision's goal, `done_when`
+  and earlier revisions' claims; each ask row reads `k of n answered` while
+  replies are owed and lists each participant (`added — never holds`,
+  `awaiting`, `not sent — <reason>`) and its objections (`(not adjudicated)`,
+  `(never holds)`). A record of the earlier schema keeps its wave rendering
+  below.
+- An earlier-schema plan wave whose reviewers may still answer reads as work in
+  progress only while its own task is running: the working tone, `in progress · k of n
   answered` where the verdict token would sit, and each awaited reviewer listed
   as awaiting rather than unavailable, under no verdict word. Once the task has
   ended the same wave reads `no verdict · k of n answered` in the neutral tone.
@@ -1439,6 +1454,8 @@ asks to return, and only the primary's own accepted reply counts as a return.
 
 A submitted action is shown as pending until the task reports its application.
 A saved Settings change and a still-pending task change are disclosed separately.
+When a requested Settings save failed or is unconfirmed, resolving the wait shows one
+toast with those facts; closing its card without resolution announces nothing.
 Retries preserve the original request identity and payload. Revisioned rows reject
 older observations and resolved episodes never reopen. Terminal authors retain
 exact live paid-review controls without reviving author status; other waits end. A mailbox delivery failure keeps Retry request available for

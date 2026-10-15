@@ -1,4 +1,5 @@
-"""Explicit child/off review crosses the real slot executor and attempt ledger."""
+"""Explicit child review crosses the real slot executor and attempt ledger; an
+explicit off-mode root call crosses neither (#1731: Off buys no new root panel)."""
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -82,5 +83,6 @@ def test_child_selected_session_and_explicit_root_off_panel_reach_real_consumers
     assert starts[0]["access"] == "readonly" and starts[0]["mode"] == "ask"
     assert starts[0]["maxSeconds"] <= 1200 and not llm.calls
     root = _call(_ctx(tmp_path, workspace, governance, child=False))
-    assert {r["slot_id"] for r in root["actors"]} == {"t_api", "t_actor", "t_sess"}
-    assert len(llm.calls) == 2 and len(seen) == 2
+    assert root == {"status": "not_dispatched", "reason": "review_mode_off", "review_runs": []}
+    assert not llm.calls and len(seen) == 1  # no root row reached the executor or the model
+    assert len([s for instance in fake.instances for s in instance.start_requests]) == 1  # only the child's session

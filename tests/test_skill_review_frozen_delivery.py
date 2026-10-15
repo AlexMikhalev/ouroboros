@@ -29,7 +29,7 @@ from ouroboros.skill_review_passes import (
     run_skill_review_passes,
 )
 from ouroboros.tools.review_helpers import REPO_ROOT
-from tests.test_plan_review_engine import _user_text
+from tests._review_substrate_shared import user_text as _user_text
 from tests.test_skill_review_late_cas import late_skill  # noqa: F401 -- the real paid-wave harness
 
 # Measuring a native seat's window probes the route's catalog; keep it off the wire.

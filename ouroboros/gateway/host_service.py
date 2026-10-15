@@ -307,7 +307,7 @@ class HostServiceContext:
         if loaded is None:
             raise HostServiceAuthError(f"skill {skill_name!r} is not installed")
         if not loaded.review.gate_for(loaded.content_hash)["executable_review"]:
-            raise HostServiceAuthError(f"skill {skill_name!r} does not have a fresh executable review")
+            raise HostServiceAuthError(f"skill {skill_name!r} has no current executable review authority")
         if not load_enabled(self.data_dir, skill_name):
             raise HostServiceAuthError(f"skill {skill_name!r} is disabled")
         if str(token_payload.get("content_hash") or "") != str(loaded.content_hash or ""):

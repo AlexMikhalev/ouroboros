@@ -766,7 +766,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # Panic sweep ``state/panic_sweep_pending.json`` (``ouroboros/process_scope.py``; two section-2
 # rows and one section-4 row) and the engine's own index ``claudexor/daemon/run-scopes.json``,
 # read at Panic and covered by the existing ``claudexor/**`` row.
-EXPECTED_SCAN_PATHS = 378
+# 378 -> 377: the retired plan engine's operative-spec source (context_checkpoints/plan-spec-*.json);
+# earlier records keep theirs, nothing writes one any more.
+EXPECTED_SCAN_PATHS = 377
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

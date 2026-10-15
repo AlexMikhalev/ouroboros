@@ -223,10 +223,10 @@ test('skill review paint changes only its generated opening, in legacy and lazy 
 
 // Probe independently selected real producer phrases, rather than enumerating the
 // display table (which cannot detect a missing producer entry).
-test('command, partial review and paused-evolution producer variants are covered', () => {
+test('command, plan and paused-evolution producer variants are covered', () => {
     const cases = [
         ['server.py', 'command_reply', '🧠 Background consciousness: ', 'off'],
-        ['ouroboros/tools/plan_review_runtime.py', 'host_progress', '📐 Plan review so far: ', '1 of 3 reviewers answered.'],
+        ['ouroboros/tools/plan_ask.py', 'host_progress', '📐 Plan: ', 'ask a1 on revision 1 — sending to 2 participants.'],
         ['supervisor/evolution_lifecycle.py', 'evolution_notice', '🧬⚠️ Evolution paused: ', '3 consecutive failures.'],
     ];
     for (const [path, type, prefix, suffix] of cases) {

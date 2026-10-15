@@ -56,9 +56,8 @@ from ouroboros.tools.review_helpers import (
     format_name_status_for_preflight,
     format_review_history_entry as _format_review_entry,
     REVIEW_PROMPT_TOKEN_BUDGET,  # noqa: F401 — patchable seam (see note above)
-    REVIEW_POOL_EMPTY_REASON,
-    REVIEW_POOL_EMPTY_SENTENCE,
     review_enforcement_blocks,
+    review_subject_pulse,
     single_line as _single_line,
 )
 
@@ -79,8 +78,9 @@ def get_tools():
                     "root in auto/required mode nominates its complete ready result: after this round's "
                     "tool results, the host advances final delivery's review operation; settling that "
                     "review alone does not finish the task. A child gets advisory evidence now from at "
-                    "most ONE configured reviewer (reviewer_slot_id selects it); a review-off root "
-                    "gets its configured panel."
+                    "most ONE configured reviewer (reviewer_slot_id selects it). Off buys no new "
+                    "root-result panel; already paid feedback remains collectible. Auto starts only "
+                    "on nomination; Required also reviews actual produced material or observed effects."
                 ),
                 "parameters": {
                     "type": "object",
@@ -186,7 +186,6 @@ def _handle_task_acceptance_review(
 
     if late_review is not None:
         from ouroboros.acceptance_late import owner_historical_acceptance
-        from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
         result = owner_historical_acceptance(ctx, late_review)
         return _publish_tool_result(ctx, ToolResult(
             status="error" if result["status"] == "refused" else "ok",
@@ -199,7 +198,7 @@ def _handle_task_acceptance_review(
     )
     from ouroboros.task_results import resolve_task_lineage
 
-    # Child/off review-only calls build their packet; roots nominate to the host fence.
+    # Child review-only calls build their packet; roots nominate to the host fence.
     # Explicit author actions stage completion before either dispatch path, even if
     # packet assembly is unavailable. Agent evidence never becomes host repo_diff.
     legacy_aliases = []
@@ -260,7 +259,6 @@ def _handle_task_acceptance_review(
         disposition = ""
     agent_rationale = " ".join(str(rationale or "").split()).strip()
     if author_action and (author_action not in {"finish", "stop"} or not agent_rationale):
-        from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
             text="ERROR: TOOL_ARG_ERROR: author_action requires finish|stop and a rationale."))
     # v6.54.4 obligations layer: normalized per-obligation dispositions ride the
@@ -299,7 +297,6 @@ def _handle_task_acceptance_review(
     retry_declaration: Dict[str, Any] = {}
     if isinstance(acceptance_retry, dict):
         from ouroboros.acceptance_preparation import RETRY_BASES, resolve_retry_source
-        from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
         if disposition or author_action:
             return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
@@ -310,7 +307,6 @@ def _handle_task_acceptance_review(
         incident_id = str(acceptance_retry.get("incident_id") or "").strip()
         retry_rationale = " ".join(str(acceptance_retry.get("rationale") or "").split())
         if basis not in RETRY_BASES or not incident_id or not retry_rationale:
-            from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
             return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
                 text="ERROR: TOOL_ARG_ERROR: acceptance_retry requires the disclosed incident_id, "
                      "a basis of material_change|repair_evidence|owner_retry, and a rationale."))
@@ -348,6 +344,13 @@ def _handle_task_acceptance_review(
             "rationale": agent_rationale, "acceptance_subject": acceptance_subject,
             "agent_decision": agent_decision,
         }, source="task_acceptance_review")
+    if is_root_task and get_task_review_mode() == "off":
+        from ouroboros.review_dispatch import reconcile_pending_acceptance_runs
+        trace = getattr(ctx, "_execution_trace", None) or {}
+        reconcile_pending_acceptance_runs(trace, drive_root=ctx.drive_root, usage_ctx=ctx)
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="REVIEW_BLOCKED",
+            text=json.dumps({"status": "not_dispatched", "reason": "review_mode_off",
+                             "review_runs": trace.get("review_runs") or []}, ensure_ascii=False, default=str)))
     if get_task_review_mode() in {"auto", "required"} and is_root_task:
         # The ROOT nomination returns BEFORE any host evidence is built: the
         # host rebuilds host-attested evidence at the authoritative fence, and
@@ -382,8 +385,7 @@ def _handle_task_acceptance_review(
             deferred["acceptance_retry"] = retry_declaration
         return json.dumps(deferred, ensure_ascii=False, indent=2, default=str)
 
-    # Child-task and `off`-mode acceptance builds the packet here and dispatches
-    # its packet rows itself; a builder failure propagates as before.
+    # A child dispatches its own advisory evidence; builder failures propagate.
     evidence = build_task_acceptance_evidence(
         ctx,
         agent_evidence=agent_evidence,
@@ -416,11 +418,8 @@ def _handle_task_acceptance_review(
         task_id=str(getattr(ctx, "task_id", "") or ""), retry_key=f"task_acceptance:{task_acceptance_evidence_revision(evidence)}",
         deadline_at=_owner_deadline_at(ctx),  # the task's own window bounds every row
     )
-    # Child-task and `off`-mode acceptance is advisory evidence, never the root
-    # verdict or its host acceptance (#1334, reviewer_slot_config R2): the rows
-    # follow their configured delivery. A child reviews with at most ONE
-    # configured row; an off-mode root's explicit call keeps the panel's
-    # configured breadth. A malformed config refuses typed (R3).
+    # Child criticism never supplies the root verdict. Each chosen row keeps
+    # its configured delivery; malformed pool configuration refuses typed.
     try:
         slots = triad_delivery_slots(role_hint="task acceptance")
     except ValueError as exc:
@@ -439,7 +438,7 @@ def _handle_task_acceptance_review(
     if not slots:
         return _publish_tool_result(ctx, ToolResult(status="unavailable", code="LEGACY_UNAVAILABLE",
             text=json.dumps({"status": "not_dispatched", "reason": "no_review_slots",
-                           "detail": "no triad reviewer row is configured; no reviewer was called"},
+                           "detail": "the review pool built no seat; no reviewer was called"},
                           ensure_ascii=False)))
     retrieving = [slot for slot in slots if slot.retrieves]
     if retrieving:
@@ -503,7 +502,7 @@ def _load_checklist_section(layer: str = "body") -> str:
         archive = archive_path.read_text(encoding="utf-8").strip()
     except OSError as e:
         # Fail-closed like the checklist itself: the archive is the same
-        # binding reviewer contract (FROZEN_CONTRACT_PATHS) — silently
+        # binding reviewer contract as the checklist — silently
         # reviewing without the standing disclosures would let settled
         # owner-accepted narrowings be re-litigated.
         raise FileNotFoundError(
@@ -1117,9 +1116,9 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     touched_paths = [f.strip() for f in review_changed.strip().splitlines() if f.strip()]
 
     # Per-row identity/delivery/strength from the ONE review-pool builder
-    # (``review_pool_slots``): the catalog's marked rows, which a never-configured
-    # install owns as the factory rows minted at the settings read seam; there is
-    # no default panel here. A malformed configuration is an infra failure, never
+    # (``review_pool_slots``): the catalog's marked rows (a never-configured install
+    # owns the factory rows minted at the settings read seam), else the Main seat
+    # alone. A malformed configuration is an infra failure, never
     # a silent api spend. Resolved BEFORE the packet's governance and file
     # evidence: only the api rows receive a packet at all, and their windows size
     # its governance share.
@@ -1137,16 +1136,6 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
             "Review enforcement=Advisory: invalid review pool configuration did not block commit. ",
         ), True
     models, row_routes = row_plan["models"], row_plan["routes"]
-    if not models:
-        # A configured fact (the ``## Review`` block's ``pool_empty``), stated as such
-        # before anything is assembled: nothing to dispatch, no provider to blame.
-        ctx._last_review_block_reason = REVIEW_POOL_EMPTY_REASON
-        return None, _handle_review_block_or_warning(
-            ctx, blocking_review,
-            f"⚠️ REVIEW_BLOCKED: review NOT_PERFORMED — {REVIEW_POOL_EMPTY_SENTENCE}",
-            "Review enforcement=Advisory: the review pool is empty, so no review ran; "
-            "an explicit author decision is required. ",
-        ), True
     ctx._last_triad_models = list(models)  # forensic: actual resolved model IDs
     # Packet rows only: a retrieving api row (native delivery or a configured
     # subagent) neither constrains the fit ladder nor counts as an api seat for
@@ -1207,7 +1196,8 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         ctx._commit_review_evidence = task_evidence
     task_evidence_compact = False
     owner_words, execution = owner_words_text(ctx), dict(getattr(ctx, "_preflight_execution", None) or {})
-    goal_section = build_goal_section(goal, scope, commit_message, owner_words, execution_section(execution))
+    pulse = review_subject_pulse(target_repo, layer, subject)  # the same line on every seat's brief
+    goal_section = build_goal_section(goal, scope, commit_message, owner_words, execution_section(execution), pulse)
     scope_section = build_scope_section(scope)
 
     def _assemble_prompt(files_section: str, staged_diff: str) -> tuple:
@@ -1286,7 +1276,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         ctx, row_plan, models, row_routes, target_repo=target_repo, governance_root=governance_root,
         subject=subject, frozen=frozen, diff_text=diff_text, layer=layer, checklist_section=checklist_section,
         commit_message=commit_message, goal=goal, scope=scope, review_rebuttal=review_rebuttal,
-        owner_words=owner_words, task_evidence=task_evidence, preflight_execution=execution)
+        owner_words=owner_words, task_evidence=task_evidence, preflight_execution=execution, diff_pulse=pulse)
     if brief_failure is not None:
         failed_slot, exc = brief_failure
         ctx._last_review_block_reason = "infra_failure"

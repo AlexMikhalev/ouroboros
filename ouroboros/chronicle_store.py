@@ -101,7 +101,7 @@ class PublishResult(NamedTuple):
     """Outcome of one publication; ``reason`` is ``saved``, ``unchanged`` or a typed refusal.
 
     Refusals: ``revision_required``, ``revision_conflict``, ``already_sealed``,
-    ``already_folded``, ``quote_mismatch``, ``target_missing``, ``invalid``. A
+    ``already_folded``, ``quote_mismatch``, ``target_missing``, ``not_integrator``, ``invalid``. A
     refusal names ids (``conflict_ids``), the current revision or room head, and
     a short ``detail``; it never carries record text.
     """
@@ -145,6 +145,18 @@ def source_time_span(timestamps: Iterable[Any], *, incomplete: bool = False) -> 
     return {"start": min(known).isoformat() if known else None,
             "end": max(known).isoformat() if known else None,
             "incomplete": bool(incomplete or not known or len(known) != len(parsed))}
+
+
+# A host-signed mark that keeps late reviewer feedback in view in its room (``late_review_marks``). The
+# feedback waits for the integrating mind: a delegated child or nanny is a helper, so only another
+# focus releases it, with a reason (``_rule_mark_release``); a first show, a page seal or a read never does.
+LATE_REVIEW_OPERATION = "late_review"
+DELEGATED_FOCUS_ROLES = frozenset({"child", "nanny"})
+
+
+def is_late_review_mark(mark: Any) -> bool:
+    author = mark.get("author") if isinstance(mark, Mapping) else None
+    return isinstance(author, Mapping) and author.get("kind") == "host" and author.get("operation") == LATE_REVIEW_OPERATION
 
 
 def _author_problem(author: Any) -> str:
@@ -775,10 +787,17 @@ class ChronicleStore:
         return None
 
     def _rule_mark_release(self, db, record):
-        if db.execute("SELECT 1 FROM active_marks WHERE id=?", (record.get("target_id", ""),)).fetchone() is None:
+        active = db.execute("SELECT body FROM active_marks WHERE id=?", (record.get("target_id", ""),)).fetchone()
+        if active is None:
             return _refuse("target_missing", "no active mark has this id", conflict_ids=(str(record.get("target_id")),))
         if not _nonblank(record.get("reason")):
             return _refuse("invalid", "a mark release needs an explicit reason")
+        author = record["author"]
+        if is_late_review_mark(json.loads(active[0])) and (
+                author["kind"] != "mind" or author["focus"]["role"] in DELEGATED_FOCUS_ROLES):
+            return _refuse("not_integrator", "late review feedback the host keeps in view is released by the "
+                           "integrating mind with its reason; a delegated helper reports it instead",
+                           conflict_ids=(str(record["target_id"]),))
         return None
 
     def _head(self, db, room) -> int:

@@ -100,6 +100,7 @@ _LOCAL_COMPACTION_MODES = {
         {
             "Shared understanding",
             "Words of my human that caused this work",
+            "Late review feedback",
             "Marks I keep in view",
             "This room",
             "Scratchpad",

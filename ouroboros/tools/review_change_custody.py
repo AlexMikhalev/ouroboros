@@ -185,9 +185,9 @@ def _recorded_commit_identity(ctx, surface: str, row: dict, retry_key: str) -> d
 
 def recorded_commit_assignment(ctx, surface: str, row: dict):
     from ouroboros.review_operation import recorded_review_assignment
-    from ouroboros.tools.review import review_drive_root
+    from ouroboros.review_custody import custody_root
 
-    return recorded_review_assignment(review_drive_root(ctx), **_recorded_commit_identity(
+    return recorded_review_assignment(custody_root(ctx), **_recorded_commit_identity(
         ctx, surface, row, str(getattr(ctx, "_current_review_retry_key", "") or "")))
 
 
@@ -259,11 +259,11 @@ def collect_recorded_commit_actor(ctx, surface: str, slot_id: str, retry_key: st
     from ouroboros.review_live_join import preparing_live_review_assignment, recorded_live_review_attempt
     from ouroboros.review_operation import collect_recorded_review_actor, recorded_review_assignment, recover_review_producer
     from ouroboros.review_substrate import run_review_request
-    from ouroboros.tools.review import review_drive_root
+    from ouroboros.review_custody import custody_root
 
     row = ((getattr(ctx, "_review_frozen_rows", {}) or {}).get(surface, {}) or {}).get(slot_id, {})
     identity = _recorded_commit_identity(ctx, surface, row, retry_key)
-    root = review_drive_root(ctx)
+    root = custody_root(ctx)
     try:
         request, slot = recorded_review_assignment(root, **identity)
     except FileNotFoundError:

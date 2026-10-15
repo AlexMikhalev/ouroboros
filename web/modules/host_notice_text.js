@@ -48,7 +48,7 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
     host_progress: ['🌐 Connection restored ', '🌐 The new attempt could not reach the provider ',
         '🌐 Provider connection ', '🌐 The primary provider temporarily refused ',
         '🌐 The request did not reach the provider ', '🌐 Primary provider answered after ',
-        '🌐 Stopped waiting for ', '🌐 Still waiting for ', '⚡ Fallback: ', '📐 Plan review:', '📐 Plan review so far:', '✅ PR #', '⚠️ PR #'],
+        '🌐 Stopped waiting for ', '🌐 Still waiting for ', '⚡ Fallback: ', '📐 Plan: ', '✅ PR #', '⚠️ PR #'],
 }));
 
 // Producers this install no longer runs: rows they already wrote keep losing only the mark at
@@ -59,7 +59,7 @@ export const RETIRED_HOST_NOTICE_PREFIXES = new Map(Object.entries({
     cancellation_notice: ['❌ cancel '],
     task_admission_notice: ['✅ Repair task '],
     task_started: ['🧬 Evolution task ', '🔎 Review task '],
-    host_progress: ['🌐 Could not establish a provider connection '],
+    host_progress: ['🌐 Could not establish a provider connection ', '📐 Plan review:', '📐 Plan review so far:'],
 }));
 
 const prefixFor = (text, type) => [...(HOST_NOTICE_PREFIXES.get(String(type || '')) || []),

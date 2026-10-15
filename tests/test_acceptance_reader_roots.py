@@ -15,7 +15,7 @@ from ouroboros.task_results import write_task_result
 from ouroboros.utils import append_jsonl
 from tests.test_acceptance_delivery import _CLEAN_VERDICT, _EpisodeLLM, _tool_call, _fake_session
 from tests.test_acceptance_source_first import _SOURCE_PATH, _prepared_request
-from tests.test_plan_review_engine import _user_text
+from tests._review_substrate_shared import user_text as _user_text
 from tests._store_shared import result_exists
 
 

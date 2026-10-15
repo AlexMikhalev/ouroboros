@@ -152,7 +152,7 @@ def test_plan_and_acceptance_prepare_effective_slot_before_capacity(live_wait, m
         return 600_000
 
     monkeypatch.setattr(reviewer_window, "reviewer_context_window", capacity)
-    accepted, _rows, _error = plan_slot_fit([slot], prompt_chars=200, quorum=1)
+    accepted, _rows = plan_slot_fit([slot], prompt_chars=200)
     budget = acceptance_packet_budget_chars([slot])
     assert accepted[0].model == "local-review" and accepted[0].use_local
     assert "critic" in budget.slot_input_caps

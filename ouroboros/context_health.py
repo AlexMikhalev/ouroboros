@@ -171,13 +171,24 @@ def _stray_server_note(env: Any) -> str:
 
 
 def _plan_review_note(env: Any, task_id: str) -> str:
-    """Read this task's recorded wave; its timestamp is a snapshot, not a live lease."""
+    """This task's plan asks still awaiting answers (a snapshot, not a live lease); a
+    legacy v2 wave with pending custody keeps its own note."""
     if not task_id:
         return ""
     try:
+        from ouroboros import plan_record
         from ouroboros.task_results import current_plan_review_wave, load_plan_review_state
 
         root = getattr(env, "drive_root", None) or env.drive_path("state").parent
+        record = plan_record.load_plan_record(root, task_id)
+        pending = plan_record.pending_asks(record)
+        if pending:
+            seats = [str(p.get("seat_id") or "?") for ask in pending for p in ask.get("participants") or [] if p.get("status") == "pending"]
+            return (f"PLAN ASK OPEN: {', '.join(str(a.get('ask_id') or '?') for a in pending)} — "
+                    f"{len(seats)} participant(s) have not answered yet ({', '.join(seats)}); silence holds nothing. "
+                    "Answers arrive in the mailbox; plan_task() reads them.")
+        if plan_record.engaged(record):
+            return ""
         wave = current_plan_review_wave(load_plan_review_state(root, task_id)) or {}
         if wave.get("closed") or not wave.get("custody_pending"):
             return ""

@@ -1,4 +1,7 @@
-"""The packaged app registers tools from an explicit module list, not package discovery."""
+"""A frozen interpreter registers tools from an explicit module list, not package discovery.
+
+Shipped builds freeze only the launcher and run ``server.py`` unfrozen, so their
+registry still discovers tool modules by package scan."""
 from __future__ import annotations
 
 import pathlib

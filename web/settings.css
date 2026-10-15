@@ -717,7 +717,8 @@
     }
 }
 
-.available-subagents-review-empty {
+.available-subagents-review-empty,
+.available-subagents-review-copies {
     display: flex;
     flex-wrap: wrap;
     align-items: center;

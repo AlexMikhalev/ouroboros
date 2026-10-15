@@ -94,10 +94,9 @@ SCENARIOS = {
     # hot-adoption variant that removes the restart (W3B-F1) — enable after boot
     # must reach the workers already running, not only the pool's next generation.
     "S13": ("skills lifecycle E2E: payload -> stub review -> grants -> enable -> dispatch -> disable/delete + Model Experience; hot-adoption variant: enable after boot dispatches in an ALREADY-SPAWNED worker with no restart", LANE_MOCK),
-    # Ф4 wave 3a (plan §8: plan review; commit triad+scope BOTH enforcement
-    # classes + stale-rejection; acceptance loop). Renumbered S14-S17 at
-    # integration: the parallel wave-3b lane claimed S11-S13 first.
-    "S14": ("plan review: scripted REVISE->ACCEPT cycle, honest durable chronicle, cycle-cap refusal", LANE_MOCK),
+    # Ф4 wave 3a (plan §8: commit triad+scope BOTH enforcement classes +
+    # stale-rejection; acceptance loop). Renumbered at integration: the parallel
+    # wave-3b lane claimed S11-S13 first; S14 (plan review) retired with its engine.
     "S15": ("commit triad+scope, ADVISORY class: red verdicts recorded + waved through with durable override, commit lands", LANE_MOCK),
     "S16": ("commit triad+scope, BLOCKING class: red blocks (HEAD unmoved), identical resubmit refused free, green lands; post-verdict revalidation", LANE_MOCK),
     "S17": ("acceptance loop (required+blocking): reject -> rework -> accept; paid-identity / free-replay invariants", LANE_MOCK),
@@ -136,11 +135,6 @@ SCENARIOS = {
     # FOUR tests: executor starvation alone, a held Host authentication alone,
     # both together, and the owner's Panic under the combined load.
     "S33": ("Presence waits keep owner controls answering: 12 events (2 held at the model, slot and same-conversation waits) on a 12-thread default executor and/or one held Host authentication; while held, /api/state, a v1 receipt and the owner's Stop (durable cancel intent, cancelled terminal) answer inside 10s/15s windows (health alone never passes); a disconnected turn and its retry are ONE model call and a later replay answers the same projection; Panic under the combined load ends the whole tree", LANE_MOCK),
-    # Plan review's ANSWER CHANNEL under blocking enforcement at the shipped cycle cap,
-    # over the asynchronous barrier route with three DISTINCT keyless reviewer models
-    # (the stub answers per seat by the wire model id).
-    "S34": ("plan review addressed answer, BLOCKING at the shipped cap: t1 objects below quorum -> $0 reject -> the identical envelope with the answer re-asks t1 ALONE (t2/t3 kept at $0 as replayed rows) over the barrier route -> t1 retires -> GREEN closed, two paid cycles, the task completes under blocking", LANE_MOCK),
-    "S35": ("plan review no-need path, BLOCKING: t1 asks the author (need_evidence), t2 leaves a note; a $0 accept closes the wave GREEN with no second panel (three reviewer calls, one paid cycle) and the task completes under blocking", LANE_MOCK),
     # #1539 own-body candidates: the smallest real consumer of the authoring seam.
     "S36": ("own-body candidate on a real server: the root's first body write in the installation's spelling binds a candidate, later repo/… and absolute serving spellings reach the same candidate files, the serving clone is byte-identical, a refused resume is the typed CANDIDATE_MISSING in the tool log, and a process in the candidate sees its isolated data root", LANE_MOCK),
     "S37": ("restart-bound adoption on one real server: a reviewed candidate commit, request_restart(adopt_commit) arms on the stop evidence, the in-place re-exec switches the clean serving checkout before its imports, generation B settles it adopted and verifies the restart on the serving SHA", LANE_MOCK),
@@ -166,7 +160,7 @@ DISTINCT_MOCK_MODEL_IDS = tuple(f"mock-model-t{i}" for i in (1, 2, 3))
 #   TRIAD_USER_MARKER      — ouroboros/tools/review.py::_dispatch_unified_review
 #   TWO_PART_SURFACE       — ouroboros/triad_review.py::REVIEW_OUTPUT_SHAPES (the commit gate's
 #                            native inspection episode names it on its "Surface:" line)
-#   PLAN_REVIEW_MARKER     — ouroboros/tools/plan_packet.py::build_plan_review_system_prompt
+#   PLAN_REVIEW_MARKER     — ouroboros/tools/plan_packet.py::_ROLE (the stable prompt's first line)
 #   NATIVE_EPISODE_MARKER  — ouroboros/review_native_episode.py::episode_prompt
 # The default-lane marker-pin test greps them out of the source files so drift is a
 # named test failure, not a silently mute stub.
@@ -179,8 +173,7 @@ TRIAD_USER_MARKER = "Review the staged diff and context provided in the instruct
 TWO_PART_SURFACE = "multi_model_review"
 SKILL_REVIEW_MARKER = "You are performing a SKILL review, not a repo-commit review."
 PLAN_REVIEW_MARKER = (
-    "You are one independent reviewer of an INTENTION — a plan spec — "
-    "before the work starts."
+    "You are one independent participant of the council that weighs an INTENTION before the work"
 )
 # Deliberately the FIRST source line of the two-literal prompt head only: the
 # marker-pin test greps the SOURCE file, where the concatenated sentence is
@@ -315,7 +308,7 @@ REVIEW_KINDS = frozenset({
 # triad — triad_review.REVIEW_JSON_ARRAY_CONTRACT ([] + NO_FINDINGS sentinel);
 # two-part — triad_review.REVIEW_TWO_PART_OBJECT_CONTRACT: one object {change, change_clean,
 # coupling}, the coupling matrix per scope_review_contract.normalize_scope_items (required
-# matrix, PASS reasons must be non-terse); reviewer slot — review_execution's "Return JSON
+# matrix, every row carries a reason); reviewer slot — review_execution's "Return JSON
 # with keys" list.
 # ---------------------------------------------------------------------------
 
@@ -340,11 +333,15 @@ def canned_review_answer(kind: str) -> dict | None:
         return {"role": "assistant", "content": TRIAD_CLEAN_TEXT}
     if kind in ("acceptance", "reviewer_slot"):
         return {"role": "assistant", "content": reviewer_slot_clean_text(kind)}
-    if kind in ("plan_review", "advisory_review", "native_episode"):
-        # One shared clean shape: the plan-review findings contract
-        # (plan_spec.parse_findings) and the advisory episode's clean predicate
-        # (triad_review.empty_array_is_verified_clean) both accept the bare
-        # empty array + NO_FINDINGS sentinel as a verified-clean verdict.
+    if kind == "plan_review":
+        # The planning organ's reply contract (plan_packet.PLAN_REPLY_CONTRACT, parsed by
+        # plan_record.parse_reply): prose plus the participant's own objections and
+        # withdrawals; a clean answer raises nothing. Nobody votes, so no verdict token.
+        return {"role": "assistant", "content": json.dumps(
+            {"prose": "Stub participant: no objection to starting as planned.", "objections": [], "withdrawn": []})}
+    if kind in ("advisory_review", "native_episode"):
+        # The advisory episode's clean predicate (triad_review.empty_array_is_verified_clean)
+        # accepts the bare empty array + NO_FINDINGS sentinel as a verified-clean verdict.
         return {"role": "assistant", "content": TRIAD_CLEAN_TEXT}
     return None
 

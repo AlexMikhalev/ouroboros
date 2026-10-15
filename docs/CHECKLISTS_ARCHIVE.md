@@ -9,11 +9,13 @@ file is delivered with the body layer only: a change review of another
 repository runs the core checklist and does not carry it.
 
 These entries remain BINDING on every reviewer — triad, scope, and advisory.
-Each records an owner-accepted removal, narrowing, or replacement path. Do not
-re-raise anything recorded here as a new undisclosed removal/narrowing finding;
-when a diff touches a surface an entry covers, judge it against the entry's
-stated bounds instead. The archive is append-only: corrections land as new
-superseding entries, not edits to old ones.
+Each records an owner-accepted removal, narrowing, or replacement path; an
+entry the change under review adds is checked against that owner decision like
+any other edit, not taken as settled. Do not re-raise anything recorded here
+as a new undisclosed removal/narrowing finding; when a diff touches a surface
+an entry covers, judge it against the entry's stated bounds instead. The
+archive is append-only: corrections land as new superseding entries, not edits
+to old ones.
 
 ## Item 7 (`capability_regression`) — standing disclosures
 

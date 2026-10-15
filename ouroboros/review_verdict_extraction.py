@@ -178,9 +178,10 @@ def canonicalize_session_verdict(
 
     ``shape`` (``triad_review.review_output_shape``) is the contract's FORM:
     ``array`` (findings list), ``object`` (the whole acceptance verdict object,
-    kept whole on every branch — never reduced to its findings) or ``report``
+    kept whole on every branch — never reduced to its findings), ``report``
     (a free-form product that is passed through verbatim; nothing here may
-    turn a diagnosis into a findings array).
+    turn a diagnosis into a findings array) or ``plan_reply`` (the planning
+    organ's reply object, passed through whole for ``plan_record.parse_reply``).
 
     An array surface may supply its existing row validator. Shape-valid but
     contract-invalid rows then reach the same extraction rail; the host never
@@ -193,6 +194,10 @@ def canonicalize_session_verdict(
     text = str(raw_text or "")
     if shape == "report":
         return text, "report", {}
+    if shape == "plan_reply":
+        # The planning organ's reply object is no verdict: the whole text passes to
+        # plan_record.parse_reply downstream; no strict shape, no light extraction.
+        return text, "plan_reply", {}
     if conformance_passed:
         try:
             payload = json.loads(text.strip())

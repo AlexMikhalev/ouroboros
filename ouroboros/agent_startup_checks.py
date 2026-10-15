@@ -279,11 +279,13 @@ def validate_task_authority_sources(env: Any, task: Dict[str, Any]) -> Dict[str,
     current_id = str(task.get("id") or "").strip()
     if current_id:
         try:
+            from ouroboros import plan_record
             from ouroboros.task_results import load_plan_review_state
             from ouroboros.task_store import exists
 
             if exists(root, current_id):
                 load_plan_review_state(root, current_id)
+                plan_record.load_plan_record(root, current_id)
         except Exception as exc:
             return _unavailable(
                 {"kind": "plan_review_state", "task_id": current_id,
