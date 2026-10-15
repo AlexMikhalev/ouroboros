@@ -1430,16 +1430,12 @@ def recover_orphaned_acceptance_operations(drive_root: Any, *, stop: Optional[Ca
     from ouroboros.acceptance_settlement import acceptance_actor_ended, settle_acceptance_operation
     from ouroboros.store import StoreError
     from ouroboros.task_results import load_task_result
-    from ouroboros.task_store import ids_with_fields
+    from ouroboros.task_store import review_collection_candidates
 
     local_reviews_settled()  # a direct turn's closed operation needs no worker probe to publish
     root = pathlib.Path(drive_root)
     report: Dict[str, Any] = {"settled": [], "pending": [], "deferred": [], "errors": []}
-    try:
-        candidates = ids_with_fields(root, (OPERATIONS_FIELD, "review_projection"))
-    except StoreError:
-        return report
-    for task_id in candidates:
+    for task_id in review_collection_candidates(root, stop=stop):
         if stop is not None and stop():
             break
         try:

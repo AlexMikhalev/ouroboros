@@ -103,42 +103,49 @@ test('#1073 the worker readiness frames render their own fields in Logs', () => 
 });
 
 
-test('accounting wait phases remain distinct visible host checkpoints in chat and Logs', () => {
-    const frame = { type: 'task_checkpoint', task_id: 't1', checkpoint_kind: 'usage_lock_wait', round: 3 };
-    const entered = { ...frame, phase: 'entered' };
-    const ended = { ...frame, phase: 'ended' };
-    const first = summarizeChatLiveEvent(entered);
-    const last = summarizeChatLiveEvent(ended);
-    assert.equal(first.headline, 'Waiting for accounting access');
-    assert.equal(last.headline, 'Accounting wait ended');
-    assert.notEqual(first.dedupeKey, last.dedupeKey);
-    for (const [event, view] of [[entered, first], [ended, last]]) {
-        assert.equal(view.visible, true);
-        assert.equal(view.promote, false);
-        assert.equal(view.terminal, false);
-        assert.equal(summarizeLogEvent(event).headline, view.headline);
-    }
-});
-
-test('two wait episodes retain all phases through the actual live and history reducers', () => {
-    const events = ['first', 'second'].flatMap((episode_id) => ['entered', 'ended'].map((phase) => ({
-        type: 'task_checkpoint', task_id: 't1', checkpoint_kind: 'usage_lock_wait', episode_id, phase,
-    }))).map((event, index) => ({ ...event, ts: `2026-09-27T01:00:0${index}Z` }));
-    const live = { items: [] }, replay = { items: [] };
-    events.forEach((event, index) => {
-        const summary = summarizeChatLiveEvent(event);
-        updateLiveTimelineItem(live, summary, { ts: event.ts, rawTs: event.ts,
-            syntheticKey: summary.dedupeKey, headline: summary.headline });
-        const row = { ...event, history_id: `progress:${index}`, history_position: { source: 'progress', offset: index } };
-        mergeHistoricalTimelineItem(replay, summary, row, event.ts);
-        assert.equal(live.items.at(-1).headline, summary.headline);
-        assert.equal(live.items.length, index + 1);
-        // Reconnect enriches each existing live row without adding a twin.
-        mergeHistoricalTimelineItem(live, summary, row, event.ts);
-        assert.equal(live.items.length, index + 1);
+for (const [kind, labels] of [
+    ['usage_lock_wait', ['Waiting for accounting access', 'Accounting wait ended']],
+    ['control_store_wait', ['Waiting for control storage', 'Control storage wait ended']],
+]) {
+    test(`${kind} phases stay distinct visible host checkpoints in chat and Logs`, () => {
+        const frame = { type: 'task_checkpoint', task_id: 't1', checkpoint_kind: kind, round: 3 };
+        const events = ['entered', 'ended'].map(phase => ({ ...frame, phase }));
+        const views = events.map(summarizeChatLiveEvent);
+        assert.deepEqual(views.map(view => view.headline), labels);
+        assert.notEqual(views[0].dedupeKey, views[1].dedupeKey);
+        for (const [index, view] of views.entries()) {
+            assert.equal(view.visible, true);
+            assert.equal(view.promote, false);
+            assert.equal(view.terminal, false);
+            assert.equal(summarizeLogEvent(events[index]).headline, view.headline);
+        }
     });
-    assert.deepEqual(live.items.map(row => row.headline), replay.items.map(row => row.headline));
-});
+
+    test(`${kind} episodes survive live delivery, redelivery, history and reconnect`, () => {
+        const events = ['first', 'second'].flatMap(episode_id => ['entered', 'ended'].map(phase => ({
+            type: 'task_checkpoint', task_id: 't1', checkpoint_kind: kind, episode_id, phase,
+        }))).map((event, index) => ({ ...event, ts: `2026-09-27T01:00:0${index}Z` }));
+        const live = { items: [] }, replay = { items: [] };
+        const deliver = event => {
+            const summary = summarizeChatLiveEvent(event);
+            updateLiveTimelineItem(live, summary, { ts: event.ts, rawTs: event.ts,
+                syntheticKey: summary.dedupeKey, headline: summary.headline, inPlaceByKey: false });
+        };
+        events.forEach(deliver);
+        assert.deepEqual(live.items.map(row => row.headline), [...labels, ...labels]);
+        events.forEach(deliver);
+        assert.equal(live.items.length, 4, 'redelivery adds no rows');
+        events.forEach((event, index) => {
+            const summary = summarizeChatLiveEvent(event);
+            const row = { ...event, history_id: `progress:${index}`,
+                history_position: { source: 'progress', offset: index } };
+            mergeHistoricalTimelineItem(replay, summary, row, event.ts);
+            mergeHistoricalTimelineItem(live, summary, row, event.ts);
+        });
+        assert.deepEqual(replay.items.map(row => row.headline), [...labels, ...labels]);
+        assert.deepEqual(live.items.map(row => row.headline), replay.items.map(row => row.headline));
+    });
+}
 
 test('unconfirmed service cleanup is visible without claiming stopped', () => {
     const pending = { type: 'task_checkpoint', task_id: 'task', round: 1,

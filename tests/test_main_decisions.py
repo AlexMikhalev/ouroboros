@@ -90,10 +90,11 @@ def test_store_published_before_the_question_flag_gains_it_once_at_boot(tmp_path
 
 def schema_one_write(root, document):
     """A schema-1 body's ``Txn.store_task`` on an upgraded store (a rollback's write): its own
-    column list, which predates ``has_owner_questions``; it never touches ``schema_version``."""
+    column list, which predates both nullable additions; it never touches ``schema_version``."""
     task_id = str(document["task_id"])
     with store.open_store(root, write=True) as txn:
-        columns = {key: value for key, value in store.typed_columns(document).items() if key != "has_owner_questions"}
+        columns = {key: value for key, value in store.typed_columns(document).items()
+                   if key not in {"has_owner_questions", "review_collection_pending"}}
         columns["write_seq"] = (txn.row(task_id, "write_seq") or 0) + 1
         txn.conn.execute("INSERT OR REPLACE INTO task_bodies (task_id, body) VALUES (?, ?)",
                          (task_id, store.encode_document(document)))
@@ -125,7 +126,7 @@ def test_questions_an_older_body_rewrote_or_asked_return_to_main_at_the_next_boo
     append_jsonl(tmp_path / "logs/chat.jsonl", {"direction": "out", "type": "quiz", "task_id": "later",
                  "chat_id": project["chat_id"], "quiz": {"quiz_id": "older"}})
     with store.open_store(tmp_path, write=False) as txn:
-        assert txn.meta("schema_version") == store.SCHEMA_VERSION == 2
+        assert txn.meta("schema_version") == store.SCHEMA_VERSION
         assert [txn.row(tid, "has_owner_questions") for tid in ("task", "later")] == [None, None]
     report = prepare_startup_state(tmp_path)  # the return to this body
     assert report["flag_rows_derived"] == 2 and report["question_publications"] == {"bound": 1, "unknown": 0}
@@ -136,7 +137,7 @@ def test_questions_an_older_body_rewrote_or_asked_return_to_main_at_the_next_boo
         ("task", "kept"), ("task", "owed"), ("later", "older")}  # a settled answer stays settled
     assert quiz_delivery_due(read_document(tmp_path, "task")["owner_quiz"]["owed"])  # recovery owes it again
     with store.open_store(tmp_path, write=False) as txn:
-        assert txn.meta("schema_version") == 2
+        assert txn.meta("schema_version") == store.SCHEMA_VERSION
     monkeypatch.setattr(startup_migrations, "_legacy_question_publications", lambda *a: pytest.fail("repeat import"))
     assert "flag_rows_derived" not in prepare_startup_state(tmp_path)
 

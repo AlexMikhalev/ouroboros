@@ -120,6 +120,7 @@ def _ensure(root: pathlib.Path, path: pathlib.Path, *, rederive: bool = False) -
             flags = _derive_flag_columns(txn, rederive=rederive)  # before any row write needs the column
             phase = txn.phase()
             if phase == PUBLISHED:
+                _upgrade_review_collection(txn)
                 report, quarantined = _reconcile(root, txn)
             export = txn.meta("export") or {}
         if phase == PUBLISHED:
@@ -134,6 +135,25 @@ def _ensure(root: pathlib.Path, path: pathlib.Path, *, rederive: bool = False) -
     elif store.generation_stamped(root):
         raise StoreLost(f"current store missing beside its completed stamp: {path}")
     return _build_and_publish(root, path, tier)
+
+
+def _upgrade_review_collection(txn: Txn) -> None:
+    """Schema only: old bodies stay unknown until the ordinary collector visits them.
+    DDL and its version commit together; an interrupted upgrade is retried in place."""
+    if "review_collection_pending" not in {row["name"] for row in txn.conn.execute("PRAGMA table_info(tasks)")}:
+        txn.conn.execute("ALTER TABLE tasks ADD COLUMN review_collection_pending INTEGER")
+    txn.conn.execute(store.REVIEW_COLLECTION_INDEX)
+    if int(txn.meta("schema_version") or 1) < store.SCHEMA_VERSION:
+        txn.set_meta("schema_version", store.SCHEMA_VERSION)
+
+
+def upgrade_current_schema(root: Any) -> None:
+    """First-touch writer/maintenance preparation, never a passive read or history import.
+    The ordinary write gate and inherited acquisition budget also govern this DDL:
+    a caller under a queue/launch lock cannot acquire an extra long import lock."""
+    with store.open_store(root, write=True) as txn:
+        _derive_flag_columns(txn)  # all prior flags must exist before the version advances
+        _upgrade_review_collection(txn)
 
 
 def _derive_flag_columns(txn: Txn, *, rederive: bool = False) -> Dict[str, Any]:
