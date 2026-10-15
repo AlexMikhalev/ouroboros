@@ -199,6 +199,7 @@ function providerSettingsCard(spec) {
 export const SECRET_KEYS = [
     ['OPENROUTER_API_KEY', 'OpenRouter API Key', 'sk-or-...'],
     ['OPENAI_API_KEY', 'OpenAI API Key', 'sk-...'],
+    ['GOOGLE_API_KEY', 'Google AI API Key (Live)', 'Google AI key'],
     ['OPENAI_COMPATIBLE_API_KEY', 'OpenAI-compatible API Key', 'Compatible provider key'],
     ['CLOUDRU_FOUNDATION_MODELS_API_KEY', 'Cloud.ru Foundation Models API Key', 'Cloud.ru key'],
     ['GIGACHAT_CREDENTIALS', 'GigaChat Authorization Key', 'Base64 client_id:secret'],

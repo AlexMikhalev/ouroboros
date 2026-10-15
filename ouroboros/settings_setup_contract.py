@@ -161,6 +161,7 @@ _STEP_ORDER = [step["id"] for step in _STEPS]
 _PROVIDER_FIELDS = _rows(("id", "stateKey", "settingKey", "settingsInputId", "label", "placeholder", "note", "inputType", "group"), (
     ("openrouter-key", "openrouterKey", "OPENROUTER_API_KEY", "s-openrouter", "OpenRouter API Key", "sk-or-v1-...", "Optional. Best when you want one router for OpenAI, Anthropic, Google, and more.", "password", "primary"),
     ("openai-key", "openaiKey", "OPENAI_API_KEY", "s-openai", "OpenAI API Key", "sk-...", "Optional. If this is the only remote key, the next step prefills OpenAI's own model ids.", "password", "primary"),
+    ("google-key", "googleKey", "GOOGLE_API_KEY", "s-google", "Google AI API Key (Live)", "Google AI key", "Optional. Enables Gemini live calls alongside your text model.", "password", "more"),
     ("cloudru-key", "cloudruKey", "CLOUDRU_FOUNDATION_MODELS_API_KEY", "s-cloudru-key", "Cloud.ru Foundation Models API Key", "Cloud.ru API key", "Optional. If this is the only remote key, the next step prefills Cloud.ru's own model ids.", "password", "more"),
     ("minimax-key", "minimaxKey", "MINIMAX_API_KEY", "s-minimax-key", "MiniMax API Key", "MiniMax API key", "Optional. If this is the only remote key, the next step prefills MiniMax's own model ids.", "password", "more"),
     ("minimax-region", "minimaxRegion", "MINIMAX_REGION", "s-minimax-region", "MiniMax Region", "global_en or cn_zh", "Choose global_en for the global endpoint or cn_zh for the China endpoint.", "text", "more"),

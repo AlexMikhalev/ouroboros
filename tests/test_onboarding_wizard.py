@@ -633,6 +633,7 @@ def test_setup_contract_groups_rarely_used_providers():
     assert {field["settingKey"]: field["group"] for field in fields} == {
         "OPENROUTER_API_KEY": "primary",
         "OPENAI_API_KEY": "primary",
+        "GOOGLE_API_KEY": "more",
         "CLOUDRU_FOUNDATION_MODELS_API_KEY": "more",
         "MINIMAX_API_KEY": "more",
         "MINIMAX_REGION": "more",
@@ -709,6 +710,7 @@ def test_setup_contract_has_no_secret_values():
 _SECRET_CANARIES = {
     "OPENROUTER_API_KEY": "sk-or-SECRETCANARY123",
     "OPENAI_API_KEY": "sk-openai-SECRETCANARY124",
+    "GOOGLE_API_KEY": "google-onboarding-canary-secret",
     "OPENAI_COMPATIBLE_API_KEY": "compat-SECRETCANARY125",
     "CLOUDRU_FOUNDATION_MODELS_API_KEY": "cloudru-SECRETCANARY126",
     "MINIMAX_API_KEY": "minimax-SECRETCANARY127",
