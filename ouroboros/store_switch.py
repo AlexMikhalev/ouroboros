@@ -103,7 +103,8 @@ def report_outcomes(root: pathlib.Path, owner_chat_id: int) -> None:
         door = doors.get(intent.get("door"), "Version switch")
         target = intent.get("target_ref") or intent.get("target_sha") or "the requested version"
         reason = outcome.get("reason") or outcome.get("message") or "the app stopped before changing versions"
-        reason = " ".join(str(reasons.get(reason, reason)).split()).rstrip(".")
+        # The headline line only: Git's whole output stays in the receipt and progress record.
+        reason = " ".join((str(reasons.get(reason, reason)).splitlines() or [""])[0].split()).rstrip(".")
         msg = (f"{door} to {target} did not happen: {reason}. The app is running the current version. "
                "You can press that door again.")
         send_with_budget(owner_chat_id, msg, role="system", system_type="storage_switch_notice", require_write=True)
@@ -186,9 +187,16 @@ def switching_owner(door: str) -> Owner:
     """The door's original owner, preserving rescue/verification/handoff and the intent's reason.
     Update doors refuse a managed record naming another target; the seam verifies HEAD."""
     if door in {"ui_rollback", "vcs_rollback"}:
+        from supervisor.git_ops_reset import IndexLockRefusal, refusal_text
         from supervisor.update_recovery import rollback_to_version
 
-        return lambda intent: rollback_to_version(intent["target_sha"], reason=intent["reason"])
+        def restore(intent: Dict[str, Any]) -> Tuple[bool, str]:
+            try:
+                return rollback_to_version(intent["target_sha"], reason=intent["reason"])
+            except IndexLockRefusal as exc:  # the door's typed refusal is this seam's failed switch
+                return False, refusal_text(exc)
+
+        return restore
     if door == "boot_smoke_rollback":
         from supervisor.update_merge import read_update_tx_strict, rollback_managed_update
 
@@ -200,11 +208,11 @@ def switching_owner(door: str) -> Owner:
         return rollback
     if door == "update_replace":
         from supervisor import git_ops
-        from supervisor.git_ops_reset import checkout_and_reset
+        from supervisor.git_ops_reset import _checkout_outcome
 
         def replace(intent: Dict[str, Any]) -> Tuple[bool, str]:
             recorded = str((git_ops._read_update_intent() or {}).get("target_sha") or "")
-            return _unbound(recorded, intent, "the managed update intent targets") or checkout_and_reset(
+            return _unbound(recorded, intent, "the managed update intent targets") or _checkout_outcome(
                 git_ops.BRANCH_DEV, reason="ui_update_apply", unsynced_policy="rescue_and_reset")
 
         return replace
