@@ -34,7 +34,7 @@ LOCK_NAME = "current.lock"  # the name-tier lock around every access
 IMPORT_LOCK_NAME = "current_import.lock"
 GENERATION = 8  # the lifecycle generation that owns the store
 GENERATION_KEY = "current_store_generation"  # in state/migrations.json
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: the ``has_owner_questions`` flag column
 STORE_WAIT_SEC = 10.0
 TIER_ENFORCED, TIER_NAME = "enforced", "name"
 PUBLISHED, EXPORTING, RETIRED = "published", "exporting", "retired"
@@ -43,10 +43,13 @@ _APPLICATION_ID = {TIER_ENFORCED: 0x4F554345, TIER_NAME: 0x4F55434E}
 TYPED_COLUMNS = ("status", "parent_task_id", "root_task_id", "delegation_role", "superseded_by",
                  "retry_task_id", "project_id", "ts", "updated_at", "child_drive_root",
                  "headless_child_drive_root", "drive_root", "presence_binding_id")
-# set name -> flag column; the writer decides ``pending_drive`` (nonterminal, or terminal files not ready)
+# set name -> flag column; the writer decides ``pending_drive`` (nonterminal, or terminal files not ready).
+# A column added after schema 1 is nullable: a whole-row write by an older body (its own column list)
+# leaves NULL, "not derived", which the next boot derives (``store_import._derive_flag_columns``).
 FLAG_COLUMNS = {"synthesis": "owes_synthesis", "terminal_projection": "owes_terminal_projection",
                 "promotions": "has_pending_promotion", "pause_notices": "has_pause_notices",
-                "delegated_runs": "delegated_runs_unreconciled", "pending_drives": "pending_drive"}
+                "delegated_runs": "delegated_runs_unreconciled", "pending_drives": "pending_drive",
+                "owner_questions": "has_owner_questions"}
 # The per-operation projections of a document that live in ``task_handoffs`` rows (``kind`` = the
 # field): a claim, a wait or a retirement writes its one row, never the body. The body keeps a
 # present key as ``{}`` (its place and presence); ``load`` puts the rows back there, so a document
@@ -60,7 +63,8 @@ CREATE TABLE tasks (
   presence_authority_recorded INTEGER NOT NULL DEFAULT 0, write_seq INTEGER NOT NULL DEFAULT 0,
   owes_synthesis INTEGER NOT NULL DEFAULT 0, owes_terminal_projection INTEGER NOT NULL DEFAULT 0,
   has_pending_promotion INTEGER NOT NULL DEFAULT 0, has_pause_notices INTEGER NOT NULL DEFAULT 0,
-  delegated_runs_unreconciled INTEGER NOT NULL DEFAULT 0, pending_drive INTEGER NOT NULL DEFAULT 0);
+  delegated_runs_unreconciled INTEGER NOT NULL DEFAULT 0, pending_drive INTEGER NOT NULL DEFAULT 0,
+  has_owner_questions INTEGER);
 CREATE INDEX tasks_parent ON tasks(parent_task_id); CREATE INDEX tasks_root ON tasks(root_task_id);
 CREATE INDEX tasks_status ON tasks(status); CREATE INDEX tasks_project ON tasks(project_id);
 CREATE INDEX tasks_ts ON tasks(ts, task_id); CREATE INDEX tasks_updated ON tasks(updated_at, task_id);

@@ -423,7 +423,7 @@ def _stored_message(row_matches_thread, stored_chat_id, child):
     def message(entry):
         kind = str(entry.get("type") or "")
         return (str(entry.get("direction") or "").lower() in ("out", "system")
-                and kind not in ("routing_options", "quiz_answer", "task_summary", "skill_review")
+                and kind not in ("routing_options", "quiz_answer", "quiz_closed", "task_summary", "skill_review")
                 and not is_a2a_chat_id(entry.get("chat_id", 1))
                 and (str(entry.get("text") or "").strip() not in ("", "\u200b") or kind in _STANDALONE_KINDS)
                 and row_matches_thread(stored_chat_id(entry.get("chat_id"), 1), entry)
@@ -523,12 +523,12 @@ def latest_arrival(rows, page, data_dir, row_matches_thread, stored_chat_id, pro
 def replay_evidence_rows(messages, evidence):
     """Carry cross-page evidence only when this page has no equivalent fact."""
     visible = {row.get("history_id") for row in messages if row.get("history_id")}
-    answered = {(row.get("task_id"), row["quiz"].get("quiz_id")) for row in messages
-                if row.get("msg_type") == "quiz" and row["quiz"].get("state") == "answered"}
+    settled = {(row.get("task_id"), row["quiz"].get("quiz_id"), row["quiz"].get("state")) for row in messages
+               if row.get("msg_type") == "quiz" and row["quiz"].get("state") in {"answered", "closed"}}
     terminals = {row["task_id"]: row["historical_terminal"] for row in messages
                  if row.get("task_id") and row.get("historical_terminal")}
     return [row for row in evidence if row.get("history_id") not in visible
-            and not (row.get("system_type") == "quiz_answer"
-                     and (row.get("task_id"), row["quiz"].get("quiz_id")) in answered)
+            and not (row.get("system_type") in {"quiz_answer", "quiz_closed"}
+                     and (row.get("task_id"), row["quiz"].get("quiz_id"), row["quiz"].get("state")) in settled)
             and not (row.get("historical_terminal")
                      and terminals.get(row.get("task_id")) == row["historical_terminal"])]

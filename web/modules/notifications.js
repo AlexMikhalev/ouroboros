@@ -414,6 +414,35 @@ export function nativeStatusText({ enabled = true, shell = null, native = false,
 
 /* ---------------------------------------------------------------- shell ---- */
 
+/** Resolve a clicked notice by its publication address, never a sidebar slice.
+ * Lookup is activation-only; live classification/hydration keep their policy.
+ * A later activation supersedes an outstanding lookup from an earlier click.
+ */
+export function createNotificationActivation({ resolveProject, openProject, openMain, unavailable }) {
+    let generation = 0;
+    return async (target) => {
+        const revision = ++generation;
+        const chatId = Number(target?.chatId);
+        try {
+            if (target?.isMain === true || (target?.isMain !== false && chatId === MAIN_CHAT_ID)) {
+                await openMain();
+                return;
+            }
+            if (!Number.isSafeInteger(chatId) || chatId === 0) throw new Error('Missing destination');
+            const project = await resolveProject(chatId);
+            if (revision !== generation) return;
+            if (!project?.id || Number(project.chat_id) !== chatId || project.lifecycle !== 'active') {
+                throw new Error('Project destination unavailable');
+            }
+            await openProject(project, {
+                openOnly: true, taskId: String(target?.taskId || ''), quizId: String(target?.quizId || ''),
+            });
+        } catch {
+            if (revision === generation) unavailable();
+        }
+    };
+}
+
 export function createNotifier({
     storage = globalThis.localStorage,
     notificationCtor = globalThis.Notification,
@@ -655,6 +684,7 @@ export function createNotifier({
             if (id && childTasks.has(id)) resolved.isRoot = false;
         }
         const candidate = classifyLiveFrame(frame, resolved);
+        if (candidate && typeof resolved.isMain === 'boolean') candidate.target.isMain = resolved.isMain;
         const decision = decideNotification(candidate, prefs, seen);
         if (!decision.deliver) return null;
         remember(decision.key);
@@ -802,7 +832,7 @@ export function createNotifier({
                     || (Number.isFinite(id) && id > 0 && id !== mainChatId && known(id));
                 const context = { kind, isMain: !inProjectRoom };
                 if (kind === 'log') context.taskId = getLogTaskGroupId(frame) || '';
-                handleFrame(frame, context);
+                handleFrame({ ...frame, chat_id: raw }, context);
             } catch {
                 /* This listener runs BEFORE the chat instances' own handlers and
                    ws.emit does not isolate them, so an error here would break

@@ -134,7 +134,7 @@ def test_warm_owner_pause_registry_and_fence_reach_the_rendered_card(tmp_path, m
         {"phase": "Paused · owner pause · review work finishing", "resume": True, "typing": "none"},
         {"phase": "Paused · owner pause", "resume": True, "typing": "none"},
         # A resumed direct turn reads its own census phase (``preparing``), a managed task ``working``.
-        {"phase": "Preparing request" if kind == "direct_chat" else "Working", "resume": False, "typing": ""},
+        {"phase": "Preparing" if kind == "direct_chat" else "Working", "resume": False, "typing": ""},
     ]
 
 

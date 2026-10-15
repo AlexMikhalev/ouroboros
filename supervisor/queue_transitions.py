@@ -540,7 +540,7 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
                     return {"ok": False, "error": "snapshot_not_persisted"}
         exact = bool(located is not None and isinstance(located.get("_budget_pause"), dict)
                      and located["_budget_pause"].get("exact_continuation"))
-        owner_paused = bool(exact and located["_budget_pause"].get("reason") == "owner")
+        pause_reason = located["_budget_pause"].get("reason") if exact else None
         result_root = pathlib.Path((located or {}).get("budget_drive_root") or q.DRIVE_ROOT)
         located_state = copy.deepcopy(located)
         needs_selection = located is not None and budget_pause_fact(located) is not None
@@ -548,7 +548,7 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
         # Fresh custody at EVERY grant, read OUTSIDE the queue lock (a harness
         # round trip is not a queue-lock tenant); the grant below re-locates the
         # row and decides on this observation. A budget pause requests stops of
-        # uncovered runs; the owner's Pause only observes sent work (Batch4 5A).
+        # uncovered runs; owner/technical pauses observe the sent work they retained.
         from ouroboros.budget_pause import observe_task_runs
         from ouroboros.owner_pause import fence_closed, read_fence
 
@@ -558,10 +558,10 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
         except Exception:
             return {"ok": False, "error": "owner_pause_custody_unreadable"}
         # Owner Pause may overlay an already saved budget/sleep checkpoint.
-        owner_paused = owner_paused or fence_closed(owner_fence)
+        owner_paused = pause_reason == "owner" or fence_closed(owner_fence)
 
         external = observe_task_runs(result_root, task_id, reason="budget_resume_uncovered_cost",
-                                     request_stop=not owner_paused)
+                                     request_stop=not (owner_paused or pause_reason == "authority"))
         if owner_paused:
             from supervisor.continuation_admission import action_writers
 

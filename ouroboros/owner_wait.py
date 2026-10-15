@@ -52,7 +52,7 @@ def classify_wake(entries: list[dict], quiz_id: str) -> str:
     Precedence: control, this card's answer, owner words, hurry, mail.
     """
     from ouroboros.owner_mailbox import (
-        KIND_FINALIZE_NOW, KIND_HURRY, KIND_OWNER_PAUSE, KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_TASK_MESSAGE,
+        KIND_FINALIZE_NOW, KIND_HURRY, KIND_OWNER_PAUSE, KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_QUIZ_CLOSED, KIND_TASK_MESSAGE,
     )
 
     kinds = [str(row.get("kind") or KIND_OWNER_TEXT) for row in entries]
@@ -63,6 +63,9 @@ def classify_wake(entries: list[dict], quiz_id: str) -> str:
     if any(kind == KIND_QUIZ_ANSWER and row.get("msg_id") == f"quiz_answer:{quiz_id}"
            for kind, row in zip(kinds, entries)):
         return "answer"
+    if any(kind == KIND_QUIZ_CLOSED and row.get("msg_id") == f"quiz_closed:{quiz_id}"
+           for kind, row in zip(kinds, entries)):
+        return "question_closed"
     if any(kind in {KIND_OWNER_TEXT, KIND_QUIZ_ANSWER} for kind in kinds):
         return "owner_text"
     if KIND_HURRY in kinds:
@@ -100,6 +103,8 @@ def _fresh_wake(ctx: Any, quiz_id: str, outcome: str) -> str:
         return outcome
     if observed in {"answer", "owner_text", "control:finalize_now", "control:owner_pause"}:
         return observed
+    if _question_closed(ctx, {"quiz_id": quiz_id}):
+        return "question_closed"
     return observed if outcome == "unknown" else outcome
 
 
@@ -460,14 +465,50 @@ def worker_owner_wait(wid: int, in_q: Any, out_q: Any, ctx: Any,
                 resume_requested = True
 
 
+_CLOSURE_READS: dict = {}  # (task_id, quiz_id) -> (task record signature, closed)
+
+
+def _question_closed(ctx: Any, checkpoint: dict) -> bool:
+    """Only this addressed canonical question can release its paired wait.
+
+    Closure requests the ordinary capacity grant. It grants no owner authority
+    and does not mutate the waiting projection before the supervisor's grant.
+    A Pause or sleep park carries no quiz id. The parked poll re-reads the
+    record only when its store signature (``write_seq``, ``updated_at``) changed.
+    """
+    quiz_id = str((checkpoint or {}).get("quiz_id") or "")
+    if not quiz_id or checkpoint.get("review_binding") or checkpoint.get("sleep"):
+        return False
+    from ouroboros.owner_quiz import quiz_states
+    from ouroboros.store import StoreError
+    from ouroboros.task_store import signature
+
+    root = pathlib.Path(ctx.budget_drive_root or ctx.drive_root)
+    key = (str(ctx.task_id), quiz_id)
+    try:
+        stamp = signature(root, ctx.task_id)
+    except StoreError:
+        stamp = None
+    cached = _CLOSURE_READS.get(key)
+    if stamp is not None and cached is not None and cached[0] == stamp:
+        return cached[1]
+    closed = (quiz_states(root, ctx.task_id).get(quiz_id) or {}).get("state") == "closed"
+    if len(_CLOSURE_READS) >= 256:
+        _CLOSURE_READS.clear()
+    if stamp is not None:
+        _CLOSURE_READS[key] = (stamp, closed)
+    return closed
+
+
 def _sleep_wake(ctx: Any, checkpoint: dict) -> str | None:
-    """``None`` for an owner/review wait (any mail wakes it); for a model sleep, the
+    """``None`` for an owner/review wait (any mail wakes it) unless its own question
+    was explicitly closed; for a model sleep, the
     reason its selected sources give NOW (``""`` = keep sleeping), read from the
     canonical records on every poll — the recheck after the park that closes the
     race with an event landing between the tool's check and the park."""
     chosen = (checkpoint or {}).get("sleep")
     if not isinstance(chosen, dict):
-        return None
+        return "question_closed" if _question_closed(ctx, checkpoint) else None
     from ouroboros.model_sleep import wake_reason
     from ouroboros.store import acquisition_budget
 
@@ -764,13 +805,23 @@ def append_wake_notice(ctx: Any, checkpoint: dict, outcome: Any, messages: list)
     if checkpoint.get("reason") == REASON_OWNER_PAUSE_WARM:
         return  # ``park_owner_pause_warm`` writes the Resume notice itself
     if checkpoint.get("review_binding") or not (
-            outcome in {"timeout", "hurry", "unknown"} or outcome.startswith("mail")):
+            outcome in {"timeout", "hurry", "unknown", "question_closed"} or outcome.startswith("mail")):
         return
     from ouroboros.owner_quiz import quiz_states
 
     root = pathlib.Path(ctx.budget_drive_root or ctx.drive_root)
     block = quiz_states(root, ctx.task_id).get(str(checkpoint.get("quiz_id") or "")) or {}
     if block.get("state") == "answered":
+        return
+    if block.get("state") == "closed":
+        if block.get("closed_actor") == "owner" and any(
+                row.get("kind") == "quiz_closed" for row in _wait_entries(ctx)):
+            return  # The typed closure frame reaches the ordinary mailbox drain.
+        actor = "the owner" if block.get("closed_actor") == "owner" else f"task {block.get('closed_by_task_id')}"
+        messages.append({"role": "user", "content": (
+            f"[SYSTEM NOTICE]\nQuestion {checkpoint.get('quiz_id')} was explicitly closed "
+            f"by {actor}: {block.get('closed_reason')}. "
+            "Its paired wait has ended without an owner answer. Closure is not owner approval.")})
         return
     if outcome == "timeout":
         messages.append(owner_wait_ended_notice(ctx, checkpoint, "timeout"))

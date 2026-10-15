@@ -41,14 +41,24 @@ def claimed_start_request(
     under that snapshot's one disposition lock, so no apply/reject of the
     predecessor can interleave with its hand-over (``delegate_continuation``).
     """
-    if request_row.get("capture_id") and request_row.get("continuation_of"):
-        from ouroboros.delegate_continuation import snapshot_handover
+    from ouroboros.usage_ledger import BillingAuthorityUnavailable
 
-        with snapshot_handover(drive, request_row) as refusal:
-            if refusal:
-                return False, refusal
-            return _claimed(drive, claim_target, payload_busy, actor_ctx, enforce_actor_idle, request_row)
-    return _claimed(drive, claim_target, payload_busy, actor_ctx, enforce_actor_idle, request_row)
+    try:
+        if request_row.get("capture_id") and request_row.get("continuation_of"):
+            from ouroboros.delegate_continuation import snapshot_handover
+
+            with snapshot_handover(drive, request_row) as refusal:
+                if refusal:
+                    return False, refusal
+                return _claimed(drive, claim_target, payload_busy, actor_ctx, enforce_actor_idle, request_row)
+        return _claimed(drive, claim_target, payload_busy, actor_ctx, enforce_actor_idle, request_row)
+    except BillingAuthorityUnavailable as exc:
+        # Refused before any START row or POST; not a budget limit.
+        return False, {"reason": "billing_authority_unavailable", "billing_authority": exc.kind, "detail": (
+            f"{exc}. No delegated session was started. "
+            + ("This task's billing lineage is missing or not its own; neither waiting nor a budget change repairs it."
+               if exc.kind == "refused" else
+               "The authority could not be read; a later start rereads it once the cause is fixed."))}
 
 
 def _claimed(drive: pathlib.Path, claim_target: str, payload_busy: Callable[[pathlib.Path, pathlib.Path], str],

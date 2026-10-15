@@ -6,12 +6,13 @@ import { showToast } from './toast.js';
 import { tx } from './i18n.js';
 import { hostRowDisplayText } from './host_notice_text.js';
 import { ORIGIN_ADDRESSED_NOTICE_TYPES, childRowPlacement, replayConcludesTask } from './chat_row_placement.js';
-import { decorateProjectRow, syncSavedProjectContext } from './project_answer.js';
+import { appendProjectRow, decorateProjectRow, PROJECT_ROW_TYPES, syncSavedProjectContext } from './project_answer.js';
 import { createProjectHandoffs, receiptNotice } from './project_handoff.js';
 import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
 import { attachmentCaption, attachmentViews, composerText, createComposerAttachments, createUnconfirmedSends } from './chat_attachments.js';
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
+import { createMainAttention } from './main_attention.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
 import { clientSurfaceField } from './client_surface.js';
 import { syncSettledItems } from './settled_card.js';
@@ -186,7 +187,6 @@ export {
     shouldFirePanic,
 };
 
-const PROJECT_ROW_TYPES = new Set(['project_started', 'project_handoff', 'project_completion_summary']);
 // Host placement: custody warns; settled reviews show results.
 const CARD_ROW_PHASES = new Map([['timeline', 'warn'], ['reviews', 'result']]);
 const CHAT_STORAGE_KEY = 'ouro_chat';
@@ -329,9 +329,15 @@ export function createChatInstance({
         stampNodeTimestamp,
         onDomWrite: withStableViewport,
     });
+    const mainAttention = isMain ? createMainAttention({ mount: inputArea, openSettings: openSettingsTab,
+        refresh: () => refreshHeaderControlState(true), mutate: withStableViewport,
+        syncQuestions: (...args) => chatDecision.syncCurrentQuestions(...args),
+        connectQuestions: value => chatDecision.setConnected(value) }) : null;
     const chatDecision = createChatDecision({
         apiFetch,
         frameNode: chatMedia.bubbleFrameNode,
+        renderMaterial: chatMedia.buildDocumentBubble,
+        releaseMaterials: chatMedia.release,
         mountMarkdown: mountChatMarkdown,
         enhanceMarkdown: enhanceMountedMarkdown,
         showToast,
@@ -339,6 +345,8 @@ export function createChatInstance({
         onDomWrite: withStableViewport,
         isMain, chatId,
         insertMessageNode,
+        currentQuestionHost: mainAttention?.questions,
+        onQuestionsChanged: mainAttention?.update,
         // A settled Main question mirror leaves through the ordinary retirement path.
         removeMessageNode: (node) => withStableViewport(() => { releaseMessageNode(node); return true; },
             { excludeAnchorNode: node }),
@@ -601,9 +609,10 @@ export function createChatInstance({
     }
 
     function hydrateStateSnapshot(data, snapshotRequestedAt = Infinity) {
-        void refreshChildProjectHolds();
-        syncHeaderControlState(data);
+        if (data) void refreshChildProjectHolds();
+        syncHeaderControlState(data ?? { accounting: { available: false } });
         handoffs?.snapshot(data);
+        mainAttention?.snapshot(data, snapshotRequestedAt);
         hostReady = supervisorReady(data) ?? hostReady;
         const activities = Array.isArray(data?.active_chat_activities)
             ? data.active_chat_activities
@@ -632,7 +641,6 @@ export function createChatInstance({
             const data = await resp.json();
             stateSnapshots.apply(request, data);
         } catch {
-            if (stateSnapshots.isCurrent(request)) syncHeaderControlState({ accounting: { available: false } });
             stateSnapshots.fail?.(request);
         }
     }
@@ -1281,6 +1289,10 @@ export function createChatInstance({
                 <div class="chat-live-activity" data-live-activity></div>
                 <div class="chat-live-meta" data-live-meta></div>
                 <div class="chat-live-review-summary" data-live-review-summary hidden></div>
+            </div>
+            <div class="chat-live-details">
+                <div data-live-phase-detail hidden></div>
+                <div data-live-cost-detail hidden></div>
             </div>
             <div class="chat-live-timeline" data-live-timeline id="${escapeHtmlAttr(timelineId)}"></div>
             <div data-live-reviews-host></div>
@@ -2173,27 +2185,27 @@ export function createChatInstance({
     function addMessage(text, role, markdown = false, timestamp = null, isProgress = false, opts = {}) {
         const pending = !!opts.pending;
         const ephemeral = !!opts.ephemeral;
-        const clientMessageId = opts.clientMessageId || '';
-        const senderLabelOverride = opts.senderLabel || '';
-        const senderSessionId = opts.senderSessionId || '';
-        const source = opts.source || '';
-        const initiator = opts.initiator || '';
-        const systemType = opts.systemType || '';
-        const taskId = opts.taskId || '';
-        const projectId = opts.projectId || '';
-        const projectName = opts.projectName || '';
+        // Normalize the persisted identity once; the same fields label and deduplicate a row.
+        const meta = Object.fromEntries([
+            'clientMessageId', 'senderLabel', 'senderSessionId', 'source', 'initiator',
+            'systemType', 'taskId', 'projectId', 'projectName', 'taskName', 'handoffId',
+            'originId', 'completionLimitation', 'deliveryId',
+        ].map(key => [key, opts[key] || '']));
+        const { clientMessageId, source, systemType, taskId, projectId, projectName } = meta;
         const attachments = role === 'user' ? attachmentViews(opts.attachments) : [];
         const ts = timestamp || new Date().toISOString();
-        const legacyKey = buildMessageKey(role, text, ts, {
-            clientMessageId,
-            systemType,
-            isProgress,
-            source,
-            senderLabel: senderLabelOverride,
-            senderSessionId,
-            taskId,
-        });
+        const legacyKey = buildMessageKey(role, text, ts, { ...meta, isProgress });
+        const bubbles = () => [...messagesDiv.querySelectorAll('.chat-bubble')];
         const messageKey = opts.historyId ? `history:${opts.historyId}` : legacyKey;
+        const deliveryKey = opts.deliveryId ? `delivery:${opts.deliveryId}` : '';
+        // A delivery is one bubble while that bubble is mounted; a released page mounts it again.
+        const delivered = deliveryKey && seenMessageKeys.has(deliveryKey)
+            && bubbles().find(node => node.dataset.deliveryId === opts.deliveryId);
+        if (delivered) {
+            stampHistoryNode(delivered, opts.historyId, opts.historyPosition);
+            rememberMessageKey(messageKey);
+            return false;
+        }
         const prior = opts.historyId
             ? historyNodes(opts.historyId).find(node => node.classList.contains('chat-bubble'))
             : Array.from(messagesDiv.querySelectorAll('.chat-bubble')).find(node => node.dataset.messageKey === legacyKey);
@@ -2205,7 +2217,7 @@ export function createChatInstance({
         // History may land first; a live copy adds no new facts.
         if (prior || (messageKey && seenMessageKeys.has(messageKey))) return false;
         if (opts.historyId) {
-            const prior = Array.from(messagesDiv.querySelectorAll('.chat-bubble')).find(node =>
+            const prior = bubbles().find(node =>
                 (clientMessageId && node.dataset.clientMessageId === clientMessageId)
                 || (opts.originId && node.dataset.originId === opts.originId)
                 || (!node.dataset.historyId && node.dataset.messageKey === legacyKey));
@@ -2222,27 +2234,9 @@ export function createChatInstance({
 
         if (!isProgress && !ephemeral && !_historyAppending) {
             persistedHistory.push({
-                text,
-                role,
-                ts,
-                markdown: !!markdown,
-                systemType,
-                narration: opts.narration,
-                source,
-                initiator,
-                senderLabel: senderLabelOverride,
-                senderSessionId,
-                clientMessageId,
-                taskId,
-                projectId,
-                projectName,
-                taskName: opts.taskName || '',
-                handoffId: opts.handoffId || '',
-                originProjected: Boolean(opts.originProjected),
-                originId: opts.originId || '',
-                terminalTime: opts.terminalTime || null,
-                skillReview: opts.skillReview || null,
-                evidenceRef: opts.evidenceRef || null,
+                text, role, ts, markdown: !!markdown, ...meta, narration: opts.narration,
+                originProjected: !!opts.originProjected, terminalTime: opts.terminalTime || null,
+                skillReview: opts.skillReview || null, evidenceRef: opts.evidenceRef || null,
                 attachments: attachments.length ? attachments : null,
                 textPlaceholder: opts.textPlaceholder === true,
             });
@@ -2255,17 +2249,12 @@ export function createChatInstance({
         bubble.className = `chat-bubble ${role}` + (isProgress ? ' progress' : '');
         if (pending) bubble.classList.add('pending');
         if (ephemeral) bubble.dataset.ephemeral = '1';
-        if (clientMessageId) bubble.dataset.clientMessageId = clientMessageId;
-        if (systemType) bubble.dataset.systemType = systemType;
-        if (senderSessionId) bubble.dataset.senderSessionId = senderSessionId;
-        if (taskId) bubble.dataset.taskId = taskId;
-        if (projectId) bubble.dataset.projectId = projectId;
+        for (const key of ['clientMessageId', 'systemType', 'senderSessionId', 'taskId', 'deliveryId', 'projectId']) {
+            if (meta[key]) bubble.dataset[key] = meta[key];
+        }
         if (legacyKey) bubble.dataset.messageKey = legacyKey;
         stampHistoryNode(bubble, opts.historyId, opts.historyPosition);
 
-        const sender = senderLabel(role, isProgress, systemType, {
-            source, senderLabel: senderLabelOverride, senderSessionId, initiator,
-        }, chatSessionId);
         const stored = text;
         if (role === 'system' && ['task_pause_notice', 'legacy_memory_notice'].includes(systemType)) text = tx(text);
         // Render-only: Copy below keeps `shown`, the pre-cleanup sentence.
@@ -2288,7 +2277,7 @@ export function createChatInstance({
         const pendingHtml = pending ? `<div class="msg-pending">Queued until reconnect</div>` : '';
         // Preserve the card's source link in a standalone row.
         bubble.innerHTML = `
-            <div class="sender">${escapeHtml(sender)}</div>
+            <div class="sender">${escapeHtml(senderLabel(role, isProgress, systemType, meta, chatSessionId))}</div>
             <div class="message${richMarkdown ? ' ui-rich-content' : ''}">${rendered}</div>
             ${evidenceLinkHtml(opts.evidenceRef)}
             ${pendingHtml}
@@ -2301,8 +2290,8 @@ export function createChatInstance({
             kind: systemType === 'project_started' ? 'started' : 'receipt' });
         if (!bubble.classList.contains('project-handoff')) {
             if (!isProgress && shown) chatMedia.attachCopyControl(bubble, String(shown));
-            if (!projectEntry && PROJECT_ROW_TYPES.has(systemType)) decorateProjectRow(bubble, { role, projectId, projectName,
-                terminalTime: opts.terminalTime, addedAt: ts, completion: systemType === 'project_completion_summary' });
+            if (!projectEntry && PROJECT_ROW_TYPES.has(systemType)) decorateProjectRow(bubble, { ...meta, ...opts, role,
+                addedAt: ts, fetchDetail: fetchTaskDetailStrict, renderFile: chatMedia.buildDocumentBubble, onDomWrite: withStableViewport });
         }
         syncSavedProjectContext(bubble, opts.originProjected, opts.originId);
         wireSkillReviewDisclosure(bubble, { onDomWrite: withStableViewport });
@@ -2312,18 +2301,9 @@ export function createChatInstance({
         chatDecision.renderRoutingDecision(bubble, opts.chatAnnotation);
         handoffs?.reconcile(bubble);
         rememberMessageKey(messageKey);
+        if (deliveryKey) rememberMessageKey(deliveryKey);
         if (pending && clientMessageId) pendingUserBubbles.set(clientMessageId, bubble);
         return bubble;
-    }
-
-    // Host-stamped Project lifecycle rows (§3 Main rows), live and replayed alike:
-    // a mirrored final answer is an ordinary assistant message, the rest System text.
-    function addProjectRow(msg, text, opts) {
-        const a = msg.completion_answer;
-        return addMessage(a || text, a ? 'assistant' : 'system', !!(a || msg.markdown), msg.ts || null, false, {
-            ...opts, systemType: msg.system_type, narration: msg.narration, projectId: msg.project_id || '',
-            projectName: msg.project_name || '', taskName: msg.task_name || '', handoffId: msg.handoff_id || '', terminalTime: msg.terminal_time || null,
-        });
     }
 
     function updateMessageAnnotation(clientMessageId, annotation) {
@@ -2458,7 +2438,7 @@ export function createChatInstance({
                 _syncPass1Active = true;
                 try { for (const msg of messages) {
                     _historyRow = msg;
-                    if (msg.system_type === 'quiz_answer') chatDecision.applyQuizStateFrame(messagesDiv, { ...msg.quiz, task_id: msg.task_id });
+                    if (['quiz_answer', 'quiz_closed'].includes(msg.system_type)) chatDecision.applyQuizStateFrame(messagesDiv, { ...msg.quiz, task_id: msg.task_id });
                     if (msg.system_type === 'task_evidence') { admitCardMetadata(msg); continue; }
                     if (isReplayEvidenceRow(msg) || msg.system_type === 'project_question_pointer') continue;
                     if (admitCardMetadata(msg) !== undefined) continue;
@@ -2539,7 +2519,7 @@ export function createChatInstance({
                     }
                     if (msg.system_type === 'task_summary') continue;
                     if (PROJECT_ROW_TYPES.has(msg.system_type)) {
-                        addProjectRow(msg, msg.text, { historyId: msg.history_id, historyPosition: msg.history_position, taskId });
+                        appendProjectRow(addMessage, msg, msg.text, { historyId: msg.history_id, historyPosition: msg.history_position, taskId });
                         continue;
                     }
                     // Render media before final handling: a mid-task delivery cannot finish its card.
@@ -3611,7 +3591,7 @@ export function createChatInstance({
             const cardRow = attachCardRow(msg, msg.ts || '');
             if (cardRow !== undefined) return settled(cardRow);
             if (PROJECT_ROW_TYPES.has(msg.system_type)) {
-                return settled(Boolean(addProjectRow(msg, msg.content, { taskId: explicitTaskId })));
+                return settled(Boolean(appendProjectRow(addMessage, msg, msg.content, { taskId: explicitTaskId })));
             }
             learnSubagentLineage(msg);
             if (msg.is_progress) {
@@ -3738,6 +3718,7 @@ export function createChatInstance({
 
     onWs('open', (msg) => {
         handoffs?.setConnected(true);
+        mainAttention?.setConnected(true);
         refreshHeaderControlState(true);
         syncChatStatus();
         // The socket's previouslyConnected covers newly mounted Projects too;
@@ -3776,6 +3757,7 @@ export function createChatInstance({
     onWs('close', () => {
         unconfirmed.unsettle();
         handoffs?.setConnected(false);
+        mainAttention?.setConnected(false);
         withStableViewport(() => {
             for (const [id, activity] of activeDirectActivities) {
                 activeDirectActivities.set(id, { ...activity, _activityUnconfirmed: true });
@@ -3848,6 +3830,7 @@ export function createChatInstance({
             roomWork?.destroy();
             chatDecision.destroy();
             modelWaits.destroy();
+            mainAttention?.destroy();
             handoffs?.destroy();
             window.removeEventListener('ouro:page-shown', handlePageShown);
             document.removeEventListener('visibilitychange', handlePageShown);

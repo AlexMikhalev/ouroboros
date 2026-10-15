@@ -222,7 +222,7 @@ def test_question_presentation_shared_fixture():
     cases = json.loads((Path(__file__).resolve().parents[1] /
                         'web/tests/fixtures/question_presentation_parity.json').read_text(encoding="utf-8"))
     keys = ("quiz_state", "owner_wait_state", "owner_wait_resume_reason", "wait_for_answer",
-            "wait_ended_at", "answered_index", "comment", "source_status")
+            "wait_ended_at", "answered_index", "comment", "source_status", "question_delivery")
     for case in cases:
         block = {"quiz_id": "q", **case["block"]} if case["block"] is not None else None
         wait = {"quiz_id": "q", **case["owner_wait"]} if case["owner_wait"] is not None else None
@@ -320,12 +320,14 @@ def test_project_question_pointer_display_fields_share_one_contract():
     # History: the producer itself emits every field the browser merges.
     block = {"quiz_id": "q", "state": "open", "question": "Which?", "options": ["a", "b"],
              "option_details": ["A detail", ""], "stake": "What rides on it", "assumption": "a",
-             "recommended_index": 0, "host_facts": "Asked by task t, origin unknown."}
+             "recommended_index": 0, "host_facts": "Asked by task t, origin unknown.",
+             "materials": [{"task_id": "t", "name": "brief.md", "label": "brief.md"}]}
     pointer = project_question_pointer({"task_id": "t", "quiz_id": "q"}, block,
                                        {"id": "p", "chat_id": 12, "name": "Project"}, None)
     assert browser_fields <= set(pointer), sorted(browser_fields - set(pointer))
     assert pointer["option_details"] == ["A detail", ""] and pointer["stake"] == "What rides on it"
     assert pointer["host_facts"] == "Asked by task t, origin unknown."
+    assert pointer["materials"] == block["materials"]
     # A block that recorded no host sentence yields a pointer without the key, never an empty one.
     bare = project_question_pointer({"task_id": "t", "quiz_id": "q"}, {**block, "host_facts": ""},
                                     {"id": "p", "chat_id": 12, "name": "Project"}, None)

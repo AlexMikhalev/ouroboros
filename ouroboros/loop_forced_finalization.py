@@ -31,7 +31,7 @@ from ouroboros.model_wait import ModelWaitInterrupted
 from ouroboros.outcomes import ACCEPTANCE_FINALIZED_UNACCEPTED, REASON_DELIVERY_CONTROL_DEGRADED
 from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL, set_terminal_host_notice
 from ouroboros.tools.registry import ToolRegistry
-from ouroboros.usage_accounting import BudgetExceeded, PhysicalAttemptPreconditionFailed
+from ouroboros.usage_accounting import BillingAuthorityUnavailable, BudgetExceeded, ControlAuthorityUnavailable, PhysicalAttemptPreconditionFailed
 from ouroboros.utils import sanitize_tool_result_for_log
 
 
@@ -1274,6 +1274,17 @@ def _forced_final_answer(
         except BudgetExceeded:
             _loop()._drain_forced_owner_directives(ctx, llm_trace)
             raise
+        except (BillingAuthorityUnavailable, ControlAuthorityUnavailable) as error:
+            _loop()._drain_forced_owner_directives(ctx, llm_trace)
+            if reason_code not in {"budget_exhausted", "owner_requested_finalization", "finalization_grace", "deadline_local"}:
+                raise  # the real loop owns the exact authority pause / infrastructure exit
+            # A selected money/Stop/deadline rail remains binding. An unavailable
+            # wrap-up neither reopens it nor buys a retry for a late owner directive.
+            ctx.accumulated_usage.update(execution_status="failed", reason_code=reason_code,
+                forced_authority_unavailable={"kind": error.kind, "cause": error.cause, "detail": str(error)})
+            return _loop()._forced_fallback_result(ctx, llm_trace, fallback_text, reason_code,
+                source="forced_authority_unavailable", provider_terminal=provider_terminal,
+                host_words=fallback_host_words)
         except ForcedCandidateUnaffordable:
             _loop()._emit_checkpoint_event(ctx.event_queue, ctx.task_id, ctx.drive_logs, {
                 "checkpoint_kind": "forced_candidate_unaffordable", "reason_code": reason_code})

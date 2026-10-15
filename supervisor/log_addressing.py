@@ -45,6 +45,27 @@ def bound_project_chat_id(ctx: Any, task_id: Any, parent_task_id: Any = "", root
     )
 
 
+def resolve_quiz_publication(root: Any, task_id: str, block: dict, proposed_chat: Any,
+                             parent_task_id: str = "", root_task_id: str = "") -> int:
+    """Strict new publication routing; a durable address wins every later binding."""
+    if "publication_chat_id" in block:
+        if (type(block["publication_chat_id"]) is not int
+                or block.get("publication_evidence") not in {"pre_exposure", "history"}):
+            raise ValueError("publication_address_unknown")
+        return block["publication_chat_id"]
+    from ouroboros.projects_registry import RoomResolver
+
+    # Use the public task-tree room rule before the immutable publication is bound.
+    # Its strict read distinguishes missing from unavailable; later retries never resolve again.
+    resolved = RoomResolver(root, strict=True)(task_id, parent_task_id, root_task_id)
+    if resolved:
+        proposed_chat = resolved
+    if type(proposed_chat) is not int:
+        raise ValueError("chat_unresolved")
+    chat_id = proposed_chat
+    return WEB_UI_CHAT_ID if chat_id == HIDDEN_CHAT_ID else chat_id
+
+
 def ingress_chat_id(raw_chat_id: Any, drive_root: Any, project_id: Any = "", *,
                     source: Any = "", project_basis: Optional[dict] = None) -> int:
     """The address a headless/API task is admitted with (ingress capture rule).
@@ -319,6 +340,13 @@ class TurnEventQueue:
 
     def put_nowait(self, item: Any) -> Any:
         return self._inner.put_nowait(self.stamp(item))
+
+    def delivery_outstanding(self, delivery_id: str) -> Optional[bool]:
+        from supervisor.event_observation import delivery_outstanding
+        return delivery_outstanding(self._inner, delivery_id)
+
+    def put_unless_outstanding(self, item: Any) -> bool:
+        return self._inner.put_unless_outstanding(self.stamp(item))
 
 
 # This process's task endpoints by task id, for the rows the worker's log sink

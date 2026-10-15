@@ -347,6 +347,12 @@ def review_wave_budget_gate(
             "slot_bounds": admission.get("slot_bounds"),
             "unpriced_slots": unpriced,
         }
+        unknown = admission.get("admission_unknown")
+        if unknown or admission.get("reason") == "billing_authority_unavailable":
+            detail = {"error": unknown} if unknown else {"billing_authority": admission.get("billing_authority")}
+            event = "review_wave_admission_unavailable" if unknown else "review_wave_billing_authority_unavailable"
+            emit_review_event(ctx, {"type": event, **base, **detail, **(extra or {})})
+            return None  # Exhaustion not established; each seat's reservation remains authoritative.
         if admission.get("fits", True):
             # An admitted wave is normally silent. It must NOT be silent when part of the
             # estimate was unknowable: "fits, every slot priced" and "fits, but one slot

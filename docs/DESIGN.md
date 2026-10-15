@@ -1094,7 +1094,7 @@ answer keep both forms readable. Anatomy, top to bottom:
    wait evidence reads `Unanswered · an answer is still accepted`;
    `Unanswered · the task finished; a late answer is accepted as your message`
    keeps the neutral dot and answerability; `You answered` uses the ok dot;
-   `Replaced by a newer question` uses the disabled dot; an unreadable source
+   `Replaced by a newer question` and `Question closed` use the disabled dot; an unreadable source
    reads `Status unavailable`, never an invented invitation. No answer-deadline
    countdown: task completion closes its mailbox, not the question's answerability.
 2. **Question** — the one primary thing, by position and ink: readable
@@ -1136,14 +1136,17 @@ answer keep both forms readable. Anatomy, top to bottom:
    as the record of work continued meanwhile. Required waiting copy disappears
    when the card settles; the status and recorded owner answer remain.
 
-The card was born on tokens ahead of the rest of the chat surface (which has
-since migrated too): type sizes and every colour come from tokens (no new
-literals), the chip's pill radius and the option gap included; every focusable
-element in the card shares one keyboard ring (2px `--focus-accent-border`,
-2px offset). Component geometry (card min/max width) keeps local literals like
-the rest of the chat surface.
+The card uses tokens for every type size and colour, including pill radius and
+option gap. Every focusable element shares the 2px `--focus-accent-border` ring
+with 2px offset. Component min/max widths keep local literals, as elsewhere in chat.
 
-**Project question mirror.** A Project question the owner has not answered appears in Main as the Project's own quiz card — the same `buildQuizCard` form with the question through the chat markdown pipeline, the options with their details and the `recommended` badge, the stake, the assumption or waiting line, the status and the own-answer field — inside the same assistant bubble. The one addition is the Project reference ("References and actions") in the head beside the `Question` chip: its inline pill (the `--project` tints, the Project name in project ink with `↗`) opens that exact question in its Project, with the card's shared keyboard ring. A long Project name yields first (the chip is capped and ellipsized, its title names the Project whole) so the status keeps its place; a phone column wraps the head. Every lifecycle state reads as it does in the Project: waiting, open, resumed and finished questions stay answerable, and a replaced question stays as a read-only record. An unreadable source keeps what Main already knew; with nothing known the copy says `Status unavailable`, takes no answer and keeps its chip, and a row that cannot carry the form yet shows `Open the original question for its text.` until it can. The first confirmed answer from any source — a press in Main, the Project form or another device, a history or census snapshot — shows the recorded result (the chosen option, `Owner's answer: …`, `You answered`) for five seconds and then removes only the Main copy, through the ordinary message retirement and without moving the reader's viewport; the Project keeps its card. The countdown starts once and later observations never restart it. When focus was inside the copy it stays there while the result shows, then moves to the next Main question, or to the composer for a keyboard owner, never summoning a touch keyboard. A copy that learns its form and its answer in one delivery shows that result for the same five seconds. An answered question never enters Main again: fresh history, a reconnect or a stale open snapshot cannot bring the copy back. Main remembers the lifecycle of a bounded number of questions; a question it no longer remembers mounts a safe unknown copy, whose answer controls appear only after a fresh canonical record confirms it unanswered. A failed, missing or wrong-project canonical read leaves a safe `Status unavailable` copy with its Project chip and no answer controls; the chip opens the original Project form, while a later owned refresh retries the Main copy, so an unavailable read never turns a stale open snapshot into an answerable form and never permanently suppresses a legitimate unanswered question. The mirror and the quiz header share the lifecycle wording above.
+**Project question mirror.** Main's **Needs you** disclosure above the composer (collapsed by default with its count; scroll-bounded when open) keeps every accepted unanswered Project question reachable beyond loaded history. It is the Project's own `buildQuizCard` card, whole as anatomized above, in an assistant bubble. The Project reference beside `Question` opens the exact original; answers, materials and recovery controls work in Main. It uses the shared ring and `--project` tints; names ellipsize (full titles) before status; narrow heads wrap. History, live pointers and the section share one task/quiz card and lifecycle wording. Optional, resumed and terminal-author questions stay answerable until answered or closed with a reason; no display/history cap drops them. Replaced questions stay read-only. The owner closes from the form; a model only its own or a host-proven continued task line. Closure records a reason, never an answer/approval. A late answer left delivery-unknown by a restart offers Remove from Needs you (no resend, never marked delivered). Publication destination stays fixed across Project conversion; current room membership controls display. Explicit materials use registered task artifacts and the existing reader.
+
+A confirmed answer/closure shows its result for five seconds, then retires only the Main copy through message/media disposal without moving the viewport; the Project card stays. Pending canonical delivery keeps the read-only form and a compact pending fact. The interval starts once, including simultaneous form/result delivery. Focus remains during it, then moves to the next Main question or keyboard owner's composer without summoning a touch keyboard. History, reconnect and stale snapshots cannot resurrect settled forms. A newly accepted question closed before first exposure publishes only its closed state; an old answer without explicit delivery debt creates no new owner turn.
+
+Unavailable canonical refresh retains text, references and drafts but disables affected controls. Missing, failed or wrong-Project reads say `Status unavailable`; absent form text says `Open the original question for its text.` The chip opens the original; owned refresh retries.
+
+Human-required Project waits expose their existing controls, including children's; activity counts stay root-only. Reuse revision-bound model-access and Resume/Stop controls: sign-in, unobservable automatic access, disabled automatic continuation, budget pauses and Resume-only holds (a sleep held, or an owner Resume interrupted, by a stop). Viable automatic account/quota recovery, queues, self-waking sleep, background scope verification and own Pause stay quiet. Deduplicate the same quiz/wait identity, not all waits on a task. Missing action evidence stays unavailable; visibility never authorizes login, budget changes or automatic Resume.
 
 **Project work entries.** Creation, transfer and manual conversion share one compact
 Project-colour card, live and on replay. The selectable work title leads at weight
@@ -1170,7 +1173,7 @@ plain text remain. An undurable Main receipt keeps a dashed border and a plain w
 the binding holds. Genuine initiator work and failures remain visible; folding never
 lends another task's outcome. The later final answer stays a separate message.
 
-**Project completion mirror.** A Project root that ended with Ouroboros's own final answer reaches Main as an ordinary Ouroboros message: that answer through the chat markdown pipeline, in the assistant voice, because the bytes are model-authored — the host stamps the answer on the completion row only for a model-authored final, so the browser never infers authorship. A long answer is folded to about seven lines; the fold is a visual clamp over the complete, selectable text, with a fade only when it really hides something, and never a cut. Under it sits one control, the Project reference ("References and actions"). The durable row and its wire frame stay `role="system"`: like the Project question mirror, this is a browser presentation of model-authored bytes, not a change of the row's author. The message carries no status word, cause sentence, title or duration, so a host verdict on that answer (a warning, an unaccepted review) is not shown in Main: it stays loud on the task's card in the Project, one press away. Copy copies the answer. An ending with no model-authored answer (a provider failure, a stop, preserved output), and every completion row written before the answer rode the row keep the System row, which ends with that same reference: the voice of a row never chooses how the UI points at its Project. One durable row either way: its plain text is unchanged, so the Telegram mirror, Ouroboros's own context and one-ending-one-notification behave as before.
+**Project completion mirror.** Eligible managed/transferred Project finals reach Main as Markdown in Ouroboros's voice, host-stamped only for a model-authored final, so the browser never infers authorship; ordinary Project-native replies stay local. A long answer folds to about seven lines of complete selectable text, faded only where text is hidden; **Show full**/**Show less** toggles it in place, and folded text has no keyboard stops. A nonclean final carries one compact factual limitation from recorded outcome/acceptance beside the answer, wrapping legibly at narrow widths; a clean final has no status caption. Copy copies the answer alone. The Project reference, **Files** and the fold toggle sit below. **Available files** lazily opens the complete retained inventory in Main: folders expand to every addressed member, text/Markdown opens the existing reader, images keep previews, other files download; ZIPs supplement per-file access, and unavailable members/archives never hide healthy siblings. Availability is not delivery or owner receipt. Full reviews, logs and progress stay in their sources. Durable rows/wire frames stay `role="system"` with unchanged plain text, so the Telegram mirror and Ouroboros's own context behave as before; no-answer endings and historical rows without an authored answer keep System voice and reference/files access. One logical identity joins retries/history and keeps one-ending-one-notification; external transport stays at-least-once.
 
 History with no current execution or known outcome keeps its expandable content under `Outcome unavailable`, without a task chip, typing or Stop. Before complete live-source reconciliation, it is `Activity unconfirmed`. Positive current activity restores only its proven controls. A delivery warning may coexist with a preserved task-acceptance PASS. Model metadata says `Last solve response`, naming the initial request only when the route changed.
 
@@ -1351,17 +1354,15 @@ collapsed header carries the tool count live and, once the turn ends, cost and
 duration (a replayed header carries the count and cost; duration is a live
 fact); its `updated` stamp follows the turn's own narration, never a host note
 and never a tool call. Money on that header is ONE line whose wording carries
-its own openness, and it never renders an unknown as a number: `$0.00` only
+its openness and never renders an unknown as a number: `$0.00` only
 where priced rows evidenced that zero, `up to $1.20` while the tracked subtotal
-is still inexact, `Tracked: $1.20` with the reason stated in words
-beside it (`some steps have no price`) when part of the same scope has no price
+is still inexact, `Tracked: $1.20` when part of the same scope has no price
 at all (`Tracked: up to $1.20` when that subtotal itself is inexact), and
 `Cost unknown` for unpriced rows with no tracked amount. An empty, intact ledger
 has no money line; an empty view with an integrity gap stays unknown. Neither
-proves a free result. The explanation is text on the line,
-never a hover-only title, because a tooltip is invisible on touch, to assistive
-technology and in a copied line. Every part of that meta line is separated by a
-real ` · ` text part for the same reason. The
+proves a free result. The chip's short word (`Sending`, `Queued`) and `Tracked:`
+are explained in the card's details (exact phase; `some steps have no price`), not
+a tooltip; real ` · ` text separates meta parts for copies and assistive technology. The
 host's `_is_direct_chat` fact keeps its host jobs (routing, census `kind`, Stop
 custody, terminal rows) and, on the client, only the header pill (a direct turn
 keeps the census verdict beside its block). A block whose only reason to exist
@@ -1550,18 +1551,17 @@ a server entry):
    rendered at secondary ink reads as disabled; if the owner can click it, it is
    `--text-primary`.
 
-**Information has a place, not a permanent caption.** A row keeps its identity,
-primary choices and current exceptions visible (a specific refusal, a mark that
-no longer acts, an error); a rule shared by every row is said once for the
-section, never as a caption on every row; history, provenance, stored spellings
-and secondary explanations wait behind one explicit disclosure that pointer and
-keyboard open, never behind hover alone. New copy serves a concrete decision or error and adds meaning no
+**The main view carries understanding, state and action; justification is
+disclosed where needed.** A row reads identity, state, facts; its primary choices,
+exceptions and owner actions stay visible, and a value keeps its honest form
+(`up to`, `Tracked:`, unknown). A rule every row shares is said once for the
+section; history, provenance and why a state or value reads so wait in details
+pointer, touch and keyboard open, never hover alone. New copy serves a concrete decision or error and adds meaning no
 control or status already carries: a checked box is not re-said beside it, and
 an unsaved draft is said once by the editor or its host page, not on every row. A conditional
 line never moves the control that caused it: controls own stable slots, and a
 line an edit toggles opens beside or below them. Clarity comes from placement,
-never from smaller text, tooltip-only meaning or a line quota; real exceptions
-all stay.
+never from smaller text or a line quota; real exceptions all stay.
 
 For a row with one action and a durable result, the result occupies the flexible
 left side and the neutral action stays docked on the right. Field-level actions
@@ -1726,7 +1726,7 @@ engineering rules; no second policy list may exist.
 never *look, I am still working*. It exists so the owner can leave the window
 and still be reached by a question or a finished task.
 
-**Startup & background.** Settings → Behavior owns host lifecycle choices, separate from the client-local Appearance controls. Sign-in startup is off until the owner opts in and always names the computer running Ouroboros, even in a remote client. OS registration is the truth: another copy, an OS-disabled entry and an unavailable app build remain visible rather than becoming a saved-settings guess. Automatic startup preserves Panic stops and saved pauses; an explicit owner start releases Panic. The second control, *keep Ouroboros running in the background when the window is closed*, is also off until chosen and lives in the host's settings. Until the owner decides, the first close of the desktop window asks once — Ouroboros will keep working in the background (tasks, schedules, Telegram): keep it running, or quit? — and the answer becomes that checkbox; dismissing the question quits. macOS labels its two buttons Keep running and Quit; Windows keeps its standard OK and Cancel, with a line saying that OK keeps it running and Cancel quits. While it is on, closing hides the window behind a live indicator (the Windows notification-area icon; the macOS menu-bar item and Dock) whose menu shows the server's real state (work only from confirmed phases; starting, an error, unconfirmed activity or no answer said as such) and offers Open, Panic and Quit; if no indicator appears the close quits, so a hidden process always has a visible way back. Quit, Cmd+Q and signing out always quit, unasked. A sign-in start stays hidden only when both checkboxes are on and the indicator actually appeared, and opening the app while it is still starting shows the window; there is no third "start minimized" setting. Linux shows the background control as not available yet and closing quits there. Android deliberately keeps its existing automatic boot entry by default, with the same Panic-preservation contract. The card is the last on Behavior: set once, and on a browser or Docker host it only explains itself. A control the host cannot offer says why as a plain note in meta ink (no warning dot); two controls with the same reason say it once, after both; a state the owner can change (another copy, an entry the OS turned off) is a warning, a failed read or write an error. Notes and statuses start at the checkbox label's text, a status dot hanging under the checkbox.
+**Startup & background.** Settings → Behavior owns host lifecycle choices, separate from the client-local Appearance controls. Sign-in startup is off until the owner opts in and always names the computer running Ouroboros, even in a remote client. OS registration is the truth: another copy, an OS-disabled entry and an unavailable app build stay visible, never a saved-settings guess. Automatic startup preserves Panic stops and saved pauses; an explicit owner start releases Panic. The second control, *keep Ouroboros running in the background when the window is closed*, is also off until chosen and lives in the host's settings. Until the owner decides, the first close of the desktop window asks once — Ouroboros will keep working in the background (tasks, schedules, Telegram): keep it running, or quit? — and the answer becomes that checkbox; dismissing the question quits. macOS labels its buttons Keep running and Quit; Windows keeps standard OK and Cancel, with a line saying OK keeps it running and Cancel quits. While it is on, closing hides the window behind a live indicator (the Windows notification-area icon; the macOS menu-bar item and Dock) whose menu shows the server's real state (work only from confirmed phases; starting, an error, unconfirmed activity or no answer said as such) and offers Open, Panic and Quit; if no indicator appears the close quits, so a hidden process always has a visible way back. Quit, Cmd+Q and signing out always quit, unasked. A sign-in start stays hidden only when both checkboxes are on and the indicator actually appeared; opening the app while it starts shows the window; there is no third "start minimized" setting. Linux shows the background control as not yet available; closing quits there. Android keeps its existing automatic boot entry by default, under the same Panic-preservation contract. The card is last on Behavior: set once; on a browser or Docker host it only explains itself. A control the host cannot offer says why as a plain note in meta ink (no warning dot); two controls with the same reason say it once, after both; a state the owner can change (another copy, an entry the OS turned off) is a warning, a failed read or write an error. Notes and statuses start at the checkbox label's text, a status dot hanging under the checkbox.
 
 **When the client runs.** Notifications are a property of a running client, and
 there is no push channel. On the desktop the Telegram bridge runs inside the same
@@ -1825,7 +1825,10 @@ honest consequence of per-client settings, not a bug we have hidden.
 
 **Click goes to the source.** A notification opens the question or the result it
 is about — the Project room and the exact question when it has one, otherwise
-the conversation. A system notification first opens the window, hidden or not,
+the conversation. Project identity comes from the full registry, including rooms
+outside the sidebar. An unavailable destination leaves the view in place and says
+so. A Main-transport notice opens Main, including Telegram; numeric addresses
+never imply a Project. A system notification first opens the window, hidden or not,
 then the same source. No reply is composed from the banner. The one exception is
 the fallback banner the desktop indicator shows while the window is hidden in
 background mode (Windows, when no system notification was shown): its click

@@ -26,8 +26,8 @@ class ChatHistoryPosition(TypedDict):
 
 class ChatHistoryQuiz(TypedDict, total=False):
     """The question card of a ``msg_type: "quiz"`` row (the question itself is the row's ``text``).
-    ``state`` is the durable lifecycle merged at read time: open, answered, expired_terminal or
-    superseded. ``answered_index`` and ``comment`` are the recorded answer."""
+    ``state`` is the durable lifecycle merged at read time: open, answered, closed,
+    expired_terminal or superseded. ``answered_index`` and ``comment`` are the recorded answer."""
 
     quiz_id: Required[str]
     options: List[Dict[str, Any]]  # QuizOption rows: {label, detail?, recommended?}
@@ -49,7 +49,7 @@ class ChatHistoryMessage(TypedDict, total=False):
 
     A row may also carry the task-progress and task-outcome fields a live ``chat`` frame carries
     (``ChatOutbound``: lineage, cost, outcome, model and card placement). A replay-evidence row
-    (``system_type`` ``quiz_answer`` or ``task_evidence``, or ``summary_kind`` with
+    (``system_type`` ``quiz_answer``, ``quiz_closed`` or ``task_evidence``, or ``summary_kind`` with
     ``historical_terminal``) carries facts for cards whose rows lie on other pages and is never
     a message to show. A derived row (``task_model_wait``, ``project_question_pointer``) carries its
     source row's identity; a synthesized one (``origin_projected``, ``lifecycle_virtual``) has none."""
@@ -66,7 +66,7 @@ class ChatHistoryMessage(TypedDict, total=False):
     source: str
     sender_label: str
     sender_session_id: str
-    client_message_id: str  # an owner message's id, the same one its live echo carries
+    client_message_id: str  # correlation id; owner rows have role=user, quiz publications also use it
     ingress_accepted: bool
     ingress_dispatched: bool
     ingress_pending: bool

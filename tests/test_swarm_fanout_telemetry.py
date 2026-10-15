@@ -211,6 +211,10 @@ def _real_delegate_start(
     ctx.task_id = "t-nanny"
     ctx.task_depth = 1
     ctx.task_metadata = metadata
+    from ouroboros.task_results import load_task_result, write_task_result
+    root_id = str(metadata.get("root_task_id") or "")
+    if root_id and root_id != ctx.task_id and load_task_result(tmp_path, root_id) is None:  # the real root
+        write_task_result(tmp_path, root_id, "running", root_task_id=root_id)
     delegate_custody._CUSTODY.clear()
     if actor_first_work_order:
         target = "some-route=weak-model:low"
