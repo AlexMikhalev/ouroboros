@@ -25,6 +25,10 @@ from ouroboros.skill_loader import (
 )
 from ouroboros.utils import atomic_write_json
 
+# An upper bound on waiting for an event that is already on its way; a loaded test
+# machine can take more than a second to hand it over, and a prompt event returns at once.
+EVENT_WAIT_S = 10
+
 
 def seed_skill(root, *, name="meeting", token="skill-token", granted=True, reviewed=True):
     directory = root / "skills" / "external" / name
@@ -153,16 +157,16 @@ def test_both_doors_audio_controls_output_flush_and_leave(door):
     client, path, role, hub = door
     with client.websocket_connect(path) as ws:
         hello(ws, role)
-        event = hub.next_event(1)
+        event = hub.next_event(EVENT_WAIT_S)
         assert isinstance(event, cp.PeerJoined) and event.peer.role == role
         ws.send_bytes(audio())
-        assert hub.next_event(1) == cp.PeerAudio(event.peer.peer_id, role, b"\x64\x00" * 480)
+        assert hub.next_event(EVENT_WAIT_S) == cp.PeerAudio(event.peer.peer_id, role, b"\x64\x00" * 480)
         for control in [{"type": "played", "item_id": "item", "played_ms": 20},
                         {"type": "mute", "muted": True},
                         {"type": "context", "text": "A slide is visible", "source": "screen"},
                         {"type": "participant", "label": "Guest", "speaking": True}]:
             ws.send_json(control)
-            received = hub.next_event(1)
+            received = hub.next_event(EVENT_WAIT_S)
             assert isinstance(received, cp.PeerControl) and received.role == role
             assert received.message == control
         hub.send_caption("ouroboros", "Hello", True, "item")
@@ -172,8 +176,8 @@ def test_both_doors_audio_controls_output_flush_and_leave(door):
         epoch = hub.flush()
         assert ws.receive_json() == {"type": "flush", "epoch": epoch}
         ws.send_json({"type": "bye", "reason": "finished"})
-        assert hub.next_event(1).message["type"] == "bye"
-        assert isinstance(hub.next_event(1), cp.PeerLeft)
+        assert hub.next_event(EVENT_WAIT_S).message["type"] == "bye"
+        assert isinstance(hub.next_event(EVENT_WAIT_S), cp.PeerLeft)
     assert hub.peers() == ()
 
 
@@ -209,12 +213,12 @@ def test_both_doors_discard_stale_epoch_but_accept_current(door):
     client, path, role, hub = door
     with client.websocket_connect(path) as ws:
         hello(ws, role)
-        hub.next_event(1)
+        hub.next_event(EVENT_WAIT_S)
         hub.flush()
         ws.receive_json()
         ws.send_bytes(audio(epoch=0))
         ws.send_bytes(audio(epoch=1, seq=1))
-        received = hub.next_event(1)
+        received = hub.next_event(EVENT_WAIT_S)
         assert isinstance(received, cp.PeerAudio)
         assert hub.stats()["stale_frames"] == 1
         assert hub.next_event(0) is None
