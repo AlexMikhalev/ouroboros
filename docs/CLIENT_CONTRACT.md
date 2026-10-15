@@ -242,7 +242,7 @@ In a Project response, `window.latest_message` names the latest eligible non-own
 - **Deliveries:** `msg_type` is `document`, `photo`, `video`, `links` or `quiz`, with `filename`, `mime`, `download_url`, `caption` and `size_bytes`; `actions` and `title` for links; `quiz` for a question (`quiz.quiz_id`, `quiz.state`, the recorded answer).
 - **Progress rows** (`is_progress: true`) carry the same task-progress facts live `chat` progress frames carry (`ChatOutbound`).
 - **Rows that are not messages.** Do not show these as bubbles:
-  - replay evidence: `system_type` `quiz_answer` or `task_evidence`, or a row with `summary_kind` and `historical_terminal`. They carry facts for cards whose rows lie on other pages.
+  - replay evidence: `system_type` `quiz_answer` or `task_evidence`, or a row with `summary_kind` and `historical_terminal`. They carry facts for cards whose rows lie on other pages. A `task_evidence` carrier may be an in-room parent's only evidence (zero tool calls included; `task_terminal_status` only when the parent is terminal): a client mints a parent card only from the parent's own rows, carrier or live state, never from a child's `parent_task_id`; a child whose parent has no such evidence here renders as its own card and re-nests when that evidence arrives.
   - `system_type: "task_model_wait"`: a model wait's latest state, in `model_waits`, for the task's card.
 - **A rebuilt row:** `lifecycle_virtual: true` describes the skill operation running now. It is rebuilt with a fresh `ts` on every read and has no `history_id`, so replace it rather than merge it.
 - **Derived and synthesized rows:** in Main a Project question appears as `system_type: "project_question_pointer"` (with `quiz_id`), carrying the question row's `history_id`. A Project's start message rebuilt from its binding (`origin_projected: true`) has no `history_id`. A synthesized `origin_omission` System notice says further archived origins were not rendered; it also has no stored `history_id`.
@@ -340,11 +340,11 @@ data: {"seq":12,"type":"task_result","task_id":"…","data":{…}}
 ## 8. Stop, pause, continue, resume
 
 **Stop.** `POST /api/tasks/{id}/cancel` takes an optional `TaskCancelRequest`: `cascade`, `stop_policy` and `stop_action_id`.
-- **Safe retries:** `stop_action_id` names one Stop action. While that action is pending, an identical request joins it and reusing the id with different arguments answers 409. An immediate Stop normally answers after teardown; once the task is no longer active, even an identical retry can answer 404. Read task detail to distinguish the recorded outcome.
-- **Graceful stop:** `202` with `cancel_state: "pending"` means a graceful stop is under way.
-- **Already stopped:** `404` for a task that is no longer active also covers repeating a Stop that already finished.
-- **Nothing cancelled:** `503 cancel_intent_write_failed` means nothing was cancelled, so retry.
-- **Still running:** a `503` saying the cancellation "did not settle" means the stop was recorded but the task is still running. Read `GET /api/tasks/{id}` (`cancel_state`) before anything else.
+- **Safe retries:** `stop_action_id` names one Stop action. While that action is pending, an identical request joins it and reusing the id with different arguments answers 409. An immediate Stop records the stop first and answers after it drove the teardown; once the task is no longer active, even an identical retry can answer 404. Read task detail to distinguish the recorded outcome.
+- **Stopped:** `200` means the teardown settled (with `cascade: true` when the whole tree was stopped).
+- **Recorded, still stopping:** `202` with `cancel_state: "pending"` means the stop is recorded and the supervisor finishes it: a graceful stop under way, or an immediate one whose teardown is not confirmed yet (`reason_code: "teardown_unconfirmed"`, with the stop's `request_id`). No retry is needed: read `GET /api/tasks/{id}` (`cancel_state`) until it settles; an immediate Stop still hardens a graceful one.
+- **Nothing to stop:** `404` means the task already finished (completion wins), the id names no task, or a repeated Stop already finished. A task that was created but never started is stopped, not 404.
+- **Nothing recorded:** `503 cancel_intent_write_failed` means nothing was recorded or cancelled, so retry; `503 cancel_intent_projection_corrupt` cannot succeed until the projection file is repaired.
 - **When to offer Stop:** chat frames carry `cancelable` to say when Stop applies. Do not offer it otherwise.
 
 `stop_policy` is `immediate` (also the omitted/empty default) or `finalize_then_cancel`. A graceful request cannot soften a previously recorded immediate Stop. Task detail has `cancel_state:"pending"` while cancellation is owed, otherwise the field is absent; there is no public `cancel_state:"settled"`.

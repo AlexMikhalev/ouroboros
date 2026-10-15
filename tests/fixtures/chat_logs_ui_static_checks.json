@@ -933,7 +933,13 @@
     "id": "test_sync_history_sweep_rederives_block_presence",
     "path": "web/modules/chat.js",
     "kind": "contains",
-    "value": "                for (const rec of liveCardRecords.values()) {\n                    reorderDirtyCardIfNeeded(rec);\n                    ensureLiveCardVisible(rec);\n                }"
+    "value": "                for (const [id, record] of liveCardRecords) {\n                    mountReplayedCard(record);"
+  },
+  {
+    "id": "test_sync_history_sweep_rederives_block_presence",
+    "path": "web/modules/chat.js",
+    "kind": "contains",
+    "value": "                function mountReplayedCard(rec) {\n                    if (rec?._anchorOrderDirty && !rec.isSubagent && rec.root?.isConnected) {\n                        insertMessageNode(rec.root, { reorderExisting: true });\n                        rec._anchorOrderDirty = false;\n                    }\n                    ensureLiveCardVisible(rec);\n                }"
   },
   {
     "id": "test_sync_history_sweep_rederives_block_presence",
@@ -975,7 +981,7 @@
     "id": "test_history_replay_preserves_failed_task_summary_phase",
     "path": "web/modules/chat.js",
     "kind": "contains",
-    "value": "finishLiveCard(taskId, msg.task_terminal_status ? taskTerminalPhase(msg) : replayTerminalPhase(record));"
+    "value": "finishLiveCard(taskId, msg.task_terminal_status ? taskTerminalPhase(msg) : replayTerminalPhase(liveCardRecords.get(taskId)));"
   },
   {
     "id": "test_history_replay_preserves_failed_task_summary_phase",

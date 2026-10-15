@@ -65,11 +65,12 @@ class HistoryCursorError(ValueError):
 
 
 def room_view_fingerprint(thread_id, project_ids, source_refs, bindings):
-    """Fingerprint the existing room lens, without introducing membership state."""
+    """Fingerprint the existing room lens, without introducing membership state.
+
+    Every room hashes every binding: a task's resolved room outranks the room its
+    rows were written to, so a conversion anywhere can move rows out of this room."""
     project = thread_id in project_ids
-    relevant = {key: value for key, value in bindings.items()
-                if not project or value == thread_id}
-    value = [thread_id, project, [] if project else sorted(project_ids), relevant,
+    value = [thread_id, project, [] if project else sorted(project_ids), dict(bindings),
              sorted(source_refs, key=lambda row: json.dumps(row, sort_keys=True))]
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 

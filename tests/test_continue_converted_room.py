@@ -196,10 +196,13 @@ def test_main_and_native_project_continue_keep_their_own_room(host, case):
     assert (bound or {}).get("project_id") == (pid if case == "native-bound" else None)
     rooms = _room_of(host, successor, row)
     assert rooms["live"] == chat
-    if case == "native-bound":
-        assert rooms == {"live": chat, "late": chat, "child": chat, "tree": chat, "delivery": chat}
+    if case == "main":
+        assert rooms["tree"] == 0, "Main work gains no Project room"
+    elif case == "native":  # a room-born root is addressed to its room unbound (the one room rule);
+        # an id the store never admitted ("helper-1") has no room of its own yet: the caller keeps its address
+        assert {key: rooms[key] for key in ("live", "late", "tree", "child")} == {"live": chat, "late": chat, "tree": chat, "child": None}
     else:
-        assert rooms["tree"] == 0, "unbound work gains no binding"
+        assert rooms == {"live": chat, "late": chat, "child": chat, "tree": chat, "delivery": chat}
 
 
 def test_a_claim_frozen_before_a_later_conversion_keeps_its_destination(host, monkeypatch):

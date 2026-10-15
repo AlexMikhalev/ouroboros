@@ -35,6 +35,7 @@ from supervisor.cancel_publication import (  # noqa: F401 -- intentional public 
     _cascade_delivery_row_locked,
     _custody_disclosure_fields,
     _deliver_on_miss,
+    _finalize_cancel_intent_on_miss,
     _intent_outcome_fields,
     _is_workspace_task_record,
     _load_result_row,
@@ -241,17 +242,8 @@ def _queue_module():
     return queue
 
 
-def _finalize_cancel_intent_on_miss(
-    task_id: str, *, intent: Optional[Dict[str, Any]] = None,
-) -> str:
-    """Preserve the lifecycle import surface while publication owns the work."""
-    from supervisor.cancel_publication import _finalize_cancel_intent_on_miss as finalize
-
-    return finalize(_queue_module(), task_id, intent=intent)
-
-
-def cancel_task_by_id(task_id: str, *, cascade: bool = False) -> bool:
-    """Cancel a task and, when requested, its atomically captured live subtree.
+def cancel_task_by_id(task_id: str) -> bool:
+    """Cancel a task and its atomically captured live subtree.
 
     The cascade is SYNCHRONOUS end to end (v6.82.0): the caller is answered only
     once the tree is actually torn down. That single decision is what removes the
@@ -278,13 +270,14 @@ def cancel_task_by_id(task_id: str, *, cascade: bool = False) -> bool:
     Completion always wins: custody is never taken from a task that already
     reached its own terminal result, and the durable write is refused by the
     result writer's monotonic guard if it settles mid-teardown.
+
+    Cascade-only: a single cancel is ``cancel_task_custody`` with its typed
+    outcome; the no-intent boolean facade is gone (invariant 14).
     """
     q = _queue_module()
     task_id = str(task_id or "").strip()
     if not task_id:
         return False
-    if not cascade:
-        return q._cancel_task_by_id_single(task_id)
     # Close admission for the TARGET before the first snapshot (a schedule event
     # already draining would otherwise slip in), then each sweep fences every id it
     # captures — so a child naming a since-removed descendant as its parent is still
@@ -294,6 +287,10 @@ def cancel_task_by_id(task_id: str, *, cascade: bool = False) -> bool:
     # Scope on the ROOT intent: a watchdog replay must re-run the cascade, not a
     # single cancel that would settle the root and leave descendants live.
     _record_cascade_scope(q, task_id)
+    # That root intent is the tree's explicit authority (A2): every custody of
+    # this cascade runs under it, so a child whose own mint failed is still
+    # stopped; a tree nobody asked to cancel has none and nothing is touched.
+    cascade_claim = _active_intent(q, task_id)
     with q._queue_lock:
         CANCELLED_ROOT_FENCES[task_id] = utc_now_iso()
         _ACTIVE_CASCADE_FENCES[cascade_token] = {task_id}
@@ -324,7 +321,7 @@ def cancel_task_by_id(task_id: str, *, cascade: bool = False) -> bool:
     all_outcomes: Dict[str, str] = {}
     try:
         for _sweep in range(4):
-            swept, outcomes = _cancel_subtree_sweep(q, task_id, already, cascade_token)
+            swept, outcomes = _cancel_subtree_sweep(q, task_id, already, cascade_token, cascade_claim)
             cancelled = swept or cancelled
             if not outcomes:
                 break
@@ -428,8 +425,9 @@ def drive_cancel_intent_scope(task_id: str, *, deliver: bool = True) -> str:
     Ingress may widen a previously-single request to ``cascade`` and Stop-now
     may harden an already-graceful cascade.  Every in-band consumer therefore
     reads the durable row immediately before teardown instead of replaying the
-    raw request shape.  Absence keeps the legacy direct-custody behavior;
-    unreadable authority fails closed.
+    raw request shape.  No open intent is a typed no-op that touches nothing
+    (``already_settled`` for a settled result, else ``not_found``: invariant
+    14 gives a stale wake no authority); unreadable authority fails closed.
     """
     q = _queue_module()
     task_id = str(task_id or "").strip()
@@ -449,23 +447,24 @@ def drive_cancel_intent_scope(task_id: str, *, deliver: bool = True) -> str:
             exc_info=True,
         )
         return CANCEL_FAILED
-    if isinstance(intent, dict):
-        try:
-            from supervisor.owner_stop import revoke_hardened_owner_stop_control
+    if not isinstance(intent, dict):
+        return CANCEL_ALREADY_SETTLED if _settled_status(q.DRIVE_ROOT, task_id) else CANCEL_NOT_FOUND
+    try:
+        from supervisor.owner_stop import revoke_hardened_owner_stop_control
 
-            revoke_hardened_owner_stop_control(q, task_id, intent)
-        except Exception:
-            log.debug(
-                "Hardened owner-stop cleanup failed for %s",
-                task_id,
-                exc_info=True,
-            )
-        if str(intent.get("scope") or "") == SCOPE_CASCADE:
-            return (
-                CANCEL_CANCELLED
-                if q.cancel_task_by_id(task_id, cascade=True)
-                else CANCEL_FAILED
-            )
+        revoke_hardened_owner_stop_control(q, task_id, intent)
+    except Exception:
+        log.debug(
+            "Hardened owner-stop cleanup failed for %s",
+            task_id,
+            exc_info=True,
+        )
+    if str(intent.get("scope") or "") == SCOPE_CASCADE:
+        return (
+            CANCEL_CANCELLED
+            if q.cancel_task_by_id(task_id)
+            else CANCEL_FAILED
+        )
     return q.cancel_task_custody(task_id, deliver=deliver)
 
 
@@ -502,7 +501,9 @@ def _record_cascade_scope(q: Any, task_id: str) -> None:
             log.debug("cascade-scope forensic append failed for %s", task_id, exc_info=True)
 
 
-def cancel_task_custody(task_id: str, *, deliver: bool = True) -> str:
+def cancel_task_custody(
+    task_id: str, *, deliver: bool = True, cascade_claim: Optional[Dict[str, Any]] = None,
+) -> str:
     """Cancel one task and return a TYPED outcome, never a bare boolean.
 
     The ONE settle owner for cancellation (phase A): every ingress records a
@@ -517,9 +518,10 @@ def cancel_task_custody(task_id: str, *, deliver: bool = True) -> str:
        mutation. Two custody attempts racing the same task used to interleave —
        the loser entered the capture-miss lane before the winner claimed, saw
        no live claim, and double-settled (two ``cancelled`` writes, two
-       ``task_done`` events). A refused claim is now ``failed`` with ZERO
-       mutation; ``{}`` (no intent at all) keeps the legacy path, where the
-       capture under the queue lock is the mutual exclusion.
+       ``task_done`` events). A refused claim is ``failed`` with ZERO
+       mutation; no intent at all is a typed no-op with ZERO mutation (A2,
+       invariant 14) unless ``cascade_claim`` — the root's open cascade intent
+       a subtree sweep runs under — authorizes this descendant.
     1. UNDER THE QUEUE LOCK — capture. A pending task leaves q.PENDING; a running
        task keeps its authoritative q.RUNNING row and its worker slot is marked
        ``reaping`` so no other actor can dispatch, reap, or respawn it.
@@ -540,7 +542,8 @@ def cancel_task_custody(task_id: str, *, deliver: bool = True) -> str:
     patch-capture seam, so its diff does not prove which actor authored it.
 
     ``deliver=False`` suppresses the per-task salvage chat delivery (cascade
-    sweeps deliver ONE root message with a children digest instead).
+    sweeps deliver ONE root message with a children digest instead); under a
+    ``cascade_claim`` a child whose own intent write failed is still stopped.
     """
     q = _queue_module()
     from supervisor import workers
@@ -562,10 +565,13 @@ def cancel_task_custody(task_id: str, *, deliver: bool = True) -> str:
         prepare_retry_chain(q, task_id, reads.load)
         with q._queue_lock:
             retry_target, settled_retry_status = _live_retry_target_locked(q, task_id, results=reads)
-    except Exception:
+    except Exception as exc:
+        # A busy store or a changed chain row under the lock is UNKNOWN: nothing
+        # was claimed or touched, the intent stays open, the watchdog retries.
         log.error(
-            "Cancellation retry-lineage authority is indeterminate for %s",
+            "Cancellation retry-lineage authority is indeterminate for %s (%s)",
             task_id,
+            exc,
             exc_info=True,
         )
         return CANCEL_FAILED
@@ -577,6 +583,11 @@ def cancel_task_custody(task_id: str, *, deliver: bool = True) -> str:
         return _cancel_live_retry_successor(
             q, task_id, retry_target, deliver=deliver,
         )
+    # The capture judges the row prepared outside the lock (A3): a full parse
+    # under the queue lock makes every admission wait on SQLite, and a result
+    # landing meanwhile is re-read after the kill (completion wins) or on miss.
+    prepared = reads.prepared(task_id)
+    settled = settled_status_of(prepared)
 
     # Read the durable intent BEFORE claiming it. The pre-claim row is what the
     # reaping-takeover gate below judges: a slot already marked ``reaping`` is
@@ -596,6 +607,9 @@ def cancel_task_custody(task_id: str, *, deliver: bool = True) -> str:
     intent = _claim_intent(q, task_id)
     if intent.get("claim_refused"):
         return CANCEL_FAILED
+    if not intent and not cascade_claim:
+        # No durable request, no authority: typed from the stored result, nothing touched.
+        return CANCEL_ALREADY_SETTLED if settled else CANCEL_NOT_FOUND
     generation = intent.get("generation")
     request_id = str(intent.get("request_id") or "")
     # Takeover authority (AR2-11, re-based on claim-first): our claim proves a
@@ -619,7 +633,6 @@ def cancel_task_custody(task_id: str, *, deliver: bool = True) -> str:
     captured_meta = None
     captured_running = None
     with q._queue_lock:
-        settled = _settled_status(q.DRIVE_ROOT, task_id)
         if settled:
             # Natural completion (or an earlier cancel) already decided this task.
             # A QUEUED row for a task with a terminal result is a ghost and is
@@ -645,7 +658,7 @@ def cancel_task_custody(task_id: str, *, deliver: bool = True) -> str:
                     from ouroboros.headless import terminal_task_files_ready
                     bound_task = (q.RUNNING.get(task_id) or {}).get("task") or {"id": task_id}
                     if (settled and not _worker_possibly_alive(worker)
-                            and terminal_task_files_ready(q.DRIVE_ROOT, bound_task, _load_result_row(q, task_id))):
+                            and terminal_task_files_ready(q.DRIVE_ROOT, bound_task, prepared)):
                         # Settled result AND provably dead process: no live
                         # ownership remains — the fast path below settles and
                         # recovers a stranded ``reaping`` marker. Only a
@@ -763,7 +776,7 @@ def cancel_task_custody(task_id: str, *, deliver: bool = True) -> str:
                 intent=intent, deliver=deliver, settled_status=settled,
                 captured_running=captured_running,
             )
-        return _finalize_cancel_intent_on_miss(task_id, intent=intent)
+        return _finalize_cancel_intent_on_miss(q, task_id, intent=intent)
     except Exception:
         # A crash BETWEEN the capture and the respawn is what strands a slot at
         # ``reaping`` forever (the reaper's step-5 self-heal has the same
@@ -883,10 +896,9 @@ def _claim_intent(q: Any, task_id: str) -> Dict[str, Any]:
 
     The two remaining shapes are deliberately DISTINCT (AR2-2):
 
-    - ``{}`` means NO ACTIVE INTENT exists — the legacy/no-intent path. Custody
-      may proceed: capture under the queue lock is the mutual exclusion for a
-      task nobody minted an intent for (pre-migration legacy latches, direct
-      custody callers), and the later ``_settle_intent`` no-ops harmlessly.
+    - ``{}`` means NO ACTIVE INTENT exists, and custody stops there (A2,
+      invariant 14): nothing to claim, settle or replay, so the caller answers
+      typed from the stored result and mutates nothing (a cascade claim aside).
     - A claim attempt that RAISED cannot tell whether a live owner exists, so
       it is treated as refused: proceeding would settle without the exclusivity
       the fence exists to prove.
@@ -958,7 +970,9 @@ def _cancel_live_retry_successor(
     intent = _claim_intent(q, intent_task_id)
     if intent.get("claim_refused"):
         return CANCEL_FAILED
-    source_intent = intent or intent_before
+    if not intent:
+        # A2: no durable request on the logical root mints none on its retry.
+        return CANCEL_NOT_FOUND
     try:
         from ouroboros.cancel_intents import (
             request_cancel,
@@ -967,9 +981,9 @@ def _cancel_live_retry_successor(
         request_cancel(
             q.DRIVE_ROOT,
             retry_task_id,
-            reason=str(source_intent.get("reason") or "logical retry cancellation"),
+            reason=str(intent.get("reason") or "logical retry cancellation"),
             source="timeout_retry_lineage",
-            requested_by=str(source_intent.get("requested_by") or ""),
+            requested_by=str(intent.get("requested_by") or ""),
             allow_settled_target=True,
         )
     except Exception:
@@ -979,31 +993,28 @@ def _cancel_live_retry_successor(
             retry_task_id,
             exc_info=True,
         )
-        if intent:
-            _release_intent_claim(
-                q, intent_task_id,
-                error="retry-lineage cancel intent write failed",
-                intent=intent,
-            )
+        _release_intent_claim(
+            q, intent_task_id,
+            error="retry-lineage cancel intent write failed",
+            intent=intent,
+        )
         return CANCEL_FAILED
 
     outcome = cancel_task_custody(retry_task_id, deliver=deliver)
     if outcome not in _CANCEL_TERMINALIZED:
-        if intent:
-            _release_intent_claim(
-                q, intent_task_id,
-                error=f"retry-lineage custody did not settle ({outcome})",
-                intent=intent,
-            )
-        return CANCEL_FAILED
-    if intent:
-        _settle_intent(
-            q,
-            intent_task_id,
-            outcome=outcome,
-            detail=f"logical cancellation followed live retry {retry_task_id}",
+        _release_intent_claim(
+            q, intent_task_id,
+            error=f"retry-lineage custody did not settle ({outcome})",
             intent=intent,
         )
+        return CANCEL_FAILED
+    _settle_intent(
+        q,
+        intent_task_id,
+        outcome=outcome,
+        detail=f"logical cancellation followed live retry {retry_task_id}",
+        intent=intent,
+    )
     return outcome
 
 
@@ -1419,9 +1430,11 @@ def sweep_cancel_intents(*, now: Optional[float] = None) -> Dict[str, str]:
 
 def _cancel_subtree_sweep(
     q: Any, task_id: str, already: set[str], cascade_token: str = "",
+    cascade_claim: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, Dict[str, str]]:
     """One snapshot pass over the live subtree of ``task_id``: fence what it sees,
-    then cancel it. Returns ``(cancelled_anything, {task_id: typed_outcome})``."""
+    then cancel it under the root's ``cascade_claim``. Returns
+    ``(cancelled_anything, {task_id: typed_outcome})``."""
     with q._queue_lock:
         live: Dict[str, Dict[str, Any]] = {
             str(task["id"]): task
@@ -1507,10 +1520,11 @@ def _cancel_subtree_sweep(
         except Exception:
             # AR2-1 (owner batch-4 1=A): a child whose durable intent could not
             # be written is NOT silently left unfenced. Custody still runs on it
-            # this sweep (killing it now beats leaving it live), but the failure
-            # is surfaced — warning + typed forensic row — and the ROOT's open
-            # ``scope=cascade`` intent makes the watchdog replay the WHOLE
-            # cascade after a crash, re-attempting this mint.
+            # this sweep under the root's ``cascade_claim`` (killing it now
+            # beats leaving it live), but the failure is surfaced — warning +
+            # typed forensic row — and the ROOT's open ``scope=cascade`` intent
+            # makes the watchdog replay the WHOLE cascade after a crash,
+            # re-attempting this mint.
             log.warning(
                 "cascade descendant intent write failed for %s (child of %s); "
                 "custody still runs this sweep, watchdog re-feeds via the root's "
@@ -1530,7 +1544,7 @@ def _cancel_subtree_sweep(
         # Children first (cancel_order is depth-sorted), each with its own typed
         # result — the parent's success can never mask a child's refusal.
         # deliver=False: the cascade delivers ONE root summary, not N messages.
-        outcomes[live_id] = q.cancel_task_custody(live_id, deliver=False)
+        outcomes[live_id] = q.cancel_task_custody(live_id, deliver=False, cascade_claim=cascade_claim)
         cancelled = outcomes[live_id] == q.CANCEL_CANCELLED or cancelled
     return cancelled, outcomes
 
@@ -1571,6 +1585,7 @@ from supervisor.queue_transitions import (  # noqa: E402, F401 -- intentional pu
     _live_retry_target_locked,
     _settled_status,
     clear_acceptance_fence_for_root,
+    settled_status_of,
     resume_budget_paused_task,
     resume_project_deletions,
     run_project_deletion,

@@ -161,7 +161,6 @@ HOST_ROW_CLASSES = {
     "acceptance_late_settlement": ("card_row", 1),
     "budget_notice": ("runtime_state", 1),
     "cancel_receipt": ("owner_act_receipt", 2),
-    "cancellation_notice": ("card_row", 1),
     "command_reply": ("owner_act_receipt", 2),
     "consciousness_notice": ("runtime_state", 1),
     "deep_self_review_queued": ("owner_act_receipt", 1),
