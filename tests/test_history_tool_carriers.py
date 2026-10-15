@@ -504,3 +504,27 @@ def test_census_rows_carry_started_at_and_never_ts(tmp_path, monkeypatch):
     rows = _real_census(tmp_path, {}, direct_turns=[])
     assert {row["activity_id"] for row in rows} == {"queued-root", "running-root"}
     assert all("ts" not in row and "started_at" in row for row in rows), rows
+
+
+@pytest.mark.parametrize("status", ["completed", "failed"])
+def test_answered_root_with_a_paused_late_phase_is_not_readdressed_at_the_page_end(tmp_path, monkeypatch, status):
+    # D10: the answer was delivered; only its post-task work waits under the owner's Pause.
+    # Its own rows left the page, so a census anchor would mint a timestamp-free card below
+    # the newest message (14.10 phantom "Done/Failed · Paused · owner pause" cards).
+    _write(tmp_path / "task_results/root.json", [{"_schema_version": 1, "task_id": "root", "status": status,
+        "chat_id": 1, "_is_direct_chat": True, "root_phase_checkpoint": {"post_task_synthesis": "paused"},
+        "completion_observations": {"delivery_counts": {"send_user_message": {"calls": 2}}}}])
+    ensure_current_store(tmp_path)
+    _write(tmp_path / "logs/chat.jsonl", [{"direction": "in", "text": "Latest question", "ts": TS, "chat_id": 1}])
+    paused = {"activity_id": "root", "chat_id": 1, "kind": "direct_chat", "phase": "budget_paused", "pause_cause": "owner",
+              "status": status, "root_phase_checkpoint": {"post_task_synthesis": "paused"}}
+    census = [paused]
+    monkeypatch.setattr("ouroboros.gateway.state._chat_activities_snapshot_safe", lambda *_: census)
+    assert [row["text"] for row in _read(tmp_path)["messages"]] == ["Latest question"]
+    # Positive control: unanswered current work of the room keeps its evidence at the page end,
+    # including a turn whose checkpoint holds only the pre-answer cost "refresh" pseudo-status.
+    census[:] = [{"activity_id": "root", "chat_id": 1, "kind": "direct_chat", "phase": "working",
+                  "root_phase_checkpoint": {"post_task_synthesis": "refresh"}}]
+    _write(tmp_path / "logs/tools.jsonl", [_tool("root")])
+    carrier = _read(tmp_path)["messages"][-1]
+    assert carrier["system_type"] == "task_evidence" and carrier["task_id"] == "root" and carrier["ts"] == ""

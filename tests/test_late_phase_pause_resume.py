@@ -250,6 +250,25 @@ def test_pause_after_delivery_saves_the_remainder_and_soft_resume_reassesses_cur
     assert not again.get("ok") and f.light.kinds() == kinds
 
 
+def test_paused_remainder_is_named_in_activity_and_never_readdressed_as_current_chat_work(late):
+    """The census keeps the answered root (Resume/Stop stay reachable) and names its work and
+    answer time for Activity; history no longer addresses it as current conversation, which
+    minted a timestamp-free card below the newest message once its own rows left the page."""
+    f = late
+    from ouroboros.gateway.state import _chat_activities_snapshot_safe, current_work_in_room
+    from ouroboros.projects_registry import task_presentation_name
+    from ouroboros.terminal_time import terminal_time_fact
+
+    _pause_during_read(f)
+    [row] = [r for r in _chat_activities_snapshot_safe(f.root, {}, direct_turns=[]) if r["activity_id"] == ROOT]
+    assert row["phase"] == "budget_paused" and row["pause_cause"] == "owner"
+    result = _row(f)
+    assert row["late_work"]["title"] == task_presentation_name(result)
+    # Only the executor's own terminal fact dates the answer; generic ts never does.
+    assert row["late_work"]["answered_at"] == (terminal_time_fact(result).get("occurred_at") or "")
+    assert ROOT not in current_work_in_room(f.root, {}, lambda *_: True)
+
+
 def test_fully_finished_root_reports_pause_inapplicable_and_buys_nothing(late):
     """Positive no-extra-work control: a genuinely finished root is not paused."""
     f = late
