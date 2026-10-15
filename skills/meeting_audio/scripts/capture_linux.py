@@ -45,9 +45,10 @@ MODULES_FILE = "speak_modules.json"
 # re-link scan that picks up new streams: PipeWire graph timing bounds.
 NODE_WAIT_SEC = 3.0
 RELINK_SEC = 2.0
-# Playback lead kept inside the player, so a flush silences within this bound.
+# Playback lead kept inside the player, so a flush silences within this bound; the queue
+# bound is memory only: engines stream speech faster than real time, so it holds minutes.
 VOICE_LEAD_SEC = 0.08
-VOICE_QUEUE_SEC = 2.0
+VOICE_QUEUE_SEC = 120.0
 COMMAND_TIMEOUT_SEC = 5.0
 
 Run = Callable[..., subprocess.CompletedProcess]
@@ -529,6 +530,7 @@ class LinuxVoice:
         self.epoch: Optional[int] = None
         self._helper: Optional[Helper] = None
         self._queue: deque = deque()
+        self._queued = 0  # bytes in the queue
         self._cond = threading.Condition()
         self._stopping = False
         self._writer: Optional[threading.Thread] = None
@@ -564,18 +566,21 @@ class LinuxVoice:
                 self.stats["dropped_bytes"] += len(pcm)
                 return
             self._queue.append((epoch, pcm))
+            self._queued += len(pcm)
             limit = int(self.rate * VOICE_QUEUE_SEC) * 2
-            while sum(len(item[1]) for item in self._queue) > limit:
-                self.stats["dropped_bytes"] += len(self._queue.popleft()[1])
+            while self._queued > limit and len(self._queue) > 1:
+                dropped = len(self._queue.popleft()[1])
+                self._queued -= dropped
+                self.stats["dropped_bytes"] += dropped
             self._cond.notify_all()
 
     def flush(self, epoch: int) -> None:
         with self._cond:
             self.epoch = epoch
             kept = deque(item for item in self._queue if item[0] == epoch)
-            self.stats["dropped_bytes"] += sum(len(item[1]) for item in self._queue) - sum(
-                len(item[1]) for item in kept)
-            self._queue = kept
+            remaining = sum(len(item[1]) for item in kept)
+            self.stats["dropped_bytes"] += self._queued - remaining
+            self._queue, self._queued = kept, remaining
             self._cond.notify_all()
 
     def _write_loop(self) -> None:
@@ -588,6 +593,7 @@ class LinuxVoice:
                 if self._stopping:
                     return
                 epoch, pcm = self._queue.popleft()
+                self._queued -= len(pcm)
             if not started:
                 started, written = time.monotonic(), 0
             ahead = written / self.rate - (time.monotonic() - started)
@@ -613,6 +619,7 @@ class LinuxVoice:
         with self._cond:
             self._stopping = True
             self._queue.clear()
+            self._queued = 0
             self._cond.notify_all()
         if self._writer is not None and self._writer is not threading.current_thread():
             self._writer.join(timeout=2.0)

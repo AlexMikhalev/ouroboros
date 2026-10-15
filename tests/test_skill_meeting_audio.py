@@ -10,6 +10,7 @@ rate and current epoch, flush, bye, close when the call ends).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ctypes
 import importlib
 import json
@@ -924,8 +925,9 @@ class FakeDoor:
                                  WebSocketRoute("/call/{call_id}/peer", peer)])
 
 
-@pytest.fixture
-def fake_door():
+@contextlib.contextmanager
+def serve_fake_door():
+    """Run a FakeDoor on a real loopback socket for the duration of the block."""
     import uvicorn
 
     door = FakeDoor()
@@ -936,10 +938,18 @@ def fake_door():
     thread.start()
     assert until(lambda: server.started, 10.0)
     door.url = f"http://127.0.0.1:{sock.getsockname()[1]}"
-    yield door
-    server.should_exit = True
-    thread.join(10.0)
-    sock.close()
+    try:
+        yield door
+    finally:
+        server.should_exit = True
+        thread.join(10.0)
+        sock.close()
+
+
+@pytest.fixture
+def fake_door():
+    with serve_fake_door() as door:
+        yield door
 
 
 def out_frame(epoch: int, pcm: bytes, rate: int = 48000) -> bytes:
