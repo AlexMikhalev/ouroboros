@@ -784,3 +784,10 @@ def test_native_search_follows_the_setting_for_gemini_only(monkeypatch, raw, exp
     monkeypatch.setenv("OUROBOROS_CALL_NATIVE_SEARCH", raw)
     assert native_search_enabled(_spec(engine=ENGINE_GOOGLE, model="gemini-3.8-live")) is expected
     assert native_search_enabled(_spec()) is False
+
+
+def test_the_call_view_opens_with_memory_the_web_and_the_room_chat():
+    from ouroboros.live_call_route import CALL_INITIAL_TOOL_NAMES
+    from ouroboros.tool_capabilities import COGNITIVE_MEMORY_TOOL_NAMES
+
+    assert set(CALL_INITIAL_TOOL_NAMES) == set(COGNITIVE_MEMORY_TOOL_NAMES) | {"web_search", "send_user_message"}

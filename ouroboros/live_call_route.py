@@ -23,9 +23,10 @@ from ouroboros.tool_capabilities import COGNITIVE_MEMORY_TOOL_NAMES
 
 log = logging.getLogger(__name__)
 
-# The call's initial Nano view: memory of the mind and the web; everything else is
-# one ``enable_tools`` away (growth reaches the engine as ``UpdateTools``).
-CALL_INITIAL_TOOL_NAMES: Tuple[str, ...] = tuple(sorted(COGNITIVE_MEMORY_TOOL_NAMES | {"web_search"}))
+# The call's initial Nano view: memory of the mind, the web, and the room's chat (what
+# reads better than it sounds — links, code, lists — the voice writes there itself);
+# everything else is one ``enable_tools`` away (growth reaches the engine as ``UpdateTools``).
+CALL_INITIAL_TOOL_NAMES: Tuple[str, ...] = tuple(sorted(COGNITIVE_MEMORY_TOOL_NAMES | {"web_search", "send_user_message"}))
 REALTIME_EVIDENCE_KIND = "realtime_windows"   # capability_evidence.json namespace of the documented windows
 
 
