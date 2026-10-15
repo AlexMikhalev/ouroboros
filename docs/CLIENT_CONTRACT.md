@@ -187,6 +187,13 @@ Replace `<model-id>` with the endpoint's model id. An empty review pool is an ex
 
 `sha` identifies the files on disk. The commit the running core actually started from is `running_sha` in `GET /api/update/status`.
 
+A quiz-bound activity may carry `owner_wait.quiz_id`, the exact question its wait
+names, in Main as well as a Project. Absence supplies no question identity.
+To open it, read `GET /api/tasks/{activity_id}`, match the task's `chat_id` and
+the exact quiz in `owner_quiz`; opening is a read, never a decision submission.
+Wait state and quiz state remain separate: a resumed task does not mean the
+question was answered. Use §7's decision contract to answer it.
+
 ### The WebSocket `/ws`
 
 **Format and liveness.** Open one socket per client. Every frame is a JSON text message with a `type`. The core sends `heartbeat` about every 15 seconds while clients are connected. If nothing arrives for about 45 seconds, treat the socket as dead and reconnect. A heartbeat proves the connection is alive, not that work is progressing. Before restarting, the core closes sockets with code 1012. The socket has no resume cursor: frames sent while it is down are not sent again.
