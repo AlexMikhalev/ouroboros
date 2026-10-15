@@ -247,7 +247,7 @@ def prepared_root_billing(task: Dict[str, Any], *, resolved: Any = _UNRESOLVED):
 def enqueue_task(
     task: Dict[str, Any], front: bool = False, *, restoring_snapshot: bool = False,
     consciousness_window: Optional[Dict[str, Any]] = None, continuation: bool = False,
-    project_admission: Optional[Dict[str, Any]] = None,
+    project_admission: Optional[Dict[str, Any]] = None, timeout_retry: bool = False,
 ) -> Dict[str, Any]:
     """Add task to PENDING (thread-safe: HTTP handlers enqueue concurrently
     with the supervisor main loop, so the mutation must hold the queue lock).
@@ -259,7 +259,8 @@ def enqueue_task(
     ``consciousness_window``: an allowance the caller already read OFF the queue lock
     (the scheduler). ``continuation``: host-derived only (a follow-up row's own
     ``continuation_of``) — a named continuation is not a spontaneous start, so it is
-    outside the consciousness concurrency cap; money (the allowance) still applies."""
+    outside the consciousness concurrency cap; money (the allowance) still applies.
+    ``timeout_retry``: the reaper's own retry admission (``apply_budget_root_admission_fence``)."""
     t = dict(task)
     if not restoring_snapshot:
         t.pop("_project_scope_none", None)  # Only this host admission can attest absence.
@@ -355,7 +356,8 @@ def enqueue_task(
             t["_admission_blocked"] = "admission_reservation_lost"
             return t
         root_id = str(t.get("root_task_id") or "").strip()
-        if root_id and not restoring_snapshot and apply_budget_root_admission_fence(t, root_id):
+        if root_id and not restoring_snapshot and apply_budget_root_admission_fence(
+                t, root_id, timeout_retry=timeout_retry):
             if ADMISSION_RESERVATIONS.get(task_id) == admission_token:
                 ADMISSION_RESERVATIONS.pop(task_id, None)
             return t

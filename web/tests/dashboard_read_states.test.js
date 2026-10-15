@@ -1227,3 +1227,24 @@ test('Storage destroy aborts its read and ignores late answers, tab events and c
     assert.deepEqual(calls, [storageUrl]);
     assert.equal(timers.polls(), 0);
 });
+
+test('Activity says why a held Continue waits, keeps its Resume, and never calls it a budget pause (#1721)', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    emptyActivity(routes);
+    routes.set(queueUrl, response({ queue: { running: [], pending: [{ id: 'pred-1-s1', task: {
+        id: 'pred-1-s1', root_task_id: 'pred-1-s1', title: 'Continue Friday report',
+        _budget_pause_hold: { reason: 'continuation_writer_unsettled', selected: false, dispatchable: false,
+            detail: "the interrupted task's own work is not proven settled; this Continue waits",
+            predecessor_task_id: 'pred-1', blockers: [{ kind: 'delegated_run', task_id: 'pred-1', run_id: 'run-leaf',
+                invocation_id: '', state: 'running', stop_outcome: '', source: 'delegated_subagent' }] } } }] } }));
+    const activity = initActivity({ mount, ws });
+    await activity.refresh();
+    const row = section(mount, 'queue').querySelector('.activity-row');
+    assert.match(row.querySelector('.activity-sub').textContent,
+        /^held: earlier work not proven settled · delegated run run-leaf is running$/);
+    assert.ok(row.classList.contains('activity-held'), 'its cause wraps instead of ending in an ellipsis');
+    assert.doesNotMatch(row.textContent, /paused \(budget\)/);
+    const control = row.querySelector('[data-act="task-control"]');
+    assert.equal(control.getAttribute('data-budget-paused'), '1', 'the existing Resume rechecks it');
+    activity.destroy();
+});

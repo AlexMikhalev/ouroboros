@@ -555,9 +555,11 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
 
         from supervisor.queue_transitions import budget_pause_fact
 
+        active_roots = set()  # logical roots represented by the current physical queue actors
         for row in pending_rows:
             task_id = str(row.get("id") or "")
             if task_id and _is_root(task_id, row):
+                active_roots.add(str(row.get("root_task_id") or task_id))
                 # #322 (P1): a budget-paused member must not masquerade as
                 # "queued" — nothing will dispatch it until an explicit resume.
                 pausing = _managed_task_budget_pausing(drive_root, row, task_id)
@@ -566,6 +568,7 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 activities.append(_activity(task_id, row, phase, _epoch_or_zero(row.get("queued_at"))))
         for task_id, row, started_at in running_rows:
             if task_id and _is_root(task_id, row):
+                active_roots.add(str(row.get("root_task_id") or task_id))
                 # #1196: a RUNNING root whose durable budget_pause row says
                 # "pausing" is neither working nor paused yet — additive phase.
                 pausing = _managed_task_budget_pausing(drive_root, row, task_id)
@@ -585,6 +588,12 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
             if latch.get("cause") != "owner_pause" or root_id in visible:
                 continue
             facts = _task_activity_facts(drive_root, root_id)
+            if root_id in active_roots and not (
+                    facts.get("late_phase") == "paused" or facts.get("finalizing")
+                    or post_task_synthesis_in_flight(drive_root, root_id)
+                    or task_has_live_review_operation(drive_root, root_id)
+                    or paused_acceptance_preparations(drive_root, root_id, str(latch.get("fence_id") or ""))):
+                continue  # the logical fence alone is no second actor; genuine late work stays
             # The fence's own census is the truth of "Paused": reviewers already
             # launched finish separately and never keep the tree Pausing.
             if facts.get("late_phase") == "paused" or _owner_fence_state(

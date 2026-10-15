@@ -4721,7 +4721,10 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     flex: 1 1 240px;
 }
 
-.activity-schedule .activity-sub {
+/* A held Continue's cause (#1721) is bounded owner text the owner must read to
+   act, so on a phone it wraps like a schedule's state instead of losing the cause. */
+.activity-schedule .activity-sub,
+.activity-held .activity-sub {
     white-space: normal;
     overflow: visible;
     overflow-wrap: anywhere;

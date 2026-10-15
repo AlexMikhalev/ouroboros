@@ -1453,10 +1453,10 @@ async def _api_chat_cancel(request: Request) -> JSONResponse:
     The cancellation owner does the work — durable intent first
     (``cancel_intents.request_cancel``), then custody through the cascade path
     the browser Stop uses — and the answer is its typed outcome: ``cancelled``,
-    ``already_terminal``, ``unresolved`` (custody did not settle; the work is
-    still live) or ``cancel_unsupported`` (nothing this request started is
-    addressable yet: still queued, or a message delivered into a pre-existing
-    task). Never a ``cancelled`` that did not happen.
+    ``already_terminal``, ``unresolved`` (custody did not confirm settlement,
+    proving neither live nor ended work) or ``cancel_unsupported`` (nothing this
+    request started is addressable yet: still queued, or a message delivered
+    into a pre-existing task). Never a ``cancelled`` that did not happen.
     """
     ctx: HostServiceContext = request.app.state.host_service_context
     try:

@@ -147,6 +147,8 @@ SCENARIOS = {
     "S38": ("evolution crash between the candidate commit and its receipts: the supervisor's cycle commits in its candidate under blocking review, the tree is SIGKILLed and the post-commit receipts removed; a fresh boot recovers the exact commit and its reviewed provenance at worker boot and does not absorb it (the serving checkout never held it)", LANE_MOCK),
     # Deployment: both container modes on real Docker, keyless (stub models through an exec relay).
     "S39": ("container lifecycle: the managed image boots a released seed into a body checkout and runtime venv on volumes (parent and split layouts), keeps code, packages and data across recreation, stays stopped after Panic until an owner start, refuses a mounted repository and a second container on shared data; the immutable image admits one server per data volume and, networkless, serves onboarding, a project, a task with a child and an artifact across a restart; an Update adding a local-wheel dependency survives an offline recreation, a task imports it, and rollback restores the old lock with the package disclosed", LANE_CONTAINER),
+    # #1729/#1730 in real processes: one worker frozen past the idle window is reaped by a real kill.
+    "S40": ("idle retry under the owner's Pause: after a Pause and a consumed Resume (and without them) a real worker frozen past the idle window is reaped by a real kill; its new-ID retry dispatches with no spent Resume and continues the saved work; a Pause of that running retry fences its logical root, a model write served after the acceptance never lands while one before it did, one Resume reopens the tree and Stop ends it", LANE_MOCK),
 }
 
 MOCK_SLUG = "openai-compatible::mock-model"
@@ -530,6 +532,16 @@ class ModelGate:
                 f"ModelGate: the scenario never released the held round within {self.timeout:.0f}s")
 
 
+class StubHttpError(Exception):
+    """A scenario's deliberate provider failure: the model answers this HTTP status
+    instead of a completion (a 503 is the provider's own transient refusal), never
+    the loud ``e2e_script_error`` 500 of a broken step."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = int(status)
+
+
 class LoopbackModelServer:
     """Shared HTTP plumbing of the loopback OpenAI-compatible model servers.
 
@@ -579,6 +591,8 @@ class LoopbackModelServer:
                     time.sleep(outer.latency_sec)
                 try:
                     completion = outer._completion(body)
+                except StubHttpError as exc:
+                    return self._send({"error": {"message": str(exc), "type": "server_error"}}, status=exc.status)
                 except Exception as exc:  # a scenario-script bug must fail LOUDLY, never hang the client
                     import traceback
 
