@@ -66,3 +66,29 @@ def test_the_same_sweep_without_the_membership_methods_admits_nothing(tmp_path):
     _age(tmp_path)
     assert td.replay_pending_deliveries(tmp_path, event_queue=plain) == []
     assert plain.items == [] and _attempts(tmp_path, event["delivery_id"]) == 0
+
+
+@pytest.mark.serial
+def test_the_last_replay_copy_is_not_exhausted_while_it_is_still_outstanding(tmp_path, monkeypatch):
+    """The replay cap gives a delivery up only once the bus says its last copy left the handler."""
+    from supervisor.event_observation import ObservedEventQueue
+
+    monkeypatch.setattr("supervisor.message_bus.send_with_budget", lambda *a, **k: None)
+    bus = ObservedEventQueue()
+    event = _owed(tmp_path)
+    did = event["delivery_id"]
+    for attempt in range(td._PENDING_MAX_REPLAYS):
+        _age(tmp_path)
+        assert td.replay_pending_deliveries(tmp_path, event_queue=bus) == [did]
+        if attempt < td._PENDING_MAX_REPLAYS - 1:
+            assert bus.get_nowait()["delivery_id"] == did
+            bus.release_delivery(did)
+    _age(tmp_path)  # the fifth copy is still queued when its backoff expires
+    assert td.replay_pending_deliveries(tmp_path, event_queue=bus) == []
+    assert bus.delivery_outstanding(did)
+    assert td.terminal_answer_receipts(tmp_path, event["task_id"])["state"] == "owed"
+    assert bus.get_nowait()["delivery_id"] == did  # the handler ran and returned without a receipt
+    bus.release_delivery(did)
+    _age(tmp_path)
+    assert td.replay_pending_deliveries(tmp_path, event_queue=bus) == []
+    assert td.terminal_answer_receipts(tmp_path, event["task_id"])["state"] == "exhausted"

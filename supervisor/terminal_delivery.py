@@ -703,14 +703,6 @@ def replay_pending_deliveries(drive_root: Any, *, event_queue: Any = None) -> Li
     ]
     if not owed:
         return []
-    spent = [row for row in owed if _replay_attempts(row) >= _PENDING_MAX_REPLAYS]
-    if spent:
-        # The cap is reached: the debt TRANSITIONS to exhausted (payload kept, copy
-        # preserved, disclosed) instead of being enqueued once more.
-        _retire_exhausted(drive_root, spent)
-        owed = [row for row in owed if row not in spent]
-    if not owed:
-        return []
     if event_queue is None:
         try:
             from supervisor import workers
@@ -719,6 +711,20 @@ def replay_pending_deliveries(drive_root: Any, *, event_queue: Any = None) -> Li
         except Exception:
             log.warning("terminal-delivery replay could not reach the event queue", exc_info=True)
             return []
+    spent = [row for row in owed if _replay_attempts(row) >= _PENDING_MAX_REPLAYS]
+    if spent:
+        # The cap is reached: the debt TRANSITIONS to exhausted (payload kept, copy
+        # preserved, disclosed) instead of being enqueued once more, but only once the
+        # bus says its last copy left the handler: a copy still queued or being handled,
+        # or unobservable membership, is not a given-up delivery (the next sweep decides).
+        from supervisor.event_observation import delivery_outstanding
+
+        done = [row for row in spent if delivery_outstanding(event_queue, str(row.get("delivery_id") or "")) is False]
+        if done:
+            _retire_exhausted(drive_root, done)
+        owed = [row for row in owed if row not in spent]
+    if not owed:
+        return []
     replayed: List[str] = []
     for row in owed:
         did = str(row.get("delivery_id") or "")
