@@ -40,8 +40,6 @@ from tests._usage_store_testing import ledger_rows
 # ---------------------------------------------------------------------------
 
 def _coupling_matrix_rows():
-    from ouroboros.tools.scope_review_contract import SCOPE_REQUIRED_ITEMS
-
     return [
         {"item": item, "verdict": "PASS", "severity": "advisory",
          "reason": "checked the relevant code path and its consumers thoroughly"}
