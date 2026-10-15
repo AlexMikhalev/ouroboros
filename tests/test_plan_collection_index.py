@@ -254,6 +254,44 @@ def test_real_late_collector_revisits_only_pending_plan_after_legacy_history(cou
     assert len(late._plan_marks(root)) == 1 and _flags(root, "old-000") == before
 
 
+@pytest.mark.parametrize("after_candidate", [False, True])
+@pytest.mark.parametrize("error", [OSError, ValueError])
+def test_lazy_selection_failure_preserves_real_settlement_and_remaining_pending_seats(
+        council, monkeypatch, caplog, after_candidate, error):
+    root = council.h.drive
+    with monkeypatch.context() as lossy:
+        lost = late._lose_settlement_callbacks(lossy)
+        council.transport.release("m/a")
+        late._until(lambda: lost)
+    late._end(council.h)
+    assert late._participant(council.h, "s1")["status"] == "pending" and late._owed_rows(root) == {}
+    candidates = task_store.plan_collection_candidates
+
+    def interrupted(*args, **kwargs):
+        if after_candidate:
+            selected = iter(candidates(*args, **kwargs))
+            try:
+                yield next(selected)  # The real collector settles this seat before iteration fails.
+            finally:
+                selected.close()
+        raise error("candidate iteration unavailable")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(task_store, "plan_collection_candidates", interrupted)
+        report = late_review_marks.replay_owed_late_reviews(root)
+    assert report["settled"] == int(after_candidate)
+    assert "plan records are unreadable; their pending seats stay pending" in caplog.text
+    assert late._participant(council.h, "s1")["status"] == ("answered" if after_candidate else "pending")
+    assert all(late._participant(council.h, seat)["status"] == "pending" for seat in ("s2", "s3"))
+    assert _flags(root, late.PLAN_TASK)[1] == 1
+    assert late_review_marks.replay_owed_late_reviews(root)["settled"] == int(not after_candidate)
+    [mark] = late._plan_marks(root)
+    assert mark["review"]["subject"]["seat_id"] == "s1"
+    assert late._participant(council.h, "s1")["status"] == "answered"
+    assert late_review_marks.replay_owed_late_reviews(root)["settled"] == 0
+    assert late._plan_marks(root) == [mark] and council.transport.calls.count("m/a") == 1
+
+
 def test_storeless_roundtrip_and_reimport_preserve_plan_and_derive_selector(tmp_path):
     original = document("task", plan_record=_record([_pending()]), result="exact historical text")
     source, restored = tmp_path / "source", tmp_path / "restored"
