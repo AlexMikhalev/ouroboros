@@ -2,11 +2,13 @@
 
 It answers one question before anyone asks the install to join a meeting: can this
 host run the Zoom Meeting SDK with these app credentials? It checks the platform,
-imports the binding, finds GLib, starts the SDK and authenticates the app. It never
-joins a meeting and never prints a secret; the credentials appear only as the Presence
-account digest a binding names.
+imports the binding, finds GLib, looks for the audio prerequisites Zoom documents for
+raw audio on Linux (a PulseAudio server and ``~/.config/zoomus.conf`` with
+``system.audio.type=default``), starts the SDK and authenticates the app. It never joins
+a meeting and never prints a secret; the credentials appear only as the Presence account
+digest a binding names.
 
-    python3 scripts/probe.py [--settings PATH] [--json]
+    <skill>/.ouroboros_env/python/bin/python <skill>/scripts/probe.py [--settings PATH] [--json]
 
 Credentials come from ZOOM_CLIENT_ID and ZOOM_CLIENT_SECRET in the environment, or from
 the same keys in an Ouroboros settings.json given with --settings. Each step prints
@@ -21,6 +23,7 @@ import importlib
 import json
 import os
 import platform
+import re
 import sys
 import time
 from pathlib import Path
@@ -31,7 +34,7 @@ from companion_link import app_account_id
 from zoom_session import WEB_DOMAIN, build_sdk_jwt, sdk_name
 
 PASS, FAIL, NOT_RUN = "PASS", "FAIL", "NOT_RUN"
-STEPS = ("platform", "import_sdk", "glib", "credentials", "init_sdk", "authenticate", "cleanup")
+STEPS = ("platform", "import_sdk", "glib", "audio_raw", "credentials", "init_sdk", "authenticate", "cleanup")
 SUPPORTED_PLATFORM = "linux-x86_64"
 AUTH_TIMEOUT_MS = 30000  # how long Zoom's authentication answer may take before the step fails
 
@@ -51,6 +54,29 @@ def _import_sdk() -> Tuple[Any, str]:
         return module, f"zoom-meeting-sdk {version('zoom-meeting-sdk')}"
     except Exception:
         return module, "zoom_meeting_sdk imported"
+
+
+def audio_raw_prerequisites(env: Mapping[str, str], home: str) -> Tuple[str, str]:
+    """Zoom's Linux raw-audio prerequisites: a PulseAudio server and zoomus.conf.
+
+    Source: Zoom Developer Docs, Meeting SDK for Linux, "Use raw data". The server is
+    found by its socket (PulseAudio or PipeWire's pulse service), without running any
+    program.
+    """
+    problems = []
+    conf = Path(home or "~").expanduser() / ".config" / "zoomus.conf"
+    try:
+        text = conf.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        text = ""
+    if not re.search(r"^\s*system\.audio\.type\s*=\s*default\s*$", text, re.MULTILINE):
+        problems.append(f"{conf} does not set system.audio.type=default")
+    runtime = env.get("XDG_RUNTIME_DIR", "")
+    if not env.get("PULSE_SERVER") and not (runtime and (Path(runtime) / "pulse" / "native").exists()):
+        problems.append("no PulseAudio server socket (PULSE_SERVER or $XDG_RUNTIME_DIR/pulse/native)")
+    if problems:
+        return FAIL, "; ".join(problems)
+    return PASS, f"{conf} and a PulseAudio server"
 
 
 def load_credentials(env: Mapping[str, str], settings_path: Optional[str]) -> Tuple[str, str, str]:
@@ -85,6 +111,7 @@ def run_probe(*, env: Mapping[str, str], settings_path: Optional[str] = None,
             results["glib"] = (PASS, f"{loop.backend} ({loop.library})")
         except glib_loop.GLibUnavailable as exc:
             results["glib"] = (FAIL, str(exc))
+    results["audio_raw"] = audio_raw_prerequisites(env, env.get("HOME", ""))
     client_id, client_secret, where = load_credentials(env, settings_path)
     if client_id and client_secret:
         results["credentials"] = (PASS, f"from the {where}; Presence account {app_account_id(client_id)}")

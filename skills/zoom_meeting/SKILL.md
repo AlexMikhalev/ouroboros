@@ -78,9 +78,14 @@ Zoom Meeting SDK app can use it.
 ## Setup
 
 - Linux x86_64. The `zoom-meeting-sdk` binding ships Linux x86_64 wheels only, and the
-  Zoom Linux SDK loads system libraries (GLib among them) and needs an audio server
-  for computer audio. The dependency check imports the binding, so a missing library
-  shows as a failed check rather than as a broken join.
+  Zoom Linux SDK loads system libraries, GLib among them. The dependency check imports
+  the binding, so a missing library shows as a failed check rather than as a broken
+  join.
+- Raw meeting audio on Linux needs a PulseAudio server (PipeWire's pulse service
+  counts) for the user Ouroboros runs as, and `~/.config/zoomus.conf` containing
+  `system.audio.type=default`; without them the SDK joins but delivers no audio.
+  Source: Zoom Developer Docs, Meeting SDK for Linux, "Use raw data",
+  https://developers.zoom.us/docs/meeting-sdk/linux/custom-ui/advanced-features/raw-data/.
 - A Zoom Meeting SDK app of the install's own (Zoom App Marketplace, with the Meeting
   SDK enabled). Save its client id and secret as `ZOOM_CLIENT_ID` and
   `ZOOM_CLIENT_SECRET` in Settings → Secrets and grant them to this skill. The
@@ -120,11 +125,13 @@ https://developers.zoom.us/blog/transition-to-obf-token-meetingsdk-apps/.
 
 ## Feasibility probe
 
-On the server, run `python3 scripts/probe.py` with `ZOOM_CLIENT_ID` and
-`ZOOM_CLIENT_SECRET` in the environment, or with `--settings <path to settings.json>`.
-It imports the binding, finds GLib, starts the SDK and authenticates the app without
-joining any meeting, and prints PASS, FAIL or NOT_RUN for each step. It never prints a
-secret; `--json` gives the same result as one JSON object.
+On the server, run the probe with the skill's isolated Python, which holds the binding:
+`<skill>/.ouroboros_env/python/bin/python <skill>/scripts/probe.py`, with
+`ZOOM_CLIENT_ID` and `ZOOM_CLIENT_SECRET` in the environment or with
+`--settings <path to settings.json>`. It checks the platform, imports the binding, finds
+GLib, looks for the raw-audio prerequisites above, starts the SDK and authenticates the
+app without joining any meeting, and prints PASS, FAIL or NOT_RUN for each step. It
+never prints a secret; `--json` gives the same result as one JSON object.
 
 ## Limits
 

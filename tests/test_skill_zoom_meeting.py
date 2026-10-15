@@ -1149,10 +1149,15 @@ def test_no_secret_reaches_a_log_line_the_status_file_or_a_reply(zoom, tmp_path)
         assert secret and secret not in written
 
 
-def test_probe_reports_pass_fail_and_not_run_without_printing_a_secret(zoom, capsys, monkeypatch):
+def test_probe_reports_pass_fail_and_not_run_without_printing_a_secret(zoom, capsys, monkeypatch, tmp_path):
     probe = zoom.probe
     run_probe = probe.run_probe
-    env = {"ZOOM_CLIENT_ID": CLIENT_ID, "ZOOM_CLIENT_SECRET": CLIENT_SECRET}
+    (tmp_path / ".config").mkdir()
+    (tmp_path / ".config" / "zoomus.conf").write_text("system.audio.type=default\n", encoding="utf-8")
+    (tmp_path / "run" / "pulse").mkdir(parents=True)
+    (tmp_path / "run" / "pulse" / "native").write_text("", encoding="utf-8")
+    env = {"ZOOM_CLIENT_ID": CLIENT_ID, "ZOOM_CLIENT_SECRET": CLIENT_SECRET, "HOME": str(tmp_path),
+           "XDG_RUNTIME_DIR": str(tmp_path / "run")}
 
     def run(fake, **kwargs):
         loop = ManualLoop()
@@ -1168,8 +1173,10 @@ def test_probe_reports_pass_fail_and_not_run_without_printing_a_secret(zoom, cap
     assert {name: status for name, (status, _detail) in steps.items()} == dict.fromkeys(probe.STEPS, "PASS")
     assert fake.calls == ["InitSDK", "CreateAuthService", "AuthService.SetEvent", "SDKAuth", "CleanUPSDK"]
     assert "Join" not in fake.calls and zoom.companion_link.app_account_id(CLIENT_ID) in steps["credentials"][1]
-    missing = run(FakeZoom(), env={}, platform_name=lambda: "darwin-arm64")
+    missing = run(FakeZoom(), env={"HOME": str(tmp_path / "nowhere")}, platform_name=lambda: "darwin-arm64")
     assert missing["platform"][0] == "FAIL" and missing["credentials"][0] == "FAIL"
+    assert missing["audio_raw"][0] == "FAIL" and "system.audio.type=default" in missing["audio_raw"][1]
+    assert "PulseAudio" in missing["audio_raw"][1]
     assert (missing["init_sdk"][0], missing["authenticate"][0], missing["cleanup"][0]) == ("PASS", "NOT_RUN", "PASS")
     absent = run(None)
     assert absent["import_sdk"][0] == "FAIL" and {absent[s][0] for s in ("glib", "init_sdk", "authenticate",
