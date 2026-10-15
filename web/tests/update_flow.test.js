@@ -20,13 +20,15 @@ test('update failure renders the rollback stash disclosure without losing diagno
         rolled_back: true, rollback: note, stash_note: note,
     } });
     assert.ok(rendered.includes(note));
+    // The update, not necessarily the checkout: a rollback may verify its target already present.
+    assert.ok(rendered.includes('the update was rolled back') && !rendered.includes('checkout was rolled back'));
     assert.equal(rendered.split(`git stash apply ${stash}`).length - 1, 1);
     const pending = applyFailureText({ message: 'write failed', body: {
         reason: 'stash_recovery_incomplete', rolled_back: false,
         stash_note: 'Automatic recovery is unconfirmed; current files were left unchanged.',
     } });
     assert.ok(pending.includes('unconfirmed'));
-    assert.ok(!pending.includes('the checkout was rolled back'));
+    assert.ok(!pending.includes('was rolled back'));
 });
 
 

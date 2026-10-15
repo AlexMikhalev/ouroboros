@@ -296,7 +296,11 @@ def _run_git_process_bounded(
             _active_subprocesses.discard(proc)
 
 
-def git_capture(cmd: List[str], *, timeout: Optional[float] = None) -> Tuple[int, str, str]:
+def git_capture(
+    cmd: List[str], *, timeout: Optional[float] = None, repair_index: bool = True,
+) -> Tuple[int, str, str]:
+    # A caller interpreting one physical command's effects can opt out of repair/retry;
+    # the final stderr alone cannot describe an earlier attempt or its index rebuild.
     # Same reason as utils.run_cmd: this stderr is PARSED (`_maybe_repair_git_index`
     # matches English git diagnostics), so the operator's locale must not decide
     # whether a repairable index error is recognised.
@@ -319,7 +323,7 @@ def git_capture(cmd: List[str], *, timeout: Optional[float] = None) -> Tuple[int
         stderr = str(raw_stderr or "").strip()
         if returncode == 0:
             return returncode, str(stdout or "").strip(), stderr
-        if _maybe_repair_git_index(stderr, timeout=timeout):
+        if repair_index and _maybe_repair_git_index(stderr, timeout=timeout):
             continue
         return returncode, str(stdout or "").strip(), stderr
     return returncode, str(stdout or "").strip(), stderr

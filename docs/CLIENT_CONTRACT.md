@@ -549,7 +549,7 @@ Ouroboros runs connected coding subscriptions through its bundled agent engine, 
   - `update_status_ready` arrives after a fresh start.
 - **Retrying:** there is no idempotency key. A non-manual request can answer 409 while an update is active or its expected base/target no longer matches; `manual` may return another plan. When an outcome is unknown, read status and transaction facts before deciding—never infer failure or resend from a dropped connection.
 
-**Rollback.** `POST /api/git/rollback {target}` stops running work, switches to the given commit or tag and restarts. It has no checks and is not safe to repeat. Ask the person first; afterwards confirm `running_sha`.
+**Rollback.** `POST /api/git/rollback {target}` stops running work, switches to the given commit or tag and restarts. It has no checks and is not safe to repeat. Ask the person first; afterwards confirm `running_sha`. 409 `reason: restore_not_applied` means Git refused the reset at its held index lock, so the reset changed no checkout file, index entry or ref; the lock, and the keep branch and rescue snapshot made before the reset, are retained. No restart is requested; writers are readmitted through the aborted-update path, which keeps admission closed while an update transaction is active or the stopped work's handoff is unconfirmed.
 
 **Promote.** `POST /api/git/promote` moves the local stable branch to the current commit (nothing is pushed).
 

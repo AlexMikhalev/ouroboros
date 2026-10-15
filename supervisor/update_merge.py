@@ -499,8 +499,12 @@ def rollback_managed_update(
         write_update_tx(tx)
     # These commands only reach the verified target below. A checkout that already IS it
     # (read directly, never inferred from a refused first step) is left alone, so an index
-    # lock Git cannot take stops only a rollback that still has tree work to do.
-    in_place = not _rollback_target_unmet(pre, branch)
+    # lock Git cannot take stops only a rollback that still has tree work to do. A clean index
+    # can still belong to an unfinished operation (an empty cherry-pick or revert): its marker
+    # denies only the skip, since reset ends those but leaves a stopped sequence or rebase.
+    in_place = not _rollback_target_unmet(pre, branch) and not any(
+        (_g._git_dir() / name).exists()
+        for name in ("CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer", "rebase-merge", "rebase-apply"))
     if not in_place:
         for cmd, failure in (
                 (["git", "reset", "--hard", "HEAD"], "rollback reset failed before checkout"),
@@ -520,15 +524,12 @@ def rollback_managed_update(
 
 def _rollback_target_unmet(pre: str, branch: str) -> str:
     """Why the checkout is not the rollback target (``""`` when it is: HEAD at ``pre`` on ``branch``, clean
-    tree and index, no unfinished Git operation, constitution present). A clean index can still belong
-    to an empty cherry-pick; skipping reset then would leave that operation active."""
+    tree and index, no merge in progress, constitution present)."""
     rc_h, head, head_error = _g.git_capture(["git", "rev-parse", "--verify", "HEAD"])
     rc_b, current, branch_error = _g.git_capture(["git", "rev-parse", "--abbrev-ref", "HEAD"])
     rc_s, status, status_error = _g.git_capture(["git", "status", "--porcelain"])
     if (rc_h != 0 or head != pre or rc_b != 0 or current != branch or rc_s != 0 or status.strip()
-            or _merge_head_sha() or any((_g._git_dir() / name).exists() for name in (
-                "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer", "rebase-merge", "rebase-apply"))
-            or not managed_update_constitution_present("HEAD")):
+            or _merge_head_sha() or not managed_update_constitution_present("HEAD")):
         return head_error or branch_error or status_error or "rollback verification mismatch"
     return ""
 

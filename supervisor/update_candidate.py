@@ -659,9 +659,13 @@ def restore_stash_with_marker(tx: Dict[str, Any], context: str) -> StashRestoreR
             persist({"status": result.status, "note": result.note, "evidence": result.evidence})
         elif (_g._git_dir() / "index.lock").exists():
             # `git stash apply` needs that lock: starting now would only spend this one-shot
-            # restore on Git's refusal. Nothing is recorded; the transaction waits and retries.
-            return StashRestoreResult("incomplete", "Git's index lock is held, so the restore waits for it; "
-                                      + _stash_recovery_note(stash_sha))
+            # restore on Git's refusal. Nothing is recorded; the transaction waits. The next start
+            # resets the tree and applies the stash itself, so a manual apply (and any edit over it)
+            # would only be set aside again: no manual apply is suggested.
+            return StashRestoreResult("incomplete", (
+                f"Git's index lock is held, so restoring the local changes waits for it; they stay in update "
+                f"stash {stash_sha[:12]}, which is kept. Once the lock is resolved, quit and reopen the app "
+                "(or restart the server process); startup then applies that stash. Do not apply it by hand."))
         else:
             persist({"status": "applying"})
             result = restore_update_stash(stash_sha, context, before_cleanup=persist)

@@ -108,8 +108,8 @@ class IndexLockRefusal(subprocess.CalledProcessError):
     """Every attempt of a ``git reset``/``git checkout`` died taking this checkout's ``index.lock``.
 
     Both take that lock before writing the index, the tree or a ref, so the command
-    itself changed nothing. ``before_tree_effects`` is ``checkout_and_reset``'s fact
-    that no earlier tree step of the same call ran.
+    itself changed nothing. ``before_tree_effects`` is its raiser's fact that no earlier
+    tree step of the same call ran (``checkout_and_reset``; Restore's single reset).
     """
     before_tree_effects = False
 

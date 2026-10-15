@@ -187,9 +187,16 @@ def switching_owner(door: str) -> Owner:
     """The door's original owner, preserving rescue/verification/handoff and the intent's reason.
     Update doors refuse a managed record naming another target; the seam verifies HEAD."""
     if door in {"ui_rollback", "vcs_rollback"}:
+        from supervisor.git_ops_reset import IndexLockRefusal, refusal_text
         from supervisor.update_recovery import rollback_to_version
 
-        return lambda intent: rollback_to_version(intent["target_sha"], reason=intent["reason"])
+        def restore(intent: Dict[str, Any]) -> Tuple[bool, str]:
+            try:
+                return rollback_to_version(intent["target_sha"], reason=intent["reason"])
+            except IndexLockRefusal as exc:  # the door's typed refusal is this seam's failed switch
+                return False, refusal_text(exc)
+
+        return restore
     if door == "boot_smoke_rollback":
         from supervisor.update_merge import read_update_tx_strict, rollback_managed_update
 

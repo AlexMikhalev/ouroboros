@@ -104,7 +104,7 @@ export function applyFailureText(err) {
     if (Array.isArray(body.blockers) && body.blockers.length) {
         parts.push(`blocked by: ${body.blockers.slice(0, 5).join(', ')}`);
     }
-    if (body.rolled_back) parts.push('the checkout was rolled back');
+    if (body.rolled_back) parts.push('the update was rolled back');
     if (body.smoke) parts.push('the post-update smoke check failed');
     if (typeof body.estimated_wave_usd === 'number') {
         parts.push(`assisted review needs ~$${body.estimated_wave_usd}` + (
@@ -210,12 +210,14 @@ export function updateVerdict(data = {}, phase = '') {
             };
         }
         if (txPhase === 'gate_blocked' || txPhase === 'marker_cleanup_retry') {
+            // The in-app restart defers in these phases (server_restart._safe_restart_serialized),
+            // so only a new process reaches boot recovery: offer no Restart control.
             return {
                 ...base,
                 state: 'resolving', tone: 'error',
                 headline: 'An update attempt stopped mid-flight and needs recovery.',
-                hint: `Phase: ${txPhase}. Restart Ouroboros — boot recovery retries the rollback/cleanup.`,
-                action: { id: 'restart', label: 'Restart now' },
+                hint: `Phase: ${txPhase}. Quit and reopen the desktop app, or restart the server process for a web deployment: boot recovery retries the rollback/cleanup. The in-app Restart is deferred in this phase.`,
+                action: { id: 'check', label: 'Check again' },
             };
         }
         if (txPhase.includes('assisted')) {
