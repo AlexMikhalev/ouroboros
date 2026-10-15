@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ouroboros.call_protocol import (
-    STATE_CLOSED, STATE_CLOSING, STATE_CONNECTING, STATE_LIVE, STATE_RECONNECTING,
+    PEER_MEETING, STATE_CLOSED, STATE_CLOSING, STATE_CONNECTING, STATE_LIVE, STATE_RECONNECTING,
     CallSpec, PeerAudio, PeerControl, PeerJoined, PeerLeft,
 )
 from ouroboros.gateways.realtime_engine import (
@@ -130,8 +130,11 @@ class _LiveCall:
         self.cancelled_items: set = set()
         self.played_ms: Dict[str, int] = {}
         self.spoken: Dict[str, _Spoken] = {}
-        self.counts = {"owner": 0, "ouroboros": 0}
+        self.counts = {"owner": 0, "ouroboros": 0, "heard": 0}
         self.muted_peers: set = set()
+        # Meeting peers whose microphone feeds the session. While one is present the
+        # engine hears a mix, so its input captions are never written as the owner's words.
+        self.meeting_mics: set = set()
         self.empty_since: Optional[float] = None
         self.owner_msg_seen: set = set()
         self._closed = asyncio.Event()
@@ -264,7 +267,7 @@ class _LiveCall:
             self.usage.update({"execution_status": "infra_failed", "reason_code": code})
             return (f"⚠️ Live call {label} could not run: {detail}", self.usage, self.llm_trace)
         text = (f"Live call {label} ended ({reason}). The transcript is in this chat: "
-                f"{self.counts['owner']} owner and {self.counts['ouroboros']} Ouroboros utterances, "
+                f"{self.counts['owner']} owner, {self.counts['heard']} heard and {self.counts['ouroboros']} Ouroboros utterances, "
                 f"{self.tools_lane.tool_calls} tool calls, {minutes} min.")
         return text, self.usage, self.llm_trace
 
@@ -420,8 +423,11 @@ class _LiveCall:
                                              source="meeting_participant"))
         elif isinstance(event, PeerJoined):
             self.empty_since = None
+            if event.peer.role == PEER_MEETING and event.peer.mic:
+                self.meeting_mics.add(event.peer.peer_id)
         elif isinstance(event, PeerLeft):
             self.muted_peers.discard(event.peer_id)
+            self.meeting_mics.discard(event.peer_id)
             if not self.hub.peers():
                 self.empty_since = time.monotonic()
 
@@ -490,7 +496,9 @@ class _LiveCall:
         text = str(event.text or "").strip()
         if not text:
             return
-        if event.speaker == SPEAKER_OWNER:
+        if event.speaker == SPEAKER_OWNER and (self.spec.presence_binding_id or self.meeting_mics):
+            self._on_heard(text, event.item_id)
+        elif event.speaker == SPEAKER_OWNER:
             self.counts["owner"] += 1
             self.messages.append({"role": "user", "content": text, "_call_row": True})
             self._write_owner_row(text, event.item_id)
@@ -504,6 +512,39 @@ class _LiveCall:
             if spoken.played or spoken.interrupted:
                 self._write_spoken_row(event.item_id)
             self.fanout.note(SPEAKER_OUROBOROS, text)
+
+    def _on_heard(self, text: str, item_id: str) -> None:
+        """Input speech while meeting audio feeds the session (or in a Presence call).
+
+        Who spoke is a host fact, and the host only knows the mix: the words are
+        recorded as heard in the call, never as the owner's message.
+        """
+        self.counts["heard"] += 1
+        self.messages.append({"role": "user", "content": f"[Heard in the call] {text}", "_call_row": True})
+        self.fanout.note("heard in the call", text)
+        if self.spec.presence_binding_id:
+            self._write_presence_heard(text, item_id)
+            return
+        try:
+            from supervisor.message_bus import send_with_budget
+
+            send_with_budget(self.spec.chat_id, f"Heard in the call: {text}", role="system",
+                             system_type="call_heard", narration=False,
+                             progress_meta={"source": SOURCE_CALL, "call_id": self.spec.call_id,
+                                            "item_id": item_id, "call_task_id": self.task_id})
+        except Exception:
+            log.warning("live call %s could not write a heard row", self.spec.call_id, exc_info=True)
+
+    def _write_presence_heard(self, text: str, item_id: str) -> None:
+        """A Presence call's correspondents' words become that conversation's dialogue rows."""
+        try:
+            from ouroboros.presence_call import record_call_utterance
+        except ImportError:
+            return
+        try:
+            record_call_utterance(self.drive_root, self.task_id, direction="in", text=text, item_id=item_id)
+        except Exception:
+            log.warning("live call %s could not record a Presence utterance", self.spec.call_id, exc_info=True)
 
     def _write_owner_row(self, text: str, item_id: str) -> None:
         """The owner's words as an owner row of the room, without an owner turn behind it."""

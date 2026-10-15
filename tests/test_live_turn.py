@@ -688,6 +688,48 @@ def test_a_session_that_cannot_be_reopened_ends_the_call(harness, monkeypatch, t
     assert usage["live_call"]["ended"] == "reconnect_failed" and usage["reason_code"] == "live_engine_unavailable"
 
 
+def test_meeting_audio_in_the_mix_is_recorded_as_heard_never_as_the_owner(harness, monkeypatch, tmp_path):
+    from supervisor import message_bus
+
+    sent = []
+    monkeypatch.setattr(message_bus, "send_with_budget", lambda chat_id, text, **kw: sent.append((chat_id, text, kw)))
+    h = harness()
+    engine = h.start()
+    meeting = PeerInfo(peer_id="capture-1", role="meeting", mic=True, speaker=False, skill="meeting_audio")
+    h.hub.feed(PeerJoined(meeting))
+    time.sleep(0.05)
+    engine.push(Caption(speaker=SPEAKER_OWNER, text="next quarter is fine", final=True, item_id="u1"))
+    assert _wait_for(lambda: sent)
+    chat_id, text, kw = sent[0]
+    assert text == "Heard in the call: next quarter is fine" and kw["role"] == "system" and kw["narration"] is False
+    assert kw["system_type"] == "call_heard" and kw["progress_meta"]["call_task_id"] == "t-call"
+    assert h.chat_rows() == []  # no owner row while meeting audio is in the mix
+    h.hub.feed(PeerLeft(peer_id="capture-1"))
+    time.sleep(0.05)
+    engine.push(Caption(speaker=SPEAKER_OWNER, text="thanks", final=True, item_id="u2"))
+    assert _wait_for(lambda: len(h.chat_rows()) == 1) and h.chat_rows()[0]["text"] == "thanks"
+    h.stop()
+    h.finish()
+
+
+def test_a_presence_call_never_writes_owner_rows(harness, monkeypatch, tmp_path):
+    import sys
+    import types
+
+    recorded = []
+    fake = types.ModuleType("ouroboros.presence_call")
+    fake.record_call_utterance = lambda root, task_id, **kw: recorded.append((task_id, kw))
+    monkeypatch.setitem(sys.modules, "ouroboros.presence_call", fake)
+    h = harness(spec=_spec(presence_binding_id="b" * 32, opened_by="skill"))
+    engine = h.start()
+    engine.push(Caption(speaker=SPEAKER_OWNER, text="hello Aika", final=True, item_id="u1"))
+    assert _wait_for(lambda: recorded)
+    assert recorded[0] == ("t-call", {"direction": "in", "text": "hello Aika", "item_id": "u1"})
+    assert h.chat_rows() == []
+    h.stop()
+    h.finish()
+
+
 # --- the owner's mailbox and the terminal ---------------------------------------------
 
 
@@ -716,11 +758,11 @@ def test_the_terminal_is_a_host_notice_that_points_at_the_transcript(harness, mo
     h.stop()
     text, usage, trace = h.finish()
     assert usage["terminal_origin"] == "host_notice"
-    assert text.startswith("Live call Test call ended (owner_stop). The transcript is in this chat: 1 owner and 1 Ouroboros utterances")
+    assert text.startswith("Live call Test call ended (owner_stop). The transcript is in this chat: 1 owner, 0 heard and 1 Ouroboros utterances")
     assert usage["live_call"]["owner"] == 1 and usage["live_call"]["ouroboros"] == 1 and usage["live_call"]["call_id"] == "call-1"
     assert trace["reasoning_notes"] == ["live_call"] and "execution_status" not in usage
     assert h.progress[-1][0] == "hello" and h.progress[-1][1]["_progress_meta_override"]["spoken"]["status"] == "generated"
-    assert h.task_row()["live_call"]["utterances"] == {"owner": 1, "ouroboros": 1}
+    assert h.task_row()["live_call"]["utterances"] == {"owner": 1, "ouroboros": 1, "heard": 0}
 
 
 def test_context_and_participant_controls_become_context_items(harness, monkeypatch, tmp_path):
