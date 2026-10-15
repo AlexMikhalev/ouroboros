@@ -19,7 +19,8 @@ import pathlib
 import re
 import subprocess
 import time
-from dataclasses import asdict, dataclass, field
+from collections import Counter
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Dict, Iterable, List
 
 from ouroboros.code_import_candidates import import_specs, is_import_node
@@ -257,19 +258,12 @@ def load_cached_inventory(repo_root: pathlib.Path, drive_root: pathlib.Path) -> 
         return None
     if not isinstance(raw, dict) or raw.get("schema_version") != CODE_INTELLIGENCE_SCHEMA_VERSION:
         return None
-    files = []
-    for item in raw.get("files") or []:
-        fact = _file_from_json(item)
-        if fact is None:
-            return None
-        files.append(fact)
-    coverage: Dict[str, int] = {}
+    files = [_file_from_json(item) for item in raw.get("files") or []]
+    if any(fact is None for fact in files):
+        return None
     raw_cov = raw.get("coverage")
-    if isinstance(raw_cov, dict):
-        coverage = {str(k): int(v or 0) for k, v in raw_cov.items()}
-    else:
-        for file in files:
-            coverage[file.disposition] = coverage.get(file.disposition, 0) + 1
+    coverage = ({str(k): int(v or 0) for k, v in raw_cov.items()} if isinstance(raw_cov, dict)
+                else dict(Counter(file.disposition for file in files)))
     return CodeInventory(
         schema_version=CODE_INTELLIGENCE_SCHEMA_VERSION,
         repo_root=str(raw.get("repo_root") or pathlib.Path(repo_root).resolve(strict=False)),
@@ -443,11 +437,6 @@ def _enumerate_files(
     return sorted(paths), sorted(nested), sorted(limits)
 
 
-def _tracked_files(repo_root: pathlib.Path) -> List[pathlib.Path]:
-    """Compatibility projection; build_code_inventory also retains walk limits."""
-    return _enumerate_files(repo_root)[0]
-
-
 def _language(path: pathlib.Path) -> str:
     suffix = path.suffix.lower()
     return {
@@ -476,8 +465,6 @@ def _signature(node: ast.AST) -> str:
     if isinstance(node, ast.ClassDef):
         return f"class {node.name}"
     return ""
-
-
 
 
 def _resolve_relative_import(rel_path: pathlib.PurePosixPath, module: str, level: int) -> str:
@@ -703,7 +690,8 @@ def _treesitter_facts(text: str, lang: str, *, raw: bytes | None = None,
     return symbols, sorted(set(imports)), syntax_error, calls
 
 
-def _file_fact(repo_root: pathlib.Path, path: pathlib.Path) -> FileFact:
+def _path_fact(repo_root: pathlib.Path, path: pathlib.Path) -> FileFact:
+    """Admission known before any source read (containment, name, size); ``not_parsed`` when admitted."""
     try:
         rel = path.relative_to(repo_root).as_posix()
     except ValueError:
@@ -721,8 +709,15 @@ def _file_fact(repo_root: pathlib.Path, path: pathlib.Path) -> FileFact:
         stat_size = path.stat().st_size
     except OSError as exc:
         return FileFact(rel, "", 0, _language(path), 0, disposition=f"read_error:{exc}")
-    if stat_size > _MAX_INDEX_FILE_BYTES:
-        return FileFact(rel, "", stat_size, _language(path), 0, disposition="oversized")
+    disposition = "oversized" if stat_size > _MAX_INDEX_FILE_BYTES else "not_parsed"
+    return FileFact(rel, "", stat_size, _language(path), 0, disposition=disposition)
+
+
+def _file_fact(repo_root: pathlib.Path, path: pathlib.Path) -> FileFact:
+    admitted = _path_fact(repo_root, path)
+    if admitted.disposition != "not_parsed":
+        return admitted
+    rel = admitted.path
     try:
         with path.open("rb") as source:
             raw = source.read(_MAX_INDEX_FILE_BYTES + 1)
@@ -820,10 +815,12 @@ def build_code_inventory(
     persist: bool = True,
     exclude_paths: Iterable[pathlib.Path] | None = None,
     path_allowed: Callable[[pathlib.Path], bool] | None = None,
+    parse: bool = True,
 ) -> CodeInventory:
+    """Current inventory facts; ``parse=False`` lists admitted paths only, never cached."""
     root = pathlib.Path(repo_root).resolve(strict=False)
     deadline = time.monotonic() + _MAX_ENUMERATION_SECONDS
-    cached = load_cached_inventory(root, drive_root) if drive_root is not None else None
+    cached = load_cached_inventory(root, drive_root) if drive_root is not None and parse else None
     cached_by_path = {file.path: file for file in (cached.files if cached else [])}
     excluded_paths = [
         pathlib.Path(path).expanduser().resolve(strict=False)
@@ -835,11 +832,12 @@ def build_code_inventory(
         nonlocal filtered
         allowed = (not _is_excluded_inventory_path(path, excluded_paths)
                    and (path_allowed is None or path_allowed(path)))
-        if not allowed:
-            filtered = True
+        filtered |= not allowed
         return allowed
 
     paths, nested_roots, enumeration_limits = _enumerate_files(root, scope=scope, path_allowed=visible)
+    walked = None if any("limit" in note for note in enumeration_limits) else {
+        path.relative_to(root).as_posix() for path in paths}
     files = []
     for path in paths:
         if time.monotonic() >= deadline:
@@ -848,18 +846,15 @@ def build_code_inventory(
         if not path.is_file() and not path.is_symlink():
             continue
         rel = path.relative_to(root).as_posix()
-        # Check sensitivity, size and root containment before cache validation.
-        # An oversized cached file must never trigger an unbounded hash read.
-        raw = None
-        cached_file = cached_by_path.get(rel)
-        try:
-            contained = path.resolve(strict=False).is_relative_to(root)
-            if (cached_file is not None and contained and not _is_sensitive_inventory_path(rel)
-                    and path.stat().st_size <= _MAX_INDEX_FILE_BYTES):
+        # The admission rule (containment, name, size) precedes cache validation:
+        # an oversized cached file must never trigger an unbounded hash read.
+        raw, cached_file = None, cached_by_path.get(rel)
+        if cached_file is not None and _path_fact(root, path).disposition == "not_parsed":
+            try:
                 with path.open("rb") as source:
                     raw = source.read(_MAX_INDEX_FILE_BYTES + 1)
-        except OSError:
-            pass
+            except OSError:
+                pass
         if (cached_file is not None and raw is not None
                 and len(raw) <= _MAX_INDEX_FILE_BYTES
                 and cached_file.language == _language(path)
@@ -868,24 +863,28 @@ def build_code_inventory(
                 and cached_file.sha256 == hashlib.sha256(raw).hexdigest()):
             files.append(cached_file)
         else:
-            files.append(_file_fact(root, path))
-    coverage: Dict[str, int] = {}
-    for file in files:
-        coverage[file.disposition] = coverage.get(file.disposition, 0) + 1
+            files.append(_file_fact(root, path) if parse else _path_fact(root, path))
     inventory = CodeInventory(
         schema_version=CODE_INTELLIGENCE_SCHEMA_VERSION,
         repo_root=str(root),
         git_head=_git_head(root),
         created_at=utc_now_iso(),
         files=files,
-        coverage=coverage,
+        coverage=dict(Counter(file.disposition for file in files)),
         nested_roots=nested_roots,
         enumeration_limits=enumeration_limits,
     )
+    stored, seen = inventory, {file.path for file in files}
+    if cached is not None and any("limit" in note for note in enumeration_limits):
+        # A bounded refresh keeps unvisited cached facts in the disposable cache only:
+        # every reuse rechecks path and hash, and a complete refresh drops deletions.
+        tail = [f for f in cached.files if f.path not in seen and (walked is None or f.path in walked)]
+        kept = sorted([*files, *tail], key=lambda f: f.path)
+        stored = replace(inventory, files=kept, coverage=dict(Counter(f.disposition for f in kept)))
     # A caller-scoped view must not replace the shared full-source cache.
-    if persist and drive_root is not None and not filtered and inventory != cached:
+    if persist and parse and drive_root is not None and not filtered and stored != cached:
         path = inventory_cache_path(root, pathlib.Path(drive_root))
-        atomic_write_json(path, inventory.to_json(), trailing_newline=True)
+        atomic_write_json(path, stored.to_json(), trailing_newline=True)
     return inventory
 
 
