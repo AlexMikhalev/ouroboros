@@ -23,7 +23,10 @@ from ouroboros.observability import persist_call
 from ouroboros.review_dispatch import review_operation_binding, review_reconciliation_identity
 from ouroboros.review_records import ReviewActorRecord
 from ouroboros.tools import plan_review as pr
-from tests._review_session_route_shared import fake_route  # noqa: F401 - pytest fixture (the offline delegated route)
+from tests._review_session_route_shared import (  # noqa: F401 - pytest fixtures (the offline delegated route)
+    _owned_gateway_uses_each_test_transport,
+    fake_route,
+)
 from tests.test_plan_task_tool import CLEAN, _call, _record, _reply, _slots, _write, harness as _harness
 
 harness = _harness  # noqa: F811 - pytest fixture re-export

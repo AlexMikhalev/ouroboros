@@ -466,7 +466,7 @@ def test_changed_group_prose_gets_new_source_and_model_cannot_supply_old_anchor(
 
 
 def test_exception_detail_fit_falls_back_to_count_without_undoing_valid_view(harness, monkeypatch):
-    ctx, _, _ = _three(harness, monkeypatch)
+    ctx, _ = _three(harness)
     source = _capture(ctx)
     rows = [{"bound_decision": "decision_1", "remark": "Unavailable exact binding.", "reason": "No positional alias."}]
     detailed, receipt, _ = apply_local(ctx, source, FIRST, all_units=True, review_notes=rows)
@@ -485,7 +485,7 @@ def test_exception_detail_fit_falls_back_to_count_without_undoing_valid_view(har
 
 
 def test_validation_origin_does_not_call_inherited_or_unselected_rows_current_failures(harness, monkeypatch):
-    ctx, _, _ = _three(harness, monkeypatch)
+    ctx, _ = _three(harness)
     entry = next(e for e in view.review_note_options(ctx)["entries"] if e["groupable"])
     good = {"bound_decision": entry["bound_decision"], "remark": "Keep meaning.", "reason": "Closed historical branch."}
     bad = {"bound_decision": "decision_1", "remark": "No binding.", "reason": "Invalid positional identifier."}

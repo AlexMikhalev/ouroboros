@@ -40,7 +40,7 @@ def test_selected_history_shows_selected_text_while_canonical_capsules_stay_exac
     from ouroboros.tools.plan_packet import _json_block
     from types import SimpleNamespace
 
-    ctx, sub = first_plan(harness)
+    ctx = first_plan(harness)
     _, receipt, _ = _apply(ctx, _capture(ctx), note=LITERAL, review_notes=notes_for(ctx))
     assert receipt["status"] == "applied", receipt
     source_ref = receipt["selected_review_history_view"]["source_ref"]
@@ -74,7 +74,7 @@ def test_multiple_local_accounts_render_every_text_in_order(harness, monkeypatch
     from tests.test_review_local_accounts import FIRST, SECOND, two_folds
     from tests.test_review_view_integration import _three
 
-    ctx, sub, _ = _three(harness, monkeypatch)
+    ctx, _ = _three(harness)
     _, _, _, _, receipt, _ = two_folds(ctx)
     history, operative = view.current_plan_history(ctx)
     selected = view.selected_review_history(history, drive_root=ctx.drive_root, task_id=ctx.task_id,
