@@ -79,7 +79,6 @@ from ouroboros.model_slots import (
     parse_fallback_chain,  # noqa: F401
 )
 from ouroboros.review_model_routes import (
-    _DIRECT_PROVIDER_REVIEW_RUNS,  # noqa: F401
     _exclusive_direct_remote_provider_env,  # noqa: F401
     adaptive_quorum,  # noqa: F401
     get_review_enforcement,  # noqa: F401

@@ -487,10 +487,11 @@ def factory_review_rows(doc: Mapping[str, Any]) -> List[Dict[str, Any]]:
 
     The panel follows the Main the document runs (owner 4A), whatever other access sits beside
     it: a reachable OpenRouter Main → OpenRouter's three ``OPENROUTER_REVIEW_DEFAULTS``; a
-    reachable direct Main → its provider's ``DIRECT_PROVIDER_REVIEW_ROLES`` panel, each seat in
-    its ROLE's whole binding (a Light seat runs Light's, never Main's by a shared model name; a
-    blank or another provider's Light leaves the provider's shipped Light standing in, plain); any other
-    reachable Main (compatible, local, managed) → ONE row of it, in its whole binding
+    reachable direct Main → its provider's ``DIRECT_PROVIDER_REVIEW_ROLES`` panel (one Main row;
+    MiniMax's Main, Light, Light), each seat in its ROLE's whole binding (a Light seat runs Light's,
+    never Main's by a shared model name; a blank or another provider's Light leaves the provider's
+    shipped Light standing in, plain); any other reachable Main (compatible, local, managed) → ONE
+    row of it, in its whole binding
     (``role_route_binding``: ``(local)`` label, account pin, processing): copies of one model would
     multiply every review's cost without a second opinion, so its one answer decides (quorum 1 of
     1, recorded as ``single_reviewer_no_diversity``). With no configured access at all the shipped

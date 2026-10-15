@@ -179,20 +179,16 @@ def _factory_pool_models(doc: dict) -> list:
     return [row["route"]["target_id"] for row in factory_review_rows(doc)]
 
 
-def test_factory_pool_repeats_main_in_openai_only_mode():
-    """The OpenAI-only profile mints three independent Main catalog rows."""
+def test_factory_pool_seats_main_once_in_openai_only_mode():
+    """The OpenAI-only profile mints ONE Main catalog row (owner Q5=A: no paid copies of one model)."""
     assert _factory_pool_models({"OPENAI_API_KEY": "configured", "OUROBOROS_MODEL": "openai::gpt-5.6-terra"}) == [
-        "openai::gpt-5.6-terra",
-        "openai::gpt-5.6-terra",
         "openai::gpt-5.6-terra",
     ]
 
 
-def test_factory_pool_repeats_main_in_anthropic_only_mode():
-    """The Anthropic-only profile repeats even an explicit provider Main."""
+def test_factory_pool_seats_main_once_in_anthropic_only_mode():
+    """The Anthropic-only profile seats even an explicit provider Main once."""
     assert _factory_pool_models({"ANTHROPIC_API_KEY": "sk-ant", "OUROBOROS_MODEL": "anthropic::claude-opus-4-6"}) == [
-        "anthropic::claude-opus-4-6",
-        "anthropic::claude-opus-4-6",
         "anthropic::claude-opus-4-6",
     ]
 
@@ -202,8 +198,8 @@ def test_factory_pool_routes_to_gigachat_in_gigachat_only_mode(monkeypatch):
     install (no other provider) gets a gigachat:: review pool, never an empty one
     or an unconfigured foreign provider — the single-isolated-provider invariant
     (docs/DEVELOPMENT.md "Provider Independence"). GIGACHAT_DIRECT_DEFAULTS uses the
-    universally available GigaChat-2-Max for every slot, so the quorum-safe panel is
-    [main, main, main] — three catalog rows (PR-3)."""
+    universally available GigaChat-2-Max for every slot, so the panel is Main once — one
+    catalog row (PR-3; owner Q5=A)."""
     monkeypatch.setenv("GIGACHAT_CREDENTIALS", "giga-creds")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -215,8 +211,6 @@ def test_factory_pool_routes_to_gigachat_in_gigachat_only_mode(monkeypatch):
     monkeypatch.setenv("OUROBOROS_MODEL", "gigachat::GigaChat-2-Max")
 
     assert _factory_pool_models({"GIGACHAT_CREDENTIALS": "giga-creds", "OUROBOROS_MODEL": "gigachat::GigaChat-2-Max"}) == [
-        "gigachat::GigaChat-2-Max",
-        "gigachat::GigaChat-2-Max",
         "gigachat::GigaChat-2-Max",
     ]
 

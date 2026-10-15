@@ -259,7 +259,7 @@ def test_a_colab_rerun_over_an_nminus1_document_pins_no_pool_its_saved_main_cann
     assert "OUROBOROS_MODEL" in caplog.text
     outcome = m.migrate_review_lanes({**document, "OUROBOROS_MODEL": "openai::gpt-5.6-sol"})
     rows = json.loads(outcome.catalog_after)["items"]
-    assert [row["route"]["target_id"] for row in rows if row.get("review_eligible")] == ["openai::gpt-5.6-sol"] * 3
+    assert [row["route"]["target_id"] for row in rows if row.get("review_eligible")] == ["openai::gpt-5.6-sol"]
     assert [row["route"]["target_id"] for row in rows if not row.get("review_eligible")] == [
         N1_DOC["OUROBOROS_MODEL_DEEP_SELF_REVIEW"]]
 

@@ -86,7 +86,7 @@ class TestRegistry:
         # The vision slot defaults to the image-capable -flash variant (probed
         # live 2026-10-06, Coding Plan endpoint; plain glm-5.3 is text-only).
         assert ZAI_DIRECT_DEFAULTS["vision"] == "zai::glm-5.3-flash"
-        assert DIRECT_PROVIDER_REVIEW_ROLES["zai"] == ("main", "main", "main")
+        assert DIRECT_PROVIDER_REVIEW_ROLES["zai"] == ("main",)
 
     def test_migrate_and_normalize_round_trip(self):
         assert migrate_model_value("zai", "zai/glm-5.3") == "zai::glm-5.3"
@@ -234,7 +234,7 @@ class TestSingleProviderIndependence:
         # PR-3: the provider panel is minted as catalog rows, not multiplied at read time.
         rows = factory_review_rows({"ZAI_API_KEY": "sk-x", "OUROBOROS_MODEL": "zai::glm-5.3",
                                     "OUROBOROS_MODEL_LIGHT": "zai::glm-5.3-flash"})
-        assert [row["route"]["target_id"] for row in rows] == ["zai::glm-5.3"] * 3
+        assert [row["route"]["target_id"] for row in rows] == ["zai::glm-5.3"]  # Main once (owner Q5=A)
 
     def test_local_only_review_route_sees_zai(self, monkeypatch):
         _clear_provider_env(monkeypatch)
