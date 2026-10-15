@@ -85,6 +85,9 @@ test('the mounted list holds its order while open, settles ended work and only n
         const doc = globalThis.document;
         const node = (className, parent) => { const el = doc.createElement('div'); el.className = className; parent.appendChild(el); return el; };
         const page = node('page', mount);
+        const input = doc.createElement('textarea');
+        input.id = 'chat-input';
+        page.appendChild(input);
         const header = node('chat-page-header', page);
         const group = node('app-page-actions ui-chrome-group', header);
         const badge = doc.createElement('span');
@@ -134,6 +137,15 @@ test('the mounted list holds its order while open, settles ended work and only n
         activities.set('t-run', { activity_id: 't-run', kind: 'managed_task', phase: 'working', chat_id: 1 });
         trigger.click();
         assert.deepEqual(ids(), ['t-ask', 't-run']);
+        // Reconcile ended-only Main membership before returning focus: a now-disabled
+        // status trigger cannot be the keyboard owner's next place.
+        activities.clear();
+        work.update();
+        assert.equal(work.isOpen(), true);
+        trigger.click();
+        assert.equal(work.isOpen(), false);
+        assert.equal(trigger.disabled, true);
+        assert.ok(doc.activeElement === input, 'closing an ended-only list returns focus to the composer');
     } finally {
         work?.destroy();
         restoreDom(prior);

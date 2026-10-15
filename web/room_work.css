@@ -311,6 +311,7 @@
 /* A coarse pointer (a phone) raises the list's own targets with the header family (ui.css). */
 @media (pointer: coarse) {
     .rw-surface { --rw-more: var(--touch-target-min); --rw-pill-h: var(--chrome-control-h); }
+    .rw-back { min-height: var(--touch-target-min); }
 }
 @media (max-width: 900px) {
     .rw-shade { max-height: min(62svh, 28rem); }

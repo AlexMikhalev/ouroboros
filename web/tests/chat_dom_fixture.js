@@ -116,8 +116,15 @@ export class ElementStub {
         return this.children.some((child) => child.contains(node));
     }
     querySelector(selector) {
-        const id = selector.match(/^\[id="([^"]+)"\]$/)?.[1];
-        if (id) return this.ownerDocument?.byId.get(id) || null;
+        const id = selector.match(/^\[id="([^"]+)"\]$/)?.[1] || selector.match(/^#([\w-]+)$/)?.[1];
+        if (id) {
+            for (const child of this.children) {
+                if (child.id === id) return child;
+                const nested = child.querySelector(selector);
+                if (nested) return nested;
+            }
+            return null;
+        }
         const data = selector.match(/^\[data-([a-z0-9-]+)\]$/i)?.[1];
         if (data) {
             const key = data.replace(/-([a-z])/g, (_all, char) => char.toUpperCase());

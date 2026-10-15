@@ -144,7 +144,11 @@ def test_project_panel_composer_and_welcome_contracts():
     assert ".chat-text-row {\n    order: 2;" in css
     assert "chat-header-more" in chat_js
     assert "chat-header-menu" in css
-    assert "backdrop-filter: blur(22px)" in css
+    # The Project is a reading surface, not a particular blur implementation.
+    # Its rendered CLOSED/OPEN backing and transparent falsifier are exercised by
+    # test_status_sheet_and_shade_geometry_light_dark_and_screenshots.
+    panel_css = css.split(".project-panel {", 1)[1].split("}", 1)[0]
+    assert "rgb(var(--shell-rgb))" in panel_css
     assert 'id="project-panel-backdrop" class="project-panel-backdrop"' in _read("web/index.html")
     assert ".project-panel-backdrop" in css
     assert "transition: transform 180ms ease, opacity 180ms ease;" in css

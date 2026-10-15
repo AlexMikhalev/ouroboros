@@ -6942,11 +6942,11 @@ textarea.chat-input {
     width: var(--project-panel-width);
     z-index: 58;
     border-left: 1px solid var(--divider);
+    /* A reading surface keeps its own backing even where native backdrop blur is not composited.
+       Project tint supplies the light material; underlying Main text must never show through it. */
     background:
-        linear-gradient(180deg, rgba(var(--shell-rgb), 0.74), rgba(var(--shell-rgb), 0.64)),
-        radial-gradient(circle at 15% 0%, var(--project-12), transparent 300px);
-    backdrop-filter: blur(22px) saturate(130%);
-    -webkit-backdrop-filter: blur(22px) saturate(130%);
+        radial-gradient(circle at 15% 0%, var(--project-12), transparent 300px),
+        rgb(var(--shell-rgb));
     box-shadow: -24px 0 64px rgba(0, 0, 0, 0.34);
     transform: translateX(18px);
     opacity: 0;

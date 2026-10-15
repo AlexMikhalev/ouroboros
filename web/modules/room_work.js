@@ -142,8 +142,6 @@ export function createRoomWork({
     surface.tabIndex = -1;  // where a pointer open lands: a landing point, never a control
     surface.dataset.scope = scope;
     surface.setAttribute('role', 'dialog');
-    surface.setAttribute('aria-label', asPanel ? tr('room_work.scope.project', 'Work in this project')
-        : tr('room_work.scope.main', 'Work in this chat'));
     // Names are authored text: the chrome in here is translated at the producer, so the overlay never walks it.
     surface.setAttribute('data-i18n-authored', '');
     const list = element('div', 'rw-list');
@@ -319,7 +317,13 @@ export function createRoomWork({
             if (!fresh && kept.row.kind === 'pending' && kept.row.cmid) {
                 // The owner's send that the host turned into a turn takes the same place.
                 fresh = [...byKey.values()].find((row) => row.kind !== 'pending' && row.cmid === kept.row.cmid);
-                if (fresh) { order[order.indexOf(key)] = fresh.key; frozen.delete(key); }
+                if (fresh) {
+                    order[order.indexOf(key)] = fresh.key;
+                    frozen.delete(key);
+                    // Identity changes, not the reader's node: preserve selection and focus in this slot.
+                    const view = views.get(key);
+                    if (view) { views.delete(key); views.set(fresh.key, view); }
+                }
             }
             if (fresh) {
                 byKey.delete(fresh.key);
@@ -419,6 +423,7 @@ export function createRoomWork({
         const detailable = !navigable && row.kind !== 'pending';
         const isOpen = detailable && expanded.has(row.key);
         Object.assign(el.dataset, {
+            id: row.id,
             slot: row.slot, kind: row.kind, tone: row.tone, settled: row.settled ? '1' : '0', open: isOpen ? '1' : '0',
             // A moving, loaded row says its word on the name's line; every exception says it under the name.
             flow: row.group === 'progress' && navigable && !row.settled ? 'moving' : 'exception',
@@ -500,6 +505,10 @@ export function createRoomWork({
         }
         // It goes to the question; it never sends, selects or fills in an answer.
         view.question?.setAttribute('aria-label', fmt('View question: {name}', { name: full }));
+        if (view.question) {
+            const label = tr('room_work.view_question', 'View question');
+            if (view.question.textContent !== label) view.question.textContent = label;
+        }
         const wantResume = row.canResume && !row.settled;
         if (wantResume && !view.resume) {
             // The shared button re-checks eligibility at press time; its id never changes.
@@ -513,8 +522,24 @@ export function createRoomWork({
             view.resume.remove();
             view.resume = null;
         }
+        if (view.resume) {
+            const label = tr('task.control.resume', 'Resume');
+            if (view.resume.textContent !== label) view.resume.textContent = label;
+        }
         // The ⋯ is the one door to every other action: the shared task controls, aimed at this exact id.
         const wantMore = row.canMenu && !row.settled;
+        const actionKey = wantMore ? taskControlActions({
+            cancelPending: Boolean(records.get(row.id)?.cancelPendingPolicy),
+            budgetPaused: activities.get(row.id)?.phase === 'budget_paused',
+            resumeVisible: row.canResume,
+        }).join(',') : '';
+        // A row may keep its menu door while the actions behind it change (Working → Paused).
+        // Withdraw the old portal immediately, not just its ability to dispatch stale actions.
+        if (view.actionKey !== actionKey && view.more?.getAttribute('aria-expanded') === 'true') {
+            menuIntent += 1;
+            closeTaskControlMenu();
+        }
+        view.actionKey = actionKey;
         if (wantMore && !view.more) {
             const button = element('button', 'rw-more');
             button.type = 'button';
@@ -585,6 +610,10 @@ export function createRoomWork({
     // ---- paint
     function render() {
         if (destroyed) return;
+        // Main mounts before the install's language arrives; the authored subtree has no overlay.
+        const label = asPanel ? tr('room_work.scope.project', 'Work in this project')
+            : tr('room_work.scope.main', 'Work in this chat');
+        if (surface.getAttribute('aria-label') !== label) surface.setAttribute('aria-label', label);
         rows = arrange(collect());
         paintTrigger();
         paintNote();
@@ -678,9 +707,13 @@ export function createRoomWork({
         frozen = null;
         order = [];
         expanded.clear();
-        schedule();
-        paintTrigger();
-        if (restoreFocus && trigger.isConnected && !trigger.hidden && !trigger.disabled) trigger.focus?.({ preventScroll: true });
+        // Reconcile against the closed-list policy before restoring focus. The final retained
+        // Main row may just have ended; disabling its trigger on the next frame would strand focus.
+        render();
+        if (restoreFocus && trigger.isConnected && !trigger.hidden) {
+            if (!trigger.disabled) trigger.focus?.({ preventScroll: true });
+            else page.querySelector('#chat-input')?.focus?.({ preventScroll: true });
+        }
     }
 
     function prefetchName(row) {
@@ -732,6 +765,16 @@ export function createRoomWork({
         back.hidden = !backAnchor;
     }
 
+    function hideBack() {
+        // Hand focus to the passage, without moving it. A later dismissal must not steal focus
+        // from a reader who already moved elsewhere while the missing-passage notice was shown.
+        if (doc.activeElement === back && !destroyed && !page.hidden && page.isConnected) {
+            if (!messagesDiv.hasAttribute('tabindex')) messagesDiv.setAttribute('tabindex', '-1');
+            messagesDiv.focus?.({ preventScroll: true });
+        }
+        back.hidden = true;
+    }
+
     function goBack() {
         if (!backAnchor) return;
         reading.cancel();
@@ -744,14 +787,15 @@ export function createRoomWork({
         if (!near) {
             backLabel.textContent = 'Earlier place is no longer loaded';
             live.textContent = 'The earlier reading place is no longer loaded.';
-            backTimer = setTimeout(() => { back.hidden = true; }, 4000);
+            backTimer = setTimeout(hideBack, 4000);
             return;
         }
         live.textContent = exact ? 'Returned to where you were reading.' : 'Returned to the nearest loaded place.';
-        back.hidden = true;
+        hideBack();
     }
 
     // ---- wiring
+    listen(globalThis.window, 'ouro:language-changed', schedule);
     // A click with detail 0 is Enter or Space on the focused control: a keyboard open lands in the list.
     listen(trigger, 'click', (event) => { if (open) close(); else openSurface(event?.detail === 0); });
     listen(trigger, 'keydown', (event) => {
@@ -855,7 +899,14 @@ export function createRoomWork({
         update: schedule,
         close: () => close({ restoreFocus: false }),
         // The room leaves the screen: the list closes and the saved passage no longer applies.
-        leave() { navigationIntent += 1; close({ restoreFocus: false }); showBack(null); },
+        leave() {
+            navigationIntent += 1;
+            // Main stays mounted behind a Project. Cancel the shared reading claim too, so an
+            // outstanding canonical question read cannot scroll or focus that obscured room.
+            reading.cancel();
+            close({ restoreFocus: false });
+            showBack(null);
+        },
         isOpen: () => open,
         destroy() {
             if (destroyed) return;
