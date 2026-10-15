@@ -177,7 +177,10 @@ test('the hurry path never creates a chat bubble in either surface', () => {
 // --- both surfaces share the ONE control module (owner parity) ---
 
 test('Chat and Activity both wire the shared dropdown', () => {
-    for (const source of [chat, activity]) {
+    // Chat and its room header share the record-aware adapter. Activity still
+    // calls the same lower-level dropdown; the adapter owns its effect wiring.
+    assert.match(chat, /openTaskControls\(/);
+    for (const source of [menuSrc, activity]) {
         assert.match(source, /openTaskControlMenu\(/);
         assert.match(source, /hurryTaskAction\(/);
         assert.match(source, /requestStop\(/);

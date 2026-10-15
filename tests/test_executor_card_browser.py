@@ -73,41 +73,37 @@ def test_observed_executor_role_activity_and_project_pointer_live_replay(subscri
     activity=card.locator('.chat-live-activity').first
     assert activity.is_visible() and activity.inner_text().startswith('Checking every')
     assert activity.evaluate('e=>getComputedStyle(e).webkitLineClamp') == '1'
-    pointer=page.locator('#executor-proof .project-work-pointer')
-    assert 'UI coherence' in pointer.inner_text()
+    # root card one press away. Outside the real panel bar it stays in the instance's status bar.
+    trigger = page.locator('#executor-proof .rw-trigger')
+    assert trigger.locator('.status-badge').count() == 1
     if linux_metrics:
         # Exercise the Linux status-pill width without bundling another font.
         page.add_style_tag(content='''
-            #executor-proof .chat-panel-statusbar .status-badge { min-width: 81px; }
+            #executor-proof .rw-trigger .status-badge { min-width: 81px; }
         ''')
-    # One-line pointer: the label ellipsizes instead of wrapping the status bar open.
-    label=pointer.locator('.project-work-pointer-label')
-    assert label.evaluate('e=>[getComputedStyle(e).whiteSpace,getComputedStyle(e).textOverflow]')==['nowrap','ellipsis']
-    assert pointer.bounding_box()['height'] <= 40
-    # Pointer and pill share one row. The common history disclosure has its own
-    # readable, wrapping row; its content determines the additional bar height.
-    assert label.evaluate('e=>e.scrollWidth<=e.clientWidth')
+    assert trigger.bounding_box()['height'] <= 40
+    # The common history disclosure has its own readable, wrapping row below the control.
     bar = page.locator('#executor-proof .chat-panel-statusbar')
     note = bar.locator('.chat-history-status')
     assert note.inner_text() == 'Some saved history is not loaded. Shown messages may have gaps.'
     assert page.locator('#executor-proof .chat-load-older-note').count() == 1
-    assert page.locator('#executor-proof .project-work-coverage').count() == 0
     geometry = bar.evaluate('''bar => {
         const box = selector => bar.querySelector(selector).getBoundingClientRect();
-        const pointer = box('.project-work-pointer'), pill = box('.status-badge'), note = box('.chat-history-status');
+        const control = box('.rw-trigger'), note = box('.chat-history-status');
         const css = getComputedStyle(bar), rect = bar.getBoundingClientRect();
-        return {pointer, pill, note, bar:rect,
+        return {control, note, bar:rect,
             spacing:parseFloat(css.paddingTop)+parseFloat(css.paddingBottom)+parseFloat(css.rowGap || 0)};
     }''')
-    assert abs(geometry['pointer']['y'] - geometry['pill']['y']) <= 8
-    assert geometry['note']['y'] >= max(geometry['pointer']['bottom'], geometry['pill']['bottom'])
+    assert geometry['note']['y'] >= geometry['control']['bottom']
     assert geometry['note']['x'] >= geometry['bar']['x']
     assert geometry['note']['right'] <= geometry['bar']['right'] + 1
-    assert geometry['bar']['height'] <= max(geometry['pointer']['height'], geometry['pill']['height']) + geometry['note']['height'] + geometry['spacing'] + 3
+    assert geometry['bar']['height'] <= geometry['control']['height'] + geometry['note']['height'] + geometry['spacing'] + 3
     input_box=page.locator('#proof-input')
     input_box.fill('Message stays in this Project')
-    pointer.click()
+    trigger.click()
+    page.locator('#executor-proof .rw-shade .rw-main', has_text='UI coherence').click()
     assert input_box.input_value() == 'Message stays in this Project'
+    assert page.locator('#executor-proof .rw-shade').is_hidden()
     terminal={**child,'is_progress':True,'subagent_event':'completed','status':'completed','result':'Checks complete',
               'ts':'2026-09-09T10:01:00Z','execution_evidence':{'delegated_runs_started':1,'delegated_runs_settled':1,
               'delegated_runs_failed':0,'harness_models':['Cursor Grok 4.6 Extra High Fast']}}
@@ -116,7 +112,7 @@ def test_observed_executor_role_activity_and_project_pointer_live_replay(subscri
     assert 'Coordinator: gpt-6-astra' in card.inner_text()
     capture(page,f'executor-card-{width}-{"linux-metrics" if linux_metrics else "native-font"}')
     page.evaluate('executorProof.instance.destroy()')
-    assert page.locator('#executor-proof .project-work-pointer').count()==0
+    assert page.locator('#executor-proof .rw-trigger').count()==0
 
 
 # #360 A matrix: the chip names the helper; exceptions stay one visible phrase; the

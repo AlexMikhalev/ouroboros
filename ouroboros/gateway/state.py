@@ -632,7 +632,10 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
             wait = facts.get("owner_wait", {})
             if not wait.get("quiz_id"):
                 continue
+            # The waited quiz's own id rides along: Main's work list goes to that exact question
+            # (a Main task has no Project pointer to carry it).
             activity["owner_wait"] = {**owner_wait_projection(wait["quiz_id"], wait, facts.get("quiz")),
+                                      "quiz_id": str(wait["quiz_id"]),
                                       "quiz_state": (facts.get("quiz") or {}).get("state", "unknown")}
             pointer = project_question_pointer(
                 {"task_id": activity["activity_id"], "quiz_id": wait["quiz_id"], "wait_for_answer": True},

@@ -733,14 +733,18 @@ preference when it opens and on every reconnect; there is no file watcher.
   visually grouped with their own rows, their own add action in the head
   (List editors, below). A heading that floats equidistant between two groups
   belongs to neither.
-- **A collapsed disclosure shows that it opens.** A `<details>` summary always
-  carries a visible open/closed marker — the native triangle, the `▸`/`▾`
-  glyph pair, or button/card chrome. A summary that sits beside a help line at
-  the same size takes control ink (`--text-primary`) and its own line, so it
-  does not read as one more note; a summary that already reads as a control
-  through its own chrome or placement may stay in meta ink. Overriding
-  `display` on a summary drops the native marker, so the glyph must be drawn
-  explicitly.
+- **A disclosure shows that it opens.** Its trigger carries a visible open/closed
+  marker — the native triangle, the `▸`/`▾` pair, a caret or button/card chrome —
+  and reads as a control: a summary beside a help line at the same size takes
+  control ink (`--text-primary`) and its own line; one that already reads as a
+  control may stay in meta ink. Overriding `display` on a summary drops the
+  native marker, so draw it. What opens has one coherent boundary tied to its
+  trigger's group: an attached surface continues that group's edges, and opening
+  moves no neighbouring target. **Floating chrome stays readable:** over scrolling
+  content, closed or open, content never shows through its text, and state tints
+  sit on that backing. Text controls in one floating group share height and
+  baseline; width, tone and icon shape follow their role. The group reflows by
+  its own container's width without losing labels, targets or focus.
 - Spacing comes from the 8pt tokens (`--space-*`); a new visual dimension
   becomes a CSS variable before it becomes a page-local literal.
 - An item in a popup menu or a picker list highlights with
@@ -885,16 +889,16 @@ keeps Open and Download as well.
 
 An initial read shows one disabled `Loading saved history…` pill at the feed edge,
 not a second loading sentence in the header. Task activity remains separate.
-Persistent history notices are wrapping text on the Project status bar, without
-an opaque strip. Only Main's floating header needs a content-sized, padded and
-rounded backing to keep that text readable above scrolling messages.
+Persistent history notices are wrapping text in the room's header chrome: the
+Project status bar without an opaque strip, Main's floating header on its own
+reading backing (§5).
 
 A room always opens at its newest message: Main and every Project, however long
 ago its last message was and however much other rooms wrote since. Returning to
 a room in the same app session opens it at its newest message too, Main after a
 closed Project included (owner decisions 2026-07-10 and 2026-10-05). Only an explicit navigation to one place
-lands elsewhere: a question opened from its Main mirror, or the Project work
-pointer. A window merely shown again keeps the reader where they were.
+lands elsewhere: a question opened from its Main mirror, or a row of the room's
+work status. A window merely shown again keeps the reader where they were.
 
 A room's history is its own. A page is counted in the room's messages, never in
 bytes of other rooms' traffic: the newest page holds the room's newest messages,
@@ -940,19 +944,25 @@ approximation until explicit navigation clears it. Visible rows and card lines,
 selection, focus and expanded Reviews keep their actual nodes during
 reconciliation.
 
-### Project work pointer
+### Room work status
 
-A Project keeps its conversation and real nested task cards. One compact pointer
-leads to an unfinished represented root, or the latest represented root when all
-are finished. It occupies one line: `Working`, or for ended work still wrapping up its
-outcome beside `Finalizing…`, then the card's coined name (else its title), ellipsized, so the status bar
-never grows into the reading area; the complete text stays on the card itself,
-one click away, not in a mouse-only tooltip. The pointer and status pill share the
-bar; the common history note wraps below them when needed, readable on touch
-screens. Without a represented card the pointer is hidden; uncertainty, failure
-and approximation remain visible through the shared history status.
-Navigation moves the conversation to the existing card without changing the next
-message's recipient, opening another work pane or manufacturing activity.
+Each room's header has one status control: the header's status word (§4) in the
+shared task colours and dots. A filled chip has work to show; pressing it, or ↓/↑
+on it, lists that room's work and only that room's: its census rows, the owner's
+unconfirmed sends and unfinished cards the census has not confirmed. A Project
+with nothing else keeps its latest represented root. Main's list continues its
+header control group, which becomes its lid; a Project's unfolds as a Shade under
+its bar. A row names its work (the card's coined name or title, else the owner's
+message) in two lines that keyboard focus or open details show whole, and says
+the card's or census's own words: an outcome stays beside `Finalizing…`, an access
+wait is not an answer wait, unknown stays unknown. The name goes to the card, or
+opens details when the card is not loaded, finished work included; `View question`
+goes to the exact waited question and answers nothing; Resume and ⋯ are that exact
+activity's shared task controls, offered only while the census confirms it. While
+open, order and focus hold, and work that ends keeps its row and outcome, without
+controls, until close. Escape, an outside press or leaving closes it; `Back to
+reading` returns to the passage left. Navigation never changes the next message's
+recipient, opens another pane or manufactures activity.
 
 ### List editors
 

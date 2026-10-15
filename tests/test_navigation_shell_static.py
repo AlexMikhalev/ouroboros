@@ -79,7 +79,8 @@ def test_page_header_is_shared_foundation_for_top_pages():
     assert "export function renderMobileNavToggle()" in header_js
     assert "toolbarHtml" in header_js
     assert "trailingHtml" in header_js
-    assert "app-page-toolbar app-page-actions" in header_js
+    # Actual toolbar class composition/escaping is exercised by page_header.test.js.
+    assert "'app-page-toolbar'" in header_js and "'app-page-actions'" in header_js
     assert "grid-template-areas:" in css
     assert '"leading title toolbar"' in css
     assert '"tabs tabs tabs"' in css
@@ -159,8 +160,8 @@ def test_project_panel_composer_and_welcome_contracts():
 def test_chat_header_controls_reorg_and_more_autodismiss():
     chat_js = _read("web/modules/chat.js")
     # Restart + Panic are promoted to always-visible header buttons...
-    assert 'class="chat-header-btn" type="button" data-chat-command="restart"' in chat_js
-    assert 'class="chat-header-btn danger" type="button" data-chat-command="panic"' in chat_js
+    assert 'class="chat-header-btn ui-chrome-control" type="button" data-chat-command="restart"' in chat_js
+    assert 'class="chat-header-btn danger ui-chrome-control" type="button" data-chat-command="panic"' in chat_js
     # ...and Consciousness / Evolve / Review move into the More overflow menu.
     menu = chat_js.split('class="chat-header-menu"', 1)[1].split("</details>", 1)[0]
     assert 'data-chat-command="bg"' in menu

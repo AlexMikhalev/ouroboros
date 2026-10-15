@@ -953,7 +953,15 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
     if (effort) capsules.push(effort.capsule);
     // One capsule is open at a time.
     if (context && effort) { context.capsule.peer = effort.capsule; effort.capsule.peer = context.capsule; }
-    const observer = row && typeof win?.ResizeObserver === 'function' ? new win.ResizeObserver(fitNames) : null;
+    // Fitting a wrapped row can shrink the composer observed higher in the tree. Defer the
+    // ResizeObserver callback's writes out of its delivery pass, coalescing repeated notifications.
+    let fitFrame = 0;
+    const scheduleFit = () => {
+        if (!fitFrame && !destroyed) fitFrame = win.requestAnimationFrame(() => { fitFrame = 0; fitNames(); });
+    };
+    const observer = row && typeof win?.ResizeObserver === 'function' ? new win.ResizeObserver(scheduleFit) : null;
+    // Window resizing can fit immediately; the observer also covers container-only resizing.
+    win?.addEventListener?.('resize', fitNames);
     observer?.observe(row);
 
     return {
@@ -964,6 +972,8 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
         pendingSave: () => (effort ? effort.pendingSave() : Promise.resolve(true)),
         destroy() {
             destroyed = true;
+            if (fitFrame) win.cancelAnimationFrame(fitFrame);
+            win?.removeEventListener?.('resize', fitNames);
             observer?.disconnect();
             context?.destroy();
             effort?.destroy();

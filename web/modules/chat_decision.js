@@ -90,6 +90,12 @@ export function createChatDecision({
         return { ...frame, ...next };
     }
 
+    // A Project question proves its Project. Main's own question also proves its exact chat;
+    // a missing room stamp is unknown, not permission to render another room's question.
+    const questionInRoom = (detail, projectId) => (projectId
+        ? String(detail?.project_id || '') === String(projectId)
+        : isMain && !detail?.project_id && detail?.chat_id != null && Number(detail.chat_id) === Number(chatId));
+
     // Navigation single-flights per task. A revalidation is its own read, begun after the copy it
     // validates mounted: it never joins a navigation read or a sibling copy's earlier validation,
     // either of which may predate an answer this tab missed. The copy's pending flag shares it
@@ -104,7 +110,7 @@ export function createChatDecision({
         const detail = await (fresh ? read() : detailReads.get(taskId));
         const block = detail?.owner_quiz?.[quizId];
         if (disposed || String(detail?.task_id || detail?.id || '') !== String(taskId)
-            || (projectId && String(detail?.project_id || '') !== String(projectId))
+            || !questionInRoom(detail, projectId)
             || !block || String(block.quiz_id || '') !== String(quizId)
             || !QUIZ_LIFECYCLE.includes(block.state)) return null;
         const wait = detail.owner_wait?.quiz_id === quizId ? detail.owner_wait
@@ -114,11 +120,15 @@ export function createChatDecision({
         return { ...source, ...observe(source) };
     }
 
-    async function revealQuestion(taskId, quizId, projectId, chatId, appendQuiz, isVisible, beginReveal = () => {}, didReveal = () => {}) {
+    // `focus: 'question'` (the room's work list) lands on the question itself, never its answer field,
+    // so going to a question summons no keyboard and invites no typing before it is read.
+    async function revealQuestion(taskId, quizId, projectId, chatId, appendQuiz, isVisible, beginReveal = () => {},
+        didReveal = () => {}, { focus = 'answer' } = {}) {
         const navigation = ++questionNavigation; // one naming no question still voids older reveals
         let ownsPosition = () => true;
         const current = () => !disposed && isVisible() && navigation === questionNavigation && ownsPosition();
-        if (!projectId || !taskId || !quizId || !current()) return false;
+        // Main's own question names no Project: readQuestion proves its room instead.
+        if (!(projectId || isMain) || !taskId || !quizId || !current()) return false;
         // Navigation supersedes the room bookmark before I/O, even if the
         // question is unavailable. A later wheel/latest intent can supersede us.
         ownsPosition = beginReveal() || ownsPosition;
@@ -137,7 +147,8 @@ export function createChatDecision({
         }
         if (!current() || !card) return false;
         card.scrollIntoView?.({ block: 'center', behavior: 'auto' });
-        (card.querySelector('.chat-quiz-comment') || card.querySelector('.chat-quiz-question'))?.focus?.({ preventScroll: true });
+        ((focus === 'question' ? null : card.querySelector('.chat-quiz-comment'))
+            || card.querySelector('.chat-quiz-question'))?.focus?.({ preventScroll: true });
         didReveal();
         return true;
     }
