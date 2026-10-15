@@ -409,7 +409,7 @@ def _settle_pending_deadline(task: Dict[str, Any], *, event_already_published: b
 
         def owe_salvage(current: Dict[str, Any]) -> "Dict[str, Any] | None":
             """Register the deadline salvage answer as OWED; None when the registration failed."""
-            _, text, path = salvage_cancelled_output(q.DRIVE_ROOT, drive, task_id)
+            text, path = salvage
             delivery = dict(outcome="", reason_code=REASON_DEADLINE, salvaged_text=text, preserved_path=path,
                             settled_status="failed",
                             unreconciled_runs=list(current.get("delegated_runs_unreconciled") or []))
@@ -418,7 +418,9 @@ def _settle_pending_deadline(task: Dict[str, Any], *, event_already_published: b
                 return None
             return delivery
 
-        delivery = None
+        delivery, salvage = None, ("", "")
+        if salvage_root:  # the response-history read and copy run before Q; only the owed registration rides it
+            salvage = tuple(salvage_cancelled_output(q.DRIVE_ROOT, drive, task_id)[1:])
         # Only the terminal write is serialized against Stop; custody and delivery
         # never make a Q-held cancel wait on this projection.
         with q._queue_lock, cancellation_projection_lock(q.DRIVE_ROOT):

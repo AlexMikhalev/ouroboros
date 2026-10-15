@@ -608,3 +608,38 @@ def test_a_timeout_retry_never_regrants_spent_execution(host, clock, monkeypatch
     job = reaps.get_nowait()
     assert job["runtime_sec"] == 500 and job["terminal_reason"] == "absolute_ceiling"
     assert not job["will_retry"] and not host.pending and not host.attempts
+
+
+def test_pending_deadline_salvage_reads_history_outside_the_supervisor_queue_lock(host, clock, monkeypatch):  # noqa: F811
+    """The salvage answer is owed before the terminal row, but its response-history read (a
+    manifest scan and a full copy) runs before Q is taken: admission and control never wait on it."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from ouroboros import observability
+
+    add_task(host, clock)
+    clock.now[0] += 100
+    queue.enforce_task_timeouts()
+    entered, release = threading.Event(), threading.Event()
+    actual = observability.latest_llm_response_text
+
+    def paused_reader(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return actual(*args, **kwargs)
+
+    monkeypatch.setattr(observability, "latest_llm_response_text", paused_reader)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(clock.reap)
+        try:
+            assert entered.wait(5)
+            responsive = queue._queue_lock.acquire(blocking=False)
+            if responsive:
+                queue._queue_lock.release()
+        finally:
+            release.set()
+        future.result(timeout=10)
+    assert responsive, "the deadline salvage read holds Q and blocks supervisor admission and control"
+    stored = load_task_result(host.root, "pending")
+    assert stored["status"] == "failed"  # the settlement itself still completes
