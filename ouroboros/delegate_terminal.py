@@ -34,8 +34,13 @@ def terminal_reconcile_task(
     (``delegate_custody_reconcile._owner_terminal_is_deliberate``); otherwise it
     is left live and disclosed as open, for the sweep to re-judge.
     ``deliberate_terminal`` carries that verdict from a caller that has not
-    written its terminal result yet, which is every kill boundary."""
+    written its terminal result yet, which is every kill boundary. A terminal
+    boundary is a release surface: ``gateway_factory`` defaults to the attach-only
+    transport and no pending invocation is replayed (exit does not admit)."""
 
+    from ouroboros.delegate_custody_reconcile import attach_only_gateway
+
+    gateway_factory = gateway_factory or attach_only_gateway
     mine = str(task_id or "")
     result: Dict[str, Any] = {
         "task_id": mine, "trigger": str(trigger or "terminal_boundary"),

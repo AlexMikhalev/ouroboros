@@ -16,7 +16,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D06 | Review stack | 82 | 0 |
 | D07 | Delegation, subagents & Claudexor | 66 | 0 |
 | D08 | Supervisor: queue, workers, events & runtime control | 62 | 0 |
-| D09 | Cancellation, owner control & process custody | 18 | 0 |
+| D09 | Cancellation, owner control & process custody | 20 | 0 |
 | D10 | Git, update & release machinery | 33 | 0 |
 | D11 | Gateway, server & Web UI | 80 | 0 |
 | D12 | Settings & configuration | 20 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 25 | 0 |
 | D19 | Frozen contracts (ABI) | 11 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **731** | **0** |
+| **total** | | **733** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -612,8 +612,10 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/owner_hurry.py`
 - `ouroboros/owner_quiz.py`
 - `ouroboros/owner_source.py`
+- `ouroboros/process_census.py`
 - `ouroboros/process_containment.py`
 - `ouroboros/process_custody.py`
+- `ouroboros/process_scope.py`
 - `ouroboros/server_control.py`
 - `supervisor/cancel_publication.py`
 - `supervisor/owner_stop.py`

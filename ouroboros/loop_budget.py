@@ -645,6 +645,7 @@ def _cleanup_loop_resources(
         return
     try:
         from ouroboros.delegate_custody import custody_root, release_task_runs
+        from ouroboros.delegate_custody_reconcile import attach_only_gateway
 
         # A delegated run is a resource this task HOLDS, like a service or
         # an executor: a terminalized parent leaving one running has a
@@ -652,8 +653,10 @@ def _cleanup_loop_resources(
         # covers a worker dying before here; this is the ordinary path. The
         # run is cancelled only behind a DELIBERATE owner terminal (B1-A); the
         # durable result is usually not written yet at this point, so a live
-        # run is left to the next sweep, which re-reads it.
-        release_task_runs(custody_root(ctx.tools._ctx), ctx.task_id)
+        # run is left to the next sweep, which re-reads it. Exit does not
+        # admit: the transport attaches only (a dead daemon is never started
+        # from a loop exit) and no pending invocation is replayed here.
+        release_task_runs(custody_root(ctx.tools._ctx), ctx.task_id, gateway_factory=attach_only_gateway)
     except Exception:
         log.debug("Failed to release delegated runs for task %s", ctx.task_id, exc_info=True)
 

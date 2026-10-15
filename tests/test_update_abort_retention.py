@@ -577,10 +577,26 @@ def test_abort_handoff_reaches_the_real_loop_without_replaying_unknown_effects(t
         raise ModelReached()
 
     monkeypatch.setattr(loop, "_dispatch_round_model", provider_reply)
+    # Regression pin for issue #1772: the loop's exit release runs with a pending
+    # invocation on the task. It must attach only and replay nothing — the old
+    # ensure default downloaded, spawned and admitted a real engine under the
+    # worker-shared config.DATA_DIR, outliving the whole battery.
+    from ouroboros import claudexor_daemon, delegate_custody_reconcile
+
+    monkeypatch.setattr(claudexor_daemon, "ensure_owned_gateway",
+                        lambda **_k: pytest.fail("the loop exit admitted work through ensure_owned_gateway"))
+    replayed = []
+    monkeypatch.setattr(delegate_custody_reconcile, "_recover_pending_invocation",
+                        lambda *a, **k: replayed.append(a) or pytest.fail("the loop exit replayed a pending invocation"))
     kwargs = _loop_kwargs(tmp_path, registry, [])
     kwargs["task_id"] = "saved"
     with pytest.raises(ModelReached):
         loop.run_llm_loop(**kwargs)
+    assert not replayed
+    assert not claudexor_daemon.owned_daemon_provisioned(), "no engine home appeared at the shared root"
+    assert not (tmp_path / "claudexor").exists()
+    assert observe_task_runs(tmp_path, "saved", request_stop=False)["runs"] == before["runs"], \
+        "the unknown POST stays pending for the admitted sweep"
     assert not effects
     assert registry._ctx._accumulated_usage["cost"] == 3.0
     assert any(row.get("content") == "Saved object 42" for row in seen)

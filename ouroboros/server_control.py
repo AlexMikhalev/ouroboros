@@ -368,6 +368,15 @@ def execute_panic_stop(
         attempt("services", lambda: kill_all_services(data_dir, request_only=True))
         attempt("companions", lambda: panic_kill_all(request_only=True))
         attempt("restart-successor", stop_restart_successor)
+        # One more bounded request attempt: every live member of the installation scope
+        # (marker, recorded task groups, the engine's recorded runs) by re-measured identity,
+        # excluding this server, its launcher and pid 1; a restart successor carries the
+        # marker and is one more owned stop. The durable pending record is written first, so
+        # whatever this process cannot finish before the hard exit is completed by the
+        # launcher or the next start. Never a condition for the exit, never a wait.
+        from ouroboros.process_scope import panic_scope_census
+
+        attempt("scope-census", lambda: panic_scope_census(data_dir))
         children = multiprocessing.active_children()
         for child in children:
             attempt(f"child-{child.pid}", lambda child=child: kill_worker_tree(

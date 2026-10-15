@@ -1158,13 +1158,12 @@ def _attach_only_run(root: Any, request: Any, slot: Any, operation_id: str, run_
              "invocation_id": str(invocation.get("invocation_id") or ""),
              "collection": "attach_only_observation", "cost": None, "run_state": state}
     try:
-        from ouroboros.review_checking import capture_seat_evidence, checking_writers_settled
+        from ouroboros.review_checking import terminal_seat_evidence
 
-        # Ordinary daemon success is published after the runner and owned
-        # adapter close/drain; a failure needs the engine's settled process
-        # scope. Neither is a claim about arbitrary detached OS descendants.
-        evidence = capture_seat_evidence(root, request.task_id, operation_id,
-                                         release=checking_writers_settled(detail))
+        # The exact-detail policy retains unknown writers; failed runs need the
+        # engine's literal settled scope. Windows copy-use compatibility is success-only,
+        # not proof about arbitrary detached OS descendants.
+        evidence = terminal_seat_evidence(root, request.task_id, operation_id, detail)
     except Exception as exc:
         # The paid verdict remains collectible even if retaining its checking
         # artifacts fails; leave the original area in custody and name the gap.
