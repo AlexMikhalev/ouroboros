@@ -406,6 +406,22 @@ _RETELLING_CHARS: Dict[str, Dict[str, int]] = {}
 _UNITS: Dict[str, Tuple[Tuple[Any, ...], List[LegacyUnit]]] = {}
 
 
+FALLBACK_REFUSAL_PREFIX = "fallback_refusal:"
+
+
+def fallback_refusals(scan: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Read per-unit receipts over the old whole map; a null key clears its receipt.
+
+    The journal's top-level scan deltas already provide per-unit replacement;
+    old authority stays readable without rewriting its accumulated maps.
+    """
+    old = scan.get("fallback_refusals")
+    found = dict(old) if isinstance(old, dict) else {}
+    found.update((name[len(FALLBACK_REFUSAL_PREFIX):], value) for name, value in scan.items()
+                 if name.startswith(FALLBACK_REFUSAL_PREFIX))
+    return {key: receipt for key, receipt in found.items() if isinstance(receipt, dict)}
+
+
 def _exact_range(pointer: Mapping[str, Any]) -> Optional[Tuple[int, int]]:
     raw = (pointer.get("covers") or {}).get("raw_range") or {}
     span = raw.get("pos")
@@ -493,8 +509,7 @@ def legacy_units(store: ChronicleStore, root: Any) -> List[LegacyUnit]:
     if cached is not None and cached[0] == key:
         return list(cached[1])
     pointers = store.legacy_pointer_rows()
-    refusals = store.scan_state().get("fallback_refusals")
-    refusals = refusals if isinstance(refusals, dict) else {}
+    refusals = fallback_refusals(store.scan_state())
     chars = _retelling_chars(store, {pointer["node_id"] for pointer in pointers}) if pointers else {}
     ranges = {pointer["node_id"]: (str(pointer["room_id"]), span) for pointer in pointers
               if (span := _exact_range(pointer)) is not None}
@@ -542,7 +557,8 @@ class Period(NamedTuple):
         return {"block": " (block period)", "mixed": " (partly block period)"}.get(self.source, "") if self.span else ""
 
 
-def record_period(store: ChronicleStore, record: Mapping[str, Any], units: Mapping[str, LegacyUnit]) -> Period:
+def record_period(store: ChronicleStore, record: Mapping[str, Any], units: Mapping[str, LegacyUnit], *,
+                  records: Optional[Mapping[str, Any]] = None) -> Period:
     """The period and place of a page, part or retold record, from its room's own rows, never the journal's aggregate.
 
     A page: its own covers. A retold record: its unit's rows (``units``: the ready legacy map of one reader);
@@ -550,13 +566,15 @@ def record_period(store: ChronicleStore, record: Mapping[str, Any], units: Mappi
     members, recursively, so a room that takes the tail of a block is dated and ordered by its own rows; the
     ``covers.ts_span`` the part recorded (its members' block aggregate) is not read. An account: the union
     over its sources the same way, whatever their rooms (a missing source adds nothing and leaves it incomplete).
+    A reader may supply its complete source-record snapshot to avoid reopening the index for every member.
     """
     covers = record.get("covers") if isinstance(record.get("covers"), Mapping) else {}
     if record.get("kind") in ("part", "account"):
         ids = covers.get("member_ids") if record.get("kind") == "part" else [
             (ref.get("id") if isinstance(ref, Mapping) else ref) for ref in record.get("sources") or ()]
-        members = [record_period(store, member, units) for member_id in ids or ()
-                   if (member := store.get(str(member_id))) is not None]
+        get = records.get if records is not None else store.get
+        members = [record_period(store, member, units, records=records) for member_id in ids or ()
+                   if (member := get(str(member_id))) is not None]
         if len(members) != len(ids or ()):
             members.append(Period(None, -1, "rows"))  # a source not in this chronicle: an incomplete period
         spans = [period.span for period in members if period.span]

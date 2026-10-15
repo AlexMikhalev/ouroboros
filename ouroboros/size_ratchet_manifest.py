@@ -140,6 +140,7 @@ BAND_PATHS = {
     "ouroboros/preflight_runner.py": None,
     "ouroboros/presence_runner.py": "Presence turn admission, durable retry identity and transport custody remain one owner; separating them now would duplicate the gate and receipt seam.",
     "ouroboros/process_custody.py": "The existing process custody owner retains task-bound invocation evidence before spawn and transfers it only after the independent process receipt; the same spawn path preserves unbound callers without another custody layer.",
+    "ouroboros/process_scope.py": "Owns task and installation membership plus exact-identity recovery; shared identity and signalling stay local while ordinary startup uses only retained identities.",
     "ouroboros/project_dialogue.py": "Shrank INTO the band from 1587 lines: the dead authored_root_summary writer was removed with the old dialogue memory writer; no new content.",
     "ouroboros/projects_registry.py": "Execution admission protocol now has its own shared owner; registry retains persistence, bindings and identity projections.",
     "ouroboros/request_wire_receipts.py": "Wire candidates and semantic-success receipts share one exact serializer digest owner.",

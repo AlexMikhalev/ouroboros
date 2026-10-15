@@ -241,3 +241,23 @@ def test_the_standing_facts_count_the_helpers_parts_and_my_folded_page_and_show_
     assert (alpha["notes"], alpha["pages"], alpha["last_covered"]) == (1, 0, "")
     assert f"; my notes not yet sealed: 1; no page of this room yet\nmemory_read(room_id='{made.alpha}', rows=true)" in (
         mv.render_room(snapshot))
+
+
+def test_story_reduction_is_not_a_claim_that_the_origin_room_shrank(tmp_path):
+    """Keep the two real consumer surfaces distinct: local member detail is intentional."""
+    from ouroboros import memory_view as mv
+    made = shape.production(tmp_path)
+    task = {"id": "turn0001", "chat_id": 1}
+
+    def capture():
+        return mv.capture_memory_view(tmp_path, task, mv.view_spec_for_task(task, tmp_path))
+
+    before = capture()
+    shape.part(tmp_path, "1", [made.gap_page], text="Short fold.")
+    after = capture()
+    story_delta = len(mv.render_story(after)) - len(mv.render_story(before))
+    room_delta = len(mv.render_room(after)) - len(mv.render_room(before))
+    print(f"ACTUAL_VIEW_DELTAS story={story_delta} room={room_delta} combined={story_delta + room_delta}")
+    assert story_delta < 0 and room_delta > 0
+    assert story_delta + room_delta > 0
+    assert made.gap_page in mv.render_room(after)

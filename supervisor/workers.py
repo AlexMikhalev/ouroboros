@@ -954,9 +954,10 @@ def _audit_delegate_terminal_custody(
         return
     try:
         from ouroboros import delegate_terminal
+        from ouroboros.delegate_custody_reconcile import attach_only_gateway
 
-        audit = delegate_terminal.terminal_reconcile_task(
-            DRIVE_ROOT, task_id, trigger=trigger,
+        audit = delegate_terminal.terminal_reconcile_task(  # a kill boundary: attach only, no replay
+            DRIVE_ROOT, task_id, trigger=trigger, gateway_factory=attach_only_gateway,
         )
         delegate_terminal.record_terminal_reconciliation(
             DRIVE_ROOT, task_id, audit,

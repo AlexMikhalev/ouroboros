@@ -54,6 +54,14 @@ def _owned_gateway_uses_each_test_transport(monkeypatch):
         "ensure_owned_gateway",
         lambda: gateway_module.ClaudexorGateway(),
     )
+    # The fixture models a SERVING daemon, so the attach-only release surfaces
+    # (loop exit, kill boundaries) reach the same test transport the admitted
+    # sweep does; neither starts anything here.
+    monkeypatch.setattr(
+        claudexor_daemon,
+        "read_owned_gateway",
+        lambda **_kw: gateway_module.ClaudexorGateway(),
+    )
     original_actor = delegate.prepare_delegate_start_actor
 
     def explicit_transport_actor(ctx, drive_root, **kwargs):
