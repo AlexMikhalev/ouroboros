@@ -568,9 +568,6 @@ def test_a_late_reply_reaches_its_rooms_next_view_and_consciousness_and_no_other
     assert "Plan council reply" not in other
 
 
-@pytest.mark.xfail(strict=True, reason="plan_ask.collect_pending recovers no real seat on this branch: "
-                   "recorded_review_assignment matches row slot_id, a plan participant carries seat_id "
-                   "(03 scope: collect_pending through the shared collector)")
 @pytest.mark.parametrize("end", ["completed", "failed", "cancelled"])
 def test_a_reply_whose_settlement_callback_was_lost_reaches_the_room_after_a_normal_or_abnormal_end(
         council, monkeypatch, end):
@@ -598,9 +595,6 @@ def test_a_reply_whose_settlement_callback_was_lost_reaches_the_room_after_a_nor
     assert _plan_marks(h.drive) == [] and transport.calls.count("m/a") == 1
 
 
-@pytest.mark.xfail(strict=True, reason="plan_ask.collect_pending recovers no real seat on this branch: "
-                   "recorded_review_assignment matches row slot_id, a plan participant carries seat_id "
-                   "(03 scope: collect_pending through the shared collector)")
 def test_a_seat_its_author_collected_before_ending_is_no_late_review(council, monkeypatch):
     """Negative: the running author's own free collection settled s1, so the end keeps nothing for it; s2,
     still running at the end, reaches the room on its own settlement."""
@@ -619,9 +613,6 @@ def test_a_seat_its_author_collected_before_ending_is_no_late_review(council, mo
     assert mark["review"]["subject"]["seat_id"] == "s2" and transport.calls.count("m/a") == 1
 
 
-@pytest.mark.xfail(strict=True, reason="plan_ask.collect_pending recovers no real seat on this branch: "
-                   "recorded_review_assignment matches row slot_id, a plan participant carries seat_id "
-                   "(03 scope: collect_pending through the shared collector)")
 def test_an_unreadable_producer_keeps_the_seat_pending_until_a_later_pass_places_one_mark(council, monkeypatch):
     """A known producer whose retained outcome cannot be read on one pass is still the seat's duty: nothing is
     kept in view, nothing is cleaned and nothing is sent; the next pass places exactly one mark."""
