@@ -906,6 +906,12 @@ def reconcile_worker_capacity(residual_demand) -> None:
     Forecast uses assignment's chooser under Q. Booting slots can satisfy future
     demand; exhausted or retiring slots cannot, but all keep charged reservations.
     Parked authors lend theirs only through the durable owner-wait protocol.
+
+    Growth and retirement take the lifecycle serializer, then Q; a spawn starts outside
+    Q. Surplus and a cap-full warm Resume share the quiescence probe, and an authorized
+    Resume holds one idle slot until that retirement. Retirement kills with kept services
+    and frees capacity only on confirmed death; it is intentional, never a crash, and
+    there is no idle timer, rotation or setting.
     """
     with _queue_lock:
         if not _pool().WORKERS or _pool()._WORKER_POOL_DISABLED_REASON:

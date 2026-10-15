@@ -97,6 +97,10 @@ def _delivery_disposition(root: Any, tid: str) -> dict:
     proven bytes, else ``""`` (no terminal message known). Only ``owed`` holds the
     Done card; unknown and exhausted are SHOWN on it, never hidden. Nothing here is
     recomputed from stored prose, and no read failure turns into a silent hold.
+    A settle that runs between the terminal row and the send sees ``owed`` and waits;
+    the delivery acknowledgement re-enters ``settle_terminal_projection``
+    (``events_chat_delivery._handoff_delivered_review``), so the held card follows its
+    answer without a sweep.
     """
     from supervisor.terminal_delivery import terminal_answer_receipts
 

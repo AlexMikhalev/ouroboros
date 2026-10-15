@@ -287,6 +287,8 @@ def _unavailable_basis(parent, child, task_id, result):
 
 
 def unchanged_unavailable_retry(parent, child, task_id, result, *, generation):
+    """True only while this generation still sees the pending rows and watched files the
+    remembered deterministic refusal was observed with; a changed file, row or generation retries."""
     key = _retry_key(parent, child, task_id)
     previous = _UNAVAILABLE_RETRIES.get(key)
     basis = _unavailable_basis(parent, child, task_id, result) if previous is not None else None

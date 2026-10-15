@@ -54,10 +54,8 @@ supervisor/ — background thread inside server.py (§5)
   sleep_wake.py — cold model-sleep wake with a typed `sleep_wake` grant, vetoed by holds (§6)
   restart_retention.py — stop retention and restart/update-abort return authority (§5, §9)
   queue_transitions.py, task_ownership.py — acceptance, Resume, evolution stop, fenced Project deletion; ownership reads precede the queue lock (§5, §6)
-  terminal_delivery.py — delivery-id dedupe, exact emitted-byte receipts and the bounded pending outbox for every terminal answer (§5, §10)
-  terminal_cascade.py — a settled cascade's one owner message: root salvage plus a children digest, reached through `terminal_delivery` (§5)
-  task_reaper.py — one off-loop owner of timeout, crash, idle and unready jobs; unconfirmed death keeps reaping (`task_reaper_wedged`); mints no cancel intents (§5)
-  task_reaper_cancel_handoff.py — the reaper's cancel-suppressed retry handoff: custody for the winning cancel, then the physical terminal event (§5)
+  terminal_delivery.py, terminal_cascade.py — delivery-id dedupe, exact emitted-byte receipts and the bounded pending outbox for every terminal answer; a settled cascade's one owner message (§5, §10)
+  task_reaper.py, task_reaper_cancel_handoff.py — one off-loop owner of timeout, crash, idle and unready jobs, and its cancel-suppressed retry handoff; unconfirmed death keeps reaping (`task_reaper_wedged`); mints no cancel intents (§5)
   owner_stop.py — graceful stop: finalize first (`finalize_now`), then cancel on the same durable cancel intent; grace bounded by `OWNER_STOP_OUTER_CAP_SEC`
   schedule_time.py, schedule_occurrence.py — cron/timezone parsing; a due occurrence admits at most one root
   schedule_notes.py — a due `kind:"notify"` row becomes a signed `reminder` System row; no model, no retry

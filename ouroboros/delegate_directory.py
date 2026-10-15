@@ -182,7 +182,11 @@ def _download(gateway, run_id, source, destination, expected=None):
 
 
 def capture_directory_result(drive, entry, gateway):
-    """Capture observed terminal work independently of its pending money record."""
+    """Capture observed terminal work independently of its pending money record.
+
+    A finished run whose engine reports no file work product is captured as ``no_changes``
+    (a ready, empty manifest), never retried on later sweeps.
+    """
     if not entry.settled and entry.terminal_state not in custody.TERMINAL_STATES:
         raise ValueError("the directory run has not completed")
     cap_dir = custody.delegated_capture_dir(drive, entry.task_id, entry.run_id)

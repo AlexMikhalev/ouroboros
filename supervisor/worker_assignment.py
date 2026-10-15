@@ -344,9 +344,10 @@ def _claim_worker_launch(queue, candidate, worker, *, deferred: Optional[set] = 
     No put before every durable step lands (``_commit_launch``, ``_mark_launch_row``). The Q-held start
     fence tries its table, control and store acquisitions once
     (``automatic_acquisitions``): contention keeps the same unsent row, and its id joins
-    ``deferred`` — still residual demand for the pool, never a refusal. Once the put
-    is entered the worker owns the task, even if the put raised: the caller binds it
-    RUNNING/busy, so Stop, completion and worker health settle it before reuse.
+    ``deferred`` — still residual demand for the pool, never a refusal, so a contended
+    tick retires no ready worker. Once the put is entered the worker owns the task, even
+    if the put raised: the caller binds it RUNNING/busy, so Stop, completion and worker
+    health settle it before reuse.
     """
     from types import SimpleNamespace
     from ouroboros.owner_pause import launch_admission, OwnerPauseRefused

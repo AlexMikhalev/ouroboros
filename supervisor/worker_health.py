@@ -2,7 +2,9 @@
 
 Distinguishes a worker that died from one that is merely slow, respects the spawn
 grace window so a booting pool is not read as a crash storm, and publishes the
-task_done the dying task can no longer publish for itself.
+task_done the dying task can no longer publish for itself. A crash storm freezes the
+captured membership, suppresses respawn until terminal sources settle, then fences
+pooled admission; direct chat is spared.
 """
 
 from __future__ import annotations
@@ -240,7 +242,15 @@ def _dead_job_is_current(job: dict) -> bool:
 
 
 def recover_confirmed_dead_worker(job: dict) -> None:
-    """Recover exact saved terminal bytes before applying the old crash policy."""
+    """Recover exact saved terminal bytes before applying the old crash policy.
+
+    Saved terminal bytes, including the ``task_exception`` terminal a worker writes after
+    ``handle_task`` failed, win over signal death; a live exact pause re-parks. Unknown or
+    incomplete publication raises ``TerminalFileRecoveryPending`` and the reaper keeps the
+    job. Only confirmed absence reaches crash policy: a signal is an infrastructure failure,
+    an eligible crash retries within ``QUEUE_MAX_RETRIES`` keeping its cost and wait
+    restrictions, and a budget continuation forbids ordinary retry.
+    """
     from ouroboros.headless import prepare_terminal_task_files, terminal_task_files_ready
     from ouroboros.task_results import load_task_result, _TRULY_TERMINAL_STATUSES
     from supervisor import queue

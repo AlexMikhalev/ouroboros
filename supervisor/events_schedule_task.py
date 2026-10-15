@@ -214,6 +214,8 @@ def _gate_view(ctx: Any, preparation: Any) -> Any:
 
 
 def _direct_child_count(roots: list, parent_id: Any, tid: str, *, propagate_contention: bool = False) -> Optional[int]:
+    """The supervisor's early count over every root: None when any root cannot prove it, which
+    neither pre-check refuses; the interlocked re-check reads it again and defers contention."""
     counts = [durable_direct_child_count(root, parent_id, exclude_task_id=tid,
                                         propagate_contention=propagate_contention) for root in roots]
     return max(counts) if counts and all(count is not None for count in counts) else None

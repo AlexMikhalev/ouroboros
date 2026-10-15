@@ -338,7 +338,11 @@ def stamp_depth_provenance(
 def schedule_delegation_refusal(
     parent_contract: Dict[str, Any], status_root: Any, parent_task_id: Any,
 ) -> str:
-    """Return the typed direct-child rights refusal, or an empty string."""
+    """Return the typed direct-child rights refusal, or an empty string.
+
+    An unknown count (a busy store included) refuses nothing here: the host's interlocked
+    re-check reads it again, defers contention and refuses only a hard unknown.
+    """
 
     budget = parent_contract.get("delegation_budget") if isinstance(parent_contract, dict) else {}
     decision = check_delegation_admission(
