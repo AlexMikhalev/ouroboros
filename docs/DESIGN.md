@@ -1020,8 +1020,20 @@ not child-task cards and never prove execution by themselves.
 - Disclosure is user-owned. Review results, retries, failures, terminal task
   state, reconnect, and lazy-detail loading update content in place but never
   open or close the task, Reviews section, or group.
-- A plan wave whose reviewers may still answer reads as work in progress only
-  while its own task is running: the working tone, `in progress · k of n
+- The Plan group is the plan record (nobody votes, so it carries no verdict
+  word): its line reads `N objections may hold` (an owner-marked reviewer's
+  objection, warning tone), `N open objections` (only added critics', warning
+  tone), `awaiting answers` (working tone while its task runs), `no open
+  objection` (done tone) or `not asked yet`; `objections not projected` in the
+  neutral tone when the detail lacks the host's fold, which the panel never
+  re-derives. The revision row shows the latest revision's goal, `done_when`
+  and earlier revisions' claims; each ask row reads `k of n answered` while
+  replies are owed and lists each participant (`added — never holds`,
+  `awaiting`, `not sent — <reason>`) and its objections (`(not adjudicated)`,
+  `(never holds)`). A record of the earlier schema keeps its wave rendering
+  below.
+- An earlier-schema plan wave whose reviewers may still answer reads as work in
+  progress only while its own task is running: the working tone, `in progress · k of n
   answered` where the verdict token would sit, and each awaited reviewer listed
   as awaiting rather than unavailable, under no verdict word. Once the task has
   ended the same wave reads `no verdict · k of n answered` in the neutral tone.
