@@ -273,6 +273,10 @@ REVIEW_OUTPUT_SHAPES: Dict[str, str] = {
     # one object {change, change_clean, coupling}. Packet seats on the same
     # surface answer contract A over direct chat and are never canonicalized.
     "multi_model_review": "two_part",
+    # The planning organ's participants answer ONE reply object {prose, objections,
+    # withdrawn} (tools/plan_packet.PLAN_REPLY_CONTRACT). It is no verdict: the host
+    # never extracts or aggregates it; the whole text reaches plan_record.parse_reply.
+    "plan_review": "plan_reply",
 }
 OBJECT_VERDICT_REQUIRED_KEYS = ("verdict",)
 TWO_PART_KEYS = ("change", "change_clean", "coupling")
@@ -296,7 +300,7 @@ evidence you read; mark anything you could not verify as unverified.
 
 
 def review_output_shape(surface: str) -> str:
-    """``array`` | ``object`` | ``two_part`` | ``report`` for one review surface."""
+    """``array`` | ``object`` | ``two_part`` | ``report`` | ``plan_reply`` for one review surface."""
     return REVIEW_OUTPUT_SHAPES.get(str(surface or ""), "array")
 
 
@@ -304,6 +308,10 @@ def default_output_contract(shape: str) -> str:
     """The prompt contract a retrieving row is asked for when its surface hands
     over no ``policy["output_contract"]`` — keyed by the same shape the
     canonicalizer parses, so the ask and the parse can never disagree."""
+    if str(shape or "") == "plan_reply":
+        from ouroboros.tools.plan_packet import PLAN_REPLY_CONTRACT
+
+        return PLAN_REPLY_CONTRACT
     return {
         "object": REVIEW_JSON_OBJECT_CONTRACT, "report": REVIEW_REPORT_CONTRACT,
         "two_part": REVIEW_TWO_PART_OBJECT_CONTRACT,
@@ -797,7 +805,7 @@ def emit_review_run_errors(ctx: Any, request: Any, actors: Sequence[Any], *, dri
         if actor.error_event_logged or actor.parse_status == "awaiting" or actor.late_result_pending:
             continue
         if actor.status not in {"error", "not_dispatched", "empty"} and (
-                actor.parse_status != "malformed" or REVIEW_OUTPUT_SHAPES.get(request.surface) == "report"):
+                actor.parse_status != "malformed" or REVIEW_OUTPUT_SHAPES.get(request.surface) in ("report", "plan_reply")):
             continue
         row = asdict(actor)
         row["task_id"] = str(getattr(request, "task_id", "") or "")
