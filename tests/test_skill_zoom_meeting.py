@@ -924,6 +924,17 @@ def test_frames_match_the_frozen_core_codec_byte_for_byte(zoom):
             peer_mod.decode_frame(bad)
 
 
+def test_control_messages_fit_the_protocol_limit_with_a_named_omission(zoom):
+    peer_mod = zoom.meeting_peer
+    fitted = peer_mod.fit_control({"type": "context", "text": "é" * 20000, "source": "zoom_chat"})
+    assert len(fitted.encode("utf-8")) <= cp.MAX_CONTROL_BYTES
+    message = cp.decode_control(fitted)
+    assert message["source"] == "zoom_chat" and message["text"].endswith("more characters omitted]")
+    small = {"type": "participant", "label": "Anna", "speaking": True}
+    assert json.loads(peer_mod.fit_control(small)) == small
+    assert peer_mod.fit_control({"type": "participant", "label": "x" * 20000, "speaking": True}) is None
+
+
 # ---- the control channel and the tools -------------------------------------------------
 
 @pytest.mark.parametrize("transport", ["unix", "tcp"])

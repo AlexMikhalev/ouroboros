@@ -136,7 +136,6 @@ class ZoomSession:
         self._join_requested = False
         self._audio_helper: Any = None
         self._recording_ctrl: Any = None
-        self._in_meeting = False
         self._setup_done = False
         self._raw_scheduled = False
         self._recording_started = False
@@ -319,12 +318,10 @@ class ZoomSession:
     def _handle_status(self, status: Any, result: Any) -> None:
         sdk = self._sdk
         if status == sdk.MEETING_STATUS_FAILED:
-            self._in_meeting = False
             self._meeting_service_done(
                 f"the meeting refused the join: {enum_member_name(getattr(sdk, 'MeetingFailCode', None), result)}")
             return
         if status == sdk.MEETING_STATUS_ENDED:
-            self._in_meeting = False
             reason = enum_member_name(getattr(sdk, "MeetingEndReason", None), result)
             self._meeting_service_done(
                 _END_REASONS.get(reason, "the meeting ended ({reason})").format(name=self._name(), reason=reason))
@@ -335,7 +332,7 @@ class ZoomSession:
             if self._setup_done:
                 self._emit("session_state", "reconnected")
                 return
-            self._setup_done = self._in_meeting = True
+            self._setup_done = True
             with contextlib.suppress(Exception):
                 self.topic = str(self._meeting_service.GetMeetingInfo().GetMeetingTopic() or "")
             self._emit("session_state", "in_meeting")

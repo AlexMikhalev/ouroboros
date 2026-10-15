@@ -76,6 +76,30 @@ def bounded_text(text: str, limit: int) -> str:
     return f"{text[:limit]} ...[{len(text) - limit} more characters omitted]"
 
 
+def fit_control(message: Dict[str, Any]) -> Optional[str]:
+    """``message`` as protocol JSON within ``MAX_CONTROL_BYTES``.
+
+    A ``text`` too long for one control message keeps its head plus a named count of
+    what was cut; a message that cannot fit otherwise is ``None``.
+    """
+    encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) <= MAX_CONTROL_BYTES:
+        return encoded
+    text = message.get("text")
+    if not isinstance(text, str):
+        return None
+    best, low, high = None, 0, len(text)
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = json.dumps({**message, "text": bounded_text(text, middle)}, ensure_ascii=False,
+                               separators=(",", ":"))
+        if len(candidate.encode("utf-8")) <= MAX_CONTROL_BYTES:
+            best, low = candidate, middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
 def epoch_is_newer(candidate: int, current: int) -> bool:
     """Serial comparison of 16-bit output epochs (they wrap)."""
     delta = (candidate - current) & 0xFFFF
@@ -117,7 +141,7 @@ def open_call(host_url: str, token: str, body: Dict[str, Any]) -> Dict[str, str]
     """Ask the Host door to admit the Presence call; ``{call_id, peer_path}`` or ``CallOpenRefused``."""
     try:
         status, payload = _host_json(f"{host_url.rstrip('/')}/call/open", token, body=body)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:  # ValueError: no usable Host Service address
         raise CallOpenRefused("call_door_unreachable", f"the Host Service did not answer ({type(exc).__name__})")
     call_id, peer_path = str(payload.get("call_id") or ""), str(payload.get("peer_path") or "")
     if 200 <= status < 300 and call_id and peer_path.startswith("/"):
@@ -129,7 +153,7 @@ def open_call(host_url: str, token: str, body: Dict[str, Any]) -> Dict[str, str]
 
 def identity_name(host_url: str, token: str) -> str:
     """This install's name from the Host Service, or ``""`` when it does not answer."""
-    with contextlib.suppress(OSError):
+    with contextlib.suppress(OSError, ValueError):
         status, payload = _host_json(f"{host_url.rstrip('/')}/identity", token, timeout=5.0)
         if status == 200:
             return str(payload.get("name") or "").strip()
@@ -309,13 +333,19 @@ class PeerSession:
         self.dropped_uplink = 0
         self.received_frames = 0
         self.ignored_frames = 0
+        self.dropped_controls = 0
 
     @classmethod
     def attach(cls, host_url: str, token: str, peer_path: str, hello: Dict[str, Any], *,
                connect: Callable[[str, str], Any] = connect_websocket, **callbacks: Any) -> "PeerSession":
         scheme, _sep, rest = host_url.rstrip("/").partition("://")
         ws = connect(("wss" if scheme == "https" else "ws") + "://" + rest + peer_path, token)
-        ws.send(json.dumps(hello, ensure_ascii=False, separators=(",", ":")))
+        try:
+            ws.send(json.dumps(hello, ensure_ascii=False, separators=(",", ":")))
+        except Exception:
+            with contextlib.suppress(Exception):
+                ws.close()
+            raise
         session = cls(ws, rate=int(hello["rate"]), **callbacks)
         session.start()
         return session
@@ -340,9 +370,11 @@ class PeerSession:
             self._cond.notify()
 
     def send_control(self, message: Dict[str, Any]) -> None:
-        text = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
-        if len(text.encode("utf-8")) > MAX_CONTROL_BYTES:
-            raise ValueError("control message larger than the protocol allows")
+        text = fit_control(message)
+        if text is None:
+            self.dropped_controls += 1
+            log.warning("a %s control message does not fit the protocol and was not sent", message.get("type"))
+            return
         with self._cond:
             if self._closing is None:
                 self._controls.append(text)

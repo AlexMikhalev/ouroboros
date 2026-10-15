@@ -47,7 +47,6 @@ SWEEP_INTERVAL_MS = 200
 HEARTBEAT_MS = 250
 # The host stops a companion within seconds; leaving must finish inside that window.
 SHUTDOWN_GRACE_MS = 4000
-_CHAT_TEXT_LIMIT = 8000
 _BINDING_ID = re.compile(r"^[0-9a-f]{32}$")
 
 _STATE_TEXT = {
@@ -271,8 +270,8 @@ class ZoomBot:
 
     def chat(self, sender: str, text: str, to_all: bool) -> None:
         audience = "to everyone" if to_all else "privately to you"
-        self._context(f"Zoom chat from {sender or 'a participant'} ({audience}): "
-                      f"{peer_mod.bounded_text(text, _CHAT_TEXT_LIMIT)}", "zoom_chat")
+        # The peer fits a long message to the protocol's control limit with a named omission.
+        self._context(f"Zoom chat from {sender or 'a participant'} ({audience}): {text}", "zoom_chat")
 
     def own_audio(self, muted_by_host: bool) -> None:
         self._context("The meeting host muted you; nobody in the meeting hears you until you are unmuted."

@@ -186,7 +186,7 @@ def _await_first_answer(state_dir: pathlib.Path, join_id: str) -> Dict[str, Any]
     while True:
         status = _companion(state_dir, "status")
         outcome = status.get("last_outcome") if isinstance(status.get("last_outcome"), dict) else {}
-        if status.get("state") == "idle" and outcome.get("join_id") == join_id:
+        if join_id and status.get("state") == "idle" and outcome.get("join_id") == join_id:
             raise ToolRefusal("ZOOM_JOIN_FAILED", str(outcome.get("message") or "the join ended"))
         if status.get("state") not in _JOINING_STATES or _monotonic() >= deadline:
             return status
@@ -195,7 +195,11 @@ def _await_first_answer(state_dir: pathlib.Path, join_id: str) -> Dict[str, Any]
 
 def _data_root(api: Any, ctx: Any) -> pathlib.Path:
     info = api.get_runtime_info() if hasattr(api, "get_runtime_info") else {}
-    return pathlib.Path(str((info or {}).get("data_dir") or getattr(ctx, "drive_root", "") or ""))
+    root = str((info or {}).get("data_dir") or getattr(ctx, "drive_root", "") or "")
+    if not root:
+        raise ToolRefusal("ZOOM_BINDINGS_UNREADABLE", "the install's data directory is unknown here, so its "
+                                                      "Presence bindings cannot be read")
+    return pathlib.Path(root)
 
 
 def _bindings(api: Any, ctx: Any) -> List[Any]:
@@ -227,7 +231,7 @@ def register(api: Any) -> None:
             _require_ready(_companion(state_dir, "status"), account_id)
             reply = _companion(state_dir, "join", {
                 "meeting_number": number, "passcode": str(passcode or "").strip() or link_passcode,
-                "display_name": _bounded(str(display_name or "").strip(), 64), "binding_id": binding.binding_id,
+                "display_name": str(display_name or "").strip(), "binding_id": binding.binding_id,
                 "account_id": account_id, "on_behalf_token": str(on_behalf_token or "").strip(),
                 "requested_by": requester_facts(ctx),
             })
