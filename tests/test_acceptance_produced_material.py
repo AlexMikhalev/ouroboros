@@ -244,3 +244,47 @@ def test_cold_reader_keeps_selected_sources_after_promotion(tmp_path):
     (task_artifact_dir_path(canonical, ctx.task_id) / output['path']).write_bytes(b'corrupt')
     with pytest.raises((ValueError, OSError)):
         read_actor_source_bytes(canonical, ctx.task_id, output)
+
+
+def test_a_new_id_retry_keeps_the_sources_of_the_work_it_continues(tmp_path, monkeypatch):
+    """A retry under a new execution id restores the record of the work it continues: that
+    work's sources keep their references and places, now in the retry's own store; what the
+    retry produces itself replaces or extends them; a capture of its own that fails is a gap,
+    never the continued answer; an unreadable continued source is a gap, never an identity."""
+    import copy
+
+    from ouroboros.artifacts import task_artifact_dir_path
+
+    first, trace = context(tmp_path), {"tool_calls": []}
+    store_task_artifact_bytes(tmp_path, first.task_id, "report.txt", b"produced report")
+    paid = copy.deepcopy(selected(first, trace, "Work.\nFINAL ANSWER: 42"))
+    assert [row["name"] for row in paid["sources"]] == ["selected-final-answer", "report.txt"]
+    restored = copy.deepcopy(trace)  # what the checkpoint gives a new-id retry
+
+    def retry(task_id):
+        return SimpleNamespace(**{**vars(first), "task_id": task_id}), copy.deepcopy(restored)
+
+    ctx, trace = retry("produced-retry")
+    carried = selected(ctx, trace, "Work.\nFINAL ANSWER: 42")
+    assert carried["sources"] == paid["sources"] and carried["selected_answer"]["text"] == "42"
+    for row in carried["sources"]:
+        assert read_actor_source_bytes(tmp_path, ctx.task_id, row["source_ref"], retained=False)
+    assert selected(ctx, trace, "Work.\nFINAL ANSWER: 42")["sources"] == paid["sources"]  # a later pass
+
+    store_task_artifact_bytes(tmp_path, ctx.task_id, "note.txt", b"new material")
+    grown = selected(ctx, trace, "Work.\nFINAL ANSWER: 43")
+    assert [row["name"] for row in grown["sources"]] == ["selected-final-answer", "report.txt", "note.txt"]
+    assert grown["sources"][0] != paid["sources"][0] and grown["sources"][1] == paid["sources"][1]
+
+    with monkeypatch.context() as patch:
+        patch.setattr("ouroboros.artifacts.persist_exact_text_source",
+                      lambda *_a, **_k: ("", {}, {"reason": "fixture unavailable"}))
+        gap = selected(ctx, trace, "Work.\nFINAL ANSWER: 44")
+    assert [row["name"] for row in gap["sources"]] == ["report.txt", "note.txt"] and "selected_answer" not in gap
+
+    report = next(row["source_ref"] for row in paid["sources"] if row["name"] == "report.txt")
+    (task_artifact_dir_path(tmp_path, first.task_id) / report["path"]).write_bytes(b"damaged")
+    ctx, trace = retry("produced-retry-2")
+    damaged = selected(ctx, trace, "Work.\nFINAL ANSWER: 42")
+    assert [row["name"] for row in damaged["sources"]] == ["selected-final-answer"]
+    assert damaged["issues"][-1]["tool"] == "continued_material"
