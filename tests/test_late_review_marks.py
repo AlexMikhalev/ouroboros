@@ -1,9 +1,9 @@
 """Late review feedback kept in view as a host mark of its owning room (#1738), end to end.
 
-A real publisher (a late acceptance settlement) persists the full source, then keeps ONE host
-mark in the room that owns the work. The next request of that
-room carries it through the real memory view and context assembly; another room's request does
-not; consciousness reads every room's. Showing, reading, a page seal and a fitted window never
+A real publisher (a late acceptance settlement, a plan council reply that settles after its
+task ended) persists the full source, then keeps ONE host mark in the room that owns the work.
+The next request of that room carries it through the real memory view and context assembly;
+another room's request does not; consciousness reads every room's. Showing, reading, a page seal and a fitted window never
 release it; only the integrating mind's ``memory_mark(release_id, reason)`` does, and a replay
 never brings it back, also after the index is lost. An unproven room keeps no mark. No test
 calls a model or the network.
@@ -419,3 +419,289 @@ def test_a_failed_publication_stays_owed_and_one_replay_after_restart_places_it_
         txn.put_row(OWED_SET, failed.mark_id, {"record": record})
     assert replay_owed_late_reviews(tmp_path)["settled"] == 1 and _owed_rows(tmp_path) == {}
     assert _late_marks(tmp_path) == [], "a replay never resurrects a released mark"
+
+
+# --- real publisher: a plan council reply that settles after its task ended (the planning organ) ---------
+
+from ouroboros import plan_record  # noqa: E402
+from tests.test_plan_task_tool import CLEAN, _call, _reply, _write, harness  # noqa: E402,F401 — the organ's fixture
+
+PLAN_TASK = "task-1"
+
+
+def _until(predicate, timeout=20.0):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.02)
+    raise AssertionError("expected state did not arrive")
+
+
+class _Council:
+    """The seats' chat transport under the REAL review substrate: a seat answers its reply only once its gate
+    opens, so its producer writes its own retained outcome and settles through custody, as in production."""
+
+    def __init__(self, replies):
+        self.replies, self.calls = dict(replies), []
+        self.gates = {model: threading.Event() for model in replies}
+
+    def __call__(self):  # LLMClient()
+        return self
+
+    def chat(self, **kwargs):
+        model = kwargs["model"]
+        self.calls.append(model)
+        assert self.gates[model].wait(30), f"{model} was never released"
+        return {"content": self.replies[model]}, {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.01,
+                                                  "resolved_model": model}
+
+    def release(self, *models):
+        for model in models or tuple(self.gates):
+            self.gates[model].set()
+
+
+@pytest.fixture
+def council(harness, monkeypatch):  # noqa: F811
+    """An ask to the whole council (s1/m-a, s2/m-b, s3/m-c) still pending at the dispatch barrier."""
+    rooms = shared.projects(harness.drive)  # Main and two Projects: the room a mark lands in is a proven one
+    replies = {"m/a": _reply("The rollback path is missing.", objections=[("o1", "Add the rollback step.")]),
+               "m/b": _reply("Looks sound to me."), "m/c": CLEAN}
+    transport = _Council(replies)
+    monkeypatch.setattr("ouroboros.tools.plan_review_runtime.LLMClient", transport)
+    ctx = harness.make_ctx()
+    try:
+        _write(ctx, ask="council")
+        record = plan_record_now(harness)
+        assert [p["status"] for p in record["asks"][0]["participants"]] == ["pending"] * 3, record["asks"][0]
+        yield SimpleNamespace(h=harness, ctx=ctx, transport=transport, rooms=rooms)
+    finally:
+        transport.release()
+
+
+def plan_record_now(h):
+    return plan_record.load_plan_record(h.drive, PLAN_TASK)
+
+
+def _participant(h, seat):
+    return next(p for p in plan_record_now(h)["asks"][0]["participants"] if p["seat_id"] == seat)
+
+
+def _end(h, status="completed"):
+    from ouroboros.task_results import write_task_result
+
+    write_task_result(h.drive, PLAN_TASK, status, chat_id=1, result="The author ended.")
+
+
+def _plan_marks(root):
+    return [mark for mark in _late_marks(root) if mark["review"]["surface"] == "plan_review"]
+
+
+def test_an_ended_authors_late_plan_replies_become_one_mark_each_on_their_own_ledger_reply(council):
+    """Two seats settle after their author ended: one mark each, in the task's room, pointing at the
+    ledger's own retained reply (never a copy), told as advice. A repeat changes nothing and the plan
+    record keeps exactly what the replies said."""
+    from ouroboros.artifacts import read_actor_source_bytes
+    from ouroboros.tools import plan_ask
+
+    h, transport = council.h, council.transport
+    _end(h)
+    transport.release("m/a")
+    [first] = _until(lambda: _plan_marks(h.drive))
+    s1 = _until(lambda: (lambda p: p if p.get("reply_ref") else None)(_participant(h, "s1")))
+    assert first["room_id"] == "1" and first["id"] == late_review_mark_id("plan_review", PLAN_TASK, "plan-late:a1:s1")
+    assert first["target_ref"] == {**s1["reply_ref"]["ref"], "task_id": s1["reply_ref"]["task_id"]}
+    raw = json.loads(read_actor_source_bytes(h.drive, s1["reply_ref"]["task_id"], s1["reply_ref"]["ref"]))
+    assert raw["objections"] == [{"id": "o1", "text": "Add the rollback step."}], "the ledger's exact reply"
+    text = first["text"]
+    assert "Plan council reply from m/a (seat s1) to ask a1 on plan revision 1" in text
+    assert "advice for whoever continues this work, not a verdict; it holds nothing." in text
+    assert "Prose: The rollback path is missing." in text and "- objection o1: Add the rollback step." in text
+    assert "PASS" not in text and "FAIL" not in text
+    transport.release("m/b")
+    _until(lambda: len(_plan_marks(h.drive)) == 2)
+    second = next(mark for mark in _plan_marks(h.drive) if mark["id"] != first["id"])
+    assert "(seat s2)" in second["text"] and "objection" not in second["text"]
+    before = plan_record_now(h)
+    record = plan_ask.collect_pending(None, before, state_root=h.drive, task_id=PLAN_TASK)  # a repeat
+    assert len(_plan_marks(h.drive)) == 2 and [m["id"] for m in _plan_marks(h.drive)].count(first["id"]) == 1
+    assert [o["id"] for o in plan_record.open_objections(record)] == ["o1"]
+    assert transport.calls.count("m/a") == 1 and transport.calls.count("m/b") == 1, "nothing is sent twice"
+
+
+def _lose_settlement_callbacks(monkeypatch):
+    """The process loses each seat's settlement callback after its producer retained its outcome (the crash
+    window): the seat stays pending in its ask, which is the whole duty."""
+    lost = []
+    monkeypatch.setattr("ouroboros.tools.plan_ask.settle_released_reply", lambda *_a, **kw: lost.append(kw["actor"]))
+    return lost
+
+
+def test_a_reply_that_settles_while_its_author_runs_stays_with_the_gate_and_plan_task(council):
+    """While the author runs, a reply is the gate's and plan_task()'s: nothing is kept in view, no row is
+    owed for later, and the task's end keeps nothing either (organ form of G1's owe-until-end cases)."""
+    from ouroboros.late_review_marks import replay_owed_late_reviews
+
+    h, transport = council.h, council.transport
+    transport.release("m/a")
+    s1 = _until(lambda: (lambda p: p if p.get("reply_ref") else None)(_participant(h, "s1")))
+    assert s1["status"] == "answered" and _plan_marks(h.drive) == [] and _owed_rows(h.drive) == {}
+    text, _result = _call(council.ctx)  # the author's own free read carries it
+    assert "Add the rollback step." in text
+    _end(h)
+    assert replay_owed_late_reviews(h.drive) == {"settled": 0, "waiting": 0, "retired": 0, "failed": 0}
+    assert _plan_marks(h.drive) == [] and _owed_rows(h.drive) == {}
+
+
+def test_a_late_reply_reaches_its_rooms_next_view_and_consciousness_and_no_other_room(council):
+    h, transport = council.h, council.transport
+    _end(h)
+    transport.release("m/a")
+    [mark] = _until(lambda: _plan_marks(h.drive))
+    room = room_text(h.drive)
+    assert SECTION in room and "Plan council reply from m/a (seat s1)" in room and f"release_id='{mark['id']}'" in room
+    assert "Plan council reply from m/a" in room_text(h.drive, {"id": "wake1", "chat_id": 1, "metadata": WAKE})
+    other = room_text(h.drive, {"id": "alpha-turn", "chat_id": council.rooms["alpha"]})
+    assert "Plan council reply" not in other
+
+
+@pytest.mark.xfail(strict=True, reason="plan_ask.collect_pending recovers no real seat on this branch: "
+                   "recorded_review_assignment matches row slot_id, a plan participant carries seat_id "
+                   "(03 scope: collect_pending through the shared collector)")
+@pytest.mark.parametrize("end", ["completed", "failed", "cancelled"])
+def test_a_reply_whose_settlement_callback_was_lost_reaches_the_room_after_a_normal_or_abnormal_end(
+        council, monkeypatch, end):
+    """The crash window: the producer retained its outcome but the settlement callback was lost, so the seat
+    is still pending in its ask. The task's canonical end, normal or abnormal, lets the real maintenance pass
+    collect it at $0 (``plan_ask.collect_pending``) and keep it in the room once; no row was ever owed for it,
+    a replay neither duplicates it nor brings back a released mark, and nothing is sent again."""
+    h, transport = council.h, council.transport
+    with monkeypatch.context() as lossy:
+        lost = _lose_settlement_callbacks(lossy)
+        transport.release("m/a")
+        _until(lambda: lost)
+    assert _participant(h, "s1")["status"] == "pending" and _owed_rows(h.drive) == {}
+    _sweep(h.drive, monkeypatch)
+    assert _plan_marks(h.drive) == [], "a running author's seat stays with its own collector"
+    _end(h, end)
+    _sweep(h.drive, monkeypatch)
+    [mark] = _plan_marks(h.drive)
+    assert _participant(h, "s1")["status"] == "answered" and "- objection o1: Add the rollback step." in mark["text"]
+    assert _owed_rows(h.drive) == {}, "the ask's pending seat was the whole duty"
+    _sweep(h.drive, monkeypatch)
+    assert len(_plan_marks(h.drive)) == 1
+    assert _release(h.drive, mark["id"], direct=True)["ok"]
+    _sweep(h.drive, monkeypatch)
+    assert _plan_marks(h.drive) == [] and transport.calls.count("m/a") == 1
+
+
+@pytest.mark.xfail(strict=True, reason="plan_ask.collect_pending recovers no real seat on this branch: "
+                   "recorded_review_assignment matches row slot_id, a plan participant carries seat_id "
+                   "(03 scope: collect_pending through the shared collector)")
+def test_a_seat_its_author_collected_before_ending_is_no_late_review(council, monkeypatch):
+    """Negative: the running author's own free collection settled s1, so the end keeps nothing for it; s2,
+    still running at the end, reaches the room on its own settlement."""
+    h, transport = council.h, council.transport
+    with monkeypatch.context() as lossy:
+        lost = _lose_settlement_callbacks(lossy)
+        transport.release("m/a")
+        _until(lambda: lost)
+    _call(council.ctx)  # plan_task() read: collects the retained outcome at $0 while the author runs
+    assert _participant(h, "s1")["status"] == "answered" and _plan_marks(h.drive) == []
+    _end(h)
+    _sweep(h.drive, monkeypatch)
+    assert _plan_marks(h.drive) == []
+    transport.release("m/b")
+    [mark] = _until(lambda: _plan_marks(h.drive))
+    assert mark["review"]["subject"]["seat_id"] == "s2" and transport.calls.count("m/a") == 1
+
+
+@pytest.mark.xfail(strict=True, reason="plan_ask.collect_pending recovers no real seat on this branch: "
+                   "recorded_review_assignment matches row slot_id, a plan participant carries seat_id "
+                   "(03 scope: collect_pending through the shared collector)")
+def test_an_unreadable_producer_keeps_the_seat_pending_until_a_later_pass_places_one_mark(council, monkeypatch):
+    """A known producer whose retained outcome cannot be read on one pass is still the seat's duty: nothing is
+    kept in view, nothing is cleaned and nothing is sent; the next pass places exactly one mark."""
+    from ouroboros import observability
+    from ouroboros.tools import plan_ask
+
+    h, transport = council.h, council.transport
+    with monkeypatch.context() as lossy:
+        lost = _lose_settlement_callbacks(lossy)
+        transport.release("m/a")
+        _until(lambda: lost)
+    _end(h, "failed")
+    operation = _participant(h, "s1")["operation_id"]
+    original = observability.read_call_payload
+
+    def unreadable(root, *, task_id, call_id):
+        if call_id == f"{operation}_response":
+            raise OSError("producer CAS momentarily unreadable")
+        return original(root, task_id=task_id, call_id=call_id)
+
+    monkeypatch.setattr(plan_ask, "dispatch_ask", lambda *a, **k: pytest.fail("no ask is sent"))
+    with monkeypatch.context() as fault:
+        fault.setattr(observability, "read_call_payload", unreadable)
+        _sweep(h.drive, monkeypatch)
+    assert _plan_marks(h.drive) == [] and _participant(h, "s1")["status"] == "pending"
+    _sweep(h.drive, monkeypatch)
+    [mark] = _plan_marks(h.drive)
+    assert mark["review"]["subject"]["seat_id"] == "s1"
+    _sweep(h.drive, monkeypatch)
+    assert len(_plan_marks(h.drive)) == 1 and transport.calls.count("m/a") == 1
+
+
+def test_while_its_author_runs_the_asks_settled_frame_reaches_its_mailbox_and_nothing_stays_in_view(council):
+    """The frame of an ask whose every seat settled while its author ran is that author's wake in its own
+    mailbox: it names the counts and points at plan_task(), it is no collection and no verdict, and nothing
+    is kept in view for the room."""
+    from ouroboros.owner_mailbox import _mailbox_path
+
+    h, transport = council.h, council.transport
+    transport.release()
+    path = _mailbox_path(h.drive, PLAN_TASK)
+    frames = _until(lambda: [json.loads(line)["text"] for line in (path.read_text(encoding="utf-8").splitlines()
+                                                                  if path.exists() else []) if "Plan ask a1" in line])
+    assert len(frames) == 1 and "every participant settled — 3 answered" in frames[0]
+    assert "plan_task() reads the answers." in frames[0] and "PASS" not in frames[0]
+    assert _plan_marks(h.drive) == [] and _owed_rows(h.drive) == {}
+
+
+@pytest.mark.parametrize("raw,lines", [
+    (_reply("Split the migration.", objections=[("o2", "Run the backfill first."), ("o3", "Keep the old\nreader.")]),
+     ["Prose: Split the migration.", "- objection o2: Run the backfill first.", "- objection o3: Keep the old reader."]),
+    (_reply("Looks sound to me."), ["Prose: Looks sound to me."]),
+    ("I think this is fine, but no JSON here.",
+     ["Its reply could not be read as the reply object; the full text is in its retained source."]),
+    ("", None),  # a failed seat: no paid words to keep, so no mark
+])
+def test_a_late_plan_reply_is_told_in_its_own_terms_never_as_a_verdict(harness, raw, lines):  # noqa: F811
+    from ouroboros.review_records import ReviewActorRecord
+    from ouroboros.tools import plan_ask
+
+    shared.projects(harness.drive)
+    pending = {"status": "pending", "raw_text": "", "operation_state": "pending_dispatch", "late_result_pending": True}
+    sub = harness.install({"s1": pending, "s2": pending, "s3": pending})
+    ctx = harness.make_ctx()
+    _write(ctx, ask="council")
+    _end(harness)
+    request, slots = sub.calls[0]["request"], {s.slot_id: s for s in sub.calls[0]["slots"]}
+    actor = ReviewActorRecord(slot_id="s1", model="m/a", status="ok" if raw else "error", raw_text=raw,
+                              error="" if raw else "run ended failed", operation_id="op-s1-1",
+                              operation_state="late_settled", usage={"cost": 0.02, "resolved_model": "m/a"})
+    plan_ask.settle_released_reply(ctx, request=request, task_id=PLAN_TASK, actor=actor, slot=slots["s1"],
+                                   settled_wave={}, roster_size=3)
+    marks = _plan_marks(harness.drive)
+    if lines is None:
+        assert marks == [] and _participant(harness, "s1")["status"] == "failed"
+        return
+    [mark] = marks
+    store_head, reviewed, head, *rest = mark["text"].splitlines()
+    assert store_head.startswith(f"Late plan review of task {PLAN_TASK}") and reviewed.startswith("Reviewed: ask_id=a1;")
+    assert reviewed.endswith("seat_id=s1") and "plan_revision=1" in reviewed
+    assert head.startswith("Plan council reply from m/a (seat s1) to ask a1 on plan revision 1, recorded after its task ended")
+    assert "not a verdict; it holds nothing." in head and rest == lines
+    assert all(word not in mark["text"] for word in ("PASS", "FAIL", "approved", "rejected"))
