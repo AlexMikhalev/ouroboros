@@ -8,6 +8,15 @@ import queue
 from types import SimpleNamespace
 
 import pytest
+from multiprocessing.managers import SyncManager
+from tests._cancel_intents_shared import DeliveryBus
+
+
+class _BusManager(SyncManager):
+    """A manager whose Queue is the membership-aware fixture bus (what lane A's bus exposes)."""
+
+
+_BusManager.register("Queue", DeliveryBus)
 
 pytestmark = pytest.mark.serial
 
@@ -72,7 +81,9 @@ def test_daemon_post_task_uses_injected_bus_or_keeps_delivery_owed(tmp_path, mon
 
     task = _seed_project(tmp_path)
     context = multiprocessing.get_context("spawn")
-    with context.Manager() as manager:
+    # The real bus (supervisor.event_observation) carries delivery membership; replay admits a
+    # copy only through it, so the injected fixture bus serves the same protocol (DeliveryBus).
+    with _BusManager(ctx=context) as manager:
         event_queue, report_queue = manager.Queue(), manager.Queue()
         worker = context.Process(target=_finish_in_worker,
                                  args=(str(tmp_path), task, event_queue, report_queue, attach))

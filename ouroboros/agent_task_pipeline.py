@@ -1078,7 +1078,7 @@ def emit_task_results(
                 post_usage, llm_trace, review_evidence, drive_logs,
                 budget_drive_root=budget_drive_root, split_drive=split_drive,
                 project_scoped=_project_scoped, project_task=_project_task,
-                parent_env=parent_env, parent_task=parent_task,
+                parent_env=parent_env, parent_task=parent_task, live_delivered=bool(_live_delivered),
             )
 
 
@@ -1090,11 +1090,14 @@ def _dispatch_root_post_task(
     *, budget_drive_root: str, split_drive: bool,
     project_scoped: bool, project_task: bool,
     parent_env: Any, parent_task: Dict[str, Any] | None,
+    live_delivered: bool = False,
 ) -> None:
-    """Sealed ground truth + post-task dispatch.
+    """Live final-answer delivery (unless already done) + sealed ground truth + post-task dispatch.
 
-    The owner's answer already went out on the live bus before the result store
-    (``_deliver_answer_first``, same lane selection as the ``blocking`` below);
+    The owner's answer normally went out on the live bus before the result store
+    (``_deliver_answer_first``, same lane selection as the ``blocking`` below,
+    ``live_delivered=True``); otherwise — a direct caller, or an early put the
+    transport refused — it goes out here, BEFORE blocking post-task cognition.
     task_done stays LAST via the buffered return (early task_done would release
     the queue slot / start child-drive cleanup mid-post-task). Rationale and the
     never-lost/never-doubled delivery contract: ouroboros/task_finalization.py.
@@ -1109,6 +1112,15 @@ def _dispatch_root_post_task(
         task, split_drive=split_drive, project_scoped=project_scoped, project_task=project_task,
         parent_env=parent_env, parent_task=parent_task,
     )
+    if blocking and event_queue is not None and not live_delivered:
+        # The CANONICAL data root — what the supervisor's boot/tick outbox
+        # replay reads (§8-A2): the parent/budget root for split children, the
+        # task's own drive for an ordinary root (whose ``budget_drive_root``
+        # field is legitimately empty).
+        deliver_final_message_live(
+            event_queue, pending_events, str(task.get("id") or ""),
+            drive_root=budget_drive_root or env.drive_root,
+        )
     # Sealed ground truth for summary/reflection: what the owner actually
     # received + the durable result's own artifact facts (Q4A).
     sealed_final = build_sealed_final_package(
