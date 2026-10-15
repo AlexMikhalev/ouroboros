@@ -990,39 +990,49 @@ def _log_dialogue(
     task: Mapping[str, Any],
     task_id: str,
 ) -> None:
+    from types import SimpleNamespace
+    from ouroboros import chat_chain
     from ouroboros.dialogue_provenance import presence_provenance_from_task
 
     state = read_json_dict(drive_root / "state" / "state.json") or {}
-    written = append_jsonl(
-        drive_root / "logs" / "chat.jsonl",
-        ensure_record_boundary=(direction == "in"),  # a re-run never re-logs: this row must be parseable
-        obj={
-            "ts": utc_now_iso(),
-            "session_id": state.get("session_id"),
-            "direction": direction,
-            "chat_id": chat_id,
-            "user_id": user_id,
-            "text": text,
-            "format": "markdown" if direction == "out" else "",
-            "source": f"presence:{event.provider}",
-            "sender_label": str(event.actor.get("display_name") or event.actor.get("username") or ""),
-            "sender_session_id": str(event.actor.get("platform_actor_id") or event.actor.get("id") or ""),
-            "client_message_id": event.source_event_id,
-            "presence_event_identity": presence_event_identity(str(task["metadata"]["presence"]["binding_id"]), event),
-            "transport": {
-                "provider": event.provider,
-                "account_id": event.account_id,
-                "conversation_id": event.conversation_id,
-                "thread_id": event.thread_id,
-                "conversation_key": event.conversation_key,
-                "actor": dict(event.actor),
-                "conversation": dict(event.conversation),
-                "message": dict(event.message),
-                **({"delivery": {"state": "authored"}} if direction == "out" else {}),
-            },
-            "presence_provenance": presence_provenance_from_task(task),
-            "task_id": task_id,
+    row = {
+        "ts": utc_now_iso(),
+        "session_id": state.get("session_id"),
+        "direction": direction,
+        "chat_id": chat_id,
+        "user_id": user_id,
+        "text": text,
+        "format": "markdown" if direction == "out" else "",
+        "source": f"presence:{event.provider}",
+        "sender_label": str(event.actor.get("display_name") or event.actor.get("username") or ""),
+        "sender_session_id": str(event.actor.get("platform_actor_id") or event.actor.get("id") or ""),
+        "client_message_id": event.source_event_id,
+        "presence_event_identity": presence_event_identity(str(task["metadata"]["presence"]["binding_id"]), event),
+        "transport": {
+            "provider": event.provider,
+            "account_id": event.account_id,
+            "conversation_id": event.conversation_id,
+            "thread_id": event.thread_id,
+            "conversation_key": event.conversation_key,
+            "actor": dict(event.actor),
+            "conversation": dict(event.conversation),
+            "message": dict(event.message),
+            **({"delivery": {"state": "authored"}} if direction == "out" else {}),
         },
+        "presence_provenance": presence_provenance_from_task(task),
+        "task_id": task_id,
+    }
+    if direction == "in":
+        # Retain the transport's exact contextual observations before publishing their address.
+        # They remain dated context of this event, never additional incoming speech or work.
+        source = {"recorded_at": row["ts"], "source_event_id": event.source_event_id,
+                  "text": text, "transport": row["transport"]}
+        row["context_source_ref"] = chat_chain.retain_memory_source(
+            SimpleNamespace(drive_root=drive_root, task_id=task_id), "presence-event",
+            json.dumps(source, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8"), "json")
+    written = append_jsonl(
+        drive_root / "logs" / "chat.jsonl", obj=row,
+        ensure_record_boundary=(direction == "in"),  # a re-run never re-logs: this row must be parseable
     )
     if direction == "in" and written is False:
         # A re-run of a lost attempt relies on the inbound row having landed (it never re-logs), so

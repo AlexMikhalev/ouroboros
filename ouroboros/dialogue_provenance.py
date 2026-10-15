@@ -329,6 +329,10 @@ def dialogue_text(entry: Mapping[str, Any]) -> str:
     evidence = entry.get("late_evidence")
     if entry.get("type") == "acceptance_late_settlement" and isinstance(evidence, Mapping):
         text += "\n[Late review evidence: " + json.dumps(dict(evidence), ensure_ascii=False, sort_keys=True) + "]"
+    source = entry.get("context_source_ref")
+    if entry.get("direction") == "in" and isinstance(source, Mapping):
+        text += ("\n[Context recorded with this event, not new speech or current provider truth: "
+                 "memory_read(source_ref=" + json.dumps(dict(source), ensure_ascii=False, sort_keys=True) + ")]")
     return text
 
 
