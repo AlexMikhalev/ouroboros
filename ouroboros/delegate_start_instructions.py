@@ -23,6 +23,15 @@ HOST_INSTRUCTIONS = (
     "state your assumption and continue."
 )
 
+# Owner 3B: the ONE host-facts sentence for a session that runs with a scoped native-state
+# home (delegated runs, reviewer agent sessions); never a raw API prompt, which has no shell
+# HOME. It names the two facts the engine provides WHEN PRESENT and lists no commands.
+HOST_FACTS_INSTRUCTION = (
+    " Your HOME may be a scoped native-state home your engine selected rather than the "
+    "operator's; when present, CLAUDEXOR_OPERATOR_HOME names the operator's home and "
+    "PLAYWRIGHT_BROWSERS_PATH the operator's existing browser cache."
+)
+
 UNPROVEN_BOUNDARY_INSTRUCTION = (
     " An OS-enforced filesystem boundary was REQUESTED for this run but is NOT guaranteed: "
     "your engine applies one only where it has a mechanism for this host, and your host "

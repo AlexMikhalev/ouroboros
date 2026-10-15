@@ -30,7 +30,7 @@ from ouroboros.server_auth import (
 from ouroboros.server_entrypoint import (ServerAdmissionRefused, admit_data_root, bound_service_socket,
                                          find_free_port, parse_server_args, reserved_service_ports, write_port_file)
 from ouroboros.launcher_bootstrap import automatic_launch_allowed
-from ouroboros import body_adoption, store_switch
+from ouroboros import body_adoption, process_scope, store_switch
 from ouroboros.server_web import ServedUI
 from ouroboros.config import resolve_port_file
 from ouroboros.process_logging import configure_process_logging
@@ -828,13 +828,10 @@ def _run_supervisor(settings: dict) -> None:
             # readers (history backfill, SSE replay, api_logs_tail, TB ATIF) are
             # archive-chain-aware.
             rotate_jsonl_log_if_needed(DATA_DIR, "progress.jsonl", "progress")
-            # CPL4-C1..C4 rotation train: the remaining unbounded hot logs rotate
-            # on the same tick with the same rotator. events.jsonl went LAST
-            # behind chain-aware custody readers (the store import's custody fold,
-            # legacy usage import, swarm rollup, worker boot verify) — rows keep
-            # replaying from archive/events_*.jsonl; tools/supervisor/
-            # task_reflections readers are tail-bounded and archive-backfilled
-            # (memory.read_jsonl_tail, api_logs_tail).
+            # CPL4-C1..C4 rotation train: the remaining unbounded hot logs rotate on the same tick with the same rotator.
+            # events.jsonl went LAST behind chain-aware custody readers (the store import's custody fold, legacy usage
+            # import, swarm rollup, worker boot verify) — rows keep replaying from archive/events_*.jsonl; tools/supervisor/
+            # task_reflections readers are tail-bounded and archive-backfilled (memory.read_jsonl_tail, api_logs_tail).
             rotate_jsonl_log_if_needed(DATA_DIR, "events.jsonl", "events")
             rotate_jsonl_log_if_needed(DATA_DIR, "tools.jsonl", "tools")
             rotate_jsonl_log_if_needed(DATA_DIR, "supervisor.jsonl", "supervisor")
@@ -1284,6 +1281,7 @@ async def lifespan(app):
     )
     if not pytest_default_real_data_dir:  # an imported ASGI app is admitted here; main() already was
         admit_data_root(lifespan_drive_root)
+        process_scope.initialize_installation_scope(lifespan_drive_root)  # idempotent after main(); first for an imported app
     _event_loop = asyncio.get_running_loop()
     _set_ws_event_loop(_event_loop)
     ws_heartbeat_task = asyncio.create_task(
@@ -1666,6 +1664,8 @@ def main() -> int:
             return 2
     # Sole server.log writer; tests on the real default data root retain only the stream handler.
     configure_process_logging(drive_logs=None if _pytest_default_real_data_dir else DATA_DIR / "logs")
+    if not _pytest_default_real_data_dir:  # a pending Panic sweep ends and the installation marker is planted before any child (§9)
+        process_scope.initialize_installation_scope(DATA_DIR)
     if not automatic_launch_allowed(os.environ.get("OUROBOROS_LAUNCH_INTENT", "owner"), DATA_DIR, log):
         return 0
     # Verify a benchmark parent's exact integrity pin before resolving the saved bind host;

@@ -25,15 +25,17 @@ Nothing a seat changes is applied anywhere. When its run is terminal,
 changed files, same-stat ones compared by content, and typed entry metadata for a
 folder) and the reviewer's files under ``.review-evidence/``, with no byte bound
 (investigations pass their own). A path it cannot list or read leaves it incomplete.
-A completed capture may release a one-shot copy only when its caller has observed,
-in the exact run's daemon detail, normal success or a failure whose engine process
-scope settled; thread copies remain at their bound path and refresh after such a
-capture. An incomplete capture keeps the copy and names the gap. Git's inventory
-omits untracked special entries and ignored outputs outside ``.review-evidence/``;
-the latter are listed, not retained.
-Frozen ``.review-drive`` inputs are excluded too: reviewer edits there are not kept.
-Unbounded capture can increase peak storage and delay the answer; a full volume
-leaves failed generations beside the copy. A full-access copy is not an OS sandbox.
+A completed capture may release a one-shot copy only when
+the copy-use policy for the exact run's daemon detail permits it
+(``checking_copy_release``: eligible success or an explicitly settled failure;
+the weaker census-less permission applies to success only); thread copies remain at their bound path and refresh only after
+such a capture. ``refresh_safe`` records that permission, never proof that writers
+ended. An incomplete capture keeps the copy and names the gap. Git's inventory omits
+untracked special entries and ignored outputs outside ``.review-evidence/``; the latter
+are listed, not retained. Frozen ``.review-drive`` inputs are excluded too: reviewer
+edits there are not kept. Unbounded capture can increase peak storage and delay the
+answer; a full volume leaves failed generations beside the copy. A full-access copy is
+not an OS sandbox.
 """
 
 from __future__ import annotations
@@ -47,7 +49,7 @@ import shutil
 import stat
 import subprocess
 import uuid
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 from ouroboros.utils import atomic_write_json, utc_now_iso
 
@@ -60,6 +62,9 @@ _IGNORED_EVIDENCE_DIRS = (".review-drive",)
 # copy. Reviewer seats keep whole outputs: their copy goes only after its delta is kept.
 EVIDENCE_RETAIN_BYTES = 64 * 1024 * 1024
 SUBJECT_INDEX, SUBJECT_WORKTREE = "index", "worktree"
+# The owner's Windows choice (quiz b532d214, 2026-10-13): a copy keeps working where the
+# engine has no census, with the incomplete cleanup disclosed. Weaker than settled.
+RELEASE_WITHOUT_CENSUS = "unsupported_census_compatibility"
 
 
 class CheckingAreaUnavailable(RuntimeError):
@@ -590,39 +595,76 @@ def _capture_directory(home: pathlib.Path, marker: Mapping[str, Any]) -> pathlib
     return home / (f"evidence-{capture_id}" if capture_id else "evidence")
 
 
-def checking_writers_settled(detail: Mapping[str, Any]) -> bool:
-    """Whether the exact GET /v2/runs/:id detail permits capture then refresh.
+def checking_copy_release(detail: Mapping[str, Any]) -> Union[bool, str]:
+    """The copy-use POLICY for the exact GET /v2/runs/:id detail: may a complete capture
+    release a one-shot copy or refresh a thread copy? ``True``, ``False``, or the weaker
+    ``RELEASE_WITHOUT_CENSUS``.
 
     The daemon persists normal success after awaiting the runner, including
     adapter completion and cleanup. Early answers/runFacts and generic terminal
     states do not establish this boundary. No universal native exit code is
     required: Codex's ordinary app-server teardown deliberately stops its process.
-    A failed, cancelled or interrupted run has no such boundary: only the engine's
-    own ``summary.processScope`` with ``settled: true`` proves its writers ended
-    (owner choice, 2026-10-14). An absent, null or unsettled scope keeps the
-    copy, as do nonterminal and unobserved runs. This covers
-    engine-owned writers, not arbitrary detached processes or OS containment.
+    This covers engine-owned writers, not arbitrary detached processes or OS
+    containment, so not even ``True`` proves that every writer ended. Failed,
+    cancelled or interrupted runs require the engine's literal ``processScope.settled:
+    true``. Absent, null or unsettled failure scopes and unobserved runs keep their copies.
+
+    An engine that settles a run's process scope always projects ``summary.processScope``
+    into the detail: the compact outcome (``{settled, coverage, completeness, census,
+    survivors, unreadable}``), or an explicit ``null`` when it has no readable record of
+    the run (its write or parse failed, or the run predates the projection). The key
+    decides on success: absent is an engine older than the projection, so the legacy boundary stands;
+    ``null`` or an invalid value is unknown, and an outcome releases only when SETTLED
+    (every member ended or confirmed gone). The one unsettled exception is the engine's
+    answer where no census exists (Windows): ``census: unsupported``, ``coverage:
+    tree_only``, ``completeness: not_provable``, ``settled: false``, zero survivors and
+    zero unreadable. On success it answers ``RELEASE_WITHOUT_CENSUS``, the owner's compatibility
+    choice: copies keep working as before the projection, and the receipt names that
+    basis beside the engine's facts, kept verbatim. A detached leftover may still write
+    into a released copy. Other unknown or unsettled outcomes keep the copy
+    (survivors may still write into it) while its evidence is captured and the review
+    verdict kept and delivered unchanged; nothing here starts another review. A run that
+    succeeded before an engine upgrade but is first captured after it therefore keeps its
+    copy, and a thread seat refuses its next turn; a receipt captured earlier is reused as
+    stored.
     """
     summary = detail.get("summary")
     if not isinstance(summary, Mapping):
         return False
-    if summary.get("state") == "succeeded":
+    if summary.get("state") != "succeeded":
+        scope = summary.get("processScope")
+        # A tuple compares malformed (even unhashable) states without raising.
+        return (summary.get("state") in ("failed", "cancelled", "interrupted")
+                and isinstance(scope, Mapping) and scope.get("settled") is True)
+    if "processScope" not in summary:  # never .get(): it cannot tell absent from null
         return True
-    scope = summary.get("processScope")
-    # A tuple compares a malformed (even unhashable) state instead of raising.
-    return (summary.get("state") in ("failed", "cancelled", "interrupted")
-            and isinstance(scope, Mapping) and scope.get("settled") is True)
+    scope = summary["processScope"]
+    if not isinstance(scope, Mapping):
+        return False
+    if scope.get("settled") is True:
+        return True
+    return RELEASE_WITHOUT_CENSUS if _census_unsupported(scope) else False
+
+
+def _census_unsupported(scope: Mapping[str, Any]) -> bool:
+    """Exactly the engine's census-less outcome: nothing read, nothing counted alive."""
+    return (scope.get("census") == "unsupported" and scope.get("coverage") == "tree_only"
+            and scope.get("completeness") == "not_provable" and scope.get("settled") is False
+            and all(type(scope.get(key)) is int and scope.get(key) == 0 for key in ("survivors", "unreadable")))
 
 
 def capture_seat_evidence(data_root: Any, task_id: str, operation_id: str, *,
-                          release: bool = False) -> Dict[str, Any]:
+                          release: Union[bool, str] = False,
+                          process_scope: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     """Retain one terminal seat's changes as evidence, then remove its copy.
 
-    By default the copy is retained. Normal run consumers request release using
-    ``checking_writers_settled`` on the exact run detail. A thread
-    copy is always retained; each operation has its own immutable evidence store.
-    Never raises: a capture that could not complete keeps the copy (recoverable)
-    and returns the gap; ``{}`` means this operation had no checking copy.
+    By default the copy is retained. Normal run consumers pass ``checking_copy_release``
+    of the exact run detail as ``release``; under ``RELEASE_WITHOUT_CENSUS`` a complete
+    capture's new receipt names that basis (``release_basis``) beside the engine's
+    compact ``process_scope``, verbatim. A thread copy is always retained; each operation has
+    its own immutable evidence store. Never raises: a capture that could not complete
+    keeps the copy (recoverable) and returns the gap; ``{}`` means this operation had
+    no checking copy.
     """
     home = seat_dir(data_root, task_id, operation_id)
     area, evidence = home / "area", home / "evidence"
@@ -696,6 +738,9 @@ def capture_seat_evidence(data_root: Any, task_id: str, operation_id: str, *,
             summary["error"] = "; ".join(errors)
         summary["area"] = str(area)
         summary["refresh_safe"] = bool(thread_seat and release and not gaps and not errors)
+        if release == RELEASE_WITHOUT_CENSUS and not gaps and not errors:  # permission, not proof: settled stays false
+            summary.update(release_basis=RELEASE_WITHOUT_CENSUS,
+                           process_scope=dict(process_scope) if isinstance(process_scope, Mapping) else None)
         if not release:
             summary["retention_reason"] = "writer_quiescence_unverified"
         atomic_write_json(evidence / "summary.json", summary)
@@ -730,7 +775,8 @@ def thread_seat_area(data_root: Any, task_id: str, seat: str, source: Mapping[st
     The engine binds this exact root at creation. No synthetic commits or engine
     worktrees: HEAD, index, working bytes and ignored inputs remain host-owned.
     Refresh is allowed only after the preceding operation's complete capture
-    and settled writers (``checking_writers_settled``). Recovery of that operation reuses it.
+    under a copy-use policy that permits it (``refresh_safe``). Recovery of that
+    operation reuses it.
     """
     home = seat_dir(data_root, task_id, f"thread:{seat}")
     area = home / "area"
@@ -757,7 +803,8 @@ def thread_seat_area(data_root: Any, task_id: str, seat: str, source: Mapping[st
             except (OSError, ValueError):
                 captured = {}
             if not previous_op or captured.get("status") != "retained" or not captured.get("refresh_safe"):
-                raise CheckingAreaUnavailable("previous thread turn has no complete, quiescent evidence capture; copy retained")
+                raise CheckingAreaUnavailable("previous thread turn has no complete evidence capture that permits "
+                                              "a refresh; copy retained")
     staging = home / f".next-{uuid.uuid4().hex}"
     home.mkdir(parents=True, exist_ok=True)
     try:
@@ -897,16 +944,17 @@ def wave_checking_source(session_root: Any, slots: Any, *, data_root: Any,
 
 def terminal_seat_evidence(data_root: Any, task_id: str, operation_id: str,
                            detail: Any) -> Dict[str, Any]:
-    """Capture only an observed terminal; release only once its writers settled.
+    """Capture only an observed terminal; release only as ``checking_copy_release``
+    permits for the exact detail.
 
-    Normal results and timeout/interaction cancellation receipts share this
-    boundary. An unknown writer retains its original copy even when a terminal
-    failure supplies enough evidence to capture its current contents; a later
-    settled read recaptures into a new generation before release.
+    Normal results, attach-only collection and timeout/interaction cancellation
+    receipts share this boundary. An unknown writer retains its original copy even
+    when a terminal failure supplies enough evidence to capture its current contents;
+    a later settled read recaptures into a new generation before release.
     """
     from ouroboros.delegate_custody import is_terminal
 
     if not isinstance(detail, dict) or not is_terminal(detail):
         return {}
-    return capture_seat_evidence(data_root, task_id, operation_id,
-                                 release=checking_writers_settled(detail))
+    return capture_seat_evidence(data_root, task_id, operation_id, release=checking_copy_release(detail),
+                                 process_scope=detail["summary"].get("processScope"))

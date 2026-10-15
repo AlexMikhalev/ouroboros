@@ -627,7 +627,7 @@ class TestOrphanReconciliation:
         assert custody.open_snapshot_ids(data) == {"inv-lost"}
 
         outcomes = custody.reconcile_orphaned_runs(
-            data, set(), gateway_factory=lambda: _TerminalSweepGateway("run-rec"))
+            data, set(), gateway_factory=lambda: _TerminalSweepGateway("run-rec"), replay_pending=lambda: True)
         custody._CUSTODY.clear()
         assert [o["action"] for o in outcomes] == ["settle_attempted"]
         assert outcomes[0]["settled"] is True

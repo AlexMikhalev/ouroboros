@@ -46,6 +46,17 @@ def _tracked_subprocess_run(cmd, **kwargs):
         kwargs.setdefault("errors", "replace")
     kwargs.setdefault("stdin", subprocess.DEVNULL)
     kwargs.update(subprocess_new_group_kwargs())
+    from ouroboros.process_scope import record_task_group, scoped_child_env, task_launch_target
+    from ouroboros.tool_custody import invocation_binding
+
+    binding = invocation_binding()
+    target = task_launch_target(binding)
+    if target is not None:
+        # The task scope marker rides THIS launch's env only (never os.environ): the
+        # child and whatever it leaves behind belong to the task until the task ends
+        # (DEVELOPMENT "Process Custody Rule"); the command's own process group is
+        # recorded below, which is what reaches a platform binary on macOS.
+        kwargs["env"] = scoped_child_env(kwargs["env"] if kwargs.get("env") is not None else os.environ, target)
     from ouroboros.tool_custody import external_handoff
     confirmed = external_handoff("shell_process")
     proc = None
@@ -62,9 +73,9 @@ def _tracked_subprocess_run(cmd, **kwargs):
                 exc.process_not_started = True
                 raise
         _active_subprocesses.add(proc)  # publish before the spawning owner can exit
-        from ouroboros.tool_custody import invocation_binding
         from ouroboros.workspace_executor import _register_process
-        binding = invocation_binding()
+        if target is not None:  # task scope only; the foreground receipt keeps its own condition below
+            record_task_group(*target, proc.pid)
         if binding.get("drive_root") and binding.get("task_id"):
             record_path = _register_process(pathlib.Path(binding["drive_root"]), {
                 "record_type": "foreground", "executor_type": "local", "executor_id": "host",

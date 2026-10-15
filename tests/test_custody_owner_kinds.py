@@ -135,7 +135,7 @@ def test_only_the_tasks_own_delegation_is_its_delegation(
                 pytest.fail("a review panel rejoins its own invocation")
 
         outcomes = dc.reconcile_orphaned_runs(
-            tmp_path, set(), gateway_factory=_NeverStarts)
+            tmp_path, set(), gateway_factory=_NeverStarts, replay_pending=lambda: True)
         # The periodic sweep leaves the panel's invocation to its panel: no outcome, still pending.
         assert [row for row in outcomes if row.get("invocation_id")] == []
         assert "inv-review" in {record["invocation_id"] for record in dc.pending_invocations(tmp_path)}

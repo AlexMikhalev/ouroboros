@@ -906,7 +906,7 @@ stop all agent processes. The `/panic` command and Panic Stop button
 guarantee:
 
 - ALL worker processes are killed (SIGKILL)
-- ALL subprocess trees are killed (process group kill)
+- ALL processes started for Ouroboros's work are killed by measured identity, or disclosed as unconfirmed
 - Background consciousness is stopped
 - Evolution mode is disabled
 - Auto-resume is disabled

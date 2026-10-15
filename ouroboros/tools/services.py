@@ -547,7 +547,19 @@ def _start_service(
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{service_name}.log"
 
+    from ouroboros.owner_pause import _member_coordinates
+    from ouroboros.process_scope import record_task_group, scoped_child_env, task_launch_target
+    from ouroboros.tool_custody import invocation_binding
+
+    # A task-scoped service belongs to the task (task marker, group recorded); a keep /
+    # session service is handed to the installation and sheds every task marker.
+    scope_root, _, scope_task = _member_coordinates(ctx)
+    scope_target = None if keep_alive else task_launch_target(
+        invocation_binding(), drive_root=scope_root, task_id=scope_task)
+
     def publish_process(proc):
+        if scope_target is not None:
+            record_task_group(*scope_target, proc.pid)
         record = ServiceRecord(
             name=service_name,
             service_id=key,
@@ -601,7 +613,8 @@ def _start_service(
             # The attested emergency bundled-node PATH prepend (post-gates
             # node resolver) applies on top of the allowlisted service env;
             # a healthy resolution leaves the env byte-identical.
-            env=overlay_env(apply_env_path_prepend(service_base_env, active_node_resolution(ctx)), env),
+            env=scoped_child_env(
+                overlay_env(apply_env_path_prepend(service_base_env, active_node_resolution(ctx)), env), scope_target),
         )
         log_fh.close()
     except OwnerPauseRefused as exc:
