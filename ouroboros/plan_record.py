@@ -353,8 +353,12 @@ def engaged(record: Mapping[str, Any]) -> bool:
 
 
 def unroutable_asks(record: Mapping[str, Any]) -> int:
-    """How many asks the mind made that no route could take (recorded attempts, nobody called)."""
-    return len(record.get("attempts") or [])
+    """How many asks the mind made that reached nobody: the recorded attempts (refused before any
+    row was written) plus the recorded asks whose every participant was refused before dispatch
+    or lost to a dispatch failure — asked, but no reviewer reached."""
+    refused = sum(1 for ask in record.get("asks") or []
+                  if ask.get("participants") and not any(p.get("dispatched") for p in ask["participants"]))
+    return len(record.get("attempts") or []) + refused
 
 
 # ------------------------------------------------------------------ gate
@@ -407,8 +411,8 @@ def gate_projection(record: Mapping[str, Any], *, enforcement: str, cyber_pro: b
     elif unreadable:
         status, allow = "unreadable", False  # a gate that cannot read its authority is engaged, not absent
     elif force_plan and dispatched == 0:
-        # Blocking holds while the mind never asked; an ask no route could take (a recorded
-        # attempt) is disclosed, not held — outages never hold. Advisory and the owner's hurry
+        # Blocking holds while the mind never asked; an ask that reached nobody (a recorded attempt,
+        # or an ask whose every seat was refused) is disclosed, not held — outages never hold. Advisory and the owner's hurry
         # never hold a plan that exists; a task that wrote no plan at all is still held to write
         # one (the Swarm admitted it on that condition).
         tried = engaged(record) or legacy_engaged

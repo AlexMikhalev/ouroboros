@@ -547,7 +547,10 @@ def reply_facts_from_row(row: Mapping[str, Any]) -> Dict[str, Any]:
     }
     state = str(row.get("operation_state") or "settled")
     if state == "not_dispatched":
-        facts.update(status="not_dispatched", not_dispatched_reason=str(row.get("error") or "not dispatched"))
+        # A typed $0 refusal before the paid boundary (a spent window, a dead route, the deadline before
+        # the first send): the seat never reached a reviewer, so the dispatch flag the barrier wrote is
+        # withdrawn here — the one conversion both the barrier rows and a late settlement pass through.
+        facts.update(status="not_dispatched", not_dispatched_reason=str(row.get("error") or "not dispatched"), dispatched=False)
     elif row.get("late_result_pending") or state in {"pending_dispatch", "in_flight", "custody_lost"}:
         facts.update(status="pending", unresolved=state == "custody_lost")
     elif row.get("error"):

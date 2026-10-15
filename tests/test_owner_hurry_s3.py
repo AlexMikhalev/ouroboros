@@ -509,7 +509,7 @@ def _plan_record(kind: str) -> dict:
     ("kind", "hurry_allows"),
     [
         ("held", True), ("awaiting", True),        # locally advisory / proceed
-        ("unsent", True),                          # a plan that reached nobody: unmet, disclosed, released by the hurry
+        ("unsent", True),                          # an ask that reached nobody: attempted, disclosed, never held (scope R1 F1)
         ("absent", False),                         # no plan at all: the Swarm admitted the task to write one — held
     ],
 )
@@ -534,12 +534,13 @@ def test_enforce_swarm_actions_task_local_advisory_matrix(tmp_path, monkeypatch,
         # Attribution rides the decision for the task detail.
         assert decision["owner_hurry_local_advisory"] is True
         assert decision["configured_enforcement"] == "blocking"
-    # WITHOUT the latch the same blocking install holds the held and unmet states; an
-    # ask whose answers are merely awaited never held (silence holds nothing).
+    # WITHOUT the latch the same blocking install holds the held state and the plan never
+    # written; an ask whose answers are merely awaited never held (silence holds nothing), and
+    # an ask every seat refused before dispatch is attempted — disclosed, not held (outages never hold).
     unlatched_ctx = _acceptance_ctx(tmp_path, latched=False)
     unlatched_ctx.task_metadata = {"force_plan": True}
     held_unlatched, _t = _swarm_held(unlatched_ctx)
-    assert held_unlatched is (kind != "awaiting")
+    assert held_unlatched is (kind in ("held", "absent"))
     # Durable review state was never touched (the monkeypatched loader is the
     # only read; nothing wrote a plan record).
     assert not (tmp_path / "task_results").exists() or "plan_record" not in json.dumps(
