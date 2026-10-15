@@ -12,12 +12,15 @@ from __future__ import annotations
 from dataclasses import asdict
 from types import SimpleNamespace
 
+import pytest
+
 from ouroboros import owner_hurry as oh
 from ouroboros import plan_record, review_operation
 from ouroboros.observability import persist_call
 from ouroboros.review_dispatch import review_operation_binding, review_reconciliation_identity
 from ouroboros.review_records import ReviewActorRecord
 from ouroboros.tools import plan_review as pr
+from tests._review_session_route_shared import fake_route  # noqa: F401 - pytest fixture (the offline delegated route)
 from tests.test_plan_task_tool import CLEAN, _call, _record, _reply, _slots, _write, harness as _harness
 
 harness = _harness  # noqa: F811 - pytest fixture re-export
@@ -207,3 +210,66 @@ def test_a_v2_wave_still_owed_at_upgrade_reaches_the_author_as_history_without_w
     assert sub.calls == [], "nothing was sent"
     legacy, _error = plan_record.legacy_facts(harness.drive, "task-1")
     assert legacy["done_when"] == [] and legacy["open_objections"] == [], "history creates no claim and no objection"
+
+
+# ---------------------------------------------------------------- the organ leg of 03 P2: a refusal before the paid stamp never reached a reviewer
+
+def _fail(message):
+    def raise_error(*args, **kwargs):
+        raise OSError(message)
+    return raise_error
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("stage", ["gateway", "source", "checking", "budget"])
+def test_a_refusal_raised_before_the_paid_stamp_is_never_a_reached_reviewer_on_the_organ(tmp_path, monkeypatch, fake_route, stage):  # noqa: F811
+    """03 P2's organ leg, after M1–M4: the gateway, source, checking and budget refusals used to
+    settle as a performed-but-failed seat (live) and recover as UNKNOWN (cold), so a Swarm
+    force_plan counted them as a reached reviewer. Both readings are now the positive
+    not_dispatched; the organ's facts withdraw the dispatch flag; the record reads the ask as
+    attempted — disclosed, never held — and never as reached."""
+    from dataclasses import replace
+
+    from ouroboros import acceptance_retrieving, budget_pause, review_checking, review_execution, review_substrate, subagents
+    from ouroboros.tools.plan_ask import reply_facts_from_row
+    from ouroboros.tools.plan_review_runtime import _plan_row_from_actor
+    from tests._review_session_route_shared import FakeLLM, _agent_request, _agent_slot
+
+    request = _agent_request(task_id="presend", task_attempt=1, retry_key="one-review", session_root=str(tmp_path),
+                             session_task="Weigh the plan.")
+    slot = _agent_slot(session_access="readonly")
+    if stage == "gateway":
+        monkeypatch.setattr("ouroboros.claudexor_daemon.ensure_owned_gateway", _fail("gateway unavailable"))
+    elif stage == "source":
+        monkeypatch.setattr(acceptance_retrieving, "prepare_session_source", _fail("source unavailable"))
+    elif stage == "checking":
+        slot = replace(slot, session_access="workspace_write")
+        monkeypatch.setattr(review_checking, "session_checking", _fail("checking unavailable"))
+        monkeypatch.setattr(subagents, "route_health", lambda *a, **k: ("", ""))
+    else:
+        monkeypatch.setattr(budget_pause, "dispatch_fenced", lambda *_: True)
+    stamps = []
+    monkeypatch.setattr(review_execution, "invoke_review_paid_stamp", lambda stamp: stamps.append("paid"))
+    ctx = SimpleNamespace(task_id="presend", root_task_id="presend", task_attempt=1, task_metadata={}, drive_root=tmp_path,
+                          budget_drive_root=tmp_path)
+    result = review_substrate.run_review_request(request, slots=[slot], drive_root=tmp_path, llm=FakeLLM(), usage_ctx=ctx)
+    row = asdict(result.actors[0]) if not isinstance(result.actors[0], dict) else result.actors[0]
+    assert stamps == [] and row["operation_state"] == "not_dispatched", "nothing was paid; the refusal is positive"
+    original, original_slot = review_operation.recorded_review_assignment(
+        tmp_path, task_id="presend", surface=request.surface, row=row, retry_key="one-review")
+    recovered = review_operation.recover_review_producer(tmp_path, original, original_slot, row)
+    assert recovered.operation_state == "not_dispatched" and sum(len(g.start_requests) for g in fake_route.instances) == 0
+    live, cold = reply_facts_from_row(_plan_row_from_actor(row, slot)), reply_facts_from_row(_plan_row_from_actor(asdict(recovered), original_slot))
+    for facts in (live, cold):
+        assert facts["status"] == "not_dispatched" and facts["dispatched"] is False and facts["not_dispatched_reason"]
+    seat = {"seat_id": slot.slot_id, "model": slot.model, "route": "agent_session", "owner_marked": True, "dispatched": True,
+            "status": "pending", **cold}
+    record = {**plan_record.empty_record(), "revisions": [{"n": 1, "ts": "t", "goal": "g", "plan": "p", "done_when": [],
+                                                           "affected_paths": [], "body": False, "content_sha256": "0" * 64}],
+              "asks": [{"ask_id": "a1", "ts": "t", "revision": 1, "message": "", "participants": [seat]}]}
+    assert plan_record.asks_dispatched(record) == 0 and plan_record.unroutable_asks(record) == 1
+    gate = plan_record.gate_projection(record, enforcement="blocking", cyber_pro=False, hurry=False, force_plan=True)
+    assert gate["status"] == "force_plan_unmet" and gate["allow"] is True and gate["force_plan_met"] is False
+    # The other direction: a seat that WAS dispatched and merely pending keeps the ask reached.
+    reached = {**record, "asks": [{**record["asks"][0], "participants": [{**seat, "status": "pending", "dispatched": True}]}]}
+    assert plan_record.asks_dispatched(reached) == 1 and plan_record.unroutable_asks(reached) == 0
