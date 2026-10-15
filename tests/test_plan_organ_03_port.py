@@ -9,6 +9,9 @@ here writes the same records the real coordinator writes).
 """
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from dataclasses import asdict
 from types import SimpleNamespace
 
@@ -273,3 +276,109 @@ def test_a_refusal_raised_before_the_paid_stamp_is_never_a_reached_reviewer_on_t
     # The other direction: a seat that WAS dispatched and merely pending keeps the ask reached.
     reached = {**record, "asks": [{**record["asks"][0], "participants": [{**seat, "status": "pending", "dispatched": True}]}]}
     assert plan_record.asks_dispatched(reached) == 1 and plan_record.unroutable_asks(reached) == 0
+
+
+# ---------------------------------------------------------------- the rebinding matrix: collection reads the send-time identity
+
+CHANGES = ["none", "prepare_before", "path", "attempt", "both", "deleted_workspace"]
+ENTRIES = ["read", "identical", "gate"]
+
+
+def _git_baseline(repo):
+    env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_AUTHOR_NAME": "Fixture",
+           "GIT_AUTHOR_EMAIL": "fixture@invalid", "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@invalid"}
+    for args in (["init", "-q"], ["add", "."], ["commit", "-qm", "fixture baseline"]):
+        subprocess.run(["git", *args], cwd=repo, env=env, check=True, capture_output=True)
+
+
+def _cold(harness, ctx):
+    """A new ToolContext (another process: no in-memory custody) carrying today's roots and attempt."""
+    cold = harness.make_ctx()
+    for attr in ("repo_dir", "system_repo_dir", "serving_repo_dir", "task_attempt"):
+        if getattr(ctx, attr, None) is not None:
+            setattr(cold, attr, getattr(ctx, attr))
+    return cold
+
+
+@pytest.mark.parametrize(("change", "entry"), [(change, entry) for change in CHANGES for entry in ENTRIES
+                                               if (change, entry) != ("deleted_workspace", "identical")])
+def test_collection_reads_the_send_time_identity_whatever_changed_since(harness, change, entry):
+    """03's rebinding matrix on the organ: the author's roots moved (a body candidate prepared
+    before or after the ask), the attempt changed, both, or the workspace is gone — the free READ,
+    an identical write followed by the READ, and the gate pre-collection all settle the paid
+    answers from the send-time record (operation and binding unchanged) and never send again."""
+    from ouroboros import body_candidate, subagent_worktrees
+
+    harness.state["slots"] = _slots(("s1", "m/a"), ("s2", "m/b"), ("s3", "m/c"))
+    harness.monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    harness.monkeypatch.setattr(subagent_worktrees, "get_subagent_worktree_root", lambda: str(harness.system.parent / "candidates"))
+    _git_baseline(harness.system)
+    barrier = _install(harness, _Barrier(harness.drive, pending={"s1", "s2", "s3"}))
+    ctx = harness.make_ctx()
+    if change == "prepare_before":
+        body_candidate.prepare(ctx)
+    _write(ctx, ask="council")
+    assert barrier.calls == [["s1", "s2", "s3"]] and all(p["status"] == "pending" for p in _rows(harness).values())
+    send_time = {seat: review_operation_binding(*barrier.sent[seat]) for seat in ("s1", "s2", "s3")}
+    for seat in ("s1", "s2", "s3"):  # the producers complete after the author moved on
+        _complete_producer(harness.drive, *barrier.sent[seat], _reply(f"{seat} answered after the author moved on."))
+    if change in {"path", "both"}:
+        body_candidate.prepare(ctx)
+    if change in {"attempt", "both"}:
+        ctx.task_attempt = 2
+    if change == "deleted_workspace":
+        shutil.rmtree(harness.workspace)  # only this disposable fixture's input
+    cold = _cold(harness, ctx)
+    if entry == "identical":
+        text, result = _write(cold)  # identical content: nothing recorded, nothing sent
+        assert "Identical content" in text and result.meta["plan_effect"] == "write" and barrier.calls == [["s1", "s2", "s3"]]
+        text, _result = _call(cold)
+    elif entry == "gate":
+        decision = oh.force_plan_decision(cold, {}, enforcement="blocking")
+        assert decision["status"] == "clear" and decision["pending_asks"] == [] and decision["unknown_outcome"] == []
+    else:
+        text, _result = _call(cold)
+    if entry != "gate":
+        assert "s2 answered after the author moved on." in text
+    rows = _rows(harness)
+    assert {seat: row["status"] for seat, row in rows.items()} == {"s1": "answered", "s2": "answered", "s3": "answered"}
+    assert {seat: row["operation_id"] for seat, row in rows.items()} == {seat: barrier.sent[seat][2] for seat in rows}
+    assert {seat: row["recovery_binding"] for seat, row in rows.items()} == send_time, "the send-time binding, never today's"
+    assert barrier.calls == [["s1", "s2", "s3"]], "collection never sends"
+    record = _record(harness)
+    assert len(record["asks"]) == 1 and len(record["revisions"]) == 1
+
+
+def test_a_missing_original_assignment_keeps_that_seat_unknown_and_the_other_answers(harness):
+    from ouroboros.observability import call_manifest_path
+
+    harness.state["slots"] = _slots(("s1", "m/a"), ("s2", "m/b"), ("s3", "m/c"))
+    barrier = _install(harness, _Barrier(harness.drive, pending={"s1", "s2", "s3"}))
+    ctx = harness.make_ctx()
+    _write(ctx, ask="council")
+    for seat in ("s1", "s2", "s3"):
+        _complete_producer(harness.drive, *barrier.sent[seat], CLEAN)
+    call_manifest_path(harness.drive, "task-1", barrier.sent["s1"][2] + "_prompt").unlink()
+    cold = harness.make_ctx()
+    cold.task_attempt = 2
+    text, _result = _call(cold)
+    rows = _rows(harness)
+    assert rows["s1"]["status"] == "pending" and rows["s1"]["unresolved"] is True
+    assert "Original review assignment unavailable" in rows["s1"]["error"] and rows["s1"]["operation_id"] == barrier.sent["s1"][2]
+    assert rows["s2"]["status"] == "answered" and rows["s3"]["status"] == "answered" and barrier.calls == [["s1", "s2", "s3"]]
+    assert "s1 (m/a): pending — outcome unknown" in text
+    # Every original assignment missing: nothing settles, nothing re-binds, nothing is re-sent.
+    other = harness.make_ctx(task_id="task-2", force_plan=True)
+    _write(other, ask="council")
+    for seat in ("s1", "s2", "s3"):
+        _complete_producer(harness.drive, *barrier.sent[seat], CLEAN)
+        call_manifest_path(harness.drive, "task-2", barrier.sent[seat][2] + "_prompt").unlink()
+    cold = harness.make_ctx(task_id="task-2", force_plan=True)
+    cold.task_attempt = 2
+    decision = oh.force_plan_decision(cold, {}, enforcement="blocking")
+    rows = _rows(harness, "task-2")
+    assert all(row["status"] == "pending" and row["unresolved"] is True for row in rows.values())
+    assert {seat: row["operation_id"] for seat, row in rows.items()} == {seat: barrier.sent[seat][2] for seat in rows}
+    assert decision["status"] == "awaiting" and decision["allow"] is True and decision["unknown_outcome"] == ["a1"]
+    assert decision["force_plan_met"] is True, "the ask was handed off; an unknown outcome is never 'nobody reached'"
+    assert barrier.calls == [["s1", "s2", "s3"], ["s1", "s2", "s3"]]
