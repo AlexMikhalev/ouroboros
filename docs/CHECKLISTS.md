@@ -1020,8 +1020,8 @@ Answer in the reply contract delivered beside this section (`PLAN_REPLY_CONTRACT
 the reply's form and of who withdraws what. Adjudicate your own open objections first: withdraw each
 with why (the change or the answer removed the defect, or you were wrong), or restate what is still
 missing. A reformulation of an earlier objection is not a new one, and a new objection on a revision
-you saw before says why it was invisible then. An answer with no objection is legitimate. Nobody
-votes, and whether an open objection holds is the host's fact, not part of your judgment.
+you saw before says why it was invisible then. An answer with no objection is legitimate.
+Nobody votes, and whether an open objection holds is the host's fact, not part of your judgment.
 
 ### Rules for reviewers
 
