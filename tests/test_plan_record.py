@@ -457,6 +457,50 @@ def test_record_history_names_a_reply_without_a_retained_source_and_shows_its_ty
     assert history["decision_rows"][0]["source"] is None
 
 
+def test_an_objection_with_a_retained_source_is_a_bound_decision_notes_and_groups_address(tmp_path):
+    """An organ objection row is a source-bound decision of the review-history views: an open one
+    takes an actor's note (the view shows the account, the history it came from is untouched) but
+    is never grouped; a withdrawn one groups; a row whose reply kept no source stays full."""
+    from ouroboros.review_ledger import retain_text_source
+    from ouroboros.review_history_view import decision_entries, project_decision_groups, project_decision_notes
+
+    record, _raw = _answered_record(tmp_path, "task-n", objections=[{"id": "o1", "text": "no export"},
+                                                                    {"id": "o2", "text": "no title slide"}])
+    raw = json.dumps({"prose": "title added", "objections": [], "withdrawn": [{"id": "o2", "why": "added a title"}]})
+    reply, _ = pr.parse_reply(raw)
+    record = pr.append_ask(tmp_path, "task-n", {"ask_id": "a2", "ts": "t2", "revision": 1, "message": "title?",
+                                                "record_id": "rec-a2", "participants": [_participant(SEAT_A)]})
+    record = pr.update_participant(tmp_path, "task-n", ask_id="a2", seat_id=SEAT_A, facts={
+        "status": "answered", "reply": reply, "reply_ref": retain_text_source(
+            tmp_path, "task-n", record_id="rec-a2", seat_id=SEAT_A, role="response", part="intention", text=raw)})
+    history = pr.record_history(tmp_path, "task-n", record)
+    entries = {e["row"]["objection_id"]: e for e in decision_entries(history)}
+    assert all(entries[oid]["bound_decision"] for oid in ("o1", "o2"))
+    assert [row["history_role"] for row in history["decision_rows"]] == ["open", "historical"]
+    assert all(row["decision_ref"].startswith("decision:") for row in history["decision_rows"])
+    before = json.loads(json.dumps(history))
+    note = {"bound_decision": entries["o1"]["bound_decision"], "remark": "Export is the open gap.",
+            "reason": "The seat still holds it; I answer it next."}
+    projected, applied, _unshortened = project_decision_notes(history, [note])
+    shown = projected["decision_rows"][entries["o1"]["index"]]
+    assert len(applied) == 1 and shown["remark"] == "Export is the open gap." and shown["authored_view"]["authorship"] == "actor"
+    assert history == before  # a view: the history it projects is never rewritten
+    group = {"bound_decisions": [entries["o2"]["bound_decision"]], "remark": "The title objection, withdrawn.",
+             "reason": "Revision 1 added the title; the raiser withdrew it."}
+    grouped, groups, gaps = project_decision_groups(history, [group], source_history=history,
+                                                    selected_source={"kind": "test", "path": "view.json"})
+    assert len(groups) == 1 and not gaps
+    assert [row["decision_kind"] for row in grouped["decision_rows"]] == ["plan_objection", "actor_history_group"]
+    _, groups, gaps = project_decision_groups(history, [{**group, "bound_decisions": [entries["o1"]["bound_decision"]]}],
+                                              source_history=history, selected_source={"kind": "test", "path": "view.json"})
+    assert not groups and gaps[0]["reason"] == "current_or_unresolved_decision_stays_explicit"
+    # Other direction: no retained source, no binding (the row stays full in every view).
+    unbound, _ = _answered_record(tmp_path, "task-u", objections=[{"id": "o1", "text": "no export"}], retained=False)
+    (entry,) = decision_entries(pr.record_history(tmp_path, "task-u", unbound))
+    assert entry["bound_decision"] is None and entry["reason"] == "unbound_or_legacy_decision"
+    assert "decision_ref" not in pr.record_history(tmp_path, "task-u", unbound)["decision_rows"][0]
+
+
 def test_plan_history_views_read_the_record_and_still_read_a_finished_v2_wave(tmp_path):
     """The context views (``current_plan_history`` → the task authority projection →
     compaction's capture) carry an organ plan, a finished earlier-schema wave, both together,

@@ -616,8 +616,13 @@ def record_history(drive_root: Any, task_id: str, record: Mapping[str, Any]) -> 
             "source": replies.get((str(objection.get("withdrawn_in") or objection.get("ask_id") or ""),
                                    str(objection.get("seat_id") or ""))),
         })
-    return {"status": "source_unavailable" if gaps else "complete", "rule": RECORD_HISTORY_RULE,
-            "rounds": rounds, "decision_rows": decision_rows, "gaps": gaps}
+    from ouroboros.review_history_view import canonical_decision_projection
+
+    # A row with a retained source is a bound decision the view addresses (an actor's note,
+    # a group of withdrawn ones); without one it stays full.
+    return canonical_decision_projection({"status": "source_unavailable" if gaps else "complete",
+                                          "rule": RECORD_HISTORY_RULE, "rounds": rounds,
+                                          "decision_rows": decision_rows, "gaps": gaps})
 
 
 # ------------------------------------------------------------------ durable index

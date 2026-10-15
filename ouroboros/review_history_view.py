@@ -150,7 +150,8 @@ def split_review_history(history: dict, *, operative_subject: Any = None) -> dic
     return {"mandatory": mandatory, "bodies": bodies}
 
 
-_DECISION_KINDS = frozenset({"plan_finding", "plan_author", "plan_closure", "review_part", "author_decision"})
+_DECISION_KINDS = frozenset({"plan_objection", "plan_finding", "plan_author", "plan_closure", "review_part",
+                             "author_decision"})
 
 
 def _decision_ref(source: Any) -> dict | None:
@@ -162,8 +163,9 @@ def _decision_ref(source: Any) -> dict | None:
 def decision_entries(history: dict) -> list[dict]:
     """Source-owned decision identities, independent of their display position.
 
-    Only the two typed history producers name these kinds. Unknown/legacy rows
-    remain full; equal prose from another source is not the same decision.
+    Only the typed history producers name these kinds (the plan record's objections,
+    earlier-schema plan waves, commit/change reviews). Unknown/legacy rows remain full;
+    equal prose from another source is not the same decision.
     """
     entries = []
     for index, row in enumerate(history.get("decision_rows") or []):
@@ -200,7 +202,11 @@ def _set_existing(value: Any, path: list, replacement: Any) -> None:
 
 
 def _decision_aliases(history: dict, entry: dict) -> list[tuple[list, Any]]:
-    """Producer-owned projections, also used to read supported legacy shapes."""
+    """Producer-owned projections, also used to read supported legacy shapes. An organ
+    objection has no structured mirror: its words live once in its own row, and the reply
+    they came from is a selectable body of its own."""
+    if entry["row"]["decision_kind"] == "plan_objection":
+        return []
     from ouroboros.tools.plan_review_artifacts import plan_decision_aliases
     from ouroboros.review_history import review_decision_aliases
     producer = plan_decision_aliases if entry["row"]["decision_kind"].startswith("plan_") else review_decision_aliases
@@ -858,6 +864,8 @@ def review_note_options(ctx: Any) -> dict:
         "decision_ref": "decision:" + _sha(entry["bound_decision"]) if entry["bound_decision"] else None,
         "groupable": bool(entry["bound_decision"] and entry["row"].get("history_role") == "historical"),
         "decision_kind": entry["row"].get("decision_kind"), "finding_id": entry["row"].get("finding_id"),
+        **({"seat_id": entry["row"].get("seat_id"), "objection_id": entry["row"].get("objection_id")}
+           if entry["row"].get("decision_kind") == "plan_objection" else {}),
         "status": {k: v for k, v in entry["row"].get("status", {}).items() if k != "rationale"}
                   if isinstance(entry["row"].get("status"), dict) else entry["row"].get("status"),
         "representation": "actor_review_note" if _sha(entry["bound_decision"]) in selected else "full",

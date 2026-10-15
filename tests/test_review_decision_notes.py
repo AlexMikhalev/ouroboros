@@ -356,3 +356,40 @@ def test_discarded_answer_uses_exact_producer_mirror_unknown_renderer_stays_full
     else:
         assert shown['rounds'][0]['verdict']['advisory_findings'] == [mirror]
         assert any(e['reason'] == 'unbound_verdict_mirror' for e in view.preserved_review_fields(history))
+
+
+def test_the_organs_objections_take_an_actor_note_and_withdrawn_ones_group_in_the_actual_view(harness):
+    """Through the real compaction tool, on a plan the organ recorded: an open objection takes
+    the actor's note (the resident index shows the account), a withdrawn one folds into the
+    actor's group, an open one is never grouped, and the plan record does not change."""
+    from ouroboros import plan_record
+    from tests.test_plan_task_tool import _call, _reply, _write
+
+    ctx = harness.make_ctx()
+    sub = harness.install({'s1': _reply('Two gaps.', objections=[('o1', 'no export path'), ('o2', 'no title slide')]),
+                           's2': _reply('Fine.'), 's3': _reply('Fine.')})
+    _write(ctx, ask='council')
+    sub.answers['s1'] = _reply('The title is there now.', withdrawn=[('o2', 'revision 2 added a title slide')])
+    _call(ctx, plan='Outline first, add a title slide, then draft each slide.', ask=['s1'], message='title added')
+    record = deepcopy(plan_record.load_plan_record(harness.drive, ctx.task_id))
+    observed = _capture(ctx)
+    record_context_view(ctx, observed, [])
+    entries = json.loads(_compact_context(ctx, inspect=True))['review_decisions']['entries']
+    objections = {e['objection_id']: e for e in entries if e['decision_kind'] == 'plan_objection'}
+    assert set(objections) == {'o1', 'o2'} and all(e['bound_decision'] for e in objections.values())
+    assert objections['o1']['groupable'] is False and objections['o2']['groupable'] is True
+    after, receipt, _ = _apply(ctx, observed, review_notes=[
+        {'bound_decision': objections['o1']['bound_decision'], 'remark': 'Export is still open.',
+         'reason': 's1 holds it; I answer it in the next revision.'},
+        {'bound_decisions': [objections['o2']['bound_decision']], 'remark': 'The withdrawn title objection.',
+         'reason': 'Revision 2 added the title slide and s1 withdrew it.'},
+        {'bound_decisions': [objections['o1']['bound_decision']], 'remark': 'Do not hide this.',
+         'reason': 'An open objection is never grouped.'}])
+    assert receipt['status'] == 'applied', receipt
+    rows = _index(after)[-1]['decision_rows']
+    (shown,) = [r for r in rows if r.get('objection_id') == 'o1']
+    assert shown['remark'] == 'Export is still open.' and shown['authored_view']['authorship'] == 'actor'
+    assert any(r['decision_kind'] == 'actor_history_group' for r in rows)
+    assert not any(r.get('objection_id') == 'o2' for r in rows)
+    assert any(g['reason'] == 'current_or_unresolved_decision_stays_explicit' for g in receipt['review_notes']['unshortened'])
+    assert plan_record.load_plan_record(harness.drive, ctx.task_id) == record
