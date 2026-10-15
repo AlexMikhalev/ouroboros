@@ -1,0 +1,626 @@
+"""Live voice-call driver: one realtime engine session is the turn's model round.
+
+A call is an ordinary turn whose model speaks and listens (ARCHITECTURE §6 "Live
+calls"). The agent prepares the same context as for a text turn; this driver opens
+the engine with that fitted system text and the room's Nano tool view
+(``live_call_route``), then pumps until the call ends: peer audio in, engine audio
+out through the hub, captions to the peers and to the chat (owner speech as an
+owner row written WITHOUT opening an owner turn, Ouroboros speech as the turn's
+own narration with its played mark), tool calls on one serialized batch worker
+(``live_tool_batch``), the owner's mailbox (Stop, Hurry, typed words) drained on a
+short tick with deferred acknowledgement, and the room's new rows
+(``live_awareness``) fed in as context. Provider session caps and transport
+losses are reconnects with a host-built history view (or the provider's resume
+handle), never the end of the call. The driver returns the loop's ordinary
+``(text, usage, llm_trace)`` triple with a host-authored terminal
+(``terminal_origin=host_notice``) that points at the transcript.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import pathlib
+import queue
+import threading
+import time
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from ouroboros.call_protocol import (
+    STATE_CLOSED, STATE_CLOSING, STATE_CONNECTING, STATE_LIVE, STATE_RECONNECTING,
+    CallSpec, PeerAudio, PeerControl, PeerJoined, PeerLeft,
+)
+from ouroboros.gateways.realtime_engine import (
+    SPEAKER_OUROBOROS, SPEAKER_OWNER, USAGE_KEYS,
+    AudioIn, AudioOut, Caption, Close, Closed, ContextItem, EngineError, GoAway, Interrupt, PlayedAudio, Ready,
+    ResponseDone, ResponseStarted, ResumeCheckpoint, SessionConfig, SpeechStarted, ToolCall, ToolCallCancelled,
+    TranscriptionUsage,
+)
+from ouroboros.live_call_route import call_minutes_ceiling, initial_call_schemas, native_search_enabled, resolve_call_route
+from ouroboros.live_tool_batch import ToolBatchWorker, text_of
+from ouroboros.usage_accounting import BudgetExceeded
+
+log = logging.getLogger(__name__)
+
+SOURCE_CALL = "call"   # the owner-speech row source (live_awareness skips it)
+
+# Physical/transport bounds, not behaviour: the Stop tick, the ack wait before a
+# spoken row is written as generated, the rejoin grace of an empty room, the
+# reopen attempts per loss, the margin before a provider's session cap and the
+# wait for a running tool batch at close.
+MAILBOX_TICK_S = 0.25
+SPOKEN_ACK_GRACE_S = 10.0
+PEER_GRACE_S = 20.0
+RECONNECT_ATTEMPTS = 3
+SESSION_CAP_MARGIN_S = 60.0
+BATCH_SETTLE_WAIT_S = 5.0
+
+
+# ---- seams the lanes meet at (tests replace these) --------------------------------
+
+def _hub_for(call_id: str):
+    from ouroboros.call_peers import get_hub
+
+    return get_hub(call_id)
+
+
+def _ledger():
+    from ouroboros import live_usage
+
+    return live_usage
+
+
+def _loop():
+    """The tool loop's members, read at call time (tests rebind them there)."""
+    from ouroboros import loop
+
+    return loop
+
+
+def _narration_meta(emit_progress: Callable[..., None]) -> Dict[str, Any]:
+    owner = getattr(emit_progress, "__self__", None)
+    build = getattr(owner, "_subagent_progress_meta", None)
+    try:
+        return dict(build("progress")) if callable(build) else {}
+    except Exception:
+        return {}
+
+
+@dataclass
+class _Spoken:
+    text: str = ""
+    final_at: float = 0.0
+    played_ms: int = 0
+    played: bool = False
+    interrupted: bool = False
+
+
+class _LiveCall:
+    """One call from open to close, on the turn's thread with its own event loop."""
+
+    def __init__(self, *, messages, tools, llm, drive_logs, emit_progress, incoming_messages, task_id, task_type,
+                 event_queue, drive_root, spec: CallSpec) -> None:
+        self.messages, self.tools, self.llm, self.drive_logs = messages, tools, llm, drive_logs
+        self.emit_progress, self.incoming, self.task_id = emit_progress, incoming_messages, task_id
+        self.task_type, self.event_queue, self.drive_root, self.spec = task_type, event_queue, drive_root, spec
+        self.ctx = tools._ctx
+        self.route = resolve_call_route(spec, drive_root)
+        self.llm_trace: Dict[str, Any] = {"reasoning_notes": ["live_call"], "tool_calls": []}
+        self.usage: Dict[str, Any] = {"_task_attempt": getattr(self.ctx, "task_attempt", None),
+                                      "live_usage": {key: 0 for key in USAGE_KEYS}, "live_responses": 0}
+        self.tool_schemas: List[Dict[str, Any]] = []
+        self.hub = None
+        self.engine = None
+        self.epoch = 0
+        self.state = STATE_CONNECTING
+        self.started = time.monotonic()
+        self.started_at_iso = ""
+        self.session_started = self.started
+        self.close_reason = ""
+        self.closing = False
+        self.reconnecting = False
+        self.reconnects = 0
+        self.resume_handle = ""
+        self.response_open = False
+        self.budget_error: Optional[BudgetExceeded] = None
+        self.failure: Optional[Tuple[str, str]] = None
+        self.attempts: Dict[str, Any] = {}
+        self.speaking_item = ""
+        self.cancelled_items: set = set()
+        self.played_ms: Dict[str, int] = {}
+        self.spoken: Dict[str, _Spoken] = {}
+        self.counts = {"owner": 0, "ouroboros": 0}
+        self.muted_peers: set = set()
+        self.empty_since: Optional[float] = None
+        self.owner_msg_seen: set = set()
+        self._closed = asyncio.Event()
+        self._hub_events: Optional[asyncio.Queue] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._reader_stop = threading.Event()
+        self._reader: Optional[threading.Thread] = None
+        self.tools_lane = ToolBatchWorker(self)
+        self.stateful_executor = None
+        self.rooms = None
+        self.fanout = None
+
+    # ---- lifecycle ---------------------------------------------------------------
+
+    def run(self) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+        from ouroboros.utils import utc_now_iso
+
+        self.started_at_iso = utc_now_iso()
+        self.hub = _hub_for(self.spec.call_id)
+        if self.hub is None:
+            return self._terminal("no_hub", failure=("live_call_hub_missing", "the call's peer hub is not open"))
+        try:
+            asyncio.run(self._main())
+        finally:
+            self.tools_lane.shutdown()
+            if self._reader is not None:
+                self._reader.join(MAILBOX_TICK_S * 4)  # it leaves within one hub wait of the stop flag
+        if self.budget_error is not None:
+            raise self.budget_error
+        return self._terminal(self.close_reason or "ended", failure=self.failure)
+
+    async def _main(self) -> None:
+        from ouroboros.live_awareness import RoomRows, UtteranceFanout
+        from ouroboros.loop_budget import _LoopExitContext, _cleanup_loop_resources
+        from ouroboros.loop_tool_execution import StatefulToolExecutor
+
+        loop_mod = _loop()
+        self._loop = asyncio.get_running_loop()
+        self._hub_events = asyncio.Queue()
+        self.hub.send_state(STATE_CONNECTING)
+        loop_mod._reset_turn_state(self.ctx)
+        loop_mod._initialize_owner_directives(self.ctx, self.messages)
+        self.tool_schemas, _extra = loop_mod._setup_dynamic_tools(
+            self.tools, list(initial_call_schemas(self.tools)), self.messages, context_mode="nano")
+        self.ctx.event_queue, self.ctx.task_id, self.ctx.messages = self.event_queue, self.task_id, self.messages
+        self.ctx._accumulated_usage = self.usage
+        self.stateful_executor = StatefulToolExecutor()
+        exit_ctx = _LoopExitContext(self.tools, self.drive_root, self.task_id, self.event_queue, self.drive_logs,
+                                    self.usage, self.llm_trace, self.ctx, getattr(self.ctx, "_execution_trace", None))
+        self.ctx._execution_trace = self.llm_trace
+        self.rooms = RoomRows(self.drive_root, self.spec.chat_id, self.task_id, self.spec.call_id, self.started_at_iso)
+        self.fanout = UtteranceFanout(self.drive_root, self.spec.chat_id, self.task_id, self.spec.call_id)
+        self.rooms.start()
+        self._reader = threading.Thread(target=self._read_hub, name=f"call-hub-{self.task_id}", daemon=True)
+        self._reader.start()
+        tasks: List[asyncio.Task] = []
+        try:
+            try:
+                await self._open_engine(history=self._history_view())
+            except Exception as exc:
+                log.warning("live call %s could not open its engine", self.spec.call_id, exc_info=True)
+                self.failure = ("live_engine_unavailable", f"{type(exc).__name__}: {exc}")
+                self._begin_close("engine_unavailable")
+            if not self.closing:
+                tasks = [asyncio.create_task(self._pump_hub()), asyncio.create_task(self._tick()),
+                         asyncio.create_task(self.tools_lane.run_forever())]
+            await self._closed.wait()
+        except BudgetExceeded as exc:
+            self.budget_error = exc
+            self._begin_close("budget_exceeded")
+        finally:
+            for task in tasks:
+                task.cancel()
+            await self._shutdown()
+            if self.budget_error is not None:
+                exit_ctx.attach_exception_evidence(self.budget_error)
+            _cleanup_loop_resources(self.stateful_executor, exit_ctx)
+
+    async def _shutdown(self) -> None:
+        self.hub.send_state(STATE_CLOSING, self.close_reason)
+        if self.engine is not None:
+            engine, self.engine = self.engine, None
+            self.epoch += 1  # anything the old iterator still yields is stale
+            for action in (lambda: engine.send(Close(self.close_reason)), lambda: engine.close(self.close_reason)):
+                try:
+                    await asyncio.wait_for(action(), timeout=BATCH_SETTLE_WAIT_S)
+                except Exception:
+                    log.debug("engine close step failed", exc_info=True)
+        deadline = time.monotonic() + BATCH_SETTLE_WAIT_S
+        while self.tools_lane.running and time.monotonic() < deadline:  # a running tool settles through custody
+            await asyncio.sleep(0.05)
+        for item_id in list(self.spoken):
+            self._write_spoken_row(item_id)
+        for key in list(self.attempts):
+            attempt = self.attempts.pop(key)
+            self._settle_safely(lambda a=attempt: _ledger().abandon_live_response(a, reason=self.close_reason or "closed"))
+        try:
+            self.fanout.flush()
+        except Exception:
+            log.debug("call %s final fan-out failed", self.spec.call_id, exc_info=True)
+        self._checkpoint()
+        self.rooms.stop()
+        self._reader_stop.set()
+        self.state = STATE_CLOSED
+        self.hub.send_state(STATE_CLOSED, self.close_reason)
+        try:
+            self.hub.close(self.close_reason)
+        except Exception:
+            log.debug("hub close failed", exc_info=True)
+
+    def _begin_close(self, reason: str) -> None:
+        if self.closing:
+            return
+        self.closing, self.close_reason, self.state = True, reason, STATE_CLOSING
+        self._closed.set()
+
+    def _terminal(self, reason: str, *, failure: Optional[Tuple[str, str]]) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+        from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE
+
+        minutes = round((time.monotonic() - self.started) / 60.0, 1)
+        self.usage.update({
+            "terminal_origin": TERMINAL_ORIGIN_HOST_NOTICE,
+            "live_call": {"call_id": self.spec.call_id, "engine": self.spec.engine, "model": self.spec.model,
+                          "ended": reason, "minutes": minutes, "reconnects": self.reconnects,
+                          "tool_calls": self.tools_lane.tool_calls, "batches": self.tools_lane.batches, **self.counts},
+        })
+        label = self.spec.label or self.spec.call_id
+        if failure is not None:
+            code, detail = failure
+            self.usage.update({"execution_status": "infra_failed", "reason_code": code})
+            return (f"⚠️ Live call {label} could not run: {detail}", self.usage, self.llm_trace)
+        text = (f"Live call {label} ended ({reason}). The transcript is in this chat: "
+                f"{self.counts['owner']} owner and {self.counts['ouroboros']} Ouroboros utterances, "
+                f"{self.tools_lane.tool_calls} tool calls, {minutes} min.")
+        return text, self.usage, self.llm_trace
+
+    # ---- engine session ----------------------------------------------------------
+
+    def _session_config(self, *, history: Tuple[Dict[str, Any], ...] = (), resume_handle: str = "") -> SessionConfig:
+        instructions = text_of(self.messages[0].get("content")) if self.messages and self.messages[0].get("role") == "system" else ""
+        return SessionConfig(route=self.route.engine, instructions=instructions, tools=tuple(self.tool_schemas),
+                             history=history, native_search=native_search_enabled(self.spec), resume_handle=resume_handle)
+
+    async def _open_engine(self, *, history: Tuple[Dict[str, Any], ...] = (), resume_handle: str = "") -> None:
+        engine = self.llm.open_live(self.route.engine)
+        await engine.open(self._session_config(history=history, resume_handle=resume_handle))
+        self.engine, self.epoch, self.session_started = engine, self.epoch + 1, time.monotonic()
+        self.hub.set_engine_rates(self.route.engine.input_rate, self.route.engine.output_rate)
+        self.state = STATE_LIVE
+        self.hub.send_state(STATE_LIVE)
+        asyncio.create_task(self._pump_engine(engine, self.epoch))
+
+    def _history_view(self) -> Tuple[Dict[str, Any], ...]:
+        """The dialogue so far as plain items (text only; the system text travels as instructions)."""
+        view: List[Dict[str, Any]] = []
+        for msg in self.messages[1:] if self.messages and self.messages[0].get("role") == "system" else self.messages:
+            role = str(msg.get("role") or "")
+            if role not in ("user", "assistant", "tool"):
+                continue
+            item: Dict[str, Any] = {"role": role, "content": text_of(msg.get("content"))}
+            for key in ("tool_calls", "tool_call_id", "name"):
+                if msg.get(key):
+                    item[key] = msg[key]
+            view.append(item)
+        return tuple(view)
+
+    async def _reconnect(self, reason: str, *, resume: bool) -> None:
+        if self.closing or self.reconnecting:
+            return
+        self.reconnecting, self.state = True, STATE_RECONNECTING
+        self.hub.send_state(STATE_RECONNECTING, reason)
+        old, self.engine = self.engine, None
+        self.epoch += 1  # events of the lost session are stale from here
+        if old is not None:
+            try:
+                await asyncio.wait_for(old.close(reason), timeout=BATCH_SETTLE_WAIT_S)
+            except Exception:
+                log.debug("lost engine close failed", exc_info=True)
+        for key in list(self.attempts):
+            attempt = self.attempts.pop(key)
+            self._settle_safely(lambda a=attempt: _ledger().abandon_live_response(a, reason=reason))
+        self.response_open = False
+        handle = self.resume_handle if resume else ""
+        for attempt_no in range(RECONNECT_ATTEMPTS):
+            try:
+                await self._open_engine(history=() if handle else self._history_view(), resume_handle=handle)
+                self.reconnects += 1
+                self.reconnecting = False
+                return
+            except Exception:
+                log.warning("live call %s reopen attempt %s failed", self.spec.call_id, attempt_no + 1, exc_info=True)
+                await asyncio.sleep(0.5 * (2 ** attempt_no))
+        self.reconnecting = False
+        self.failure = ("live_engine_unavailable", f"the engine could not be reopened after {reason}")
+        self._begin_close("reconnect_failed")
+
+    async def _send(self, command: Any) -> None:
+        engine = self.engine
+        if engine is None:
+            return
+        try:
+            await engine.send(command)
+        except Exception:
+            log.debug("engine send failed (%s)", type(command).__name__, exc_info=True)
+
+    # ---- pumps -------------------------------------------------------------------
+
+    async def _pump_engine(self, engine: Any, epoch: int) -> None:
+        lost = "stream_ended"
+        try:
+            async for event in engine.events():
+                if epoch != self.epoch:
+                    return  # a stale session's event
+                await self._on_engine_event(event)
+        except BudgetExceeded as exc:
+            self.budget_error = exc
+            self._begin_close("budget_exceeded")
+            return
+        except Exception:
+            log.warning("live call %s engine stream failed", self.spec.call_id, exc_info=True)
+            lost = "transport_lost"
+        if epoch == self.epoch and not self.closing:  # the session ended without the call ending
+            asyncio.create_task(self._reconnect(lost, resume=True))
+
+    def _read_hub(self) -> None:
+        while not self._reader_stop.is_set():
+            try:
+                event = self.hub.next_event(MAILBOX_TICK_S)
+            except Exception:
+                log.debug("hub read failed", exc_info=True)
+                break
+            if event is not None and self._loop is not None:
+                try:
+                    self._loop.call_soon_threadsafe(self._hub_events.put_nowait, event)
+                except RuntimeError:
+                    break
+
+    async def _pump_hub(self) -> None:
+        while True:
+            await self._on_hub_event(await self._hub_events.get())
+
+    async def _tick(self) -> None:
+        while not self.closing:
+            await asyncio.sleep(MAILBOX_TICK_S)
+            await self._drain()
+            now = time.monotonic()
+            ceiling = call_minutes_ceiling(self.spec)
+            if ceiling is not None and now - self.started >= ceiling * 60:
+                self._begin_close("max_minutes")
+            cap = self.route.fact.session_cap_minutes if self.route.fact else None
+            if (cap and not self.response_open and not self.reconnecting
+                    and now - self.session_started >= cap * 60 - SESSION_CAP_MARGIN_S):
+                asyncio.create_task(self._reconnect("session_cap", resume=False))
+            for item_id, spoken in list(self.spoken.items()):
+                if spoken.final_at and now - spoken.final_at >= SPOKEN_ACK_GRACE_S:
+                    self._write_spoken_row(item_id)
+            if self.empty_since is not None and now - self.empty_since >= PEER_GRACE_S:
+                self._begin_close("peers_left")
+            if self.fanout.pending and not self.response_open:
+                self.fanout.flush()
+
+    # ---- hub events ---------------------------------------------------------------
+
+    async def _on_hub_event(self, event: Any) -> None:
+        if isinstance(event, PeerAudio):
+            if not self.closing and not self.reconnecting and event.peer_id not in self.muted_peers:
+                await self._send(AudioIn(pcm=event.pcm, rate=self.route.engine.input_rate))
+        elif isinstance(event, PeerControl):
+            kind = str(event.message.get("type") or "")
+            if kind == "played":
+                item_id, played_ms = str(event.message.get("item_id") or ""), int(event.message.get("played_ms") or 0)
+                self.played_ms[item_id] = max(self.played_ms.get(item_id, 0), played_ms)
+                if item_id in self.spoken:
+                    self.spoken[item_id].played, self.spoken[item_id].played_ms = True, self.played_ms[item_id]
+                    if self.spoken[item_id].final_at:
+                        self._write_spoken_row(item_id)
+                await self._send(PlayedAudio(item_id=item_id, played_ms=played_ms))
+            elif kind == "mute":
+                (self.muted_peers.add if event.message.get("muted") else self.muted_peers.discard)(event.peer_id)
+            elif kind == "context":
+                await self._send(ContextItem(text=str(event.message.get("text") or ""),
+                                             source=f"peer:{event.role}:{event.message.get('source') or 'observation'}"))
+            elif kind == "participant":
+                label, speaking = str(event.message.get("label") or "someone"), bool(event.message.get("speaking"))
+                await self._send(ContextItem(text=f"{label} {'started' if speaking else 'stopped'} speaking",
+                                             source="meeting_participant"))
+        elif isinstance(event, PeerJoined):
+            self.empty_since = None
+        elif isinstance(event, PeerLeft):
+            self.muted_peers.discard(event.peer_id)
+            if not self.hub.peers():
+                self.empty_since = time.monotonic()
+
+    # ---- engine events ------------------------------------------------------------
+
+    async def _on_engine_event(self, event: Any) -> None:
+        if isinstance(event, AudioOut):
+            if event.item_id not in self.cancelled_items:
+                self.speaking_item = event.item_id
+                self.hub.play(event.pcm, event.item_id)
+        elif isinstance(event, Caption):
+            self.hub.send_caption(event.speaker, event.text, event.final, event.item_id)
+            if event.final:
+                self._on_final_caption(event)
+        elif isinstance(event, SpeechStarted):
+            await self._barge_in()
+        elif isinstance(event, ToolCall):
+            self.tools_lane.enqueue(event, self.epoch)
+        elif isinstance(event, ToolCallCancelled):
+            self.tools_lane.cancel(event.call_ids)
+        elif isinstance(event, ResponseStarted):
+            self.response_open = True
+            self._attempt_for(event.response_id or event.item_id)
+        elif isinstance(event, ResponseDone):
+            self.response_open = False
+            self._settle(event)
+            await self._drain()
+            if self.fanout.pending:
+                self.fanout.flush()
+        elif isinstance(event, TranscriptionUsage):
+            self._settle_safely(lambda: _ledger().record_transcription(
+                engine=self.spec.engine, model=event.model, call_id=self.spec.call_id, usage=dict(event.usage),
+                raw_usage=dict(event.raw_usage), task_id=self.task_id, drive_root=self.drive_root))
+        elif isinstance(event, ResumeCheckpoint):
+            self.resume_handle = event.handle if event.resumable else ""
+        elif isinstance(event, GoAway):
+            asyncio.create_task(self._reconnect("go_away", resume=True))
+        elif isinstance(event, EngineError):
+            if event.retryable:
+                asyncio.create_task(self._reconnect(f"engine_error:{event.kind}", resume=True))
+            else:
+                self.failure = ("live_engine_error", f"{event.kind}: {event.message}")
+                self._begin_close(f"engine_error:{event.kind}")
+        elif isinstance(event, Closed):
+            if not self.closing:
+                asyncio.create_task(self._reconnect(f"transport_lost:{event.reason}", resume=True))
+        elif isinstance(event, Ready):
+            effective = dict(event.effective or {})
+            if effective.get("input_rate") or effective.get("output_rate"):
+                self.hub.set_engine_rates(int(effective.get("input_rate") or self.route.engine.input_rate),
+                                          int(effective.get("output_rate") or self.route.engine.output_rate))
+
+    async def _barge_in(self) -> None:
+        self.hub.flush()
+        item = self.speaking_item
+        if item:
+            self.cancelled_items.add(item)
+            self.spoken.setdefault(item, _Spoken()).interrupted = True  # its caption, when final, is written as cut
+            await self._send(Interrupt(item_id=item, played_ms=self.played_ms.get(item, 0)))
+
+    def _on_final_caption(self, event: Caption) -> None:
+        text = str(event.text or "").strip()
+        if not text:
+            return
+        if event.speaker == SPEAKER_OWNER:
+            self.counts["owner"] += 1
+            self.messages.append({"role": "user", "content": text, "_call_row": True})
+            self._write_owner_row(text, event.item_id)
+            self.fanout.note(SPEAKER_OWNER, text)
+        elif event.speaker == SPEAKER_OUROBOROS:
+            self.counts["ouroboros"] += 1
+            self.messages.append({"role": "assistant", "content": text, "_call_row": True})
+            spoken = self.spoken.setdefault(event.item_id, _Spoken())
+            spoken.text, spoken.final_at = text, time.monotonic()
+            spoken.played_ms = max(spoken.played_ms, self.played_ms.get(event.item_id, 0))
+            if spoken.played or spoken.interrupted:
+                self._write_spoken_row(event.item_id)
+            self.fanout.note(SPEAKER_OUROBOROS, text)
+
+    def _write_owner_row(self, text: str, item_id: str) -> None:
+        """The owner's words as an owner row of the room, without an owner turn behind it."""
+        try:
+            from supervisor.message_bus import get_bridge, log_chat
+
+            client_message_id = f"call:{self.spec.call_id}:{item_id or self.counts['owner']}"
+            row = log_chat("in", self.spec.chat_id, 1, text, source=SOURCE_CALL, sender_label="voice",
+                           client_message_id=client_message_id, task_id=self.task_id, drive_root=self.drive_root)
+            if row:
+                get_bridge().broadcast({"type": "chat", "role": "user", "content": text, "ts": row.get("ts"),
+                                        "source": SOURCE_CALL, "chat_id": self.spec.chat_id, "task_id": self.task_id,
+                                        "client_message_id": client_message_id})
+        except Exception:
+            log.warning("live call %s could not write an owner row", self.spec.call_id, exc_info=True)
+
+    def _write_spoken_row(self, item_id: str) -> None:
+        spoken = self.spoken.pop(item_id, None)
+        if spoken is None or not spoken.text:
+            return
+        status = "interrupted" if spoken.interrupted else ("played" if spoken.played else "generated")
+        meta = _narration_meta(self.emit_progress)
+        meta["spoken"] = {"call_id": self.spec.call_id, "item_id": item_id, "status": status, "played_ms": spoken.played_ms}
+        try:
+            self.emit_progress(spoken.text, narration=True, _progress_meta_override=meta)
+        except TypeError:
+            self.emit_progress(spoken.text, narration=True)
+
+    # ---- the ledger ----------------------------------------------------------------
+
+    def _attempt_for(self, key: str) -> Any:
+        if key not in self.attempts:
+            self.attempts[key] = _ledger().reserve_live_response(
+                engine=self.spec.engine, model=self.spec.model, call_id=self.spec.call_id, response_key=key,
+                task_id=self.task_id, rendered_mode=str(getattr(self.ctx, "active_context_mode", "") or "nano"),
+                drive_root=self.drive_root)
+        return self.attempts[key]
+
+    def _settle(self, event: ResponseDone) -> None:
+        key = event.response_id or event.item_id
+        try:
+            attempt = self._attempt_for(key)
+        except BudgetExceeded:
+            raise
+        except Exception:
+            log.warning("live call %s could not reserve response %s", self.spec.call_id, key, exc_info=True)
+            return
+        self.attempts.pop(key, None)
+        self.usage["live_responses"] += 1
+        for name in USAGE_KEYS:
+            self.usage["live_usage"][name] += int(event.usage.get(name) or 0)
+        self._settle_safely(lambda: _ledger().settle_live_response(
+            attempt, usage=dict(event.usage), raw_usage=dict(event.raw_usage), status=event.status))
+
+    def _settle_safely(self, action: Callable[[], Any]) -> None:
+        try:
+            action()
+        except Exception:
+            log.warning("live call %s ledger write failed", self.spec.call_id, exc_info=True)
+
+    # ---- the owner's mailbox and the room -------------------------------------------
+
+    async def _drain(self) -> None:
+        from ouroboros.loop_round_limits import _drain_incoming_messages
+        from ouroboros.working_checkpoint import flush_content_acks
+
+        scratch: List[Dict[str, Any]] = []
+        controls = _drain_incoming_messages(scratch, self.incoming, self.drive_root, self.task_id, self.event_queue,
+                                            self.owner_msg_seen, owner_ctx=self.ctx, defer_content_ack=True)
+        items = [ContextItem(text=text_of(msg.get("content")), source="mailbox") for msg in scratch]
+        for msg in scratch:
+            self.messages.append({**msg, "_call_row": True})
+        items.extend(self.rooms.drain())
+        if controls.get("hurry"):
+            items.append(ContextItem(text="The owner pressed Hurry: finish what you are saying and wrap up.", source="owner_control"))
+        for item in items:
+            if item.text.strip():
+                await self._send(item)
+        if items or controls:
+            if self._checkpoint():
+                flush_content_acks(self.ctx)
+        if controls.get("finalize_now"):
+            self._begin_close("owner_stop")
+
+    def _checkpoint(self) -> bool:
+        """The call's durable state on its task row; content ACKs wait for this write."""
+        from ouroboros.task_result_schema import require_writable_task_result_schema, stamp_task_result_schema
+        from ouroboros.task_store import patch_document
+        from ouroboros.utils import utc_now_iso
+
+        if self.drive_root is None or not self.task_id:
+            return False
+        block = {"call_id": self.spec.call_id, "consumed_mailbox_ids": sorted(str(x) for x in self.owner_msg_seen),
+                 "executed_tool_calls": sorted(self.tools_lane.executed), "batches": self.tools_lane.batches,
+                 "utterances": dict(self.counts), "reconnects": self.reconnects, "updated_at": utc_now_iso()}
+
+        def _mutate(current: Dict[str, Any]) -> Dict[str, Any]:
+            require_writable_task_result_schema(current)
+            return stamp_task_result_schema({**current, "live_call": block})
+
+        try:
+            patch_document(pathlib.Path(self.drive_root), self.task_id, _mutate)
+            return True
+        except Exception:
+            log.warning("live call %s checkpoint unwritten; mailbox content stays unacknowledged", self.spec.call_id, exc_info=True)
+            return False
+
+
+def run_live_turn(
+    messages: List[Dict[str, Any]], tools: Any, llm: Any, drive_logs: pathlib.Path,
+    emit_progress: Callable[..., None], incoming_messages: queue.Queue, task_id: str, task_type: str,
+    budget_remaining_usd: Optional[float], event_queue: Optional[queue.Queue], drive_root: Optional[pathlib.Path],
+    spec: CallSpec,
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    """Run one live call to its end; the loop's ordinary triple with a host-authored terminal.
+
+    ``budget_remaining_usd`` is read by the ledger at every response reservation
+    (``BudgetExceeded`` propagates after the call is closed); it is accepted here
+    so the driver keeps the loop's calling shape.
+    """
+    call = _LiveCall(messages=messages, tools=tools, llm=llm, drive_logs=drive_logs, emit_progress=emit_progress,
+                     incoming_messages=incoming_messages, task_id=task_id, task_type=task_type,
+                     event_queue=event_queue, drive_root=drive_root, spec=spec)
+    return call.run()
