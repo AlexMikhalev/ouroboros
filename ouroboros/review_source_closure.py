@@ -42,7 +42,7 @@ _METADATA_FIELDS = frozenset({
     'required_sources', 'late_settlement', 'reviewer_outputs', 'emitted_answer', 'delivered',
     'tool_trajectory', 'tool_trajectory_selected', '__unresolved_partial_artifacts__',
     'owner_requirements_and_decisions', 'plan_claims_exhibit', 'acceptance_support_refs',
-    'skill_lifecycle_history_coverage', 'evidence_manifest',
+    'skill_lifecycle_history_coverage', 'evidence_manifest', 'acceptance_material', 'selected_answer', 'workspace', 'observed_effects',
 })
 
 

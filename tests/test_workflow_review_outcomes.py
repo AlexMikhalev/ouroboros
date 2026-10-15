@@ -62,7 +62,7 @@ def test_commit_finish_requires_received_outcome(candidate, monkeypatch, basis):
     assert changed is (basis in {"explicit_prior", "custody_lost"}), second
     if basis in {"none", "unrelated_prior"}:
         assert "needs received feedback" in second
-        assert "continuation is not available yet" in first
+        assert "informed continuation needs received feedback" in first
     assert len(calls) == (2 if basis in {"unrelated_prior", "explicit_prior"} else 1)
     retained = next(item for item in load_state(ctx.drive_root).attempts if item.attempt == row.attempt)
     assert retained.triad_raw_results == row.triad_raw_results and retained.late_result_pending
@@ -139,9 +139,12 @@ def test_clean_commit_path_and_structured_advice_are_distinct(candidate, monkeyp
     monkeypatch.setattr(git, "_run_parallel_review", reviewer)
     result = git._run_reviewed_stage_cycle(ctx, "Review changed candidate", 0,
         skip_advisory_pre_review=True, require_release_tag=False)
-    assert result["status"] == ("passed" if kind == "clean" else "reviewed")
+    # #1741: under Advisory a clean PASS also returns before Git; only its recorded advice differs.
+    assert result["status"] == "reviewed"
+    row = load_state(ctx.drive_root).attempts[-1]
+    assert row.phase == "review_only" and bool(row.advisory_findings or ctx._last_review_advisory_findings) is (kind == "advisory")
     # Every dispatched wave leaves one durable review ledger record the result names.
-    assert (result if kind == "clean" else result["review_reference"])["review_record_id"]
+    assert result["review_reference"]["review_record_id"]
 
 
 @pytest.mark.parametrize("prior_feedback", [False, True])
@@ -152,6 +155,7 @@ def test_repeated_exposed_host_failure_does_not_pump_author_rounds(tmp_path, mon
     from ouroboros.acceptance_settlement import expose_acceptance_feedback
     from ouroboros.contracts.task_contract import build_task_contract
     from tests.test_acceptance_publication import _context
+    from tests.test_loop_acceptance_gate import _nominate_acceptance
     ctx = _context(tmp_path)
     ctx.task_contract = build_task_contract({"id": "applied", "root_task_id": "applied"})
     ctx._task_acceptance_reviewed = False
@@ -171,6 +175,7 @@ def test_repeated_exposed_host_failure_does_not_pump_author_rounds(tmp_path, mon
     monkeypatch.setattr(loop, "_execute_task_acceptance_panel", review)
     monkeypatch.setattr(acceptance, "_apply_task_acceptance_result", fail_apply)
     trace = {"tool_calls": []}
+    _nominate_acceptance(trace, task_id="applied", subject="Unchanged complete answer")
     if prior_feedback:
         trace["review_runs"] = [{"authority": "host_root", "binding_hash": "earlier", "feedback_delivered": True}]
     messages = []

@@ -244,6 +244,79 @@ def test_commit_and_change_use_same_authored_selection_and_cold_packet(staged_bo
         assert "actor_authored_view" in text
 
 
+GATE_FINDING = "The new helper drops the error path the caller relies on. GATE_FAIL_FINDING_END"
+
+
+def _failing_dispatch():
+    from tests import _contributor_packet_shared as shared_packet
+
+    golden = shared_packet.golden_substrate([])
+
+    def run(request, **kwargs):
+        result = golden(request, **kwargs)
+        for actor in result.actors:
+            value = json.loads(actor["raw_text"])
+            change = value if isinstance(value, list) else value["change"]
+            (change or value["coupling"])[0].update(verdict="FAIL", severity="critical", reason=GATE_FINDING)
+            actor["raw_text"] = json.dumps(value, ensure_ascii=False)
+        return result
+
+    return run
+
+
+@pytest.mark.parametrize("dispatch", ["fail", "crash"])
+def test_first_commit_gate_wave_reaches_the_next_request_after_the_authors_fold(
+        staged_body, tmp_path, monkeypatch, dispatch):
+    """#1723: the commit panel queues the same review view review_change does.
+
+    The first wave of the task, with no resident index yet: its raw return is
+    the only other carrier, and the author's fold removes it. The caller's own
+    outcome is unchanged; a crashed wave queues the view and invents no verdict.
+    """
+    from pathlib import Path
+
+    from ouroboros import capability_evidence, review_ledger, review_substrate, reviewer_window
+    from ouroboros.tools.git_review_cycle import _run_non_committing_review_cycle
+    from ouroboros.tools.registry import ToolContext
+
+    monkeypatch.setattr(capability_evidence, "probe", lambda *a, **k: None)
+    monkeypatch.setattr(reviewer_window, "reviewer_context_window", lambda *a, **k: 1_000_000)
+    root, drive = Path(staged_body["repo"]), tmp_path / "gate-view"
+    ctx = ToolContext(repo_dir=root, drive_root=drive, task_id="gate-view")
+
+    def crash(*_args, **_kwargs):
+        raise RuntimeError("reviewer transport crashed")
+
+    monkeypatch.setattr(review_substrate, "run_review_request", _failing_dispatch() if dispatch == "fail" else crash)
+    outcome = _run_non_committing_review_cycle(ctx, "fix: drop the redundant helper branch",
+                                               skip_advisory_review=True, goal="Ship the bounded file design")
+    assert outcome["status"] != "passed", outcome
+    record = review_ledger.load_record(drive, outcome["review_record_id"])
+    assert record["verdict"]["aggregate"] == ("FAIL" if dispatch == "fail" else "NOT_PERFORMED"), record["verdict"]
+    messages = [{"role": "system", "content": "Runtime."}, {"role": "user", "content": "Ship the bounded file design."}]
+    assert not _index(messages)  # no resident index precedes this first wave
+    messages.append(call("commit_reviewed", {"commit_message": "fix: drop the redundant helper branch"}, "gate"))
+    raw_return = json.dumps({"raw_gate_return": "RAW_GATE_RETURN_END", **outcome}, default=str)
+    process_tool_results([{"fn_name": "commit_reviewed", "is_error": False, "tool_call_id": "gate",
+                           "result": raw_return, "args_for_log": {}, "trace_ref": {}}],
+                         messages, {"tool_calls": []}, lambda _: None, SimpleNamespace(_ctx=ctx),
+                         fit_candidate=lambda rows, schemas: {"accepted": True, "strict_bound_proven": False},
+                         tool_schemas=[])
+    after, receipt, fits = _apply(ctx, messages)
+    assert receipt["status"] == "applied", receipt
+    assert "RAW_GATE_RETURN_END" not in str(after)  # the raw return was folded away
+    if dispatch == "fail":
+        assert GATE_FINDING in str(after) and GATE_FINDING in str(fits[-1])  # the next model send
+        cold = _capture(ToolContext(repo_dir=root, drive_root=drive, task_id=ctx.task_id))
+        assert GATE_FINDING in str(cold)
+    # The producer's typed notification was consumed once at the tool boundary.
+    assert getattr(ctx, "_pending_review_context", None) == {}
+    for index in (_index(messages)[-1], _index(after)[-1]):
+        (round_,) = index["rounds"]
+        assert round_["review_record_id"] == record["record_id"]
+        assert round_["verdict"]["aggregate"] == record["verdict"]["aggregate"]  # no invented verdict
+
+
 def test_late_supplement_after_selection_keeps_new_text_and_old_verdict(tmp_path):
     from ouroboros.task_results import load_plan_review_state
     from ouroboros.tools.registry import ToolContext

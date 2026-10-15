@@ -849,6 +849,7 @@ def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
     ctx._review_resume_pending = False
     ctx._pending_review_attempt = None
     ctx._review_cyber_pending = ""
+    ctx._review_open_peers = []
 
     def _mutate(state):
         expired = state.expire_stale_attempts(now_ts=_utc_now())
@@ -878,16 +879,17 @@ def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
             (source.repo_key, source.tool_name, source.task_id)]
     if not active_attempts:
         return None
-    if not review_enforcement_blocks("blocking"):
-        ctx._review_cyber_pending = (
-            "Existing review custody remains active: "
-            + ", ".join(f"{item.tool_name}#{item.attempt}" for item in active_attempts)
-            + ". No new reviewer will be dispatched; the original attempts remain collectible."
-        )
-        return None
-
     task_id = str(getattr(ctx, "task_id", "") or "")
     tool_name = _current_review_tool_name(ctx)
+    if _readers_frozen(ctx, active_attempts):
+        # Their reviewers keep custody over retained frozen checkouts, so restaging the live
+        # index changes nothing they read: this call stages its own candidate and either
+        # rejoins its exact-identity attempt or gets its own panel (``exact_open_peer``).
+        ctx._review_open_peers = [item for item in active_attempts if item.task_id == task_id
+                                  and item.tool_name == tool_name and item.review_retry_key]
+        return None
+    # The caller's own exact open attempt is rejoined in every mode before any
+    # free-cycle or Cyber continuation: one request never buys a second wave.
     if len(active_attempts) == 1:
         candidate = active_attempts[0]
         if (
@@ -900,6 +902,14 @@ def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
             ctx._pending_review_attempt = candidate
             ctx._current_review_attempt_number = int(candidate.attempt or 0)
             return None
+    if not review_enforcement_blocks("blocking"):
+        # Cyber Pro: foreign custody is no veto, and no new reviewer is bought beside it.
+        ctx._review_cyber_pending = (
+            "Existing review custody remains active: "
+            + ", ".join(f"{item.tool_name}#{item.attempt}" for item in active_attempts)
+            + ". No new reviewer will be dispatched; the original attempts remain collectible."
+        )
+        return None
 
     active = active_attempts[-1]
     attempt_label = (
@@ -915,6 +925,38 @@ def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
         "reconcile retained custody; otherwise operator recovery is required. "
         f"Only an unpaid legacy row auto-expires after {expiration_window}s."
     )
+
+
+def _readers_frozen(ctx: ToolContext, attempts: Sequence[Any]) -> bool:
+    """Every open attempt's reviewers read its round's retained isolated checkout (a wave
+    whose author could leave it); a live-index reader, or an unverifiable one, keeps the
+    index as part of its wave's identity."""
+    from ouroboros.tools.review_subject import round_checkout_repo
+
+    try:
+        return bool(attempts) and all(item.review_retry_key and round_checkout_repo(
+            ctx, item.review_retry_key, item.task_id).is_dir() for item in attempts)
+    except Exception:
+        return False
+
+
+def exact_open_peer(ctx: ToolContext, commit_message: str, *, goal: str, scope: str, review_rebuttal: str,
+                    fingerprint: str) -> Any:
+    """The caller's own open attempt whose exact identity this call repeats — the same staged
+    bytes and intent under that attempt's own paid contract — or ``None``: a distinct candidate
+    then gets its own panel and the open attempt keeps its custody, never blessing these bytes."""
+    from ouroboros.tools.parallel_review import _commit_review_retry_key
+
+    current = getattr(ctx, "_current_review_contract_fingerprint", "")
+    try:
+        for peer in getattr(ctx, "_review_open_peers", None) or []:
+            ctx._current_review_contract_fingerprint = str(peer.review_contract_fingerprint or current)
+            if _commit_review_retry_key(ctx, commit_message, goal=goal, scope=scope, review_rebuttal=review_rebuttal,
+                                        binding_fingerprint=fingerprint) == peer.review_retry_key:
+                return peer
+    finally:
+        ctx._current_review_contract_fingerprint = current
+    return None
 
 
 def review_failure_is_technical(facts: Dict[str, Any]) -> bool:
@@ -1061,16 +1103,21 @@ def run_commit_preflight(ctx: ToolContext, reviewer: str, *, commit_message: str
 
 
 def _return_commit_feedback(ctx: ToolContext, message: str, started: float, before: dict, after: dict,
-                            *, pending: bool = False, reason: str = "author_decision_required", findings: Optional[list] = None) -> dict:
-    """Return material criticism before Git effects, preserving its original attempt."""
+                            *, pending: bool = False, reason: str = "author_decision_required", findings: Optional[list] = None,
+                            note: str = "") -> dict:
+    """Return the received outcome before any Git effect, preserving its original attempt.
+
+    Nonblocking application hands back every outcome of a committing call, a clean PASS
+    included; a pending wave keeps its exact index and attempt for a free rejoin. The
+    commit is the author's explicit continuation with the returned reference."""
     from dataclasses import asdict
     import time
     from ouroboros.tools import git as git_mod
     from ouroboros.review_state import load_state, make_repo_key
 
-    if not pending:
+    if not pending:  # a settled wave: no custody stays open behind its handback, in Cyber Pro too
         git_mod._record_commit_attempt(ctx, message, "reviewed", phase="review_only", block_reason=reason,
-            duration_sec=time.time() - started, pre_review_fingerprint=before["fingerprint"],
+            late_result_pending=False, duration_sec=time.time() - started, pre_review_fingerprint=before["fingerprint"],
             post_review_fingerprint=after.get("fingerprint", ""), fingerprint_status="matched",
             critical_findings=findings if findings is not None else getattr(ctx, "_last_review_critical_findings", []),
             advisory_findings=getattr(ctx, "_review_advisory", []),
@@ -1080,28 +1127,52 @@ def _return_commit_feedback(ctx: ToolContext, message: str, started: float, befo
     row = state.latest_attempt_for(repo_key=make_repo_key(pathlib.Path(ctx.repo_dir)),
         task_id=str(getattr(ctx, "task_id", "") or ""), tool_name="commit_reviewed", attempt=ctx._current_review_attempt_number)
     reference = {"surface": "commit", **{key: getattr(row, key) for key in ("repo_key", "task_id", "tool_name", "attempt", "pre_review_fingerprint")},
-                 "review_record_id": str(getattr(row, "review_record_id", "") or "")}
-    choice = ("Inspect the outcome, then revise/request review, stop, or explicitly continue in Advisory using the same "
-              "commit tool with review_reference and author_disposition {disposition: accepted|rejected|partial|deferred, "
-              "rationale: ...}. Author continuation buys no reviewer cycle. ")
+                 "review_record_id": str(getattr(row, "review_record_id", "") or "")} if row is not None else {}
     try:
         resolve_commit_review_reference(ctx, reference, state=state)
+        continuable = True
     except ValueError:
-        choice = "Reviewers are still running without feedback. Collect the existing wave or stop; informed author continuation is not available yet. "
+        continuable = False
+    collect = "Re-issue the same unchanged commit call to collect this paid wave at $0 (no second dispatch), "
+    choice = ("Inspect it, then revise and review again, stop, or explicitly continue with the same commit tool "
+              "passing review_reference and author_disposition {disposition: accepted|rejected|partial|deferred, "
+              "rationale: ...}; continuation re-checks the current bytes, buys no reviewer and is no reviewer PASS. ")
+    if row is None:
+        choice = "The attempt row is unreadable, so no continuation reference exists; retry or stop. "
+    elif pending:
+        choice = collect + ("or explicitly continue now with review_reference and author_disposition; the pending "
+                            "review stays recorded and is no PASS. " if continuable
+                            else "or stop; informed continuation needs received feedback. ")
+        left = getattr(ctx, "_left_review_wait", None) or {}
+        if left.get("surface") == "commit" and left.get("retry_key") == getattr(ctx, "_current_review_retry_key", ""):
+            note = ("An addressed message reached you while the reviewers ran: this call returned and their paid "
+                    "work continues separately; a [Review settled] notice follows the whole wave. " + note)
     if not pending:
         git_mod.run_cmd(["git", "reset", "HEAD"], cwd=ctx.repo_dir)
-    text = ("Review outcome returned before commit. " + choice +
+    text = ("Review outcome returned before commit" + (": reviewers are still running. " if pending else ". ") + note + choice +
             "Current files are preserved; no commit, tag or push occurred.\n" + json.dumps({"review_reference": reference,
-            "review_outcome": asdict(row)}, ensure_ascii=False, default=str))
+            "review_outcome": asdict(row) if row is not None else {}}, ensure_ascii=False, default=str))
     return {"status": "reviewed", "message": text, "review_reference": reference,
             "pre_fingerprint": before, "post_fingerprint": after}
+
+
+def watch_left_commit_review(ctx: ToolContext) -> bool:
+    """The author left this commit's paid wave on an addressed message: keep the wait
+    intention and one whole-wave settlement notice (``review_pause.watch_left_review``)."""
+    from ouroboros import review_pause
+
+    return review_pause.watch_left_review(
+        ctx, surface="commit", retry_key=str(getattr(ctx, "_current_review_retry_key", "") or ""),
+        attempt=int(getattr(ctx, "_current_review_attempt_number", 0) or 0),
+        record_id=str(getattr(ctx, "_current_review_record_id", "") or ""),
+        reissue="the same unchanged commit_reviewed call") is not None
 
 
 def disclose_commit_review_replay(ctx: ToolContext, replay: dict) -> None:
     """Keep the free replay cause separate from authority to create a commit."""
     replay_reason = str(replay.get("replay_reason") or "")
     if not review_enforcement_blocks("blocking"):
-        progress_note = "Cyber Pro: continuing without a new reviewer dispatch; original review facts are retained."
+        progress_note = "Cyber Pro: no new reviewer dispatched; original review facts are retained and the outcome returns first."
     elif replay_reason == IDENTICAL_DIFF_BLOCK_REASON:
         progress_note = (
             "Max Review Cycles: identical staged diff — reusing the recorded "
@@ -1119,7 +1190,7 @@ def disclose_commit_review_replay(ctx: ToolContext, replay: dict) -> None:
         + str(replay.get("advisory_replay") or "")
     )
     if not review_enforcement_blocks("blocking"):
-        disclosure = "Cyber Pro: proceeding without a new review. " + str(replay.get("advisory_replay") or "")
+        disclosure = "Cyber Pro: no new review was dispatched. " + str(replay.get("advisory_replay") or "")
     advisory_list = getattr(ctx, "_review_advisory", None)
     if isinstance(advisory_list, list):
         advisory_list.append(disclosure)
@@ -1137,8 +1208,17 @@ def bind_author_commit_candidate(ctx: ToolContext, commit_message: str, pre_fing
     from ouroboros.tools.review import _preflight_check, format_name_status_for_preflight
     from ouroboros.config import get_review_enforcement
 
+    # The critic's own aggregate on ITS subject (the reference's fingerprint), never this candidate's verdict.
+    signal = ""
+    if str(getattr(author_source, "review_record_id", "") or ""):
+        from ouroboros import review_ledger
+        try:
+            record = review_ledger.load_record(review_ledger.ledger_root(ctx), author_source.review_record_id) or {}
+            signal = str((record.get("verdict") or {}).get("aggregate") or "")
+        except Exception:
+            log.debug("critic aggregate unavailable for the author continuation", exc_info=True)
     author = build_author_disposition_from_mapping(ctx._author_commit_decision, subject_hash=pre_fingerprint["fingerprint"],
-        reviewer_signal=author_source.block_reason or author_source.status, enforcement=get_review_enforcement())
+        reviewer_signal=signal or author_source.block_reason or author_source.status, enforcement=get_review_enforcement())
     author["review_reference"] = ctx._author_commit_reference
     ctx._author_commit_record = author
     staged = git_mod.run_cmd(["git", "diff", "--cached", "--name-status"], cwd=ctx.repo_dir)

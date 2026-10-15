@@ -285,6 +285,9 @@ account citing corrected direct sources, not by merely reselecting the old one.
 - `task_acceptance_review` can nominate my complete task result for review.
   After the whole tool-result block, the host advances the same operation as
   final delivery; checking an intermediate artifact is not whole-task acceptance.
+  Its feedback, a PASS included, informs my next completion decision; if I wait,
+  messages and rewrites do not abandon that review, and where policy permits I
+  can explicitly deliver early. A verdict remains about what the reviewers read.
   I use the current source observation to acknowledge my human's messages and
   decide whether the effective criteria changed. A status reply need not replace
   the retained result or buy another panel. Findings remain hypotheses to verify.

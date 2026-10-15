@@ -67,7 +67,7 @@ def harness(tmp_path, monkeypatch):
     from ouroboros import review_custody
     from ouroboros.review_execution import ReviewAttemptResult
 
-    for name, value in {"OUROBOROS_TASK_REVIEW_MODE": "auto", "OUROBOROS_REVIEW_ENFORCEMENT": "blocking",
+    for name, value in {"OUROBOROS_TASK_REVIEW_MODE": "required", "OUROBOROS_REVIEW_ENFORCEMENT": "blocking",
                         "OUROBOROS_REVIEW_MAX_CYCLES": "3", "OUROBOROS_MAX_ROUNDS": "12",
                         "OUROBOROS_SAFETY_MODE": "off", "MCP_ENABLED": "false"}.items():
         monkeypatch.setenv(name, value)
@@ -158,10 +158,12 @@ def harness(tmp_path, monkeypatch):
             ctx = registry._ctx
             ctx.is_direct_chat = True
             ctx.task_metadata = dict(task["metadata"])
-            # Auto review by the typed contract: Auto/Required eligibility is unchanged.
             ctx.task_contract = {**task["task_contract"], "expected_output": "A complete status report."}
             # The agent's own RUNNING write: the contract is the root's review-cap authority.
             write_task_result(data, task["id"], "running", task_contract=ctx.task_contract, root_task_id=task["id"])
+            # Required reviews the report the turn retained (#1731); a declared output alone buys no panel.
+            from ouroboros.artifacts import store_task_artifact_bytes
+            store_task_artifact_bytes(data, task["id"], "report.txt", ANSWER.encode())
             ctx.task_attempt, ctx.current_chat_id = 1, task["chat_id"]
             ctx.review_wait_callback = getattr(self, "review_wait_callback", None)
             registry.override_handler("chat_history", lambda *_a, **_kw: "Synthetic history")
@@ -311,8 +313,9 @@ def test_a_correction_with_identical_text_is_a_new_output(harness, monkeypatch):
 def test_cyber_keeps_the_released_author_for_its_criticism(harness, monkeypatch, version):
     h = harness
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
-    monkeypatch.setattr("ouroboros.acceptance_settlement.acceptance_wait_chosen", lambda _ctx: False)
-    h.script = [finish("nominate", message=ANSWER),
+    # Cyber waits by default too (#1737): only the author's explicit finish releases early.
+    monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "cyber_pro")
+    h.script = [finish("nominate", message=ANSWER, pending_review="finish"),
                 lambda _messages: finish("again", answer_sha256=h.ctxs[0]._delivery_candidate.content_sha256)]
     execution = h.start(event(version=version))
     initial = execution.initial.result(timeout=30)

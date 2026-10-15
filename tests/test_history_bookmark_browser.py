@@ -234,7 +234,7 @@ def test_a_card_line_arrives_with_its_source_page_and_a_reopen_reads_only_the_ne
     when the saved row adopts it. Closed and opened again, the room reads only its newest page and
     is at its newest message (owner decisions 2026-10-05)."""
     from datetime import datetime, timedelta, timezone
-    from ouroboros.merge_receipts import card_row_text
+    from ouroboros.merge_receipts import card_row_text, review_coverage
     from ouroboros.projects_registry import create_project
     from tests.ui_chat_viewport_smoke import _emit_ws_frame
     from playwright.sync_api import sync_playwright
@@ -244,9 +244,12 @@ def test_a_card_line_arrives_with_its_source_page_and_a_reopen_reads_only_the_ne
     cid = project['chat_id']
     start = datetime(2026, 9, 1, 10, tzinfo=timezone.utc)
     stamp = lambda minute: (start + timedelta(minutes=minute)).isoformat()
+    # A declared review with no host-observed record: the receipt honestly warns, never reads green.
+    declared = {'reviewed_head_sha': 'b' * 40, 'reviewed_base_sha': 'c' * 40, 'scope': 'full', 'verdict': 'PASS'}
     receipt = {'receipt_id': 'source', 'number': 1347, 'revision': 3,
                'outcome': {'status': 'merged', 'merge_sha': 'a' * 40},
-               'coverage': {'status': 'covers_head', 'gaps': []}}
+               'review': {'declared': declared, 'record': None, 'declared_only': True},
+               'coverage': review_coverage(declared, [], 'b' * 40)}
     marker = 'PR #1347 merge:' if line_kind == 'receipt' else 'SOURCE_PAGE_NARRATION'
     text = card_row_text(receipt) if line_kind == 'receipt' else (
         'SOURCE_PAGE_NARRATION. ' + 'The original expanded activity remains readable. ' * 12)
@@ -307,8 +310,8 @@ def test_a_card_line_arrives_with_its_source_page_and_a_reopen_reads_only_the_ne
                 _emit_ws_frame(page, {**old, 'type': 'chat', 'is_progress': True,
                                      'card_row_revision': 2, 'ts': stamp(99), 'content': 'Stale queued receipt'})
                 # The retained source above is exact; the known host prefix is display-only.
-                assert text.startswith('✅ PR #1347 merge:')
-                assert all(part in line.inner_text() for part in text.removeprefix('✅ ').splitlines())
+                assert text.startswith('⚠️ PR #1347 merge:') and 'no_host_observed_review_record' in text
+                assert all(part in line.inner_text() for part in text.removeprefix('⚠️ ').splitlines())
             else:
                 line.locator('[data-live-line-toggle]').click()
                 assert line.get_attribute('data-expanded') == '1'

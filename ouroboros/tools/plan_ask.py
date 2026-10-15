@@ -837,10 +837,39 @@ def record_reply(ctx: Any, *, state_root: pathlib.Path, task_id: str, ask_id: st
         reply_ref = settle_ledger_seat(state_root, task_id, str(ask["record_id"]), seat_id, facts, raw_text=str(row.get("text") or ""))
         if reply_ref:
             record = plan_record.update_participant(state_root, task_id, ask_id=ask_id, seat_id=seat_id, facts={"reply_ref": reply_ref})
+            if participant.get("status") == "pending":  # it settles now
+                _keep_late_reply_in_view(state_root, task_id, ask, participant, facts, reply_ref)
     if ctx is not None:
         _announce_reply(ctx, participant, facts)
         _reference(ctx, task_id, record, state_root)
     return record
+
+
+def _keep_late_reply_in_view(state_root: pathlib.Path, task_id: str, ask: Mapping[str, Any], participant: Mapping[str, Any],
+                             facts: Mapping[str, Any], reply_ref: Mapping[str, Any]) -> None:
+    """A reply that settles after its task ended stays in view in the task's room until the integrating mind
+    releases it (#1738, ``late_review_marks``): advice for whoever continues the work, never a verdict, a hold
+    or a wake. The mark points at the ledger's retained reply and copies nothing else. A reply that lands
+    while its author runs stays with the gate and ``plan_task()``."""
+    from ouroboros import late_review_marks
+
+    source, ended = reply_ref.get("ref"), late_review_marks.ended_task_row(state_root, task_id)
+    if not isinstance(source, Mapping) or ended is None:
+        return
+    who, seat = str(facts.get("model") or participant.get("model") or "a participant"), str(participant.get("seat_id") or "")
+    reply = facts.get("reply") or {}
+    lines = [f"Plan council reply from {who} (seat {seat}) to ask {ask.get('ask_id')} on plan revision {ask.get('revision')}, "
+             "recorded after its task ended: advice for whoever continues this work, not a verdict; it holds nothing."]
+    if facts.get("status") != "answered":
+        lines.append("Its reply could not be read as the reply object; the full text is in its retained source.")
+    lines += [f"Prose: {' '.join(str(reply['prose']).split())}"] if str(reply.get("prose") or "").strip() else []
+    lines += [f"- objection {o.get('id')}: {' '.join(str(o.get('text') or '').split())}" for o in reply.get("objections") or []]
+    late_review_marks.publish_late_review(state_root, {
+        "surface": "plan_review", "task_id": task_id, "publication_id": f"plan-late:{ask.get('ask_id')}:{seat}",
+        "chat_id": ended.get("chat_id"), "lines": lines,
+        "settled_at": str(facts.get("answered_at") or ""), "source_ref": {**source, "task_id": str(reply_ref.get("task_id") or task_id)},
+        "subject": {"ask_id": str(ask.get("ask_id") or ""), "seat_id": seat, "plan_revision": ask.get("revision"),
+                    "record_id": str(ask.get("record_id") or "")}})
 
 
 def settle_released_reply(usage_ctx: Any, *, request: Any, task_id: str, actor: Any, settled_wave: Dict[str, str],

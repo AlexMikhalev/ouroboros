@@ -67,7 +67,7 @@ explicit work-order review obligations.
 - **Author finality remains evidence, not reviewer PASS:** task acceptance,
   skill, and commit owners may record an explicit author disposition against the
   exact current subject after received feedback or a disclosed unavailable review under Advisory.
-  Material commit outcomes return before Git effects; explicit continuation uses
+  Advisory and Cyber commit outcomes return before Git; explicit continuation uses
   the returned `review_reference` and author disposition, with independent current
   preflight/test/Git checks and no new critic.
   Cyber may decide to continue without prior feedback, keeping the actual missing,

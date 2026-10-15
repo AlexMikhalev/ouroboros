@@ -77,13 +77,13 @@ def test_acceptance_answer_choice_preserves_wait_policy(tmp_path, monkeypatch, e
     assert (getattr(registry._ctx, "_acceptance_pending_review_choice", "") or "wait") == (
         "finish" if answer == "finish" else "wait")
     assert acceptance_wait_chosen(registry._ctx) is (
-        mode != "cyber_pro" and (enforcement == "blocking" or answer != "finish")
+        (enforcement == "blocking" and mode != "cyber_pro") or answer != "finish"
     )
     assert registry._ctx._task_acceptance_pending == "paid-binding"
     assert candidate.control_episode_seen is True
     assert "Interim prose is activity, not a new completion selection" in str(ctx.messages)
     assert ("Pending critics: choose pending_review=wait" in str(ctx.messages)) is (
-        enforcement == "advisory" and mode != "cyber_pro"
+        enforcement == "advisory" or mode == "cyber_pro"
     )
 
 
@@ -259,11 +259,11 @@ def test_whole_loop_delivers_selected_complete_answer_after_settlement(full_loop
     assert trace["delivery_candidate"]["content_sha256"] != trace["acceptance_decision"]["reviewed_candidate_hash"]
 
 
-def test_cyber_explicit_nomination_keeps_its_existing_no_wait_power(full_loop, monkeypatch):
+def test_cyber_explicit_early_finish_keeps_its_no_wait_power(full_loop, monkeypatch):
     f = full_loop
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "cyber_pro")
     revised = ANSWER + " Budget: $12."
-    f.ctx.owner_wait_callback = lambda *_a, **_kw: pytest.fail("Cyber must not acquire a wait")
+    f.ctx.owner_wait_callback = lambda *_a, **_kw: pytest.fail("explicit early finish must not acquire a wait")
 
     def main(_llm, messages, *_a, **_kw):
         f.model_step += 1
@@ -271,7 +271,7 @@ def test_cyber_explicit_nomination_keeps_its_existing_no_wait_power(full_loop, m
             return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "review")]}, 0.0
         assert f.model_step == 2 and f.entered.wait(5) and not f.release.is_set()
         assert "Interim prose is activity, not a new completion selection" in str(messages)
-        return _finish(revised, acceptance_subject={
+        return _finish(revised, pending_review="finish", acceptance_subject={
             "owner_source_sha256": f.ctx._acceptance_observation["owner_source_sha256"],
         }), 0.0
 
@@ -280,7 +280,7 @@ def test_cyber_explicit_nomination_keeps_its_existing_no_wait_power(full_loop, m
     assert result == revised and len(f.review_sends) == 1 and not f.waits
     assert trace["acceptance_decision"]["reason"] == "author_finish"
     author = trace["acceptance_decision"]["author_disposition"]
-    assert author["source"] == "author_final_response"
+    assert author["source"] == "finish_task"
     # The submitted final is Main's act: the host records "finish" and invents
     # neither an "accepted" stance nor a "solved" tier (TZ-2 C4).
     assert author["action"] == "finish" and author["disposition"] == ""
@@ -352,7 +352,7 @@ def test_return_order_preserves_feedback_identity_and_new_subjects(full_loop, mo
                 index, offered = next((i, row) for i, row in enumerate(runs) if row.get("authority") == "host_root")
                 assert offered["feedback_offered"] and not offered.get("feedback_delivered")
                 assert any(source == {"task_id": f.run_args["task_id"], "run_index": index,
-                                      "binding_hash": offered["binding_hash"]}
+                                      "binding_hash": offered["binding_hash"], "settled": True}
                            for message in messages for source in message.get("review_feedback", []))
             if next_action == "effect" or (next_action == "held_effect" and order == "ready"):
                 if next_action == "held_effect":
@@ -384,6 +384,8 @@ def test_return_order_preserves_feedback_identity_and_new_subjects(full_loop, mo
     monkeypatch.setattr(loop, "call_llm_with_retry", main)
     result, _usage, trace = f.run()
     assert result == revised
+    # A text-only rewrite delivered after the settled PASS reached Main buys nothing (fork 1=B); a
+    # rewrite Main nominated itself gets its own panel, also when it was nominated while the first ran.
     assert len(f.review_sends) == (1 if next_action == "rewrite" else 2)
     assert f.review_requests[0].subject == ANSWER
     if order == "ready":
@@ -393,9 +395,10 @@ def test_return_order_preserves_feedback_identity_and_new_subjects(full_loop, mo
         effect = f.ctx.drive_root / "task_drives" / f.run_args["task_id"] / "new-effect.txt"
         assert effect.read_text(encoding="utf-8") == "Additional evidence."
     if next_action == "held_effect" and order == "ready":
-        # Both panels are ready before returning. The refused fence creates no
-        # acceptance-wait request; the answered re-seal still closes admission.
-        assert f.model_step == 3  # nomination, effect, final selection; no refusal-only round
+        # Both panels are ready before returning. The refused fence buys no
+        # refusal-only round, but the changed subject's feedback precedes its
+        # author's next completion decision: nomination, effect, select, confirm.
+        assert f.model_step == 4
         assert "TASK ACCEPTANCE WAIT" not in str(f.model_inputs)
         assert len(begins) == 3  # the nomination's, the refused one, the answered re-seal
         assert trace["acceptance_decision"]["reason"] == "clean_pass"
@@ -431,7 +434,8 @@ def test_ready_fallback_reuses_only_a_delivered_pass_on_a_replaced_text(
         "actors": [{"operation_state": "settled"}], "binding_hash": "binding-one", "panel_id": "panel-one",
         "candidate_hash": candidate.content_sha256,
         "subject_hash": delivery_subject_hash(registry._ctx, trace, ANSWER),
-        "feedback_delivered": delivered, "superseded_by_revision": True, "superseded_reason": reason,
+        "feedback_delivered": delivered, "settled_feedback_delivered": delivered,
+        "superseded_by_revision": True, "superseded_reason": reason,
     }]
     revised = ANSWER + " Reworded only."
     loop_mod._replace_delivery_candidate(registry, ctx, trace, revised, control="replace")

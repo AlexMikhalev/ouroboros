@@ -740,7 +740,7 @@ def test_pending_custody_record_settles_in_place_on_the_exact_retry(candidate, m
     assert len(calls) == 2, second
     settled = rl.load_record(rl.ledger_root(ctx), record_id)
     assert settled["state"] == "settled" and settled["revision"] == 2 and settled["verdict"]["aggregate"] == "PASS", second
-    assert f"review_record_id: {record_id}" in second
+    assert record_id in second, "the returned outcome names the record it settled"
     assert [r["record_id"] for r in rl.recent_records(rl.ledger_root(ctx), ctx.task_id, 5)] == [record_id]
     assert rl.recent_records(rl.ledger_root(ctx), ctx.task_id, 5)[0]["revision"] == 2
 

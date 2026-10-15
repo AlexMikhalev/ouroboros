@@ -78,7 +78,9 @@ def actual_acceptance(tmp_path, monkeypatch):
     # a different logical task, not merely a different directory for "task".
     task_id = "task-" + tmp_path.name
     _seed_acceptance_root(tmp_path, task_id, ctx)
-    trace = {"tool_calls": [{"tool": "write_file", "args": {"path": "result.txt"}}]}
+    from ouroboros.artifacts import store_task_artifact_bytes
+    store_task_artifact_bytes(tmp_path, task_id, "result.txt", b"Produced result for independent review.")
+    trace = {"tool_calls": []}
     messages = [{"role": "system", "content": ""}, {"role": "user", "content": "goal"}]
     tools = SimpleNamespace(_ctx=ctx)
     ctx._execution_trace = trace
@@ -227,22 +229,27 @@ def test_task_author_record_preserves_configured_and_effective_authority(actual_
     original = copy.deepcopy(h.host_runs()[-1])
     assert len(h.physical.calls) == 1
     expose_acceptance_feedback(h.trace, inspect.getclosurevars(h.run).nonlocals["messages"], h.ctx.task_id)
-    if explicit or runtime == "pro":
-        h.annotate()
     config.reset_runtime_mode_baseline_for_tests()
     config.initialize_runtime_mode_baseline(runtime)
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", enforcement)
     try:
+        if not explicit:
+            # Prose after exposed feedback is not an author finish, Cyber included.
+            # Reuse the reviewed subject so this negative cannot buy a new panel.
+            h.run("Initial answer")
+            assert not h.trace["acceptance_decision"].get("author_disposition")
+            assert h.trace["acceptance_decision"]["reason"] != "author_finish"
+            assert len(h.physical.calls) == len(h.host_runs()) == 1
+        h.annotate()
         h.run("Verified revised answer")
         decision = h.trace["acceptance_decision"]
         assert decision["enforcement"] == enforcement
         assert decision["author_disposition"]["enforcement"] == "advisory"
         assert decision["reason"] == "author_finish"
-        if explicit or runtime == "pro":
-            assert len(h.physical.calls) == len(h.host_runs()) == 1
+        assert len(h.physical.calls) == len(h.host_runs()) == 1
         assert h.host_runs()[0]["actors"] == original["actors"]
-        if not explicit and runtime == "cyber_pro":
-            assert decision["author_disposition"]["source"] == "author_final_response"
+        assert h.host_runs()[0]["paid_identity"] == original["paid_identity"]
+        assert decision["author_disposition"]["source"] != "author_final_response"
         review = {"status": "fail", "acceptance_decision": decision}
         objective = _objective_axis(review)
         row = {"status": "completed", "outcome_axes": {

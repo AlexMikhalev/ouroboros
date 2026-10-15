@@ -60,6 +60,11 @@ class DecisionResponse(TypedDict, total=False):
     applied_request_id. wait carries the current projection and revision;
     saved says whether the optional permanent role update landed, with null
     reserved for the existing settings-writer timeout's unknown outcome.
+    Applied, saved and a refusal or failure stay separate facts: an error after
+    the claim still reports the claim's current row and receipt. ``applied:false``
+    is no observed application yet, not proof that a pending action cannot apply. The role saves
+    only while the task's stop state reads clear — a recorded Stop intent (Wrap
+    up included) or Panic saves nothing, nor does an unreadable (unknown) state.
     """
 
     ok: bool

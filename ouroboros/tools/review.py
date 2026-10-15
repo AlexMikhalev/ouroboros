@@ -78,8 +78,9 @@ def get_tools():
                     "root in auto/required mode nominates its complete ready result: after this round's "
                     "tool results, the host advances final delivery's review operation; settling that "
                     "review alone does not finish the task. A child gets advisory evidence now from at "
-                    "most ONE configured reviewer (reviewer_slot_id selects it); a review-off root "
-                    "gets its configured panel."
+                    "most ONE configured reviewer (reviewer_slot_id selects it). Off buys no new "
+                    "root-result panel; already paid feedback remains collectible. Auto starts only "
+                    "on nomination; Required also reviews actual produced material or observed effects."
                 ),
                 "parameters": {
                     "type": "object",
@@ -197,7 +198,7 @@ def _handle_task_acceptance_review(
     )
     from ouroboros.task_results import resolve_task_lineage
 
-    # Child/off review-only calls build their packet; roots nominate to the host fence.
+    # Child review-only calls build their packet; roots nominate to the host fence.
     # Explicit author actions stage completion before either dispatch path, even if
     # packet assembly is unavailable. Agent evidence never becomes host repo_diff.
     legacy_aliases = []
@@ -296,7 +297,6 @@ def _handle_task_acceptance_review(
     retry_declaration: Dict[str, Any] = {}
     if isinstance(acceptance_retry, dict):
         from ouroboros.acceptance_preparation import RETRY_BASES, resolve_retry_source
-        from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
         if disposition or author_action:
             return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
@@ -307,7 +307,6 @@ def _handle_task_acceptance_review(
         incident_id = str(acceptance_retry.get("incident_id") or "").strip()
         retry_rationale = " ".join(str(acceptance_retry.get("rationale") or "").split())
         if basis not in RETRY_BASES or not incident_id or not retry_rationale:
-            from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
             return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
                 text="ERROR: TOOL_ARG_ERROR: acceptance_retry requires the disclosed incident_id, "
                      "a basis of material_change|repair_evidence|owner_retry, and a rationale."))
@@ -345,6 +344,13 @@ def _handle_task_acceptance_review(
             "rationale": agent_rationale, "acceptance_subject": acceptance_subject,
             "agent_decision": agent_decision,
         }, source="task_acceptance_review")
+    if is_root_task and get_task_review_mode() == "off":
+        from ouroboros.review_dispatch import reconcile_pending_acceptance_runs
+        trace = getattr(ctx, "_execution_trace", None) or {}
+        reconcile_pending_acceptance_runs(trace, drive_root=ctx.drive_root, usage_ctx=ctx)
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="REVIEW_BLOCKED",
+            text=json.dumps({"status": "not_dispatched", "reason": "review_mode_off",
+                             "review_runs": trace.get("review_runs") or []}, ensure_ascii=False, default=str)))
     if get_task_review_mode() in {"auto", "required"} and is_root_task:
         # The ROOT nomination returns BEFORE any host evidence is built: the
         # host rebuilds host-attested evidence at the authoritative fence, and
@@ -379,8 +385,7 @@ def _handle_task_acceptance_review(
             deferred["acceptance_retry"] = retry_declaration
         return json.dumps(deferred, ensure_ascii=False, indent=2, default=str)
 
-    # Child-task and `off`-mode acceptance builds the packet here and dispatches
-    # its packet rows itself; a builder failure propagates as before.
+    # A child dispatches its own advisory evidence; builder failures propagate.
     evidence = build_task_acceptance_evidence(
         ctx,
         agent_evidence=agent_evidence,
@@ -413,11 +418,8 @@ def _handle_task_acceptance_review(
         task_id=str(getattr(ctx, "task_id", "") or ""), retry_key=f"task_acceptance:{task_acceptance_evidence_revision(evidence)}",
         deadline_at=_owner_deadline_at(ctx),  # the task's own window bounds every row
     )
-    # Child-task and `off`-mode acceptance is advisory evidence, never the root
-    # verdict or its host acceptance (#1334, reviewer_slot_config R2): the rows
-    # follow their configured delivery. A child reviews with at most ONE
-    # configured row; an off-mode root's explicit call keeps the panel's
-    # configured breadth. A malformed config refuses typed (R3).
+    # Child criticism never supplies the root verdict. Each chosen row keeps
+    # its configured delivery; malformed pool configuration refuses typed.
     try:
         slots = triad_delivery_slots(role_hint="task acceptance")
     except ValueError as exc:

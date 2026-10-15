@@ -614,6 +614,97 @@ def test_a_real_remote_operation_consumes_its_exact_decision_and_a_closed_one_is
     assert dead.status_code == 409
 
 
+@pytest.mark.serial
+@pytest.mark.parametrize("surface", ["task_acceptance", "plan_review"])
+def test_a_decision_the_remote_operation_applies_between_the_gateway_reads_is_its_own_receipt(
+        env, monkeypatch, surface):
+    """The gateway reads the claimed row, then asks whether the remote controller is
+    closed. A controller that consumes that exact claim in between closes BECAUSE it
+    applied it: its durable ``applied_request_id`` is the answer, never a refusal and
+    never a second application. A closure for any other reason still refuses."""
+    from ouroboros.gateway import task_model_wait as gateway
+    from ouroboros.owner_mailbox import KIND_MODEL_WAIT, drain_owner_entries
+    from ouroboros.platform_layer import process_start_time
+    from ouroboros.process_custody import current_custody_session_id
+    from ouroboros.task_store import patch_document
+    from supervisor import queue as task_queue
+
+    f = env
+    monkeypatch.setattr(task_queue, "RUNNING", {})
+    canonical = lambda wait_id: (load_task_result(f.root, TASK).get("model_waits") or {}).get(wait_id) or {}  # noqa: E731
+    between_reads = {}
+    closed = review_operation._RemoteOperationController.closed
+
+    def racing(controller):
+        # Only the post-claim read meets a pending action; the earlier liveness read has none.
+        request_id = (canonical(controller.wait_id).get("pending_action") or {}).get("request_id")
+        if request_id in between_reads:
+            between_reads.pop(request_id)(controller.wait_id)
+        return closed.fget(controller)
+
+    monkeypatch.setattr(review_operation._RemoteOperationController, "closed", property(racing))
+    child = subprocess.Popen([sys.executable, "-c", _REMOTE_OPERATION, str(f.root), current_custody_session_id(), TASK,
+                              surface],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, cwd=os.getcwd())
+    out, reader = _lines(child.stdout)
+    executing = {}
+    try:
+        banner = json.loads(out.get(timeout=60))
+        executing.update(banner, birth=process_start_time(banner["pid"]))
+        row = until(lambda: [r for r in _rows(f.root) if r.get("credential_harness")], timeout=30)[0]
+        write_task_result(f.root, TASK, "completed", result="answer")
+        block = row["review_operation"]
+        pointer = load_task_result(f.root, TASK)["review_operations"][block["owner_id"]]
+
+        def end_without_applying(wait_id):
+            owner_id = canonical(wait_id)["model_wait_owner_id"]
+            patch_document(f.root, TASK, lambda current: {**current, "review_operations": {
+                key: value for key, value in current["review_operations"].items() if key != owner_id}})
+
+        def apply_another(wait_id):
+            model_wait.mutate_wait(f.root, TASK, wait_id, lambda previous: {
+                **{key: value for key, value in previous.items() if key != "pending_action"},
+                "state": "resolved", "applied_request_id": "another-request"})
+
+        # Rows of the same LIVE controller under their own open pointers: a closure
+        # between the reads that did not apply this claim is still task_not_live.
+        for wait_id, close in (("ended-between", end_without_applying), ("applied-another", apply_another)):
+            owner_id = f"forged-{wait_id}"
+            forged = {**row, "wait_id": wait_id, "model_wait_owner_id": owner_id,
+                      "review_operation": {**block, "owner_id": owner_id}}
+            _forge(f.root, wait_id, forged, dict(pointer))
+            try:
+                between_reads[wait_id] = close
+                refused = gateway._decide(f.root, _decision(forged, wait_id))
+                assert refused.status_code == 409 and json.loads(refused.body)["reason_code"] == "task_not_live"
+                assert wait_id not in between_reads, "the closure happened between the gateway's reads"
+                assert "pending_action" not in canonical(wait_id)
+                assert canonical(wait_id).get("applied_request_id") != wait_id
+            finally:
+                _forge(f.root, wait_id, forged, dict(pointer), remove=True)
+        # The real operation consumes the exact claim between the reads.
+        between_reads["switch-remote"] = lambda wait_id: until(
+            lambda: canonical(wait_id).get("applied_request_id") == "switch-remote", timeout=30)
+        switch = _decision(row, "switch-remote", action="switch", model=OTHER_MODEL,
+                           credential_profile_id="", use_local=False, persist_role=False)
+        response = gateway._decide(f.root, switch)
+        assert "switch-remote" not in between_reads, "the controller applied the claim between the gateway's reads"
+        assert response.status_code == 202, response.body
+        answer = json.loads(response.body)
+        assert (answer["applied"], answer["duplicate"], answer["state"]) == (True, False, "resolved")
+        assert answer["wait"]["applied_request_id"] == "switch-remote"
+        assert json.loads(out.get(timeout=60)) == {"operation": "closed", "calls": [MODEL, OTHER_MODEL]}, \
+            "one application by the operation itself, never a repeated action"
+        assert drain_owner_entries(f.root, TASK, set(), kinds={KIND_MODEL_WAIT}) == []
+        # The same request after the operation closed stays refused: the receipt above
+        # was this request's own observation, not a licence for a later 202.
+        late = gateway._decide(f.root, switch)
+        assert late.status_code == 409 and json.loads(late.body)["reason_code"] == "task_not_live"
+    finally:
+        teardown = _stop_remote(child, reader, executing)
+    assert teardown["interpreter_exited"] and not teardown["reader_running"], teardown
+
+
 def test_rejoining_a_live_panel_binds_its_operation_and_retains_no_phantom_checkpoint(env):
     f = env
     with _parent(f):

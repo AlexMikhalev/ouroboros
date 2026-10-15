@@ -383,7 +383,7 @@ def test_acceptance_panel_skips_with_typed_reason_and_zero_reviewer_calls(tmp_pa
     )
     oh.record_requested(tmp_path, "t-acc", request_id="rq", attempt=1)
     ctx = _acceptance_ctx(tmp_path, latched=True)
-    trace = {"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}
+    trace = {"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}, "is_error": False}]}
     assert loop_mod._run_task_acceptance_review_once(
         tools=SimpleNamespace(_ctx=ctx), content="done", task_id="t-acc", task_type="task",
         llm_trace=trace, drive_root=None,
@@ -429,12 +429,14 @@ def test_unlatched_task_reaches_the_normal_acceptance_machinery(tmp_path, monkey
     monkeypatch.setattr(task_pacing, "review_launch_allowed",
                         lambda snapshot: (False, "review_skipped_deadline_reserve"))
     ctx = _acceptance_ctx(tmp_path, latched=False)
-    trace = {"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}
+    trace = {"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}, "is_error": False}]}
     loop_mod._run_task_acceptance_review_once(
         tools=SimpleNamespace(_ctx=ctx), content="done", task_id="t-acc", task_type="task",
         llm_trace=trace, drive_root=None,
         messages=[{"role": "user", "content": "goal"}], emit_progress=lambda _m, *, incident=None: None,
     )
+    # Same eligible context as the latched case, so only the latch differs.
+    assert trace["review_decision"]["eligibility"] == "eligible"
     assert trace["review_decision"].get("skipped") != "owner_hurry"
     assert resolved, "the unlatched path must reach the real pacing machinery"
 

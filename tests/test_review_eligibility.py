@@ -1,9 +1,8 @@
-"""Effect-gated task-acceptance review eligibility + cognitive recovery + persistence.
+"""Root result modes, observed effects, cognitive recovery and persistence.
 
-Covers v6.6.0 changes: `required` mode reviews only turns with observable
-reviewable effects (or non-direct tasks); cognitive-memory updates are not
-effects; cognitive/root redirect blocks recover via the correct tool; the
-review decision surfaces into loop_outcome; and the draft-final invariant holds.
+Auto requires the author's typed nomination; Required also accepts produced
+material and observed effects, never requests or queue membership. Cognitive
+memory keeps its separate meaning, and the review decision stays observable.
 """
 from __future__ import annotations
 
@@ -134,16 +133,14 @@ def test_empty_trace_has_no_effects():
     assert not turn_has_reviewable_effects({})
 
 
-def test_process_outputs_are_reviewable_effects():
-    # run_command / run_script that declare deliverable outputs produce artifacts.
+@pytest.mark.parametrize("tool", ["run_command", "run_script"])
+@pytest.mark.parametrize("registered", [False, True])
+def test_process_outputs_require_observed_production(tool, registered):
+    # Declared paths are intentions; successful registration is the produced fact.
     assert turn_has_reviewable_effects({"tool_calls": [
-        {"tool": "run_command", "is_error": False, "status": "ok",
-         "args": {"cmd": ["python", "build.py"], "outputs": ["Desktop/deck.pptx"]}},
-    ]})
-    assert turn_has_reviewable_effects({"tool_calls": [
-        {"tool": "run_script", "is_error": False, "status": "ok",
-         "args": {"outputs": ["report.html"]}},
-    ]})
+        {"tool": tool, "is_error": False, "status": "ok",
+         "args": {"outputs": ["report.html"]}, "artifact_registered": registered},
+    ]}) is registered
 
 
 def test_registered_artifact_flag_is_an_effect():
@@ -174,8 +171,8 @@ def test_cwd_coding_effect_class_is_empty_since_d10():
     ]})
 
 
-def test_start_service_with_outputs_is_an_effect():
-    assert turn_has_reviewable_effects({"tool_calls": [
+def test_start_service_declared_outputs_are_not_produced_artifacts():
+    assert not turn_has_reviewable_effects({"tool_calls": [
         {"tool": "start_service", "is_error": False, "status": "ok",
          "args": {"cmd": ["serve"], "outputs": ["report.html"]}},
     ]})
@@ -187,10 +184,10 @@ def test_off_never_eligible():
     assert _task_acceptance_eligible("off", {"tool_calls": [_call("commit_reviewed")]}, False) == (False, "off")
 
 
-def test_auto_host_reviews_effectful_work():
-    assert _task_acceptance_eligible(
-        "auto", {"tool_calls": [_call("commit_reviewed")]}, True,
-    ) == (True, "auto_effect")
+def test_auto_effectful_work_still_requires_a_nomination():
+    trace = {"tool_calls": [_call("commit_reviewed")]}
+    assert _task_acceptance_eligible("auto", trace, True) == (False, "skipped_conversation")
+    assert _task_acceptance_eligible("auto", _nominated(trace), True) == (True, "auto_agent_request")
 
 
 def test_auto_direct_conversation_is_skipped():
@@ -206,13 +203,13 @@ def test_required_direct_chat_no_effect_is_skipped():
     assert _task_acceptance_eligible("required", {"tool_calls": []}, True) == (False, "skipped_conversation")
 
 
-def test_direct_declared_deliverable_is_host_reviewed_without_write_effect():
+def test_direct_requested_deliverable_does_not_prove_production():
     assert _task_acceptance_eligible(
         "required",
         {"tool_calls": []},
         True,
         task_contract={"expected_output": "A cited research report"},
-    ) == (True, "required_contract")
+    ) == (False, "skipped_conversation")
 
 
 def test_read_or_search_activity_alone_does_not_request_review():
@@ -245,8 +242,8 @@ def test_required_with_effect_is_eligible():
     ) == (True, "required_effect")
 
 
-def test_required_nondirect_is_eligible_even_without_effect():
-    assert _task_acceptance_eligible("required", {"tool_calls": []}, False) == (True, "required_nondirect")
+def test_required_queue_membership_does_not_prove_production():
+    assert _task_acceptance_eligible("required", {"tool_calls": []}, False) == (False, "skipped_conversation")
 
 
 @pytest.fixture
@@ -295,23 +292,25 @@ def host_acceptance(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("direct", [False, True], ids=["queued", "direct"])
-@pytest.mark.parametrize("calls,contract,expected", [
-    ([], {}, 0),
-    ([_call("read_file"), _call("web_search")], {}, 0),
-    ([_call("update_scratchpad")], {}, 0),
-    ([_call("enable_tools")], {}, 0),
-    ([_call("write_file", root="user_files")], {}, 1),
-    ([_call("read_file")], {"expected_output": "A cited research report"}, 1),
-    ([], {"acceptance_claims": [{"id": "claim_1", "claim": "Compare the sources"}]}, 1),
+@pytest.mark.parametrize("nominated", [False, True])
+@pytest.mark.parametrize("calls,contract", [
+    ([], {}),
+    ([_call("read_file"), _call("web_search")], {}),
+    ([_call("update_scratchpad")], {}),
+    ([_call("enable_tools")], {}),
+    ([_call("write_file", root="user_files")], {}),
+    ([_call("read_file")], {"expected_output": "A cited research report"}),
+    ([], {"acceptance_claims": [{"id": "claim_1", "claim": "Compare the sources"}]}),
 ], ids=["conversation", "exploration", "cognitive", "meta", "effect", "report", "claim"])
 def test_auto_host_dispatch_is_transport_independent(
-    monkeypatch, host_acceptance, direct, calls, contract, expected,
+    monkeypatch, host_acceptance, direct, calls, contract, nominated,
 ):
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "auto")
     ctx, run, requests = host_acceptance
     ctx.is_direct_chat = direct
     ctx.task_contract = contract
-    trace = {"tool_calls": calls}
+    trace = _nominated({"tool_calls": calls}) if nominated else {"tool_calls": calls}
+    expected = int(nominated)
     run(trace)
     assert len(requests) == expected, trace.get("acceptance_decision", {}).get("degraded_reasons")
     assert len(trace.get("review_runs", [])) == expected

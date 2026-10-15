@@ -18,7 +18,7 @@ A boundary with still-live tool invocations, processes or services is not passiv
 the author waits holding the conversation, as before. Persistence failure lends
 nothing. ``continuation_version`` is negotiated per request; only a version-1 consumer
 takes the initial envelope, so only there is an author-selected output "released"
-early (Advisory ``pending_review=finish`` and the Cyber rule). Releasing keeps the
+early (an explicit ``pending_review=finish`` under nonblocking review, Cyber included). Releasing keeps the
 author for the panel's criticism; a PASS never publishes by itself. A pending release
 is bound to its selection and panel: a new selection clears it, and a skipped park
 never publishes it at a later unrelated review. Each released or

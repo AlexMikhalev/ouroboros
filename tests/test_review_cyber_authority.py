@@ -75,8 +75,11 @@ def test_review_status_readiness_matches_the_actual_gate(candidate, access):  # 
     assert not load_state(candidate.drive_root).advisory_runs
 
 
-def test_actual_staged_candidate_can_continue_after_failed_review(candidate, access, monkeypatch):  # noqa: F811
-    from ouroboros.tools import git_review_cycle
+def test_failed_review_returns_before_git_and_cyber_continues_explicitly(candidate, access, monkeypatch):  # noqa: F811
+    """#1741: a Cyber outcome, even a failed review, reaches the author before Git; only the
+    author's explicit continuation commits the independently bound current bytes."""
+    import json as _json
+    from ouroboros.tools import commit_gate, git_review_cycle
 
     # The wave's one verdict: nobody answered the coupling question (the seat
     # asked it errored) — NOT_PERFORMED, carried as ``review_err`` with the
@@ -93,11 +96,27 @@ def test_actual_staged_candidate_can_continue_after_failed_review(candidate, acc
     outcome = git_review_cycle._run_reviewed_stage_cycle(
         candidate, "candidate", 0, paths=["change.py"], require_release_tag=False,
     )
-    assert outcome["status"] == ("passed" if access == "cyber_pro" else "blocked")
+    assert outcome["status"] == ("reviewed" if access == "cyber_pro" else "blocked")
     assert result.status == "error" and result.blocked
-    if access == "cyber_pro":
-        assert outcome["pre_fingerprint"]["fingerprint"] == outcome["post_fingerprint"]["fingerprint"]
-        assert "value = 2" in git.run_cmd(["git", "show", ":change.py"], cwd=candidate.repo_dir)
+    if access != "cyber_pro":
+        return
+    assert "Review outcome returned before commit" in outcome["message"]
+    reference = _json.loads(outcome["message"].split("\n", 1)[1])["review_reference"]
+    assert reference == outcome["review_reference"] and reference["surface"] == "commit"
+    assert "value = 2" not in git.run_cmd(["git", "diff", "--cached"], cwd=candidate.repo_dir), "nothing stays staged"
+    monkeypatch.setattr(git, "_run_parallel_review", lambda *a, **k: pytest.fail("continuation buys no reviewer"))
+    git._reset_commit_review_state(candidate)
+    assert commit_gate.prepare_author_commit_request(candidate, reference, {
+        "disposition": "rejected", "rationale": "I read the unperformed coupling outcome and accept these bytes."}, "") is None
+    assert git._check_overlapping_review_attempt(candidate) is None
+    continued = git_review_cycle._run_reviewed_stage_cycle(
+        candidate, "candidate", 0, paths=["change.py"], require_release_tag=False)
+    assert continued["status"] == "passed", continued
+    assert candidate._commit_review_status == "author_continued"
+    author = candidate._author_commit_record
+    assert author["review_reference"] == reference and author["subject_hash"] == continued["pre_fingerprint"]["fingerprint"]
+    assert author["reviewer_signal"] and author["reviewer_signal"] != "passed"
+    assert "value = 2" in git.run_cmd(["git", "show", ":change.py"], cwd=candidate.repo_dir)
 
 
 def test_pending_review_retains_custody_when_author_continues(candidate, access):  # noqa: F811
@@ -107,7 +126,7 @@ def test_pending_review_retains_custody_when_author_continues(candidate, access)
     candidate._current_review_retry_key = "same-paid-work"
     result = git._finalize_pending_review(candidate, "candidate", 0,
         pre_fingerprint={"fingerprint": "fp"}, post_fingerprint={"fingerprint": "fp"})
-    assert (result is None) == (access == "cyber_pro")
+    assert "REVIEW_PENDING" in result, "a pending wave never licenses Git in either mode"
     saved = load_state(candidate.drive_root).attempts[-1]
     assert saved.status == "reviewing" and saved.late_result_pending
     assert saved.triad_raw_results[0]["operation_id"] == "op-1"
@@ -128,24 +147,34 @@ def test_pending_cyber_commit_uses_no_second_dispatch(candidate, access, monkeyp
     before = load_state(candidate.drive_root).attempts[-1].triad_raw_results
     git._reset_commit_review_state(candidate)
     outcome = git._check_overlapping_review_attempt(candidate)
+    # The caller's own exact open attempt is rejoined in every mode (never a Cyber skip).
+    assert outcome is None and candidate._review_resume_pending and not candidate._review_cyber_pending
     if access == "cyber_pro":
-        assert outcome is None
         monkeypatch.setattr(git, "check_review_cycles_ceiling", lambda *a, **k: pytest.fail("new review admission"))
         free = git._free_cycle_gate(candidate, "new candidate", 0,
             pre_fingerprint={"fingerprint": "new"}, review_rebuttal="")
-        assert free["replay_reason"] == "review_pending"
+        # Other intent than the open paid wave: its pending outcome returns, nothing is bought or vetoed.
+        assert free["status"] == "reviewed" and "this other intent waits; nothing was dispatched" in free["message"]
+        assert free["review_reference"]["attempt"] == load_state(candidate.drive_root).attempts[-1].attempt
         assert load_state(candidate.drive_root).attempts[-1].triad_raw_results == before
         monkeypatch.setattr(git, "_preflight_and_tests_gate", lambda *a, **k: None)
         monkeypatch.setattr(git, "_run_parallel_review", lambda *a, **k: pytest.fail("duplicate paid panel"))
         cycle = git._run_reviewed_stage_cycle(candidate, "new candidate", 0,
             paths=["change.py"], require_release_tag=False)
-        assert cycle["status"] == "passed"
+        assert cycle["status"] == "reviewed", "no Git effect while the paid review is open"
+        reference = cycle["review_reference"]
+        git._reset_commit_review_state(candidate)
+        from ouroboros.tools import commit_gate
+        assert commit_gate.prepare_author_commit_request(candidate, reference, {
+            "disposition": "deferred", "rationale": "Continue now; the open review stays collectible."}, "") is None
+        assert git._check_overlapping_review_attempt(candidate) is None and not candidate._review_resume_pending
+        continued = git._run_reviewed_stage_cycle(candidate, "new candidate", 0,
+            paths=["change.py"], require_release_tag=False)
+        assert continued["status"] == "passed", continued
         git._record_commit_attempt(candidate, "new candidate", "succeeded")
         attempts = load_state(candidate.drive_root).attempts
         assert attempts[-2].late_result_pending and attempts[-2].triad_raw_results == before
         assert not attempts[-1].late_result_pending and not attempts[-1].triad_raw_results
-    else:
-        assert candidate._review_resume_pending or outcome is not None
 
 
 @pytest.mark.parametrize("status,stale", [("blockers", False), ("pending", False), ("clean", True)])
@@ -183,6 +212,36 @@ def test_skill_author_can_finish_without_fabricating_first_feedback(tmp_path, ac
     save_enabled(ctx.drive_root, "demo", True)
     actual = json.loads(skill_exec._handle_skill_exec(ctx, skill="demo", script="hello.py"))
     assert actual["exit_code"] == 0 and "hello from skill" in actual["stdout"]
+
+
+def test_skill_review_texts_state_the_gate_skill_exec_obeys(tmp_path, access, monkeypatch):
+    """#1735: no skill_review text promises a lock Cyber Pro does not apply."""
+    from ouroboros import skill_review_passes
+    from ouroboros.skill_loader import save_enabled
+    from ouroboros.tools import skill_exec
+    from tests.test_skill_exec import _build_skill, _make_ctx, _valid_script_manifest
+
+    ctx = _make_ctx(tmp_path)
+    skills_root = tmp_path / "skills"
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
+    # A declared script that does not exist fails the deterministic preflight: $0, no panel.
+    manifest = _valid_script_manifest("demo").replace(
+        "---\n# body", "  - name: absent.py\n    description: Missing.\n---\n# body")
+    _build_skill(skills_root, "demo", manifest=manifest)
+    monkeypatch.setattr(skill_review_passes, "run_skill_review_passes", lambda *a, **k: pytest.fail("no panel"))
+    reviewed = skill_exec._handle_review_skill(ctx, skill="demo")
+    assert "status=pending" in reviewed and "skill_preflight failed" in reviewed
+    assert "not executable" not in reviewed
+    for schema in (skill_exec._REVIEW_SCHEMA, skill_exec._EXEC_SCHEMA):
+        description = schema["description"]
+        assert "never executable" not in description and "Cyber Pro" in description
+        assert "must be enabled and carry a fresh executable review verdict" not in description
+    save_enabled(ctx.drive_root, "demo", True)
+    ran = skill_exec._handle_skill_exec(ctx, skill="demo", script="hello.py")
+    if access == "cyber_pro":
+        assert json.loads(ran)["exit_code"] == 0, ran
+    else:
+        assert ran.startswith("⚠️ SKILL_EXEC_BLOCKED") and "review_pending" in ran
 
 
 def test_real_force_plan_decision_uses_cyber_authority(harness, access):  # noqa: F811

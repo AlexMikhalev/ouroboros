@@ -58,14 +58,20 @@ def test_deterministic_refusal_reaches_every_seat_without_starting_tests(
     monkeypatch.setattr(git, "_run_review_preflight_tests", no_launch)
     monkeypatch.setattr(substrate, "run_review_request", _recording(shared.golden_substrate(briefs), evidence))
 
+    head = shared.git(repo, "rev-parse", "HEAD")
     git._reset_commit_review_state(ctx)
     outcome = _run_reviewed_stage_cycle(ctx, "fix: proposal", time.time(), skip_advisory_review=True,
                                         skip_tests=skip_tests, goal="Ship the proposal", scope="helper.py")
 
-    assert outcome["status"] == "passed", outcome  # Cyber continues to the real panel.
+    # Cyber continues to the real panel, whose received outcome returns to its author before any Git effect.
+    assert outcome["status"] == "reviewed", outcome
+    assert outcome["message"].startswith("Review outcome returned before commit."), outcome["message"]
+    assert shared.git(repo, "rev-parse", "HEAD") == head, "no commit, tag or push before the author decides"
+    reference = outcome["review_reference"]
+    assert (reference["surface"], reference["tool_name"]) == ("commit", "commit_reviewed") and reference["review_record_id"]
     assert len(checked) == 1 and not launched
     assert getattr(ctx, "_preflight_test_proof", None) is proof  # do not destroy a prior proof
-    record = review_ledger.load_record(ctx.drive_root, outcome["review_record_id"])
+    record = review_ledger.load_record(ctx.drive_root, reference["review_record_id"])
     exhibit = record["preflight_execution"]
     assert exhibit["status"] == "not_run"
     # The same record's tests fact follows the exhibit this attempt froze, not the kept proof.
@@ -77,6 +83,22 @@ def test_deterministic_refusal_reaches_every_seat_without_starting_tests(
     assert sorted(brief["slot_id"] for brief in briefs) == ["s1", "t1", "t2"]
     assert all(_brief_text(brief).count(receipts.execution_section(exhibit)) == 1 for brief in briefs)
     assert len(evidence) == 3 and all(item["preflight_execution"] == exhibit for item in evidence)
+    # Only the author's explicit continuation commits: the same record, no new critic, the refusal rechecked
+    # and still disclosed, and still no test started.
+    shared.git(repo, "add", "-A")
+    committed = git._commit_reviewed(ctx, "fix: proposal", skip_advisory_review=True, skip_tests=skip_tests,
+                                     goal="Ship the proposal", scope="helper.py", review_reference=reference,
+                                     author_disposition={"disposition": "accepted",
+                                                         "rationale": "Read all three seats; the refusal is known."})
+    if prior_proof == "stale":  # its new ouroboros/helper.py is refused by the continuation's own current check
+        assert "PREFLIGHT_BLOCKED" in committed and "ouroboros/helper.py" in committed, committed
+        assert shared.git(repo, "rev-parse", "HEAD") == head and len(briefs) == 3 and not launched
+        return
+    assert shared.git(repo, "rev-parse", "HEAD") != head and ctx._commit_review_status == "author_continued", committed
+    assert f"review_record_id: {reference['review_record_id']}" in committed and refusal in committed
+    assert len(briefs) == 3 and len(checked) == 2 and not launched
+    assert ctx._preflight_execution["status"] == "not_run" and refusal in ctx._preflight_execution["reason"]
+    assert review_ledger.load_record(ctx.drive_root, reference["review_record_id"])["preflight_execution"] == exhibit
 
 
 @pytest.mark.parametrize("outcome", ["green", "skip", "failed", "skip_after_green", "unbound", "skip_after_unbound",

@@ -566,8 +566,13 @@ def _pr_merge(ctx: ToolContext, number: int, expected_head_sha: str, method: str
     from ouroboros.merge_receipts import REVIEW_SCOPES, _VERDICT_RE, _sha, run_pr_merge
     from ouroboros.tool_access import canonical_data_root
 
-    if review_scope not in REVIEW_SCOPES or (review_verdict and not _VERDICT_RE.fullmatch(review_verdict)):
-        return _refuse(ctx, "⚠️ TOOL_ARG_ERROR: review_scope is full|delta; review_verdict is a short word such as PASS.", no_effect=True)
+    if review_scope not in REVIEW_SCOPES:
+        return _refuse(ctx, "⚠️ TOOL_ARG_ERROR: review_scope is full or delta; nothing was merged.", no_effect=True)
+    if review_verdict and not _VERDICT_RE.fullmatch(review_verdict):
+        return _refuse(ctx, (
+            f"⚠️ TOOL_ARG_ERROR: review_verdict must match {_VERDICT_RE.pattern}: a letter, then at most 39 "
+            "letters, digits, spaces, '_' or '-' (e.g. PASS, PASS_WITH_ADVISORIES). The "
+            f"{len(review_verdict)}-character value was refused, not shortened; nothing was merged."), no_effect=True)
     record_id = str(review_record_id or "").strip()
     declared = ({"reviewed_head_sha": _sha(reviewed_head_sha), "reviewed_base_sha": _sha(reviewed_base_sha),
                  "scope": review_scope, "verdict": review_verdict}
@@ -722,12 +727,15 @@ def get_tools() -> List[ToolEntry]:
                 "expected_head_sha": {"type": "string", "description": "The PR head you intend to merge; GitHub refuses if it moved"},
                 "method": {"type": "string", "enum": ["merge", "squash", "rebase"]},
                 "review_task_ids": {"type": "array", "items": {"type": "string"}, "default": [],
-                                    "description": "Task ids of the reviews you rely on; the host records what it can observe of each"},
+                                    "description": "Task ids of the reviews you rely on; the host records whether each "
+                                                   "completed, not its kind or reviewed subject"},
                 "reviewed_head_sha": {"type": "string", "default": "", "description": "The head those reviews covered (declared)"},
                 "reviewed_base_sha": {"type": "string", "default": "", "description": "The base those reviews covered (declared)"},
                 "review_scope": {"type": "string", "enum": ["full", "delta"], "default": "full",
                                  "description": "delta = only the change since an earlier review; never counted as whole-PR coverage"},
-                "review_verdict": {"type": "string", "default": "", "description": "The declared verdict word, e.g. PASS"},
+                "review_verdict": {"type": "string", "default": "", "maxLength": 40,
+                                   "description": "Your declared verdict, recorded as your statement, never as the host "
+                                                  "review result; must match ^[A-Za-z][A-Za-z0-9_ -]{0,39}$, e.g. PASS"},
                 "review_record_id": {"type": "string", "default": "",
                                      "description": "Id of the host review record to bind (e.g. the review_record_id commit_reviewed "
                                                     "returns); the host then reads the reviewed subject and verdict from it instead "
