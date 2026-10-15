@@ -81,9 +81,11 @@ def battery_commands(sequential: bool) -> list[tuple[str, list[str]]]:
 
 
 def _run(label: str, argv: list[str], cwd: pathlib.Path) -> int:
+    from ouroboros.preflight_node import node_environment
+
     print(f"\n=== {label}: {shlex.join(argv[2:] if argv[0] == sys.executable else argv)}", flush=True)
     started = time.monotonic()
-    env = dict(os.environ)
+    env = node_environment(os.environ)
     override = env.get("OUROBOROS_PREFLIGHT_TEST_WORKERS", "").strip()
     if override.isdigit():  # the gate steers `-n auto` the same way (preflight_runner._preflight_env)
         env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = str(max(2, int(override)))

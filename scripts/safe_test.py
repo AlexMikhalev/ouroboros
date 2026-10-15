@@ -40,7 +40,16 @@ def main() -> int:
     if not command:
         parser.error("supply a verification command after --")
     repo = Path(__file__).resolve().parents[1]
-    parent = Path(args.temp_parent or tempfile.gettempdir()).resolve()
+    helper = repo / "ouroboros" / "test_environment.py"
+    tree = ast.parse(helper.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        names = ([item.name for item in node.names] if isinstance(node, ast.Import)
+                 else [node.module] if isinstance(node, ast.ImportFrom) else [])
+        if any(name not in {"__future__", "ast", "os", "pathlib", "sys", "tempfile"} for name in names):
+            raise RuntimeError("test environment helper must import only its audited stdlib leaves")
+    environment = runpy.run_path(str(helper))
+    boundary = environment["isolated_environment"]
+    parent = Path(args.temp_parent or environment["default_temp_parent"]()).resolve()
     if parent == repo or repo in parent.parents:
         # A disposable root nested in the checkout is not disposable: `git`
         # started in it walks up into THIS working tree, and a run that
@@ -51,14 +60,6 @@ def main() -> int:
     if ancestor is not None:
         # The same hazard one level up: any enclosing checkout, not only this one.
         parser.error(f"--temp-parent must not be inside a Git working tree ({ancestor})")
-    helper = repo / "ouroboros" / "test_environment.py"
-    tree = ast.parse(helper.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        names = ([item.name for item in node.names] if isinstance(node, ast.Import)
-                 else [node.module] if isinstance(node, ast.ImportFrom) else [])
-        if any(name not in {"__future__", "ast", "os", "pathlib"} for name in names):
-            raise RuntimeError("test environment helper must import only its audited stdlib leaves")
-    boundary = runpy.run_path(str(helper))["isolated_environment"]
     # Short on purpose: server sockets live several levels below this root and
     # macOS caps an AF_UNIX path at 104 bytes.
     root = Path(tempfile.mkdtemp(prefix="ob-", dir=parent)).resolve()

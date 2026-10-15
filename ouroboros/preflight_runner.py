@@ -575,12 +575,13 @@ def _observed_worker_ids(temp_root: pathlib.Path) -> set:
 
 def _preflight_env(temp_root: pathlib.Path, repo_worktree: pathlib.Path, *, create=True) -> dict:
     from ouroboros.test_environment import isolated_environment, without_launch_descriptors
+    from ouroboros.preflight_node import node_environment
 
     temp_root = pathlib.Path(temp_root).resolve(strict=False)
     # The scrub drops settings keys (`test_environment.settings_keys`), secret suffixes,
     # `NODE_OPTIONS`, `VIRTUAL_ENV`, the OUROBOROS_/GH_/GIT_/PYTEST_/PYTHON/UV_/PIP_
     # prefixes and launch descriptors; writable paths are re-rooted under `temp_root`.
-    env = without_launch_descriptors(isolated_environment(temp_root, repo_worktree, create=create))
+    env = node_environment(without_launch_descriptors(isolated_environment(temp_root, repo_worktree, create=create)))
     # PREPENDED, so `-p ouroboros_preflight_probe` resolves to the gate's own
     # worker-count plugin and not to anything the candidate tree or the
     # operator's PYTHONPATH happens to shadow it with.
@@ -1283,7 +1284,8 @@ def run_hermetic_pytest(
     source_index_tree, source_index_error = _capture_source_index_tree(repo, max_output)
     if source_index_error is not None:
         return source_index_error
-    temp_root_path = tempfile.mkdtemp(prefix="ouroboros-preflight-")
+    from ouroboros.test_environment import default_temp_parent
+    temp_root_path = tempfile.mkdtemp(prefix="ouroboros-preflight-", dir=default_temp_parent())
     temp_root = pathlib.Path(temp_root_path).resolve(strict=False)
     worktree = temp_root / "repo"
     worktree_added = False
