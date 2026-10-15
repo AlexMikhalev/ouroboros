@@ -697,11 +697,12 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("run_command", {
             "name": "run_command",
             "description": (
-                "Run a bounded foreground command in an allowed cwd; returns stdout+stderr and the resolved cwd. "
-                "cmd MUST be an array of strings, never one shell string. A builtin as cmd[0] (cd, export, ...) "
-                "is refused: use cwd= or [\"sh\", \"-c\", \"cd x && a | b\"] (also for pipes/chaining). "
+                "Run a bounded foreground command in an allowed cwd; returns stdout+stderr and resolved cwd. "
+                "cmd MUST be a string array, not one shell string. A builtin as cmd[0] (cd, export, ...) "
+                "is refused: use cwd= or [\"sh\", \"-c\", \"cd x && a | b\"] (also pipes/chaining). "
                 "A background child (&, nohup) is no service: holding stdout/stderr it stalls the call until "
-                "timeout_sec, and once the call returns nothing tracks it (use start_service). "
+                "timeout_sec; it ends with this task (local POSIX runs only; start_service keep_alive=true "
+                "outlives the task). "
                 "Prefer read_file, search_code/query_code, write_file/edit_text to cat/head/sed, grep/find, redirects."
             ),
             "parameters": {"type": "object", "properties": {

@@ -54,7 +54,7 @@ def test_early_or_unobserved_details_retain_original_named_outputs(tmp_path, det
     coverage.write_bytes(b"<coverage>still observable</coverage>\r\n")
 
     evidence = rc.capture_seat_evidence(
-        drive, "original-task", "original-op", release=rc.checking_writers_settled(detail))
+        drive, "original-task", "original-op", release=rc.checking_copy_release(detail))
 
     assert evidence["status"] == "retained"
     assert not evidence["refresh_safe"] and area.is_dir()

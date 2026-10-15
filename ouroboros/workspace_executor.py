@@ -299,6 +299,30 @@ def overlay_env(base: "dict[str, str]", env_overlay: "dict[str, str] | None") ->
     return env
 
 
+def _handed_off_popen(kind: str, cmd: list[str], **kwargs: Any) -> "tuple[subprocess.Popen, Any]":
+    """Start ``cmd`` under the Pause gate after its external duty is retained (``tool_custody``).
+
+    Returns ``(proc, confirmed)``: only the caller's later receipt discharges the duty. A start
+    that returned no process discharges it at once; an OS refusal is ``process_not_started``."""
+    from ouroboros.owner_pause import operation_start
+    from ouroboros.tool_custody import external_handoff
+
+    confirmed = external_handoff(kind)
+    proc = None
+    try:
+        with operation_start():
+            try:
+                proc = subprocess.Popen(cmd, **kwargs)
+            except (OSError, ValueError) as exc:
+                exc.process_not_started = True
+                raise
+    except BaseException:
+        if proc is None:
+            confirmed()
+        raise
+    return proc, confirmed
+
+
 def _execute_local(
     executor: ExecutorRef,
     cmd: list[str],
@@ -313,38 +337,33 @@ def _execute_local(
     if _panic_requested:
         raise RuntimeError("Emergency Stop has retired executor admission")
     started = time.monotonic()
-    from ouroboros.owner_pause import operation_start
     from ouroboros.settings_integrity import runtime_environ
+
+    from ouroboros.process_scope import record_task_group, scoped_child_env, task_launch_target
+    from ouroboros.tool_custody import invocation_binding
 
     base_env = local_env if local_env is not None else scrub_repo_from_pythonpath(runtime_environ(), _system_repo_dir())
     process_env = overlay_env(overlay_env(base_env, target_env), env_overlay)
-    from ouroboros.tool_custody import external_handoff
-    confirmed = external_handoff("workspace_process")
-    proc = None
-    try:
-        with operation_start():
-            try:
-                proc = subprocess.Popen(
-                    [str(part) for part in cmd],
-                    cwd=str(cwd),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    stdin=subprocess.DEVNULL,
-                    text=True,
-                    errors="replace",
-                    env=process_env,
-                    **subprocess_new_group_kwargs(),
-                )
-            except (OSError, ValueError) as exc:
-                exc.process_not_started = True
-                raise
-    except BaseException:
-        if proc is None:
-            confirmed()
-        raise
+    target = task_launch_target(invocation_binding())
+    if target is not None:  # after every overlay: the task marker is the last word on a task launch
+        process_env = scoped_child_env(process_env, target)
+    proc, confirmed = _handed_off_popen(
+        "workspace_process",
+        [str(part) for part in cmd],
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        errors="replace",
+        env=process_env,
+        **subprocess_new_group_kwargs(),
+    )
     _FOREGROUND[proc] = (None, executor.kind)
     if _panic_requested:
         request_process_tree_kill(proc)
+    if target is not None:
+        record_task_group(*target, proc.pid)
     record_path = _register_process(
         drive_root,
         {
@@ -425,31 +444,17 @@ def _execute_docker(
         wrapper,
     ]
     started = time.monotonic()
-    from ouroboros.owner_pause import operation_start
-
-    from ouroboros.tool_custody import external_handoff
-    confirmed = external_handoff("workspace_process")
-    proc = None
-    try:
-        with operation_start():
-            try:
-                proc = subprocess.Popen(
-                    docker_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    errors="replace",
-                    stdin=subprocess.DEVNULL,
-                    **({"env": {**os.environ, **{aliases[key]: value for key, value in target_env.items()}}} if target_env else {}),
-                    **subprocess_new_group_kwargs(),
-                )
-            except (OSError, ValueError) as exc:
-                exc.process_not_started = True
-                raise
-    except BaseException:
-        if proc is None:
-            confirmed()
-        raise
+    proc, confirmed = _handed_off_popen(
+        "workspace_process",
+        docker_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+        stdin=subprocess.DEVNULL,
+        **({"env": {**os.environ, **{aliases[key]: value for key, value in target_env.items()}}} if target_env else {}),
+        **subprocess_new_group_kwargs(),
+    )
     _FOREGROUND[proc] = (None, executor.kind)
     if _panic_requested:
         request_process_tree_kill(proc)
@@ -982,11 +987,24 @@ def start_service(
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_fh = log_path.open("ab")
 
+        from ouroboros.owner_pause import _member_coordinates
+        from ouroboros.process_scope import record_task_group, scoped_child_env, task_launch_target
+        from ouroboros.tool_custody import invocation_binding
+
+        # A task-scoped service is the task's: its launch carries the task marker and its
+        # group is recorded; a keep/session service is handed to the installation and sheds
+        # every task marker (inheritance is not a lifetime transfer).
+        scope_root, _, scope_task = _member_coordinates(ctx)
+        scope_target = None if record.keep_alive else task_launch_target(
+            invocation_binding(), drive_root=scope_root, task_id=scope_task)
+
         def publish_process(proc):
             record.local_proc = proc
             record.backend_pid = str(proc.pid)
             record.backend_log_path = str(log_path)
             _SERVICES[key] = record
+            if scope_target is not None:
+                record_task_group(*scope_target, proc.pid)
             if _panic_requested:
                 raise RuntimeError(f"Emergency Stop during service spawn: {request_process_tree_kill(proc)}")
 
@@ -996,8 +1014,9 @@ def start_service(
                 purpose=f"workspace_service:{name}", scope="session" if record.keep_alive else "task",
                 owner_task_id=record.task_id, on_spawn=publish_process, cwd=str(host_cwd),
                 stdout=log_fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                # Host interpreter overlay applies only to the local executor.
-                env=overlay_env(overlay_env(base_env, env_overlay), env),
+                # Host interpreter overlay applies only to the local executor; the scope
+                # marker (or its shedding) is the last word, after every overlay.
+                env=scoped_child_env(overlay_env(overlay_env(base_env, env_overlay), env), scope_target),
             )
         finally:
             log_fh.close()
@@ -1043,22 +1062,7 @@ def start_service(
 
 def _submit_service_command(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     """Start the Docker CLI under the Pause gate; wait outside it."""
-    from ouroboros.owner_pause import operation_start
-
-    from ouroboros.tool_custody import external_handoff
-    confirmed = external_handoff("backend_service")
-    proc = None
-    try:
-        with operation_start():
-            try:
-                proc = subprocess.Popen(cmd, **kwargs)
-            except (OSError, ValueError) as exc:
-                exc.process_not_started = True
-                raise
-    except BaseException:
-        if proc is None:
-            confirmed()
-        raise
+    proc, confirmed = _handed_off_popen("backend_service", cmd, **kwargs)
     try:
         stdout, stderr = proc.communicate(timeout=20)
     except Exception as exc:
@@ -1315,6 +1319,9 @@ def service_env() -> dict[str, str]:
         if key.casefold() not in allowed_casefold and not key.startswith("LC_"):
             continue
         env[key] = str(value)
+    from ouroboros.process_scope import installation_scope_entries
+
+    env.update(installation_scope_entries(os.environ))  # a service stays in the installation's scope
     return env
 
 

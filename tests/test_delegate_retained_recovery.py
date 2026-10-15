@@ -5,11 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from ouroboros import delegate_collection as body, delegate_custody as custody, delegate_custody_current as current
+from ouroboros import delegate_collection as body
+from ouroboros import delegate_custody as custody
+from ouroboros import delegate_custody_current as current
 from ouroboros.gateways.claudexor import ClaudexorUnavailable
 from ouroboros.tools.delegate_terminal_evidence import collect_and_deliver_terminal, retained_terminal_result
 from ouroboros.tools.registry import ToolContext
-from tests.test_delegate_body_collection import started, terminal, money  # noqa: F401
+from tests.test_delegate_body_collection import money, started, terminal  # noqa: F401
 
 
 class AbsentGateway:
@@ -33,15 +35,20 @@ class AbsentGateway:
 def recover(root, entry, factory, surface):
     if surface == "task":
         return custody.reconcile_task_runs(root, entry.task_id, gateway_factory=factory)
+    if surface == "exit":
+        return custody.release_task_runs(root, entry.task_id)
     return custody.reconcile_orphaned_runs(root, running_task_ids=set(), gateway_factory=factory)
 
 
-@pytest.mark.parametrize("surface", ["task", "orphan"])
+@pytest.mark.parametrize("surface", ["task", "orphan", "exit"])
 @pytest.mark.parametrize("transport", ["absent", "factory", "handshake"])
-def test_settled_local_capture_recovers_without_remote_run(tmp_path, monkeypatch, money, surface, transport):  # noqa: F811
-    from ouroboros.tools import delegate_integration
+@pytest.mark.parametrize("pending", [False, True])
+def test_settled_local_capture_recovers_without_remote_run(tmp_path, monkeypatch, money, surface, transport, pending):  # noqa: F811
+    from ouroboros import claudexor_daemon
     from ouroboros.subagent_worktrees import find_execution_snapshot
+    from ouroboros.tools import delegate_integration
     from tests.test_delegated_run_isolation import TestCaptureAndIntegrate, _isolated_entry
+    from tests.test_exit_does_not_admit import INVOCATION, _pending, _pending_ids
 
     target, ctx, handle = TestCaptureAndIntegrate()._provisioned(tmp_path, monkeypatch)
     execution = Path(handle.path)
@@ -56,12 +63,24 @@ def test_settled_local_capture_recovers_without_remote_run(tmp_path, monkeypatch
         body.collect_terminal(root, entry.run_id, detail=terminal(entry.run_id))
     before = current.run(root, entry.run_id)
     assert before.settled and body.collection_pending(before)
+    if pending:
+        _pending(root, task_id=entry.task_id)
     gateway = AbsentGateway(handshake_error=transport == "handshake")
     def factory():
         if transport == "factory":
             raise ClaudexorUnavailable("daemon_unreachable", "controlled factory gap")
         return gateway
-    assert recover(root, entry, factory, surface)
+    monkeypatch.setattr(claudexor_daemon, "read_owned_gateway", lambda **kw: factory())
+    monkeypatch.setattr(claudexor_daemon, "ensure_owned_gateway",
+                        lambda **kw: pytest.fail("collection at exit cannot start a daemon"))
+    monkeypatch.setattr(gateway, "start_run",
+                        lambda *a, **kw: pytest.fail("collection cannot replay a pending start"), raising=False)
+    outcomes = recover(root, entry, None, surface)  # public default must attach only
+    assert outcomes
+    if pending:
+        assert _pending_ids(root, entry.task_id) == [INVOCATION]
+        retained = [row for row in outcomes if row.get("action") == "invocation_retained"]
+        assert bool(retained) == (surface == "orphan")
     after = current.run(root, entry.run_id)
     assert after.patch_captured and not body.collection_pending(after)
     assert after.terminal_source == before.terminal_source

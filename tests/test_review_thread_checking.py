@@ -30,6 +30,7 @@ from tests._review_session_route_shared import (  # noqa: F401
     fake_route,
 )
 from tests.test_review_checking import _author_state, _git, author  # noqa: F401
+from tests.test_review_checking_scope import ABSENT, NO_CENSUS, SETTLED, UNSETTLED
 
 
 class ThreadGateway(FakeGateway):
@@ -48,6 +49,7 @@ class ThreadGateway(FakeGateway):
         self.before_turn = None
         self.handles = {}
         self.lose_start_response = False
+        self.process_scope = ABSENT  # summary.processScope; an older engine omits the key
 
     def ensure_full_access(self, root):
         self.trust.append(root)
@@ -94,6 +96,8 @@ class ThreadGateway(FakeGateway):
     def get_run(self, run_id, **kwargs):
         detail = super().get_run(run_id, **kwargs)
         detail["summary"]["state"] = self.terminal_state
+        if self.process_scope is not ABSENT:
+            detail["summary"]["processScope"] = self.process_scope
         if self.terminal_state != "succeeded":
             detail["summary"]["failure"] = {
                 "code": self.failure_code, "safeMessage": "The reviewer probe failed",
@@ -233,6 +237,69 @@ def test_failed_terminal_turn_keeps_named_output_and_original_error(author, tmp_
     assert (area / rc.EVIDENCE_DIRNAME / "coverage.xml").read_bytes() == ThreadGateway.coverage(1)
     _assert_coverage(evidence, ThreadGateway.coverage(1))
     assert _author_state(author) == before
+
+
+@pytest.mark.parametrize("scope,refreshes", [
+    (ABSENT, True), (SETTLED, True), (NO_CENSUS, True), (None, False), (UNSETTLED, False),
+    ({**NO_CENSUS, "survivors": 1}, False), ({**NO_CENSUS, "unreadable": 1}, False),
+    ({**NO_CENSUS, "coverage": "marker"}, False),
+], ids=["absent", "settled", "no-census", "null", "unsettled", "no-census-survivor", "no-census-unreadable",
+        "mixed-coverage"])
+def test_process_scope_decides_whether_the_next_turn_refreshes_the_copy(author, tmp_path, thread_gateway, scope, refreshes):  # noqa: F811
+    """A succeeded turn whose scope is unknown (``null``: the engine holds no readable
+    record, e.g. a run that succeeded before an engine upgrade and is first captured after
+    it) or unsettled delivers its answer and evidence, keeps the copy as left and refuses
+    the next turn typed before any send; an absent key (an older engine) or a settled
+    scope refreshes the copy, and so does the engine's census-less answer (Windows) under
+    the owner's weaker permission, which each receipt names beside the engine's facts."""
+    drive = tmp_path / "drive"
+    source = rc.freeze_checking_source(author, data_root=drive, subject=rc.SUBJECT_INDEX)
+    before = _author_state(author)
+    thread_gateway.process_scope = scope
+    left_over = []
+    thread_gateway.before_turn = lambda area: left_over.append((area / "reviewer-test.txt").exists())
+    first = _run(author, drive, source)
+    assert first["text"] == '{"findings": []}' and first["run_id"] == "run-1"
+    _assert_coverage(first["checking_evidence"], ThreadGateway.coverage(1))
+    assert first["checking_evidence"]["refresh_safe"] is refreshes
+    compatible = scope == NO_CENSUS
+    assert first["checking_evidence"].get("release_basis") == (rc.RELEASE_WITHOUT_CENSUS if compatible else None)
+    assert first["checking_evidence"].get("process_scope") == (NO_CENSUS if compatible else None)
+    area = rc.seat_dir(drive, "task-1", "thread:plan_review:t1") / "area"
+    if refreshes:
+        second = _run(author, drive, source, operation="op-2", thread_id=first["thread_id"])
+        assert second["turn_id"] == "turn-2" and left_over == [False, False], "turn 2 starts on a fresh copy"
+        _assert_coverage(second["checking_evidence"], ThreadGateway.coverage(2))
+        assert second["checking_evidence"]["refresh_safe"] is True
+        assert second["checking_evidence"].get("release_basis") == first["checking_evidence"].get("release_basis")
+        assert second["checking_evidence"].get("process_scope") == first["checking_evidence"].get("process_scope")
+    else:
+        assert first["checking_evidence"]["retention_reason"] == "writer_quiescence_unverified"
+        with pytest.raises(ReviewRouteUnavailable) as blocked:
+            _run(author, drive, source, operation="op-2", thread_id=first["thread_id"])
+        assert blocked.value.code == "review_checking_copy_unavailable"
+        assert (area / "reviewer-test.txt").read_bytes() == b"reviewer turn 1\n" and left_over == [False]
+    assert len(thread_gateway.turn_requests) == (2 if refreshes else 1)
+    assert len(thread_gateway.thread_requests) == 1 and not thread_gateway.start_requests
+    assert not thread_gateway.cancels and _author_state(author) == before
+
+
+def test_engine_upgrade_between_turns_reuses_the_stored_receipt(author, tmp_path, thread_gateway):  # noqa: F811
+    drive = tmp_path / "drive"
+    source = rc.freeze_checking_source(author, data_root=drive, subject=rc.SUBJECT_INDEX)
+    first = _run(author, drive, source)  # an older engine: no projection, refresh-safe capture
+    stored = Path(first["checking_evidence"]["evidence_dir"]) / "summary.json"
+    stored_bytes = stored.read_bytes()
+    thread_gateway.process_scope = None  # upgraded engine: no readable scope record of run-1 or run-2
+    assert rc.terminal_seat_evidence(drive, "task-1", "op-1", thread_gateway.get_run("run-1")) == first["checking_evidence"]
+    assert stored.read_bytes() == stored_bytes
+    second = _run(author, drive, source, operation="op-2", thread_id=first["thread_id"])
+    assert second["turn_id"] == "turn-2", "the stored receipt still opens the next turn"
+    assert not second["checking_evidence"]["refresh_safe"]  # the new turn's own scope is unknown
+    with pytest.raises(ReviewRouteUnavailable) as blocked:
+        _run(author, drive, source, operation="op-3", thread_id=first["thread_id"])
+    assert blocked.value.code == "review_checking_copy_unavailable"
+    assert len(thread_gateway.turn_requests) == 2 and stored.read_bytes() == stored_bytes
 
 
 def test_unobserved_terminal_keeps_copy_and_blocks_next_subject(author, tmp_path, thread_gateway, monkeypatch):  # noqa: F811

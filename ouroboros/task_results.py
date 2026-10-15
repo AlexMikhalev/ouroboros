@@ -840,6 +840,7 @@ def write_task_result(
     from ouroboros.task_store import Reprepare, prepared_write
 
     prepared: Dict[str, Any] = {}
+    transition: Dict[str, bool] = {}  # set by the reducer when THIS write turns the row truly terminal
 
     def _write(needs: set) -> Dict[str, Any]:
         # TZ-1 V10: the mailbox bytes are read BEFORE the row lock (a bounded union happens
@@ -854,6 +855,7 @@ def write_task_result(
         return patch_document(results_drive_root, task_id, lambda existing: _merge(existing, prepared))
 
     def _merge(existing: Dict[str, Any], prepared: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        transition.clear()
         if strict_existing_dict and existing and (
             str(existing.get("task_id") or "") != str(task_id)
             or not isinstance(existing.get("status"), str)
@@ -910,6 +912,7 @@ def write_task_result(
         if projected_status in _TRULY_TERMINAL_STATUSES and existing_status not in _TRULY_TERMINAL_STATUSES:
             if "mail" not in prepared:
                 raise Reprepare("mail")  # the projector turned the row terminal: the capture happens outside
+            transition["terminal"] = True
             captured, owner_mail = prepared["mail"]
             merged = {**existing, **projected_fields}
             lineage_keys = ("root_task_id", "parent_task_id", "delegation_role", "original_task_id", "timeout_retry_from")
@@ -940,7 +943,17 @@ def write_task_result(
             "updated_at": now,
         }))
 
-    return prepared_write(_write)
+    stored = prepared_write(_write)
+    if transition.get("terminal"):
+        # The accepted transition into a truly terminal status ends the task: processes its commands left behind are
+        # ended by scope (marker + recorded groups) outside this store transaction, on positive evidence only; a pause,
+        # retained hold, handoff or reopenable placeholder never reaches here (DEVELOPMENT "Process Custody Rule").
+        try:  # a task that launched nothing costs nothing
+            from ouroboros.process_scope import note_task_terminal_transition
+            note_task_terminal_transition(results_drive_root, task_id)
+        except Exception:
+            log.debug("task scope cleanup could not be started for %s; the sweep owns it", task_id, exc_info=True)
+    return stored
 
 
 # plan_review_state v2 records each task's plan_task cycles: a fresh series_id,
