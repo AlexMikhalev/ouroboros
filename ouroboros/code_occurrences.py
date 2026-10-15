@@ -58,6 +58,7 @@ class EvidenceScan:
     files_matched: int = 0
     files_parsed: int = 0
     occurrences: int = 0
+    matched_paths: list[str] = field(default_factory=list)  # files whose text held the token
     limits: Counter = field(default_factory=Counter)
     methods: set[str] = field(default_factory=set)
     incomplete: bool = False
@@ -165,6 +166,8 @@ def scan_occurrences(inventory: ci.CodeInventory, query: str | None, *, mode: st
     legacy, overflowed or changed facts require a fresh parse.
     Inventory call facts and definition ranges also apply only to the bytes the
     inventory hashed: a changed file is disclosed without them; others still scan.
+    A path-only (``not_parsed``) entry is admitted like an indexed one; its
+    Python call fallback parses the current source read here.
     A view may select/summarize each file's rows before the selected-result cap.
     """
     scan = EvidenceScan()
@@ -186,7 +189,7 @@ def scan_occurrences(inventory: ci.CodeInventory, query: str | None, *, mode: st
             scan.limits["policy excluded"] += 1
             continue
         reason = search_skip_reason(path)
-        if not reason and file.disposition not in {"indexed"} and not file.disposition.startswith("structural_unavailable"):
+        if not reason and file.disposition not in {"indexed", "not_parsed"} and not file.disposition.startswith("structural_unavailable"):
             reason = file.disposition
         if reason:
             scan.limits[reason] += 1
@@ -213,6 +216,7 @@ def scan_occurrences(inventory: ci.CodeInventory, query: str | None, *, mode: st
         if pattern and not matches:
             continue
         scan.files_matched += 1
+        scan.matched_paths.append(file.path)
         scan.occurrences += len(matches)
         grammar = grammar_id(file.language)
         if mode == "imports" and grammar not in {"python", "javascript", "typescript", "go", "java", "rust"}:
@@ -254,13 +258,20 @@ def scan_occurrences(inventory: ci.CodeInventory, query: str | None, *, mode: st
             # need validation against this read, not only the inventory read:
             # edits can happen between inventory construction and this scan.
             if mode in {"callers", "callees"} and file.language == "python" and not file.syntax_error:
-                if file.sha256 != hashlib.sha256(raw).hexdigest():
+                calls = file.call_sites
+                if file.disposition == "not_parsed":
+                    # A path-only entry has no inventory facts: parse this current source.
+                    *_, error, calls = ci._python_facts(text, pathlib.PurePosixPath(file.path))
+                    if error:
+                        scan.limits["syntax error (no Python AST calls)"] += 1
+                elif file.sha256 != hashlib.sha256(raw).hexdigest():
                     scan.limits["file changed since inventory; Python call facts not used"] += 1
                     stale = True
-                else:
+                    calls = None
+                if calls is not None:
                     lines = _source_lines(text, python_ast=True)
                     rows = [EvidenceRow(file.path, c.line, 0, "ast.Call.func", _source(lines, c.line, 1),
-                                        "call?", c.enclosing) for c in file.call_sites if query is None or c.name == query]
+                                        "call?", c.enclosing) for c in calls if query is None or c.name == query]
                     scan.methods.add("python ast local calls")
         if mode == "references":
             lines = _source_lines(text)

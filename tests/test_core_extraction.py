@@ -139,9 +139,12 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
     # numbered read views (both cursors count source characters, never display
     # numbers), explicit omitted-root semantics and ordered same-file edit_text
     # replacements; editor calls run in call order and `force` confirms only an
-    # intentional shrink.
+    # intentional shrink. Rolled again for long-line search windows: only the
+    # search_code description changed, saying a long matched line shows a window
+    # around its first match with that window's read_file range; no parameter,
+    # type, default, required key or handler owner changed.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "e1093d0a47f57a73ac033524ae3c55c365c1d6646504db0e73a8f5d2ada461eb"
+        "f38bef318bcaf2e5877d5de40429f4a384e61aab335551f9f22de6ddbb166dad"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)
