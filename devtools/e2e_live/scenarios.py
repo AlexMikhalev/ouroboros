@@ -754,7 +754,13 @@ def run_sw1(ctx: LaneContext) -> None:
     if not parent_id:
         return
     stored = ctx.wait_task(parent_id)
-    ctx.check("plan_review_engaged", isinstance(stored.get("plan_review_state"), dict))
+    # The planning organ's record: the Swarm root wrote a plan and one ask reached a reviewer.
+    record = stored.get("plan_record") if isinstance(stored.get("plan_record"), dict) else {}
+    asks = [a for a in (record.get("asks") or []) if isinstance(a, dict)]
+    ctx.check("plan_record_engaged", bool(record.get("revisions")) and bool(asks),
+              revisions=len(record.get("revisions") or []), asks=len(asks))
+    ctx.check("plan_ask_dispatched", any(p.get("dispatched") for ask in asks for p in ask.get("participants") or []),
+              participants=[f"{p.get('seat_id')}:{p.get('status')}" for ask in asks for p in ask.get("participants") or []])
     # The quiescent path, not the forced one: every child result absorbed before the final.
     ctx.check("clean_finalization", str(stored.get("reason_code") or "") != "children_unabsorbed",
               parent_reason_code=str(stored.get("reason_code") or ""))
@@ -816,13 +822,14 @@ def sw1_stub_script(_clone: pathlib.Path) -> dict:
 
     return {
         "agent": [
+            # One write+ask on the planning organ (the retired spec form is refused at $0 and would hold the Swarm gate).
             {"tool": "plan_task", "arguments": {
                 "goal": "Survey the repository with two parallel scouts.",
                 "plan": "Schedule two scouts, wait for both, summarize.",
-                "spec": {"deliverables": ["Two scout results summarized."],
-                         "acceptance_claims": ["Both scouts completed and were absorbed."],
-                         # Required on every submitted spec (owner 9=A); a survey changes no file.
-                         "affected_paths": []}}},
+                "done_when": [{"id": "c1", "claim": "Both scouts completed and were absorbed.",
+                               "support": "both scout results are quoted in the summary"}],
+                "affected_paths": [],  # a survey changes no file
+                "ask": "council"}},
             scout("A", "list the top-level directories"),
             scout("B", "list the test modules under tests/system_e2e"),
             wait_step,
