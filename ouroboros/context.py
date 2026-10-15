@@ -66,7 +66,9 @@ from ouroboros.context_sections import (  # re-export the existing context surfa
     _drive_state_section,
     _registry_row as _registry_row,
     build_knowledge_sections,
+    runtime_host_section,
 )
+from ouroboros.section_floor import capture_sections
 from ouroboros.contracts.task_contract import normalize_bool, task_input_sources
 from ouroboros.memory import Memory, render_scratchpad_markdown
 from ouroboros.update_letter import official_update_projection  # contract: never raises
@@ -628,9 +630,9 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
         # Absent when none exists, so an ordinary Runtime block stays byte-identical.
         if candidates := body_candidate.context_fact(str(task.get("root_task_id") or task.get("id") or "")):
             runtime_data["body_candidates"] = candidates
-    out = "## Runtime context\n\n" + json.dumps(runtime_data, ensure_ascii=False, indent=2)
+    coordination = ""
     if declared:
-        return out
+        return runtime_host_section(runtime_data)
     try:
         from ouroboros.task_tree_ledger import tree_ledger_tail_digest
         _root_id = str(task.get("root_task_id") or task.get("id") or "")
@@ -642,7 +644,7 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
             _root_id, limit=40, data_root=_tree_root,
         ) if _root_id else ""
         if _tree_digest:
-            out += (
+            coordination = (
                 "\n\n## Task-tree coordination ledger (shared swarm blackboard)\n\n"
                 "Shared across this task tree via tree_note/tree_read. Before fanning out "
                 "INTERDEPENDENT children, publish the shared frame (contract/decision/fact); "
@@ -652,7 +654,7 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
             )
     except Exception:
         log.debug("Failed to inject task-tree ledger digest", exc_info=True)
-    return out
+    return runtime_host_section(runtime_data, coordination)
 
 
 _SECTION_BUDGETS = {"scratchpad": SCRATCHPAD_SECTION_BUDGET_CHARS, "identity": 80_000, "registry": 30_000, "world": 16_000}
@@ -1202,6 +1204,10 @@ def _capture_context_core(
         development_md=development_md,
         semi_stable_text=semi_stable_text,
         dynamic_text="\n\n".join(dynamic_parts),
+        dynamic_sections=capture_sections(dynamic_parts, prefix="dynamic"),
+        dynamic_head_sections=capture_sections(head_parts, prefix="head"),
+        section_root=str(env.drive_root),
+        section_task_id=str(task.get("id") or ""),
         user_content_json=json.dumps(
             build_user_content(task), ensure_ascii=False, sort_keys=True,
         ),
@@ -1274,6 +1280,7 @@ def build_context_fit_plan(
     preferred_mode: Optional[str] = None,
     ctx: Any = None,
     tool_schemas: Optional[List[Dict[str, Any]]] = None,
+    known_window_tokens: Optional[int] = None,
 ) -> ContextFitPlan:
     """Compatibility wrapper over the cohesive context-fit implementation."""
     core = _capture_context_core(env, memory, task, review_context_builder, ctx)
@@ -1284,6 +1291,7 @@ def build_context_fit_plan(
         preferred_mode=str(preferred_mode or get_context_mode() or "max"),
         route_resolver=_context_fit_route,
         tool_schemas=tool_schemas,
+        known_window_tokens=known_window_tokens,
     )
 
 
@@ -1313,11 +1321,14 @@ def build_llm_messages(
     review_context_builder: Optional[Any] = None,
     ctx: Any = None,
     *, tool_schemas: Optional[List[Dict[str, Any]]] = None,
+    known_window_tokens: Optional[int] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """The first request of a task: the plan's projection for its starting mode, and the cap info.
 
     No model is called on this path: my memory is rendered, never prepared by a paid pass;
     a window too small for it addresses lines and pages instead.
+    ``known_window_tokens`` supplies capacity evidence for a caller-resolved route;
+    it never substitutes an owner target for unknown capacity.
     """
     # Keep the legacy public shape while publishing the immutable plan on the
     # existing ToolContext for the ordinary loop.  Commit/scope reviewers do not
@@ -1330,6 +1341,7 @@ def build_llm_messages(
         preferred_mode=get_context_mode(),
         ctx=ctx,
         tool_schemas=tool_schemas,
+        known_window_tokens=known_window_tokens,
     )
     if ctx is not None:
         ctx.context_fit_plan = plan
