@@ -65,6 +65,7 @@ def collect_routes(
         api_skill_review_history_detail,
         api_skill_toggle,
     )
+    from ouroboros.gateway.call_ws import api_call_open, ws_call
     from ouroboros.gateway.widgets import api_widgets
     from ouroboros.gateway.files import (
         api_chat_upload,
@@ -335,6 +336,8 @@ def collect_routes(
             # contract; the handler dispatches on the method).
             methods=["DELETE", "PATCH"],
         ),
+        Route("/api/call/open", endpoint=api_call_open, methods=["POST"]),
+        WebSocketRoute("/ws/call/{call_id}", endpoint=ws_call),
         WebSocketRoute("/ws", endpoint=ws_endpoint),
     ]
     return routes

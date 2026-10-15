@@ -1,8 +1,8 @@
 """Audio transport checks use real sample clocks and concurrent producers."""
 
-from concurrent.futures import ThreadPoolExecutor
 import math
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -57,12 +57,12 @@ def test_mixing_clips_once_and_keeps_conservative_provenance():
     join(hub, "meeting", role="meeting")
     send(hub, [30000, -30000, 100], "owner")
     send(hub, [30000, -30000, -50], "meeting")
-    event = hub.next_event(0)
+    event = hub.next_event(0.1)
     assert (event.peer_id, event.role) == ("mixed", "meeting")
     assert samples(event.pcm) == [32767, -32768, 50]
     assert hub.next_event(0) is None
     send(hub, [10], seq=1)
-    assert hub.next_event(0) == cp.PeerAudio("owner", "owner", pcm([10]))
+    assert hub.next_event(0.1) == cp.PeerAudio("owner", "owner", pcm([10]))
 
 
 def test_tracks_and_different_device_rates_share_one_engine_timeline():
@@ -72,7 +72,7 @@ def test_tracks_and_different_device_rates_share_one_engine_timeline():
     join(hub, "meeting", role="meeting", rate=16000)
     send(hub, [1000] * 960, rate=48000)
     send(hub, [2000] * 320, "meeting", rate=16000)
-    event = hub.next_event(0)
+    event = hub.next_event(0.1)
     assert samples(event.pcm) == [3000] * 320
     hub.play(pcm([1000] * 480), "item")
     owner = cp.decode_frame(hub.next_outgoing("owner"))
@@ -107,8 +107,8 @@ def test_audio_queue_bounds_drop_oldest_with_counters_and_sequence_wrap():
     send(hub, [3] * 480, seq=1)
     assert not send(hub, [4], seq=1)
     assert hub.stats()["input_dropped_samples"] == 480
-    assert samples(hub.next_event(0).pcm) == [2] * 480
-    assert samples(hub.next_event(0).pcm) == [3] * 480
+    assert samples(hub.next_event(0.1).pcm) == [2] * 480
+    assert samples(hub.next_event(0.1).pcm) == [3] * 480
     for value in (1, 2, 3):
         hub.play(pcm([value] * 480), "item")
     assert hub.stats()["output_dropped_frames"] == 1
@@ -127,7 +127,7 @@ def test_mute_direction_checks_and_peer_lifecycle():
     hub.receive_control("owner", {"type": "mute", "muted": False})
     hub.next_event(0)
     assert send(hub, [300], seq=2)
-    assert samples(hub.next_event(0).pcm) == [300]
+    assert samples(hub.next_event(0.1).pcm) == [300]
     join(hub, "speaker", mic=False)
     with pytest.raises(CallPeerError, match="direction"):
         send(hub, [1], "speaker")
@@ -171,5 +171,99 @@ def test_registry_concurrency_close_wakes_waiter_and_revokes_grants():
         assert get_hub(value.call_id) is None
         with pytest.raises(CallPeerError, match="call_closed"):
             hub.peer_grant("meeting", "token-digest")
+    finally:
+        close_hub(value.call_id)
+
+
+def test_mixer_waits_one_audio_tick_for_asynchronous_microphones(monkeypatch):
+    from ouroboros import call_peers
+
+    clock = [100.0]
+    monkeypatch.setattr(call_peers.time, "monotonic", lambda: clock[0])
+    hub = LiveCallHub(spec())
+    join(hub)
+    join(hub, "meeting", role="meeting")
+    send(hub, [1000] * 480)
+    assert hub.next_event(0) is None
+    clock[0] += 0.005
+    send(hub, [2000] * 480, "meeting")
+    assert hub.next_event(0) is None
+    clock[0] += 0.016
+    assert samples(hub.next_event(0).pcm) == [3000] * 480
+    assert hub.next_event(0) is None
+
+
+def test_engine_rate_change_resets_buffers_and_notifies_peers():
+    hub = LiveCallHub(spec())
+    join(hub, rate=48000)
+    send(hub, [100] * 960, rate=48000)
+    hub.play(pcm([100] * 480), "item")
+    hub.set_engine_rates(16000, 24000)
+    assert hub.stats()["input_dropped_samples"] == 480
+    assert cp.decode_control(hub.next_outgoing("owner"))["epoch"] == hub.epoch
+    assert hub.next_event(0) is None
+    hub.set_engine_rates(16000, 24000)
+    assert hub.next_outgoing("owner") is None
+    send(hub, [200] * 960, rate=48000, seq=1)
+    assert samples(hub.next_event(.1).pcm) == [200] * 320
+
+
+def test_peer_and_stream_capacity_have_accept_and_refusal_paths(monkeypatch):
+    from ouroboros import call_peers
+
+    monkeypatch.setattr(call_peers, "MAX_PEERS", 2)
+    monkeypatch.setattr(call_peers, "MAX_STREAMS", 2)
+    hub = LiveCallHub(spec())
+    join(hub)
+    join(hub, "second")
+    with pytest.raises(CallPeerError, match="peer_capacity_full"):
+        hub.join(cp.PeerInfo("third", "owner", True, True), 24000)
+    hub.leave("second")
+    hub.next_event(0)
+    join(hub, "third")
+    send(hub, [1], stream=0)
+    send(hub, [2], seq=1, stream=1)
+    with pytest.raises(CallPeerError, match="stream_capacity_full"):
+        send(hub, [3], seq=2, stream=2)
+    for token in ("a", "b"):
+        hub.grant_peer("meeting", token, mic=True, speaker=False)
+    with pytest.raises(CallPeerError, match="peer_capacity_full"):
+        hub.grant_peer("meeting", "c", mic=True, speaker=False)
+
+
+@pytest.mark.parametrize("rate", [0, -1, 7999, 192001, True, 16000.5])
+def test_unsupported_rates_refuse_before_join(rate):
+    hub = LiveCallHub(spec())
+    with pytest.raises(CallPeerError, match="unsupported_audio_rate"):
+        hub.join(cp.PeerInfo("owner", "owner", True, True), rate)
+    assert hub.peers() == ()
+
+
+def test_speaker_direction_and_slow_control_consumer():
+    hub = LiveCallHub(spec(), control_queue_messages=2)
+    join(hub, speaker=False)
+    hub.play(pcm([12] * 480), "item")
+    assert hub.next_outgoing("owner") is None
+    with pytest.raises(CallPeerError, match="audio_direction_forbidden"):
+        hub.receive_control("owner", {"type": "played", "item_id": "item", "played_ms": 10})
+    for value in ("a", "b", "c"):
+        hub.send_caption("ouroboros", value, True)
+    with pytest.raises(CallPeerError, match="control_queue_full"):
+        hub.next_outgoing("owner")
+    assert hub.stats()["control_overflows"] == 1
+    hub.close("finished")
+    with pytest.raises(CallPeerError, match="call_closed"):
+        send(hub, [1])
+
+
+def test_registry_refuses_conflicting_spec_and_closed_hub():
+    value = spec("registry-conflict")
+    hub = open_hub(value)
+    try:
+        with pytest.raises(CallPeerError, match="call_id_conflict"):
+            open_hub(cp.CallSpec(value.call_id, 9, "google", "another-model"))
+        hub.close("finished")
+        with pytest.raises(CallPeerError, match="call_id_conflict"):
+            open_hub(value)
     finally:
         close_hub(value.call_id)

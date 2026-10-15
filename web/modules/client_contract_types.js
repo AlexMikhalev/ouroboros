@@ -231,6 +231,7 @@
  * @property {string[]} interface_paths
  * @property {ContractHttpEntry[]} http
  * @property {ContractWs} ws
+ * @property {CallSocketContract=} call
  * @property {Object.<string,Object>} schemas
  */
 

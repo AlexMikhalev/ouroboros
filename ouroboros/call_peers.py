@@ -3,7 +3,8 @@
 Queues bound transport memory, not conversation length. Audio overflow discards
 oldest samples and exposes counters; control overflow refuses the slow peer.
 Mixing happens when the driver drains input, so simultaneously buffered microphones
-share one engine timeline instead of playing sequentially. A mixed frame keeps a
+share one engine timeline instead of playing sequentially. A 20 ms mixer tick
+collects asynchronously arriving microphone frames before emitting each chunk. A mixed frame keeps a
 single peer's identity when possible; otherwise its id is ``mixed`` and its role
 is meeting if any contributor is a meeting. Mixing never invents owner provenance.
 """
@@ -140,6 +141,7 @@ class LiveCallHub(cp.CallHub):
         self._input_rate = 16000 if spec.engine == "google" else 24000
         self._output_rate = 24000
         self._epoch = 0
+        self._mix_at = 0.0
         self._closed = False
         self._state = {"type": "state", "state": cp.STATE_CONNECTING, "reason": ""}
         self._counts = dict(input_dropped_samples=0, output_dropped_frames=0,
@@ -175,6 +177,8 @@ class LiveCallHub(cp.CallHub):
             prior = self._grants.get((skill, token_digest))
             if prior is not None and prior != grant:
                 raise CallPeerError("peer_direction_mismatch")
+            if prior is None and len(self._grants) >= MAX_PEERS:
+                raise CallPeerError("peer_capacity_full")
             self._grants[(skill, token_digest)] = grant
             return grant
 
@@ -194,6 +198,8 @@ class LiveCallHub(cp.CallHub):
         self._condition.notify_all()
 
     def _send(self, peer: _Peer, message: bytes | str) -> None:
+        if peer.failure:
+            return
         audio = isinstance(message, bytes)
         count = sum(isinstance(m, bytes) == audio for m in peer.outgoing)
         limit = self._audio_limit if audio else self._control_limit
@@ -254,6 +260,8 @@ class LiveCallHub(cp.CallHub):
                     raise CallPeerError("stream_capacity_full")
                 track = _Track(LinearResampler(frame.rate, self._input_rate))
                 peer.tracks[frame.stream] = track
+            if not any(t.samples for p in self._peers.values() for t in p.tracks.values()):
+                self._mix_at = time.monotonic() + MIX_FRAME_MS / 1000
             track.samples.extend(_samples(track.converter.feed(frame.pcm)))
             limit = self._input_rate * MIX_FRAME_MS * self._audio_limit // 1000
             excess = max(0, len(track.samples) - limit)
@@ -267,7 +275,9 @@ class LiveCallHub(cp.CallHub):
         with self._condition:
             self._live()
             peer = self._peers[peer_id]
-            kind = message["type"]
+            kind = message.get("type")
+            if kind not in cp.PEER_MESSAGE_TYPES or kind == "hello":
+                raise CallPeerError("invalid_call_control")
             if kind == "played" and not peer.info.speaker:
                 raise CallPeerError("audio_direction_forbidden")
             self._event(cp.PeerControl(peer_id, peer.info.role, dict(message)))
@@ -278,8 +288,9 @@ class LiveCallHub(cp.CallHub):
 
     def _mix(self) -> cp.PeerAudio | None:
         tracks = [(p, t) for p in self._peers.values() for t in p.tracks.values() if t.samples]
-        if not tracks:
+        if not tracks or time.monotonic() < self._mix_at:
             return None
+        self._mix_at += MIX_FRAME_MS / 1000
         length = min(self._input_rate * MIX_FRAME_MS // 1000, max(len(t.samples) for _, t in tracks))
         mixed = [0] * length
         for _, track in tracks:
@@ -304,7 +315,9 @@ class LiveCallHub(cp.CallHub):
                 remaining = deadline - time.monotonic()
                 if self._closed or remaining <= 0:
                     return None
-                self._condition.wait(remaining)
+                buffered = any(t.samples for p in self._peers.values() for t in p.tracks.values())
+                wake_in = max(0, self._mix_at - time.monotonic()) if buffered else remaining
+                self._condition.wait(min(remaining, wake_in))
 
     def next_outgoing(self, peer_id: str) -> bytes | str | None:
         """A nonblocking socket poll; the hub owns all queue and epoch checks."""
