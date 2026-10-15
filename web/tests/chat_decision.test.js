@@ -143,7 +143,7 @@ test('quiz card renders full anatomy from a WS frame', () => {
         assert.equal(card.querySelector('.chat-quiz-question').textContent, 'Merge now?');
         assert.match(card.querySelector('.chat-quiz-stake').textContent, /At stake: release timing/);
         assert.match(card.querySelector('.chat-quiz-assumption').textContent, /Continuing meanwhile: continuing with the merge/);
-        assert.equal(card.querySelector('.chat-quiz-status-text').textContent, 'Unanswered · an answer is still accepted');
+        assert.equal(card.querySelector('.chat-quiz-status-text').textContent, 'Unanswered');
         const buttons = card.querySelectorAll('.chat-quiz-option');
         assert.equal(buttons.length, 2);
         assert.equal(buttons[1].querySelector('.chat-quiz-option-detail').textContent, 'wait for CI');
@@ -170,7 +170,7 @@ test('a finished task leaves its card answerable; only a settled one is a record
         const card = fx.decision.buildQuizCard(replayMsg);
         assert.ok(card);
         assert.equal(card.dataset.state, 'expired_terminal');
-        assert.match(card.querySelector('.chat-quiz-status-text').textContent, /a late answer is accepted/);
+        assert.equal(card.querySelector('.chat-quiz-status-text').textContent, 'Unanswered · task finished');
         assert.ok(card.querySelectorAll('.chat-quiz-option').every((btn) => !btn.disabled));
         const field = card.querySelector('.chat-quiz-comment');
         assert.ok(field);
@@ -897,11 +897,11 @@ test('the Project card reads the wait facts history attaches: a wait resumed by 
             quiz: { ...WS_MSG, quiz_id: 'qz-o', wait_for_answer: true, owner_wait_state: 'resumed', assumption: '' } });
         assert.equal(replayed.querySelector('.chat-quiz-wait'), null);
         assert.match(replayed.querySelector('.chat-quiz-assumption').textContent, /wait ended without an answer/);
-        assert.equal(replayed.querySelector('.chat-quiz-status-text').textContent, 'Unanswered · the task continued; an answer is still accepted');
+        assert.equal(replayed.querySelector('.chat-quiz-status-text').textContent, 'Unanswered · task continued');
         assert.ok(replayed.querySelectorAll('.chat-quiz-option').every((btn) => !btn.disabled));
         // A detail read whose wait record moved on to another quiz proves this wait ended too.
         const detail = fx.decision.buildQuizCard(await fx.decision.readQuestion('t-1', 'qz-d', 'p1'));
-        assert.equal(detail.querySelector('.chat-quiz-status-text').textContent, 'Unanswered · the task continued; an answer is still accepted');
+        assert.equal(detail.querySelector('.chat-quiz-status-text').textContent, 'Unanswered · task continued');
         // A bounded wait that ended under an assumption names the path the task took.
         const assumed = fx.decision.buildQuizCard({ ...WS_MSG, quiz_id: 'qz-a', wait_for_answer: true, wait_ended_at: 'x' });
         assert.match(assumed.querySelector('.chat-quiz-assumption').textContent, /under its assumption \(continuing with the merge\)/);
@@ -1053,17 +1053,20 @@ test('Main native question withdraws every input on close and canonical reread k
 });
 
 test('settled native history needs no recovery reads, and missing exact room proof authorizes nothing', async () => {
-    let reads = 0;
-    const fx = fixture({ isMain: true, rawDetail: true, currentQuestionHost: new NodeStub(), fetchDetail: async () => {
-        reads++;
-        return { task_id: 't-1', chat_id: 1, owner_quiz: { 'qz-1': WS_MSG } };
+    const reads = [];
+    const fx = fixture({ isMain: true, rawDetail: true, fetchDetail: async (taskId) => {
+        reads.push(taskId);
+        return { task_id: taskId, chat_id: 1, owner_quiz: { 'qz-1': { ...WS_MSG, task_id: taskId } } };
     } });
     try {
         fx.decision.buildQuizCard({ ...WS_MSG, state: 'answered', answered_index: 0 });
+        // An unanswered native card beside it: the census after the reopen does reconfirm that one.
+        fx.decision.buildQuizCard({ ...WS_MSG, task_id: 't-2' });
         fx.decision.setConnected(false);
         fx.decision.setConnected(true);
         for (let n = 0; n < 3; n++) { fx.decision.syncCurrentQuestions([], true); await turn(); }
-        assert.equal(reads, 0);
+        assert.ok(reads.includes('t-2'), 'the census ran and reconfirms the unanswered native card');
+        assert.equal(reads.filter(id => id === 't-1').length, 0, 'the settled native card is never read');
         assert.equal(await fx.decision.readQuestion('t-1', 'qz-1', ''), null);
         assert.equal(fx.calls.length, 0);
     } finally { fx.decision.destroy(); fx.restore(); }

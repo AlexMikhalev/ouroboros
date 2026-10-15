@@ -50,7 +50,7 @@ export function createChatDecision({
     // Main's own node retirement (viewport-stable; media, decision views and markdown released).
     removeMessageNode = null,
     focusAfterRemoval = null,
-    currentQuestionHost = null,
+    // Main's waiting navigator recounts what is on screen when a question copy comes or goes.
     onQuestionsChanged = () => {},
 }) {
     const observations = new Map();
@@ -320,16 +320,17 @@ export function createChatDecision({
                 revalidateMirror(prior);
             return null;
         }
-        // An answered pointer never enters Main. Once memory has evicted anything,
-        // every unmounted non-answered question needs canonical confirmation: an
-        // old in-flight read can have re-seeded its stale open observation meanwhile.
+        // A settled (answered or closed) pointer never enters Main unless its delivery is still
+        // owed. Once memory has evicted anything, every unmounted unsettled question needs
+        // canonical confirmation: an old in-flight read can have re-seeded its stale open
+        // observation meanwhile.
         const known = observations.get(key)?.question_delivery;
         const owed = questionDeliveryPending(msg) && known?.state !== 'delivered' && known?.dismissed !== true;
-        if (!owed && (msg.quiz_state === 'answered' || ['answered', 'closed'].includes(observations.get(key)?.state))) {
+        if (!owed && (['answered', 'closed'].includes(msg.quiz_state) || ['answered', 'closed'].includes(observations.get(key)?.state))) {
             observe(msg); return null;
         }
         const view = { key, row: {}, observedAt: Date.now(), timer: null,
-            needsValidation: !canonical && (forgotten || Boolean(currentQuestionHost)),
+            needsValidation: !canonical && forgotten,
             revalidationPending: false, revalidationFailed: false };
         mirrorRow(view, msg);
         const bubble = mountMirror(view);
@@ -373,22 +374,25 @@ export function createChatDecision({
         });
     }
 
+    // A Project question's Main copy takes its own place in the feed, at the time it was asked.
     function appendQuestionPointer(msg) {
         if (!isMain || !insertMessageNode) return false;
         return onDomWrite(() => {
             const bubble = buildQuestionPointer(msg);
             if (!bubble) return false;
-            if (currentQuestionHost) {
-                currentQuestionHost.append(bubble);
-                onQuestionsChanged();
-                return true;
-            }
-            return insertMessageNode(bubble) !== false;
+            const inserted = insertMessageNode(bubble) !== false;
+            onQuestionsChanged();
+            return inserted;
         });
     }
 
+    // The canonical current questions (`/api/state`) never mount copies: history and the live
+    // frame place questions in the feed. The census only confirms or settles copies already
+    // mounted, and reconfirms cards a socket close made stale. `complete` is a boolean or the
+    // read's `(taskId, quizId) => vouched` predicate: an unnamed copy it vouches for has left.
     function syncCurrentQuestions(rows, complete = false, requestedAt = Infinity) {
-        if (!isMain || !currentQuestionHost || !Array.isArray(rows)) return;
+        if (!isMain || !Array.isArray(rows)) return;
+        const vouched = typeof complete === 'function' ? complete : () => complete === true;
         onDomWrite(() => {
             for (const [key, card] of quizViews) {
                 if (!connected || mirrors.has(key) || card.dataset.authorityStale !== '1' || card.dataset.validationPending === String(epoch)) continue;
@@ -404,13 +408,13 @@ export function createChatDecision({
             }
             const named = new Set();
             for (const row of rows) {
-                named.add(questionKey(row.task_id, row.quiz_id));
-                const bubble = buildQuestionPointer(row, true);
-                if (bubble) currentQuestionHost.append(bubble);
+                const key = questionKey(row.task_id, row.quiz_id);
+                named.add(key);
+                if (mirrors.has(key)) buildQuestionPointer(row, true);
             }
             for (const view of [...mirrors.values()]) {
                 if (named.has(view.key) || view.observedAt > requestedAt || view.settling) continue;
-                if (complete) removeMirror(view);
+                if (vouched(view.row.task_id, view.row.quiz_id)) removeMirror(view);
                 else {
                     view.needsValidation = true;
                     view.revalidationFailed = true;
@@ -573,11 +577,9 @@ export function createChatDecision({
             }
             const comment = card.querySelector('.chat-quiz-comment');
             const send = card.querySelector('.chat-quiz-send');
-            const closeReason = card.querySelector('.chat-quiz-close-reason');
-            const closeSubmit = card.querySelector('.chat-quiz-close-submit');
-            if (closeReason) closeReason.disabled = !answerable;
-            if (closeSubmit) closeSubmit.disabled = !answerable || !String(closeReason?.value || '').trim()
-                || String(closeReason?.value || '').length > MAX_DECISION_COMMENT;
+            const closeButton = card.querySelector('.chat-quiz-close');
+            if (closeButton && !answerable && state !== 'unknown') { closeButton.remove(); changed = true; }
+            else if (closeButton) closeButton.disabled = !answerable || Boolean(String(comment?.value || '').trim());
             if (comment) comment.disabled = !answerable;
             if (send && comment) send.disabled = !answerable || !String(comment.value || '').trim()
                 || String(comment.value || '').length > MAX_DECISION_COMMENT;
@@ -602,14 +604,14 @@ export function createChatDecision({
                 changed = true;
             }
             // An accepted late answer whose delivery became unknown: Main's copy lets the owner
-            // remove it from Needs you. Nothing is resent; the answer and its record stay.
+            // stop counting it as pending. Nothing is resent; the answer and its record stay.
             const removable = card.classList.contains('project-question-card') && unknownDeliveryRemovable({ ...current, state });
             let remove = card.querySelector('.chat-quiz-dismiss');
             if (removable && !remove) {
                 remove = document.createElement('button');
                 remove.type = 'button';
                 remove.className = 'chat-quiz-dismiss btn btn-xs btn-default';
-                remove.textContent = tr('quiz.remove_unknown', 'Remove from Needs you');
+                remove.textContent = tr('quiz.remove_unknown', 'Remove from pending');
                 remove.addEventListener('click', () => submitAnswer(card,
                     { taskId: card.dataset.taskId, quizId: card.dataset.quizId, options: [] }, null, '', setCardState, 'dismiss'));
                 card.append(remove);
@@ -714,8 +716,12 @@ export function createChatDecision({
         const statusLabel = document.createElement('span');
         statusLabel.className = 'chat-quiz-status-text';
         status.append(dot, statusLabel);
+        // The status and the card's quiet Close end the head together, so a wrap moves both.
+        const headEnd = document.createElement('span');
+        headEnd.className = 'chat-quiz-head-end';
+        headEnd.append(status);
         // The mirror's one addition to the Project form: the chip that opens it in its Project.
-        head.append(chip, ...(mirror ? [mirrorChip(mirror)] : []), status);
+        head.append(chip, ...(mirror ? [mirrorChip(mirror)] : []), headEnd);
         card.append(head);
 
         // DRY with the chat surface (owner requirement): question and stake go

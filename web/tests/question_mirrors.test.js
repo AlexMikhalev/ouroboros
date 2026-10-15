@@ -50,9 +50,9 @@ test('a realistic burst: every unanswered question is the full Project form, an 
         const cards = fx.cards();
         assert.deepEqual(cards.map((card) => card.dataset.quizId), ['q-resumed', 'q-optional', 'q-finished', 'q-replaced', 'q-waiting']);
         assert.deepEqual(cards.map((card) => text(card, 'chat-quiz-status-text')), [
-            'Unanswered · the task continued; an answer is still accepted',
-            'Unanswered · an answer is still accepted',
-            'Unanswered · the task finished; a late answer is accepted as your message',
+            'Unanswered · task continued',
+            'Unanswered',
+            'Unanswered · task finished',
             'Replaced by a newer question',
             'Waiting for your answer',
         ]);
@@ -92,8 +92,10 @@ test('the mirror is the Project form node for node; its one addition is the Proj
         const [ownHead, ...ownBody] = own.children;
         assert.deepEqual(body.map(shape), ownBody.map(shape));
         assert.deepEqual(head.children.map((node) => node.className),
-            ['chat-quiz-chip', 'chat-live-project-card-btn chat-quiz-project', 'chat-quiz-status']);
-        assert.deepEqual(ownHead.children.map((node) => node.className), ['chat-quiz-chip', 'chat-quiz-status']);
+            ['chat-quiz-chip', 'chat-live-project-card-btn chat-quiz-project', 'chat-quiz-head-end']);
+        assert.deepEqual(ownHead.children.map((node) => node.className), ['chat-quiz-chip', 'chat-quiz-head-end']);
+        // The head ends with the status and the card's one quiet Close, the same on both surfaces.
+        assert.deepEqual(head.children[2].children.map((node) => node.className), ['chat-quiz-status', 'chat-quiz-close']);
         assert.deepEqual(shape(head.children[2]), shape(ownHead.children[1]));
         assert.equal(own.classList.contains('project-question-card'), false);
         const chip = head.children[1];
@@ -592,7 +594,7 @@ test('a fresh single-wait census ends older waits in place without settling or r
         assert.equal(text(older, 'chat-quiz-status-text'), 'Waiting for your answer', 'a pre-arrival read cannot end a newer wait');
         fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q2', ts: ASKED[1] });
         assert.deepEqual([older, newer, foreign].map((card) => text(card, 'chat-quiz-status-text')), [
-            'Unanswered · the task continued; an answer is still accepted', 'Waiting for your answer', 'Waiting for your answer']);
+            'Unanswered · task continued', 'Waiting for your answer', 'Waiting for your answer']);
         assert.match(text(older, 'chat-quiz-assumption'), /^The wait ended without an answer/);
         assert.deepEqual([older.dataset.state, Boolean(older.querySelector('.chat-quiz-comment'))], ['open', true]);
         // Neither a missing stamp nor a sub-millisecond tie is an order.
@@ -602,7 +604,7 @@ test('a fresh single-wait census ends older waits in place without settling or r
         assert.deepEqual(fx.cards().slice(3, 5).map((card) => text(card, 'chat-quiz-status-text')),
             ['Waiting for your answer', 'Waiting for your answer']);
         fx.add(WAITING);
-        assert.equal(text(older, 'chat-quiz-status-text'), 'Unanswered · the task continued; an answer is still accepted',
+        assert.equal(text(older, 'chat-quiz-status-text'), 'Unanswered · task continued',
             'stale history cannot restore the closed wait');
         mock.timers.tick(SETTLE_MS * 2);
         assert.equal(fx.removed.length, 0, 'an unanswered question is never removed');
@@ -730,7 +732,7 @@ test('an optional canonical ask inherits no resumed fact from another quiz wait'
         const detail = await fx.decision.readQuestion('t-1', 'opt', 'p1');
         assert.equal(detail.owner_wait_state, undefined);
         const card = fx.decision.buildQuizCard(detail);
-        assert.equal(text(card, 'chat-quiz-status-text'), 'Unanswered · an answer is still accepted');
+        assert.equal(text(card, 'chat-quiz-status-text'), 'Unanswered');
         assert.ok(options(card).every(button => !button.disabled));
     } finally { fx.decision.destroy(); fx.restore(); }
 });

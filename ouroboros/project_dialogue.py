@@ -61,9 +61,9 @@ def _row_chat_id(row: Dict[str, Any]) -> int:
 # rows this module actually emits by web/tests/fixtures/question_presentation_parity.json.
 QUESTION_STATUS = {
     "waiting": "Waiting for your answer",
-    "open": "Unanswered · an answer is still accepted",
-    "resumed": "Unanswered · the task continued; an answer is still accepted",
-    "expired_terminal": "Unanswered · the task finished; a late answer is accepted as your message",
+    "open": "Unanswered",
+    "resumed": "Unanswered · task continued",
+    "expired_terminal": "Unanswered · task finished",
     "answered": "You answered",
     "answer_pending": "Answer recorded · delivery pending",
     "answer_unknown": "Answer recorded · delivery unknown",
