@@ -455,10 +455,10 @@ function onMenuKeydown(event) {
  * closes the menu and invokes `onAction(actionId)`.
  * @param {HTMLElement} anchor trigger element
  * @param {{cancelPending?: boolean, budgetPaused?: boolean, wholeTree?: boolean, busy?: boolean,
- *     onAction: (action: string) => void}} opts
+ *     canAct?: (action: string) => boolean, onAction: (action: string) => void}} opts
  */
 export function openTaskControlMenu(anchor, {
-    cancelPending = false, budgetPaused = false, wholeTree = true, resumeVisible = false, busy = false, onAction,
+    cancelPending = false, budgetPaused = false, wholeTree = true, resumeVisible = false, busy = false, canAct = () => true, onAction,
 } = {}) {
     closeTaskControlMenu();
     if (!anchor?.isConnected || !document.body) return null;
@@ -478,6 +478,9 @@ export function openTaskControlMenu(anchor, {
         if (busy) item.disabled = true;
         item.addEventListener('click', (event) => {
             event.stopPropagation();
+            // A portal can outlive the facts that offered it. Its owner rechecks before EVERY effect,
+            // including Pause, which dispatches here rather than through onAction.
+            if (!canAct(action)) { closeTaskControlMenu(); return; }
             closeTaskControlMenu();
             // Both surfaces' anchors name their task (Activity row `data-id`,
             // chat card root `data-task-id`), so Pause needs no per-surface hook.
@@ -499,6 +502,24 @@ export function openTaskControlMenu(anchor, {
     document.addEventListener('pointerdown', onOutsidePointer, true);
     document.addEventListener('keydown', onMenuKeydown, true);
     return menu;
+}
+
+/**
+ * The shared controls of one exact task, from whichever surface shows it (its Chat card, the room's
+ * work list): the same actions, eligibility and request owners. `stop` is the caller's own stop path
+ * (a card keeps its optimistic chip); the Pause item reads its target from the anchor.
+ */
+export function openTaskControls(anchor, taskId, { record = null, activity = null, cancelPending = false, canAct, stop }) {
+    const id = String(taskId || '').trim();
+    return openTaskControlMenu(anchor, {
+        cancelPending,
+        budgetPaused: activity?.phase === 'budget_paused',
+        resumeVisible: resumeRunEligibility(record || { groupId: id }, activity),
+        busy: taskControlBusy(id),
+        canAct,
+        onAction: (action) => (action === ACTION_HURRY ? hurryTaskAction(id)
+            : action === ACTION_RESUME ? resumeTaskAction(id) : stop(action)),
+    });
 }
 
 // The trigger's constant label. The trigger always opens the dropdown; the

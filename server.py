@@ -584,8 +584,9 @@ def _bootstrap_supervisor_repo(settings: dict, git_ops_module=None):
             _managed_update_active = False
         block = _has_active_evolution_transaction() or _managed_update_active
         policy = "rescue_and_block" if block else "rescue_and_reset"
+        from ouroboros.server_restart import _noticed_bootstrap  # its failure, not a deferral, is told
         ok, msg = _safe_restart_serialized(
-            git_ops_module.safe_restart,
+            _noticed_bootstrap(git_ops_module.safe_restart),
             reason="bootstrap",
             unsynced_policy=policy,
         )
@@ -680,7 +681,7 @@ def _run_supervisor(settings: dict) -> None:
         from supervisor.queue import (
             enqueue_task, enforce_task_timeouts, enqueue_evolution_task_if_needed,
             persist_queue_snapshot, restore_pending_from_snapshot,
-            cancel_task_by_id, queue_deep_self_review_task, sort_pending,
+            queue_deep_self_review_task, sort_pending,
         )
         from supervisor.workers import (
             init as workers_init, get_event_q, WORKERS, PENDING, RUNNING,
@@ -776,7 +777,7 @@ def _run_supervisor(settings: dict) -> None:
             send_with_budget=send_with_budget, load_state=load_state, save_state=save_state,
             update_state=update_state,
             update_budget_from_usage=update_budget_from_usage, append_jsonl=append_jsonl,
-            enqueue_task=enqueue_task, cancel_task_by_id=cancel_task_by_id,
+            enqueue_task=enqueue_task,
             queue_deep_self_review_task=queue_deep_self_review_task, persist_queue_snapshot=persist_queue_snapshot,
             safe_restart=safe_restart, kill_workers=kill_workers, spawn_workers=spawn_workers,
             sort_pending=sort_pending, consciousness=_consciousness,
@@ -1327,7 +1328,7 @@ async def lifespan(app):
         log.warning("Native skills bootstrap failed", exc_info=True)
 
     # Boot-reconcile the project registry BEFORE /api/state and context-building
-    # can rely on registered_project_chat_ids (the multi-project isolation SSOT):
+    # can rely on reserved_project_chat_ids (the multi-project isolation SSOT):
     # register any pre-existing data/projects/<id>/ store whose row is missing, so
     # an inherited project's raw chat is partitioned from turn one (not only after
     # the 300s periodic tick). Idempotent and never prunes.

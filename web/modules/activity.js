@@ -53,6 +53,18 @@ export function ownOutcomePhase(activity, queueFact = null) {
         ? { ...view, secondary: queueFact, secondaryMotion: false } : view;
 }
 
+/** An answered root whose late work remains (D10) names its own work, when it answered,
+ * and that only the work left after the delivered answer waits — never a generic turn. */
+function lateWorkHtml(a, late) {
+    const at = new Date(String(late.answered_at || ''));
+    const iso = Number.isNaN(at.getTime()) ? '' : at.toISOString();
+    const when = iso ? ` <time datetime="${esc(iso)}" title="${esc(iso)}">${esc(at.toLocaleString([], {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</time>` : '';
+    const state = { budget_paused: 'paused', budget_pausing: 'pausing', unknown: 'status unknown' }[a.phase] || 'running';
+    // The state leads: a narrow row's ellipsis may cut the time, never what waits.
+    return { name: esc(late.title || 'Answered task'), sub: `Remaining work ${state} · answer delivered${when}` };
+}
+
 /** A census-only live root (a direct turn, or an answered root whose late work the owner
  * paused, D10): its phase, and the shared control — Resume once the census says Paused.
  * `slot` marks where the caller paints a known outcome (`ownOutcomePhase`). */
@@ -60,11 +72,12 @@ export function liveActivityRowHtml(a, nowMs = Date.now(), slot = null) {
     const names = { direct_chat: 'Direct turn', managed_task: 'Managed task' };
     const started = Number(a.started_at) || 0;
     const elapsed = started > 0 ? ` · ${Math.max(0, Math.round(nowMs / 1000 - started))}s` : '';
-    const outcome = slot && ownOutcomePhase(a);
+    const late = a.late_work && typeof a.late_work === 'object' ? lateWorkHtml(a, a.late_work) : null;
+    const outcome = !late && slot && ownOutcomePhase(a);
     return `<div class="activity-row">
                 <div class="activity-row-main">
-                    <span class="activity-name">${esc(names[a.kind] || 'Live turn')}</span>
-                    <span class="activity-sub">${outcome ? slot(outcome) : esc(a.phase || '')}${elapsed}</span>
+                    <span class="activity-name">${late ? late.name : esc(names[a.kind] || 'Live turn')}</span>
+                    <span class="activity-sub">${late ? late.sub : `${outcome ? slot(outcome) : esc(a.phase || '')}${elapsed}`}</span>
                 </div>
                 <div class="activity-row-actions">
                     <button type="button" class="btn btn-xs btn-danger" data-act="task-control" data-id="${esc(a.activity_id || '')}" data-root="1"${a.phase === 'budget_paused' ? ' data-budget-paused="1"' : ''}>${esc(TASK_CONTROL_TRIGGER_LABEL)}</button>
@@ -517,9 +530,10 @@ export function initActivity({ mount, ws } = {}) {
                         }
                         // Same declared semantics as the chat card (v6.82): the
                         // task AND its live subtree, so stopping an orchestrator
-                        // never orphans its running subagents. Soft stop answers
-                        // 202 with the intent open; immediate answers after the
-                        // teardown — either way the refresh shows honest state.
+                        // never orphans its running subagents. A soft stop answers
+                        // 202 with the intent open; an immediate stop answers 200
+                        // once torn down or 202 pending while the intent is still
+                        // being driven — either way the refresh shows honest state.
                         await requestStop(id, action);
                     } catch (exc) {
                         // A 404 is the documented completion race (the run

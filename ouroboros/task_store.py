@@ -21,20 +21,25 @@ FACT_KEYS = ("task_id", "status", "ts", "updated_at", "delegation_role", "parent
 _NEWEST_ORDER = "ORDER BY ts DESC, task_id DESC"  # NULL ts sorts last: a row without one is oldest
 
 
-def read_document(root: Any, task_id: str, *, txn: Optional[Txn] = None) -> Optional[Dict[str, Any]]:
+def read_document(root: Any, task_id: str, *, txn: Optional[Txn] = None, signed: bool = False) -> Any:
     """One coherent document; implicit reads decode only after releasing the store.
 
     A supplied transaction keeps its own read/modify/write snapshot and lifetime.
+    ``signed=True`` returns ``(document, signature)`` captured in that same read
+    transaction, so an ownership check compares the stamp of the body it holds and
+    never a second read's.
     """
     if txn is not None:
-        return txn.load(str(task_id))
+        document = txn.load(str(task_id))
+        return (document, signature(root, task_id, txn=txn)) if signed else document
     task_id = str(task_id)
     with open_store(root, write=False) as txn:
+        stamp = signature(root, task_id, txn=txn) if signed else None
         body = txn.body_text(task_id)
         rows = txn.handoff_records([task_id]) if body is not None else []
-    if body is None:
-        return None
-    return store.project_handoffs(json.loads(body), store.decode_handoffs([task_id], rows)[task_id])
+    document = None if body is None else store.project_handoffs(
+        json.loads(body), store.decode_handoffs([task_id], rows)[task_id])
+    return (document, stamp) if signed else document
 
 
 def exists(root: Any, task_id: str) -> bool:

@@ -432,10 +432,10 @@ def test_absence_is_recorded_once_and_a_busy_reread_is_busy_not_a_change(env, mo
     real, stamps, busy = task_store.signature, {}, [True]
 
     def signature(root, task_id, *, txn=None):
-        if txn is None:  # an addressed read; the real one recurses with its open transaction
+        if txn is None:
             stamps[task_id] = stamps.get(task_id, 0) + 1
-            if busy[0] and task_id == "root" and stamps[task_id] > 1:
-                raise store.StoreBusy("current store busy: database is locked", reason="contention")
+        if busy[0] and task_id == "root":  # the signed read and any re-check find the store busy
+            raise store.StoreBusy("current store busy: database is locked", reason="contention")
         return real(root, task_id, txn=txn)
 
     monkeypatch.setattr(task_store, "signature", signature)

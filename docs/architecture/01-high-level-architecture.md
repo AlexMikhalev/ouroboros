@@ -19,7 +19,7 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
     project_handoff.js — compact Main creation/transfer entries; receipt folding preserves work identity (§3 Project handoff receipts)
     project_reference.js — the one Project pointer control and the only raiser of `ouro:open-project` (DESIGN "References and actions")
     project_activity.js — `active_chat_activities` census projection for Project dots (§3 Liveness census)
-    project_work_pointer.js, project_read_state.js — root-card pointer without execution authority; a room's read receipt (§3 Project rooms)
+    room_work.js, project_read_state.js — a room's header work list without execution authority; its read receipt (§3 Project rooms)
     model_wait.js — model-wait views and owner actions inside chat cards (§6 Quota and auth waits)
     task_checkpoints.js, cancel_presentation.js — typed checkpoints and cancellation-cause text shared by Chat and Logs (§3)
     dashboard.js, logs.js, worker_sha_presentation.js, costs.js, files.js — Dashboard, Logs, worker-SHA presentation, Costs (unknown is not free), Files (§3)

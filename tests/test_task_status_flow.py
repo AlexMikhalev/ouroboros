@@ -226,7 +226,9 @@ def test_natural_completion_wins_a_late_cancel(tmp_path, monkeypatch):
     monkeypatch.setattr(queue_module, "persist_queue_snapshot", lambda reason="": None)
     monkeypatch.setattr(queue_module, "_emit_cancel_task_done", lambda *_args, **_kwargs: None)
 
-    assert queue_module.cancel_task_by_id("fast-child") is True
+    # No intent was ever minted (the tool saw a settled child), so custody is the
+    # typed no-op already_settled (A2): nothing captured, nothing written.
+    assert task_lifecycle.cancel_task_custody("fast-child") == task_lifecycle.CANCEL_ALREADY_SETTLED
     stored = load_task_result(tmp_path, "fast-child")
     assert stored["status"] == STATUS_COMPLETED
     assert stored["accounted_upper_bound_usd"] == 0.75
@@ -236,12 +238,9 @@ def test_natural_completion_wins_a_late_cancel(tmp_path, monkeypatch):
     # Completion wins WITHOUT a parent_decision stamp: discarding a kept result
     # stays a separate explicit action (discard_child_result).
     assert "parent_decision" not in stored
-    # The durable intent settled (already_settled) — nothing left pending.
     assert active_intent(tmp_path, "fast-child") is None
     public = public_task_result(stored)
     assert public["outcome_axes"]["execution"]["status"] == "ok"
-    # The typed custody outcome (not the boolean facade) reports already_settled.
-    assert task_lifecycle.cancel_task_custody("fast-child") == task_lifecycle.CANCEL_ALREADY_SETTLED
 
 
 def test_cancel_workspace_task_records_terminal_artifact_state(tmp_path, monkeypatch):
@@ -279,7 +278,10 @@ def test_cancel_workspace_task_records_terminal_artifact_state(tmp_path, monkeyp
         result="queued",
     )
 
-    assert queue_module.cancel_task_by_id("workspacecancel") is True
+    from ouroboros.cancel_intents import request_cancel
+
+    request_cancel(tmp_path, "workspacecancel")
+    assert queue_module.drive_cancel_intent_scope("workspacecancel") == queue_module.CANCEL_CANCELLED
 
     stored = load_task_result(tmp_path, "workspacecancel")
     assert stored["status"] == STATUS_CANCELLED

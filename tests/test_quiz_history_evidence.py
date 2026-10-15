@@ -288,7 +288,7 @@ def test_recent_room_and_history_share_parent_root_and_origin_membership(runtime
     from ouroboros.chronicle_store import ChronicleStore
     from ouroboros.gateway.history import _make_thread_filter
     from ouroboros.memory_inventory import open_room_rows
-    from ouroboros.projects_registry import bind_task_to_project, create_project
+    from ouroboros.projects_registry import RoomResolver, bind_task_to_project, create_project
 
     project = create_project(runtime.root, "membership", name="Membership")
     bind_task_to_project(runtime.root, "parent", project["id"], origin={"absent": "system"})
@@ -300,8 +300,8 @@ def test_recent_room_and_history_share_parent_root_and_origin_membership(runtime
     rows = [meta for _address, meta, _pos in open_room_rows(runtime.root, project["chat_id"])]
     assert {row["task_id"] for row in rows} == {"child-parent_task_id", "child-root_task_id"}
     assert open_room_rows(runtime.root, 1) == []  # bound by lineage: not Main's
-    project_filter = _make_thread_filter(project["chat_id"], {project["chat_id"]}, [], {"parent": project["chat_id"]})
-    main_filter = _make_thread_filter(1, {project["chat_id"]}, [], {"parent": project["chat_id"]})
+    project_filter = _make_thread_filter(project["chat_id"], {project["chat_id"]}, [], RoomResolver(runtime.root))
+    main_filter = _make_thread_filter(1, {project["chat_id"]}, [], RoomResolver(runtime.root))
     assert all(project_filter(row["chat_id"], row) and not main_filter(row["chat_id"], row) for row in rows)
 
 

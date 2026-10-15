@@ -743,26 +743,32 @@ def _normalize_swarm_efficiency(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load_task_result(
-    drive_root: Any, task_id: str, *, strict: bool = False,
-) -> Optional[Dict[str, Any]]:
+    drive_root: Any, task_id: str, *, strict: bool = False, signed: bool = False,
+) -> Any:
     """Read one exact result through schema admission, tolerating old fan-out names.
 
     Fail-soft refusal quarantines with a batched event and returns None; strict
     refusal raises without moving, so unreadable identities cannot be readmitted.
-    Neither mode materializes deliverables or independent state axes."""
+    Neither mode materializes deliverables or independent state axes. ``signed``
+    returns ``(result, signature)`` from ONE read transaction: an ownership check
+    (``supervisor.task_ownership``) re-checks the stamp of the very body it holds,
+    so a writer landing between two reads is a change and a busy store is unknown,
+    never a false change."""
     try:
         tid = validate_task_id(task_id)
     except ValueError:
         if strict:
             raise
-        return None
-    data = read_document(drive_root, tid)
+        return (None, None) if signed else None
+    data, stamp = read_document(drive_root, tid, signed=True) if signed else (read_document(drive_root, tid), None)
     if data is None:
         if strict:
             _refuse_occupied(drive_root, tid, write=False)
-        return None  # This read saw absence even if a writer publishes immediately after it.
-    _admit_stored(data, tid, strict=strict, noun="task result authority")
-    return _normalize_swarm_efficiency(data)
+        result = None  # This read saw absence even if a writer publishes immediately after it.
+    else:
+        _admit_stored(data, tid, strict=strict, noun="task result authority")
+        result = _normalize_swarm_efficiency(data)
+    return (result, stamp) if signed else result
 
 
 def _refuse_occupied(drive_root: Any, task_id: str, *, write: bool) -> None:

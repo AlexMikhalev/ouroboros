@@ -579,8 +579,11 @@ def test_stop_after_a_raised_put_captures_the_bound_worker(world, monkeypatch, c
         write_task_result(root, task["id"], STATUS_COMPLETED, result="finished before the Stop",
                           final_answer="finished before the Stop", cost_usd=0.0, cost_final=True,
                           cost_accounting_status="available")
+    # As every in-process ingress does: live ownership (the bound worker) lets a Stop reach a
+    # task whose result already settled; custody without an open intent touches nothing.
     cancel_intents.request_cancel(root, task["id"], reason="Explicit Stop", source="http_single",
-                                  requested_by="owner")
+                                  requested_by="owner",
+                                  allow_settled_target=queue.task_has_live_ownership(task["id"]))
     outcome = task_lifecycle.cancel_task_custody(task["id"])
     assert not proc.is_alive(), "Stop reaches the worker the raised put may have started"
     if completed_first:

@@ -1016,13 +1016,20 @@ body.resizing-panels { user-select: none; }
 
 /* === design-system:migrated-begin (chat: page header, budget pill, load-older) === */
 
+/* Main's header reflows by its own width, never a viewport guess: the title takes the spare room and the
+   control group stays content-sized beside it; when both no longer fit, the group wraps onto its own line
+   (clear of the title by the group's inset) and fills it. */
 .chat-page-header {
     position: absolute;
     top: 0;
     left: 0;
     right: 0;
     z-index: 5;
-    row-gap: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: var(--space-3);
+    row-gap: calc(var(--space-2) + var(--chrome-inset));
     pointer-events: none;
     background: transparent;
     backdrop-filter: none;
@@ -1031,19 +1038,24 @@ body.resizing-panels { user-select: none; }
     mask-image: none;
     overflow: visible;
 }
+.chat-page-header > .app-page-leading { flex: 0 0 auto; }
+.chat-page-header > .app-page-title-block { flex: 999 1 7rem; }
+.chat-page-header > .app-page-actions { flex: 1 1 auto; gap: 6px; justify-content: flex-start; }
 
-/* Blur is decoration, so fade its own layer without masking header actions. */
+/* The header's reading backing (DESIGN §5): page ink under everything readable (title, every wrapped line
+   of controls, the history note) that fades only in the band below it, so moving messages never show
+   through header text, closed or open. The mask stays on this layer, never on the actions. */
 .chat-page-header::before {
     content: "";
     position: absolute;
-    inset: 0;
+    inset: 0 0 calc(-1 * var(--space-4));
     z-index: -1;
     pointer-events: none;
-    background: linear-gradient(180deg, var(--bg-primary), transparent);
+    background: var(--bg-primary);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
-    -webkit-mask-image: linear-gradient(180deg, black 45%, transparent 100%);
-    mask-image: linear-gradient(180deg, black 45%, transparent 100%);
+    -webkit-mask-image: linear-gradient(180deg, black calc(100% - var(--space-4)), transparent);
+    mask-image: linear-gradient(180deg, black calc(100% - var(--space-4)), transparent);
 }
 
 .chat-page-header > * {
@@ -1063,12 +1075,8 @@ body.resizing-panels { user-select: none; }
 .chat-header-btn {
     border: 1px solid rgba(var(--neutral-rgb), 0.12);
     background: rgba(var(--shell-rgb), 0.55);
-    backdrop-filter: blur(8px);
     color: var(--text-secondary);
-    border-radius: 999px;
-    padding: 7px 14px;
     font-size: var(--type-meta);
-    line-height: 1.2;
     font-weight: 600;
     cursor: pointer;
     white-space: nowrap;
@@ -1179,11 +1187,8 @@ body.resizing-panels { user-select: none; }
     flex-direction: column;
     align-items: center;
     gap: 3px;
-    padding: 4px 12px;
-    border-radius: 999px;
     border: 1px solid rgba(245, 158, 11, 0.18);
     background: rgba(var(--shell-rgb), 0.55);
-    backdrop-filter: blur(8px);
     cursor: pointer;
     min-width: 100px;
     font: inherit;
@@ -1312,15 +1317,6 @@ body.resizing-panels { user-select: none; }
     text-align: left;
     overflow-wrap: anywhere;
 }
-/* Main's header floats over messages; Project's status bar is in normal flow.
-   Keep the reading backing local to the overlay, never a filled Project row. */
-.chat-page-header > .chat-history-status {
-    justify-self: start;
-    padding: var(--space-1) var(--space-2);
-    border-radius: var(--radius-sm);
-    background: var(--bg-primary);
-}
-
 .typing-bubble { opacity: 0.7; }
 .typing-dots {
     display: inline-flex;
@@ -3158,19 +3154,6 @@ body.resizing-panels { user-select: none; }
         padding-bottom: env(safe-area-inset-bottom, 0px);
     }
 
-    .chat-page-header {
-        /* Keep the desktop overlay header (position:absolute + fade-to-transparent
-           gradient + blur): the transcript scrolls under it. Only restack the grid
-           for narrow widths — never switch to position:static / a flat background,
-           which is what removed the gradient and made mobile look heavy. */
-        row-gap: 6px;
-        grid-template-columns: auto minmax(0, 1fr);
-        grid-template-areas:
-            "leading title"
-            "toolbar toolbar"
-            "tabs tabs";
-    }
-
     body.project-panel-open .mobile-nav-toggle {
         display: none;
     }
@@ -3184,23 +3167,9 @@ body.resizing-panels { user-select: none; }
         flex-wrap: wrap;
     }
 
-    .chat-page-header .app-page-actions {
-        width: 100%;
-        margin-left: 0;
-        justify-content: flex-start;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 6px;
-    }
-
     .chat-page-header .chat-budget-pill,
     .chat-page-header .status-badge {
         order: 0;
-    }
-
-    .chat-budget-pill {
-        min-width: 0;
-        padding: 3px 10px;
     }
 
     .page-header,
@@ -6981,11 +6950,11 @@ textarea.chat-input {
     width: var(--project-panel-width);
     z-index: 58;
     border-left: 1px solid var(--divider);
+    /* A reading surface keeps its own backing even where native backdrop blur is not composited.
+       Project tint supplies the light material; underlying Main text must never show through it. */
     background:
-        linear-gradient(180deg, rgba(var(--shell-rgb), 0.74), rgba(var(--shell-rgb), 0.64)),
-        radial-gradient(circle at 15% 0%, var(--project-12), transparent 300px);
-    backdrop-filter: blur(22px) saturate(130%);
-    -webkit-backdrop-filter: blur(22px) saturate(130%);
+        radial-gradient(circle at 15% 0%, var(--project-12), transparent 300px),
+        rgb(var(--shell-rgb));
     box-shadow: -24px 0 64px rgba(0, 0, 0, 0.34);
     transform: translateX(18px);
     opacity: 0;
@@ -7032,8 +7001,9 @@ textarea.chat-input {
     background: var(--accent-04);
     color: var(--text-secondary);
     border-radius: var(--radius-md, 8px);
-    width: 28px;
-    height: 28px;
+    /* The bar's floating-chrome height (ui.css): close and status control share one line box. */
+    width: var(--chrome-control-h);
+    height: var(--chrome-control-h);
     font-size: 16px;
     line-height: 1;
     cursor: pointer;
@@ -8610,28 +8580,6 @@ textarea.chat-input {
 
 /* === design-system:migrated-end === */
 
-/* One line, never a paragraph: the pointer names the card and ellipsizes, so
-   the status bar cannot grow into the reading area (a 400-character plan_task
-   verdict used to wrap it to twelve lines). The 180px basis is the bar's
-   original row policy: a default desktop panel keeps one row while the
-   status pill is short; a longer pill, a narrower panel or a phone wraps the
-   bar to a second row, never a third. The auto margin keeps the pointer left
-   of the status pill. */
-.project-work-pointer {
-    flex: 1 1 180px;
-    min-width: 0;
-    max-width: 40ch;
-    margin-right: auto;
-    justify-content: flex-start;
-    text-align: left;
-    overflow: hidden;
-}
-.project-work-pointer-label {
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-}
 /* Compact horizontal spacing leaves room for wider native system-font metrics. */
 .chat-panel-statusbar { flex-wrap: wrap; gap: var(--space-2) var(--space-1); }
 .chat-live-executor-chip { max-width: 100%; white-space: normal; }

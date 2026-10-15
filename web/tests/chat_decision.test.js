@@ -968,3 +968,35 @@ test('a Main mirror of a Project question carries the host facts line from its p
         assert.equal(column.children[1].children[0].querySelector('.chat-quiz-host-facts'), null);
     } finally { fx.restore(); }
 });
+
+test('Main reveals its own question by exact task and room, never a Project or another chat record', async () => {
+    const records = {
+        main: { task_id: 'main', chat_id: 1, owner_quiz: { 'qz-1': WS_MSG } },
+        unstamped: { task_id: 'unstamped', owner_quiz: { 'qz-1': WS_MSG } },
+        project: { task_id: 'project', project_id: 'p1', owner_quiz: { 'qz-1': WS_MSG } },
+        other: { task_id: 'other', chat_id: 7, owner_quiz: { 'qz-1': WS_MSG } },
+    };
+    const fx = fixture({ isMain: true, fetchDetail: async (taskId) => records[taskId] || null });
+    const appended = [];
+    const append = (msg) => { appended.push(msg.task_id); fx.decision.buildQuizCard(msg); };
+    try {
+        assert.equal((await fx.decision.readQuestion('main', 'qz-1', ''))?.task_id, 'main');
+        assert.equal(await fx.decision.readQuestion('unstamped', 'qz-1', ''), null);
+        assert.equal(await fx.decision.readQuestion('project', 'qz-1', ''), null);
+        assert.equal(await fx.decision.readQuestion('other', 'qz-1', ''), null);
+        const revealed = await fx.decision.revealQuestion('main', 'qz-1', '', 1, append, () => true,
+            () => {}, () => {}, { focus: 'question' });
+        assert.equal(revealed, true);
+        assert.deepEqual(appended, ['main']);
+        // The work list lands on the question itself, never the answer field, and posts nothing.
+        assert.ok(globalThis.document.activeElement?.classList.contains('chat-quiz-question'));
+        assert.equal(fx.calls.length, 0);
+        assert.equal(await fx.decision.revealQuestion('other', 'qz-1', '', 1, append, () => true), false);
+        assert.deepEqual(appended, ['main']);
+    } finally { fx.restore(); }
+    const project = fixture({ fetchDetail: async () => records.main });
+    try {
+        // A Project room still needs its Project: an empty one names nothing there.
+        assert.equal(await project.decision.revealQuestion('main', 'qz-1', '', 23, () => {}, () => true), false);
+    } finally { project.restore(); }
+});

@@ -204,8 +204,12 @@ def test_gr6_1_every_ingress_passes_the_live_ownership_fact():
 
     gw = (REPO_ROOT / "ouroboros" / "gateway" / "tasks.py").read_text(encoding="utf-8")
     assert "task_has_live_ownership as _live_ownership" in gw
-    assert "allow_settled=live_own" in gw
-    assert "allow_settled_target=bool(cascade_scope or allow_settled)" in gw
+    assert "allow_settled_target=bool(cascade or live_own)" in gw  # graceful ingress
+    # HTTP Stop: a target the intent request found settled is re-requested with
+    # the live-ownership fact (cascade: also its live subtree).
+    assert "return task_has_live_ownership(task_id) or (cascade and task_subtree_is_live(task_id))" in gw
+    assert ('if intent.get("already_settled") and still_owned():\n'
+            '        intent = record(allow_settled_target=True)') in gw
 
     qt = (REPO_ROOT / "supervisor" / "queue_transitions.py").read_text(encoding="utf-8")
     assert qt.count("allow_settled_target=task_has_live_ownership(task_id)") == 2, (

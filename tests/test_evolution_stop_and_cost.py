@@ -69,7 +69,23 @@ def test_reconstruct_task_cost_never_fabricates_zero_when_ledger_unavailable(
         state.reconstruct_task_cost("paid-task")
 
 
-def test_stop_evolution_tasks_cancels_only_evolution_pending_and_running(monkeypatch):
+def _minting(monkeypatch, q, tmp_path):
+    """The real durable intent, observed: the stop drives custody only through an
+    open intent (A1/A2), so a fixture that mints nothing would stop nothing."""
+    from ouroboros.cancel_intents import request_cancel
+
+    monkeypatch.setattr(q, "DRIVE_ROOT", tmp_path)
+    intents: list = []
+
+    def _mint(root, tid, **kw):
+        intents.append((tid, kw.get("source")))
+        return request_cancel(root, tid, **kw)
+
+    monkeypatch.setattr("ouroboros.cancel_intents.request_cancel", _mint)
+    return intents
+
+
+def test_stop_evolution_tasks_cancels_only_evolution_pending_and_running(monkeypatch, tmp_path):
     """GR2-13: PENDING evolution tasks go through the same durable-intent +
     typed-custody ingress as running ones (never an in-place prune), and only
     evolution tasks are touched."""
@@ -84,11 +100,7 @@ def test_stop_evolution_tasks_cancels_only_evolution_pending_and_running(monkeyp
         {"id": "evo-pending", "type": "evolution"},
         {"id": "plain-pending", "type": "chat"},
     ])
-    intents: list = []
-    monkeypatch.setattr(
-        "ouroboros.cancel_intents.request_cancel",
-        lambda root, tid, **kw: intents.append((tid, kw.get("source"))) or {},
-    )
+    intents = _minting(monkeypatch, q, tmp_path)
     custody: list = []
     monkeypatch.setattr(q, "cancel_task_custody",
                         lambda tid, **_kw: custody.append(tid) or q.CANCEL_CANCELLED)
@@ -102,7 +114,7 @@ def test_stop_evolution_tasks_cancels_only_evolution_pending_and_running(monkeyp
     assert not any(bucket for key, bucket in out.items() if key != "cancelled")
 
 
-def test_stop_evolution_tasks_reports_settled_and_failed_honestly(monkeypatch):
+def test_stop_evolution_tasks_reports_settled_and_failed_honestly(monkeypatch, tmp_path):
     """GR2-13: 'cancelled' names only CANCEL_CANCELLED outcomes; already-settled
     and failed teardowns are separate buckets, and the report composer marks the
     stop incomplete only for still-live tasks."""
@@ -113,8 +125,7 @@ def test_stop_evolution_tasks_reports_settled_and_failed_honestly(monkeypatch):
         "evo-stuck": {"task": {"type": "evolution"}},
     })
     monkeypatch.setattr(q, "PENDING", [])
-    monkeypatch.setattr("ouroboros.cancel_intents.request_cancel",
-                        lambda root, tid, **kw: {})
+    _minting(monkeypatch, q, tmp_path)
     outcomes = {"evo-done": q.CANCEL_ALREADY_SETTLED, "evo-stuck": q.CANCEL_FAILED}
     monkeypatch.setattr(q, "cancel_task_custody", lambda tid, **_kw: outcomes[tid])
 

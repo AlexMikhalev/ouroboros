@@ -15,7 +15,7 @@ from ouroboros.project_dialogue import (
     bound_room_chat, entry_matches_source_ref, project_origin_rows,
     room_membership, source_refs_for_project, latest_chat_annotations,
 )
-from ouroboros.projects_registry import all_task_bindings, list_reserved_projects
+from ouroboros.projects_registry import list_reserved_projects, RoomResolver
 from ouroboros.utils import jsonl_archive_segments, jsonl_generation_signature, utc_now_iso
 
 # Structural producer fields, not a semantic selection of what counts as an
@@ -107,9 +107,8 @@ def read_room_source(drive_root: Any, chat_id: int, *, task_id: str = "",
     projects = {int(p["chat_id"]): p for p in list_reserved_projects(root)}
     if chat_id < 0:
         return None
-    bindings = all_task_bindings(root)
     refs = source_refs_for_project(root, chat_id) if chat_id in projects else []
-    matches = room_membership(chat_id, set(projects), refs, bindings)
+    matches = room_membership(chat_id, set(projects), refs, RoomResolver(root))
     rows, coverage = Memory(root).read_chat_generations(predicate=lambda row: matches(_chat_id(row), row))
     if chat_id not in projects and chat_id not in {0, 1} and not rows:
         return None
@@ -263,7 +262,7 @@ def own_room_chat(ctx: Any, drive_root: Any) -> int | None:
     stored = task_room_record(drive_root, task_id)
     meta = getattr(ctx, "task_metadata", {}) or {}
     task = {**stored, **meta, "task_id": task_id}
-    bound = bound_room_chat(all_task_bindings(drive_root), task)
+    bound = bound_room_chat(RoomResolver(drive_root), task)
     if bound:
         return bound
     for value in (getattr(ctx, "current_chat_id", None), task.get("chat_id")):

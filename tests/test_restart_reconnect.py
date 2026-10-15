@@ -342,7 +342,8 @@ def test_chat_scrolls_to_bottom_after_first_history_load():
     assert "ensureLiveCardVisible(record, { reorderExisting: true });" in source, \
         "A mounted task card must be re-sorted if a later event lowers its anchor"
     assert "record._anchorOrderDirty = true;" in source
-    assert "reorderDirtyCardIfNeeded(rec);" in source, \
+    assert "if (rec?._anchorOrderDirty && !rec.isSubagent && rec.root?.isConnected) {" in source
+    assert "mountReplayedCard(record);" in source, \
         "Pass 2 must re-sort connected cards dirtied by routine history sync"
     assert "const parent = liveCardRecords.get(record.parentGroupId);" in source
     assert "seen.has(record.groupId)" in source, \

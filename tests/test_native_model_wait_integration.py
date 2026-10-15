@@ -162,7 +162,7 @@ def test_native_post_task_wait_remains_addressable_after_dialogue_closes(phase, 
                     return reason
 
                 # Keep paid post-task custody alive until HTTP reports its
-                # existing still-live response; this is a schedule, not a fake stop.
+                # pending response; this is a schedule, not a fake stop.
                 monkeypatch.setattr(owner, "control_reason", hold_observed_stop)
             else:
                 real_request_cancel = cancel_intents.request_cancel
@@ -170,6 +170,8 @@ def test_native_post_task_wait_remains_addressable_after_dialogue_closes(phase, 
                 def settle_after_durable_stop(*args, **kwargs):
                     assert post_task_model_wait(f.root, task_id) is owner
                     intent = real_request_cancel(*args, **kwargs)
+                    if intent.get("already_settled") and not kwargs.get("allow_settled_target"):
+                        return intent  # the settled answer asks live ownership before it mints
                     assert intent["request_id"] and intent["state"] == "requested"
                     assert intent["source"] == "http_single"
                     assert not intent.get("already_settled")
@@ -187,7 +189,7 @@ def test_native_post_task_wait_remains_addressable_after_dialogue_closes(phase, 
                 monkeypatch.setattr(cancel_intents, "request_cancel", settle_after_durable_stop)
             with _client(f.root) as client:
                 response = client.post(f"/api/tasks/{task_id}/cancel", json={"stop_policy": "immediate"})
-                assert response.status_code == (503 if action == "stop" else 404), response.json()
+                assert response.status_code == (202 if action == "stop" else 404), response.json()
             if action == "stop":
                 assert stop_observed.wait(5)
                 assert post_task_model_wait(f.root, task_id) is owner and not owner.closed
