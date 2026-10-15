@@ -75,19 +75,25 @@ def _bind_worker_repo_root(repo_dir: str, drive_root: str = "") -> None:
         _git_ops.DRIVE_ROOT = _pl.Path(drive_root)
 
 
-def write_bytecode_to_prefix_only() -> None:
-    """Let this worker cache its bytecode, only when a bytecode prefix is set.
+def write_bytecode_to_prefix_only(drive_root: str) -> None:
+    """Let this worker cache its bytecode, only into a prefix inside its data dir.
 
-    With a prefix (the launcher's ``data/state/pycache``) Python writes bytecode only
-    there, never beside a source and so never into a signed bundle (WA6, the reason the
-    launcher sets ``PYTHONDONTWRITEBYTECODE``); the next worker then loads its import
-    graph instead of recompiling it on every boot. Without a prefix nothing changes, and
-    the inherited environment still keeps every other child this process starts from
-    writing.
+    The launcher points the prefix at ``data/state/pycache``, and with a prefix Python
+    writes bytecode only there, never beside a source and so never into a signed bundle
+    (WA6, the reason the launcher sets ``PYTHONDONTWRITEBYTECODE``); the next worker then
+    loads its import graph instead of recompiling it on every boot. No prefix, or one
+    outside the data dir (a developer's, a test harness's), changes nothing, and the
+    inherited environment still keeps every other child this process starts from writing.
     """
     import sys
 
-    if sys.pycache_prefix:
+    if not sys.pycache_prefix:
+        return
+    try:
+        inside = pathlib.Path(sys.pycache_prefix).resolve().is_relative_to(pathlib.Path(drive_root).resolve())
+    except (OSError, RuntimeError, ValueError):
+        return
+    if inside:
         sys.dont_write_bytecode = False
 
 
@@ -307,7 +313,7 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
     # fork-safety guard (no _scproxy/SCDynamicStoreCopyProxies on the child side
     # of fork) and a clean default for spawned workers too.
     _os.environ["OUROBOROS_IN_WORKER"] = "1"
-    write_bytecode_to_prefix_only()  # before the agent's import graph
+    write_bytecode_to_prefix_only(drive_root)  # before the agent's import graph
     # Pin the executing source before this process loads the agent, and so before
     # worker_ready lets an assisted update land another generation (preflight_receipts).
     from ouroboros.preflight_receipts import capture_executing_source_baseline

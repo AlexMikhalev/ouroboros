@@ -6,8 +6,9 @@ and stamps ``state/startup_verification.json``; a pool re-grow honours that stam
 of repeating the generation checks (2-20 s per boot in production on 13-14 Oct). Each
 process still writes its own ``worker_boot`` row.
 
-A worker also caches its bytecode, but only into the launcher's bytecode prefix: never
-beside a source, so never into a signed bundle (WA6).
+A worker also caches its bytecode, but only into a prefix inside its data dir (the
+launcher's ``state/pycache``): never beside a source, so never into a signed bundle (WA6),
+and never into a prefix someone else set up (a developer's, this test harness's).
 """
 from __future__ import annotations
 
@@ -55,7 +56,8 @@ def boot(tmp_path, monkeypatch):
         rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
         return [row for row in rows if row.get("type") == "worker_boot"]
 
-    return SimpleNamespace(start=start, checks=checks, boots=boots, receipt=tmp_path / "state" / "startup_verification.json")
+    return SimpleNamespace(start=start, checks=checks, boots=boots,
+                           receipt=tmp_path / "state" / "startup_verification.json")
 
 
 def test_the_first_process_of_a_generation_verifies_and_stamps(boot):
@@ -104,24 +106,28 @@ def test_an_unreadable_or_unknown_stamp_verifies_again(boot):
     assert [name for name, _sha in boot.checks] == ["restart", "system"]
 
 
-@pytest.mark.parametrize("prefix", [True, False], ids=["prefix", "no_prefix"])
-def test_a_worker_writes_bytecode_only_into_its_prefix(tmp_path, prefix):
+@pytest.mark.parametrize("prefix", ["data_dir", "elsewhere", "none"])
+def test_a_worker_writes_bytecode_only_into_a_prefix_inside_its_data_dir(tmp_path, prefix):
     """A real interpreter started with -B (as spawn starts every worker under the launcher's
-    PYTHONDONTWRITEBYTECODE): the worker's own later imports are cached in the prefix, and
-    without a prefix nothing is written anywhere."""
-    pycache = tmp_path / "pycache"
+    PYTHONDONTWRITEBYTECODE): with the launcher's prefix (inside the data dir) the worker's own
+    later imports are cached there; a prefix elsewhere (a developer's, this harness's) or none
+    writes nothing anywhere."""
+    data = tmp_path / "data"
+    pycache = {"data_dir": data / "state" / "pycache", "elsewhere": tmp_path / "pycache"}.get(prefix)
     module = REPO / "ouroboros" / "preflight_receipts.py"
     beside = sorted((module.parent / "__pycache__").glob("preflight_receipts.*.pyc"))
     # An empty value is "no prefix" to Python (the test harness refills an absent one).
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(REPO),
-           "PYTHONPYCACHEPREFIX": str(pycache) if prefix else ""}
-    probe = ("import sys; import supervisor.worker_process as w; w.write_bytecode_to_prefix_only(); "
+           "PYTHONPYCACHEPREFIX": str(pycache or "")}
+    probe = ("import sys; import supervisor.worker_process as w; "
+             f"w.write_bytecode_to_prefix_only({str(data)!r}); "
              "print(int(sys.dont_write_bytecode)); import ouroboros.preflight_receipts")
     done = subprocess.run([sys.executable, "-B", "-c", probe], cwd=tmp_path, env=env,
                           capture_output=True, text=True, timeout=120)
     assert done.returncode == 0, done.stderr
-    assert done.stdout.strip() == ("0" if prefix else "1")
-    cached = sorted(pycache.rglob("preflight_receipts.*.pyc")) if pycache.exists() else []
-    assert bool(cached) is prefix
+    assert done.stdout.strip() == ("0" if prefix == "data_dir" else "1")
+    cached = sorted(tmp_path.rglob("preflight_receipts.*.pyc"))
+    assert bool(cached) is (prefix == "data_dir")
+    assert all(path.is_relative_to(data / "state" / "pycache") for path in cached)
     assert sorted((module.parent / "__pycache__").glob("preflight_receipts.*.pyc")) == beside, \
         "nothing is ever written beside the source"
