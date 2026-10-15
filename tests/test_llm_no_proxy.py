@@ -427,7 +427,7 @@ def test_chat_remote_no_proxy_uses_warm_capabilities_without_a_rejection(monkeyp
 
 def test_plan_review_slots_use_no_proxy(tmp_path):
     """plan_review's shared ReviewCoordinator path must pass no_proxy=True."""
-    from ouroboros.tools import plan_review, plan_review_runtime
+    from ouroboros.tools import plan_review_legacy as plan_review, plan_review_runtime
 
     captured_kwargs = []
 

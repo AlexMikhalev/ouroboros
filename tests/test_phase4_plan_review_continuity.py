@@ -866,7 +866,7 @@ def test_agent_session_accepts_only_a_typed_profile_rotation_receipt(monkeypatch
 
 def test_disposition_supersedes_the_exact_wave_before_hot_state(_harness) -> None:
     from ouroboros.task_results import load_plan_review_state
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
     from ouroboros.tools.plan_review_artifacts import read_wave
     from tests.test_plan_review_engine import CLEAN, _call, _finding
 
@@ -891,7 +891,7 @@ def test_disposition_supersedes_the_exact_wave_before_hot_state(_harness) -> Non
 
 def test_33rd_blocker_is_dispositionable(_harness) -> None:
     from ouroboros.task_results import load_plan_review_state
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
     from tests.test_plan_review_engine import CLEAN, _call
 
     findings = json.dumps([_finding(index) for index in range(1, 33)] + [_finding(33, "blocking")])

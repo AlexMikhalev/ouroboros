@@ -30,7 +30,7 @@ def _chapter_tails() -> dict[str, str]:
 
 
 def test_a_constitutional_plan_packet_inlines_the_chapters_not_the_membership():
-    from ouroboros.tools.plan_packet import PlanPacketError, build_plan_review_system_prompt
+    from ouroboros.tools.plan_packet_legacy import PlanPacketError, build_plan_review_system_prompt
     from ouroboros.tools.plan_review_runtime import _governance_text
 
     architecture = _governance_text(REPO, "docs/ARCHITECTURE.md")
@@ -58,7 +58,7 @@ def test_a_constitutional_plan_packet_inlines_the_chapters_not_the_membership():
 
 
 def test_a_non_constitutional_plan_packet_points_at_chapters_by_path():
-    from ouroboros.tools.plan_packet import build_plan_review_system_prompt
+    from ouroboros.tools.plan_packet_legacy import build_plan_review_system_prompt
     from ouroboros.tools.plan_review_runtime import _architecture_navigation, _governance_text
 
     architecture = _governance_text(REPO, "docs/ARCHITECTURE.md")

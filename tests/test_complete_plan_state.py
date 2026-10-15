@@ -77,7 +77,7 @@ def test_large_operative_values_persist_once_and_rehydrate_for_consumers(tmp_pat
 
 def test_full_plan_review_disposition_repeat_and_tail_delta(_harness, monkeypatch):
     from tests.test_plan_review_engine import CLEAN, _call, _control, _finding, _state, _user_text
-    from ouroboros.tools.plan_review import _apply_disposition
+    from ouroboros.tools.plan_review_legacy import _apply_disposition
 
     note = json.dumps([_finding("n1", "note", summary="Consider another example")])
     substrate = _harness.install({"s1": note, "s2": CLEAN, "s3": CLEAN})

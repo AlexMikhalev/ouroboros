@@ -639,11 +639,11 @@ def review_session_output_schema(surface: str) -> Optional[Dict[str, Any]]:
     if shape in ("report", "object", "two_part"):
         return {"object": ACCEPTANCE_SESSION_OUTPUT_SCHEMA, "two_part": TWO_PART_SESSION_OUTPUT_SCHEMA}.get(shape)
     if surface == "plan_review":
-        # plan review's own element contract (4e133c8a): the generic item/verdict shape
-        # would conform-and-launder — an unknown class demotes to a note.
-        from ouroboros.tools.plan_spec import PLAN_REVIEW_SESSION_OUTPUT_SCHEMA
+        # The planning organ's reply object (prose, the participant's own objections and
+        # withdrawals): the generic item/verdict shape would conform-and-launder it.
+        from ouroboros.tools.plan_packet import PLAN_REPLY_SESSION_OUTPUT_SCHEMA
 
-        return PLAN_REVIEW_SESSION_OUTPUT_SCHEMA
+        return PLAN_REPLY_SESSION_OUTPUT_SCHEMA
     if surface != "skill_review":
         return REVIEW_SESSION_OUTPUT_SCHEMA
     shaped = json.loads(json.dumps(REVIEW_SESSION_OUTPUT_SCHEMA))

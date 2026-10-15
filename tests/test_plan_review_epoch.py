@@ -195,40 +195,6 @@ def test_effort_only_roster_change_lapses_replay_authority(harness, monkeypatch)
     assert _state(harness)["cycles_paid"] == 2
 
 
-def test_degraded_reminder_promises_free_replay_only_with_structural_epoch(harness, monkeypatch):
-    """Round-3: the user-turn DEGRADED reminder mirrors plan_render's
-    _degraded_replay_note (the wording SSOT) — a wave WITH a recorded structural
-    epoch is promised the free replay with its conditions (unchanged epoch +
-    roster); an EMPTY-epoch wave re-dispatches a paid panel, so the old
-    unconditional "replays ... at no cost" promise must not appear."""
-    from ouroboros.owner_hurry import force_plan_decision, plan_review_reminder
-
-    # Empty epoch: every slot dies at dispatch time, invisible to the snapshot.
-    _patch_health(monkeypatch, lambda slots: {})
-    harness.install({"s1": "", "s2": "", "s3": ""})
-    ctx = harness.make_ctx()
-    out = _call(ctx)
-    assert _control(out) == {"outcome": "DEGRADED", "closed": False}
-    decision = force_plan_decision(ctx, {}, enforcement="blocking")
-    assert decision["reviewer_slots_degraded"] and decision["degraded_health_epoch"] == ""
-    reminder = plan_review_reminder(decision)
-    assert "re-dispatches a fresh panel" in reminder
-    assert "no cost" not in reminder and "no further cost" not in reminder
-    # Non-empty epoch: structural snapshot evidence recorded — the free replay is
-    # promised together with its conditions (epoch + roster stand).
-    _patch_health(monkeypatch, lambda slots: dict(_DEAD_PANEL))
-    harness.install({"s1": CLEAN})
-    ctx2 = harness.make_ctx(task_id="task-epoch")
-    out2 = _call(ctx2)
-    assert _control(out2) == {"outcome": "DEGRADED", "closed": False}
-    decision2 = force_plan_decision(ctx2, {}, enforcement="blocking")
-    assert decision2["reviewer_slots_degraded"] and decision2["degraded_health_epoch"]
-    reminder2 = plan_review_reminder(decision2)
-    assert "at no further cost" in reminder2
-    assert "reviewer roster stand" in reminder2
-    assert "re-dispatches a fresh panel" not in reminder2
-
-
 def test_replay_decision_config_failure_keeps_replay_but_logs_loudly(caplog):
     """Review fix 4 (accepted-partial): a configuration-resolution failure keeps the
     recorded free replay (fail-open) but is logged as a WARNING with the exception
@@ -590,24 +556,10 @@ def test_revise_plan_render_names_only_available_paid_cycles_and_exits(enforceme
     assert ("asks only the slots its items name" in evidence_text) is (cap != 2)
 
 
-def test_loop_reminder_does_not_repromise_a_spent_panel(monkeypatch):
-    from ouroboros.owner_hurry import plan_review_reminder
-
-    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
-    for outcome in ("REVISE_PLAN", "REVIEW_REQUIRED", "DEGRADED"):
-        text = plan_review_reminder({"outcome": outcome, "status": "open", "cycles_paid": 2,
-                                    "reviewer_slots_degraded": outcome == "DEGRADED"})
-        assert "cannot dispatch another paid panel" in text
-        assert "re-dispatches a fresh panel" not in text
-        assert "a changed spec starts the next paid cycle" not in text
-    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "unlimited")
-    assert "re-dispatches a fresh panel" in plan_review_reminder({"outcome": "DEGRADED", "reviewer_slots_degraded": True, "cycles_paid": 2})
-
-
 def _effort_aware_builder(harness, monkeypatch):
     """A builder stub that honours ``default_effort`` (the engine wraps the builder
     only when the envelope declares an effort; zero-arg stubs stay valid)."""
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
 
     def build(default_effort=""):
         return [dataclasses.replace(slot, effort=default_effort or slot.effort,
@@ -694,7 +646,7 @@ def test_no_model_facing_text_promises_that_a_host_will_disclose_the_open_review
     import re
 
     from ouroboros.tools import plan_render
-    from ouroboros.tools.plan_review import get_tools
+    from ouroboros.tools.plan_review_legacy import legacy_tool_entries as get_tools
     from tests.test_plan_review_engine import DECK_SPEC
 
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
@@ -729,7 +681,7 @@ def test_an_author_finish_narrates_its_rationale_in_the_models_voice(harness, mo
     verbatim, exactly once per durable author record — never on a refusal, never
     for an empty rationale, and never a second time from the tool's host lines."""
     import ouroboros.review_records as review_records
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
 
     harness.state["enforcement"] = "advisory"
     harness.install({"s1": json.dumps([_finding("b1", "blocking", breaks="claim_1")]), "s2": CLEAN, "s3": CLEAN})
@@ -770,7 +722,7 @@ def test_an_author_finish_narrates_its_rationale_in_the_models_voice(harness, mo
 
 def _pinned_xhigh_rows_env(monkeypatch):
     """Three api pool rows the owner pinned `xhigh`, read by the REAL plan builder."""
-    from ouroboros.tools import plan_review as pr, plan_review_runtime
+    from ouroboros.tools import plan_review_legacy as pr, plan_review_runtime
     from tests.review_pool_rosters import pool_roster, pool_seat
 
     monkeypatch.setenv("OUROBOROS_SUBAGENTS", pool_roster(*(
@@ -841,7 +793,7 @@ def test_a_compound_route_slug_keeps_its_effort_and_discloses_the_unapplied_orde
     """A seat whose route slug encodes its effort ignores the order (its effort is the
     route's identity) and says so on its actor row; the other seats run the order and
     only they can rank weaker than the owner's setting. Without an order: no disclosure."""
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
 
     _patch_health(monkeypatch, lambda slots: {})
 

@@ -17,7 +17,7 @@ def test_plan_first_dispatch_then_author_repeat_keeps_exact_raw_wave(harness, mo
     regression hold: the exact raw wave survives that collection and the author's
     repeated disposition neither re-sends nor rewrites it.
     """
-    from ouroboros.tools import plan_review
+    from ouroboros.tools import plan_review_legacy as plan_review
     from ouroboros.tools.plan_review_artifacts import read_wave
     from tests.test_plan_review_event_route import _mailbox_entries, _wait_until
 
@@ -77,7 +77,7 @@ def test_plan_first_dispatch_then_author_repeat_keeps_exact_raw_wave(harness, mo
 
 
 def test_plan_author_cannot_replace_first_dispatch_or_bind_stale_wave(harness):  # noqa: F811
-    from ouroboros.tools import plan_review
+    from ouroboros.tools import plan_review_legacy as plan_review
 
     h = harness
     h.state["enforcement"] = "advisory"
@@ -97,7 +97,7 @@ def test_plan_author_cannot_replace_first_dispatch_or_bind_stale_wave(harness): 
 
 def test_plan_cancellation_preserves_review_without_author_finish(harness):  # noqa: F811
     from ouroboros.cancel_intents import request_cancel
-    from ouroboros.tools import plan_review
+    from ouroboros.tools import plan_review_legacy as plan_review
 
     h = harness
     h.state["enforcement"] = "advisory"

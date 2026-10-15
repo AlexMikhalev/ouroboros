@@ -71,7 +71,7 @@ def test_commit_finish_requires_received_outcome(candidate, monkeypatch, basis):
 from types import SimpleNamespace
 from tests.test_plan_review_engine import harness, _call  # noqa: F401
 from ouroboros.task_results import load_plan_review_state
-from ouroboros.tools import plan_review as pr
+from ouroboros.tools import plan_review_legacy as pr
 
 
 def test_no_feedback_pending_plan_cannot_author_finish(harness, monkeypatch):  # noqa: F811

@@ -454,7 +454,7 @@ def test_a_collection_records_the_dispatched_packet_not_one_rebuilt_from_the_liv
     import copy
     import json
 
-    from ouroboros.tools.plan_review import _handle_plan_task
+    from ouroboros.tools.plan_review_legacy import _handle_plan_task
     from ouroboros.tools.plan_review_artifacts import authority_wave, continuation_inputs
 
     executor = _HeldExecutor()
@@ -544,7 +544,7 @@ def test_the_open_wave_text_names_the_route_that_waits_for_the_settlement_frame(
 def test_neutral_collection_uses_the_paid_wave_not_schema_filled_overrides(harness, monkeypatch, effort, enforcement):
     """Real substrate and saved source: padded fields never buy or author a new wave."""
     import copy
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
     from ouroboros.tools.plan_review_artifacts import authority_wave
 
     harness.state["enforcement"] = enforcement

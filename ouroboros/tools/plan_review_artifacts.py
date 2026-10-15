@@ -998,7 +998,7 @@ def exact_wave(
     paid cycle. The recorded request of each slot that already has one is therefore
     carried forward byte for byte; only a slot with no recorded request (a roster row
     the dispatched wave never had) falls back to the rebuilt packet."""
-    from ouroboros.tools.plan_packet import plan_user_stable_len
+    from ouroboros.tools.plan_packet_legacy import plan_user_stable_len  # replays the retired engine's recorded waves
     from ouroboros.tools.review_synthesis import build_plan_review_messages
 
     common = build_plan_review_messages(system_prompt, user_content, plan_user_stable_len(user_content))

@@ -489,17 +489,15 @@ def _typed_result_metadata(
     ):
         meta["artifact_registered"] = True
     if fn_name == "plan_task" and not is_error and isinstance(tool_result, ToolResult):
-        plan_outcome = tool_result.meta.get("plan_review_outcome")
-        plan_closed = tool_result.meta.get("plan_review_closed")
-        if (
-            plan_outcome in {"GREEN", "REVIEW_REQUIRED", "REVISE_PLAN", "DEGRADED"}
-            and type(plan_closed) is bool
-            and not (plan_outcome == "GREEN" and not plan_closed)
-            and not (plan_outcome in {"REVISE_PLAN", "DEGRADED"} and plan_closed)
+        # The planning organ's typed facts: which effect the call had and the record's
+        # open objections / holds / pending asks after it (never read from the text).
+        effect = tool_result.meta.get("plan_effect")
+        counts = {key: tool_result.meta.get(key) for key in ("plan_revision", "plan_open_objections", "plan_holding", "plan_pending_asks")}
+        if effect in {"write", "ask", "write+ask", "read"} and all(
+            type(value) is int and value >= 0 for value in counts.values()
         ):
-            meta["plan_review_outcome"] = plan_outcome
-            meta["plan_review_closed"] = plan_closed
-            meta["plan_review_historical_critic"] = bool(tool_result.meta.get("plan_review_historical_critic"))
+            meta["plan_effect"] = effect
+            meta.update(counts)
     if isinstance(tool_result, ToolResult) and tool_result.meta.get("post_commit_tests") == "failed":
         # A preserved commit whose post-commit tests failed is a SUCCESS that
         # still holds a failure the reflection triggers must see. The producer

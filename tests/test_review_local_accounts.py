@@ -284,7 +284,7 @@ def test_legacy_singleton_extends_to_two_surviving_accounts(harness, monkeypatch
 
 
 def test_compact_decision_ref_selects_only_observed_version_not_reused_position(harness, monkeypatch):
-    from ouroboros.tools.plan_review import _apply_disposition
+    from ouroboros.tools.plan_review_legacy import _apply_disposition
     ctx, _, _ = _three(harness, monkeypatch)
     observed = _capture(ctx)
     entry = view.review_note_options(ctx)["entries"][-1]

@@ -1179,10 +1179,10 @@ def plan_review_gate_projection(
     elif status == "cycles_exhausted":
         gate_status, allow = "cycles_exhausted", True
     elif status == "open" and control.get("quorum_unreachable"):
-        # B2b: quorum structurally unreachable under blocking — finalization is
-        # RELEASED so the agent MAY choose an honest blocked terminal (outcomes maps
-        # it to blocked_with_evidence). The review stays open, implementation stays
-        # held, and nothing here auto-finalizes: the gate merely stops refusing.
+        # B2b (legacy v2 record): quorum structurally unreachable under blocking —
+        # finalization is RELEASED so the agent MAY choose an honest blocked terminal;
+        # the review stays open and nothing here auto-finalizes: the gate merely stops
+        # refusing. (No edit or commit ever read this projection.)
         # Staleness residual (disclosed): the stamped facts are as old as the wave
         # record — earliest_reset may already have passed by finalization time; the
         # agent SEES the reset instant below and can re-call plan_task to re-probe.

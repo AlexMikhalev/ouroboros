@@ -52,7 +52,7 @@ def test_a_reasoned_reject_closes_a_below_quorum_blocking_finding_only_under_adv
     in the hot index and the exact artifact, no reviewer call, no cycle) and the gate
     allows; under blocking the same $0 call leaves it open and the gate still holds."""
     from ouroboros.task_results import plan_review_gate_projection
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
     from ouroboros.tools.plan_review_artifacts import read_wave
 
     harness.state["enforcement"] = enforcement
@@ -100,22 +100,16 @@ def test_quorum_unreachable_releases_finalization_for_a_blocked_terminal(harness
     # advisory is untouched: it already proceeded under loud disclosure
     advisory = plan_review_gate_projection(state, "advisory")
     assert advisory["status"] == "advisory_open" and advisory["allow"] is True
+    # The live gate reads this wave through the importer: a dead panel raised no objection and
+    # a seat that was never dispatched is owed nothing, so nothing holds and nothing is
+    # disclosed (the retired engine's structural quorum is history).
     decision = force_plan_decision(ctx, {}, enforcement="blocking")
-    assert decision["allow"] is True and decision["quorum_unreachable"] is True
-    disclosure = plan_review_disclosure(decision)
-    # Owner-readable prose says the ending in words; the ledger identifier stays
-    # on the typed objective axis asserted below.
-    assert "the task ends blocked with its evidence recorded" in disclosure
-    assert "blocked_with_evidence" not in disclosure
-    assert "structurally unreachable" in disclosure
-    assert "2030-01-01T00:00:00+00:00" in disclosure
+    assert decision["allow"] is True and decision["status"] == "clear" and decision["source"] == "legacy_v2"
+    assert plan_review_disclosure(decision) == ""
     from ouroboros.outcomes import derive_loop_outcome
 
     outcome = derive_loop_outcome("done", {}, {"force_plan_decision": decision, "tool_calls": []})
-    objective = outcome["outcome_axes"]["objective"]
-    assert objective["status"] == "fail"
-    assert objective["outcome_tier"] == "blocked_with_evidence"
-    assert objective["reason"] == "plan_review_quorum_unreachable"
+    assert outcome["outcome_axes"]["objective"]["status"] != "fail"
     # the review itself is NOT closed by the release
     assert _state(harness)["waves"][-1]["closed"] is False
 

@@ -326,6 +326,21 @@ def _task_authority_projection(env: Any, task: Dict[str, Any]) -> Dict[str, Any]
         "arguments": {"task_id": task_id, "include_authority": True},
     }
     try:
+        from ouroboros import plan_record as _plan_record
+
+        record = _plan_record.load_plan_record(canonical_root, task_id)
+        if _plan_record.engaged(record):
+            view = _plan_record.read_view(record)
+            projection["plan_record"] = {
+                "revision": view["revision"], "revisions": view["revisions"], "asks": view["asks"],
+                "open_objections": view["open_objections"], "pending_asks": view["pending_asks"],
+                "participants": view["participants"], "source": source,
+            }
+    except Exception as exc:
+        from ouroboros.tools.plan_review_artifacts import plan_review_source_gap
+
+        projection["plan_record"] = plan_review_source_gap(task_id, exc, source=source)
+    try:
         from ouroboros.task_results import current_plan_review_wave, load_plan_review_state
         from ouroboros.review_history_view import current_plan_history
         from types import SimpleNamespace

@@ -638,7 +638,7 @@ def test_deadline_clamp_never_floors_past_reserve(tmp_path, monkeypatch):
 def test_plan_task_skips_under_tight_deadline(tmp_path):
     from datetime import datetime, timedelta, timezone
 
-    from ouroboros.tools.plan_review import _handle_plan_task
+    from ouroboros.tools.plan_review_legacy import _handle_plan_task
 
     deadline = (datetime.now(timezone.utc) + timedelta(seconds=400)).isoformat()
     ctx = _ctx(tmp_path, meta={"deadline_at": deadline})
@@ -663,7 +663,7 @@ def test_plan_task_no_deadline_does_not_skip(tmp_path, monkeypatch):
     # with no deadline plan_task does not skip, it runs the review coroutine.
     import asyncio
 
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
 
     sentinel = {"called": False}
 

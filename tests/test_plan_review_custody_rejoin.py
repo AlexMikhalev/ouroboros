@@ -116,7 +116,7 @@ class _Seat:
 
 def _collect(ctx, fingerprint):
     """The agent's $0 collection of the current wave (drain window 0)."""
-    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools import plan_review_legacy as pr
 
     return pr._handle_plan_task(ctx, review_disposition={"review_fingerprint": fingerprint, "items": []})
 

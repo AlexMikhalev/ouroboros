@@ -297,8 +297,12 @@ def dialogue_slot_inputs(slots: list, *, system_prompt: str, user_content: str,
                          session_task: str, manifest: dict, slot_messages: dict,
                          native_mandatory_chars: int, data_root: Any = "",
                          frozen: dict | None = None, session_root: str = "", task_id: str = "",
-                         session_limits: dict | None = None) -> dict:
+                         session_limits: dict | None = None, output_contract: str = "") -> dict:
     """Project a fresh request, or reuse the recorded delivery at collection.
+
+    ``output_contract`` is the reply contract the request policy and every retrieving
+    seat's first send carry (the planning organ's reply object); omitted, the legacy
+    findings-array contract of the old engine applies.
 
     Each slot's fit lands in ``dialogue_delivery``; a session slot with an engine bound also
     records ``input_limit`` (the bound, the measured ``prompt_chars``, ``fits``). A frozen
@@ -311,8 +315,11 @@ def dialogue_slot_inputs(slots: list, *, system_prompt: str, user_content: str,
     from ouroboros.tools.plan_review_runtime import PLAN_REVIEW_MAX_TOKENS, slot_retrieves, slot_is_session
     from ouroboros.tools.review_synthesis import build_plan_review_messages, per_slot_input_token_limits
     from ouroboros.tools.plan_packet import plan_user_stable_len
+    from ouroboros.tools.plan_packet_legacy import plan_user_stable_len as _legacy_stable_len  # the retired engine's marker
     from ouroboros.tools.plan_spec import PLAN_FINDINGS_ARRAY_CONTRACT
     from ouroboros.tools.scope_required_sources import source_text_identity
+
+    contract = str(output_contract or "") or PLAN_FINDINGS_ARRAY_CONTRACT
     from ouroboros.review_native_episode import review_native_transcript_bound, native_landing_at, native_first_send_chars
     from ouroboros.reviewer_window import reviewer_window_binding
     from ouroboros.review_execution import _messages_char_count
@@ -354,7 +361,8 @@ def dialogue_slot_inputs(slots: list, *, system_prompt: str, user_content: str,
                     restarted[sid] = "prior_transcript_exceeds_slot_window"
             if not existing:
                 view, coverage[sid] = fit_dialogue_view(user_content, own, capacity - len(system_prompt) - len(seat))
-                messages[sid] = build_plan_review_messages(system_prompt, view + seat, plan_user_stable_len(view))
+                messages[sid] = build_plan_review_messages(system_prompt, view + seat,
+                                                           plan_user_stable_len(view) or _legacy_stable_len(view))
             lengths[sid] = _messages_char_count(messages[sid])
         elif not slot_is_session(slot):
             # Initial layout only: an irreducible brief remains sendable and
@@ -365,7 +373,7 @@ def dialogue_slot_inputs(slots: list, *, system_prompt: str, user_content: str,
             governance_read = max(0, native_mandatory_chars - len(session_task))
             def first_send(task):
                 return native_first_send_chars(session_root, surface="plan_review", role_hint=slot.role_hint,
-                    slot_id=sid, session_task=task, output_contract=PLAN_FINDINGS_ARRAY_CONTRACT, task_id=task_id)
+                    slot_id=sid, session_task=task, output_contract=contract, task_id=task_id)
             tasks[sid], coverage[sid] = fit_dialogue_view(session_task + seat, own,
                 native_landing_at(bound) - governance_read - 1, measure=first_send)
         else:
@@ -378,7 +386,7 @@ def dialogue_slot_inputs(slots: list, *, system_prompt: str, user_content: str,
                 limit = per_slot_input_token_limits([slot.model], context_window=asserted, slots=[slot],
                                                     output_reserve=PLAN_REVIEW_MAX_TOKENS, tokenizer_margin=155_000)
                 capacity = min(capacity, int(limit[sid]) * 4) if capacity is not None else int(limit[sid]) * 4
-            request = SimpleNamespace(surface="plan_review", policy={"output_contract": PLAN_FINDINGS_ARRAY_CONTRACT})
+            request = SimpleNamespace(surface="plan_review", policy={"output_contract": contract})
             def session_chars(task):
                 return len(render_review_session_prompt(request, slot, task.strip()))
             if capacity is not None:
@@ -398,7 +406,7 @@ def dialogue_slot_inputs(slots: list, *, system_prompt: str, user_content: str,
     return {"slot_messages": messages, "slot_session_tasks": tasks, "slot_prompt_chars": lengths,
             "dialogue_delivery": coverage, "continuation_restarted": restarted,
             "native_mandatory_read_chars": native_mandatory_chars,
-            "request_policy": {"output_contract": PLAN_FINDINGS_ARRAY_CONTRACT,
+            "request_policy": {"output_contract": contract,
                                "native_data_root": str(data_root),
                                "native_mandatory_read_chars": native_mandatory_chars,
                                **({"observed_sources": observed} if observed else {})}}

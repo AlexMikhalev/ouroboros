@@ -443,6 +443,7 @@ const TASK_CAUSE_PHRASES = {
     plan_review_none_answered: "None of the plan reviewers answered; the work went on without their notes.",
     plan_review_answered_open: "The plan reviewers answered, but the review was never closed; the work went on with their notes.",
     plan_review_quorum_unreachable: "Too few plan reviewers could answer, so the work was held.",
+    plan_review_objections_open: "Objections to the plan were still open when this answer was delivered; the work went on with them disclosed.",
     host_child_status_suffix: "A child task had not settled when the answer was delivered",
     invalid_delivery_control_after_repair: "Ouroboros's final delivery instruction could not be read even after repair, so the answer stands as delivered.",
     budget_exhausted: "The task ran out of budget before it could finish cleanly",
@@ -538,7 +539,7 @@ const authorStopRationale = (d) => (explicitAuthorStop(d) ? String(d.author_disp
 // result's terminal_plan_review_open flag), worded by its class when one is
 // named. The twin of project_dialogue._terminal_limitations.
 // The open-review classes that state a standing limitation (never the merely awaited case).
-const PLAN_REVIEW_OPEN_CLASSES = new Set(['plan_review_unanswered', 'plan_review_none_answered', 'plan_review_answered_open']);
+const PLAN_REVIEW_OPEN_CLASSES = new Set(['plan_review_unanswered', 'plan_review_none_answered', 'plan_review_answered_open', 'plan_review_objections_open']);
 
 function terminalLimitations(record, reason, held = false) {
     const deferred = Number(record?.outcome_axes?.objective?.deferred_count || 0) > 0;

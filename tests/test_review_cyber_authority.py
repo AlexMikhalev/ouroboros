@@ -6,7 +6,7 @@ import json
 import pytest
 
 from ouroboros import config
-from ouroboros.tools import git, plan_review
+from ouroboros.tools import git, plan_review_legacy as plan_review
 from ouroboros.tools.parallel_review import aggregate_review_verdict
 from ouroboros.tools.review_helpers import review_enforcement_blocks
 from ouroboros.review_ledger import CouplingOutcome
@@ -230,4 +230,8 @@ def test_real_force_plan_decision_uses_cyber_authority(harness, access):  # noqa
     ctx = harness.make_ctx(force_plan=True)
     result = force_plan_decision(ctx, {}, enforcement="blocking")
     assert result["allow"] == (access == "cyber_pro")
-    assert result["enforcement"] == "blocking" and not result["closed"]
+    # An unmet Swarm planning obligation holds outside Cyber Pro; Cyber Pro's authority
+    # releases it and is named as the deciding authority.
+    assert result["enforcement"] == "blocking" and result["force_plan_met"] is False
+    assert result["status"] == ("clear" if access == "cyber_pro" else "force_plan_unmet")
+    assert result.get("decision_authority") == ("cyber_pro" if access == "cyber_pro" else None)

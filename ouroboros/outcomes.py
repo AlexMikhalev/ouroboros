@@ -1146,25 +1146,10 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
     objective = _objective_axis(review)
     execution_status, reason_code = _host_acceptance_failure_axes(
         acceptance_decision, llm_trace, objective, execution_status, reason_code)
+    # The planning gate holds or releases the final answer; it names no objective of its
+    # own (plans have no cycle cap, no quorum and no author stop: the stop path is the
+    # task's). Its open objections and pending asks ride ``execution.plan_review`` below.
     plan_gate = _trace_mapping(llm_trace, "force_plan_decision")
-    _plan_gate_status = str(plan_gate.get("status") or "")
-    if _plan_gate_status == "author_stopped" or (str(plan_gate.get("enforcement") or "") == "blocking" and (
-        _plan_gate_status == "cycles_exhausted"
-        or (_plan_gate_status == "open" and plan_gate.get("quorum_unreachable"))
-    )):
-        # D27: a blocking plan review whose cycle cap is spent never closed — the
-        # task terminalizes BLOCKED, never best_effort. B2b extends the same honest
-        # terminal to a structurally unreachable reviewer quorum (the agent CHOSE to
-        # finalize; the review itself stays open and implementation stayed held).
-        _quorum_case = _plan_gate_status != "cycles_exhausted"
-        objective.update({
-            "status": OBJECTIVE_FAIL,
-            "source": ("plan_review_author_stop" if _plan_gate_status == "author_stopped" else "plan_review_quorum_unreachable" if _quorum_case
-                       else "plan_review_cycles_exhausted"),
-            "outcome_tier": OUTCOME_TIER_BLOCKED,
-            "reason": (str(plan_gate.get("review_capacity_reason") or "author_stop") if _plan_gate_status == "author_stopped" else REASON_REVIEW_QUORUM_UNREACHABLE if _quorum_case
-                       else REASON_REVIEW_CYCLES_EXHAUSTED),
-        })
     if deferred_child_count and objective.get("status") != OBJECTIVE_FAIL:
         objective.update({
             "status": OBJECTIVE_BEST_EFFORT,

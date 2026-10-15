@@ -10,7 +10,7 @@ import pytest
 
 from ouroboros.artifacts import task_artifact_dir_path
 from ouroboros.context import _task_authority_projection
-from ouroboros.tools import plan_review, plan_review_artifacts as artifacts, plan_spec
+from ouroboros.tools import plan_review_legacy as plan_review, plan_review_artifacts as artifacts, plan_spec
 from tests.test_plan_review_engine import (
     CLEAN, DECK_SPEC, _call, _control, _finding, _slots, _state, _user_text,
     harness as _engine_harness,

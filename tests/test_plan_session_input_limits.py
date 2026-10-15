@@ -11,7 +11,7 @@ from ouroboros.gateways.claudexor import ClaudexorGateway, DaemonEndpoint, run_f
 from ouroboros.review_execution import ReviewRouteKind
 from ouroboros.review_session_preparation import render_review_session_prompt
 from ouroboros.review_substrate import ReviewSlot
-from ouroboros.tools import plan_dialogue, plan_review
+from ouroboros.tools import plan_dialogue, plan_review_legacy as plan_review
 from ouroboros.tools.plan_spec import PLAN_FINDINGS_ARRAY_CONTRACT
 from ouroboros.utils import append_jsonl
 from tests.test_plan_review_engine import CLEAN, _call, _state, harness as _harness

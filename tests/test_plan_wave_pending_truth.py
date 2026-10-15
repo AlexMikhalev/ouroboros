@@ -21,9 +21,9 @@ import json
 
 import pytest
 
-from ouroboros.owner_hurry import force_plan_decision, plan_review_disclosure
+from ouroboros.owner_hurry import force_plan_decision
 from ouroboros.review_records import review_slot_awaiting, review_slot_unresolved
-from ouroboros.tools import plan_review as pr
+from ouroboros.tools import plan_review_legacy as pr
 from ouroboros.tools.plan_render import (
     _actor_outcome, _degraded_replay_note, _next_step, _parse_plan_review_control, _render_wave,
 )
@@ -273,22 +273,6 @@ def test_the_wave_line_has_news_unless_the_roster_is_only_planned_waits():
 # ------------------------------------------------------------------ finalization disclosure
 
 
-def test_the_disclosure_names_no_verdict_token_while_reviewer_work_is_pending():
-    base = {"required": True, "status": "open", "allow": True, "outcome": "DEGRADED",
-            "enforcement": "advisory", "reviewer_slots_degraded": True}
-    pending = plan_review_disclosure({**base, "custody_pending": True})
-    assert "Plan review is still open (reviewer work is running or awaiting collection)" in pending
-    assert "DEGRADED" not in pending and "no parseable reviewer quorum" not in pending
-    owed = plan_review_disclosure({**base, "review_late_result_pending": True})
-    assert "(reviewer work is running or awaiting collection)" in owed and "DEGRADED" not in owed
-    assert "a late result is still owed" in owed
-    assert "paid" not in owed  # a slot released at the barrier is $0 until its row proves the send
-    # A settled panel with no quorum keeps its verdict token and its cause, byte for byte.
-    assert plan_review_disclosure(base) == (
-        "\n\n⚠️ Plan review is still open (DEGRADED; no parseable reviewer quorum); work proceeded "
-        "under the owner-selected advisory enforcement.")
-
-
 # ------------------------------------------------------------------ agent tool result
 
 
@@ -439,27 +423,6 @@ def test_the_advisory_open_event_carries_typed_custody_and_per_slot_state(tmp_pa
     assert [s["failure_code"] for s in settled_row["slots"]] == ["", "run_failed"]
 
 
-@pytest.mark.parametrize("pending", [True, False])
-def test_the_acceptance_exhibit_of_an_open_wave_carries_typed_custody(pending, tmp_path):
-    import types
-
-    from ouroboros.review_evidence import build_task_acceptance_evidence
-    from ouroboros.task_results import STATUS_RUNNING, record_plan_review_wave, write_task_result
-    from tests.test_acceptance_claims_wiring import _v2_wave
-
-    root = tmp_path
-    write_task_result(root, "acc", STATUS_RUNNING, result="running")
-    record_plan_review_wave(root, "acc", {
-        **_v2_wave("a" * 64, ["unreviewed claim"], aggregate="DEGRADED", closed=False),
-        "custody_pending": pending, "paid": False})
-    ctx = types.SimpleNamespace(task_contract={"requirements": "do X"}, task_metadata={},
-                                drive_root=str(root), task_id="acc", repo_dir=str(root))
-    exhibit = build_task_acceptance_evidence(
-        ctx, llm_trace={"tool_calls": []}, drive_root=root, task_id="acc")["plan_claims_exhibit"]
-    assert exhibit["binding"] == "not bound: wave open" and exhibit["aggregate"] == "DEGRADED"
-    assert exhibit["custody_pending"] is pending
-
-
 # ------------------------------------------------------------------ the floor, through the real substrate
 
 
@@ -482,8 +445,12 @@ def test_a_fully_awaiting_wave_keeps_the_fail_closed_floor_and_every_line_tells_
         assert (actor["operation_state"], actor["late_result_pending"], actor["failure_code"]) == (
             "pending_dispatch", True, "")
     assert _control(first) == {"outcome": "DEGRADED", "closed": False}
+    # The live gate reads this in-flight legacy wave through the read-only importer: silence
+    # never holds (owner batch 2, Q2), so the final answer is allowed and the wave's unanswered
+    # reviewers are disclosed as ONE pending ask; blocking findings land as objections once answered.
     decision = force_plan_decision(ctx, {}, enforcement="blocking")
-    assert decision["allow"] is False and decision["custody_pending"] and decision["reviewer_slots_degraded"]
+    assert decision["allow"] is True and decision["status"] == "awaiting" and decision["source"] == "legacy_v2"
+    assert decision["pending_asks"] == [f"legacy wave {wave['request_fingerprint'][:12]}"] and decision["holding"] == []
     refused = pr._handle_plan_task(ctx, review_disposition={
         "review_fingerprint": wave["request_fingerprint"], "items": [], "author_action": "finish",
         "author_disposition": {"disposition": "accepted", "rationale": "Proceed without the reviewers."}})
@@ -522,7 +489,7 @@ def test_a_fully_awaiting_wave_keeps_the_fail_closed_floor_and_every_line_tells_
     held = _state(harness)["waves"][-1]
     assert (held["aggregate"], held["closed"], held["custody_pending"]) == ("DEGRADED", False, True)
     assert held["counts"]["parseable"] == 2 and _control(quorum) == {"outcome": "DEGRADED", "closed": False}
-    assert force_plan_decision(ctx, {}, enforcement="blocking")["allow"] is False
+    assert force_plan_decision(ctx, {}, enforcement="blocking")["status"] == "awaiting"  # the third seat is still owed
     assert "📐 Plan review so far: 2 of 3 reviewers answered." in harness.progress
     assert "### Aggregate: no verdict — held open as DEGRADED (open)" in quorum and "GREEN" not in quorum
     for executor in panel.values():

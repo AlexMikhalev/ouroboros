@@ -61,7 +61,7 @@ def test_the_output_contract_states_both_need_evidence_forms():
     the Output contract inserted into the same prompt still demanded a locator for every
     ``need_evidence``. The contract must state the two forms instead of making the reviewer
     guess between its own halves or invent a file."""
-    from ouroboros.tools.plan_packet import build_plan_review_system_prompt
+    from ouroboros.tools.plan_packet_legacy import build_plan_review_system_prompt
 
     prompt = build_plan_review_system_prompt(
         checklist_section="", constitutional=False, bible_text=None,

@@ -193,7 +193,7 @@ _REVIEW_RULES = {
 
 _REVIEW_SURFACES = {
     "commit_gate": "every pool row outside Cyber Pro; composed from the pool in Cyber Pro (reason recorded)",
-    "plan_review": "every pool row",
+    "plan_review": "ask='council' = every pool row; ask=[ids] = those rows",
     "task_acceptance": {"root": "every pool row", "child": "≤1 from the pool; with several, name one as reviewer"},
     "preflight": "one enabled catalog row you name: commit_reviewed(preflight_reviewer=…); none → recorded as not performed",
     "system_review": "/review: one enabled catalog row, default Main",

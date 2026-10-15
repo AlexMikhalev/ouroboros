@@ -206,7 +206,7 @@ def test_plan_review_state_validator_rejects_malformed_waves():
 
 
 def test_invalid_new_plan_attempts_do_not_reuse_old_green(tmp_path):
-    import ouroboros.tools.plan_review as pr
+    import ouroboros.tools.plan_review_legacy as pr
     from ouroboros.task_results import (
         STATUS_RUNNING,
         load_plan_review_state,
@@ -316,7 +316,7 @@ def test_closed_wave_dispositions_are_immutable(tmp_path):
 
 
 def test_planning_state_requires_real_task_id(tmp_path):
-    from ouroboros.tools.plan_review import _planning_state_location
+    from ouroboros.tools.plan_review_legacy import _planning_state_location
     from ouroboros.tools.registry import ToolContext
 
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
@@ -326,7 +326,7 @@ def test_planning_state_requires_real_task_id(tmp_path):
 
 
 def test_disposition_without_task_id_returns_typed_state_error(tmp_path):
-    import ouroboros.tools.plan_review as pr
+    import ouroboros.tools.plan_review_legacy as pr
     from ouroboros.tools.registry import ToolContext
 
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
@@ -345,7 +345,7 @@ def test_malformed_reviewer_slots_block_plan_review_before_any_dispatch(tmp_path
     refuse plan review loudly (typed retryable unavailability, precise parse error in
     the message) BEFORE any reviewer dispatch — never run the panel on a silently
     projected default."""
-    import ouroboros.tools.plan_review as pr
+    import ouroboros.tools.plan_review_legacy as pr
     from ouroboros.tools.registry import ToolContext
 
     monkeypatch.setenv("OUROBOROS_SUBAGENTS", "{broken")
@@ -450,7 +450,7 @@ def _deadline_ctx(tmp_path, *, seconds_left: int):
 def test_expired_explicit_deadline_skips_before_any_reviewer(monkeypatch, tmp_path):
     import asyncio
 
-    import ouroboros.tools.plan_review as pr
+    import ouroboros.tools.plan_review_legacy as pr
     import ouroboros.loop as loop_mod
     from ouroboros.task_results import load_plan_review_state
 
@@ -466,11 +466,15 @@ def test_expired_explicit_deadline_skips_before_any_reviewer(monkeypatch, tmp_pa
     assert attempt["status"] == "rail_degraded"
     assert attempt["reason"] == "plan_task_deadline"
 
+    # The skip dispatched nobody: the force_plan obligation stays unmet until an ask reaches a
+    # reviewer or the task's own deadline rail fires at finalization (never the skip itself).
     monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: "blocking")
     decision = loop_mod._force_plan_decision(ctx, {})
-    assert decision["allow"] is True
-    assert decision["status"] == "rail_degraded"
-    assert "plan_task_deadline" in loop_mod._force_plan_disclosure(ctx, {}, forced_reason="")
+    assert decision["allow"] is False and decision["status"] == "force_plan_unmet"
+    railed = loop_mod._force_plan_decision(ctx, {}, hard_rail="deadline")
+    assert railed["allow"] is True and railed["status"] == "rail_degraded"
+    assert loop_mod._force_plan_disclosure(ctx, {}, forced_reason="") == ""  # held, not finalized: nothing to disclose yet
+    assert "planning obligation was not met" in loop_mod._force_plan_disclosure(ctx, {}, forced_reason="deadline")
 
 
 def test_expired_deadline_replays_a_recorded_wave_but_never_pays(monkeypatch, tmp_path):
@@ -478,7 +482,7 @@ def test_expired_deadline_replays_a_recorded_wave_but_never_pays(monkeypatch, tm
     (no panel); a NEW envelope records the rail-degraded attempt instead of paying."""
     import asyncio
 
-    import ouroboros.tools.plan_review as pr
+    import ouroboros.tools.plan_review_legacy as pr
     from ouroboros.task_results import load_plan_review_state
 
     ctx = _deadline_ctx(tmp_path, seconds_left=-1)
@@ -494,7 +498,7 @@ def test_expired_deadline_replays_a_recorded_wave_but_never_pays(monkeypatch, tm
 
 
 def test_missing_deadline_is_not_treated_as_expired(tmp_path):
-    import ouroboros.tools.plan_review as pr
+    import ouroboros.tools.plan_review_legacy as pr
     from ouroboros.tools.registry import ToolContext
 
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="plan-review-test")
@@ -506,7 +510,7 @@ class TestPlanReviewInputValidation(unittest.TestCase):
     def setUp(self):
         import tempfile
 
-        from ouroboros.tools.plan_review import _handle_plan_task
+        from ouroboros.tools.plan_review_legacy import _handle_plan_task
         from ouroboros.tools.registry import ToolContext
 
         self.handler = _handle_plan_task
@@ -553,7 +557,7 @@ class TestPlanReviewChecklist(unittest.TestCase):
 
 class TestPlanReviewToolRegistration(unittest.TestCase):
     def test_plan_task_schema_has_required_fields(self):
-        from ouroboros.tools.plan_review import get_tools
+        from ouroboros.tools.plan_review_legacy import legacy_tool_entries as get_tools
         tool = next(t for t in get_tools() if t.name == "plan_task")
         params = tool.schema["parameters"]["properties"]
         self.assertEqual(set(params), {"plan", "goal", "spec", "reviewer_effort", "review_disposition"})
@@ -603,12 +607,14 @@ class TestPlanReviewToolRegistration(unittest.TestCase):
             )
 
         self.assertIn("TOOL_ARG_ERROR (plan_task)", result)
-        self.assertIn("review_disposition", result)
+        for field in ("done_when", "affected_paths", "ask", "reviewer_effort"):  # the new form is advertised
+            self.assertIn(field, result)
+        self.assertNotIn("review_disposition", result)  # retired names are hidden, never advertised
         self.assertIn("unsupported argument(s): review_dispositon", result)
         self.assertNotIn("handler-ran", result)
 
     def test_plan_task_description_is_domain_neutral_and_trigger_free(self):
-        from ouroboros.tools.plan_review import get_tools
+        from ouroboros.tools.plan_review_legacy import legacy_tool_entries as get_tools
         tool = next(t for t in get_tools() if t.name == "plan_task")
         desc = tool.schema["description"]
         lower = desc.lower()
@@ -628,7 +634,7 @@ class TestPlanReviewToolRegistration(unittest.TestCase):
 
     def test_plan_task_contract_has_no_swarm_knobs(self):
         from ouroboros.config import RETIRED_SETTING_KEYS, SETTINGS_DEFAULTS
-        from ouroboros.tools.plan_review import get_tools
+        from ouroboros.tools.plan_review_legacy import legacy_tool_entries as get_tools
 
         tool = next(t for t in get_tools() if t.name == "plan_task")
         description = tool.schema["description"].lower()
@@ -646,7 +652,7 @@ class TestPlanReviewToolRegistration(unittest.TestCase):
 class TestPlanReviewDispositionEnvelope(unittest.TestCase):
     def test_disposition_without_prior_review_is_unbindable_and_free(self):
         import tempfile
-        import ouroboros.tools.plan_review as pr
+        import ouroboros.tools.plan_review_legacy as pr
         from ouroboros.tools.registry import ToolContext
 
         with tempfile.TemporaryDirectory() as raw:
@@ -666,7 +672,7 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
         """The valid envelope is prepared read-only, then the answers are bound to their wave:
         none holds this fingerprint, so the call is refused before any review or write."""
         import tempfile
-        import ouroboros.tools.plan_review as pr
+        import ouroboros.tools.plan_review_legacy as pr
         from ouroboros.tools.registry import ToolContext
 
         with tempfile.TemporaryDirectory() as raw:
@@ -690,7 +696,7 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
         reach disposition mode exactly like the bare envelope. The reciprocal (a vacuous
         disposition beside a real plan) was already tolerated; this is the other side."""
         import tempfile
-        import ouroboros.tools.plan_review as pr
+        import ouroboros.tools.plan_review_legacy as pr
         from ouroboros.tools.registry import ToolContext
 
         scratch = tempfile.TemporaryDirectory()  # a real root: the store's first touch builds under it, never the cwd
@@ -719,7 +725,7 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
         key or a wrong type is an envelope, validated FIRST — its typed form refusal comes
         before the answers are touched; a vacuity rule never discards an invalid value."""
         import tempfile
-        import ouroboros.tools.plan_review as pr
+        import ouroboros.tools.plan_review_legacy as pr
         from ouroboros.tools.registry import ToolContext
 
         with tempfile.TemporaryDirectory() as raw:
@@ -741,7 +747,7 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
         """``items=[{}]`` says something malformed, not nothing: beside a plan it is an answer
         with an envelope whose (malformed) form is refused typed, never plain review mode."""
         import tempfile
-        import ouroboros.tools.plan_review as pr
+        import ouroboros.tools.plan_review_legacy as pr
         from ouroboros.tools.registry import ToolContext
 
         scratch = tempfile.TemporaryDirectory()  # a real root: the store's first touch builds under it, never the cwd
@@ -761,7 +767,7 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
         # Consultation guard: an indeterminate state store must ERROR, never be
         # classified as "no review" (which would silently launch a paid wave).
         import tempfile
-        import ouroboros.tools.plan_review as pr
+        import ouroboros.tools.plan_review_legacy as pr
         from ouroboros.tools.registry import ToolContext
 
         with tempfile.TemporaryDirectory() as raw:
@@ -781,7 +787,7 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
             self.assertNotIn("PLAN_REVIEW_DISPOSITION_UNBINDABLE", out)
 
     def test_vacuous_disposition_only_is_rejected_before_raw_attempt(self):
-        import ouroboros.tools.plan_review as pr
+        import ouroboros.tools.plan_review_legacy as pr
         from ouroboros.tools.registry import ToolContext
 
         ctx = ToolContext(repo_dir=pathlib.Path("."), drive_root=pathlib.Path("."))
@@ -798,7 +804,7 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
         run.assert_not_called()
 
     def test_vacuous_disposition_beside_a_plan_is_ignored(self):
-        import ouroboros.tools.plan_review as pr
+        import ouroboros.tools.plan_review_legacy as pr
         from ouroboros.tools.registry import ToolContext
 
         ctx = ToolContext(repo_dir=pathlib.Path("."), drive_root=pathlib.Path("."))
@@ -815,7 +821,7 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
         {"author_disposition": {"disposition": "accepted", "rationale": ""},
          "items": [], "review_fingerprint": ""} with its FIRST plan and looped on
         MIXED_ENVELOPE. No fingerprint names no wave, so it carries nothing."""
-        import ouroboros.tools.plan_review as pr
+        import ouroboros.tools.plan_review_legacy as pr
         from ouroboros.tools.registry import ToolContext
 
         ctx = ToolContext(repo_dir=pathlib.Path("."), drive_root=pathlib.Path("."))
@@ -848,7 +854,7 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
         self.assertFalse(tool_calls_can_run_parallel(calls))
 
     def test_control_line_outcomes_follow_the_parser_contract(self):
-        import ouroboros.tools.plan_review as pr
+        import ouroboros.tools.plan_review_legacy as pr
         from ouroboros.tools.plan_render import _parse_plan_review_control
 
         for aggregate, closed, expected in (

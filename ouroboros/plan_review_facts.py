@@ -300,10 +300,67 @@ def render_plan_review_section(facts: Mapping[str, Any]) -> str:
     return _SECTION_HEADING + _render(facts)
 
 
+def facts_from_record(record: Mapping[str, Any], *, claims_source: str = "",
+                      source_ref: Optional[Mapping[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Pure projection of the planning organ's record for the learning surfaces: every
+    revision's done_when text, each ask with who answered, every objection with its
+    standing (open / withdrawn / not adjudicated) and the latest contributions. ``None``
+    when the task never wrote a plan. Bounded with every cut counted in ``omitted``."""
+    from ouroboros import plan_record
+
+    if not plan_record.engaged(record):
+        return None
+    objections = plan_record.fold_objections(record)
+    views = plan_record.participant_views(record)
+    facts: Dict[str, Any] = {
+        "organ": "plan_record",
+        "source_ref": dict(source_ref or {}),
+        "scope": "revisions, asks and objections come from the task's plan record; nobody voted and no verdict was computed",
+        "claims_source": claims_source or "unknown",
+        "revisions": [{"n": r.get("n"), "ts": r.get("ts"), "goal": _cut(r.get("goal"), _TEXT_CHARS), "body": bool(r.get("body")),
+                       "done_when": [{"id": c.get("id"), "claim": _cut(c.get("claim"), _TEXT_CHARS), "support": _cut(c.get("support"), _TEXT_CHARS)}
+                                     for c in r.get("done_when") or []],
+                       "affected_paths": list(r.get("affected_paths") or [])} for r in record.get("revisions") or []],
+        "asks": [{"ask_id": a.get("ask_id"), "revision": a.get("revision"), "message": _cut(a.get("message"), _TEXT_CHARS),
+                  "participants": [{"seat_id": p.get("seat_id"), "model": p.get("model"), "owner_marked": bool(p.get("owner_marked")),
+                                    "status": p.get("status")} for p in a.get("participants") or []]}
+                 for a in record.get("asks") or []],
+        "objections": [{"seat_id": o.get("seat_id"), "id": o.get("id"), "text": _cut(o.get("text"), _TEXT_CHARS),
+                        "raised_in": o.get("raised_in"), "open": bool(o.get("open")), "holds": bool(o.get("holds")),
+                        "not_adjudicated": bool(o.get("not_adjudicated")), "withdrawn_in": o.get("withdrawn_in") or "",
+                        "why_withdrawn": _cut(o.get("why"), _TEXT_CHARS)} for o in objections if not o.get("unknown_withdrawal")],
+        "contributions": [{"seat_id": sid, "prose": _cut(v.get("latest_prose"), 400)} for sid, v in views.items() if v.get("latest_prose")],
+    }
+    return _fit_record(facts)
+
+
+def _fit_record(facts: Dict[str, Any]) -> Dict[str, Any]:
+    """Bound the record slice: contributions go first, then the oldest asks and revisions."""
+    def over() -> bool:
+        return len(render_plan_review_section(facts)) > PLAN_REVIEW_REFLECTION_CHARS
+
+    if not over():
+        return facts
+    omitted = {"contributions": 0, "asks": 0, "revisions": 0, "note": "whole rows omitted; read source_ref"}
+    facts["omitted"] = omitted
+    while over() and facts["contributions"]:
+        facts["contributions"].pop(0)
+        omitted["contributions"] += 1
+    while over() and len(facts["asks"]) > 1:
+        facts["asks"].pop(0)
+        omitted["asks"] += 1
+    while over() and len(facts["revisions"]) > 1:
+        facts["revisions"].pop(0)
+        omitted["revisions"] += 1
+    return facts
+
+
 def plan_review_reflection_slice(root: Any, task_id: str, *, task: Optional[Mapping[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """Load one task's plan-review record and project it; ``None`` without waves, a disclosed
-    ``{"unavailable": …}`` when a recorded source cannot be read or the wave the author
-    answered is not in the index (no other wave is substituted for it)."""
+    """Load one task's plan record and project it (``facts_from_record``); a task that only
+    has a v1/v2 ``plan_review_state`` keeps the legacy projection below. ``None`` without a
+    plan, a disclosed ``{"unavailable": …}`` when a recorded source cannot be read or the
+    wave the author answered is not in the index (no other wave is substituted for it)."""
+    from ouroboros import plan_record
     from ouroboros.task_results import current_plan_review_wave, load_plan_review_state, plan_review_wave
     from ouroboros.tools.plan_review_artifacts import PlanReviewSourceUnavailable, authority_wave, current_author_plan
 
@@ -315,6 +372,20 @@ def plan_review_reflection_slice(root: Any, task_id: str, *, task: Optional[Mapp
     def unavailable(reason: Any) -> Dict[str, Any]:
         return {"unavailable": str(reason), "source_ref": source_ref}
 
+    try:
+        record = plan_record.load_plan_record(drive, str(task_id))
+    except (plan_record.PlanRecordInvalid, OSError, ValueError, StoreError) as exc:
+        return unavailable(exc)
+    if plan_record.engaged(record):
+        claims_source = ""
+        try:
+            from ouroboros.review_evidence_sections import _accept_effective_claims
+
+            contract = (task or {}).get("task_contract") if isinstance((task or {}).get("task_contract"), Mapping) else {}
+            claims_source = _accept_effective_claims(None, dict(contract or {}), drive, str(task_id))[1]
+        except Exception:
+            log.debug("plan facts: claims source unavailable", exc_info=True)
+        return facts_from_record(record, claims_source=claims_source, source_ref={**source_ref, "field": "plan_record"})
     try:
         state = load_plan_review_state(drive, str(task_id))
     except (PlanReviewSourceUnavailable, OSError, ValueError, StoreError) as exc:

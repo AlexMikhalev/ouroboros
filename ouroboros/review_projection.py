@@ -33,6 +33,7 @@ _AWAITING_REASON = "No answer recorded: the host returned at the dispatch barrie
 PLAN_REVIEW_UNANSWERED = "unanswered"      # some answered; some failed, were refused at $0 or are unresolved
 PLAN_REVIEW_NONE_ANSWERED = "none_answered"  # nobody answered and nobody is merely awaited
 PLAN_REVIEW_ANSWERED_OPEN = "answered_open"  # everybody answered; the verdict was not closed
+PLAN_REVIEW_OBJECTIONS_OPEN = "objections_open"  # the planning organ: objections stood open at delivery
 
 if TYPE_CHECKING:  # annotation-only names; lazy under future annotations, never imported at runtime
     from ouroboros.review_records import ReviewActorRecord, ReviewRequest

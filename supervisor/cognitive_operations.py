@@ -142,9 +142,9 @@ def _handle_review_late_result(evt: Dict[str, Any], ctx: Any) -> None:
     except Exception:
         log.debug("late review result persistence failed", exc_info=True)
     try:
-        from ouroboros.tools.plan_review_collect import attach_late_plan_event
+        from ouroboros.tools.plan_ask import attach_late_reply
 
-        attach_late_plan_event(ctx.DRIVE_ROOT, payload)
+        attach_late_reply(ctx.DRIVE_ROOT, payload)
     except Exception:
         log.warning("historical plan review remains unresolved", exc_info=True)
     try:
