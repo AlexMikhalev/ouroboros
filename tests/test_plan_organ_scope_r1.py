@@ -8,7 +8,7 @@ from __future__ import annotations
 from ouroboros import owner_hurry as oh
 from ouroboros import plan_record
 from ouroboros.review_records import ReviewActorRecord
-from ouroboros.tools import plan_ask
+from ouroboros.tools import plan_ask, plan_review as pr
 from tests._store_shared import seed_result
 from tests.test_plan_gate import _v2
 from tests.test_plan_task_tool import CLEAN, _call, _record, _reply, _slots, _user_text, _write, harness as _harness
@@ -177,3 +177,25 @@ def test_the_tools_read_and_the_gate_agree_that_an_unreadable_earlier_state_hold
     other = harness.make_ctx(task_id="task-2")
     text, _result = _write(other)
     assert "Nothing holds your final answer." in text and oh.force_plan_decision(other, {}, enforcement="blocking")["status"] == "clear"
+
+
+# ---------------------------------------------------------------- A3 / Fable 9: the owner's progress line speaks typed facts
+
+def test_a_failed_seats_progress_line_carries_its_typed_tag_not_the_raw_provider_error(harness):
+    raw = '{"nextActions": ["Retry the run", "Inspect the run"], "safeMessage": "harness_error", "detail": "' + "x" * 500 + '"}'
+    harness.install({"s1": {"status": "error", "error": f"delegated review session run-e23 ended failed: {raw}", "failure_code": "run_failed",
+                            "reported_cause": "the harness could not start a session for this profile",
+                            "reset_at": "2026-10-16T00:00:00+00:00", "usage": {"cost": 0.0}}, "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    text, _result = _write(ctx, ask="council")
+    [line] = [row for row in harness.progress if "didn't answer" in row]
+    assert line == ("📐 Plan: m/a didn't answer: failed[run_failed] — reported cause: "
+                    '"the harness could not start a session for this profile" (reset at 2026-10-16T00:00:00+00:00).')
+    assert "nextActions" not in line and "x" * 40 not in line
+    assert "s1 (m/a): failed[run_failed] — reported cause:" in text, "the read view speaks the same typed tag"
+    # The other direction: a failure that reported nothing typed keeps a bounded first line, still no retry coach.
+    harness.install({"s1": {"status": "error", "error": f"transport died: {raw}", "usage": {"cost": 0.0}}, "s2": CLEAN, "s3": CLEAN})
+    _call(ctx, ask="council", message="again")
+    bare = [row for row in harness.progress if "didn't answer" in row][-1]
+    assert bare.startswith("📐 Plan: m/a didn't answer: failed — transport died:") and len(bare) < 260
+    assert "Under Blocking, outside Cyber Pro, an open objection of an owner-marked reviewer holds" in pr._SCHEMA["description"]

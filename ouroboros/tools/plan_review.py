@@ -35,7 +35,7 @@ from ouroboros.config import (
     get_task_abs_ceiling_sec,
     operation_window_sec,
 )
-from ouroboros.tools import plan_ask
+from ouroboros.tools import plan_ask, plan_packet
 from ouroboros.tools.plan_review_runtime import REVIEWER_EFFORT_SCHEMA as _REVIEWER_EFFORT_SCHEMA
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import TOOL_CODE_SPECS, ToolResult, _publish_tool_result
@@ -92,7 +92,7 @@ _SCHEMA = {
         "attachments. Answers arrive in your mailbox; READ (no arguments, free) shows the current revision, every open "
         "objection with who raised it, who saw which revision, the latest contributions and the pending asks. An "
         "objection stands until the participant who raised it withdraws it (ask that participant again after you "
-        "revise or argue); nobody votes and there is no verdict. Under Blocking an open objection of an owner-marked "
+        "revise or argue); nobody votes and there is no verdict. Under Blocking, outside Cyber Pro, an open objection of an owner-marked "
         "reviewer holds your final answer; under Advisory and in Cyber Pro it is disclosed. The old spec/"
         "review_disposition form is refused at $0."
     ),
@@ -328,27 +328,6 @@ def _render_done_when(rows: List[Mapping[str, Any]]) -> str:
                      for r in rows)
 
 
-def _failure_tag(participant: Mapping[str, Any]) -> str:
-    """A failed seat by its TYPED facts — the code, the reset instant, the engine's reported
-    sentence — never the raw error prose with its retry coach (BIBLE P5: the host puts no
-    engine template in the mind's mouth). A row that reported nothing typed keeps a bounded
-    first line of the error."""
-    from ouroboros.utils import truncate_review_artifact
-
-    code = str(participant.get("failure_code") or "")
-    cause = str(participant.get("reported_cause") or "")
-    reset = str(participant.get("reset_at") or "")
-    tag = "failed" + (f"[{code}]" if code else "")
-    if cause:
-        tag += f' — reported cause: "{cause}"'
-    elif participant.get("error"):
-        first_line = str(participant["error"]).strip().splitlines()[0] if str(participant["error"]).strip() else ""
-        tag += " — " + truncate_review_artifact(first_line, limit=160)
-    if reset:
-        tag += f" (reset at {reset})"
-    return tag
-
-
 def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy: Optional[Mapping[str, Any]] = None,
                   legacy_error: Optional[Mapping[str, str]] = None) -> str:
     """The read view as text: current revision, council, open objections, gate facts."""
@@ -379,7 +358,7 @@ def render_record(record: Mapping[str, Any], decision: Mapping[str, Any], legacy
             if p["status"] == "not_dispatched":
                 tag = f"not sent — {p.get('not_dispatched_reason') or 'not sendable'}"
             elif p["status"] == "failed":
-                tag = _failure_tag(p)
+                tag = plan_packet.failure_tag(p)
             elif p["status"] == "unparseable":
                 tag = "unparseable" + (f" — {p.get('parse_error')}" if p.get("parse_error") else "")
             parts.append(f"{p['seat_id']} ({p.get('model') or '?'}{'' if p.get('owner_marked') else ', added'}): {tag}")

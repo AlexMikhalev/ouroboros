@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 
 from ouroboros.review_records import ReviewActorRecord
-from ouroboros.tools import plan_ask, plan_review as pr
+from ouroboros.tools import plan_ask, plan_packet
 from ouroboros.utils import append_jsonl
 from tests.test_plan_task_tool import CLEAN, _call, _record, _reply, _slots, _user_text, _write, harness as _harness
 
@@ -181,7 +181,7 @@ def test_a_session_that_resolved_its_model_is_observed_as_that_model_and_a_wordl
     assert ledger["s2"]["capability_delta"][0]["reason"] == "session_route_resolves_its_own_model"
     assert record["asks"][0]["participants"][1]["resolved_model"] == "openai/gpt-6-astra"
     # The other direction: no reported cause → the first line of the error, bounded, and no "reported cause".
-    tag = pr._failure_tag(record["asks"][0]["participants"][0])
+    tag = plan_packet.failure_tag(record["asks"][0]["participants"][0])
     assert tag.startswith("failed[run_failed] — delegated review session run-e23 ended failed:") and "reported cause" not in tag
     assert len(tag) < 260 and "(reset at 2026-10-16T00:00:00+00:00)" in tag
     assert "s1 (m/a): failed[run_failed] — delegated review session" in text

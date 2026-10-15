@@ -245,6 +245,28 @@ def _render_reply(entry: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def failure_tag(participant: Mapping[str, Any]) -> str:
+    """A failed seat by its TYPED facts — the code, the reset instant, the engine's reported
+    sentence — never the raw error prose with its retry coach (BIBLE P5: the host puts no
+    engine template in the mind's or the owner's mouth); the one owner of that line for the
+    read view and the progress line alike. A row that reported nothing typed keeps a bounded
+    first line of the error."""
+    from ouroboros.utils import truncate_review_artifact
+
+    code = str(participant.get("failure_code") or "")
+    cause = str(participant.get("reported_cause") or "")
+    reset = str(participant.get("reset_at") or "")
+    tag = "failed" + (f"[{code}]" if code else "")
+    if cause:
+        tag += f' — reported cause: "{cause}"'
+    elif participant.get("error"):
+        first_line = str(participant["error"]).strip().splitlines()[0] if str(participant["error"]).strip() else ""
+        tag += " — " + truncate_review_artifact(first_line, limit=160)
+    if reset:
+        tag += f" (reset at {reset})"
+    return tag
+
+
 def render_cross_talk(asks: Sequence[Mapping[str, Any]], *, seat_id: str) -> str:
     """Everything said in the council in ``asks`` (the ones since this participant last
     answered, preceded by earlier asks' replies that settled after its last delivery,

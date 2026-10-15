@@ -810,8 +810,8 @@ def _announce_reply(ctx: Any, participant: Mapping[str, Any], facts: Mapping[str
                        + (f", {n_bad} malformed item{'' if n_bad == 1 else 's'} ignored" if n_bad else "") + ".")
     elif status == "unparseable":
         _progress(ctx, f"📐 Plan: {who} answered, but the reply could not be read as the reply object; nothing changed.")
-    elif status == "failed":
-        _progress(ctx, f"📐 Plan: {who} didn't answer" + (f" — {facts.get('error')}" if facts.get("error") else "") + ".")
+    elif status == "failed":  # typed facts, never the raw provider error with its retry coach
+        _progress(ctx, f"📐 Plan: {who} didn't answer: {plan_packet.failure_tag({**participant, **facts})}.")
 
 
 def record_reply(ctx: Any, *, state_root: pathlib.Path, task_id: str, ask_id: str, seat_id: str, row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
