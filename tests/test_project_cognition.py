@@ -41,6 +41,8 @@ def room_settings(tmp_path, monkeypatch):
         app.state.drive_root = root
         yield root, TestClient(app)
         config.reset_runtime_mode_baseline_for_tests()
+        # Undo test-body patches before restoring the outer environment snapshot.
+        monkeypatch.undo()
 
 
 def _legacy_rows(root, *ids):

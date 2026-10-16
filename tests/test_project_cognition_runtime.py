@@ -269,4 +269,3 @@ def test_failed_reload_and_ambiguous_low_preserve_runtime_presence_on_main():
         restore_cognition(saved)
         assert config.get_context_mode() == "low" and config.get_owner_context_mode() == "max"
         assert config.resolve_effort("task") == "ultra"
-
