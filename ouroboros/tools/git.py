@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.config import get_runtime_mode  # noqa: F401
 from ouroboros.tools.review_helpers import review_enforcement_blocks
+from ouroboros.test_selection import bind_commit_test_request, commit_test_options, widening_properties
 from ouroboros.runtime_mode_policy import (
     core_patch_notice,  # noqa: F401
     format_protected_paths,  # noqa: F401
@@ -643,10 +644,8 @@ def _run_pre_push_tests(ctx: ToolContext, force: bool = False) -> Optional[str]:
         return None
     if not force and os.environ.get("OUROBOROS_PRE_PUSH_TESTS", "1") != "1":
         return None
-    # NO `tests/` existence check here: whether the repository is in scope is
-    # run_hermetic_pytest's decision. This entry point runs POST-commit, so it
-    # compares HEAD and HEAD~1 (the default phase) — a candidate that deleted the
-    # suite is a hard block, while a repo that never had one is out of scope.
+    # The runner checks HEAD and HEAD~1: deleting the suite blocks;
+    # a repository that never had tests stays out of scope.
     try:
         from ouroboros.preflight_runner import run_hermetic_pytest
 
@@ -654,7 +653,7 @@ def _run_pre_push_tests(ctx: ToolContext, force: bool = False) -> Optional[str]:
         return run_hermetic_pytest(
             pathlib.Path(ctx.repo_dir),
             max_output=MAX_TEST_OUTPUT,
-            ctx=ctx,
+            ctx=ctx, **commit_test_options(ctx, force=force),
         )
     except Exception as e:
         log.warning(f"Pre-push tests failed with exception: {e}", exc_info=True)
@@ -1043,6 +1042,8 @@ def _publish_reviewed_commit(
 
 def _commit_reviewed(ctx: ToolContext, commit_message: str, *args: Any, **kwargs: Any) -> str:
     """The public commit handler: an outcome of a call that wrote a review record names it."""
+    if error := bind_commit_test_request(ctx, kwargs):
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=error))
     return name_review_record(ctx, _repo_commit_push(ctx, commit_message, *args, **kwargs))
 
 
@@ -1366,11 +1367,9 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
             if receipt_error:
                 return receipt_error
         if not _managed_tx and not publication_paused:
-            # Ordinary self-modification contract: post-commit tests are reported
-            # as a warning. Managed-update merges already ran them as the BLOCKING
-            # assisted_post_commit_tests gate right after the commit above.
+            # Evolution publication requires full even when the author skipped preflight.
             try:
-                run_operation(ctx, _post_commit_result, ctx, commit_message, skip_tests, test_warning_ref)
+                run_operation(ctx, _post_commit_result, ctx, commit_message, skip_tests, test_warning_ref, force=bool(evolution_claim))
             except OwnerPauseRefused as exc:
                 publication_paused = True
                 tag_info += f" [post-commit tests not started: owner pause ({exc})]"
@@ -1382,7 +1381,8 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
             )
             if publication_error:
                 return publication_error
-            push_status = _auto_push_after_review(ctx, publication_paused=publication_paused) if not body_candidate.is_bound(ctx) else body_candidate.publication_note(ctx)
+            push_status = (_evolution_test_publication_stop(ctx, commit_sha, test_warning_ref[0])
+                           or (_auto_push_after_review(ctx, publication_paused=publication_paused) if not body_candidate.is_bound(ctx) else body_candidate.publication_note(ctx)))
         ctx.last_reviewed_commit_sha = commit_sha
         body_candidate.record_reviewed_commit(ctx, commit_sha)
         if attribution_binding is not None:
@@ -1449,6 +1449,7 @@ def get_tools() -> List[ToolEntry]:
         "checks, the tests (see skip_tests) and the panel still run; the opposite of preflight_reviewer."
     )
     commit_properties = {
+        **widening_properties(),
         "root": {"type": "string", "enum": ["system_repo"], "default": "system_repo", "description": "The reviewed commit lands in Ouroboros's own body only; review any other root with review_change and commit it with ordinary git."},
         "commit_message": {"type": "string"},
         "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional subset of task-attributed paths. Omitted computes candidates; empty never stages the whole tree."},
@@ -1569,6 +1570,7 @@ from ouroboros.tools.git_evolution import (  # noqa: E402,F401
     _check_evolution_commit_stage,
     _evolution_commit_authority,
     _evolution_publication_stopped_result,
+    _evolution_test_publication_stop,
     _preserve_evolution_orphan,
     _record_evolution_commit_intent,
     _record_evolution_commit_receipt,

@@ -139,6 +139,14 @@ def render_summary(root: Path, *, producer_outcome: str, artifact_outcome: str,
     """Reporter failure cannot replace producer truth; missing reports stay unknown."""
     data, error = _final(root)
     available = not error
+    # The selected CLI writes scope beside the pass directories before execution.
+    # Its actual tier may escalate to full; never describe a subset as full.
+    try:
+        selection = json.loads((Path(root).parent / "selection.json").read_text(encoding="utf-8"))
+        if scope == "full" and selection.get("tier") in ("selected", "full"):
+            scope = selection["tier"]
+    except (OSError, ValueError, AttributeError):
+        pass
     lines = [
         "## CI test evidence" + (f" — {_cell(label)}" if label else "")
         + (" — PARTIAL DIAGNOSTIC" if scope != "full" else ""),
@@ -661,6 +669,9 @@ class _Results:
             lane = getattr(self.config, "_default_suite_lane", None)
             if lane:
                 facts["default_" + lane["pass"]] = lane
+            crash = getattr(self.config, "_ouroboros_worker_crash", None)
+            if crash:
+                facts["worker_crash"] = crash
             write_json(output_dir(self.config) / "results.json", _redact(facts, self.secrets))
         except Exception as error:
             # Diagnostics alone never alter session.exitstatus or expose a body.

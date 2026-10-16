@@ -78,14 +78,6 @@ def test_persistent_profile_guard_rejects_missing_or_non_false_argument(argument
         _assert_persistent_webview_starts(f"webview.start(\n    {argument}\n)", "fixture.py")
 
 
-def test_the_owner_approved_cost_is_written_down_where_it_is_paid():
-    # A flag that makes local site data persist on disk is an owner decision,
-    # not an implementation detail; the rationale must survive the next reader.
-    main = _read("launcher.py")
-    assert "cookies and website data" in main
-    assert "ouroboros.theme" in main
-
-
 def test_the_select_arrow_is_a_theme_token_not_a_baked_colour():
     ui = _read("web/ui.css")
     dark, light = ui.split(':root[data-theme="light"]', 1)

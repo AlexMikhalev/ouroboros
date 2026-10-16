@@ -130,6 +130,7 @@ def test_real_manager():
         monkeypatch.setenv(key, str(ambient))
     monkeypatch.setattr(tempfile, "tempdir", str(ambient))
     monkeypatch.setenv("OUROBOROS_PREFLIGHT_TEST_WORKERS", "2")
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "2")  # nested slots: the gate must really run two workers
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_SERIAL", raising=False)
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.delenv("PYTEST_XDIST_TESTRUNUID", raising=False)

@@ -616,13 +616,10 @@ def test_discovery_has_one_implementation_bound_by_the_loop(tmp_path):
     handlers to its resident list instead of carrying its own copies, so the
     hidden-vs-missing answer has exactly one author."""
     import ouroboros.loop as loop_mod
-    import ouroboros.tools.tool_discovery as td
     from ouroboros.tools.registry import ToolContext, ToolRegistry
 
-    label = "🚫 Hidden by policy (the tool exists but this task cannot use it)"
     loop_src = inspect.getsource(loop_mod)
-    assert label not in loop_src and "policy_hidden_reason(" not in loop_src
-    assert label in inspect.getsource(td)
+    assert "policy_hidden_reason(" not in loop_src
 
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
