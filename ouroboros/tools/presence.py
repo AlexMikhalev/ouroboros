@@ -382,7 +382,7 @@ def get_tools() -> List[ToolEntry]:
                     "properties": {
                         "outcome": {"type": "string", "enum": list(PRESENCE_OUTCOMES)},
                         "action": {"type": "string", "enum": ["finish", "stop"], "default": "finish"},
-                        "rationale": {"type": "string", "description": "Required for stop: what remains unfinished. Optional for finish, with or without author_disposition; finishing over an exposed local acceptance-preparation failure still states its caveat here. Delivery outcome is independent."},
+                        "rationale": {"type": "string", "description": "Required for stop: what remains unfinished. Optional for finish, with or without author_disposition. Over an exposed local acceptance-preparation failure, state the caveat here for author_finish; without it, the host retains the preparation-failure cause, not a validation rejection. Delivery outcome is independent."},
                         "answer_sha256": {"type": "string", "description": "Select an offered complete answer instead of message or reply-later."},
                         "author_disposition": {
                             "type": "string", "enum": list(AUTHOR_DISPOSITIONS),

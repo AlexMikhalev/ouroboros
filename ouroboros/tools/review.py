@@ -108,7 +108,7 @@ def get_tools():
                         "rationale": {
                             "type": "string",
                             "default": "",
-                            "description": "Required for stop: name unfinished work; the owner sees it on the task row. Optional for finish, except that finishing over an exposed local acceptance-preparation failure states its caveat here. Alone it is evidence, not completion; with author_action it explains the act without inventing a stance.",
+                            "description": "Required for stop: name unfinished work; the owner sees it on the task row. Optional for finish. Over an exposed local acceptance-preparation failure, state the caveat here for author_finish; without it, the host retains the preparation-failure cause, not a validation rejection. Alone it is evidence, not completion; with author_action it explains the act without inventing a stance.",
                         },
                         "author_action": {
                             "type": "string", "enum": ["finish", "stop"],

@@ -505,12 +505,20 @@ def delivery_approves_clean_feedback(tools_ctx: Any, llm_trace: Dict[str, Any], 
                                      subject_hash: str) -> bool:
     """Whether ordinary delivery approves the current subject from this clean feedback at $0.
 
-    Unsuperseded feedback on the same subject replays as clean; a text-only rewrite
-    rejoins as previous_revision_accepted. A superseded return to the reviewed
-    subject (A->B->A) is neither: replay refuses it, so an informed Advisory
-    finish must not defer to it."""
+    Consult the same paid-run selector as ordinary delivery before considering a
+    text-only rewrite. Latest feedback may be B's PASS while delivery will replay
+    A's superseded FAIL; neither replay can authorize an informed finish of A."""
     from ouroboros.review_substrate import task_acceptance_is_clean
+    from ouroboros.loop_acceptance_review import _prior_acceptance_run, acceptance_paid_identity
 
+    _, prior = _prior_acceptance_run(
+        tools_ctx, llm_trace, "", paid_identity=acceptance_paid_identity(subject_hash, llm_trace),
+    )
+    if prior is not None:
+        return (not prior.get("superseded_by_revision") and prior.get("subject_hash") == subject_hash
+                and task_acceptance_is_clean(SimpleNamespace(**prior)))
+    # No paid run matches the selected material: preserve the ordinary delivery
+    # rejoin for a genuinely new text-only rewrite of the latest exposed PASS.
     if not run or not task_acceptance_is_clean(SimpleNamespace(**run)):
         return False
     if not run.get("superseded_by_revision"):

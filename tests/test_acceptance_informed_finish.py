@@ -440,6 +440,46 @@ def test_clean_text_only_rewrite_still_rejoins_previous_revision(full_loop, monk
     assert (decision["status"], decision["reason"]) == ("accepted", "previous_revision_accepted"), decision
 
 
+@pytest.mark.parametrize("rationale", [None, "Read both reviews; deliver the original with its limitations."])
+@pytest.mark.parametrize("door", ["finish_task", "author_action", "agent_disposition"])
+def test_newer_clean_feedback_does_not_shadow_paid_failure_on_selected_answer(full_loop, monkeypatch, rationale, door):  # noqa: F811
+    """A FAIL -> nominated B PASS -> finish A must select A's paid run, not predict from B."""
+    f = full_loop
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    _feedback(f, monkeypatch, "fail")
+    originals = []
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return _nominate(), 0.0
+        assert f.model_step <= 3, (f.progress, f.ctx._execution_trace.get("acceptance_decision"))
+        originals.append(_assert_exposed(f))
+        if f.model_step == 2:
+            assert originals[-1]["aggregate_signal"] == "FAIL"
+            f.reviewer_verdict = "PASS"
+            return {"content": "", "tool_calls": [call(
+                "task_acceptance_review", {"claim": REWRITE}, "nominate-B")]}, 0.0
+        assert originals[-1]["aggregate_signal"] == "PASS"
+        return _finish(door, rationale=rationale), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    decision = trace["acceptance_decision"]
+    assert result == ANSWER and f.model_step == 3 and len(f.review_sends) == 2, decision
+    assert (decision["status"], decision["reason"]) == ("finalized_unaccepted", "author_finish"), decision
+    hosts = _host_runs(trace)
+    assert len(hosts) == 2 and hosts[0]["superseded_by_revision"]
+    assert [row["aggregate_signal"] for row in hosts] == ["FAIL", "PASS"]
+    for run, original in zip(hosts, originals):
+        assert run["actors"] == original["actors"]
+        assert run["binding_hash"] == original["binding_hash"]
+    assert decision["reviewer_binding_hash"] == hosts[1]["binding_hash"]
+    assert decision["author_disposition"]["reviewer_signal"] == "PASS"
+    assert decision["author_disposition"]["rationale"] == (rationale or "Explicit completion selection.")
+
+
 def test_finish_over_a_newer_running_panel_keeps_it_in_flight(full_loop, monkeypatch):  # noqa: F811
     """pending_review=finish over a re-nominated revision's running panel belongs to delivery's
     early release, never to an author_finish bound to the older exposed panel."""

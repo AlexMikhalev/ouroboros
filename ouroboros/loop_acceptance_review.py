@@ -1132,7 +1132,7 @@ def _prior_acceptance_run(
 
     def _matches(run: Any) -> bool:
         return isinstance(run, dict) and (
-            str(run.get("binding_hash") or "") == binding_hash
+            bool(binding_hash and str(run.get("binding_hash") or "") == binding_hash)
             or bool(identity and str(run.get("paid_identity") or "") == identity)
         )
 
