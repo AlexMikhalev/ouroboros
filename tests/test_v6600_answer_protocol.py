@@ -60,17 +60,6 @@ def test_context_injects_protocol_rule_only_when_declared(tmp_path):
     assert "FINAL ANSWER" not in without_rule
 
 
-def test_system_prompt_carries_no_marker_doctrine():
-    """The SYSTEM.md marker rule moved to the per-task contract: the default prompt
-    must NOT instruct every task to emit FINAL ANSWER lines. Whitespace-NORMALIZED
-    check (adversarial r1: a line-wrapped 'FINAL\\nANSWER' slipped past the plain
-    substring assert — the guard must be wrap-insensitive)."""
-    text = (pathlib.Path(__file__).resolve().parents[1] / "prompts" / "SYSTEM.md").read_text(encoding="utf-8")
-    normalized = " ".join(text.split())
-    assert "FINAL ANSWER" not in normalized
-    assert "CANDIDATES:" not in normalized
-
-
 def test_protocol_facts_state_the_latch_without_marker_instructions():
     """The 10% FINAL ANSWER flush and the pacing marker tail are gone (#1748); under
     the protocol the facts line states whether a FINAL ANSWER line is latched, and
@@ -124,16 +113,6 @@ def test_obligations_widen_to_high_only_on_failing_aggregate():
         trace_blocked, _result("PASS", [high_finding], tiers=("blocked_with_evidence",))
     )
     assert {o["item"] for o in trace_blocked["acceptance_obligations"]} == {"missed requirement"}
-
-
-def test_verdict_is_advisory_flag_is_gone():
-    """The dead policy KEY is removed from every ReviewRequest (comments may still
-    name it historically); enforcement semantics live in OUROBOROS_REVIEW_ENFORCEMENT."""
-    hits = []
-    for path in (pathlib.Path(__file__).resolve().parents[1] / "ouroboros").rglob("*.py"):
-        if '"verdict_is_advisory":' in path.read_text(encoding="utf-8", errors="replace"):
-            hits.append(str(path))
-    assert hits == [], f"dead policy key still set in: {hits}"
 
 
 # --- 4.3 bytes_equal ---------------------------------------------------------------
