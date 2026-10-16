@@ -303,3 +303,24 @@ test('a bound claim stays pending: Retry Continue on the work\'s own card, nothi
         assertFollowed(f, node);
     } finally { f.close(); }
 });
+
+test('an admitted successor held in the room carries Resume as its one primary, from its own census row', async () => {
+    const details = {};
+    const f = fixture({ details });
+    try {
+        const node = await runningPortal(f);
+        details['w-1'] = failedDetail(continuedBy());
+        f.state({ task_bindings: bindings, active_chat_activities: [successorRow({ phase: 'budget_paused', pause_cause: 'owner',
+            can_resume: true, last_line: '' })] });
+        await settle();
+        assert.equal(node.hidden, true);
+        assert.deepEqual(controls(f, 'w-1-c1'), ['Reply', 'Resume', 'Stop…'], 'held: Resume beside Reply and Stop…');
+        const primary = f.card('w-1-c1').querySelector('.chat-live-actions').children.filter((b) => b.classList.contains('btn-primary'));
+        assert.deepEqual(primary.map((b) => b.textContent), ['Resume']);
+        // Released in the room: the next census says working, and the card's controls follow it.
+        f.state({ task_bindings: bindings, active_chat_activities: [successorRow()] });
+        await settle();
+        assert.deepEqual(controls(f, 'w-1-c1'), ['Reply', 'Stop…']);
+        assert.equal(f.part('w-1-c1', 'live-activity').textContent, 'Continuing the audit.');
+    } finally { f.close(); }
+});
