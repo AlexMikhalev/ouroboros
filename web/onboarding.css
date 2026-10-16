@@ -32,7 +32,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at top left, rgba(201, 53, 69, 0.12), transparent 35%),
+    radial-gradient(circle at top right, rgba(232, 121, 249, 0.12), transparent 30%),
+    var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -1393,3 +1396,66 @@ textarea:not(.ui-control):not(.ui-checkbox):focus {
   box-shadow: 0 0 0 3px var(--focus-accent-ring);
 }
 /* track-migration:end */
+
+/* ---- Airy dopamine (DESIGN.md design bible; light theme) ------------------------------------------------------
+   The setup page maps onto the bible's roles: the shell is the plain room (no wash, no outline, no heavy shadow);
+   the step's body is the object on the rest shadow; cards, the collapse and the summary inside it are trays, and a
+   tray inside a tray drops its fill; the step rail is trays with the chosen step in the crimson tone and a done
+   step's chip in green; choices and pills are neutral capsules, the chosen one crimson. Fields keep their hairline. */
+:root[data-theme="light"] body { background: var(--bg); }
+:root[data-theme="light"] .wizard-shell {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+:root[data-theme="light"] .wizard-content {
+  border-color: transparent;
+  border-radius: var(--radius-object);
+  background: var(--surface-object);
+  box-shadow: var(--elev-rest);
+}
+:root[data-theme="light"] :is(.panel-card, .summary-card, .wizard-collapse, .wizard-runtime-strip) {
+  border-color: transparent;
+  border-radius: var(--radius-inner);
+  background: var(--surface-tray);
+}
+:root[data-theme="light"] :is(.panel-card, .summary-card, .wizard-collapse) :is(.agent-family-row, .panel-card, .summary-card) {
+  border-color: transparent;
+  background: transparent;
+}
+:root[data-theme="light"] .wizard-step {
+  border-color: transparent;
+  border-radius: var(--radius-inner);
+  background: var(--surface-tray);
+  box-shadow: none;
+}
+:root[data-theme="light"] .wizard-step.active { background: var(--tone-crimson); }
+:root[data-theme="light"] .wizard-step.done { border-color: transparent; }
+:root[data-theme="light"] .wizard-step.active .wizard-step-index { background: var(--tone-crimson-hover); color: var(--accent-light); }
+:root[data-theme="light"] .wizard-step.done .wizard-step-index { background: var(--tone-green); color: var(--status-ok-fg); }
+:root[data-theme="light"] .wizard-badge { border-color: transparent; }
+:root[data-theme="light"] :is(.wizard-choice, .selection-pill) {
+  border-color: transparent;
+  background: var(--surface-object);
+  box-shadow: var(--elev-rest);
+  transition: var(--motion-tone), var(--motion-press);
+}
+:root[data-theme="light"] .wizard-choice { border-radius: var(--radius-inner); }
+:root[data-theme="light"] :is(.wizard-choice, .selection-pill):hover {
+  border-color: transparent;
+  background: var(--surface-object);
+  box-shadow: var(--elev-float);
+  transform: none;
+}
+:root[data-theme="light"] :is(.wizard-choice, .selection-pill).active {
+  border-color: transparent;
+  background: var(--tone-crimson);
+  color: var(--accent-light);
+  box-shadow: none;
+}
+:root[data-theme="light"] :is(.wizard-choice, .selection-pill):active { transform: scale(0.97); box-shadow: none; transition-duration: 60ms; }
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="light"] :is(.wizard-choice, .selection-pill):active { transform: none; }
+}

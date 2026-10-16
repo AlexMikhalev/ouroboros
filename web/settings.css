@@ -1343,3 +1343,29 @@
     .mcp-header-row { grid-template-columns: minmax(0, 1fr); }
     .mcp-server-card-head { flex-wrap: wrap; }
 }
+
+/* ---- Airy dopamine (DESIGN.md design bible; light theme) ------------------------------------------------------
+   A segmented choice is the one capsule control: neutral options, the chosen one in its tone (crimson; Advisory's
+   warn tint), no outline. A press sinks it like every capsule. */
+:root[data-theme="light"] .ui-segment {
+    border-color: transparent;
+    border-radius: var(--pill-radius);
+    background: var(--surface-object);
+    box-shadow: var(--elev-rest);
+    transition: var(--motion-tone), var(--motion-press);
+}
+:root[data-theme="light"] .ui-segment:not(:disabled):hover {
+    border-color: transparent; background: var(--surface-object); box-shadow: var(--elev-float); color: var(--text-primary);
+}
+:root[data-theme="light"] .ui-segment:not(:disabled):active { transform: scale(0.97); box-shadow: none; transition-duration: 60ms; }
+:root[data-theme="light"] .settings-effort-btn.active,
+:root[data-theme="light"] [data-enforcement-group] .settings-effort-btn[data-effort-value="blocking"].active {
+    border-color: transparent; background: var(--tone-crimson); color: var(--accent-light); box-shadow: none;
+}
+:root[data-theme="light"] [data-enforcement-group] .settings-effort-btn[data-effort-value="advisory"].active {
+    border-color: transparent; background: var(--tone-amber); color: var(--status-warn-fg); box-shadow: none;
+}
+:root[data-theme="light"] .settings-effort-btn:disabled:hover { border-color: transparent; background: var(--surface-object); }
+@media (prefers-reduced-motion: reduce) {
+    :root[data-theme="light"] .ui-segment:active { transform: none; }
+}

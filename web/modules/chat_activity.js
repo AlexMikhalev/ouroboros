@@ -1104,7 +1104,8 @@ export function computeDerivedChatStatus({
     // The call's own short word (Sending, Working, Queued…); a stop policy's word (Cancelling…, Finalizing…)
     // passes through unchanged. The operation, not the word, chooses the tone.
     const observed = modelActivity && view(modelActivity.waiting ? 'online' : 'thinking', modelActivity.text,
-        modelActivity.operation === 'unknown' ? 'unknown' : modelActivity.waiting ? 'queued' : 'live', modelActivity.motion);
+        modelActivity.operation === 'unknown' ? 'unknown' : modelActivity.operation === 'queued' ? 'queued'
+            : modelActivity.waiting ? 'held' : 'live', modelActivity.motion);
     if (hasActiveLiveCard || activeManagedCount > 0) {
         return (activeManagedCount > 0 && observed) || view('thinking', working(), 'live', !hasActiveLiveCard);
     }

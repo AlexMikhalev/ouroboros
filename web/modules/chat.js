@@ -226,7 +226,7 @@ export function createChatInstance({
     // Evolve/Restart/Panic/budget chrome, which belongs to the one agent, not a
     // single project thread). The main chat keeps the full overlay header.
     const headerHtml = asPanel
-        ? `<div class="chat-panel-statusbar"><span id="chat-status" class="status-badge offline">Connecting...</span></div>`
+        ? `<div class="chat-panel-statusbar"><span id="chat-status" class="status-badge offline" data-tone="offline" data-dots="one">Connecting…</span></div>`
         : renderPageHeader({
             title: title,
             icon: PAGE_ICONS.chat,
@@ -252,7 +252,7 @@ export function createChatInstance({
                         <div class="chat-budget-bar-fill" id="chat-budget-bar-fill"></div>
                     </div>
                 </button>
-                <span id="chat-status" class="status-badge offline">Connecting...</span>
+                <span id="chat-status" class="status-badge offline" data-tone="offline" data-dots="one">Connecting…</span>
             `,
         });
     page.innerHTML = `

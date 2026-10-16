@@ -174,7 +174,7 @@ def open_menu(page, task_id, scope="main"):
 # Translated chrome, long names, a coarse pointer at 320 and 390 px, light and dark.
 
 MARK = "‹{}›"
-OVERLAY_KEYS = ["Back to reading", "Some work is waiting", "Earlier place is no longer loaded",
+OVERLAY_KEYS = ["Back to reading", "A question waits for your answer", "Earlier place is no longer loaded",
                 "The earlier reading place is no longer loaded.", "Returned to where you were reading.",
                 "Returned to the nearest loaded place."]
 _TR = re.compile(r"""\btr\(\s*(['"])([A-Za-z0-9_.\-]+)\1\s*,\s*(['"])((?:\\.|(?!\3).)*?)\3\s*\)""", re.S)
@@ -223,7 +223,7 @@ LEAKS = r"""(scope) => {
     for (const el of surface?.querySelectorAll('.rw-group, .rw-note') || []) if (shown(el)) note(el.className, el.textContent);
     for (const rowEl of surface?.querySelectorAll('.rw-row') || []) {
         const id = rowEl.dataset.id;
-        for (const sel of ['.rw-word', '.rw-secondary', '.rw-place', '.rw-pill', '.rw-detail-label',
+        for (const sel of ['.rw-word', '.rw-secondary', '.rw-pill', '.rw-detail-label',
                            '.rw-detail-line > span:not(.rw-detail-label)']) {
             for (const el of rowEl.querySelectorAll(sel)) if (shown(el)) note(`${id} ${sel}`, el.textContent);
         }

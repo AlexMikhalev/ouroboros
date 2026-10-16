@@ -230,6 +230,9 @@ test('the amber dot is the owner\'s question beside any other word; the control 
             work.update();
             return [trigger.dataset.tone, amber.hidden];
         };
+        // Before the producer's first answer (no tone on the badge) the control never claims Online.
+        work.update();
+        assert.equal(trigger.dataset.tone, 'offline');
         // Queued outranks the answer wait in the word; the question is still announced by the amber dot.
         assert.deepEqual(paint('Queued', 'queued', 'still'), ['queued', false]);
         assert.deepEqual(paint('Working', 'live', 'moving'), ['live', false]);

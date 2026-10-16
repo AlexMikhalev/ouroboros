@@ -53,7 +53,9 @@ body {
     flex-direction: column;
     min-width: 0;
     padding: var(--space-4) var(--space-3) var(--space-3);
-    background: linear-gradient(180deg, rgba(var(--shell-rgb), 0.62), rgba(var(--shell-rgb), 0.32));
+    background:
+        linear-gradient(180deg, rgba(var(--shell-rgb), 0.62), rgba(var(--shell-rgb), 0.32)),
+        radial-gradient(circle at 8% 0%, var(--accent-08), transparent 260px);
     border-right: 1px solid var(--divider);
     z-index: 10;
     position: relative;  /* positioning context for the resize handle */
@@ -579,7 +581,9 @@ body.keyboard-open .main-attention-body {
 .page.active { display: flex; }
 
 .app-page-glass {
-    background: linear-gradient(180deg, rgba(var(--shell-rgb), 0.76) 0%, rgba(var(--shell-rgb), 0.34) 170px, rgba(var(--shell-rgb), 0.08) 100%);
+    background:
+        linear-gradient(180deg, rgba(var(--shell-rgb), 0.76) 0%, rgba(var(--shell-rgb), 0.34) 170px, rgba(var(--shell-rgb), 0.08) 100%),
+        radial-gradient(circle at 18% 0%, var(--accent-10), transparent 300px);
 }
 
 /* Containment for narrow screens and unbroken runtime text. */
@@ -761,7 +765,9 @@ body.keyboard-open .main-attention-body {
     min-height: 0;
     display: flex;
     flex-direction: column;
-    background: rgba(var(--neutral-rgb), 0.015);
+    background:
+        linear-gradient(180deg, var(--accent-05), transparent 120px),
+        rgba(var(--neutral-rgb), 0.015);
 }
 
 .files-preview-header {
@@ -1059,7 +1065,7 @@ body.keyboard-open .main-attention-body {
     overflow: visible;
 }
 .chat-page-header > .app-page-leading { flex: 0 0 auto; }
-.chat-page-header > .app-page-title-block { flex: 999 1 20rem; min-width: 0; }
+.chat-page-header > .app-page-title-block { flex: 999 1 min(15rem, calc(100% - 44px - var(--space-3))); min-width: 0; }
 .chat-page-header > .app-page-actions { flex: 1 1 auto; gap: 6px; justify-content: flex-end; }
 
 /* The header's reading backing (DESIGN §5): page ink under everything readable (title, every wrapped line
@@ -3162,7 +3168,8 @@ body.keyboard-open .main-attention-body {
         transition: transform 0.18s ease, box-shadow 0.18s ease;
         padding-top: calc(64px + env(safe-area-inset-top, 0px));
         background:
-            linear-gradient(180deg, rgba(var(--shell-rgb), 0.94), rgba(var(--shell-rgb), 0.86));
+            linear-gradient(180deg, rgba(var(--shell-rgb), 0.94), rgba(var(--shell-rgb), 0.86)),
+            radial-gradient(circle at 8% 0%, var(--accent-10), transparent 260px);
     }
 
     /* The shadow belongs to the open drawer: on the closed one it leaked a grey band onto the phone's left edge. */
@@ -6989,8 +6996,9 @@ textarea.chat-input {
     border-left: 1px solid var(--divider);
     /* A reading surface keeps its own backing even where native backdrop blur is not composited.
        Project tint supplies the light material; underlying Main text must never show through it. */
-    /* A reading surface is one flat material; the project's colour lives in its small marks (DESIGN vision). */
-    background: rgb(var(--shell-rgb));
+    background:
+        radial-gradient(circle at 15% 0%, var(--project-12), transparent 300px),
+        rgb(var(--shell-rgb));
     box-shadow: -24px 0 64px rgba(0, 0, 0, 0.34);
     transform: translateX(18px);
     opacity: 0;
@@ -7048,6 +7056,13 @@ textarea.chat-input {
 .project-panel-close:hover {
     color: var(--text-primary);
     border-color: var(--accent);
+}
+
+/* The bars' icon controls wear the one focus ring (DESIGN §3 Focus), like every other control. */
+.project-panel-close:focus-visible,
+.mobile-nav-toggle:focus-visible {
+    outline: 2px solid var(--focus-accent-border);
+    outline-offset: 2px;
 }
 
 .project-panel-body {
@@ -8831,6 +8846,9 @@ textarea.chat-input {
 :root[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(var(--neutral-rgb), 0.16); }
 :root[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(var(--neutral-rgb), 0.28); }
 :root[data-theme="light"] .app-page-glass { background: none; }
+:root[data-theme="light"] .files-preview { background: rgba(var(--neutral-rgb), 0.015); }
+/* A reading surface is one flat material; the project's colour lives in its small marks. */
+:root[data-theme="light"] .project-panel { background: rgb(var(--shell-rgb)); }
 
 /* Voices: the owner lavender-blue, Ouroboros blush (a task card a lighter blush), each a resting object. */
 :root[data-theme="light"] :is(#chat-messages, .chat-messages) { gap: 14px; }
@@ -8877,6 +8895,16 @@ textarea.chat-input {
     background: transparent;
 }
 :root[data-theme="light"] .agents-service-banner { border-color: transparent; background: transparent; padding-inline: 0; }
+/* A state on an object is mapped here too, or the object and tray rules above would erase it: a spent account is
+   the amber tone, the Danger Zone the red one, a widget being dropped on or resized wears the focus ring. */
+:root[data-theme="light"] :is(.harness-account-row, .agent-family-card .harness-account-row).harness-exhausted { background: var(--tone-amber); }
+:root[data-theme="light"] .settings-shell .form-section.danger { background: var(--tone-red); }
+:root[data-theme="light"] :is(.widgets-card.drag-over, .widgets-card.resizing) {
+    box-shadow: var(--elev-float), 0 0 0 2px var(--focus-accent-border);
+}
+:root[data-theme="light"] .settings-more-providers > summary {
+    border-color: transparent; border-radius: var(--radius-object); background: var(--surface-object); box-shadow: var(--elev-rest);
+}
 :root[data-theme="light"] .settings-footer { background: var(--surface-object); }
 
 /* Sheets: what floats over moving content (menus, the composer's field) takes the float shadow. */
@@ -8888,7 +8916,7 @@ textarea.chat-input {
     -webkit-backdrop-filter: none; backdrop-filter: none;
 }
 :root[data-theme="light"] .chat-text-row:focus-within {
-    border-color: transparent; background: var(--surface-object); box-shadow: var(--elev-float), 0 0 0 2px var(--focus-accent-border);
+    border-color: var(--focus-accent-border); background: var(--surface-object); box-shadow: var(--elev-float), 0 0 0 3px var(--focus-accent-ring);
 }
 
 /* Controls: ui.css's three tones mapped onto the page's own controls. The bars' controls (the Project bar's close and
@@ -8898,7 +8926,7 @@ textarea.chat-input {
 :root[data-theme="light"] :is(.chat-header-btn.ui-chrome-control, .project-panel-close, .mobile-nav-toggle) {
     border-color: transparent; background: var(--surface-object); color: var(--text-primary); box-shadow: var(--elev-rest);
     -webkit-backdrop-filter: none; backdrop-filter: none;
-    transition: background 0.12s ease, box-shadow 0.12s ease, color 0.12s ease, transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
+    transition: var(--motion-tone), var(--motion-press);
 }
 :root[data-theme="light"] :is(.chat-header-btn.ui-chrome-control, .project-panel-close, .mobile-nav-toggle):hover {
     border-color: transparent; background: var(--surface-object); box-shadow: var(--elev-float);
@@ -8928,15 +8956,23 @@ textarea.chat-input {
     -webkit-backdrop-filter: none; backdrop-filter: none;
 }
 :root[data-theme="light"] .chat-send-inline:hover { border-color: transparent; background: var(--tone-crimson-hover); }
+:root[data-theme="light"] :is(.chat-attach-btn, .rw-more) { border-radius: var(--pill-radius); }
+/* Quiet navigation floating over the transcript (↓ latest, Back to reading): neutral capsules on the float shadow. */
+:root[data-theme="light"] .chat-load-older-btn { border-color: transparent; background: var(--surface-object); box-shadow: var(--elev-rest); }
+:root[data-theme="light"] :is(.chat-scroll-bottom-btn, .rw-back) {
+    border-color: transparent; background: var(--surface-object); box-shadow: var(--elev-float);
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+:root[data-theme="light"] :is(.chat-scroll-bottom-btn, .rw-back):hover { border-color: transparent; background: var(--surface-object); }
 /* Tabs and segmented choices: neutral capsules with the secondary ink; the chosen one is the crimson tone. Their strip
    scrolls sideways, so it lends the capsules' shadow room inside its own box instead of clipping it. Filters are
    quiet until chosen. */
 :root[data-theme="light"] .app-tab-strip { padding: 6px 16px 24px; margin: 0 -16px -16px; }
-:root[data-theme="light"] :is(.app-tab, .theme-choice) {
+:root[data-theme="light"] .app-tab {
     border-color: transparent; border-radius: var(--pill-radius); background: var(--surface-object); box-shadow: var(--elev-rest);
 }
-:root[data-theme="light"] :is(.app-tab, .theme-choice):hover { border-color: transparent; background: var(--surface-object); box-shadow: var(--elev-float); }
-:root[data-theme="light"] :is(.app-tab.active, .app-tab.is-active, .theme-choice[aria-checked="true"]) {
+:root[data-theme="light"] .app-tab:hover { border-color: transparent; background: var(--surface-object); box-shadow: var(--elev-float); }
+:root[data-theme="light"] :is(.app-tab.active, .app-tab.is-active) {
     border-color: transparent; background: var(--tone-crimson); color: var(--accent-light); box-shadow: none;
 }
 :root[data-theme="light"] .filter-chip { border-color: transparent; border-radius: var(--pill-radius); background: transparent; }
@@ -8944,12 +8980,16 @@ textarea.chat-input {
 :root[data-theme="light"] .filter-chip.active { border-color: transparent; background: var(--tone-crimson); color: var(--accent-light); }
 /* A press sinks every capsule the same way. */
 :root[data-theme="light"] :is(.chat-header-btn, .chat-budget-pill, .project-panel-close, .mobile-nav-toggle, .chat-swarm,
-    .chat-send-inline, .app-tab, .theme-choice, .filter-chip):not(:disabled):active {
+    .chat-send-inline, .app-tab, .filter-chip):not(:disabled):active,
+:root[data-theme="light"] .chat-capsule:not([data-open="true"]):active {
     transform: scale(0.97); box-shadow: none; transition-duration: 60ms;
+}
+:root[data-theme="light"] :is(.chat-capsule, .chat-swarm, .chat-send-inline, .app-tab, .filter-chip, .chat-load-older-btn) {
+    transition: var(--motion-tone), var(--motion-press);
 }
 @media (prefers-reduced-motion: reduce) {
     :root[data-theme="light"] :is(.chat-header-btn, .chat-budget-pill, .project-panel-close, .mobile-nav-toggle, .chat-swarm,
-        .chat-send-inline, .app-tab, .theme-choice, .filter-chip):active { transform: none; }
+        .chat-send-inline, .app-tab, .filter-chip, .chat-capsule):active { transform: none; }
 }
 
 /* The sidebar's places are rows of one list: the inner radius. */

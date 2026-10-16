@@ -43,6 +43,7 @@
     --accent-08: rgba(201, 53, 69, 0.08);
     --accent-10: rgba(201, 53, 69, 0.10);
     --accent-12: rgba(201, 53, 69, 0.12);
+    --accent-14: rgba(201, 53, 69, 0.14);
     --accent-18: rgba(201, 53, 69, 0.18);
     --accent-22: rgba(201, 53, 69, 0.22);
     --accent-25: rgba(201, 53, 69, 0.25);
@@ -255,15 +256,19 @@
     --voice-owner: #e9eef9;
     --voice-ouroboros: #fdf2f4;
     --voice-ouroboros-card: #fff8f9;
-    --tone-crimson: rgba(201, 53, 69, 0.10);
-    --tone-crimson-hover: rgba(201, 53, 69, 0.16);
+    /* The crimson tone is the accent ladder's; its hover stops at 14 % so the ink keeps 4.5:1 on it. */
+    --tone-crimson: var(--accent-10);
+    --tone-crimson-hover: var(--accent-14);
     --tone-green: rgba(34, 197, 94, 0.14);
     --tone-green-hover: rgba(34, 197, 94, 0.22);
-    --tone-red: rgba(220, 38, 38, 0.10);
-    --tone-red-hover: rgba(220, 38, 38, 0.16);
+    --tone-red: rgba(239, 68, 68, 0.10);
+    --tone-red-hover: rgba(239, 68, 68, 0.16);
     --tone-amber: rgba(245, 158, 11, 0.18);
     --tone-amber-hover: rgba(245, 158, 11, 0.26);
     --tone-quiet-hover: rgba(28, 33, 51, 0.06);
+    /* One motion for every capsule: colour and shadow in 120 ms; a quick sink on press, a sprung release. */
+    --motion-tone: background 0.12s ease, box-shadow 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+    --motion-press: transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .ouro-ui { font-family: var(--font-sans); color-scheme: var(--native-color-scheme); }
@@ -662,7 +667,6 @@ textarea.ui-control { resize: vertical; }
     :root { --chrome-control-h: var(--touch-target-min); }
 }
 .ui-chrome-group {
-    --chrome-edge: rgba(var(--neutral-rgb), 0.16);
     position: relative;
     box-sizing: border-box;
     display: flex;
@@ -693,7 +697,10 @@ textarea.ui-control { resize: vertical; }
    save, red for danger, amber for the owner's turn) or quiet (no fill). A press sinks every tone the same way.
    `.ui-chrome-control` stays geometry only (a floating control's own tone is its page's): page styles map their
    controls onto these tones and add no fourth recipe and no outline. */
-:root[data-theme="light"] .btn { border-color: transparent; border-radius: var(--pill-radius); font-weight: 600; }
+:root[data-theme="light"] .btn {
+    border-color: transparent; border-radius: var(--pill-radius); font-weight: 600;
+    transition: var(--motion-tone), var(--motion-press);
+}
 :root[data-theme="light"] :is(.btn-default, .btn-secondary) {
     border-color: transparent;
     background: var(--surface-object);
@@ -718,12 +725,18 @@ textarea.ui-control { resize: vertical; }
     border-color: transparent; background: var(--tone-red-hover);
 }
 :root[data-theme="light"] .btn:not(:disabled):hover { transform: none; }
-:root[data-theme="light"] .btn:not(:disabled):active {
-    transform: scale(0.97);
-    box-shadow: none;
-    transition: transform 60ms ease;
+:root[data-theme="light"] :is(.btn, .theme-choice):not(:disabled):active { transform: scale(0.97); box-shadow: none; transition-duration: 60ms; }
+/* The Appearance choice is one control in both documents (the SPA and the served setup page load only this sheet
+   in common): neutral capsules, the chosen one in the crimson tone. */
+:root[data-theme="light"] .theme-choice {
+    border-color: transparent; border-radius: var(--pill-radius); background: var(--surface-object); box-shadow: var(--elev-rest);
+    transition: var(--motion-tone), var(--motion-press);
+}
+:root[data-theme="light"] .theme-choice:hover { border-color: transparent; background: var(--surface-object); box-shadow: var(--elev-float); }
+:root[data-theme="light"] .theme-choice[aria-checked="true"] {
+    border-color: transparent; background: var(--tone-crimson); color: var(--accent-light); box-shadow: none;
 }
 :root[data-theme="light"] :is(.ui-chip, .status-badge) { border-color: transparent; }
 @media (prefers-reduced-motion: reduce) {
-    :root[data-theme="light"] .btn:active { transform: none; }
+    :root[data-theme="light"] :is(.btn, .theme-choice):active { transform: none; }
 }

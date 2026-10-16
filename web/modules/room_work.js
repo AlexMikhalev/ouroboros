@@ -1,7 +1,7 @@
 /**
- * The room's work status in its header (DESIGN "Room work status"). The header's one status control
- * opens this room's current work: Main hangs a sheet from its header control group (ui.css "Floating
- * chrome"); a Project unfolds a Shade under its panel bar. Presentation only, over the chat instance's
+ * The room's work status in its bar (DESIGN "Room work status"). The bar's one status control, right after
+ * the room's title, paints the word, tone and dots the chat's producer gives it and opens this room's current
+ * work as one Shade under the bar, in Main and a Project alike. Presentation only, over the chat instance's
  * own owners; it keeps no task state, phase vocabulary, poller, pager, question index or permission:
  *   membership  this room's census (`activeDirectActivities`), the owner's unconfirmed sends
  *               (`pendingSubmissions`) and unfinished foreground cards the census does not list
@@ -653,7 +653,8 @@ export function createRoomWork({
         const listed = rows.length > 0;
         // Word, tone and dots come together from the chat's producer (computeDerivedChatStatus via setStatus);
         // the control paints them and never ranks row tones or reads a class name for a second opinion.
-        const tone = statusBadge.dataset.tone || 'online';
+        // Before the producer's first answer the room is not online yet: an unknown tone paints as offline.
+        const tone = statusBadge.dataset.tone || 'offline';
         const dotsMode = statusBadge.dataset.dots || 'one';
         trigger.disabled = !listed;
         trigger.dataset.tone = tone;

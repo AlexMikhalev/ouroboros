@@ -295,7 +295,8 @@ test('the header producer pins word, tone and dots; a stop policy passes its own
         assert.equal(call(phase)[2], 'moving', phase);
     }
     assert.deepEqual(call('queued'), ['Queued', 'queued', 'still']);
-    assert.deepEqual(call('rejoining'), ['Rejoining', 'queued', 'still']);
+    // Rejoining waits on a call it already started: a single fact, one dot, never queued work.
+    assert.deepEqual(call('rejoining'), ['Rejoining', 'held', 'one']);
     assert.deepEqual(call('unknown'), ['Activity unconfirmed', 'unknown', 'one']);
     // A stop policy's view carries no operation: its own word stays (Cancelling…, Finalizing…), never Working.
     for (const [stopPolicy, word] of [['immediate', 'Cancelling…'], ['finalize', 'Finalizing…']]) {

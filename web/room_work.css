@@ -1,19 +1,20 @@
 /* The room's work status (DESIGN "Room work status"; web/modules/room_work.js). The status control is a
-   status sentence leading its bar's trailing controls; in every room its list is a Shade, the bar's own
-   material unfolding from the bar's bottom edge (Main without a Project tint). One tone per row
-   and per control, set from the presenter's facts and never from text, always beside a word and a dot:
-     live       confirmed motion: the live card's accent triple, three moving dots
-     wait       the owner's turn, a pause, an access or Project wait: the warn triple, one amber dot
+   status sentence right after the room's title in its bar; in every room its list is one Shade, the bar's
+   own material unfolding from the bar's bottom edge. The control's tone comes with its word from one
+   producer (chat_activity.js: live, queued, wait for the owner's question, held for a pause, an access wait or
+   a hold, unknown, and the connection's own). A row's tone comes from the presenter's facts, never from text,
+   always beside a word and a dot:
+     live       confirmed motion: the accent ink, three moving dots
+     wait       the owner's turn, a pause, an access or Project wait: the warn ink, one amber dot
      queued     neutral, three still dots;   unknown: neutral, a hollow ring
      done / caution / failed   a known outcome in its status foreground, one dot
-     online / starting / offline / error   the connection itself: no fill (DESIGN §4), one dot
    Names stay --text-primary at 400; local dimensions are variables on .rw-surface, never a type size. */
 
 /* ---- the status control ---------------------------------------------------------------------------
    A status sentence (DESIGN §4 tone primitive): the dot carries the state, the short word says it in its
    status ink, and nothing is filled. Pressing is the only fill: a neutral tint on hover and while open.
-   It leads its bar's trailing controls, so a longer word grows into the free space before it and never
-   moves a neighbour; the word is clipped at a stable cap and said whole in the control's name. */
+   It follows the title, so a longer word takes the title's room, never a neighbour's; it stays whole until the
+   title reaches its floor, and is said whole in the control's name either way. */
 .rw-trigger {
     --rw-dot: var(--text-disabled);
     gap: var(--space-2);
@@ -30,7 +31,7 @@
 .rw-trigger[hidden] { display: none; }
 .rw-trigger:disabled { cursor: default; opacity: 1; }
 .rw-trigger:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
-/* Variant D: the status follows the room's title in its bar. The status never shrinks while the title can: the title
+/* The status follows the room's title in its bar. The status never shrinks while the title can: the title
    yields its ellipsis first and keeps an 8ch floor, because the status may never take more than the row less 8ch;
    only past that floor does the status word ellipsize inside its cap. Neither moves the bar's other controls: the
    bar decides its rows by the title block's basis, never by these words. */
@@ -45,7 +46,6 @@
 .rw-trigger .status-badge {
     display: block;
     min-width: 0;
-    max-width: 24ch;
     padding: 0;
     border: 0;
     background: none;
@@ -116,7 +116,7 @@
     max-height: min(60svh, 28rem);
     overflow-y: auto;
     overscroll-behavior: contain;
-    /* The bar's own shell ink plus the Project tint: one surface unfolding, not a card on cards. */
+    /* The bar's own shell ink: one surface unfolding, not a card on cards. */
     background: rgb(var(--shell-rgb));
     border-bottom: 1px solid var(--surface-border, rgba(var(--neutral-rgb), 0.14));
     border-radius: 0 0 var(--radius-lg) var(--radius-lg);
@@ -161,8 +161,7 @@
 .rw-main {
     grid-area: main;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    column-gap: var(--space-3);
+    grid-template-columns: minmax(0, 1fr);
     row-gap: 2px;
     align-items: center;
     min-width: 0;
@@ -338,7 +337,11 @@
     border-radius: 0 0 var(--radius-sheet) var(--radius-sheet);
 }
 :root[data-theme="light"] .rw-row { border-radius: var(--radius-inner); }
-:root[data-theme="light"] .rw-row .rw-pill { border-color: transparent; border-radius: var(--pill-radius); }
+:root[data-theme="light"] .rw-row .rw-pill {
+    border-color: transparent; border-radius: var(--pill-radius);
+    transition: var(--motion-tone), var(--motion-press);
+}
+:root[data-theme="light"] .rw-row .rw-pill:not(:disabled):active { transform: scale(0.97); box-shadow: none; transition-duration: 60ms; }
 :root[data-theme="light"] .rw-row .rw-pill-question { background: var(--tone-amber); color: var(--status-warn-fg); }
 :root[data-theme="light"] .rw-row .rw-pill-question:hover { background: var(--tone-amber-hover); }
 :root[data-theme="light"] .rw-row .rw-pill-resume { background: var(--surface-object); color: var(--text-primary); box-shadow: var(--elev-rest); }

@@ -37,7 +37,8 @@ neumorphism.
    Shade, menus, the composer field, dialogs) takes the *float* shadow. Inside an
    object a group or row is a *tray*, a soft neutral fill without a shadow, and
    fills never stack. Only fields keep a hairline, because an editable box must
-   read as editable.
+   read as editable; the composer's field floats instead, and focus gives it the
+   field's ring.
 3. **Colour says who and what.** Each voice tints its own objects: the owner
    lavender-blue, Ouroboros blush, System amber, a Project fuchsia. A state is a
    candy tint with its own ink, or a dot and a word. Hue says identity and fill
@@ -68,12 +69,13 @@ neumorphism.
   · sheet `24px` (the Shade's lower corners).
 - Colour: room `#ffffff`, sidebar `#fafbfc`, tray the neutral at 3 %; owner
   `#e9eef9`; Ouroboros `#fdf2f4` (task card `#fff8f9`); crimson `#c93545`, ink
-  `#bf2f40`. Tonal fills, rest/hover: crimson 10/16 %, green 14/22 %, red
+  `#bf2f40`. Tonal fills, rest/hover: crimson 10/14 %, green 14/22 %, red
   10/16 %, amber 18/26 %; inks are the status tokens.
-- Type: the system face (SF Pro on Apple), 12 / 14 / 16 / 24, weights 400 and 600.
+- Type: the system face (SF Pro on Apple), 12 / 14 / 16 / 24; weight 400 to read,
+  500 for a status word or a root's title, 600 for labels and controls.
 - Space: 4 / 8 / 12 / 16 / 24; 14 between messages; 12 x 18 inside a bubble.
-- Motion: 120 ms for colour and shadow; a 240 ms spring for press; the three-dot
-  loop only while work runs.
+- Motion: 120 ms for colour and shadow; a quick sink and a 240 ms sprung release
+  for press (`--motion-tone`, `--motion-press`); the three-dot loop only while work runs.
 - Where it lives: the values are `web/ui.css` tokens (`--elev-*`, `--radius-object`
   / `-inner` / `-sheet`, `--surface-object` / `-tray` / `-side`, `--voice-*`,
   `--tone-*`); the recipes are ui.css "One control, three tones" and style.css
@@ -171,9 +173,9 @@ caps with `text-transform`.
 
 | Token | Meaning |
 | --- | --- |
-| `--text-primary` | The one thing this row/card is about; interactive control labels |
+| `--text-primary` | The one thing this row/card is about; the label of an action |
 | `--text-meta` | Real secondary content: labels, notes, hints, meta lines |
-| `--text-secondary` | A quieter step below meta, for a dense repeated field |
+| `--text-secondary` | A quieter step below meta: a dense repeated field; a setting's name or an unchosen option on a capsule |
 | `--text-disabled` | Genuinely inert or incidental content only |
 
 `--text-muted` is a legacy alias of `--text-disabled`; new work names
@@ -202,9 +204,9 @@ Two failure modes this table exists to prevent, both observed in this codebase:
 ### Brand accent
 
 The brand red is **one value**, `--accent`. Every appearance of it is either
-that token, the named roles built on it (`--accent-light` for text on dark,
+that token, the named roles built on it (`--accent-light` for accent text, the crimson ink on light,
 `--accent-dim` for a fill, `--focus-accent-border` / `--focus-accent-ring` for
-focus), or a rung of the accent alpha ladder (`--accent-04` … `--accent-65`).
+focus), or a rung of the accent alpha ladder (`--accent-04` … `--accent-65`; the crimson tone and its hover are `--accent-10` and `--accent-14`).
 A new alpha is a rung added to the ladder, never an `rgba()` literal in a rule:
 the ladder is what makes "make the accent calmer" a one-line change instead of
 a grep.
@@ -811,8 +813,8 @@ preference when it opens and on every reconnect; there is no file watcher.
   control ink (`--text-primary`) and its own line; one that already reads as a
   control may stay in meta ink. Overriding `display` on a summary drops the
   native marker, so draw it. What opens has one coherent boundary tied to its
-  trigger's group: an attached surface continues that group's edges, and opening
-  moves no neighbouring target. **Floating chrome stays readable:** over scrolling
+  trigger: what a bar discloses unfolds from the bar's bottom edge as its Shade,
+  and opening moves no neighbouring target. **Floating chrome stays readable:** over scrolling
   content, closed or open, content never shows through its text, and state tints
   sit on that backing. Text controls in one floating group share height and
   baseline; width, tone and icon shape follow their role. The group reflows by
@@ -1637,9 +1639,9 @@ a server entry):
 5. **Meta line** — `--type-meta`, `--text-meta`, on its own line under the
    name. Quantities are stated in human words ("38% used · resets in 2h"), and
    an instant is humanized. A row never leads with a raw ISO timestamp.
-6. **Actions** — docked right in a slot of their own, legible at rest. A control
-   rendered at secondary ink reads as disabled; if the owner can click it, it is
-   `--text-primary`.
+6. **Actions** — docked right in a slot of their own, legible at rest. An action
+   rendered at secondary ink reads as disabled: its label is `--text-primary` (a
+   setting's name and an unchosen option take the secondary ink, bible principle 4).
 
 **The main view carries understanding, state and action; justification is
 disclosed where needed.** A row reads identity, state, facts; its primary choices,
@@ -1791,6 +1793,9 @@ contract already applies everywhere.
 
 `tests/test_web_typography_static.py` guards the migrated set only. Extending
 the guard and migrating the corresponding family or region are the same commit.
+The light theme's materials (objects, trays, sheets and the three capsule tones of
+the design bible) reach every page through the light blocks of ui.css, style.css and
+the page sheets; that mapping is not a typography migration of those pages.
 
 ### Author freedom
 
