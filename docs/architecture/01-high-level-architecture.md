@@ -156,7 +156,7 @@ ouroboros/ — agent core and shared runtime (§6)
   _usage_rows.py, _usage_money.py, _usage_response.py, usage_ledger.py, skill_review_usage.py — the one reducer, exact Decimal cash, the accounting usage normalizer, shared row rules and the money lock, the read-only Skill Review projection (§6 Usage ledger substrate vs. accounting policy)
   _usage_cache_splits.py — process-local cache split by task/provider/route/review; a missing entry prices a full cache write (§6)
   usage_store.py, usage_journal.py, openrouter_cost.py — `state/usage.sqlite`, its journal import and explicit OpenRouter price receipts (docs/USAGE_STORE.md)
-  store.py, store_import.py, store_switch.py — `state/current.sqlite`: money's SQLite core, lazy per-thread connections, PERSIST or gated WAL with FULL, atomic `meta.commit_seq`, typed store outcomes; inode-safe reads and export/fork disposal (docs/USAGE_STORE.md). Boot import/reconcile (§2), export before storeless switches (§9); packer snapshots precede deletion locks, changed facts defer.
+  store.py, store_import.py, store_switch.py, maintenance_jobs.py, dialogue_store.py, dialogue_import.py — the shared SQLite core (lazy per-thread connections, PERSIST or gated WAL with FULL, typed outcomes, inode-safe reads, export/fork disposal; docs/USAGE_STORE.md): `state/current.sqlite` (atomic `meta.commit_seq`, durable job rows; boot import/reconcile §2, export before storeless switches §9; packer snapshots precede deletion locks, changed facts defer) and `state/dialog.sqlite` (chat/progress rows by chain coordinate, one `append` seam: dedup, room facts, dispatch obligation; addressed reads; cutover, archive-import job, rollback export; PERSISTENCE.md)
   cost_projection.py — the one task-cost projection for every producer: `accounted_upper_bound_usd`, null as None and never $0.00 (§6 Budget tracking)
   storage.py — Dashboard Storage: one bounded, link-safe metadata walk at a time, kept in memory (§3 Dashboard)
   delegate_custody.py, delegate_custody_reconcile.py, delegate_collection.py, delegate_state_sweep.py, delegate_custody_usage.py — run custody, observation, collection and usage; OWNED/FOREIGN/UNKNOWN (§6 Nanny, transport and custody)
@@ -613,7 +613,7 @@ Birth identity is separate from PID presence. Linux mints boot-qualified ticks, 
 │   ├── state/
 │   │   ├── state.json             ← runtime state and cost projection; never the monetary authority
 │   │   ├── queue_snapshot.json    ← PENDING/RUNNING recovery projection, `worker_pool_disabled_reason` (§5)
-│   │   ├── current.sqlite         ← the current-facts authority (task rows, obligations, custody, handoffs, outbox); `.exported-<UTC>` retired copies
+│   │   ├── current.sqlite         ← the current-facts authority (tasks, obligations, custody, handoffs, outbox); `.exported-<UTC>` retired copies
 │   │   ├── usage.sqlite           ← the monetary authority (docs/USAGE_STORE.md)
 │   │   ├── usage_attempts.jsonl   ← imported journal; historical audit and older-seed input
 │   │   ├── usage_attempts.quarantine.jsonl ← the journal's proven-corrupt rows
@@ -679,9 +679,9 @@ Birth identity is separate from PID presence. Linux mints boot-qualified ticks, 
 │   ├── observability/             ← private forensic ledger: blobs/<sha256>.json.gz, calls/<task_id>/<call_id>.json, packs/<task>.xz once settled
 │   ├── services/<task_id>/<service>.log ← service runner logs
 │   ├── logs/
-│   │   ├── chat.jsonl             ← canonical chat, stored once, projected into Main/Project lenses
+│   │   ├── chat.jsonl             ← frozen at the cutover (state/dialog.sqlite)
+│   │   ├── progress.jsonl         ← frozen at the cutover
 │   │   ├── chat_annotations.jsonl ← routing status by client_message_id
-│   │   ├── progress.jsonl         ← progress/thinking stream
 │   │   ├── events.jsonl           ← lifecycle, llm_round/llm_usage, errors
 │   │   ├── tools.jsonl            ← tool calls
 │   │   ├── supervisor.jsonl       ← workers/supervisor, cancel trail

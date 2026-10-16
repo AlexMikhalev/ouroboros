@@ -95,10 +95,10 @@ an installation's migration finished. Passive readers fall back only for underiv
 - **Passive GET:** no new steady-state durable writes. `usage_store.py::read` may
   initialize an empty store with no pending import; otherwise display reads report
   unavailable data and leave import to startup (`tests/test_usage_store.py`).
-- **Reuse precedents:** archive-aware rotation (`supervisor/state.py::rotate_chat_log_if_needed`);
-  current rows reduced by the writing transaction (`delegate_custody_current.py`);
-  bounded filtered tail (`jsonl_tail.py`); per-archive room summaries
-  (`gateway/history_segments.py`); transactional summaries (`usage_store.py`, `store.py`);
+- **Reuse precedents:** one writer seam whose transaction also writes the facts readers
+  address (`dialogue_store.py::append`); current rows reduced by the writing transaction
+  (`delegate_custody_current.py`); bounded filtered tail (`jsonl_tail.py`);
+  transactional summaries (`usage_store.py`, `store.py`);
   indexed selects (`task_store.py`); task-event SSE v2 cursor (ARCHITECTURE §3).
 
 CHECKLISTS item 9 `perf_lifecycle` advises on changed readers, startup/shutdown, batches,
@@ -165,7 +165,7 @@ here, and enroll it in `hot_store_growth_notes` in the same change.
 
 | Store / surface | Complete source → interactive projection | Growth and retention proof |
 |---|---|---|
-| Chat and biography | `logs/chat.jsonl` with its rotated generations and `memory/chronicle/records.jsonl` → the memory view (`memory_view.py`) and archive-aware `chat_history` | Rotation and archive readers carry generation/gap coverage; pages and parts compress the horizon, never delete it; the journal warns at `CHRONICLE_JOURNAL_WARN_BYTES` |
+| Chat and biography | `state/dialog.sqlite` (`dialogue_store.py`; the frozen `archive/chat_*.jsonl` segments imported once by the `dialogue_import` job) and `memory/chronicle/records.jsonl` → the memory view (`memory_view.py`) and `chat_history` | Addressed reads cost the page, never another room's history; import coverage is a fact readers disclose; pages and parts compress the horizon, never delete it; the journal warns at `CHRONICLE_JOURNAL_WARN_BYTES` |
 | Plan/review evidence | ARCHITECTURE §10.1, "Plan/review authority" | Source and retention rules live in that row |
 | Skill-review root tasks | Per-skill `state/skills/<name>/review_history.jsonl`; `skill_review_runner._append_terminal_history` projects terminal identities to `state/skill_review_root_tasks.jsonl` → `skill_readiness._skill_names_from_review_history` reads a bounded newest-first suffix | Append-only and idempotent by root/task/outcome identity; warns at `SKILL_REVIEW_ROOT_TASKS_WARN_BYTES` |
 | Task/project execution | ARCHITECTURE §10.1, "Execution evidence" | Promotion and retention rules live in that row |
