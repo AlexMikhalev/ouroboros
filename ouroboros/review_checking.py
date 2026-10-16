@@ -875,6 +875,7 @@ def session_checking(gateway: Any, *, custody_drive: Any, task_id: str, operatio
             "this reviewer seat holds configured write access but its wave froze no checking source"
             + (f" ({source['unavailable']})" if source else "") + "; nothing was started",
             code="review_checking_source_missing")
+    thread_binding = {}
     if thread_seat:
         from ouroboros.review_thread_continuity import require_delegated_review_threads
 
@@ -894,24 +895,22 @@ def session_checking(gateway: Any, *, custody_drive: Any, task_id: str, operatio
         except (CheckingAreaUnavailable, OSError, subprocess.SubprocessError) as exc:
             raise ReviewRouteUnavailable(f"private checking copy unavailable: {exc}",
                                          code="review_checking_copy_unavailable") from exc
-        return {"thread_root": area, "thread_id": saved_thread, "instructions": CHECKING_REVIEWER_INSTRUCTIONS + checking_instructions(
-                    area, source, str(root)),
-                "custody": {"authority_source": INVESTIGATION_AUTHORITY, "execution_root": area,
-                            "target_root": str(root)}}
-    if not delegated_execution_workspace_root(gateway, shape, str(root)):
-        raise ReviewRouteUnavailable(
-            "the serving engine cannot bind a private execution root, so a reviewer with write access "
-            "cannot be kept out of the reviewed root; nothing was started", code="review_checking_root_unsupported")
-    try:
-        area = prepare_seat_area(custody_drive, task_id, operation_id, source)
-    except (CheckingAreaUnavailable, OSError) as exc:
-        raise ReviewRouteUnavailable(f"private checking copy unavailable: {exc}",
-                                     code="review_checking_copy_unavailable") from exc
-    if shape.access == "full":
-        gateway.ensure_full_access(str(root))
+        thread_binding = {"thread_root": area, "thread_id": saved_thread}
+    else:
+        if not delegated_execution_workspace_root(gateway, shape, str(root)):
+            raise ReviewRouteUnavailable(
+                "the serving engine cannot bind a private execution root, so a reviewer with write access "
+                "cannot be kept out of the reviewed root; nothing was started", code="review_checking_root_unsupported")
+        try:
+            area = prepare_seat_area(custody_drive, task_id, operation_id, source)
+        except (CheckingAreaUnavailable, OSError) as exc:
+            raise ReviewRouteUnavailable(f"private checking copy unavailable: {exc}",
+                                         code="review_checking_copy_unavailable") from exc
+        if shape.access == "full":
+            gateway.ensure_full_access(str(root))
     execution = {"isolation": "live", "delegated": True, "workspaceRoot": area,
                  **({"workspaceKind": "directory"} if source.get("kind") == "directory" else {})}
-    return {"execution": execution,
+    return {**thread_binding, "execution": execution,
             "instructions": CHECKING_REVIEWER_INSTRUCTIONS + checking_instructions(area, source, str(root)),
             "custody": {"authority_source": INVESTIGATION_AUTHORITY, "execution_root": area,
                         "target_root": str(root)}}

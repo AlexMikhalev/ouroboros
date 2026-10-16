@@ -884,7 +884,8 @@ def test_reconcile_queue_failure_degrades_the_receipt_honestly(tmp_path, monkeyp
     custody._CUSTODY.clear()
 
 
-def test_parallel_starts_on_same_payload_yield_exactly_one_winner(tmp_path, monkeypatch):
+@pytest.mark.parametrize("iteration", range(50))
+def test_parallel_starts_on_same_payload_yield_exactly_one_winner(tmp_path, monkeypatch, iteration):
     """Gate fix 5 + Sol delta 5a: deterministic REQUESTED→STARTED window, x50.
 
     Both starts pass the cheap early check and provision; the winner then claims
@@ -892,7 +893,9 @@ def test_parallel_starts_on_same_payload_yield_exactly_one_winner(tmp_path, monk
     request row, before its STARTED row. The loser runs its locked busy predicate
     strictly inside that window: the old two-pass read could miss a holder whose
     transition landed between the passes; the single-pass snapshot cannot. Fifty
-    fresh-drive iterations prove the interleaving is stable, not schedule-lucky.
+    fresh-drive cases prove the interleaving is stable, not schedule-lucky.
+    In the parallel lane each repeat has its own pytest timeout; repeated real
+    provisioning and store imports must not consume one repeat's hang budget.
     (Both starts are one task here; distinct owners: tests/test_custody_keyed_readers.py.)"""
     import threading
     from contextlib import contextmanager
@@ -906,77 +909,76 @@ def test_parallel_starts_on_same_payload_yield_exactly_one_winner(tmp_path, monk
     real_provision = integration._provision_payload_snapshot
     real_snapshot, real_open = current.payload_snapshot, store.open_store
     inside = threading.local()
-    for iteration in range(50):
-        base = tmp_path / f"iter{iteration}"
-        base.mkdir()
-        ctx = _payload_ctx(base, monkeypatch)
-        _seed_skill(base / "data")
-        delegate._CUSTODY.clear()
-        barrier = threading.Barrier(2, timeout=30)
-        in_window = threading.Event()   # winner: REQUESTED durable, STARTED not
-        release = threading.Event()     # loser observed busy; let winner finish
+    base = tmp_path / f"iter{iteration}"
+    base.mkdir()
+    ctx = _payload_ctx(base, monkeypatch)
+    _seed_skill(base / "data")
+    delegate._CUSTODY.clear()
+    barrier = threading.Barrier(2, timeout=30)
+    in_window = threading.Event()   # winner: REQUESTED durable, STARTED not
+    release = threading.Event()     # loser observed busy; let winner finish
 
-        def _synced(*args, **kwargs):
-            result = real_provision(*args, **kwargs)
-            barrier.wait()
-            if threading.current_thread().name != "winner":
-                assert in_window.wait(30), "winner never reached its window"
-            return result
+    def _synced(*args, **kwargs):
+        result = real_provision(*args, **kwargs)
+        barrier.wait()
+        if threading.current_thread().name != "winner":
+            assert in_window.wait(30), "winner never reached its window"
+        return result
 
-        class _WindowStub(_StartStub):
-            def start_run(self, request, *, idempotency_key=""):
-                in_window.set()
-                assert release.wait(30), "the loser never settled"
-                return super().start_run(request, idempotency_key=idempotency_key)
+    class _WindowStub(_StartStub):
+        def start_run(self, request, *, idempotency_key=""):
+            in_window.set()
+            assert release.wait(30), "the loser never settled"
+            return super().start_run(request, idempotency_key=idempotency_key)
 
-        fired: list = []
+    fired: list = []
 
-        def _snapshot_hook(drive_root):
-            inside.active = True
-            try:
-                return real_snapshot(drive_root)
-            finally:
-                inside.active = False
+    def _snapshot_hook(drive_root):
+        inside.active = True
+        try:
+            return real_snapshot(drive_root)
+        finally:
+            inside.active = False
 
-        @contextmanager
-        def _read_hook(root, **kwargs):
-            with real_open(root, **kwargs) as txn:
-                yield txn
-            if (getattr(inside, "active", False) and threading.current_thread().name != "winner"
-                    and in_window.is_set() and not release.is_set()):
-                # Mutant-killer: the winner's STARTED row lands durably AFTER
-                # the busy snapshot's read transaction closed and BEFORE its
-                # projections are built — the exact hole a two-pass (re-reading)
-                # predicate had. Only one shared read still reports busy here.
-                fired.append(iteration)
-                release.set()
-                thread.join(timeout=30)
+    @contextmanager
+    def _read_hook(root, **kwargs):
+        with real_open(root, **kwargs) as txn:
+            yield txn
+        if (getattr(inside, "active", False) and threading.current_thread().name != "winner"
+                and in_window.is_set() and not release.is_set()):
+            # Mutant-killer: the winner's STARTED row lands durably AFTER
+            # the busy snapshot's read transaction closed and BEFORE its
+            # projections are built — the exact hole a two-pass (re-reading)
+            # predicate had. Only one shared read still reports busy here.
+            fired.append(iteration)
+            release.set()
+            thread.join(timeout=30)
 
-        seen: dict = {}
-        monkeypatch.setattr(current, "payload_snapshot", _snapshot_hook)
-        monkeypatch.setattr(store, "open_store", _read_hook)
-        monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _WindowStub(seen))
-        monkeypatch.setattr(integration, "_provision_payload_snapshot", _synced)
-        monkeypatch.setattr(delegate, "_provision_payload_snapshot", _synced)
-        winner_out: list = []
+    seen: dict = {}
+    monkeypatch.setattr(current, "payload_snapshot", _snapshot_hook)
+    monkeypatch.setattr(store, "open_store", _read_hook)
+    monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _WindowStub(seen))
+    monkeypatch.setattr(integration, "_provision_payload_snapshot", _synced)
+    monkeypatch.setattr(delegate, "_provision_payload_snapshot", _synced)
+    winner_out: list = []
 
-        def _winner():
-            winner_out.append(json.loads(_exact_payload_start(
-                ctx, "start winner", root="skill_payload", bucket="external",
-                skill_name="alpha")))
+    def _winner():
+        winner_out.append(json.loads(_exact_payload_start(
+            ctx, "start winner", root="skill_payload", bucket="external",
+            skill_name="alpha")))
 
-        thread = threading.Thread(target=_winner, name="winner")
-        thread.start()
-        loser = json.loads(_exact_payload_start(
-            ctx, "start loser", root="skill_payload", bucket="external",
-            skill_name="alpha"))
-        release.set()
-        thread.join(timeout=60)
-        assert not thread.is_alive(), f"iteration {iteration}: winner hung"
-        assert loser["status"] == "refused", (iteration, loser)
-        assert loser["reason"] == "payload_delegation_busy", (iteration, loser)
-        assert winner_out and winner_out[0]["status"] == "started", (iteration, winner_out)
-        assert fired == [iteration], f"iteration {iteration}: the window hook never ran"
+    thread = threading.Thread(target=_winner, name="winner")
+    thread.start()
+    loser = json.loads(_exact_payload_start(
+        ctx, "start loser", root="skill_payload", bucket="external",
+        skill_name="alpha"))
+    release.set()
+    thread.join(timeout=60)
+    assert not thread.is_alive(), f"iteration {iteration}: winner hung"
+    assert loser["status"] == "refused", (iteration, loser)
+    assert loser["reason"] == "payload_delegation_busy", (iteration, loser)
+    assert winner_out and winner_out[0]["status"] == "started", (iteration, winner_out)
+    assert fired == [iteration], f"iteration {iteration}: the window hook never ran"
     custody._CUSTODY.clear()
 
 

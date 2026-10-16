@@ -91,12 +91,13 @@ def _own_cleanup_threads():
 
 @pytest.mark.parametrize("task_id", ["t-end", "manual"])
 def test_a_commands_background_child_lives_until_the_task_ends_then_is_ended_by_its_group(tmp_path, task_id):
+    inherited = ps.scope_entries(os.environ, prefix=ps.TASK_SCOPE_PREFIX)
     pid = _leftover(tmp_path, task_id)
     try:
         record = ps.task_scope_record(tmp_path, task_id)
         assert record["marker"].startswith(ps.TASK_SCOPE_PREFIX)
         assert [group["pgid"] for group in record["groups"]] == [os.getpgid(pid)], "the command's own group is recorded"
-        assert not ps.scope_entries(os.environ, prefix=ps.TASK_SCOPE_PREFIX), "the worker never carries a task marker"
+        assert ps.scope_entries(os.environ, prefix=ps.TASK_SCOPE_PREFIX) == inherited, "launch leaves the worker's task markers unchanged"
         write_task_result(tmp_path, task_id, "running", result="working")
         ps.wait_for_cleanups()
         assert _alive(pid), "a running row is not an end"
