@@ -53,14 +53,14 @@ def _history(root, chat_id=1):
 def _consume_payload(root, payload, pattern):
     import pathlib
     import shutil
-    import subprocess
+    from tests.group_run import run_in_group
     path = root / 'main-consumer-history.json'
     path.write_text(json.dumps(payload))
     node = shutil.which('node')
     assert node, 'Node is required for the actual Main consumer regression'
-    result = subprocess.run([node, '--test', '--test-force-exit', f'--test-name-pattern={pattern}', 'web/tests/main_durable_edges.test.js'],
+    result = run_in_group([node, '--test', '--test-force-exit', f'--test-name-pattern={pattern}', 'web/tests/main_durable_edges.test.js'],
         cwd=pathlib.Path(__file__).resolve().parents[1], env={**os.environ, 'MAIN_REVIEW_HISTORY_PAYLOAD': str(path)},
-        capture_output=True, text=True, timeout=30)
+        timeout=30)
     (root / 'consumer.log').write_text(result.stdout + result.stderr)
     assert result.returncode == 0, result.stdout + result.stderr
 
