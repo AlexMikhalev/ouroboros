@@ -351,3 +351,21 @@ def test_relay_success_silent_named_failure_one_line_synthetic_uses_host_row(bri
     assert len(b.calls) == 1
     asyncio.run(handle({"role": "system", "system_type": "steer_not_delivered", "text": f"Parser · {cause}"}))
     assert len(b.calls) == 2 and all(method == "sendMessage" for method, _ in b.calls)
+
+
+def test_relay_quotes_the_owners_words_and_files_above_the_note_verbatim(bridge):
+    first = {"text": "Please deploy *now*", "attachments": [], "source": {"chat_id": 1, "label": "Main"}}
+    second = {"text": "", "attachments": [{"name": "config.json"}], "source": {"chat_id": 7, "label": "Alpha"}}
+    event = {"role": "assistant", "text": "Apply this constraint.", "chat_id": 7, "task_id": "receiver",
+             "system_type": "relay_entry", "kind": "relay_entry",
+             "relay": {"relay_id": "r", **first, "quotes": [first, second]}}
+    asyncio.run(bridge.plugin._make_outbound(bridge.api)(event))
+    [(method, data)] = bridge.calls
+    assert method == "sendMessage"
+    assert data["text"] == ("Your message in Main:\nPlease deploy *now*\n\n"
+                            "Your message in Alpha:\nAttached: config.json\n\nApply this constraint.")
+    assert not data.get("parse_mode"), "his words are sent verbatim, never re-read as markup"
+    bridge.calls.clear()
+    asyncio.run(bridge.plugin._make_outbound(bridge.api)({**event, "relay": {"relay_id": "r2", "text": "", "quotes": []}}))
+    [(_method, plain)] = bridge.calls
+    assert plain["text"] == "Apply this constraint.", "a relay without quoted words is just its note"

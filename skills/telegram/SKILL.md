@@ -47,8 +47,10 @@ evicted ids add nothing. Answers to an earlier owner message from this Telegram
 chat use a native reply; answers to its latest owner message stay unquoted.
 Silent mode edits only within one task episode and reply origin; Continue
 episodes remain separate messages. Relay success stays silent; a host-reported
-failure arrives as one line. Quiz buttons and replies keep their decision path;
-earlier parts of a long question carry ordinary references.
+failure arrives as one line. A relayed row quotes the owner's words verbatim as
+plain text, under where he wrote them and with the file names, above the note.
+Quiz buttons and replies keep their decision path; earlier parts of a long
+question carry ordinary references.
 
 Version 1.2.1 marks questions that wait for an owner answer and clears the
 waiting line after an answer submitted through Telegram.

@@ -187,6 +187,35 @@ _NOTIFY = Index("notify", {
 }, "push notifications about finished tasks and the budget")
 _PHASE_ICONS = {"done": "✅", "warn": "⚠️", "error": "❌", "cancelled": "🚫"}
 
+# The owner's own words Ouroboros passes to another work (a relay, one Ouroboros message): each quoted
+# message under where he wrote it, verbatim, with the names of the files that came with it, then the note.
+_RELAY = Index("relay", {
+    "head": "Your message in {place}:",
+    "files": "Attached: {names}",
+}, "the owner's own words quoted when Ouroboros passes them on to another work")
+
+
+def _relay_text(relay: Any, note: str, lang: str) -> str:
+    """The relay's quoted owner messages above its note; just the note when nothing is quoted."""
+    relay = relay if isinstance(relay, dict) else {}
+    quotes = relay.get("quotes") if isinstance(relay.get("quotes"), list) and relay.get("quotes") else [relay]
+    blocks = []
+    for quote in quotes:
+        if not isinstance(quote, dict):
+            continue
+        words = str(quote.get("text") or "").strip()
+        names = [str(item.get("name") or item.get("display_name") or item.get("filename") or item.get("label") or "").strip()
+                 for item in quote.get("attachments") or [] if isinstance(item, dict)]
+        names = [name for name in names if name]
+        if not words and not names:
+            continue
+        place = str((quote.get("source") or {}).get("label") or "Main") if isinstance(quote.get("source"), dict) else "Main"
+        lines = [_RELAY[lang].format("head", place=place)]
+        lines += [words] if words else []
+        lines += [_RELAY[lang].format("files", names=", ".join(names))] if names else []
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks + ([note] if note else []))
+
 # Completion notices are opt-in for every outcome. The task's evidence stays in
 # its details even when the owner chooses no additional phone messages.
 # Only a ROOT outcome, and only in a room the owner actually talks in. ``summary_kind``

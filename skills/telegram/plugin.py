@@ -35,7 +35,7 @@ from .lib.telegram_state import (
 )
 from .lib import telegram_i18n, telegram_inbound, telegram_quiz
 from .lib.telegram_health import _collect_health, _build_menu_tasks
-from .lib.telegram_notifier import _make_notifier, _notify_enabled, _completion_text
+from .lib.telegram_notifier import _make_notifier, _notify_enabled, _completion_text, _relay_text
 from .lib.miniapp_registration import _read_status, register as register_miniapp
 from .scripts.telegram_settings import (
     TelegramSettingsError,
@@ -1093,6 +1093,10 @@ def _make_outbound(api):
                 return
 
             text = str(event.get("text") or "").strip()
+            # A relay quotes the owner's own words above Ouroboros's note; they are sent verbatim, as plain text.
+            relayed = event.get("system_type") == "relay_entry" and isinstance(event.get("relay"), dict)
+            if relayed:
+                text = _relay_text(event["relay"], text, lang)
             completion_summary = event.get("role") == "system" and event.get("system_type") == "project_completion_summary"
             if completion_summary:
                 notice = event.get("completion_notice")
@@ -1107,7 +1111,7 @@ def _make_outbound(api):
             # Honor the host's markdown hint: plain text (markdown=False) is sent
             # verbatim so literal *, _, `, [] aren't mis-parsed as Telegram
             # formatting; an absent/True hint renders markdown→HTML as before.
-            parse_mode = "" if completion_summary or event.get("markdown") is False else "HTML"
+            parse_mode = "" if completion_summary or relayed or event.get("markdown") is False else "HTML"
 
             # A host receipt must neither replace nor become the tracked agent reply.
             silent_on = _is_silent_mode_enabled(local_settings) and event.get("role") != "system"
