@@ -189,6 +189,15 @@ def parse_short(text: str) -> List[List[str]]:
     return [line.split("\t") for line in (text or "").splitlines() if line.strip()]
 
 
+def pulse_server_name(info: str) -> str:
+    """The ``Server Name`` of ``pactl info``; PipeWire's Pulse layer answers "PulseAudio (on PipeWire ...)"."""
+    for line in (info or "").splitlines():
+        key, _, value = line.partition(":")
+        if key.strip() == "Server Name":
+            return value.strip()
+    return ""
+
+
 class LinuxBackend:
     """Capture targets, capture and speaking on one Linux desktop session."""
 
@@ -215,18 +224,25 @@ class LinuxBackend:
         return all(self.which(name) for name in names)
 
     def stack(self) -> str:
-        """``pipewire`` or ``pulse``; a typed refusal names what is missing."""
-        if self.has("pw-record", "pw-dump"):
-            probe = self.run(["pw-dump"])
-            if probe.returncode == 0:
+        """``pipewire`` or ``pulse``: the server that really plays this desktop's sound.
+
+        A PipeWire daemon also runs on desktops whose sound is PulseAudio's (Ubuntu
+        22.04 starts it for screen sharing), so a working ``pw-dump`` says nothing
+        about audio. The Pulse server names itself: PipeWire is used when PipeWire's
+        own Pulse layer answers, or when no Pulse server answers at all; otherwise
+        PulseAudio. A typed refusal names what is missing.
+        """
+        info = self.run(["pactl", "info"]) if self.has("pactl") else None
+        pulse = pulse_server_name(info.stdout) if info is not None and info.returncode == 0 else None
+        if (pulse is None or "on pipewire" in pulse.lower()) and self.has("pw-record", "pw-dump"):
+            if self.run(["pw-dump"]).returncode == 0:
                 return "pipewire"
-        if self.has("parec", "pactl"):
-            probe = self.run(["pactl", "info"])
-            if probe.returncode == 0:
-                return "pulse"
+        if pulse is not None and self.has("parec"):
+            return "pulse"
+        if info is not None and info.returncode != 0 and self.has("parec"):
             raise CaptureFailed("MEETING_AUDIO_SERVER_UNREACHABLE",
                                 "Could not reach the desktop audio server: "
-                                + ((probe.stderr or "").strip()[-300:] or "pactl info failed"))
+                                + ((info.stderr or "").strip()[-300:] or "pactl info failed"))
         missing = [name for name in ("pw-record", "pw-dump", "parec", "pactl") if not self.which(name)]
         raise CaptureFailed(
             "MEETING_AUDIO_TOOLS_MISSING",

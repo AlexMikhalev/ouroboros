@@ -51,8 +51,9 @@ class FakePactl:
     """A stateful fake of pactl/pw-dump/pw-link for one desktop session."""
 
     def __init__(self, *, pipewire=False, graph=None, sink_inputs="", sinks="1\talsa_output.pci\tmodule\n",
-                 modules=None, link_ok=True):
+                 modules=None, link_ok=True, server_name="pulseaudio"):
         self.pipewire = pipewire
+        self.server_name = server_name  # what `pactl info` calls the Pulse server
         self.graph = graph or []
         self.sink_inputs = sink_inputs
         self.sinks = sinks
@@ -75,7 +76,8 @@ class FakePactl:
         if argv[0] == "pactl" and self.server_down:
             return subprocess.CompletedProcess(argv, 1, "", "Connection failure: Connection refused")
         if argv[:2] == ["pactl", "info"]:
-            return ok("Server Name: pulseaudio\n")
+            return ok(f"Server String: /run/user/1000/pulse/native\nServer Name: {self.server_name}\n"
+                      "Server Version: 15.99.1\n")
         if argv[:3] == ["pactl", "list", "sink-inputs"]:
             return ok(self.sink_inputs)
         if argv[:4] == ["pactl", "list", "sinks", "short"]:
@@ -217,6 +219,33 @@ def test_linux_pulse_records_the_sink_monitor_and_discloses_it(tmp_path):
         assert "everything playing on alsa_output.pci" in note and "own whispered hints" in note
     finally:
         capture.stop()
+
+
+@pytest.mark.parametrize("server_name,stack,recorder", [
+    ("pulseaudio", "pulse", "parec"),  # Ubuntu 22.04: PulseAudio plays, a PipeWire daemon runs for screen sharing
+    ("PulseAudio (on PipeWire 0.3.48)", "pipewire", "pw-record"),  # PipeWire's own Pulse layer answers
+])
+def test_linux_listens_through_the_server_that_plays_the_sound(tmp_path, server_name, stack, recorder):
+    fake, procs = FakePactl(pipewire=True, graph=PW_GRAPH, sink_inputs=SINK_INPUTS, server_name=server_name), []
+    backend = linux_backend(tmp_path, fake, {"pw-record", "pw-dump", "pw-link", "parec", "pactl"}, procs)
+    assert backend.stack() == stack, "a working pw-dump alone must not pick PipeWire"
+    capture = backend.open_capture(meeting_apps.choose(backend.running_apps(), "zoom"))
+    capture.start(lambda *a: None, lambda reason: None)
+    try:
+        assert procs[0].argv[0] == recorder and capture.describe()["backend"] == stack
+    finally:
+        capture.stop()
+
+
+def test_linux_uses_pipewire_when_no_pulse_server_answers(tmp_path):
+    fake = FakePactl(pipewire=True, graph=PW_GRAPH)
+    fake.server_down = True
+    backend = linux_backend(tmp_path, fake, {"pw-record", "pw-dump", "pw-link", "parec", "pactl"}, [])
+    assert backend.stack() == "pipewire"
+    fake.pipewire = False  # and with neither answering, the refusal names the unreachable server
+    with pytest.raises(capture_common.CaptureFailed) as failed:
+        backend.stack()
+    assert failed.value.code == "MEETING_AUDIO_SERVER_UNREACHABLE" and "Connection refused" in failed.value.message
 
 
 def test_virtual_microphone_unloads_exactly_the_modules_it_loaded(tmp_path):
