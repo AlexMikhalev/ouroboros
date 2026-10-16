@@ -3778,7 +3778,7 @@ export function createChatInstance({
     roomWork = createRoomWork({ page, asPanel, ws, statusBadge, messagesDiv, reading, stateSnapshots, revealQuestion,
         activeDirectActivities, liveCardRecords, pendingSubmissions, pendingSuggestedNames, modelWaits, stopEligible,
         cancelRunFromCard, refreshHeaderControlState, captureVisibleTimelineAnchor, restoreVisibleTimelineAnchor,
-        hostReady: () => hostReady });
+        historyPager, showLatest, hostReady: () => hostReady });
 
     return {
         page,

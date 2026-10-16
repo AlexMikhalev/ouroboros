@@ -65,6 +65,18 @@ test('history chrome shares one control and derives completeness from physical c
     assert.equal(controls.olderButton.hidden, true);
 });
 
+test('at its older end a grown room offers the way on, a chain a navigation began does not', () => {
+    const doc = { byId: new Map(), createElement: (tag) => new ElementStub(tag, doc) };
+    const messages = new ElementStub('div', doc);
+    messages.isConnected = true;
+    const controls = createHistoryControls(messages);
+    const exhausted = { initialized: true, canOlder: false, canNewer: false, olderExhausted: true, loading: '', error: null };
+    controls.render(exhausted, { horizonGap: true });
+    assert.equal(controls.olderButton.hidden, false, 'a grown room re-anchors to the present from here');
+    controls.render({ ...exhausted, jumped: true }, { horizonGap: true });
+    assert.equal(controls.olderButton.hidden, true, 'a page around a task never sends Load more to the present');
+});
+
 test('the empty-Main greeting and the reconnect notice are chrome: a read over them still shows its loading and failure', () => {
     const doc = { byId: new Map(), createElement: (tag) => new ElementStub(tag, doc) };
     const messages = new ElementStub('div', doc);

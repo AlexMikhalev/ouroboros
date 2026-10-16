@@ -995,7 +995,9 @@ ago its last message was and however much other rooms wrote since. Returning to
 a room in the same app session opens it at its newest message too, Main after a
 closed Project included (owner decisions 2026-07-10 and 2026-10-05). Only an explicit navigation to one place
 lands elsewhere: a question opened from its Main mirror, or a row of the room's
-work status. A window merely shown again keeps the reader where they were.
+work status, whose landing reads the page around that work as the room's history
+from there on: `Load more history` continues older from it and `Scroll to latest
+message` returns to the present. A window merely shown again keeps the reader where they were.
 
 A room's history is its own. A page is counted in the room's messages, never in
 bytes of other rooms' traffic: the newest page holds the room's newest messages,
@@ -1059,14 +1061,19 @@ Project with nothing else keeps its latest represented root. A row names its wor
 keyboard focus or open details show whole, with the state under the name in the
 card's or census's own words: an outcome stays beside `Finalizing…`, an access
 wait is not an answer wait, unknown stays unknown, a pause keeps its cause and
-each paused remainder its own row; work outside the loaded messages says so in
-its details and accessible name. The name goes to the card, or
-opens details when the card is not loaded, finished work included; `View question`
+each paused remainder its own row. The name goes to the work's message wherever
+it lies, finished work included: its card or the owner's message when loaded, else
+the room reads the page of its history around the work's first message there and
+lands on it, the list staying open while it looks. Before that a row claims nothing
+about where its message is; when the room's history holds none (`No message yet.`,
+or `No message saved in this chat.` once ended), belongs to another room, or cannot
+be checked, its details say so. `View question`
 goes to the exact waited question and answers nothing; Resume and ⋯ are that exact
 activity's shared task controls, offered only while the census confirms it. While
 open, order and focus hold, and work that ends keeps its row and outcome, without
 controls, until close. Escape, an outside press or leaving closes it; `Back to
-reading` returns to the passage left. Navigation never changes the next message's
+reading` returns to the passage left, reading its page again if it was let go, or
+to the present the reader was following. Navigation never changes the next message's
 recipient, opens another pane or manufactures activity.
 
 ### List editors
