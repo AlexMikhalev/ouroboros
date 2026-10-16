@@ -38,6 +38,8 @@ def test_leaf_selects_only_direct_importers_and_changed_tests_above_floor(repo):
     "tests/conftest.py", "tests/_shared.py", "tests/support.py", "tests/nested/conftest.py",
     "tests/test_floor.py", "pyproject.toml", "uv.lock", "requirements-runtime.lock", "site/pnpm-lock.yaml",
     "ouroboros/preflight_runner.py", "ouroboros/test_selection.py", "scripts/run_tests.py",
+    "ouroboros/process_containment.py", "ouroboros/process_lifeline.py",
+    "ouroboros/process_overload.py", "ouroboros/test_parallelism.py",
 ])
 def test_verification_changes_require_full(repo, path):
     result = selection.select_from_paths(repo, [path], base="base")

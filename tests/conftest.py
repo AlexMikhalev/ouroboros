@@ -1298,7 +1298,19 @@ def pytest_testnodedown(node, error):  # noqa: ARG001
             pending = bool(scheduler.node2pending.get(node))
         if getattr(scheduler, "collection", None) is None or not pending:
             _record_worker_crash(node, reason, scheduler)
-            pytest.exit(reason, returncode=1)
+            if _owned_run():
+                pytest.exit(reason, returncode=1)
+
+
+def _owned_run() -> bool:
+    """An outer ProcessContainer will reap this run, so aborting live workers strands nothing.
+
+    Without one (CI steps, a bare pytest), xdist's own shutdown lets running tests finish
+    and clean up their children: nobody else would.
+    """
+    from ouroboros.process_containment import CONTAINMENT_ENV_PREFIX
+
+    return any(key.startswith(CONTAINMENT_ENV_PREFIX) for key in os.environ)
 
 
 def _record_worker_crash(node, reason, scheduler):
@@ -1325,6 +1337,8 @@ def pytest_runtest_logreport(report):
     if report.when == "???" and session is not None and session.shouldfail:
         controller = config.pluginmanager.get_plugin("dsession")
         _record_worker_crash(node, session.shouldfail, controller.sched)
+        if not _owned_run():
+            return
         # All consumers have now recorded xdist's native crash report. Do not
         # await another worker's running test: bounded gateway teardown and the
         # outer ProcessContainer own shutdown; evidence retains unfinished IDs.

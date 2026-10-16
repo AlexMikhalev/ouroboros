@@ -229,6 +229,7 @@ def test_overload_stops_bounded_allocator_with_largest_member(tmp_path, owned, s
     # 80 MiB maximum allocation, a 32 MiB test budget. No pressure experiment
     # against the machine: only the watch's physical budget is made small.
     monkeypatch.setattr(test_parallelism, "memory_budget", lambda memory: 32 * 1024 * 1024)
+    monkeypatch.setattr(config, "TEST_WORKER_PEAK_RSS_BYTES", 8 * 1024 * 1024)  # admitted floor below the budget
     monkeypatch.setattr(config, "TEST_PROCESS_SAMPLE_SEC", 0.05)
     receipt = tmp_path / "allocator.json"
     container, proc = owned(_child_code(receipt, allocate=True), lifeline=True, overload=True)
@@ -242,6 +243,29 @@ def test_overload_stops_bounded_allocator_with_largest_member(tmp_path, owned, s
     assert container.reap() == diagnostic, "repeated cleanup must not erase an overload stop"
     assert not _live(child)
     assert _live(sentinel)
+
+
+@pytest.mark.parametrize("tree,start,now,machine,stops", [
+    (0.9, 2.0, 2.0, 16, False),    # the one admitted worker on a busy 16 GB laptop runs
+    (2.5, 2.0, 2.0, 16, True),     # a tree past its limit stops
+    (0.05, 12.0, 12.0, 128, False),  # a small tree is not killed for another program's pressure
+    (1.5, 54.0, 10.0, 128, False),   # an admitted-size tree survives pressure that arrives later
+    (3.0, 54.0, 10.0, 128, True),    # past its admitted size while the machine is under its reserve
+    (42.0, 54.0, 54.0, 128, True),   # a runaway past the start budget stops on an idle machine too
+])
+def test_overload_stops_growth_not_an_admitted_tree(monkeypatch, tree, start, now, machine, stops):
+    from ouroboros import config, process_overload, test_parallelism
+
+    gib = 1024 ** 3
+    monkeypatch.setattr(config, "TEST_WORKER_PEAK_RSS_BYTES", gib)
+    at_start = test_parallelism.MemorySnapshot(machine * gib, int(start * gib))
+    monkeypatch.setattr(test_parallelism, "physical_memory", lambda: at_start)
+    watch = process_overload.OverloadWatch(object(), slots=1)
+    assert watch.floor_bytes == 2 * gib and watch.limit_bytes >= watch.floor_bytes
+    reserve = int(machine * gib * config.TEST_MEMORY_RESERVE_FRACTION)
+    reason = process_overload.stop_reason(int(tree * gib), test_parallelism.MemorySnapshot(machine * gib, int(now * gib)),
+                                          limit=watch.limit_bytes, floor=watch.floor_bytes, reserve=reserve)
+    assert bool(reason) is stops, reason
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows attribution is the held Job, not a POSIX token")

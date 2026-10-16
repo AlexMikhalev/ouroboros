@@ -25,6 +25,7 @@ def test_selected_cli_skips_unrelated_collection_and_records_both_lanes(tmp_path
     monkeypatch.setattr(cli, "REPO", repo)
     monkeypatch.setattr(test_selection, "FLOOR_TESTS", {"tests/test_floor.py": "minimal witness"})
     monkeypatch.setenv("OUROBOROS_PREFLIGHT_TEST_WORKERS", "2")
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "2")  # nested slots: the selected passes run two real workers
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_SERIAL", raising=False)
     node = []
     monkeypatch.setattr(cli, "_node_lane", lambda: node.append(True) or 0)

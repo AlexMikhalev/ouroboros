@@ -714,11 +714,24 @@ def test_ordinary_jobs_name_their_failures_without_owning_the_result(jobname, ar
     evidence = next(step for step in job["steps"] if step.get("uses") == EVIDENCE_ACTION)
     assert evidence["continue-on-error"] is True and "!cancelled()" in evidence["if"]
     assert evidence["with"] == {"name": artifact, "passes": " ".join(
-        f"{label}=${{{{ " + (f"github.event_name == 'pull_request' && steps.tests_selected.outputs.{label}_outcome || "
+        f"{label}=${{{{ " + (f"github.event_name == 'pull_request' && (steps.tests_selected.outputs.{label}_outcome"
+                             " || steps.tests_selected.outcome) || "
                              if jobname == "quick-test" and label != "size" else "")
         + f"steps.tests_{label}.outcome }}}}" for label in PASSES)}
     assert job["steps"].index(evidence) > max(job["steps"].index(steps[f"tests_{label}"])
                                               for label in PASSES)
+
+
+def test_pull_requests_run_the_selected_scope_on_windows_and_macos():
+    job = _workflow("ci.yml")["jobs"]["pr-selected-os"]
+    assert "pull_request" in job["if"] and job["strategy"]["matrix"]["os"] == ["windows-latest", "macos-latest"]
+    producer = _steps("ci.yml", "pr-selected-os")["tests_selected"]
+    assert "scripts/run_tests.py --selected --base ${{ github.event.pull_request.base.sha }} --sequential" in producer["run"]
+    evidence = next(step for step in job["steps"] if step.get("uses") == EVIDENCE_ACTION)
+    # A step killed before run_tests.py writes its outputs still reports through its own outcome.
+    assert evidence["with"]["passes"] == " ".join(
+        f"{label}=${{{{ steps.tests_selected.outputs.{label}_outcome || steps.tests_selected.outcome }}}}"
+        for label in ("parallel", "serial"))
 
 
 def test_evidence_action_steps_are_independent_diagnostics():

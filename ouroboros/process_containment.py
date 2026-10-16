@@ -320,7 +320,8 @@ class ProcessContainer:
         try:
             if self._watch_overload:
                 from ouroboros.process_overload import OverloadWatch
-                self._watch = OverloadWatch(self)
+                from ouroboros.test_parallelism import nested_workers
+                self._watch = OverloadWatch(self, nested_workers(kwargs["env"]))
             proc = subprocess.Popen(argv, **kwargs)
         except BaseException:
             self.reap()

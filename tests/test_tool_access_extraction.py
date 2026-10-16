@@ -138,5 +138,3 @@ def test_tool_access_policy_matrix_is_one_object_across_owners():
     the facade re-export IS its binding."""
     assert tool_access._POLICY is tool_access_types._POLICY
     assert set(tool_access._ALL_ROOTS) == set(tool_access_types._ALL_ROOTS)
-
-

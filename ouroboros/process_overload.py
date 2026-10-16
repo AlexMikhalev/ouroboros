@@ -78,17 +78,34 @@ def member_memory(container) -> list[MemberMemory]:
     return members
 
 
+def stop_reason(total: int, memory, *, limit: int, floor: int, reserve: int) -> str:
+    """Why an owned tree must stop now, or "".
+
+    A tree past its limit always stops. Under the machine's physical reserve only
+    a tree that outgrew what admission gave it stops: a normal run is never
+    killed for another program's memory pressure.
+    """
+    if total > limit:
+        return "tree over its physical budget"
+    if memory.available_bytes < reserve and total > floor:
+        return "machine under its reserve and tree past its admitted size"
+    return ""
+
+
 class OverloadWatch:
     """A joined owner thread; a stop always survives as a nonempty reap error."""
 
-    def __init__(self, container):
-        from ouroboros.config import TEST_PROCESS_SAMPLE_SEC
+    def __init__(self, container, slots: int = 1):
+        from ouroboros.config import TEST_PROCESS_SAMPLE_SEC, TEST_WORKER_PEAK_RSS_BYTES
         from ouroboros.test_parallelism import memory_budget, physical_memory
 
         initial = physical_memory()
         if initial is None:
             raise RuntimeError("overload_watch_unavailable: physical memory could not be read")
-        self.limit_bytes = memory_budget(initial)
+        # The admitted workers and their controller always fit, so admission never
+        # starts a tree that this watch would then kill.
+        self.floor_bytes = (max(1, slots) + 1) * TEST_WORKER_PEAK_RSS_BYTES
+        self.limit_bytes = max(memory_budget(initial), self.floor_bytes)
         self._container = container
         self._interval = TEST_PROCESS_SAMPLE_SEC
         self._done = threading.Event()
@@ -112,10 +129,11 @@ class OverloadWatch:
                     raise RuntimeError("physical memory could not be read")
                 total = sum(member.rss_bytes for member in members)
                 reserve = int(memory.total_bytes * TEST_MEMORY_RESERVE_FRACTION)
-                if members and (total > self.limit_bytes or memory.available_bytes < reserve):
+                why = stop_reason(total, memory, limit=self.limit_bytes, floor=self.floor_bytes, reserve=reserve)
+                if members and why:
                     largest = max(members, key=lambda member: member.rss_bytes)
                     self.diagnostic = (
-                        f"overload_stop: tree_rss={total} limit={self.limit_bytes} "
+                        f"overload_stop: {why}; tree_rss={total} limit={self.limit_bytes} floor={self.floor_bytes} "
                         f"available={memory.available_bytes} reserve={reserve}; "
                         f"largest pid={largest.pid} name={largest.name!r} rss={largest.rss_bytes}"
                     )

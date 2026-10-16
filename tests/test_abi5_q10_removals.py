@@ -123,5 +123,3 @@ def test_deadline_no_longer_lifts_the_improvement_count_axis(monkeypatch):
     assert effective_max_improvement_passes({**profile, "max_improvement_passes": 1}) == 1
     params = inspect.signature(effective_max_improvement_passes).parameters
     assert "has_deadline" not in params
-
-

@@ -185,5 +185,3 @@ def test_review_helper_leaves_are_review_substrate_members():
     for module in _LEAVES:
         rel = pathlib.Path(module.__file__).relative_to(REPO).as_posix()
         assert rel in _REVIEW_SUBSTRATE_PATHS, rel
-
-

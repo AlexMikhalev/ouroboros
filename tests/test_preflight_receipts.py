@@ -37,6 +37,7 @@ SECTION = "## Preflight test execution (host fact)"
 def gate_env(monkeypatch, receipt_python):
     monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
     monkeypatch.setenv("OUROBOROS_PREFLIGHT_TEST_WORKERS", "2")
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "3")  # nested slots: receipts need two real workers; the workers case asks for three
     monkeypatch.setenv("OUROBOROS_AGENT_PYTHON", receipt_python)
     for key in ("OUROBOROS_PREFLIGHT_SERIAL", "OUROBOROS_PREFLIGHT_TIMEOUT_SEC"):
         monkeypatch.delenv(key, raising=False)

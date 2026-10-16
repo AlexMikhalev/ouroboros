@@ -37,5 +37,3 @@ def test_live_task_message_marker_uses_my_human_wording(tmp_path):
         "[Message from independent task t-source]")
     assert rendered["ancestor_task"].startswith("[Message from ancestor task t-source]")
     assert rendered[""] == rendered["ancestor_task"], "unknown provenance keeps the tree fallback"
-
-

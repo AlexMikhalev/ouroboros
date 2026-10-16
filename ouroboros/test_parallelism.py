@@ -81,17 +81,22 @@ def nested_workers(env: Mapping[str, str]) -> int:
     return _positive(env.get(NESTED_WORKERS_ENV, "1"), 1)
 
 
+def requested_workers(cpu_workers: Optional[int] = None, *, env: Optional[Mapping[str, str]] = None) -> int:
+    """The deterministic request: the override or CPU default within parent slots."""
+    env = os.environ if env is None else env
+    requested = _positive(env.get(WORKERS_ENV, ""), cpu_workers or os.cpu_count() or 1)
+    if NESTED_WORKERS_ENV in env:
+        requested = min(requested, nested_workers(env))
+    return max(1, requested)
+
+
 def worker_budget(cpu_workers: Optional[int] = None, *, env: Optional[Mapping[str, str]] = None) -> int:
     """Keep the caller's CPU default, capped by physical room and parent slots."""
     from ouroboros.config import TEST_WORKER_PEAK_RSS_BYTES
 
-    env = os.environ if env is None else env
-    requested = _positive(env.get(WORKERS_ENV, ""), cpu_workers or os.cpu_count() or 1)
     memory = physical_memory()
     capacity = max(1, memory_budget(memory) // TEST_WORKER_PEAK_RSS_BYTES) if memory else 1
-    if NESTED_WORKERS_ENV in env:
-        capacity = min(capacity, nested_workers(env))
-    return max(1, min(requested, capacity))
+    return max(1, min(requested_workers(cpu_workers, env=env), capacity))
 
 
 def _cap_requested(value, slots: int, *, pytest_count: bool = False) -> str:

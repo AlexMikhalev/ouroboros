@@ -164,5 +164,3 @@ def test_surface_scan_excludes_ignored_exports_but_checks_tracked_and_new_source
         test_no_runtime_or_settings_surface_still_names_either_key()
     (tmp_path / 'new.py').write_text('current = True')
     test_no_runtime_or_settings_surface_still_names_either_key()
-
-

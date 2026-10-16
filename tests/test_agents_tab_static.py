@@ -216,5 +216,3 @@ def test_a_spent_window_is_emphasised_rather_than_dimmed() -> None:
         "sentence and disables-looking buttons that still work"
     )
     assert "var(--status-warn-" in rule.group(1)
-
-

@@ -558,4 +558,3 @@ class TestSupportedParametersFilter:
         )
         # Unknown model → cache miss → None → no stripping
         assert kwargs.get("temperature") == 0.2
-

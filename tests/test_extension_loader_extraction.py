@@ -173,5 +173,3 @@ def test_the_public_loader_surface_is_unchanged():
     ]
     for name in extension_loader.__all__:
         assert hasattr(extension_loader, name), name
-
-

@@ -183,5 +183,3 @@ def test_server_route_composition_is_owned_by_the_composition_root():
         route for route in server.routes if getattr(route, "path", "") == "/api/settings"
     )
     assert settings_route.endpoint.__module__ == "server"
-
-

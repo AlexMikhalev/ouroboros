@@ -105,7 +105,7 @@ def test_shared_child_spawn_keeps_containment_and_bounds_nested_runners(monkeypa
     assert seen["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == (slots or "1")
 
 
-def _run_pytest(tmp_path, files, *, workers, extra=()):
+def _run_pytest(tmp_path, files, *, workers, extra=(), owned=True):
     suite = tmp_path / "suite"
     suite.mkdir()
     for name, body in files.items():
@@ -117,10 +117,21 @@ def _run_pytest(tmp_path, files, *, workers, extra=()):
     entry = tmp_path / "run.py"
     entry.write_text(f"import sys\nsys.path.insert(0, {str(ROOT)!r})\nimport pytest\n"
                      f"raise SystemExit(pytest.main({args!r}))\n", encoding="utf-8")
+    started = time.monotonic()
+    if not owned:  # A bare run: the caller removed every inherited membership token.
+        with log.open("w", encoding="utf-8") as output:
+            proc = subprocess.Popen([sys.executable, str(entry)], cwd=ROOT,
+                                    env={**os.environ, budget.NESTED_WORKERS_ENV: str(workers)},
+                                    stdout=output, stderr=subprocess.STDOUT)
+        try:
+            code = proc.wait(timeout=60)
+        finally:
+            pl.kill_process_tree(proc)
+            proc.wait(timeout=10)
+        return code, evidence, log.read_text(encoding="utf-8"), time.monotonic() - started
     container = ProcessContainer(lifeline=True, overload=True)
     command = [sys.executable, "-I", "-S", str(ROOT / "scripts/safe_test.py"), "--temp-parent", str(tmp_path),
                "--", sys.executable, str(entry)]
-    started = time.monotonic()
     with log.open("w", encoding="utf-8") as output:
         proc = container.spawn(command, cwd=ROOT, env={**os.environ, budget.NESTED_WORKERS_ENV: str(workers)},
                                stdout=output, stderr=subprocess.STDOUT)
@@ -194,6 +205,34 @@ def test_worker_death_ends_pass_with_crash_and_unfinished_evidence(tmp_path, fau
         "test_1_running.py::test_running", "test_2_pending.py::test_pending"]
     pid, born = json.loads(child_identity.read_text(encoding="utf-8"))
     assert pl.process_start_time(pid) != born or pid_is_zombie(pid), output
+
+
+def test_unowned_worker_death_lets_running_tests_finish(tmp_path, monkeypatch):
+    """With no outer owner to reap them, xdist's own shutdown lets running tests finish."""
+    from ouroboros.process_containment import CONTAINMENT_ENV_PREFIX
+
+    for key in [key for key in os.environ if key.startswith(CONTAINMENT_ENV_PREFIX)]:
+        monkeypatch.delenv(key)
+    finished = tmp_path / "running-finished"
+    code, evidence, output, _ = _run_pytest(tmp_path, {
+        "test_0_crash.py": """
+            import os, time
+            def test_dies():
+                time.sleep(1)
+                os._exit(7)
+        """,
+        "test_1_running.py": f"""
+            import time
+            from pathlib import Path
+            def test_running():
+                time.sleep(15)  # longer than xdist's ten-second teardown wait before it kills workers
+                Path({str(finished)!r}).write_text('finished', encoding='utf-8')
+        """,
+    }, workers=2, owned=False)
+    assert code != 0, output
+    assert finished.exists(), output
+    data = json.loads((evidence / "results.json").read_text(encoding="utf-8"))
+    assert data["worker_crash"]["reason"].startswith("xdist worker")
 
 
 @pytest.mark.parametrize("phase", ["collection", "idle"])

@@ -1,7 +1,7 @@
 # Ouroboros CI — Five-tier cross-platform testing and release pipeline
 #
 # Tier 1 (Quick):       Push to ouroboros or PR targeting ouroboros                   → Ubuntu-only tests
-# Tier 2 (Full):        Every PR and every ouroboros push → Windows/macOS; stable / manual / tag → full 3-OS matrix
+# Tier 2 (Full):        Every ouroboros push → Windows/macOS (PRs: selected scope, pr-selected-os); stable / manual / tag → full 3-OS matrix
 # Tier 1.5 (SQLite floor): Push to ouroboros or PR targeting ouroboros             → store modules on ubuntu-22.04's system SQLite 3.37.2
 # Tier 2.5 (Integration): Manual / tag (branch pushes: provider-canary-push.yml)       → Real-provider tests, reusable provider-canary.yml (~2 min)
 # Tier 2.6 (Skill smoke): Push to ouroboros-stable / manual / tag                     → LIVE OuroborosHub official-skill install smoke (3-OS, ~5 min) + review→grant→enable-persistence flow on one cheap reviewer slot (ubuntu-only step, OPENROUTER_API_KEY, ~$1.2/run)
@@ -197,7 +197,7 @@ jobs:
         uses: ./.github/actions/test-evidence
         with:
           name: quick-test
-          passes: parallel=${{ github.event_name == 'pull_request' && steps.tests_selected.outputs.parallel_outcome || steps.tests_parallel.outcome }} serial=${{ github.event_name == 'pull_request' && steps.tests_selected.outputs.serial_outcome || steps.tests_serial.outcome }} size=${{ steps.tests_size.outcome }}
+          passes: parallel=${{ github.event_name == 'pull_request' && (steps.tests_selected.outputs.parallel_outcome || steps.tests_selected.outcome) || steps.tests_parallel.outcome }} serial=${{ github.event_name == 'pull_request' && (steps.tests_selected.outputs.serial_outcome || steps.tests_selected.outcome) || steps.tests_serial.outcome }} size=${{ steps.tests_size.outcome }}
 
   # ──────────────────────────────────────────────────────────────────
   # Pull requests on Windows and macOS: the same selected scope as quick-test
@@ -252,7 +252,7 @@ jobs:
         uses: ./.github/actions/test-evidence
         with:
           name: pr-selected-${{ matrix.os }}
-          passes: parallel=${{ steps.tests_selected.outputs.parallel_outcome }} serial=${{ steps.tests_selected.outputs.serial_outcome }}
+          passes: parallel=${{ steps.tests_selected.outputs.parallel_outcome || steps.tests_selected.outcome }} serial=${{ steps.tests_selected.outputs.serial_outcome || steps.tests_selected.outcome }}
 
   # ──────────────────────────────────────────────────────────────────
   # Benchmark methodology tests (owner decision R42). The devtools/benchmarks

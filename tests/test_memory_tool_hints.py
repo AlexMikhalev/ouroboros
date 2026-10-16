@@ -236,4 +236,3 @@ def test_data_read_missing_non_memory_path_uses_narrower_sentinel(tmp_path):
     assert "DATA_NOT_YET_CREATED" in result
     assert "lazily on first write" not in result
     assert "not guaranteed" in result
-

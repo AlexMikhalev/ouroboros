@@ -14,6 +14,7 @@ pytestmark = pytest.mark.serial  # finite nested pytest controllers; one at a ti
 @pytest.fixture
 def candidate(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_PREFLIGHT_TEST_WORKERS", "2")
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "2")  # nested slots: the selected gate must really run two workers
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_SERIAL", raising=False)
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_TIMEOUT_SEC", raising=False)
     monkeypatch.setattr(selection, "FLOOR_TESTS", {"tests/test_floor.py": "floor witness"})
