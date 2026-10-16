@@ -320,13 +320,13 @@ def test_enqueue_snapshot_and_first_reservation_keep_original_billing_without_li
 def test_focused_node_control_consumers():
     import pathlib
     import shutil
-    import subprocess
+    from tests.group_run import run_in_group
     root = pathlib.Path(__file__).resolve().parents[1]
     node = shutil.which('node')
     assert node, 'focused frontend verification requires the provided Node runtime'
-    result = subprocess.run([node, '--test', 'web/tests/task_continue.test.js',
-                             'web/tests/chat_activity_block.test.js', 'web/tests/activity_schedule_time.test.js'],
-                            cwd=root, capture_output=True, text=True, timeout=60)
+    result = run_in_group([node, '--test', 'web/tests/task_continue.test.js',
+                           'web/tests/chat_activity_block.test.js', 'web/tests/activity_schedule_time.test.js'],
+                          cwd=root, timeout=60)
     print(result.stdout)
     assert result.returncode == 0, result.stdout + result.stderr
 
