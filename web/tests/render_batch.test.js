@@ -97,19 +97,17 @@ test('the empty-Main greeting and the reconnect notice are chrome: a read over t
 test('sticky single-flight never swallows the post-completion resync', () => {
     // [GPT#12 + Fable#1] scheduleHistorySync (700ms debounce after task
     // completion) must do a REAL fetch — a lost task_done is healed only by
-    // refetching — so it calls syncHistory directly, never the sticky
-    // awaitInitialHydration shortcut.
+    // refetching — so it reads through the pager (what arrived since the newest
+    // read, else the newest page; chat_history_arrivals.test.js), never the
+    // sticky awaitInitialHydration shortcut.
     const fn = chatSource.slice(
         chatSource.indexOf('function scheduleHistorySync('),
         chatSource.indexOf('function applyLiveCardState('),
     );
-    assert.match(fn, /syncHistory\(\{ includeUser: false \}\)/);
+    assert.match(fn, /run: \(\) => historyPager\.read\(\)/);
     assert.doesNotMatch(fn, /awaitInitialHydration/);
-    // The reconnect branch of the open handler also always refetches.
-    assert.match(
-        chatSource,
-        /\? syncHistory\(\{ includeUser: !historyLoaded, fromReconnect: isReconnect \}\)/,
-    );
+    // The reconnect branch of the open handler also always reads again.
+    assert.match(chatSource, /\? historyPager\.read\(\{ fromReconnect: true \}\)/);
     // Every failed sync resets the sticky promise.
     assert.ok((chatSource.match(/initialHydrationPromise = null;/g) || []).length >= 3);
 });

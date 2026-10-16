@@ -1634,7 +1634,7 @@ export function createChatInstance({
     const historyResyncScheduler = createHistoryResyncScheduler({
         isReplayActive: () => _historyReplayActive,
         // Re-arm if the joined sync fetched its window before the arm.
-        run: () => syncHistory({ includeUser: false }).catch(() => {}).then(() => {
+        run: () => historyPager.read().catch(() => {}).then(() => {
             if (!destroyed && lastHistorySyncSucceeded && liveCardBound.isArmed()) scheduleHistorySync();
         }),
     });
@@ -2340,12 +2340,8 @@ export function createChatInstance({
     // Host-owned empty state: never a bubble, a history row or a model reply.
     const emptyWelcome = isMain ? mountEmptyChatWelcome(messagesDiv) : null;
 
-    // Hydration triggers share one sticky request; reconnect/resync still refetch.
-    function awaitInitialHydration({ includeUser = false } = {}) {
-        if (initialHydrationPromise) return initialHydrationPromise;
-        initialHydrationPromise = syncHistory({ includeUser });
-        return initialHydrationPromise;
-    }
+    // Hydration triggers share one sticky request; reconnect/resync read again.
+    const awaitInitialHydration = () => (initialHydrationPromise ||= syncHistory());
 
     // Main briefly yields hydration to an opening Project, with a hard bound.
     const MAIN_HYDRATION_MAX_DEFER_MS = 3500;
@@ -2391,7 +2387,7 @@ export function createChatInstance({
             pendingLiveEvictions.delete(id);
         }
     }
-    function applyHistoryMessages(messages, { fromReconnect = false, includeUser = true, archived = false } = {}) {
+    function applyHistoryMessages(messages, { fromReconnect = false, archived = false } = {}) {
         const knownCards = new Set(liveCardRecords.keys());
         _historyReplayActive = true;
         _historyAppending = archived;
@@ -2509,7 +2505,6 @@ export function createChatInstance({
                     if (fromReconnect && msg.role === 'user' && msg.client_message_id) {
                         pendingSubmissions.delete(String(msg.client_message_id));
                     }
-                    if (!includeUser && msg.role === 'user') continue;
                     if (msg.is_progress) {
                         // Progress-only/failed tasks still anchor at their first event.
                         insertCardIfNeeded(taskId);
@@ -2620,7 +2615,7 @@ export function createChatInstance({
         syncChatStatus();
     }
 
-    async function syncHistory({ includeUser = false, fromReconnect = false } = {}) {
+    async function syncHistory({ fromReconnect = false } = {}) {
         if (historySyncPromise) {
             // A reconnect joining an older read still owes a rebuild.
             if (fromReconnect) {
@@ -2629,7 +2624,7 @@ export function createChatInstance({
                     // One waiter consumes the queued rebuild; peers await it.
                     if (pendingReconnectSync) {
                         pendingReconnectSync = false;
-                        return syncHistory({ includeUser: false, fromReconnect: true });
+                        return syncHistory({ fromReconnect: true });
                     }
                     return historySyncPromise || lastHistorySyncSucceeded;
                 });
@@ -2664,12 +2659,10 @@ export function createChatInstance({
                 const reader = readingHistory();
                 const rechainRecent = admitted && !reader && !data.reason_code && pagerBeforeRecent.initialized
                     && !pagerBeforeRecent.canNewer && [...oldRecentIds].some(id => !recentHistoryIds.has(id));
-                const result = historyPager.acceptRecent(data);
+                const result = historyPager.acceptRecent(data, rechainRecent && { fromReconnect });
                 if (result.status !== 'applied') applyHistoryMessages(messages, { fromReconnect });
-                const recentState = historyPager.getState();
-                const releasableRecentIds = !admitted || rechainRecent || reader || recentState.canNewer ? [] : oldRecentIds;
-                withStableViewport(() => releaseHistoryIds(releasableRecentIds));
-                if (rechainRecent && !destroyed) void historyPager.latest();
+                withStableViewport(() => releaseHistoryIds(!admitted || rechainRecent || reader
+                    || historyPager.getState().canNewer ? [] : oldRecentIds));
                 if (armedAtStart) {
                     const represented = new Set(messages.map(row => row.presentation_owner_task_id || row.task_id));
                     for (const id of cardsAtStart) if (!represented.has(id)) pendingLiveEvictions.add(id);
@@ -2756,12 +2749,8 @@ export function createChatInstance({
     const newestFacts = { delivered: id => retainedHistoryIds().has(id), nodes: id => historyNodes(id),
         viewport: messagesDiv, header: pageHeader, composer: inputArea };
     const readReceipt = createProjectReadReceipt({
-        read: async (fresh) => {
-            if (!fresh && initialHydrationPromise) await initialHydrationPromise;
-            else {
-                if (historySyncPromise) await historySyncPromise;
-                await syncHistory({ includeUser: true });
-            }
+        read: async (fresh, whole) => {
+            await (!fresh && initialHydrationPromise || historyPager.read({ whole }));
             return lastHistorySyncSucceeded;
         },
         // A destroyed page reports hidden===false, hence the lifecycle flag.
@@ -2793,7 +2782,7 @@ export function createChatInstance({
         // A message this tab kept across a reload that the first read (or its preview) did not show saved is in doubt.
         const reconcileUnsaved = () => !destroyed && unconfirmed.reconcile(({ frame, views, ts }) => addMessage(frame.content,
             'user', false, ts || null, false, { source: 'web', senderSessionId: chatSessionId, clientMessageId: frame.client_message_id, attachments: views }));
-        if (await awaitInitialHydration({ includeUser: true })) return reconcileUnsaved();
+        if (await awaitInitialHydration()) return reconcileUnsaved();
         try {
             const saved = JSON.parse(sessionStorage.getItem(storeKey(CHAT_STORAGE_KEY)) || '[]');
             // A snapshot row is the addMessage option bag persistedHistory wrote;
@@ -3262,10 +3251,10 @@ export function createChatInstance({
         applyPage: (messages, descriptor) => {
             pageHistoryIds.set(descriptor.id, new Set(messages.flatMap(historyRowIds)));
             const oldRecentIds = recentHistoryIds;
-            const admitted = descriptor.direction === 'latest' && acceptRecentWindow(descriptor, messages);
+            const admitted = descriptor.direction === 'latest' && (acceptRecentWindow(descriptor, messages) || descriptor.rechained);
             const archived = descriptor.direction !== 'recent' && descriptor.direction !== 'latest';
             if (!archived) pagerRecent = descriptor;
-            applyHistoryMessages(messages, { archived });
+            applyHistoryMessages(messages, { ...descriptor, archived });
             // The present re-anchors the chain: rows no page or window owns any more
             // (windows kept while the reader was in older history) go with it.
             if (admitted) withStableViewport(() => releaseHistoryIds(new Set([...oldRecentIds,
@@ -3279,6 +3268,14 @@ export function createChatInstance({
             pageHistoryIds.delete(descriptor.id);
             withStableViewport(() => releaseHistoryIds(ids));
         },
+        // Rows stored since the newest read join its window.
+        applyArrivals: (messages, { window, fromReconnect }) => {
+            for (const id of messages.flatMap(historyRowIds)) recentHistoryIds.add(id);
+            applyHistoryMessages(messages, { fromReconnect });
+            readReceipt.arrived(window);
+        },
+        readNewest: syncHistory, newestInFlight: () => historySyncPromise,
+        canArrive: () => sourceHydrated && lastHistorySyncSucceeded && !liveCardBound.isArmed(),
         isPageProtected: isHistoryPageProtected,
         onState: snapshot => syncLoadOlderControl(snapshot),
     });
@@ -3295,7 +3292,7 @@ export function createChatInstance({
     async function loadOlderHistory() {
         if (historyControls.recentFailed()) {
             const owned = onHistoryRetry?.();
-            return historySyncPromise ? owned : syncHistory({ includeUser: true });
+            return historySyncPromise ? owned : syncHistory();
         }
         const snapshot = historyPager.getState();
         if (snapshot.error?.body?.reason_code === 'history_view_changed') {
@@ -3318,7 +3315,7 @@ export function createChatInstance({
         let result;
         do {
             result = current() ? await historyPager[direction]() : {};
-        } while (!destroyed && result.status === 'applied' && result.messageCount === 0
+        } while (!destroyed && result.status === 'applied' && result.messageCount === 0 && !result.indexing
             && historyPager.getState()[direction === 'older' ? 'canOlder' : 'canNewer']);
         return result;
     }
@@ -3735,11 +3732,8 @@ export function createChatInstance({
         updateMessagesPadding();
         loadUiPreferences()
             // Reconnect refetches lost task_done; first open shares idle-gated hydration.
-            .then(() => (isReconnect
-                ? syncHistory({ includeUser: !historyLoaded, fromReconnect: isReconnect })
-                : waitForHydrationWindow().then(
-                    () => awaitInitialHydration({ includeUser: !historyLoaded }),
-                )))
+            .then(() => (isReconnect ? historyPager.read({ fromReconnect: true })
+                : waitForHydrationWindow().then(awaitInitialHydration)))
             .then(() => {
                 if (reconnectBanner) {
                     addMessage(reconnectBanner, 'system', false, null, false, { ephemeral: true, systemType: 'reconnect' });

@@ -70,11 +70,19 @@ export function historyCoverage(recent, pages = []) {
 
 /** Chat's bounded archive-page owner. DOM, reading protection and live rows stay
  * with the chat instance; only fetchPage is asynchronous. Cursors are opaque.
+ * It also owns the open window's `after_cursor` (CLIENT_CONTRACT §5 "Reading
+ * history"): `read()` takes only the rows stored since the newest read and hands
+ * them to `applyArrivals`, the keyed row path the newest page takes; it leaves the
+ * newest page to chat's own read (`readNewest`) whenever arrivals cannot answer.
  */
 export function createChatHistoryPager({
     fetchPage,
     applyPage,
     releasePage,
+    applyArrivals = () => {},
+    readNewest = async () => false,
+    canArrive = () => false,  // a hydrated, healthy window that needs no rebuild
+    newestInFlight = () => null,
     isPageProtected = () => false,
     onState = () => {},
     isAlive = () => true,
@@ -88,7 +96,17 @@ export function createChatHistoryPager({
     let pending = null;
     let failure = null;
     let destroyed = false;
+    // Where the next read of new arrivals starts, the newest read's row count and the
+    // rows read since; the read in flight and at most one queued behind it.
+    let after = null, windowRows = 0, arrived = 0, arrival = null, queued = null, landedArrivals = 0;
     const alive = () => !destroyed && isAlive();
+    const rowCount = rows => (Array.isArray(rows) ? rows.filter(row => !isReplayEvidenceRow(row)).length : 0);
+    // Every newest read (the page, ↓, a recent read applied by chat) restarts the arrivals.
+    function newest(data) {
+        after = typeof data?.after_cursor === 'string' && data.after_cursor ? data.after_cursor : null;
+        windowRows = rowCount(data?.messages);
+        arrived = 0;
+    }
 
     // Protected pages can remain as islands while the ordinary reading window
     // moves. Navigation follows the contiguous window containing the last load.
@@ -175,7 +193,7 @@ export function createChatHistoryPager({
         return null;
     }
 
-    function land(data, { index, direction, newChain }) {
+    function land(data, { index, direction, newChain }, extra = {}) {
         const error = sourceReadError(data);
         if (error) throw error;
         if (!Array.isArray(data?.messages) || typeof data.has_more !== 'boolean'
@@ -183,7 +201,7 @@ export function createChatHistoryPager({
             throw new TypeError('History page is missing its messages or continuation boundary');
         }
         const nextChain = newChain ? chain + 1 : chain;
-        const messageCount = data.messages.filter(row => !isReplayEvidenceRow(row)).length;
+        const messageCount = rowCount(data.messages);
         // Re-reading a page refreshes its row count, never its frozen boundaries.
         const prior = newChain ? null : pages[index];
         const baseId = `history-page-${nextChain}-${index}`;
@@ -196,23 +214,25 @@ export function createChatHistoryPager({
             : { id, chain: nextChain, index,
                 requestCursor: data.page_cursor, nextCursor: data.next_cursor ?? null,
                 hasMore: data.has_more, rows: messageCount, loaded: true, coverage: data.coverage ?? null });
-        applyPage(data.messages, { ...page, direction, window: data.window ?? null, recentVersion: data.recentVersion });
+        applyPage(data.messages, { ...page, direction, window: data.window ?? null, recentVersion: data.recentVersion, ...extra });
         if (!alive()) return { status: 'disposed' };
-        if (newChain) { chain = nextChain; pages = [page]; }
+        if (newChain) { chain = nextChain; pages = [page]; newest(data); }
         else pages[index] = page;
         cache.set(page.id, { page });
         // An empty page is never a reading position: it would make the window
         // rewind one request per click for content nobody can see.
         if (newChain || messageCount > 0) focus = index;
         const releasedPageIds = prune();
-        return { status: 'applied', page, releasedPageIds, messageCount };
+        // Older rows the server's room index has not reached yet: reading on cannot land them now.
+        const indexing = Boolean(data.window?.truncated_by?.some?.(cause => String(cause).endsWith('_room_index_building')));
+        return { status: 'applied', page, releasedPageIds, messageCount, indexing };
     }
 
     function request(direction, index, cursor, newChain = false) {
         if (!alive()) return Promise.resolve({ status: 'disposed' });
         if (pending) return pending.direction === direction
             ? pending.promise : Promise.resolve({ status: 'busy' });
-        const operation = { direction, index, cursor, newChain, abort: new AbortController() };
+        const operation = { direction, index, cursor, newChain, abort: new AbortController(), landed: landedArrivals };
         failure = null;
         pending = operation;
         operation.promise = Promise.resolve()
@@ -220,7 +240,11 @@ export function createChatHistoryPager({
                 ? fetchPage(cursor, { signal: operation.abort.signal }) : null)
             .then(data => {
                 if (!alive() || pending !== operation) return { status: 'disposed' };
-                return land(data, operation);
+                const result = land(data, operation);
+                // Arrivals that landed meanwhile may lie past this newest page, which let
+                // them go: they are read again from its cursor.
+                if (newChain && landedArrivals !== operation.landed && canArrive()) void arrivals(false);
+                return result;
             })
             .catch(error => {
                 if (!alive() || pending !== operation) return { status: 'disposed' };
@@ -236,13 +260,78 @@ export function createChatHistoryPager({
         return operation.promise;
     }
 
+    // One read of what arrived since `after`. Its rows cover the window's present only
+    // when they account for everything stored since: a gap in the conversation, an
+    // unknown newest arrival, a refusal (409 history_view_changed/history_delta_reset)
+    // or any failure forgets the cursor, and the caller reads the newest page instead.
+    function readArrivals(ask) {
+        const cursor = after, abort = new AbortController();
+        const promise = Promise.resolve()
+            .then(() => fetchPage(cursor, { signal: abort.signal }))
+            .then(data => {
+                if (!alive()) return { status: 'disposed' };
+                const gap = data?.window?.truncated_by?.some?.(cause => String(cause).startsWith('chat_'));
+                if (!Array.isArray(data?.messages) || typeof data.after_cursor !== 'string' || !data.after_cursor
+                    || gap || data.window?.latest_message === null) {
+                    throw new TypeError('History arrivals do not account for everything stored since the last read');
+                }
+                const messageCount = rowCount(data.messages);
+                if (after === cursor) { after = data.after_cursor; arrived += messageCount; }
+                landedArrivals += 1;
+                applyArrivals(data.messages, { window: data.window ?? null, fromReconnect: ask.fromReconnect });
+                return alive() ? { status: 'applied', messageCount } : { status: 'disposed' };
+            })
+            .catch(error => {
+                if (after === cursor) after = null;
+                return alive() ? { status: 'reset', error } : { status: 'disposed' };
+            })
+            .finally(() => { if (arrival?.promise === promise) arrival = null; });
+        arrival = { promise, abort };
+        return promise;
+    }
+    // A window that took in a whole newest page of rows (at least the default page:
+    // 150 conversation and 60 narration rows, CLIENT_CONTRACT §5) reads the newest
+    // page again, which re-anchors it and lets go of what that page no longer holds.
+    const arrivable = () => Boolean(after) && arrived <= Math.max(windowRows, 210);
+    const startArrivals = ask => (!alive() ? Promise.resolve({ status: 'disposed' })
+        : arrivable() ? readArrivals(ask) : Promise.resolve({ status: 'unavailable' }));
+    // One read in flight and at most one queued behind it, so every caller gets a read
+    // begun after its call; a queued read reconciles as a reconnect when any caller it
+    // serves is one.
+    function arrivals(fromReconnect) {
+        if (queued) { queued.fromReconnect ||= fromReconnect; return queued.promise; }
+        if (!arrival) return startArrivals({ fromReconnect });
+        const ask = { fromReconnect };
+        ask.promise = arrival.promise.then(() => { queued = null; return startArrivals(ask); });
+        queued = ask;
+        return ask.promise;
+    }
+    // A read begun after this call, once chat's newest read in flight settled: what
+    // arrived since the newest read, else the newest page (`whole`, no cursor yet, a
+    // window grown full, one `canArrive` declines, a refusal or a failure). When
+    // arrivals cannot answer, chat's newest read starts within this very call.
+    function read({ fromReconnect = false, whole = false } = {}) {
+        const inFlight = newestInFlight();
+        if (inFlight) return inFlight.then(() => read({ fromReconnect, whole }));
+        if (!alive()) return Promise.resolve(false);
+        if (whole || !canArrive() || !(arrival || arrivable())) {
+            return readNewest({ fromReconnect });
+        }
+        return arrivals(fromReconnect).then(result => result.status === 'applied' || (alive() && readNewest({ fromReconnect })));
+    }
+
     return {
         getState,
+        read,
         // The first recent response owns the frozen chain. Later recent/live
         // refreshes are applied by chat itself, without registering their bodies
-        // here or replacing the original page-zero continuation.
-        acceptRecent(data) {
+        // here or replacing the original page-zero continuation, unless chat asks
+        // to `rechain` (a window shifted under a reader following the present):
+        // this read then starts the new chain as `latest` would, without reading
+        // the same page again; its descriptor carries `rechain` and `rechained`.
+        acceptRecent(data, rechain = null) {
             if (!alive()) return { status: 'disposed' };
+            newest(data);
             const sourceError = sourceReadError(data);
             if (sourceError && !pending) {
                 failure = { direction: 'recent', index: 0, cursor: null, newChain: true, error: sourceError };
@@ -250,9 +339,10 @@ export function createChatHistoryPager({
                 return { status: 'error', error: sourceError, cursor: null };
             }
             if (!sourceError && failure?.direction === 'recent') { failure = null; publish(); }
-            if (pages.length || pending) return { status: 'ignored' };
+            if (pending || (pages.length && !rechain)) return { status: 'ignored' };
             try {
-                const result = land(data, { index: 0, direction: 'recent', newChain: true });
+                const result = pages.length ? land(data, { index: 0, direction: 'latest', newChain: true }, { ...rechain, rechained: true })
+                    : land(data, { index: 0, direction: 'recent', newChain: true });
                 failure = null;
                 publish();
                 return result;
@@ -296,8 +386,10 @@ export function createChatHistoryPager({
             if (destroyed) return;
             destroyed = true;
             pending?.abort.abort();
+            arrival?.abort.abort();
             pending = null;
             failure = null;
+            after = null;
             for (const entry of cache.values()) release(entry);
             pages = [];
         },
