@@ -78,12 +78,12 @@ def test_quiz_pending_persistent_profile_recovery_and_keyboard(tmp_path, engine,
         pending = page.evaluate("""() => {const c=document.querySelector('.chat-quiz-card'),b=c.querySelectorAll('.chat-quiz-option')[1];
             return {state:c.dataset.state,phase:c.dataset.submission,pending:b.classList.contains('pending-choice'),
                 chosen:b.classList.contains('chosen'),focusPreserved:document.activeElement===window.qaClickFocus,readonly:c.querySelector('textarea').readOnly,
-                posts:qaPosts.length,overflow:c.scrollWidth>c.clientWidth,border:getComputedStyle(b).borderTopWidth};}""")
+                posts:qaPosts.length,overflow:c.scrollWidth>c.clientWidth,marked:getComputedStyle(b).backgroundColor!==getComputedStyle(c.querySelectorAll('.chat-quiz-option')[0]).backgroundColor};}""")
         observations["pending"] = pending
         page.screenshot(path=str(evidence / f"{engine}-{theme}-pending.png"))
         assert pending == {"state": "open", "phase": "sending", "pending": True, "chosen": False,
                            "focusPreserved": True, "readonly": True,
-                           "posts": 1, "overflow": False, "border": "1px"}, pending
+                           "posts": 1, "overflow": False, "marked": True}, pending
         original = page.evaluate("qaPosts[0]")
         page.screenshot(path=str(evidence / f"{engine}-{theme}-pending.png"))
         context.close()  # closes the browser process, not just the page
