@@ -7,7 +7,6 @@ ground-truth probe guidance, and the decision-turn outcome contract."""
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -485,6 +484,9 @@ def test_not_found_error_self_locates_without_ancestor_hint(tmp_path):
     ctx = _ctx(tmp_path)
     out = tools_core._read_file(ctx, path="definitely/missing/file.py", root="system_repo")
     assert "NOT_FOUND" in out
+    # Owner decision 22a: the error names the resolved path and never walks to an existing ancestor.
+    assert "definitely/missing/file.py" in out.replace("\\", "/")
+    assert "ancestor" not in out.lower()
 
 
 def test_access_blocked_message_has_single_period(tmp_path):

@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import subprocess
 from typing import Iterable
 
@@ -67,9 +68,48 @@ def is_test_module(path: str) -> bool:
 
 def apparatus_change(path: str) -> bool:
     p = PurePosixPath(path)
+    # Under tests/, everything but a test module (helpers, conftest, fixture data) is shared apparatus.
     return (path in _APPARATUS or path in FLOOR_TESTS
-            or (p.parts[0] == "tests" and p.suffix == ".py" and not is_test_module(path))
+            or (p.parts[0] == "tests" and not is_test_module(path))
             or (p.name.startswith("requirements") and p.suffix in {".txt", ".lock"}))
+
+
+# Release carriers bumped by every numbered release (P9): only a change beyond the
+# release version makes them apparatus, or selection would never apply to a release.
+_RELEASE_CARRIERS = frozenset({"pyproject.toml", "uv.lock", "web/package.json", "web/package-lock.json"})
+_PYPROJECT_VERSION = re.compile(r'^version\s*=\s*"([^"]+)"', re.M)
+
+
+def _release_versions(repo: Path, base: str) -> set[str]:
+    """Both spellings of the base and candidate release version (VERSION and its PEP 440 form)."""
+    versions = set()
+    for name in ("VERSION", "pyproject.toml"):
+        texts = []
+        try:
+            texts.append(_git(repo, "show", f"{base}:{name}").decode("utf-8"))
+        except (subprocess.SubprocessError, UnicodeError):
+            pass
+        try:
+            texts.append((repo / name).read_text(encoding="utf-8"))
+        except OSError:
+            pass
+        for text in texts:
+            if name == "VERSION":
+                versions.add(text.strip())
+            elif match := _PYPROJECT_VERSION.search(text):
+                versions.add(match.group(1))
+    return {version for version in versions if version}
+
+
+def _version_only_change(repo: Path, base: str, path: str, versions: set[str]) -> bool:
+    try:
+        old = _git(repo, "show", f"{base}:{path}").decode("utf-8")
+        new = (repo / path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError, subprocess.SubprocessError):
+        return False
+    for version in sorted(versions, key=len, reverse=True):
+        old, new = old.replace(version, "\0"), new.replace(version, "\0")
+    return bool(versions) and old == new
 
 
 def _module(path: str) -> str:
@@ -93,6 +133,22 @@ def direct_imports(source: str, path: str) -> set[str]:
                 imports.add(module)
                 imports.update(f"{module}.{alias.name}" for alias in node.names if alias.name != "*")
     return imports
+
+
+# Every proof check re-selects; parsing ~2,000 test modules each time cost seconds per commit.
+# Keyed by content, so an edited module is parsed again; the bound only caps memory.
+_IMPORT_SCANS: dict[tuple[str, bytes], frozenset[str]] = {}
+_IMPORT_SCAN_ENTRIES = 50_000
+
+
+def _scanned_imports(repo: Path, path: str) -> frozenset[str]:
+    source = (repo / path).read_text(encoding="utf-8")
+    key = (path, hashlib.blake2b(source.encode("utf-8"), digest_size=16).digest())
+    if key not in _IMPORT_SCANS:
+        if len(_IMPORT_SCANS) >= _IMPORT_SCAN_ENTRIES:
+            _IMPORT_SCANS.clear()
+        _IMPORT_SCANS[key] = frozenset(direct_imports(source, path))
+    return _IMPORT_SCANS[key]
 
 
 def validate_widening(repo: Path, extra_tests=(), full_tests=False, reason="") -> tuple[str, ...]:
@@ -134,8 +190,11 @@ class TestSelection:
         return ("tests/",) if self.tier == "full" else self.files
 
     def record(self) -> dict:
-        return {**asdict(self), "rule": SELECTION_RULE, "expected_files": list(self.files),
-                "omitted_files": self.available - len(self.files)}
+        record = {**asdict(self), "rule": SELECTION_RULE, "omitted_files": self.available - len(self.files)}
+        # A full run would list every module; its count and the rule say the same far smaller.
+        record["files"] = record["expected_files"] = list(self.files) if self.tier == "selected" else []
+        record["file_count"] = len(self.files)
+        return record
 
 
 def select_from_paths(repo: Path, paths: Iterable[str], *, base: str,
@@ -149,7 +208,9 @@ def select_from_paths(repo: Path, paths: Iterable[str], *, base: str,
     changed = tuple(sorted(set(paths)))
     files = tuple(sorted(p.relative_to(repo).as_posix() for p in (repo / "tests").rglob("test_*.py")))
     reasons = [(path, f"floor: {invariant}") for path, invariant in FLOOR_TESTS.items()]
-    full = [(p, "verification apparatus changed") for p in changed if apparatus_change(p)]
+    versions = _release_versions(repo, base) if _RELEASE_CARRIERS & set(changed) else set()
+    full = [(p, "verification apparatus changed") for p in changed if apparatus_change(p)
+            and not (p in _RELEASE_CARRIERS and _version_only_change(repo, base, p, versions))]
     if full_tests:
         full.append(("*", "author requested full: " + test_reason.strip()))
     selected = set(FLOOR_TESTS)
@@ -160,7 +221,7 @@ def select_from_paths(repo: Path, paths: Iterable[str], *, base: str,
             reasons.append((path, "changed test module"))
         if not full and modules:
             try:
-                imports = direct_imports((repo / path).read_text(encoding="utf-8"), path)
+                imports = _scanned_imports(repo, path)
             except (SyntaxError, UnicodeError) as exc:
                 # An unavailable graph grants no extra automatic escalation rule.
                 raise ValueError(f"import scan unavailable for {path}; repair it or request full_tests with test_reason") from exc

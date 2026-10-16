@@ -107,10 +107,10 @@ def make_serving(root: pathlib.Path) -> pathlib.Path:
 
 def isolate(monkeypatch, root: pathlib.Path) -> pathlib.Path:
     """Point the worktree registry and data root at ``root``; returns the data dir."""
-    # These miniature bodies exercise switching, not the battery. The real full
-    # qualification/refusal boundary is exercised in test_preflight_selection.py.
-    monkeypatch.setattr("ouroboros.preflight_qualification.qualify_commit",
-                        lambda *args, **kwargs: {"tier": "full", "candidate": args[1]})
+    # These miniature bodies exercise switching, not the battery. The real full-evidence
+    # acceptance/refusal boundary is exercised in test_preflight_selection.py.
+    monkeypatch.setattr("ouroboros.preflight_qualification.adoption_test_evidence",
+                        lambda *args, **kwargs: {"tier": "full", "source": "stub", "head": args[2]})
     data = root / "data"
     (data / "state").mkdir(parents=True, exist_ok=True)
     (data / "logs").mkdir(parents=True, exist_ok=True)

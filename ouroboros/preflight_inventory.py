@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import hashlib
 import json
 from pathlib import Path
 import uuid
@@ -92,12 +93,35 @@ def read_inventory(temp_root, label):
         return {}, f"test inventory unavailable: {exc}"
 
 
+_LISTED_IDS = 50  # bounded excerpt of ids worth reading; counts and the digest cover the rest
+
+
+def compact_inventory(inventory):
+    """Counts, a digest of the expected ids and only the ids worth reading.
+
+    The complete inventory stays with the run (and in the CLI's selection.json); a
+    durable record repeated in events, exhibits, ledgers and handoffs never carries it.
+    """
+    compact = {}
+    for label, row in (inventory or {}).items():
+        expected, executed = row.get("expected", []), row.get("executed", [])
+        compact[label] = {
+            "expected": len(expected), "executed": len(executed), "skipped": len(row.get("skipped", [])),
+            "digest": hashlib.sha256("\n".join(sorted(expected)).encode("utf-8")).hexdigest(),
+            "failed": row.get("failed", [])[:_LISTED_IDS],
+            "missing": sorted((Counter(expected) - Counter(executed)).elements())[:_LISTED_IDS],
+            "unexpected": sorted((Counter(executed) - Counter(expected)).elements())[:_LISTED_IDS],
+            "exitcode": row.get("exitcode"),
+        }
+    return compact
+
+
 def scope_record(proof, inventory=None):
     selection = getattr(proof, "selection", None)
     rule = "full default suite" if proof.tier == "full" else "custom pytest selection"
     return {"tier": proof.tier, **(selection.record() if selection else {"rule": rule}),
             "candidate": proof.tree, "head": proof.head, "index_tree": proof.index_tree,
-            **({"inventory": inventory} if inventory is not None else {})}
+            **({"inventory": compact_inventory(inventory)} if inventory is not None else {})}
 
 
 def inventory_problem(selection, inventory):

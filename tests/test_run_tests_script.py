@@ -1,6 +1,7 @@
 """The local battery entry point keeps the gate's recipe and a bounded serial overlap."""
 
 import importlib.util
+import json
 import pathlib
 import types
 
@@ -167,6 +168,39 @@ def test_empty_lane_with_cleanup_error_makes_the_battery_red(run_tests, monkeypa
     captured = capsys.readouterr()
     assert diagnostic in captured.err
     assert "battery: RED" in captured.out
+
+
+def test_the_node_option_runs_only_the_owned_node_lane(run_tests, monkeypatch):
+    lanes = []
+    monkeypatch.setattr(run_tests, "_node_lane", lambda: lanes.append("node") or 7)
+    monkeypatch.setattr(run_tests, "_run", lambda label, argv, cwd: pytest.fail("pytest must not start"))
+    assert run_tests.main(["--node"]) == 7 and lanes == ["node"]  # its exit status is the step's
+    for combined in (["--node", "--sequential"], ["--node", "--selected"], ["--node", "tests/test_x.py"]):
+        with pytest.raises(SystemExit):
+            run_tests.main(combined)
+
+
+@pytest.mark.parametrize("tier", ["full", "selected"])
+def test_a_deferred_full_escalation_runs_nothing_and_says_so(run_tests, monkeypatch, tmp_path, tier):
+    from ouroboros import test_selection
+
+    chosen = test_selection.TestSelection(
+        tier, "base", ("tests/test_floor.py",), (("tests/conftest.py", "verification apparatus changed"),),
+        ("tests/conftest.py",), "policy", 3)
+    monkeypatch.setattr(test_selection, "select_tests", lambda *a, **k: chosen)
+    summary, outputs, ran = tmp_path / "summary.md", tmp_path / "outputs", []
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(outputs))
+    monkeypatch.setattr(run_tests, "_node_lane", lambda: ran.append("node") or 0)
+    monkeypatch.setattr(run_tests, "_run", lambda label, argv, cwd: ran.append(label) or 0)
+    code = run_tests.main(["--selected", "--defer-full", "--evidence-dir", str(tmp_path / "evidence")])
+    record = json.loads((tmp_path / "evidence" / "selection.json").read_text(encoding="utf-8"))
+    if tier == "full":
+        assert code == 0 and ran == [] and record["outcome"] == "deferred"
+        assert "tests/conftest.py: verification apparatus changed" in summary.read_text(encoding="utf-8")
+        assert outputs.read_text(encoding="utf-8") == "parallel_outcome=skipped\nserial_outcome=skipped\n"
+    else:  # the selected scope still runs on the deferring leg
+        assert ran[0] == "node" and "parallel" in ran
 
 
 def test_sequential_with_pytest_arguments_is_refused(run_tests, monkeypatch):

@@ -32,10 +32,10 @@ from ouroboros.platform_layer import probe_node_version, resolve_bundled_node
 NODE_MIN_VERSION = (20, 11)
 
 # The web package boundary and its test glob. `web/package.json` runs
-# `node --test tests/*.test.js` FROM web/, and both CI jobs mirror that exact
-# step; the parity test derives the CI command from these two constants, so the
-# gate, CI, and the package script cannot drift apart silently. The gate globs
-# in Python (sorted, cross-platform) instead of relying on a shell.
+# `node --test tests/*.test.js` FROM web/; the gate and both CI jobs (through
+# `scripts/run_tests.py --node`) run `candidate_node_tests` over these two
+# constants, so the gate, CI, and the package script cannot drift apart silently.
+# The lane globs in Python (sorted, cross-platform) instead of relying on a shell.
 WEB_DIR = "web"
 TESTS_GLOB = "tests/*.test.js"
 

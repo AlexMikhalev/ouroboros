@@ -166,13 +166,13 @@ def test_generated_pytest_entry_obeys_nested_allocation(tmp_path, slots):
 
 @pytest.mark.parametrize("fault", ["exit", "thread_timeout"])
 def test_worker_death_ends_pass_with_crash_and_unfinished_evidence(tmp_path, fault):
-    child_identity, running = tmp_path / "child.json", tmp_path / "running"
+    child_identity, running, finished = tmp_path / "child.json", tmp_path / "running", tmp_path / "finished"
     child_code = ("import os,time,json; from pathlib import Path; "
                   "from ouroboros.platform_layer import process_start_time; "
                   f"Path({str(child_identity)!r}).write_text(json.dumps([os.getpid(),process_start_time(os.getpid())]),encoding='utf-8'); "
                   "time.sleep(40)")
     crash = "os._exit(7)" if fault == "exit" else "time.sleep(40)"
-    code, evidence, output, elapsed = _run_pytest(tmp_path, {
+    code, evidence, output, _ = _run_pytest(tmp_path, {
         "test_0_crash.py": f"""
             import os, subprocess, sys, time
             from pathlib import Path
@@ -191,10 +191,11 @@ def test_worker_death_ends_pass_with_crash_and_unfinished_evidence(tmp_path, fau
             def test_running():
                 Path({str(running)!r}).write_text('started', encoding='utf-8')
                 time.sleep(40)
+                Path({str(finished)!r}).write_text('finished', encoding='utf-8')
         """,
         "test_2_pending.py": "def test_pending(): raise AssertionError('must not schedule after worker death')\n",
     }, workers=2, extra=("--timeout=3", "--timeout-method=thread") if fault == "thread_timeout" else ())
-    assert code != 0 and elapsed < 35, output
+    assert code != 0 and not finished.exists(), output  # the pass ended without waiting for the sleeper
     data = json.loads((evidence / "results.json").read_text(encoding="utf-8"))
     crash_reports = [row for row in data["reports"] if row["phase"] == "crash"]
     assert any(row["nodeid"] == "test_0_crash.py::test_dies" for row in crash_reports), output

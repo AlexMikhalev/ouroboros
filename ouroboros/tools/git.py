@@ -1381,7 +1381,8 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
             )
             if publication_error:
                 return publication_error
-            push_status = _auto_push_after_review(ctx, publication_paused=publication_paused) if not body_candidate.is_bound(ctx) else body_candidate.publication_note(ctx)
+            push_status = (_evolution_test_publication_stop(ctx, commit_sha, test_warning_ref[0])
+                           or (_auto_push_after_review(ctx, publication_paused=publication_paused) if not body_candidate.is_bound(ctx) else body_candidate.publication_note(ctx)))
         ctx.last_reviewed_commit_sha = commit_sha
         body_candidate.record_reviewed_commit(ctx, commit_sha)
         if attribution_binding is not None:
@@ -1569,6 +1570,7 @@ from ouroboros.tools.git_evolution import (  # noqa: E402,F401
     _check_evolution_commit_stage,
     _evolution_commit_authority,
     _evolution_publication_stopped_result,
+    _evolution_test_publication_stop,
     _preserve_evolution_orphan,
     _record_evolution_commit_intent,
     _record_evolution_commit_receipt,

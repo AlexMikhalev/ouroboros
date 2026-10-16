@@ -116,9 +116,8 @@ jobs:
       # The hermetic commit gate runs this exact suite (ouroboros/preflight_node.py);
       # keeping the step here keeps gate and CI mirrored in both directions.
       - name: Run browser-module tests (node --test — mirrored by the hermetic commit gate)
-        if: ${{ !cancelled() && steps.setup_node.outcome == 'success' && github.event_name != 'pull_request' }}
-        shell: bash
-        run: cd web && node --test tests/*.test.js
+        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && steps.setup_node.outcome == 'success' && github.event_name != 'pull_request' }}
+        run: python scripts/run_tests.py --node
       # ESLint `no-undef` is the second, independent layer of the browser no-undef
       # gate (owner decision D-13): the hermetic commit gate keeps the dependency-free
       # acorn walker in the suite above; this layer is CI-only, lockfile-frozen
@@ -134,18 +133,18 @@ jobs:
       # observed platform: the serial pass has no per-test timeout (the commit gate's
       # serial pass has none either), so the ceiling is what bounds a hang there. Its
       # expiry fails that step, and with it the job, without cancelling the job: the
-      # evidence step below still names the test. On Linux and macOS the killed step's
-      # pytest can linger beside the later steps until the runner cleans up the job.
+      # evidence step below still names the test. `scripts/run_tests.py` owns each pass
+      # (lifeline guardian, overload stop), so a killed step leaves no tree behind.
       - name: Run tests (parallel — excludes the costly marker lanes AND the serial real-process suites)
         id: tests_parallel
         timeout-minutes: 90
         if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && github.event_name != 'pull_request' }}
-        run: python -m pytest tests/ -m "not serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/parallel"
+        run: python scripts/run_tests.py tests/ -m "not serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/parallel"
       - name: Run tests (serial — real subprocess/port/global-state suites that flake under -n)
         id: tests_serial
         timeout-minutes: 60
         if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && github.event_name != 'pull_request' }}
-        run: python -m pytest tests/ -m "serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/serial"
+        run: python scripts/run_tests.py tests/ -m "serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/serial"
       - name: Run PR tests (contract floor + affected modules and complete Node lane)
         id: tests_selected
         timeout-minutes: 150
@@ -202,7 +201,8 @@ jobs:
   # ──────────────────────────────────────────────────────────────────
   # Pull requests on Windows and macOS: the same selected scope as quick-test
   # (contract floor, affected modules, complete Node lane), so a platform break
-  # in the changed area shows before the merge. The full matrix runs after it.
+  # in the changed area shows before the merge. The full matrix runs after it;
+  # a full escalation on Windows is left to its four landed shards (--defer-full).
   # ──────────────────────────────────────────────────────────────────
   pr-selected-os:
     if: ${{ github.event_name == 'pull_request' && github.base_ref == 'ouroboros' }}
@@ -245,7 +245,7 @@ jobs:
         id: tests_selected
         timeout-minutes: 150
         if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && steps.setup_node.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) }}
-        run: python scripts/run_tests.py --selected --base ${{ github.event.pull_request.base.sha }} --sequential --evidence-dir="${{ runner.temp }}/ci-evidence"
+        run: python scripts/run_tests.py --selected --base ${{ github.event.pull_request.base.sha }} --sequential --evidence-dir="${{ runner.temp }}/ci-evidence" ${{ runner.os == 'Windows' && '--defer-full' || '' }}
       - name: Publish test evidence
         if: ${{ !cancelled() && steps.setup_python.outcome == 'success' }}
         continue-on-error: true
@@ -377,12 +377,10 @@ jobs:
         shell: pwsh
         run: '"${{ steps.posix_tools.outputs.msys2-location }}\usr\bin" >> $env:GITHUB_PATH'
       # Independent checks keep running after a red sibling; setup outcomes suppress cascaded noise.
-      # The hermetic commit gate runs this exact suite (ouroboros/preflight_node.py);
-      # `shell: bash` keeps the glob working on the Windows runner too.
+      # The hermetic commit gate runs this exact suite (ouroboros/preflight_node.py).
       - name: Run browser-module tests (node --test — mirrored by the hermetic commit gate)
-        if: ${{ !cancelled() && steps.setup_node.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) && matrix.shard <= 1 }}
-        shell: bash
-        run: cd web && node --test tests/*.test.js
+        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && steps.setup_node.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) && matrix.shard <= 1 }}
+        run: python scripts/run_tests.py --node
       # ESLint `no-undef` is the second, independent layer of the browser no-undef
       # gate (owner decision D-13): the hermetic commit gate keeps the dependency-free
       # acorn walker in the suite above; this layer is CI-only, lockfile-frozen
@@ -410,17 +408,18 @@ jobs:
           --collect-only -q --default-suite-manifest
           --ci-evidence-dir="${{ runner.temp }}/ci-evidence/default-manifest/serial"
       # A command-line `-m` REPLACES the pyproject addopts markexpr, so repeat the default
-      # marker-lane exclusions and AND them with the serial split. --timeout guards hangs.
+      # marker-lane exclusions and AND them with the serial split. --timeout guards hangs;
+      # `scripts/run_tests.py` passes the arguments through and owns the process tree.
       - name: Run tests (parallel — excludes the costly marker lanes AND the serial real-process suites)
         id: tests_parallel
         timeout-minutes: 90
         if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) }}
-        run: python -m pytest tests/ -m "not serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/parallel" ${{ runner.os == 'Windows' && format('--default-suite-shard={0}/4', matrix.shard) || '' }}
+        run: python scripts/run_tests.py tests/ -m "not serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/parallel" ${{ runner.os == 'Windows' && format('--default-suite-shard={0}/4', matrix.shard) || '' }}
       - name: Run tests (serial — real subprocess/port/global-state suites that flake under -n)
         id: tests_serial
         timeout-minutes: 60
         if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) }}
-        run: python -m pytest tests/ -m "serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/serial" ${{ runner.os == 'Windows' && format('--default-suite-shard={0}/4', matrix.shard) || '' }}
+        run: python scripts/run_tests.py tests/ -m "serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/serial" ${{ runner.os == 'Windows' && format('--default-suite-shard={0}/4', matrix.shard) || '' }}
       # Whom the reference-book rule binds (scripts/book_growth_mode.py): the size
       # lane below blocks, warns or passes a grown book by this mode.
       - name: Decide the reference-book growth mode

@@ -39,7 +39,7 @@ def test_leaf_selects_only_direct_importers_and_changed_tests_above_floor(repo):
     "tests/test_floor.py", "pyproject.toml", "uv.lock", "requirements-runtime.lock", "site/pnpm-lock.yaml",
     "ouroboros/preflight_runner.py", "ouroboros/test_selection.py", "scripts/run_tests.py",
     "ouroboros/process_containment.py", "ouroboros/process_lifeline.py",
-    "ouroboros/process_overload.py", "ouroboros/test_parallelism.py",
+    "ouroboros/process_overload.py", "ouroboros/test_parallelism.py", "tests/fixtures/sample.json",
 ])
 def test_verification_changes_require_full(repo, path):
     result = selection.select_from_paths(repo, [path], base="base")
@@ -96,6 +96,19 @@ def test_an_unparseable_import_graph_requires_explicit_widening(repo):
                                        full_tests=True, test_reason="inspect collection failure").tier == "full"
 
 
+def test_repeated_selection_parses_only_modules_whose_content_changed(repo, monkeypatch):
+    parsed = []
+    scan = selection.direct_imports
+    monkeypatch.setattr(selection, "_IMPORT_SCANS", {})
+    monkeypatch.setattr(selection, "direct_imports", lambda source, path: parsed.append(path) or scan(source, path))
+    first = selection.select_from_paths(repo, ["ouroboros/leaf.py"], base="base")
+    assert len(parsed) == 5  # every test module once
+    assert selection.select_from_paths(repo, ["ouroboros/leaf.py"], base="base") == first and len(parsed) == 5
+    write(repo, "tests/test_unrelated.py", "from ouroboros import leaf\n")  # an edit is read again
+    assert "tests/test_unrelated.py" in selection.select_from_paths(repo, ["ouroboros/leaf.py"], base="base").files
+    assert parsed[5:] == ["tests/test_unrelated.py"]
+
+
 def test_git_candidate_includes_dirty_untracked_deleted_and_renamed_inputs(repo):
     def git(*args):
         return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True).stdout.decode().strip()
@@ -116,6 +129,27 @@ def test_git_candidate_includes_dirty_untracked_deleted_and_renamed_inputs(repo)
     assert selection.refresh_selection(repo, result) == result
     with pytest.raises(subprocess.CalledProcessError):
         selection.select_tests(repo, base="missing-base")
+
+
+def test_a_release_bump_alone_stays_selected_but_other_carrier_edits_run_full(repo):
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True).stdout.decode().strip()
+    git("init", "-q")
+    git("config", "user.email", "selection@example.invalid")
+    git("config", "user.name", "Selection tests")
+    project = '[project]\nname = "ouroboros"\nversion = "{}"\ndependencies = [{}]\n'
+    write(repo, "VERSION", "7.7.0-rc.1\n")
+    write(repo, "pyproject.toml", project.format("7.7.0rc1", ""))
+    write(repo, "web/package.json", '{\n  "version": "7.7.0-rc.1"\n}\n')
+    git("add", ".")
+    git("commit", "-qm", "base")
+    write(repo, "VERSION", "7.7.0-rc.2\n")  # P9: every numbered release bumps the carriers
+    write(repo, "pyproject.toml", project.format("7.7.0rc2", ""))
+    write(repo, "web/package.json", '{\n  "version": "7.7.0-rc.2"\n}\n')
+    assert selection.select_tests(repo).tier == "selected"
+    write(repo, "pyproject.toml", project.format("7.7.0rc2", '"requests"'))
+    result = selection.select_tests(repo)
+    assert result.tier == "full" and ("pyproject.toml", "verification apparatus changed") in result.reasons
 
 
 def test_floor_exists_in_this_checkout():

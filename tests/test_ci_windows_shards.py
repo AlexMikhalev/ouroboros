@@ -207,7 +207,7 @@ def test_windows_matrix_keeps_the_same_passes_and_once_per_os_checks(tmp_path):
     for name in ("book_mode", "tests_size", "attachment_browser_install", "attachment_browser", "composer_browser"):
         assert "matrix.shard <= 1" in steps[name]["if"]
     for step in job["steps"]:
-        if ("node --test" in step.get("run", "") or "lint:undef" in step.get("run", "")
+        if ("run_tests.py --node" in step.get("run", "") or "lint:undef" in step.get("run", "")
                 or "test_no_core_a2a_telegram_imports.py" in step.get("run", "")):
             assert "matrix.shard <= 1" in step["if"]
     mandatory = [step for step in job["steps"] if step.get("name", "").startswith(("Require both Windows", "Upload the Windows"))]

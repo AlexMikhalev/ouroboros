@@ -241,7 +241,8 @@ def _ci_pytest_suite_commands(job: str) -> list[tuple[str, str]]:
     )
     assert block, f"ci.yml has no `{job}:` job"
     # `tests/` only — the per-file guard steps run one file and are not the split.
-    return re.findall(r'run: python -m pytest tests/ -m "([^"]+)"(.*)', block.group(1))
+    # Each pass runs under the owned runner, which forwards its pytest arguments unchanged.
+    return re.findall(r'run: python (?:-m pytest|scripts/run_tests\.py) tests/ -m "([^"]+)"(.*)', block.group(1))
 
 
 @pytest.mark.parametrize("job", ["quick-test", "full-test-runs"])

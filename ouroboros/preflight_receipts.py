@@ -268,10 +268,10 @@ class FullGateReceipt:
 
         if subject is None:
             return cls(None, {}, "no tested subject (no caller ctx, or the checkout could not be bound)")
-        if subject.tier != "full":
-            return cls(None, {}, "selected evidence cannot mint a FullGateReceipt")
         if [spec.label for spec in passes] != ["parallel", "serial"] or probe_module not in passes[0].args:
             return cls(None, {}, "not the complete default recipe")
+        if subject.tier != "full":
+            return cls(None, {}, "selected evidence cannot mint a FullGateReceipt")
         root = canonical_data_root(ctx)
         if root is None:
             return cls(None, {}, "no canonical data root")
@@ -451,8 +451,12 @@ def execution_section(exhibit: Any) -> str:
                     else "; which of its lanes ran tests is not disclosed")
         if empty:
             observed += f"; lanes {', '.join(empty)} collected no tests, so no test ran there"
+        scope = ""
+        if exhibit.get("tier") == "selected" and isinstance(exhibit.get("files"), list):
+            scope = (f" over {len(exhibit['files'])} selected test modules ({exhibit.get('omitted_files', 0)} "
+                     f"not run; {exhibit.get('rule', 'floor, direct importers and widening')})")
         return ("## Preflight test execution (host fact)\n"
-                f"The {exhibit.get('tier', 'full')} hermetic test gate passed{observed}.\n"
+                f"The {exhibit.get('tier', 'full')} hermetic test gate passed{scope}{observed}.\n"
                 f"Tested checkout: HEAD {tested.get('head')}, tree {tested.get('tree')}, index "
                 f"{tested.get('index_tree')}. Evidence: {how}.\n"
                 "Unsigned host fact, not a verdict: decide yourself which further checks this change needs.")

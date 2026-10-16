@@ -4,6 +4,7 @@
     python scripts/run_tests.py                  full battery (node lane + every default-lane test)
     python scripts/run_tests.py --sequential     full battery exactly as the commit gate and CI split it
     python scripts/run_tests.py --selected --base HEAD  commit/PR floor + affected tests, with both lanes
+    python scripts/run_tests.py --node            only the complete Node lane (CI runs it as its own step)
     python scripts/run_tests.py --evidence-dir DIR  pytest diagnostics in DIR/<phase>, passed by argv
     python scripts/run_tests.py tests/test_x.py  focused run; every argument is forwarded to pytest
 
@@ -158,6 +159,10 @@ def _selected(args, evidence) -> int:
     output = root / "selection.json"
     output.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     print(f"=== selection evidence: {output}", flush=True)
+    if args.defer_full and selection.tier == "full":
+        record["outcome"] = "deferred"
+        output.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        return _defer_full(selection)
     code = _node_lane()
     previous = os.environ.get("PYTHONPATH")
     completed = False
@@ -197,6 +202,20 @@ def _selected(args, evidence) -> int:
     return code
 
 
+def _defer_full(selection) -> int:
+    """A full escalation this leg cannot finish (Windows runs full in four landed shards)."""
+    why = "; ".join(f"{path}: {reason}" for path, reason in selection.reasons
+                    if reason == "verification apparatus changed" or reason.startswith("author requested full"))
+    note = f"full scope deferred to the landed matrix, nothing ran on this leg ({why})"
+    print(f"=== {note}", flush=True)
+    for name, text in (("GITHUB_STEP_SUMMARY", f"**{note}**\n"),
+                       ("GITHUB_OUTPUT", "parallel_outcome=skipped\nserial_outcome=skipped\n")):
+        if destination := os.environ.get(name):
+            with open(destination, "a", encoding="utf-8") as stream:
+                stream.write(text)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--sequential", action="store_true", help="two passes, exactly as the commit gate and CI")
@@ -205,6 +224,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--extra-test", action="append", default=[], help="widen selection with a test module")
     parser.add_argument("--full-tests", action="store_true", help="widen --selected to the full battery")
     parser.add_argument("--test-reason", default="", help="reason for authored widening")
+    parser.add_argument("--defer-full", action="store_true",
+                        help="with --selected: report a full escalation and run nothing (a leg that cannot finish it)")
+    parser.add_argument("--node", action="store_true", help="only the complete Node lane, owned like every pass")
     parser.add_argument("--evidence-dir", type=pathlib.Path,
                         help="write pytest diagnostics under DIR/<phase>; never inherited by nested pytest",
                         metavar="DIR")
@@ -213,12 +235,16 @@ def main(argv: list[str] | None = None) -> int:
     if not (REPO / "tests" / "conftest.py").is_file():
         print(f"{REPO} is not an Ouroboros checkout (no tests/conftest.py)", file=sys.stderr)
         return 2
+    if args.node:
+        if args.selected or args.sequential or pytest_args:
+            parser.error("--node runs only the Node lane")
+        return _node_lane()
     if args.selected:
         if pytest_args:
             parser.error("--selected cannot be combined with arbitrary pytest arguments")
         return _selected(args, evidence)
-    if args.base or args.extra_test or args.full_tests or args.test_reason:
-        parser.error("--base and widening options require --selected")
+    if args.base or args.extra_test or args.full_tests or args.test_reason or args.defer_full:
+        parser.error("--base, --defer-full and widening options require --selected")
     if pytest_args:
         if args.sequential:
             parser.error("--sequential selects the full two-pass battery; drop it or drop the pytest arguments")

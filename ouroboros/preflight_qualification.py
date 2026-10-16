@@ -1,10 +1,17 @@
-"""Full exact-commit qualification at adoption and evolution publication."""
+"""Full exact-commit test evidence for adoption and evolution publication.
+
+Neither consumer runs tests. The full battery runs where a long wait belongs (a
+reviewed commit with ``full_tests``, evolution's forced post-commit run); these
+consumers accept only its evidence, for exactly the commit in question.
+"""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import subprocess
-import tempfile
-from types import SimpleNamespace
+
+_HOW = ("a run that also carried uncommitted or untracked files does not count; commit it with full_tests=true "
+        "from a clean checkout so the post-commit run tests exactly this tree, then request the restart again")
 
 
 def full_proof_error(ctx, repo, commit="") -> str:
@@ -20,26 +27,39 @@ def full_proof_error(ctx, repo, commit="") -> str:
     return "a full green exact-tree test proof is required; selected, skipped or stale evidence cannot qualify"
 
 
-def qualify_commit(repo, commit, data_dir, *, task_id="") -> dict:
-    """Use an immutable checkout, so later dirty edits cannot qualify an earlier SHA."""
-    from ouroboros import preflight_runner as pr
-    from ouroboros.test_environment import default_temp_parent
+def receipt_for_commit(data_dir, repo, commit) -> dict:
+    """A coherent durable receipt of a complete full run of exactly ``commit``, or ``{}``."""
+    from ouroboros.preflight_receipts import RECEIPT_SCHEMA, RECEIPTS_DIR, _record_problem
 
-    repo = Path(repo)
-    root = Path(tempfile.mkdtemp(prefix="ouroboros-qualification-", dir=default_temp_parent()))
-    tree = root / "repo"
-    added = False
-    try:
-        result = pr._run_git(repo, ["-c", "core.autocrlf=false", "-c", "core.eol=lf",
-                                    "worktree", "add", "--detach", str(tree), commit], timeout=60)
-        if result.returncode:
-            raise ValueError(result.stderr.strip() or "could not materialize the exact adoption commit")
-        added = True
-        ctx = SimpleNamespace(repo_dir=tree, drive_root=Path(data_dir), task_id=task_id)
-        error = pr.run_hermetic_pytest(tree, ctx=ctx, selected=True, base="HEAD",
-                                      full_tests=True, test_reason="exact-commit adoption qualification")
-        if error or (error := full_proof_error(ctx, tree, commit)):
-            raise ValueError(error)
-        return dict(ctx._preflight_test_disclosure)
-    finally:
-        pr._release_hermetic_tree(repo, root, tree, added, "")
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True, timeout=60)
+
+    tree = git("rev-parse", "--verify", f"{commit}^{{tree}}")
+    if tree.returncode:
+        return {}
+    tree = tree.stdout.strip()
+    # The run must have carried the Node lane exactly when this commit has web tests.
+    node_ran = any(name.endswith(".test.js") for name in git("ls-tree", "-r", "--name-only", commit, "--",
+                                                              "web/tests").stdout.split())
+    for path in sorted((Path(data_dir) / "state" / RECEIPTS_DIR).glob("*.json")):
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+            identity = document["identity"]
+            if (identity["schema"] == RECEIPT_SCHEMA and identity["head"] == commit and identity["tree"] == tree
+                    and not _record_problem(document, identity, node_ran)):
+                return {"source": "receipt", "key": path.stem, "head": commit, "tree": tree,
+                        "created_at": document["created_at"], "phase": document["phase"]}
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return {}
+
+
+def adoption_test_evidence(data_dir, repo, commit, ctx=None) -> dict:
+    """The task's own full proof of ``commit`` or a durable receipt of it; never a new run."""
+    if ctx is not None and not full_proof_error(ctx, repo, commit):
+        proof = ctx._preflight_test_proof
+        return {"tier": "full", "source": "proof", "head": proof.head, "tree": proof.tree}
+    receipt = receipt_for_commit(data_dir, repo, commit)
+    if receipt:
+        return {"tier": "full", **receipt}
+    raise ValueError(f"no full green test run of {str(commit)[:12]} is on record; {_HOW}")

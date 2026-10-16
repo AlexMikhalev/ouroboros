@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros import commit_admission as admission, preflight_runner as pr, test_selection as selection
-from ouroboros.preflight_qualification import full_proof_error, qualify_commit
+from ouroboros.preflight_qualification import adoption_test_evidence, full_proof_error
 from tests.test_preflight_runner import _make_repo, _commit_all
 
 pytestmark = pytest.mark.serial  # finite nested pytest controllers; one at a time
@@ -52,10 +52,10 @@ def test_real_selected_run_records_inventory_and_cannot_qualify_managed_update(c
     assert row["receipt"]["status"] == "declined"
     assert "selected" in row["receipt"]["reason"]
     assert not list(ctx.drive_root.glob("state/preflight_receipts/*.json"))
-    inventory = row["inventory"]
-    assert sorted(inventory["parallel"]["expected"]) == sorted(inventory["parallel"]["executed"])
-    assert len(inventory["parallel"]["expected"]) == 2
-    assert inventory["serial"]["expected"] == []
+    inventory = row["inventory"]  # durable records keep counts, a digest and only the ids worth reading
+    assert inventory["parallel"]["expected"] == inventory["parallel"]["executed"] == 2
+    assert inventory["parallel"]["missing"] == inventory["parallel"]["unexpected"] == []
+    assert len(inventory["parallel"]["digest"]) == 64 and inventory["serial"]["expected"] == 0
     exhibit = preflight_receipts.execution_exhibit(ctx)
     assert exhibit["tier"] == "selected" and exhibit["inventory"] == inventory
     assert "selected" in preflight_receipts.execution_section(exhibit)
@@ -114,63 +114,61 @@ def test_undisclosed_execution_keeps_the_proofs_actual_tier(tmp_path, monkeypatc
     assert scope_record(proof)["rule"] == "custom pytest selection"
 
 
-def test_full_qualification_tests_the_named_commit_not_later_dirty_bytes(candidate):
+def test_adoption_accepts_a_full_receipt_of_exactly_the_named_commit(candidate):
+    from ouroboros.preflight_receipts import capture_executing_source_baseline
+
+    capture_executing_source_baseline()  # receipts bind the loaded code generation, as server.py does at import
     repo = candidate.repo_dir
     (repo / "tests/test_unrelated.py").write_text("def test_other(): assert True\n", encoding="utf-8")
     _commit_all(repo)
     sha = pr._run_git(repo, ["rev-parse", "HEAD"]).stdout.strip()
-    (repo / "leaf.py").write_text("value = 99\n", encoding="utf-8")
-    record = qualify_commit(repo, sha, candidate.drive_root)
-    assert record["tier"] == "full" and record["head"] == sha
-    assert (repo / "leaf.py").read_text(encoding="utf-8") == "value = 99\n"
+    assert pr.run_hermetic_pytest(repo, ctx=candidate) is None  # a full green run mints the durable receipt
+    (repo / "leaf.py").write_text("value = 99\n", encoding="utf-8")  # later dirty bytes do not matter
+    evidence = adoption_test_evidence(candidate.drive_root, repo, sha)
+    assert evidence["tier"] == "full" and evidence["source"] == "receipt" and evidence["head"] == sha
+    _commit_all(repo)
+    later = pr._run_git(repo, ["rev-parse", "HEAD"]).stdout.strip()
+    with pytest.raises(ValueError, match="full_tests=true"):  # another commit has no full run on record
+        adoption_test_evidence(candidate.drive_root, repo, later)
 
 
 def test_evolution_publication_refuses_selected_but_accepts_full(candidate, monkeypatch):
     from ouroboros.tools import git
-    from ouroboros.tools.git_evolution import _evolution_publication_stopped_result
+    from ouroboros.tools.git_evolution import _evolution_test_publication_stop
 
     ctx = candidate
     ctx.current_task_type = "evolution"
     monkeypatch.setattr(git, "_evolution_commit_authority", lambda *a, **k: ({}, {"ok": True}))
     assert pr.run_hermetic_pytest(ctx.repo_dir, ctx=ctx, selected=True, phase=pr.PRE_COMMIT_PHASE) is None
-    assert "EVOLUTION_PUBLICATION_STOPPED" in _evolution_publication_stopped_result(ctx, "candidate", ctx._preflight_test_proof.head, "")
+    assert "EVOLUTION_PUBLICATION_STOPPED" in _evolution_test_publication_stop(ctx, ctx._preflight_test_proof.head, "")
     (ctx.repo_dir / "tests/test_unrelated.py").write_text("def test_other(): assert True\n", encoding="utf-8")
     assert pr.run_hermetic_pytest(ctx.repo_dir, ctx=ctx) is None
-    assert _evolution_publication_stopped_result(ctx, "candidate", ctx._preflight_test_proof.head, "") == ""
+    assert _evolution_test_publication_stop(ctx, ctx._preflight_test_proof.head, "") == ""
 
 
-def test_adoption_refuses_failed_qualification_before_writing_handoff(tmp_path, monkeypatch):
-    from ouroboros import body_adoption
+def test_adoption_without_full_evidence_is_refused_before_writing_handoff(tmp_path, monkeypatch):
+    from ouroboros import body_adoption, preflight_qualification
     from tests.test_body_adoption import Scene
 
-    scene = Scene(tmp_path, monkeypatch)
+    real = preflight_qualification.adoption_test_evidence
+    scene = Scene(tmp_path, monkeypatch)  # stubs the evidence for its miniature bodies
     scene.commit()
-    def failed(*args, **kwargs):
-        raise ValueError("selected evidence is not full qualification")
-    monkeypatch.setattr("ouroboros.preflight_qualification.qualify_commit", failed)
-    with pytest.raises(body_adoption.AdoptionRefused, match="selected evidence") as caught:
+    monkeypatch.setattr(preflight_qualification, "adoption_test_evidence", real)  # nothing is on record here
+    with pytest.raises(body_adoption.AdoptionRefused, match="full_tests=true") as caught:
         scene.authorize()
     assert caught.value.code == "ADOPTION_TESTS_REQUIRED"
     assert not body_adoption.read(scene.data)
 
 
-def test_adoption_does_not_replace_a_restart_armed_during_qualification(tmp_path, monkeypatch):
-    from ouroboros import body_adoption
-    from tests.test_body_adoption import Scene
+def test_durable_records_carry_counts_not_the_whole_inventory():
+    from ouroboros.preflight_inventory import compact_inventory
 
-    scene = Scene(tmp_path, monkeypatch)
-    scene.commit()
-    def qualify(*args, **kwargs):
-        directory = body_adoption.helper_dir(scene.data)
-        directory.mkdir(parents=True, exist_ok=True)
-        body_adoption.body_switch.record(str(directory), {"id": "other", "phase": "armed"}, "armed", "other restart")
-        return {"tier": "full"}
-    monkeypatch.setattr("ouroboros.preflight_qualification.qualify_commit", qualify)
-    with pytest.raises(body_adoption.AdoptionRefused) as caught:
-        scene.authorize()
-    assert caught.value.code == "ADOPTION_STATE_CHANGED"
-    assert body_adoption.read(scene.data)["id"] == "other"
-    assert body_adoption.read(scene.data)["phase"] == "armed"
+    ids = [f"tests/test_x.py::test_{i}" for i in range(500)]
+    row = {"expected": ids, "executed": ids + [ids[0]], "skipped": [], "failed": [ids[2]], "exitcode": 1}
+    compact = compact_inventory({"parallel": row})["parallel"]
+    assert compact["expected"] == 500 and compact["executed"] == 501
+    assert compact["unexpected"] == [ids[0]] and compact["missing"] == [] and compact["failed"] == [ids[2]]
+    assert len(json.dumps(compact)) < 2000  # repeated in events, exhibits, ledgers and handoffs
 
 
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "unfinished"])

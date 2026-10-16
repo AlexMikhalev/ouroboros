@@ -727,11 +727,23 @@ def test_pull_requests_run_the_selected_scope_on_windows_and_macos():
     assert "pull_request" in job["if"] and job["strategy"]["matrix"]["os"] == ["windows-latest", "macos-latest"]
     producer = _steps("ci.yml", "pr-selected-os")["tests_selected"]
     assert "scripts/run_tests.py --selected --base ${{ github.event.pull_request.base.sha }} --sequential" in producer["run"]
+    # Unsharded Windows cannot finish a full escalation in its ceiling; its four landed shards run it.
+    assert producer["run"].endswith("${{ runner.os == 'Windows' && '--defer-full' || '' }}")
     evidence = next(step for step in job["steps"] if step.get("uses") == EVIDENCE_ACTION)
     # A step killed before run_tests.py writes its outputs still reports through its own outcome.
     assert evidence["with"]["passes"] == " ".join(
         f"{label}=${{{{ steps.tests_selected.outputs.{label}_outcome || steps.tests_selected.outcome }}}}"
         for label in ("parallel", "serial"))
+
+
+@pytest.mark.parametrize("job", ["quick-test", "full-test-runs"])
+def test_every_landed_test_producer_runs_under_the_owned_runner(job):
+    """One owner per test run: the full passes and the Node lane run through scripts/run_tests.py."""
+    steps = _workflow("ci.yml")["jobs"][job]["steps"]
+    producers = [step["run"] for step in steps if step.get("id") in {"tests_parallel", "tests_serial"}]
+    node = [step["run"] for step in steps if step.get("name", "").startswith("Run browser-module tests")]
+    assert len(producers) == 2 and all(run.startswith("python scripts/run_tests.py tests/ -m ") for run in producers)
+    assert node == ["python scripts/run_tests.py --node"]
 
 
 def test_evidence_action_steps_are_independent_diagnostics():

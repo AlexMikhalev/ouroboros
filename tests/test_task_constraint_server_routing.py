@@ -1,6 +1,5 @@
 from types import SimpleNamespace
 import asyncio
-from pathlib import Path
 
 import server
 from ouroboros.gateway import control as gateway_control

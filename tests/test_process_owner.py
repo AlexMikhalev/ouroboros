@@ -245,6 +245,45 @@ def test_overload_stops_bounded_allocator_with_largest_member(tmp_path, owned, s
     assert _live(sentinel)
 
 
+def test_an_unavailable_sampler_degrades_the_watch_instead_of_failing_the_run(owned, monkeypatch, capfd):
+    from ouroboros import config, process_overload
+
+    def no_sampler(container, detached=None):
+        raise FileNotFoundError("ps")  # a slim Linux image ships no ps; /proc is read there instead
+
+    monkeypatch.setattr(config, "TEST_PROCESS_SAMPLE_SEC", 0.05)
+    monkeypatch.setattr(process_overload, "member_memory", no_sampler)
+    container, proc = owned("import time; time.sleep(1)", lifeline=True, overload=True)
+    assert proc.wait(timeout=15) == 0  # the healthy run is not stopped
+    assert container.reap() == ""
+    assert "running without the memory stop" in capfd.readouterr().err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows membership is the held Job, read every sample")
+def test_the_token_scan_keeps_its_own_cadence_and_its_members_stay_counted(monkeypatch, sentinel):
+    from ouroboros import config, process_containment, process_overload
+
+    scans, seen = [], []
+    monkeypatch.setattr(process_containment, "pids_with_env_marker",
+                        lambda token, *a: scans.append(token) or [sentinel[0]])  # a member only its token finds
+    monkeypatch.setattr(config, "TEST_PROCESS_SAMPLE_SEC", 0.01)
+    monkeypatch.setattr(config, "TEST_PROCESS_TOKEN_SCAN_SEC", 3600.0)
+    watch = process_overload.OverloadWatch(SimpleNamespace(_token="token", _birth=None, _root=0), slots=1)
+    real = process_overload.member_memory
+
+    def sample(container, detached=None):
+        members = real(container, detached)
+        seen.append([member.pid for member in members])
+        if len(seen) == 4:
+            watch._done.set()
+        return members
+
+    monkeypatch.setattr(process_overload, "member_memory", sample)
+    watch._run()
+    assert not watch.degraded and len(scans) == 1  # one environment scan, then the cheap table every sample
+    assert seen == [[sentinel[0]]] * 4  # the detached member is counted in every sample
+
+
 @pytest.mark.parametrize("tree,start,now,machine,stops", [
     (0.9, 2.0, 2.0, 16, False),    # the one admitted worker on a busy 16 GB laptop runs
     (2.5, 2.0, 2.0, 16, True),     # a tree past its limit stops

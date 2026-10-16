@@ -11,7 +11,6 @@ still nominates notes writes none.
 
 from __future__ import annotations
 
-import inspect
 import json
 
 import pytest
