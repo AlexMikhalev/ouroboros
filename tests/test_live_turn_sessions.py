@@ -263,7 +263,7 @@ def test_a_stop_after_a_send_already_waiting_on_the_transport_closes_the_call(ha
     assert write_owner_message(tmp_path, "one more thing", "t-call", msg_id="owner-typed-3")
     assert sending.wait(5)  # that send has begun and waits
     assert write_owner_message(tmp_path, "stop", "t-call", msg_id="owner-stop", kind=KIND_FINALIZE_NOW)
-    text, usage, _trace = h.finish(timeout=5.0)
+    text, usage, _trace = h.finish()  # a Stop held behind the send would never finish
     assert usage["live_call"]["ended"] == "owner_stop" and engine.closed
 
 
@@ -680,5 +680,25 @@ def test_a_meeting_only_call_counts_real_time_playback_at_a_barge_in(harness):
     assert _wait_for(lambda: engine.sent_of(Interrupt))
     (cut,) = engine.sent_of(Interrupt)  # the finished answer is left alone
     assert cut.item_id == "long" and 250 <= cut.played_ms < 4000  # cut where it is, not at zero
+    h.stop()
+    h.finish()
+
+
+def test_later_meeting_captions_landing_first_leave_the_earlier_owner_words_the_owners(harness):
+    h = harness()
+    engine = h.start()
+    second = b"\x01\x00" * 24000
+    h.hub.feed(PeerAudio("owner-1", "owner", second))  # 0-1000 ms: the owner, before any meeting
+    assert _wait_for(lambda: len(engine.sent_of(AudioIn)) == 1)
+    h.hub.feed(PeerJoined(PeerInfo("meeting-audio", "meeting", True, False)))
+    h.hub.feed(PeerAudio("meeting-audio", "meeting", second))
+    h.hub.feed(PeerAudio("meeting-audio", "meeting", second))  # 1000-3000 ms: the meeting
+    assert _wait_for(lambda: len(engine.sent_of(AudioIn)) == 3)
+    for item, start in (("o1", 0), ("m1", 1000), ("m2", 2000)):
+        engine.push(SpeechStarted(item, start))
+    for item, words in (("m1", "meeting words one"), ("m2", "meeting words two"), ("o1", "owner words")):
+        engine.push(Caption(SPEAKER_OWNER, words, True, item))  # the owner's caption lands last
+    assert _wait_for(lambda: len(h.chat_rows()) == 1 and h.counts_heard() == 2)
+    assert h.chat_rows()[0]["text"] == "owner words"
     h.stop()
     h.finish()

@@ -179,6 +179,7 @@ class _LiveCall:
         self.input_ms = 0.0
         self.meeting_spans: List[Tuple[int, float, float]] = []  # (session epoch, start ms, end ms)
         self.input_starts: Dict[str, Tuple[int, float]] = {}
+        self.inputs_done: set = set()  # captioned inputs whose start still bounds an earlier pending one
         # Participants whose audio the platform reported flowing since the last heard
         # caption: exactly one names that utterance's speaker, otherwise it stays unnamed.
         self.voices_since_caption: set = set()
@@ -722,14 +723,23 @@ class _LiveCall:
     def _input_source(self, item_id: str) -> Optional[bool]:
         """Whether meeting audio fed this input item: from its start to the next item's start
         (or to now while it is the latest); ``None`` when the provider never placed it."""
-        placed = self.input_starts.pop(item_id, None)
+        placed = self.input_starts.get(item_id)
         if placed is None:
             return None
         epoch, start = placed
         later = [begin for session, begin in self.input_starts.values() if session == epoch and begin > start]
         end = min(later) if later else (self.input_ms if epoch == self.epoch else float("inf"))
-        return any(session == epoch and begin < end and finish > start
-                   for session, begin, finish in self.meeting_spans)
+        heard = any(session == epoch and begin < end and finish > start
+                    for session, begin, finish in self.meeting_spans)
+        self.inputs_done.add(item_id)
+        # A captioned input's start is retired once no earlier input of its session is pending.
+        for key, (session, begin) in list(self.input_starts.items()):
+            if key in self.inputs_done and not any(
+                    other not in self.inputs_done and other_session == session and other_begin < begin
+                    for other, (other_session, other_begin) in self.input_starts.items()):
+                del self.input_starts[key]
+                self.inputs_done.discard(key)
+        return heard
 
     def _on_heard(self, text: str, item_id: str) -> None:
         """Input speech while meeting audio feeds the session (or in a Presence call).
