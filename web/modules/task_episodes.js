@@ -4,18 +4,19 @@
  * title — `Episode 1 · 17:33–18:15 · Failed: <the shared cause sentence>`, `Episode 2 · since 19:42` —
  * never a column of chips.
  *
- * The chain is the host's explicit fact only: a settled task's `continued_by.successor_task_id`, or
- * its `continuation_offer.successor_task_id` once the offer says `admitted`. Names, projects or an
- * origin message shared by two tasks are not a chain.
+ * The chain is the host's explicit fact only: a settled task's `continued_by` or `continuation_offer`
+ * naming its successor once it says `admitted`. A `bound` claim is still pending (its card offers
+ * Retry Continue) and is no episode yet. Names, projects or an origin message shared by two tasks are
+ * not a chain.
  */
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
 import { taskDoneIsTerminal, taskPresentation, taskReasonDetail, taskTerminalPhase } from './log_events.js';
 import { fmt } from './i18n.js';
+import { projectCollapsedActivity, renderCollapsedActivity } from './chat_activity.js';
 
 export function admittedSuccessor(row) {
-    const offer = row?.continuation_offer;
-    const viaOffer = offer && typeof offer === 'object' && offer.state === 'admitted' ? offer.successor_task_id : '';
-    return String(row?.continued_by?.successor_task_id || viaOffer || '').trim();
+    const admitted = (link) => (link && typeof link === 'object' && link.state === 'admitted' ? link.successor_task_id : '');
+    return String(admitted(row?.continued_by) || admitted(row?.continuation_offer) || '').trim();
 }
 
 /** Fold one row's facts into a task's episode: when its attempt started, when and how it ended. */
@@ -90,9 +91,10 @@ export function renderEpisodes(el, episodes = []) {
  * card to where its work began (earliest wins); `activity(record)` is the census row its controls read.
  * The host's admitted successor carries the SAME work, so its card takes the predecessor's place and
  * name, and every episode is one meta line on it. The predecessor's node folds away; its record stays to
- * take late rows.
+ * take late rows. A successor with no card here runs where this chat sees none of its frames (a Main
+ * portal's room): `follow(successorId, predecessor)` may mint its card from the facts it holds.
  */
-export function createTaskEpisodes({ records, reanchor, activity }) {
+export function createTaskEpisodes({ records, reanchor, activity, follow = () => false }) {
     const predecessors = new Map();  // successor task id -> predecessor task id
 
     function chainOf(taskId) {
@@ -121,7 +123,13 @@ export function createTaskEpisodes({ records, reanchor, activity }) {
             record.suggestedName = name;
             changed = true;
         }
-        if (name && record.titleEl.textContent !== name) { record.titleEl.textContent = name; changed = true; }
+        if (name && record.titleEl.textContent !== name) {
+            record.titleEl.textContent = name;
+            // An unnamed successor's own latest line stood in for its title; under the work's name it is the line again.
+            renderCollapsedActivity(record, projectCollapsedActivity({ suggestedName: name, headline: record.collapsedActivity,
+                previous: record.collapsedActivity }));
+            changed = true;
+        }
         for (const predecessor of chain) {
             if (!predecessor.root.hidden) { predecessor.root.hidden = true; changed = true; }
             predecessor.root.dataset.episodeOf = record.groupId;
@@ -143,8 +151,10 @@ export function createTaskEpisodes({ records, reanchor, activity }) {
             if (!record || record.isSubagent || !row || typeof row !== 'object') return false;
             record.episode = noteEpisodeFacts(record.episode, row);
             const successor = admittedSuccessor(row);
-            if (successor && successor !== record.groupId) predecessors.set(successor, record.groupId);
-            return sync(record);
+            const linked = Boolean(successor) && successor !== record.groupId;
+            if (linked) predecessors.set(successor, record.groupId);
+            const changed = sync(record);
+            return Boolean((linked && !records.get(successor)?.root?.isConnected && follow(successor, record)) || changed);
         },
         /** A card that became visible: if it belongs to a known chain, the chain's card takes over. */
         sync: (record) => (record && (predecessors.has(record.groupId) || record.root?.dataset?.episodeOf) ? sync(record) : false),

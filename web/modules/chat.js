@@ -572,18 +572,17 @@ export function createChatInstance({
         if (budgetFill) budgetFill.style.width = `${budget.fillPct}%`;
     }
 
-    // Main: a card whose work lives in a Project room is that work's portal (work_portal.js); Continue
-    // episodes of one work share one card (task_episodes.js).
+    // Main: a moved work's card is its portal (work_portal.js); Continue episodes share one card (task_episodes.js).
     const portals = createWorkPortals({ isMain, feed: messagesDiv, records: liveCardRecords, onDomWrite: withStableViewport,
         isConnected: () => ws.isConnected?.() !== false, onConverted: () => signalChatFreed(), remember: rememberMessageKey,
         append: (msg, text, opts) => appendProjectRow(addMessage, msg, text, opts), actionsOf: ensureLiveActionsEl,
         card: { get: getLiveCardRecord, show: ensureLiveCardVisible, reanchor: reanchorTaskCard, restore: restoreCardActivity,
-            meta: renderLiveCardMeta, controls: syncCancelRunButton, finish: finishLiveCardMutation,
-            missing: (id) => observeMissingManagedTask(id), summary: appendTaskSummaryToLiveCard,
+            meta: renderLiveCardMeta, controls: syncCancelRunButton, finish: finishLiveCardMutation, note: noteTaskDetails,
+            missing: observeMissingManagedTask, summary: appendTaskSummaryToLiveCard,
             collapse: (record) => (explicitCardExpansion.delete(record.groupId), record.root.dataset.expanded === '1'
                 && setLiveCardExpanded(record, false)) } });
     const episodes = createTaskEpisodes({ records: liveCardRecords, reanchor: reanchorTaskCard,
-        activity: (record) => currentActivity(record) });
+        activity: (record) => currentActivity(record), follow: portals.follow });
     const rowMenu = createChatRowMenu({ feed: messagesDiv, replies, cardOf: (id) => liveCardRecords.get(id),
         activityOf: (record) => currentActivity(record) });
 

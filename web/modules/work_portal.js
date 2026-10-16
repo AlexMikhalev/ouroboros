@@ -12,14 +12,22 @@
  * are data, not a second product; they only say which card moved where). The present comes from the
  * all-chat census (`last_line`, `last_line_at`, `tool_calls`, `detached`; CONTRACTS K8); a fact the
  * row does not carry stays absent, so an older host leaves today's card.
+ *
+ * A Continue is the next episode of the SAME card (owner QB = A) on every surface, whoever made it:
+ * the predecessor's own record (its admitted link) is read again when the owner presses Continue on a
+ * card here, or when the census lists a new root that may be its successor. A successor whose frames
+ * reach this chat (a room, Main's own work) then joins its card (task_episodes.js); Main sees none of a
+ * portal's successor's frames, so that successor's census row is its whole present there.
  */
-import { apiClient } from './api_client.js';
+import { apiClient, fetchTaskDetailStrict } from './api_client.js';
 import { showToast } from './toast.js';
 import { normalizeLogTs } from './log_events.js';
 import { censusTaskFacts, liveCardLabel, syncParkedPhase } from './task_phase_chip.js';
 import { boundActivityPreview, projectIdFromTask, refitCollapsedActivity, renderCollapsedActivity, taskCostProjection } from './chat_activity.js';
 import { DURABLE_RECEIPTS, receiptNotice } from './project_handoff.js';
 import { nameProjectReference, projectReference } from './project_reference.js';
+import { admittedSuccessor } from './task_episodes.js';
+import { continueControlSuccessor } from './task_continue.js';
 
 const key = (value) => String(value || '').trim();
 export const isPortal = (record) => record?.root?.dataset?.portal === '1';
@@ -97,7 +105,8 @@ export function reconcilePortalNotes(feed, scope = feed) {
  * mechanics (each returns whether the DOM changed): `get(id)` mints or finds a root record, `show(record)`
  * mounts it, `reanchor(record, ts)`, `collapse(record)`, `restore(record, hold)`, `meta(record, cost?)`,
  * `controls(record)` (Stop/Resume), `finish(id, outcome)`, `missing(id)` (durable-detail read),
- * `summary(row)` (a final's typed outcome). `onConverted` is the composer's "this chat is free" cue;
+ * `note(record, detail)` (a settled card's detail), `summary(row)` (a final's typed outcome).
+ * `onConverted` is the composer's "this chat is free" cue;
  * `append(row, text, opts)` draws an ordinary Project row, `remember(key)` keeps a history key, `actionsOf(record)`
  * is the card's own action row.
  */
@@ -109,6 +118,10 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
     const projects = new Map();
     // History reads newest pages first: a final can arrive before the older row that binds its card.
     const completions = new Map();
+    // An admitted successor of a portal's work -> that portal's record, until the successor's census row is here.
+    const follows = new Map();
+    // `predecessor|root` pairs whose record already said whether that root is its Continue.
+    const asked = new Set();
 
     /** The live activity a card's controls act on when its work runs in another chat (its room). */
     const activity = (record) => (isPortal(record) ? record.portalActivity || undefined : undefined);
@@ -198,9 +211,74 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
         return changed;
     }
 
-    /** `/api/state`: the census of EVERY chat (a portal's work runs in its room's chat), bindings and names. */
+    // The successor's census row names its Project: its card is minted as that Project's portal, at its own
+    // start, and the episode chain then gives it the work's place and first name. No row, no card.
+    function adopt(successorId) {
+        const row = census.get(successorId);
+        const projectId = key(bindings[successorId]?.project_id) || key(row?.project_id);
+        if (!isPortal(follows.get(successorId)) || !row || !projectId) return false;
+        follows.delete(successorId);
+        const record = card.get(successorId);
+        if (!record || record.isSubagent) return false;
+        // A queued row may not know its start (0): stamping that would pin the card above the whole feed.
+        const startedSec = Number(row.started_at);
+        if (startedSec > 0) card.reanchor(record, startedSec * 1000);
+        const changed = bind(record, { id: projectId, name: key(row.project_name) });
+        card.show(record);
+        return Boolean(changed || record.root.isConnected);
+    }
+
+    /** The episode chain's hand-off: a portal's admitted successor, which runs where Main sees no frame of it. */
+    function follow(successorId, predecessor) {
+        const id = key(successorId);
+        if (!isMain || !id || !isPortal(predecessor)) return false;
+        follows.set(id, predecessor);
+        return Boolean(onDomWrite(() => adopt(id)));
+    }
+
+    // Read a settled card's own record once for one root that may be its Continue; the card's normal detail path
+    // (`card.note`) then folds an admitted link. An absent record is an answer; a failed read, or a claim on this
+    // root still bound, asks again.
+    function ask(record, rootId) {
+        const pair = `${record?.groupId}|${rootId}`;
+        if (!record || !rootId || asked.has(pair)) return;
+        asked.add(pair);
+        void fetchTaskDetailStrict(record.groupId).then((detail) => {
+            if (detail?.continued_by?.successor_task_id === rootId && !admittedSuccessor(detail)) asked.delete(pair);
+            if (detail && record.root?.isConnected) onDomWrite(() => card.note(record, detail));
+        }, () => asked.delete(pair));
+    }
+
+    // The owner's own press on a card here (task_continue.js) names its successor at once: read the record now, so
+    // the successor joins the same card when its first frame lands, not at the next census.
+    feed?.addEventListener?.('ouro:task-continued', (event) => {
+        const record = records.get(key(event?.detail?.taskId));
+        if (record?.root?.isConnected) ask(record, key(event.detail.successorId));
+    });
+
+    // A Continue made anywhere else (another chat or tab, the mind) is written on the predecessor's own record; the
+    // census then lists its successor. A new root that may be the Continue of a settled card here (its Continue
+    // control names no successor yet, or that root) is when to ask: a root whose frames reach this chat (a room,
+    // Main's own work) has a card here; a portal's successor runs in the portal's Project and has none in Main.
+    function askContinued() {
+        const roots = [...census.values()].filter((row) => row?.kind === 'managed_task' && !row.parent_task_id
+            && key(row.activity_id) && !follows.has(key(row.activity_id)));
+        for (const record of roots.length ? records.values() : []) {
+            const named = !record.isSubagent && record.finished && record.root?.isConnected && !record.root.dataset.episodeOf
+                ? continueControlSuccessor(record) : null;
+            for (const row of named === null ? [] : roots) {
+                const rootId = key(row.activity_id);
+                const candidate = records.get(rootId);
+                const scoped = candidate?.root?.isConnected ? !isPortal(record) && !candidate.episodeName && candidate !== record
+                    : isMain && isPortal(record) && key(row.project_id) === record.root.dataset.projectId;
+                if (scoped && (!named || named === rootId)) ask(record, rootId);
+            }
+        }
+    }
+
+    /** `/api/state`: the census of EVERY chat (a portal's work runs in its room's chat), bindings and names (Main). */
     function sync(data) {
-        if (!isMain || !data || typeof data !== 'object') return;
+        if (!data || typeof data !== 'object') return;
         if (Array.isArray(data.active_chat_activities)) {
             census.clear();
             for (const row of data.active_chat_activities) {
@@ -209,6 +287,7 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
             }
             censusComplete = data.active_chat_activities_complete === true && data.supervisor_ready === true && isConnected();
         }
+        if (!isMain) return askContinued();  // a room has no portals; its cards still follow a Continue
         if (Array.isArray(data.projects)) for (const project of data.projects) if (project?.id) projects.set(project.id, project);
         if (data.task_bindings && typeof data.task_bindings === 'object') bindings = data.task_bindings;
         onDomWrite(() => {
@@ -221,8 +300,10 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
                     changed = bind(record, { id: projectId, name: key(row?.project_name) }) || changed;
                 } else changed = present(record) || changed;
             }
+            for (const successorId of [...follows.keys()]) changed = adopt(successorId) || changed;
             return reconcilePortalNotes(feed) || changed;
         });
+        askContinued();
     }
 
     /**
@@ -332,5 +413,5 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
         return added;
     }
 
-    return { activity, bind, bindRow, present, row, settle, sync, syncConvert, turnIntoProject };
+    return { activity, bind, bindRow, follow, present, row, settle, sync, syncConvert, turnIntoProject };
 }
