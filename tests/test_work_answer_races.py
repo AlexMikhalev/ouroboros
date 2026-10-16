@@ -19,7 +19,7 @@ pytestmark = pytest.mark.serial
     ("successor", "before"), ("successor", "selected"), ("successor", "appended"),
     ("held_successor", "selected"),
 ])
-def test_answer_follows_reader_at_finish_without_creating_a_successor(host, monkeypatch, destination, cut):
+def test_answer_follows_reader_at_finish_without_creating_a_successor(host, monkeypatch, destination, cut):  # noqa: F811
     from ouroboros import question_answers as qa
     from ouroboros.gateway.task_decision import answer_decision, recover_question_deliveries
     from ouroboros.owner_mailbox import drain_owner_entries
@@ -112,7 +112,7 @@ def test_answer_follows_reader_at_finish_without_creating_a_successor(host, monk
         assert "continued_by" not in load_task_result(host.root, "asker")
 
 
-def test_owner_pause_after_delivery_keeps_the_answer_for_its_own_resume(host, monkeypatch):
+def test_owner_pause_after_delivery_keeps_the_answer_for_its_own_resume(host, monkeypatch):  # noqa: F811
     from ouroboros.gateway.task_decision import answer_decision, recover_question_deliveries
     from ouroboros.owner_mailbox import KIND_QUIZ_ANSWER, drain_owner_entries
     from ouroboros.owner_pause import release_fence

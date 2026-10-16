@@ -17,7 +17,7 @@ from tests.test_work_intent_races import Crash
 pytestmark = pytest.mark.serial
 
 
-def direct(host, monkeypatch):
+def direct(host, monkeypatch):  # noqa: F811
     from ouroboros import working_checkpoint
     from supervisor import active_activity, queue
 
@@ -59,7 +59,7 @@ def park(limit, task):
 
 
 @pytest.mark.parametrize("cut", ["arm", "checkpoint", "seed", "source", "pause_row", "park", "unregister", "wake_grant"])
-def test_detach_crash_prefix_restores_the_same_work_and_runs_it_once(host, monkeypatch, cut):
+def test_detach_crash_prefix_restores_the_same_work_and_runs_it_once(host, monkeypatch, cut):  # noqa: F811
     from ouroboros import owner_wait, working_checkpoint
     from supervisor import direct_pause, queue, worker_chat_lane, workers
     from supervisor.events_budget import budget_hold_fact
@@ -167,7 +167,7 @@ def test_detach_crash_prefix_restores_the_same_work_and_runs_it_once(host, monke
 
 
 @pytest.mark.parametrize("blocker", ["no_checkpoint", "owner_stop"])
-def test_seed_cannot_invent_saved_work_or_override_stop(host, monkeypatch, blocker):
+def test_seed_cannot_invent_saved_work_or_override_stop(host, monkeypatch, blocker):  # noqa: F811
     from ouroboros import working_checkpoint
     from ouroboros.cancel_intents import has_active_intent, request_cancel
     from supervisor import queue, workers
@@ -199,7 +199,7 @@ def test_seed_cannot_invent_saved_work_or_override_stop(host, monkeypatch, block
 
 
 @pytest.mark.parametrize("pause_at", ["none", "readiness", "after_grant", "launch"])
-def test_owner_pause_vetoes_detach_wake_and_last_launch_gate(host, monkeypatch, pause_at):
+def test_owner_pause_vetoes_detach_wake_and_last_launch_gate(host, monkeypatch, pause_at):  # noqa: F811
     from ouroboros import project_placement
     from ouroboros.owner_pause import read_fence
     from supervisor import queue, sleep_wake, workers

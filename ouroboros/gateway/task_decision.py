@@ -525,9 +525,9 @@ async def answer_decision(drive_root: pathlib.Path, body: Any, *, source: str = 
                 task_id=task_id, reason_code=refusal,
             )
         from ouroboros.owner_quiz import (
-            CLOSURE_FIELDS, claim_quiz_delivery, mark_discharged, mark_quiz_history_written,
-            question_delivery_projection, quiz_states, record_answered, record_answer_delivery_after_terminal,
-            question_delivery_settled, record_quiz_delivery_failure, reconcile_terminal,
+            CLOSURE_FIELDS, claim_quiz_delivery, question_delivery_projection, quiz_states, record_answered,
+            record_answer_delivery_after_terminal, question_delivery_settled, record_quiz_delivery_failure,
+            reconcile_terminal,
         )
 
         if task is None and refusal != "task_not_reading":
@@ -621,7 +621,7 @@ async def answer_decision(drive_root: pathlib.Path, body: Any, *, source: str = 
             comment=str(block.get("comment") or ""),
             question_delivery=delivery_view,
         )
-    except Exception as exc:
+    except Exception:
         try:
             from ouroboros.owner_quiz import record_quiz_delivery_failure
             record_quiz_delivery_failure(drive_root, task_id, quiz_id, "quiz_delivery_failed")
