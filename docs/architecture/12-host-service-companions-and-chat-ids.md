@@ -1,6 +1,6 @@
 # 12. Host Service, Companion Processes, and Chat IDs
 
-Reviewed-skill ingress, Presence, companions and chat-id delivery live here. Chat ids are values, including the hidden destination; reviewed owner-bound transports are control surfaces. External speech remains observation with provenance, never an owner request; unknown outcomes never authorize another attempt.
+Chat ids are values, including the hidden destination; reviewed owner-bound transports are control surfaces. External speech remains observation with provenance, never an owner request; unknown outcomes never authorize another attempt.
 
 ### Host Service boundary
 
@@ -38,7 +38,7 @@ Receipt reporting is negotiated per turn (wire fields: CREATING_SKILLS "Reportin
 
 ### Companion processes
 
-Companion processes are host-supervised: reviewed manifest-declared descriptors enter durable custody, reconcile after lifecycle changes and restart, and stop on disable, unload or panic. `state/extension_generation.json` carries the opposite direction, the server's published live set, which a running task worker adopts at a task's start or at a dispatch miss, so an enable after boot is not invisible until the pool respawns. Worker-side changes write durable reconcile requests (`state/extension_reconcile/`) rather than spawning server-owned children, and every reconcile state names the process that answered. Health is process-qualified: aggregate and Skills UI health take the server observation as authority and expose the worker observation only as a qualifier, so a failed handoff cannot advance `last_known_good`; restart-budget exhaustion persists a terminal reason cleared only by a later successful start. A companion's cwd is the reviewed payload directory, so a payload edit stales review before reload instead of silently mutating a live process. The live projection is `state/extension_companions.json`.
+Companion processes are host-supervised: reviewed manifest-declared descriptors enter durable custody, reconcile after lifecycle changes and restart, and stop on disable, unload or panic. `state/extension_generation.json` publishes the server's live set for running task workers to adopt at task start or dispatch miss, exposing post-boot enablement without pool respawn. Worker changes write durable reconcile requests (`state/extension_reconcile/`) rather than spawning server-owned children; every reconcile state names the responding process. Health is process-qualified: aggregate and Skills UI health use server observations as authority and worker observations only as qualifiers, so failed handoffs cannot advance `last_known_good`; restart-budget exhaustion persists a terminal reason cleared only by a later successful start. A companion's cwd is the reviewed payload directory; payload edits stale review before reload rather than silently mutating a live process. The live projection is `state/extension_companions.json`.
 
 ### Chat-id delivery
 
