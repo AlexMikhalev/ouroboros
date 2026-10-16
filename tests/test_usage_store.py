@@ -749,6 +749,7 @@ class _Steps:
 
     def __init__(self, monkeypatch):
         self.count = 0
+        usage_store._core.close_connections()  # install the counter before lazy connections open
         connect = usage_store._connect
 
         def counted(*args, **kwargs):
@@ -842,6 +843,9 @@ def test_ordinary_readers_do_not_grow_with_unrelated_history(tmp_path, monkeypat
             for name, call in readers.items():
                 call()  # warm the process (imports, first open)
             measured[size] = {name: steps.measure(call) for name, call in readers.items()}
+            # Some readers use only a file or fewer than 50 VM instructions. Admission
+            # always uses SQL and proves that cached connections carry the counter.
+            assert measured[size]["admission"] > 0
         usage_store.forget(root)
     (tmp_path / "history_steps.json").write_text(json.dumps(measured, indent=1), encoding="utf-8")  # evidence
     for name, small in measured[100].items():

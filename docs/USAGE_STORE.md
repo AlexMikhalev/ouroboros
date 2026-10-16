@@ -134,6 +134,11 @@ after checkpointing, before a rename; an active lease refuses handoff with the
 usual busy outcome. Any switch that retains a store while changing to an older
 SQLite runtime must also call `store.prepare_handoff` after quiescing writers.
 This includes switches whose target still contains the store module.
+Sibling import builds also close in DELETE mode before publication, so no
+temporary journal or WAL is left under the pre-rename filename.
+Caller-owned raw connections must also close before rename on every platform.
+At normal interpreter exit the pool closes before Python clears the inode registry
+and its locks; thread exit closes that thread's connections earlier.
 
 - `enforced`: SQLite's own file locks. `usage_store.hold` is the acquisition
   primitive the existing waits slice (`_usage_wait`): sends retry it in short

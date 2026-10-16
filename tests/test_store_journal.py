@@ -153,3 +153,30 @@ def test_wal_is_full_and_export_checkpoints_to_standalone_delete(tmp_path, monke
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
         assert conn.execute("SELECT value FROM meta WHERE key='retained'").fetchone()[0] == "42"
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+@pytest.mark.parametrize("money", [False, True])
+@pytest.mark.parametrize("mode", ["PERSIST", "WAL"])
+def test_sibling_build_is_standalone_before_publication(tmp_path, monkeypatch, money, mode):
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: mode)
+    if money:
+        usage_store.migrate_from_journal(tmp_path)
+    else:
+        store_import.ensure_current_store(tmp_path, with_children=False)
+    assert list((tmp_path / "state").glob("*.import-*")) == []
+
+
+@pytest.mark.parametrize("mode", ["PERSIST", "WAL"])
+def test_failed_build_rolls_back_and_releases_its_temporary_journal(tmp_path, monkeypatch, mode):
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: mode)
+    path = tmp_path / "unpublished.sqlite"
+    with pytest.raises(ValueError):
+        with contextlib.closing(store.connect(path, store.TIER_ENFORCED, create=True)) as conn:
+            conn.execute("CREATE TABLE pending(value)")
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("INSERT INTO pending VALUES (1)")
+            raise ValueError("interrupted build")
+    assert all(not path.with_name(path.name + suffix).exists() for suffix in ("-journal", "-wal", "-shm"))
+    with contextlib.closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("SELECT * FROM pending").fetchall() == []
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"

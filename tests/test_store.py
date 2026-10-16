@@ -278,8 +278,8 @@ def test_every_public_write_refuses_in_the_window_and_outside_published_while_se
 
 def test_a_straggler_after_the_retirement_is_told_retired_not_migrating(tmp_path):
     """The seam commits ``phase=retired`` into the store, clears the stamp and renames it aside.
-    A writer that opened the file earlier reads that phase inside its own transaction (before
-    the rename on Windows, which requires its handle closed; after the rename on POSIX); a writer
+    A writer that opened the file earlier reads that phase inside its own transaction before
+    closing for the rename (required by the journal handoff on every platform); a writer
     that opens by path now (``update_task``, a reader) is told ``StoreRetired`` by the sibling,
     never «not published yet»."""
     from ouroboros.startup_migrations import stamp
@@ -290,12 +290,9 @@ def test_a_straggler_after_the_retirement_is_told_retired_not_migrating(tmp_path
         with store.open_store(tmp_path, write=True) as txn:
             txn.set_meta("phase", store.RETIRED)
         stamp(tmp_path, **{store.GENERATION_KEY: None})
-        if os.name != "nt":
-            os.replace(path, retired)
         with store.transaction(straggler, write=True):
             assert store.Txn(straggler).phase() == store.RETIRED
-    if os.name == "nt":
-        os.replace(path, retired)
+    os.replace(path, retired)
     with pytest.raises(StoreRetired):
         store.update_task(tmp_path, "t1", lambda current: {**current, "note": "late"})
     with pytest.raises(StoreRetired):

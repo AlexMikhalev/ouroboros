@@ -9,6 +9,7 @@ importer/exporter/seam."""
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import contextvars
 import errno
@@ -234,8 +235,16 @@ class _StoreConnection(sqlite3.Connection):
     """A ``connect`` connection, counted on its file's inode until it closes (see ``_borrow``)."""
 
     _store_key: Optional[Tuple[int, int]] = None
+    _store_build = False
 
     def close(self) -> None:
+        if self._store_build:
+            # A sibling build is published by renaming ONLY the database. Leave no
+            # journal under its temporary name, on success or interrupted construction.
+            if self.in_transaction:
+                self.execute("ROLLBACK")
+            _delete_journal(self)
+            self._store_build = False
         super().close()  # a close that raises leaves the connection counted: its lock may still be held
         key, self._store_key = self._store_key, None
         if key is not None:
@@ -534,6 +543,7 @@ def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: fl
         exc.rollback_confirmed = not conn.in_transaction
         conn.close()
         raise
+    conn._store_build = create
     return conn
 
 
@@ -550,6 +560,8 @@ class _ThreadConnections:
 
     def __del__(self) -> None:
         # Thread-local values die with their thread, including short-lived request threads.
+        if not self.entries:
+            return
         with _CONNECTION_GUARD:
             for entry in self.entries.values():
                 if entry.conn is not None:
@@ -632,16 +644,23 @@ def close_connections(path: Optional[pathlib.Path] = None) -> None:
             del pool.entries[name]
 
 
+atexit.register(close_connections)  # before module globals (including the inode guard) are cleared
+
+
 def prepare_handoff(path: pathlib.Path, tier: str, *, wait_sec: float = STORE_WAIT_SEC) -> None:
     """Quiescent export/switch seam: release cached handles and leave a standalone DELETE file.
     Name-tier callers hold their name lock. An older SQLite may open the resulting file."""
     close_connections(path)
     with contextlib.closing(connect(path, tier, wait_sec=wait_sec, journal_mode="")) as conn:
-        if conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal":
-            if conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]:
-                raise StoreBusy("store checkpoint busy at handoff", reason="contention")
-        if conn.execute("PRAGMA journal_mode = DELETE").fetchone()[0] != "delete":
-            raise StoreBusy("store journal still in use at handoff", reason="contention")
+        _delete_journal(conn)
+
+
+def _delete_journal(conn: sqlite3.Connection) -> None:
+    if conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal":
+        if conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]:
+            raise StoreBusy("store checkpoint busy at handoff", reason="contention")
+    if conn.execute("PRAGMA journal_mode = DELETE").fetchone()[0] != "delete":
+        raise StoreBusy("store journal still in use at handoff", reason="contention")
 
 
 def _before_fork() -> None:

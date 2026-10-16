@@ -3,6 +3,8 @@ import contextlib
 import multiprocessing
 import os
 import sqlite3
+import subprocess
+import sys
 import threading
 
 import pytest
@@ -21,6 +23,7 @@ def release_connections():
 @pytest.mark.parametrize("money", [False, True])
 @pytest.mark.parametrize("tier", [store.TIER_ENFORCED, store.TIER_NAME])
 def test_fifty_reads_open_one_connection_per_thread(tmp_path, monkeypatch, money, tier):
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
     if money:
         from ouroboros import platform_layer
         monkeypatch.setattr(platform_layer, "kernel_file_locks_enforced", lambda _path: tier == store.TIER_ENFORCED)
@@ -108,7 +111,8 @@ def test_idle_reader_sees_a_later_independent_commit(tmp_path):
         assert txn.conn is conn and txn.meta("later") == 42
 
 
-def test_delete_and_persist_writers_interleave_with_full_durability(tmp_path):
+def test_delete_and_persist_writers_interleave_with_full_durability(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
     path = publish(tmp_path)
     with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as old:
         assert old.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
@@ -241,3 +245,35 @@ def test_fork_closes_parent_cache_and_child_opens_its_own_connection(tmp_path):
             process.kill()
             process.join(5)
         receiving.close()
+
+
+@pytest.mark.serial
+def test_interpreter_exit_closes_both_stores_before_clearing_module_globals(tmp_path):
+    publish(tmp_path)
+    usage_store.migrate_from_journal(tmp_path)
+    script = """
+import atexit, pathlib, sqlite3, sys
+connections = []
+def verify_closed():
+    for conn in connections:
+        try:
+            conn.execute('SELECT 1')
+        except sqlite3.ProgrammingError:
+            continue
+        raise AssertionError('cached connection still open at shutdown')
+    print('closed')
+atexit.register(verify_closed)
+from ouroboros import store, usage_store
+root = pathlib.Path(sys.argv[1])
+for lease in (store.open_store(root, write=True), usage_store.hold(root)):
+    with lease as txn:
+        txn.set_meta('exit_check', True)
+        connections.append(txn.conn)
+"""
+    result = subprocess.run([sys.executable, "-c", script, str(tmp_path)], capture_output=True,
+                            text=True, timeout=30)
+    assert result.returncode == 0 and result.stdout.strip() == "closed", result.stderr
+    assert "Exception ignored" not in result.stderr
+    for lease in (store.open_store(tmp_path, write=False), usage_store.read(tmp_path)):
+        with lease as txn:
+            assert txn.meta("exit_check") is True
