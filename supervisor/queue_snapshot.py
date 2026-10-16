@@ -20,6 +20,7 @@ from typing import Any, Optional
 from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
 from ouroboros.utils import utc_now_iso
 from ouroboros.subagents import subagent_intent_fields
+from supervisor.restart_retention import exact_pause_row as _exact_pause_row
 from supervisor.task_admission import (
     restore_terminalization_retry,
     restore_terminalization_retry_rows,
@@ -299,15 +300,6 @@ def _fence_snapshot_running_rows(rows: Any, *, restored_ids: "set[str]") -> "lis
                 {"ts": utc_now_iso(), "type": kind, "task_ids": task_ids},
             )
     return fenced
-
-
-def _exact_pause_row(task: Any) -> bool:
-    """Whether this snapshot row is an EXACT mid-run budget pause locator (#1196)."""
-    pause = task.get("_budget_pause") if isinstance(task, dict) else None
-    # Typed: the marker writers stamp a boolean; a truthy string or an
-    # otherwise malformed marker is NOT a saved pause and keeps ordinary
-    # drain/parent-interrupted settlement (Astra run-e0bb1ca3487c A1).
-    return isinstance(pause, dict) and pause.get("exact_continuation") is True
 
 
 def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stale: bool,
@@ -862,7 +854,7 @@ def restore_pending_from_snapshot(
                  "snapshot_ts": ts[:64], "action": "treated_as_stale"},
             )
         stale = ts_unix is None or (time.time() - ts_unix) > max_age_sec
-        from ouroboros.project_admission import hold_unreadable_result
+        from supervisor.restart_retention import conserve_unreadable_pending
         from ouroboros.task_results import (
             _TRULY_TERMINAL_STATUSES, STATUS_CANCEL_REQUESTED, STATUS_CANCELLED,
             load_task_result, write_task_result,
@@ -997,7 +989,7 @@ def restore_pending_from_snapshot(
                         acceptance_held.append(str(task.get("id") or ""))
                         log.warning("Snapshot restore retained paused row %s under a hold: its "
                                     "result authority is unreadable", task.get("id"), exc_info=True)
-                    if hold_unreadable_result(task) or _exact_pause_row(task):
+                    if conserve_unreadable_pending(task):
                         # A receipt read failure cannot select a terminal policy for conserved
                         # work: its pause, its Project hold, or accepted Project work held here.
                         _append_held_pending_row(task)

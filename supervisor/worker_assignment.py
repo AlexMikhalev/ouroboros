@@ -67,6 +67,9 @@ def _tick_parked_work(queue: Any) -> None:
         _handle_budget_pause({"phase": "consumed", "task_id": task_id,
             "task_attempt": attempt, "pause_id": resume.get("pause_id"),
             "grant_id": resume.get("grant_id")}, _pool())
+    from supervisor.worker_owner_wait import retry_pending_owner_waits
+
+    retry_pending_owner_waits(_pool())
     try:
         from supervisor.sleep_wake import wake_ready_sleepers
 

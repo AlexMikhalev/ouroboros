@@ -59,8 +59,10 @@ def test_consumption_fold_requires_current_authority_and_runs_once(host, monkeyp
             row['source_ref']['sha256'] = '0' * 64
         budget_pause.set_budget_pause(host.root, 'held', row)
     before = copy.deepcopy(meta)
-    assert fold_consumed_resume(meta, host.root, event) is (change == 'none')
-    if change == 'none':
+    # This addressed row's nested root copy is metadata, not Resume admission.
+    folds = change in {'none', 'foreign_root'}
+    assert fold_consumed_resume(meta, host.root, event) is folds
+    if folds:
         assert execution_elapsed_seconds(meta, clock[0]) == pytest.approx(90)
         assert 'sleep_parked_at' not in meta
         folded = copy.deepcopy(meta)

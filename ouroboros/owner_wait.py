@@ -280,7 +280,8 @@ def checkpoint_owner_wait(ctx: Any, messages: list, trace: dict, usage: dict,
         # The SAME two carriers every finite-lifetime reader subtracts: the quota
         # union above and the budget-paused interval (#1196, F5). Without it the
         # row's own lifetime check would count a pause as execution.
-        "budget_paused_sec": float(model_state.get("budget_paused_sec") or 0.0),
+        **({"budget_paused_sec": model_state["budget_paused_sec"]}
+           if "budget_paused_sec" in model_state else {}),
     }
 
 
@@ -400,18 +401,14 @@ def restore_owner_wait_allowed(root: Any, task: dict, *, strict: bool = False, e
 
 def worker_owner_wait(wid: int, in_q: Any, out_q: Any, ctx: Any,
                       checkpoint: dict) -> str:
-    """Keep the original task process asleep until the pool grants capacity.
-
-    A bound is a second reason to ask for the SAME resume the mailbox already
-    triggers — no new scheduler: the request must sit inside the ``parked``
-    gate, because the supervisor ignores a resume for a wait that is not
-    durably waiting. Disclosed: a resume is a REQUEST, not a guarantee (the
-    grant can be refused under a cancel intent or the repo-writer gate); the
-    hard axes still end the task in that case.
+    """Keep this stack until the pool grants capacity. Mail and the wait's own
+    bound request Resume only after park; hard controls also end a pre-ACK wait.
+    A request grants nothing: current cancellation and writer gates still bind.
     """
     import os
 
     from ouroboros.deadline_utils import parse_deadline_ts, utc_now
+    from ouroboros.budget_pause import _hold_control_reason
 
     identity = {"type": "owner_wait", "worker_id": wid, "pid": os.getpid(),
                 "task_id": ctx.task_id, "task_attempt": int(ctx.task_attempt or 1),
@@ -447,6 +444,10 @@ def worker_owner_wait(wid: int, in_q: Any, out_q: Any, ctx: Any,
                     return outcome
                 elif phase == "refused":
                     raise RuntimeError(str(command.get("reason") or "owner wait refused"))
+        if not parked and (reason := _hold_control_reason(ctx)):
+            from ouroboros.model_wait import ModelWaitInterrupted
+
+            raise ModelWaitInterrupted(reason)
         if parked and not resume_requested:
             woke = _sleep_wake(ctx, checkpoint)
             if woke is not None:
@@ -590,6 +591,7 @@ def park_owner_pause_warm(limit_ctx: Any, ctx: Any, *, fence: dict, detached: li
         checkpoint = checkpoint_owner_wait(ctx, messages, trace, usage_for_state, int(limit_ctx.round_idx),
                                            list(limit_ctx.tool_schemas or []),
                                            set(limit_ctx.owner_msg_seen or ()), pause=pause)
+        checkpoint["sleep_started_at"] = ctx._model_sleep_started
         outcome = str(callback(ctx, checkpoint) or "")
     finally:
         model_sleep.end(ctx)
@@ -866,13 +868,13 @@ def wait_after_tools(ctx: Any, messages: list, trace: dict, usage: dict,
         raise RuntimeError("required owner wait has no worker continuation owner")
     checkpoint = checkpoint_owner_wait(ctx, messages, trace, usage, round_idx, tool_schemas, seen,
                                        review_binding=review_binding)
-    sleep = checkpoint.get("sleep")
     if not callable(callback):
         review_callback(ctx, checkpoint, messages)
-    elif sleep:
+    elif sleep := checkpoint.get("sleep"):
         from ouroboros import model_sleep
 
         model_sleep.begin(ctx)
+        checkpoint["sleep_started_at"] = ctx._model_sleep_started
         try:
             outcome = callback(ctx, checkpoint)
         finally:
@@ -883,9 +885,7 @@ def wait_after_tools(ctx: Any, messages: list, trace: dict, usage: dict,
     else:
         outcome = callback(ctx, checkpoint)
         append_wake_notice(ctx, checkpoint, outcome, messages)
-    ctx._owner_wait_requested = ""
-    ctx._owner_wait_deadline_at = ""
-    ctx._owner_wait_max_minutes = 0
+    ctx._owner_wait_requested, ctx._owner_wait_deadline_at, ctx._owner_wait_max_minutes = "", "", 0
 
 
 def park_for_left_review(tools: Any, limit_ctx: Any, content: Any, emit_progress: Any) -> bool:
