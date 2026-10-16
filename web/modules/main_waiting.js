@@ -38,8 +38,9 @@ const REASONS = { budget: 'Paused at the spending limit. Change the limit if nee
     model_access: 'Needs you to restore model access.' };
 
 export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNode, stampNodeTimestamp, openSettings,
-    refresh = () => {}, mutate = fn => fn(), syncQuestions = () => {}, connectQuestions = () => {},
-    mountQuestion = () => false, revealQuestion = () => {}, beginReading = () => {}, observedQuestion = () => null }) {
+    refresh = () => {}, mutate = fn => fn(), decision = () => null, revealQuestion = () => {}, beginReading = () => {} }) {
+    // The question owner (chat_decision.js), read when used: chat.js creates it after this navigator.
+    const owner = () => decision() || {};
     const pill = document.createElement('button');
     pill.type = 'button';
     pill.className = 'chat-question-nav';
@@ -141,9 +142,11 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
     // What this tab already saw settle (an answer, a close, a removal from pending) leaves the
     // count at once; the next census only confirms it.
     function stillWaits(row) {
-        const seen = observedQuestion(row.task_id, row.quiz_id);
+        const seen = owner().observedQuestion?.(row.task_id, row.quiz_id);
         if (!seen) return true;
-        if (waitsAnswer(row)) return !SETTLED.includes(seen.state);
+        // An answer seen here whose delivery a restart left unknown still waits on the owner.
+        if (waitsAnswer(row)) return !SETTLED.includes(seen.state)
+            || (Boolean(row.project_id) && unknownDeliveryRemovable({ ...row, quiz_state: seen.state, question_delivery: seen.question_delivery }));
         // Only a receipt for this same delivery settles it: the question's publication receipt
         // says nothing about the answer that came later.
         const known = seen.question_delivery;
@@ -224,7 +227,7 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
             // Outside the loaded history: a Project question's copy mounts at its own date; Main's
             // own question opens through its canonical read.
             if (target.row.project_id) {
-                mountQuestion(target.row, fresh.has(rowKey(target.row)) ? { canonical: true } : { stale: true });
+                owner().appendQuestionPointer?.(target.row, fresh.has(rowKey(target.row)) ? { canonical: true } : { stale: true });
                 node = nodeOf(target);
             }
             else { await revealQuestion(target.row.task_id, target.row.quiz_id); node = nodeOf(target); }
@@ -251,7 +254,7 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
             // An install can carry gaps for good (an old question whose room no import proved), so
             // incompleteness counts only for what the gaps name, never the whole list.
             const vouched = vouchedBy(data);
-            syncQuestions(data ? data.current_questions : [], vouched, requestedAt);
+            owner().syncCurrentQuestions?.(data ? data.current_questions : [], vouched, requestedAt);
             const rows = (Array.isArray(data?.current_questions) ? data.current_questions : []).filter(waitsOwner);
             // A partial read keeps what it cannot see: never a count that silently drops to zero.
             fresh = new Set(rows.map(rowKey));
@@ -283,7 +286,7 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
                 for (const record of records.values()) record.available = false;
             }
             mutate(() => { for (const record of records.values()) paint(record, record.row); return true; });
-            connectQuestions(value);  // the question owner withdraws its forms and voids its reads in flight
+            owner().setConnected?.(value);  // the question owner withdraws its forms and voids its reads in flight
         },
         destroy() {
             waits.destroy();

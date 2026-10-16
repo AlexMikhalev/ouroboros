@@ -331,12 +331,8 @@ export function createChatInstance({
     });
     const mainWaiting = isMain ? createMainWaiting({ page, messagesDiv, toolbar: page.querySelector('.chat-toolbar-row'),
         insertMessageNode, stampNodeTimestamp, openSettings: openSettingsTab,
-        refresh: () => refreshHeaderControlState(true), mutate: withStableViewport,
-        syncQuestions: (...args) => chatDecision.syncCurrentQuestions(...args),
-        connectQuestions: value => chatDecision.setConnected(value),
-        mountQuestion: (row, authority) => chatDecision.appendQuestionPointer(row, authority),
-        observedQuestion: (taskId, quizId) => chatDecision.observedQuestion(taskId, quizId),
-        revealQuestion: (taskId, quizId) => revealQuestion(taskId, quizId, { focus: 'question' }),
+        refresh: () => refreshHeaderControlState(true), mutate: withStableViewport, decision: () => chatDecision,
+        revealQuestion: (t, q) => revealQuestion(t, q, { focus: 'question' }),
         beginReading: () => { reading.claim(); reading.stick = false; } }) : null;
     const chatDecision = createChatDecision({
         apiFetch,

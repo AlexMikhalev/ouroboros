@@ -51,7 +51,7 @@ function browserQueries(t) {
 // feed scrolls down. `CSS.escape` is the browser global the card lookup uses.
 const ROW = 1000;
 const box = (top, height) => ({ top, bottom: top + height, height, left: 0, right: 600, width: 600 });
-function mainPage(t, { fetchImpl, ...options } = {}) {
+function mainPage(t, { fetchImpl, observedQuestion = () => null, ...options } = {}) {
     browserQueries(t);
     const priorCss = globalThis.CSS;
     globalThis.CSS = { escape: value => String(value) };
@@ -98,12 +98,14 @@ function mainPage(t, { fetchImpl, ...options } = {}) {
         return bubble;
     };
     const calls = { sync: [], connect: [], inserted: [], stamps: [], mounted: [], authority: [], revealed: [], reading: 0 };
+    // The question owner's surface the navigator uses (chat_decision.js), recorded.
+    const owner = { syncCurrentQuestions: (...args) => calls.sync.push(args), setConnected: value => calls.connect.push(value),
+        appendQuestionPointer: (row, authority) => { calls.mounted.push(row); calls.authority.push(authority); card(row); return true; },
+        observedQuestion };
     const waiting = createMainWaiting({ page, messagesDiv: feed, toolbar,
         insertMessageNode: node => { calls.inserted.push(node); return insert(node); },
         stampNodeTimestamp: (node, raw, opts) => { calls.stamps.push(raw); return stampNodeTimestamp(node, raw, opts); },
-        syncQuestions: (...args) => calls.sync.push(args), connectQuestions: value => calls.connect.push(value),
-        mountQuestion: (row, authority) => { calls.mounted.push(row); calls.authority.push(authority); card(row); return true; },
-        beginReading: () => { calls.reading += 1; }, ...options });
+        decision: () => owner, beginReading: () => { calls.reading += 1; }, ...options });
     t.after(() => waiting.destroy());
     const pill = toolbar.children.at(-1);
     const shown = () => pill.hidden ? null : {
@@ -227,6 +229,13 @@ test('what this tab already saw settle leaves the count at once, before the next
     main.feed.scrollTop = 100 * ROW;
     main.waiting.refresh();
     assert.equal(main.shown().text, '2 waiting', 'another delivery\'s receipt never settles the pending answer');
+    // An answer this tab saw while the census still says "open" leaves the count, unless a restart
+    // left its delivery unknown: then it still waits on the owner.
+    seen.set('task-1:next', { state: 'answered', question_delivery: { kind: 'answer', state: 'owed',
+        reason_code: 'late_answer_delivery_unknown' } });
+    main.waiting.refresh();
+    assert.equal(main.shown().text, '2 waiting', 'its own unknown delivery keeps it counted, with no gap');
+    seen.set('task-1:next', { state: 'open' });
     seen.set('task-1:late', { state: 'answered', question_delivery: { kind: 'answer', state: 'owed', dismissed: true } });
     main.feed.scrollTop = 100 * ROW;
     main.waiting.refresh();

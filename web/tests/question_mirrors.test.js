@@ -430,6 +430,29 @@ test('a Main card that settles asks the waiting pill to recount, and its lifecyc
     } finally { fx.decision.destroy(); fx.restore(); }
 }));
 
+test('only a receipt for the same delivery keeps a pending answer\'s copy out of Main', () => {
+    const fx = mainFixture();
+    const unknown = { ...ROW, quiz_state: 'answered', answered_index: 1,
+        question_delivery: { kind: 'answer', state: 'owed', reason_code: 'late_answer_delivery_unknown' } };
+    try {
+        // A long-lived tab remembers the question's publication receipt from before the answer.
+        fx.decision.applyQuizStateFrame({}, { task_id: 't-1', quiz_id: 'qz-1', state: 'open',
+            question_delivery: { kind: 'publication', state: 'delivered' } });
+        fx.add(unknown);
+        const [card] = fx.cards();
+        assert.ok(card, 'the pending answer mounts at the first try');
+        assert.equal(card.querySelector('.chat-quiz-dismiss')?.textContent, 'Remove from pending');
+        fx.decision.destroy(); fx.restore();
+        const other = mainFixture();
+        try {
+            other.decision.applyQuizStateFrame({}, { task_id: 't-1', quiz_id: 'qz-1', state: 'answered', answered_index: 1,
+                question_delivery: { kind: 'answer', state: 'delivered' } });
+            other.add(unknown);
+            assert.equal(other.cards().length, 0, 'its own delivered receipt does keep it out');
+        } finally { other.decision.destroy(); other.restore(); }
+    } finally { fx.decision.destroy(); fx.restore(); }
+});
+
 // Main's waiting pill mounts a question beyond the loaded history from its own census rows: one the
 // current census named is live at once; one kept from an older read (a gap, a failed read, a
 // reconnect) is withheld until its own canonical read, so a stale "unanswered" never takes input.

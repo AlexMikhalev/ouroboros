@@ -49,8 +49,8 @@ function mainWaiting(env, options = {}) {
 test('Main waiting forwards census, failed read and connection to its question owner', () => {
     const env = installDom();
     const calls = [], links = [];
-    const main = mainWaiting(env, { syncQuestions: (...args) => calls.push(args),
-        connectQuestions: value => links.push(value) });
+    const main = mainWaiting(env, { decision: () => ({ syncCurrentQuestions: (...args) => calls.push(args),
+        setConnected: value => links.push(value) }) });
     try {
         const rows = [question('current')];
         main.waiting.snapshot({ current_questions: rows, current_questions_complete: true }, 120);
@@ -446,8 +446,8 @@ test('current Main pause offers the existing real Resume action and withdraws it
 test('a complete read that lands while disconnected restores nothing; only the census after reopening does', () => {
     const env = installDom(async () => assert.fail('withdrawn authority makes no request'));
     const calls = [], links = [];
-    const main = mainWaiting(env, { syncQuestions: (...args) => calls.push(args),
-        connectQuestions: value => links.push(value) });
+    const main = mainWaiting(env, { decision: () => ({ syncCurrentQuestions: (...args) => calls.push(args),
+        setConnected: value => links.push(value) }) });
     try {
         document.body = env.mount;
         const wait = { wait_id: 'login', revision: 1, task_attempt: 1, role: 'main', reason: 'auth',

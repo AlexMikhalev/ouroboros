@@ -331,8 +331,10 @@ export function createChatDecision({
         // owed. Once memory has evicted anything, every unmounted unsettled question needs
         // canonical confirmation: an old in-flight read can have re-seeded its stale open
         // observation meanwhile.
+        // Only a receipt for this same delivery settles it: a publication receipt says nothing of a later answer.
         const known = observations.get(key)?.question_delivery;
-        const owed = questionDeliveryPending(msg) && known?.state !== 'delivered' && known?.dismissed !== true;
+        const owed = questionDeliveryPending(msg) && !(known?.kind === msg.question_delivery?.kind
+            && (known.state === 'delivered' || known.dismissed === true));
         if (!owed && (['answered', 'closed'].includes(msg.quiz_state) || ['answered', 'closed'].includes(observations.get(key)?.state))) {
             observe(msg); return null;
         }

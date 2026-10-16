@@ -30,6 +30,21 @@ test('targeted detail preserves normalized option details, single-flight, and th
     } finally { fx.restore(); }
 });
 
+test('closing a native card with its × keeps focus on the question, not the page', async () => {
+    const fx = fixture({ fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ ok: true, state: 'closed',
+        closed_reason: 'Closed by the owner without an answer.', closed_actor: 'owner' }) }) });
+    try {
+        const card = fx.decision.buildQuizCard({ ...WS_MSG, options: ['Yes', 'No'] });
+        const close = card.querySelector('.chat-quiz-close');
+        close.focus();
+        close.click();
+        await turn();
+        assert.equal(card.dataset.state, 'closed');
+        assert.equal(card.querySelector('.chat-quiz-close'), null, 'the × leaves with the settled state');
+        assert.equal(document.activeElement, card.querySelector('.chat-quiz-question'));
+    } finally { fx.restore(); }
+});
+
 test('a finished task keeps its card answerable and legacy labels disclose missing details', async () => {
     const fx = fixture({ fetchDetail: async () => ({ task_id: 't-1', project_id: 'p1', owner_quiz: {
         'qz-1': { ...WS_MSG, state: 'expired_terminal', options: ['Yes', 'No'] },
