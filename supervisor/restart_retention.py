@@ -63,9 +63,9 @@ def conserve_unreadable_pending(task: dict) -> bool:
     """Live and restored saved work survives a failed result observation under its own hold."""
     from ouroboros.project_admission import hold_unreadable_result
 
-    # Exact pauses already have their locator/hold; only Project work needs
-    # that owner's verification hold installed by the unreadable-result rule.
-    return exact_pause_row(task) or hold_unreadable_result(task)
+    # Saved pauses already have their locator/hold; Project work needs
+    # its verification hold installed by the unreadable-result rule.
+    return bool(exact_pause_row(task) or task.get("_owner_wait_resume") or hold_unreadable_result(task))
 
 
 def saved_sleep_hold_reason(result_root: Any, *, owner_restart: bool = False) -> str:
