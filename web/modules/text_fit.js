@@ -3,7 +3,8 @@
 // `редизайна.…` (four dots). This cuts on a word, drops the punctuation the cut leaves at the end, and only
 // then adds the ellipsis. The full text stays on record (`fullText`) for copy, expansion and re-fitting; an
 // element with no layout (a hidden page, a test DOM) simply shows the whole text and is fitted once it has
-// a width. One ResizeObserver serves every fitted element; a width change re-fits, a height change does not.
+// a width. One ResizeObserver serves every fitted element; a width change re-fits, a height change does not, and an
+// element removed from the page leaves the observer (no element is kept alive by it).
 const fits = new WeakMap();  // element -> { text, lines, width, onFit }
 let observer = null;
 
@@ -75,6 +76,8 @@ export function fitText(el, text, lines, onFit = null) {
     if (!observer && typeof ResizeObserver === 'function') {
         observer = new ResizeObserver((entries) => {
             for (const entry of entries) {
+                // A removed element reports its last size change here: it leaves the shared observer with it.
+                if (!entry.target.isConnected) { observer.unobserve(entry.target); fits.delete(entry.target); continue; }
                 const fit = fits.get(entry.target);
                 if (fit && entry.target.clientWidth !== fit.width) refit(entry.target);
             }
