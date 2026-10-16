@@ -81,6 +81,8 @@ def test_the_row_carries_the_answer_and_its_text_does_not_change(tmp_path, monke
     pointer = _enqueue_row(tmp_path / "b", monkeypatch, _result(terminal_origin="host_salvage"))
 
     assert mirrored["progress_meta"]["completion_answer"] == ANSWER.strip()
+    assert mirrored["progress_meta"]["outcome_axes"]["execution"]["status"] == "ok"
+    assert "reply_to" not in mirrored["progress_meta"]  # system-origin work has no invented owner quote
     assert mirrored["role"] == "system"
     assert mirrored["system_type"] == "project_completion_summary"
     # Telegram, the model's own context and older clients read `text` alone:
@@ -100,11 +102,22 @@ def test_the_answer_survives_live_frame_durable_row_and_history_replay(monkeypat
     monkeypatch.setattr(message_bus, "load_state", lambda: {"session_id": "s", "owner_id": 7})
     monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat_id: None)
     monkeypatch.setattr(message_bus, "publish_event", lambda *_a, **_k: None)
-
+    from ouroboros.chat_chain import format_address, row_address
+    from ouroboros.project_dialogue import build_owner_message_ref
+    # The request itself can quote an older message. The answer quotes this request.
+    origin = message_bus.log_chat("in", 1, 7, "Ship the release", client_message_id="owner-request",
+                                  message_meta={"reply_to": {"address": "task:older", "kind": "work_card"}})
+    origin_ref = build_owner_message_ref(chat_id=1, client_message_id="owner-request",
+                                         text=origin["text"], ts=origin["ts"])
+    event = _enqueue_row(tmp_path, monkeypatch, _result(origin_message_ref=origin_ref,
+        outcome_axes={"objective": {"status": "pass", "source": "author_acceptance"}}))
+    facts = {key: event["progress_meta"][key] for key in ("outcome_axes", "reply_to")}
+    assert facts["reply_to"]["address"] == format_address(row_address(origin))
+    assert facts["reply_to"]["snippet"] == "Ship the release"
     message_bus.send_with_budget(
         1, "Launch › Ship release · Done\nOpen the Project for details.",
         task_id="root-project", role="system", system_type="project_completion_summary",
-        progress_meta={"project_id": "launch", "project_name": "Launch",
+        progress_meta={**facts, "project_id": "launch", "project_name": "Launch",
                        "target_label": "Launch › Ship release", "status": "completed",
                        "completion_answer": ANSWER,
                        "completion_notice": {"neutral": True, "detail": "", "phase": "warn", "salvage": ""},
@@ -133,6 +146,8 @@ def test_the_answer_survives_live_frame_durable_row_and_history_replay(monkeypat
     assert replayed["completion_answer"] == ANSWER
     assert replayed["text"] == stored["text"]
     assert replayed["terminal_time"] == stored["terminal_time"] == live["terminal_time"]
+    for key in ("outcome_axes", "reply_to"):
+        assert replayed[key] == stored[key] == live[key] == facts[key]
     assert replayed["completion_notice"] == stored["completion_notice"] == live["completion_notice"] == {
         "neutral": True, "detail": "", "phase": "warn", "salvage": ""}
 

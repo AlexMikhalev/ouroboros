@@ -836,10 +836,9 @@ def _collect_chat_rows(
                 # before the producer stripped markdown; a no-op on new rows.
                 # The durable chat.jsonl is never rewritten.
                 rec["text"] = strip_markdown(rec["text"])
-                if isinstance(entry.get("terminal_time"), dict):
-                    rec["terminal_time"] = dict(entry["terminal_time"])
-                if isinstance(entry.get("completion_notice"), dict):
-                    rec["completion_notice"] = dict(entry["completion_notice"])
+                for key in ("terminal_time", "completion_notice", "outcome_axes"):
+                    if isinstance(entry.get(key), dict):
+                        rec[key] = dict(entry[key])
                 for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer",
                             "completion_reason", "delivery_id", "handoff_id"):
                     if key in entry:
