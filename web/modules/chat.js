@@ -329,11 +329,9 @@ export function createChatInstance({
         stampNodeTimestamp,
         onDomWrite: withStableViewport,
     });
-    const mainWaiting = isMain ? createMainWaiting({ page, messagesDiv, toolbar: page.querySelector('.chat-toolbar-row'),
-        insertMessageNode, stampNodeTimestamp, openSettings: openSettingsTab,
-        refresh: () => refreshHeaderControlState(true), mutate: withStableViewport, decision: () => chatDecision,
-        revealQuestion: (t, q) => revealQuestion(t, q, { focus: 'question' }),
-        beginReading: () => { reading.claim(); reading.stick = false; } }) : null;
+    const mainWaiting = isMain ? createMainWaiting({ page, messagesDiv, insertMessageNode, stampNodeTimestamp,
+        openSettings: openSettingsTab, refresh: () => refreshHeaderControlState(true), mutate: withStableViewport,
+        decision: () => chatDecision, revealQuestion: (...a) => revealQuestion(...a), reading: () => reading }) : null;
     const chatDecision = createChatDecision({
         apiFetch,
         frameNode: chatMedia.bubbleFrameNode,
@@ -346,7 +344,7 @@ export function createChatInstance({
         onDomWrite: withStableViewport,
         isMain, chatId,
         insertMessageNode,
-        onQuestionsChanged: () => mainWaiting?.refresh(),
+        onQuestionsChanged: mainWaiting?.refresh,
         // A settled Main question mirror leaves through the ordinary retirement path.
         removeMessageNode: (node) => withStableViewport(() => { releaseMessageNode(node); return true; },
             { excludeAnchorNode: node }),

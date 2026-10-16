@@ -105,7 +105,7 @@ function mainPage(t, { fetchImpl, observedQuestion = () => null, ...options } = 
     const waiting = createMainWaiting({ page, messagesDiv: feed, toolbar,
         insertMessageNode: node => { calls.inserted.push(node); return insert(node); },
         stampNodeTimestamp: (node, raw, opts) => { calls.stamps.push(raw); return stampNodeTimestamp(node, raw, opts); },
-        decision: () => owner, beginReading: () => { calls.reading += 1; }, ...options });
+        decision: () => owner, reading: () => ({ claim: () => { calls.reading += 1; }, stick: true }), ...options });
     t.after(() => waiting.destroy());
     const pill = toolbar.children.at(-1);
     const shown = () => pill.hidden ? null : {
@@ -448,8 +448,8 @@ test('an off-window question mounts at its own date (Project) or opens through i
     const native = { task_id: 'main-task', quiz_id: 'q-native', chat_id: 1, native: true, quiz_state: 'open',
         ts: '2020-01-01T11:00:00Z' };
     let main = null;
-    main = mainPage(t, { revealQuestion: async (taskId, quizId) => {
-        revealed.push([taskId, quizId]);
+    main = mainPage(t, { revealQuestion: async (taskId, quizId, options) => {
+        revealed.push([taskId, quizId, options]);
         await turn();
         main.card(native);
         return true;
@@ -466,8 +466,8 @@ test('an off-window question mounts at its own date (Project) or opens through i
     assert.equal(main.feed.children.indexOf(copy.parentNode), 1, 'at its own date');
     assert.deepEqual([copy.parentNode.getBoundingClientRect().top, document.activeElement], [72, copy.children[0]]);
     await main.press();
-    assert.deepEqual([main.calls.mounted.length, revealed], [1, [['main-task', 'q-native']]],
-        'Main\'s own question opens through its canonical read');
+    assert.deepEqual([main.calls.mounted.length, revealed], [1, [['main-task', 'q-native', { focus: 'question' }]]],
+        'Main\'s own question opens through its canonical read, focusing the question rather than its answer field');
     const own = find(main.feed, node => node.dataset.quizId === 'q-native');
     assert.deepEqual([own.parentNode.getBoundingClientRect().top, document.activeElement], [72, own.children[0]]);
     await main.press();

@@ -37,8 +37,11 @@ const REASONS = { budget: 'Paused at the spending limit. Change the limit if nee
     restart: 'Needs Resume after the restart.', resume: 'Needs an explicit Resume.',
     model_access: 'Needs you to restore model access.' };
 
-export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNode, stampNodeTimestamp, openSettings,
-    refresh = () => {}, mutate = fn => fn(), decision = () => null, revealQuestion = () => {}, beginReading = () => {} }) {
+// `reading` returns the chat's reading position (chat_reading_position.js), read when used like the
+// question owner: a landing claims it, as any other navigation does, so the feed stops following the live edge.
+export function createMainWaiting({ page, messagesDiv, toolbar = page?.querySelector('.chat-toolbar-row'), insertMessageNode,
+    stampNodeTimestamp, openSettings, refresh = () => {}, mutate = fn => fn(), decision = () => null,
+    revealQuestion = () => {}, reading = () => null }) {
     // The question owner (chat_decision.js), read when used: chat.js creates it after this navigator.
     const owner = () => decision() || {};
     const pill = document.createElement('button');
@@ -214,7 +217,8 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
     // The card's head lands just under the chat header; the question text takes focus (never the
     // answer field), so going to a question summons no phone keyboard.
     function land(node) {
-        beginReading();
+        const position = reading();
+        if (position) { position.claim(); position.stick = false; }
         messagesDiv.scrollTop += node.getBoundingClientRect().top - view().top - 12;
         (node.querySelector('.chat-quiz-question') || node).focus?.({ preventScroll: true });
     }
@@ -230,7 +234,7 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
                 owner().appendQuestionPointer?.(target.row, fresh.has(rowKey(target.row)) ? { canonical: true } : { stale: true });
                 node = nodeOf(target);
             }
-            else { await revealQuestion(target.row.task_id, target.row.quiz_id); node = nodeOf(target); }
+            else { await revealQuestion(target.row.task_id, target.row.quiz_id, { focus: 'question' }); node = nodeOf(target); }
         }
         if (node) land(node);
         requestAnimationFrame(update);
