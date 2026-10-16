@@ -6,8 +6,8 @@ Modules, devtools, gateway/CLI, host and data map. Packaged launcher recovers fa
 User → launcher.py (desktop/native) — the shared lifecycle; an immutable packaged shell, or source over an immutable seed on Android and the managed container (Runtime topology below; §2)
 launcher.py spawns server.py (Starlette+uvicorn) — HTTP + WebSocket on configurable host:port; bind host via `OUROBOROS_SERVER_HOST` (§4; §7)
 web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules not listed here (§3)
-  modules/call.js — Room call control, microphone and socket lifetime, captions, playback acks (§3)
-  modules/call_worklet.js — Call PCM frames, device-rate capture, epoch-aware playback (§3)
+  modules/call.js — Room call control, microphone and socket lifetime, captions, playback acks (§6 Live calls)
+  modules/call_worklet.js — Call PCM frames, device-rate capture, epoch-aware playback (§6 Live calls)
   ui.css — the shared palette/control stylesheet of the SPA, onboarding and author pages (§3 Navigation)
   modules/ — browser modules (§3)
     ui_primitives.js — safe-field, escaping and tone/status helpers (§3 Navigation)
@@ -305,7 +305,7 @@ ouroboros/ — agent core and shared runtime (§6)
   launcher_appearance.py — A desktop window's native Windows caption takes the light or dark tint of its page's painted palette (§3)
   launcher_tray.py, launcher_tray_macos.py — Windows notification-area icon; macOS menu-bar item, Dock reopen, quit marking (§9)
   desktop_notifications.py — Desktop system notifications, one adapter per platform; submitted/unknown/typed refusal, click token back to the page (§3; DESIGN §9)
-  desktop_media.py — GTK microphone permission for the app's own loopback origin (§3)
+  desktop_media.py — GTK microphone permission for the app's own loopback origin (§6 Live calls)
   desktop_autostart.py, windows_autostart.py — Host sign-in adapter table: Windows registry, macOS LaunchAgent, Linux systemd/XDG state (Runtime topology below)
   plan_review_facts.py — Bounded plan-review facts for the late-settlement reflection-log row, with a source pointer and named omissions, never a score (§6 Post-task work)
   provider_models.py — Model-ID helpers; `ACTIVE_MODEL_SETTING_KEYS` / `LEGACY_MODEL_SETTING_KEYS` keeps Heavy out of live route selection
@@ -641,6 +641,8 @@ Birth identity is separate from PID presence. Linux mints boot-qualified ticks, 
 │   │   ├── skill_review_root_tasks.jsonl ← derived skill-review index; warns at `SKILL_REVIEW_ROOT_TASKS_WARN_BYTES`
 │   │   ├── request_wire_compatibility.json ← exact-route wire evidence
 │   │   ├── capability_evidence.json ← sourced model-capability evidence
+│   │   ├── pricing/litellm.json   ← cached LiteLLM catalog with URL, fetch time and digest (§6 Budget tracking)
+│   │   ├── context_views/<task>/<sha256>/<section>.md ← retained full host sections a small-window view points at
 │   │   ├── extra-ca-bundle/<digest>.pem ← content-addressed CA bundle every first-party HTTP client verifies against
 │   │   ├── process_ledger.jsonl   ← process-custody ledger (Runtime topology)
 │   │   ├── installation_scope.json ← scope marker
