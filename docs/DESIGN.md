@@ -600,7 +600,7 @@ this Project" came to be drawn six ways. The rule is therefore about intents.
   class. It names the Project wherever its row carries the name, even beside
   same-named work; a Project never named, and the owner's routed message (whose
   caption names the destination), read `Project`, never an id. It claims no
-  activity (an entry's status chip does). Its accessible name says in words what
+  activity (the work card's chip does). Its accessible name says in words what
   the glyph and the arrow say in pixels (`Open project <name>`); nothing depends
   on hover.
 - **Its form follows the surface's job.** It is a bound work card's wide footer
@@ -610,7 +610,7 @@ this Project" came to be drawn six ways. The rule is therefore about intents.
   composition, not a card framework or global button-margin rule); the same
   capsule at the end of the owner's routed message's one receipt line ("Passed
   on to «work» in", "Started as a task in"); a meta capsule in a question head.
-  Long names: two lines in entry/footer, ellipsis in capsules, no smaller type;
+  Long names: two lines in the footer, ellipsis in capsules, no smaller type;
   accessible names stay whole.
 - A **command** is a button: it changes or confirms something, or goes to a
   place that is not such a reference (`Load older messages`, `Open widgets`).
