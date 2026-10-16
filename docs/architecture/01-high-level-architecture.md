@@ -253,7 +253,7 @@ ouroboros/ — agent core and shared runtime (§6)
   review.py — Size and complexity inventory behind the shrink-only ceilings and the diff pulse (§6 Structural gates, Commit preflight)
   size_ratchet_manifest.py — Generated data-only size-debt manifest (`scripts/regenerate_size_ratchet.py`)
   review_execution_projection.py — Reviewer-execution projection; kinds `api` | `harness` | `native`, so the owner can tell a retrieving review from a packet review on the same model
-  preflight_runner.py, preflight_node.py, preflight_receipts.py — Hermetic test gate, Node lane, receipts (§6 Hermetic preflight proof; §8)
+  preflight_runner.py, preflight_node.py, preflight_receipts.py, test_parallelism.py — Hermetic gate, Node lane, receipts and CPU/memory worker budget (§6; §8)
   review_substrate.py — Review seat coordinator: independent seats, per-actor records that keep transport, parse, verdict, coverage and quorum distinct (§6 Review stack, Task acceptance)
   review_custody.py, review_source_closure.py, review_operation.py, review_live_join.py — Reviewer workers: no-resend custody, retained owner-bound inputs, panel waits/checkpoints, existing-producer collection/live joins (§6 Task acceptance)
   review_owner_custody.py — Paid attempts record `(server session, pid)` (§6 Paid stamp and owner custody)
@@ -518,7 +518,7 @@ ouroboros/ — agent core and shared runtime (§6)
     subagent_integration.py — integrate_subagent_patch (sha256, 3-way --index, protected-path gated, genesis refused), external-workspace audited verdict, `coop_already_in_tree` no-op, compare_subagent_patches
     patch_verdict.py — The one verdict writer for both patch pipelines: subjects are minted by the writer (`run_<rid>`), never prefix-matched by readers; artifact plus typed `delegate_run_patch_verdict` custody row
   delegate_start_claims.py — Serializes custody recheck and `START_REQUESTED`; transport/run waits are outside locks. Unsent retries may hold actor/payload locks, never root/store locks
-  process_containment.py — Env-token container membership (`OURO_PROC_CONTAINER_*`: Linux /proc, macOS `ps -E`, Windows Job Object); an alive-or-undeterminable member is an honest hard-block answer, never a kill guarantee (§6 Delegated subagents)
+  process_containment.py, process_lifeline.py, process_overload.py — Token/Job custody, POSIX owner-death guardian and RSS stop; unconfirmed cleanup blocks. Native supervision is not a memory/PID quota (DEVELOPMENT §9)
   process_scope.py, process_census.py — work scopes (membership, records, task-end/Panic reap, engine index); kernel-state readers (§9)
   process_custody.py — `spawn_supervised` and the durable process_ledger.jsonl; `reap_orphaned_processes` with strict identity and `retained_purposes`; the parent lifeline; `stop_ledgered_processes` requires measured identity and confirmed exit (Runtime topology below; §9)
   obligations.py — Atomic current sets (incl. `owner_questions`); owning transitions publish before work and retire after discharge

@@ -165,7 +165,7 @@ def run_node_tests(
     # reaped unconditionally, and a live-or-undeterminable leftover is a hard
     # block whatever the exit code said. Run from the candidate's web/ with
     # web-relative paths so imports resolve exactly as under `npm test`.
-    container = ProcessContainer()
+    container = ProcessContainer(lifeline=True, overload=True)
     started = time.monotonic()
     # NODE_OPTIONS admits --test-only/--test-*-pattern/--require: an inherited
     # operator value can silently green a red suite — same class the pytest
@@ -173,7 +173,7 @@ def run_node_tests(
     env = pr._preflight_env(temp_root, worktree)
     env.pop("NODE_OPTIONS", None)
     proc = container.spawn(
-        [node, "--test", *files],
+        [node, "--test", f"--test-concurrency={env['PYTEST_XDIST_AUTO_NUM_WORKERS']}", *files],
         cwd=str(pathlib.Path(worktree) / WEB_DIR),
         env=env,
         stdout=subprocess.PIPE,

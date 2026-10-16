@@ -37,16 +37,15 @@ _PYTEST_EXIT_NO_TESTS = 5
 
 
 def _workers() -> int:
-    """What `-n auto` will resolve to: the operator override, else xdist's own count."""
-    raw = os.environ.get("OUROBOROS_PREFLIGHT_TEST_WORKERS", "").strip()
-    if raw.isdigit():
-        return max(2, int(raw))
+    """Keep xdist's CPU default within the physical and inherited allocation."""
+    from ouroboros.test_parallelism import worker_budget
+
     try:  # xdist prefers physical cores whenever psutil is importable
         import psutil
         physical = psutil.cpu_count(logical=False)
     except Exception:
         physical = None
-    return max(2, physical or os.cpu_count() or 2)
+    return worker_budget(physical or os.cpu_count() or 1)
 
 
 def serial_shards(workers: int) -> int:
@@ -82,14 +81,35 @@ def battery_commands(sequential: bool) -> list[tuple[str, list[str]]]:
 
 def _run(label: str, argv: list[str], cwd: pathlib.Path) -> int:
     from ouroboros.preflight_node import node_environment
+    from ouroboros.process_containment import ProcessContainer
+    from ouroboros.test_parallelism import NESTED_WORKERS_ENV, bounded_test_command
 
     print(f"\n=== {label}: {shlex.join(argv[2:] if argv[0] == sys.executable else argv)}", flush=True)
     started = time.monotonic()
     env = node_environment(os.environ)
-    override = env.get("OUROBOROS_PREFLIGHT_TEST_WORKERS", "").strip()
-    if override.isdigit():  # the gate steers `-n auto` the same way (preflight_runner._preflight_env)
-        env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = str(max(2, int(override)))
-    code = subprocess.call(argv, cwd=str(cwd), env=env)
+    env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = str(_workers())
+    env[NESTED_WORKERS_ENV] = env["PYTEST_XDIST_AUTO_NUM_WORKERS"]
+    container = ProcessContainer(lifeline=True, overload=True)
+    proc = None
+    try:
+        proc = container.spawn(bounded_test_command(argv, env), cwd=str(cwd), env=env)
+        code = proc.wait()
+    except KeyboardInterrupt:
+        code = 130
+    finally:
+        try:
+            diagnostic = container.reap()
+            if proc is not None:
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    diagnostic = "; ".join(filter(None, [diagnostic, "test root did not exit after reap"]))
+            if diagnostic:
+                print(f"=== {label}: {diagnostic}", file=sys.stderr, flush=True)
+        finally:
+            container.close()
+    if diagnostic and code in (0, _PYTEST_EXIT_NO_TESTS):
+        code = 1
     print(f"=== {label}: exit {code} in {time.monotonic() - started:.0f}s", flush=True)
     return code
 
@@ -110,7 +130,7 @@ def _node_lane() -> int:
         print(f"\n=== node: NOT_RUN — {found}; the web lane needs node >= {floor}, so this is not the full "
               "battery: install node or pass focused targets", flush=True)
         return 1
-    return _run("node", [node, "--test", *files], REPO / WEB_DIR)
+    return _run("node", [node, "--test", f"--test-concurrency={_workers()}", *files], REPO / WEB_DIR)
 
 
 def main(argv: list[str] | None = None) -> int:

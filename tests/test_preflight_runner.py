@@ -121,10 +121,10 @@ def two_pass_env(monkeypatch, preflight_timeout_diagnostics):
     """Deterministic env for the real-spawn two-pass tests."""
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_SERIAL", raising=False)
-    # Operator lever (scrubbed before the candidate ever sees it), clamped at the
-    # >=2 floor: the fixture repos below hold 1-3 probe tests, so a full `-n auto`
-    # fan-out would spend minutes on worker startup for nothing.
+    # These tiny fixture repos explicitly need two workers to prove concurrency;
+    # they must not inherit the surrounding battery's full fan-out.
     monkeypatch.setenv("OUROBOROS_PREFLIGHT_TEST_WORKERS", "2")
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "2")  # These scenarios prove real xdist concurrency.
     # The operator-environment downgrade the scrub must defeat. Every real-spawn
     # test below therefore ALSO proves the parallel lane stayed parallel: if
     # PYTEST_XDIST_AUTO_NUM_WORKERS were inherited, `-n auto` would resolve to one
@@ -464,24 +464,22 @@ def test_plugin_verification_ignores_the_candidate_working_directory(tmp_path):
 # ── Parallelism is real, not nominal (unit) ───────────────────────────
 
 
-def test_worker_count_can_never_fall_below_two(monkeypatch):
-    """A "parallel" pass on ONE worker exercises no concurrency at all, yet the
-    argv still says `-n` and the green return is accepted as proof. The count is
-    therefore clamped: the operator lever may only lower it TO the floor."""
+def test_worker_count_respects_physical_room_and_the_parent_allocation(monkeypatch):
+    """CPU defaults and operator requests cannot spend unavailable worker slots."""
     from ouroboros import preflight_runner as pr
+    from ouroboros import config, test_parallelism as budget
 
+    monkeypatch.delenv(budget.NESTED_WORKERS_ENV, raising=False)
+    peak = config.TEST_WORKER_PEAK_RSS_BYTES
+    monkeypatch.setattr(budget, "physical_memory", lambda: budget.MemorySnapshot(10 * peak, 4 * peak))
     monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "1")
-    assert pr._preflight_worker_count() == 2
+    assert pr._preflight_worker_count() == 1
     monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "0")
-    assert pr._preflight_worker_count() == 2
-    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "-4")
-    assert pr._preflight_worker_count() == 2
-    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "not-a-number")
-    assert pr._preflight_worker_count() >= 2
-    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "3")
+    assert pr._preflight_worker_count() == 1
+    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "16")
     assert pr._preflight_worker_count() == 3
-    monkeypatch.delenv(pr._PREFLIGHT_WORKERS_ENV, raising=False)
-    assert pr._preflight_worker_count() >= 2
+    monkeypatch.setenv(budget.NESTED_WORKERS_ENV, "2")
+    assert pr._preflight_worker_count() == 2
 
 
 @pytest.mark.parametrize("hostile", [
@@ -507,6 +505,7 @@ def test_external_pytest_controls_never_reach_the_candidate_suite(tmp_path, monk
     from ouroboros.preflight_runner import _preflight_env
 
     key, value = hostile
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "2")
     monkeypatch.setenv(key, value)
     env = _preflight_env(tmp_path / "root", tmp_path / "root" / "repo")
 
@@ -542,6 +541,7 @@ def test_the_gate_pins_the_worker_count_it_verified(tmp_path, monkeypatch):
     from ouroboros import preflight_runner as pr
 
     monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "3")
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "3")
     monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", "1")
     env = pr._preflight_env(tmp_path / "root", tmp_path / "root" / "repo")
     assert env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
@@ -2645,7 +2645,7 @@ def test_a_second_timeout_keeps_the_excerpt_the_first_one_already_carried(tmp_pa
         def close(self):
             order.append("close")
 
-    monkeypatch.setattr(process_containment, "ProcessContainer", _FakeContainer)
+    monkeypatch.setattr(process_containment, "ProcessContainer", lambda **options: _FakeContainer())
     monkeypatch.setattr(pr, "_terminate_preflight_tree", lambda proc, temp_root: None)
 
     returncode, output, reap_error = pr._execute_pytest_pass(

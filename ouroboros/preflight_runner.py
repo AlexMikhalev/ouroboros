@@ -471,37 +471,31 @@ def _copy_untracked(repo_dir: pathlib.Path, worktree: pathlib.Path) -> None:
         shutil.copy2(src, dst)
 
 
-# The parallel lane is only a parallel lane if xdist really starts more than one
-# worker. `-n auto` resolves through PYTEST_XDIST_AUTO_NUM_WORKERS, which the
-# operator environment can carry: an inherited "1" runs the whole pass on a
-# single worker while the argv still says `-n`, so `PreflightPass.parallel` stays
-# True, the pass returns green, and the gate has proved nothing about the
-# parallel-only defects it exists to catch. That value is therefore never
-# inherited — `_preflight_env` scrubs the whole PYTEST_* namespace and re-injects
-# the count resolved here, which is clamped so it can never fall below two.
+# Require real concurrency when the admitted budget permits it. Physical room
+# or an explicit parent allocation may admit one worker; that is not proof of
+# concurrency. The host freezes its admitted count beside the nonce probe, so
+# a later memory sample cannot change the pass's expected evidence.
 _MIN_PREFLIGHT_WORKERS = 2
-# Operator lever for the parallel pass's xdist worker count, floored at two and
-# sized per concurrent build lane by the rule in docs/DEVELOPMENT.md. It also
-# keeps the nested fixture repos in tests/test_preflight_runner.py (1-3 probe
-# tests each) from spending minutes on a full `-n auto` fan-out. Read from the
-# OPERATOR environment, never forwarded to the candidate: the scrub drops it.
-_PREFLIGHT_WORKERS_ENV = "OUROBOROS_PREFLIGHT_TEST_WORKERS"
+from ouroboros.test_parallelism import WORKERS_ENV as _PREFLIGHT_WORKERS_ENV  # noqa: F401 (compatibility name)
 
 
 def _preflight_worker_count() -> int:
-    """How many xdist workers the parallel pass must start — always >= 2."""
-    raw = os.environ.get(_PREFLIGHT_WORKERS_ENV, "")
-    if raw.strip():
-        try:
-            return max(_MIN_PREFLIGHT_WORKERS, int(raw.strip()))
-        except ValueError:
-            pass
-    return max(_MIN_PREFLIGHT_WORKERS, os.cpu_count() or _MIN_PREFLIGHT_WORKERS)
+    """CPU-based default, capped by physical room and a parent test allocation."""
+    from ouroboros.test_parallelism import worker_budget
+
+    return worker_budget(os.cpu_count() or 1)
+
+
+def _allocated_worker_count(temp_root: pathlib.Path) -> int:
+    try:
+        return int((_probe_dir(temp_root) / "admitted-workers").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return _preflight_worker_count()
 
 
 # Forcing the flags and the plugins still only proves what the gate ASKED for.
-# The pass is accepted as parallel only if xdist really started >= 2 workers, and
-# that is observed from inside the run: a tiny plugin the gate writes into its own
+# The pass must actually start min(2, admitted budget) workers, observed inside
+# the run: a tiny plugin the gate writes into its own
 # disposable temp root (never into the candidate worktree) records one file per
 # worker id. Reading it back is the difference between "the argv said -n" and
 # "concurrency actually happened".
@@ -559,6 +553,7 @@ def _install_worker_probe(temp_root: pathlib.Path) -> str:
     module = f"{_WORKER_PROBE_MODULE}_{uuid.uuid4().hex}"
     probe = _probe_dir(temp_root)
     probe.mkdir(parents=True, exist_ok=True)
+    (probe / "admitted-workers").write_text(str(_preflight_worker_count()), encoding="utf-8")
     (probe / f"{module}.py").write_text(
         _WORKER_PROBE_SOURCE.replace("__WORKER_LOG__", repr(str(_worker_log_dir(temp_root)))),
         encoding="utf-8",
@@ -577,6 +572,7 @@ def _observed_worker_ids(temp_root: pathlib.Path) -> set:
 def _preflight_env(temp_root: pathlib.Path, repo_worktree: pathlib.Path, *, create=True) -> dict:
     from ouroboros.test_environment import isolated_environment, without_launch_descriptors
     from ouroboros.preflight_node import node_environment
+    from ouroboros.test_parallelism import NESTED_WORKERS_ENV
 
     temp_root = pathlib.Path(temp_root).resolve(strict=False)
     # The scrub drops settings keys (`test_environment.settings_keys`), secret suffixes,
@@ -590,7 +586,8 @@ def _preflight_env(temp_root: pathlib.Path, repo_worktree: pathlib.Path, *, crea
     # Re-injected AFTER the scrub, so `-n auto` resolves to a count this process
     # chose rather than one the operator environment happened to carry. Inert for
     # the serial/legacy passes, which pass no `-n` at all.
-    env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = str(_preflight_worker_count())
+    env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = str(_allocated_worker_count(temp_root))
+    env[NESTED_WORKERS_ENV] = env["PYTEST_XDIST_AUTO_NUM_WORKERS"]
     return env
 
 
@@ -821,7 +818,7 @@ def _execute_pytest_pass(
     """
     from ouroboros.process_containment import ProcessContainer
 
-    container = ProcessContainer()
+    container = ProcessContainer(lifeline=True, overload=True)
     # `container.spawn`, not `Popen` + `adopt`: it applies the process-group/session
     # kwargs AND leaves no window between the process existing and being contained.
     # On Windows job membership only takes effect at assignment, so a descendant
@@ -1438,11 +1435,11 @@ def run_hermetic_pytest(
                 # Use the actual nonce flag, not the stem or spec.parallel:
                 # custom argv gets no host probe; red/empty lanes need no count.
                 observed = _observed_worker_ids(temp_root)
-                if len(observed) < _MIN_PREFLIGHT_WORKERS:
+                if len(observed) < (required := min(_MIN_PREFLIGHT_WORKERS, _allocated_worker_count(temp_root))):
                     return _diagnosis(
                         "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_PARALLELISM_LOST (hard block): "
                         f"the {spec.label} pass returned green on {len(observed)} xdist "
-                        f"worker(s), fewer than the {_MIN_PREFLIGHT_WORKERS} it requires",
+                        f"worker(s), fewer than the {required} its admitted budget requires",
                         "A pass that never ran concurrently proves nothing about the "
                         "parallel-only defects this gate exists to catch, so it is not "
                         "accepted as green. Check the repository's pytest configuration for "

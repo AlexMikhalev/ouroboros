@@ -215,6 +215,9 @@ _PYTEST_POPEN_PATCHED = False
 
 
 def _isolated_child_env(value) -> dict:
+    from ouroboros.process_containment import CONTAINMENT_ENV_PREFIX
+    from ouroboros.test_parallelism import NESTED_WORKERS_ENV, nested_workers
+
     child_env = dict(value)
     synthetic_home = (child_env.get("HOME") or child_env.get("USERPROFILE"))
     synthetic_home = synthetic_home and synthetic_home != _PYTEST_DEFAULTS["HOME"]
@@ -236,6 +239,12 @@ def _isolated_child_env(value) -> dict:
         child_env.pop(key, None)
     child_env["OUROBOROS_PYTEST_ACTIVE"] = "1"
     child_env["OUROBOROS_TEST_LIVE_DATA_ROOT"] = _PYTEST_CHILD_LIVE_ROOT
+    # Custom env={} must retain every outer owner's attribution. Otherwise a
+    # test child that changes its process group escapes the owner's token scan.
+    child_env.update({key: value for key, value in os.environ.items()
+                      if key.startswith(CONTAINMENT_ENV_PREFIX)})
+    child_env[NESTED_WORKERS_ENV] = str(nested_workers(child_env))
+    child_env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = child_env[NESTED_WORKERS_ENV]
     return child_env
 
 
@@ -247,11 +256,19 @@ def _install_pytest_child_isolation() -> None:
 
     @functools.wraps(_ORIGINAL_POPEN_INIT)
     def isolated_init(self, *args, **kwargs):
+        from ouroboros.test_parallelism import bounded_test_command
+
         positional = list(args)
         if len(positional) > 10:
             positional[10] = _isolated_child_env(os.environ if positional[10] is None else positional[10])
+            env = positional[10]
         else:
             kwargs["env"] = _isolated_child_env(os.environ if kwargs.get("env") is None else kwargs["env"])
+            env = kwargs["env"]
+        if positional:
+            positional[0] = bounded_test_command(positional[0], env)
+        elif "args" in kwargs:
+            kwargs["args"] = bounded_test_command(kwargs["args"], env)
         return _ORIGINAL_POPEN_INIT(self, *positional, **kwargs)
 
     subprocess.Popen.__init__ = isolated_init
@@ -465,6 +482,20 @@ def _pin_lane_groups(items, shards: int) -> None:
 
 
 @pytest.hookimpl(tryfirst=True)
+def pytest_cmdline_main(config):
+    from ouroboros.test_parallelism import NESTED_WORKERS_ENV, nested_workers
+
+    # Generated entry scripts can call pytest.main directly, bypassing the argv
+    # seam. xdist resolves -n auto later in this hook; cap explicit counts too.
+    count = getattr(config.option, "numprocesses", None)
+    if count and NESTED_WORKERS_ENV in os.environ:
+        slots = nested_workers(os.environ)
+        config.option.numprocesses = min(count, slots) if isinstance(count, int) else slots
+        # xdist's own tryfirst hook may already have expanded -n into gateways.
+        config.option.tx = config.option.tx[:slots]
+
+
+@pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
     config.addinivalue_line("markers", "scale: storage operation-count acceptance measurements")
     if _PYTEST_ROOT is not None:
@@ -532,6 +563,12 @@ def _claim_fresh_basetemp(root: pathlib.Path) -> str:
 
 
 def pytest_sessionstart(session):  # noqa: ARG001
+    from ouroboros.test_parallelism import NESTED_WORKERS_ENV
+
+    session.config._ouroboros_session = session
+    # This process already owns its allocation. Test-created runners begin with
+    # one slot; tests of real concurrency opt in by setting their child's key.
+    os.environ[NESTED_WORKERS_ENV] = "1"
     _bind_pytest_runtime_roots()
     _install_pytest_child_isolation()
     repo_root = pathlib.Path(__file__).resolve().parents[1]
@@ -1215,10 +1252,69 @@ def _fail_if_a_thread_leaked(item):
                 f"test it pollutes", pytrace=False)
 
 
-@pytest.hookimpl(optionalhook=True)
+@pytest.hookimpl(optionalhook=True, trylast=True)
 def pytest_testnodedown(node, error):  # noqa: ARG001
     # pytest-xdist controller: merge each worker's leak list (shipped via workeroutput below).
     _THREAD_LEAKS.extend(getattr(node, "workeroutput", {}).get("thread_leaks", []))
+    if error is None:
+        return
+    session = getattr(node.config, "_ouroboros_session", None)
+    reason = f"xdist worker {node.gateway.id} died: {error}"
+    if session is not None:
+        session.shouldfail = reason
+    controller = node.config.pluginmanager.get_plugin("dsession")
+    if controller is not None:
+        # xdist's loop reads its own shouldstop, not Session.shouldfail. Stop
+        # scheduling before it redistributes the dead worker's pending items.
+        controller.shouldstop = reason
+        controller._max_worker_restart = 0
+        controller.triggershutdown()
+        scheduler = controller.sched
+        # With no collected/assigned test xdist emits no crash report. Its
+        # native schedulers expose precisely the work remove_node would use.
+        pending = True
+        if hasattr(scheduler, "assigned_work"):
+            pending = any(not done for unit in scheduler.assigned_work.get(node, {}).values()
+                          for done in unit.values())
+        elif hasattr(scheduler, "node2pending"):
+            pending = bool(scheduler.node2pending.get(node))
+        if getattr(scheduler, "collection", None) is None or not pending:
+            _record_worker_crash(node, reason, scheduler)
+            pytest.exit(reason, returncode=1)
+
+
+def _record_worker_crash(node, reason, scheduler):
+    collected = getattr(scheduler, "collection", None)
+    completed = getattr(node.config, "_ouroboros_completed_tests", set())
+    node.config._ouroboros_worker_crash = {
+        "worker": node.gateway.id, "reason": str(reason),
+        "collection_available": collected is not None,
+        "unfinished": sorted(set(collected or []) - completed),
+    }
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_logreport(report):
+    outcome = yield
+    node = getattr(report, "node", None)
+    config = getattr(node, "config", None)
+    session = getattr(config, "_ouroboros_session", None)
+    if config is not None:
+        completed = getattr(config, "_ouroboros_completed_tests", set())
+        if report.when in {"teardown", "???"} or report.failed or report.skipped:
+            completed.add(report.nodeid)
+        config._ouroboros_completed_tests = completed
+    if report.when == "???" and session is not None and session.shouldfail:
+        controller = config.pluginmanager.get_plugin("dsession")
+        _record_worker_crash(node, session.shouldfail, controller.sched)
+        # All consumers have now recorded xdist's native crash report. Do not
+        # await another worker's running test: bounded gateway teardown and the
+        # outer ProcessContainer own shutdown; evidence retains unfinished IDs.
+        error = pytest.exit.Exception(str(session.shouldfail), returncode=1)
+        if hasattr(outcome, "force_exception"):
+            outcome.force_exception(error)
+        else:  # pluggy < 1.1, still allowed by pytest 7's dependency range.
+            raise error
 
 
 def pytest_terminal_summary(terminalreporter):

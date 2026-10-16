@@ -661,6 +661,9 @@ class _Results:
             lane = getattr(self.config, "_default_suite_lane", None)
             if lane:
                 facts["default_" + lane["pass"]] = lane
+            crash = getattr(self.config, "_ouroboros_worker_crash", None)
+            if crash:
+                facts["worker_crash"] = crash
             write_json(output_dir(self.config) / "results.json", _redact(facts, self.secrets))
         except Exception as error:
             # Diagnostics alone never alter session.exitstatus or expose a body.

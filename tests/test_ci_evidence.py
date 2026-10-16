@@ -359,9 +359,22 @@ def test_successful_upload_without_a_url_is_incomplete(tmp_path):
     ("import time; time.sleep(60)", ("-n", "2", "--dist", "loadscope", "--max-worker-restart=0",
                                      "--timeout=2", "--timeout-method=thread")),
 ], ids=["exit", "ci-timeout"])
-def test_dead_xdist_worker_is_a_named_crash_and_not_an_unknown_session(tmp_path, body, args):
+def test_dead_xdist_worker_is_a_named_crash_and_not_an_unknown_session(tmp_path, monkeypatch, body, args):
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "2")
     result, public, _ = _producer(tmp_path, f"""
         def test_dies():
+            import json, time
+            from pathlib import Path
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    rows = [json.loads(line) for line in Path({str(tmp_path / 'public/events.jsonl')!r}).read_text(encoding='utf-8').splitlines()]
+                except (OSError, ValueError):
+                    rows = []
+                if any(row.get('phase') == 'teardown' and row.get('nodeid', '').endswith('::test_survives') for row in rows):
+                    break
+                assert time.monotonic() < deadline
+                time.sleep(.01)
             {body}
         class TestOtherScope:
             def test_survives(self, request):
@@ -437,7 +450,8 @@ def test_killed_session_names_the_test_in_flight_and_earlier_failures(tmp_path):
         f"::error title=Test in flight when the session was killed::{blocked}"]
 
 
-def test_killed_xdist_session_names_every_test_in_flight(tmp_path):
+def test_killed_xdist_session_names_every_test_in_flight(tmp_path, monkeypatch):
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "2")
     public = _kill_when(tmp_path, _blocking(tmp_path, """
         def test_blocks_a():
             block()

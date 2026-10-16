@@ -13,6 +13,7 @@ import yaml
 
 from ouroboros.preflight_runner import LANE_EXCLUSION_EXPR, PARALLEL_PASS_FLAGS
 from tests.ci_evidence import file_shards, reconcile_shards
+from ouroboros.test_parallelism import NESTED_WORKERS_ENV
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA, RUN = "a" * 40, "42"
@@ -69,6 +70,7 @@ def test_real_pytest_manifests_and_xdist_prove_both_passes_by_whole_file(tmp_pat
             result = subprocess.run(
                 [sys.executable, "-I", "-S", str(ROOT / "scripts/safe_test.py"),
                  "--temp-parent", str(tmp_path), "--", sys.executable, str(entry), *args],
+                env={**os.environ, NESTED_WORKERS_ENV: "2"},
                 capture_output=True, text=True, encoding="utf-8", timeout=90)
             assert result.returncode == 0, result.stdout + result.stderr
             data = json.loads((public / "results.json").read_text(encoding="utf-8"))

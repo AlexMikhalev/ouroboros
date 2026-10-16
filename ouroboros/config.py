@@ -1,11 +1,6 @@
-"""
-Ouroboros — Shared configuration (single source of truth).
-
-Paths, the settings-file lifecycle (locked load/normalize/save plus environment
-projection) and mode-aware write authority. The vocabularies it reads through —
-shipped defaults, closed scales, model slots, reviewer routes, numeric limits —
-live in sibling leaves and are re-exported here, so ``ouroboros.config`` remains
-the one import surface for settings knowledge.
+"""Shared configuration: paths, locked settings lifecycle and mode-aware writes.
+Defaults, scales, model slots, routes and limits live in sibling leaves and are
+re-exported here: one import surface for settings knowledge.
 """
 
 from __future__ import annotations
@@ -136,6 +131,11 @@ from ouroboros.runtime_limits import (
     get_update_letter_timeout_sec, get_ui_translation_timeout_sec, get_websearch_timeout_sec,  # noqa: F401
 )
 from ouroboros.update_channels import UPDATE_SETTINGS_DEFAULTS, normalize_update_channel  # noqa: F401
+
+# Physical safety budgets, not test-value judgments or kernel-enforced quotas.
+TEST_WORKER_PEAK_RSS_BYTES = 1024**3  # Provisional 1 GiB; loaded P0 observed 690 MiB/worker.
+TEST_MEMORY_RESERVE_FRACTION = 0.10  # Keep physical headroom for the OS and other work.
+TEST_PROCESS_SAMPLE_SEC = 1.0  # Poll latency; allocations between samples can exceed the bound.
 
 
 def resolve_task_execution_timeout_sec(task: dict, *, global_ceiling=_CURRENT_TASK_CEILING) -> Optional[float]:

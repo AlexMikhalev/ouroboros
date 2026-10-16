@@ -20,6 +20,17 @@ def run_tests():
     return module
 
 
+@pytest.fixture
+def standalone_budget(monkeypatch):
+    from ouroboros import test_parallelism
+
+    # These command-shape cases model the standalone operator entrypoint.
+    # Real nested runners retain their inherited one-slot allocation.
+    monkeypatch.delenv(test_parallelism.NESTED_WORKERS_ENV, raising=False)
+    monkeypatch.setattr(test_parallelism, "physical_memory", lambda:
+                        test_parallelism.MemorySnapshot(100 * 1024**3, 100 * 1024**3))
+
+
 def _item(nodeid, *, serial):
     markers = [types.SimpleNamespace(name="serial")] if serial else []
     item = types.SimpleNamespace(nodeid=nodeid, added=[])
@@ -47,7 +58,7 @@ def test_sequential_mode_keeps_the_gate_marker_split_and_xdist_flags(run_tests, 
     assert serial[3:] == ["tests/", "-m", f"serial and {LANE_EXCLUSION_EXPR}"]
 
 
-def test_default_mode_is_one_run_over_both_lanes(run_tests, monkeypatch):
+def test_default_mode_is_one_run_over_both_lanes(run_tests, monkeypatch, standalone_budget):
     monkeypatch.setenv("OUROBOROS_PREFLIGHT_TEST_WORKERS", "8")
     ((label, command),) = run_tests.battery_commands(sequential=False)
     assert label == "overlapped"
@@ -61,12 +72,101 @@ def test_default_mode_is_one_run_over_both_lanes(run_tests, monkeypatch):
     assert all(flag in command for flag in untouched)
 
 
-def test_the_worker_override_steers_xdist_like_the_gate(run_tests, monkeypatch):
+def test_the_worker_override_steers_xdist_like_the_gate(run_tests, monkeypatch, standalone_budget):
+    from ouroboros import process_containment
+
     seen = {}
     monkeypatch.setenv("OUROBOROS_PREFLIGHT_TEST_WORKERS", "3")
-    monkeypatch.setattr(run_tests.subprocess, "call", lambda argv, cwd, env: seen.update(env=env) or 0)
+
+    class Owner:
+        def __init__(self, **options):
+            seen["options"] = options
+
+        def spawn(self, argv, *, cwd, env):
+            seen.update(env=env, argv=argv, cwd=cwd)
+            return types.SimpleNamespace(wait=lambda **kwargs: 0)
+
+        def reap(self):
+            seen["reaped"] = True
+            return ""
+
+        def close(self):
+            seen["closed"] = True
+
+    monkeypatch.setattr(process_containment, "ProcessContainer", Owner)
     assert run_tests._run("x", [run_tests.sys.executable, "-m", "pytest"], run_tests.REPO) == 0
     assert seen["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
+    assert seen["env"]["OURO_TEST_WORKER_BUDGET"] == "3"
+    assert seen["options"] == {"lifeline": True, "overload": True}
+    assert seen["reaped"] and seen["closed"]
+
+
+@pytest.mark.parametrize("interrupted, diagnostic, expected", [
+    (False, "overload_stop: largest pid=123 rss=456", 1),
+    (True, "", 130),
+])
+def test_runner_never_greens_an_overload_or_interrupt(
+    run_tests, monkeypatch, capsys, interrupted, diagnostic, expected,
+):
+    from ouroboros import process_containment
+
+    events = []
+
+    class Owner:
+        def __init__(self, **options):
+            pass
+
+        def spawn(self, *args, **kwargs):
+            return self
+
+        def wait(self, **kwargs):
+            if interrupted and not kwargs:
+                raise KeyboardInterrupt
+            return 0
+
+        def reap(self):
+            events.append("reaped")
+            return diagnostic
+
+        def close(self):
+            events.append("closed")
+
+    monkeypatch.setattr(process_containment, "ProcessContainer", Owner)
+    assert run_tests._run("x", [run_tests.sys.executable, "-c", "pass"], REPO) == expected
+    assert events == ["reaped", "closed"]
+    if diagnostic:
+        assert diagnostic in capsys.readouterr().err
+
+
+def test_node_lane_uses_the_shared_worker_budget(run_tests, monkeypatch):
+    from ouroboros import preflight_node
+
+    seen = []
+    monkeypatch.setattr(preflight_node, "candidate_node_tests", lambda repo: ["tests/one.test.js"])
+    monkeypatch.setattr(preflight_node, "resolve_node", lambda: "node")
+    monkeypatch.setattr(preflight_node, "probe_node_version", lambda node: "24.0.0")
+    monkeypatch.setattr(run_tests, "_workers", lambda: 3)
+    monkeypatch.setattr(run_tests, "_run", lambda label, argv, cwd: seen.append(argv) or 0)
+    assert run_tests._node_lane() == 0
+    assert seen == [["node", "--test", "--test-concurrency=3", "tests/one.test.js"]]
+
+
+def test_empty_lane_with_cleanup_error_makes_the_battery_red(run_tests, monkeypatch, capsys):
+    from ouroboros import process_containment
+
+    def owner(code, diagnostic):
+        proc = types.SimpleNamespace(wait=lambda **kwargs: code)
+        return types.SimpleNamespace(spawn=lambda *args, **kwargs: proc,
+                                     reap=lambda: diagnostic, close=lambda: None)
+
+    diagnostic = "overload_stop: largest pid=123 rss=456"
+    owners = iter([owner(0, ""), owner(5, diagnostic)])
+    monkeypatch.setattr(process_containment, "ProcessContainer", lambda **options: next(owners))
+    monkeypatch.setattr(run_tests, "_node_lane", lambda: 0)
+    assert run_tests.main(["--sequential"]) == 1
+    captured = capsys.readouterr()
+    assert diagnostic in captured.err
+    assert "battery: RED" in captured.out
 
 
 def test_sequential_with_pytest_arguments_is_refused(run_tests, monkeypatch):
