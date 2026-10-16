@@ -30,7 +30,7 @@ from ouroboros.server_auth import (
 from ouroboros.server_entrypoint import (ServerAdmissionRefused, admit_data_root, bound_service_socket,
                                          find_free_port, parse_server_args, reserved_service_ports, write_port_file)
 from ouroboros.launcher_bootstrap import automatic_launch_allowed
-from ouroboros import body_adoption, process_scope, store_switch
+from ouroboros import body_adoption, process_scope, server_boot, store_switch
 from ouroboros.server_web import ServedUI
 from ouroboros.config import resolve_port_file
 from ouroboros.process_logging import configure_process_logging
@@ -1399,16 +1399,10 @@ async def lifespan(app):
     store_switch.when_ready(lifespan_drive_root, _dialogue, _after_extensions)  # now, when no import runs here
 
     # --- the boot coordinator's steps, in the order the lifespan ran them before it served ---
-    def _owned_stops() -> None:  # before any extension/replacement process (§9)
-        if not pytest_default_real_data_dir:
-            finish_unconfirmed_stops(lifespan_drive_root)
-
-    def _inherited_records() -> None:
-        if not pytest_default_real_data_dir:
-            start_inherited_import(lifespan_drive_root)  # the one-time disk walk, off the ready path
+    live = not pytest_default_real_data_dir  # the real data root: every step; a bare pytest run: none that touches it
 
     def _usage_store() -> None:  # the one journal import, on every door (providerless included)
-        if pytest_default_real_data_dir:
+        if not live:
             return
         try:
             usage_store.migrate_from_journal(lifespan_drive_root)
@@ -1417,114 +1411,18 @@ async def lifespan(app):
                          "until it succeeds", exc_info=True)
             raise
 
-    def _skills() -> None:  # source-mode must seed native skills too, matching packaged launcher layout
-        if pytest_default_real_data_dir:
-            log.info("Skipping native skills bootstrap against real DATA_DIR during pytest")
-            return
-        from ouroboros.launcher_bootstrap import ensure_data_skills_seeded
-        ensure_data_skills_seeded()
-
-    def _projects() -> None:
-        # Register any pre-existing data/projects/<id>/ store whose row is missing, so an inherited
-        # project's raw chat is partitioned (reserved_project_chat_ids, the multi-project isolation
-        # SSOT) before the supervisor routes a turn. Idempotent and never prunes.
-        if not pytest_default_real_data_dir:
-            from ouroboros.projects_registry import reconcile_projects
-            reconcile_projects(lifespan_drive_root)
-
-    def _services() -> None:
-        # P2: finalize a pending managed merge update (post-boot smoke / boot-loop rollback) and run a
-        # one-shot boot-time update check (check-on-restart) so the main-screen Update badge reflects
-        # availability. Both fail-soft — a missing managed remote / offline boot simply yields no
-        # badge. Local autostart goes FIRST: a local-only install's boot check may write its update
-        # letter through the local model, and the git fetch ahead of that call is the head start the
-        # model server gets (no readiness wait — a letter that still finds the model loading fails
-        # typed and is rewritten by the next check).
-        if has_local and settings.get("LOCAL_MODEL_SOURCE"):
-            from ouroboros.local_model_autostart import auto_start_local_model
-            threading.Thread(
-                target=auto_start_local_model, args=(settings,),
-                daemon=True, name="local-model-autostart",
-            ).start()
-        threading.Thread(
-            target=_boot_managed_update_tasks, daemon=True, name="boot-managed-update",
-        ).start()
-        if not pytest_default_real_data_dir:
-            from ouroboros.claudexor_daemon import warm_owned_daemon
-            warm_owned_daemon()  # provisioned homes only; one background ensure, off the startup path
-
-    async def _serve_host_service() -> None:
-        from ouroboros.event_bus import init_global_event_bus
-        from ouroboros.extension_companion import init_global_supervisor
-        from ouroboros.gateway.host_service import (
-            DEFAULT_HOST_SERVICE_HOST,
-            create_host_service_app,
-            host_service_port,
-        )
-
-        init_global_event_bus().set_loop(_event_loop)
-        init_global_supervisor(lifespan_drive_root)
-        host_service_app = create_host_service_app(lifespan_drive_root)
-        host_port = host_service_port()
-        # Bind before starting the asyncio task: uvicorn's bind-error SystemExit
-        # otherwise escapes run_forever and kills the main server. Keep that
-        # socket, removing the former probe-close/rebind race as well.
-        host_socket = boot.host_service_listener.enter_context(bound_service_socket(
-            lifespan_drive_root, "host_service", DEFAULT_HOST_SERVICE_HOST, host_port))
-        host_service_config = uvicorn.Config(
-            host_service_app,
-            host=DEFAULT_HOST_SERVICE_HOST,
-            port=host_port,
-            log_level="warning",
-            log_config=None,  # uvicorn loggers propagate to the root handlers
-        )
-        boot.host_service_server = _embedded_uvicorn_server(host_service_config)
-        boot.host_service_task = asyncio.create_task(
-            boot.host_service_server.serve(sockets=[host_socket]),
-            name="host-service-api",
-        )
-        boot.host_service_task.add_done_callback(lambda _task: boot.host_service_listener.close())
-        log.info("Host Service API listening on %s:%d", DEFAULT_HOST_SERVICE_HOST, host_port)
-
-    def _host_service() -> None:  # loop-bound: the companions' API serves on the main loop
-        try:
-            asyncio.run_coroutine_threadsafe(_serve_host_service(), _event_loop).result()
-        except Exception:
-            boot.host_service_listener.close()
-            raise
-
-    def _review_jobs() -> None:
-        from ouroboros.skill_review_runner import reconcile_stale_review_jobs
-
-        if pytest_default_real_data_dir:
-            log.info("Skipping stale skill-review reconciliation against real DATA_DIR during pytest")
-        else:
-            reconcile_stale_review_jobs(lifespan_drive_root)
-
     def _extensions() -> None:  # reload enabled+reviewed extensions across restarts
         try:
             from ouroboros.config import get_skills_repo_path, load_settings as _load_settings
             from ouroboros.extension_loader import reload_all as _reload_extensions, set_ws_broadcaster as _set_extension_ws_broadcaster
             _set_extension_ws_broadcaster(broadcast_ws_sync)
             repo_path = get_skills_repo_path()
-            if pytest_default_real_data_dir:
+            if not live:
                 log.info("Skipping extension reload_all against real DATA_DIR during pytest")
             else:
                 _reload_extensions(lifespan_drive_root, _load_settings, repo_path=repo_path or None)
         finally:
             _extensions_ready.set()  # loaded or not, the subscribers that exist are registered: the supervisor may start
-
-    def _ui_translation() -> None:  # after the skills registered their tables; fail-soft, no model call
-        if not pytest_default_real_data_dir:
-            _start_ui_translation(lifespan_drive_root, _supervisor_stop)  # no batch starts once teardown began
-
-    def _mcp() -> None:
-        from ouroboros.mcp_client import (
-            reconfigure_from_settings as _mcp_reconfigure_startup,
-            refresh_all_background as _mcp_refresh_background_startup,
-        )
-        _mcp_reconfigure_startup(settings)
-        _mcp_refresh_background_startup(reason="startup")
 
     async def _start_extension_reconcile() -> None:
         from ouroboros.config import get_skills_repo_path, load_settings as _load_settings
@@ -1539,45 +1437,22 @@ async def lifespan(app):
             name="extension-reconcile-pickup",
         )
 
-    def _extension_reconcile() -> None:  # loop-bound
-        if pytest_default_real_data_dir:
-            log.info("Skipping extension reconcile pickup against real DATA_DIR during pytest")
-            return
-        asyncio.run_coroutine_threadsafe(_start_extension_reconcile(), _event_loop).result()
-
-    def _store() -> None:
-        """The import's outcome: a boot whose store did not publish cannot become ready."""
-        if pytest_default_real_data_dir:
-            return
-        outcome = store_switch.wait_ready(lifespan_drive_root, timeout=0.5)
-        while outcome.get("status") == "importing" and not body_stop.is_set():
-            outcome = store_switch.wait_ready(lifespan_drive_root, timeout=0.5)
-        if outcome.get("status") not in ("published", "not_started", "importing"):
-            BOOT.fail(f"current-facts store not published: {outcome.get('error') or outcome.get('status')}")
-            raise RuntimeError(f"store not published: {outcome.get('status')}")
-
-    def _supervisor_outcome() -> None:
-        """The generation is ready once the supervisor (or the providerless recovery) is."""
-        while not (_supervisor_ready.wait(0.5) or _supervisor_error or body_stop.is_set() or BOOT.phase() == "failed"):
-            pass
-        if _supervisor_error:
-            raise RuntimeError(_supervisor_error)
-
     steps = [
-        ("owned_stops", _owned_stops),
-        ("inherited_records", _inherited_records),
+        ("owned_stops", lambda: live and finish_unconfirmed_stops(lifespan_drive_root)),  # before any extension/replacement process (§9)
+        ("inherited_records", lambda: live and start_inherited_import(lifespan_drive_root)),  # the one-time disk walk, off the ready path
         ("usage_store", _usage_store),
-        ("skills", _skills),
-        ("projects", _projects),
-        ("services", _services),
-        ("host_service", _host_service),
-        ("review_jobs", _review_jobs),
+        ("skills", lambda: live and server_boot.seed_skills()),
+        ("projects", lambda: live and server_boot.reconcile_projects(lifespan_drive_root)),
+        ("services", lambda: server_boot.start_background_services(
+            settings, local_model=has_local, boot_managed_update=_boot_managed_update_tasks, warm_daemon=live)),
+        ("host_service", lambda: server_boot.on_loop(_event_loop, server_boot.serve_host_service(lifespan_drive_root, boot))),
+        ("review_jobs", lambda: live and server_boot.reconcile_review_jobs(lifespan_drive_root)),
         ("extensions", _extensions),
-        ("ui_translation", _ui_translation),
-        ("mcp", _mcp),
-        ("extension_reconcile", _extension_reconcile),
-        ("store", _store),
-        ("supervisor", _supervisor_outcome),
+        ("ui_translation", lambda: live and _start_ui_translation(lifespan_drive_root, _supervisor_stop)),  # after the skills registered their tables
+        ("mcp", lambda: server_boot.mcp_startup(settings)),
+        ("extension_reconcile", lambda: live and server_boot.on_loop(_event_loop, _start_extension_reconcile())),
+        ("store", lambda: live and server_boot.wait_store_published(lifespan_drive_root, body_stop)),
+        ("supervisor", lambda: server_boot.wait_supervisor_outcome(_supervisor_ready, lambda: _supervisor_error, body_stop)),
     ]
     start_boot_coordinator(steps, stop=body_stop)
     BOOT.serving()

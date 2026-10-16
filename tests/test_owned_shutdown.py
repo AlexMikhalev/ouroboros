@@ -774,9 +774,12 @@ def test_every_door_joins_the_one_stop_and_the_boot_retry_precedes_launches():
     assert order == ["owned_stops", "inherited_records", "services", "host_service", "extensions"]
     assert steps.index('("owned_stops", ') < steps.index('("inherited_records", ') < steps.index('("services", ') \
         < steps.index('("host_service", ') < steps.index('("extensions", ')
-    for launch, step in (("auto_start_local_model", "_services"), ("warm_owned_daemon()", "_services"),
-                         ("create_host_service_app(", "_serve_host_service"), ("_reload_extensions(lifespan_drive_root", "_extensions")):
-        assert launch in lifespan[lifespan.index(f"def {step}("):], launch
+    from ouroboros import server_boot
+    boot_steps = inspect.getsource(server_boot)
+    for launch, step in (("auto_start_local_model", "start_background_services"), ("warm_owned_daemon()", "start_background_services"),
+                         ("create_host_service_app(", "serve_host_service")):
+        assert launch in boot_steps[boot_steps.index(f"def {step}("):], launch
+    assert "_reload_extensions(lifespan_drive_root" in lifespan[lifespan.index("def _extensions("):]
     gate = lifespan[lifespan.index("def _after_extensions("):lifespan.index("store_switch.when_ready(")]
     assert gate.index("_await_extensions_ready(body_stop)") < gate.index("start_body()") < gate.index("_start_supervisor_if_needed(settings)")
     teardown = lifespan.split("\n    finally:\n", 1)[1]

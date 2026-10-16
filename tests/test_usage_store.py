@@ -424,7 +424,7 @@ def test_the_server_imports_the_journal_as_a_boot_step_on_every_door():
     assert "prepare_startup_state(" not in source
     assert source.index("store_switch.start(") < source.index("usage_store.migrate_from_journal(") \
         < source.index('("usage_store", _usage_store)') < source.index("\n        yield\n")
-    assert "if startup_provider_ready" not in source[source.index("def _usage_store"):source.index("def _skills")]
+    assert "if startup_provider_ready" not in source[source.index("def _usage_store"):source.index("def _extensions")]
 
 
 def test_an_import_interrupted_before_publication_is_redone_from_scratch(root, monkeypatch):
