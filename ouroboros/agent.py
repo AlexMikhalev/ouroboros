@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ouroboros.task_carrier import inline_execution
+
 from ouroboros.config import runtime_setting
 
 import logging
@@ -474,6 +476,7 @@ class OuroborosAgent:
             execution_kind = assigned_owner.get("kind") or (
                 "presence" if task.get("_presence_turn") else "direct" if task.get("_is_direct_chat") else "pooled")
             execution_owner = execution_owner_record(canonical, task, execution_kind)
+            task["_execution_owner"] = execution_owner
             started = getattr(self, "_task_started_ts", None)
             # A queue row's focus is a REPLAY (retry clone, owner-wait restart
             # handoff): it may be older than the focus the same task id already
@@ -594,7 +597,7 @@ class OuroborosAgent:
         attributed candidate set to consume."""
         if (
             str(task.get("id") or "").strip()
-            and not bool(task.get("_is_direct_chat"))
+            and not inline_execution(task)
             and str(task_metadata.get("delegation_role") or "").lower() != "subagent"
         ):
             try:
@@ -632,6 +635,8 @@ class OuroborosAgent:
         # RUNNING record below is the single atomic write that states model, effort,
         # route, profile, effective executor and the one `capability_delta` together.
         dispatch = resolve_dispatch_axes(task)
+        from ouroboros.tool_access_roots import freeze_tool_profile
+        freeze_tool_profile(task)
         _record_executor_resolution(drive_logs, task, dispatch)
         sanitized_task = sanitize_task_for_event(task, drive_logs)
         append_jsonl(drive_logs / "events.jsonl", {"ts": utc_now_iso(), "type": "task_received", "task": sanitized_task,
@@ -695,7 +700,7 @@ class OuroborosAgent:
             # The complete work-order source reader needs the original typed
             # constraint mapping, not the normalized dataclass repr, to rebuild
             # the exact canonical serializer bytes during a source-range answer.
-            "task_constraint",
+            "task_constraint", "tool_profile", "_execution_owner", "detached_at", "detached_by",
         ):
             if task.get(key) not in (None, ""):
                 task_metadata[key] = task.get(key)
@@ -1019,7 +1024,7 @@ class OuroborosAgent:
                 if isinstance(task.get("metadata"), dict)
                 else {}
             )
-            self._accepting_owner_messages = bool(task.get("_is_direct_chat"))
+            self._accepting_owner_messages = inline_execution(task)
         authority_refusal = validate_task_authority_sources(self.env, task)
         if not authority_refusal:
             _persist_early_origin_stub(self.env.drive_root, task)
@@ -1113,7 +1118,7 @@ class OuroborosAgent:
                     llm_trace = {"reasoning_notes": ["deep_self_review_error"], "tool_calls": []}
             else:
                 with self._owner_message_admission_lock:
-                    if task.get("_is_direct_chat"):
+                    if inline_execution(task):
                         self._accepting_owner_messages = True
                 try:
                     text, usage, llm_trace = run_llm_loop(
@@ -1201,7 +1206,7 @@ class OuroborosAgent:
             physical_calls = _physical_calls_after_budget_rail(
                 task.get("budget_drive_root") or self.env.drive_root, task_id)
             # Direct chats cannot honestly advertise the queued-task resume contract.
-            replay_safe = physical_calls == 0 and not bool(task.get("_is_direct_chat"))
+            replay_safe = physical_calls == 0 and not inline_execution(task)
             resource_limit = {
                 "status": "paused_before_dispatch" if replay_safe else "resource_limited",
                 "scope": str(getattr(exc, "limit_scope", "global") or "global"),
@@ -1211,10 +1216,10 @@ class OuroborosAgent:
                 "auto_resume": False,
                 "resume_policy": _budget_resume_policy(
                     replay_safe=replay_safe,
-                    direct_chat=bool(task.get("_is_direct_chat")),
+                    direct_chat=inline_execution(task),
                 ),
             }
-            if resource_limit["scope"] == "root" and not replay_safe and not task.get("_is_direct_chat"):
+            if resource_limit["scope"] == "root" and not replay_safe and not inline_execution(task):
                 # One root admission latch is enough. Existing siblings finish
                 # any sent request and meet the same ledger rail before another.
                 self._pending_events.append({
@@ -1242,7 +1247,7 @@ class OuroborosAgent:
                     "ts": utc_now_iso(),
                 })
                 return list(self._pending_events)
-            message_fn = _budget_exhausted_message if task.get("_is_direct_chat") else _queued_budget_exhausted_message
+            message_fn = _budget_exhausted_message if inline_execution(task) else _queued_budget_exhausted_message
             text = message_fn()
             usage = {
                 "execution_status": "failed",

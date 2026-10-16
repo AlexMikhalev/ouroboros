@@ -273,6 +273,8 @@ def enqueue_task(
         if continuation:
             t["_consciousness_continuation"] = True
     attach_task_contract(apply_consciousness_authority(t))
+    from ouroboros.tool_access_roots import freeze_tool_profile
+    freeze_tool_profile(t)
     # The allowance read takes the cross-process ledger lock: read it BEFORE the queue
     # lock so a contended ledger never stalls every queue reader; only the live-root
     # count and the append must be one transaction with the lock (the window gates

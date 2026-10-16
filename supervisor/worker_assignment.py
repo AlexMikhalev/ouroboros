@@ -467,8 +467,7 @@ def _choose_candidate(queue, remaining, unresolved_invalid_id_set, refused_this_
                 # unrestorable continuation or failed grant revocation.
                 # Selection must be recorded before assignment.
                 continue
-            if (candidate.get("_is_direct_chat")
-                    and _direct_actor_still_registered(str(candidate.get("id") or ""))):
+            if _direct_actor_still_registered(str(candidate.get("id") or "")):
                 # The direct actor that parked this id has not released
                 # its registry entry yet: no second live actor for one id.
                 continue

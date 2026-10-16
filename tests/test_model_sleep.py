@@ -158,6 +158,7 @@ def test_the_pooled_park_excludes_the_sleep_live_and_the_grant_folds_it(tmp_path
     workers.RUNNING["sleeper"] = meta
     ctx = SimpleNamespace(RUNNING=workers.RUNNING, WORKERS=workers.WORKERS, DRIVE_ROOT=tmp_path)
     checkpoint = {"wait_id": "w1", "task_attempt": 1, "source_ref": {"x": 1}, "reason": "sleep",
+                  "budget_paused_sec": 0.0, "sleep_started_at": time.time(),
                   "sleep": {"senders": ["peer-a"], "any_mail": False}}
     handle_owner_wait({"task_id": "sleeper", "wait_id": "w1", "task_attempt": 1, "worker_id": 0, "pid": 77,
                        "phase": "park", "checkpoint": checkpoint}, ctx)

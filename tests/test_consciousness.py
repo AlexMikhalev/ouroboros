@@ -561,11 +561,11 @@ def test_a_turn_admitted_in_the_same_instant_keeps_the_wake_due(clock, monkeypat
     calls = {"n": 0}
     real = clock.clock.live_turns
 
-    def live_turns():
+    def live_turns(**kwargs):
         calls["n"] += 1
         if calls["n"] == 2:  # the re-check under the gate lock sees a just-admitted owner turn
             _register("owner002")
-        return real()
+        return real(**kwargs)
 
     monkeypatch.setattr(clock.clock, "live_turns", live_turns)
     due = clock.clock.next_wake_at

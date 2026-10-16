@@ -99,6 +99,7 @@ def test_tool_set_matches(registry):
 
 
 EXPECTED_TOOLS = [
+    "continue_in_background", "pause_task", "resume_task", "continue_task",
     "browse_page", "browser_action",
     "preflight_review", "review_change", "review_status",
     "compact_context", "set_tool_timeout", "request_restart", "prepare_self_change",

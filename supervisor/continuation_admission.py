@@ -529,7 +529,8 @@ def admit_continuation(predecessor_task_id: str, *, action_nonce: str) -> Dict[s
             return {"ok": False, "error": "continuation_claim_unwritable", "detail": str(exc)[:200]}
         binding = dict(claim["binding"])
     blockers = action_writers(q, predecessor, purpose=CONTINUE_PURPOSE)
-    admission = {"binding": binding, "binding_sha256": binding_sha(binding), "admitted_at": utc_now_iso(),
+    admission = {**{key: claim[key] for key in ("actor", "actor_task_id", "reason") if key in claim},
+                 "binding": binding, "binding_sha256": binding_sha(binding), "admitted_at": utc_now_iso(),
                  "held": bool(blockers)}
     task = _successor_task(q, predecessor, result, binding, verdict, sources, admission)
     if blockers:
