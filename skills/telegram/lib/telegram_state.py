@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import threading
 from typing import Any, Dict
 
 import httpx
@@ -16,6 +17,45 @@ from .telegram_i18n import Index
 
 
 _RUNTIME_STATE_TIMEOUT_SEC = 2.0
+_MAX_MESSAGE_REFS = 1000
+_MESSAGE_REFS_LOCK = threading.RLock()
+
+
+def _message_refs(api) -> dict:
+    """Bounded transport index, never authority for host routing or authorship."""
+    data = _read_json_file(_state_file(api, "message_refs.json"))
+    return data if isinstance(data, dict) else {}
+
+
+def _remember_message(api, chat_id: int, message_id: int, record: dict) -> None:
+    if not message_id:
+        return
+    with _MESSAGE_REFS_LOCK:
+        data = _message_refs(api)
+        key = f"{chat_id}:{message_id}"
+        data.pop(key, None)
+        data[key] = dict(record)
+        for stale in list(data)[:-_MAX_MESSAGE_REFS]:
+            data.pop(stale, None)
+        path = _state_file(api, "message_refs.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+
+
+def _message_ref(api, chat_id: int, message_id: int) -> dict:
+    with _MESSAGE_REFS_LOCK:
+        value = _message_refs(api).get(f"{chat_id}:{message_id}")
+        return dict(value) if isinstance(value, dict) else {}
+
+
+def _reply_reference(api, chat_id: int, message_id: int) -> str:
+    record = _message_ref(api, chat_id, message_id)
+    task_id = str(record.get("task_id") or "")
+    if record.get("kind") == "work_card" and task_id:
+        return f"task:{task_id}"
+    return str(record.get("row_address") or (f"task:{task_id}" if task_id else ""))
 
 
 def _data_dir(api) -> pathlib.Path:
