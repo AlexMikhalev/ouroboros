@@ -112,10 +112,17 @@ def window_evidence(drive_root: Any, spec: CallSpec) -> Optional[Dict[str, Any]]
     return dict(record) if isinstance(record, dict) else None
 
 
-def initial_call_schemas(tools: Any) -> List[Dict[str, Any]]:
-    """The room's permitted schemas through the existing Nano path, with the call's initial names."""
+def initial_call_schemas(tools: Any, spec: Optional[CallSpec] = None) -> List[Dict[str, Any]]:
+    """The call's initial view of the room's permitted schemas.
+
+    An owner call opens with the Nano path and the call's initial names. A
+    Presence call opens with every schema its binding's ceiling permits: the
+    binding author chose that set, and the registry already narrowed it.
+    """
     from ouroboros.tool_policy import initial_tool_schemas
 
+    if spec is not None and spec.presence_binding_id:
+        return initial_tool_schemas(tools, context_mode="max")
     return initial_tool_schemas(tools, context_mode="nano", schema_names=CALL_INITIAL_TOOL_NAMES)
 
 
@@ -131,7 +138,7 @@ def call_context_plan(task: Dict[str, Any], tools: Any, drive_root: Any) -> Opti
         return None
     route = resolve_call_route(spec, drive_root)
     fit_kwargs: Dict[str, Any] = {"known_window_tokens": route.window_tokens} if route.window_tokens else {}
-    return CallContextPlan(spec, route, initial_call_schemas(tools), fit_kwargs)
+    return CallContextPlan(spec, route, initial_call_schemas(tools, spec), fit_kwargs)
 
 
 def _call_setting(key: str) -> str:

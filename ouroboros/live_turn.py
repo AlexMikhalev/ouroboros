@@ -182,7 +182,7 @@ class _LiveCall:
         loop_mod._reset_turn_state(self.ctx)
         loop_mod._initialize_owner_directives(self.ctx, self.messages)
         self.tool_schemas, _extra = loop_mod._setup_dynamic_tools(
-            self.tools, list(initial_call_schemas(self.tools)), self.messages, context_mode="nano")
+            self.tools, list(initial_call_schemas(self.tools, self.spec)), self.messages, context_mode="nano")
         self.ctx.event_queue, self.ctx.task_id, self.ctx.messages = self.event_queue, self.task_id, self.messages
         self.ctx._accumulated_usage = self.usage
         self.stateful_executor = StatefulToolExecutor()

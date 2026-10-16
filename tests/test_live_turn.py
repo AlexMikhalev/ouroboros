@@ -200,7 +200,7 @@ class Harness:
         self.error = None
         monkeypatch.setattr(live_turn, "_hub_for", lambda call_id: self.hub if call_id == self.spec.call_id else None)
         monkeypatch.setattr(live_turn, "_ledger", lambda: self.ledger)
-        monkeypatch.setattr(live_turn, "initial_call_schemas", lambda tools: list(self.schemas))
+        monkeypatch.setattr(live_turn, "initial_call_schemas", lambda tools, spec=None: list(self.schemas))
         monkeypatch.setattr(loop, "_setup_dynamic_tools",
                             lambda tools, schemas, messages, context_mode="max": (list(schemas), None))
         monkeypatch.setattr(loop, "handle_tool_calls", self._handle_tool_calls)
@@ -327,7 +327,7 @@ def test_the_route_window_is_recorded_as_sourced_evidence_before_the_fit(tmp_pat
 def test_call_context_plan_passes_the_known_window_and_the_call_view(monkeypatch, tmp_path):
     from ouroboros import live_call_route
 
-    monkeypatch.setattr(live_call_route, "initial_call_schemas", lambda tools: [_schema("web_search")])
+    monkeypatch.setattr(live_call_route, "initial_call_schemas", lambda tools, spec=None: [_schema("web_search")])
     task = {"id": "t", "metadata": {"live_call": _spec().as_metadata()}}
     assert live_call_route.call_context_plan({"id": "t", "metadata": {}}, None, tmp_path) is None
     with_window = live_call_route.call_context_plan(task, None, tmp_path)
@@ -811,3 +811,13 @@ def test_a_call_nobody_attaches_to_ends_after_the_rejoin_grace(harness, monkeypa
     h.start()
     text, usage, _trace = h.finish()
     assert usage["live_call"]["ended"] == "peers_left"
+
+
+def test_a_presence_call_opens_with_its_whole_ceiling_and_an_owner_call_with_the_nano_view():
+    from ouroboros.live_call_route import initial_call_schemas
+
+    registry = SimpleNamespace(schemas=lambda: [_schema("notes_read"), _schema("web_search"), _schema("enable_tools")])
+    owner = [s["function"]["name"] for s in initial_call_schemas(registry, _spec())]
+    presence = [s["function"]["name"] for s in initial_call_schemas(registry, _spec(presence_binding_id="b" * 32))]
+    assert "notes_read" not in owner and {"web_search", "enable_tools"} <= set(owner)
+    assert presence == ["notes_read", "web_search", "enable_tools"]
