@@ -329,7 +329,11 @@ def test_async_cancellation_joins_the_publication_wait_without_a_send(tmp_path, 
         with ua.usage_scope(ua.UsageScope(drive_root=tmp_path, task_id=CHILD, root_task_id=ROOT)):
             task = asyncio.create_task(ua.execute_physical_attempt_async(ua.AttemptRequest(model="m", provider="p"), send))
             try:
-                assert await asyncio.to_thread(waiting.wait, 3)
+                # Preparation (first store creation, earlier locks) has no test clock:
+                # the attempt either enters its publication wait or ends on its own.
+                while not waiting.is_set() and not task.done():
+                    await asyncio.sleep(0.01)
+                assert waiting.is_set(), task
                 task.cancel()
                 assert await asyncio.to_thread(cancellations[0].wait, 3)
                 release.set()
