@@ -16,6 +16,7 @@ from ouroboros.projects_registry import (
 )
 
 ORIGIN = {"absent": "mid_task_no_origin"}
+from tests.test_swarm_host_admission import host  # noqa: E402, F401
 
 
 @pytest.fixture
@@ -135,3 +136,82 @@ def test_bind_failure_never_changes_pending_or_running(runtime, monkeypatch):
     with pytest.raises(OSError, match="write failed"):
         place(root, "one", "room", workers)
     assert work == {"id": "one", "project_id": ""}
+
+
+def test_deletion_after_prepare_blocks_move_and_boundary(runtime):
+    from ouroboros.project_admission import ProjectAdmissionError
+    from ouroboros.projects_registry import begin_project_deletion
+
+    root, repo, workers = runtime
+    create_project(root, "room")
+    basis = placement_basis(root, "one", "room")
+    place(root, "already-bound", "room", workers)
+    begin_project_deletion(root, "room")
+    with pytest.raises(ProjectAdmissionError):
+        move_task_to_project(root, "one", "room", origin=ORIGIN, basis=basis,
+                             running=workers.RUNNING, pending=workers.PENDING)
+    assert project_binding_for_task(root, "one") is None
+    pending = {"id": "already-bound", "project_id": "", "workspace_root": str(repo)}
+    assert not refresh_pending_placement(root, pending)
+    assert pending == {"id": "already-bound", "project_id": "", "workspace_root": str(repo)}
+
+
+def test_live_memory_reads_follow_binding_without_reloading_or_rescoping(runtime):
+    from ouroboros.tools.knowledge import _address
+    from ouroboros.tools.project_journal import _resolve_project_id
+
+    root, _, workers = runtime
+    ctx = SimpleNamespace(task_id="one", project_id="", drive_root=root, budget_drive_root=root,
+                          task_metadata={}, task_contract={}, is_direct_chat=True)
+    assert _address(ctx, "notes").scope == "global"
+    assert _resolve_project_id(ctx, "", write=True) == ("", "")
+    place(root, "one", "room", workers)
+    assert _address(ctx, "notes").scope == "project:room"
+    assert _resolve_project_id(ctx, "", write=True) == ("room", "")
+    assert "TOOL_FORBIDDEN" in _resolve_project_id(ctx, "other", write=True)[1]
+    assert _address(ctx, "notes", "global").scope == "global"
+    assert ctx.project_id == ""
+
+
+def test_real_assignment_acquires_destination_before_changing_folder(host, tmp_path, monkeypatch):
+    from tests.test_main_project_consistency import admit_main
+    from tests.test_project_hold_recovery import worker
+    from supervisor import workers
+
+    task = admit_main(host, tid="one")
+    folder = tmp_path / "destination"
+    folder.mkdir()
+    create_project(host.root, "room", working_dir=str(folder))
+    before = task.get("workspace_root")
+    move_task_to_project(host.root, "one", "room", origin=ORIGIN,
+                         basis=placement_basis(host.root, "one", "room"),
+                         running=workers.RUNNING, pending=host.pending)
+    sent = worker(host, monkeypatch)
+    workers.RUNNING["occupant"] = {"task": {"id": "occupant", "project_id": "room"}}
+    workers.assign_tasks()
+    assert not sent and task.get("workspace_root") == before
+    workers.RUNNING.clear()
+    workers.assign_tasks()
+    assert [row["id"] for row in sent] == ["one"]
+    assert sent[0]["workspace_root"] == str(folder)
+    assert sent[0]["task_contract"]["workspace"]["root"] == str(folder)
+    assert workers.RUNNING["one"]["task"]["project_id"] == "room"
+
+
+def test_real_admission_never_adopts_shared_origin(host):
+    from ouroboros.project_dialogue import build_owner_message_ref
+    from supervisor.events_project_routing import _handle_promote_chat_to_task
+
+    text = "One owner message"
+    ref = build_owner_message_ref(chat_id=1, client_message_id="owner", ts="2026-10-16T12:00:00Z", text=text)
+    create_project(host.root, "sibling-room")
+    bind_task_to_project(host.root, "sibling", "sibling-room", origin={"ref": ref, "text": text})
+    outcome = _handle_promote_chat_to_task({
+        "type": "promote_chat_to_task", "task_id": "separate", "routing_token": "new-token",
+        "objective": "Separate work", "title": "Separate", "source_ref": ref, "source_text": text,
+        "chat_id": 1, "workspace": "none",
+    }, host.ctx)
+    assert outcome["status"] == "scheduled"
+    assert len(host.pending) == 1 and host.pending[0]["id"] == "separate"
+    assert not host.pending[0].get("project_id")
+    assert project_binding_for_task(host.root, "separate") is None

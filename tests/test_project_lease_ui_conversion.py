@@ -108,3 +108,60 @@ def test_running_mark_is_noop_pending_mark_follows_binding():
     assert not mark_task_project(running, pending, "two", "new")
     assert mark_task_project(running, pending, "two", "new", authority="binding")
     assert pending[0]["project_id"] == "new"
+
+
+_OWNER_TEXT = "Publish and merge the seven pull requests"
+
+
+def _origin_ref(client_message_id: str = "msg-owner", text: str = _OWNER_TEXT, chat_id: int = 1) -> dict:
+    from ouroboros.project_dialogue import build_owner_message_ref
+
+    return build_owner_message_ref(
+        chat_id=chat_id, client_message_id=client_message_id,
+        ts="2026-09-14T12:15:20+00:00", text=text,
+    )
+
+
+def _seed_origin_task(tmp_path, task_id: str, ref: dict, title: str = "Ship the queue") -> None:
+    """Persist the ingress-captured origin the convert path reads by value. An empty
+    title leaves the naming step to the (patchable) model call."""
+    from ouroboros.task_results import write_task_result
+
+    write_task_result(
+        tmp_path, task_id, "running",
+        origin_message_ref=ref, origin_message_text=_OWNER_TEXT, **({"title": title} if title else {}),
+    )
+
+
+def _live_queue(monkeypatch, tmp_path, running: dict, pending: list) -> None:
+    import supervisor.queue as queue
+    import supervisor.workers as workers
+
+    for mod in (workers, queue):
+        monkeypatch.setattr(mod, "RUNNING", running)
+        monkeypatch.setattr(mod, "PENDING", pending)
+    monkeypatch.setattr(queue, "DRIVE_ROOT", tmp_path)
+    monkeypatch.setattr(queue, "QUEUE_SEQ_COUNTER_REF", {"value": 0})
+
+
+def _root(task_id: str, ref: dict, project_id: str = "") -> dict:
+    return {"id": task_id, "project_id": project_id, "type": "task",
+            "delegation_role": "root", "chat_id": 1, "origin_message_ref": dict(ref)}
+
+
+def _convert(tmp_path, task_id: str, **body):
+    payload = {"task_id": task_id, "id": f"task-{task_id}", "objective_hint": _OWNER_TEXT}
+    payload.update(body)
+    from ouroboros.gateway.projects import api_project_from_task
+
+    return asyncio.run(api_project_from_task(_request(tmp_path, payload)))
+
+
+def _events(tmp_path, kind: str) -> list:
+    path = tmp_path / "logs" / "events.jsonl"
+    if not path.exists():
+        return []
+    return [row for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+            if (row := json.loads(line)).get("type") == kind]
+
+

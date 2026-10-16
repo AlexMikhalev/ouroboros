@@ -438,14 +438,9 @@ def test_main_manifest_manual_options_include_project_roots_and_new_project_task
     metadata = server._decision_turn_metadata(ctx, 987654, "external-1", {})
 
     assert metadata["routing_contract"]["source_lane"] == "main"
-    options = metadata["routing_contract"]["manual_options"]
-    assert any(row.get("task_id") == "project-root" for row in options)
-    assert any(
-        row.get("action") == "new_task_in_project"
-        and row.get("project_id") == "racer"
-        and row.get("label") == "New task in Racer"
-        for row in options
-    )
+    assert "manual_options" not in metadata["routing_contract"]
+    assert {"start_task", "move_to_project", "steer_task"} <= set(metadata["routing_contract"]["valid_actions"])
+    assert "route_to_project" not in metadata["routing_contract"]["valid_actions"]
 
 
 def test_project_room_manual_options_are_room_scoped(tmp_path):
@@ -460,11 +455,7 @@ def test_project_room_manual_options_are_room_scoped(tmp_path):
 
     assert metadata["routing_contract"]["source_lane"] == "project"
     assert "main_routing_manifest" not in metadata
-    assert metadata["routing_contract"]["manual_options"] == [{
-        "action": "new_task_in_project",
-        "project_id": "racer",
-        "label": "New task in Project",
-    }]
+    assert "manual_options" not in metadata["routing_contract"]
 
 
 def test_project_room_decision_turn_carries_last_task_result_ground_truth(tmp_path):

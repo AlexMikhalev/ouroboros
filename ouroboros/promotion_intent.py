@@ -14,6 +14,28 @@ from ouroboros.task_results import load_task_result, write_task_result
 from ouroboros.utils import utc_now_iso
 
 
+def promotion_intent_notice(task_id: str, result: dict) -> str:
+    """Expose pending/held/not-started intent through the existing result reader."""
+    admission = result.get("promotion_admission") or {}
+    status = admission.get("status")
+    if status == "not_started":
+        intent = result.get("promotion_intent") or {}
+        arguments = {key: intent[key] for key in (
+            "objective", "title", "expected_output", "project_id", "project_name", "workspace_root",
+            "workspace", "source", "context_requires_self_body_docs", "reasoning_effort",
+        ) if key in intent}
+        return (f"Task {task_id}: not_started. No admission began. An explicit retry is available: "
+                f"start_task({json.dumps(arguments, ensure_ascii=False)}). Nothing restarts automatically.")
+    if result.get("status") != "requested" or status not in {"emitted", "unconfirmed"}:
+        return ""
+    since = admission.get("prepared_at") or admission.get("emitted_at") or "unknown time"
+    return (f"Task {task_id}: admission pending since {since}. "
+            + ("The complete intent is durable. " if result.get("promotion_intent") else "This is a legacy receipt. ")
+            + ("Admission is held for reconciliation. " if status == "unconfirmed" else "No settled admission receipt exists yet. ")
+            + f"Read get_task_result({task_id}) for its recorded outcome before an explicit retry; "
+            "elapsed time alone cannot prove this work was not started. A new start_task creates a NEW task id.")
+
+
 def prepare_promotion_intent(root: Any, event: dict) -> dict:
     """Commit the complete replayable event before any emission; fail closed."""
     from ouroboros.dialogue_provenance import presence_root_carrier

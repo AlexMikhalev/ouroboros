@@ -357,9 +357,9 @@ def test_an_unconfirmed_promote_names_what_was_requested_as_a_request(tmp_path, 
 
     )
 
-    assert out.startswith("⚠️ PROMOTE_UNCONFIRMED")
-    assert "the requested destination was new project 'Dinosaurs'" in out
-    assert "the effective one is unknown" in out
+    assert out.startswith("Accepted, waiting to start:")
+    assert "admission to new project 'Dinosaurs'" in out
+    assert "is pending" in out
 
 
 # --- (e) one owner message keeps one convertible unit (#902) ------------------

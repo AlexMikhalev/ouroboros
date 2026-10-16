@@ -778,32 +778,3 @@ def _handle_ensure_project_scope(evt: Dict[str, Any], ctx: Any) -> None:
         })
     except Exception:
         log.debug("ensure_project_scope settle row failed", exc_info=True)
-
-
-def _handle_routing_manual_target(evt: Dict[str, Any], ctx: Any) -> None:
-    """Publish the decision actor's typed abstention without routing work."""
-    from ouroboros.project_dialogue import routing_options_with_labels
-    from ouroboros.settings_scales import EFFORT_SCALE
-
-    options = routing_options_with_labels(ctx.DRIVE_ROOT, evt.get("options"))
-    effort = str(evt.get("reasoning_effort") or "")
-    _emit_routing_receipt(
-        ctx,
-        evt,
-        action="route_decision",
-        # An unnamed target stays "": the typed reason is a code, never a task
-        # id to label.
-        target=str(evt.get("requested_target") or "")[:200],
-        status="needs_manual_target",
-        reason=str(evt.get("reason") or "target_unspecified"),
-        # The model's own words about the abstention, kept beside the typed
-        # code on the durable row (replay-only; no owner surface reads it).
-        detail=str(evt.get("detail") or ""),
-        options=options,
-        # Durable carrier: the picker click re-forwards these staged specs to
-        # the chosen destination long after the routing turn's metadata died.
-        attachment_manifest=_events()._routing_attachments(evt.get("attachment_uploads")),
-        # The turn's explicit start for a New task picked here: the card is its only
-        # carrier once the turn ends (routing_decision reads it back on the click).
-        reasoning_effort=effort if effort in EFFORT_SCALE else "",
-    )

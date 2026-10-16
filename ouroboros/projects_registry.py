@@ -432,16 +432,11 @@ _ORIGIN_CLAIM_LOCK = threading.RLock()
 
 
 def origin_claim_lock() -> Any:
-    """The one lock every IMPLICIT project claim holds from its origin read through
-    its durable bind: the UI conversion, the promote handler and the in-task
-    ``ensure_project_scope`` handler. All three run in the SERVER process (the
-    gateway is in-process with the supervisor, and workers reach both through
-    events), so a process-local RLock serializes them; a model call that names the
-    project stays OUTSIDE it, because it may await for seconds.
+    """Serialize mind/button placement from the task binding read through commit.
 
-    Without it two cards of the SAME owner message, clicked in two tabs (or the
-    desktop shell and the mini app) inside one naming window, both read "no project
-    for this origin" and both create one."""
+    Naming stays outside the lock. Shared message origin is provenance only;
+    independent works never acquire each other's room through this serializer.
+    """
     return _ORIGIN_CLAIM_LOCK
 
 

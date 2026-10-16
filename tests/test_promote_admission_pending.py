@@ -53,14 +53,14 @@ def test_an_unconfirmed_promote_reads_as_a_pending_admission(tmp_path, _short_co
 
     ctx = _promote_ctx(tmp_path, _DeadQueue())
     out = _start_task(ctx, "Continue the racer", title="Racer continuation", workspace="none")
-    assert out.startswith("⚠️ PROMOTE_UNCONFIRMED")
+    assert out.startswith("Accepted, waiting to start:")
     task_id = ctx.event_queue.events[0]["task_id"]
     assert f"get_task_result({task_id})" in out
 
     stub = load_task_result(tmp_path, task_id)
     assert stub["promotion_admission"]["status"] == "emitted"
     assert stub["promotion_admission"]["routing_token"] == ctx.event_queue.events[0]["routing_token"]
-    emitted_at = stub["promotion_admission"]["emitted_at"]
+    emitted_at = stub["promotion_admission"]["prepared_at"]
     assert emitted_at
 
     read = _get_task_result(ctx, task_id)
@@ -255,7 +255,7 @@ def _emit_into(root, monkeypatch):
     monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_POLL_SEC", 0.005)
     ctx = _promote_ctx(root, _DeadQueue())
     out = _start_task(ctx, "Build the racer", title="Racer build", workspace="none")
-    assert out.startswith("⚠️ PROMOTE_UNCONFIRMED"), out
+    assert out.startswith("Accepted, waiting to start:"), out
     return ctx, ctx.event_queue.events[0]
 
 
@@ -325,4 +325,4 @@ def test_the_pending_sentence_never_forbids_a_new_promote_for_ever(tmp_path, _sh
     # Facts only: the row cannot tell a lost event from a source still being prepared,
     # so the sentence names the longest honest wait and leaves the judgement to the model.
     assert "did not land" not in read and "within seconds" not in read
-    assert "can stay pending for up to 15 minutes" in read and "NEW task id" in read
+    assert "elapsed time alone cannot prove" in read and "NEW task id" in read

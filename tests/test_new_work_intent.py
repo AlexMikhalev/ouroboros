@@ -7,6 +7,7 @@ import pytest
 from ouroboros.promotion_intent import prepare_promotion_intent, claim_promotion_intent, reconcile_promotion_intents
 from ouroboros.task_results import load_task_result, write_task_result
 from ouroboros.tools.control_events import _emit_and_wait_for_routing
+from tests.test_startup_terminal_files import roots  # noqa: F401
 
 
 def event():
@@ -70,3 +71,29 @@ def test_live_or_saved_custody_is_preserved(tmp_path):
     prepare_promotion_intent(tmp_path, event())
     assert reconcile_promotion_intents(tmp_path, protected={"new"}) == {"not_started": [], "held": []}
     assert load_task_result(tmp_path, "new")["promotion_admission"]["phase"] == "prepared"
+
+
+@pytest.mark.parametrize("claimed", [False, True])
+def test_startup_recovers_intent_only_after_worker_custody_proof(roots, monkeypatch, claimed):
+    from ouroboros import server_maintenance
+    from ouroboros.startup_migrations import prepare_startup_state
+    from ouroboros.tools.control_task_results import _get_task_result
+    from supervisor import queue
+
+    root, repo = roots
+    prepare_startup_state(root)
+    evt = event()
+    prepare_promotion_intent(root, evt)
+    if claimed:
+        claim_promotion_intent(root, evt)
+    monkeypatch.setattr(queue, "enqueue_task", lambda *a, **k: pytest.fail("boot must not enqueue new work"))
+    unknown = server_maintenance._run_startup_task_recovery(root, repo, skip_live_data=False)
+    assert unknown["errors"] == ["prior_worker_ownership_unconfirmed"]
+    assert load_task_result(root, "new")["promotion_admission"]["status"] == "emitted"
+    report = server_maintenance._run_startup_task_recovery(root, repo, skip_live_data=False, prior_worker_pids=set())
+    assert report["errors"] == []
+    stored = load_task_result(root, "new")
+    assert stored["promotion_admission"]["status"] == ("unconfirmed" if claimed else "not_started")
+    result = _get_task_result(SimpleNamespace(drive_root=root, budget_drive_root=root), "new")
+    assert ("held for reconciliation" if claimed else "explicit retry is available: start_task(") in result
+    assert queue.PENDING == [] and queue.RUNNING == {}

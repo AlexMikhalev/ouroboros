@@ -12,6 +12,16 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
+def placed_project_id(ctx: Any) -> Any:
+    """Resolve the current memory room without changing execution context fields."""
+    from ouroboros.projects_registry import project_id_for_task
+    from ouroboros.tool_access import canonical_data_root
+
+    tid = str(getattr(ctx, "task_id", "") or "")
+    bound = project_id_for_task(canonical_data_root(ctx), tid, strict=True) if tid else ""
+    return bound or getattr(ctx, "project_id", "")
+
+
 def placement_basis(drive_root: Any, task_id: str, project_id: str) -> dict:
     """Capture the destination before transport or asynchronous project naming."""
     from ouroboros.projects_registry import project_id_for_task, project_admission_view
@@ -93,7 +103,7 @@ def pending_placement(drive_root: Any, task: dict, *, bindings_snapshot: dict | 
 def refresh_pending_placement(drive_root: Any, task: dict, *, binding: dict | None = None) -> bool:
     """Refresh pending lease identity before selection, keeping folder access unchanged."""
     from ouroboros.sleep_custody import carrier_receipt
-    from ouroboros.project_admission import project_admission_guard
+    from ouroboros.project_admission import project_admission_basis, project_admission_guard
 
     try:
         binding = pending_placement(drive_root, task) if binding is None else binding
@@ -101,9 +111,9 @@ def refresh_pending_placement(drive_root: Any, task: dict, *, binding: dict | No
             return True
         if carrier_receipt(task).get("retains_project_lane"):
             return False
-        with project_admission_guard(drive_root, binding["placement_admission"]):
+        with project_admission_guard(drive_root, {**binding["placement_admission"], "frozen": True}) as project:
             task["project_id"] = binding["project_id"]
-            task["_project_admission"] = binding["placement_admission"]
+            task["_project_admission"] = project_admission_basis(binding["project_id"], project, frozen=True)
             task.pop("_project_scope_none", None)
         return True
     except Exception:
@@ -123,18 +133,19 @@ def readmit_placement(drive_root: Any, task: dict, *, repo_dir: Any, running: An
     if not candidate_is_leasable(task, running_project_ids(running.values()),
                                 cold_holders=cold_project_holders(pending)):
         return False
-    with project_admission_guard(drive_root, binding["placement_admission"]) as project:
+    # Placement pins room identity; readmission consumes its current folder/generation.
+    with project_admission_guard(drive_root, {**binding["placement_admission"], "frozen": True}) as project:
         folder = validate_workspace_root(project.get("working_dir"), system_repo_dir=repo_dir, drive_root=drive_root)
         task.update(project_id=binding["project_id"], chat_id=project.get("chat_id"),
                     workspace_root=str(folder or ""), workspace_mode="external" if folder else "",
                     _project_admission=project_admission_basis(binding["project_id"], project, frozen=True),
                     placement_applied_at=binding["bound_at"])
         task.pop("_project_scope_none", None)
-        contract = task.get("task_contract")
+        metadata = task.setdefault("metadata", {})
+        contract = task.get("task_contract") or metadata.get("task_contract")
         if isinstance(contract, dict):
             task["task_contract"] = {**contract, "workspace": {"root": str(folder or ""),
                                                                "mode": "external" if folder else ""}}
-        metadata = task.setdefault("metadata", {})
         metadata["placement_applied_at"] = binding["bound_at"]
         if isinstance(metadata.get("task_contract"), dict):
             metadata["task_contract"] = task["task_contract"]

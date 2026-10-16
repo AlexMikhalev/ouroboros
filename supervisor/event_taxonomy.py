@@ -138,8 +138,6 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         "supervisor.events_runtime_controls", "ouroboros/tools/control_runtime.py"),
     "review_late_result": _handled(
         "supervisor.cognitive_operations", "ouroboros/review_custody.py"),
-    "routing_manual_target": _handled(
-        "supervisor.events_project_routing", "ouroboros/tools/control_routing.py"),
     "schedule_subagent": _handled(
         "supervisor.events_schedule_task", "ouroboros/tools/control_scheduling.py",
         idle_input=True, note="the only producer of the schedule handler; the schedule_task key "

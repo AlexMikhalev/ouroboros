@@ -283,7 +283,6 @@ def test_tool_snapshot_precheck_skips_source_side_effects(monkeypatch, tmp_path)
         title="Project build",
         project_name="Must Not Exist",
         source="/tmp/must-not-attach",
-        predecessor_task_id="",
     )
     assert out.startswith("⚠️ PROMOTE_REJECTED:")
     assert "worker_crash_storm" in out
@@ -345,8 +344,7 @@ def test_real_event_queue_reaches_dispatch_and_confirms_durable_admission(
     )
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(control._start_task, tool_ctx, "Build the racer", title="Racer build",
-                                     predecessor_task_id="")
+            future = executor.submit(control._start_task, tool_ctx, "Build the racer", title="Racer build")
             event = queue.get(timeout=10)
             assert event["type"] == "promote_chat_to_task"
             outcome = _handle_promote_chat_to_task(event, handler_ctx)
@@ -435,11 +433,11 @@ def test_stale_live_transport_returns_unconfirmed_not_ok(monkeypatch, tmp_path):
         task_metadata={},
     )
     try:
-        out = control._start_task(ctx, "Never drained", title="Undrained promote", predecessor_task_id="")
+        out = control._start_task(ctx, "Never drained", title="Undrained promote")
         event = stale_queue.get(timeout=10)
         assert event["type"] == "promote_chat_to_task"
-        assert out.startswith("⚠️ PROMOTE_UNCONFIRMED:")
-        assert "Do not report this task as created" in out
+        assert out.startswith("Accepted, waiting to start:")
+        assert "complete intent is durable" in out
         # #1160: the id is durably PENDING, never scheduled - the emitted stub is
         # exactly the reconciliation read the refusal names, and it grants nothing.
         stored = load_task_result(tmp_path, event["task_id"])

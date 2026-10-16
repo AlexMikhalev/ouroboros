@@ -585,3 +585,15 @@ def test_supervisor_intake_hands_the_receipt_stamp_to_routing(monkeypatch):
     bridge.enqueue_local_message("hello", chat_id=42, user_id=7, source="skill:telegram", received_at="2026-09-26T01:00:00+00:00")
     server._process_bridge_updates(bridge, 0, Ctx({"owner_id": 7, "owner_chat_id": 42}))
     assert [incoming["received_at"] for incoming in routed] == ["2026-09-26T01:00:00+00:00"]
+
+
+def test_routing_producers_attach_client_surface():
+    # tools/control.py re-exports them; the producers live in the routing leaf.
+    tree = ast.parse((REPO / "ouroboros" / "tools" / "control_routing.py").read_text(encoding="utf-8"))
+    for producer in ("_start_task", "_steer_task"):
+        calls = _function_calls(tree, producer)
+        assert "_attach_client_surface" in calls, (
+            f"{producer} no longer attaches client_surface — the fact silently "
+            "dies at this transition (the is_desktop dead-wire class)"
+        )
+

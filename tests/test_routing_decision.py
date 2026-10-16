@@ -177,7 +177,6 @@ def _manual_picker(tmp_path, monkeypatch, **effort):
     monkeypatch.setattr(message_bus, "publish_event", lambda *a, **k: None)
     monkeypatch.setattr(message_bus, "log_chat", lambda *a, **k: None)
     handlers = {
-        "routing_manual_target": events._handle_routing_manual_target,
         "promote_chat_to_task": events._handle_promote_chat_to_task,
         "steer_task": events._handle_steer_task,
     }
@@ -192,7 +191,12 @@ def _manual_picker(tmp_path, monkeypatch, **effort):
               "chat_id": 7, "options": OPTIONS, "reason": "target_unspecified"}
     if effort.get("reasoning_effort"):
         manual["reasoning_effort"] = effort["reasoning_effort"].strip().lower()
-    queue.put_nowait(manual)
+    from supervisor.events_project_routing import _emit_routing_receipt
+
+    queue.events.append(manual)
+    _emit_routing_receipt(sup, manual, action="route_decision", status="needs_manual_target",
+                          reason="target_unspecified", options=OPTIONS,
+                          reasoning_effort=str(manual.get("reasoning_effort") or ""))
     card = _user_annotation("user", "cm-1", latest_chat_annotations(tmp_path))
     assert card["routing_token"] == manual["routing_token"]
     [frame] = frames
@@ -330,34 +334,6 @@ def test_ingress_routes_the_routing_family(tmp_path, monkeypatch):
     assert res.json()["state"] == "superseded"
 
 
-def test_manual_target_refusal_persists_the_attachment_manifest(tmp_path):
-    """The producer half: _handle_routing_manual_target must store the routing
-    turn's staged-attachment specs on the durable refusal row (#198)."""
-    from supervisor.events import _handle_routing_manual_target
-
-    class _Ctx:
-        DRIVE_ROOT = tmp_path
-
-        @staticmethod
-        def append_jsonl(path, row):
-            pass
-
-    evt = {
-        "type": "routing_manual_target", "routing_token": "tok-9",
-        "chat_id": 0, "client_message_id": "cm-9",
-        "reason": "target_unspecified", "options": OPTIONS,
-        "reasoning_effort": "high",
-        "attachment_uploads": [{"path": "/up/b.pdf", "label": "b.pdf"}],
-        "ts": "2026-08-31T00:00:00Z",
-    }
-    _handle_routing_manual_target(evt, _Ctx)
-    receipt = chat_annotation_receipt(tmp_path, "cm-9", "tok-9")
-    assert receipt["status"] == "needs_manual_target"
-    assert receipt["reasoning_effort"] == "high"
-    assert receipt["attachment_manifest"] == [{"path": "/up/b.pdf", "label": "b.pdf"}]
-    assert [row["action"] for row in receipt["options"]] == [
-        "steer_task", "new_task_in_project",
-    ]
 
 
 def test_click_identity_reaches_both_presentation_paths(monkeypatch):

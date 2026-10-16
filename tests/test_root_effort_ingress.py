@@ -421,8 +421,8 @@ def test_configured_children_keep_their_profile_and_ask_for_effort_through_their
     from ouroboros.tools.control import get_tools
 
     schemas = {entry.name: entry.schema for entry in get_tools()}
-    assert "reasoning_effort" in schemas["promote_chat_to_task"]["parameters"]["properties"]
-    assert "reasoning_effort" in schemas["route_to_project"]["parameters"]["properties"]
+    assert "reasoning_effort" in schemas["start_task"]["parameters"]["properties"]
+    assert "route_to_project" not in schemas
     child = schemas["schedule_subagent"]["parameters"]["properties"]
     assert "reasoning_effort" not in child and child["effort"]["default"] == "auto"
     assert "reasoning_effort" in LEGACY_SUBAGENT_FIELDS  # a pre-record stored child value stays ignored
@@ -430,6 +430,6 @@ def test_configured_children_keep_their_profile_and_ask_for_effort_through_their
 
     assert child["effort"]["enum"] == ["auto", *EFFORT_SCALE]
 
-    assert schemas["promote_chat_to_task"]["parameters"]["properties"]["reasoning_effort"]["enum"] == \
-        list(EFFORT_SCALE)
-    assert json.dumps(schemas["promote_chat_to_task"])  # serializable as sent
+    assert schemas["start_task"]["parameters"]["properties"]["reasoning_effort"]["enum"] == \
+        ["", *EFFORT_SCALE]
+    assert json.dumps(schemas["start_task"])  # serializable as sent

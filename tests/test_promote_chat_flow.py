@@ -353,10 +353,8 @@ def test_managed_swarm_can_choose_a_named_project_for_later_work(tmp_path, monke
     assert evt["project_id"] == project_id_from_display_name("Slime Lab Escape")
     assert evt["workspace_root"] == "/tmp/foreign"
     assert evt["source"] == "https://example.invalid/repo.git"
-    # Owner 3=A: the root's still-unmet Swarm obligation follows the promoted work.
-    assert (evt["force_plan"], evt["force_plan_source"], evt["force_plan_transferred_from"]) == (
-        True, "swarm", "swarm-root",
-    )
+    assert "force_plan_transferred_from" not in evt and "force_plan" not in evt
+    assert ctx.task_metadata["force_plan"] is True
 
 
 def test_managed_swarm_can_choose_an_existing_project_for_later_work(tmp_path, monkeypatch):
@@ -386,7 +384,7 @@ def test_managed_swarm_promotes_in_current_project_without_explicit_target(tmp_p
     out = _start_task(ctx, "Audit the issue", title="Issue audit")
     assert out.startswith("OK: task")
     assert ctx.pending_events[0]["project_id"] == "alpha"
-    assert ctx.pending_events[0]["force_plan_transferred_from"] == "swarm-root"
+    assert "force_plan_transferred_from" not in ctx.pending_events[0]
     assert not hasattr(ctx, "_swarm_handoff_attempt")
 
 
@@ -574,7 +572,7 @@ def test_presence_unconfirmed_promotion_records_handoff_for_reconciliation(tmp_p
     )
     ctx = _managed_swarm_ctx(tmp_path, task_metadata={"presence": {"binding_id": "presence-binding"}})
     out = _start_task(ctx, "Audit and fix the issue", title="Issue audit and fix")
-    assert out.startswith("⚠️ PROMOTE_UNCONFIRMED")
+    assert out.startswith("Accepted, waiting to start:")
     assert len(ctx.pending_events) == 1
     assert ctx._swarm_handoff_attempt["task_id"] == ctx.pending_events[0]["task_id"]
     assert ctx._swarm_handoff_attempt["status"] == "unconfirmed"

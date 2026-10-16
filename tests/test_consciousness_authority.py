@@ -848,3 +848,15 @@ def _addressable_result(tmp_path, task_id="racer-old"):
     results.mkdir(parents=True, exist_ok=True)
     seed_result(tmp_path, task_id, {"_schema_version": 1, **row})
     return _task_result_ground_truth(row)
+
+
+def test_a_wake_starts_fresh_work_with_no_predecessor_and_needs_no_manifest(tmp_path):
+    from ouroboros.projects_registry import create_project
+    from ouroboros.tools.control_routing import _start_task
+
+    create_project(tmp_path, "racer", name="Racer")
+
+    promoted = _wake_routing_ctx(tmp_path)
+    _start_task(promoted, "audit the logs", title="Log audit", workspace="none")
+    assert "predecessor_task_id" not in promoted.pending_events[0]
+
