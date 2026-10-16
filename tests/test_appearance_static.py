@@ -125,7 +125,10 @@ def test_status_text_uses_foreground_roles_not_raw_hues():
 def test_chat_palette_redraw_is_local_viewport_work():
     chat = _read('web/modules/chat.js')
     mount = chat.split('function enhanceMountedMarkdown(root)', 1)[1].split('const {', 1)[0]
-    assert 'onThemeDomWrite: withStableViewport' in mount
+    assert 'onThemeDomWrite: foldedWrite(withStableViewport)' in mount
+    assert 'const foldedWrite = writer => (mutate, options) => writer(() => {' in mount
+    assert mount.index('const changed = mutate();') < mount.index('refreshProjectAnswerFold(') < mount.index('return changed;')
+    assert 'refreshProjectAnswerFold(root.closest?.(\'.project-answer\'))' in mount
 
 
 def test_surface_sheets_carry_no_near_white_ink():
