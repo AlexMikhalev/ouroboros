@@ -144,7 +144,10 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
         const seen = observedQuestion(row.task_id, row.quiz_id);
         if (!seen) return true;
         if (waitsAnswer(row)) return !SETTLED.includes(seen.state);
-        return seen.question_delivery?.dismissed !== true && seen.question_delivery?.state !== 'delivered';
+        // Only a receipt for this same delivery settles it: the question's publication receipt
+        // says nothing about the answer that came later.
+        const known = seen.question_delivery;
+        return !(known?.kind === row.question_delivery?.kind && (known.dismissed === true || known.state === 'delivered'));
     }
     const identity = t => (t.kind === 'question' ? `q:${t.row.task_id}:${t.row.quiz_id}` : `a:${t.id}`);
     // Question rows carry ISO times, feed nodes epoch milliseconds: both order as milliseconds.

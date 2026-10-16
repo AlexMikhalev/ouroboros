@@ -221,6 +221,12 @@ test('what this tab already saw settle leaves the count at once, before the next
     await main.press();
     assert.equal(main.calls.mounted.at(-1).quiz_id, 'next', 'and a press never goes to it');
     seen.set('task-1:next', { state: 'open' });
+    // A long-lived tab remembers the question's own publication receipt from before the answer
+    // came from another device: that receipt says nothing about the answer's delivery.
+    seen.set('task-1:late', { state: 'open', question_delivery: { kind: 'publication', state: 'delivered' } });
+    main.feed.scrollTop = 100 * ROW;
+    main.waiting.refresh();
+    assert.equal(main.shown().text, '2 waiting', 'another delivery\'s receipt never settles the pending answer');
     seen.set('task-1:late', { state: 'answered', question_delivery: { kind: 'answer', state: 'owed', dismissed: true } });
     main.feed.scrollTop = 100 * ROW;
     main.waiting.refresh();
