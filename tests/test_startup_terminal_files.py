@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros import headless, observability, server_maintenance as maintenance
+from ouroboros import maintenance as background
 from ouroboros.task_results import load_task_result, write_task_result
 
 from tests._cancel_intents_shared import _LiveProc
@@ -90,6 +91,9 @@ def test_saved_body_and_sources_precede_orphan_reader_and_actual_prune(roots, mo
     monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
     maintenance._startup_prune_sweeps()
     assert child.exists(), "startup copies and hashes no child store: settlement is the off-loop pass's"
+    maintenance._run_drive_custody_pass()
+    assert child.exists(), "settlement waits for the pending child-ref promotion"
+    background.run_job(root, "child_ref_promotion")  # the maintenance child's job, never a server thread
     maintenance._run_drive_custody_pass()
     assert not child.exists()
     manifest = observability.read_call_manifest_ref(root, row["trace_refs"]["response"], task_id="saved")
@@ -392,11 +396,11 @@ def test_late_split_root_start_cannot_replace_canonical_terminal(roots):
 
 @pytest.mark.parametrize("failure", [False, True])
 def test_periodic_bulk_work_does_not_block_drain_or_duplicate_sweep(roots, monkeypatch, failure):
-    """The child-ref promotion walk is history-sized (every child drive, a result load
-    each). It rides the 300 s reconcile block, never the 20 s cancel sweep: while the
-    walk is held the tick returns, the cancel sweep keeps its OWN cadence (a second one
-    starts and finishes 25 s later), and no second walk starts. Whether the walk ends or
-    raises, its latch opens and its marker is stamped at the END (issue #1230)."""
+    """Drive settlement may copy and hash a child store per settlement. It rides the 300 s
+    reconcile block, never the 20 s cancel sweep: while the walk is held the tick returns,
+    the cancel sweep keeps its OWN cadence (a second one starts and finishes 25 s later),
+    and no second walk starts. Whether the walk ends or raises, its latch opens and its
+    marker is stamped at the END (issue #1230)."""
     root, _ = roots
     entered, release, done = threading.Event(), threading.Event(), threading.Event()
     cancel_lock, reconcile_lock = threading.Lock(), threading.Lock()
@@ -421,15 +425,16 @@ def test_periodic_bulk_work_does_not_block_drain_or_duplicate_sweep(roots, monke
     monkeypatch.setattr(maintenance, "_reconcile_abandoned_usage", lambda root: calls.append("usage"))
     monkeypatch.setattr(maintenance, "_periodic_zombie_reconcile", lambda **kw: calls.append("heal"))
 
-    def bulk(root, **_kwargs):
-        calls.append("refs")
+    def bulk(*_args, **_kwargs):
+        calls.append("drives")
         entered.set()
         assert release.wait(3)
         done.set()
         if failure:
             raise OSError("copy failed")
 
-    monkeypatch.setattr(observability, "retry_pending_child_ref_promotions", bulk)
+    monkeypatch.setattr(maintenance, "_run_drive_custody_pass", bulk)
+    monkeypatch.setattr(maintenance, "_tick_maintenance_child", lambda: calls.append("dispatch"))
     marker = [0.0]
 
     def cancel_sweeps():
@@ -441,14 +446,14 @@ def test_periodic_bulk_work_does_not_block_drain_or_duplicate_sweep(roots, monke
         for thread in cancel_sweeps():
             thread.join(3)
         assert calls.count("cancel") == calls.count("delivery") == calls.count("usage") == 1
-        assert calls.index("heal") < calls.index("refs"), "heal first, then promote"
+        assert calls.index("heal") < calls.index("drives"), "heal first, then settle"
         assert not cancel_lock.locked(), "the cancel sweep finished while the walk is still held"
         clock[0] = 1025.0
         maintenance._periodic_supervisor_maintenance([clock[0]], marker)
         for thread in cancel_sweeps():
             thread.join(3)
         assert [t.name for t in threads if t.name != "cold-custody"] == ["cancel_intent_sweep", "terminal_delivery_replay", "question_delivery_replay", "pause_notice_replay", "abandoned_usage_reconciliation", "post_task_synthesis_recovery"] + ["reconcile-maintenance"] + ["cancel_intent_sweep", "terminal_delivery_replay", "question_delivery_replay", "pause_notice_replay", "abandoned_usage_reconciliation", "post_task_synthesis_recovery"]
-        assert calls.count("cancel") == 2 and calls.count("refs") == 1, "cancel cadence held; no duplicate walk"
+        assert calls.count("cancel") == 2 and calls.count("drives") == 1, "cancel cadence held; no duplicate walk"
         assert marker[0] == 0.0 and reconcile_lock.locked(), "stamped only when the walk ENDS"
     finally:
         release.set()
@@ -460,7 +465,7 @@ def test_periodic_bulk_work_does_not_block_drain_or_duplicate_sweep(roots, monke
     maintenance._periodic_supervisor_maintenance([clock[0]], marker)  # 25 s after the END
     for thread in threads:
         thread.join(3)
-    assert calls.count("cancel") == 3 and calls.count("refs") == 1, "the walk waits its 300 s, the cancel sweep does not"
+    assert calls.count("cancel") == 3 and calls.count("drives") == 1, "the walk waits its 300 s, the cancel sweep does not"
 
 
 def test_thread_start_failure_releases_maintenance_latch(roots, monkeypatch):

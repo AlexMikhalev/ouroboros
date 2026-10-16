@@ -303,12 +303,13 @@ def _periodic_supervisor_maintenance(
     """Throttled upkeep on the supervisor tick, nothing history-sized inline (INV-24).
     Each tick starts the schedule duty when its previous pass ended;
     the 20 s cadence independently starts cancel, delivery, question, notice, usage and synthesis duties; every 600 s
-    the custody block; every 300 s the reconcile block (zombie heal, then pending
-    child-ref promotion retry). The first two stamp here before handing off; the
+    the custody block; every 300 s the reconcile block (zombie heal, drive settlement, then the
+    maintenance dispatcher). The first two stamp here before handing off; the
     reconcile pass stamps when it ENDS (issue #1230). A due cadence whose latch is still
     held journals the duty's stall once, with its thread's stack (``_duty_busy``).
     ``stop_event`` is the loop's per-generation token: both long passes stop mutating
-    once it closes."""
+    once it closes. History-sized work is the maintenance child's (``ouroboros/maintenance.py``):
+    a process's first tick, or a job scheduled since (``owed``), reserves its slot here."""
     if _stop_requested(stop_event):
         return
     now = time.time()
@@ -1000,11 +1001,12 @@ _STARTUP_TEMP_SWEEP_OWED = [False]
 
 
 def _run_periodic_reconcile_sweep(marker: list, stop_event: Any = None, latch: Any = None) -> None:
-    """Off-loop 300 s history-sized heal, then the drive-custody pass (the ONE pending
-    child-ref promotion retry, then bounded settlement). The marker is stamped when the pass ENDS, before
-    its latch opens; the 20 s cancel cadence never waits on any walk and a slow pass never
-    restarts (issue #1230). The generation token is asked before every step and, by the
-    mutation owners, again before each publication commits."""
+    """Off-loop 300 s heal of addressed work (orphans, preparations, the project registry, review
+    collection, late reviews), then the drive-custody pass (bounded settlement under the queue
+    lock), then the maintenance dispatcher (history-sized jobs run in its child, never here).
+    The marker is stamped when the pass ENDS, before its latch opens; the 20 s cancel cadence
+    never waits on any walk and a slow pass never restarts (issue #1230). The generation token
+    is asked before every step and, by the mutation owners, again before each publication commits."""
     try:
         _periodic_zombie_reconcile(stop_event=stop_event)
         if not _stop_requested(stop_event):
@@ -1053,16 +1055,15 @@ def _tick_maintenance_child() -> None:
 
 
 def _run_drive_custody_pass(stop_event: Any = None) -> None:
-    """The ONE pending child-ref promotion retry (the retry owner, before settlement asks),
-    the settled canonical mailboxes the loop thread's seam left (unread inputs to carry),
+    """The settled canonical mailboxes the loop thread's seam left (unread inputs to carry),
     then settle terminal child and direct drives past retention (a cancelled subagent's at
     once) through ``task_custody.settle_child_drive`` with the supervisor's probe and
     ownership interlock, at most ``DRIVE_SETTLEMENTS_PER_PASS`` attempts per layout and
     pass, continuing from the previous pass's cursor; crashed-settlement leftovers are
     swept first. Off the loop thread: each settlement may copy and hash a child store.
-    A drive kept because its custody is not proven is material evidence in the event."""
+    A drive kept because its custody is not proven is material evidence in the event. The
+    pending child-ref promotions it waits on are the maintenance child's job."""
     from ouroboros.headless import DRIVE_SETTLEMENTS_PER_PASS, prune_headless_task_drives, prune_task_drives
-    from ouroboros.observability import retry_pending_child_ref_promotions
     from ouroboros.owner_mailbox import sweep_settled_owner_mailboxes
     from ouroboros.task_custody import sweep_custody_leftovers
     from supervisor.queue import task_settlement_interlock, task_settlement_liveness
@@ -1071,11 +1072,6 @@ def _run_drive_custody_pass(stop_event: Any = None) -> None:
         return _stop_requested(stop_event)
 
     root = pathlib.Path(DATA_DIR)
-    report = retry_pending_child_ref_promotions(root, stop=stop, generation=stop_event) or {}
-    if report.get("retried") or report.get("errors"):
-        log.info("Child-ref promotion retry: %s", report)
-    if stop():
-        return
     sweep_custody_leftovers(root)
     # Canonical mailboxes the loop thread's seam left because unread rows carry inputs to
     # verify or copy: carried and unlinked here, off the loop thread.

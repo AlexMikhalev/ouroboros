@@ -157,3 +157,58 @@ def test_activity_backfill_killed_after_k_sources_resumes_at_k(data, opened, mon
     row = maintenance_jobs.job(data, "activity_backfill")
     assert row["flagged"] == ["legacy"] and row["empty"] == ["never-active"] and row["total"] == 14
     assert pr.get_reserved_project(data, "legacy")["thread_activity_seen"] is True
+
+
+def _promotion_member(parent, task):
+    """A settled child whose call inventory misses one blob: a deterministic refusal to remember."""
+    from ouroboros import headless, observability
+    from ouroboros.task_results import write_task_result
+
+    child = headless.prepare_task_drive(parent, task, "empty")
+    call = observability.persist_call(child, task_id=task, call_id="broken", call_type="tool_call",
+                                      payload={"tool": "read_file", "result": f"original of {task}"})
+    manifest = json.loads(pathlib.Path(call["manifest_ref"]["path"]).read_text(encoding="utf-8"))
+    pathlib.Path(manifest["full_payload_ref"]["path"]).unlink()
+    write_task_result(child, task, "completed", result="answer", artifact_status="ready")
+    headless.copy_child_task_result(parent, {"id": task, "drive_root": str(child)})
+    return child
+
+
+def test_child_ref_promotion_rests_on_its_second_run(tmp_path, opened, monkeypatch):
+    """The remembered refusal is a durable row: the next run (any process; the memo is read
+    from the store, never from module memory) reads no evidence and no body and commits nothing."""
+    parent = tmp_path / "canonical"
+    child = _promotion_member(parent, "member")
+    assert "child_ref_promotion" in maintenance.due(parent)
+    assert maintenance.run_job(parent, "child_ref_promotion")["state"] == "done"
+    assert "child_ref_promotion" not in maintenance.due(parent)
+    before, decodes = _revision(parent), _decodes(monkeypatch)
+    opened.clear()
+    assert maintenance.run_job(parent, "child_ref_promotion") == {"state": "done", "items": 0}
+    assert decodes == [] and _revision(parent) == before
+    assert _under(opened, parent / "observability") == [] and _under(opened, child / "observability") == []
+
+
+def test_child_ref_promotion_killed_after_k_members_resumes_at_k(tmp_path, monkeypatch):
+    from ouroboros import observability
+
+    parent = tmp_path / "canonical"
+    for task in ("t1", "t2", "t3"):
+        _promotion_member(parent, task)
+    walk, walked = observability._retry_pending_child_ref_promotion, []
+
+    def killed_on_the_third(parent_root, child, task_id, result, **kwargs):
+        if len(walked) == 2:
+            raise _Killed()
+        walked.append(task_id)
+        return walk(parent_root, child, task_id, result, **kwargs)
+
+    monkeypatch.setattr(observability, "_retry_pending_child_ref_promotion", killed_on_the_third)
+    with pytest.raises(_Killed):
+        maintenance.run_job(parent, "child_ref_promotion")
+    assert sorted(maintenance_jobs.job(parent, "child_ref_promotion")["observed"]) == walked
+    monkeypatch.setattr(observability, "_retry_pending_child_ref_promotion",
+                        lambda parent_root, child, task_id, result, **kw: walked.append(task_id) or walk(
+                            parent_root, child, task_id, result, **kw))
+    assert maintenance.run_job(parent, "child_ref_promotion")["state"] == "done"
+    assert sorted(walked) == ["t1", "t2", "t3"], "a member remembered before the kill was walked again"

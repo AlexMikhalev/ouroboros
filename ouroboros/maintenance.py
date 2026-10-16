@@ -47,9 +47,14 @@ def _plain(value: Any) -> Any:
 
 
 def _store_facts(root: pathlib.Path) -> Dict[str, Any]:
-    """The dispatcher's store reading: one read transaction."""
+    """The dispatcher's store reading, one read transaction: the revision and each pending
+    promotion member's row signature (indexed flag column; no body)."""
+    from ouroboros.obligations import members_in
+
     with store.open_store(root, write=False) as txn:
-        return {"revision": txn.revision()}
+        return {"revision": txn.revision(),
+                "promotions": {task_id: _plain(txn.row(task_id, "write_seq", "updated_at"))
+                               for task_id in members_in(txn, "promotions")}}
 
 
 def _record_settled(root: pathlib.Path, name: str, baseline: int, *, quiet: bool = True, **facts: Any) -> Dict[str, Any]:
@@ -186,6 +191,31 @@ def _activity_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[s
 
 
 
+def _promotion_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
+    """A pending promotion member with no remembered refusal at its current row and body: a new
+    member, a transient failure, or a row that changed since (``source_retention.RetentionMemo``)."""
+    from ouroboros.source_retention import memo_epoch
+
+    observed, epoch = row.get("observed") or {}, memo_epoch()
+    return any((observed.get(task_id) or {}).get("signature") != signature
+               or (observed.get(task_id) or {}).get("epoch") != epoch
+               for task_id, signature in facts["promotions"].items())
+
+
+def _promotion_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, Any]:
+    """The pending child-ref promotion retry (copies a settled child's call history and sources
+    into the canonical store under the task's custody file lock); its durable observations are
+    this job's row, its state is written only when it changes."""
+    from ouroboros.observability import retry_pending_child_ref_promotions
+
+    report = retry_pending_child_ref_promotions(root, stop=should_stop)
+    row = maintenance_jobs.job(root, "child_ref_promotion") or {}
+    state = "pending" if _promotion_due(root, row, _store_facts(root), True) else "done"
+    if row.get("state") != state:
+        maintenance_jobs.record(root, "child_ref_promotion", state=state)
+    return {"state": state, "items": len(report["retried"])}
+
+
 def _any_entry(directory: pathlib.Path) -> bool:
     """Whether DIRECTORY holds anything (one scandir that stops at the first entry)."""
     try:
@@ -237,6 +267,7 @@ def _packing_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[st
 # (it still runs whenever the child runs for another reason).
 JOBS: Dict[str, tuple] = {
     "activity_backfill": (_activity_due, _activity_run),
+    "child_ref_promotion": (_promotion_due, _promotion_run),
     "evidence_packing": (_packing_due, _packing_run),
 }
 JOB_NAMES = tuple(JOBS)
