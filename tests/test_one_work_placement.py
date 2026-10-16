@@ -1,0 +1,137 @@
+"""One id moves; running resources change only at a leased execution boundary."""
+
+import asyncio
+import copy
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from ouroboros.project_placement import (
+    append_placement_notice, move_task_to_project, placement_basis,
+    readmit_placement, refresh_pending_placement,
+)
+from ouroboros.projects_registry import (
+    bind_task_to_project, create_project, get_project, project_binding_for_task, update_project,
+)
+
+ORIGIN = {"absent": "mid_task_no_origin"}
+
+
+@pytest.fixture
+def runtime(tmp_path, monkeypatch):
+    from supervisor import queue, workers
+
+    root = tmp_path / "data"
+    repo = tmp_path / "repo"
+    root.mkdir()
+    repo.mkdir()
+    for module in (queue, workers):
+        monkeypatch.setattr(module, "DRIVE_ROOT", root)
+        monkeypatch.setattr(module, "RUNNING", {})
+        monkeypatch.setattr(module, "PENDING", [])
+    monkeypatch.setattr(workers, "REPO_DIR", repo)
+    monkeypatch.setattr(queue, "persist_queue_snapshot", lambda **kw: True)
+    monkeypatch.setattr("supervisor.message_bus.get_bridge", lambda: SimpleNamespace(broadcast=lambda frame: None))
+    return root, repo, workers
+
+
+def place(root, task_id, pid, workers, **kw):
+    return move_task_to_project(root, task_id, pid, origin=ORIGIN,
+                               basis=placement_basis(root, task_id, pid),
+                               running=workers.RUNNING, pending=workers.PENDING, **kw)
+
+
+@pytest.mark.parametrize("entrance", ["mind", "owner"])
+def test_same_work_moves_without_pulling_siblings(runtime, entrance):
+    from ouroboros.gateway.projects import api_project_from_task
+    from ouroboros.tools.control import _move_to_project
+    from ouroboros.utils import append_jsonl
+    from supervisor.events_project_routing import _handle_ensure_project_scope
+
+    root, repo, workers = runtime
+    original = {"id": "one", "project_id": "", "workspace_root": str(repo)}
+    workers.RUNNING.update(one={"task": original}, sibling={"task": {"id": "sibling"}})
+    ctx = SimpleNamespace(task_id="one", task_metadata={}, task_contract={}, project_id="",
+                          drive_root=root, budget_drive_root=root, pending_events=[])
+    if entrance == "mind":
+        host = SimpleNamespace(DRIVE_ROOT=root, RUNNING=workers.RUNNING, PENDING=workers.PENDING,
+                               append_jsonl=append_jsonl)
+        ctx.event_queue = SimpleNamespace(put_nowait=lambda event: _handle_ensure_project_scope(event, host))
+        assert _move_to_project(ctx, project_name="Room").startswith("OK:")
+    else:
+        async def body():
+            return {"task_id": "one", "project_id": "room", "name": "Room"}
+        request = SimpleNamespace(json=body, app=SimpleNamespace(state=SimpleNamespace(drive_root=root)))
+        response = asyncio.run(api_project_from_task(request))
+        assert response.status_code == 200, response.body
+        assert json.loads(response.body)["binding"]["task_id"] == "one"
+    assert project_binding_for_task(root, "one")["project_id"] == "room"
+    assert project_binding_for_task(root, "sibling") is None
+    assert original == {"id": "one", "project_id": "", "workspace_root": str(repo)}
+    assert ctx.project_id == ""
+    messages = []
+    assert append_placement_notice(ctx, messages)
+    assert not append_placement_notice(ctx, messages)
+    assert len(messages) == 1 and "Knowledge is not automatically reloaded" in messages[0]["content"]
+
+
+def test_bound_elsewhere_is_rename_and_creates_nothing(runtime):
+    root, _, workers = runtime
+    create_project(root, "first", name="First")
+    bind_task_to_project(root, "one", "first", origin=ORIGIN)
+    outcome = place(root, "one", "second", workers, name="Renamed")
+    assert outcome["status"] == "delivered" and outcome["reason"] == "renamed"
+    assert get_project(root, "first")["name"] == "Renamed"
+    assert get_project(root, "second") is None
+    assert project_binding_for_task(root, "one")["project_id"] == "first"
+
+
+def test_generation_change_between_prepare_and_move_refuses(runtime, tmp_path):
+    root, _, workers = runtime
+    create_project(root, "room")
+    basis = placement_basis(root, "one", "room")
+    folder = tmp_path / "new-folder"
+    folder.mkdir()
+    update_project(root, "room", working_dir=str(folder))
+    from ouroboros.project_admission import ProjectAdmissionError
+
+    with pytest.raises(ProjectAdmissionError, match="changed"):
+        move_task_to_project(root, "one", "room", origin=ORIGIN, basis=basis,
+                             running=workers.RUNNING, pending=workers.PENDING)
+    assert project_binding_for_task(root, "one") is None
+
+
+def test_running_move_waits_for_boundary_and_destination_lease(runtime, tmp_path):
+    root, repo, workers = runtime
+    folder = tmp_path / "room-folder"
+    folder.mkdir()
+    create_project(root, "room")
+    update_project(root, "room", working_dir=str(folder))
+    work = {"id": "one", "project_id": "old", "workspace_root": str(repo), "metadata": {}}
+    workers.RUNNING["one"] = {"task": work}
+    before = copy.deepcopy(work)
+    place(root, "one", "room", workers)
+    assert work == before
+    del workers.RUNNING["one"]
+    workers.PENDING.append(work)
+    assert refresh_pending_placement(root, work)
+    assert work["project_id"] == "room" and work["workspace_root"] == str(repo)
+    workers.RUNNING["other"] = {"task": {"id": "other", "project_id": "room"}}
+    assert not readmit_placement(root, work, repo_dir=repo, running=workers.RUNNING, pending=workers.PENDING)
+    assert work["workspace_root"] == str(repo)
+    workers.RUNNING.clear()
+    assert readmit_placement(root, work, repo_dir=repo, running=workers.RUNNING, pending=workers.PENDING)
+    assert work["workspace_root"] == str(folder) and work["workspace_mode"] == "external"
+    assert work["_project_admission"]["project"]["routing_generation"] == get_project(root, "room")["routing_generation"]
+
+
+def test_bind_failure_never_changes_pending_or_running(runtime, monkeypatch):
+    root, _, workers = runtime
+    work = {"id": "one", "project_id": ""}
+    workers.PENDING.append(work)
+    monkeypatch.setattr("ouroboros.projects_registry.bind_task_to_project",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("write failed")))
+    with pytest.raises(OSError, match="write failed"):
+        place(root, "one", "room", workers)
+    assert work == {"id": "one", "project_id": ""}

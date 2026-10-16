@@ -63,7 +63,7 @@ def test_a_presence_childs_promote_and_follow_up_stay_its_bindings_work_under_th
     from ouroboros.peer_roster import maybe_append_roster_note
     from ouroboros.project_facts import resolve_project_id
     from ouroboros.tools.control import _steer_task
-    from ouroboros.tools.control_routing import _promote_chat_to_task
+    from ouroboros.tools.control_routing import _start_task
     from ouroboros.tools.followup import _handle_schedule_followup, _manage_schedules
     from ouroboros.tools.project_journal import _scope_authority
     from ouroboros.tools.recent_tasks import _restricted_actor
@@ -102,8 +102,8 @@ def test_a_presence_childs_promote_and_follow_up_stay_its_bindings_work_under_th
             put_nowait=lambda event: emitted.append(event) or _handle_promote_chat_to_task(event, handler_ctx)),
     )
 
-    out = _promote_chat_to_task(child_ctx, "Compile the full audit", title="Full audit", project_name="Widened",
-                                workspace_root=str(tmp_path / "elsewhere"), source="api", predecessor_task_id="")
+    out = _start_task(child_ctx, "Compile the full audit", title="Full audit", project_name="Widened",
+                                workspace_root=str(tmp_path / "elsewhere"), source="api")
 
     authority = {"binding_id": BINDING}
     [evt], [root] = emitted, pending
@@ -155,8 +155,8 @@ def test_a_presence_childs_promote_and_follow_up_stay_its_bindings_work_under_th
     plain_ctx = types.SimpleNamespace(**{**vars(child_ctx), "task_id": plain["id"], "task_metadata": _worker_metadata(plain),
                                          "task_contract": plain["task_contract"],
                                          "event_queue": types.SimpleNamespace(put_nowait=plain_events.append)})
-    _promote_chat_to_task(plain_ctx, "Owner-side work", title="Owner-side work",
-                          project_name="Chosen", predecessor_task_id="")
+    _start_task(plain_ctx, "Owner-side work", title="Owner-side work",
+                          project_name="Chosen")
     assert not {"presence", "presence_binding_authority"} & set(plain_events[0])
     assert plain_events[0]["project_name"] == "Chosen"
 

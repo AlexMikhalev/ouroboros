@@ -558,7 +558,7 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
         runtime_data["current_chat_rule"] = (
             "addressable_root_tasks are RUNNING/PENDING roots in THIS chat. If a new message continues or "
             "redirects one of them, steer_task(task_id, message) it rather than spawning a duplicate; "
-            "your judgment picks the target (or none -> answer inline / promote_chat_to_task). A "
+            "Your judgment picks the target; otherwise do this request here. start_task begins separate work. A "
             "message in a project room defaults to that project unless it clearly says otherwise."
         )
     # Host-built ground truth about what THIS lane may continue: Main's bounded

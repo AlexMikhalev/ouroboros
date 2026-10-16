@@ -49,7 +49,7 @@ def _promote_retained_correction(root, data, monkeypatch):
     router = ToolContext(repo_dir=root, drive_root=data, task_id="decision",
         current_chat_id=1, task_metadata={"main_routing_manifest": {
             "final_results": [_task_result_ground_truth(load_task_result(data, "first"))]}})
-    response = control_routing._promote_chat_to_task(
+    response = control_routing._start_task(
         router, "Finish the retained correction", title="Retained correction",
         predecessor_task_id="first", workspace="none")
     assert "durably scheduled" in response, response

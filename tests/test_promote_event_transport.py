@@ -277,7 +277,7 @@ def test_tool_snapshot_precheck_skips_source_side_effects(monkeypatch, tmp_path)
         current_chat_id=1,
         drive_root=tmp_path,
     )
-    out = control._promote_chat_to_task(
+    out = control._start_task(
         ctx,
         "Build",
         title="Project build",
@@ -345,7 +345,7 @@ def test_real_event_queue_reaches_dispatch_and_confirms_durable_admission(
     )
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(control._promote_chat_to_task, tool_ctx, "Build the racer", title="Racer build",
+            future = executor.submit(control._start_task, tool_ctx, "Build the racer", title="Racer build",
                                      predecessor_task_id="")
             event = queue.get(timeout=10)
             assert event["type"] == "promote_chat_to_task"
@@ -370,151 +370,6 @@ def test_real_event_queue_reaches_dispatch_and_confirms_durable_admission(
             "routing_receipt_required": False,
             "routing_receipt_status": "not_applicable",
         }
-    finally:
-        queue.close()
-        queue.cancel_join_thread()
-
-
-def test_route_to_project_waits_for_same_durable_admission(monkeypatch, tmp_path):
-    import supervisor.workers as workers
-    from ouroboros.projects_registry import create_project
-    from ouroboros.project_dialogue import chat_annotation_receipt
-    from ouroboros.task_results import (
-        claim_task_acceptance_review_cycle,
-        load_task_result,
-        review_binding_hash,
-    )
-    from ouroboros.tools import control, control_events
-    from supervisor.events import _handle_promote_chat_to_task
-
-    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
-    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 15.0)
-    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_POLL_SEC", 0.01)
-    create_project(tmp_path, "racer", name="Racer")
-    pending = []
-    named = []
-    monkeypatch.setattr(workers, "_broadcast_task_named", named.append)
-
-    def enqueue(task):
-        admitted = dict(task)
-        admitted["task_contract"] = {
-            **task["task_contract"],
-            "source": "queue_admitted_test",
-        }
-        pending.append(admitted)
-        return admitted
-
-    handler_ctx = types.SimpleNamespace(
-        DRIVE_ROOT=tmp_path,
-        WORKERS={0: types.SimpleNamespace()},
-        PENDING=pending,
-        bridge=None,
-        append_jsonl=lambda *_args, **_kwargs: None,
-        persist_queue_snapshot=lambda **_kwargs: True,
-        enqueue_task=enqueue,
-        load_state=lambda: {"owner_chat_id": 1},
-    )
-    queue = mp.get_context("spawn").Queue()
-    tool_ctx = types.SimpleNamespace(
-        event_queue=queue,
-        pending_events=[],
-        current_chat_id=1,
-        drive_root=tmp_path,
-        is_direct_chat=True,
-        task_metadata={"client_message_id": "route-owner-1",
-                       **_owner_stamp("route-owner-1")},
-    )
-    try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                control._route_to_project,
-                tool_ctx,
-                "racer",
-                "Continue the racer",
-                "belongs there",
-                title="**Racer tuning**", predecessor_task_id="",
-            )
-            event = queue.get(timeout=10)
-            outcome = _handle_promote_chat_to_task(event, handler_ctx)
-            text = future.result(timeout=15)
-        assert outcome["status"] == "scheduled"
-        assert text.startswith("✉️ Routed to project 'Racer'")
-        assert "durably scheduled" in text
-        task = next(row for row in pending if row["id"] == event["task_id"])
-        assert task["budget_drive_root"] == str(tmp_path)
-        assert task["drive_root"] != str(tmp_path)
-        assert event["title"] == "**Racer tuning**"
-        assert (task["title"], task["suggested_name"]) == ("Racer tuning", "Racer tuning")
-        stored = load_task_result(tmp_path, event["task_id"])
-        assert stored["suggested_name"] == "Racer tuning"
-        assert named == [{"type": "task_named", "task_id": event["task_id"], "suggested_name": "Racer tuning"}]
-        assert stored["root_task_id"] == event["task_id"]
-        assert stored["delegation_role"] == "root"
-        assert stored["task_contract"] == task["task_contract"]
-        candidate_hash = "a" * 64
-        evidence_revision = "b" * 64
-        fence_hash = "c" * 64
-        claim = claim_task_acceptance_review_cycle(
-            tmp_path,
-            event["task_id"],
-            {
-                "binding_hash": review_binding_hash(
-                    candidate_hash=candidate_hash,
-                    evidence_revision=evidence_revision,
-                    fence_hash=fence_hash,
-                ),
-                "candidate_hash": candidate_hash,
-                "evidence_revision": evidence_revision,
-                "fence_hash": fence_hash,
-            },
-            claimed_by_task_id=event["task_id"],
-        )
-        assert claim["status"] == "claimed"
-        receipt = chat_annotation_receipt(
-            tmp_path, "route-owner-1", event["routing_token"]
-        )
-        assert receipt["action"] == "route_to_project"
-        assert receipt["status"] == "scheduled"
-    finally:
-        queue.close()
-        queue.cancel_join_thread()
-
-
-def test_manual_target_tool_waits_for_durable_handler_receipt(monkeypatch, tmp_path):
-    from ouroboros.tools import control, control_events
-    from supervisor.events import _handle_routing_manual_target
-
-    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 15.0)
-    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_POLL_SEC", 0.01)
-    queue = mp.get_context("spawn").Queue()
-    tool_ctx = types.SimpleNamespace(
-        event_queue=queue,
-        pending_events=[],
-        current_chat_id=1,
-        drive_root=tmp_path,
-        is_direct_chat=True,
-        task_metadata={
-            "client_message_id": "manual-owner-1",
-            **_owner_stamp("manual-owner-1"),
-            "routing_contract": {"manual_options": [{"kind": "new_task"}]},
-        },
-    )
-    handler_ctx = types.SimpleNamespace(DRIVE_ROOT=tmp_path, bridge=None)
-    try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                control._route_to_project,
-                tool_ctx,
-                "missing-project",
-                "Continue",
-                "uncertain target",
-                predecessor_task_id="",
-            )
-            event = queue.get(timeout=10)
-            _handle_routing_manual_target(event, handler_ctx)
-            text = future.result(timeout=15)
-        assert text.startswith("⚠️ NEEDS_MANUAL_TARGET")
-        assert 'Host-validated options: [{"kind": "new_task"}]' in text
     finally:
         queue.close()
         queue.cancel_join_thread()
@@ -580,7 +435,7 @@ def test_stale_live_transport_returns_unconfirmed_not_ok(monkeypatch, tmp_path):
         task_metadata={},
     )
     try:
-        out = control._promote_chat_to_task(ctx, "Never drained", title="Undrained promote", predecessor_task_id="")
+        out = control._start_task(ctx, "Never drained", title="Undrained promote", predecessor_task_id="")
         event = stale_queue.get(timeout=10)
         assert event["type"] == "promote_chat_to_task"
         assert out.startswith("⚠️ PROMOTE_UNCONFIRMED:")

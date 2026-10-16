@@ -460,6 +460,9 @@ def _promote_chat_to_task_outcome(evt: Dict[str, Any], ctx: Any) -> Dict[str, An
                 },
             )
             return blocked
+        from ouroboros.promotion_intent import claim_promotion_intent
+
+        claim_promotion_intent(ctx.DRIVE_ROOT, evt)
         evt = {**evt, "_admission_reserved": True}
         if str(evt.get("source") or "").strip() and not evt.get("_source_prepared"):
             threading.Thread(
@@ -540,8 +543,6 @@ def _promote_chat_to_task_outcome(evt: Dict[str, Any], ctx: Any) -> Dict[str, An
                     "routing_receipt_required": bool(str(evt.get("client_message_id") or "")),
                     "routing_receipt_status": str(receipt.get("annotation_status") or ""),
                     "source_note": str(outcome.get("source_note") or ""),
-                    # Owner 3=A: the promoter's unmet planning obligation moved onto
-                    # this root; the tool reads it back with the admission receipt.
                     **({"force_plan_transfer": dict(transfer)} if isinstance(transfer, dict) and transfer else {}),
                 },
                 result=(
@@ -550,8 +551,7 @@ def _promote_chat_to_task_outcome(evt: Dict[str, Any], ctx: Any) -> Dict[str, An
                     else "Task is scheduled, but its owner-facing routing receipt was not confirmed."
                 ),
                 attachment_manifest=list(outcome.get("attachment_manifest") or []),
-                # A Presence promotion's host-carried provenance is canonical from
-                # admission, so its binding finds, polls and controls the work while
+                    # admission, so its binding finds, polls and controls the work while
                 # it is still queued (the worker's running write keeps the same value).
                 **({"metadata": carrier, "source": "presence_promote"} if carrier else {}),
             )
@@ -744,15 +744,7 @@ def _record_obligation_transfer(ctx: Any, transfer: Dict[str, Any]) -> None:
 
 
 def _handle_ensure_project_scope(evt: Dict[str, Any], ctx: Any) -> None:
-    """Create/attach the registry project for an in-task ensure_project_scope call,
-    bind the CURRENT task to it, and answer on the receipt rail.
-
-    The worker already scoped itself in memory; what it waits for is the DURABLE
-    outcome: a landed bind (``delivered``) or a typed refusal (``rejected`` with
-    the reason -- bound elsewhere, a refused bind, a registration failure) under
-    the act's own synthetic receipt id. Before this the tool said "OK: created"
-    before any bind existed and the handler's receipt writer reported an unwritten
-    row as persisted."""
+    """Frozen receipt adapter for placement of the current work."""
     from supervisor.workers import ensure_project_scope
 
     try:
@@ -764,10 +756,6 @@ def _handle_ensure_project_scope(evt: Dict[str, Any], ctx: Any) -> None:
     if not isinstance(outcome, dict):
         outcome = {"status": "unconfirmed", "reason": "handler_returned_no_outcome"}
     target = str(outcome.get("project_id") or evt.get("project_id") or "")
-    if outcome.get("status") == "delivered":
-        from ouroboros.project_handoff import enqueue_project_handoff
-
-        enqueue_project_handoff(ctx.DRIVE_ROOT, str(evt.get("task_id") or ""))
     label = ""
     try:
         from ouroboros.projects_registry import get_project

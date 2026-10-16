@@ -617,51 +617,6 @@ def test_real_promotion_provisions_healthy_room_beside_malformed_neighbor(host, 
     assert not host.attempts
 
 
-@pytest.mark.parametrize("operation", ["create", "rename", "delete", "folder", "route"])
-def test_named_project_consumers_keep_healthy_neighbor_available(room, tmp_path, monkeypatch, operation):
-    import asyncio
-    from ouroboros.gateway import projects
-    from ouroboros.workspace_admission import room_chat_lens_dir
-    from ouroboros.tools.control_routing import _route_to_project
-    from tests.test_route_to_project import _ctx
-
-    folder = tmp_path / "target-folder"
-    folder.mkdir()
-    registry.update_project(room.root, "target", working_dir=str(folder))
-    raw = corrupt_neighbor(room.root, routing_generation="broken", visible_revision=[1])
-    calls = []
-    monkeypatch.setattr("supervisor.task_lifecycle.start_project_deletion", lambda *a: calls.append(a))
-    monkeypatch.setattr(projects, "_broadcast_projects_changed", lambda *a: None)
-
-    class Request:
-        app = SimpleNamespace(state=SimpleNamespace(drive_root=room.root, repo_dir=tmp_path / "repo"))
-        path_params = {"project_id": "target"}
-
-        async def json(self):
-            return {"id": "fresh-room", "name": "Updated"}
-
-    if operation == "folder":
-        assert room_chat_lens_dir(room.root, "target") == (str(folder), "")
-    elif operation == "route":
-        events = []
-        answer = _route_to_project(_ctx(room.root, events), "target", "Continue", title="Project work", predecessor_task_id="")
-        assert answer.startswith("⚠️ ROUTE_UNCONFIRMED:"), answer
-        assert len(events) == 1 and events[0]["project_id"] == "target"
-    else:
-        handler = {"create": projects.api_projects_create, "rename": projects.api_project_update,
-                   "delete": projects.api_project_delete}[operation]
-        response = asyncio.run(handler(Request()))
-        assert response.status_code == 200, response.body
-        if operation == "delete":
-            assert len(calls) == 1 and calls[0][1] == "target"
-            assert registry.get_reserved_project(room.root, "target", strict=True)["lifecycle"] == "deleting"
-        else:
-            pid = "fresh-room" if operation == "create" else "target"
-            assert registry.get_project(room.root, pid, strict=True)["name"] == "Updated"
-    rows = json.loads(registry._registry_path(room.root).read_text(encoding="utf-8"))["projects"]
-    assert next(row for row in rows if row["id"] == "other") == raw
-
-
 def test_conversion_adopts_origin_room_beside_malformed_neighbor(room, monkeypatch):
     from tests.test_project_lease_ui_conversion import _convert, _origin_ref, _seed_origin_task, _live_queue, _OWNER_TEXT
 

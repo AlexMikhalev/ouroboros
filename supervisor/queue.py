@@ -399,11 +399,24 @@ def enqueue_task(
 
         lookup = "project_routing_fence_lookup_failed"  # the authority whose read failed
         try:
+            bindings_snapshot = None
+            if not restoring_snapshot and task_id not in RUNNING:
+                from ouroboros.project_placement import pending_placement, refresh_pending_placement
+
+                from ouroboros.projects_registry import _load_bindings
+
+                bindings_snapshot = _load_bindings(DRIVE_ROOT, strict=True)["bindings"]
+                binding = pending_placement(DRIVE_ROOT, t, bindings_snapshot=bindings_snapshot)
+                if binding:
+                    if not refresh_pending_placement(DRIVE_ROOT, t, binding=binding):
+                        raise ProjectAdmissionError(lookup, "The moved work could not be readmitted.")
+                    project_id, project_admission = t["project_id"], t["_project_admission"]
+                    has_project_admission = True
             if has_project_admission:
                 validate_project_admission(project_admission)
             if project_admission is None or project_admission["project"] is None:
                 unscoped = restoring_snapshot and host_unscoped(t)
-                project_id, known_room = task_project_membership(DRIVE_ROOT, t)
+                project_id, known_room = task_project_membership(DRIVE_ROOT, t, bindings_snapshot=bindings_snapshot)
                 if project_id and unscoped:
                     # Host-attested absence is the admitted scope: a later binding
                     # never retargets it (hold release applies the same rule).

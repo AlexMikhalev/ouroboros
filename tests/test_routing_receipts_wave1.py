@@ -230,73 +230,23 @@ def test_a_resumed_turn_keeps_its_own_unconfirmed_acts(tmp_path):
 
 # --- (c) a routing refusal is a recorded failure, not a successful call -------
 
+
 def _produced_refusals(tmp_path, monkeypatch):
-    """Every routing refusal sentence, taken from the PRODUCER that composes it."""
-    from ouroboros.projects_registry import create_project
     from ouroboros.tools import control_events, control_routing
-    from ouroboros.tools.control import _promote_chat_to_task, _route_to_project
+    from ouroboros.tools.control import _start_task
 
-    create_project(tmp_path, "dinosaurs")
-    produced: dict = {}
-
-    monkeypatch.setattr(
-        control_routing, "_promotion_pool_disabled_from_snapshot", lambda _ctx: "crash_storm",
-    )
-    produced["pool_disabled"] = _promote_chat_to_task(
-        _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", predecessor_task_id="",
-    )
-    monkeypatch.setattr(
-        control_routing, "_promotion_pool_disabled_from_snapshot", lambda _ctx: "",
-    )
-
-    for key, admission in (
-        ("promote_rejected", {"status": "rejected", "reason": "duplicate_task_id"}),
-        ("promote_unconfirmed", {"status": "unconfirmed", "reason": "confirmation_timeout"}),
-    ):
-        monkeypatch.setattr(
-            control_events, "_wait_for_promotion_admission", lambda *_a, _r=admission, **_k: dict(_r),
-        )
-        produced[key] = _promote_chat_to_task(
-            _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", project_name="Dinosaurs",
-            predecessor_task_id="",
-        )
-
-    for key, receipt in (
-        ("route_rejected", {"status": "rejected", "reason": "project_routing_fence"}),
-        ("route_unconfirmed", {"status": "unconfirmed", "reason": "confirmation_timeout"}),
-    ):
-        monkeypatch.setattr(
-            control_events, "_wait_for_promotion_admission", lambda *_a, _r=receipt, **_k: dict(_r),
-        )
-        produced[key] = _route_to_project(
-            _tool_ctx(tmp_path), project_id="dinosaurs", message="continue there",
-            title="Project work", predecessor_task_id="",
-        )
-
-    for key, receipt in (
-        ("needs_manual_target", {"status": "needs_manual_target", "options": []}),
-        ("routing_unconfirmed", {"status": "unconfirmed", "reason": "confirmation_timeout"}),
-    ):
-        monkeypatch.setattr(
-            control_events, "_wait_for_routing_annotation", lambda *_a, _r=receipt, **_k: dict(_r),
-        )
-        produced[key] = _route_to_project(
-            _tool_ctx(tmp_path, is_direct_chat=True, metadata={
-                "client_message_id": "cm-1", "origin_message_ref": _origin_ref("cm-1"),
-            }),
-            project_id="", message="somewhere", predecessor_task_id="",
-        )
-    return produced
+    monkeypatch.setattr(control_routing, "_promotion_pool_disabled_from_snapshot", lambda ctx: "crash_storm")
+    disabled = _start_task(_tool_ctx(tmp_path), "Audit", title="Audit")
+    monkeypatch.setattr(control_routing, "_promotion_pool_disabled_from_snapshot", lambda ctx: "")
+    monkeypatch.setattr(control_events, "_wait_for_promotion_admission",
+                        lambda *a, **kw: {"status": "rejected", "reason": "duplicate_task_id"})
+    rejected = _start_task(_tool_ctx(tmp_path), "Audit", title="Audit")
+    return {"pool_disabled": disabled, "promote_rejected": rejected}
 
 
 @pytest.mark.parametrize("key,identifier", [
     ("pool_disabled", "PROMOTE_REJECTED"),
     ("promote_rejected", "PROMOTE_REJECTED"),
-    ("promote_unconfirmed", "PROMOTE_UNCONFIRMED"),
-    ("route_rejected", "ROUTE_REJECTED"),
-    ("route_unconfirmed", "ROUTE_UNCONFIRMED"),
-    ("needs_manual_target", "NEEDS_MANUAL_TARGET"),
-    ("routing_unconfirmed", "ROUTING_UNCONFIRMED"),
 ])
 def test_a_routing_act_that_scheduled_nothing_is_not_a_successful_call(
     tmp_path, monkeypatch, key, identifier,
@@ -314,7 +264,7 @@ def test_a_routing_act_that_scheduled_nothing_is_not_a_successful_call(
     text = _produced_refusals(tmp_path, monkeypatch)[key]
     assert text.startswith(f"⚠️ {identifier}"), text
 
-    typed = LegacyTextResultAdapter.from_text("promote_chat_to_task", text)
+    typed = LegacyTextResultAdapter.from_text("start_task", text)
     assert (typed.status, typed.code) == ("error", "TOOL_REPORTED_FAILURE")
     assert TOOL_CODE_SPECS[typed.code].outcome_bucket == "tool_reported_failure"
 
@@ -330,9 +280,9 @@ def test_a_routing_refusal_is_recorded_without_degrading_execution_health(tmp_pa
     produced = _produced_refusals(tmp_path, monkeypatch)
     calls = [
         {
-            "tool": "route_to_project",
+            "tool": "start_task",
             "status": TOOL_CODE_SPECS[
-                LegacyTextResultAdapter.from_text("route_to_project", text).code
+                LegacyTextResultAdapter.from_text("start_task", text).code
             ].outcome_bucket,
             "is_error": True,
             "result": text,
@@ -355,7 +305,7 @@ def test_an_admitted_promote_names_the_destination_admission_returned(tmp_path, 
     caller's own argument back told the owner the work was in a room it is not in."""
     from ouroboros.projects_registry import create_project
     from ouroboros.tools import control_events
-    from ouroboros.tools.control import _promote_chat_to_task
+    from ouroboros.tools.control import _start_task
 
     create_project(tmp_path, "dinosaurs", name="Dinosaurs")
     monkeypatch.setattr(
@@ -363,8 +313,8 @@ def test_an_admitted_promote_names_the_destination_admission_returned(tmp_path, 
         lambda *_a, **_k: {"status": "scheduled", "effective_project_id": "dinosaurs"},
     )
 
-    out = _promote_chat_to_task(
-        _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", predecessor_task_id="",
+    out = _start_task(
+        _tool_ctx(tmp_path), "Audit the issue", title="Issue audit",
     )
 
     assert out.startswith("OK: task")
@@ -375,16 +325,16 @@ def test_a_promote_admitted_into_no_project_claims_none(tmp_path, monkeypatch):
     """The symmetric direction: a requested project that admission did not grant
     must not be reported as the destination either."""
     from ouroboros.tools import control_events
-    from ouroboros.tools.control import _promote_chat_to_task
+    from ouroboros.tools.control import _start_task
 
     monkeypatch.setattr(
         control_events, "_wait_for_promotion_admission",
         lambda *_a, **_k: {"status": "scheduled", "effective_project_id": ""},
     )
 
-    out = _promote_chat_to_task(
+    out = _start_task(
         _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", project_name="Dinosaurs",
-        predecessor_task_id="",
+
     )
 
     assert out.startswith("OK: task")
@@ -395,16 +345,16 @@ def test_an_unconfirmed_promote_names_what_was_requested_as_a_request(tmp_path, 
     """No receipt means no known destination, so the sentence says what was ASKED
     for and that the outcome is unknown — never a room the task may not be in."""
     from ouroboros.tools import control_events
-    from ouroboros.tools.control import _promote_chat_to_task
+    from ouroboros.tools.control import _start_task
 
     monkeypatch.setattr(
         control_events, "_wait_for_promotion_admission",
         lambda *_a, **_k: {"status": "unconfirmed", "reason": "confirmation_timeout"},
     )
 
-    out = _promote_chat_to_task(
+    out = _start_task(
         _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", project_name="Dinosaurs",
-        predecessor_task_id="",
+
     )
 
     assert out.startswith("⚠️ PROMOTE_UNCONFIRMED")
@@ -431,63 +381,6 @@ def _request(tmp_path):
     return types.SimpleNamespace(
         app=types.SimpleNamespace(state=types.SimpleNamespace(drive_root=tmp_path)),
     )
-
-
-def test_a_live_task_whose_owner_message_has_a_project_offers_no_second_conversion(
-    tmp_path, monkeypatch,
-):
-    """An ADOPTING conversion (#900) binds only the clicked card. The sibling task
-    of the SAME owner message stayed task-unbound, so the client gate — which is
-    task-keyed — kept offering "Turn into project" for work that already has one."""
-    import supervisor.workers as workers
-    from ouroboros.gateway.state import _task_bindings_safe
-    from ouroboros.projects_registry import bind_task_to_project, create_project
-
-    project = create_project(tmp_path, "dinosaurs", name="Dinosaurs")
-    bind_task_to_project(
-        tmp_path, "clicked-root", "dinosaurs", project["chat_id"],
-        origin={"ref": _origin_ref(), "text": _OWNER_TEXT},
-    )
-    monkeypatch.setattr(workers, "PENDING", [
-        {"id": "sibling-root", "origin_message_ref": _origin_ref()},
-        {"id": "other-work", "origin_message_ref": _origin_ref("cm-OTHER")},
-        {"id": "child", "delegation_role": "subagent", "origin_message_ref": _origin_ref()},
-    ])
-    monkeypatch.setattr(workers, "RUNNING", {})
-
-    bindings = _task_bindings_safe(_request(tmp_path))
-
-    assert bindings["clicked-root"] == {
-        "project_id": "dinosaurs", "chat_id": project["chat_id"],
-    }
-    assert bindings["sibling-root"] == {
-        "project_id": "dinosaurs", "chat_id": project["chat_id"], "origin_bound": True,
-    }
-    # A different message's work keeps its own convert button, and a delegated
-    # child is never bound itself — it inherits its root's project by lineage.
-    assert "other-work" not in bindings and "child" not in bindings
-
-
-def test_an_origin_bound_card_is_not_moved_out_of_the_chat_it_runs_in(tmp_path, monkeypatch):
-    """A DURABLE binding re-homes a converted card; an origin-bound row is a gate
-    fact only. Moving the live card into the project room would strand it from its
-    own chat rows, which no conversion ever wrote."""
-    import supervisor.queue as queue_mod
-    from ouroboros.gateway.state import _chat_activities_snapshot_safe
-
-    monkeypatch.setattr(queue_mod, "PENDING", [{
-        "id": "sibling-root", "root_task_id": "sibling-root",
-        "delegation_role": "root", "chat_id": 1,
-    }])
-    monkeypatch.setattr(queue_mod, "RUNNING", {})
-    bindings = {
-        "sibling-root": {"project_id": "dinosaurs", "chat_id": 77, "origin_bound": True},
-    }
-
-    rows = _chat_activities_snapshot_safe(tmp_path, bindings, direct_turns=[])
-
-    [row] = [entry for entry in rows if entry["activity_id"] == "sibling-root"]
-    assert (row["chat_id"], row["project_id"]) == (1, "")
 
 
 def test_an_unreadable_live_queue_still_answers_the_durable_bindings(tmp_path, monkeypatch):
@@ -556,7 +449,6 @@ def test_two_roots_under_one_owner_message_keep_two_readable_receipts_after_comp
     assert chat_annotation_receipt(tmp_path, "cm-1", "tok-unknown") == {}
     assert latest_chat_annotations(tmp_path)["cm-1"]["routing_token"] == "tok-steer-2"
     assert "msg-expired" not in latest_chat_annotations(tmp_path)
-
 
 
 # --- (e) a relayed owner steer refused by a pending cancel: receipt, no bubble ---

@@ -280,6 +280,10 @@ def handle_routing_decision(
         ForkingPickler.dumps(dict(evt))
         from supervisor.workers import get_event_q
 
+        if action == "new_task_in_project":
+            from ouroboros.promotion_intent import prepare_promotion_intent
+
+            prepare_promotion_intent(drive_root, evt)
         get_event_q().put_nowait(dict(evt))
     except Exception as exc:
         log.warning("routing decision dispatch failed", exc_info=True)

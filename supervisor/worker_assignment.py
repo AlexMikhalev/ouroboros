@@ -357,10 +357,15 @@ def _claim_worker_launch(queue, candidate, worker, *, deferred: Optional[set] = 
     from supervisor.queue_schedules import automatic_acquisitions
     from supervisor.queue_timeouts import _pending_continuation, _deadline_launch_claim, pending_deadline_expirable
 
+    from ouroboros.project_placement import readmit_placement
+
     witness = _unsent(candidate)
     if (witness is None or witness["unsubmitted"] is None) and _deadline_refuses_launch(queue, candidate):
         return False
     try:
+        if not readmit_placement(queue.DRIVE_ROOT, candidate, repo_dir=_pool().REPO_DIR,
+                                running=_pool().RUNNING, pending=_pool().PENDING):
+            return False
         from supervisor.followup_policy import scheduled_start
         with automatic_acquisitions(), scheduled_start(queue.DRIVE_ROOT, candidate) as allowed:
             if not allowed:
@@ -442,6 +447,7 @@ def _choose_candidate(queue, remaining, unresolved_invalid_id_set, refused_this_
     Selection never claims dispatch, consumes a grant, or creates RUNNING custody.
     """
     from ouroboros.project_lease import candidate_is_leasable, cold_project_holders, running_project_ids
+    from ouroboros.project_placement import refresh_pending_placement
     from ouroboros.config import get_max_active_subagents_per_root
     from supervisor.state import EVOLUTION_BUDGET_RESERVE
 
@@ -510,6 +516,8 @@ def _choose_candidate(queue, remaining, unresolved_invalid_id_set, refused_this_
                         candidate, queue.BUDGET_ROOT_FENCES.get(root_task_id))):
                 continue
             if str(candidate.get("type") or "") == "evolution" and remaining < EVOLUTION_BUDGET_RESERVE:
+                continue
+            if not refresh_pending_placement(_pool().DRIVE_ROOT, candidate):
                 continue
             if not candidate_is_leasable(candidate, leased, cold_holders=cold_holders):
                 continue

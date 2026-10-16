@@ -78,7 +78,7 @@ def wait_for_promotion_admission(
             and str(admission.get("routing_token") or "") == routing_token
         ):
             status = str(admission.get("status") or "")
-            if status in {"scheduled", "rejected", "unconfirmed"}:
+            if status in {"scheduled", "rejected", "unconfirmed", "not_started"}:
                 # The EFFECTIVE destination rides back with the receipt. The
                 # admission handler re-resolves an implicit promote's project
                 # under the claim lock, so the project the caller ASKED for and

@@ -618,7 +618,7 @@ def test_a_refused_bind_reaches_the_ensure_caller_as_a_typed_refusal(_projects_r
     never says OK; the receipt is readable under the act's own id."""
     import ouroboros.projects_registry as reg
     from ouroboros.project_dialogue import latest_chat_annotations
-    from ouroboros.tools.control import _ensure_project_scope
+    from ouroboros.tools.control import _move_to_project
 
     tmp_path = _projects_root
 
@@ -629,7 +629,7 @@ def test_a_refused_bind_reaches_the_ensure_caller_as_a_typed_refusal(_projects_r
     supervisor = _supervisor(tmp_path, running={"t-root": {"task": {"id": "t-root", "project_id": ""}}})
     ctx = _ensure_live(tmp_path, supervisor, project_id="")
 
-    out = _ensure_project_scope(ctx, project_name="Cyber Racing")
+    out = _move_to_project(ctx, project_name="Cyber Racing")
 
     assert out.startswith("⚠️ SCOPE_REJECTED (project_binding_failed)")
     assert "OK" not in out and "durably bound to no project" in out
@@ -648,7 +648,7 @@ def test_a_bind_that_lands_after_a_lost_ack_is_discoverable_from_the_durable_bin
     import ouroboros.tools.control_events as control_events
     from ouroboros.project_facts import project_id_from_display_name
     from ouroboros.projects_registry import project_id_for_task
-    from ouroboros.tools.control import _ensure_project_scope
+    from ouroboros.tools.control import _move_to_project
 
     tmp_path = _projects_root
     monkeypatch.setattr(
@@ -659,12 +659,12 @@ def test_a_bind_that_lands_after_a_lost_ack_is_discoverable_from_the_durable_bin
     ctx = _ensure_live(tmp_path, supervisor)
     pid = project_id_from_display_name("Cyber Racing")
 
-    out = _ensure_project_scope(ctx, project_name="Cyber Racing")
+    out = _move_to_project(ctx, project_name="Cyber Racing")
 
     assert out.startswith("⚠️ SCOPE_UNCONFIRMED") and "do not report it as scoped" in out
     assert ctx.project_id == pid  # journal writes target it meanwhile
     assert project_id_for_task(tmp_path, "t-root") == pid  # the bind did land
-    again = _ensure_project_scope(_ensure_live(tmp_path, supervisor), project_name="Cyber Racing")
+    again = _move_to_project(_ensure_live(tmp_path, supervisor), project_name="Cyber Racing")
     assert "already scoped" in again
 
 
@@ -691,7 +691,7 @@ def test_an_unmet_swarm_obligation_moves_to_the_promoted_root(_projects_root, mo
     import supervisor.queue as queue_mod
     from ouroboros.owner_hurry import force_plan_decision
     from ouroboros.task_results import load_task_result
-    from ouroboros.tools.control import _promote_chat_to_task
+    from ouroboros.tools.control import _start_task
     from supervisor.events_project_routing import _handle_promote_chat_to_task
 
     tmp_path = _projects_root
@@ -705,8 +705,7 @@ def test_an_unmet_swarm_obligation_moves_to_the_promoted_root(_projects_root, mo
         _drain_owner_followup(tmp_path, ctx)
     ctx.event_queue = types.SimpleNamespace(put_nowait=lambda event: _handle_promote_chat_to_task(event, supervisor))
 
-    out = _promote_chat_to_task(ctx, "Implement the plan in a new root", title="Plan implementation",
-                                predecessor_task_id="")
+    out = _start_task(ctx, "Implement the plan in a new root", title="Plan implementation")
 
     assert out.startswith("OK: task")
     [new_root] = enqueued
@@ -728,14 +727,14 @@ def test_an_unmet_swarm_obligation_moves_to_the_promoted_root(_projects_root, mo
 def test_ensure_keeps_the_obligation_and_a_met_one_transfers_nothing(_projects_root, monkeypatch):
     import ouroboros.task_results as task_results
     from ouroboros.owner_hurry import unmet_force_plan_obligation
-    from ouroboros.tools.control import _ensure_project_scope
+    from ouroboros.tools.control import _move_to_project
 
     tmp_path = _projects_root
     supervisor = _supervisor(tmp_path, running={"swarm-root": {"task": {"id": "swarm-root", "project_id": ""}}})
     ctx = _ensure_live(tmp_path, supervisor, task_id="swarm-root",
                        task_metadata={"force_plan": True, "force_plan_source": "swarm"})
 
-    out = _ensure_project_scope(ctx, project_name="Cyber Racing")
+    out = _move_to_project(ctx, project_name="Cyber Racing")
 
     assert out.startswith("OK: this task is now durably bound")
     assert ctx.task_metadata["force_plan"] is True  # same task: the obligation stays
@@ -751,7 +750,7 @@ def test_a_promote_into_another_project_discloses_the_second_project(_projects_r
     now holds the work when the request already had one."""
     import ouroboros.tools.control_events as control_events
     from ouroboros.projects_registry import bind_task_to_project, create_project
-    from ouroboros.tools.control import _promote_chat_to_task
+    from ouroboros.tools.control import _start_task
 
     tmp_path = _projects_root
     create_project(tmp_path, "first-room", name="First Room")
@@ -763,8 +762,8 @@ def test_a_promote_into_another_project_discloses_the_second_project(_projects_r
     )
     ctx = _pooled_root_ctx(tmp_path)
 
-    out = _promote_chat_to_task(ctx, "Do it elsewhere", title="Work elsewhere",
-                                project_id="second-room", predecessor_task_id="")
+    out = _start_task(ctx, "Do it elsewhere", title="Work elsewhere",
+                                project_id="second-room")
 
     assert "already has project 'first-room'" in out and "a second project 'second-room' now holds this promote" in out
 
