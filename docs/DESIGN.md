@@ -1252,8 +1252,8 @@ answer keep both forms readable. Anatomy, top to bottom:
    as the record of work continued meanwhile. Required waiting copy disappears
    when the card settles; the status and recorded owner answer remain.
 
-Inside a bubble the card adds no box: the bubble is its object. `Close without
-answering` is a quiet disclosure in the meta size. The card uses tokens for every
+Inside a bubble the card adds no box: the bubble is its object. Its × is a quiet
+control, without a body until hover. The card uses tokens for every
 type size and colour, including pill radius and option gap. Every focusable element shares the 2px `--focus-accent-border` ring
 with 2px offset. Component min/max widths keep local literals, as elsewhere in chat.
 

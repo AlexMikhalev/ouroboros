@@ -8487,8 +8487,6 @@ textarea.chat-input {
 .chat-quiz-send:hover:not(:disabled) { background: var(--tone-crimson-hover); }
 .chat-quiz-send:active:not(:disabled) { filter: var(--press); }
 .chat-quiz-send:disabled { color: var(--text-disabled); background: var(--surface-tray); box-shadow: none; cursor: default; }
-/* Closing without an answer is a quiet disclosure in the card's meta size, never the bubble's reading size. */
-.chat-quiz-close > summary { font-size: var(--type-meta); font-weight: 600; color: var(--text-secondary); cursor: pointer; }
 .chat-quiz-option:focus-visible,
 .chat-quiz-comment:focus-visible,
 .chat-quiz-send:focus-visible,
@@ -9010,6 +9008,15 @@ textarea.chat-input {
     -webkit-backdrop-filter: none; backdrop-filter: none;
 }
 :root[data-theme] .chat-send-inline:not(:disabled):hover { border-color: transparent; background: var(--tone-crimson-hover); }
+/* Main's waiting pill is one of these capsules: the owner's turn in the amber tone, standing like the others. */
+:root[data-theme] .chat-question-nav {
+    border-color: transparent; background: var(--tone-amber); color: var(--status-warn-fg); box-shadow: var(--elev-rest);
+    font-weight: 600; -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass); transition: var(--motion-tone);
+}
+:root[data-theme] .chat-question-nav:hover { border-color: transparent; background: var(--tone-amber-hover); }
+/* A question's × is a quiet control: no body until hover. */
+:root[data-theme] .chat-quiz-close { border-color: transparent; background: transparent; }
+:root[data-theme] .chat-quiz-close:hover:not(:disabled) { border-color: transparent; background: var(--tone-quiet-hover); }
 :root[data-theme] :is(.chat-attach-btn, .rw-more) { border-radius: var(--pill-radius); }
 /* Navigation over the transcript: Load older rests in the reading flow; ↓ latest and Back to reading fly over it. */
 :root[data-theme] .chat-load-older-btn { border-color: transparent; background: var(--surface-capsule); box-shadow: var(--elev-rest); }
@@ -9034,7 +9041,7 @@ textarea.chat-input {
 :root[data-theme] .filter-chip.active { border-color: transparent; background: var(--tone-crimson); color: var(--tone-crimson-ink); }
 /* A press deepens a capsule's colour; nothing changes height. */
 :root[data-theme] :is(.chat-header-btn, .chat-budget-pill, .project-panel-close, .mobile-nav-toggle, .chat-swarm, .chat-send-inline,
-    .app-tab, .filter-chip, .chat-load-older-btn, .chat-scroll-bottom-btn, .rw-back):not(:disabled):active,
+    .app-tab, .filter-chip, .chat-load-older-btn, .chat-scroll-bottom-btn, .rw-back, .chat-question-nav):not(:disabled):active,
 :root[data-theme] .chat-capsule:not([data-open="true"]):active {
     filter: var(--press);
 }
