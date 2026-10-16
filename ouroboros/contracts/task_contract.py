@@ -72,7 +72,9 @@ def normalize_disabled_tools(value: Any) -> list[str]:
         name = str(item or "").strip()
         if name and name not in seen:
             seen.append(name)
-    return seen
+    from ouroboros.contracts.tool_aliases import expand_disabled_tool_names
+
+    return expand_disabled_tool_names(seen)
 
 
 def normalize_bool(value: Any) -> bool:
