@@ -6,7 +6,9 @@ Ouroboros's own Zoom, Google or Microsoft account in once. Playwright's
 ``chrome`` channel launches the Google Chrome already installed on the computer;
 nothing is downloaded. Microphone permission is granted only to the meeting
 service's origins, and ``participant_page.js`` (an init script) replaces the
-page's microphone and taps its remote audio.
+page's microphone and taps its remote audio. Chrome starts with fake capture
+devices (``--use-fake-device-for-media-stream``), so no path in this browser,
+whichever frame or API it uses, reaches the computer's real microphone or camera.
 
 The window's own sound is muted (``--mute-audio``): Ouroboros hears the meeting
 through the tap, and a second copy playing from the speakers would echo into
@@ -27,7 +29,7 @@ from typing import Any, Callable, Dict, List, Optional
 PAGE_SCRIPT = pathlib.Path(__file__).with_name("participant_page.js")
 PROFILE_DIR = "chrome-profile"
 RATE = 48000
-LAUNCH_ARGS = ("--autoplay-policy=no-user-gesture-required", "--mute-audio")
+LAUNCH_ARGS = ("--autoplay-policy=no-user-gesture-required", "--mute-audio", "--use-fake-device-for-media-stream")
 OPEN_TIMEOUT_SEC = 90.0
 NAVIGATION_TIMEOUT_MS = 60000
 STATUS_EVERY_SEC = 1.0

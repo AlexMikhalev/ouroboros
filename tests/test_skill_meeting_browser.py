@@ -339,6 +339,16 @@ def test_session_feeds_only_frames_that_took_the_microphone_and_honors_flush(tmp
         session.close()
 
 
+def test_the_window_has_no_real_capture_device(tmp_path):
+    """Chrome's fake capture devices: a frame or API the page script did not replace still gets no real mic."""
+    playwright = FakePlaywright()
+    session = open_session(tmp_path, playwright, [])
+    try:
+        assert "--use-fake-device-for-media-stream" in playwright.contexts[0].kwargs["args"]
+    finally:
+        session.close()
+
+
 def test_missing_chrome_is_a_typed_refusal(tmp_path):
     playwright = FakePlaywright("BrowserType.launch_persistent_context: Chromium distribution 'chrome' is not "
                                 "found at /Applications/Google Chrome.app")
@@ -600,6 +610,10 @@ function fixture(options) {
   }
   function Sender() {}
   Sender.prototype.replaceTrack = function () { return Promise.resolve(); };
+  class MediaDevices {
+    async getUserMedia() { throw new Error('the native microphone must never be opened for audio'); }
+    async enumerateDevices() { return [{ kind: 'audioinput', deviceId: 'real' }, { kind: 'audiooutput', deviceId: 'speakers' }]; }
+  }
   const scope = {
     atob: (text) => Buffer.from(text, 'base64').toString('binary'),
     btoa: (text) => Buffer.from(text, 'binary').toString('base64'),
@@ -609,10 +623,7 @@ function fixture(options) {
     RTCPeerConnection: PeerConnection, RTCRtpSender: Sender, setInterval: () => 0,
     document: { createElement: () => ({ play: () => Promise.resolve(), getContext: () => ({ fillRect() {}, fillText() {} }),
       captureStream: () => new Stream([new Track('video')]) }) },
-    navigator: { mediaDevices: {
-      getUserMedia: async () => { throw new Error('the native microphone must never be opened for audio'); },
-      enumerateDevices: async () => [{ kind: 'audioinput', deviceId: 'real' }, { kind: 'audiooutput', deviceId: 'speakers' }],
-    } },
+    MediaDevices, navigator: { mediaDevices: new MediaDevices() },
     __ouroborosRemotePcm: (text, rate) => { calls.remote.push({ text, rate }); return Promise.resolve(); },
     __ouroborosParticipantEvent: (name) => { calls.events.push(name); return Promise.resolve(); },
   };
@@ -699,6 +710,15 @@ test('fallback path: a refused worklet keeps the same arithmetic on a ScriptProc
   assert.deepStrictEqual(devices.map((d) => [d.kind, d.label || d.deviceId]),
     [['audioinput', 'Ouroboros'], ['audiooutput', 'speakers']]);
 });
+
+test('the prototype method gives the replaced microphone too, never the native one', async () => {
+  const { scope, calls } = fixture({});
+  const viaPrototype = await scope.MediaDevices.prototype.getUserMedia.call(scope.navigator.mediaDevices, { audio: true });
+  assert.strictEqual(viaPrototype.getAudioTracks().length, 1);
+  const viaAnotherObject = await new scope.MediaDevices().getUserMedia({ audio: true });
+  assert.strictEqual(viaAnotherObject.getAudioTracks().length, 1);
+  assert.deepStrictEqual(calls.events, ['microphone_requested', 'microphone_requested']);
+});
 """
 
 
@@ -719,7 +739,7 @@ def test_page_script_pcm_path_under_node(tmp_path):
                             timeout=120,
                             env={"PATH": "", "PAGE_SCRIPT": str(PAGE_SCRIPT)}, cwd=str(tmp_path))
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "# pass 2" in result.stdout and "# fail 0" in result.stdout
+    assert "# pass 3" in result.stdout and "# fail 0" in result.stdout
 
 
 # ---- real Chromium: the replaced microphone carries fed audio, the tap returns remote audio ---------------------
@@ -780,8 +800,9 @@ def test_replaced_microphone_carries_fed_audio_and_the_tap_returns_remote_audio(
     chunks, events = [], []
     try:
         with sync_playwright() as playwright:
-            # Host candidates stay plain IP addresses: a sandboxed headless browser may not resolve mDNS names.
-            browser = playwright.chromium.launch(args=["--autoplay-policy=no-user-gesture-required",
+            # The participant window's own flags (its fake capture devices included); host candidates stay
+            # plain IP addresses: a sandboxed headless browser may not resolve mDNS names.
+            browser = playwright.chromium.launch(args=[*participant_browser.LAUNCH_ARGS,
                                                        "--disable-features=WebRtcHideLocalIpsWithMdns"])
             try:
                 context = browser.new_context()
@@ -804,6 +825,10 @@ def test_replaced_microphone_carries_fed_audio_and_the_tap_returns_remote_audio(
                 page.wait_for_timeout(2500)
                 after = b"".join(pcm for pcm, _rate in chunks)
                 status = page.evaluate("window.__ouroborosParticipant.status()")
+                via_prototype = page.evaluate("""async () => {
+                  const stream = await MediaDevices.prototype.getUserMedia.call(navigator.mediaDevices, { audio: true });
+                  return [stream.getAudioTracks().length, window.__ouroborosParticipant.status().microphoneRequests];
+                }""")
             finally:
                 browser.close()
     finally:
@@ -811,6 +836,7 @@ def test_replaced_microphone_carries_fed_audio_and_the_tap_returns_remote_audio(
     assert {rate for _pcm, rate in chunks} == {48000}
     assert status["mode"] == "worklet" and status["published"] is True and status["microphoneRequests"] == 1
     assert status["tappedTracks"] == 2  # the meeting's tone at ours, our microphone at the meeting
+    assert via_prototype == [1, 2], "the prototype method is the replaced microphone in a real browser too"
     assert events[:1] == ["microphone_requested"] and "microphone_published" in events
     assert len(before) > 48000 and len(after) > 48000
     # The tap returns the meeting's 880 Hz; the fed 440 Hz appears only once fed through WebRTC.

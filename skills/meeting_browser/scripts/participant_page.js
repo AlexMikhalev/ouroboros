@@ -279,7 +279,7 @@
   if (media) {
     var nativeGetUserMedia = media.getUserMedia ? media.getUserMedia.bind(media) : null;
     var nativeEnumerate = media.enumerateDevices ? media.enumerateDevices.bind(media) : null;
-    media.getUserMedia = async function getUserMedia(constraints) {
+    var replacedGetUserMedia = async function getUserMedia(constraints) {
       var wanted = constraints || {};
       if (!wanted.audio) {
         if (wanted.video) return cameraStream();
@@ -297,6 +297,12 @@
       note('microphone_requested');
       return stream;
     };
+    // The prototype too: a page calling MediaDevices.prototype.getUserMedia gets the same microphone.
+    var MediaDevicesPrototype = scope.MediaDevices && scope.MediaDevices.prototype;
+    if (MediaDevicesPrototype && MediaDevicesPrototype.getUserMedia) {
+      MediaDevicesPrototype.getUserMedia = replacedGetUserMedia;
+    }
+    media.getUserMedia = replacedGetUserMedia;
     media.enumerateDevices = async function enumerateDevices() {
       var devices = nativeEnumerate ? await nativeEnumerate() : [];
       var microphoneDevice = {
