@@ -2,6 +2,8 @@
 while every recorded input holds, the pass selects it without reading a body or writing, and the
 first change of an input (a new fact on the task, an external stamp, its own retry instant) puts
 it back exactly once. A rest is a kept fact, never debt and never a retirement of the debt."""
+import json
+
 import pytest
 
 from ouroboros import evidence_packs, obligations as o, store, task_store
@@ -178,3 +180,100 @@ def test_a_late_answer_wakes_its_question_and_the_retry_instant_wakes_the_owed_d
     monkeypatch.setattr(owner_quiz, "utc_now_iso", lambda: later)
     assert recover(runtime)["attempted"] == 1 and loads[0] == "old-a"
     assert owner_quiz.quiz_states(runtime.root, "old-a")["q"]["delivery"]["state"] == "delivered"
+
+
+# ---------------------------------------------------------------- synthesis / terminal projection
+
+from ouroboros import agent_task_pipeline as pipeline, terminal_projection  # noqa: E402
+
+
+def counted_bodies(monkeypatch):
+    """Every task-body decode goes through ``Txn.body_text`` (reads and merge-writes alike)."""
+    seen, real = [], store.Txn.body_text
+    monkeypatch.setattr(store.Txn, "body_text", lambda self, tid: seen.append(tid) or real(self, tid))
+    return seen
+
+
+def stuck_roots(root):
+    """A late phase paused by its owner, and a finished pooled root whose child result was
+    never adopted (its drive is named, no copy-back recorded): the 16.10 fixture's two classes."""
+    write_task_result(root, "paused-1", "completed", root_task_id="paused-1", result="r",
+                      root_phase_checkpoint={"post_task_synthesis": "paused"})
+    child = root / "state" / "headless_tasks" / "unadopted-1" / "data"
+    write_task_result(root, "unadopted-1", "failed", root_task_id="unadopted-1", result="r", drive_root=str(child))
+    assert {"paused-1", "unadopted-1"} <= set(o.members(root, "synthesis"))
+
+
+def steady(root):
+    return pipeline.recover_pending_root_post_task_synthesis(
+        root, startup=False, owner_liveness=lambda _tid: False, claim_guard=None)
+
+
+def test_synthesis_duty_rests_owner_waits_and_unadopted_projections(tmp_path, monkeypatch):
+    stuck_roots(tmp_path)
+    bodies = counted_bodies(monkeypatch)
+    steady(tmp_path)  # the first settle mints readiness (a write): its rest lands next pass
+    steady(tmp_path)
+    rests = marks(tmp_path)
+    assert rests["synthesis_recovery:paused-1"]["waits_on"] == ["owner_resume"]
+    assert rests["synthesis_recovery:unadopted-1"]["waits_on"] == ["child_files"]
+    before, bodies[:] = revision(tmp_path), []
+    steady(tmp_path)
+    assert bodies == [] and revision(tmp_path) == before
+    assert {"paused-1", "unadopted-1"} <= set(o.members(tmp_path, "synthesis"))  # the debt stays
+    write_task_result(tmp_path, "unadopted-1", "failed", note="a new fact")
+    bodies[:] = []
+    steady(tmp_path)
+    assert set(bodies) == {"unadopted-1"}  # back exactly once
+    bodies[:] = []
+    steady(tmp_path)
+    assert bodies == []
+
+
+def test_startup_still_visits_a_paused_late_phase(tmp_path, monkeypatch):
+    from ouroboros import post_task_synthesis
+    from supervisor import owner_pause_control
+
+    stuck_roots(tmp_path)
+    steady(tmp_path)
+    steady(tmp_path)
+    calls = []
+    monkeypatch.setattr(post_task_synthesis, "revoke_late_phase_grant", lambda root, tid, **kw: calls.append(tid))
+    monkeypatch.setattr(owner_pause_control, "retain_late_phase_latch", lambda root, tid: calls.append(tid))
+    bodies = counted_bodies(monkeypatch)
+    for _restart in range(2):
+        pipeline.recover_pending_root_post_task_synthesis(tmp_path)
+    assert calls == ["paused-1"] * 4  # every boot restores the in-memory latch
+    assert "unadopted-1" not in bodies  # a projection rest holds across a restart
+
+
+def test_projection_reconcile_rests_on_its_cause_and_the_registry_wakes_only_delivery_waits(tmp_path, monkeypatch):
+    stuck_roots(tmp_path)
+    child = tmp_path / "state" / "headless_tasks" / "adopted-1" / "data"
+    write_task_result(tmp_path, "adopted-1", "completed", root_task_id="adopted-1", result="r", drive_root=str(child),
+                      headless_child_drive_root=str(child),
+                      child_ref_promotion={"schema_version": 1, "status": "complete"})
+    registry = tmp_path / "state" / "terminal_deliveries.json"
+    registry.write_text(json.dumps({"schema_version": 1, "delivered": [], "pending": {
+        "final:adopted-1:0123456789abcdef": {"task_id": "adopted-1", "chat_id": 1, "text": "answer"}}}),
+        encoding="utf-8")
+    terminal_projection.reconcile_terminal_projections(tmp_path)
+    terminal_projection.reconcile_terminal_projections(tmp_path)
+    rests = marks(tmp_path)
+    assert rests["terminal_projection:unadopted-1"]["waits_on"] == ["child_files"]
+    assert rests["terminal_projection:adopted-1"]["waits_on"] == ["terminal_delivery"]
+    bodies = counted_bodies(monkeypatch)
+    terminal_projection.reconcile_terminal_projections(tmp_path)
+    assert bodies == []
+    registry.write_text(json.dumps({"schema_version": 1, "delivered": [], "pending": {}}) + " ", encoding="utf-8")
+    terminal_projection.reconcile_terminal_projections(tmp_path)
+    assert "adopted-1" in bodies and "unadopted-1" not in bodies  # only the delivery wait woke
+
+
+def test_a_projection_deferred_on_its_child_files_never_reads_the_delivery_registry(tmp_path, monkeypatch):
+    stuck_roots(tmp_path)
+    monkeypatch.setattr(terminal_projection, "_delivery_disposition",
+                        lambda *a: pytest.fail("registry read before the row's own facts"))
+    waits = {}
+    terminal_projection.settle_terminal_projection(tmp_path, "unadopted-1", waits=waits)
+    assert waits == {"on": "child_files"}

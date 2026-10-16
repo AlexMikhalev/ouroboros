@@ -561,18 +561,53 @@ def clear_terminal_projection_obligation(root: Any, tid: str, expected: dict, di
     return cleared
 
 
+def _deferral(root: Any, tid: str, task: dict | None, stored: dict) -> str:
+    """What keeps a recorded readiness from publishing now, '' when nothing does: the
+    canonical row's own facts first, the delivery registry only once they all hold."""
+    if _open(stored):
+        return "synthesis_open"
+    if not _settled(stored):
+        return "not_settled"
+    if not _files_ready(root, tid, {**(task or {}), **stored}):
+        return "child_files"
+    return "terminal_delivery" if _delivery_disposition(root, tid).get("state") == "owed" else ""
+
+
+def delivery_registry_stamp(root: Any) -> list | None:
+    """The identity of ``supervisor.terminal_delivery``'s registry file, ``None`` when absent: every
+    write replaces the file (``update_json_locked``), so an equal stamp is an unchanged registry."""
+    try:
+        info = (pathlib.Path(root) / "state" / "terminal_deliveries.json").stat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return ["unreadable", exc.errno]
+    return [info.st_ino, info.st_size, info.st_mtime_ns]
+
+
+def rest_deferral(rest: Any, task_id: str, waits: dict) -> None:
+    """Rest a projection member on the cause ``settle_terminal_projection`` recorded in WAITS
+    (``obligations.DutyRest``); a deferral without one (a held lock, an owed Main delivery this
+    call re-queued, a failure) is examined again by the next pass."""
+    if rest is not None and waits.get("on"):
+        rest.wait(task_id, waits["on"], inputs=("terminal_deliveries",) if waits["on"] == "terminal_delivery" else ())
+
+
 def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | None = None,
                                event: dict | None = None, event_queue: Any = None,
-                               prepare: bool = True) -> str:
+                               prepare: bool = True, waits: dict | None = None) -> str:
     """Run both halves of a root's owed terminal projection once its conditions hold.
 
     ``prepare=False`` is the delivery lanes' word (a delivery acknowledged or given
     up on): readiness is task_done's to mint, so the settle only proceeds when an
-    earlier terminal transition already recorded it.
+    earlier terminal transition already recorded it. ``waits`` receives ``on``, the
+    cause of a deferral only a change of the row (or of the delivery registry, for
+    ``terminal_delivery``) can lift, for a duty's rest (``rest_deferral``).
     """
     from ouroboros import project_dialogue as dialogue
 
     tid = str(task_id or "").strip()
+    waits = {} if waits is None else waits
     if not tid:
         return SETTLEMENT_NONE
     try:
@@ -585,10 +620,11 @@ def settle_terminal_projection(drive_root: Any, task_id: str, *, task: dict | No
                 stored, minted_now = load_task_result(drive_root, tid, strict=True) or {}, False
             if (not isinstance(stored.get("canonical_terminal_projection_ready"), dict)
                     or is_reconciled_presence_placeholder(stored)):  # readiness an earlier release recorded
+                waits["on"] = "nothing_owed"
                 return SETTLEMENT_NONE
-            if (_open(stored) or not _settled(stored)
-                    or _delivery_disposition(drive_root, tid).get("state") == "owed"
-                    or not _files_ready(drive_root, tid, {**(task or {}), **stored})):
+            cause = _deferral(drive_root, tid, task, stored)
+            if cause:
+                waits["on"] = cause
                 return SETTLEMENT_DEFERRED
             _append_project(drive_root, tid, task or {}, event or {}, prepare=False, minted_now=minted_now)
             # IO may have advanced canonical state. Render Main from the NEW
@@ -643,17 +679,25 @@ def reconcile_terminal_projections(drive_root: Any) -> int:
 
     Never re-enter synthesis or infer debt from historical terminal status. Read
     each authority strictly: one bad sibling must not stall others or quarantine
-    unknown bytes via a tolerant scan.
+    unknown bytes via a tolerant scan. A member whose deferral has a recorded cause
+    rests (``rest_deferral``) until its row or the delivery registry changes.
     """
-    from ouroboros.obligations import result_rows
+    from ouroboros.obligations import DutyRest, result_rows
 
+    rest = DutyRest(drive_root, "terminal_projection", name="terminal_projection",
+                    inputs={"terminal_deliveries": delivery_registry_stamp(drive_root)})
     settled = 0
-    for row in result_rows(drive_root, "terminal_projection"):
+    for row in result_rows(drive_root, "terminal_projection", ids=rest.examine):
+        waits = {"on": "nothing_owed"}
         try:
             if terminal_projection_owed(row["task_id"], row):
-                settled += settle_terminal_projection(drive_root, row["task_id"]) == SETTLEMENT_SETTLED
+                waits = {}
+                settled += settle_terminal_projection(drive_root, row["task_id"], waits=waits) == SETTLEMENT_SETTLED
         except Exception:
+            waits = {}
             log.warning("Terminal projection reconciliation deferred for %s", row["task_id"], exc_info=True)
+        rest_deferral(rest, row["task_id"], waits)
+    rest.commit()
     return settled
 
 
