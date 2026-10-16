@@ -617,7 +617,9 @@ class _LiveCall:
                 continue
             self.cancelled_items.add(item)
             spoken.interrupted = True
-            await self._send(Interrupt(item_id=item, played_ms=played))
+            # A playback mark can run a few ms past the audio delivered so far; the
+            # provider refuses a cut beyond the item's audio, so the cut stays inside it.
+            await self._send(Interrupt(item_id=item, played_ms=min(played, int(spoken.audio_ms))))
             if spoken.final_at:
                 self._write_spoken_row(item)
 

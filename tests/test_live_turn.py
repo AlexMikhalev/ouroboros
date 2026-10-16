@@ -508,13 +508,14 @@ def test_a_spoken_row_is_written_as_generated_when_no_playback_ack_arrives(harne
 def test_barge_in_flushes_the_peers_and_interrupts_the_item(harness, monkeypatch, tmp_path):
     h = harness()
     engine = h.start()
-    engine.push(AudioOut(pcm=b"\x01" * 10, rate=24000, item_id="a1"))
+    engine.push(AudioOut(pcm=bytes(9600), rate=24000, item_id="a1"))   # 200 ms delivered
     assert _wait_for(lambda: len(h.hub.played) == 1)
-    h.hub.control("played", item_id="a1", played_ms=400)
+    h.hub.control("played", item_id="a1", played_ms=205)   # the mark runs past the audio
     assert _wait_for(lambda: engine.sent_of(PlayedAudio))
     engine.push(SpeechStarted())
     assert _wait_for(lambda: engine.sent_of(Interrupt))
-    assert h.hub.flushes == 1 and engine.sent_of(Interrupt) == [Interrupt(item_id="a1", played_ms=400)]
+    # The cut stays inside the delivered audio; the provider refuses one beyond it.
+    assert h.hub.flushes == 1 and engine.sent_of(Interrupt) == [Interrupt(item_id="a1", played_ms=200)]
     engine.push(AudioOut(pcm=b"\x02" * 10, rate=24000, item_id="a1"))   # late audio of the cut item
     engine.push(Caption(speaker=SPEAKER_OUROBOROS, text="I was say", final=True, item_id="a1"))
     assert _wait_for(lambda: len(h.progress) == 1)
