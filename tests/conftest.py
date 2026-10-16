@@ -1123,6 +1123,24 @@ def _isolate_workspace_executor_globals():
 
 
 @pytest.fixture(autouse=True)
+def _restore_supervisor_queue_refs():
+    """Undo a test's ``init_queue_refs`` rebinding of the supervisor queue's maps.
+
+    Fixtures bind private PENDING/RUNNING objects and rarely bind them back, so a
+    later test in the same worker read the earlier one's queue (a scheduled task
+    became an extra history read in an unrelated module).
+    """
+    try:
+        from supervisor import queue
+    except Exception:
+        yield
+        return
+    saved = (queue.PENDING, queue.RUNNING, queue.QUEUE_SEQ_COUNTER_REF)
+    yield
+    queue.PENDING, queue.RUNNING, queue.QUEUE_SEQ_COUNTER_REF = saved
+
+
+@pytest.fixture(autouse=True)
 def _isolate_repo_writer_gate():
     """Reset the process-global repo-writer admission latch between tests.
 
