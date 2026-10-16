@@ -73,8 +73,8 @@ def get_pricing(
     """Return pricing from the exact provider route's live catalog.
 
     Direct OpenAI/Anthropic/Google routes use the public LiteLLM catalog.
-    Other uncatalogued routes return an empty mapping. A cold/expired fetch is bounded to five
-    seconds; failures expose unknown pricing rather than a fabricated fallback.
+    Other uncatalogued routes return an empty mapping. A cold/expired fetch bounds its connect and
+    each read to five seconds; failures expose unknown pricing rather than a fabricated fallback.
     An exact OpenRouter model selects its endpoint-tagged tariff catalog lazily,
     sharing this cache's TTL and in-flight owner. It never fetches all endpoints.
     """

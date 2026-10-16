@@ -46,7 +46,7 @@ One row per `config.SETTINGS_DEFAULTS` key (defaults canonical in `settings_defa
 |-----|---------|-------------|
 | OPENROUTER_API_KEY | "" | OpenRouter credential |
 | OPENAI_API_KEY | "" | Official direct-OpenAI credential |
-| OPENAI_BASE_URL | "" | OpenAI base-URL override; legacy compatible endpoint (only with `OPENAI_API_KEY`) |
+| OPENAI_BASE_URL | "" | OpenAI base-URL override; legacy compatible endpoint (only with `OPENAI_API_KEY`); live calls still dial OpenAI |
 | OPENAI_COMPATIBLE_API_KEY | "" | OpenAI-compatible endpoint credential |
 | OPENAI_COMPATIBLE_BASE_URL | "" | OpenAI-compatible endpoint base URL; only with its own key (blank = no auth) |
 | GOOGLE_API_KEY | "" | Google AI (Gemini API) credential; used by the Gemini Live call engine |
