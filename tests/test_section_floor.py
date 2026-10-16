@@ -204,22 +204,24 @@ def test_runtime_keeps_scalars_authority_and_decisions_while_counting_observatio
     assert section.operative_view.endswith(ledger) and data == before
 
 
-def test_shared_understanding_keeps_authored_heading_and_first_paragraph_without_inference(tmp_path):
-    from ouroboros.knowledge import read_knowledge_note, resolve_knowledge_address, write_knowledge_note
+def test_shared_understanding_stays_whole_since_its_source_marks_no_operative_view(tmp_path):
+    from ouroboros.knowledge import resolve_knowledge_address, write_knowledge_note
 
     env, _memory = _make_env_and_memory(tmp_path)
-    orientation = "# Our orientation\n\nWe intend to understand the entire situation.\nThis paragraph stays exact.\n"
-    body = "\n## Later material\n\nWe commit to a lexical phrase that must not be extracted.\n" * 100
+    # The second paragraph is as much the authored orientation as the first.
+    orientation = ("# Our orientation\n\nWe intend to understand the entire situation.\n\n"
+                   "We commit to telling the owner before any irreversible step.\n")
+    body = "\n## Later material\n\nDetails that still belong to the shared understanding.\n" * 100
     write_knowledge_note(resolve_knowledge_address(env.drive_root, "overview", "global"), orientation + body)
     section = context.build_knowledge_sections(env)[0]
-    assert isinstance(section, HostSection)
-    assert section.full_text.endswith(orientation + body)
-    assert orientation.strip() in section.operative_view
-    assert "lexical phrase" not in section.operative_view
-    # Without a paragraph (or a shorter address), the authored source stays whole.
-    address = resolve_knowledge_address(env.drive_root, "overview", "global")
-    assert write_knowledge_note(address, "# Only a heading\n", expected_revision=read_knowledge_note(address).revision).ok
-    assert context.build_knowledge_sections(env)[0].operative_view is None
+    assert isinstance(section, HostSection) and section.section_id == "shared_understanding"
+    assert section.full_text.endswith(orientation + body) and section.operative_view is None
+    # Under physical window pressure the floor addresses other host sections, never this one.
+    addressed, receipts = section_floor.fit_host_sections(
+        [section, _service("runtime", 20_000)], root=str(tmp_path), task_id="task-1",
+        measure=lambda _addressed: 10 ** 6, window_tokens=50_000, known_window=True,
+        output_reserve=RESERVE, ratio=1.0)
+    assert set(addressed) == {"runtime"} and [row["section_id"] for row in receipts] == ["runtime"]
 
 
 def test_health_keeps_every_nonpassing_line_and_counts_passes(tmp_path, monkeypatch):
@@ -247,7 +249,7 @@ def test_preparation_with_caller_window_fits_large_sections_at_128k_and_records_
 
     env, memory = _make_env_and_memory(tmp_path)
     orientation = "# Our orientation\n\nKeep the authored orientation intact.\n"
-    body = "\nEvidence and long authored background. " * 17_000
+    body = "\nEvidence and long authored background. " * 1_000
     write_knowledge_note(resolve_knowledge_address(env.drive_root, "overview", "global"), orientation + body)
     def observations(_env, found):
         found[:] = ["OK: detailed passing check " + "evidence " * 1_000 for _ in range(90)]
@@ -271,11 +273,12 @@ def test_preparation_with_caller_window_fits_large_sections_at_128k_and_records_
     assert plan.initial_mode == "max" and plan.preferred_mode == "max"
     assert plan.max_projection.estimated_tokens + RESERVE <= 128_000
     text = _text(plan)
-    assert "CRITICAL: preserve this failing check" in text and orientation.strip() in text
+    assert "CRITICAL: preserve this failing check" in text and orientation + body in text
     assert "Preserve ABI" in text and "source read" in text and "## Task Contract Discipline" in text
     assert messages[1]["content"] == task["text"]
     facts = _host_facts(plan)
-    assert {row["section_id"] for row in facts} >= {"health_invariants", "runtime", "shared_understanding"}
+    assert {row["section_id"] for row in facts} >= {"health_invariants", "runtime"}
+    assert "shared_understanding" not in {row["section_id"] for row in facts}
     assert cap["memory_view"]["host_sections_addressed"] == facts == ctx.memory_view_facts["host_sections_addressed"]
     event = [json.loads(line) for line in (env.drive_root / "logs/events.jsonl").read_text().splitlines()
              if json.loads(line).get("type") == "context_memory_view"][-1]

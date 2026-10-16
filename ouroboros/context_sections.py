@@ -54,14 +54,9 @@ def build_knowledge_sections(
         if overview_text.strip():
             reader = f"knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global')"
             heading = f"## Shared understanding\n\nSource: {reader}.\n\n"
-            orientation = None
-            if overview.source and overview.source.paragraphs:
-                # Preserve authored orientation by source range, never infer
-                # commitments or importance from the words of the body.
-                source = overview.source
-                end = source.paragraphs[0].end_byte
-                orientation = heading + source.raw[source.body_span.start_byte:end].decode("utf-8")
-            sections.append(HostSection("shared_understanding", heading + overview_text, orientation, reader))
+            # The whole authored orientation stays inline: the overview marks no complete
+            # operative view, and no structural slice of it (a first paragraph) is one.
+            sections.append(HostSection("shared_understanding", heading + overview_text, reader=reader))
         else:
             sections.append(_SHARED_UNDERSTANDING_GAP)  # present but empty is still unauthored
     except FileNotFoundError:
