@@ -220,6 +220,28 @@ def invocation(root, invocation_id: str, request_facts: Callable) -> Optional[Di
     return None
 
 
+_OPERATION_REQUESTS = (  # the START_REQUESTED event each kind of invocation row keeps
+    "SELECT json_extract(facts,'$.request.invocation_id') AS iid, json_extract(facts,'$.request.ts') AS ts "
+    "FROM obligations WHERE set_name IN ('custody_open','custody_refused') "
+    "AND json_extract(facts,'$.request.operation_id')=? AND json_extract(facts,'$.request.slot_id')=?",
+    "SELECT invocation_id AS iid, json_extract(facts,'$.request_event.ts') AS ts FROM custody_runs "
+    "WHERE invocation_id<>'' AND json_extract(facts,'$.request_event.operation_id')=? "
+    "AND json_extract(facts,'$.request_event.slot_id')=?",
+)
+
+
+def operation_invocation(root, operation_id: str, slot_id: str) -> str:
+    """The invocation a review operation's slot requested ("" when none is on record): the store's
+    pending, refused or bound row whose START_REQUESTED names that operation and slot, the earliest
+    request first. A miss proves nothing about the wire; the caller keeps the outcome unknown."""
+    if not operation_id:
+        return ""
+    with store.open_store(root, write=False) as txn:
+        found = [(str(record["ts"] or ""), str(record["iid"] or "")) for query in _OPERATION_REQUESTS
+                 for record in txn.conn.execute(query, (operation_id, slot_id)).fetchall()]
+    return min(found)[1] if found else ""
+
+
 def unreadable(root) -> bool:
     """Whether the store cannot answer custody (the ``custody_log_unreadable`` of the store era)."""
     try:

@@ -1052,18 +1052,15 @@ def _row_actor(slot: Any, operation_id: str, row: Optional[dict], *, state: str,
 
 
 def _invocation_for_operation(root: Any, slot: Any, operation_id: str, row: dict) -> Optional[Dict[str, Any]]:
-    """The durable delegated invocation this operation requested, if one is on record."""
+    """The durable delegated invocation this operation requested, if one is on record: the
+    store's custody rows (P13), never a replay of the whole retained event chain."""
     from ouroboros import delegate_custody as custody
+    from ouroboros.delegate_custody_current import operation_invocation
 
     token = str(row.get("pending_invocation_id") or (row.get("usage") or {}).get("pending_invocation_id")
-                or (row.get("recovery_binding") or {}).get("pending_invocation_id") or "")
-    rows = list(custody.custody_rows(root))
-    if not token:
-        token = next((str(item.get("invocation_id") or "") for item in rows
-                      if item.get("type") == custody.START_REQUESTED
-                      and str(item.get("operation_id") or "") == operation_id
-                      and str(item.get("slot_id") or "") == str(slot.slot_id)), "")
-    record = custody.invocation_record(root, token, rows=rows) if token else None
+                or (row.get("recovery_binding") or {}).get("pending_invocation_id")
+                or operation_invocation(root, operation_id, str(slot.slot_id)))
+    record = custody.invocation_record(root, token) if token else None
     return {**record, "invocation_id": token} if record is not None else None
 
 
