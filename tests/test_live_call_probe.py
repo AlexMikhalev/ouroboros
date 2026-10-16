@@ -186,3 +186,25 @@ def test_fixture_reuse_requires_matching_text_and_retains_provenance(tmp_path):
     probe.write_json(source / "input-tool.json", {"text": "different request"})
     with pytest.raises(ValueError, match="does not match"):
         probe.speech_fixture(output, "tool", "unused", str(source))
+
+
+def test_owner_microphone_keeps_sending_quiet_frames_between_utterances(tmp_path):
+    async def run():
+        hub = LiveCallHub(CallSpec("call", 1, "openai", "test"))
+        evidence = probe.Evidence(tmp_path)
+        peer = probe.OwnerPeer(hub, evidence)
+        evidence.note("Ready")
+        pump = asyncio.create_task(peer.pump())
+        received = bytearray()
+        try:
+            async def collect():
+                while len(received) < 3 * probe.FRAME_BYTES:
+                    event = await asyncio.to_thread(hub.next_event, .025)
+                    if isinstance(event, PeerAudio):
+                        received.extend(event.pcm)
+            await asyncio.wait_for(collect(), 3)
+            assert not any(received) and not evidence.of("speech_start")
+        finally:
+            hub.close("test_done")
+            await pump
+    asyncio.run(run())

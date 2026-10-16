@@ -521,6 +521,22 @@ def test_barge_in_after_final_caption_retains_playback_cut(harness):
     assert len(h.progress) == 1
 
 
+def test_barge_in_truncates_all_unplayed_items_of_a_response(harness):
+    h = harness()
+    engine = h.start()
+    for item in ("commentary", "answer"):
+        engine.push(AudioOut(bytes(48000 * 3), 24000, item))
+        engine.push(Caption(SPEAKER_OUROBOROS, item, True, item))
+    h.hub.control("played", item_id="commentary", played_ms=1000)
+    assert _wait_for(lambda: engine.sent_of(PlayedAudio))
+    engine.push(SpeechStarted())
+    assert _wait_for(lambda: len(h.progress) == 2)
+    assert {(c.item_id, c.played_ms) for c in engine.sent_of(Interrupt)} == {("commentary", 1000), ("answer", 0)}
+    assert all(p[1]["_progress_meta_override"]["spoken"]["status"] == "interrupted" for p in h.progress)
+    h.stop()
+    h.finish()
+
+
 # --- tools -----------------------------------------------------------------------
 
 

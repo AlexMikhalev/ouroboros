@@ -256,6 +256,10 @@ class OpenAIRealtimeEngine(RealtimeTransport):
             elif code == "conversation_already_has_active_response":
                 self._response_requested = False
                 self._need_response = True
+            elif code == "response_cancel_not_active":
+                # Native VAD may cancel just before the host's playback flush.
+                # Cancellation is idempotent; response.done still owns usage.
+                return
             else:
                 # The instruction field has its own physical limit, separate
                 # from the model window. Retain only measured numbers so the

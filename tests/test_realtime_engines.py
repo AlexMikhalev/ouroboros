@@ -131,6 +131,18 @@ async def test_recorded_instruction_refusal_retains_only_capacity_evidence(valid
         assert event.kind == "provider"
 
 
+@run_async
+async def test_native_vad_cancel_racing_host_interrupt_keeps_session_open():
+    engine, connection, events, collector = await opened("openai")
+    socket = connection.sockets[0]
+    await feed(engine, socket, {"type": "error", "error": {"type": "invalid_request_error",
+        "code": "response_cancel_not_active", "message": "Cancellation failed: no active response found", "param": None}})
+    assert not socket.closed and not selected(events, EngineError)
+    await engine.send(ContextItem("Continue the call", "owner_mailbox"))
+    assert socket.sent[-1]["item"]["content"][0]["text"] == "[owner_mailbox] Continue the call"
+    await finished(engine, collector)
+
+
 @pytest.mark.parametrize("name", ["text_tool_exchange.json", "audio_tool_exchange.json", "adapter_audio_exchange.json"])
 @run_async
 async def test_recorded_openai_exchange(name):

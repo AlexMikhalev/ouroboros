@@ -479,17 +479,18 @@ class Probe:
                 await self.wait(lambda: bool(self.evidence.of("peer_audio", since)))
                 await asyncio.sleep(2)
                 cut = self.evidence.note("barge_in")["at"]
-                interrupted_item = self.peer.item
                 await self.peer.speak(fixtures["interrupt"], "interrupt")
-                await self.wait(lambda: any(e.get("speaker") == "ouroboros" and e.get("final")
-                                           and e.get("item_id") != interrupted_item
-                                           for e in self.evidence.of("Caption", cut)))
+                def continued_items():
+                    starts = {e.get("response_id") for e in self.evidence.of("ResponseStarted", cut)}
+                    return {e.get("item_id") for e in self.evidence.of("ResponseDone", cut)
+                            if e.get("response_id") in starts and e.get("status") == "completed"}
+                await self.wait(lambda: bool(continued_items()))
                 await self.wait(lambda: not self.peer.pending)
                 commands = [e for e in self.evidence.of("command", cut) if e["type"] == "Interrupt"]
                 flushes = [e for e in self.evidence.of("peer_control", cut) if e["message"]["type"] == "flush"]
                 rows = json_rows(self.root / "data/logs/chat.jsonl")
                 interrupted = [r for r in rows if (r.get("spoken") or {}).get("status") == "interrupted"]
-                continued = [e for e in self.evidence.of("peer_audio", cut) if e["item_id"] != interrupted_item]
+                continued = [e for e in self.evidence.of("peer_audio", cut) if e["item_id"] in continued_items()]
                 truncated = [e for e in self.evidence.of("wire_received", cut)
                              if e["payload"].get("type") == "conversation.item.truncated"]
                 self.verdict("interruption", bool(commands and flushes and interrupted and

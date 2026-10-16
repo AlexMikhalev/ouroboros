@@ -509,8 +509,9 @@ class _LiveCall:
 
     async def _barge_in(self) -> None:
         self.hub.flush()
-        item = self.speaking_item
-        if item and item in self.spoken:
+        # A response can have several audio items queued ahead of playback.
+        # Flush/truncate every unfinished item, including an earlier commentary.
+        for item in tuple(self.spoken.keys() - self.cancelled_items):
             self.cancelled_items.add(item)
             self.spoken[item].interrupted = True
             await self._send(Interrupt(item_id=item, played_ms=self.played_ms.get(item, 0)))
