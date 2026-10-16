@@ -649,7 +649,9 @@ def main(argv=None) -> int:
     helper = runpy.run_path(str(REPO / "ouroboros/test_environment.py"))
     env = helper["isolated_environment"](root, REPO)
     env = {k: v for k, v in env.items() if not k.startswith("CLAUDEXOR_")}
-    command = [sys.executable, str(Path(__file__).resolve()), *(sys.argv[1:] if argv is None else argv), "--isolated-child"]
+    # The child runs isolated (its own data root), so the settings source resolved here travels explicitly.
+    command = [sys.executable, str(Path(__file__).resolve()), *(sys.argv[1:] if argv is None else argv),
+               "--settings-source", str(Path(args.settings_source).resolve()), "--isolated-child"]
     try:
         with (root / "console.log").open("w") as stream:
             code = subprocess.call(command, cwd=REPO, env=env, stdout=stream, stderr=subprocess.STDOUT)

@@ -208,3 +208,16 @@ def test_owner_microphone_keeps_sending_quiet_frames_between_utterances(tmp_path
             hub.close("test_done")
             await pump
     asyncio.run(run())
+
+
+def test_the_isolated_child_receives_the_settings_the_parent_resolved(tmp_path, monkeypatch):
+    install = tmp_path / "install-data"
+    install.mkdir()
+    monkeypatch.setenv("OUROBOROS_DATA_DIR", str(install))
+    started: list = []
+    monkeypatch.setattr(probe, "daemon_list", lambda: [])
+    monkeypatch.setattr(probe.subprocess, "call", lambda command, **kwargs: started.append((command, kwargs["env"])) or 0)
+    assert probe.main(["--output-dir", str(tmp_path / "run")]) == 0
+    (command, env), = started
+    assert command[command.index("--settings-source") + 1] == str((install / "settings.json").resolve())
+    assert command[-1] == "--isolated-child" and env["OUROBOROS_DATA_DIR"] != str(install)
