@@ -33,6 +33,7 @@ import pathlib
 import queue
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -145,7 +146,10 @@ class _LiveCall:
         self.response_open = False
         self.budget_error: Optional[BudgetExceeded] = None
         self.failure: Optional[Tuple[str, str]] = None
-        self.attempts: Dict[str, Any] = {}
+        self.attempts: Dict[str, Future] = {}
+        # Ledger writes run in order on one thread beside the call's loop: a busy store
+        # never stalls the audio, and each reservation still precedes its settlement.
+        self.records = ThreadPoolExecutor(max_workers=1, thread_name_prefix="call-ledger")
         self.speaking_item = ""
         self.cancelled_items: set = set()
         self.played_ms: Dict[str, int] = {}
@@ -193,6 +197,7 @@ class _LiveCall:
             asyncio.run(self._main())
         finally:
             self.tools_lane.shutdown()
+            self.records.shutdown(wait=True)  # every ledger write lands before the terminal
             if self._reader is not None:
                 self._reader.join(MAILBOX_TICK_S * 4)  # it leaves within one hub wait of the stop flag
         if self.budget_error is not None:
@@ -276,8 +281,7 @@ class _LiveCall:
         for item_id in list(self.spoken):
             self._write_spoken_row(item_id)
         for key in list(self.attempts):
-            attempt = self.attempts.pop(key)
-            self._settle_safely(lambda a=attempt: _ledger().abandon_live_response(a, reason=self.close_reason or "closed"))
+            self._abandon(self.attempts.pop(key), self.close_reason or "closed")
         try:
             self.fanout.flush()
         except Exception:
@@ -393,8 +397,7 @@ class _LiveCall:
             except Exception:
                 log.debug("lost engine close failed", exc_info=True)
         for key in list(self.attempts):
-            attempt = self.attempts.pop(key)
-            self._settle_safely(lambda a=attempt: _ledger().abandon_live_response(a, reason=reason))
+            self._abandon(self.attempts.pop(key), reason)
         self.response_open = False
         handle = self.resume_handle if resume else ""
         for attempt_no in range(RECONNECT_ATTEMPTS):
@@ -577,7 +580,7 @@ class _LiveCall:
             if self.fanout.pending:
                 self.fanout.flush()
         elif isinstance(event, TranscriptionUsage):
-            self._settle_safely(lambda: _ledger().record_transcription(
+            self.records.submit(self._settle_safely, lambda: _ledger().record_transcription(
                 engine=self.spec.engine, model=event.model, call_id=self.spec.call_id, usage=dict(event.usage),
                 raw_usage=dict(event.raw_usage), task_id=self.task_id, drive_root=self.drive_root))
         elif isinstance(event, ResumeCheckpoint):
@@ -720,39 +723,66 @@ class _LiveCall:
     # ---- the ledger ----------------------------------------------------------------
 
     def _attempt_for(self, key: str, *, usage: Optional[Dict[str, Any]] = None,
-                     raw_usage: Optional[Dict[str, Any]] = None, status: str = "") -> Any:
+                     raw_usage: Optional[Dict[str, Any]] = None, status: str = "") -> Future:
         if key not in self.attempts:
             mode = str(getattr(self.ctx, "active_context_mode", "") or "nano")
-            try:
-                self.attempts[key] = _ledger().reserve_live_response(
-                    engine=self.spec.engine, model=self.spec.model, call_id=self.spec.call_id, response_key=key,
-                    task_id=self.task_id, rendered_mode=mode, drive_root=self.drive_root)
-            except BudgetExceeded as exc:
-                # The provider already started (or finished) this response: the budget
-                # refuses the call, not the provider's charge, which stays on the ledger.
-                reason = str(exc)
-                self._settle_safely(lambda: _ledger().record_refused_live_response(
-                    engine=self.spec.engine, model=self.spec.model, call_id=self.spec.call_id, response_key=key,
-                    task_id=self.task_id, rendered_mode=mode, drive_root=self.drive_root, reason=reason,
-                    usage=dict(usage or {}), raw_usage=dict(raw_usage or {}), status=status or "budget_refused"))
-                raise
+            self.attempts[key] = self.records.submit(self._reserve, key, mode, dict(usage or {}),
+                                                     dict(raw_usage or {}), status)
+            self.attempts[key].add_done_callback(self._on_reserved)
         return self.attempts[key]
+
+    def _reserve(self, key: str, mode: str, usage: Dict[str, Any], raw_usage: Dict[str, Any], status: str) -> Any:
+        try:
+            return _ledger().reserve_live_response(
+                engine=self.spec.engine, model=self.spec.model, call_id=self.spec.call_id, response_key=key,
+                task_id=self.task_id, rendered_mode=mode, drive_root=self.drive_root)
+        except BudgetExceeded as exc:
+            # The provider already started (or finished) this response: the budget
+            # refuses the call, not the provider's charge, which stays on the ledger.
+            reason = str(exc)
+            self._settle_safely(lambda: _ledger().record_refused_live_response(
+                engine=self.spec.engine, model=self.spec.model, call_id=self.spec.call_id, response_key=key,
+                task_id=self.task_id, rendered_mode=mode, drive_root=self.drive_root, reason=reason,
+                usage=usage, raw_usage=raw_usage, status=status or "budget_refused"))
+            raise
+
+    def _on_reserved(self, attempt: Future) -> None:
+        exc = attempt.exception()
+        if isinstance(exc, BudgetExceeded):
+            try:
+                self._loop.call_soon_threadsafe(self._refuse_budget, exc)
+            except (AttributeError, RuntimeError):  # the loop already ended: run() raises it
+                self.budget_error = self.budget_error or exc
+        elif exc is not None:
+            log.warning("live call %s could not reserve a response", self.spec.call_id, exc_info=exc)
+
+    def _refuse_budget(self, exc: BudgetExceeded) -> None:
+        self.budget_error = self.budget_error or exc
+        self._begin_close("budget_exceeded")
+
+    def _after_reservation(self, attempt: Future, action: Callable[[Any], Any]) -> None:
+        """Queue ``action(reservation)`` behind the reservation; a refused one has nothing to settle."""
+        def run() -> None:
+            try:
+                reserved = attempt.result()
+            except Exception:
+                return
+            self._settle_safely(lambda: action(reserved))
+        self.records.submit(run)
+
+    def _abandon(self, attempt: Future, reason: str) -> None:
+        self._after_reservation(attempt, lambda reserved: _ledger().abandon_live_response(reserved, reason=reason))
 
     def _settle(self, event: ResponseDone) -> None:
         key = event.response_id or event.item_id
-        try:
-            attempt = self._attempt_for(key, usage=dict(event.usage), raw_usage=dict(event.raw_usage), status=event.status)
-        except BudgetExceeded:
-            raise
-        except Exception:
-            log.warning("live call %s could not reserve response %s", self.spec.call_id, key, exc_info=True)
-            return
+        attempt = self._attempt_for(key, usage=dict(event.usage), raw_usage=dict(event.raw_usage), status=event.status)
         self.attempts.pop(key, None)
         self.usage["live_responses"] += 1
         for name in USAGE_KEYS:
             self.usage["live_usage"][name] += int(event.usage.get(name) or 0)
-        self._settle_safely(lambda: _ledger().settle_live_response(
-            attempt, usage=dict(event.usage), raw_usage=dict(event.raw_usage), status=event.status))
+        usage, raw_usage, status = dict(event.usage), dict(event.raw_usage), event.status
+        self._after_reservation(attempt, lambda reserved: _ledger().settle_live_response(
+            reserved, usage=usage, raw_usage=raw_usage, status=status))
 
     def _settle_safely(self, action: Callable[[], Any]) -> None:
         try:
@@ -769,24 +799,25 @@ class _LiveCall:
         scratch: List[Dict[str, Any]] = []
         controls = _drain_incoming_messages(scratch, self.incoming, self.drive_root, self.task_id, self.event_queue,
                                             self.owner_msg_seen, owner_ctx=self.ctx, defer_content_ack=True)
+        if controls.get("finalize_now"):
+            self._begin_close("owner_stop")  # a Stop never waits behind the context sends below
         for msg in scratch:
             self.messages.append({**msg, "_call_row": True})
             item = ContextItem(text=text_of(msg.get("content")), source="mailbox")
-            if item.text.strip():
+            if item.text.strip() and not self.closing:
                 await self._send(item)
-        for item in self.rooms.drain():
-            await self._context(item)
-        if controls.get("hurry"):
-            await self._context(ContextItem(text="The owner pressed Hurry: finish what you are saying and wrap up.",
-                                            source="owner_control"))
+        if not self.closing:
+            for item in self.rooms.drain():
+                await self._context(item)
+            if controls.get("hurry"):
+                await self._context(ContextItem(text="The owner pressed Hurry: finish what you are saying and wrap up.",
+                                                source="owner_control"))
         # Content is acknowledged only once a live session holds it and the checkpoint
         # is written; while no session is live the entries wait (and are redelivered).
         pending_acks = bool(getattr(self.ctx, "_pending_content_acks", None))
-        if (scratch or controls or pending_acks) and self.engine is not None:
+        if (scratch or controls or pending_acks) and self.engine is not None and not self.closing:
             if self._checkpoint():
                 flush_content_acks(self.ctx)
-        if controls.get("finalize_now"):
-            self._begin_close("owner_stop")
 
     def _checkpoint(self) -> bool:
         """The call's durable state on its task row; content ACKs wait for this write."""

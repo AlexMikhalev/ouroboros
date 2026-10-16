@@ -19,7 +19,7 @@ from ouroboros.call_protocol import (
 from ouroboros.gateways.realtime_engine import (
     ENGINE_GOOGLE, ENGINE_OPENAI, SPEAKER_OUROBOROS, SPEAKER_OWNER,
     AudioIn, AudioOut, Caption, ContextItem, GoAway, Interrupt, PlayedAudio,
-    ResponseDone, SpeechStarted, ToolCall, ToolResult,
+    ResponseDone, ResponseStarted, SpeechStarted, ToolCall, ToolResult,
 )
 from ouroboros.usage_accounting import BudgetExceeded
 from tests import test_live_turn as base
@@ -223,6 +223,26 @@ def test_stop_during_the_connection_cancels_the_opening_and_closes_what_was_open
     assert (STATE_LIVE, "") not in h.hub.states and h.hub.closed == ["owner_stop"]
     assert h.ledger.reserved == [] and h.ledger.abandoned == []
 
+
+
+def test_a_stop_beside_typed_words_closes_without_waiting_for_their_send(harness, monkeypatch, tmp_path):
+    from ouroboros.owner_mailbox import KIND_FINALIZE_NOW, write_owner_message
+
+    original = FakeEngine.send
+
+    async def held_send(self, command):  # a transport waiting to be ready again holds this send
+        if isinstance(command, ContextItem) and command.source == "mailbox":
+            await asyncio.Event().wait()
+        await original(self, command)
+
+    monkeypatch.setattr(FakeEngine, "send", held_send)
+    assert write_owner_message(tmp_path, "one more thing", "t-call", msg_id="owner-typed-2")
+    assert write_owner_message(tmp_path, "stop", "t-call", msg_id="owner-stop", kind=KIND_FINALIZE_NOW)
+    h = harness()
+    engine = h.start()
+    text, usage, _trace = h.finish(timeout=10.0)
+    assert usage["live_call"]["ended"] == "owner_stop"
+    assert not [c for c in engine.sent_of(ContextItem) if c.source == "mailbox"]
 
 def test_joins_leaves_and_context_while_connecting_wait_for_the_live_session(harness, monkeypatch):
     _slow_opening(monkeypatch)
@@ -472,3 +492,26 @@ def test_an_estimate_above_the_smallest_projection_never_refuses_the_open(harnes
     h.stop()
     _, _usage, trace = h.finish()
     assert [(s["from"], s["to"]) for s in trace["live_context_prefit"]] == [("max", "low"), ("low", "nano")]
+
+
+def test_a_slow_ledger_write_never_holds_the_audio_and_settles_after_its_reservation(harness):
+    h = harness()
+    engine = h.start()
+    gate = threading.Event()
+    reserve = h.ledger.reserve_live_response
+
+    def slow_reserve(**fields):  # a store busy with another writer
+        gate.wait(5)
+        return reserve(**fields)
+
+    h.ledger.reserve_live_response = slow_reserve
+    engine.push(ResponseStarted(item_id="a1", response_id="r1"))
+    engine.push(AudioOut(bytes(4800), 24000, "a1"))
+    engine.push(ResponseDone(item_id="a1", status="completed", usage={"audio_output_tokens": 3}, response_id="r1"))
+    assert _wait_for(lambda: len(h.hub.played) == 1, timeout=2.0)  # the audio flows while the write waits
+    assert h.ledger.reserved == [] and h.ledger.settled == []
+    gate.set()
+    assert _wait_for(lambda: h.ledger.settled == [("r1", "completed", {"audio_output_tokens": 3})])
+    assert [attempt["key"] for attempt in h.ledger.reserved] == ["r1"]
+    h.stop()
+    h.finish()
