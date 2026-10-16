@@ -73,10 +73,11 @@ def settlement_fields(reservation, usage, cost_usd, cost_final, *, estimate_cost
         if quote:
             evidence["tariff_quote"] = copy.deepcopy(quote)
             normalized["price_source"] = f"litellm@{quote['fetched_at']}"
-    # The row's counters are a compatibility projection. Preserve the full usage
-    # beside them so new modalities and future provider fields remain inspectable.
-    evidence.setdefault("usage", copy.deepcopy({key: value for key, value in normalized.items()
-                                               if key != "cost_evidence"}))
+    # The row's counters are a projection of text usage. Usage they cannot carry
+    # (audio and image modalities) is preserved beside them, inspectable.
+    if has_nontext_usage(normalized):
+        evidence.setdefault("usage", copy.deepcopy({key: value for key, value in normalized.items()
+                                                   if key != "cost_evidence"}))
     return dict(
         cost_usd=cost,
         cost_final=bool(cost_final and cost is not None),

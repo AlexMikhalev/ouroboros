@@ -43,6 +43,19 @@ def catalog_fixture(tmp_path, monkeypatch):
     catalog._fetching.clear()
 
 
+
+def test_a_quote_keeps_the_tariff_and_memory_keeps_no_raw_catalog_text(catalog_fixture):
+    root, rows, response, _fetch = catalog_fixture
+    entry = dict(rows["gpt-realtime-2.1"], max_tokens=32000, supports_audio_input=True, mode="chat",
+                 search_context_cost_per_query={"search_context_size_low": 0.03})
+    response.content = json.dumps({**rows, "gpt-realtime-2.1": entry}).encode()
+    quote = catalog.get_catalog_quote("gpt-realtime-2.1", provider="openai")
+    assert quote["entry"] == {key: value for key, value in entry.items()
+                              if key not in {"max_tokens", "supports_audio_input", "mode"}}
+    (snapshot,) = catalog._cache.values()
+    assert "content" not in snapshot and snapshot["entries"]["gpt-realtime-2.1"] == entry
+    assert json.loads(json.loads((root / catalog.CACHE_REL).read_text())["content"])["gpt-realtime-2.1"] == entry
+
 def test_fetch_persists_timestamp_digest_and_exact_entry(catalog_fixture):
     root, rows, response, fetch = catalog_fixture
     quote = catalog.get_catalog_quote("openai::gpt-realtime-2.1", provider="openai")

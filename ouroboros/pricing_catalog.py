@@ -100,6 +100,11 @@ def _decode(snapshot: dict) -> dict:
     return {**snapshot, "entries": entries}
 
 
+def _resident(snapshot: dict) -> dict:
+    """The decoded entries stay in memory; the raw text lives only in the cache file."""
+    return {key: value for key, value in snapshot.items() if key != "content"}
+
+
 def _fetch_catalog() -> dict:
     import requests
     response = requests.get(CATALOG_URL, timeout=5.0, **requests_verify_kwargs())
@@ -115,7 +120,7 @@ def _snapshot(*, drive_root=None, allow_live_fetch: bool = True) -> dict | None:
         snapshot = _cache.get(path)
         if snapshot is None and path not in _retry_after:
             try:
-                snapshot = _decode(json.loads(path.read_text(encoding="utf-8")))
+                snapshot = _resident(_decode(json.loads(path.read_text(encoding="utf-8"))))
                 _cache[path] = snapshot
             except (OSError, ValueError, TypeError, KeyError, AttributeError):
                 snapshot = None
@@ -136,7 +141,7 @@ def _snapshot(*, drive_root=None, allow_live_fetch: bool = True) -> dict | None:
             _cache.pop(path, None)
             _retry_after[path] = time.time() + 30.0
         else:
-            _cache[path] = snapshot
+            snapshot = _cache[path] = _resident(snapshot)
             _retry_after.pop(path, None)
     return snapshot
 
@@ -151,7 +156,12 @@ def get_catalog_quote(model: str, *, provider: str, drive_root=None,
     if not isinstance(entry, dict) or entry.get("litellm_provider") != DIRECT_PROVIDERS[provider]:
         return None
     return {"url": CATALOG_URL, "fetched_at": snapshot["fetched_at"], "sha256": snapshot["sha256"],
-            "catalog_id": entry_id, "provider": provider, "entry": copy.deepcopy(entry)}
+            "catalog_id": entry_id, "provider": provider, "entry": _priced(entry)}
+
+
+def _priced(entry: Mapping) -> dict:
+    """The entry's tariff fields: a ledger row keeps the price it used, the digest names the rest."""
+    return copy.deepcopy({key: value for key, value in entry.items() if "cost" in key or key == "litellm_provider"})
 
 
 def rate(quote: Mapping | None, field: str, *, input_tokens: int = 0) -> float | None:
@@ -211,7 +221,7 @@ def get_text_pricing(*, provider: str, model: str = "", allow_live_fetch: bool =
             if (isinstance(entry, dict) and entry.get("litellm_provider") == DIRECT_PROVIDERS[provider]
                     and catalog_id(name, provider) == name):
                 quotes.append({key: snapshot[key] for key in ("url", "fetched_at", "sha256")} |
-                              {"catalog_id": name, "provider": provider, "entry": copy.deepcopy(entry)})
+                              {"catalog_id": name, "provider": provider, "entry": _priced(entry)})
     rows = {}
     for quote in quotes:
         name = quote["catalog_id"].removeprefix("gemini/") if provider == "google" else quote["catalog_id"]
