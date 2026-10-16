@@ -30,7 +30,6 @@ import math
 import os
 import pathlib
 import sqlite3
-import subprocess
 import sys
 from typing import Any, Callable, Dict, Iterable, List
 
@@ -42,7 +41,7 @@ pytestmark = pytest.mark.scale
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 K_SMALL = 1
-CHILD_TIMEOUT_SEC = 900  # a transport bound for one child; the launcher's --timeout stops the whole tree
+CHILD_TIMEOUT_SEC = 900  # a transport bound for one child, not a judgment about the boot
 LOCATIONS = ("root", *HISTORY)
 # Counted per location; lock files (``lock``) are left out: how often a lock is probed and retried
 # follows the contention between this process's threads at that instant, not the history.
@@ -72,19 +71,12 @@ def vm_allowance(large: int, small: int = K_SMALL) -> int:
 # ---- measurement -------------------------------------------------------------------------------
 
 def _child(module: str, args: List[str], env: Dict[str, str], log: pathlib.Path) -> None:
-    from ouroboros.platform_layer import kill_process_tree
+    """One fresh interpreter; a timeout or an interrupt stops its whole process tree (tests/group_run.py)."""
+    from tests.group_run import run_in_group
 
-    with open(log, "wb") as output:
-        proc = subprocess.Popen([sys.executable, "-m", module, *args], cwd=REPO, env=env, stdout=output,
-                                stderr=subprocess.STDOUT, start_new_session=True)
-        try:
-            code = proc.wait(timeout=CHILD_TIMEOUT_SEC)
-        except subprocess.TimeoutExpired:
-            kill_process_tree(proc)
-            proc.wait()
-            raise
-    if code != 0:
-        raise AssertionError(f"{module} exited {code}:\n{log.read_text(encoding='utf-8', errors='replace')[-6000:]}")
+    done = run_in_group([sys.executable, "-m", module, *args], timeout=CHILD_TIMEOUT_SEC, cwd=REPO, env=env)
+    log.write_text(done.stdout + done.stderr, encoding="utf-8")
+    assert done.returncode == 0, f"{module} exited {done.returncode}:\n{(done.stdout + done.stderr)[-6000:]}"
 
 
 def measure(base: pathlib.Path, k: int) -> Dict[str, Any]:
@@ -152,11 +144,13 @@ def assert_flat(measured: Dict[Any, Any], tag: str) -> None:
 
 # ---- B1-B5 and the room ------------------------------------------------------------------------
 
+PREVIEW = "the wave-A preview (wu1+wu2a+wu2b+wu3a+wu3b+wu4+wu6+wu7 heads of 17.10)"
+
 @pytest.mark.xfail(strict=True, reason=(
     "WU3a/WU2a: the lifespan runs projects_registry.reconcile_projects -> _backfill_thread_activity, which opens "
     "every archive chat/progress segment before /api/health can answer (k=1 -> k=30: open:archive 5 -> 92, "
     "read 0.18 -> 4.9 MB, json_loads 535 -> 13585). WU3a turns the scan into a one-time job; WU2a moves the step "
-    "after the yield."))
+    f"after the yield. Verified: XPASS on {PREVIEW}."))
 def test_b1_lifespan_before_health_is_flat(measured):
     assert_flat(measured, "B1")
     assert_flat(measured, "B1h")
@@ -164,8 +158,8 @@ def test_b1_lifespan_before_health_is_flat(measured):
 
 @pytest.mark.xfail(strict=True, reason=(
     "WU2a: today the whole boot runs before the HTTP yield; no boot coordinator thread exists yet, so "
-    "this boundary is not reached. With WU2a the steps that move after the yield must stay flat too "
-    "(WU3a removes the archive backfill from the projects step)."))
+    "this boundary is not reached. With WU2a the steps that move after the yield must stay flat too: on "
+    f"{PREVIEW} the coordinator still runs _backfill_thread_activity (open:archive 5 -> 92); WU3a removes it."))
 def test_b1_boot_steps_after_the_yield_are_flat(measured):
     assert_flat(measured, "B1c")
 
@@ -173,7 +167,7 @@ def test_b1_boot_steps_after_the_yield_are_flat(measured):
 @pytest.mark.xfail(strict=True, reason=(
     "WU2a: four child processes run before the first /api/health answer at every size: git x2 "
     "(extension_health.code_stamp during the extension reload) and ps x2 (record_service_binding of the host "
-    "service; macOS reads process identity through ps). WU2a moves both after the yield."))
+    f"service; macOS reads process identity through ps). WU2a moves both after the yield. Verified: XPASS on {PREVIEW}."))
 def test_b1_no_child_process_before_health(measured):
     for k in (K_SMALL, measured["large"]):
         assert measured[k]["popen_before_health"] == 0, (k, measured[k]["B1"]["names"])
@@ -183,14 +177,15 @@ def test_b1_no_child_process_before_health(measured):
     "WU1: the boot import re-verifies history before the chat bus exists: store_import.ensure_current_store "
     "stats every frozen task_results/*.json and opens and commits every child drive's store (k=1 -> k=30: "
     "connect 15 -> 131 (child stores 4 -> 91), statements 150 -> 2006, stat under state/headless_tasks "
-    "215 -> 4942, under task_results 12 -> 302). Verified: XPASS on wu1/startup 9f3a6d471."))
+    f"215 -> 4942, under task_results 12 -> 302). Verified: XPASS on wu1/startup 9f3a6d471 and on {PREVIEW}."))
 def test_b2_publication_to_dialogue_is_flat(measured):
     assert_flat(measured, "B2_dialogue")
 
 
 @pytest.mark.xfail(strict=True, reason=(
     "WU1: the same per-boot import walk precedes supervisor readiness (k=1 -> k=30: connect 70 -> 186, "
-    "statements 523 -> 2379, stat under state/headless_tasks 218 -> 4945). Verified: XPASS on wu1/startup 9f3a6d471."))
+    "statements 523 -> 2379, stat under state/headless_tasks 218 -> 4945). Verified: XPASS on wu1/startup 9f3a6d471 "
+    f"and on {PREVIEW}."))
 def test_b2_publication_to_supervisor_ready_is_flat(measured):
     assert_flat(measured, "B2_ready")
 
@@ -198,7 +193,7 @@ def test_b2_publication_to_supervisor_ready_is_flat(measured):
 @pytest.mark.xfail(strict=True, reason=(
     "WU3b: /api/state reads every owner_questions member one store connection each, including answered "
     "questions of settled tasks retained by quiz_needs_retention (k=1 -> k=30: connect 16 -> 74, "
-    "statements 105 -> 482, json_chars 17642 -> 51876)."))
+    f"statements 105 -> 482, json_chars 17642 -> 51876). Still red on {PREVIEW} (statements 133 -> 568)."))
 def test_b3_state_cold_is_flat(measured):
     assert_flat(measured, "B3")
 

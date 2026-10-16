@@ -40,7 +40,6 @@ from __future__ import annotations
 import builtins
 import collections
 import contextvars
-import copy
 import io
 import json
 import os
@@ -206,14 +205,6 @@ class CostMeter:
         with self._lock:
             return sorted(self.counts)
 
-    def reset(self, tag: Optional[str] = None) -> None:
-        with self._lock:
-            for table in (self.counts, self.paths, self.statements, self.names):
-                if tag is None:
-                    table.clear()
-                else:
-                    table.pop(tag, None)
-
     def join_spawned(self, tag: str, timeout: float = 30.0) -> List[str]:
         """Join the threads started under ``tag`` (its own helpers); names of those still alive."""
         alive = []
@@ -246,10 +237,6 @@ class CostMeter:
 
 
 # ---- wrappers (module level so that aliases can be rebound to one object) ------------
-
-def _meter() -> Optional[CostMeter]:
-    return _ACTIVE
-
 
 def _w_stat(path, *args, **kwargs):
     meter = _ACTIVE
@@ -508,13 +495,3 @@ def tagged(tag: str, call: Callable[[], Any]) -> Any:
         return call()
     finally:
         BOUNDARY.reset(token)
-
-
-def diff(small: Dict[str, int], large: Dict[str, int], keys: Iterable[str]) -> Dict[str, Tuple[int, int]]:
-    """``{key: (small, large)}`` for every key whose values differ."""
-    return {key: (small.get(key, 0), large.get(key, 0)) for key in keys
-            if small.get(key, 0) != large.get(key, 0)}
-
-
-def deepcopy_counts(snapshot: Dict[str, Any]) -> Dict[str, Any]:
-    return copy.deepcopy(snapshot)

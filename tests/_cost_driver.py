@@ -117,7 +117,6 @@ def _install_checkpoints(meter: CostMeter, srv: Any, result: Dict[str, Any]) -> 
 
     from ouroboros import server_liveness, store_switch
     from supervisor import message_bus
-
     from tests._cost_meter import tagged
 
     events = {"ready": threading.Event(), "release": threading.Event()}
@@ -190,8 +189,9 @@ def run(spec: Dict[str, Any]) -> Dict[str, Any]:
                       lineage={"B1": "B1:spawned", "B2": "B2:spawned", "B1c": "B1c:spawned"})
     meter.__enter__()
     try:
-        import server as srv
         from starlette.testclient import TestClient
+
+        import server as srv
 
         _mark(result, "imported")
         _stub_external_effects(srv, result)
