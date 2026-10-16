@@ -22,7 +22,8 @@ _TXN_SET_ARG = {"put_row", "set_rows", "delete_row", "get_row", "replace_set"}  
 _MODULE_SET_ARG = {"add", "remove", "members", "members_in", "result_rows"}  # obligations: (root|txn, name, ...)
 _MARKER = re.compile(r"\.(?:put_row|set_rows|delete_row|get_row|replace_set)\(|^\s*(?:from|import)\s.*\bobligations\b", re.M)
 # These pass a caller's set name through or copy every set (import/export); their callers are enumerated.
-_FORWARDERS = {("ouroboros/obligations.py", name) for name in ("members_in", "members", "add", "remove", "result_rows")} | {
+_FORWARDERS = {("ouroboros/obligations.py", name) for name in ("members_in", "members", "add", "remove", "result_rows",
+                                                                  "__init__")} | {  # __init__: DutyRest reads a caller's set
     ("ouroboros/evidence_packs.py", "settlement_obligations"), ("ouroboros/store_import.py", "_reconcile_sets"),
     ("ouroboros/store_import.py", "_build"), ("ouroboros/store_import.py", "export_facts")}
 
