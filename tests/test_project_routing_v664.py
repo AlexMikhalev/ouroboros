@@ -1096,6 +1096,7 @@ def test_project_completion_enqueues_once_for_root_and_never_for_child_or_direct
             "project_name": "Launch 🚀",
             "target_label": "Launch 🚀 › Ship release",
             "status": "completed",
+            "completion_notice": {"neutral": False, "detail": "", "phase": "done", "salvage": ""},
             "terminal_time": {"v": 1, "occurred_at": None, "source": "unknown",
                               "attempt": dict.fromkeys(("task_attempt", "_attempt", "started_at",
                                                         "metadata_attempt", "metadata_task_attempt"))},

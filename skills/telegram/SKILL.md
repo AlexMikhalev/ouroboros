@@ -1,7 +1,7 @@
 ---
 name: telegram
 description: Owner-only Telegram text bridge and Mini App gateway for the existing Ouroboros interface.
-version: 1.2.13
+version: 1.2.14
 type: extension
 entry: plugin.py
 plugin_api: "2.0"
@@ -52,9 +52,8 @@ Version 1.2.1 marks questions that wait for an owner answer and clears the
 waiting line after an answer submitted through Telegram.
 Version 1.2.3 serves the stored settings on GET settings/save so the Settings
 form shows saved values before Save, and shortens the four long option labels.
-Version 1.2.4 always sends one short line when a task does not finish cleanly, with
-the same status word and reason sentence the task card shows; the task-completion
-toggle now only adds the clean finishes.
+Version 1.2.4 introduced a non-clean completion notice even with the task toggle off;
+version 1.2.14 replaces that policy with a true opt-out (below).
 Version 1.2.5 shows the whole quiz card: its project, the host's facts about the
 asking task, and every option's detail, with localized field names; a card too
 long for one Telegram message arrives as ordered parts followed by the keyboard
@@ -85,6 +84,18 @@ retired bridge-only `TELEGRAM_LANGUAGE` setting is migrated once.
 Version 1.2.12 starts the Mini App when the Ouroboros server is a container's
 PID 1 without an init. PID 1 counts as the server only when the host named
 itself so; a companion adopted by init or a subreaper still stops.
+
+Version 1.2.14 makes `TELEGRAM_NOTIFY_TASKS=off` suppress every additional task
+completion notice, failures and cancellations included. On sends completion
+notices with the host's material causes; pure review provenance and missing
+host-verification receipts stay in task details, without declaring success.
+Required, unresolved or unknown review obligations remain disclosed. Previously
+stored Off values now mean no extra notices; no setting is migrated or added.
+The status-only Main mirror follows this toggle too; preserved intermediate
+content still arrives. Ordinary replies, files and questions are independent, as is
+`TELEGRAM_SILENT_MODE` (editing consecutive replies). IDs observed while Off
+remain seen, so enabling does not replay that backlog. Older summary rows without
+the host's compact cause projection retain their original reason text when On.
 
 The Mini App exposes the unchanged Ouroboros SPA through the established
 owner-authenticated sidecar and a pinned Cloudflare Quick Tunnel. It is enabled

@@ -302,6 +302,7 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
                 if workers.direct_chat_turn(task_id) is not None:
                     progress_meta = dict(progress_meta or {})
                     progress_meta["cancelable"] = True
+        result = {}
         if task_id and not is_progress and not task_row and not subagent_message_meta(progress_meta, task_id=task_id):
             try:
                 from ouroboros.task_status import load_effective_task_result
@@ -314,6 +315,19 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
                     progress_meta.update(event_meta)
             except Exception:
                 log.debug("final lineage recovery failed for %s", task_id, exc_info=True)
+        if (evt.get("system_type") == "project_completion_summary"
+                and not isinstance((progress_meta or {}).get("completion_notice"), dict)):
+            from ouroboros.terminal_projection import completion_event_view
+
+            if not result:
+                from ouroboros.task_results import load_task_result
+
+                try:
+                    result = load_task_result(ctx.DRIVE_ROOT, task_id, strict=True) or {}
+                except Exception:
+                    log.debug("legacy completion metadata unavailable for %s; keeping retained text", task_id, exc_info=True)
+                    result = {}
+            progress_meta = completion_event_view(ctx.DRIVE_ROOT, {**evt, "progress_meta": progress_meta or {}}, result).get("progress_meta")
         if progress_meta and "executor_observation" in progress_meta:
             progress_meta = dict(progress_meta)
             observation = executor_observation_meta(
