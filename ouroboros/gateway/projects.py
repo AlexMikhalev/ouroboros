@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from ouroboros.gateway._helpers import json_exception, request_drive_root, request_repo_dir
+from ouroboros.project_admission import ProjectAdmissionError
 
 log = logging.getLogger(__name__)
 
@@ -699,6 +700,8 @@ async def api_project_from_task(request: Request) -> JSONResponse:
         if outcome["project"].get("created"):
             _emit_naming_reason(drive_root, task_id, project_name, reason)
         return JSONResponse(outcome)
+    except ProjectAdmissionError as exc:
+        return JSONResponse({"error": str(exc), "reason_code": exc.reason}, status_code=409)
     except Exception as exc:
         return json_exception(exc)
 
