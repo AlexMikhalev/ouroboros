@@ -1030,7 +1030,9 @@ def header_states(room):
         ("pausing", [activity("g-pausing", "budget_pausing", pause_cause="owner", **where)]),
         ("paused", [activity("g-paused", "budget_paused", pause_cause="owner", **where)]),
         ("unknown", [activity("g-unknown", "unknown", **where)]),
-        ("live+answer", [activity("g-live", **where), ask]),
+        # A fresh question (its own id and quiz): the client remembers a question that left the census.
+        ("live+answer", [activity("g-live", **where), activity("g-ask2", kind="direct_chat", client_message_id="cm-geo2",
+                                                             **waited("q-geo2"), **where)]),
     ]
     if room == "project":
         # The host's longest current hold label (ouroboros/project_admission.py) stays whole in a Project's bar.

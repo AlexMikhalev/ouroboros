@@ -187,7 +187,9 @@ and disabled and is written at ~50 call sites. Reach for it only when
 list, a chip's supporting word — and `--text-disabled` would be unreadable.
 The criterion is the same one that governs the whole table: **if the owner has
 to read it to act, it is `--text-meta` or brighter.** A load-bearing caveat, a
-one-off note, a hint that explains a control: those stay at meta. A tone or an
+one-off note, a hint that explains a control: those stay at meta. A control's own
+label is not content: it follows bible principle 4 (an action's label is primary, a
+setting's name or an unchosen option secondary). A tone or an
 unclassifiable ink is what produced the original "too much small
 high-contrast white text" report from the opposite direction, so a rule that
 declares a size and no colour is still the worst of the options.

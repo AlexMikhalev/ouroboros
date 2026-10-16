@@ -32,11 +32,11 @@
 .rw-trigger:disabled { cursor: default; opacity: 1; }
 .rw-trigger:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
 /* The status follows the room's title in its bar. The status never shrinks while the title can: the title
-   yields its ellipsis first and keeps an 8ch floor, because the status may never take more than the row less 8ch;
+   yields its ellipsis first and keeps a 5ch floor, because the status may never take more than the row less 5ch;
    only past that floor does the status word ellipsize inside its cap. Neither moves the bar's other controls: the
    bar decides its rows by the title block's basis, never by these words. */
 :is(.chat-page-header, .project-panel-bar) .app-page-title-row > .rw-trigger {
-    flex: 0 0 auto; min-width: 0; max-width: calc(100% - 8ch); margin-left: var(--space-1);
+    flex: 0 0 auto; min-width: 0; max-width: calc(100% - 5ch); margin-left: var(--space-1); padding-inline: 10px;
 }
 :is(.chat-page-header, .project-panel-bar) .app-page-title-row > .app-page-title {
     flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -341,7 +341,9 @@
     border-color: transparent; border-radius: var(--pill-radius);
     transition: var(--motion-tone), var(--motion-press);
 }
-:root[data-theme="light"] .rw-row .rw-pill:not(:disabled):active { transform: scale(0.97); box-shadow: none; transition-duration: 60ms; }
+@media (prefers-reduced-motion: no-preference) {
+    :root[data-theme="light"] .rw-row .rw-pill:not(:disabled):active { transform: scale(0.97); box-shadow: none; transition-duration: 60ms; }
+}
 :root[data-theme="light"] .rw-row .rw-pill-question { background: var(--tone-amber); color: var(--status-warn-fg); }
 :root[data-theme="light"] .rw-row .rw-pill-question:hover { background: var(--tone-amber-hover); }
 :root[data-theme="light"] .rw-row .rw-pill-resume { background: var(--surface-object); color: var(--text-primary); box-shadow: var(--elev-rest); }

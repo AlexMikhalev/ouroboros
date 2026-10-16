@@ -8979,10 +8979,12 @@ textarea.chat-input {
 :root[data-theme="light"] .filter-chip:hover { background: var(--tone-quiet-hover); }
 :root[data-theme="light"] .filter-chip.active { border-color: transparent; background: var(--tone-crimson); color: var(--accent-light); }
 /* A press sinks every capsule the same way. */
-:root[data-theme="light"] :is(.chat-header-btn, .chat-budget-pill, .project-panel-close, .mobile-nav-toggle, .chat-swarm,
-    .chat-send-inline, .app-tab, .filter-chip):not(:disabled):active,
-:root[data-theme="light"] .chat-capsule:not([data-open="true"]):active {
-    transform: scale(0.97); box-shadow: none; transition-duration: 60ms;
+@media (prefers-reduced-motion: no-preference) {
+    :root[data-theme="light"] :is(.chat-header-btn, .chat-budget-pill, .project-panel-close, .mobile-nav-toggle, .chat-swarm,
+        .chat-send-inline, .app-tab, .filter-chip):not(:disabled):active,
+    :root[data-theme="light"] .chat-capsule:not([data-open="true"]):active {
+        transform: scale(0.97); box-shadow: none; transition-duration: 60ms;
+    }
 }
 :root[data-theme="light"] :is(.chat-capsule, .chat-swarm, .chat-send-inline, .app-tab, .filter-chip, .chat-load-older-btn) {
     transition: var(--motion-tone), var(--motion-press);

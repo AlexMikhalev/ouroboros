@@ -129,11 +129,10 @@ export function createRoomWork({
     const badgeParent = statusBadge.parentNode;
     const badgeNext = statusBadge.nextSibling || null;
     const panel = asPanel ? page.closest?.('.project-panel') || null : null;
-    // One bar per room: the Project panel bar, or Main's floating header. The status leads the bar's trailing
-    // controls in both, so a changing word grows into the free space before it and never moves a neighbour.
+    // One bar per room: the Project panel bar, or Main's header. The status follows the room's own title in the
+    // bar's title row, so a changing word takes the title's room and never moves a neighbour.
     const bar = panel?.querySelector?.('.project-panel-bar') || (asPanel ? null : page.querySelector('.chat-page-header'));
     trigger.append(lead, dots, statusBadge, amber, waitNote, caret);
-    // Variant D: the room's status follows the room's own title, in the bar's title row, in every room.
     const titleRow = bar?.querySelector('.app-page-title-row');
     if (titleRow) titleRow.appendChild(trigger);
     else badgeParent?.insertBefore(trigger, badgeNext);
