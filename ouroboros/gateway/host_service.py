@@ -568,7 +568,8 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
             inline = str(payload.get("image_base64") or "") if image_mime else ""
             metadata = {**({"chat_attachment_uploads": uploads} if uploads else {}),
                         **({"chat_attachments": refs} if refs else {})}
-        metadata["reply_to"] = payload.get("reply_to", "")
+        if payload.get("reply_to"):  # no reference adds nothing to a plain inject's kwargs
+            metadata["reply_to"] = payload["reply_to"]
         bridge = ctx.bridge_getter()
         response_event: asyncio.Event = asyncio.Event()
         response_holder: dict[str, str] = {}
