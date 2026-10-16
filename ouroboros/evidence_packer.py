@@ -11,7 +11,7 @@ import pathlib
 import sqlite3
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from ouroboros import evidence_packs as packs, store
 from ouroboros.startup_historical_audit import _REPORT_BYTES, finish_maintenance_job, spawn_maintenance_job
@@ -52,25 +52,36 @@ def _stamp(root: pathlib.Path, task_id: str, seq, obligation_rows: dict, externa
     return json.dumps(stamps, sort_keys=True, separators=(",", ":"))
 
 
-def _loose_task_ids(root: pathlib.Path) -> set:
+def _loose_task_ids(root: pathlib.Path, stop: Optional[Callable[[], bool]] = None) -> set:
     ids = set()
-    with contextlib.suppress(OSError):
-        ids.update(entry.name for entry in os.scandir(root / "observability" / "calls") if entry.is_dir(follow_symlinks=False))
-    with contextlib.suppress(OSError):
-        for entry in os.scandir(root / "task_results" / "artifacts"):
-            if entry.is_dir(follow_symlinks=False) and (pathlib.Path(entry.path) / "source_handles" / "context_checkpoints").is_dir():
-                ids.add(entry.name)
+    for directory, checkpoints in ((root / "observability" / "calls", False),
+                                   (root / "task_results" / "artifacts", True)):
+        if stop is not None and stop():
+            break
+        with contextlib.suppress(OSError), os.scandir(directory) as entries:
+            for entry in entries:
+                if stop is not None and stop():
+                    return ids
+                if entry.is_dir(follow_symlinks=False) and (not checkpoints or
+                        (pathlib.Path(entry.path) / "source_handles" / "context_checkpoints").is_dir()):
+                    ids.add(entry.name)
     return ids
 
 
-def swept_stamps(root: pathlib.Path) -> Optional[Dict[str, str]]:
+def swept_stamps(root: pathlib.Path, *, discovery: bool = False) -> Optional[Dict[str, str]]:
     """Per task, the stamps the last sweep recorded; ``None`` when the cache is unavailable."""
     if not packs.packs_dir(root).is_dir():
         return {}
     try:
-        with packs.open_index(root) as conn:
+        with packs.open_index(root, **({"wait_sec": 0, "rebuild": False} if discovery else {})) as conn:
             return {row["task_id"]: row["stamps"] for row in conn.execute("SELECT task_id, stamps FROM swept")}
-    except (store.StoreError, sqlite3.Error, OSError):
+    except store.StoreBusy:
+        if discovery:
+            raise  # advisory discovery skips this pass instead of waiting or spawning on contention
+        return None
+    except (store.StoreError, sqlite3.Error, OSError) as exc:
+        if discovery and isinstance(exc, sqlite3.OperationalError) and store.busy(exc):
+            raise store.StoreBusy("evidence index read busy", reason="contention") from exc
         return None
 
 
@@ -80,22 +91,50 @@ def record_swept(root: pathlib.Path, task_id: str, stamps: str) -> None:
             conn.execute("INSERT OR REPLACE INTO swept VALUES (?,?)", (task_id, stamps))
 
 
-def changed_stamps(root: pathlib.Path, *, obligation_rows: Optional[dict] = None, external: Optional[dict] = None,
-                   seqs: Optional[dict] = None) -> Dict[str, str]:
+def _changed_stamps(root: pathlib.Path, *, obligation_rows: Optional[dict] = None, external: Optional[dict] = None,
+                    seqs: Optional[dict] = None, stop: Optional[Callable[[], bool]] = None) -> Iterator[Tuple[str, str]]:
     """Tasks with loose evidence whose directories or result changed since a sweep recorded them, with their
     stamps. The rows and duties come from ONE short read that is closed before the directory probes."""
     root = pathlib.Path(root)
-    ids = _loose_task_ids(root)
-    if not ids:
-        return {}
+    ids = _loose_task_ids(root) if stop is None else _loose_task_ids(root, stop)
+    if not ids or (stop is not None and stop()):
+        return
     if obligation_rows is None or seqs is None:
         with store.open_store(root, write=False) as txn:
             obligation_rows = packs.settlement_obligations(root, txn=txn) if obligation_rows is None else obligation_rows
             seqs = txn.write_seqs() if seqs is None else seqs
-    external = packs.settlement_external(root) if external is None else external
-    swept = swept_stamps(root)
-    stamps = {task: _stamp(root, task, seqs.get(task), obligation_rows, external) for task in sorted(ids)}
-    return {task: stamp for task, stamp in stamps.items() if swept is None or swept.get(task) != stamp}
+    if stop is not None and stop():
+        return
+    external = packs.settlement_external(root, **({"timeout_sec": 0} if stop is not None else {})) if external is None else external
+    if stop is not None and stop():
+        return
+    swept = swept_stamps(root, discovery=stop is not None)
+    for task in sorted(ids):
+        if stop is not None and stop():
+            return
+        stamp = _stamp(root, task, seqs.get(task), obligation_rows, external)
+        if swept is None or swept.get(task) != stamp:
+            yield task, stamp
+
+
+def changed_stamps(root: pathlib.Path, **census) -> Dict[str, str]:
+    """Full child census; never reuse the parent's advisory discovery as unlink authority."""
+    return dict(_changed_stamps(root, **census))
+
+
+def packing_pending(root: pathlib.Path, stop: Callable[[], bool]) -> bool:
+    """Advisory, stop-aware discovery: archives first, then only the first changed stamp.
+
+    Contended stores defer the pass. Index reconstruction belongs to the supervised
+    child, not this reader. A quiet nonempty root still needs a full stamp walk.
+    """
+    if stop():
+        return False
+    if archive_pending(root):
+        return not stop()
+    with store.acquisition_budget(0):
+        changed = next(_changed_stamps(root, stop=stop), None)
+    return changed is not None and not stop()
 
 
 def changed_tasks(root: pathlib.Path, **census) -> List[str]:
@@ -288,7 +327,10 @@ class EvidencePacker:
         self._thread: Optional[threading.Thread] = None
 
     def tick(self, data_root: pathlib.Path, repo_dir: pathlib.Path) -> bool:
-        """Called from the maintenance sweep; spawns at most one child, never on the first tick."""
+        """Reserve one discovery thread, never on the boot tick; no filesystem walk here.
+
+        True means discovery started, not that a packing child was needed or spawned.
+        """
         with self._lock:
             if self._stopped.is_set() or (self._thread is not None and self._thread.is_alive()):
                 return False
@@ -296,12 +338,6 @@ class EvidencePacker:
                 self._armed = True  # the boot tick only arms the packer
                 return False
             root = pathlib.Path(data_root)
-            try:
-                if not changed_tasks(root) and not archive_pending(root):
-                    return False
-            except Exception:
-                log.debug("Evidence pack candidate check failed", exc_info=True)
-                return False
             self._thread = threading.Thread(target=self._run, args=(root, pathlib.Path(repo_dir)),
                                             name="evidence-packer", daemon=True)
             self._thread.start()
@@ -328,7 +364,12 @@ class EvidencePacker:
     def _run(self, data_root: pathlib.Path, repo_dir: pathlib.Path) -> None:
         started = time.monotonic()
         try:
-            if self._stopped.is_set():
+            try:
+                pending = packing_pending(data_root, self._stopped.is_set)
+            except Exception:
+                log.debug("Evidence pack candidate check failed", exc_info=True)
+                return
+            if not pending or self._stopped.is_set():
                 return
             process = spawn_maintenance_job(data_root, repo_dir, "evidence_packer")
             fields = finish_maintenance_job(self, process, data_root, started, _report_fields, packs.record_storage_pack)

@@ -426,13 +426,14 @@ def test_stop_latches_and_signals_without_waiting_for_candidate_walk(root, monke
     unit._process = child
     unit.tick(root, REPO)
 
-    def walk(_):
+    def walk(_, _stop):
         entered.set()
         assert release.wait(5)
         return ["candidate"]
 
-    monkeypatch.setattr(packer, "changed_tasks", walk)
-    monkeypatch.setattr(process_custody, "spawn_supervised", lambda *a, **k: pytest.fail("spawned after Stop"))
+    monkeypatch.setattr(packer, "packing_pending", walk)
+    spawns = []
+    monkeypatch.setattr(process_custody, "spawn_supervised", lambda *a, **k: spawns.append(a) or _FakeChild(b""))
     tick = threading.Thread(target=unit.tick, args=(root, REPO))
     stop = threading.Thread(target=lambda: (unit.stop(), stopped.set()))
     tick.start()
@@ -448,6 +449,7 @@ def test_stop_latches_and_signals_without_waiting_for_candidate_walk(root, monke
         if unit._thread is not None:
             unit._thread.join(3)
     assert not tick.is_alive() and not stop.is_alive()
+    assert spawns == [], "spawned after Stop"
 
 
 def test_restore_and_preflight_cover_all_descendants_but_not_symlink_drives(root):
