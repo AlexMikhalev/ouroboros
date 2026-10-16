@@ -8870,6 +8870,17 @@ textarea.chat-input {
 :root[data-theme="light"] .chat-live-summary-button { padding: 16px 20px 12px; }
 :root[data-theme="light"] .chat-live-actions { padding: 0 20px 16px; gap: var(--space-2); }
 :root[data-theme="light"] :is(.chat-live-phase, .chat-live-line-phase) { border-color: transparent; }
+/* A Project entry is the Project's voice: its tint, one resting object in every shell it replaces (a task card, a
+   history row); an unsaved entry keeps its dashed edge, which is a state, not an outline. */
+:root[data-theme="light"] :is(.chat-live-card, .chat-bubble).project-handoff {
+    border-color: transparent;
+    background: var(--project-08);
+    border-radius: var(--radius-object);
+    box-shadow: var(--elev-rest);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
+:root[data-theme="light"] .project-handoff.project-handoff--unsaved { border-color: var(--project-18); }
 
 /* Objects and trays. A card on the room is an object: white on the rest shadow with the object radius. Inside an
    object a group or row is a tray: the soft neutral fill with the inner radius and no shadow; a tray inside a tray
