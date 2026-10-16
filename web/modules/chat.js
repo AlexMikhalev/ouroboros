@@ -226,7 +226,7 @@ export function createChatInstance({
     // Evolve/Restart/Panic/budget chrome, which belongs to the one agent, not a
     // single project thread). The main chat keeps the full overlay header.
     const headerHtml = asPanel
-        ? `<div class="chat-panel-statusbar"><span id="chat-status" class="status-badge offline" data-tone="offline" data-dots="one">Connecting…</span></div>`
+        ? `<div class="chat-panel-statusbar"><span id="chat-status" class="status-badge offline">Connecting…</span></div>`
         : renderPageHeader({
             title: title,
             icon: PAGE_ICONS.chat,
@@ -252,7 +252,7 @@ export function createChatInstance({
                         <div class="chat-budget-bar-fill" id="chat-budget-bar-fill"></div>
                     </div>
                 </button>
-                <span id="chat-status" class="status-badge offline" data-tone="offline" data-dots="one">Connecting…</span>
+                <span id="chat-status" class="status-badge offline">Connecting…</span>
             `,
         });
     page.innerHTML = `
@@ -536,8 +536,7 @@ export function createChatInstance({
 
     function setStatus({ kind, text, tone = 'online', dots = 'one' }) {
         // replay frames never touch the badge; the reducer
-        // (syncChatStatus) writes it once after the batch. Word, tone and dots come from one producer
-        // (computeDerivedChatStatus); the room's status control paints them and derives nothing.
+        // (syncChatStatus) writes it once after the batch: one producer's word, tone and dots.
         if (!statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
         statusBadge.textContent = text;
