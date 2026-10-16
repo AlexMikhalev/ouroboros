@@ -572,7 +572,7 @@ export function createChatDecision({
             mirror.row = { ...mirror.row, ...current, quiz_state: state };
             mirror.signature = mirrorSignature(mirror.row);
         }
-        const focused = mirrored && card.contains?.(document.activeElement);
+        const focused = card.contains?.(document.activeElement);
         const answerable = ANSWERABLE_QUIZ_STATES.includes(state);
         const written = onDomWrite(() => {
             let changed = card.dataset.state !== state;
@@ -644,13 +644,11 @@ export function createChatDecision({
             });
             return changed;
         });
-        if (mirrored) {
-            // Settling disables or removes the control the owner used: focus stays in this copy
-            // for the moment it still shows the result.
-            const active = document.activeElement;
-            if (focused && (!card.contains?.(active) || active?.disabled)) card.querySelector('.chat-quiz-question')?.focus?.({ preventScroll: true });
-            if (state === 'answered' || state === 'closed') settleMirror(mirror);
-        }
+        // Settling disables or removes the control the owner used (an option, the ×): focus stays in
+        // this card, on its question, rather than falling to the page.
+        const active = document.activeElement;
+        if (focused && (!card.contains?.(active) || active?.disabled)) card.querySelector('.chat-quiz-question')?.focus?.({ preventScroll: true });
+        if (mirrored && (state === 'answered' || state === 'closed')) settleMirror(mirror);
         if (written && isMain && !answerable && state !== 'unknown') onQuestionsChanged();
         return written;
     }

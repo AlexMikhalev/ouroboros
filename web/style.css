@@ -410,7 +410,6 @@ body.resizing-panels { user-select: none; }
     .chat-question-nav { padding: 0 10px; gap: 4px; }
     .chat-question-nav-word, .chat-question-nav-arrow { display: none; }
 }
-@media (pointer: coarse) { .chat-question-nav { min-height: var(--touch-target-min); } }
 /* A quiz card's head ends with its status and, while it takes an answer, one quiet × that closes it. */
 .chat-quiz-head-end { margin-inline-start: auto; display: inline-flex; align-items: center; gap: var(--space-3); min-width: 0; }
 .chat-quiz-close {
