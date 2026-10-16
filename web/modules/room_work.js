@@ -124,19 +124,22 @@ export function createRoomWork({
     const lead = decorative(element('span', 'rw-lead'));
     const amber = decorative(element('span', 'rw-amber'));
     // Said as well as drawn: moving work with something waiting names the wait in the control's name.
-    const waitNote = element('span', 'rw-sr', 'Some work is waiting');
+    const waitNote = element('span', 'rw-sr', 'A question waits for your answer');
     const caret = decorative(element('span', 'rw-caret'));
     const badgeParent = statusBadge.parentNode;
     const badgeNext = statusBadge.nextSibling || null;
     const panel = asPanel ? page.closest?.('.project-panel') || null : null;
-    const bar = panel?.querySelector?.('.project-panel-bar') || null;
-    const group = asPanel ? null : badgeParent?.closest?.('.ui-chrome-group') || null;
+    // One bar per room: the Project panel bar, or Main's floating header. The status leads the bar's trailing
+    // controls in both, so a changing word grows into the free space before it and never moves a neighbour.
+    const bar = panel?.querySelector?.('.project-panel-bar') || (asPanel ? null : page.querySelector('.chat-page-header'));
     trigger.append(lead, dots, statusBadge, amber, waitNote, caret);
-    if (bar) bar.insertBefore(trigger, bar.querySelector('.project-panel-close'));
+    // Variant D: the room's status follows the room's own title, in the bar's title row, in every room.
+    const titleRow = bar?.querySelector('.app-page-title-row');
+    if (titleRow) titleRow.appendChild(trigger);
     else badgeParent?.insertBefore(trigger, badgeNext);
 
-    // ---- the surface: Main's sheet continues its group; a Project's Shade hangs under its bar
-    const surface = element('div', asPanel ? 'rw-surface rw-shade' : 'rw-surface rw-sheet ui-chrome-sheet');
+    // ---- the surface: one Shade in every room, unfolding from the bottom edge of the room's bar
+    const surface = element('div', 'rw-surface rw-shade');
     surface.id = `${uid}-surface`;
     surface.hidden = true;
     surface.tabIndex = -1;  // where a pointer open lands: a landing point, never a control
@@ -148,15 +151,14 @@ export function createRoomWork({
     const note = element('p', 'rw-note');
     note.hidden = true;
     surface.append(list, note);
-    let shadeAnchor = null;
-    if (asPanel) {
-        // A zero-height anchor under the bar: the Shade follows the bar's real height at every width.
-        shadeAnchor = element('div', 'rw-shade-anchor');
-        shadeAnchor.appendChild(surface);
-        (bar || page.querySelector('.chat-panel-statusbar'))?.insertAdjacentElement('afterend', shadeAnchor);
-    } else {
-        (group || page.querySelector('.chat-page-header') || page).appendChild(surface);
-    }
+    // A zero-height anchor under the bar: the Shade follows the bar's real height at every width. Main's
+    // header floats over the transcript, so its anchor is the header's own last child at its bottom edge.
+    const shadeAnchor = element('div', 'rw-shade-anchor');
+    shadeAnchor.appendChild(surface);
+    if (asPanel) (bar || page.querySelector('.chat-panel-statusbar'))?.insertAdjacentElement('afterend', shadeAnchor);
+    else (bar || page).appendChild(shadeAnchor);
+    // The element that says "open" for CSS: the Project panel, or Main's header.
+    const openHost = panel || (asPanel ? null : bar);
 
     // ---- Back to reading: one explicit return to the passage a navigation left
     const back = element('button', 'rw-back');
@@ -663,12 +665,13 @@ export function createRoomWork({
         trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
         trigger.title = text;  // the whole status word, never clipped away (an extra, not the only path)
         caret.hidden = !listed;
+        // Owner 15.10 (3C): live work keeps the three moving dots in the header; a single fact is one dot.
         const dotted = tone === 'live' || tone === 'queued';
         dots.hidden = !dotted;
         dots.dataset.state = tone === 'live' ? 'working' : 'queued';
         lead.hidden = dotted;
-        // Moving work that also has something waiting keeps its live chip and adds one amber dot, said in words too.
-        const mixed = !connection && tones.has('live') && tones.has('wait');
+        // A second, amber dot means one thing: while work runs, a question waits for the owner's answer.
+        const mixed = !connection && tones.has('live') && current.some((row) => row.question);
         amber.hidden = !mixed;
         waitNote.hidden = !mixed;
         if (!listed && open) close({ restoreFocus: false });
@@ -691,8 +694,7 @@ export function createRoomWork({
         frozen = new Map();
         order = [];
         surface.hidden = false;
-        panel?.setAttribute('data-rw-open', '');
-        group?.setAttribute('data-disclosure', 'open');
+        openHost?.setAttribute('data-rw-open', '');
         render();
         // A pointer open lands on the (ring-less) list; a keyboard open enters its first real control.
         const first = viaKeyboard ? list.querySelector('.rw-main[tabindex="0"], .rw-action, .rw-more') : null;
@@ -705,8 +707,7 @@ export function createRoomWork({
         open = false;
         closeTaskControlMenu();
         surface.hidden = true;
-        panel?.removeAttribute('data-rw-open');
-        group?.removeAttribute('data-disclosure');
+        openHost?.removeAttribute('data-rw-open');
         frozen = null;
         order = [];
         expanded.clear();
@@ -924,8 +925,7 @@ export function createRoomWork({
             if (outsideClick) doc.removeEventListener('click', outsideClick, true);
             watcher?.disconnect();
             for (const dispose of disposers.splice(0)) dispose();
-            panel?.removeAttribute('data-rw-open');
-            group?.removeAttribute('data-disclosure');
+            openHost?.removeAttribute('data-rw-open');
             // The badge returns where the product put it; this module's nodes go.
             if (badgeParent?.isConnected) badgeParent.insertBefore(statusBadge, badgeNext?.parentNode === badgeParent ? badgeNext : null);
             trigger.remove();

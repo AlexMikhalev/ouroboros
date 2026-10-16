@@ -53,9 +53,7 @@ body {
     flex-direction: column;
     min-width: 0;
     padding: var(--space-4) var(--space-3) var(--space-3);
-    background:
-        linear-gradient(180deg, rgba(var(--shell-rgb), 0.62), rgba(var(--shell-rgb), 0.32)),
-        radial-gradient(circle at 8% 0%, var(--accent-08), transparent 260px);
+    background: linear-gradient(180deg, rgba(var(--shell-rgb), 0.62), rgba(var(--shell-rgb), 0.32));
     border-right: 1px solid var(--divider);
     z-index: 10;
     position: relative;  /* positioning context for the resize handle */
@@ -581,9 +579,7 @@ body.keyboard-open .main-attention-body {
 .page.active { display: flex; }
 
 .app-page-glass {
-    background:
-        linear-gradient(180deg, rgba(var(--shell-rgb), 0.76) 0%, rgba(var(--shell-rgb), 0.34) 170px, rgba(var(--shell-rgb), 0.08) 100%),
-        radial-gradient(circle at 18% 0%, var(--accent-10), transparent 300px);
+    background: linear-gradient(180deg, rgba(var(--shell-rgb), 0.76) 0%, rgba(var(--shell-rgb), 0.34) 170px, rgba(var(--shell-rgb), 0.08) 100%);
 }
 
 /* Containment for narrow screens and unbroken runtime text. */
@@ -765,9 +761,7 @@ body.keyboard-open .main-attention-body {
     min-height: 0;
     display: flex;
     flex-direction: column;
-    background:
-        linear-gradient(180deg, var(--accent-05), transparent 120px),
-        rgba(var(--neutral-rgb), 0.015);
+    background: rgba(var(--neutral-rgb), 0.015);
 }
 
 .files-preview-header {
@@ -1041,17 +1035,20 @@ body.keyboard-open .main-attention-body {
 
 /* === design-system:migrated-begin (chat: page header, budget pill, load-older) === */
 
-/* Main's header reflows by its own width, never a viewport guess: the title takes the spare room and the
-   control group stays content-sized beside it; when both no longer fit, the group wraps onto its own line
-   (clear of the title by the group's inset) and fills it. */
-.chat-page-header {
+/* Main's header is one bar like a Project's: title, the room's status leading the trailing controls, then
+   the agent's commands. Its rows follow the page's own width (a container query), never a label's length,
+   so no status word can wrap, stretch or move anything: below the breakpoint the commands take their own
+   second row and the title row keeps the status. */
+#page-chat { container: chatpage / inline-size; }
+#page-chat > .chat-page-header {
     position: absolute;
     top: 0;
     left: 0;
     right: 0;
     z-index: 5;
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "leading title toolbar";
     align-items: center;
     column-gap: var(--space-3);
     row-gap: calc(var(--space-2) + var(--chrome-inset));
@@ -1063,9 +1060,17 @@ body.keyboard-open .main-attention-body {
     mask-image: none;
     overflow: visible;
 }
-.chat-page-header > .app-page-leading { flex: 0 0 auto; }
-.chat-page-header > .app-page-title-block { flex: 999 1 7rem; }
-.chat-page-header > .app-page-actions { flex: 1 1 auto; gap: 6px; justify-content: flex-start; }
+#page-chat > .chat-page-header > .app-page-actions { grid-area: toolbar; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
+#page-chat > .chat-page-header .chat-header-actions { flex-wrap: nowrap; max-width: none; }
+@container chatpage (max-width: 46rem) {
+    #page-chat > .chat-page-header > .app-page-actions,
+    #page-chat > .chat-page-header .chat-header-actions { flex-wrap: wrap; }
+    #page-chat > .chat-page-header {
+        grid-template-columns: auto minmax(0, 1fr);
+        grid-template-areas: "leading title" "toolbar toolbar";
+    }
+    #page-chat > .chat-page-header > .app-page-actions { justify-content: flex-start; }
+}
 
 /* The header's reading backing (DESIGN §5): page ink under everything readable (title, every wrapped line
    of controls, the history note) that fades only in the band below it, so moving messages never show
@@ -3168,8 +3173,7 @@ body.keyboard-open .main-attention-body {
         box-shadow: 24px 0 60px rgba(0, 0, 0, 0.36);
         padding-top: calc(64px + env(safe-area-inset-top, 0px));
         background:
-            linear-gradient(180deg, rgba(var(--shell-rgb), 0.94), rgba(var(--shell-rgb), 0.86)),
-            radial-gradient(circle at 8% 0%, var(--accent-10), transparent 260px);
+            linear-gradient(180deg, rgba(var(--shell-rgb), 0.94), rgba(var(--shell-rgb), 0.86));
     }
 
     #primary-sidebar.open {
@@ -6994,9 +6998,8 @@ textarea.chat-input {
     border-left: 1px solid var(--divider);
     /* A reading surface keeps its own backing even where native backdrop blur is not composited.
        Project tint supplies the light material; underlying Main text must never show through it. */
-    background:
-        radial-gradient(circle at 15% 0%, var(--project-12), transparent 300px),
-        rgb(var(--shell-rgb));
+    /* A reading surface is one flat material; the project's colour lives in its small marks (DESIGN vision). */
+    background: rgb(var(--shell-rgb));
     box-shadow: -24px 0 64px rgba(0, 0, 0, 0.34);
     transform: translateX(18px);
     opacity: 0;

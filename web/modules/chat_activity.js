@@ -1093,16 +1093,21 @@ export function computeDerivedChatStatus({
     supervisorStarting = false,
     modelActivity = null,
 } = {}) {
-    if (!isConnected) return { kind: 'offline', text: 'Reconnecting...', showDots: false };
-    const observed = modelActivity && { kind: modelActivity.waiting ? 'online' : 'thinking', text: modelActivity.text, showDots: modelActivity.motion };
-    if (hasActiveLiveCard || activeManagedCount > 0) return (activeManagedCount > 0 && observed) || { kind: 'thinking', text: 'Working...', showDots: !hasActiveLiveCard };
+    if (!isConnected) return { kind: 'offline', text: 'Reconnecting…', showDots: false };
+    // The header says the room's state in the card chip's word family; the model call's own phase (Sending
+    // request…, Response received…) is detail for the work list and the card, never the header's word.
+    // The call's own short word (the card chip's family: Sending, Working, Queued…); a stop
+    // policy's word (Cancelling…, Finalizing…) passes through unchanged.
+    const observed = modelActivity && { kind: modelActivity.waiting ? 'online' : 'thinking',
+        text: modelActivity.text, showDots: modelActivity.motion };
+    if (hasActiveLiveCard || activeManagedCount > 0) return (activeManagedCount > 0 && observed) || { kind: 'thinking', text: taskActivityPresentation({ phase: 'working' }).text, showDots: !hasActiveLiveCard };
     // Sent work still finishing under the owner's Pause: settling, not working.
     if (pausingManagedCount > 0) return { kind: 'thinking', text: 'Pausing…', showDots: true };
     if (activeDirectCount > 0) return observed || { kind: 'thinking', text: taskActivityPresentation({ phase: 'working' }).text, showDots: true };
-    if (pendingSubmissionsCount > 0) return { kind: 'thinking', text: 'Sending...', showDots: true };
+    if (pendingSubmissionsCount > 0) return { kind: 'thinking', text: 'Sending…', showDots: true };
     if (finalizingCount > 0 || hasFinalizingLiveCard) return { kind: 'thinking', text: taskActivityPresentation({ phase: 'finalizing' }).text, showDots: true };
     if (waitingModelCount > 0) return { kind: 'online', text: 'Waiting for access', showDots: false };
-    if (queuedManagedCount > 0) return { kind: 'thinking', text: 'Queued...', showDots: true };
+    if (queuedManagedCount > 0) return { kind: 'thinking', text: taskActivityPresentation({ phase: 'queued' }).text, showDots: true };
     if (waitingOwnerCount > 0) return { kind: 'online', text: tr('task.chip.waiting_for_answer', 'Waiting for your answer'), showDots: false };
     if (unknownActivityCount > 0) return { kind: 'online', text: 'Activity unconfirmed', showDots: false };
     // Mixed or unknown causes stay generic; paused work never claims Running.

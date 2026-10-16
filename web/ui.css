@@ -153,7 +153,6 @@
     /* Floating chrome (the recipe at the end): one height for a floating group's text controls, and the
        group's inset, which its negative margin cancels so grouping moves no control. */
     --chrome-control-h: 30px;
-    --chrome-sheet-shadow: 0 18px 22px -16px rgba(0, 0, 0, 0.6);
     --chrome-shade-shadow: 0 16px 20px -16px rgba(40, 18, 48, 0.34);
     --chrome-navigation-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
     --chrome-inset: calc(var(--space-1) + 1px);
@@ -201,7 +200,6 @@
 }
 
 :root[data-theme="light"] {
-    --chrome-sheet-shadow: 0 18px 22px -18px rgba(24, 16, 32, 0.38);
     --native-color-scheme: light;
     --neutral-rgb: 32, 35, 43;
     --shell-rgb: 255, 255, 255;
@@ -632,10 +630,9 @@ textarea.ui-control { resize: vertical; }
 /* ---- Floating chrome ----------------------------------------------------------------------------------------------
    Controls that float over scrolling content (Main's header group) share one box: height, baseline and the pill
    corner; words, width, weight and tone stay the control's own (DESIGN §5). The group is invisible at rest and its
-   padding is cancelled by an equal negative margin, so grouping moves no control; what it discloses hangs from it
-   absolutely, so opening moves no target either. An attached sheet continues the group's edges and the group becomes
-   its lid. Readability belongs to the floating surface's own layer (Main: `.chat-page-header::before`, page ink under
-   everything readable, fading only below it); state tints are laid on that layer, never instead of it. */
+   padding is cancelled by an equal negative margin, so grouping moves no control. A room's bar keeps its own reading
+   backing (Main: `.chat-page-header::before`), and what a bar discloses unfolds from the bar's bottom edge as one
+   Shade (room_work.css), never as a box glued to one control or one group. */
 @media (pointer: coarse) {
     /* A coarse pointer (a phone) raises the whole family together to the shared touch minimum. */
     :root { --chrome-control-h: var(--touch-target-min); }
@@ -664,24 +661,4 @@ textarea.ui-control { resize: vertical; }
     line-height: 1;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
-}
-/* Open: the group squares its foot and backs its controls; the sheet takes its sides and the rest of the edge. */
-.ui-chrome-group[data-disclosure="open"] {
-    background: var(--bg-primary);
-    border-color: var(--chrome-edge);
-    border-bottom-color: transparent;
-    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-}
-.ui-chrome-sheet {
-    position: absolute;
-    z-index: 40;
-    top: 100%;
-    left: -1px;
-    right: -1px;
-    box-sizing: border-box;
-    background: var(--bg-primary);
-    border: 1px solid var(--chrome-edge);
-    border-top: 0;
-    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
-    box-shadow: var(--chrome-sheet-shadow);
 }
