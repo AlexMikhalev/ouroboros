@@ -446,27 +446,27 @@ def test_meeting_audio_already_sent_makes_the_delayed_caption_heard_not_owner_wo
 
 
 
-def test_each_input_keeps_the_source_it_was_named_with_however_late_its_caption(harness):
+def test_an_input_items_speaker_follows_the_audio_that_formed_it_however_late_the_events(harness):
     h = harness()
     engine = h.start()
+    second = b"\x01\x00" * 24000  # one second at 24 kHz
     h.hub.feed(PeerJoined(PeerInfo("meeting-audio", "meeting", True, False)))
-    sent = 0
-    for item in ("m1", "m2"):  # two meeting utterances, named while meeting audio fed the engine
-        h.hub.feed(PeerAudio("meeting-audio", "meeting", b"\x01\x00" * 240))
-        sent += 1
-        assert _wait_for(lambda: len(engine.sent_of(AudioIn)) == sent)
-        engine.push(Caption(SPEAKER_OWNER, "", False, item))
+    h.hub.feed(PeerAudio("meeting-audio", "meeting", second))
+    h.hub.feed(PeerAudio("meeting-audio", "meeting", second))  # 0-2000 ms: the meeting
+    assert _wait_for(lambda: len(engine.sent_of(AudioIn)) == 2)
     h.hub.feed(PeerLeft("meeting-audio", "listen_stop"))
-    h.hub.control("context", text="after-leave-marker")
-    assert _wait_for(lambda: any(c.text == "after-leave-marker" for c in engine.sent_of(ContextItem)))
-    engine.push(Caption(SPEAKER_OWNER, "", False, "o1"))  # the owner alone, after the meeting left
-    for item, words in (("m2", "meeting words two"), ("m1", "meeting words one"), ("o1", "owner words")):
+    h.hub.feed(PeerAudio("owner-1", "owner", second))  # 2000-3000 ms: the owner alone
+    assert _wait_for(lambda: len(engine.sent_of(AudioIn)) == 3)
+    # The provider reports both meeting inputs and the owner's only now, after the meeting left.
+    engine.push(SpeechStarted("m1", 0))
+    engine.push(SpeechStarted("m2", 1000))
+    engine.push(SpeechStarted("o1", 2100))
+    for item, words in (("m2", "meeting words two"), ("o1", "owner words"), ("m1", "meeting words one")):
         engine.push(Caption(SPEAKER_OWNER, words, True, item))  # the captions land late, out of order
-    assert _wait_for(lambda: len(h.chat_rows()) == 1)
+    assert _wait_for(lambda: len(h.chat_rows()) == 1 and h.counts_heard() == 2)
     assert h.chat_rows()[0]["text"] == "owner words"
     heard = [m["content"] for m in h.messages if str(m.get("content")).startswith("[Heard in the call]")]
     assert heard == ["[Heard in the call] meeting words two", "[Heard in the call] meeting words one"]
-    assert h.hub.captions and all(c[1] for c in h.hub.captions)  # interim naming captions are not shown
     h.stop()
     h.finish()
 

@@ -153,7 +153,15 @@ class Caption:
 
 @dataclass(frozen=True)
 class SpeechStarted:
-    """The owner started speaking (the provider's turn detection)."""
+    """Input speech started (the provider's turn detection).
+
+    ``item_id`` names the input item and ``audio_start_ms`` its position in the
+    session's input audio, when the provider reports them; the host reads who fed
+    that stretch of audio from them.
+    """
+
+    item_id: str = ""
+    audio_start_ms: int = -1
 
 
 @dataclass(frozen=True)

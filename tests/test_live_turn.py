@@ -275,6 +275,9 @@ class Harness:
             raise self.error
         return self.result
 
+    def counts_heard(self) -> int:
+        return sum(str(m.get("content")).startswith("[Heard in the call]") for m in self.messages)
+
     def chat_rows(self) -> list:
         path = self.root / "logs" / "chat.jsonl"
         if not path.exists():

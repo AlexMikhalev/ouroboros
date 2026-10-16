@@ -171,11 +171,12 @@ class _LiveCall:
         # Whether meeting audio reached the engine since its last input caption: the
         # words of that caption came from the mix even if the meeting peer left meanwhile.
         self.meeting_audio_since_caption = False
-        # Who fed each input item, marked when the provider names it (at its speech start and
-        # commit): heard when meeting audio was sent since the previous mark or a meeting
-        # microphone was attached. Its final caption keeps that source however late it lands.
-        self.meeting_audio_since_mark = False
-        self.input_sources: Dict[str, bool] = {}
+        # The session's input audio as the provider counts it: where meeting audio sits in
+        # it and where each input item starts, so an item's speaker follows the audio that
+        # formed it however late its caption, its start or the meeting's departure arrive.
+        self.input_ms = 0.0
+        self.meeting_spans: List[Tuple[int, float, float]] = []  # (session epoch, start ms, end ms)
+        self.input_starts: Dict[str, Tuple[int, float]] = {}
         # Participants whose audio the platform reported flowing since the last heard
         # caption: exactly one names that utterance's speaker, otherwise it stays unnamed.
         self.voices_since_caption: set = set()
@@ -363,6 +364,7 @@ class _LiveCall:
                 log.debug("cancelled engine close failed", exc_info=True)
             raise
         self.engine, self.epoch, self.session_started = engine, self.epoch + 1, time.monotonic()
+        self.input_ms = 0.0  # a new session counts its input audio from zero
         self.hub.set_engine_rates(self.route.engine.input_rate, self.route.engine.output_rate)
         if self.empty_since is None and not self.hub.peers():
             # A call nobody attached to yet runs the same rejoin grace as one everyone left:
@@ -553,9 +555,13 @@ class _LiveCall:
         if isinstance(event, PeerAudio):
             if (self.engine is not None and not self.closing and not self.reconnecting
                     and event.peer_id not in self.muted_peers):
+                rate = self.route.engine.input_rate
+                duration = len(event.pcm) * 500 / rate
                 if event.role == PEER_MEETING:
-                    self.meeting_audio_since_caption = self.meeting_audio_since_mark = True
-                await self._send(AudioIn(pcm=event.pcm, rate=self.route.engine.input_rate))
+                    self.meeting_audio_since_caption = True
+                    self._note_meeting_audio(self.input_ms, self.input_ms + duration)
+                self.input_ms += duration
+                await self._send(AudioIn(pcm=event.pcm, rate=rate))
         elif isinstance(event, PeerControl):
             kind = str(event.message.get("type") or "")
             if kind == "played":
@@ -603,13 +609,12 @@ class _LiveCall:
                 self.spoken.setdefault(event.item_id, _Spoken()).audio_ms += len(event.pcm) * 500 / event.rate
                 self.hub.play(event.pcm, event.item_id)
         elif isinstance(event, Caption):
-            if event.speaker == SPEAKER_OWNER and not event.final and not event.text:
-                self._mark_input(event.item_id)  # the provider named an input item; no words yet
-            else:
-                self.hub.send_caption(event.speaker, event.text, event.final, event.item_id)
-                if event.final:
-                    self._on_final_caption(event)
+            self.hub.send_caption(event.speaker, event.text, event.final, event.item_id)
+            if event.final:
+                self._on_final_caption(event)
         elif isinstance(event, SpeechStarted):
+            if event.item_id and event.audio_start_ms >= 0:
+                self.input_starts[event.item_id] = (self.epoch, float(event.audio_start_ms))
             await self._barge_in()
         elif isinstance(event, ToolCall):
             self.tools_lane.enqueue(event, self.epoch, self.current_response)
@@ -675,10 +680,10 @@ class _LiveCall:
         text = str(event.text or "").strip()
         if not text:
             return
-        # Who spoke is the source marked for this input item; an item the provider never
-        # named falls back to what fed the engine since its last input caption: a meeting
-        # microphone attached, or meeting audio already sent (its peer may have left).
-        source = self.input_sources.pop(event.item_id, None) if event.speaker == SPEAKER_OWNER else None
+        # Who spoke is read from the audio that formed this input item; an item the provider
+        # never placed falls back to what fed the engine since its last input caption: a
+        # meeting microphone attached, or meeting audio already sent (its peer may have left).
+        source = self._input_source(event.item_id) if event.speaker == SPEAKER_OWNER else None
         heard = self.spec.presence_binding_id or (
             source if source is not None else (self.meeting_mics or self.meeting_audio_since_caption))
         if event.speaker == SPEAKER_OWNER:
@@ -700,11 +705,23 @@ class _LiveCall:
                 self._write_spoken_row(event.item_id)
             self.fanout.note(SPEAKER_OUROBOROS, text)
 
-    def _mark_input(self, item_id: str) -> None:
-        if item_id:
-            fed_by_meeting = bool(self.meeting_mics) or self.meeting_audio_since_mark
-            self.input_sources[item_id] = self.input_sources.get(item_id, False) or fed_by_meeting
-        self.meeting_audio_since_mark = False
+    def _note_meeting_audio(self, start: float, end: float) -> None:
+        if self.meeting_spans and self.meeting_spans[-1][0] == self.epoch and self.meeting_spans[-1][2] >= start:
+            self.meeting_spans[-1] = (self.epoch, self.meeting_spans[-1][1], end)
+        else:
+            self.meeting_spans.append((self.epoch, start, end))
+
+    def _input_source(self, item_id: str) -> Optional[bool]:
+        """Whether meeting audio fed this input item: from its start to the next item's start
+        (or to now while it is the latest); ``None`` when the provider never placed it."""
+        placed = self.input_starts.pop(item_id, None)
+        if placed is None:
+            return None
+        epoch, start = placed
+        later = [begin for session, begin in self.input_starts.values() if session == epoch and begin > start]
+        end = min(later) if later else (self.input_ms if epoch == self.epoch else float("inf"))
+        return any(session == epoch and begin < end and finish > start
+                   for session, begin, finish in self.meeting_spans)
 
     def _on_heard(self, text: str, item_id: str) -> None:
         """Input speech while meeting audio feeds the session (or in a Presence call).
