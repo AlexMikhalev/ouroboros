@@ -234,24 +234,19 @@ def get_tools() -> List[ToolEntry]:
             schema={
                 "name": "compact_context",
                 "description": (
-                    "Request complete-input context reclaim. "
-                    "Supply working_note for an authored view; inspect is optional. Main also supports "
-                    "restore_unit_refs alone and helper summarization of completed tool units without a note. "
-                    "Native review requires working_note (empty for restoration alone), runs no helper, "
+                    "Reclaim complete-input context with an authored working_note (inspect optional). Main also supports "
+                    "restore_unit_refs alone or helper summaries without a note. Native review runs no helper "
                     "and does not apply schema_names, review_notes or review_transfers. Its inspect response "
                     "reports window evidence, serialized characters and previous-request input, not current free tokens. "
-                    "An authored view addresses complete tool units, earlier records, your own "
-                    "completed replies and host prose rows (inspect lists them with kind and eligibility); the owner's "
+                    "Authored views address complete tool units, earlier records, your completed replies and host prose "
+                    "(inspect lists kind/eligibility); the owner's "
                     "words and your typed owner-directed dialogue, the assignment and the system view stay whole. "
-                    "Select exact keep_unit_ids or explicitly keep_last_n recent tool units raw; "
-                    "an authored note without either keeps all units. Earlier notes remain in place unless your exact "
-                    "keep selection replaces them; choose several for an explicit merged account. Rewriting can lose prefix-cache "
+                    "Earlier notes stay in place unless selected for replacement; select several to merge them. "
+                    "The note occupies the first replaced unit. Rewriting can lose prefix-cache "
                     "reuse from the earliest change: fold for space/clarity in useful batches, with a note shorter than its sources. "
                     "A selected older assistant tool call and all of its "
                     "contiguous matching results stay atomic; Ouroboros checkpoints their exact "
-                    "actor-visible bytes before replacing them with summaries whose metadata points "
-                    "to the checkpoint/CAS evidence. Active context becomes summarized; raw evidence "
-                    "remains retrievable through the recorded provenance (restore_unit_refs; an emergency "
+                    "actor-visible bytes before replacement, with checkpoint/CAS provenance. Raw evidence remains retrievable (restore_unit_refs; an emergency "
                     "record lists its checkpoint once and its member units separately)."
                 ),
                 "parameters": {
@@ -259,7 +254,7 @@ def get_tools() -> List[ToolEntry]:
                     "properties": {
                         "inspect": {"type": "boolean", "description": "Return and pin the last observed view revision, complete unit IDs, source references and current schema names without changing context."},
                         "expected_view_revision": {"type": "string", "description": "Optional view_revision from inspect, checked exactly. Omitted binds the actual model-send view that produced this call; inspect is not required to replace all completed units."},
-                        "working_note": {"type": "string", "description": "Your account of selected material, corrections and unresolved work, placed at its first replaced unit. Earlier notes remain unless selected too. Required in native review except inspect; Main can request helper compaction without it."},
+                        "working_note": {"type": "string", "description": "For a future reader without selected sources in view: preserve the source-supported situation and purpose behind conclusions, who decided what, its status within those sources, scope, changes, corrections and unresolved work. Distinguish inference and gaps; invent no detail. Later grants/cancellations supersede only their scope, not unaffected branches. Proposals are not approvals; do not retain obsolete restrictions after a later scoped approval. Be concise, no fixed template. Required in native review except inspect; Main may use a helper without it."},
                         "keep_unit_ids": {"type": "array", "items": {"type": "string"}, "description": "Exact inspected complete units to retain raw; takes precedence over keep_last_n, empty keeps none eligible. If both selectors are omitted, an authored note keeps all. Owner words, the assignment, the system view and the newer tail are preserved whatever the selection."},
                         "restore_unit_refs": {"type": "array", "items": {"type": "object", "properties": {
                             "checkpoint_ref": {"type": "object"}, "unit_id": {"type": "string"}, "raw_sha256": {"type": "string"}},
