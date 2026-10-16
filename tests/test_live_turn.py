@@ -368,11 +368,19 @@ def test_the_route_window_is_recorded_as_sourced_evidence_before_the_fit(tmp_pat
 
     route = resolve_call_route(_spec(), tmp_path)
     assert route.window_tokens == 128_000 and route.fact.session_cap_minutes == 60
+    assert route.fact.instructions_cap_tokens == 65_536 and "observed" in route.fact.instructions_cap_source
     evidence = window_evidence(tmp_path, _spec())
-    assert evidence["window_tokens"] == 128_000 and evidence["status"] == "confirmed"
-    assert "developers.openai.com" in evidence["detail"] and evidence["response_limit"]["max_output_tokens"] == 32_000
+    # A shipped documented fact is asserted evidence with its source and read date,
+    # never metadata the provider confirmed on the wire.
+    assert evidence["window_tokens"] == 128_000 and evidence["status"] == "asserted"
+    assert evidence["source"] == "documented_route_fact" and evidence["response_limit"]["source"] == "documented_route_fact"
+    assert evidence["response_limit"]["status"] == "asserted" and evidence["source"] != "provider_metadata"
+    assert "developers.openai.com" in evidence["detail"] and "read 2026-10-16" in evidence["detail"]
+    assert "instructions field ceiling 65536 tokens" in evidence["detail"]
+    assert evidence["response_limit"]["max_output_tokens"] == 32_000
     google = resolve_call_route(_spec(engine=ENGINE_GOOGLE, model="gemini-3.8-live"), tmp_path)
     assert google.window_tokens == 131_072 and google.fact.session_cap_minutes is None
+    assert google.fact.instructions_cap_tokens is None
     unknown = resolve_call_route(_spec(model="gpt-realtime-future"), tmp_path)
     assert unknown.fact is None and unknown.window_tokens is None and window_evidence(tmp_path, _spec(model="gpt-realtime-future")) is None
 
@@ -384,7 +392,8 @@ def test_call_context_plan_passes_the_known_window_and_the_call_view(monkeypatch
     task = {"id": "t", "metadata": {"live_call": _spec().as_metadata()}}
     assert live_call_route.call_context_plan({"id": "t", "metadata": {}}, None, tmp_path) is None
     with_window = live_call_route.call_context_plan(task, None, tmp_path)
-    assert with_window.fit_kwargs == {"known_window_tokens": 128_000}
+    # The realtime route's own window AND reply allowance, not Main's send cap.
+    assert with_window.fit_kwargs == {"known_window_tokens": 128_000, "known_output_reserve_tokens": 32_000}
     assert [s["function"]["name"] for s in with_window.tool_schemas] == ["web_search"]
     unknown = {"id": "t", "metadata": {"live_call": _spec(model="gpt-realtime-future").as_metadata()}}
     without = live_call_route.call_context_plan(unknown, None, tmp_path)

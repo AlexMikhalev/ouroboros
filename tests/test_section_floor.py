@@ -393,3 +393,52 @@ def test_new_host_savings_pay_the_refused_deficit_before_memory_steps(tmp_path):
         output_reserve=RESERVE, tool_schemas=[], refused_tokens=1_000)
     assert _host_facts(narrowed)
     assert narrowed.max_projection.memory_facts["floor"]["steps"] == {}
+
+
+def _presence_ceiling(*tool_names):
+    from ouroboros.presence_authority import build_presence_capability_ceiling, presence_ceiling_payload
+    from ouroboros.presence_capabilities import PresenceProfileResolution, PresenceSelection, PresenceToolTarget
+    from ouroboros.presence_runtime import ResolvedPresenceRuntime
+
+    targets = [PresenceToolTarget("builtin", name) for name in tool_names] or [PresenceToolTarget("builtin", "chat_history")]
+    resolution = PresenceProfileResolution(
+        active=tuple(PresenceSelection(f"{index + 1:064x}", target) for index, target in enumerate(targets)),
+        missing_required=(), missing_optional=(), orphaned=(), runtime=ResolvedPresenceRuntime("main", 10, 10, False),
+        profile_fingerprint="a" * 64, selection_fingerprint="b" * 64, required_selections_present=True)
+    ceiling = build_presence_capability_ceiling(skill_name="moderator", skill_content_hash="c" * 64,
+                                                state_fingerprint="d" * 64, resolution=resolution)
+    return {"capability_ceiling": presence_ceiling_payload(ceiling)}
+
+
+def test_host_sections_stay_whole_for_an_actor_that_could_not_read_a_pointer_back(tmp_path):
+    env = SimpleNamespace(drive_root=tmp_path)
+    # An owner turn (no ceiling) and a Presence ceiling that grants read_file: pointers resolve.
+    assert context._section_root_for(env, SimpleNamespace()) == str(tmp_path)
+    assert context._section_root_for(env, SimpleNamespace(task_contract=_presence_ceiling("read_file"))) == str(tmp_path)
+    # A Presence ceiling without read_file: a pointer would name a source this actor cannot
+    # open, so the preparation leaves its host sections whole (an empty section root).
+    assert context._section_root_for(env, SimpleNamespace(task_contract=_presence_ceiling())) == ""
+    assert context._section_root_for(env, SimpleNamespace(task_metadata={"task_contract": _presence_ceiling()})) == ""
+    # An unreadable carrier also keeps the sections whole rather than publishing a dead pointer.
+    assert context._section_root_for(env, SimpleNamespace(task_contract={"capability_ceiling": {"bad": 1}})) == ""
+    core = _core(tmp_path, [_service(size=12_000)], snapshot=syn.snapshot(story=syn.pages(2, 5_000)))
+    whole = dataclasses.replace(core, section_root="")
+    plan = _plan(whole, 128_000, "nano")
+    assert _host_facts(plan, "nano") == [] and "observed details" in _text(plan, "nano")
+    assert not (tmp_path / "state/context_views").exists()
+
+
+def test_a_known_route_reply_allowance_replaces_mains_reserve(tmp_path, monkeypatch):
+    core = _core(tmp_path, ["protected dynamic text"])
+    monkeypatch.setattr(fit, "main_output_reserve_tokens", lambda **_kw: 999)
+    env = SimpleNamespace(drive_root=tmp_path)
+    resolver = lambda *_a, **_kw: ({"provider": "test", "model": "synthetic"}, _evidence(128_000))
+    mains = fit.build_context_fit_plan(env, core, {"id": "task-1"}, preferred_mode="max", route_resolver=resolver,
+                                       known_window_tokens=128_000)
+    routes = fit.build_context_fit_plan(env, core, {"id": "task-1"}, preferred_mode="max", route_resolver=resolver,
+                                        known_window_tokens=128_000, known_output_reserve_tokens=32_000)
+    assert mains.output_reserve_tokens == 999 and routes.output_reserve_tokens == 32_000
+    for bad in (0, -1, True, 1.5):
+        with pytest.raises(ValueError, match="positive evidenced allowance"):
+            fit.build_context_fit_plan(env, core, {"id": "task-1"}, preferred_mode="max", route_resolver=resolver,
+                                       known_window_tokens=128_000, known_output_reserve_tokens=bad)

@@ -963,6 +963,25 @@ def build_recent_sections(memory: Memory, env: Any, task_id: str = "", project_i
     return sections
 
 
+def _section_root_for(env: Any, ctx: Any) -> str:
+    """Where relocated host sections are retained; empty when this actor could not read them back.
+
+    A section-floor pointer is a ``read_file(root='runtime_data', ...)``. A Presence
+    turn runs under its binding's capability ceiling; when that ceiling does not grant
+    ``read_file`` the pointer would name a source the actor cannot resolve, so its host
+    sections stay whole instead (BIBLE P1: a disclosure names a resolvable source).
+    """
+    try:
+        from ouroboros.presence_authority import presence_ceiling_allows_tool, presence_ceiling_from_context
+
+        ceiling = presence_ceiling_from_context(ctx)
+    except Exception:
+        log.debug("presence ceiling unreadable; host sections stay whole", exc_info=True)
+        return ""
+    if ceiling is not None and not presence_ceiling_allows_tool(ceiling, "read_file"):
+        return ""
+    return str(env.drive_root)
+
 
 def _capture_context_core(
     env: Any,
@@ -1207,7 +1226,7 @@ def _capture_context_core(
         dynamic_text="\n\n".join(dynamic_parts),
         dynamic_sections=capture_sections(dynamic_parts, prefix="dynamic"),
         dynamic_head_sections=capture_sections(head_parts, prefix="head"),
-        section_root=str(env.drive_root),
+        section_root=_section_root_for(env, ctx),
         section_task_id=str(task.get("id") or ""),
         user_content_json=json.dumps(
             build_user_content(task), ensure_ascii=False, sort_keys=True,
@@ -1282,6 +1301,7 @@ def build_context_fit_plan(
     ctx: Any = None,
     tool_schemas: Optional[List[Dict[str, Any]]] = None,
     known_window_tokens: Optional[int] = None,
+    known_output_reserve_tokens: Optional[int] = None,
 ) -> ContextFitPlan:
     """Compatibility wrapper over the cohesive context-fit implementation."""
     core = _capture_context_core(env, memory, task, review_context_builder, ctx)
@@ -1293,6 +1313,7 @@ def build_context_fit_plan(
         route_resolver=_context_fit_route,
         tool_schemas=tool_schemas,
         known_window_tokens=known_window_tokens,
+        known_output_reserve_tokens=known_output_reserve_tokens,
     )
 
 
@@ -1323,13 +1344,15 @@ def build_llm_messages(
     ctx: Any = None,
     *, tool_schemas: Optional[List[Dict[str, Any]]] = None,
     known_window_tokens: Optional[int] = None,
+    known_output_reserve_tokens: Optional[int] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """The first request of a task: the plan's projection for its starting mode, and the cap info.
 
     No model is called on this path: my memory is rendered, never prepared by a paid pass;
     a window too small for it addresses lines and pages instead.
-    ``known_window_tokens`` supplies capacity evidence for a caller-resolved route;
-    it never substitutes an owner target for unknown capacity.
+    ``known_window_tokens`` and ``known_output_reserve_tokens`` supply the capacity and
+    reply allowance of a caller-resolved route; they never substitute an owner target
+    for unknown capacity.
     """
     # Keep the legacy public shape while publishing the immutable plan on the
     # existing ToolContext for the ordinary loop.  Commit/scope reviewers do not
@@ -1343,6 +1366,7 @@ def build_llm_messages(
         ctx=ctx,
         tool_schemas=tool_schemas,
         known_window_tokens=known_window_tokens,
+        known_output_reserve_tokens=known_output_reserve_tokens,
     )
     if ctx is not None:
         ctx.context_fit_plan = plan

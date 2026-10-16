@@ -864,6 +864,7 @@ def build_context_fit_plan(
     route_resolver: Callable[..., Tuple[Dict[str, Any], Any]],
     tool_schemas: Optional[List[Dict[str, Any]]] = None,
     known_window_tokens: Optional[int] = None,
+    known_output_reserve_tokens: Optional[int] = None,
 ) -> ContextFitPlan:
     """Deterministically project one captured core into ordinary-task Max, Low and Nano.
 
@@ -871,6 +872,8 @@ def build_context_fit_plan(
     of its view, the tool schemas it would send (``tool_schemas``, Nano's selection of
     them) and its reply reserve; the physical floor decides what of my memory that
     mode shows only by address (``memory_floor.render_view_for_mode``).
+    ``known_output_reserve_tokens`` is a caller-resolved route's own reply allowance
+    (a live call's realtime route); without it the reserve is Main's send cap.
     """
     preferred = str(preferred_mode or "max").strip().lower()
     if preferred not in {"low", "max", "nano"}:
@@ -898,7 +901,13 @@ def build_context_fit_plan(
     # data-only fit representation to the high-level model loop.
     from ouroboros.capability_evidence import is_known
 
-    output_reserve = main_output_reserve_tokens(use_local=bool(route.get("use_local")), evidence=evidence)
+    if known_output_reserve_tokens is not None:
+        if (isinstance(known_output_reserve_tokens, bool) or not isinstance(known_output_reserve_tokens, int)
+                or known_output_reserve_tokens <= 0):
+            raise ValueError("known_output_reserve_tokens must be a positive evidenced allowance")
+        output_reserve = known_output_reserve_tokens
+    else:
+        output_reserve = main_output_reserve_tokens(use_local=bool(route.get("use_local")), evidence=evidence)
     # One observation store: witnesses are written at settlement into the
     # canonical host root, so a child task's own drive must not be consulted.
     ratio = _route_calibration_ratio(
