@@ -11,7 +11,7 @@ import logging
 import re
 import threading  # noqa: F401  (prior import surface)
 import time  # noqa: F401  (prior import surface)
-from typing import Any, Awaitable, Dict, List, Optional, Set, Tuple, overload
+from typing import Any, Awaitable, Dict, List, Optional, Set, Tuple
 
 from ouroboros.gateways.realtime_engine import EngineRoute, LiveEngine, SessionConfig
 
@@ -178,13 +178,7 @@ class LLMClient(
         self._async_remote_clients: Dict[Tuple[str, str, str, Tuple[Tuple[str, str], ...]], Any] = {}
         self._gigachat_clients: Dict[Tuple[str, str, str, str, str, bool], Any] = {}
 
-    @overload
-    def open_live(self, route: EngineRoute, config: None = None) -> LiveEngine: ...
-
-    @overload
-    def open_live(self, route: EngineRoute, config: SessionConfig) -> Awaitable[LiveEngine]: ...
-
-    def open_live(self, route: EngineRoute, config: Optional[SessionConfig] = None):
+    def open_live(self, route: EngineRoute, config: Optional[SessionConfig] = None) -> "LiveEngine | Awaitable[LiveEngine]":
         """Resolve a live engine before fitting, or await its configured opening.
 
         ``open_live(route)`` returns the frozen LiveEngine lifecycle; callers
