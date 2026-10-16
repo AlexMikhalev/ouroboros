@@ -391,6 +391,7 @@ function assertRoomFollowed(f, node) {
     assert.equal(feed.indexOf(next), feed.indexOf(node) + 1, 'it stands where the work began');
     assert.equal(f.part('w-1-c1', 'live-title').textContent, 'Audit the projects', 'the work keeps its first name');
     assert.equal(f.part('w-1-c1', 'live-phase').textContent, 'Working', 'the current episode owns the chip');
+    assert.equal(f.part('w-1-c1', 'live-activity').textContent, 'Continuing the audit.', 'and its own latest line');
     assert.ok(controls(f, 'w-1-c1').includes('Stop…'), 'and its controls');
     assert.ok(!controls(f, 'w-1-c1').includes('Continued'));
     const episodes = f.part('w-1-c1', 'live-episodes');

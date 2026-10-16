@@ -12,6 +12,7 @@
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
 import { taskDoneIsTerminal, taskPresentation, taskReasonDetail, taskTerminalPhase } from './log_events.js';
 import { fmt } from './i18n.js';
+import { projectCollapsedActivity, renderCollapsedActivity } from './chat_activity.js';
 
 export function admittedSuccessor(row) {
     const admitted = (link) => (link && typeof link === 'object' && link.state === 'admitted' ? link.successor_task_id : '');
@@ -122,7 +123,13 @@ export function createTaskEpisodes({ records, reanchor, activity, follow = () =>
             record.suggestedName = name;
             changed = true;
         }
-        if (name && record.titleEl.textContent !== name) { record.titleEl.textContent = name; changed = true; }
+        if (name && record.titleEl.textContent !== name) {
+            record.titleEl.textContent = name;
+            // An unnamed successor's own latest line stood in for its title; under the work's name it is the line again.
+            renderCollapsedActivity(record, projectCollapsedActivity({ suggestedName: name, headline: record.collapsedActivity,
+                previous: record.collapsedActivity }));
+            changed = true;
+        }
         for (const predecessor of chain) {
             if (!predecessor.root.hidden) { predecessor.root.hidden = true; changed = true; }
             predecessor.root.dataset.episodeOf = record.groupId;

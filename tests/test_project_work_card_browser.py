@@ -412,6 +412,7 @@ def test_room_card_follows_a_continue_pressed_in_the_room(project_chat, chat_id,
             return cards[at - 1]?.dataset.taskId === 'creation'; }""", SUCCESSOR), f"{label}: at the work's first place"
         expect(card.locator('[data-live-title]')).to_have_text("Review runner › integration")
         expect(card.locator('.chat-live-phase').first).to_have_text("Working")
+        expect(card.locator('[data-live-activity]')).to_have_text("Continuing the audit")
         expect(card.locator('.chat-live-actions > button')).to_have_text(["Reply", "Stop…"])
         episodes = card.locator('.chat-live-episode')
         expect(episodes).to_have_count(2)
