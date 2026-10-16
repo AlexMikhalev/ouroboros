@@ -13,6 +13,7 @@ import time
 import pytest
 
 from ouroboros.platform_layer import force_kill_pid, pid_is_alive
+from ouroboros.test_parallelism import WORKERS_ENV
 from ouroboros.settings_defaults import settings_env_keys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -473,11 +474,11 @@ def test_worker_count_respects_physical_room_and_the_parent_allocation(monkeypat
     monkeypatch.delenv(budget.NESTED_WORKERS_ENV, raising=False)
     peak = config.TEST_WORKER_PEAK_RSS_BYTES
     monkeypatch.setattr(budget, "physical_memory", lambda: budget.MemorySnapshot(10 * peak, 4 * peak))
-    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "1")
+    monkeypatch.setenv(WORKERS_ENV, "1")
     assert pr._preflight_worker_count() == 1
-    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "0")
+    monkeypatch.setenv(WORKERS_ENV, "0")
     assert pr._preflight_worker_count() == 1
-    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "16")
+    monkeypatch.setenv(WORKERS_ENV, "16")
     assert pr._preflight_worker_count() == 3
     monkeypatch.setenv(budget.NESTED_WORKERS_ENV, "2")
     assert pr._preflight_worker_count() == 2
@@ -541,14 +542,14 @@ def test_the_gate_pins_the_worker_count_it_verified(tmp_path, monkeypatch):
     the operator environment happened to say."""
     from ouroboros import preflight_runner as pr
 
-    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "3")
+    monkeypatch.setenv(WORKERS_ENV, "3")
     monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "3")
     monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", "1")
     env = pr._preflight_env(tmp_path / "root", tmp_path / "root" / "repo")
     assert env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
     # ...and the seam itself is OUROBOROS_*, so the scrub removes it first: a
     # candidate test can neither read nor re-lower it.
-    assert pr._PREFLIGHT_WORKERS_ENV not in env
+    assert WORKERS_ENV not in env
 
 
 def test_the_worker_probe_is_prepended_to_pythonpath(tmp_path, monkeypatch):

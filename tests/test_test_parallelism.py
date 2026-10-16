@@ -30,6 +30,7 @@ def test_native_memory_reports_reclaimable_bytes_without_double_counting(monkeyp
         monkeypatch.setattr(budget, "_native_output", lambda argv: next(outputs))
     elif platform == "linux":
         monkeypatch.setattr(budget.Path, "read_text", lambda self, **kwargs: "MemTotal: 64 kB\nMemAvailable: 24 kB\n")
+        monkeypatch.setattr(budget.Path, "is_file", lambda self: False)  # no cgroup limit on this host
     else:
         monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(
             virtual_memory=lambda: SimpleNamespace(total=65536, available=24576)))
@@ -146,6 +147,23 @@ def _run_pytest(tmp_path, files, *, workers, extra=(), owned=True):
     return code, evidence, log.read_text(encoding="utf-8"), time.monotonic() - started
 
 
+def test_a_cgroup_limit_bounds_physical_memory_and_credits_reclaimable_cache(monkeypatch):
+    gib = 1024 ** 3
+    files = {"/proc/meminfo": "MemTotal: 33554432 kB\nMemAvailable: 16777216 kB\n",  # a 32 GiB host, 16 free
+             "/sys/fs/cgroup/memory.max": f"{4 * gib}\n",  # a 4 GiB container
+             "/sys/fs/cgroup/memory.current": f"{3 * gib}\n",  # 3 GiB charged, 1 GiB of it file cache
+             "/sys/fs/cgroup/memory.stat": f"anon {2 * gib}\ninactive_file {gib}\n"}
+    read_text, is_file = Path.read_text, Path.is_file
+    monkeypatch.setattr(budget, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: files[str(self)] if str(self) in files
+                        else read_text(self, *a, **k))
+    monkeypatch.setattr(Path, "is_file", lambda self: str(self) in files or is_file(self))
+    memory = budget.physical_memory()
+    assert (memory.total_bytes, memory.available_bytes) == (4 * gib, 2 * gib)  # the cap, minus anon only
+    del files["/sys/fs/cgroup/memory.stat"]  # without the stat file the cache is not credited
+    assert budget.physical_memory().available_bytes == gib
+
+
 @pytest.mark.parametrize("slots", [1, 2])
 def test_generated_pytest_entry_obeys_nested_allocation(tmp_path, slots):
     workers = tmp_path / "workers"
@@ -239,7 +257,7 @@ def test_unowned_worker_death_lets_running_tests_finish(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("phase", ["collection", "idle"])
 def test_worker_death_without_an_active_case_stops_other_workers(tmp_path, phase):
-    finished = tmp_path / "other-worker-finished"
+    finished, fast = tmp_path / "other-worker-finished", tmp_path / "fast-worker"
     hook = "pytest_collection" if phase == "collection" else "pytest_sessionfinish"
     code, evidence, output, _ = _run_pytest(tmp_path, {
         "conftest.py": f"""
@@ -247,13 +265,22 @@ def test_worker_death_without_an_active_case_stops_other_workers(tmp_path, phase
             from pathlib import Path
             def {hook}(session):
                 worker = getattr(session.config, 'workerinput', {{}}).get('workerid')
-                if worker == 'gw0':
+                # Idle: the worker that ran the fast module dies while the other still sleeps;
+                # which worker loadscope hands that module to is not fixed.
+                dies = (Path({str(fast)!r}).exists() and Path({str(fast)!r}).read_text(encoding='utf-8') == worker
+                        if {phase!r} == 'idle' else worker == 'gw0')
+                if dies:
                     os._exit(7)
                 if worker == 'gw1' and {phase!r} == 'collection':
                     time.sleep(40)
                     Path({str(finished)!r}).write_text('finished', encoding='utf-8')
         """,
-        "test_0_fast.py": "def test_fast(): assert True\n",
+        "test_0_fast.py": f"""
+            import os
+            from pathlib import Path
+            def test_fast():
+                Path({str(fast)!r}).write_text(os.environ['PYTEST_XDIST_WORKER'], encoding='utf-8')
+        """,
         "test_1_wait.py": f"""
             import time
             from pathlib import Path
@@ -264,7 +291,7 @@ def test_worker_death_without_an_active_case_stops_other_workers(tmp_path, phase
     }, workers=2)
     assert code != 0 and not finished.exists(), output
     data = json.loads((evidence / "results.json").read_text(encoding="utf-8"))
-    assert data["worker_crash"]["worker"] == "gw0"
+    assert data["worker_crash"]["worker"] == (fast.read_text(encoding="utf-8") if phase == "idle" else "gw0")
     assert data["worker_crash"]["collection_available"] is (phase == "idle")
     if phase == "idle":
         assert data["worker_crash"]["unfinished"] == ["test_1_wait.py::test_wait"]

@@ -64,7 +64,7 @@ OUROBOROS_RUN_UI_SMOKE=1 OUROBOROS_EXPECT_BROWSER_ENGINES=chromium,webkit \
 
 ### The tiered commit and CI gates
 
-Ordinary `commit_reviewed` runs the floor in `test_selection.FLOOR_TESTS`, changed test modules, direct AST importers of changed product modules, and authored widening. Each floor entry names its invariant; missing or empty modules block. Selection reads the assembled candidate, dirty/untracked files included, against `HEAD` before commit and `HEAD~1` afterwards. PR CI on every OS uses the same selector against the PR base; Windows leaves a full escalation to its landed shards.
+Ordinary `commit_reviewed` runs the floor in `test_selection.FLOOR_TESTS`, changed test modules, direct AST importers of changed product modules, and authored widening. Each floor entry names its invariant; missing or empty modules block. Selection reads the assembled candidate, dirty/untracked files included, against `HEAD` before commit and `HEAD~1` afterwards. PR CI on every OS uses the same selector against the PR base; on a full escalation Windows runs the floor and leaves the rest to its landed shards.
 
 Imports are a minimum: `extra_tests` covers indirect/dynamic consumers, prompts, skills and cross-language effects; `full_tests` covers unresolved impact. Both require `test_reason`, retained in the commit record. Verifier changes force full: runner/selector, floor, shared test helpers or data, pytest configuration, and dependency locks beyond a release bump. Product fan-out alone never triggers a threshold. Records name tier, candidate/base/policy and reasons, with execution counts; missing or duplicate execution blocks.
 

@@ -775,7 +775,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 377 -> 379 (live calls): the direct-route price catalog cache ``state/pricing/litellm.json``
 # (``ouroboros/pricing_catalog.py``; a section-2 row) and the small-window section captures
 # ``state/context_views/*/*/*.md`` (``ouroboros/section_floor.py``; a section-4 row).
-EXPECTED_SCAN_PATHS = 379
+# 379 -> 380 (test health): adoption reads the receipt directory ``state/preflight_receipts``
+# (``ouroboros/preflight_qualification.py``; the existing receipts row).
+EXPECTED_SCAN_PATHS = 380
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

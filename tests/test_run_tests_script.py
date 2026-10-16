@@ -181,26 +181,28 @@ def test_the_node_option_runs_only_the_owned_node_lane(run_tests, monkeypatch):
 
 
 @pytest.mark.parametrize("tier", ["full", "selected"])
-def test_a_deferred_full_escalation_runs_nothing_and_says_so(run_tests, monkeypatch, tmp_path, tier):
+def test_a_deferred_full_escalation_runs_the_floor_and_says_so(run_tests, monkeypatch, tmp_path, tier):
     from ouroboros import test_selection
 
     chosen = test_selection.TestSelection(
         tier, "base", ("tests/test_floor.py",), (("tests/conftest.py", "verification apparatus changed"),),
         ("tests/conftest.py",), "policy", 3)
     monkeypatch.setattr(test_selection, "select_tests", lambda *a, **k: chosen)
-    summary, outputs, ran = tmp_path / "summary.md", tmp_path / "outputs", []
+    summary, ran = tmp_path / "summary.md", []
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-    monkeypatch.setenv("GITHUB_OUTPUT", str(outputs))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "outputs"))
     monkeypatch.setattr(run_tests, "_node_lane", lambda: ran.append("node") or 0)
-    monkeypatch.setattr(run_tests, "_run", lambda label, argv, cwd: ran.append(label) or 0)
-    code = run_tests.main(["--selected", "--defer-full", "--evidence-dir", str(tmp_path / "evidence")])
+    monkeypatch.setattr(run_tests, "_run", lambda label, argv, cwd: ran.append((label, argv)) or 0)
+    run_tests.main(["--selected", "--defer-full", "--evidence-dir", str(tmp_path / "evidence")])
     record = json.loads((tmp_path / "evidence" / "selection.json").read_text(encoding="utf-8"))
-    if tier == "full":
-        assert code == 0 and ran == [] and record["outcome"] == "deferred"
+    assert ran[0] == "node" and ran[1][0] == "parallel"  # the leg still runs the Node lane and a pytest pass
+    if tier == "full":  # the PR minimum runs here; the rest goes to the landed shards
+        assert record["deferred_full"] is True and record["files"] == sorted(test_selection.FLOOR_TESTS)
+        assert all(path in ran[1][1] for path in test_selection.FLOOR_TESTS)
         assert "tests/conftest.py: verification apparatus changed" in summary.read_text(encoding="utf-8")
-        assert outputs.read_text(encoding="utf-8") == "parallel_outcome=skipped\nserial_outcome=skipped\n"
-    else:  # the selected scope still runs on the deferring leg
-        assert ran[0] == "node" and "parallel" in ran
+    else:
+        assert "deferred_full" not in record and record["files"] == ["tests/test_floor.py"]
+        assert not summary.exists()
 
 
 def test_sequential_with_pytest_arguments_is_refused(run_tests, monkeypatch):

@@ -179,9 +179,10 @@ def test_actual_exit_consumers_keep_blocked_discovery_visible_then_accept_exit(r
     import server
     from ouroboros import body_adoption
     from tests.test_body_adoption_consumers import EXITED
-    from tests.body_candidate_support import make_serving, make_ctx, rich_commit, restart_receipt
+    from tests.body_candidate_support import make_serving, make_ctx, rich_commit, restart_receipt, stub_adoption_evidence
     from ouroboros import body_candidate, body_switch
 
+    stub_adoption_evidence(monkeypatch)  # this test exits maintenance, not the test battery
     serving = make_serving(root.parent / "body")
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "pro")
     # These are disposable repositories/data, never the installation.

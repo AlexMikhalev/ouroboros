@@ -202,7 +202,7 @@ jobs:
   # Pull requests on Windows and macOS: the same selected scope as quick-test
   # (contract floor, affected modules, complete Node lane), so a platform break
   # in the changed area shows before the merge. The full matrix runs after it;
-  # a full escalation on Windows is left to its four landed shards (--defer-full).
+  # on Windows a full escalation runs the floor and leaves the rest to its four landed shards (--defer-full).
   # ──────────────────────────────────────────────────────────────────
   pr-selected-os:
     if: ${{ github.event_name == 'pull_request' && github.base_ref == 'ouroboros' }}

@@ -445,14 +445,13 @@ def preflight_test_workload(
     from ouroboros.process_containment import CONTAINMENT_ENV_PREFIX
     from ouroboros.test_environment import default_temp_parent
     from ouroboros.preflight_inventory import MODULE, selection_passes
-    from ouroboros.test_parallelism import NESTED_WORKERS_ENV, requested_workers
+    from ouroboros.test_parallelism import requested_workers
 
     base = default_temp_parent() / "ouroboros-preflight-contract"
-    env = pr._preflight_env(base, base / "repo", create=False)
     # The workload names the requested worker count. The count free memory admits
     # is an execution fact frozen in the run's own probe, so a memory sample never
-    # changes what a proof covers.
-    env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = env[NESTED_WORKERS_ENV] = str(requested_workers(os.cpu_count() or 1))
+    # changes what a proof covers, and naming the workload reads no memory at all.
+    env = pr._preflight_env(base, base / "repo", create=False, workers=requested_workers(os.cpu_count() or 1))
     # Containment membership stays in the child env (an outer reap must see the
     # tree), but its keys are per-launch nonces, not test inputs.
     environment = hashlib.sha256(json.dumps({key: value for key, value in env.items()

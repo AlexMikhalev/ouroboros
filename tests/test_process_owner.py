@@ -256,7 +256,32 @@ def test_an_unavailable_sampler_degrades_the_watch_instead_of_failing_the_run(ow
     container, proc = owned("import time; time.sleep(1)", lifeline=True, overload=True)
     assert proc.wait(timeout=15) == 0  # the healthy run is not stopped
     assert container.reap() == ""
-    assert "running without the memory stop" in capfd.readouterr().err
+    assert "the memory stop skips it" in capfd.readouterr().err
+
+
+def test_a_transient_sample_failure_does_not_end_the_watch(tmp_path, owned, sentinel, monkeypatch, capfd):
+    from ouroboros import config, process_overload, test_parallelism
+
+    monkeypatch.setattr(test_parallelism, "memory_budget", lambda memory: 32 * 1024 * 1024)
+    monkeypatch.setattr(config, "TEST_WORKER_PEAK_RSS_BYTES", 8 * 1024 * 1024)
+    monkeypatch.setattr(config, "TEST_PROCESS_SAMPLE_SEC", 0.05)
+    real, calls = process_overload.member_memory, []
+
+    def flaky(container, detached=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired("ps", 5)  # one sample lost to a loaded host
+        return real(container, detached)
+
+    monkeypatch.setattr(process_overload, "member_memory", flaky)
+    receipt = tmp_path / "allocator.json"
+    container, proc = owned(_child_code(receipt, allocate=True), lifeline=True, overload=True)
+    child = _read(receipt)
+    proc.wait(timeout=15)
+    diagnostic = container.reap()
+    assert "overload_stop" in diagnostic and f"largest pid={child[0]}" in diagnostic  # the runaway still stops
+    assert len(calls) > 1 and "the memory stop skips it" in capfd.readouterr().err
+    assert _live(sentinel)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows membership is the held Job, read every sample")

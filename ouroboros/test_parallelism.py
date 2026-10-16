@@ -53,10 +53,17 @@ def physical_memory() -> Optional[MemorySnapshot]:
             fields = {name: int(value.split()[0]) * 1024 for name, value in
                       (line.split(":", 1) for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines())}
             total, available = fields["MemTotal"], fields["MemAvailable"]
-            # Inside a container, its cgroup v2 limit is the physical room, not the host's RAM.
+            # Inside a container, its cgroup v2 limit is the physical room, not the host's RAM;
+            # reclaimable file cache counts as room, as MemAvailable counts it on the host.
             limit = Path("/sys/fs/cgroup/memory.max")
             if limit.is_file() and (cap := limit.read_text(encoding="ascii").strip()) != "max":
                 used = int(Path("/sys/fs/cgroup/memory.current").read_text(encoding="ascii"))
+                try:
+                    stat = dict(line.split() for line in Path("/sys/fs/cgroup/memory.stat").read_text(
+                        encoding="ascii").splitlines() if len(line.split()) == 2)
+                except OSError:
+                    stat = {}
+                used = max(0, used - int(stat.get("inactive_file", 0)))
                 total, available = min(total, int(cap)), min(available, max(0, int(cap) - used))
         else:
             return None

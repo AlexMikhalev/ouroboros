@@ -476,7 +476,6 @@ def _copy_untracked(repo_dir: pathlib.Path, worktree: pathlib.Path) -> None:
 # concurrency. The host freezes its admitted count beside the nonce probe, so
 # a later memory sample cannot change the pass's expected evidence.
 _MIN_PREFLIGHT_WORKERS = 2
-from ouroboros.test_parallelism import WORKERS_ENV as _PREFLIGHT_WORKERS_ENV  # noqa: F401 (compatibility name)
 
 
 def _preflight_worker_count() -> int:
@@ -569,7 +568,8 @@ def _observed_worker_ids(temp_root: pathlib.Path) -> set:
         return set()
 
 
-def _preflight_env(temp_root: pathlib.Path, repo_worktree: pathlib.Path, *, create=True) -> dict:
+def _preflight_env(temp_root: pathlib.Path, repo_worktree: pathlib.Path, *, create=True,
+                   workers: Optional[int] = None) -> dict:
     from ouroboros.test_environment import isolated_environment, without_launch_descriptors
     from ouroboros.preflight_node import node_environment
     from ouroboros.test_parallelism import NESTED_WORKERS_ENV
@@ -586,7 +586,7 @@ def _preflight_env(temp_root: pathlib.Path, repo_worktree: pathlib.Path, *, crea
     # Re-injected AFTER the scrub, so `-n auto` resolves to a count this process
     # chose rather than one the operator environment happened to carry. Inert for
     # the serial/legacy passes, which pass no `-n` at all.
-    env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = str(_allocated_worker_count(temp_root))
+    env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = str(_allocated_worker_count(temp_root) if workers is None else workers)
     env[NESTED_WORKERS_ENV] = env["PYTEST_XDIST_AUTO_NUM_WORKERS"]
     return env
 

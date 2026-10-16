@@ -143,12 +143,19 @@ class OverloadWatch:
         from ouroboros.test_parallelism import physical_memory
 
         detached, scanned = None, None
-        try:
-            while not self._done.is_set():
+        while not self._done.is_set():
+            try:
                 if not pl.IS_WINDOWS and (scanned is None or time.monotonic() - scanned >= TEST_PROCESS_TOKEN_SCAN_SEC):
                     detached, scanned = token_members(self._container), time.monotonic()
                 members = member_memory(self._container, detached)
                 memory = physical_memory()
+            except Exception as exc:
+                # A sample this host cannot take is skipped (said once); it never fails a
+                # healthy run or ends the watch. The tree is still owned and reaped.
+                if not self.degraded:
+                    self.degraded = f"overload watch sample failed, the memory stop skips it: {exc}"
+                    print(self.degraded, file=sys.stderr, flush=True)
+            else:
                 total = sum(member.rss_bytes for member in members)
                 reserve = int(memory.total_bytes * TEST_MEMORY_RESERVE_FRACTION) if memory else 0
                 why = stop_reason(total, memory, limit=self.limit_bytes, floor=self.floor_bytes, reserve=reserve)
@@ -159,15 +166,13 @@ class OverloadWatch:
                         f"available={memory.available_bytes if memory else 'unknown'} reserve={reserve}; "
                         f"largest pid={largest.pid} name={largest.name!r} rss={largest.rss_bytes}"
                     )
-                    self._container.stop_tree()
+                    try:
+                        self._container.stop_tree()
+                    except Exception as exc:
+                        self.diagnostic += f"; tree stop unconfirmed: {exc}"
                     return
-                if self._done.wait(self._interval):
-                    return
-        except Exception as exc:
-            # A sampler this host cannot run switches the memory stop off for this run,
-            # loudly; it never fails a healthy run. The tree is still owned and reaped.
-            self.degraded = f"overload watch unavailable, running without the memory stop: {exc}"
-            print(self.degraded, file=sys.stderr, flush=True)
+            if self._done.wait(self._interval):
+                return
 
     def stop(self) -> str:
         self._done.set()

@@ -160,9 +160,9 @@ def _selected(args, evidence) -> int:
     output.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     print(f"=== selection evidence: {output}", flush=True)
     if args.defer_full and selection.tier == "full":
-        record["outcome"] = "deferred"
+        selection = _defer_full(selection)
+        record = {**selection.record(), "inventory": {}, "outcomes": record["outcomes"], "deferred_full": True}
         output.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-        return _defer_full(selection)
     code = _node_lane()
     previous = os.environ.get("PYTHONPATH")
     completed = False
@@ -202,18 +202,24 @@ def _selected(args, evidence) -> int:
     return code
 
 
-def _defer_full(selection) -> int:
-    """A full escalation this leg cannot finish (Windows runs full in four landed shards)."""
+def _defer_full(selection):
+    """A full escalation this leg cannot finish (Windows runs full in four landed shards).
+
+    The leg still runs the PR minimum, the contract floor and the Node lane, and says
+    what it left to the landed matrix.
+    """
+    import dataclasses
+
+    from ouroboros.test_selection import FLOOR_TESTS
+
     why = "; ".join(f"{path}: {reason}" for path, reason in selection.reasons
                     if reason == "verification apparatus changed" or reason.startswith("author requested full"))
-    note = f"full scope deferred to the landed matrix, nothing ran on this leg ({why})"
+    note = f"full scope deferred to the landed matrix; this leg runs the contract floor and the Node lane ({why})"
     print(f"=== {note}", flush=True)
-    for name, text in (("GITHUB_STEP_SUMMARY", f"**{note}**\n"),
-                       ("GITHUB_OUTPUT", "parallel_outcome=skipped\nserial_outcome=skipped\n")):
-        if destination := os.environ.get(name):
-            with open(destination, "a", encoding="utf-8") as stream:
-                stream.write(text)
-    return 0
+    if destination := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(destination, "a", encoding="utf-8") as stream:
+            stream.write(f"**{note}**\n")
+    return dataclasses.replace(selection, tier="selected", files=tuple(sorted(FLOOR_TESTS)))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -225,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--full-tests", action="store_true", help="widen --selected to the full battery")
     parser.add_argument("--test-reason", default="", help="reason for authored widening")
     parser.add_argument("--defer-full", action="store_true",
-                        help="with --selected: report a full escalation and run nothing (a leg that cannot finish it)")
+                        help="with --selected: on a full escalation run only the floor and Node lane, and say so")
     parser.add_argument("--node", action="store_true", help="only the complete Node lane, owned like every pass")
     parser.add_argument("--evidence-dir", type=pathlib.Path,
                         help="write pytest diagnostics under DIR/<phase>; never inherited by nested pytest",
