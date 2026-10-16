@@ -21,9 +21,11 @@ from typing import Any
 
 from ouroboros import call_protocol as cp
 
-# Physical transport bounds: one second of buffered PCM per track, 50 output
-# frames, 128 pending controls, and a finite peer/track set per admitted call.
+# Physical transport bounds: one second of capture per track; ten seconds of
+# outbound PCM to absorb faster-than-playback provider bursts before socket
+# drainage (under 1 MiB per peer at 48 kHz); bounded controls and peer/track sets.
 AUDIO_QUEUE_FRAMES = 50
+OUTPUT_QUEUE_FRAMES = 500
 CONTROL_QUEUE_MESSAGES = 128
 MAX_PEERS = 32
 MAX_STREAMS = 16
@@ -129,8 +131,8 @@ class PeerGrant:
 
 class LiveCallHub(cp.CallHub):
     def __init__(self, spec: cp.CallSpec, *, audio_queue_frames: int = AUDIO_QUEUE_FRAMES,
-                 control_queue_messages: int = CONTROL_QUEUE_MESSAGES):
-        if audio_queue_frames < 1 or control_queue_messages < 1:
+                 control_queue_messages: int = CONTROL_QUEUE_MESSAGES, output_queue_frames: int = OUTPUT_QUEUE_FRAMES):
+        if audio_queue_frames < 1 or control_queue_messages < 1 or output_queue_frames < 1:
             raise ValueError("queue bounds must be positive")
         self.spec, self.call_id = spec, spec.call_id
         self._condition = threading.Condition(threading.RLock())
@@ -138,6 +140,7 @@ class LiveCallHub(cp.CallHub):
         self._grants: dict[tuple[str, str], PeerGrant] = {}
         self._events: deque = deque()
         self._audio_limit, self._control_limit = audio_queue_frames, control_queue_messages
+        self._output_limit = output_queue_frames
         self._input_rate = 16000 if spec.engine == "google" else 24000
         self._output_rate = 24000
         self._epoch = 0
@@ -202,7 +205,7 @@ class LiveCallHub(cp.CallHub):
             return
         audio = isinstance(message, bytes)
         count = sum(isinstance(m, bytes) == audio for m in peer.outgoing)
-        limit = self._audio_limit if audio else self._control_limit
+        limit = self._output_limit if audio else self._control_limit
         if count >= limit:
             if not audio:
                 peer.failure = "control_queue_full"

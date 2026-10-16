@@ -80,13 +80,13 @@ class Evidence:
         self.root, self.rows = root, []
         self.started = time.monotonic()
         self.lock = threading.Lock()
+        self.stream = (root / "observations.jsonl").open("a", encoding="utf-8", buffering=1)
 
     def note(self, kind: str, **fields) -> dict:
         row = {"at": time.monotonic() - self.started, "kind": kind, **fields}
         with self.lock:
             self.rows.append(row)
-            with (self.root / "observations.jsonl").open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+            self.stream.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
         return row
 
     def of(self, kind: str, since: float = 0) -> list[dict]:
@@ -125,9 +125,11 @@ class ObservedEngine:
         except ImportError:
             from ouroboros.utils import estimate_tokens
             tokens, method = estimate_tokens(instructions), "host_estimate_chars_div_4"
-        (self.evidence.root / "instructions.txt").write_text(instructions, encoding="utf-8")
+        name = f"instructions-{len(self.evidence.of('session_config')) + 1}.txt"
+        (self.evidence.root / name).write_text(instructions, encoding="utf-8")
         facts = dict(getattr(self.ctx, "memory_view_facts", {}) or {})
-        self.evidence.note("session_config", instruction_tokens=tokens,
+        self.evidence.note("session_config", instruction_tokens=tokens, instructions_ref=name,
+                           rendered_mode=getattr(self.ctx, "active_context_mode", "unknown"),
                            tokenizer=method, instruction_sha256=hashlib.sha256(instructions.encode()).hexdigest(),
                            memory_view=facts, host_sections_addressed=facts.get("host_sections_addressed", []),
                            tools=[t["function"]["name"] for t in config.tools], route=asdict(config.route))
@@ -167,6 +169,7 @@ class OwnerPeer:
         self.peer_id, self.item, self.seq = "probe-owner", "", 0
         self.pending, self.played = deque(), {}
         self.next_play = time.monotonic()
+        self.speaking, self.next_capture = False, time.monotonic()
         hub.join(PeerInfo(self.peer_id, "owner", True, True, "Synthetic owner"), RATE)
 
     def control(self, **message):
@@ -177,6 +180,10 @@ class OwnerPeer:
 
         with (self.evidence.root / "output.pcm").open("wb") as stream:
             while True:
+                if (not self.speaking and not self.hub.closed and self.evidence.of("Ready")
+                        and time.monotonic() >= self.next_capture):
+                    self.capture(bytes(FRAME_BYTES))
+                    self.next_capture = time.monotonic() + .02
                 message = self.hub.next_outgoing(self.peer_id)
                 if isinstance(message, bytes):
                     frame = decode_frame(message)
@@ -203,22 +210,29 @@ class OwnerPeer:
                         return
                     await asyncio.sleep(.005)
 
-    async def speak(self, pcm: bytes, label: str):
+    def capture(self, pcm: bytes):
         from ouroboros.call_protocol import AudioFrame, FRAME_AUDIO_IN, decode_frame, encode_frame
 
+        frame = AudioFrame(FRAME_AUDIO_IN, self.hub.epoch, self.seq, RATE, 0, pcm)
+        self.hub.receive_audio(self.peer_id, decode_frame(encode_frame(frame)))
+        self.seq += 1
+
+    async def speak(self, pcm: bytes, label: str):
+
         self.evidence.note("speech_start", label=label)
+        self.speaking = True
         start = time.monotonic()
         # A real microphone also sends quiet frames; VAD needs the trailing silence.
         audio = pcm + bytes(RATE * 2)
         for offset in range(0, len(audio), FRAME_BYTES):
             if self.hub.closed:
                 raise RuntimeError("call closed while sending speech")
-            frame = AudioFrame(FRAME_AUDIO_IN, self.hub.epoch, self.seq, RATE, 0, audio[offset:offset + FRAME_BYTES])
-            self.hub.receive_audio(self.peer_id, decode_frame(encode_frame(frame)))
-            self.seq += 1
-            await asyncio.sleep(max(0, start + (offset + len(frame.pcm)) / (RATE * 2) - time.monotonic()))
+            frame = audio[offset:offset + FRAME_BYTES]
+            self.capture(frame)
+            await asyncio.sleep(max(0, start + (offset + len(frame)) / (RATE * 2) - time.monotonic()))
             if offset < len(pcm) <= offset + FRAME_BYTES:
                 self.evidence.note("speech_end", label=label)
+        self.speaking = False
 
 
 def synthesize(root: Path, label: str, key: str) -> bytes:
@@ -244,6 +258,8 @@ def synthesize(root: Path, label: str, key: str) -> bytes:
             response.raise_for_status()
             for line in response.iter_lines():
                 if line.startswith(b"data: "):
+                    if line[6:].strip() == b"[DONE]":
+                        break
                     event = json.loads(line[6:])
                     if event.get("type") == "speech.audio.delta":
                         audio.extend(base64.b64decode(event["audio"], validate=True))
@@ -261,6 +277,24 @@ def synthesize(root: Path, label: str, key: str) -> bytes:
     (root / f"input-{label}.pcm").write_bytes(audio)
     write_json(root / f"input-{label}.json", {"text": SPEECH[label], "usage": usage, "seconds": len(audio) / (2 * RATE)})
     return bytes(audio)
+
+
+def speech_fixture(root: Path, label: str, key: str, reuse: str | None) -> bytes:
+    """Reuse an exact saved synthetic utterance to avoid paying for repeat diagnostics."""
+    if reuse:
+        source = Path(reuse).resolve()
+        if not source.is_relative_to(Path("/tmp").resolve()):
+            raise ValueError("fixture reuse is restricted to the isolated /tmp runs")
+        metadata = source / f"input-{label}.json"
+        if metadata.exists():
+            meta = json.loads(metadata.read_text())
+            pcm = (source / f"input-{label}.pcm").read_bytes()
+            if meta.get("text") != SPEECH[label] or not pcm or len(pcm) % 2:
+                raise ValueError("saved fixture does not match the scenario")
+            (root / f"input-{label}.pcm").write_bytes(pcm)
+            write_json(root / f"input-{label}.json", {**meta, "reused_from": str(metadata)})
+            return pcm
+    return synthesize(root, label, key)
 
 
 def money_evidence(rows: list[dict], events: list[dict], engine: str) -> tuple[bool, dict]:
@@ -283,6 +317,8 @@ def money_evidence(rows: list[dict], events: list[dict], engine: str) -> tuple[b
             errors.append("catalog quote unavailable: " + row["attempt_id"])
         if row.get("cost_usd") is None:
             errors.append("unpriced modalities: " + row["attempt_id"])
+        if row in responses and not all(row.get(k) for k in ("ts_reserved", "ts_dispatched", "ts_final")):
+            errors.append("missing reservation/dispatch/settlement proof: " + row["attempt_id"])
     if engine == "openai" and not transcriptions:
         errors.append("no separate transcription attempt")
     unknown = [r["attempt_id"] for r in rows if r.get("cost_usd") is None]
@@ -317,11 +353,23 @@ class Probe:
 
     async def speech_case(self, name, audio):
         since = self.evidence.note("scenario_start", scenario=name)["at"]
+        before_rows = len(json_rows(self.root / "data/logs/chat.jsonl"))
         await self.peer.speak(audio, name)
+        if name in ("tool", "chat"):
+            tool = "web_search" if name == "tool" else "send_user_message"
+            await self.wait(lambda: any(e["type"] == "ToolResult" and any(
+                c["name"] == tool and c["call_id"] == e["call_id"] for c in self.evidence.of("ToolCall", since))
+                for e in self.evidence.of("command", since)))
+            answer_after = self.evidence.of("command", since)[-1]["at"]
+        else:
+            answer_after = since
         await self.wait(lambda: any(e.get("speaker") == "ouroboros" and e.get("final")
-                                   for e in self.evidence.of("Caption", since)))
+                                   for e in self.evidence.of("Caption", answer_after)))
         await self.wait(lambda: not self.peer.pending)
-        await asyncio.sleep(.3)
+        final_items = {e["item_id"] for e in self.evidence.of("Caption", answer_after)
+                       if e.get("speaker") == "ouroboros" and e.get("final")}
+        await self.wait(lambda: any((r.get("spoken") or {}).get("item_id") in final_items
+                                   for r in json_rows(self.root / "data/logs/chat.jsonl")[before_rows:]))
         captions = self.evidence.of("Caption", since)
         audio_rows = self.evidence.of("peer_audio", since)
         ends = self.evidence.of("speech_end", since)
@@ -329,7 +377,7 @@ class Probe:
         return {"since": since, "captions": [c for c in captions if c.get("final")],
                 "output_bytes": sum(r["bytes"] for r in audio_rows),
                 "latency_seconds": audio_rows[0]["at"] - end if audio_rows else None,
-                "chat_rows": json_rows(self.root / "data/logs/chat.jsonl")}
+                "chat_rows": json_rows(self.root / "data/logs/chat.jsonl")[before_rows:], "hub_stats": self.hub.stats()}
 
     def start(self, settings):
         from ouroboros.agent import make_agent
@@ -342,6 +390,7 @@ class Probe:
         from supervisor.events_chat_delivery import _handle_send_message
 
         data = self.root / "data"
+        self.evidence.note("call_open")
         state.init(data, total_budget_limit=10)
         state.init_state()
         state.update_state(lambda s: {**s, "owner_id": 1, "owner_chat_id": WEB_UI_CHAT_ID})
@@ -386,9 +435,12 @@ class Probe:
 
     async def scenarios(self, fixtures):
         await self.wait(lambda: bool(self.evidence.of("Ready")))
+        await self.wait(lambda: any(r["message"].get("state") == "live" for r in self.evidence.of("peer_control")))
         if "opening" in self.selected:
             config = self.evidence.of("session_config")[-1]
-            self.verdict("opening", True, **config, seconds_to_ready=self.evidence.of("Ready")[0]["at"])
+            self.verdict("opening", True, **config, seconds_to_live=self.evidence.of("Ready")[0]["at"] -
+                         self.evidence.of("call_open")[0]["at"], attempts=self.evidence.of("session_config"),
+                         recovery=self.evidence.of("EngineError"))
         for name in ("russian_reply", "tool", "chat"):
             if name not in self.selected:
                 continue
@@ -414,7 +466,8 @@ class Probe:
                                       for r in facts["chat_rows"])
                 self.verdict(name, passed, **facts)
             except Exception as exc:
-                self.verdict(name, False, error=str(exc))
+                self.verdict(name, False, error=str(exc), captions=self.evidence.of("Caption"),
+                             tool_calls=self.evidence.of("ToolCall"), commands=self.evidence.of("command"))
         if "interruption" in self.selected:
             try:
                 since = self.evidence.note("scenario_start", scenario="interruption")["at"]
@@ -422,19 +475,23 @@ class Probe:
                 await self.wait(lambda: bool(self.evidence.of("peer_audio", since)))
                 await asyncio.sleep(2)
                 cut = self.evidence.note("barge_in")["at"]
+                interrupted_item = self.peer.item
                 await self.peer.speak(fixtures["interrupt"], "interrupt")
                 await self.wait(lambda: any(e.get("speaker") == "ouroboros" and e.get("final")
+                                           and e.get("item_id") != interrupted_item
                                            for e in self.evidence.of("Caption", cut)))
                 await self.wait(lambda: not self.peer.pending)
                 commands = [e for e in self.evidence.of("command", cut) if e["type"] == "Interrupt"]
                 flushes = [e for e in self.evidence.of("peer_control", cut) if e["message"]["type"] == "flush"]
                 rows = json_rows(self.root / "data/logs/chat.jsonl")
                 interrupted = [r for r in rows if (r.get("spoken") or {}).get("status") == "interrupted"]
+                continued = [e for e in self.evidence.of("peer_audio", cut) if e["item_id"] != interrupted_item]
                 truncated = [e for e in self.evidence.of("wire_received", cut)
                              if e["payload"].get("type") == "conversation.item.truncated"]
                 self.verdict("interruption", bool(commands and flushes and interrupted and
-                             (truncated or self.engine == "google") and not self.hub.closed),
-                             commands=commands, flushes=flushes, truncated=truncated, rows=interrupted)
+                             (truncated or self.engine == "google") and continued and not self.hub.closed),
+                             commands=commands, flushes=flushes, truncated=truncated, rows=interrupted,
+                             continued_audio_bytes=sum(e["bytes"] for e in continued))
             except Exception as exc:
                 self.verdict("interruption", False, error=str(exc))
         if "typed" in self.selected:
@@ -454,7 +511,7 @@ class Probe:
         from ouroboros.owner_mailbox import KIND_FINALIZE_NOW, write_owner_message
         from ouroboros.call_peers import close_hub
         from ouroboros.task_results import load_task_result
-        from ouroboros.usage_store import read_usage_records
+        from ouroboros.usage_store import read
 
         if self.peer and not self.hub.closed:
             self.peer.control(type="bye", reason="probe_finished")
@@ -466,13 +523,18 @@ class Probe:
                 await asyncio.to_thread(self.thread.join, 15)
             task_result = load_task_result(self.root / "data", self.task["id"]) or {}
             write_json(self.root / "task-result.json", task_result)
+            terminals = [e for e in self.evidence.of("task_event") if e["event"].get("terminal_origin") == "host_notice"]
             if "hangup" in self.selected:
-                self.verdict("hangup", not self.thread.is_alive() and self.hub.closed and bool(task_result.get("live_call")),
+                self.verdict("hangup", not self.thread.is_alive() and self.hub.closed and bool(task_result.get("live_call"))
+                             and any("utterances" in e["event"].get("text", "") for e in terminals),
                              thread_alive=self.thread.is_alive(), hub_closed=self.hub.closed,
-                             checkpoint=task_result.get("live_call"), terminal_events=[e for e in self.evidence.of("task_event")
-                             if e["event"].get("terminal_origin") == "host_notice"])
+                             checkpoint=task_result.get("live_call"), terminal_events=terminals, hub_stats=self.hub.stats())
             close_hub(self.spec.call_id)
-        rows = read_usage_records(self.root / "data")
+        with read(self.root / "data") as txn:
+            rows = txn.attempts()
+            transitions = {r["attempt_id"]: dict(r) for r in txn.conn.execute(
+                "SELECT attempt_id, ts_reserved, ts_dispatched, ts_final FROM attempts")}
+        rows = [{**r, **transitions[r["attempt_id"]]} for r in rows]
         ok, facts = money_evidence(rows, self.evidence.rows, self.engine)
         self.result.update(total_cost_usd=facts["total_cost_usd"], known_estimated_usd=facts["known_estimated_usd"])
         if "money" in self.selected:
@@ -520,7 +582,8 @@ async def run_probe(args):
         labels = [s for s in ("russian_reply", "tool", "chat") if s in probe.selected]
         if "interruption" in probe.selected:
             labels += ["long", "interrupt"]
-        fixtures = {name: await asyncio.to_thread(synthesize, root, name, keys["OPENAI_API_KEY"]) for name in labels}
+        fixtures = {name: await asyncio.to_thread(speech_fixture, root, name, keys["OPENAI_API_KEY"], args.fixture_dir)
+                    for name in labels}
         # This standalone probe must never provision a daemon, even if a future
         # context helper begins requesting an optional delegated capability.
         with patch("ouroboros.claudexor_daemon.ensure_owned_gateway", side_effect=RuntimeError("probe_daemon_forbidden")):
@@ -535,6 +598,11 @@ async def run_probe(args):
                     pump.cancel()
                     await asyncio.gather(pump, return_exceptions=True)
                 await probe.finish()
+    except Exception as exc:
+        probe.result["failure"] = str(exc)
+        logging.exception("Probe setup or teardown failed")
+        if probe.thread is None:
+            await probe.finish()
     finally:
         # Keep only the actual key fields out of every retained settings copy.
         settings_path = root / "data/settings.json"
@@ -553,6 +621,7 @@ def main(argv=None) -> int:
     parser.add_argument("--scenarios", default="all", help=",".join(SCENARIOS))
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--settings-source", default="/Users/anton/Ouroboros/data/settings.json")
+    parser.add_argument("--fixture-dir", help="reuse exact speech fixtures from a previous isolated /tmp run")
     parser.add_argument("--timeout", type=float, default=60, help="per-scenario observation bound in seconds")
     parser.add_argument("--isolated-child", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -560,7 +629,7 @@ def main(argv=None) -> int:
     if args.isolated_child:
         sys.path.insert(0, str(REPO))
         result = asyncio.run(run_probe(args))
-        return int(any(r["verdict"] == "FAIL" for r in result["scenarios"].values()))
+        return int(bool(result.get("failure")) or any(r["verdict"] == "FAIL" for r in result["scenarios"].values()))
     root = output_root(args.output_dir)
     before = daemon_list()
     write_json(root / "daemons-before.json", before)

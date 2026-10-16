@@ -1,7 +1,8 @@
 """Probe verdicts require observations, and the owner simulator preserves pacing."""
 import asyncio
+import base64
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -36,7 +37,8 @@ def attempts():
     evidence = {"response_key": "response", "usage": counts, "raw_usage": {"input_tokens": 56},
                 "tariff_quote": {"url": "https://catalog", "fetched_at": "2026-10-16", "sha256": "digest", "entry": {"rate": 1}}}
     rows = [{"attempt_id": "response-attempt", "source": "live_response", "state": "settled",
-             "cost_evidence": evidence, "prompt_tokens": 12, "cost_usd": .1},
+             "cost_evidence": evidence, "prompt_tokens": 12, "cost_usd": .1,
+             "ts_reserved": "start", "ts_dispatched": "sent", "ts_final": "settled"},
             {"attempt_id": "transcription-attempt", "source": "live_transcription", "state": "settled",
              "cost_evidence": {**evidence, "response_key": "transcription"}, "prompt_tokens": 12, "cost_usd": .02}]
     events = [{"kind": "ResponseStarted", "response_id": "response"}, {"kind": "ResponseDone", "response_id": "response"}]
@@ -52,7 +54,7 @@ def test_money_matches_response_id_and_keeps_audio_separate():
     assert not ok and any("audio included" in e for e in facts["errors"])
 
 
-@pytest.mark.parametrize("change", ["duplicate", "missing_done", "no_transcription", "unknown_price", "no_quote", "unresolved"])
+@pytest.mark.parametrize("change", ["duplicate", "missing_done", "no_transcription", "unknown_price", "no_quote", "unresolved", "no_reservation"])
 def test_money_cannot_pass_incomplete_or_double_billed_evidence(change):
     rows, events = attempts()
     if change == "duplicate":
@@ -65,6 +67,8 @@ def test_money_cannot_pass_incomplete_or_double_billed_evidence(change):
         rows[0]["cost_usd"] = None
     elif change == "no_quote":
         rows[0]["cost_evidence"]["tariff_quote"] = None
+    elif change == "no_reservation":
+        rows[0].pop("ts_reserved")
     else:
         rows[0]["state"] = "unresolved"
     ok, facts = probe.money_evidence(rows, events, "openai")
@@ -98,7 +102,7 @@ def test_observer_forwards_real_commands_and_records_only_audio_lengths(tmp_path
         config = SessionConfig(EngineRoute("openai", "test"), "A complete instruction")
         await observed.open(config)
         assert engine.open.call_args.args == (config,)
-        assert (tmp_path / "instructions.txt").read_text() == config.instructions
+        assert (tmp_path / "instructions-1.txt").read_text() == config.instructions
         assert evidence.of("session_config")[0]["instruction_tokens"] > 0
         assert [e.kind async for e in observed.events()] == ["invalid_request"]
         assert evidence.of("EngineError")[0]["error_kind"] == "invalid_request"
@@ -119,7 +123,10 @@ def test_owner_audio_uses_real_codec_and_engine_rate(tmp_path):
                     received.extend(event.pcm)
         task = asyncio.create_task(drain())
         await peer.speak(b"\x01\x00" * 480, "fixture")
-        await asyncio.sleep(.05)
+        for _ in range(200):
+            if len(received) == 960 + probe.RATE * 2:
+                break
+            await asyncio.sleep(.01)
         hub.close("done")
         await task
         assert received == b"\x01\x00" * 480 + bytes(probe.RATE * 2)
@@ -137,3 +144,45 @@ def test_failed_open_keeps_unexecuted_scenarios_not_run(tmp_path):
     assert report["scenarios"]["opening"]["verdict"] == "FAIL"
     assert report["scenarios"]["tool"]["verdict"] == "NOT_RUN"
     assert report["total_cost_usd"] is None
+
+
+def test_speech_sse_done_marker_preserves_real_usage_and_pcm(tmp_path, monkeypatch):
+    import requests
+    from ouroboros import live_usage, pricing_catalog, usage_accounting
+
+    usage = {"input_tokens": 16, "output_tokens": 150}
+    pcm = b"\x01\x00" * 480
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            pass
+        def raise_for_status(self):
+            pass
+        def iter_lines(self):
+            yield b"event: speech.audio.delta"
+            yield b"data: " + json.dumps({"type": "speech.audio.delta", "audio": base64.b64encode(pcm).decode()}).encode()
+            yield b"data: " + json.dumps({"type": "speech.audio.done", "usage": usage}).encode()
+            yield b"data: [DONE]"
+    monkeypatch.setattr(requests, "post", lambda *a, **k: Response())
+    monkeypatch.setattr(pricing_catalog, "get_catalog_quote", lambda *a, **k: {"source": "test"})
+    settlement = Mock(return_value=({"cost_evidence": {"raw_usage": usage}}, .01))
+    monkeypatch.setattr(live_usage, "_settlement", settlement)
+    for method in ("reserve_attempt", "mark_dispatched", "settle_attempt"):
+        monkeypatch.setattr(usage_accounting, method, Mock())
+    assert probe.synthesize(tmp_path, "russian_reply", "test-key") == pcm
+    assert settlement.call_args.args[2] == {"text_input_tokens": 16, "audio_output_tokens": 150}
+    assert json.loads((tmp_path / "input-russian_reply.json").read_text())["usage"] == usage
+
+
+def test_fixture_reuse_requires_matching_text_and_retains_provenance(tmp_path):
+    source, output = tmp_path / "source", tmp_path / "output"
+    source.mkdir()
+    output.mkdir()
+    probe.write_json(source / "input-tool.json", {"text": probe.SPEECH["tool"]})
+    (source / "input-tool.pcm").write_bytes(b"\x01\x00")
+    assert probe.speech_fixture(output, "tool", "unused", str(source)) == b"\x01\x00"
+    assert json.loads((output / "input-tool.json").read_text())["reused_from"].endswith("input-tool.json")
+    probe.write_json(source / "input-tool.json", {"text": "different request"})
+    with pytest.raises(ValueError, match="does not match"):
+        probe.speech_fixture(output, "tool", "unused", str(source))

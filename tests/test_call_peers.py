@@ -100,7 +100,7 @@ def test_flush_discards_queued_audio_and_resampler_tail_but_keeps_captions():
 
 
 def test_audio_queue_bounds_drop_oldest_with_counters_and_sequence_wrap():
-    hub = LiveCallHub(spec(), audio_queue_frames=2)
+    hub = LiveCallHub(spec(), audio_queue_frames=2, output_queue_frames=2)
     join(hub)
     send(hub, [1] * 480, seq=0xFFFFFFFF)
     send(hub, [2] * 480, seq=0)
@@ -114,6 +114,25 @@ def test_audio_queue_bounds_drop_oldest_with_counters_and_sequence_wrap():
     assert hub.stats()["output_dropped_frames"] == 1
     assert samples(cp.decode_frame(hub.next_outgoing("owner")).pcm) == [2] * 480
     assert samples(cp.decode_frame(hub.next_outgoing("owner")).pcm) == [3] * 480
+
+
+def test_output_absorbs_a_recorded_realtime_burst_without_changing_input_bound():
+    hub = LiveCallHub(spec())
+    join(hub)
+    # The real provider emitted 4.15 seconds in 112 ms: the input capture's
+    # one-second bound must not cut this normal outbound burst to one second.
+    blocks = [bytes(19200)] * 10 + [bytes(7200)]
+    for block in blocks:
+        hub.play(block, "spoken")
+    received = bytearray()
+    while (frame := hub.next_outgoing("owner")) is not None:
+        if isinstance(frame, bytes):
+            received.extend(cp.decode_frame(frame).pcm)
+    assert len(received) == sum(map(len, blocks))
+    assert hub.stats()["output_dropped_frames"] == 0
+    assert hub._audio_limit == 50
+    with pytest.raises(ValueError, match="positive"):
+        LiveCallHub(spec(), output_queue_frames=0)
 
 
 def test_mute_direction_checks_and_peer_lifecycle():
