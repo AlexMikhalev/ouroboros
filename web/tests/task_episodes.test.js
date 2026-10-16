@@ -98,6 +98,30 @@ test('the successor\'s card takes the work\'s first place and name; the predeces
     }
 });
 
+test('a successor with no card here is handed on once admitted; a bound claim hands on and folds nothing', () => {
+    const records = new Map();
+    const handed = [];
+    const episodes = createTaskEpisodes({ records, reanchor: () => false, activity: () => null,
+        follow: (id, predecessor) => (handed.push([id, predecessor.groupId]), false) });
+    const first = card('t-1', 1000, 'Audit the projects');
+    records.set('t-1', first);
+    const bound = { state: 'bound', successor_task_id: 't-2', action_nonce: 'n-1' };
+    episodes.note(first, { status: 'failed', continued_by: bound, continuation_offer: { ...bound, eligible: false } });
+    assert.deepEqual(handed, [], 'a bound claim is pending: nothing is handed on');
+    assert.equal(first.root.hidden, false, 'and its card keeps its place');
+    episodes.note(first, { status: 'failed', continued_by: { ...bound, state: 'admitted' } });
+    assert.deepEqual(handed, [['t-2', 't-1']], 'the admitted successor, which has no card in this chat, is handed on');
+    assert.equal(first.root.hidden, false, 'nothing folds before the successor has a card');
+    // The successor's card is here (its frames reach this chat): the chain merges in place, nothing is handed on.
+    const next = card('t-2', 5000, 'Continue: Audit the projects');
+    next.root.isConnected = true;
+    records.set('t-2', next);
+    episodes.note(first, { status: 'failed', continued_by: { ...bound, state: 'admitted' } });
+    assert.equal(handed.length, 1);
+    assert.equal(first.root.hidden, true, 'the predecessor folds into the successor\'s card');
+    assert.equal(next.titleEl.textContent, 'Audit the projects');
+});
+
 test('a bound claim never folds a card, even when the claimed successor\'s card is here; its admission does', () => {
     const records = new Map();
     const episodes = createTaskEpisodes({ records, reanchor: () => false, activity: () => null });

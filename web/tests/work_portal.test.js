@@ -46,6 +46,7 @@ function fixture({ history = [], details = {} } = {}) {
         narrate: (taskId, content, seconds = 0) => handlers.get('chat')({ chat_id: 1, role: 'assistant', is_progress: true,
             narration: true, task_id: taskId, content, ts: `2026-10-10T12:00:${String(seconds).padStart(2, '0')}Z` }),
         frame: (row) => handlers.get('chat')({ chat_id: 1, ...row }),
+        emit: (type, row) => handlers.get(type)?.(row),
         state: (data) => instance.hydrateStateSnapshot({ supervisor_ready: true, active_chat_activities_complete: true,
             active_chat_activities: [], ...data }),
         close() { instance.destroy(); restoreDom(env.prior); },
@@ -167,4 +168,138 @@ test('Main only: a Project room\'s portals bind nothing and read nothing', () =>
     assert.equal(portals.bindRow({ task_id: 'w-1', project_id: 'p-1' }), false);
     assert.deepEqual(calls, [], 'the room shows the full card');
     assert.equal(records.get('w-1').root.dataset.portal, undefined);
+});
+
+// A Continue made in the Project room (owner QB = A, 16.10 Q1 = A): Main sees none of the successor's frames, so the
+// predecessor's admitted link (its durable detail) and the successor's census row are what its ONE card follows.
+const bindings = { 'w-1': { project_id: 'p-1', chat_id: 7 } };
+const failedDetail = (extra = {}) => ({ task_id: 'w-1', status: 'failed', reason_code: 'model_provider_failed',
+    terminal_time: { occurred_at: '2026-10-10T12:20:00Z', attempt: { started_at: '2026-10-10T12:00:00Z' } }, ...extra });
+const continuedBy = (state = 'admitted') => ({
+    continued_by: { state, successor_task_id: 'w-1-c1', action_nonce: 'n-1', binding: { project_id: 'p-1', chat_id: 7 } },
+    continuation_offer: state === 'bound'
+        ? { eligible: false, refusal: 'continuation_unconfirmed', state, successor_task_id: 'w-1-c1', action_nonce: 'n-1' }
+        : { eligible: false, refusal: 'already_continued', state, successor_task_id: 'w-1-c1' } });
+const successorRow = (extra = {}) => room({ activity_id: 'w-1-c1', project_id: 'p-1', project_name: 'Audit',
+    started_at: Date.parse('2026-10-10T12:30:00Z') / 1000, last_line: 'Continuing the audit.', tool_calls: 3,
+    cancelable: true, ...extra });
+
+async function runningPortal(f) {
+    f.narrate('w-1', 'Reading the logs before the audit.');
+    f.emit('task_named', { task_id: 'w-1', suggested_name: 'Audit the projects' });
+    f.state({ task_bindings: bindings, projects: [{ id: 'p-1', name: 'Audit' }],
+        active_chat_activities: [room({ project_id: 'p-1', project_name: 'Audit' })] });
+    await settle();
+    assert.equal(f.card('w-1').dataset.portal, '1');
+    return f.card('w-1');
+}
+
+function assertFollowed(f, node) {
+    const next = f.card('w-1-c1');
+    assert.ok(next, 'the successor has the work\'s card in Main');
+    assert.equal(node.hidden, true, 'the ended episode folds into it: never a second card');
+    assert.equal(next.hidden, false);
+    const feed = f.messages.children;
+    assert.equal(feed.indexOf(next), feed.indexOf(node) + 1, 'it stands where the work began');
+    assert.equal(feed.filter((child) => child.classList.contains('chat-live-card') && !child.hidden).length, 1,
+        'one visible card for the work');
+    assert.equal(next.dataset.portal, '1');
+    assert.equal(next.children.at(-1).getAttribute('aria-label'), 'Open project Audit', 'the Project reference closes it');
+    assert.equal(f.part('w-1-c1', 'live-title').textContent, 'Audit the projects', 'the work keeps its first name');
+    assert.equal(f.part('w-1-c1', 'live-phase').textContent, 'Working', 'the current episode owns the chip');
+    assert.equal(f.part('w-1-c1', 'live-activity').textContent, 'Continuing the audit.');
+    assert.match(f.part('w-1-c1', 'live-meta').innerHTML, /3 tool calls/);
+    assert.deepEqual(controls(f, 'w-1-c1'), ['Reply', 'Stop…'], 'its own controls: Stop… while the room runs it');
+    const episodes = f.part('w-1-c1', 'live-episodes');
+    assert.equal(episodes.hidden, false);
+    assert.match(episodes.innerHTML, /Episode 1<\/span> · <span class="chat-live-episode-span">[^<]+<\/span> · <span class="chat-live-episode-outcome" data-tone="error">Failed<\/span>/,
+        'the ended episode is one meta line on the same card');
+    assert.match(episodes.innerHTML, /data-episode="2" data-current="1"/);
+}
+
+test('a Continue made in the room: the successor\'s census row takes the work\'s card in Main, live; no row, no change', async () => {
+    const details = {};
+    const f = fixture({ details });
+    try {
+        const node = await runningPortal(f);
+        // Interrupted and continued in its room: Main reads the link, but the successor's row is not here yet.
+        details['w-1'] = failedDetail(continuedBy());
+        f.state({ task_bindings: bindings, active_chat_activities: [] });
+        await settle();
+        assert.equal(f.card('w-1-c1'), null, 'without the successor\'s own facts Main mints nothing');
+        assert.equal(node.hidden, false, 'and the card stays as it was');
+        assert.equal(f.part('w-1', 'live-phase').textContent, 'Failed');
+        // The census that lists it arrives while Main is open.
+        f.state({ task_bindings: bindings, active_chat_activities: [successorRow()] });
+        await settle();
+        assertFollowed(f, node);
+    } finally { f.close(); }
+});
+
+test('continued later in the room: a new root in its Project makes the settled portal read its own record once', async () => {
+    const details = {};
+    const f = fixture({ details });
+    try {
+        const node = await runningPortal(f);
+        details['w-1'] = failedDetail({ continuation_offer: { eligible: true, cause: 'model_provider_failed' } });
+        f.state({ task_bindings: bindings, active_chat_activities: [] });
+        await settle();
+        assert.deepEqual(controls(f, 'w-1'), ['Reply', 'Continue'], 'the interrupted work offers Continue');
+        const reads = () => f.reads.filter((id) => id === 'w-1').length;
+        const read = reads();
+        // Another work starts in the same room: the portal's record names no successor, so nothing changes.
+        const other = room({ activity_id: 'w-9', project_id: 'p-1', project_name: 'Audit' });
+        f.state({ task_bindings: bindings, active_chat_activities: [other] });
+        await settle();
+        assert.equal(reads(), read + 1, 'a new root in its Project: the settled portal reads its own record');
+        assert.equal(f.card('w-9'), null, 'a root its record does not name is not its Continue');
+        assert.equal(node.hidden, false);
+        f.state({ task_bindings: bindings, active_chat_activities: [other] });
+        await settle();
+        assert.equal(reads(), read + 1, 'once per root, never a poll');
+        // The owner (or the mind) presses Continue in the room: the record now names its admitted successor.
+        details['w-1'] = failedDetail(continuedBy());
+        f.state({ task_bindings: bindings, active_chat_activities: [other, successorRow()] });
+        await settle();
+        assertFollowed(f, node);
+    } finally { f.close(); }
+});
+
+test('after a Main reload the start row binds the work and its record names the successor: the same one card', async () => {
+    const history = [
+        { role: 'user', text: 'audit the projects in their own room', ts: '2026-10-10T11:59:00Z', chat_id: 1, source: 'web',
+            history_id: 'h-1', row_address: 'row:1@h#1' },
+        { role: 'system', system_type: 'project_started', chat_id: 1, task_id: 'w-1', project_id: 'p-1', project_name: 'Audit',
+            task_name: 'Audit the projects', text: 'Audit › Audit the projects · Started', ts: '2026-10-10T12:00:00Z',
+            history_id: 'h-2' },
+    ];
+    const f = fixture({ history, details: { 'w-1': failedDetail(continuedBy()) } });
+    try {
+        await f.instance.refreshHistory({ revision: 1 });
+        await settle();
+        f.state({ task_bindings: bindings, projects: [{ id: 'p-1', name: 'Audit' }], active_chat_activities: [successorRow()] });
+        await settle();
+        assertFollowed(f, f.card('w-1'));
+        assert.equal(f.messages.children.filter((child) => child.dataset?.systemType === 'project_started').length, 0);
+    } finally { f.close(); }
+});
+
+test('a bound claim stays pending: Retry Continue on the work\'s own card, nothing folds until the host admits it', async () => {
+    const details = {};
+    const f = fixture({ details });
+    try {
+        const node = await runningPortal(f);
+        details['w-1'] = failedDetail(continuedBy('bound'));
+        for (let pass = 0; pass < 2; pass += 1) {
+            f.state({ task_bindings: bindings, active_chat_activities: [successorRow()] });
+            await settle();
+        }
+        assert.equal(f.card('w-1-c1'), null, 'a bound claim mints no successor card');
+        assert.equal(node.hidden, false, 'nor hides or replaces the work\'s card');
+        assert.deepEqual(controls(f, 'w-1'), ['Reply', 'Retry Continue'], 'the claim shows as pending');
+        details['w-1'] = failedDetail(continuedBy());
+        f.state({ task_bindings: bindings, active_chat_activities: [successorRow()] });
+        await settle();
+        assertFollowed(f, node);
+    } finally { f.close(); }
 });

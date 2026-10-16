@@ -90,9 +90,10 @@ export function renderEpisodes(el, episodes = []) {
  * card to where its work began (earliest wins); `activity(record)` is the census row its controls read.
  * The host's admitted successor carries the SAME work, so its card takes the predecessor's place and
  * name, and every episode is one meta line on it. The predecessor's node folds away; its record stays to
- * take late rows.
+ * take late rows. A successor with no card here runs where this chat sees none of its frames (a Main
+ * portal's room): `follow(successorId, predecessor)` may mint its card from the facts it holds.
  */
-export function createTaskEpisodes({ records, reanchor, activity }) {
+export function createTaskEpisodes({ records, reanchor, activity, follow = () => false }) {
     const predecessors = new Map();  // successor task id -> predecessor task id
 
     function chainOf(taskId) {
@@ -143,8 +144,10 @@ export function createTaskEpisodes({ records, reanchor, activity }) {
             if (!record || record.isSubagent || !row || typeof row !== 'object') return false;
             record.episode = noteEpisodeFacts(record.episode, row);
             const successor = admittedSuccessor(row);
-            if (successor && successor !== record.groupId) predecessors.set(successor, record.groupId);
-            return sync(record);
+            const linked = Boolean(successor) && successor !== record.groupId;
+            if (linked) predecessors.set(successor, record.groupId);
+            const changed = sync(record);
+            return Boolean((linked && !records.get(successor)?.root?.isConnected && follow(successor, record)) || changed);
         },
         /** A card that became visible: if it belongs to a known chain, the chain's card takes over. */
         sync: (record) => (record && (predecessors.has(record.groupId) || record.root?.dataset?.episodeOf) ? sync(record) : false),

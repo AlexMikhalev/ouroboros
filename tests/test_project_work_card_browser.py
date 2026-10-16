@@ -267,3 +267,85 @@ def test_a_reply_sends_only_the_quoted_rows_address(project_chat, tmp_path):
     page.fill('#chat-input', "Stop after the third run")
     page.locator('#chat-send').click()
     assert page.evaluate("() => sentFrames.at(-1).reply_to") == "task:creation"
+
+
+SUCCESSOR = "creation-cnext"
+
+
+def _interrupted(**extra):
+    return {"task_id": "creation", "status": "failed", "reason_code": "model_provider_failed",
+            "terminal_time": {"occurred_at": "2026-10-08T14:09:00Z", "attempt": {"started_at": "2026-10-08T13:57:33Z"}},
+            **extra}
+
+
+def _continued():
+    binding = {"project_id": "alpha", "chat_id": 7}
+    return _interrupted(
+        continued_by={"state": "admitted", "successor_task_id": SUCCESSOR, "action_nonce": "n-1", "binding": binding},
+        continuation_offer={"eligible": False, "refusal": "already_continued", "state": "admitted",
+                            "successor_task_id": SUCCESSOR})
+
+
+def _room_continue(chat):
+    """The owner pressed Continue in Project Alpha's room: the predecessor's record names its admitted successor and
+    the all-chat census lists that successor in the room (Main receives none of its frames)."""
+    chat["details"]["creation"] = _continued()
+    state = chat["state"]
+    state["active_chat_activities"] = [row for row in state["active_chat_activities"] if row["activity_id"] != "creation"]
+    state["active_chat_activities"].append({
+        "activity_id": SUCCESSOR, "project_id": "alpha", "project_name": "Project Alpha", "chat_id": 7,
+        "kind": "managed_task", "phase": "working", "started_at": 1791468000, "last_line": "Continuing the audit",
+        "last_line_at": "2026-10-08T14:12:00Z", "tool_calls": 3, "cancelable": True})
+    return state
+
+
+def _visible_cards(page):
+    return page.evaluate("""() => [...document.querySelectorAll('#chat-messages > .chat-live-card')]
+        .filter((card) => card.getClientRects().length).map((card) => card.dataset.taskId)""")
+
+
+@pytest.mark.parametrize("journey", ["continued-later", "same-snapshot", "reload"])
+def test_main_portal_follows_a_continue_made_in_the_project_room(project_chat, journey, tmp_path):
+    """Owner QB = A and 16.10 Q1 = A: a Main request moved into Project Alpha, interrupted, then continued in the room.
+    Main's ONE card for that work shows the admitted successor as its current episode (chip, line, meta, its Stop…),
+    keeps the work's place, first name and Project footer, and folds the ended episode into one meta line: live
+    (the census arrives while Main is open) and after a Main reload."""
+    page, expect = project_chat["page"], project_chat["expect"]
+    creation = _card(page, "creation")
+    expect(creation.locator('.chat-live-phase').first).to_have_text("Working")
+    assert _visible_cards(page) == ["creation", "transfer"]
+    if journey == "continued-later":
+        # The work fails first: Main reads its record and offers Continue on the same card.
+        project_chat["details"]["creation"] = _interrupted(
+            continuation_offer={"eligible": True, "cause": "model_provider_failed"})
+        state = project_chat["state"]
+        state["active_chat_activities"] = [row for row in state["active_chat_activities"] if row["activity_id"] != "creation"]
+        page.evaluate("s => chat.hydrateStateSnapshot(s)", state)
+        expect(creation.locator('.chat-live-phase').first).to_have_text("Failed", timeout=15000)
+        expect(creation.locator('[data-continue-task]')).to_have_text("Continue")
+    state = _room_continue(project_chat)
+    if journey == "reload":
+        page.reload()
+        page.wait_for_function("() => window.chat && document.querySelector('#chat-messages .chat-bubble')")
+    page.evaluate("s => chat.hydrateStateSnapshot(s)", state)
+    card = _card(page, SUCCESSOR)
+    expect(card).to_be_visible(timeout=15000)
+    expect(_card(page, "creation")).to_be_hidden()
+    assert _visible_cards(page) == [SUCCESSOR, "transfer"], "one card for the work, at its first place"
+    expect(card).to_have_attribute("data-portal", "1")
+    expect(card.locator('[data-live-title]')).to_have_text("Review runner › integration")
+    expect(card.locator('.chat-live-phase').first).to_have_text("Working")
+    expect(card.locator('[data-live-activity]')).to_have_text("Continuing the audit")
+    expect(card.locator('[data-live-meta]')).to_contain_text("3 tool calls")
+    expect(card.locator('.chat-live-actions > button')).to_have_text(["Reply", "Stop…"])
+    footer = card.locator(':scope > .chat-live-bound-pointer')
+    expect(footer).to_have_attribute("aria-label", "Open project Project Alpha")
+    assert card.evaluate("c => c.lastElementChild.classList.contains('chat-live-bound-pointer')"), "the footer closes the card"
+    episodes = card.locator('.chat-live-episode')
+    expect(episodes).to_have_count(2)
+    expect(episodes.nth(0)).to_contain_text("Episode 1 · 13:57–14:09 · Failed")
+    expect(episodes.nth(1)).to_have_text("Episode 2 · since 14:00")
+    expect(episodes.nth(1)).to_have_attribute("data-current", "1")
+    assert page.locator('#chat-messages [data-continue-task]:visible').count() == 0, "no Continued stands as its action"
+    assert page.locator('.project-handoff, [data-system-type="project_started"], [data-system-type="project_handoff"]').count() == 0
+    card.screenshot(path=_evidence(tmp_path, project_chat, f"continue-{journey}"), animations="disabled")

@@ -12,14 +12,20 @@
  * are data, not a second product; they only say which card moved where). The present comes from the
  * all-chat census (`last_line`, `last_line_at`, `tool_calls`, `detached`; CONTRACTS K8); a fact the
  * row does not carry stays absent, so an older host leaves today's card.
+ *
+ * A Continue made in the room (by the owner or the mind) is the next episode of the SAME card (owner
+ * QB = A): Main sees none of the successor's frames, so the predecessor's admitted link and the
+ * successor's census row are its whole present, and its card takes the work's place (task_episodes.js).
  */
-import { apiClient } from './api_client.js';
+import { apiClient, fetchTaskDetailStrict } from './api_client.js';
 import { showToast } from './toast.js';
 import { normalizeLogTs } from './log_events.js';
 import { censusTaskFacts, liveCardLabel, syncParkedPhase } from './task_phase_chip.js';
 import { boundActivityPreview, projectIdFromTask, refitCollapsedActivity, renderCollapsedActivity, taskCostProjection } from './chat_activity.js';
 import { DURABLE_RECEIPTS, receiptNotice } from './project_handoff.js';
 import { nameProjectReference, projectReference } from './project_reference.js';
+import { admittedSuccessor } from './task_episodes.js';
+import { continueControlSuccessor } from './task_continue.js';
 
 const key = (value) => String(value || '').trim();
 export const isPortal = (record) => record?.root?.dataset?.portal === '1';
@@ -97,7 +103,8 @@ export function reconcilePortalNotes(feed, scope = feed) {
  * mechanics (each returns whether the DOM changed): `get(id)` mints or finds a root record, `show(record)`
  * mounts it, `reanchor(record, ts)`, `collapse(record)`, `restore(record, hold)`, `meta(record, cost?)`,
  * `controls(record)` (Stop/Resume), `finish(id, outcome)`, `missing(id)` (durable-detail read),
- * `summary(row)` (a final's typed outcome). `onConverted` is the composer's "this chat is free" cue;
+ * `note(record, detail)` (a settled card's detail), `summary(row)` (a final's typed outcome).
+ * `onConverted` is the composer's "this chat is free" cue;
  * `append(row, text, opts)` draws an ordinary Project row, `remember(key)` keeps a history key, `actionsOf(record)`
  * is the card's own action row.
  */
@@ -109,6 +116,10 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
     const projects = new Map();
     // History reads newest pages first: a final can arrive before the older row that binds its card.
     const completions = new Map();
+    // An admitted successor of a portal's work -> that portal's record, until the successor's census row is here.
+    const follows = new Map();
+    // `predecessor|root` pairs whose record already said whether that root is its Continue.
+    const asked = new Set();
 
     /** The live activity a card's controls act on when its work runs in another chat (its room). */
     const activity = (record) => (isPortal(record) ? record.portalActivity || undefined : undefined);
@@ -198,6 +209,52 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
         return changed;
     }
 
+    // The successor's census row names its Project: its card is minted as that Project's portal, at its own
+    // start, and the episode chain then gives it the work's place and first name. No row, no card.
+    function adopt(successorId) {
+        const row = census.get(successorId);
+        const projectId = key(bindings[successorId]?.project_id) || key(row?.project_id);
+        if (!isPortal(follows.get(successorId)) || !row || !projectId) return false;
+        follows.delete(successorId);
+        const record = card.get(successorId);
+        if (!record || record.isSubagent) return false;
+        card.reanchor(record, Number(row.started_at) * 1000);
+        const changed = bind(record, { id: projectId, name: key(row.project_name) });
+        card.show(record);
+        return Boolean(changed || record.root.isConnected);
+    }
+
+    /** The episode chain's hand-off: a portal's admitted successor, which runs where Main sees no frame of it. */
+    function follow(successorId, predecessor) {
+        const id = key(successorId);
+        if (!isMain || !id || !isPortal(predecessor)) return false;
+        follows.set(id, predecessor);
+        return Boolean(onDomWrite(() => adopt(id)));
+    }
+
+    // A Continue in the room is written on the predecessor's own record. A new root in the Project of a settled
+    // portal whose Continue control names no successor yet (or that root) is when to read that record again:
+    // once per root, and again while its claim on that root is still bound.
+    function askContinued() {
+        const roots = [...census.values()].filter((row) => row?.kind === 'managed_task' && !row.parent_task_id
+            && key(row.project_id) && !follows.has(key(row.activity_id)) && !records.get(key(row.activity_id))?.root?.isConnected);
+        for (const record of roots.length ? records.values() : []) {
+            const named = isPortal(record) && record.finished && !record.root.dataset.episodeOf
+                ? continueControlSuccessor(record) : null;
+            for (const row of named === null ? [] : roots) {
+                const rootId = key(row.activity_id);
+                const pair = `${record.groupId}|${rootId}`;
+                if (key(row.project_id) !== record.root.dataset.projectId || (named && named !== rootId) || asked.has(pair)) continue;
+                asked.add(pair);
+                // An absent record is an answer; a failed read, or a claim on this root still bound, asks again.
+                void fetchTaskDetailStrict(record.groupId).then((detail) => {
+                    if (detail?.continued_by?.successor_task_id === rootId && !admittedSuccessor(detail)) asked.delete(pair);
+                    if (detail && record.root?.isConnected) onDomWrite(() => card.note(record, detail));
+                }, () => asked.delete(pair));
+            }
+        }
+    }
+
     /** `/api/state`: the census of EVERY chat (a portal's work runs in its room's chat), bindings and names. */
     function sync(data) {
         if (!isMain || !data || typeof data !== 'object') return;
@@ -221,8 +278,10 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
                     changed = bind(record, { id: projectId, name: key(row?.project_name) }) || changed;
                 } else changed = present(record) || changed;
             }
+            for (const successorId of [...follows.keys()]) changed = adopt(successorId) || changed;
             return reconcilePortalNotes(feed) || changed;
         });
+        askContinued();
     }
 
     /**
@@ -332,5 +391,5 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
         return added;
     }
 
-    return { activity, bind, bindRow, present, row, settle, sync, syncConvert, turnIntoProject };
+    return { activity, bind, bindRow, follow, present, row, settle, sync, syncConvert, turnIntoProject };
 }

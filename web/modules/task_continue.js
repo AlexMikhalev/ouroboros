@@ -97,6 +97,12 @@ function renderSuccessor(button, successorId) {
     button.dataset.continueSuccessor = successorId;
 }
 
+/** The successor a card's Continue control names: '' while it still offers Continue, null with no control. */
+export function continueControlSuccessor(record) {
+    const button = ownLiveActionsEl(record)?.querySelector('[data-continue-task]');
+    return button ? String(button.dataset.continueSuccessor || '') : null;
+}
+
 /**
  * Keep one settled card's Continue action in step with the server's offer.
  *
