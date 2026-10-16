@@ -54,8 +54,11 @@ document.querySelector('#chat').addEventListener('submit', event => {
     event.preventDefault();
     if (socket?.readyState !== WebSocket.OPEN) return;
     const field = document.querySelector('#message');
+    // getRandomValues also works on ordinary HTTP LAN origins.
+    const id = Array.from(crypto.getRandomValues(new Uint8Array(16)),
+        byte => byte.toString(16).padStart(2, '0')).join('');
     socket.send(JSON.stringify({type: 'chat', content: field.value, chat_id: 1,
-        client_message_id: crypto.randomUUID()}));
+        client_message_id: id}));
     field.value = '';
     status.textContent = 'Sent to socket; waiting for the core to accept it.';
 });

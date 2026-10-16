@@ -201,7 +201,7 @@ The Settings client validates the whole draft before Save and sends no partial s
 
 Each provider card's one compact **Test** (`POST /api/providers/test`, §4) is one bounded, physically accounted call (`llm_probe.py`) without the chat retry, fallback, tool, reasoning, web, cache or capability-learning paths; draft credentials stay request-local, never mutating Settings, the process environment or `LLMClient` caches, and the tooltip discloses possible provider charges.
 
-Desktop and the overlay open the same `/onboarding` (§2). A selected directory may replace that page; the overlay's outside-frame recovery opens `?builtin=1`, including in a copied builtin client. On macOS, `launcher_onboarding.setup_recovery_menu` opens it independently of page JS in the current setup/main window; other OS chrome is unchanged. Completion still uses the single HTTP writer; discovery and reviewer-recovery previews write nothing.
+Desktop and the overlay open the same `/onboarding` (§2). A directory or separately hosted copy of the builtin client offers outside-frame recovery via `?builtin=1`; the core-owned main page already opens builtin setup and omits that control (`ws.pageOwnedByCore`). On macOS, `launcher_onboarding.setup_recovery_menu` opens it independently of page JS in the current setup/main window; other OS chrome is unchanged. Completion uses the single HTTP writer; discovery and reviewer-recovery previews write nothing.
 
 #### Agent accounts
 

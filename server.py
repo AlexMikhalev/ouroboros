@@ -1263,7 +1263,7 @@ routes = [
             "api_settings_post": api_settings_post,
         },
     ),
-    *served_ui.mounts(),  # builtin /onboarding/static, then the selected /static (kept last)
+    *served_ui.mounts(),  # public selected /auth, builtin /onboarding/static, selected /static last
 ]
 
 from contextlib import ExitStack, asynccontextmanager, suppress
