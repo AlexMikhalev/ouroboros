@@ -20,6 +20,7 @@ from .telegram_state import (
     _load_settings,
     _read_json_file,
     _state_file,
+    _mirror_options,
 )
 from ..scripts.telegram_settings import telegram_proxy
 from ouroboros.contracts.chat_id_policy import WEB_UI_CHAT_ID, is_project_chat_id
@@ -55,7 +56,7 @@ def _pinned_chat_id(settings: Dict[str, Any]) -> int:
 
 
 async def _push_notification(
-    api, chat_id: int, text: str, *, trust_env: bool = False,
+    api, chat_id: int, text: str, *, trust_env: bool = False, event=None,
 ) -> Tuple[str, Optional[BaseException]]:
     """Send one notification; never raises a typed Telegram failure.
 
@@ -72,6 +73,7 @@ async def _push_notification(
     client = TelegramClient(
         protected.get("TELEGRAM_BOT_TOKEN", ""), trust_env=trust_env,
         proxy=telegram_proxy(Path(api.get_state_dir())),
+        **(_mirror_options(api, event, chat_id) if event is not None else {}),
     )
     try:
         await client.send_message(int(chat_id), text, parse_mode="")
@@ -272,7 +274,10 @@ async def _check_tasks_notify(
         except (TypeError, ValueError):
             pass
         msg = _completion_text(e, tid, lang, parts)
-        send_outcome, exc = await _push_notification(api, chat_id, msg, trust_env=trust_env)
+        from ouroboros.chat_chain import format_address, row_address
+
+        event = {**e, "row_address": format_address(row_address(e))}
+        send_outcome, exc = await _push_notification(api, chat_id, msg, trust_env=trust_env, event=event)
         if send_outcome == "transient":
             # Stop the batch on the first transient failure: every further
             # send would burn its full transport timeout against the same dead
