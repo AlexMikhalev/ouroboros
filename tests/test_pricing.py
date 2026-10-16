@@ -19,13 +19,8 @@ from ouroboros.pricing import (
 
 
 @pytest.fixture(autouse=True)
-def _reset_pricing_cache(monkeypatch):
+def _reset_pricing_cache():
     import ouroboros.pricing as pricing
-    from ouroboros import pricing_catalog
-
-    pricing_catalog._cache.clear()
-    pricing_catalog._retry_after.clear()
-    monkeypatch.setattr(pricing_catalog, "_fetch_catalog", MagicMock(side_effect=OSError("offline catalog")))
 
     pricing._cached_pricing.clear()
     pricing._pricing_fetched_at.clear()
@@ -183,7 +178,7 @@ def test_cloudru_catalog_uses_exact_model_and_explicit_fx(monkeypatch):
     assert rows["cloudru/vendor/new-model"] == (1.0, None, None, 5.0)
 
 
-@pytest.mark.parametrize("provider", ["openai-compatible", "gigachat"])
+@pytest.mark.parametrize("provider", ["openai", "openai-compatible", "gigachat", "anthropic"])
 def test_routes_without_automatic_catalog_return_empty(provider):
     assert get_pricing(provider=provider) == {}
 

@@ -55,7 +55,6 @@ class PresenceAdmission:
     selection_fingerprint: str
     capability_ceiling: PresenceCapabilityCeiling
     workspace_root: str = ""
-    execution: str = "event"  # the resolved ``event`` / ``call`` runtime value
 
 
 def _component_error(exc: Any) -> PresenceAdmissionError:
@@ -226,7 +225,6 @@ def admit_presence_turn(
         selection_fingerprint=resolution.selection_fingerprint,
         capability_ceiling=ceiling,
         workspace_root=str(workspace) if workspace is not None else "",
-        execution=resolution.runtime.execution,
     )
 
 
