@@ -348,11 +348,11 @@ export function mountCall({ page, chatId, env = globalThis }) {
     };
 }
 
-/** Extend the room's existing disposers so navigation releases every call resource. */
-export function mountRoomCall({ roomWork, ...options }) {
-    const call = mountCall(options);
-    const { leave, destroy } = roomWork;
-    roomWork.leave = () => { call.leave(); leave(); };
+/** Only a destroyed room hangs up; leave() also runs when the room just leaves the screen
+ * (Settings, a Project, a notification), and the call goes on like a phone call. */
+export function mountRoomCall({ roomWork, mount = mountCall, ...options }) {
+    const call = mount(options);
+    const { destroy } = roomWork;
     roomWork.destroy = () => { call.destroy(); destroy(); };
     return call;
 }

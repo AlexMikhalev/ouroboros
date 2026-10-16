@@ -19,6 +19,7 @@ from ouroboros import call_protocol as cp
 class CallOpenRequest(TypedDict):
     chat_id: int
     engine: NotRequired[Literal["openai", "google"]]
+    model: NotRequired[str]
     voice: NotRequired[str]
     client_message_id: NotRequired[str]
 
@@ -26,6 +27,7 @@ class CallOpenRequest(TypedDict):
 class CallOpenResponse(TypedDict):
     call_id: str
     ws_path: str
+    joined: NotRequired[bool]   # the room already had a call: this surface joins it
 
 
 class CallRefusal(TypedDict):

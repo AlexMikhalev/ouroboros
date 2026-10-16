@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { apiClient } from '../modules/api_client.js';
 import { SETTINGS_INPUT_FIELDS, SECRET_KEYS, renderSettingsPage } from '../modules/settings_ui.js';
-import { CallSession, callAvailability, mediaFailure, statePresentation } from '../modules/call.js';
+import { CallSession, callAvailability, mediaFailure, mountRoomCall, statePresentation } from '../modules/call.js';
 import { decodeFrame, encodeFrame, newerEpoch, pcm16, PlaybackBuffer, playedMilliseconds,
     MAX_FRAME_PAYLOAD, MAX_BUFFER_SECONDS } from '../modules/call_worklet.js';
 
@@ -294,4 +294,14 @@ test('the registered AudioWorklet captures real quanta at device rate and never 
             if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
         }
     }
+});
+
+test('a room that only leaves the screen keeps its call; destroying the room hangs up', () => {
+    const calls = [];
+    const roomWork = { leave: () => calls.push('room-leave'), destroy: () => calls.push('room-destroy') };
+    mountRoomCall({ roomWork, mount: () => ({ leave: () => calls.push('call-leave'), destroy: () => calls.push('call-destroy') }) });
+    roomWork.leave();
+    assert.deepEqual(calls, ['room-leave']);
+    roomWork.destroy();
+    assert.deepEqual(calls, ['room-leave', 'call-destroy', 'room-destroy']);
 });

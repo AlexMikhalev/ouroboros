@@ -58,7 +58,7 @@ def build_call_spec(payload: dict) -> cp.CallSpec:
     engine = payload.get("engine", settings.get("OUROBOROS_CALL_ENGINE", "openai"))
     if engine not in ("openai", "google"):
         raise CallPeerError("unsupported_call_engine")
-    model = settings.get(f"OUROBOROS_CALL_MODEL_{engine.upper()}", "")
+    model = payload.get("model") or settings.get(f"OUROBOROS_CALL_MODEL_{engine.upper()}", "")
     if not isinstance(model, str) or not model.strip():
         raise CallPeerError("call_model_missing")
     voice = payload.get("voice", settings.get(f"OUROBOROS_CALL_VOICE_{engine.upper()}", ""))
@@ -79,8 +79,12 @@ def build_call_spec(payload: dict) -> cp.CallSpec:
 
 
 def _admit_owner_call(payload: dict) -> dict:
+    from ouroboros.call_peers import owner_hub_for_room
     from supervisor.worker_chat_lane import handle_call_direct
 
+    existing = owner_hub_for_room(payload["chat_id"])
+    if existing is not None:
+        return {"call_id": existing.call_id, "ws_path": f"/ws/call/{existing.call_id}", "joined": True}
     spec = build_call_spec(payload)
     open_hub(spec)
     try:
@@ -104,15 +108,33 @@ async def api_call_open(request: Request) -> JSONResponse:
             raise CallPeerError("invalid_call_request")
         result = await run_sync_to_completion(_admit_owner_call, payload)
         if "refusal" in result:
-            return refusal(result["refusal"], 409)
+            return _owner_refusal(result["refusal"], 409)
         return JSONResponse(result)
     except CallPeerError as exc:
-        return refusal(exc.code, 413 if exc.code == "control_too_large" else 400)
+        return _owner_refusal(exc.code, 413 if exc.code == "control_too_large" else 400)
     except ImportError:
-        return refusal("call_admission_unavailable", 503)
+        return _owner_refusal("call_admission_unavailable", 503)
     except Exception:
         log.exception("Call admission failed")
-        return refusal("call_admission_failed", 503)
+        return _owner_refusal("call_admission_failed", 503)
+
+
+# What the owner's surface shows for an owner-door refusal; the code stays beside it.
+_OWNER_REFUSAL_WORDS = {
+    "repo_writer_gate_closed": "Ouroboros is applying an update; try the call again in a moment.",
+    "budget_exhausted": "The spending limit is reached; raise it in Settings to call.",
+    "cost_accounting_unavailable": "Spending cannot be checked right now, so the call did not open.",
+    "project_room_unavailable": "This project's room is not available for a call.",
+    "unsupported_call_engine": "Choose the OpenAI or Google live engine.",
+    "call_model_missing": "No live model is set for this engine in Settings (Models, Live calls).",
+    "invalid_call_max_minutes": "The call's minute limit in Settings is not a positive whole number.",
+    "invalid_call_request": "The call request was malformed.",
+    "control_too_large": "The call request was too large.",
+}
+
+
+def _owner_refusal(code: str, status: int) -> JSONResponse:
+    return refusal(code, status, _OWNER_REFUSAL_WORDS.get(code, "The call could not start; the log has the details."))
 
 
 def _control(text: str) -> dict:

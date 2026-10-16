@@ -131,7 +131,34 @@ def test_owner_admission_refusal_removes_hub(owner, monkeypatch):
     monkeypatch.setattr(worker_chat_lane, "handle_call_direct", admit, raising=False)
     response = owner.post("/api/call/open", json={"chat_id": 1})
     assert response.status_code == 409 and response.json()["code"] == "budget_exhausted"
+    assert response.json()["error"] == "The spending limit is reached; raise it in Settings to call."
     assert get_hub(seen[0]) is None
+
+
+def test_owner_open_honours_a_chosen_model_and_a_second_surface_joins_the_rooms_call(owner, monkeypatch):
+    from ouroboros import config
+    from supervisor import worker_chat_lane
+
+    monkeypatch.setattr(config, "load_settings", lambda: {"OUROBOROS_CALL_MODEL_OPENAI": "settings-model"})
+    admitted = []
+
+    def admit(chat_id, spec, on_finished):
+        admitted.append(spec)
+        return {"admitted": True, "task_id": "turn", "reason": ""}
+
+    monkeypatch.setattr(worker_chat_lane, "handle_call_direct", admit, raising=False)
+    first = owner.post("/api/call/open", json={"chat_id": 7, "model": "chosen-model"})
+    try:
+        assert first.status_code == 200 and admitted[0].model == "chosen-model"
+        second = owner.post("/api/call/open", json={"chat_id": 7, "model": "another-model"})
+        assert second.status_code == 200 and second.json() == {
+            "call_id": admitted[0].call_id, "ws_path": f"/ws/call/{admitted[0].call_id}", "joined": True}
+        assert len(admitted) == 1  # one paid call per room; the second surface joined it
+        other_room = owner.post("/api/call/open", json={"chat_id": 8})
+        assert other_room.status_code == 200 and len(admitted) == 2 and admitted[1].model == "settings-model"
+    finally:
+        for spec in admitted:
+            close_hub(spec.call_id)
 
 
 @pytest.mark.parametrize("payload", [{}, [], {"chat_id": True}, {"chat_id": "1"},

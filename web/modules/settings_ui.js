@@ -31,7 +31,7 @@ export const SETTINGS_INPUT_FIELDS = [
     ['s-call-engine', 'OUROBOROS_CALL_ENGINE', 'openai'],
     ['s-call-model-openai', 'OUROBOROS_CALL_MODEL_OPENAI'], ['s-call-voice-openai', 'OUROBOROS_CALL_VOICE_OPENAI'],
     ['s-call-model-google', 'OUROBOROS_CALL_MODEL_GOOGLE'], ['s-call-voice-google', 'OUROBOROS_CALL_VOICE_GOOGLE'],
-    ['s-call-native-search', 'OUROBOROS_CALL_NATIVE_SEARCH', 'false'],
+    ['s-call-native-search', 'OUROBOROS_CALL_NATIVE_SEARCH', 'true'],
     ['s-call-max-minutes', 'OUROBOROS_CALL_MAX_MINUTES'], ['s-presence-call-max-minutes', 'OUROBOROS_PRESENCE_CALL_MAX_MINUTES'],
 ];
 

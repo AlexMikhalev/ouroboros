@@ -288,9 +288,10 @@ Frames sent while you were disconnected are not resent: history and the task rea
 
 ### Live calls
 
-A room may hold one live voice call; its audio travels on its own socket, never on `/ws`. `GET /api/contract` describes it under `call`.
+A room holds at most one owner call; its audio travels on its own socket, never on `/ws`. `GET /api/contract` describes it under `call`.
 
-- **Opening.** `POST /api/call/open` with `{chat_id, client_message_id?, engine?, model?, voice?}` answers `{call_id, ws_path}`; a refusal is `{ok: false, code, error}` with `error` in plain words. The defaults come from Settings (Models → Live calls).
+- **Opening.** `POST /api/call/open` with `{chat_id, client_message_id?, engine?, model?, voice?}` answers `{call_id, ws_path}`. When the room already has a call, the answer adds `joined: true` and this surface joins that call, which keeps its own engine, model and voice. A refusal is `{ok: false, code, error}`, where `error` is a sentence for the owner. The defaults come from Settings (Models → Live calls).
+- **Typed words during a call.** A message typed in the room still starts its own ordinary turn. The call learns of it as context and speaks about it when it next talks.
 - **The socket.** Open `ws_path` with the same authentication as `/ws`. The first text frame is `hello` `{type: "hello", protocol: 1, role: "owner", mic, speaker, rate, label}`, where `rate` is the device's sample rate; the core resamples.
 - **Audio frames.** Binary frames carry a 16-byte little-endian header (magic `OC`, version 1, kind 1 = to the core or 2 = from the core, epoch u16, sequence u32, rate u32, stream u16) and then PCM16 mono.
 - **Your control frames.** `mute {muted}`, `played {item_id, played_ms}` (milliseconds of that item actually rendered) and `bye {reason}`.

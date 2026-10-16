@@ -4,6 +4,7 @@
  * @typedef {Object} CallOpenRequest
  * @property {number} chat_id
  * @property {'openai'|'google'=} engine
+ * @property {string=} model
  * @property {string=} voice
  * @property {string=} client_message_id
  */
@@ -11,6 +12,7 @@
  * @typedef {Object} CallOpenResponse
  * @property {string} call_id
  * @property {string} ws_path
+ * @property {boolean=} joined
  */
 /**
  * @typedef {Object} CallRefusal
@@ -23,6 +25,8 @@
  * @property {'meeting'} role
  * @property {string=} call_id
  * @property {string=} binding_id
+ * @property {Object=} event
+ * @property {string=} label
  * @property {boolean=} mic
  * @property {boolean=} speaker
  */
