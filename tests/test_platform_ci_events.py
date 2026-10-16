@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from fnmatch import fnmatchcase
 import re
+from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
 

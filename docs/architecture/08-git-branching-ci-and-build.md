@@ -10,7 +10,7 @@ The local `ouroboros-stable` ref is also a recovery fallback maintained by expli
 
 ### CI topology
 
-Ordinary cloud CI runs only by manual dispatch or `v*` release tag: no automatic branch-push or PR tests. This trades early cross-platform feedback for runner capacity; local tests and independent review remain. `.github/workflows/ci.yml` retains its full release graph. UI/provider wrappers are manual-only; their filenames remain dispatch-compatible. Claudexor integration, Hub validation and non-test publishing keep their own triggers.
+Ordinary cloud CI runs only on dispatch or `v*` tags, not branch pushes or PRs: later cross-platform feedback buys runner capacity, not weaker local tests or review. `ci.yml` retains the full release graph; UI/provider wrappers are manual-only with unchanged filenames. Claudexor integration, Hub validation and non-test publishing keep their triggers.
 
 | Tier | Jobs | Trust boundary |
 |---|---|---|
