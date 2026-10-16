@@ -19,10 +19,12 @@ def live_root(catalog_fixture, monkeypatch):
     return root
 
 
-def reserve(root, **values):
+def reserve(root, *, warm=True, **values):
     args = dict(engine="openai", model="gpt-realtime-2.1", call_id="call-1", response_key="response-1",
                 task_id="call-task", rendered_mode="nano", drive_root=root)
     args.update(values)
+    if warm:  # as the driver does on its own thread before the call's loop exists
+        live.warm_quote(engine=args["engine"], model=args["model"], drive_root=root)
     return live.reserve_live_response(**args)
 
 
@@ -290,9 +292,20 @@ def test_matched_raw_modality_counts_and_measured_zero_are_priceable(live_root):
         raw_usage={"input_token_details": {"audio_tokens": 10, "video_tokens": 0},
                    "promptTokensDetails": [{"modality": "AUDIO", "tokenCount": 10}]}, status="completed")
     assert ledger_rows(live_root)[0]["cost_usd"] == pytest.approx(.0001)
+    # The provider reported zeros: a free response, priced zero.
     zero = reserve(live_root, response_key="zero")
-    live.settle_live_response(zero, usage=dict.fromkeys(USAGE_KEYS, 0), raw_usage={}, status="cancelled")
+    live.settle_live_response(zero, usage=dict.fromkeys(USAGE_KEYS, 0),
+                              raw_usage={"input_tokens": 0, "output_tokens": 0}, status="cancelled")
     assert ledger_rows(live_root)[-1]["cost_usd"] == 0
+    # Nothing reported at all: the adapter's zeros are not a measurement; the cost stays unknown.
+    unreported = reserve(live_root, response_key="unreported")
+    live.settle_live_response(unreported, usage=dict.fromkeys(USAGE_KEYS, 0), raw_usage={}, status="cancelled")
+    row = ledger_rows(live_root)[-1]
+    assert row["cost_usd"] is None and row["cost_coverage"] == "partial"
+    assert "usage_unreported" in row["cost_evidence"]["unpriced"]
+    empty = reserve(live_root, response_key="empty")
+    live.settle_live_response(empty, usage={}, raw_usage={}, status="failed")
+    assert ledger_rows(live_root)[-1]["cost_usd"] is None
 
 
 def test_direct_text_settlement_keeps_quote_and_uses_its_data_root(live_root, monkeypatch):
@@ -323,3 +336,67 @@ def test_direct_settlement_keeps_the_computing_quote_without_a_second_lookup(liv
     assert row["cost_usd"] == pytest.approx(.00028)
     assert row["cost_evidence"]["tariff_quote"] == quote
     assert lookup.call_count == 1
+
+
+def test_gemini_thinking_tokens_are_billed_output(live_root):
+    attempt = reserve(live_root, engine="google", model="gemini-3.8-live")
+    raw = {"usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 30, "thoughtsTokenCount": 400,
+                             "responseTokensDetails": [{"modality": "TEXT", "tokenCount": 30}]}}
+    live.settle_live_response(attempt, usage={"text_input_tokens": 100, "text_output_tokens": 30}, raw_usage=raw,
+                              status="completed")
+    row, = ledger_rows(live_root)
+    assert row["cost_usd"] == pytest.approx((100 * 1 + 30 * 3 + 400 * 3) / 1e6)
+    assert row["cost_evidence"]["priced_usage"]["thoughts_output_tokens"] == {"tokens": 400, "usd_per_token": 3e-6}
+
+
+def test_thinking_tokens_without_an_output_rate_keep_the_cost_unknown(live_root):
+    import json
+    import requests  # the catalog fixture's mocked fetch
+    response = requests.get.return_value
+    rows = json.loads(response.content)
+    del rows["gemini/gemini-3.8-live"]["output_cost_per_token"]
+    response.content = json.dumps(rows).encode()
+    attempt = reserve(live_root, engine="google", model="gemini-3.8-live")
+    live.settle_live_response(attempt, usage={"audio_output_tokens": 10},
+                              raw_usage={"usageMetadata": {"thoughtsTokenCount": 7}}, status="completed")
+    row, = ledger_rows(live_root)
+    assert row["cost_usd"] is None and "output_cost_per_token" in row["cost_evidence"]["unpriced"]
+
+
+def test_a_budget_refused_response_keeps_the_providers_charge(live_root):
+    scope = accounting.UsageScope(drive_root=live_root, task_id="call-task", root_task_id="root-task",
+                                  global_limit_usd=.001, non_task_operation=True)
+    with accounting.usage_scope(scope):
+        settle(reserve(live_root), audio_input_tokens=100)
+        with pytest.raises(accounting.BudgetExceeded) as refusal:
+            reserve(live_root, response_key="response-2")
+        # The provider never heard of the refusal: a response it already started is still charged.
+        live.record_refused_live_response(engine="openai", model="gpt-realtime-2.1", call_id="call-1",
+            response_key="response-2", task_id="call-task", rendered_mode="nano", drive_root=live_root,
+            reason=str(refusal.value), usage={}, raw_usage={}, status="budget_refused")
+        live.record_refused_live_response(engine="openai", model="gpt-realtime-2.1", call_id="call-1",
+            response_key="response-2", task_id="call-task", rendered_mode="nano", drive_root=live_root,
+            reason=str(refusal.value), usage={"audio_output_tokens": 100}, raw_usage={"output_tokens": 100},
+            status="completed")
+    rows = [row for row in ledger_rows(live_root) if row.get("source") == "live_response_refused"]
+    assert [row["cost_usd"] for row in rows] == [None, pytest.approx(.002)]
+    assert rows[0]["cost_coverage"] == "partial" and "usage_unreported" in rows[0]["cost_evidence"]["unpriced"]
+    assert rows[0]["cost_evidence"]["budget_refusal"] == str(refusal.value)
+    assert rows[1]["cost_evidence"]["status"] == "completed"
+    assert accounting.usage_projection(live_root)["settled_usd"] == pytest.approx(.001 + .002)
+
+
+def test_in_loop_lookups_never_fetch_the_catalog(live_root):
+    import requests  # the catalog fixture's mocked fetch
+    fetch = requests.get
+    attempt = reserve(live_root, warm=False)
+    assert fetch.call_count == 0
+    assert ledger_rows(live_root)[0]["reservation_upper_bound_usd"] is None  # unknown until warmed, never a wait
+    settle(attempt, audio_input_tokens=10)
+    live.record_transcription(engine="openai", model="gpt-realtime-2.1", call_id="call-1",
+        usage={"audio_input_tokens": 10}, raw_usage={}, task_id="call-task", drive_root=live_root)
+    assert fetch.call_count == 0
+    assert live.warm_quote(engine="openai", model="gpt-realtime-2.1", drive_root=live_root)["catalog_id"] == "gpt-realtime-2.1"
+    assert fetch.call_count == 1
+    reserve(live_root, warm=False, response_key="after-warm")
+    assert ledger_rows(live_root)[-1]["reservation_upper_bound_usd"] is not None and fetch.call_count == 1

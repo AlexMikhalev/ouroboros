@@ -3,7 +3,13 @@
 A response is reserved when its start event arrives and is already dispatched.
 The caller's UsageScope owns root/group attribution and money limits. Catalog
 quotes are estimates, never provider invoices; an uncovered modality keeps the
-whole amount unknown. Abandonment retains physical custody as unresolved.
+whole amount unknown, and a receipt the provider never reported settles as
+unknown, never as a free response. Abandonment retains physical custody as
+unresolved; a response the budget refuses after the provider started it keeps
+the provider's charge on the ledger. The catalog is warmed by the call's thread
+before its event loop exists (``warm_quote``); every lookup made from inside the
+loop reads the warmed snapshot and never fetches, so no network wait ever sits
+on the audio path.
 """
 
 from __future__ import annotations
@@ -140,15 +146,26 @@ def _raw_count_gaps(counts: dict, raw: Mapping) -> list[str]:
     return missing
 
 
+def _thoughts_tokens(raw: Mapping) -> int:
+    """Gemini bills its thinking as output tokens, outside the response modality details."""
+    return _count(raw.get("thoughtsTokenCount", raw.get("thoughts_token_count", 0)))
+
+
 def _price(quote: dict | None, usage: Mapping, raw_usage: Mapping) -> tuple[float | None, dict]:
-    """Only a fully covered token receipt has a numeric estimated cost."""
-    missing = _unpriced_raw(_raw_body(raw_usage))
+    """Only a fully covered token receipt has a numeric estimated cost.
+
+    An all-zero normalized receipt with nothing from the provider behind it is an
+    unreported receipt (the adapter saw no usage), priced unknown; a provider that
+    reports zeros reports a free response, and those zeros price as zero.
+    """
+    body = _raw_body(raw_usage)
+    missing = _unpriced_raw(body)
     priced = {}
     try:
         counts = {key: _count(usage.get(key, 0)) for key in USAGE_KEYS}
-        missing.extend(_raw_count_gaps(counts, _raw_body(raw_usage)))
+        missing.extend(_raw_count_gaps(counts, body))
         missing.extend(str(key) for key, value in usage.items() if key not in USAGE_KEYS and value != 0)
-        split = _cached_split(counts, _raw_body(raw_usage))
+        split = _cached_split(counts, body)
         total_input = sum(counts[f"{m}_input_tokens"] for m in ("text", "audio", "image"))
         for key in RATE_FIELDS:
             if key.startswith("cached_"):
@@ -162,10 +179,16 @@ def _price(quote: dict | None, usage: Mapping, raw_usage: Mapping) -> tuple[floa
                 priced[key] = {"tokens": number, "usd_per_token": price}
                 if price is None:
                     missing.append(RATE_FIELDS[key])
+        thoughts = _thoughts_tokens(body)
+        if thoughts:
+            price = rate(quote, RATE_FIELDS["text_output_tokens"], input_tokens=total_input)
+            priced["thoughts_output_tokens"] = {"tokens": thoughts, "usd_per_token": price}
+            if price is None:
+                missing.append(RATE_FIELDS["text_output_tokens"])
+        if not usage or (not any(counts.values()) and not body):
+            missing.append("usage_unreported")
     except (ValueError, TypeError, KeyError) as exc:
         missing.append(str(exc))
-    if not usage:
-        missing.append("usage_unreported")
     if quote is None:
         missing.append("catalog_entry_unavailable")
     try:
@@ -178,9 +201,19 @@ def _price(quote: dict | None, usage: Mapping, raw_usage: Mapping) -> tuple[floa
     return cost, {"priced_usage": priced, "unpriced": sorted(set(missing))}
 
 
+def warm_quote(*, engine: str, model: str, drive_root) -> dict | None:
+    """Fetch the catalog once, off the call's event loop; later lookups read this snapshot."""
+    return get_catalog_quote(model, provider=engine, drive_root=drive_root, allow_live_fetch=True)
+
+
+def _warmed_quote(model: str, engine: str, drive_root) -> dict | None:
+    # Inside the call's loop: the snapshot ``warm_quote`` left, never a network wait.
+    return get_catalog_quote(model, provider=engine, drive_root=drive_root, allow_live_fetch=False)
+
+
 def reserve_live_response(*, engine: str, model: str, call_id: str, response_key: str,
                           task_id: str, rendered_mode: str, drive_root) -> LiveAttempt:
-    quote = get_catalog_quote(model, provider=engine, drive_root=drive_root)
+    quote = _warmed_quote(model, engine, drive_root)
     cost, pricing = _price(quote, PROVISIONAL_USAGE, {})
     context = accounting.current_physical_attempt_context()
     if context is not None:
@@ -221,7 +254,7 @@ def settle_live_response(attempt: LiveAttempt, *, usage: Mapping, raw_usage: Map
 def record_transcription(*, engine: str, model: str, call_id: str, usage: Mapping,
                          raw_usage: Mapping, task_id: str, drive_root) -> None:
     context = accounting.current_physical_attempt_context()
-    quote = get_catalog_quote(model, provider=engine, drive_root=drive_root)
+    quote = _warmed_quote(model, engine, drive_root)
     mode = context.rendered_mode if context else ""
     evidence = {"call_id": call_id, "response_key": f"transcription:{uuid.uuid4().hex}",
                 "rendered_mode": mode, "tariff_quote": quote}
@@ -229,6 +262,27 @@ def record_transcription(*, engine: str, model: str, call_id: str, usage: Mappin
     accounting.record_received_attempt(accounting.AttemptRequest(
         model=model, provider=engine, task_id=task_id, drive_root=drive_root, source="live_transcription",
         physical_context=context, rendered_mode=mode), normalized, cost_usd=cost)
+
+
+def record_refused_live_response(*, engine: str, model: str, call_id: str, response_key: str, task_id: str,
+                                 rendered_mode: str, drive_root, reason: str, usage: Mapping, raw_usage: Mapping,
+                                 status: str) -> None:
+    """A response the budget refused after the provider started it: the charge stays on the ledger.
+
+    Admission cannot veto past provider spend (``record_received_attempt``). With a
+    reported receipt the row is priced like any settlement; without one (refused at
+    the start event) it carries no counts, unknown cost, and names the refusal.
+    """
+    context = accounting.current_physical_attempt_context()
+    if context is not None:
+        context = replace(context, rendered_mode=rendered_mode)
+    quote = _warmed_quote(model, engine, drive_root)
+    evidence = {"call_id": call_id, "response_key": response_key, "rendered_mode": rendered_mode,
+                "tariff_quote": quote, "budget_refusal": reason}
+    normalized, cost = _settlement(quote, evidence, usage, raw_usage, status)
+    accounting.record_received_attempt(accounting.AttemptRequest(
+        model=model, provider=engine, task_id=task_id, drive_root=drive_root, source="live_response_refused",
+        physical_context=context, rendered_mode=rendered_mode), normalized, cost_usd=cost)
 
 
 def abandon_live_response(attempt: LiveAttempt, *, reason: str) -> None:
