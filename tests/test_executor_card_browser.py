@@ -52,7 +52,7 @@ def test_observed_executor_role_activity_and_project_pointer_live_replay(subscri
     card = page.locator('#executor-proof [data-task-id="child"]')
     card.wait_for()
     root_card = page.locator('#executor-proof [data-task-id="root"]')
-    root_meta = root_card.locator(':scope > .chat-live-summary-button > .chat-live-meta')
+    root_meta = root_card.locator(':scope > .chat-live-foot > .chat-live-meta')
     assert 'Agent model: gpt-6-astra' in root_meta.inner_text()
     # A helper's usage shares the task id but must not replace its coordinator.
     page.evaluate('''async () => {
@@ -216,7 +216,7 @@ def test_quiet_executor_label_matrix_and_details_by_pointer_keyboard_touch(engin
         assert fragment in detail.text_content(), task
         # Collapsed: the sentence is out of sight and out of the copied line, with no dangling dot.
         assert not detail.locator('.chat-live-meta-text').is_visible(), task
-        copied = ' '.join(card.locator(':scope > .chat-live-summary-button [data-live-meta]').evaluate(COPY).split())
+        copied = ' '.join(card.locator(':scope > .chat-live-foot [data-live-meta]').evaluate(COPY).split())
         assert copied.startswith(label) and fragment not in copied and '· ·' not in copied, (task, copied)
         meta = part(card, '[data-live-meta]')
         assert meta.evaluate('e => e.scrollWidth <= e.clientWidth + 1'), task

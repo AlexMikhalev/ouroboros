@@ -1110,16 +1110,17 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                     row = running.evaluate(
                         """card => {
                             const btn = card.querySelector(':scope > [data-live-summary-button]');
-                            const meta = btn.querySelector('[data-live-meta]').getBoundingClientRect();
-                            const review = btn.querySelector('[data-live-review-summary]').getBoundingClientRect();
-                            return {height: btn.getBoundingClientRect().height, metaTop: meta.top,
-                                reviewTop: review.top, reviewRight: review.right,
-                                buttonRight: btn.getBoundingClientRect().right};
+                            const foot = card.querySelector(':scope > [data-live-foot]');
+                            const meta = foot.querySelector('[data-live-meta]').getBoundingClientRect();
+                            const end = foot.querySelector('[data-live-foot-end]').getBoundingClientRect();
+                            const review = foot.querySelector('[data-live-review-summary]').getBoundingClientRect();
+                            return {height: btn.getBoundingClientRect().height, metaBottom: meta.bottom,
+                                reviewTop: review.top, reviewLeft: review.left, endLeft: end.left};
                         }"""
                     )
-                    # The quiet count shares the metadata row, docked right, without a new row.
-                    assert abs(row["reviewTop"] - row["metaTop"]) <= 2, row
-                    assert row["buttonRight"] - row["reviewRight"] <= 20, row
+                    # The quiet count leads the card's one action row under the metadata line; the summary keeps its height.
+                    assert row["reviewTop"] >= row["metaBottom"] - 2, row
+                    assert abs(row["reviewLeft"] - row["endLeft"]) <= 2, row
                     assert abs(row["height"] - before_reviews) <= 1, row
                     assert all(not bands[task_id]["clipped"] for task_id in bands), bands
                     assert all("Reviews" not in bands[task_id]["reviews"] for task_id in bands), bands
@@ -2448,7 +2449,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         deepest = page.locator('.chat-live-card[data-task-id="layout-child-10"]')
         assert deepest.locator(':scope > .chat-live-summary-button [data-live-title]').inner_text() == "pty-tests"
         assert "Agent model: gemini-3.6-flash" in deepest.locator(
-            ':scope > .chat-live-summary-button [data-live-meta]').inner_text()
+            ':scope > .chat-live-foot [data-live-meta]').inner_text()
         deepest.locator(":scope > [data-live-summary-button]").click()
         line_toggle = deepest.locator(":scope > [data-live-timeline] .chat-live-line-toggle").last
         line_toggle.wait_for(state="visible", timeout=5_000)

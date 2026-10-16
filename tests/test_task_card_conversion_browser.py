@@ -244,7 +244,7 @@ def test_running_direct_turn_converts_to_project_and_its_answer_follows(
                     main_text = page.locator("#page-chat").inner_text()
                     page.locator('#page-chat .project-answer').filter(has_text='The converted turn finished its work.').wait_for(timeout=30000)
                     page.wait_for_selector('#page-chat .project-answer.is-folded', timeout=30000)
-                    page.wait_for_function("() => [...document.querySelectorAll('#page-chat .chat-live-card[data-portal=\\"1\\"]:not([hidden]) .chat-live-phase')].some(n => n.textContent === 'Done')", timeout=30000)
+                    page.wait_for_function("() => [...document.querySelectorAll('#page-chat .chat-live-card[data-portal]:not([hidden]) .chat-live-phase')].some(n => n.textContent === 'Done')", timeout=30000)
                     assert page.locator('#page-chat .chat-live-card[data-portal="1"]:not([hidden])').count() == 1
                     assert page.locator('#page-chat .project-handoff').count() == 0, "no second entry beside the card"
                     assert marker in main_text, "Main lost the owner message the turn started from"

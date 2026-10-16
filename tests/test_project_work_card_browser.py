@@ -20,6 +20,7 @@ const ws={ws:{readyState:1},on(type,fn){const rows=handlers.get(type)||[];rows.p
     isConnected:()=>connected,send(frame){const id=frame.client_message_id||`cm-${++coined}`;
         window.sentFrames.push({...frame,client_message_id:id});return {status:'sent',clientMessageId:id};}};
 window.emit=(type,row)=>(handlers.get(type)||[]).forEach(fn=>fn(row));
+window.connection=value=>{connected=value;window.emit(value?'open':'close');};
 window.chat=createChatInstance({ws,state:{activePage:'chat',projectChatIds:new Set([7,8]),unreadCount:0},
     updateUnreadBadge(){},openSettingsTab(){},openDashboardTab(){},chatId:1,
     mountEl:document.getElementById('content'),stateSnapshots:{begin:()=>({generation:1,requestedAt:Date.now()}),
@@ -35,7 +36,9 @@ window.addEventListener('ouro:open-project',event=>{window.openedProject=event.d
     ("chromium", "light", 1360), ("chromium", "dark", 390),
     ("webkit", "light", 390), ("webkit", "dark", 1360),
 ], ids=["chromium-light-desktop", "chromium-dark-mobile", "webkit-light-mobile", "webkit-dark-desktop"])
-def main_chat(request):
+def project_chat(request):
+    """A real chat instance over static gateway data (Main, or a Project panel when the test is parametrized with
+    `chat_id`); `rows` is the history the page reads and `state` the /api/state answer, both mutable."""
     engine, theme, width = request.param
     if os.environ.get("OUROBOROS_RUN_UI_SMOKE") != "1":
         pytest.skip("Set OUROBOROS_RUN_UI_SMOKE=1 to run the browser flow")
@@ -65,13 +68,15 @@ def main_chat(request):
                  {"activity_id": "transfer", "project_id": "beta", "chat_id": 8, "kind": "managed_task",
                   "phase": "budget_paused", "pause_cause": "owner", "started_at": 1791467880},
              ]}
-    conversions, requests = {}, []
+    conversions, details, requests = {}, {}, []
     history = {"messages": rows, "progress": [], "has_more": False, "page_cursor": "work-cards",
                "next_cursor": None, "window": {"complete": True}, "coverage": {
                    "v": 1, "view": "work", "upper": {"chat": len(rows), "progress": 0}, "spans": {
                        "chat": {"from": 0, "to": len(rows), "chain": "work", "gaps": []}, "progress": None}}}
+    chat_id = request.node.callspec.params.get("chat_id", 1)
+    boot = BOOT.replace("chatId:1,", f"chatId:{chat_id},asPanel:{str(chat_id != 1).lower()},")
     html = (WEB / "index.html").read_text(encoding="utf-8").replace(
-        '<script type="module" src="/static/app.js"></script>', BOOT)
+        '<script type="module" src="/static/app.js"></script>', boot)
 
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *_):
@@ -95,7 +100,8 @@ def main_chat(request):
             requests.append(payload)
             data = conversions[payload["task_id"]]
         if path.startswith("/api/tasks/"):
-            data = {"task_id": path.split("/")[-1], "status": "running"}
+            task_id = path.split("/")[-1]
+            data = details.get(task_id, {"task_id": task_id, "status": "running"})
         route.fulfill(content_type="application/json", body=json.dumps(data))
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(WEB)))
@@ -113,10 +119,11 @@ def main_chat(request):
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(f"http://127.0.0.1:{server.server_port}/")
-                page.wait_for_function("() => window.chat && document.querySelector('#chat-messages .chat-bubble')")
-                page.evaluate("s=>chat.hydrateStateSnapshot(s)", state)
-                yield {"page": page, "expect": playwright.expect, "state": state, "conversions": conversions,
-                       "requests": requests, "engine": engine, "theme": theme, "width": width}
+                if chat_id == 1:
+                    page.wait_for_function("() => window.chat && document.querySelector('#chat-messages .chat-bubble')")
+                    page.evaluate("s=>chat.hydrateStateSnapshot(s)", state)
+                yield {"page": page, "expect": playwright.expect, "rows": rows, "state": state, "conversions": conversions,
+                       "details": details, "requests": requests, "engine": engine, "theme": theme, "width": width}
                 assert not errors
             finally:
                 browser.close()
@@ -126,18 +133,22 @@ def main_chat(request):
         thread.join(timeout=5)
 
 
-def _evidence(tmp_path, chat, name):
+def _evidence_dir(tmp_path):
     path = Path(os.environ.get("OUROBOROS_BROWSER_EVIDENCE_OUT") or tmp_path)
     path.mkdir(parents=True, exist_ok=True)
-    return str(path / f"{name}-{chat['engine']}-{chat['theme']}-{chat['width']}.png")
+    return path
+
+
+def _evidence(tmp_path, chat, name):
+    return str(_evidence_dir(tmp_path) / f"{name}-{chat['engine']}-{chat['theme']}-{chat['width']}.png")
 
 
 def _card(page, task_id):
     return page.locator(f'#chat-messages > .chat-live-card[data-task-id="{task_id}"]')
 
 
-def test_project_rows_bind_the_works_own_cards_never_an_entry(main_chat, tmp_path):
-    page, expect = main_chat["page"], main_chat["expect"]
+def test_project_rows_bind_the_works_own_cards_never_an_entry(project_chat, tmp_path):
+    page, expect = project_chat["page"], project_chat["expect"]
     creation, transfer = _card(page, "creation"), _card(page, "transfer")
     for card, name in ((creation, "Project Alpha"), (transfer, "Project Beta")):
         expect(card).to_have_attribute("data-portal", "1")
@@ -154,7 +165,7 @@ def test_project_rows_bind_the_works_own_cards_never_an_entry(main_chat, tmp_pat
     expect(transfer.locator('.chat-live-actions > button')).to_have_text(["Reply", "Resume", "Stop…"])
     assert transfer.locator('.chat-live-actions > .btn-primary').all_text_contents() == ["Resume"]
     # The summary is reading content in a portal: no disclosure, no stop.
-    assert creation.locator('[data-live-summary]').evaluate("e=>['role','tabindex','aria-expanded'].map(n=>e.getAttribute(n))") == [None, None, None]
+    assert creation.locator(':scope > [data-live-summary-button]').evaluate("e=>['role','tabindex','aria-expanded'].map(n=>e.getAttribute(n))") == [None, None, None]
     geometry = creation.evaluate("""card => { const c = card.getBoundingClientRect();
         const box = (sel) => { const r = card.querySelector(sel).getBoundingClientRect(); return {l: r.left - c.left, r: c.right - r.right, h: r.height}; };
         return {overflow: card.scrollWidth > card.clientWidth + 1, footer: box(':scope > .chat-live-bound-pointer'),
@@ -165,41 +176,41 @@ def test_project_rows_bind_the_works_own_cards_never_an_entry(main_chat, tmp_pat
     assert min(geometry["buttons"]) >= 24
     creation.locator(':scope > .chat-live-bound-pointer').click()
     assert page.evaluate("[openedProject.project.id, openedProject.task_id]") == ["alpha", "creation"]
-    creation.screenshot(path=_evidence(tmp_path, main_chat, "portal"), animations="disabled")
+    creation.screenshot(path=_evidence(tmp_path, project_chat, "portal"), animations="disabled")
 
 
-def test_turn_into_project_keeps_the_card_as_its_portal(main_chat):
-    page, expect = main_chat["page"], main_chat["expect"]
+def test_turn_into_project_keeps_the_card_as_its_portal(project_chat):
+    page, expect = project_chat["page"], project_chat["expect"]
     page.evaluate("""() => {
         emit('chat', {chat_id: 1, task_id: 'local', role: 'assistant', is_progress: true, narration: true,
             content: 'Inspecting the requested work', ts: '2026-10-08T14:10:00Z'});
         emit('task_named', {task_id: 'local', suggested_name: 'Inspect the runner'});
     }""")
     card = _card(page, "local")
-    state = main_chat["state"]
+    state = project_chat["state"]
     state["active_chat_activities"].append({"activity_id": "local", "chat_id": 1, "kind": "direct_chat", "phase": "working",
                                             "cancelable": True})
     page.evaluate("s=>chat.hydrateStateSnapshot(s)", state)
     expect(card.locator('[data-turn-into-project]')).to_have_count(1)
     node = card.element_handle()
-    main_chat["conversions"]["local"] = {"project": {"id": "gamma", "name": "Project Gamma", "chat_id": 9},
+    project_chat["conversions"]["local"] = {"project": {"id": "gamma", "name": "Project Gamma", "chat_id": 9},
                                          "binding": {"project_id": "gamma"}, "handoff_receipt": "durable"}
     card.locator('[data-turn-into-project]').click()
     expect(card).to_have_attribute("data-portal", "1")
     assert page.evaluate("n => n.isConnected && n === document.querySelector('[data-task-id=\"local\"]')", node), "the SAME node"
     expect(card.locator('[data-turn-into-project]')).to_have_count(0)
     expect(card.locator(':scope > .chat-live-bound-pointer')).to_have_attribute("aria-label", "Open project Project Gamma")
-    assert main_chat["requests"][-1]["task_id"] == "local"
+    assert project_chat["requests"][-1]["task_id"] == "local"
 
 
-def test_the_row_menu_opens_by_pointer_keyboard_and_touch_and_gives_focus_back(main_chat, tmp_path):
-    page, expect = main_chat["page"], main_chat["expect"]
+def test_the_row_menu_opens_by_pointer_keyboard_and_touch_and_gives_focus_back(project_chat, tmp_path):
+    page, expect = project_chat["page"], project_chat["expect"]
     card = _card(page, "creation")
     menu = page.locator('.chat-row-menu')
     card.locator('[data-live-title]').click(button="right")
     expect(menu.locator('[role="menuitem"]')).to_have_text(["Reply", "Copy", "Open project", "Pause", "Stop…"])
     expect(menu.locator('[role="menuitem"]').first).to_be_focused()
-    page.screenshot(path=_evidence(tmp_path, main_chat, "row-menu-card"), animations="disabled")
+    page.screenshot(path=_evidence(tmp_path, project_chat, "row-menu-card"), animations="disabled")
     page.keyboard.press("ArrowDown")
     expect(menu.locator('[role="menuitem"]').nth(1)).to_be_focused()
     page.keyboard.press("Escape")
@@ -231,8 +242,8 @@ def test_the_row_menu_opens_by_pointer_keyboard_and_touch_and_gives_focus_back(m
     expect(menu).to_have_count(0)
 
 
-def test_a_reply_sends_only_the_quoted_rows_address(main_chat, tmp_path):
-    page, expect = main_chat["page"], main_chat["expect"]
+def test_a_reply_sends_only_the_quoted_rows_address(project_chat, tmp_path):
+    page, expect = project_chat["page"], project_chat["expect"]
     answer = page.locator('#chat-messages > .chat-bubble.assistant').first
     answer.locator('.chat-message-reply').click()
     strip = page.locator('.chat-quote--composer')
@@ -242,7 +253,7 @@ def test_a_reply_sends_only_the_quoted_rows_address(main_chat, tmp_path):
     page.keyboard.press("Escape")
     expect(strip).to_have_count(0)
     answer.locator('.chat-message-reply').click()
-    page.screenshot(path=_evidence(tmp_path, main_chat, "reply-strip"), animations="disabled")
+    page.screenshot(path=_evidence(tmp_path, project_chat, "reply-strip"), animations="disabled")
     page.fill('#chat-input', "Which runs disagree?")
     page.locator('#chat-send').click()
     frame = page.evaluate("() => sentFrames.at(-1)")
