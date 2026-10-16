@@ -117,11 +117,12 @@ def _schedule_legacy(root: pathlib.Path, last: dict, job: dict, body_sha: str) -
     reason = ("state_unreadable" if not isinstance(previous, str) or not previous else
               "last_store_body_missing" if not last.get("sha") else
               "body_changed" if previous != last["sha"] else "")
-    if reason and not (job.get("state") in {"pending", "running"} and job.get("observed_sha") == previous):
+    if reason and not (job.get("state") in {"pending", "running", "failed"} and job.get("observed_sha") == previous):
         maintenance_jobs.record(root, "legacy_reconcile", state="pending", reason=reason,
                                 observed_sha=previous, body_sha=body_sha, cursor=None, done=0, total=None,
                                 error=None, waiting_on=None)
-    return bool(reason or job.get("state") in {"pending", "running"})
+        return True
+    return job.get("state") in {"pending", "running"}
 
 
 def ensure_current_store(root: Any, *, with_children: bool = True, rederive: bool = False,
@@ -225,7 +226,19 @@ def _ensure(root: pathlib.Path, path: pathlib.Path, *, rederive: bool = False,
                     "_import_job": facts["job:current_store_import"],
                     "legacy_reconcile": "scheduled" if scheduled else "not_needed"}, quarantined
         if (facts["export"] or {}).get("status") != "completed":
-            return {"status": "switch_pending", "phase": phase, "lock_tier": tier, "legacy_reconcile": "not_needed"}, []
+            # An interrupted export can still need old-writer obligation flags.
+            # Its review schema/version stays unpublished until it returns to PUBLISHED.
+            if derive or retiered or tier_record != facts["lock_tier"]:
+                with store.name_lock(root, IMPORT_LOCK_NAME, timeout_sec=600.0, stale_sec=600.0):
+                    with store.open_store(root, write=True, service=True) as txn:
+                        if derive:
+                            _derive_flag_columns(txn, rederive=rederive)
+                        if retiered:
+                            txn.conn.execute(f"PRAGMA application_id = {store._APPLICATION_ID[tier]}")
+                        if tier_record != facts["lock_tier"]:
+                            txn.set_meta("lock_tier", tier_record)
+            return {"status": "switch_pending", "phase": phase, "lock_tier": tier, **retiered,
+                    "legacy_reconcile": "not_needed"}, []
     elif store.generation_stamped(root):
         raise StoreLost(f"current store missing beside its completed stamp: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -841,7 +854,7 @@ def run_legacy_reconcile(root: Any, *, progress: Optional[Callable[[dict], None]
                          should_stop: Optional[Callable[[], bool]] = None) -> dict:
     """Run a pending job (or a first explicit invocation); a done job stays done.
 
-    The CLI explicitly queues a fresh pass when requested again. Stop keeps a pending
+    The CLI queues a fresh pass after a done job, otherwise resumes. Stop keeps a pending
     cursor; failures keep it with the drive/error for repair. No lifespan/supervisor
     caller runs this function. Publication and ordinary writer gates still apply.
     """
@@ -868,7 +881,7 @@ def run_legacy_reconcile(root: Any, *, progress: Optional[Callable[[dict], None]
         try:
             drives = [root, *sorted(descendant_drives(root), key=lambda path: path.relative_to(root).as_posix())]
             total = len(drives)
-            row = record(state="running", cursor=cursor, done=done, total=total, error=None)
+            row = record(state="running", cursor=cursor, done=done, total=total, error=None, waiting_on=None)
             for drive in drives:
                 relative = drive.relative_to(root).as_posix()
                 if relative <= cursor:
@@ -908,7 +921,7 @@ def main() -> None:
         args.root = resolve_data_dir()
     ensure_current_store(args.root, with_children=False)
     current = maintenance_jobs.job(args.root, "legacy_reconcile") or {}
-    if current.get("state") not in {"pending", "running"}:
+    if current.get("state") not in {"pending", "running", "failed"}:
         maintenance_jobs.record(args.root, "legacy_reconcile", state="pending", reason="explicit_command",
                                 cursor=None, done=0, total=None, error=None, waiting_on=None)
     run_legacy_reconcile(args.root, progress=lambda row: print(json.dumps({"job": "legacy_reconcile", **row}), flush=True),

@@ -83,7 +83,8 @@ def test_old_body_edits_wait_for_job_and_reach_root_and_child(tmp_path, monkeypa
     assert store_import.run_legacy_reconcile(tmp_path) == job
 
 
-def test_stop_after_three_drives_resumes_without_reopening_finished_drives(tmp_path, monkeypatch):
+@pytest.mark.parametrize("interruption", ["stop", "error"])
+def test_stop_after_three_drives_resumes_without_reopening_finished_drives(tmp_path, monkeypatch, interruption):
     drives = [tmp_path, *(tmp_path / "task_drives" / f"child-{index}" for index in range(5))]
     for drive in drives:
         write_result(drive, result("task", note="frozen"))
@@ -95,16 +96,26 @@ def test_stop_after_three_drives_resumes_without_reopening_finished_drives(tmp_p
     reconciled, progress = [], []
     reconcile = store_import._reconcile
     def tracked(root, txn):
+        if interruption == "error" and root == drives[3] and len(reconciled) == 3:
+            raise store.StoreBusy("injected drive unavailable")
         reconciled.append(root)
         return reconcile(root, txn)
     monkeypatch.setattr(store_import, "_reconcile", tracked)
-    row = store_import.run_legacy_reconcile(tmp_path, progress=progress.append,
-        should_stop=lambda: bool(progress and progress[-1]["done"] == 3))
-    assert row["state"] == "pending" and row["done"] == 3
+    if interruption == "error":
+        with pytest.raises(store.StoreBusy, match="injected"):
+            store_import.run_legacy_reconcile(tmp_path, progress=progress.append)
+        row = maintenance_jobs.job(tmp_path, "legacy_reconcile")
+        assert row["state"] == "failed" and row["waiting_on"] == {"drive": str(drives[3])}
+    else:
+        row = store_import.run_legacy_reconcile(tmp_path, progress=progress.append,
+            should_stop=lambda: bool(progress and progress[-1]["done"] == 3))
+        assert row["state"] == "pending"
+    assert row["done"] == 3
     assert row["cursor"] == drives[2].relative_to(tmp_path).as_posix()
     # Boot before git bootstrap still sees the same old-body SHA. It preserves the cursor.
     store_import.ensure_current_store(tmp_path, body_sha="store-head")
     assert maintenance_jobs.job(tmp_path, "legacy_reconcile")["cursor"] == row["cursor"]
+    interruption = "repaired"
     opened, opening = [], store.open_store
     from contextlib import contextmanager
     @contextmanager
@@ -116,6 +127,7 @@ def test_stop_after_three_drives_resumes_without_reopening_finished_drives(tmp_p
         patch.setattr(store, "open_store", tracked_open)
         row = store_import.run_legacy_reconcile(tmp_path, progress=progress.append, should_stop=lambda: False)
     assert row["state"] == "done" and row["done"] == row["total"] == len(drives)
+    assert row["error"] is None and row["waiting_on"] is None
     assert reconciled == drives
     assert not set(drives[1:3]) & set(opened)
     assert all(load(drive, "task")["note"] == "changed" for drive in drives)

@@ -307,4 +307,6 @@ def test_storeless_roundtrip_and_reimport_preserve_plan_and_derive_selector(tmp_
     closed["plan_record"]["asks"][0]["participants"][0]["status"] = "answered"
     copied.write_text(json.dumps(closed), encoding="utf-8")
     store_import.ensure_current_store(restored, with_children=False)
+    assert task_store.read_document(restored, "task") == original  # boot only opens the store
+    store_import.run_legacy_reconcile(restored)
     assert task_store.read_document(restored, "task") == closed and _flags(restored, "task")[1] == 0

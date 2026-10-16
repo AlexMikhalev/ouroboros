@@ -460,6 +460,8 @@ def test_storeless_export_import_and_changed_legacy_files_derive_membership(tmp_
     changed["review_operations"]["op"]["state"] = "collected"
     (restored / "task_results" / "task.json").write_text(json.dumps(changed), encoding="utf-8")
     store_import.ensure_current_store(restored, with_children=False)
+    assert task_store.read_document(restored, "task") == row  # boot leaves frozen files to maintenance
+    store_import.run_legacy_reconcile(restored)
     assert task_store.read_document(restored, "task") == changed and _flag(restored, "task")[0] == 0
 
 

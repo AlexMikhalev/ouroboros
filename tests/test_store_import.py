@@ -471,7 +471,7 @@ def test_a_changed_file_replaces_its_row_and_a_touched_file_does_not(tmp_path):
 
 def test_the_reconciliation_reads_only_stat_changed_files_and_compares_them_by_content(tmp_path, monkeypatch):
     root = fixture_root(tmp_path)
-    ensure_current_store(root, with_children=False)
+    ensure_current_store(root)  # publish children before measuring the whole-tree maintenance pass
     read: list = []
     real_read = store_import._read_result
     monkeypatch.setattr(store_import, "_read_result", lambda path: read.append(path.stem) or real_read(path))

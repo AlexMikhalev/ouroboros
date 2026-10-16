@@ -264,8 +264,8 @@ def test_child_wait_projects_real_owner_and_control_without_expanding_census(gat
     assert not drain_owner_entries(gateway.root, 'root', kinds={KIND_MODEL_WAIT})
 
 
-def test_first_import_quarantines_a_corrupt_task_without_a_fabricated_question(gateway, monkeypatch):
-    """The store import quarantines unreadable result bytes (log-only visibility, 6.3=B) and
+def test_legacy_job_quarantines_a_corrupt_task_without_a_fabricated_question(gateway, monkeypatch):
+    """The legacy job quarantines unreadable result bytes (log-only visibility, 6.3=B) and
     occupies the identity; no question is reconstructed for it and a GET never scans."""
     from ouroboros import startup_migrations, store, store_import
     from ouroboros.memory import Memory
@@ -273,6 +273,7 @@ def test_first_import_quarantines_a_corrupt_task_without_a_fabricated_question(g
     (root / 'task_results').mkdir(exist_ok=True)
     (root / 'task_results/broken.json').write_text('{partial')
     startup_migrations.prepare_startup_state(root)
+    store_import.run_legacy_reconcile(root)
     assert store_import.occupied_reason(root, 'broken')
     monkeypatch.setattr(store_import, 'ensure_current_store', lambda *_a, **_kw: pytest.fail('GET import'))
     monkeypatch.setattr(Memory, 'read_chat_generations', lambda *_a, **_kw: pytest.fail('GET history scan'))
