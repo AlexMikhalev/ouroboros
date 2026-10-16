@@ -680,3 +680,51 @@ def test_ensure_native_telegram_stops_on_enable_error():
         return 200, {}
     status = ensure_native_telegram_live(settings={"TELEGRAM_BOT_TOKEN": "x"}, request=fake_request, timeout=5)
     assert status["ok"] is False and "enable failed" in status["error"]
+
+
+def test_ensure_native_telegram_waits_for_the_dialogue_not_for_a_clock(monkeypatch):
+    """The wait follows the server's own phases: a serving core whose dialogue is not open yet is
+    waited for (however long), the first dialogue_ready answer proceeds, and each phase is printed
+    once. An older core without ``boot`` counts at its first 200."""
+    from ouroboros.colab_bootstrap import ensure_native_telegram_live, wait_for_dialogue
+
+    monkeypatch.setattr("ouroboros.colab_bootstrap.time.sleep", lambda _seconds: None)
+    health_calls, printed = [], []
+    phases = iter([(503, {})] * 3 + [(200, {"boot": {"phase": "serving", "dialogue_ready": False, "tasks_ready": False}})] * 200
+                  + [(200, {"boot": {"phase": "serving", "dialogue_ready": True, "tasks_ready": False}})])
+
+    def fake_request(method, path, body=None, timeout=None):
+        if path == "/api/health":
+            health_calls.append(path)
+            return next(phases)
+        if path == "/api/extensions":
+            return 200, _native_telegram_index()
+        return 200, {}
+
+    status = ensure_native_telegram_live(settings={"TELEGRAM_BOT_TOKEN": "x"}, request=fake_request)
+    assert status["ok"] is True and status["steps"][0] == "ready"
+    assert len(health_calls) == 204, "every not-ready answer was waited through; nothing timed out"
+
+    phases = iter([(200, {"boot": {"phase": "serving", "dialogue_ready": False, "tasks_ready": False}})] * 2
+                  + [(200, {"boot": {"phase": "serving", "dialogue_ready": True, "tasks_ready": False}})])
+    assert wait_for_dialogue(fake_request, report=printed.append)["ok"] is True
+    assert printed == ["Ouroboros boot: serving (dialogue_ready=False, tasks_ready=False)",
+                       "Ouroboros boot: serving (dialogue_ready=True, tasks_ready=False)"], "each phase once"
+    assert wait_for_dialogue(lambda *a, **k: (200, {}))["ok"] is True, "an older core: its first answer is readiness"
+
+
+def test_ensure_native_telegram_ends_on_a_failed_boot_or_a_dead_server(monkeypatch):
+    from ouroboros.colab_bootstrap import ensure_native_telegram_live, wait_for_dialogue
+
+    monkeypatch.setattr("ouroboros.colab_bootstrap.time.sleep", lambda _seconds: None)
+    failed = lambda *a, **k: (200, {"boot": {"phase": "failed", "dialogue_ready": False, "tasks_ready": False,  # noqa: E731
+                                              "error": "current-facts store not published: failed"}})
+    status = ensure_native_telegram_live(settings={"TELEGRAM_BOT_TOKEN": "x"}, request=failed)
+    assert status["ok"] is False and "store not published" in status["error"]
+
+    lives = iter([True, True, False])
+    status = ensure_native_telegram_live(settings={"TELEGRAM_BOT_TOKEN": "x"}, request=lambda *a, **k: (503, {}),
+                                         alive=lambda: next(lives))
+    assert status["ok"] is False and "exited" in status["error"]
+    assert wait_for_dialogue(lambda *a, **k: (503, {}), timeout=0.0)["error"] == "server did not become ready", \
+        "a caller's own bound still ends the wait"
