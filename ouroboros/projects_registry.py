@@ -246,6 +246,7 @@ def bind_task_to_project(
     *,
     origin: Dict[str, Any],
     admission_basis: Optional[dict] = None,
+    execution_readmission: bool = False,
 ) -> Dict[str, Any]:
     """Durably bind an existing task/live card to a project thread.
 
@@ -268,9 +269,7 @@ def bind_task_to_project(
     if admission_basis is None and get_reserved_project(drive_root, pid) is None:
         create_project(drive_root, pid)
     media = _origin_media(drive_root, origin)  # a chat read: never under the registry's cross-process lock
-    # Linearize admission with the lifecycle fence. Holding the registry lock
-    # through the short bindings append means begin_project_deletion either lands
-    # before this bind (which is refused) or after it (which cancellation sees).
+    # Registry lock linearizes binding with destination deletion.
     with _file_write_lock(_registry_path(drive_root)), \
             project_admission_guard(drive_root, admission_basis) if admission_basis is not None else nullcontext():
         project = next(
@@ -292,6 +291,7 @@ def bind_task_to_project(
             "project_id": pid,
             "project_chat_id": resolved_chat,
             "bound_at": utc_now_iso(),
+            **({"placement_admission": admission_basis} if execution_readmission else {}),
             **origin_fields,
         }
         with _file_write_lock(_bindings_path(drive_root)):
@@ -300,8 +300,6 @@ def bind_task_to_project(
             if isinstance(existing, dict):
                 existing_pid = str(existing.get("project_id") or "")
                 if existing_pid == pid:
-                    # One-way enrichment: fill a ref-less row when a valid ref
-                    # arrives; a stored valid ref is immutable (never replaced).
                     if not isinstance(existing.get("source_ref"), dict) and "source_ref" in origin_fields:
                         enriched = {
                             key: value for key, value in existing.items() if key != "origin_absent"
@@ -345,6 +343,7 @@ def all_task_project_bindings(drive_root: Any, *, strict: bool = False) -> Dict[
     readers propagate source failures so absence never impersonates completeness."""
     out: Dict[str, Dict[str, Any]] = {}
     try:
+        names = {row["id"]: row.get("name") or row["id"] for row in _load(drive_root)["projects"]}
         for tid, row in _load_bindings(drive_root, strict=strict).get("bindings", {}).items():
             if not isinstance(row, dict):
                 continue
@@ -354,7 +353,7 @@ def all_task_project_bindings(drive_root: Any, *, strict: bool = False) -> Dict[
             except (TypeError, ValueError):
                 cid = 0
             if pid and cid:
-                out[str(tid)] = {"project_id": pid, "chat_id": cid}
+                out[str(tid)] = {"project_id": pid, "chat_id": cid, "project_name": str(names.get(pid) or pid)}
     except Exception:
         if strict:
             raise
@@ -433,16 +432,11 @@ _ORIGIN_CLAIM_LOCK = threading.RLock()
 
 
 def origin_claim_lock() -> Any:
-    """The one lock every IMPLICIT project claim holds from its origin read through
-    its durable bind: the UI conversion, the promote handler and the in-task
-    ``ensure_project_scope`` handler. All three run in the SERVER process (the
-    gateway is in-process with the supervisor, and workers reach both through
-    events), so a process-local RLock serializes them; a model call that names the
-    project stays OUTSIDE it, because it may await for seconds.
+    """Serialize mind/button placement from the task binding read through commit.
 
-    Without it two cards of the SAME owner message, clicked in two tabs (or the
-    desktop shell and the mini app) inside one naming window, both read "no project
-    for this origin" and both create one."""
+    Naming stays outside the lock. Shared message origin is provenance only;
+    independent works never acquire each other's room through this serializer.
+    """
     return _ORIGIN_CLAIM_LOCK
 
 
@@ -470,46 +464,6 @@ def _live_task_ids() -> set:
         log.debug("_live_task_ids: direct activity read failed", exc_info=True)
     live.discard("")
     return live
-
-
-def live_origin_lanes() -> list:
-    """``(task_id, origin_message_ref)`` for every LIVE owner ROOT and in-flight
-    direct turn — the task ids one owner message's work can still be spread across.
-
-    Subagents are excluded: a delegated child is never bound itself, it inherits
-    its root's project by lineage. ONE scan with TWO readers that must agree — the
-    freshly created project's sibling claim (which binds them durably) and the
-    /api/state binding projection (which only closes their convert gate). While
-    each kept its own scan, a task the claim skipped could still be offered as a
-    second convertible unit for work that already has a project. Never raises: an
-    unreadable supervisor answers "no lanes", which degrades to today's
-    task-keyed behaviour rather than blocking the owner.
-    """
-    lanes: list = []
-    try:
-        from supervisor.queue import _queue_lock
-        from supervisor.workers import PENDING, RUNNING
-
-        with _queue_lock:
-            rows = [meta.get("task") for meta in list(RUNNING.values()) if isinstance(meta, dict)]
-            rows += list(PENDING or ())
-        for row in rows:
-            if not isinstance(row, dict) or str(row.get("delegation_role") or "") == "subagent":
-                continue
-            lanes.append((str(row.get("id") or ""), row.get("origin_message_ref")))
-    except Exception:
-        log.debug("live_origin_lanes: queue scan failed", exc_info=True)
-    try:
-        from supervisor.active_activity import get_direct_activity_registry
-
-        for entry in get_direct_activity_registry().actors():
-            lanes.append((
-                str(getattr(entry, "activity_id", "") or ""),
-                getattr(entry, "origin_message_ref", None),
-            ))
-    except Exception:
-        log.debug("live_origin_lanes: direct activity scan failed", exc_info=True)
-    return [(tid, ref) for tid, ref in lanes if tid]
 
 
 def project_id_for_origin(drive_root: Any, origin_ref: Any, *, strict: bool = False,
@@ -1546,7 +1500,6 @@ __all__ = [
     "list_projects",
     "list_reserved_projects",
     "list_sidebar_projects",
-    "live_origin_lanes",
     "origin_claim_lock",
     "origin_key",
     "project_binding_for_task",

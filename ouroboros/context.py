@@ -563,15 +563,10 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
         runtime_data["current_chat_rule"] = (
             "addressable_root_tasks are RUNNING/PENDING roots in THIS chat. If a new message continues or "
             "redirects one of them, tell_task(task_id, note, quote) can carry your note and held owner words; "
-            "your judgment picks the target (or none -> answer inline / promote_chat_to_task). A "
+            "your judgment picks the target; otherwise do this request here. start_task begins separate work. A "
             "message in a project room defaults to that project unless it clearly says otherwise."
         )
-    # Host-built ground truth about what THIS lane may continue: Main's bounded
-    # manifest, a project room's own hint (its recent ROOT results and the roots
-    # still live in it) and the thread's most recent result (id/status/workspace
-    # facts/artifact refs). Read these before framing a "continue" promotion;
-    # never reconstruct prior work from chat memory. What promote ACCEPTS is the
-    # predicate in ARCHITECTURE ch. 10 - these rows are the hint, not the door.
+    # Host facts identify live work and recorded results independently of the spawn tool.
     for _routing_key in (
         "main_routing_manifest", "project_routing_manifest", "project_last_task_result",
     ):

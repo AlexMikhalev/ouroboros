@@ -533,7 +533,7 @@ def test_an_effective_redirect_is_judged_before_projection_and_own_retries_still
 
 def test_an_unconfirmed_presence_promote_is_readable_as_pending_by_its_own_binding(tmp_path, monkeypatch):
     from ouroboros.tools import control_events
-    from ouroboros.tools.control_routing import _promote_chat_to_task
+    from ouroboros.tools.control_routing import _start_task
     from ouroboros.tools.control_task_results import _get_task_result
 
     monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 0.05)
@@ -548,9 +548,9 @@ def test_an_unconfirmed_presence_promote_is_readable_as_pending_by_its_own_bindi
         task_contract={"capability_ceiling": presence_ceiling_payload(_ceiling())},
     )
 
-    out = _promote_chat_to_task(ctx, "Compile the figures", title="Figure compilation", predecessor_task_id="")
+    out = _start_task(ctx, "Compile the figures", title="Figure compilation")
 
-    assert out.startswith("⚠️ PROMOTE_UNCONFIRMED")
+    assert out.startswith("Accepted, waiting to start:")
     task_id = emitted[0]["task_id"]
     stub = load_task_result(tmp_path, task_id)
     # Emitted, not scheduled: the supervisor alone grants that; the provenance is the event's own.
@@ -570,7 +570,7 @@ def test_an_unconfirmed_presence_promote_is_readable_as_pending_by_its_own_bindi
         pending_events=[], event_queue=types.SimpleNamespace(put_nowait=owner_emitted.append), current_chat_id=1,
         drive_root=tmp_path, budget_drive_root=str(tmp_path), project_id="", task_metadata={}, task_id="",
     )
-    _promote_chat_to_task(owner_ctx, "Owner work", title="Owner work", workspace="none", predecessor_task_id="")
+    _start_task(owner_ctx, "Owner work", title="Owner work", workspace="none")
     owner_stub = load_task_result(tmp_path, owner_emitted[0]["task_id"])
     assert "presence" not in (owner_stub.get("metadata") or {}) and "delegation_role" not in owner_stub
 

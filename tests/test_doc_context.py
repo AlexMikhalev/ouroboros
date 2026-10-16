@@ -101,7 +101,7 @@ def test_plan_review_docs_pin_honest_continuation_from_retained_sources():
 
     for relative in ("docs/ARCHITECTURE.md", "docs/DEVELOPMENT.md"):
         text = governance_doc_text(relative, repo)
-        assert "an unreadable source means a fresh send" in text and "`continued`" in text, relative
+        assert "unreadable source means a fresh send" in text and "`continued`" in text, relative
         assert "plan_review_exact_artifact_unavailable" not in text, relative
 
 
@@ -479,7 +479,7 @@ def test_promoted_self_body_requirement_reaches_the_contract_and_context_without
     workspace = tmp_path / "working-copy"
     workspace.mkdir()
     project = create_project(host.root, "code-copy", name="Code Copy")
-    entry = next(tool for tool in get_tools() if tool.name == "promote_chat_to_task")
+    entry = next(tool for tool in get_tools() if tool.name == "start_task")
     field = "context_requires_self_body_docs"
     parameters = entry.schema["parameters"]
     assert parameters["properties"][field]["type"] == "boolean"
@@ -502,7 +502,7 @@ def test_promoted_self_body_requirement_reaches_the_contract_and_context_without
     for flag in (True, None, False):
         kwargs = {} if flag is None else {field: flag}
         result = entry.handler(tool_ctx, "Inspect this working copy", title="Working copy inspection",
-                               predecessor_task_id="", project_id=project["id"],
+                               project_id=project["id"],
                                workspace_root=str(workspace), **kwargs)
         assert result.startswith("OK: task"), result
         task = copy.deepcopy(host.pending[-1])

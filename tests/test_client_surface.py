@@ -223,20 +223,6 @@ def _function_calls(tree: ast.AST, func_name: str) -> set[str]:
     raise AssertionError(f"function {func_name} not found")
 
 
-def test_all_three_routing_producers_attach_client_surface():
-    # tools/control.py re-exports them; the producers live in the routing leaf.
-    tree = ast.parse((REPO / "ouroboros" / "tools" / "control_routing.py").read_text(encoding="utf-8"))
-    for producer in ("_promote_chat_to_task", "_route_to_project"):
-        calls = _function_calls(tree, producer)
-        assert "_attach_client_surface" in calls, (
-            f"{producer} no longer attaches client_surface — the fact silently "
-            "dies at this transition (the is_desktop dead-wire class)"
-        )
-
-    relay = ast.parse((REPO / "ouroboros/tools/control_relay.py").read_text(encoding="utf-8"))
-    assert "_attach_client_surface" in _function_calls(relay, "_tell_task")
-
-
 def test_owner_surface_note_baseline_uses_the_shared_projection():
     """Codex scope C1: the mailbox baseline and the context render must read ONE
     projection — a CLI/API-admitted task (channel fact stamped at admission)
@@ -599,3 +585,15 @@ def test_supervisor_intake_hands_the_receipt_stamp_to_routing(monkeypatch):
     bridge.enqueue_local_message("hello", chat_id=42, user_id=7, source="skill:telegram", received_at="2026-09-26T01:00:00+00:00")
     server._process_bridge_updates(bridge, 0, Ctx({"owner_id": 7, "owner_chat_id": 42}))
     assert [incoming["received_at"] for incoming in routed] == ["2026-09-26T01:00:00+00:00"]
+
+
+def test_routing_producers_attach_client_surface():
+    # tools/control.py re-exports them; the producers live in the routing leaf.
+    tree = ast.parse((REPO / "ouroboros" / "tools" / "control_routing.py").read_text(encoding="utf-8"))
+    calls = _function_calls(tree, "_start_task")
+    assert "_attach_client_surface" in calls, (
+        "_start_task no longer attaches client_surface — the fact silently "
+        "dies at this transition (the is_desktop dead-wire class)"
+    )
+    relay = ast.parse((REPO / "ouroboros/tools/control_relay.py").read_text(encoding="utf-8"))
+    assert "_attach_client_surface" in _function_calls(relay, "_tell_task")

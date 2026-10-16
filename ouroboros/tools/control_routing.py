@@ -1,10 +1,6 @@
-"""Routing real work out of a conversation lane into a supervised task.
+"""Start separate work, place the current work, and deliver messages to live work.
 
-The model decides WHEN a chat message stops being a conversational answer and
-becomes work — a new pooled task, a task inside an existing project, or a
-follow-up steered into a task already in flight. These verbs only carry that
-decision to the supervisor and report the receipt it returns, including the
-rejected and unconfirmed outcomes a caller must not describe as scheduled.
+Tools state an intent; the supervisor owns admission and its durable receipt.
 """
 
 from __future__ import annotations
@@ -17,7 +13,6 @@ from typing import Any, Dict
 
 from ouroboros.dialogue_provenance import presence_root_carrier
 from ouroboros.tools.control_events import (
-    _PROMOTE_CONFIRM_TIMEOUT_SEC,
     _emit_and_wait_for_routing,
     _promotion_pool_disabled_from_snapshot,
 )
@@ -29,20 +24,6 @@ from ouroboros.utils import append_jsonl, utc_now_iso
 log = logging.getLogger(__name__)
 
 
-from ouroboros.task_status import load_effective_task_result
-
-
-_MISSING_PREDECESSOR_SELECTOR = object()
-
-
-def _predecessor_selector_error(value: Any, tool_name: str) -> str:
-    """Require the router to state fresh work or a named continuation."""
-    if value is _MISSING_PREDECESSOR_SELECTOR or value is None:
-        return (
-            f"⚠️ TOOL_ARG_ERROR ({tool_name}): predecessor_task_id is required; "
-            "pass an empty string for fresh work or the id of a settled result to continue it"
-        )
-    return ""
 
 
 def _root_effort_arg(value: Any, tool_name: str) -> tuple[Dict[str, str], str, str]:
@@ -54,7 +35,7 @@ def _root_effort_arg(value: Any, tool_name: str) -> tuple[Dict[str, str], str, s
     field stays absent and the note says so (owner ingress — the API, the CLI, owner
     schedules, Continue — keeps pinning); in Cyber Pro it is applied.
     """
-    if value is None:
+    if value is None or value == "":
         return {}, "", ""
     from ouroboros.runtime_mode_policy import effort_range_binds
     from ouroboros.settings_scales import effort_range, requested_effort
@@ -108,139 +89,12 @@ def _attach_drafted_objective(ctx: ToolContext, evt: Dict[str, Any]) -> None:
     evt["owner_corpus"] = owner_rows
 
 
-def _durable_project_of_request(ctx: ToolContext) -> str:
-    """The project this request's work ALREADY has, durably: the promoting task's
-    own binding — the one truth about a task's project, which a "Turn into
-    project" conversion writes without ever reaching the live worker's
-    ``ctx.project_id`` — else the project the OWNER MESSAGE it came from has.
-
-    Both reads fail OPEN exactly like ``project_facts._bound_project_id`` (one
-    DEBUG line, then ""): this runs on a routing decision the owner is waiting
-    for, and an unreadable store must not stop the work."""
-    metadata = getattr(ctx, "task_metadata", None)
-    metadata = metadata if isinstance(metadata, dict) else {}
-    try:
-        from ouroboros.config import DATA_DIR
-        from ouroboros.projects_registry import project_id_for_origin, project_id_for_task
-
-        return str(
-            project_id_for_task(DATA_DIR, str(getattr(ctx, "task_id", "") or ""))
-            or project_id_for_origin(DATA_DIR, metadata.get("origin_message_ref"))
-            or ""
-        )
-    except Exception:
-        log.debug("promote: durable project scope lookup failed", exc_info=True)
-        return ""
-
-
 def _inherited_project_scope(ctx: ToolContext) -> str:
-    """The project a promote with NO explicit target should land in: the durable
-    project of the request (own binding, then the owner message's), so a root
-    promoted out of an already-converted message joins it instead of appearing
-    in Main as a second convertible unit; else the in-memory scope copy,
-    unchanged behaviour. Explicit ``project_id``/``project_name`` never reach
-    here — they stay the model's ceiling (BIBLE P13)."""
-    return _durable_project_of_request(ctx) or str(getattr(ctx, "project_id", "") or "")
+    """Only the caller's own room supplies a default for separate new work."""
+    from ouroboros.projects_registry import project_id_for_task
 
-
-def _host_listed_predecessors(metadata: Dict[str, Any]) -> list:
-    """Every result THIS turn's host facts put in front of the model: the Main
-    lane's manifest, the room's own hint list, and the room's pointer row."""
-    rows: list = []
-    for key in ("main_routing_manifest", "project_routing_manifest"):
-        manifest = metadata.get(key)
-        if isinstance(manifest, dict) and isinstance(manifest.get("final_results"), list):
-            rows.extend(row for row in manifest["final_results"] if isinstance(row, dict))
-    previous = metadata.get("project_last_task_result")
-    if isinstance(previous, dict) and previous:
-        rows.append(previous)
-    return rows
-
-
-def _predecessor_door_refusal(result: Dict[str, Any]) -> str:
-    """Why this readable result may NOT be continued, or ``""``.
-
-    A PREDICATE on the result itself - settled, and a result rather than a pending
-    admission - never on where the caller sits, where the work lands or whether it
-    is a root's or a helper's: the pointer is rebuilt from the task id alone, the
-    successor inherits DATA (ceiling, origin and contract come from the caller and
-    admission), and a fresh root in the predecessor's project was always reachable.
-    The host list stays a hint; a foreign landing or a helper is disclosed, never refused.
-    """
-    from ouroboros.routing_wait import is_emitted_admission_stub
-    from ouroboros.task_status import SETTLED_STATUSES
-
-    status = str(result.get("status") or "")
-    if is_emitted_admission_stub(result):
-        return ("the selected predecessor is a promote whose admission is still pending, not a "
-                "result; read get_task_result on it, and name a settled result instead")
-    if status not in SETTLED_STATUSES:
-        return (
-            f"the selected predecessor is still live (status {status or 'unknown'}); "
-            "tell_task continues a live root, and promoting it would start a second one"
-        )
-    return ""
-
-
-def _predecessor_notes(predecessor_id: str, facts: Dict[str, Any], landed: str) -> str:
-    """What the receipt says about the predecessor once, like the second-project note: a
-    helper's result names its root (or parent), a foreign landing names both projects."""
-    if not predecessor_id:
-        return ""
-    home, root, parent = (str(facts.get(k) or "") for k in ("project_id", "root_task_id", "parent_task_id"))
-    lineage = f"its root is {root}" if root else (f"its parent is {parent}" if parent else "its root is unknown")
-    notes = f" Note: predecessor {predecessor_id} is a delegated helper's result; {lineage}." if facts.get("helper") else ""
-    if home != str(landed or ""):
-        where = f"project '{home}'" if home else "the main chat"
-        here = f"project '{landed}'" if landed else "the main chat"
-        notes += f" Note: predecessor {predecessor_id} belongs to {where}; this continuation runs in {here} (your choice)."
-    return notes
-
-
-def _attach_predecessor_authority_from_metadata(
-    ctx: ToolContext, evt: Dict[str, Any], predecessor_task_id: str = "",
-) -> str:
-    metadata = getattr(ctx, "task_metadata", None)
-    metadata = metadata if isinstance(metadata, dict) else {}
-    selected_id = str(predecessor_task_id or "").strip()
-    if not selected_id:
-        return ""
-    listed = next((
-        row for row in _host_listed_predecessors(metadata)
-        if str(row.get("task_id") or "") == selected_id
-    ), None)
-    result = load_effective_task_result(canonical_data_root(ctx), selected_id, materialize_artifacts=False)
-    if not isinstance(result, dict) or not result:
-        return "the selected predecessor task result is missing or unreadable"
-    refusal = _predecessor_door_refusal(result)
-    if refusal:
-        return refusal
-    if listed is not None:
-        # A row the host showed carries its own host-issued pointer, and only that
-        # one is accepted for it: rebuilding a source for a shown row would make a
-        # tampered manifest row indistinguishable from a host-built one.
-        source = listed.get("authority_source")
-    else:
-        from ouroboros.server_routing_context import _task_result_ground_truth
-
-        source = _task_result_ground_truth(result).get("authority_source")
-    from ouroboros.agent_startup_checks import valid_task_result_authority_source
-
-    if valid_task_result_authority_source(source, selected_id):
-        from ouroboros.server_routing_context import _is_child_result
-
-        evt["predecessor_task_id"] = selected_id
-        evt["predecessor_authority_source"] = dict(source)
-        # Render-only facts for the receipt's notes; the caller pops them before
-        # emission, so the event carries nothing the supervisor never reads.
-        evt["predecessor_facts"] = {
-            "project_id": str(result.get("project_id") or ""), "helper": _is_child_result(result),
-            "root_task_id": str(result.get("root_task_id") or ""),
-            "parent_task_id": str(result.get("parent_task_id") or ""),
-        }
-    else:
-        return "the selected predecessor has no readable authority source"
-    return ""
+    return str(project_id_for_task(canonical_data_root(ctx), str(getattr(ctx, "task_id", "") or ""), strict=True)
+               or getattr(ctx, "project_id", "") or "")
 
 
 def _attach_client_surface(ctx: ToolContext, evt: Dict[str, Any]) -> None:
@@ -317,15 +171,7 @@ def _finish_swarm_handoff(
 
 
 def _effective_scope_note(ctx: ToolContext, project_id: str) -> str:
-    """Where an admitted promote ACTUALLY landed, read from the admission receipt.
-
-    The requested ``project_name``/``project_id`` is the model's ask, not the
-    destination: an implicit promote's scope is re-resolved by the admission
-    handler under the origin claim lock, so a sibling card converted in the
-    emit → admission window moves the root into a project the tool never named.
-    Reporting the request as the outcome told the owner the work was in a room it
-    was not in. Empty project id means Main, which is also the truth when a
-    project scope was requested and admission granted none."""
+    """Report the separate work's recorded destination, not its requested room."""
     pid = str(project_id or "").strip()
     if not pid:
         return ""
@@ -360,7 +206,7 @@ def _task_card_title_arg(title: str, verb: str) -> tuple[str, str]:
     )
 
 
-def _promote_chat_to_task(
+def _start_task(
     ctx: ToolContext,
     objective: str,
     expected_output: str = "",
@@ -370,38 +216,17 @@ def _promote_chat_to_task(
     project_name: str = "",
     workspace: str = "",
     source: str = "",
-    predecessor_task_id: Any = _MISSING_PREDECESSOR_SELECTOR,
     context_requires_self_body_docs: bool = False,
     reasoning_effort: Any = None,
 ) -> str:
-    """Route real work out of the conversation lane into a supervised pooled task.
-
-    The conversation stays in the fast in-process lane and keeps its own tools;
-    the model promotes when an independent task is useful (SYSTEM.md, Decision
-    Loop), and the promoted work runs as a first-class pooled task with a live
-    card. The decision is the model's own structural tool call (BIBLE P5 — no
-    keyword routing). Follow-up owner messages reach the running task through
-    its owner-mailbox.
-
-    ``title`` is a short human name the model coins for the card AT CREATION
-    (no extra request, owner P1) — reused as the project name if this task is
-    later turned into a project. It is required here (#1725): the shared
-    admission fallback would show the work order's first line as its name;
-    owner, API and queued entrances keep that fallback. ``project_name`` makes
-    this an LLM-first "create a named project and work there" call: the
-    project is created NOW with that display name and the task runs inside it
-    (v6.33.0).
-    """
-    selector_error = _predecessor_selector_error(predecessor_task_id, "promote_chat_to_task")
-    if selector_error:
-        return selector_error
-    effort_fields, effort_error, effort_note = _root_effort_arg(reasoning_effort, "promote_chat_to_task")
+    """Start separate new work; the caller keeps its identity and obligations."""
+    effort_fields, effort_error, effort_note = _root_effort_arg(reasoning_effort, "start_task")
     if effort_error:
         return effort_error
     goal = str(objective or "").strip()
     if not goal:
-        return "⚠️ TOOL_ARG_ERROR (promote_chat_to_task): objective is required"
-    card_title, title_error = _task_card_title_arg(title, "promote_chat_to_task")
+        return "⚠️ TOOL_ARG_ERROR (start_task): objective is required"
+    card_title, title_error = _task_card_title_arg(title, "start_task")
     if title_error:
         return title_error
     from ouroboros.project_facts import (
@@ -415,7 +240,7 @@ def _promote_chat_to_task(
     if str(project_id or "").strip():
         if not explicit_project_id_ok(project_id):
             return (
-                f"⚠️ TOOL_ARG_ERROR (promote_chat_to_task): project_id {project_id!r} is not "
+                f"⚠️ TOOL_ARG_ERROR (start_task): project_id {project_id!r} is not "
                 "filesystem-clean; use lowercase alphanumeric/_/-/. (<=64 chars)"
             )
         pid = sanitize_project_id(project_id)
@@ -426,11 +251,7 @@ def _promote_chat_to_task(
         # the human-readable name rides project_name on the registry.
         pid = project_id_from_display_name(display_name)
     else:
-        # No explicit arg: inherit the CURRENT project scope so a project-chat
-        # task that promotes follow-up work stays in its own project (the model
-        # still chose to promote — scope is contextual, never a keyword gate).
-        # The durable binding of this task, then of the owner message it came
-        # from, outrank the in-memory copy; see _inherited_project_scope.
+        # The caller's own room supplies the default, never a sibling's origin.
         pid = sanitize_project_id(_inherited_project_scope(ctx))
     try:
         current_chat_id = int(getattr(ctx, "current_chat_id", None) or 0)
@@ -538,18 +359,7 @@ def _promote_chat_to_task(
     evt.update(consciousness_origin_metadata(metadata))
     _attach_origin_from_metadata(ctx, evt)
     _attach_drafted_objective(ctx, evt)
-    predecessor_error = _attach_predecessor_authority_from_metadata(
-        ctx, evt, predecessor_task_id,
-    )
-    if predecessor_error:
-        return (
-            "⚠️ AUTHORITY_SOURCE_UNAVAILABLE (promote_chat_to_task): "
-            + predecessor_error
-        )
-    predecessor_facts = dict(evt.pop("predecessor_facts", None) or {})
     _attach_client_surface(ctx, evt)
-    _attach_unmet_obligation(ctx, evt)
-    already_bound = _durable_project_of_request(ctx)
     mode, confirmation = _emit_and_wait_for_routing(ctx, evt)
     confirmation_status = str(confirmation.get("status") or "unconfirmed")
     reason = str(confirmation.get("reason") or "")
@@ -565,13 +375,10 @@ def _promote_chat_to_task(
             "The task now runs independently, and follow-up chat can steer it. "
             "Use wait_task/get_task_result if its result "
             "is needed in this conversation."
-            + _second_project_note(ctx, already_bound, effective_pid)
-            + _predecessor_notes(str(evt.get("predecessor_task_id") or ""), predecessor_facts, effective_pid)
-            + _obligation_moved_note(ctx, tid, confirmation.get("force_plan_transfer"))
             + (f"\n{effort_note}" if effort_note else "")
         )
         return _finish_swarm_handoff(ctx, evt, response, status="scheduled")
-    if confirmation_status in {"rejected", "needs_manual_target"}:
+    if confirmation_status in {"rejected", "needs_manual_target", "not_started"}:
         shown_reason = (
             f"{reason}: {disabled_reason}" if disabled_reason else reason
         )
@@ -600,65 +407,14 @@ def _promote_chat_to_task(
         )
     except Exception:
         log.debug("Failed to record unconfirmed promote", exc_info=True)
-    confirmation_window = (
-        f"within {int(_PROMOTE_CONFIRM_TIMEOUT_SEC)} seconds"
-        if mode == "live"
-        else f"because the event transport returned {mode}"
-    )
     response = (
-        f"⚠️ PROMOTE_UNCONFIRMED: task {tid} admission was not confirmed {confirmation_window}; "
-        f"the requested destination was {_requested_scope_label(display_name, pid)} and the "
-        "effective one is unknown until the admission is reconciled. The request was emitted and "
-        "may still be admitted, or already was: while this turn keeps acting, a [ROUTING_RECEIPTS] "
-        "row reports the admission once it is recorded. Do not report this task as created yet and "
-        f"do not retry automatically: call get_task_result({tid}) to read the durable outcome before "
-        "promoting the same work again."
+        f"Accepted, waiting to start: separate task {tid}. Its complete intent is durable; "
+        f"admission to {_requested_scope_label(display_name, pid)} is pending ({mode}). "
+        "A [ROUTING_RECEIPTS] row reports its recorded outcome. "
+        f"Use get_task_result({tid}) to reconcile it before an explicit retry."
     )
     return _finish_swarm_handoff(
         ctx, evt, response, status="unconfirmed", reason=reason or "confirmation_timeout",
-    )
-
-
-def _attach_unmet_obligation(ctx: ToolContext, evt: Dict[str, Any]) -> None:
-    """Owner 3=A: a task whose Swarm planning obligation is still UNMET carries it
-    onto the root it promotes (the existing admission seam stamps the new root
-    and releases the promoter in the same transaction). An owner turn has no
-    obligation of its own; a met or unreadable one stays where it is."""
-    if _routing_issuer(ctx)["kind"] != ISSUER_TASK:
-        return
-    from ouroboros.owner_hurry import unmet_force_plan_obligation
-
-    obligation = unmet_force_plan_obligation(ctx)
-    if obligation.get("unmet"):
-        evt.update({
-            "force_plan": True,
-            "force_plan_source": str(obligation.get("source") or "operator"),
-            "force_plan_transferred_from": str(getattr(ctx, "task_id", "") or ""),
-        })
-
-
-def _obligation_moved_note(ctx: ToolContext, new_task_id: str, transfer: Any) -> str:
-    """Tell the promoter its obligation moved, and release the worker's own copy."""
-    if not isinstance(transfer, dict) or str(transfer.get("from") or "") != str(getattr(ctx, "task_id", "") or ""):
-        return ""
-    from ouroboros.owner_hurry import release_force_plan_obligation
-
-    release_force_plan_obligation(ctx, new_task_id)
-    return (
-        f" Your planning obligation (force_plan) moved to task {new_task_id}: it now owes the "
-        "plan review, and this task no longer does. If you meant to move THIS task into a "
-        "project, use ensure_project_scope; any work you keep doing here yourself is unplanned."
-    )
-
-
-def _second_project_note(ctx: ToolContext, already_bound: str, effective_pid: str) -> str:
-    """Owner 5A: promote stays a free choice, so when the request's work already had
-    a Project and this promote landed in another one, say so instead of hiding it."""
-    if not already_bound or not effective_pid or effective_pid == already_bound:
-        return ""
-    return (
-        f" Note: the request that started this work already has project '{already_bound}'; "
-        f"a second project '{effective_pid}' now holds this promote (your choice)."
     )
 
 
@@ -674,7 +430,7 @@ def _list_projects(ctx: ToolContext, limit: int = 50) -> str:
     except Exception as exc:
         return f"⚠️ PROJECTS_ERROR: {type(exc).__name__}: {exc}"
     if not rows:
-        return "No projects yet. Create one by promoting work with a fresh project_id, or just answer/spawn a task."
+        return "No projects yet. move_to_project places this work in a named room."
     lines = []
     for p in rows:
         pid = str(p.get("id") or "")
@@ -682,218 +438,7 @@ def _list_projects(ctx: ToolContext, limit: int = 50) -> str:
         last = str(p.get("last_active_at") or p.get("created_at") or "")
         active = " · running" if p.get("has_thread_activity") else ""
         lines.append(f"- {pid} — {name}{active}{(' · last ' + last) if last else ''}")
-    return "Projects (route a related main-chat message with route_to_project):\n" + "\n".join(lines)
-
-
-def _route_to_project(
-    ctx: ToolContext, project_id: str = "", message: str = "", reason: str = "",
-    predecessor_task_id: Any = _MISSING_PREDECESSOR_SELECTOR,
-    candidates: Any = None,
-    reasoning_effort: Any = None,
-    title: str = "",
-) -> str:
-    """Route a main-chat message to an EXISTING project so the work continues in
-    that project's context (its memory/journal/thread), keeping the main chat free.
-
-    LLM-first: the model decides WHEN to route (its judgment is the gate, never a
-    keyword rule); this verb just delivers the decision and returns a visible
-    receipt. The receipt is host metadata on the owner message; any non-empty
-    final decision-turn explanation remains a separate conversational reply.
-    An existing target starts a new root and requires its human-facing title;
-    the manual picker starts nothing and needs no title. Queued/owner events
-    retain admission's fallback; this check belongs only to the model's call.
-    """
-    selector_error = _predecessor_selector_error(predecessor_task_id, "route_to_project")
-    if selector_error:
-        return selector_error
-    effort_fields, effort_error, effort_note = _root_effort_arg(reasoning_effort, "route_to_project")
-    if effort_error:
-        return effort_error
-    from ouroboros.project_facts import explicit_project_id_ok, sanitize_project_id
-    from ouroboros.projects_registry import get_project
-
-    msg = str(message or "")
-    if not msg.strip():
-        return "⚠️ TOOL_ARG_ERROR (route_to_project): message is required"
-    try:
-        current_chat_id = int(getattr(ctx, "current_chat_id", None) or 0)
-    except (TypeError, ValueError):
-        current_chat_id = 0
-    metadata = getattr(ctx, "task_metadata", {})
-    metadata = metadata if isinstance(metadata, dict) else {}
-    routing_contract = (
-        metadata.get("routing_contract")
-        if isinstance(metadata.get("routing_contract"), dict)
-        else {}
-    )
-    client_message_id = str(metadata.get("client_message_id") or "").strip()
-    predecessor_event: Dict[str, Any] = {}
-    predecessor_error = _attach_predecessor_authority_from_metadata(
-        ctx, predecessor_event, predecessor_task_id,
-    )
-    if predecessor_error:
-        return "⚠️ AUTHORITY_SOURCE_UNAVAILABLE (route_to_project): " + predecessor_error
-    predecessor_facts = dict(predecessor_event.pop("predecessor_facts", None) or {})
-    requested_pid = str(project_id or "").strip()
-    pid = sanitize_project_id(requested_pid) if requested_pid and explicit_project_id_ok(requested_pid) else ""
-    try:
-        proj = get_project(canonical_data_root(ctx), pid, strict=True) if pid else None
-    except (OSError, ValueError) as exc:
-        return "⚠️ AUTHORITY_SOURCE_UNAVAILABLE (route_to_project): " + str(exc)
-    failure = (
-        "target_unspecified" if not requested_pid
-        else "invalid_project_id" if not pid
-        else "target_not_found"
-    )
-    if not proj and _routing_issuer(ctx)["kind"] == ISSUER_TASK:
-        # A picker is an owner surface (7=A): a task speaking for itself gets
-        # the typed refusal in its own result, and no ack travels to a chat under
-        # an empty message id. `list_projects` names the ids it may route to.
-        return (
-            f"⚠️ ROUTE_REJECTED ({failure}): no route was dispatched{_cause_words(failure)}. A task-authored route "
-            "needs an existing project id (see list_projects); the manual-target picker is "
-            "an owner surface and is not offered to a task."
-        )
-    if not proj:
-        # The decision actor cannot manufacture a UI payload by returning prose.
-        # An empty, malformed, or stale target becomes the typed manual-target
-        # control event, carrying only the host-built options from this turn.
-        options = [
-            dict(row) for row in list(routing_contract.get("manual_options") or [])[:100]
-            if isinstance(row, dict)
-        ]
-        # Owner decision 2=B: the model may NARROW the picker by naming its
-        # plausible candidates — a host-validated reorder, never new options.
-        # Named ids that match host options move to the front; unknown ids are
-        # ignored (host truth wins), and every host option stays clickable.
-        candidate_ids = list(dict.fromkeys(
-            str(row).strip() for row in (candidates if isinstance(candidates, list) else [])
-            if str(row).strip()
-        ))
-        if candidate_ids:
-            def _option_id(row: Dict[str, Any]) -> str:
-                return str(row.get("task_id") or row.get("project_id") or "")
-
-            ranked = [
-                row for cid in candidate_ids for row in options if _option_id(row) == cid
-            ]
-            ranked_ids = {id(row) for row in ranked}
-            options = ranked + [row for row in options if id(row) not in ranked_ids]
-        routing_token = uuid.uuid4().hex
-        manual_event: Dict[str, Any] = {
-            "type": "routing_manual_target",
-            "routing_token": routing_token,
-            "chat_id": current_chat_id,
-            "client_message_id": client_message_id,
-            "requested_target": pid or requested_pid[:200],
-            # The typed code is the receipt's `reason` (the host cause table
-            # reads it); the model's own words ride `detail` beside it instead
-            # of replacing the code with untyped prose.
-            "reason": failure,
-            "detail": str(reason or "").strip()[:1000],
-            "options": options,
-            # The picker click dispatches AFTER this turn's metadata is gone,
-            # so the refusal annotation is the durable carrier of the original
-            # message's staged-attachment specs (#198).
-            "attachment_uploads": list(
-                ((getattr(ctx, "task_metadata", {}) or {}).get("chat_attachment_uploads") or [])
-            ),
-            # The explicit start rides the card the same way: a New task picked
-            # from it is a root this turn chose the effort for.
-            **effort_fields,
-            "ts": utc_now_iso(),
-        }
-        manual_event.update(predecessor_event)
-        mode, receipt = _emit_and_wait_for_routing(ctx, manual_event)
-        if str(receipt.get("status") or "") == "needs_manual_target":
-            durable_options = (
-                receipt.get("options") if isinstance(receipt.get("options"), list) else options
-            )
-            options_text = json.dumps(durable_options, ensure_ascii=False, default=str)
-            return (
-                f"⚠️ NEEDS_MANUAL_TARGET ({failure}, {mode}): no route was dispatched{_cause_words(failure)}. "
-                f"Host-validated options: {options_text}"
-                + (f" A New task picked from it starts on reasoning_effort={effort_fields['reasoning_effort']}; "
-                   "picking an existing task delivers the message there and leaves that task's effort "
-                   "unchanged." if effort_fields else "")
-                + (f" {effort_note}" if effort_note else "")
-            )
-        return (
-            f"⚠️ ROUTING_UNCONFIRMED ({failure}, {mode}): no route was dispatched{_cause_words(failure)}, and "
-            "delivery of the manual target options was not confirmed."
-        )
-    card_title, title_error = _task_card_title_arg(title, "route_to_project")
-    if title_error:
-        return title_error
-    tid = uuid.uuid4().hex[:16]
-    routing_token = uuid.uuid4().hex
-    objective = msg if not str(reason or "").strip() else f"{msg}\n\n(routing reason: {str(reason).strip()})"
-    evt: Dict[str, Any] = {
-        "type": "promote_chat_to_task",
-        "task_id": tid,
-        "routing_token": routing_token,
-        "objective": objective,
-        "title": card_title,
-        "project_id": pid,
-        **effort_fields,
-        "chat_id": current_chat_id,
-        "routed_from_main": True,
-        "client_message_id": client_message_id,
-        "attachment_uploads": list(
-            ((getattr(ctx, "task_metadata", {}) or {}).get("chat_attachment_uploads") or [])
-            if isinstance(getattr(ctx, "task_metadata", {}), dict) else []
-        ),
-        "ts": utc_now_iso(),
-    }
-    # A route mints a root exactly like a promote, so a consciousness turn's origin,
-    # ledger category and level ride THIS event too. The single admission door reads
-    # them off the event (supervisor/worker_promotion.promote_chat_to_task) and stamps
-    # the root; without them a wake's routed root landed with empty metadata, no
-    # disabled_tools in its contract and the ordinary `task` ledger category.
-    from ouroboros.consciousness_authority import consciousness_origin_metadata
-
-    evt.update(consciousness_origin_metadata(metadata))
-    _attach_origin_from_metadata(ctx, evt)
-    _attach_drafted_objective(ctx, evt)
-    evt.update(predecessor_event)
-    _attach_client_surface(ctx, evt)
-    # Owner 3=A holds on this verb too: a route starts a NEW root exactly like a
-    # promote, so an unmet Swarm planning obligation follows the work into the
-    # project instead of staying with a sender that keeps none of it.
-    _attach_unmet_obligation(ctx, evt)
-    mode, receipt = _emit_and_wait_for_routing(ctx, evt)
-    name = str(proj.get("name") or pid)
-    status = str(receipt.get("status") or "unconfirmed")
-    if status == "scheduled":
-        response = (
-            f"✉️ Routed to project '{name}' ({pid}) as task {tid}; admission is durably "
-            f"scheduled ({mode}). I'll continue there; this chat stays free for you."
-            + _predecessor_notes(str(evt.get("predecessor_task_id") or ""), predecessor_facts,
-                                 str(receipt.get("effective_project_id") or pid))
-            + _obligation_moved_note(ctx, tid, receipt.get("force_plan_transfer"))
-            + (f"\n{effort_note}" if effort_note else "")
-        )
-        return _finish_swarm_handoff(ctx, evt, response, status="scheduled")
-    reason_text = str(receipt.get("reason") or "confirmation_timeout")
-    detail = str(receipt.get("detail") or "")
-    if status in {"rejected", "needs_manual_target"}:
-        response = (
-            f"⚠️ ROUTE_REJECTED: task {tid} was not routed to project '{name}' "
-            f"({reason_text}{(': ' + detail) if detail else ''}){_cause_words(reason_text)}."
-        )
-        return _finish_swarm_handoff(
-            ctx, evt, response, status="rejected", reason=reason_text,
-        )
-    response = (
-        f"⚠️ ROUTE_UNCONFIRMED: task {tid} routing to project '{name}' was not durably "
-        "confirmed. Do not report it as routed and do not retry automatically. The request was "
-        "emitted and may still be admitted, or already was: while this turn keeps acting, a "
-        f"[ROUTING_RECEIPTS] row reports the admission once it is recorded; call get_task_result({tid}) "
-        "before routing the same work again."
-    )
-    return _finish_swarm_handoff(
-        ctx, evt, response, status="unconfirmed", reason=reason_text,
-    )
+    return "Projects (move_to_project places this work in a room):\n" + "\n".join(lines)
 
 
 def _cause_words(code: str) -> str:

@@ -133,8 +133,8 @@ EXPECTED_TOOLS = [
     "codebase_health", "knowledge_read", "knowledge_write", "knowledge_list",
     "chronicle_write", "memory_read", "memory_mark",
     "journal_read", "journal_write", "workpad_read", "workpad_write",
-    "promote_chat_to_task", "route_to_project", "list_projects", "tell_task",
-    "ensure_project_scope", "schedule_followup",
+    "start_task", "list_projects", "tell_task",
+    "move_to_project", "schedule_followup",
     "memory_map", "memory_update_registry",
     "plan_task", "recent_tasks", "live_roots", "update_focus",
     "task_acceptance_review", "finish_task", "verify_and_record", "web_search",
@@ -344,7 +344,7 @@ def test_memory_persistence():
 
 def test_no_hardcoded_replies():
     """Principle 5 (LLM-First): no hardcoded reply strings in code.
-    
+
     Checks for suspicious patterns like:
     - reply = "Fixed string"
     - return "Sorry, I can't..."
@@ -506,7 +506,7 @@ def test_js_module_gate_buckets_and_grandfathering():
 
 def test_no_bare_except_pass():
     """No bare `except: pass` (not even except Exception: pass with just pass).
-    
+
     v4.9.0 hardened exceptions — but checks the STRICTEST form:
     bare except (no Exception class) followed by pass.
     """
@@ -638,8 +638,6 @@ class TestPrePushGate:
                 _os.environ.pop("OUROBOROS_PREFLIGHT_TIMEOUT_SEC", None)
             else:
                 _os.environ["OUROBOROS_PREFLIGHT_TIMEOUT_SEC"] = prev
-
-
 
 
 def test_no_module_defines_the_same_top_level_name_twice():

@@ -416,7 +416,7 @@ def _decision_turn_metadata(ctx: Any, chat_id: int, client_message_id: str, task
     needs: the RUNNING tasks in THIS chat (so it can tell_task the right one
     instead of spawning a duplicate) and the originating message id (for idempotent
     steer delivery). P5-clean: surfaces state only; the agent picks the target by
-    judgment among answer / tell_task / promote_chat_to_task / route_to_project."""
+    judgment among answer / tell_task / start_task / move_to_project."""
     md = dict(task_metadata) if isinstance(task_metadata, dict) else {}
     addressable_here = _addressable_root_tasks(ctx, chat_id)
     running_here = [row for row in addressable_here if row.get("status") == "running"]
@@ -463,46 +463,13 @@ def _decision_turn_metadata(ctx: Any, chat_id: int, client_message_id: str, task
             log.warning("Unable to build the project routing manifest", exc_info=True)
     if client_message_id:
         md["client_message_id"] = client_message_id
-    option_roots = (
-        list(main_manifest.get("root_tasks") or [])
-        if is_main_lane and isinstance(main_manifest, dict)
-        else addressable_here
-    )
-    manual_options = [
-        {
-            "action": "steer_task",
-            "task_id": row["task_id"],
-            "status": row["status"],
-            "title": row.get("title") or row.get("objective"),
-            "project_id": str(row.get("project_id") or ""),
-        }
-        for row in option_roots
-        if isinstance(row, dict) and row.get("task_id")
-    ]
-    if is_main_lane and isinstance(main_manifest, dict):
-        manual_options.extend({
-            "action": "new_task_in_project",
-            "project_id": str(row.get("project_id") or ""),
-            "project_name": str(row.get("name") or row.get("project_id") or "Project"),
-            "label": f"New task in {str(row.get('name') or 'Project')}",
-        } for row in list(main_manifest.get("projects") or []) if isinstance(row, dict))
-    elif project_id:
-        manual_options.append({
-            "action": "new_task_in_project",
-            "project_id": project_id,
-            "label": "New task in Project",
-        })
     routing_contract = {
         "llm_first": True,
         "source_lane": "main" if is_main_lane else "project",
         "valid_actions": [
-            "answer_inline", "tell_task", "promote_chat_to_task", "route_to_project",
-            "needs_manual_target",
+            "answer_inline", "tell_task", "start_task", "move_to_project",
         ],
-        "on_uncertain_or_invalid_target": "needs_manual_target",
-        "manual_options": manual_options,
     }
-    routing_contract["manual_target_tool"] = {"name": "route_to_project", "project_id": ""}
     receipt = _message_routing_receipt(ctx, client_message_id)
     if receipt:
         # DISCLOSURE, not a gate (owner decision B5=A): one owner message became a
@@ -517,7 +484,7 @@ def _decision_turn_metadata(ctx: Any, chat_id: int, client_message_id: str, task
             routing_contract["message_routing_acts"] = acts
             routing_contract["message_routing_acts_note"] = (
                 "Recorded routing acts already taken for THIS owner message, oldest first. "
-                "Facts, not a ban: another act stays your choice.")
+                "Each receipt identifies the work and its recorded outcome.")
     md["routing_contract"] = routing_contract
     return md
 
@@ -582,8 +549,8 @@ def _scoped_task_metadata(project_id: str, task_metadata: Any) -> Any:
     """Bind a chat frame's task_metadata to the thread's project via chat_id (the
     SSOT). A registered project chat scopes to its OWN project, overriding any
     client-supplied project_id; a non-project chat DROPS an untrusted client
-    project_id (work is scoped to a project only via the promote_chat_to_task tool,
-    never a raw ws frame). Prevents a stale/malformed frame (chat_id A + project_id
+    project_id (work placement uses durable binding, never a raw ws frame).
+    Prevents a stale/malformed frame (chat_id A + project_id
     B) from rendering in A while loading/writing project B's memory."""
     if project_id:
         return {**(task_metadata or {}), "project_id": project_id}

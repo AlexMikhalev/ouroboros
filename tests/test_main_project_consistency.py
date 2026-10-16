@@ -109,8 +109,9 @@ def test_no_scope_recovery_requires_original_positive_authority(host, monkeypatc
                 "text_sha256": hashlib.sha256(b"Owner work").hexdigest()}, "text": "Owner work"})
     sent = worker(host, monkeypatch)
     workers.assign_tasks()
-    assert not sent and not host.attempts
-    assert not any(r.get("project_id") == "new-room" for r in host.pending)
+    assert ([r["id"] for r in sent] == ["main"] if veto == "origin" else not sent)
+    assert not host.attempts
+    assert not any(r.get("project_id") == "new-room" for r in [*host.pending, *sent])
 
 
 def test_restore_never_retargets_unscoped_row_to_a_later_origin_binding(host, monkeypatch):  # noqa: F811
@@ -126,8 +127,10 @@ def test_restore_never_retargets_unscoped_row_to_a_later_origin_binding(host, mo
     sent = worker(host, monkeypatch)
     workers.assign_tasks()
     assert not sent and not any(r.get("project_id") == "new-room" for r in host.pending)
-    stored = load_task_result(host.root, "main")  # a semantic change, visibly terminal, never rerouted
-    assert stored["status"] == "failed" and stored["reason_code"] == "project_routing_fence_changed"
+    assert load_task_result(host.root, "main")["status"] == "scheduled"
+    resume_after_app_stop(host, "main")
+    workers.assign_tasks()
+    assert [r["id"] for r in sent] == ["main"] and not sent[0].get("project_id")
 
 
 def test_old_main_snapshot_cannot_replay_after_handoff(host, monkeypatch):  # noqa: F811

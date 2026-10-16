@@ -115,9 +115,8 @@ TOOL_POLICY: Dict[str, str] = {
     # and persisted only by join_ledger; neither branch has an external/repo effect.
     "tree_note": POLICY_SKIP,
     "tree_read": POLICY_SKIP,
-    "promote_chat_to_task": POLICY_SKIP,
-    "ensure_project_scope": POLICY_SKIP,
-    "route_to_project": POLICY_SKIP,
+    "start_task": POLICY_SKIP,
+    "move_to_project": POLICY_SKIP,
     "tell_task": POLICY_SKIP,
     "update_scratchpad": POLICY_SKIP,
     "update_identity": POLICY_SKIP,

@@ -1248,8 +1248,6 @@ def _run_startup_task_recovery(
         log.warning("Startup file/task recovery deferred: prior worker ownership is unconfirmed")
         return report
     try:
-        # Reattach logical receipts before any orphan or cleanup decision. On a
-        # providerless boot the queue has not restored its saved carriers yet.
         from ouroboros.task_status import _load_queue_snapshot
         snapshot = _load_queue_snapshot(pathlib.Path(drive_root))
         saved = [row["task"] for row in snapshot.get("pending", [])
@@ -1258,6 +1256,8 @@ def _run_startup_task_recovery(
         from supervisor.workspace_preparation import recover_interrupted_preparations
         preparations = recover_interrupted_preparations(drive_root, stop=_stop_requested)
         protected = _startup_live_task_ids(drive_root, include_pending=True)
+        from ouroboros.promotion_intent import reconcile_promotion_intents
+        reconcile_promotion_intents(drive_root, protected=protected)
     except Exception as exc:
         report["errors"].append(f"startup_ownership_unconfirmed: {type(exc).__name__}")
         log.warning("Startup task recovery deferred: live/pending ownership is unreadable", exc_info=True)

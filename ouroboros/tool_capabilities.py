@@ -61,8 +61,8 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     # (kept in the core envelope so the anti-freeze ephemeral turn never needs an
     # enable_tools detour to route — though initial_tool_schemas exposes the full
     # set today, this makes the coupling explicit).
-    "list_projects", "route_to_project", "promote_chat_to_task", "tell_task",
-    "ensure_project_scope",
+    "list_projects", "start_task", "tell_task",
+    "move_to_project",
     *COGNITIVE_MEMORY_TOOL_NAMES,
     "chronicle_write",
     "recent_tasks", "live_roots", "update_focus",
@@ -414,10 +414,9 @@ FOREGROUND_MUTATIVE_TOOLS: frozenset[str] = frozenset({
 # verb rides the same receipt rail (``ensure_project_scope`` moves THIS task;
 # its receipt is the Started annotation and the project pointer).
 ROUTING_VERBS: dict[str, frozenset[str]] = {
-    "promote_chat_to_task": frozenset({"promote_chat_to_task"}),
-    "route_to_project": frozenset({"promote_chat_to_task", "routing_manual_target"}),
+    "start_task": frozenset({"promote_chat_to_task"}),
     "tell_task": frozenset({"steer_task"}),
-    "ensure_project_scope": frozenset({"ensure_project_scope"}),
+    "move_to_project": frozenset({"ensure_project_scope"}),
 }
 
 
@@ -442,8 +441,8 @@ OBSERVE_WORLD_MUTATION_TOOLS: frozenset[str] = frozenset({
     "pause_task", "resume_task", "continue_task",
     "maintain_harness",
     # starting or steering work (tell_task stays: the nanny of a running campaign)
-    "promote_chat_to_task", "schedule_subagent", "schedule_followup", "plan_task",
-    "route_to_project", "ensure_project_scope", "delegate_start", "initiate_presence",
+    "start_task", "schedule_subagent", "schedule_followup", "plan_task",
+    "move_to_project", "delegate_start", "initiate_presence",
     "cancel_task", "resume_child_task", "override_delegation_constraint", "request_deep_self_review",
     # writing files, running processes, integrating patches
     "write_file", "edit_text", "apply_patch", "edit_batch",

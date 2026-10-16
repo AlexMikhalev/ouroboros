@@ -85,7 +85,7 @@ _PENDING_FIELDS = (
     'title', 'expected_output', 'constraints', 'role',
     'context', 'parent_task_id', 'root_task_id', 'session_id',
     'actor_id', 'delegation_role', 'workspace_root', 'workspace_mode',
-    'project_id', '_project_admission_restore_hold', 'focus', 'allowed_resources',
+    'project_id', 'placement_applied_at', '_project_admission_restore_hold', 'focus', 'allowed_resources',
     'deadline_at', 'task_contract', '_owner_hold', '_consciousness_continuation',
     'model_lane', 'effective_model_lane', 'model',
     'use_local_model', 'effective_executor', 'tool_profile', 'executor_route',
