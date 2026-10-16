@@ -438,7 +438,7 @@ def test_ui_folded_completion_excludes_late_table_focus(direct_server_with_data,
             # This isolates syncFold -> MutationObserver restoration from table resize.
             # Pin the fixture table width: WebKit's page scrollbar otherwise
             # changes its width by six pixels when the message becomes taller.
-            tables.first.evaluate('n => { n.style.width = `${n.clientWidth}px`; }')
+            tables.first.evaluate('n => { n.style.minWidth = `${n.clientWidth}px`; n.style.maxWidth = "none"; }')
             page.evaluate('() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))')
             dimensions = tables.first.evaluate('n => [n.clientWidth, n.clientHeight]')
             message.evaluate("n => n.style.maxHeight = 'none'")
@@ -464,7 +464,9 @@ def test_ui_folded_completion_excludes_delayed_diagram_fallback(direct_server_wi
 
     root = direct_server_with_data["data_dir"]
     project = create_project(root, f"late-diagram-{engine}", name="Diagram report")
-    answer = _LONG_ANSWER + "\n\n```mermaid\ngraph TD; A-->B\n```"
+    # The fallback is also an implicitly keyboard-focusable overflowing code box.
+    diagram_source = 'graph TD; A-->B\n%% ' + 'X' * 250
+    answer = _LONG_ANSWER + '\n\n```mermaid\n' + diagram_source + '\n```'
     append_jsonl(root / "logs" / "chat.jsonl", {
         "direction": "system", "chat_id": 1, "user_id": 1, "type": "project_completion_summary",
         "project_id": project["id"], "project_name": project["name"], "status": "completed",
@@ -477,6 +479,8 @@ def test_ui_folded_completion_excludes_delayed_diagram_fallback(direct_server_wi
     with sync_playwright() as pw:
         browser = getattr(pw, engine).launch(headless=True)
         page = browser.new_page(viewport={"width": 1146, "height": 792})
+        page.add_init_script("""window.__copied = []; Object.defineProperty(navigator, 'clipboard', {configurable: true,
+            value: {writeText: async text => { window.__copied.push(text); }}});""")
         pending = []
         page.route("**/mermaid.min.js", lambda route: pending.append(route))
         try:
@@ -506,5 +510,8 @@ def test_ui_folded_completion_excludes_delayed_diagram_fallback(direct_server_wi
             assert ordinary.evaluate('n => n.tabIndex') == 0
             ordinary.click()
             expect(ordinary).to_have_text('Copied')
+            copied = page.evaluate('() => window.__copied.at(-1)')
+            assert copied == panel.locator('.md-code-block pre > code').inner_text()
+            assert copied.strip() == diagram_source
         finally:
             browser.close()

@@ -41,9 +41,10 @@ export function refreshProjectAnswerFold(bubble) {
 // Folded text offers no keyboard stops (pointer clicks still reach visible links): the Project
 // reference leads to the complete answer. The table enhancer respects the fold even
 // when it registers later; removing its tabindex lets it restore normal keyboard use.
-const FOCUSABLE = 'a[href], button, input, select, textarea, summary, [tabindex]';
+// Browsers also tab into overflow boxes without an explicit tabindex.
+const FOCUSABLE = 'a[href], button, input, select, textarea, summary, [tabindex], pre, .katex-display, .md-mermaid, .md-chart';
 function syncFold(bubble, message, collapsed) {
-    for (const node of message.querySelectorAll(collapsed ? FOCUSABLE : '[data-fold-stop], .md-table-wrap[tabindex]')) {
+    for (const node of message.querySelectorAll(collapsed ? FOCUSABLE : '[data-fold-stop], .md-table-wrap[tabindex="-1"]')) {
         node.toggleAttribute('data-fold-stop', collapsed);
         if (collapsed) node.setAttribute('tabindex', '-1');
         else node.removeAttribute('tabindex');
