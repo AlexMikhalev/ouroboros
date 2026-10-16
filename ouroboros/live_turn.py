@@ -100,8 +100,9 @@ class _LiveCall:
     """One call from open to close, on the turn's thread with its own event loop."""
 
     def __init__(self, *, messages, tools, llm, drive_logs, emit_progress, incoming_messages, task_id, task_type,
-                 event_queue, drive_root, spec: CallSpec) -> None:
+                 event_queue, drive_root, spec: CallSpec, task: Optional[Dict[str, Any]] = None) -> None:
         self.messages, self.tools, self.llm, self.drive_logs = messages, tools, llm, drive_logs
+        self.task = task if isinstance(task, dict) else {}
         self.emit_progress, self.incoming, self.task_id = emit_progress, incoming_messages, task_id
         self.task_type, self.event_queue, self.drive_root, self.spec = task_type, event_queue, drive_root, spec
         self.ctx = tools._ctx
@@ -135,6 +136,9 @@ class _LiveCall:
         # Meeting peers whose microphone feeds the session. While one is present the
         # engine hears a mix, so its input captions are never written as the owner's words.
         self.meeting_mics: set = set()
+        # Participants whose audio the platform reported flowing since the last heard
+        # caption: exactly one names that utterance's speaker, otherwise it stays unnamed.
+        self.voices_since_caption: set = set()
         self.empty_since: Optional[float] = None
         self.owner_msg_seen: set = set()
         self._closed = asyncio.Event()
@@ -267,8 +271,10 @@ class _LiveCall:
             self.usage.update({"execution_status": "infra_failed", "reason_code": code})
             return (f"⚠️ Live call {label} could not run: {detail}", self.usage, self.llm_trace)
         text = (f"Live call {label} ended ({reason}). The transcript is in this chat: "
-                f"{self.counts['owner']} owner, {self.counts['heard']} heard and {self.counts['ouroboros']} Ouroboros utterances, "
-                f"{self.tools_lane.tool_calls} tool calls, {minutes} min.")
+                f"{self.counts['owner']} owner, {self.counts['heard']} heard and "
+                f"{self.counts['ouroboros']} Ouroboros utterances, {self.tools_lane.tool_calls} tool calls, {minutes} min.")
+        if self.counts.get("unrecorded"):
+            text += f" {self.counts['unrecorded']} utterances could not be written to the conversation record."
         return text, self.usage, self.llm_trace
 
     # ---- engine session ----------------------------------------------------------
@@ -423,6 +429,8 @@ class _LiveCall:
                                              source=f"peer:{event.role}:{event.message.get('source') or 'observation'}"))
             elif kind == "participant":
                 label, speaking = str(event.message.get("label") or "someone"), bool(event.message.get("speaking"))
+                if speaking and event.message.get("label"):
+                    self.voices_since_caption.add(label)
                 await self._send(ContextItem(text=f"{label} {'started' if speaking else 'stopped'} speaking",
                                              source="meeting_participant"))
         elif isinstance(event, PeerJoined):
@@ -541,14 +549,19 @@ class _LiveCall:
 
     def _write_presence_heard(self, text: str, item_id: str) -> None:
         """A Presence call's correspondents' words become that conversation's dialogue rows."""
+        voices, self.voices_since_caption = self.voices_since_caption, set()
+        self._record_presence_utterance("in", text, speaker_label=next(iter(voices)) if len(voices) == 1 else "")
+
+    def _record_presence_utterance(self, direction: str, text: str, *, speaker_label: str = "") -> None:
         try:
             from ouroboros.presence_call import record_call_utterance
-        except ImportError:
-            return
-        try:
-            record_call_utterance(self.drive_root, self.task_id, direction="in", text=text, item_id=item_id)
+
+            if not record_call_utterance(self.drive_root, self.task, direction=direction, text=text,
+                                         speaker_label=speaker_label):
+                self.counts["unrecorded"] = self.counts.get("unrecorded", 0) + 1
         except Exception:
             log.warning("live call %s could not record a Presence utterance", self.spec.call_id, exc_info=True)
+            self.counts["unrecorded"] = self.counts.get("unrecorded", 0) + 1
 
     def _write_owner_row(self, text: str, item_id: str) -> None:
         """The owner's words as an owner row of the room, without an owner turn behind it."""
@@ -570,6 +583,8 @@ class _LiveCall:
         if spoken is None or not spoken.text:
             return
         status = "interrupted" if spoken.interrupted else ("played" if spoken.played else "generated")
+        if self.spec.presence_binding_id:
+            self._record_presence_utterance("out", spoken.text)
         meta = _narration_meta(self.emit_progress)
         meta["spoken"] = {"call_id": self.spec.call_id, "item_id": item_id, "status": status, "played_ms": spoken.played_ms}
         try:
@@ -661,7 +676,7 @@ def run_live_turn(
     messages: List[Dict[str, Any]], tools: Any, llm: Any, drive_logs: pathlib.Path,
     emit_progress: Callable[..., None], incoming_messages: queue.Queue, task_id: str, task_type: str,
     budget_remaining_usd: Optional[float], event_queue: Optional[queue.Queue], drive_root: Optional[pathlib.Path],
-    spec: CallSpec,
+    spec: CallSpec, task: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Run one live call to its end; the loop's ordinary triple with a host-authored terminal.
 
@@ -671,5 +686,5 @@ def run_live_turn(
     """
     call = _LiveCall(messages=messages, tools=tools, llm=llm, drive_logs=drive_logs, emit_progress=emit_progress,
                      incoming_messages=incoming_messages, task_id=task_id, task_type=task_type,
-                     event_queue=event_queue, drive_root=drive_root, spec=spec)
+                     event_queue=event_queue, drive_root=drive_root, spec=spec, task=task)
     return call.run()

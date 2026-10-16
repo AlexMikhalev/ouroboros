@@ -1086,7 +1086,7 @@ class OuroborosAgent:
                         emit_progress=self._emit_progress, incoming_messages=self._incoming_messages,
                         task_id=str(task.get("id") or ""), task_type=task_type_str,
                         budget_remaining_usd=budget_remaining, event_queue=self._event_queue,
-                        drive_root=self.env.drive_root, spec=live_spec,
+                        drive_root=self.env.drive_root, spec=live_spec, task=task,
                     )
                 except (BudgetExceeded, BudgetPauseRequested):
                     raise

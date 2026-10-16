@@ -182,11 +182,12 @@ def _schema(name):
 class Harness:
     """One call on its own thread, wired to the fakes; ``tool_hook`` is what a tool does."""
 
-    def __init__(self, monkeypatch, tmp_path, *, spec=None) -> None:
+    def __init__(self, monkeypatch, tmp_path, *, spec=None, task=None) -> None:
         from ouroboros import loop, loop_budget
         from supervisor import message_bus
 
         self.root = tmp_path
+        self.task = task
         (tmp_path / "logs").mkdir(exist_ok=True)
         self.spec = spec or _spec()
         self.hub, self.llm, self.ledger = FakeHub(), FakeLLM(), FakeLedger()
@@ -234,7 +235,7 @@ class Harness:
                     messages=self.messages, tools=self.tools, llm=self.llm, drive_logs=self.root / "logs",
                     emit_progress=self.emit_progress, incoming_messages=self.incoming, task_id="t-call",
                     task_type="task", budget_remaining_usd=10.0, event_queue=self.events, drive_root=self.root,
-                    spec=self.spec)
+                    spec=self.spec, task=self.task)
             except BaseException as exc:  # surfaced to the test thread
                 self.error = exc
 
@@ -712,19 +713,29 @@ def test_meeting_audio_in_the_mix_is_recorded_as_heard_never_as_the_owner(harnes
     h.finish()
 
 
-def test_a_presence_call_never_writes_owner_rows(harness, monkeypatch, tmp_path):
-    import sys
-    import types
+def test_a_presence_call_records_both_sides_in_its_conversation_never_as_owner_rows(harness, monkeypatch, tmp_path):
+    from ouroboros import presence_call
 
     recorded = []
-    fake = types.ModuleType("ouroboros.presence_call")
-    fake.record_call_utterance = lambda root, task_id, **kw: recorded.append((task_id, kw))
-    monkeypatch.setitem(sys.modules, "ouroboros.presence_call", fake)
-    h = harness(spec=_spec(presence_binding_id="b" * 32, opened_by="skill"))
+    monkeypatch.setattr(presence_call, "record_call_utterance",
+                        lambda root, task, **kw: recorded.append((task.get("id"), kw)) or True)
+    task = {"id": "t-call", "metadata": {"presence": {"binding_id": "b" * 32}}}
+    h = harness(spec=_spec(presence_binding_id="b" * 32, opened_by="skill"), task=task)
     engine = h.start()
+    h.hub.feed(PeerControl(peer_id="zoom-1", role="meeting", message={"type": "participant", "label": "Elena", "speaking": True}))
+    time.sleep(0.05)
     engine.push(Caption(speaker=SPEAKER_OWNER, text="hello Aika", final=True, item_id="u1"))
     assert _wait_for(lambda: recorded)
-    assert recorded[0] == ("t-call", {"direction": "in", "text": "hello Aika", "item_id": "u1"})
+    assert recorded[0] == ("t-call", {"direction": "in", "text": "hello Aika", "speaker_label": "Elena"})
+    for label in ("Elena", "Pavel"):  # two voices during one utterance: it stays unnamed
+        h.hub.feed(PeerControl(peer_id="zoom-1", role="meeting", message={"type": "participant", "label": label, "speaking": True}))
+    time.sleep(0.05)
+    engine.push(Caption(speaker=SPEAKER_OWNER, text="and the budget", final=True, item_id="u2"))
+    assert _wait_for(lambda: len(recorded) == 2) and recorded[1][1]["speaker_label"] == ""
+    engine.push(Caption(speaker=SPEAKER_OUROBOROS, text="Happy to help.", final=True, item_id="a1"))
+    h.hub.control("played", item_id="a1", played_ms=900)
+    assert _wait_for(lambda: len(recorded) == 3)
+    assert recorded[2] == ("t-call", {"direction": "out", "text": "Happy to help.", "speaker_label": ""})
     assert h.chat_rows() == []
     h.stop()
     h.finish()
