@@ -11,7 +11,7 @@ from ouroboros.gateway.state import _chat_activities_snapshot_safe
 from supervisor import queue, state, workers
 from supervisor.events_budget import explicit_resume_required
 from supervisor.queue_transitions import pending_member_replay_safe
-from tests._store_shared import seed_result, unreadable_result
+from tests._store_shared import read_result, seed_result, unreadable_result
 from tests.test_owner_wait_restart import (
     acknowledge, first_cleanup, restart_case as restart_case, restore_project_wait, restore_stale_snapshot,
 )
@@ -28,13 +28,15 @@ def _held(case, monkeypatch, *, stage="early", project=False):
     if project:
         restored = restore_project_wait(case, monkeypatch, registry_outage=False)
     else:
+        expected_ids = {row["id"] for row in workers.PENDING} | {case.task_id}
         first_cleanup(case)
         acknowledge(case, monkeypatch, "launcher")
-        assert restore_stale_snapshot(case) == 1
-        [restored] = workers.PENDING
+        assert restore_stale_snapshot(case) == len(expected_ids)
+        [restored] = [row for row in workers.PENDING if row["id"] == case.task_id]
     carrier = copy.deepcopy(restored["_owner_wait_resume"])
     exact = read_actor_source_bytes(case.root, case.task_id, carrier["source_ref"])
     assert queue.persist_queue_snapshot(reason="native-wait-gap-test")
+    expected_ids = {row["id"] for row in workers.PENDING}
     workers.PENDING.clear()
     reads = []
     with monkeypatch.context() as fault:
@@ -52,8 +54,9 @@ def _held(case, monkeypatch, *, stage="early", project=False):
                 return original(root, task_id, **kwargs)
 
             fault.setattr(task_results, "load_task_result", unavailable)
-        assert queue.restore_pending_from_snapshot() == 1
-    [kept] = workers.PENDING
+        assert queue.restore_pending_from_snapshot() == len(expected_ids)
+    assert {row["id"] for row in workers.PENDING} == expected_ids
+    [kept] = [row for row in workers.PENDING if row["id"] == case.task_id]
     assert kept["_budget_pause_hold"]["reason"] == (EARLY if stage == "early" else LATE)
     assert kept["_owner_wait_resume"] == carrier and kept["_attempt"] == case.attempt
     assert not kept.get("_terminalization_retry")
@@ -97,10 +100,10 @@ def test_recovered_native_wait_needs_explicit_resume_then_dispatches_once(restar
     assert _activity(env)["can_resume"] is True
     resumed = queue.resume_budget_paused_task(env.case.task_id)
     assert resumed["ok"] and resumed["same_generation"], resumed
-    selected = copy.deepcopy(env.task["_budget_pause_hold"])
-    assert selected["selected"] and not env.task.get("_budget_pause_resume")
+    assert "_budget_pause_hold" not in env.task and not env.task.get("_budget_pause_resume")
+    released = copy.deepcopy(env.task)
     again = queue.resume_budget_paused_task(env.case.task_id)
-    assert not again["ok"] and env.task["_budget_pause_hold"] == selected
+    assert not again["ok"] and env.task == released
     assert not env.sent  # Selection itself starts no worker and replays no tool.
     _assert_original_dispatch(env)
 
@@ -145,10 +148,22 @@ def test_read_gap_without_valid_native_authority_never_falls_back(restart_case, 
     env = _held(restart_case, monkeypatch)
     task = env.task
     if fallback == "working":
-        from tests.test_working_checkpoint import _saved_working_state
+        from ouroboros import working_checkpoint as wc
+        from tests._budget_pause_exact_helpers import _loop_ctx
 
-        task["_working_recovery"] = _saved_working_state(env.case.root, monkeypatch, env.case.task_id)
-        task["_attempt"] = 2
+        # Freeze real prior work before restoring the native park that governs it.
+        original = read_result(env.case.root, env.case.task_id)
+        seed_result(env.case.root, env.case.task_id, {key: value for key, value in original.items()
+                                                    if key != "owner_wait"})
+        try:
+            _, limit = _loop_ctx(env.case.root, env.case.task_id, attempt=env.case.attempt)
+            wc.save_round(limit, "ready")
+            task["_attempt"] = env.case.attempt + 1
+            assert wc.attach_recovery(env.case.root, task, source_task_id=env.case.task_id,
+                                      from_attempt=env.case.attempt, cause="worker_crash")
+        finally:
+            seed_result(env.case.root, env.case.task_id, original)
+        assert read_result(env.case.root, env.case.task_id) == original
     else:
         from ouroboros import usage_store
 
@@ -175,6 +190,7 @@ def test_native_selection_does_not_release_the_project_verification_hold(restart
     hold = copy.deepcopy(env.task["_project_admission_restore_hold"])
     resumed = queue.resume_budget_paused_task(env.case.task_id)
     assert resumed["ok"], resumed  # Intent does not certify the Project or dispatch a worker.
+    assert "_budget_pause_hold" not in env.task
     assert env.task["_project_admission_restore_hold"] == hold
     workers.assign_tasks()
     assert not env.sent and env.task["_project_admission_restore_hold"]
@@ -192,10 +208,14 @@ def test_failed_selection_publication_keeps_the_native_wait_unselected(restart_c
                       False if reason == "budget_hold_selected" else persist(reason=reason))
         refused = queue.resume_budget_paused_task(env.case.task_id)
     assert refused == {"ok": False, "error": "snapshot_not_persisted"}
+    # The existing selector removes the snapshot's null exact-pause slot.
+    if before.get("_budget_pause") is None:
+        before.pop("_budget_pause", None)
     assert env.task == before and not env.sent
     workers.assign_tasks()
     assert not env.sent and not env.task["_budget_pause_hold"]["selected"]
     assert queue.resume_budget_paused_task(env.case.task_id)["ok"]
+    assert "_budget_pause_hold" not in env.task
     _assert_original_dispatch(env)
 
 
@@ -207,3 +227,93 @@ def test_unrelated_restore_hold_has_no_new_resume_button_or_release(restart_case
     assert _activity(env)["can_resume"] is False
     assert queue.resume_budget_paused_task(env.case.task_id) == {"ok": False, "error": reason}
     assert not env.sent and env.task["_budget_pause_hold"]["selected"] is False
+
+
+@pytest.mark.parametrize("stage", ["early", "late"])
+def test_technical_resume_rejoins_native_work_without_monetary_selection(restart_case, monkeypatch, stage):
+    from ouroboros import usage_accounting as accounting
+    from supervisor import events_budget
+
+    case = restart_case
+    state.init(case.root)
+    case.task.update(root_task_id=case.task_id, delegation_role="root")
+    sibling = {"id": "unstarted-child", "type": "task", "chat_id": 1, "depth": 1,
+               "root_task_id": case.task_id, "parent_task_id": case.task_id,
+               "delegation_role": "subagent", "text": "Independent work"}
+    assert not queue.enqueue_task(sibling).get("_admission_blocked")
+    task_results.write_task_result(case.root, "spent-child", "failed", root_task_id=case.task_id,
+                                   parent_task_id=case.task_id, reason_code="budget_exhausted")
+    events_budget._handle_budget_root_fence({
+        "type": "budget_root_fence", "task_id": "spent-child", "task_type": "task",
+        "resource_limit": {"scope": "root", "root_task_id": case.task_id},
+    }, SimpleNamespace(DRIVE_ROOT=case.root, RUNNING=workers.RUNNING,
+                       persist_queue_snapshot=queue.persist_queue_snapshot,
+                       bridge=SimpleNamespace(push_log=lambda _event: None)))
+    fence = copy.deepcopy(queue.BUDGET_ROOT_FENCES[case.task_id])
+    env = _held(case, monkeypatch, stage=stage)
+    siblings = copy.deepcopy([row for row in workers.PENDING if row["id"] != case.task_id])
+    assert [row["id"] for row in siblings] == [sibling["id"]]
+    monkeypatch.setattr(state, "budget_remaining", lambda *_args, **_kwargs: 100.0)
+    workers.assign_tasks()
+    assert not env.sent and not env.task["_budget_pause_hold"]["selected"]
+    assert queue.resume_budget_paused_task(case.task_id)["ok"]
+    assert "_budget_pause_hold" not in env.task and not env.task.get("_budget_pause_resume")
+    assert env.task["_owner_wait_resume"] == env.carrier
+    assert events_budget.live_root_resume_grant(queue, case.task_id, case.root) == {}
+    released = copy.deepcopy(env.task)
+    # This second click now meets only the monetary fence. Native restore proof
+    # must not turn an ordinary money Resume into permission to spend or select children.
+    duplicate = queue.resume_budget_paused_task(case.task_id)
+    assert not duplicate["ok"] and env.task == released
+    assert not env.sent and queue.BUDGET_ROOT_FENCES == {case.task_id: fence}
+    assert [row for row in workers.PENDING if row["id"] != case.task_id] == siblings
+    _assert_original_dispatch(env)
+    assert workers.PENDING == siblings and queue.BUDGET_ROOT_FENCES == {case.task_id: fence}
+    assert events_budget.live_root_resume_grant(queue, case.task_id, case.root) == {}
+    assert json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))["budget_root_fences"] == [fence]
+    fresh = queue.enqueue_task({**sibling, "id": "fresh-child"})
+    assert fresh["_admission_blocked"] == "root_budget_fence"
+    with accounting.usage_scope(accounting.UsageScope(
+            drive_root=case.root, task_id=case.task_id, root_task_id=case.task_id,
+            global_limit_usd=100.0, root_limit_usd=100.0)):
+        with pytest.raises(accounting.BudgetExceeded) as refused:
+            accounting.reserve_attempt(accounting.AttemptRequest(
+                model="fixture", provider="openai", reservation_usd=1.0))
+        assert refused.value.limit_scope == "root"
+
+
+def test_owner_pause_after_technical_release_cannot_resume_native_work_as_unstarted(restart_case, monkeypatch):
+    from ouroboros.owner_pause import fence_closed, read_fence
+    from supervisor.events_budget import live_root_resume_grant
+    from supervisor.owner_pause_control import request_owner_pause
+
+    case = restart_case
+    state.init(case.root)
+    case.task.update(root_task_id=case.task_id, delegation_role="root")
+    sibling = {"id": "pending-sibling", "type": "task", "chat_id": 1, "depth": 1,
+               "root_task_id": case.task_id, "parent_task_id": case.task_id,
+               "delegation_role": "subagent", "text": "Independent work"}
+    assert not queue.enqueue_task(sibling).get("_admission_blocked")
+    env = _held(case, monkeypatch)
+    assert queue.resume_budget_paused_task(case.task_id)["ok"]
+    assert "_budget_pause_hold" not in env.task and not env.sent
+    assert env.task["_owner_wait_resume"] == env.carrier
+    paused = request_owner_pause(case.task_id, request_id="pause-native-pending")
+    assert paused["ok"], paused
+    latch = copy.deepcopy(queue.BUDGET_ROOT_FENCES[case.task_id])
+    durable = read_fence(case.root, case.task_id)
+    assert latch["cause"] == "owner_pause" and fence_closed(durable)
+    pending = copy.deepcopy(workers.PENDING)
+    assert {row["id"] for row in pending} == {case.task_id, sibling["id"]}
+    refused = queue.resume_budget_paused_task(case.task_id)
+    assert not refused["ok"] and refused["error"] == "dispatch_outcome_unknown", refused
+    assert not refused.get("never_started")
+    assert workers.PENDING == pending and queue.BUDGET_ROOT_FENCES == {case.task_id: latch}
+    assert read_fence(case.root, case.task_id) == durable
+    assert live_root_resume_grant(queue, case.task_id, case.root) == {}
+    workers.assign_tasks()
+    workers.assign_tasks()
+    assert not env.sent and not workers.RUNNING
+    assert fence_closed(read_fence(case.root, case.task_id))
+    assert env.task["_owner_wait_resume"] == env.carrier
+    assert read_actor_source_bytes(case.root, case.task_id, env.carrier["source_ref"]) == env.exact

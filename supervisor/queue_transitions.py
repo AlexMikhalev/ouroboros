@@ -441,27 +441,22 @@ def _resume_unstarted_owner_paused_root(q: Any, task: Dict[str, Any], fence: Dic
 
 
 def pending_member_replay_safe(q: Any, member: Dict[str, Any]) -> Tuple[bool, str]:
-    """Prove the governing saved continuation, or genuinely never-dispatched work."""
+    """Whether one PENDING row genuinely never dispatched (zero physical calls)."""
     from supervisor.restart_retention import never_started
     from supervisor.schedule_occurrence import restore_allowed
-    from supervisor.task_admission import _working_resume_granted, governing_continuation
 
     if member.get("_owner_hold"):
         return False, "owner_held"
-    native = governing_continuation(member) == "owner_wait"
-    if native or "_working_recovery" in member:
-        # A governing native wait never falls back to older work or zero-dispatch proof.
+    if "_working_recovery" in member:
+        # A locator alone does not authorize Resume: read its exact frozen source
+        # and the target attempt's durable launch evidence, as assignment does.
+        from supervisor.task_admission import _working_resume_granted
+
         try:
-            if native:
-                from ouroboros.owner_wait import restore_owner_wait_allowed
-                root = pathlib.Path(member.get("budget_drive_root") or q.DRIVE_ROOT)
-                safe = restore_owner_wait_allowed(root, member, strict=True)
-            else:
-                safe = _working_resume_granted(member, q.DRIVE_ROOT)
-            if safe:
+            if _working_resume_granted(member, q.DRIVE_ROOT):
                 return True, ""
         except (OSError, ValueError, TypeError, KeyError):
-            log.warning("Saved continuation Resume evidence unavailable for %s", member.get("id"), exc_info=True)
+            log.warning("Saved work Resume evidence unavailable for %s", member.get("id"), exc_info=True)
         return False, "dispatch_outcome_unknown"
     if not restore_allowed(member):
         return False, "dispatch_outcome_unknown"
@@ -493,12 +488,13 @@ def pending_member_replay_safe(q: Any, member: Dict[str, Any]) -> Tuple[bool, st
 
 
 def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[str, Any]:
-    """Explicitly resume one paused task and, if needed, its root latch.
+    """Explicitly resume one budget-paused task and, if needed, its root latch.
 
-    Zero-dispatch work is released; an exact pause gets one single-use grant,
-    never a rerun. A held row needs recorded selection even after its root fence
-    lifts. ``selected_by`` names a model request (Q9); empty means the owner,
-    whose own act needs no root grant above itself.
+    A replay-safe ZERO-dispatch row is released as before. An EXACT
+    continuation gets a single-use ``grant_exact_budget_resume``, never a rerun.
+    A lifted root fence releases a held row only after recording its selection.
+    ``selected_by`` names the MODEL-issued request (owner Q9); an empty value is
+    the owner's own act, which needs no root grant above itself.
     """
     q = _queue_module()
     task_id = str(task_id or "").strip()
@@ -512,8 +508,9 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
     with q._queue_lock:
         located = next((item for item in q.PENDING if str(item.get("id") or "") == task_id), None)
     if located is None:
-        # A warm owner-Pause stack waits while its critic finishes; owner Resume
-        # or model selection reaches its fence here.
+        # A member parked WARM under the owner's Pause (its stack retained while a
+        # started critic finishes) wakes on the fence; the owner's own Resume and
+        # a model's selection reach it here.
         from supervisor.budget_resume import resume_warm_owner_pause_root
 
         warm = resume_warm_owner_pause_root(task_id, selected_by=selected_by)
@@ -548,8 +545,10 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
         located_state = copy.deepcopy(located)
         needs_selection = located is not None and budget_pause_fact(located) is not None
     if exact:
-        # Every grant re-locates its row after fresh custody observation outside Q.
-        # Budget pauses stop uncovered runs; owner/technical pauses observe retained work.
+        # Fresh custody at EVERY grant, read OUTSIDE the queue lock (a harness
+        # round trip is not a queue-lock tenant); the grant below re-locates the
+        # row and decides on this observation. A budget pause requests stops of
+        # uncovered runs; owner/technical pauses observe the sent work they retained.
         from ouroboros.budget_pause import observe_task_runs
         from ouroboros.owner_pause import fence_closed, read_fence
 
@@ -566,7 +565,8 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
         if owner_paused:
             from supervisor.continuation_admission import action_writers
 
-            # Saved cognition proves no tool/process exit: observe whole-tree custody off Q.
+            # A saved loop is not proof that its handed tools/processes ended.
+            # Observe the existing whole-tree custody owner off the queue lock.
             try:
                 external["owner_pause_tree"] = {"fence": owner_fence, "blockers": action_writers(
                     q, root_task_id, drive_root=result_root,
