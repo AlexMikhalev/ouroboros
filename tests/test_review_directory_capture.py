@@ -67,6 +67,8 @@ def _run(root, drive, surface, source, monkeypatch, edit):
     original_start = FakeGateway.start_run
 
     def start(self, request, **kwargs):
+        assert request["execution"]["workspaceKind"] == "directory"
+        assert request["execution"]["isolation"] == "live"
         edit(Path(request["execution"]["workspaceRoot"]))
         return original_start(self, request, **kwargs)
 
