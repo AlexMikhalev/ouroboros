@@ -96,6 +96,7 @@ _CLIPBOARD = """(() => {
 # Long names in the languages the product is used in; a row shows two lines, focus shows all.
 LONG_NAME = ("Сверить итоговые ссылки отчёта с первоисточниками и собрать таблицу расхождений для приложения Б "
              "— einschließlich der Übersetzungsvarianten aller Zitate, Quellenangaben und Anmerkungen")
+LONGER_NAME = f"{LONG_NAME} — {LONG_NAME}"  # clamps at two lines even in a Shade as wide as the bar
 ASK_TEXT = "Please check which evidence the weekly summary should cite, and ask me before you choose."
 PROJECT = {"id": "rw-proj", "name": "Archive evidence review", "chat_id": 42, "lifecycle": "active", "visible_revision": 0}
 OTHER_PROJECT = {"id": "rw-proj-two", "name": "Release notes", "chat_id": 43, "lifecycle": "active",
@@ -354,7 +355,7 @@ def capture(page, name):
 
 def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui):
     history = {1: [*reading(10), owner(ASK_TEXT, "cm-ask", 30),
-                   progress("rw-live", "Comparing the cited pages.", 31, suggested_name=LONG_NAME),
+                   progress("rw-live", "Comparing the cited pages.", 31, suggested_name=LONGER_NAME),
                    progress("rw-access", "Preparing the quota check.", 32, suggested_name="Check the subscription quota"),
                    progress("rw-pausing", "Collecting appendix evidence.", 33, suggested_name="Collect appendix evidence"),
                    progress("rw-failfin", "Rebuilding the index.", 34, suggested_name="Rebuild the citation index"),
@@ -406,8 +407,8 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
     assert by["rw-ask"]["name"].startswith("Reply to “Please check which evidence"), by["rw-ask"]
     assert by["rw-ask"]["target"] == "card", "the owner's own message is the row's place"
     # Names: the card's coined name whole in the DOM; census-only work reads its detail; else a neutral name.
-    assert by["rw-live"]["name"] == LONG_NAME and by["rw-live"]["target"] == "card"
-    assert by["rw-live"]["label"].startswith(f"Go to task: {LONG_NAME}, Working")
+    assert by["rw-live"]["name"] == LONGER_NAME and by["rw-live"]["target"] == "card"
+    assert by["rw-live"]["label"].startswith(f"Go to task: {LONGER_NAME}, Working")
     # Work outside the loaded messages says so in its name for assistive technology and in its details (5A),
     # never as a visible line of its own: every row's second line is its state.
     assert "Not in loaded messages" in by["rw-unknown"]["label"] and by["rw-unknown"]["target"] == "details"
@@ -870,7 +871,7 @@ def test_project_shade_hold_outside_press_switch_and_latest_root(room_ui):
     main = wait_facts(page, "main", lambda f: f["exists"], "Main's control")
     assert main["disabled"] and main["rows"] == [], "Main never lists a Project's work"
     open_project(page, PROJECT)
-    closed = wait_facts(page, "project", lambda f: f["tone"] == "wait" and not f["disabled"], "the Project's control")
+    closed = wait_facts(page, "project", lambda f: f["tone"] == "held" and not f["disabled"], "the Project's control")
     capture(page, "project-closed")
     trigger(page, "project").click()
     shade = wait_facts(page, "project", lambda f: [item["id"] for item in f["rows"]] == ["p-hold"]
@@ -1038,14 +1039,39 @@ def header_states(room):
     return states
 
 
+# The words the producer gives each named state (the access wait has no card here, so it may read as work).
+HEADER_WORDS = {"idle": "Online", "live": "Working", "queued": "Queued", "finalizing": "Finalizing…",
+                "answer": "Waiting for your answer", "pausing": "Pausing…", "paused": "Paused · owner pause",
+                "unknown": "Activity unconfirmed", "live+answer": "Working",
+                "hold": "Waiting for task scope verification"}
+
+
+def settled_bar(page, room, expected, previous, timeout=15):
+    """The bar once the census has repainted it: the expected word when known, else a word that changed from the
+    previous state's and held still for a moment (a census read lands asynchronously, more so under load)."""
+    deadline, last, stable = time.monotonic() + timeout, None, 0
+    while time.monotonic() < deadline:
+        sample = page.evaluate(_BAR_GEOMETRY, room)
+        if expected is not None and sample["word"] == expected:
+            settle_frames(page)
+            return page.evaluate(_BAR_GEOMETRY, room)
+        if expected is None and (previous is None or sample["word"] != previous["word"]):
+            stable = stable + 1 if last and last["word"] == sample["word"] else 0
+            if stable >= 3:
+                return sample
+        last = sample
+        page.wait_for_timeout(100)
+    raise AssertionError(("the header never settled", room, expected, last))
+
+
 def assert_word_never_moves_the_bar(page, transport, room, tag):
     """Every word the header can say leaves the bar's height and every other control's box where they were,
     keeps the word whole (the title yields first) and overflows nothing."""
-    samples = {}
+    samples, previous = {}, None
     for name, activities in header_states(room):
         transport.activities = activities
         transport.refresh()
-        samples[name] = page.evaluate(_BAR_GEOMETRY, room)
+        samples[name] = previous = settled_bar(page, room, HEADER_WORDS.get(name), previous)
     evidence(f"bar-words-{room}-{tag}", samples)
     words = [sample["word"] for sample in samples.values()]
     assert len(set(words)) >= 7, ("the census states reached the header as different words", words)
