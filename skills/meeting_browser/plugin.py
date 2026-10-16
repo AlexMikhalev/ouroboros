@@ -30,7 +30,11 @@ def _call_id(ctx: Any) -> str:
 
 
 def _reply(payload: Dict[str, Any]) -> str:
-    return json.dumps(payload, ensure_ascii=False)
+    """JSON for the mind; a refusal leads with the typed line the host records as a failure."""
+    body = json.dumps(payload, ensure_ascii=False)
+    if payload.get("ok") is False:
+        return f"⚠️ {payload.get('code') or 'MEETING_REFUSED'}: {payload.get('message') or ''}\n{body}"
+    return body
 
 
 class ParticipantTools:

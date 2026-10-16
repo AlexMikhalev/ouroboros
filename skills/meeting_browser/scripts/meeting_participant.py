@@ -176,6 +176,7 @@ class ParticipantCompanion:
         try:
             session.open()
         except SessionFailed as exc:
+            peer.close("browser_failed")  # the door's direction grant ends with the failed join
             return _refusal(exc.code, exc.message)
         participation = Participation(call_id, vendor, url, session, peer)
         holder["p"] = participation

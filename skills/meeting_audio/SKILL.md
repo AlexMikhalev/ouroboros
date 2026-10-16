@@ -7,7 +7,7 @@ entry: plugin.py
 plugin_api: "2.0"
 runtime: python3
 os: any
-permissions: [tool, call_peer, companion_process, subprocess]
+permissions: [tool, call_peer, companion_process, subprocess, net]
 env_from_settings: []
 when_to_use: During a live call the owner wants Ouroboros to listen to a meeting running on this computer, to whisper hints or take notes, or (Linux) to speak in it.
 model_experience:

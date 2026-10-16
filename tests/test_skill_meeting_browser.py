@@ -40,6 +40,16 @@ import participant_browser  # noqa: E402
 import probe_vendor  # noqa: E402
 import vendors  # noqa: E402
 
+
+def tool_payload(text):
+    """A tool reply's JSON; a refusal leads with its typed ``⚠️ CODE: message`` line."""
+    if text.startswith("⚠️ "):
+        line, _, body = text.partition("\n")
+        payload = json.loads(body)
+        assert line == f"⚠️ {payload['code']}: {payload['message']}"
+        return payload
+    return json.loads(text)
+
 CALL_META = {"live_call": {"call_id": "call-1", "chat_id": 7, "engine": "openai", "model": "m"}}
 MEET = "https://meet.google.com/abc-defg-hij"
 
@@ -112,7 +122,7 @@ def test_plugin_registers_participant_tools_and_refuses_outside_a_call(tmp_path,
     plugin.register(api)
     assert set(api.tools) == {"meeting_join", "meeting_leave", "meeting_status"}
     assert api.companions == ["meeting_participant"]
-    reply = json.loads(api.tools["meeting_join"]["handler"](SimpleNamespace(task_metadata={}), url=MEET))
+    reply = tool_payload(api.tools["meeting_join"]["handler"](SimpleNamespace(task_metadata={}), url=MEET))
     assert reply["code"] == "MEETING_NO_CALL" and "press Call" in reply["message"]
 
 

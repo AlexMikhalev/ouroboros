@@ -37,6 +37,16 @@ import meeting_control  # noqa: E402
 import meeting_peer  # noqa: E402
 from meeting_apps import RunningApp  # noqa: E402
 
+
+def tool_payload(text):
+    """A tool reply's JSON; a refusal leads with its typed ``⚠️ CODE: message`` line."""
+    if text.startswith("⚠️ "):
+        line, _, body = text.partition("\n")
+        payload = json.loads(body)
+        assert line == f"⚠️ {payload['code']}: {payload['message']}"
+        return payload
+    return json.loads(text)
+
 CALL_META = {"live_call": {"call_id": "call-1", "chat_id": 7, "engine": "openai", "model": "m"}}
 
 
@@ -81,7 +91,7 @@ def test_manifest_declares_tools_companion_and_isolated_platform_dependencies():
     manifest = parse_skill_manifest_text((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8"))
     assert (manifest.name, manifest.type, manifest.entry, manifest.runtime) == (
         "meeting_audio", "extension", "plugin.py", "python3")
-    assert set(manifest.permissions) == {"tool", "call_peer", "companion_process", "subprocess"}
+    assert set(manifest.permissions) == {"tool", "call_peer", "companion_process", "subprocess", "net"}
     assert manifest.plugin_api["version"] == "2.0"
     [companion] = manifest.companion_processes
     assert companion["name"] == "meeting_capture"
@@ -134,10 +144,10 @@ def test_listen_start_outside_a_call_refuses_in_plain_words(tmp_path, monkeypatc
     monkeypatch.setattr(plugin, "request", lambda *a, **k: pytest.fail("no companion call outside a call"))
     api = FakeAPI(tmp_path)
     plugin.register(api)
-    reply = json.loads(api.tools["meeting_listen_start"]["handler"](SimpleNamespace(task_metadata={}), app="zoom"))
+    reply = tool_payload(api.tools["meeting_listen_start"]["handler"](SimpleNamespace(task_metadata={}), app="zoom"))
     assert reply["ok"] is False and reply["code"] == "MEETING_NO_CALL"
     assert "press Call" in reply["message"]
-    reply = json.loads(api.tools["meeting_listen_start"]["handler"](SimpleNamespace(task_metadata=None)))
+    reply = tool_payload(api.tools["meeting_listen_start"]["handler"](SimpleNamespace(task_metadata=None)))
     assert reply["code"] == "MEETING_NO_CALL"
 
 
@@ -149,7 +159,7 @@ def test_speaking_is_refused_on_darwin_and_win32(tmp_path, monkeypatch, platform
     api = FakeAPI(tmp_path)
     plugin.register(api)
     for name in ("meeting_speak_start", "meeting_speak_stop"):
-        reply = json.loads(api.tools[name]["handler"](SimpleNamespace(task_metadata=CALL_META)))
+        reply = tool_payload(api.tools[name]["handler"](SimpleNamespace(task_metadata=CALL_META)))
         assert reply["ok"] is False and reply["code"] == "MEETING_SPEAK_UNSUPPORTED"
         assert word in reply["message"] and "audio driver" in reply["message"]
         assert "browser participant" in reply["message"]
@@ -162,7 +172,7 @@ def test_speaking_on_linux_reaches_the_companion_with_the_call(tmp_path, monkeyp
     monkeypatch.setattr(plugin, "request", lambda state, op, args, **k: seen.append((op, args)) or {"ok": True})
     api = FakeAPI(tmp_path)
     plugin.register(api)
-    assert json.loads(api.tools["meeting_speak_start"]["handler"](SimpleNamespace(task_metadata=CALL_META)))["ok"]
+    assert tool_payload(api.tools["meeting_speak_start"]["handler"](SimpleNamespace(task_metadata=CALL_META)))["ok"]
     assert seen == [("speak_start", {"call_id": "call-1"})]
 
 
@@ -185,10 +195,10 @@ def test_tools_reach_the_companion_over_the_control_channel(tmp_path):
             assert (tmp_path / meeting_control.CONTROL_FILE).stat().st_mode & 0o077 == 0
         api = FakeAPI(tmp_path)
         load_plugin().register(api)
-        reply = json.loads(api.tools["meeting_listen_start"]["handler"](
+        reply = tool_payload(api.tools["meeting_listen_start"]["handler"](
             SimpleNamespace(task_metadata=CALL_META), app=" zoom "))
         assert reply["message"] == "listening to Zoom"
-        status = json.loads(api.tools["meeting_status"]["handler"](SimpleNamespace(task_metadata={})))
+        status = tool_payload(api.tools["meeting_status"]["handler"](SimpleNamespace(task_metadata={})))
         assert status["in_call"] is False
         assert seen == [("listen_start", {"call_id": "call-1", "app": "zoom"}), ("status", {})]
     finally:
@@ -212,7 +222,7 @@ def test_control_channel_refuses_a_wrong_token_and_reports_a_missing_companion(t
         meeting_control.request(tmp_path, "status")
     api = FakeAPI(tmp_path)
     load_plugin().register(api)
-    reply = json.loads(api.tools["meeting_listen_stop"]["handler"](SimpleNamespace(task_metadata={})))
+    reply = tool_payload(api.tools["meeting_listen_stop"]["handler"](SimpleNamespace(task_metadata={})))
     assert reply["code"] == "MEETING_COMPANION_UNAVAILABLE" and "not running" in reply["message"]
 
 
