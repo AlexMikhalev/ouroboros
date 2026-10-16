@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -139,14 +141,24 @@ def test_every_load_is_a_private_copy_and_absence_is_the_stores_answer(tmp_path)
     assert reads.store_reads == 1
 
 
+def _age(root, seconds=60):
+    """The store file as a commit that many seconds ago left it."""
+    from ouroboros.store import STORE_REL
+
+    then = time.time() - seconds
+    os.utime(root / STORE_REL, (then, then))
+
+
 def test_an_unchanged_child_store_is_not_reopened(tmp_path, monkeypatch):
     from ouroboros import task_reads
 
     child = tmp_path / "child"
     _seed(child, "task-a", "completed")
+    _age(child)
     opened = []
     real = task_store.display_documents
-    monkeypatch.setattr(task_store, "display_documents", lambda root, ids: opened.append(str(root)) or real(root, ids))
+    monkeypatch.setattr(task_store, "display_documents",
+                        lambda root, ids, versions=None: opened.append(str(root)) or real(root, ids, versions))
     monkeypatch.setattr(task_reads, "_REPLICAS", task_reads.OrderedDict())
     for _ in range(3):
         assert TaskReads(tmp_path).load(child, "task-a")["status"] == "completed"
@@ -156,11 +168,50 @@ def test_an_unchanged_child_store_is_not_reopened(tmp_path, monkeypatch):
     assert opened == [str(child), str(child)]
 
 
+def test_a_child_store_written_within_the_file_time_grain_is_read_again(tmp_path, monkeypatch):
+    """A commit inside a coarse file time (FAT, HFS+, some FUSE mounts) can keep the store's size
+    and time: a store that recent is never served from the cache, an older one is."""
+    from ouroboros import task_reads
+    from ouroboros.store import STORE_REL
+
+    child = tmp_path / "child"
+    _seed(child, "task-a", "completed")
+    opened = []
+    real = task_store.display_documents
+    monkeypatch.setattr(task_store, "display_documents",
+                        lambda root, ids, versions=None: opened.append(str(root)) or real(root, ids, versions))
+    monkeypatch.setattr(task_reads, "_REPLICAS", task_reads.OrderedDict())
+    stamp = os.stat(child / STORE_REL)
+    for _ in range(2):
+        assert TaskReads(tmp_path).load(child, "task-a")["status"] == "completed"
+    assert opened == [str(child)] * 2  # fresh: read each time
+    _seed(child, "task-a", "failed")
+    os.utime(child / STORE_REL, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))  # same time a coarse clock keeps
+    assert TaskReads(tmp_path).load(child, "task-a")["status"] == "failed"
+    _age(child)
+    for _ in range(2):
+        assert TaskReads(tmp_path).load(child, "task-a")["status"] == "failed"
+    assert opened == [str(child)] * 4  # aged: the cache answers the second read
+
+
+def test_a_page_read_records_the_version_of_each_document_it_showed(tmp_path):
+    for task_id in ("task-a", "task-b"):
+        _seed(tmp_path, task_id, "completed")
+    reads = TaskReads(tmp_path)
+    reads.prefetch(["task-a", "task-b", "absent"])
+    assert set(reads.versions) == {"task-a", "task-b"} and all(seq > 0 for seq in reads.versions.values())
+    before = dict(reads.versions)
+    _seed(tmp_path, "task-a", "failed")
+    now = task_store.task_versions(tmp_path, ["task-a", "task-b", "absent"])
+    assert now["task-a"][0] > before["task-a"] and now["task-b"][0] == before["task-b"]
+    assert now["task-a"][1] == "failed" and "absent" not in now
+
+
 @pytest.mark.parametrize("bad", ["unreadable"])
 def test_an_unreadable_store_is_never_proven_absent(tmp_path, monkeypatch, bad):
     reads = TaskReads(tmp_path)
 
-    def broken(root, ids):
+    def broken(root, ids, versions=None):
         raise OSError(bad)
 
     monkeypatch.setattr(task_store, "display_documents", broken)

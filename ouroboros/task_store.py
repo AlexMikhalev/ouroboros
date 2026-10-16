@@ -248,7 +248,7 @@ def documents_by_ids(root: Any, task_ids: Iterable[str]) -> Dict[str, Dict[str, 
 # goes to task detail, Continue and writers (cost planes, verification, plan/review state,
 # traces, artifacts — whose materialized view is the ``materialize_artifacts=True`` read).
 # A display reader that needs a dropped path names it here; ``tests/test_task_reads.py``
-# pins that no display reader touches one.
+# builds a page from display views and from full documents and requires the same page.
 DISPLAY_DROPPED: Tuple[str, ...] = (
     "loop_outcome", "trace_refs", "review_evidence", "artifacts", "result", "trace_summary",
     "governing_owner_words", "verification_ledger", "plan_review_state", "acceptance_debt",
@@ -286,25 +286,45 @@ def _display_sql(column: str = "b.body") -> str:
     return view
 
 
-def display_documents(root: Any, task_ids: Iterable[str]) -> Dict[str, str]:
+def display_documents(root: Any, task_ids: Iterable[str],
+                      versions: Optional[Dict[str, int]] = None) -> Dict[str, str]:
     """The display views (``DISPLAY_DROPPED``) of several documents as JSON text, row-backed
     fields projected: ONE aggregated row in ONE short read, everything else after it closes.
     A page of tasks costs a few interpreter hand-offs and kilobytes, not a row step per task and
-    the megabytes of evidence; each caller decodes its own private copy of a text."""
+    the megabytes of evidence; each caller decodes its own private copy of a text. ``versions``
+    receives each view's ``write_seq`` from the same read."""
     ids = sorted({str(task_id) for task_id in task_ids if str(task_id or "").strip()})
     if not ids:
         return {}
     with open_store(root, write=False) as txn:
         record = txn.conn.execute(  # '' || ...: the view travels as a string, decoded per use
-            f"SELECT json_group_array(json_array(t.task_id, '' || {_display_sql()})) FROM tasks AS t "
+            f"SELECT json_group_array(json_array(t.task_id, '' || {_display_sql()}, t.write_seq)) FROM tasks AS t "
             "JOIN task_bodies AS b ON b.task_id = t.task_id WHERE t.task_id IN (SELECT value FROM json_each(?))",
             (json.dumps(ids),)).fetchone()
         handoff_rows = txn.handoff_records(ids)
     handoffs = store.decode_handoffs(ids, handoff_rows)
     held = {record["task_id"] for record in handoff_rows}
+    found = json.loads(record[0] or "[]")
+    if versions is not None:
+        versions.update((task_id, int(seq or 0)) for task_id, _text, seq in found)
     return {task_id: (text if task_id not in held else
                       store.document_text(store.project_handoffs(json.loads(text), handoffs[task_id])))
-            for task_id, text in json.loads(record[0] or "[]")}
+            for task_id, text, _seq in found}
+
+
+def task_versions(root: Any, task_ids: Iterable[str]) -> Dict[str, Tuple[int, str, bool]]:
+    """Each stored task's ``(write_seq, status, owes_synthesis)``, typed columns only, in ONE
+    aggregated row: whether documents a window shows changed since it read them, and which of them
+    are settled now. An id the store does not hold is absent from the answer."""
+    ids = sorted({str(task_id) for task_id in task_ids if str(task_id or "").strip()})
+    if not ids:
+        return {}
+    with open_store(root, write=False) as txn:
+        record = txn.conn.execute(
+            "SELECT json_group_array(json_array(task_id, write_seq, status, owes_synthesis)) FROM tasks "
+            "WHERE task_id IN (SELECT value FROM json_each(?))", (json.dumps(ids),)).fetchone()
+    return {task_id: (int(seq or 0), str(status or ""), bool(owes))
+            for task_id, seq, status, owes in json.loads(record[0] or "[]")}
 
 
 def task_ids(root: Any) -> List[str]:

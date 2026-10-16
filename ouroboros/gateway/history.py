@@ -1441,7 +1441,7 @@ def _assemble_history_response(
                                 "progress": progress_quota_predicate(row_matches_thread, _stored_chat_id)},
                                {"human": _MAX_N_HUMAN, "progress": _MAX_N_PROGRESS},
                                room_segment_lens(thread_id, project_chat_ids, project_source_refs, rooms),
-                               notes)
+                               notes, rooms.warm)
     selections, before, recent = page["selections"], page["before"], page["recent"]
     n_human, n_progress = page["quotas"]["human"], page["quotas"]["progress"]
     historical_terminals: Dict[str, dict] = {}
@@ -1530,7 +1530,7 @@ def _assemble_history_response(
     # Hidden source evidence shares ordinary keyed replay. It carries no new
     # review/cost authority and never consumes the conversation quota.
     messages.extend(replay_evidence_rows(messages, replay_evidence))
-    tokens = history_page_tokens(page)
+    tokens = history_page_tokens(page, messages, result_cache[_READS])
     stream_gaps = {"chat": chat_gaps | selections["chat"][2], "progress": progress_gaps | selections["progress"][2]}
     window = _window_metadata(
             chat_quota_rows, progress_quota_rows, n_human, n_progress,

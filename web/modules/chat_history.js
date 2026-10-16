@@ -259,25 +259,30 @@ export function createChatHistoryPager({
     }
 
     // One read of what arrived since `after`. Its rows cover the window's present only
-    // when they account for everything stored since: a gap in the conversation, an
-    // unknown newest arrival, a refusal (409 history_view_changed/history_delta_reset)
-    // or any failure forgets the cursor, and the caller reads the newest page instead.
+    // when they account for everything stored since: a gap in either stream (narration's
+    // unfinished live line excepted: the next read takes it), an unknown newest arrival, a refusal
+    // (409 history_view_changed/history_delta_reset) or any failure forgets the cursor, and
+    // the caller reads the newest page instead. An answer that lands after a newest read
+    // restarted the arrivals is older than that window: it is dropped, and the arrivals are
+    // read again from the newer cursor, so it never rolls rows or the newest message back.
     function readArrivals(ask) {
         const cursor = after, abort = new AbortController();
         const promise = Promise.resolve()
             .then(() => fetchPage(cursor, { signal: abort.signal }))
             .then(data => {
                 if (!alive()) return { status: 'disposed' };
-                const gap = data?.window?.truncated_by?.some?.(cause => String(cause).startsWith('chat_'));
+                if (after !== cursor) return startArrivals(ask);
+                const gap = data?.window?.truncated_by?.some?.(cause => /^(chat|progress)_/.test(String(cause))
+                    && String(cause) !== 'progress_incomplete_live_line');
                 if (!Array.isArray(data?.messages) || typeof data.after_cursor !== 'string' || !data.after_cursor
                     || gap || data.window?.latest_message === null) {
                     throw new TypeError('History arrivals do not account for everything stored since the last read');
                 }
-                const messageCount = rowCount(data.messages);
-                if (after === cursor) { after = data.after_cursor; arrived += messageCount; }
+                after = data.after_cursor;
+                arrived += rowCount(data.messages);
                 landedArrivals += 1;
                 applyArrivals(data.messages, { window: data.window ?? null, fromReconnect: ask.fromReconnect });
-                return alive() ? { status: 'applied', messageCount } : { status: 'disposed' };
+                return alive() ? { status: 'applied', messageCount: rowCount(data.messages) } : { status: 'disposed' };
             })
             .catch(error => {
                 if (after === cursor) after = null;

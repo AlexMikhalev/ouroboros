@@ -37,6 +37,9 @@ _DELTA_CEILING_BYTES = 2 * 1024 * 1024
 # first is carried on by the chain's cursors (``latest_before``/``quiet``).
 _ARRIVAL_SEARCH_BYTES = 512 * 1024
 _CHAIN_WITNESSES = 16
+# Bound on an opaque cursor's length (a query parameter): an ``after`` cursor carries the versions
+# of the tasks its window shows, and a window too large to name them reads its newest page instead.
+_CURSOR_CHARS = 8192
 # A projection that failed part-way: the rows after the failing one are missing
 # from the response, so neither its coverage nor its newest arrival is known.
 PROJECTION_FAILED = "projection_failed"
@@ -84,7 +87,7 @@ def encode_cursor(value):
 
 def decode_cursor(value, thread_id, view):
     try:
-        if not isinstance(value, str) or len(value) > 4096:
+        if not isinstance(value, str) or len(value) > _CURSOR_CHARS:
             raise ValueError
         decoded = base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
         cursor = json.loads(decoded)
@@ -103,6 +106,13 @@ def decode_cursor(value, thread_id, view):
         if type(cursor.setdefault("quiet", False)) is not bool:  # see ``latest_arrival``
             raise ValueError
         if type(cursor.setdefault("notes", "")) is not str or len(cursor["notes"]) > 64:  # see ``notes_stamp``
+            raise ValueError
+        tasks = cursor.setdefault("tasks", {})  # see ``history_page_tokens``
+        if not isinstance(tasks, dict) or any(type(seq) is not int or seq < 0 for seq in tasks.values()):
+            raise ValueError
+        if type(cursor.setdefault("newest", "")) is not str or len(cursor["newest"]) > 64:  # see ``latest_arrival``
+            raise ValueError
+        if type(cursor.setdefault("lifecycle", False)) is not bool:
             raise ValueError
         if set(cursor["quotas"]) != {"human", "progress"} or any(
             type(value) is not int or value < 0 for value in cursor["quotas"].values()
@@ -138,6 +148,7 @@ class HistorySource(JsonlChainSnapshot):
     def __init__(self, path: Path, source: str, upper=None, unfinished=False):
         super().__init__(path, upper=upper)
         self.source = source
+        self.warm = None  # the room rule's lineage batch read (``RoomResolver.warm``), before rows are counted
         # Bytes after the frozen boundary that a writer had not finished when it
         # was frozen (a cursor carries the fact with ``upper``): every read that
         # reaches the boundary discloses them (``incomplete_live_line``), a clean EOF has none.
@@ -156,6 +167,13 @@ class HistorySource(JsonlChainSnapshot):
 
     def _boundary_gaps(self, end):
         return {"incomplete_live_line"} if self.unfinished_live_line and end == self.upper else set()
+
+    def _warmed(self, rows):
+        """``rows``, after their tasks' lineage (and their ancestors') was read in batches."""
+        if self.warm is not None and rows:
+            self.warm({str(row.get(key) or "") for row in rows for key in ("task_id", "parent_task_id", "root_task_id")
+                       if isinstance(row, dict)} - {""})
+        return rows
 
     def _entries(self, start, end, gaps):
         data = self._read(start, end)
@@ -218,7 +236,7 @@ class HistorySource(JsonlChainSnapshot):
             window = _TAIL_WINDOW_START_BYTES if live else end - base
             while True:
                 start = self._aligned_start(max(base, end - window), end, base)
-                selected = self._entries(start, end, gaps)
+                selected = self._warmed(self._entries(start, end, gaps))
                 found = sum(map(counts, selected))
                 if start == base or counted + found >= want:
                     break
@@ -247,7 +265,7 @@ class HistorySource(JsonlChainSnapshot):
                 if start < before or start == base:
                     break
                 window *= 2  # one large JSONL row keeps its existing support
-            entries = self._entries(start, before, gaps)
+            entries = self._warmed(self._entries(start, before, gaps))
             for entry in reversed(entries):
                 selected.append(entry)
                 read += before - entry["history_position"]["offset"]
@@ -293,10 +311,12 @@ def chain_witness(reader):
     return ".".join(witnesses[-_CHAIN_WITNESSES:]) or "empty"
 
 
-def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, caps, lens=None, notes=""):
-    """``lens``: the room's archive filter (``history_segments.room_segment_lens``); ``notes``: ``notes_stamp``."""
+def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, caps, lens=None, notes="", warm=None):
+    """``lens``: the room's archive filter (``history_segments.room_segment_lens``); ``notes``:
+    ``notes_stamp``; ``warm``: the room rule's lineage batch read, given rows before they are counted."""
     continuation = decode_cursor(cursor, thread_id, view) if cursor else None
-    if continuation and continuation["kind"] == "after" and continuation["notes"] != notes:
+    if continuation and continuation["kind"] == "after" and (
+            continuation["notes"] != notes or _settled_since(data_dir, continuation["tasks"])):
         raise HistoryCursorError("history_delta_reset")
     if continuation:
         quotas = continuation["quotas"]
@@ -311,6 +331,7 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
             reader = HistorySource(paths[source], source,
                                    continuation["upper"][source] if continuation else None,
                                    bool(continuation) and source in continuation["unfinished"])
+            reader.warm = warm
             upper[source] = reader.upper
             chains[source] = chain_witness(reader)
             if reader.unfinished_live_line:
@@ -319,6 +340,7 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
             if after:
                 # Rows the window has not seen: everything appended after its last read, read fresh.
                 reader = HistorySource(paths[source], source)
+                reader.warm = warm
                 upper[source], chains[source], unfinished[:] = reader.upper, chain_witness(reader), [
                     *(name for name in unfinished if name != source), *([source] if reader.unfinished_live_line else [])]
                 page_ends[source] = reader.upper
@@ -326,6 +348,8 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
                 if not seen <= reader.upper or reader.upper - seen > _DELTA_CEILING_BYTES:
                     raise HistoryCursorError("history_delta_reset")
                 selections[source] = reader.replay(seen, reader.upper, lens)
+                if selections[source][2] - {"incomplete_live_line"}:  # rows it could not read stay unaccounted for
+                    raise HistoryCursorError("history_delta_reset")
             elif continuation and continuation["kind"] == "page":
                 selections[source] = reader.replay(continuation["lower"][source], page_ends[source], lens)
             elif continuation:
@@ -342,7 +366,31 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
     return {"v": 1, "chat_id": thread_id, "view": view, "upper": upper, "unfinished": unfinished,
             "quotas": quotas, "recent": recent, "after": after, "replayed": bool(continuation),
             "quiet": bool(continuation and continuation["quiet"]), "lens": lens, "notes": notes,
-            "selections": selections, "before": before, "page_ends": page_ends, "chains": chains}
+            "selections": selections, "before": before, "page_ends": page_ends, "chains": chains,
+            **({key: continuation[key] for key in ("tasks", "newest", "lifecycle")} if after else {})}
+
+
+def _settled_since(data_dir, tasks):
+    """Whether a task the window shows changed since its read while it no longer runs: a question
+    that closed, a late phase that settled. Its own rows cannot say so, so the window reads its
+    newest page again; a running task's rows carry its facts. Unknown is a change."""
+    if not tasks:
+        return False
+    from ouroboros import task_store
+    from ouroboros.task_status import FINAL_STATUSES
+
+    try:
+        now = task_store.task_versions(data_dir, tasks)
+    except Exception:
+        return True
+    for task_id, seen in tasks.items():
+        if task_id not in now:
+            return True
+        seq, status, owes = now[task_id]
+        finalizing = owes and (status in ("completed", "failed") or status not in FINAL_STATUSES)
+        if seq != seen and status in FINAL_STATUSES and not finalizing:
+            return True
+    return False
 
 
 def history_page_coverage(page, stream_gaps):
@@ -363,10 +411,15 @@ def history_page_coverage(page, stream_gaps):
         for source in _SOURCES}}
 
 
-def history_page_tokens(page):
+def history_page_tokens(page, messages=(), reads=None):
     """The conversation decides whether older history remains: narration (progress)
     keeps paging alongside it but never keeps a press alive on its own, so no press
-    lands narration alone. A narration-only read (no human quota) pages narration."""
+    lands narration alone. A narration-only read (no human quota) pages narration.
+
+    The ``after`` cursor also carries what its window shows besides rows: the version of each
+    task the projection read (``reads``, the page's ``TaskReads``), the newest message's time and
+    whether a running skill operation was shown. A later ``after`` read refuses when a shown task
+    settled or changed without running, or the operation is gone (``history_delta_reset``)."""
     if any(selection[0] is None for selection in page["selections"].values()):
         return {"has_more": True, "next_cursor": None, "page_cursor": None,
                 "reason_code": "history_source_unavailable"}
@@ -374,9 +427,21 @@ def history_page_tokens(page):
     before = {source: position if page["quotas"]["human" if source == "chat" else source] else 0
               for source, position in page["before"].items()}
     has_more = bool(before["chat"]) if page["quotas"]["human"] else any(before.values())
-    arrivals = {**state, "kind": "after", "before": dict(page["upper"]), "quiet": False, "notes": page["notes"]}
+    versions = getattr(reads, "versions", {})
+    shown = {str(row.get("task_id")) for row in messages if row.get("task_id")
+             and row.get("system_type") not in ("project_question_pointer", *ORIGIN_ADDRESSED_NOTICE_TYPES)}
+    lifecycle = any(row.get("lifecycle_virtual") for row in messages)
+    if page.get("after") and page.get("lifecycle") and not lifecycle:
+        raise HistoryCursorError("history_delta_reset")  # the shown operation ended: nothing here says so
+    arrivals = {**state, "kind": "after", "before": dict(page["upper"]), "quiet": False, "notes": page["notes"],
+                "tasks": {**page.get("tasks", {}), **{tid: versions[tid] for tid in sorted(shown) if tid in versions}},
+                "newest": page.get("newest", ""), "lifecycle": lifecycle}
+    after_cursor = encode_cursor(arrivals)
+    after_cursor = after_cursor if len(after_cursor) <= _CURSOR_CHARS else None
     if page.get("after"):  # a read of what arrived after the window's last read: it never pages older
-        return {"has_more": False, "next_cursor": None, "page_cursor": None, "after_cursor": encode_cursor(arrivals)}
+        if after_cursor is None:
+            raise HistoryCursorError("history_delta_reset")
+        return {"has_more": False, "next_cursor": None, "page_cursor": None, "after_cursor": after_cursor}
     return {
         "has_more": has_more,
         "next_cursor": encode_cursor({**state, "kind": "older", "before": before,
@@ -385,7 +450,7 @@ def history_page_tokens(page):
                                       "lower": {source: value[1] for source, value in page["selections"].items()},
                                       "recent": page["recent"]}),
         # The newest page names where the next read of new arrivals starts.
-        **({"after_cursor": encode_cursor(arrivals)} if page["recent"] and not page["replayed"] else {}),
+        **({"after_cursor": after_cursor} if after_cursor and page["recent"] and not page["replayed"] else {}),
     }
 
 
@@ -528,10 +593,16 @@ def latest_arrival(rows, page, data_dir, row_matches_thread, stored_chat_id, pro
     if entries is None or PROJECTION_FAILED in projected_gaps or "incomplete_live_line" in gaps or (
             gaps and _skipped_row_after(entries, offset(latest) if latest else start, end)):
         return {"latest_message": None}
+    # The newest time a message this read shows was sent: a later arrival sent before it sorts above
+    # it, which the window's next ``after`` read can only tell from its cursor.
+    newest = next((str(row.get("ts") or "") for row in sorted(feed, key=lambda row: str(row.get("ts") or ""),
+                                                              reverse=True) if not words(row)), "")
     if page["after"]:  # what arrived since the window's last read: its newest message, if one did
-        return {"latest_message": {"history_id": latest["history_id"], "out_of_order": any(
-            offset(row) < offset(latest) and str(row.get("ts") or "") > str(latest.get("ts") or "") and not words(row)
-            for row in feed)}} if latest else {}
+        shown, page["newest"] = page.get("newest", ""), max(page.get("newest", ""), newest)
+        return {"latest_message": {"history_id": latest["history_id"], "out_of_order": str(latest.get("ts") or "") < shown
+                                   or any(offset(row) < offset(latest) and str(row.get("ts") or "") > str(latest.get("ts") or "")
+                                          and not words(row) for row in feed)}} if latest else {}
+    page["newest"] = newest
     if not page["recent"]:
         page["quiet_below"] = latest is None
         if latest:

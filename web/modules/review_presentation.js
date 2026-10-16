@@ -1120,16 +1120,21 @@ function reviewRevision(value) {
 // many review owners otherwise opened one GET per owner at once and starved the
 // browser's few connections per host (WebKit: 6), videos included. Newest request
 // first: a room opens at its newest cards, and an expansion is the latest ask. A
-// read keeps its slot until it settles; a closed owner's queued reads never start.
+// read keeps its slot until it settles, or until a response that never comes is
+// given up on (it still answers its card when it lands): one dead connection must
+// not stall every card's details. A closed owner's queued reads never start.
 export const REVIEW_DETAIL_READS = 2;
+export const REVIEW_DETAIL_SLOT_MS = 30000;
 const detailQueue = [];
 let detailReads = 0;
 function drainDetailReads() {
     while (detailReads < REVIEW_DETAIL_READS && detailQueue.length) {
         const job = detailQueue.pop();
         detailReads += 1;
-        new Promise(resolve => resolve(job.read())).then(job.resolve, job.reject)
-            .finally(() => { detailReads -= 1; drainDetailReads(); });
+        let held = true;
+        const release = () => { if (held) { held = false; clearTimeout(timer); detailReads -= 1; drainDetailReads(); } };
+        const timer = setTimeout(release, REVIEW_DETAIL_SLOT_MS);
+        new Promise(resolve => resolve(job.read())).then(job.resolve, job.reject).finally(release);
     }
 }
 const queueDetailRead = (owner, read) => new Promise((resolve, reject) => {

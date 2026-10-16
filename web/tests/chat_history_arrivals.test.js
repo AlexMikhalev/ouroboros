@@ -6,7 +6,7 @@
 // one queue of two reads (issue #1771). Real createChatInstance, mocked HTTP.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { REVIEW_DETAIL_READS, createReviewHydrator } from '../modules/review_presentation.js';
+import { REVIEW_DETAIL_READS, REVIEW_DETAIL_SLOT_MS, createReviewHydrator } from '../modules/review_presentation.js';
 import { createChatHistoryPager } from '../modules/chat_history.js';
 import { ElementStub } from './chat_dom_fixture.js';
 import { quiet, room, until } from './project_read_state_fixture.js';
@@ -147,6 +147,37 @@ test('a read waits for chat\'s newest read in flight, then reads what arrived af
     finish();
     await reading;
     assert.deepEqual(p.calls, ['after:1']);
+});
+
+test('an arrivals answer older than a newest read that landed meanwhile is dropped and read again from its cursor', async () => {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const answers = { 'after:1': arrivedRows(['chat:2'], 'after:2'), 'after:5': arrivedRows(['chat:6'], 'after:6') };
+    const p = arrivalsPager({ fetch: async (cursor) => { if (cursor === 'after:1') await gate; return answers[cursor]; } });
+    p.pager.acceptRecent(newestPage());
+    const reading = p.pager.read();
+    await quiet();
+    p.pager.acceptRecent(newestPage('after:5', ['chat:5']));  // the newest page landed first: it owns the present
+    release();
+    assert.equal(await reading, true);
+    assert.deepEqual(p.calls, ['after:1', 'after:5'], 'read again from the newer cursor');
+    assert.deepEqual(p.arrivals.map((arrival) => arrival.ids), [['chat:6']], 'the older answer never rolls the window back');
+    // The other order: arrivals land first, the newer page after them; reads go on from the page.
+    p.pager.acceptRecent(newestPage('after:9', ['chat:9']));
+    answers['after:9'] = arrivedRows([], 'after:9');
+    await p.pager.read();
+    assert.equal(p.calls.at(-1), 'after:9');
+});
+
+test('a read of arrivals with a narration gap takes the newest page; an unfinished narration line does not', async () => {
+    const gapped = (cause, after) => ({ ...arrivedRows([], after), window: { complete: false, truncated_by: ['page', cause] } });
+    const answers = { 'after:1': gapped('progress_incomplete_live_line', 'after:2'), 'after:2': gapped('progress_malformed_jsonl', 'after:3') };
+    const p = arrivalsPager({ fetch: async (cursor) => answers[cursor] });
+    p.pager.acceptRecent(newestPage());
+    await p.pager.read();
+    assert.deepEqual([p.calls, p.newest.length], [['after:1'], 0], 'its writer is still on the line: the next read takes it');
+    await p.pager.read();
+    assert.deepEqual([p.calls, p.newest.length], [['after:1', 'after:2'], 1], 'rows it could not read: the newest page answers');
 });
 
 test('a window that took in a whole default page of arrivals reads the newest page next', async () => {
@@ -434,6 +465,26 @@ test('review details of sixty cards hold at most two reads in flight, newest ask
     assert.equal(peak, 2);
     assert.equal(started.length, 60, 'every owner is read once');
     assert.deepEqual(started.slice(2, 4), ['owner-59', 'owner-58'], 'a room opens at its newest cards: they are read first');
+});
+
+test('a review detail read that never answers gives its slot back, and still answers its card when it lands', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const started = [], release = {};
+    const hydrator = createReviewHydrator({
+        fetchDetail: (taskId) => { started.push(taskId); return new Promise((resolve) => { release[taskId] = () => resolve({ id: taskId }); }); },
+        applyDetail: () => true,
+    });
+    const done = ['a', 'b', 'c'].map((id) => hydrator.hydrate(id, 'a'.repeat(64)));
+    await quiet();
+    assert.deepEqual(started, ['a', 'b'], 'two in flight');
+    t.mock.timers.tick(REVIEW_DETAIL_SLOT_MS - 1);
+    await quiet();
+    assert.deepEqual(started, ['a', 'b'], 'a slow read keeps its slot');
+    t.mock.timers.tick(1);
+    await quiet();
+    assert.deepEqual(started, ['a', 'b', 'c'], 'two dead connections do not stall the rest');
+    for (const id of ['c', 'a', 'b']) release[id]();
+    assert.deepEqual((await Promise.all(done)).map(Boolean), [true, true, true], 'the late answers still reach their cards');
 });
 
 test('review readers of two rooms share the bound, and a closed room\'s queued reads never start', async () => {

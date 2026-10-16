@@ -8,7 +8,8 @@ replicas. A page therefore pays one short store read per data root and wave inst
 store open per task and per document it overlays (P13: facts relevant to the current
 operation). Within the read every loader receives its own copy, as from ``load_task_result``.
 An unchanged child store is not reopened by later reads of this process: its views are kept
-under the store file's stamp, and a stamp that moved reads again.
+under the store file's stamp, and a stamp that moved reads again. The canonical documents' versions
+(``write_seq``, read with their views) say which truth a page showed (``after`` cursors).
 """
 
 from __future__ import annotations
@@ -16,22 +17,30 @@ from __future__ import annotations
 import json
 import pathlib
 import threading
+import time
 from collections import OrderedDict
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 _REPLICAS: "OrderedDict[str, Tuple[tuple, Dict[str, Any]]]" = OrderedDict()
 _REPLICAS_MAX = 512  # child stores whose views a process keeps (one per delegated child drive)
 _REPLICAS_LOCK = threading.Lock()
+# The coarsest file time a supported file system keeps (FAT, HFS+ and some FUSE mounts: 1-2 s):
+# a store written this recently may change again without its stamp moving, so it is not cached.
+_STAMP_GRAIN_SEC = 2.0
 
 
 def _store_stamp(root: pathlib.Path) -> Optional[tuple]:
-    """The store file's identity, or None when it is absent. A commit rewrites the file (rollback
-    journal), so an unchanged stamp is unchanged content; an interrupted commit moves it too."""
+    """The store file's identity, or None when it is absent or too fresh to stand for its content.
+    A commit rewrites the file (rollback journal), so an unchanged stamp is unchanged content; an
+    interrupted commit moves it too. A commit inside the file time's grain may keep size and time,
+    so a stamp younger than the grain is never trusted."""
     from ouroboros.store import STORE_REL
 
     try:
         info = (root / STORE_REL).stat()
     except OSError:
+        return None
+    if time.time() - info.st_mtime < _STAMP_GRAIN_SEC:
         return None
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
 
@@ -46,6 +55,7 @@ class TaskReads:
         self._intents: Dict[str, Dict[str, Any]] = {}
         self._events: Any = None
         self._stamps: Dict[str, Optional[tuple]] = {}  # child store stamps, one stat per read
+        self.versions: Dict[str, int] = {}  # canonical task id -> write_seq of the view read
         self.store_reads = 0  # store transactions this read opened (cost evidence for tests)
 
     # -- documents ------------------------------------------------------------------------
@@ -67,7 +77,7 @@ class TaskReads:
                     self._documents[(key, tid)] = cached[1][tid]
                 return
         self.store_reads += 1
-        found = display_documents(root, wanted)
+        found = display_documents(root, wanted, self.versions if root == self.root else None)
         for tid in wanted:
             self._documents[(key, tid)] = found.get(tid)
         if stamp is not None:
