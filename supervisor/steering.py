@@ -1,12 +1,6 @@
 """Steering delivery into a running task's mailbox.
 
-Extracted VERBATIM from ``supervisor/events.py`` (byte-neutral module-size
-boundary for the pinned events surface): the cancel-pending steering refusal
-and the ``steer_task`` event handler. ``supervisor.events`` imports the handler
-back and keeps the dispatch table; the routing-receipt emitter stays in
-``events.py`` (many other handlers use it) and is imported lazily here so the
-dependency stays one-way at import time.
-
+The public tell_task tool uses the retained steer_task event and receipt rail.
 The issuer remains capability provenance. The atomic relay entry carries exact
 owner quotes and the teller's own contextual note, independently of its lane.
 """
@@ -294,9 +288,7 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
     delivered = False
     cancel_pending_refused = False
     active_fence = None
-    staged_manifest: list = []
     relay_entry = {}
-    attachment_report = ""
     try:
         from supervisor.queue import ACCEPTANCE_FENCES, _queue_lock, _task_drive_for_task
         if direct_active and direct_lock is not None:
@@ -349,7 +341,7 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         # before the queue lock is taken, and a cancel ingress lands in exactly
         # that window. Held under the same lock as the write, so the refusal and
         # the admission cannot both win. No early return here (GR2-9): the
-        # refusal falls through so the staged-input removal and the owner
+        # refusal falls through so the owner
         # notice run AFTER the lock is released (a chat send is not something
         # to hold the global queue lock for — and the old `return` skipped the
         # notice entirely).
@@ -362,7 +354,8 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
             relay_entry, newly_written = write_relay(
                 drive, target, relay_id=str(evt.get("relay_id") or routing_token or msg_id),
                 note=message, quotes=list(evt.get("quotes") or []), chat_id=chat_id,
-                teller_task_id=issuer_task_id, canonical_root=ctx.DRIVE_ROOT, sender_origin=evt.get("sender_origin"))
+                teller_task_id=issuer_task_id, canonical_root=ctx.DRIVE_ROOT, sender_origin=evt.get("sender_origin"),
+                client_surface=evt.get("client_surface"))
             delivered = True
             if not newly_written or not evt.get("quotes"):
                 active_fence = None  # context alone supersedes no reviewed owner answer
@@ -388,17 +381,8 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
             _queue_lock.release()
         if direct_lock_held:
             direct_lock.release()
-        if staged_manifest and not delivered:
-            try:
-                from ouroboros.artifacts import remove_staged_attachments
-
-                remove_staged_attachments(staged_manifest)
-            except Exception:
-                log.debug("staged-attachment cleanup failed for %s", target, exc_info=True)
     if cancel_pending_refused:
-        # GR2-9: the message was refused, so the inputs staged for it must not
-        # linger in the dying task's artifact store. The notice is the owner's:
-        # a task that spoke for itself has its typed refusal and Logs row.
+        # Nothing was written or staged; keep the legacy owner's refusal notice.
         if not task_issued and not relayed_owner_message_id:
             _refusal_row(ctx, evt, target, target_label, "rejected", "cancel_pending")
     if delivered:
@@ -410,5 +394,4 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         publish_relay(ctx.DRIVE_ROOT, target, relay_entry, getattr(ctx, "bridge", None), task)
         _steer_receipt(
             ctx, evt, target, target_label=target_label, status="delivered",
-            detail=attachment_report, attachment_manifest=staged_manifest or None,
         )

@@ -107,7 +107,7 @@ def relay_envelope(relay_id: str, quotes: list, *, chat_id: int) -> dict:
 
 
 def write_relay(root, task_id: str, *, relay_id: str, note: str, quotes: list, chat_id: int,
-                teller_task_id: str, canonical_root=None, sender_origin=None) -> tuple[dict, bool]:
+                teller_task_id: str, canonical_root=None, sender_origin=None, client_surface=None) -> tuple[dict, bool]:
     """Mail lock: dedupe then append; caller bumps generation only on a new quote."""
     from ouroboros.owner_mailbox import _mailbox_path, mailbox_lines
     from ouroboros.task_custody import task_mail_lock
@@ -118,6 +118,8 @@ def write_relay(root, task_id: str, *, relay_id: str, note: str, quotes: list, c
              "text": note, "relay": relay_envelope(relay_id, quotes, chat_id=chat_id),
              "owner_rows": [q["owner_row"] for q in quotes], "source_task_id": teller_task_id,
              "relay_canonical_root": str(canonical_root or root)}
+    if client_surface:
+        entry["client_surface"] = copy.deepcopy(client_surface)
     if sender_origin:
         entry["sender_origin"] = copy.deepcopy(sender_origin)
     with task_mail_lock(root, task_id) as locked:
@@ -148,7 +150,8 @@ def inject_relay(ctx, entry: dict, messages: list) -> None:
             body += "\n[Host question frame]\n" + recorded_answer_frame(row["quiz"])
         if row.get("attachments"):
             body += "\n[Host-retained attachments]\n" + json.dumps(row["attachments"], ensure_ascii=False)
-        loop._append_or_merge_user_message(messages, body, slot=ctx)
+        content = quote_content(ctx, entry, row, body)
+        loop._append_or_merge_user_message(messages, content, slot=ctx)
     note = str(entry.get("text") or "")
     relay = entry["relay"]
     loop._append_or_merge_user_message(messages,
@@ -159,6 +162,24 @@ def inject_relay(ctx, entry: dict, messages: list) -> None:
             ctx._open_relays = relays = {}
         relays[relay["relay_id"]] = copy.deepcopy(relay)
         persist_held_state(ctx)
+
+
+def quote_content(ctx, entry, row, body):
+    """Stage the quoted bytes on the recipient's drive using their saved hashes."""
+    if not row.get("attachments") or ctx is None:
+        return body
+    from ouroboros.artifacts import stage_task_attachments, attachment_manifest_projection
+    from ouroboros.chat_uploads import uploads_dir, upload_id
+    from ouroboros.context import build_incoming_user_content
+    from ouroboros.gateway.tasks import _render_attachment_lines
+    from ouroboros.tool_access import canonical_data_root
+    root = entry.get("relay_canonical_root") or canonical_data_root(ctx)
+    manifest = stage_task_attachments(ctx.drive_root, ctx.task_id, [
+        {**ref, "path": str(uploads_dir(root) / upload_id(ref.get("upload"))) if upload_id(ref.get("upload")) else "",
+         "label": str(ref.get("name") or "attachment")} for ref in row["attachments"]])
+    body += "\n[Host attachment delivery]\n" + _render_attachment_lines(
+        attachment_manifest_projection(ctx.drive_root, ctx.task_id, manifest))
+    return build_incoming_user_content({"text": body, "attachment_manifest": manifest}, ctx.drive_root, ctx.task_id)
 
 
 def select_return(ctx, relay_id: str) -> tuple[dict, str]:

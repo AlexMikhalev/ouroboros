@@ -26,7 +26,11 @@ def test_http_reply_resolves_and_rejects_client_authored_previews(bridge):
         assert client.post("/api/command", json={"cmd": "about that", "reply_to": address}).status_code == 200
         assert client.post("/api/command", json={"cmd": "forged", "reply_to": {"snippet": "fake"}}).status_code == 400
     [item] = [u["message"] for u in bridge.get_updates(offset=0, timeout=0)]
-    assert item["task_metadata"]["reply_reference"]["address"] == address
+    metadata_read_by_consumer = item["task_metadata"]
+    assert metadata_read_by_consumer["reply_to"] == address
+    message_bus.record_inbound_message(bridge, item, chat_id=1, user_id=1, text="about that",
+        client_message_id="http-reply", ts="2026-10-01T00:00:00Z")
+    assert metadata_read_by_consumer["reply_reference"]["address"] == address
     assert item["task_metadata"]["reply_reference"]["snippet"] == "Earlier answer"
     rows = [json.loads(line) for line in (bridge.drive / "logs/chat.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 2 and rows[-1]["reply_to"]["address"] == address

@@ -301,9 +301,8 @@ def test_the_roster_note_includes_direct_roots_but_skips_subagents_and_discloses
     })
     assert "…and 5 more not shown." in rendered and "roster incomplete" in rendered
     assert 'your note' in rendered
-    assert 'Project room (Main may address any listed root)' in rendered
-    assert 'a task speaks as itself' in rendered
-    assert "Presence's existing authority restrictions still apply" in rendered
+    assert 'selected held owner messages as exact owner words with attachments' in rendered
+    assert "Presence's existing binding and publication boundaries" in rendered
     assert 'never as owner text' not in rendered
 
 

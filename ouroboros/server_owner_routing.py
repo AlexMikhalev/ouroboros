@@ -213,6 +213,8 @@ def _route_project_chat_to_running_task(
                 _queue_lock.acquire()
                 queue_lock_held = True
                 live_meta = getattr(ctx, "RUNNING", {}).get(tid)
+                if isinstance(live_meta, dict):
+                    task_obj = live_meta.get("task") if isinstance(live_meta.get("task"), dict) else live_meta
                 from ouroboros.room_reader import is_reading
                 if not is_reading(task_drive, tid, task_obj, running=live_meta is not None,
                                   fences=getattr(ctx, "BUDGET_ROOT_FENCES", None)):

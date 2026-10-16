@@ -268,6 +268,7 @@
  * @property {string=} row_address
  * @property {Object=} reply_to
  * @property {Object=} relay
+ * @property {string=} reply_to_relay
  * @property {string} text
  * @property {'user'|'assistant'|'system'} role
  * @property {string} ts  // the stored row's time: the same string its live frame carried

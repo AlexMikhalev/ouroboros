@@ -585,7 +585,8 @@ def _exercise_owner_followup_during_acceptance_panel(monkeypatch, tmp_path, *, d
     _drain_incoming_messages(
         messages, queue.Queue(), tmp_path, root_id, None, seen, owner_ctx=acceptance_ctx,
     )
-    assert "newly added criterion" in str(messages[-1]["content"])
+    assert any("newly added criterion" in str(m.get("content")) for m in messages)
+    assert acceptance_ctx._held_owner_messages
     _nominate_acceptance(trace, task_id=root_id, subject="revised answer")
     assert _run_task_acceptance_review_once(
         tools=tools, content="revised answer", task_id=root_id, task_type="task",

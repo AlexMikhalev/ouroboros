@@ -155,3 +155,37 @@ def test_retained_current_quotes_extend_owner_corpus_without_the_note(tmp_path):
     words, absent = task_owner_words(tmp_path, "receiver")
     assert not absent and [r["text"] for r in words] == ["Original task", row["text"]]
     assert "NOT OWNER" not in str(words)
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_quoted_file_is_staged_on_the_recipient_drive_with_its_original_hash(tmp_path, changed):
+    from ouroboros.chat_uploads import store_upload, claim_refs, uploads_dir
+    from ouroboros.owner_relay import retain_owner_message
+    from ouroboros.tools.core import _read_file
+    from ouroboros.tools.registry import ToolContext
+    _path, ref = store_upload(b"exact attached words", "note.txt", data_dir=tmp_path)
+    claim_refs([ref], tmp_path)
+    row, _ = source(tmp_path)
+    row["attachments"] = [ref]
+    sender = context(tmp_path)
+    retain_owner_message(sender, row)
+    quotes, _ = quote_rows(sender, [format_address(row_address(row))])
+    child = tmp_path / "child"
+    child.mkdir()
+    write_relay(child, "receiver", relay_id="file", note="context", quotes=quotes,
+                chat_id=1, teller_task_id="teller", canonical_root=tmp_path)
+    if changed:
+        (uploads_dir(tmp_path) / ref["upload"]).write_bytes(b"substituted bytes")
+    receiver = context(child)
+    receiver.task_id = "receiver"
+    messages = []
+    _drain_incoming_messages(messages, queue.Queue(), child, "receiver", None, set(), owner_ctx=receiver)
+    if changed:
+        assert "rejected" in str(messages)
+        assert "substituted bytes" not in str(messages)
+    else:
+        artifact = child / "task_results/artifacts/receiver/attachments" / ref["upload"]
+        assert artifact.read_bytes() == b"exact attached words"
+        reader = ToolContext(repo_dir=tmp_path, drive_root=child, task_id="receiver")
+        assert "exact attached words" in _read_file(reader, "attachments/" + ref["upload"], root="artifact_store")
+        assert "read_file" in str(messages)

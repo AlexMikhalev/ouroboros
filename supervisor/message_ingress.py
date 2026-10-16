@@ -432,7 +432,8 @@ def record_inbound_message(bridge, message: dict, *, chat_id: int, user_id: int,
         from ouroboros.chat_references import ingress_reply
         reply = ingress_reply(message_bus.DATA_DIR, metadata)
         if reply:
-            message["task_metadata"] = {**metadata, "reply_reference": reply}
+            metadata["reply_reference"] = reply
+            message["task_metadata"] = metadata
         row = message_bus.log_chat(
             "in", chat_id, user_id, text, ts=ts, source=source,
             sender_label=str(message.get("sender_label") or ""),

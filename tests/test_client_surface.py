@@ -444,7 +444,7 @@ def test_steering_and_project_mailbox_writers_pass_client_surface():
     # separately so an unrelated extra forwarding site cannot hide a dropped one.
     writers = {
         "project mailbox": REPO / "ouroboros" / "server_owner_routing.py",
-        "inbound chat journal": REPO / "supervisor" / "message_bus.py",
+        "inbound chat journal": REPO / "supervisor" / "message_ingress.py",
     }
     assert "client_surface=" in steering, "steer mailbox write dropped client_surface"
     for owner, path in writers.items():
