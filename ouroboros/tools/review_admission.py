@@ -851,17 +851,20 @@ def managed_update_wave_estimate(remaining_usd: float) -> dict:
     subscriptions and are counted, not priced. An estimator error is recorded
     inside the event, never a zero; this function is called explicitly, so a
     broken import propagates to the caller."""
+    from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.reviewer_slot_config import review_pool_slots
     from ouroboros.tools.review_helpers import REVIEW_PROMPT_TOKEN_BUDGET
     from ouroboros.tools.review_multi_model import _review_output_budget
     from ouroboros.usage_admission import review_wave_admission
 
     rows = review_pool_slots()
-    models = [row.model for row in rows if not row.is_session and row.model]
+    # A ReviewSlot's transport is its own ``route`` — the test ``commit_gate_paid_seats`` applies.
+    delegated = [str(getattr(row.route, "value", row.route) or "") == ReviewRouteKind.AGENT_SESSION.value
+                 for row in rows]
+    models = [row.model for row, session in zip(rows, delegated) if not session and row.model]
     event: dict = {"type": "managed_update_wave_estimate", "estimated_wave_usd": None,
                    "exceeds_known_remaining": False, "unpriced_slots": 0,
-                   "session_slots": sum(1 for row in rows if row.is_session),
-                   "remaining_usd": float(remaining_usd)}
+                   "session_slots": sum(delegated), "remaining_usd": float(remaining_usd)}
     if not models:
         return event
     try:
