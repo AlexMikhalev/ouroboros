@@ -9,7 +9,7 @@ runtime: python3
 os: any
 permissions: [tool, call_peer, companion_process, subprocess, net]
 env_from_settings: []
-when_to_use: During a live call the owner wants Ouroboros itself to take part in an online meeting, heard by the other participants, on a service whose participant probe has passed.
+when_to_use: During a live call the owner wants Ouroboros itself to take part in an online meeting, heard by the other participants (experimental; until the service's participant probe passes, the join says so).
 model_experience:
   what_model_sees: Three tools (join, leave, status). While joined, the meeting's audio arrives in the call as meeting audio and your speech also reaches the meeting.
   token_effect: Small fixed schema cost per round while enabled; meeting audio is billed as ordinary call input audio.

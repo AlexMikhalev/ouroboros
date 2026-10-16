@@ -1,7 +1,7 @@
 """meeting_browser: Ouroboros's own browser window joins a meeting as a participant.
 
-Experimental, and offered per vendor only after that vendor's participant probe
-passed. Like the meeting_audio tools, these tools never open a call: a join
+Experimental: a known vendor's meeting can be joined, and until that vendor's
+participant probe passes the join result says so. Like the meeting_audio tools, these tools never open a call: a join
 belongs to the live call whose turn invoked it (``metadata.live_call.call_id``
 on the task, visible in ``ctx`` in-process and in an extension child), and the
 ``meeting_participant`` companion does the work over the private control
@@ -67,8 +67,8 @@ def register(api: Any) -> None:
         description=(
             "Experimental: join a Zoom web, Google Meet or Microsoft Teams meeting as a participant in "
             "Ouroboros's own visible browser window, during the current live call. The meeting then hears "
-            "your voice and you hear the meeting, without any audio driver. Offered per service only after "
-            "its participant probe passed; the refusal says when it has not. The page may still need a "
+            "your voice and you hear the meeting, without any audio driver. Until a service's participant "
+            "probe has passed, the join result says so and the page may leave you listen-only. It may need a "
             "click on its Join button in that window (use the computer-use tools), and the owner signs "
             "Ouroboros's own account in there once."
         ),
