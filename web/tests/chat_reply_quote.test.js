@@ -67,6 +67,20 @@ test('a relay quote names the owner, where and when he wrote, carries his comple
     assert.equal(createRelayQuote({ text: '   ' }), null, 'an empty relay draws nothing');
 }));
 
+test('a captionless photo or file relayed into a work still draws its panel: who, where, when and the files', () => withDom(() => {
+    const panel = createRelayQuote({ text: '', attachments: [{ name: 'one.png', upload: 'abc' }],
+        source: { label: 'Main', ts: 't' }, relay_id: 'r2' }, { formatTime: fixedTime });
+    assert.ok(panel, 'his files are his message even without words');
+    const [head, files, ...rest] = panel.children;
+    assert.equal(head.children[0].textContent, 'You');
+    assert.equal(head.children[1].textContent, '· Main · 00:37');
+    assert.equal(files.className, 'chat-quote-files');
+    assert.equal(files.textContent, 'Attached: one.png');
+    assert.equal(rest.length, 0, 'no empty text line and no host placeholder');
+    assert.equal(head.children.find((node) => node.tagName === 'BUTTON'), undefined, 'nothing to clamp, no Show all');
+    assert.equal(createRelayQuote({ text: '', attachments: [{ upload: 'abc' }] }), null, 'a nameless manifest names nothing');
+}));
+
 test('Show all opens the clamp, Show less closes it, through the caller\'s stable-viewport seam', () => withDom(() => {
     const writes = [];
     const panel = createRelayQuote({ text: 'long words', source: { label: 'Main' } },

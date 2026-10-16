@@ -65,12 +65,13 @@ export function normalizeReplyRef(raw) {
 export function normalizeRelay(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
     const text = String(raw.text ?? '').trim();
-    if (!text) return null;
-    const source = raw.source && typeof raw.source === 'object' ? raw.source : {};
-    const chatId = Number(source.chat_id);
     // His attachments travel with his words (a manifest per file); the panel names them, it does not re-serve them.
     const files = (Array.isArray(raw.attachments) ? raw.attachments : [])
         .map((item) => oneSpace(item?.name || item?.display_name || item?.filename || item?.label)).filter(Boolean);
+    // A photo or file sent without a caption is still his message: the panel names the files, never a placeholder.
+    if (!text && !files.length) return null;
+    const source = raw.source && typeof raw.source === 'object' ? raw.source : {};
+    const chatId = Number(source.chat_id);
     return { text, files, where: oneSpace(source.label), ts: oneSpace(source.ts), relayId: oneSpace(raw.relay_id),
         // The host's retained reference to the owner's original message (its row address), so the words a relay
         // carries can be replied to without minting a second owner message.
@@ -185,9 +186,9 @@ export function createRelayQuote(raw, { onDomWrite, formatTime = formatMsgTime }
     const head = node('div', 'chat-quote-head');
     head.append(node('span', 'chat-quote-author', author));
     if (place.length) head.append(node('span', 'chat-quote-when', `· ${place.join(' · ')}`));
-    const text = node('div', 'chat-quote-text', relay.text);
-    root.append(head, text);
+    const text = relay.text ? node('div', 'chat-quote-text', relay.text) : null;
+    root.append(head, ...(text ? [text] : []));
     if (relay.files.length) root.append(node('div', 'chat-quote-files', fmt('Attached: {names}', { names: relay.files.join(', ') })));
-    clampWithToggle(text, head, { onDomWrite });
+    if (text) clampWithToggle(text, head, { onDomWrite });
     return root;
 }
