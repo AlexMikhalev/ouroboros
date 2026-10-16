@@ -357,7 +357,7 @@ def _parent_alive(pid: int) -> bool:
     return os.getppid() == pid
 
 
-def take_host_service() -> tuple:
+def _take_host_service() -> tuple:
     """The Host Service address and token, removed from this process's environment.
 
     Playwright's driver and Chrome start from this environment, and Chrome runs the
@@ -372,7 +372,7 @@ def take_host_service() -> tuple:
 def main() -> int:
     state_dir = pathlib.Path(os.environ.get("OUROBOROS_SKILL_STATE_DIR") or ".").resolve()
     state_dir.mkdir(parents=True, exist_ok=True)
-    host_url, host_token = take_host_service()
+    host_url, host_token = _take_host_service()
     companion = ParticipantCompanion(state_dir, host_url, host_token)
     for name in ("SIGTERM", "SIGINT", "SIGHUP"):
         if hasattr(signal, name):
