@@ -222,7 +222,7 @@ def test_an_expired_card_is_a_transition_and_stays_answerable_in_the_inventory(t
     kinds = [kind for kind, _offset, _line in second.events]
     assert sorted(kinds) == ["card_state", "task_terminal"]
     card = next(line for kind, _o, line in second.events if kind == "card_state")
-    assert card.startswith("- owner card q1 on task asker: Unanswered · the task finished; a late answer is accepted")
+    assert card.startswith("- owner card q1 on task asker: Unanswered · task finished")
     assert "Ship it?" in card
     assert len(second.outstanding) == 1 and "q1" in second.outstanding[0]  # still answerable
     assert "1 card closed unanswered" in second.full_text()
@@ -476,7 +476,7 @@ def test_a_project_task_is_an_observed_event_not_a_wake_cause(tmp_path):
     assert observation.trigger == "- wake cause: the scheduled wake time; events never move it, they are listed as observed"
     assert any("finished" in line and "audit completed" in line for line in _lines(observation))
     card = observation.outstanding[0]
-    assert card.startswith("- owner card q1 on task card-task: Unanswered · the task finished")
+    assert card.startswith("- owner card q1 on task card-task: Unanswered · task finished")
     text = observation.full_text()
     assert text.index(observation.trigger) < text.index("Outstanding owner cards (1):") < text.index(card)
 

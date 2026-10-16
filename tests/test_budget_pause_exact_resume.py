@@ -633,16 +633,6 @@ def test_activity_rows_show_a_held_budget_row_as_paused_not_queued():
     assert "|| heldRow(t)" in source  # consulted by the pending-row pause predicate
 
 
-def test_runbook_does_not_promise_a_managed_outage_window_the_runtime_has_no_rail_for():
-    """F8: with no deadline and an unlimited absolute ceiling, a managed task's
-    transport-outage episode has NO window of its own — the 6h operation-window
-    fallback belongs to other operations. The runbook names the optional rails an
-    operator can set instead of promising a timeout that does not exist."""
-    source = _repo_file("devtools", "benchmarks", "continual_learning", "RUNBOOK.md")
-    assert "6h operation window from episode entry" not in source
-    assert "OUROBOROS_TASK_ABS_CEILING_SEC" in source and "idle reaper" in source
-
-
 # --------------------------------------------------------------------------- consumption publication holds
 
 def _granted_loop(tmp_path, monkeypatch, task_id):

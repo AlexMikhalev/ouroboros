@@ -313,6 +313,65 @@ def task_ids(root: Any) -> List[str]:
 
 
 _COLLECTION_BATCH = 64  # bounds selection/materialization and one classification commit
+DRIVE_RETENTION_BATCH = 64  # bounds directory-name selection and one classification commit
+
+
+def drive_retention_facts(root: Any, task_ids: Iterable[str], *,
+                          stop: Optional[Callable[[], bool]] = None) -> Dict[str, Dict[str, Any]]:
+    """Cheap facts for one bounded batch of drive names, never a scan of task history.
+
+    A missing row/body or NULL projection stays a strict-read candidate. Legacy
+    classification reads coherent bodies outside the selector transaction and
+    commits only still-NULL write_seq matches, without changing bodies/signatures.
+    An old body's REPLACE clears the nullable projection even after schema upgrade.
+    """
+    from ouroboros.retention import task_result_retention_at
+    from ouroboros.task_results import load_task_result
+
+    ids = [str(task_id) for task_id in task_ids]
+    if not ids:
+        return {}
+    stopped = stop or (lambda: False)
+    with open_store(root, write=False) as txn:
+        schema = txn.meta("schema_version")
+    if schema is not None and int(schema) < store.SCHEMA_VERSION:
+        from ouroboros.store_import import upgrade_current_schema
+
+        upgrade_current_schema(root)
+    with open_store(root, write=False) as txn:
+        rows = txn.conn.execute(
+            "SELECT t.task_id, t.status, t.delegation_role, t.drive_retention_at, "
+            "b.task_id IS NOT NULL AS body_present FROM tasks AS t "
+            "LEFT JOIN task_bodies AS b ON b.task_id=t.task_id "
+            f"WHERE t.task_id IN ({','.join('?' * len(ids))})", ids).fetchall()
+    facts = {row["task_id"]: dict(row) for row in rows}
+    classified = []
+    for task_id, row in facts.items():
+        if stopped():
+            break
+        if row["drive_retention_at"] is not None or not row["body_present"]:
+            continue
+        try:
+            document, stamp = load_task_result(root, task_id, strict=True, signed=True)
+            if document is None or stamp is None:
+                continue
+            value = task_result_retention_at(document)
+            if value is None:
+                continue
+            # This coherent body's facts improve this pass's hint too. A racing
+            # writer may still postpone a skip; actual candidates are read afresh.
+            row.update(status=document["status"], delegation_role=document.get("delegation_role"),
+                       drive_retention_at=value)
+            classified.append((value, task_id, stamp[0]))
+        except (store.StoreError, ValueError, TypeError, AttributeError):
+            # Leave NULL: the pruner's strict read retains the original diagnostic.
+            continue
+    if classified and not stopped():
+        with open_store(root, write=True) as txn:
+            txn.conn.executemany(
+                "UPDATE tasks SET drive_retention_at=? WHERE task_id=? AND write_seq=? "
+                "AND drive_retention_at IS NULL", classified)
+    return facts
 
 
 def _collection_ids(root: Any, column: str, pending: Optional[int], after: str) -> List[str]:

@@ -28,7 +28,7 @@ LOCK_NAME = "current.lock"  # the name-tier lock around every access
 IMPORT_LOCK_NAME = "current_import.lock"
 GENERATION = 8  # the lifecycle generation that owns the store
 GENERATION_KEY = "current_store_generation"  # in state/migrations.json
-SCHEMA_VERSION = 4  # 2: owner questions; 3: acceptance collection; 4: plan collection
+SCHEMA_VERSION = 5  # 2: owner questions; 3: acceptance; 4: plans; 5: drive retention
 STORE_WAIT_SEC = 10.0
 TIER_ENFORCED, TIER_NAME = "enforced", "name"
 PUBLISHED, EXPORTING, RETIRED = "published", "exporting", "retired"
@@ -63,7 +63,7 @@ CREATE TABLE tasks (
   has_pending_promotion INTEGER NOT NULL DEFAULT 0, has_pause_notices INTEGER NOT NULL DEFAULT 0,
   delegated_runs_unreconciled INTEGER NOT NULL DEFAULT 0, pending_drive INTEGER NOT NULL DEFAULT 0,
   has_owner_questions INTEGER,
-  review_collection_pending INTEGER, plan_collection_pending INTEGER);
+  review_collection_pending INTEGER, plan_collection_pending INTEGER, drive_retention_at TEXT);
 CREATE INDEX tasks_parent ON tasks(parent_task_id); CREATE INDEX tasks_root ON tasks(root_task_id);
 CREATE INDEX tasks_status ON tasks(status); CREATE INDEX tasks_project ON tasks(project_id);
 CREATE INDEX tasks_ts ON tasks(ts, task_id); CREATE INDEX tasks_updated ON tasks(updated_at, task_id);
@@ -752,11 +752,11 @@ def encode_document(document: Dict[str, Any]) -> str:
 
 
 def typed_columns(document: Dict[str, Any], *, pending_drive: Optional[bool] = None) -> Dict[str, Any]:
-    """The ``tasks`` columns of a document: top-level typed facts, the two Presence facts
-    derived from their carriers, and the obligation flags from the existing predicates."""
+    """Top-level facts and derived Presence, obligation, collection and retention projections."""
     from ouroboros.dialogue_provenance import presence_metadata_binding, presence_record_binding
     from ouroboros.obligations import result_memberships, review_collection_pending
     from ouroboros.plan_record import PLAN_RECORD_KEY, collection_pending
+    from ouroboros.retention import task_result_retention_at
 
     names = result_memberships(document)
     columns: Dict[str, Any] = {}
@@ -777,6 +777,7 @@ def typed_columns(document: Dict[str, Any], *, pending_drive: Optional[bool] = N
     columns["pending_drive"] = int("nonterminal" in names if pending_drive is None else pending_drive)
     columns["review_collection_pending"] = int(review_collection_pending(document))
     columns["plan_collection_pending"] = int(collection_pending(document.get(PLAN_RECORD_KEY)))
+    columns["drive_retention_at"] = task_result_retention_at(document)
     return columns
 
 

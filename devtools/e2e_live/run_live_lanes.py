@@ -73,7 +73,7 @@ MAX_LANES = 6
 STAGGER_BOUNDS = (2.0, 3.0)
 # The commit gate's hermetic pytest pass runs INSIDE each lane server and resolves ``-n auto`` to the host's
 # CPU count (128 here) with no ceiling: the paid run of 2026-09-04 started >= 104 xdist workers per self-mod
-# lane, three lanes at once, on a shared host. The runtime's own lever (``preflight_runner._PREFLIGHT_WORKERS_ENV``,
+# lane, three lanes at once, on a shared host. The runtime's own lever (``test_parallelism.WORKERS_ENV``,
 # floor 2 so PREFLIGHT_PARALLELISM_LOST can never trip) is set in this process and forwarded by ``IsolatedServer``
 # in settings-authoritative mode (its keep-list); the budget is split evenly across the concurrent lanes so the
 # whole stand stays within the shared-host rule of at most 16 pytest workers.

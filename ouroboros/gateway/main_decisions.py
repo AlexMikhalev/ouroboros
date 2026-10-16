@@ -1,9 +1,11 @@
-"""Main's current decisions, projected from addressed canonical obligations.
+"""What waits on the owner in Main, projected from addressed canonical obligations.
 
 The ``owner_questions`` set is the store's flag over task documents, never copies
 of questions or another decision lifecycle. Polling reads only its members and the
-existing live task/wait owners, including children. An incomplete read is disclosed
-so consumers retain known cards without enabling stale answer controls.
+existing live task/wait owners, including children. Main's waiting pill counts these
+questions and actions and reaches their cards in the feed; it never mounts a copy from
+here. An incomplete read is disclosed so consumers retain known cards without enabling
+stale answer controls.
 """
 from __future__ import annotations
 
@@ -49,6 +51,17 @@ def question_display_rooms(drive_root: Any, task_id: str, quizzes: Any, *, rooms
         return unknown
 
 
+def _native_question(task_id: str, quiz_id: str, block: dict, owner_wait: Any) -> dict:
+    """Main's own question is already its native card in Main: navigation needs its identity only."""
+    from ouroboros.contracts.chat_id_policy import WEB_UI_CHAT_ID
+
+    row = {"task_id": task_id, "quiz_id": quiz_id, "chat_id": WEB_UI_CHAT_ID, "native": True,
+           "quiz_state": str(block.get("state") or "open"), "ts": str(block.get("asked_at") or "")}
+    if isinstance(owner_wait, dict) and owner_wait.get("quiz_id") == quiz_id:
+        row["owner_wait_state"] = str(owner_wait.get("state") or "")
+    return row
+
+
 def human_required_model_wait(row: dict, attempt: int) -> bool:
     """Use this live owner's revision-bound action fact, never classify labels."""
     return (row.get("state") == "waiting" and row.get("task_attempt") == attempt
@@ -63,6 +76,7 @@ def main_decisions_snapshot(drive_root: Any, activities: list[dict], bindings: d
     Project lookup uses the complete registry, including archived/deleting rows;
     a sidebar display limit never changes destination or visibility authority.
     """
+    from ouroboros.contracts.chat_id_policy import WEB_UI_CHAT_ID
     from ouroboros.obligations import members
     from ouroboros.owner_quiz import quiz_needs_retention
     from ouroboros.project_dialogue import project_question_pointer
@@ -115,7 +129,9 @@ def main_decisions_snapshot(drive_root: Any, activities: list[dict], bindings: d
                     raise ValueError("question room unavailable")
                 project = projects.get(room["project_id"])
                 if not project:
-                    continue  # known native/foreign room; contextual project_id creates no mirror or gap
+                    if room.get("chat_id") == WEB_UI_CHAT_ID and not room.get("project_id"):
+                        questions.append(_native_question(task_id, quiz_id, block, result.get("owner_wait")))
+                    continue  # another known room; contextual project_id creates no mirror or gap
                 pointer = project_question_pointer(
                     {"task_id": task_id, "quiz_id": quiz_id}, block, project,
                     result.get("owner_wait"),

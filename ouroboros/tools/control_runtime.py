@@ -193,7 +193,7 @@ def self_change_tool_entries() -> list:
                 "restart, after the running generation's readers have stopped."),
             "parameters": {"type": "object", "properties": {
                 "reason": {"type": "string"},
-                "adopt_commit": {"type": "string", "description": "Exact reviewed candidate commit SHA to adopt at this restart."},
+                "adopt_commit": {"type": "string", "description": "Exact reviewed candidate commit SHA to adopt at this restart; it needs a full green test run of that commit on record (commit it with full_tests=true)."},
             }, "required": ["reason"]},
         }, _request_restart),
     ]

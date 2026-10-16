@@ -38,9 +38,9 @@ def _value(expression, *, event, ref, base="", schedule="", cancelled=False, att
 
 
 @pytest.mark.parametrize("event,ref,base,quick,platforms", [
-    ("pull_request", "refs/pull/42/merge", "ouroboros", True, ["windows-latest", "macos-latest"]),
+    ("pull_request", "refs/pull/42/merge", "ouroboros", True, []),
     ("pull_request", "refs/pull/42/merge", "main", False, []),
-    # A landed commit gets the same two desktop systems a pull request gets; Ubuntu is quick-test.
+    # Landed commits retain both desktop systems; Ubuntu is quick-test.
     ("push", "refs/heads/ouroboros", "", True, ["windows-latest", "macos-latest"]),
     ("push", "refs/heads/main", "", False, []),
     ("push", "refs/heads/ouroboros-stable", "", False, ["ubuntu-latest", "windows-latest", "macos-latest"]),
@@ -63,12 +63,12 @@ def test_ordinary_matrix_covers_prs_and_landed_pushes_and_keeps_other_events(eve
     assert job["runs-on"] == "$" + "{{ matrix.os }}"
 
 
-def test_desktop_pr_matrix_keeps_merge_checkout_and_pr_base_evidence_secret_free():
+def test_selected_pr_job_keeps_merge_checkout_and_pr_base_evidence_secret_free():
     triggers = WORKFLOW.get("on") or WORKFLOW[True]  # PyYAML's YAML 1.1 spelling of "on".
     assert triggers["pull_request"]["branches"] == ["ouroboros"]
     assert "pull_request_target" not in triggers
     assert WORKFLOW["permissions"] == {"contents": "read"}
-    job = WORKFLOW["jobs"]["full-test-runs"]
+    job = WORKFLOW["jobs"]["quick-test"]
     assert "secrets." not in json.dumps(job)
     # The book-growth exception reads PR label events, without any write grant.
     assert job["permissions"] == {"contents": "read", "pull-requests": "read"}
@@ -173,10 +173,10 @@ def test_landed_push_desktop_matrix_runs_in_this_repository_only():
     push = {"event": "push", "ref": "refs/heads/ouroboros"}
     assert _value(job["if"], **push)
     assert not _value(job["if"], **push, repository="someone/private-copy")
+    assert not _value(job["if"], event="pull_request", ref="refs/pull/42/merge", base="ouroboros")
     assert _value(WORKFLOW["jobs"]["quick-test"]["if"], **push, repository="someone/private-copy")
-    # Pull requests, stable pushes, manual runs and tags keep their matrix in every repository.
-    for event, ref, base in (("pull_request", "refs/pull/42/merge", "ouroboros"),
-                             ("push", "refs/heads/ouroboros-stable", ""),
+    # Stable pushes, manual runs and tags keep their matrix in every repository.
+    for event, ref, base in (("push", "refs/heads/ouroboros-stable", ""),
                              ("workflow_dispatch", "refs/heads/candidate", ""), ("push", "refs/tags/v7.0.0", "")):
         assert _value(job["if"], event=event, ref=ref, base=base, repository="someone/private-copy")
 

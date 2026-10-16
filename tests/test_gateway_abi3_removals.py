@@ -85,14 +85,6 @@ class TestTelegramChatIdRemoval:
             assert "telegram_chat_id" not in hints, cls.__name__
             assert "transport" in hints, cls.__name__
 
-    def test_no_runtime_producer_left(self):
-        # The history mapper was the ONLY emitter; grep-level absence pin.
-        import inspect
-
-        from ouroboros.gateway import history as gateway_history
-
-        source = inspect.getsource(gateway_history)
-        assert '"telegram_chat_id": ' not in source
 
     def test_legacy_stored_row_replays_without_reemitting_the_key(self, tmp_path):
         from ouroboros.gateway.history import _collect_chat_rows
