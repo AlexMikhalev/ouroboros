@@ -470,9 +470,9 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
             refusal = budget_pause_restore_refusal(_queue().DRIVE_ROOT, task)
             retained.append(task if not refusal else hold_restored_budget_pause(
                 task, _queue().DRIVE_ROOT, reason=HOLD_RESTORE_REFUSED_PREFIX + refusal))
-            if (task.get("_budget_pause") or {}).get("reason") == "sleep":
-                # A ready selector grants no fresh execution authority after a stop.
-                hold_after_stop(retained[-1], _queue().DRIVE_ROOT, sleep_hold_reason)
+            if (owner_restart or panic) and (task.get("_budget_pause") or {}).get("reason") == "sleep":
+                # A cold model sleep never wakes itself after the owner's Restart or a Panic.
+                hold_after_stop(retained[-1], _queue().DRIVE_ROOT, HOLD_OWNER_RESTART if owner_restart else HOLD_PANIC)
         elif task.get("_owner_wait_resume"):
             # An existing Project hold is custody; its revalidation reads the owner-wait authority.
             if budget_hold_fact(task) or wait_allowed:

@@ -324,7 +324,7 @@ def park_saved_pause(task: Dict[str, Any], attempt: int, result_root: Any, *,
     parked.pop("_budget_pause_resume", None)
     parked.pop("_owner_wait_resume", None)
     parked["_budget_pause"] = exact_pause_marker(pause, default_root=str(task.get("root_task_id") or task_id))
-    if retention == RETAIN_SLEEP or pause.get("reason") == "sleep":
+    if retention == RETAIN_SLEEP:
         hold_after_stop(parked, result_root, sleep_hold_reason)
     if held_reason:
         hold_budget_row(
@@ -481,7 +481,8 @@ def retained_pending(task: Dict[str, Any], *, sleep_hold_reason: str = "") -> bo
     from supervisor.events_budget import budget_hold_fact
 
     hold = budget_hold_fact(task)
-    if sleep_hold_reason and ((saved and pause.get("reason") == "sleep")
+    if sleep_hold_reason and ((saved and pause.get("reason") == "sleep"
+                               and sleep_hold_reason != HOLD_SAVED_SLEEP_RECOVERY)
                               or (hold or {}).get("reason") == HOLD_SAVED_SLEEP_RECOVERY):
         from supervisor import queue as q
 

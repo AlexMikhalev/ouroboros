@@ -22,7 +22,8 @@ def _arm(tmp_path, monkeypatch):
     return ctx, limit, result
 
 
-def test_ready_detach_arms_then_parks_same_id_and_sleep_grant_is_single_use(tmp_path, monkeypatch):
+@pytest.mark.parametrize("door", ["ordinary", "owner_restart", "panic"])
+def test_ready_detach_arms_then_parks_same_id_and_sleep_grant_is_single_use(tmp_path, monkeypatch, door):
     from ouroboros import budget_pause
     from ouroboros.task_results import load_task_result
     from supervisor.direct_pause import park_direct_pause
@@ -56,7 +57,11 @@ def test_ready_detach_arms_then_parks_same_id_and_sleep_grant_is_single_use(tmp_
     assert grant["selected_by"] == "sleep_wake"
     assert wake_ready_sleepers(q) == []
     assert budget_pause.budget_pause_row(tmp_path, "head")["grant"] == grant
-    # Restart without an acknowledged handoff retains this ready sleep for Resume.
+    # An ordinary restart (update, crash recovery) restores the detached sleep, which wakes
+    # itself; the owner's Restart or a Panic retains it for an explicit Resume.
+    flag = {"owner_restart": "owner_restart_no_resume.flag", "panic": "panic_stop.flag"}.get(door)
+    if flag:
+        (tmp_path / "state" / flag).write_text("panic" if door == "panic" else "owner_restart", encoding="utf-8")
     assert q.persist_queue_snapshot(reason="detached-before-restart")
     workers.PENDING[:] = []
     assert q.restore_pending_from_snapshot() == 1
@@ -64,7 +69,14 @@ def test_ready_detach_arms_then_parks_same_id_and_sleep_grant_is_single_use(tmp_
     assert restored["id"] == "head" and restored["_is_direct_chat"]
     assert restored["detached_at"] == durable["detached_at"]
     assert restored["tool_profile"] == "operator_control"
-    assert not any(outcome.get("ok") for outcome in wake_ready_sleepers(q))
+    woke = [outcome for outcome in wake_ready_sleepers(q) if outcome.get("ok")]
+    if not flag:
+        regrant = budget_pause.budget_pause_row(tmp_path, "head")["grant"]
+        assert woke and regrant["selected_by"] == "sleep_wake"
+        assert regrant["grant_id"] != grant["grant_id"], "the pre-restart grant stays single-use"
+        return
+    assert not woke
+    (tmp_path / "state" / flag).unlink()
     assert q.resume_budget_paused_task("head")["ok"], "explicit Resume can release the retained sleep"
 
 
