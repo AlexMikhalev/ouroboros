@@ -224,6 +224,15 @@ def test_search_receipt_includes_each_server_call_or_remains_unknown(catalog_fix
     assert usage["cost_evidence"]["web_search"]["calls"] == calls
 
 
+
+@pytest.mark.parametrize("usage,known", [({}, False), ({"input_tokens": 1000}, False),
+    ({"input_tokens": 0, "output_tokens": 0}, True), ({"prompt_tokens": 1000, "completion_tokens": 500}, True)])
+def test_a_search_receipt_without_its_token_counts_stays_unknown(catalog_fixture, usage, known):
+    root = catalog_fixture[0]
+    catalog.get_catalog_quote("gpt-realtime-2.1", provider="openai")
+    cost = catalog.search_response_cost("gpt-realtime-2.1", usage, calls=0, context_size="low", drive_root=root)
+    assert (cost is not None) is known and usage["cost_coverage"] == ("complete" if known else "partial")
+
 def test_openrouter_still_uses_its_own_catalog(catalog_fixture, monkeypatch):
     _, _, _, fetch = catalog_fixture
     monkeypatch.setattr(pricing, "_fetch_live_rows", lambda *args: {"openai/gpt-realtime-2.1": (5, None, None, 10)})

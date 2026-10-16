@@ -242,9 +242,12 @@ def search_response_cost(model: str, usage: dict, *, calls: int | None, context_
     per_call = tool_rates.get(f"search_context_size_{context_size}") if isinstance(tool_rates, dict) else None
     tool_known = (calls == 0 or isinstance(per_call, (int, float)) and not isinstance(per_call, bool)
                   and math.isfinite(per_call) and per_call >= 0)
-    text = (_cost_from_pricing(text_schedule(quote), int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0),
-                              int(usage.get("output_tokens") or usage.get("completion_tokens") or 0),
-                              usage, exact_cache_tiers=True) if quote else None)
+    # A receipt without its token counts prices nothing: an absent count is unknown, never zero.
+    counts = [usage.get(key, usage.get(alias)) for key, alias in (("input_tokens", "prompt_tokens"),
+                                                                  ("output_tokens", "completion_tokens"))]
+    counted = all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in counts)
+    text = (_cost_from_pricing(text_schedule(quote), counts[0], counts[1], usage, exact_cache_tiers=True)
+            if quote and counted else None)
     standard = (usage.get("processing") or {}).get("observed") in (None, "", "standard", "default")
     known = (text is not None and type(calls) is int and calls >= 0 and tool_known and standard)
     search = (calls * (per_call or 0)) if known else None
