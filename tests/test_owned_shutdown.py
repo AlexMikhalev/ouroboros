@@ -323,7 +323,8 @@ def test_a_target_recorded_after_the_stop_began_is_finished_by_the_next_start(tm
     finally:
         _reap(late, machinery)
 
-def test_a_live_process_under_an_unproven_identity_is_never_signalled(tmp_path, monkeypatch):
+@pytest.mark.parametrize("measurable", [True, False])
+def test_a_live_process_under_an_unproven_identity_is_never_signalled(tmp_path, monkeypatch, measurable):
     from ouroboros import owned_shutdown
     from ouroboros import workspace_executor as executor
 
@@ -336,9 +337,17 @@ def test_a_live_process_under_an_unproven_identity_is_never_signalled(tmp_path, 
         record = json.loads(path.read_text(encoding="utf-8"))
         record["host_command_sha256"] = "0" * 64  # the pid now names some other command
         path.write_text(json.dumps(record), encoding="utf-8")
+        if not measurable:
+            monkeypatch.setattr(executor, "_process_command_sha256", lambda _: "")
         monkeypatch.setattr(executor, "_kill_host_pid", lambda _pid: pytest.fail("unproven identity signalled"))
         outcome = owned_shutdown.stop_owned_work(data)
-        assert outcome["unconfirmed"] == [path.stem] and proc.poll() is None
+        assert proc.poll() is None
+        if measurable:
+            assert outcome["state"] == "completed" and not path.exists()
+            event = json.loads((data / "logs" / "supervisor.jsonl").read_text(encoding="utf-8").splitlines()[0])
+            assert event["outcome"] == "not_ours" and event["record_id"] == path.stem
+        else:
+            assert outcome["unconfirmed"] == [path.stem] and path.exists()
     finally:
         _reap(proc)
 
