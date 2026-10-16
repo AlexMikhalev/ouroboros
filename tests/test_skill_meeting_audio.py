@@ -788,6 +788,30 @@ def test_companion_stops_a_capture_that_finished_starting_after_the_call_ended(t
 
 
 @pytest.mark.serial
+def test_a_capture_start_that_fails_in_any_way_ends_its_session(tmp_path, fake_door):
+    class BrokenCapture(FakeCapture):
+        def start(self, on_pcm, on_error):
+            raise RuntimeError("the audio device vanished")
+
+    backend = FakeBackend(capture_class=BrokenCapture)
+    companion = meeting_capture.MeetingCompanion(tmp_path, fake_door.url, FakeDoor.token, backend)
+    companion.start()  # the tools reach it over the control channel
+    try:
+        args = {"call_id": "call-1", "app": "zoom"}
+        reply = meeting_control.request(tmp_path, "listen_start", args)
+        assert reply == {"ok": False, "code": "MEETING_CAPTURE_FAILED",
+                         "message": "RuntimeError: the audio device vanished"}
+        assert companion.status()["state"] == "idle" and backend.captures[0].stopped
+        assert until(lambda: fake_door.controls[-1:] == [{"type": "bye", "reason": "stopped"}])
+        assert any(control.get("type") == "context" and "the audio device vanished" in control.get("text", "")
+                   for control in fake_door.controls), "the call hears why its meeting audio stopped"
+        retry = meeting_control.request(tmp_path, "listen_start", args)  # a fresh attempt, never "already listening"
+        assert retry["code"] == "MEETING_CAPTURE_FAILED" and len(backend.captures) == 2
+    finally:
+        companion.shutdown()
+
+
+@pytest.mark.serial
 def test_companion_discloses_what_the_capture_became_once_started(tmp_path, fake_door):
     class FallbackCapture(FakeCapture):
         def start(self, on_pcm, on_error):  # like Linux falling back to a device monitor at start

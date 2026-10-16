@@ -234,11 +234,13 @@ class MeetingCompanion:
         try:
             capture.start(lambda pcm, stream=0: peer.send_audio(pcm, stream),
                           lambda reason: self._later(self._capture_failed, session, reason))
-        except CaptureFailed as exc:
+        except Exception as exc:  # any failed start ends this session, so a retry starts afresh
             if session.ending:
                 return self._closed_while_joining(session)
-            self._end(session, f"capture could not start: {exc.message}", tell_call=True)
-            return _refusal(exc.code, exc.message)
+            failed = exc if isinstance(exc, CaptureFailed) else CaptureFailed(
+                "MEETING_CAPTURE_FAILED", f"{type(exc).__name__}: {exc}")
+            self._end(session, f"capture could not start: {failed.message}", tell_call=True)
+            return _refusal(failed.code, failed.message)
         if session.ending:
             return self._closed_while_joining(session)
         # Disclosures describe what the capture really became (a fallback picks its source at start).
