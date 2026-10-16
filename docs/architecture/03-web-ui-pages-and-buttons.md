@@ -73,7 +73,7 @@ Host task facts attach to its card by producer-stamped `card_row` (`timeline`/`r
 
 `project_handoff.py` owes Main a transfer receipt through the terminal outbox after durable binding. `handoff_id` binds captured ingress/Project: retries share it, independent requests do not. `RECEIPT_STATES`: `durable`/`already_delivered` prove Main owed/delivered; `origin_unproven` writes none, other states disclose gaps. Main is never default. `/api/projects/from-task` returns `handoff_receipt`/`handoff_id`; nondurability warns, inventing no history.
 
-`work_portal.js` binds a Main card to its Project from Turn into project (`/api/projects/from-task`), `task_bindings`, a census row's `project_id`, or a `project_started`/`project_handoff` row (data, never an entry): the same node becomes the portal and reads its present from the all-chat `active_chat_activities` (`last_line`, `last_line_at`, `tool_calls`, `detached`); a completion row settles it from `outcome_axes`, else the durable detail. Structured `task_name` names it. `task_episodes.js` folds an admitted `continued_by`/`continuation_offer` chain into one card (DESIGN "Work portal"); reconnect re-proves activity.
+`work_portal.js` binds a Main card to its Project from Turn into project (`/api/projects/from-task`), `task_bindings`, a census row's `project_id` or a `project_started`/`project_handoff` row (data, never an entry); the node becomes the portal, its present from the all-chat `active_chat_activities` (`last_line`, `last_line_at`, `tool_calls`, `detached`) and settled by a completion row's `outcome_axes`, else the durable detail; `task_name` names it. `task_episodes.js` folds an admitted (never `bound`) `continued_by`/`continuation_offer` chain into one card (DESIGN "Work portal"): a chat re-reads the predecessor after its Continue press or when the census lists a new root, and Main takes a portal's successor from its census row. Reconnect re-proves activity.
 
 #### Composer, attachments and delivered media
 
@@ -123,11 +123,11 @@ Card `Reviews` projects independent skill, plan, acceptance and repository-revie
 
 #### Stop and cancel controls
 
-Cancel appears only on unfinished root cards, a moved work's Main portal included, whose host attests `cancelable=true`; card shape grants no control, and native direct tasks follow §5 custody. The shared dropdown sends `cascade:true`; Wrap up, or a Stop now not yet confirmed, returns 202 pending. Completion wins and a missing live task reconciles from durable state. Reason lines: `log_events.taskReasonDetail` over `cancel_origin` (§3 Task cards, errors and reason lines).
+Cancel appears only on unfinished root cards (moved works' portals too) whose host attests `cancelable=true`; card shape grants no control, and native direct tasks follow §5 custody. The shared dropdown sends `cascade:true`; Wrap up, or a Stop now not yet confirmed, returns 202 pending. Completion wins and a missing live task reconciles from durable state. Reason lines: `log_events.taskReasonDetail` over `cancel_origin` (§3 Task cards, errors and reason lines).
 
 #### Turning a card into a Project
 
-One click and `move_to_project` call the same placement operation for the same task id. Its durable binding wins; a name requested for an already-bound task renames that room. Only this work moves. `project_started`, `project_handoff` and `/api/state.task_bindings` carry task/project identity and project name for the existing Main card. Origin siblings are independent. RUNNING resources stay unchanged until leased readmission (§6 Project placement).
+One click and `move_to_project` share one placement operation for the same task id. Its durable binding wins; a name requested for an already-bound task renames that room. Only this work moves. `project_started`, `project_handoff` and `/api/state.task_bindings` carry the task/project identity and name for the existing Main card. Origin siblings are independent. RUNNING resources stay unchanged until leased readmission (§6 Project placement).
 
 The Main-root `project_reference.js` opens/focuses the panel, never closes it; naming stays server-owned (DESIGN "References and actions"). Project-scoped is not project-bound: a headless/CLI `project_id` grants lease/memory scope without durable binding, routes to that thread at admission (§5), and creates neither Main card nor conversion button.
 
