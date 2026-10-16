@@ -322,12 +322,8 @@ def bind_task_to_project(
 
 
 def project_task_bindings(drive_root: Any) -> Dict[str, Dict[str, Any]]:
-    """Copy of the immutable task-to-Project bindings for read models."""
-    return {
-        str(task_id): dict(row)
-        for task_id, row in _load_bindings(drive_root).get("bindings", {}).items()
-        if isinstance(row, dict)
-    }
+    """Copy of the immutable task-to-Project bindings for read models (the cached lens)."""
+    return {str(task_id): dict(row) for task_id, row in _bindings_lens(drive_root).items() if isinstance(row, dict)}
 
 
 def all_task_bindings(drive_root: Any) -> Dict[str, int]:
@@ -344,8 +340,9 @@ def all_task_project_bindings(drive_root: Any, *, strict: bool = False) -> Dict[
     (F4), not merely to suppress the stray convert button (P2). Strict snapshot
     readers propagate source failures so absence never impersonates completeness."""
     out: Dict[str, Dict[str, Any]] = {}
-    try:
-        for tid, row in _load_bindings(drive_root, strict=strict).get("bindings", {}).items():
+    try:  # a strict reader rereads the file; the others share the mtime-keyed lens
+        bindings = _load_bindings(drive_root, strict=True)["bindings"] if strict else _bindings_lens(drive_root)
+        for tid, row in bindings.items():
             if not isinstance(row, dict):
                 continue
             pid = str(row.get("project_id") or "").strip()
