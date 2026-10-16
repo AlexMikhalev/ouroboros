@@ -137,6 +137,7 @@ D20 = "Presence"
 "ouroboros/colab_bootstrap.py" = "D12"
 "ouroboros/commit_admission.py" = "D06"
 "ouroboros/config.py" = "D12"
+"ouroboros/composer_cognition.py" = "D12"
 "ouroboros/confined_files.py" = "D18"
 "ouroboros/model_slots.py" = "D12"
 "ouroboros/search_routes.py" = "D12"
@@ -986,6 +987,7 @@ allowed = [
   "D17->D06",
   "D17->D08",
   "D17->D11",
+  "D17->D12",
   "D17->D15",
   "D17->D16",
   "D17->D18",
@@ -1110,7 +1112,6 @@ lazy_only = [
   "D17->D05",
   "D17->D07",
   "D17->D09",
-  "D17->D12",
   "D17->D13",
   "D17->D20",
   "D18->D01",

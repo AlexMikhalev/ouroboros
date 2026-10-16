@@ -18,7 +18,7 @@ import contextlib
 import contextvars
 import copy
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
@@ -38,6 +38,7 @@ class TaskSettingsSnapshot:
 
     settings: Mapping
     environ: Mapping
+    actor_scope: tuple[Path, Mapping] | None = None
 
 
 def _next_task_setting(key: str) -> bool:
@@ -185,15 +186,89 @@ def runtime_environ() -> dict[str, str]:
     return env
 
 
+def _actor_project(scope: tuple[Path, Mapping]) -> str:
+    """The actor's current room, including descendants of a converted task.
+
+    RoomResolver owns lineage; the admitted caller supplies the facts a new
+    direct turn has not stored yet. A working directory is not a room.
+    """
+    from ouroboros.project_admission import reserved_project_for_chat
+    from ouroboros.projects_registry import RoomResolver, get_reserved_project
+
+    root, actor = scope
+    if actor.get("presence"):
+        return ""
+    chat = RoomResolver(root, strict=True)(actor.get("id"), actor.get("parent_task_id"), actor.get("root_task_id"))
+    if chat:
+        return reserved_project_for_chat(root, chat)["id"]
+    project = get_reserved_project(root, actor.get("project_id"), strict=True)
+    if project:
+        return project["id"]
+    return reserved_project_for_chat(root, actor["chat_id"]).get("id", "") if actor.get("chat_id") else ""
+
+
+def _with_cognition(snapshot: TaskSettingsSnapshot, cognition: Mapping) -> TaskSettingsSnapshot:
+    from ouroboros.composer_cognition import cognition_overrides
+    from ouroboros.context_mode_compat import VALID_CONTEXT_MODES
+    from ouroboros.settings_scales import EFFORT_SCALE, effort_rank
+
+    effort = cognition.get("effort_range")
+    if (cognition.get("context_mode") not in VALID_CONTEXT_MODES or not isinstance(effort, Mapping)
+            or any(effort.get(key) not in EFFORT_SCALE for key in ("min", "recommended", "max"))
+            or effort_rank(effort["min"]) > effort_rank(effort["max"])):
+        raise ValueError("Saved actor cognition is invalid")
+    values = cognition_overrides(cognition)
+    values["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"  # this is an explicit owner choice
+    return replace(snapshot, settings=MappingProxyType({**snapshot.settings, **values}),
+                   environ=MappingProxyType({**snapshot.environ, **values}))
+
+
+def actor_settings_snapshot(snapshot: TaskSettingsSnapshot, task: Mapping, drive_root: Path) -> TaskSettingsSnapshot:
+    """Capture this room privately; a new subordinate resolves its room again."""
+    from ouroboros.composer_cognition import read_cognition
+    from ouroboros.dialogue_provenance import presence_metadata_binding
+
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), Mapping) else {}
+    actor = {key: task.get(key) or metadata.get(key) for key in (
+        "id", "parent_task_id", "root_task_id", "project_id", "chat_id")}
+    actor["presence"] = bool(task.get("_presence_turn") or presence_metadata_binding(metadata) is not None)
+    scope = (Path(task.get("budget_drive_root") or metadata.get("budget_drive_root") or drive_root),
+             MappingProxyType(actor))
+    snapshot = replace(snapshot, actor_scope=scope)
+    return _with_cognition(snapshot, read_cognition(scope[0], _actor_project(scope), settings=snapshot.settings))
+
+
+def captured_cognition() -> dict | None:
+    """Only the actor's four composer values cross a cold continuation, never credentials."""
+    from ouroboros.composer_cognition import cognition_from_settings
+
+    snapshot = _TASK_SETTINGS.get()
+    return cognition_from_settings(snapshot.settings) if snapshot is not None else None
+
+
+def restore_cognition(cognition: Mapping | None) -> None:
+    """Replace the bound private view before rebuilding a returning actor's request.
+
+    Legacy checkpoints have no choice recorded and retain their existing fallback.
+    The enclosing task_settings_scope still resets the context at task exit.
+    """
+    snapshot = _TASK_SETTINGS.get()
+    if cognition is not None and snapshot is not None:
+        _TASK_SETTINGS.set(_with_cognition(snapshot, cognition))
+
+
 def live_effort_range() -> dict[str, str]:
-    """The owner's CURRENT effort range (``settings_scales.effort_range`` over the settings
-    document as it reads now), for a participant started INSIDE a running task — a review
-    wave, a direct ``delegate_start``: it reads this once at its start while the task that
-    started it keeps the range of its own snapshot (``runtime_setting``)."""
+    """Current own-room bounds for a NEW review/delegate; the caller keeps its snapshot."""
     from ouroboros import config
+    from ouroboros.composer_cognition import read_cognition
     from ouroboros.settings_scales import effort_range
 
-    return effort_range(config.load_settings())
+    settings = config.load_settings()
+    snapshot = _TASK_SETTINGS.get()
+    if snapshot is None or snapshot.actor_scope is None:
+        return effort_range(settings)
+    root, _actor = snapshot.actor_scope
+    return read_cognition(root, _actor_project(snapshot.actor_scope), settings=settings)["effort_range"]
 
 
 def read_environ() -> Mapping:

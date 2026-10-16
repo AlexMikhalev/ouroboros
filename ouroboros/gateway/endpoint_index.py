@@ -232,9 +232,9 @@ HTTP_SHAPES: dict[str, Shape] = {
     "POST /api/desktop/background": Shape(f"200:DesktopAutostartResponse {_SETTINGS_REFUSAL}", "OwnerEnabledRequest"),
     "POST /api/owner/runtime-mode": Shape(f"200:OwnerRuntimeModeResponse {_SETTINGS_REFUSAL}", "OwnerRuntimeModeRequest"),
     "POST /api/owner/auto-grant": Shape(f"200:OwnerAutoGrantResponse {_SETTINGS_REFUSAL}", "OwnerEnabledRequest"),
-    "POST /api/owner/context-mode": Shape(f"200:OwnerContextModeResponse {_SETTINGS_REFUSAL}", "OwnerContextModeRequest"),
-    "POST /api/owner/effort-range": Shape(f"200:OwnerEffortRangeResponse {_SETTINGS_REFUSAL}", "EffortRange",
-                                          note="min <= recommended <= max on the effort scale"),
+    "POST /api/owner/context-mode": Shape(f"200:OwnerContextModeResponse {_SETTINGS_REFUSAL} 404:SettingsWriteRefusal", "OwnerContextModeRequest"),
+    "POST /api/owner/effort-range": Shape(f"200:OwnerEffortRangeResponse {_SETTINGS_REFUSAL} 404:SettingsWriteRefusal", "OwnerEffortRangeRequest",
+                                          note="helper min <= max; primary independent; optional project_id, otherwise Main"),
     "POST /api/owner/safety-mode": Shape(f"200:OwnerSafetyModeResponse {_SETTINGS_REFUSAL}", "OwnerSafetyModeRequest"),
     "POST /api/owner/capability-ack": Shape(
         "200:ResponseLimitAckResponse|ContextWindowAckResponse 400:ErrorResponse", "CapabilityAckRequest",

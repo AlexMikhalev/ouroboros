@@ -250,25 +250,24 @@ Enter as a line break.
 
 ### Composer owner controls
 
-Two controls in the composer's pill row write a global owner setting rather than a
-fact about the next message: the context mode and the **effort range**. Both save at
-once through their owner endpoint, show the server's refusal as a toast and read the
-one saved value back from `/api/state`, so Main and every Project composer agree;
-Settings has no effort section.
+Each composer saves its room's **Context** and **Effort** through the owner endpoints.
+Main supplies a one-time copy to new Projects; later changes stay in their room.
+Readback comes from Main state or the named Project, never another room. Saves apply
+to new participants; running work retains its choices through Resume. A refusal
+keeps the saved value and says why. No scope selector or extra settings row.
 
 Each is a **capsule** of the pills' height — ring, name, value: `Context Max`,
-`Effort X-High`. Closed, Effort names only the recommended level; its ring (a 300°
-arc: band minimum..maximum, dot recommended) and the button's name carry the range.
+`Effort X-High`. Closed, Effort names only the primary level; its ring (a 300°
+arc: band minimum..maximum, dot primary) and the button's name carry the range.
 Context's ring is three arcs, the chosen one lit: one of three modes, never a fill
 level or capacity. A capsule opens **inline**, never as a dropdown, one at a time;
 its value yields to the strip. Context's is Nano · Low · Max under a glass thumb; a
-choice posts at once and the strip waits for the answer (lowering only while idle,
-outside Cyber Pro). Effort's: seven levels, two brackets, the recommended pill. A
+choice posts at once and the strip waits for the answer. Effort's seven levels carry
+a primary pill and two helper bounds; the primary may lie outside them. A
 segment is its word plus `--capsule-seg-pad` a side; the pill covers its segment;
-band, pill and brackets share one vertical inset. Every handle pushes the ones it
-meets, a pushed bracket stays, the brackets never cross. A tap inside the range sets
-the recommended level, outside it the nearer bracket; a drag keeps the grab offset
-on whole levels. A stored `minimal` shows at Low until its handle moves.
+band, pill and brackets share one vertical inset. The primary and helper bounds never
+move each other; the brackets cannot cross. A level tap sets primary; each bracket
+has its own handle. A drag keeps its grab offset on whole levels. A stored `minimal` shows at Low until its handle moves.
 
 **A mark keeps from a rounded end the clearance it keeps from the straight edges.**
 A pill (the thumb, the recommended pill) is concentric with the capsule, so the band
@@ -290,7 +289,7 @@ or the chosen mode; arrows step a handle (PageUp/PageDown too) or choose the nex
 mode, Home/End reach the ends; Esc closes and returns focus to the head; an outside
 press closes. Handles are sliders naming their level; closed, they leave the tab
 order. An effort change saves when the gesture ends, saves run in order (last wins),
-and Send waits for a pending one so the next root starts at that level; a refused
+and Send waits for both pending Context and Effort saves; a refused
 save keeps the draft, says why and returns to the saved value — unsaved values are
 never shown as saved.
 
