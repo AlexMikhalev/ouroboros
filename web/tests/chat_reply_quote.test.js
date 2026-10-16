@@ -81,6 +81,24 @@ test('a captionless photo or file relayed into a work still draws its panel: who
     assert.equal(createRelayQuote({ text: '', attachments: [{ upload: 'abc' }] }), null, 'a nameless manifest names nothing');
 }));
 
+test('a relay of several owner messages shows each of them, its own where, when, words and files, in the host order', () => withDom(() => {
+    const first = { text: 'Please deploy', attachments: [], source: { label: 'Main', ts: 't' } };
+    const second = { text: 'Use staging only', attachments: [{ name: 'config.json' }], source: { label: 'Alpha', ts: 't' } };
+    // The envelope repeats its first quote in the singular fields for older readers; `quotes` is the whole truth.
+    const group = createRelayQuote({ relay_id: 'r3', ...first, quotes: [first, second] }, { formatTime: fixedTime });
+    assert.equal(group.className, 'chat-relay-quotes');
+    const panels = group.children;
+    assert.deepEqual(panels.map((panel) => panel.dataset.mode), ['relay', 'relay']);
+    assert.deepEqual(panels.map((panel) => panel.querySelector('.chat-quote-text').textContent), ['Please deploy', 'Use staging only']);
+    assert.deepEqual(panels.map((panel) => panel.children[0].children[1].textContent), ['· Main · 00:37', '· Alpha · 00:37']);
+    assert.equal(panels[0].querySelector('.chat-quote-files'), null);
+    assert.equal(panels[1].querySelector('.chat-quote-files').textContent, 'Attached: config.json');
+    assert.ok(panels.every((panel) => panel.dataset.relayId === 'r3'));
+    const one = createRelayQuote({ relay_id: 'r4', ...first, quotes: [first] }, { formatTime: fixedTime });
+    assert.equal(one.dataset.mode, 'relay', 'one quoted message is one panel, no extra block around it');
+    assert.equal(createRelayQuote({ relay_id: 'r5', text: '', quotes: [] }), null, 'a note without quoted words draws no panel');
+}));
+
 test('Show all opens the clamp, Show less closes it, through the caller\'s stable-viewport seam', () => withDom(() => {
     const writes = [];
     const panel = createRelayQuote({ text: 'long words', source: { label: 'Main' } },
