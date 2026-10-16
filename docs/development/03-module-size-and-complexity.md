@@ -75,6 +75,13 @@ coupling `implicit_contracts` item.
 
 Apply ARCHITECTURE §10 invariant 10 to current-state readers:
 
+`tests/test_hot_facts*.py` hold Stop and custody selection results fixed while unrelated
+settled history grows from 20 to 2,000 rows. They count SQL statements, VM steps and
+decoded JSON bytes, and compare typed selectors with the previous JSON predicates.
+New current facts belong in the changing transition's transaction. Legacy derivation
+uses a named durable job and sequence/source CAS; a process-local flag cannot prove
+an installation's migration finished. Passive readers fall back only for underived rows.
+
 - **Measure the growing operation:** history, object count, nesting, cold caches and
   contention. Where responsiveness suffers, use existing spans and real-reader spies;
   telemetry adds no steady-state writes/history reads. Remove redundant work or reuse

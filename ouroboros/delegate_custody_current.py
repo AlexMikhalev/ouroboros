@@ -92,6 +92,21 @@ _MAY_HOLD_PAYLOAD = ("CASE WHEN json_valid(facts) THEN "
                      "AND COALESCE(json_extract(facts, '$.patch_disposed'), '')<>'')) ELSE 1 END")
 
 
+def _selected(txn, typed: str, legacy: str, params: tuple = ()):
+    """Indexed current facts plus only the partial index's underived legacy rows."""
+    from ouroboros.store_hot_facts import VERSION
+
+    if int(txn.meta("schema_version") or VERSION) < VERSION:
+        return legacy, params  # the import owner has not prepared this store's columns yet
+    return ("run_id IN (SELECT run_id FROM custody_runs WHERE facts_derived=1 AND (" + typed + ") "
+            "UNION SELECT run_id FROM custody_runs INDEXED BY custody_underived_hot "
+            "WHERE facts_derived IS NULL AND (" + legacy + "))", params + params)
+
+
+_TREE = "root_task_id=? OR (root_task_id='' AND task_id=?)"
+_LEGACY_TREE = "json_extract(facts, '$.root_task_id')=? OR (json_extract(facts, '$.root_task_id')='' AND task_id=?)"
+
+
 def runs(root, where: str = "", params: tuple = ()):
     """Custody selected by typed columns (all runs when unfiltered)."""
     with store.open_store(root, write=False) as txn:
@@ -103,10 +118,12 @@ def health_runs(root, task_id: str = ""):
     """The rows the context's delegated-run lines can name, in ONE read and ``run_id`` order:
     the reader's own runs, every held run (an undisposed patch is held) and every run whose
     output may be unread. A superset: the callers' own predicates decide, as over ``runs``."""
-    where, params = f"state=? OR {_MAYBE_UNREAD}", (HELD,)
+    typed, legacy, params = "state=? OR output_unread=1", f"state=? OR {_MAYBE_UNREAD}", (HELD,)
     if task_id:
-        where, params = f"task_id=? OR {where}", (str(task_id), HELD)
-    return runs(root, where, params)
+        typed, legacy, params = f"task_id=? OR {typed}", f"task_id=? OR {legacy}", (str(task_id), HELD)
+    with store.open_store(root, write=False) as txn:
+        raw = txn.custody_raw_rows(*_selected(txn, typed, legacy, params))
+    return _decode_all({rid: json_loads(text) for rid, text in raw.items()})
 
 
 def run(root, run_id: str):
@@ -119,18 +136,18 @@ def tree_task_ids(root, tree_id: str) -> List[str]:
     """Every task of a tree that ever delegated (a bound run, a pending or a refused request) —
     the census the root's sleep check needs for members whose result row is gone (one SQL pass
     over the run facts, no Python decode, plus the request rows)."""
+    from ouroboros.store_hot_facts import tree_requests
+
     tree = str(tree_id or "")
     with store.open_store(root, write=False) as txn:
+        where, params = _selected(txn, _TREE, _LEGACY_TREE, (tree, tree))
         ids = {record["task_id"] for record in txn.conn.execute(
-            "SELECT DISTINCT task_id FROM custody_runs WHERE task_id<>'' AND "
-            "(json_extract(facts, '$.root_task_id')=? OR (json_extract(facts, '$.root_task_id')='' AND task_id=?))",
-            (tree, tree))}
-        for name in ("custody_open", "custody_refused"):
-            for facts in txn.set_rows(name).values():
-                request = facts.get("request") if isinstance(facts.get("request"), dict) else {}
-                tid = str(request.get("task_id") or "")
-                if tid and str(request.get("root_task_id") or tid) == tree:
-                    ids.add(tid)
+            f"SELECT DISTINCT task_id FROM custody_runs WHERE task_id<>'' AND {where}", params)}
+        for _name, _identity, facts in tree_requests(txn, tree, refused=True):
+            request = facts.get("request") if isinstance(facts.get("request"), dict) else {}
+            tid = str(request.get("task_id") or "")
+            if tid:
+                ids.add(tid)
     return sorted(ids)
 
 
@@ -139,14 +156,15 @@ def tree_billing_group(root, tree_id: str) -> Optional[Dict[str, Any]]:
     pending request): the late settlement's lineage when no execution scope is active. An
     older start's ``unavailable:`` stand-in names no bucket and is skipped."""
     from ouroboros.usage_admission import UNAVAILABLE_GROUP_PREFIX
+    from ouroboros.store_hot_facts import tree_requests
 
     tree = str(tree_id or "")
     with store.open_store(root, write=False) as txn:
+        where, params = _selected(txn, f"billing_group_id<>'' AND ({_TREE})",
+            f"json_extract(facts, '$.billing_group.billing_group_id')<>'' AND ({_LEGACY_TREE})", (tree, tree))
         carried = [json_loads(record["facts"]) for record in txn.conn.execute(
-            "SELECT facts FROM custody_runs WHERE json_extract(facts, '$.billing_group.billing_group_id')<>'' AND "
-            "(json_extract(facts, '$.root_task_id')=? OR (json_extract(facts, '$.root_task_id')='' AND task_id=?)) "
-            "ORDER BY updated_at, run_id", (tree, tree))]
-        requests = _pending_rows(txn)
+            f"SELECT facts FROM custody_runs WHERE {where} ORDER BY updated_at, run_id", params)]
+        requests = [facts["request"] for _name, key, facts in tree_requests(txn, tree) if key.startswith("invocation:")]
     for facts in carried:
         group = facts.get("billing_group") or {}
         if "billing_group_limit_usd" in group and not str(group["billing_group_id"]).startswith(UNAVAILABLE_GROUP_PREFIX):
@@ -198,7 +216,8 @@ def payload_snapshot(root):
     from ouroboros.delegate_pending import pending_invocations
 
     with store.open_store(root, write=False) as txn:
-        raw, requests = txn.custody_raw_rows(_MAY_HOLD_PAYLOAD), _pending_rows(txn)
+        raw = txn.custody_raw_rows(*_selected(txn, "payload_held=1", _MAY_HOLD_PAYLOAD))
+        requests = _pending_rows(txn)
     held = {rid: json_loads(text) for rid, text in raw.items()}
     return {"runs": _decode_all(held), "pending": pending_invocations(root, rows=requests)}
 
@@ -349,11 +368,17 @@ def publish(root, event: Dict[str, Any], *, propagate_contention: bool = False) 
 
     owed = ""
     try:
-        with store.open_store(root, write=True) as txn:
-            if not event.get("event_id") or txn.get_row(inv.EVENTS, str(event["event_id"])) is None:
-                event = {**event, "custody_ordinal": int(txn.meta(inv.ORDINAL) or 0) + 1}
-                owed = _reduce(txn, event, _loaded(txn, event), {})
-                txn.outbox_put(event)
+        while True:
+            with store.open_store(root, write=True) as txn:
+                if int(txn.meta("schema_version") or 1) >= store.SCHEMA_VERSION:
+                    if not event.get("event_id") or txn.get_row(inv.EVENTS, str(event["event_id"])) is None:
+                        event = {**event, "custody_ordinal": int(txn.meta(inv.ORDINAL) or 0) + 1}
+                        owed = _reduce(txn, event, _loaded(txn, event), {})
+                        txn.outbox_put(event)
+                    break
+            # Prepare an old child before reducing anything, like store.update_task.
+            from ouroboros.store_import import upgrade_current_schema
+            upgrade_current_schema(root)
     except store.StoreError as exc:
         if (propagate_contention and isinstance(exc, store.StoreBusy) and exc.reason == "contention"
                 and getattr(exc, "rollback_confirmed", None) is not False):

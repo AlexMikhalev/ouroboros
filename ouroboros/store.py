@@ -27,13 +27,14 @@ import weakref
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from ouroboros.utils import append_jsonl, machine_json, utc_now_iso  # one compact JSON text: key order kept, facts round-trip
+from ouroboros import store_hot_facts
 
 STORE_REL = pathlib.Path("state/current.sqlite")
 LOCK_NAME = "current.lock"  # the name-tier lock around every access
 IMPORT_LOCK_NAME = "current_import.lock"
 GENERATION = 8  # the lifecycle generation that owns the store
 GENERATION_KEY = "current_store_generation"  # in state/migrations.json
-SCHEMA_VERSION = 5  # 2: owner questions; 3: acceptance; 4: plans; 5: drive retention
+SCHEMA_VERSION = 6  # 2: owner questions; 3: acceptance; 4: plans; 5: retention; 6: hot facts
 STORE_WAIT_SEC = 10.0
 JOURNAL_SIZE_LIMIT = 1 << 20  # retain at most 1 MiB of an idle rollback journal
 TIER_ENFORCED, TIER_NAME = "enforced", "name"
@@ -87,7 +88,7 @@ CREATE INDEX custody_invocation ON custody_runs(invocation_id) WHERE invocation_
 CREATE TABLE custody_outbox (event_id TEXT PRIMARY KEY, run_id TEXT, task_id TEXT, event TEXT NOT NULL, created_at TEXT);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """ + REVIEW_COLLECTION_INDEX + PLAN_COLLECTION_INDEX + "".join(f"CREATE INDEX tasks_{column} ON tasks({column}) WHERE {column}=1;\n"
-              for column in FLAG_COLUMNS.values())
+              for column in FLAG_COLUMNS.values()) + store_hot_facts.SCHEMA
 
 
 class StoreError(RuntimeError):
@@ -1104,6 +1105,7 @@ def typed_columns(document: Dict[str, Any], *, pending_drive: Optional[bool] = N
     columns["review_collection_pending"] = int(review_collection_pending(document))
     columns["plan_collection_pending"] = int(collection_pending(document.get(PLAN_RECORD_KEY)))
     columns["drive_retention_at"] = task_result_retention_at(document)
+    columns.update(store_hot_facts.task_columns(document))
     return columns
 
 
@@ -1137,6 +1139,11 @@ class Txn:
         return None if record is None else json.loads(record["value"])
 
     def set_meta(self, key: str, value: Any) -> None:
+        # The import owner publishes schema versions here, in the same transaction
+        # as its DDL. Extend that gate without doing schema work on passive reads.
+        if key == "schema_version" and int(value) >= store_hot_facts.VERSION:
+            if int(self.meta(key) or 1) < store_hot_facts.VERSION:
+                store_hot_facts.upgrade(self)
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, machine_json(value)))
         if (key == "phase" and value in (EXPORTING, RETIRED)) or key in {"export_manifest", "lock_tier"}:
             self._handoff = True
@@ -1203,6 +1210,10 @@ class Txn:
 
     def replace_set(self, set_name: str, rows: Dict[str, Dict[str, Any]]) -> None:
         self.conn.execute("DELETE FROM obligations WHERE set_name=?", (set_name,))
+        if set_name in store_hot_facts.REQUEST_SETS:
+            for identity, facts in rows.items():
+                self.put_row(set_name, str(identity), facts)
+            return
         self.conn.executemany("INSERT INTO obligations (set_name, id, facts) VALUES (?, ?, ?)",
                               [(set_name, str(identity), machine_json(facts)) for identity, facts in rows.items()])
 
@@ -1212,6 +1223,9 @@ class Txn:
             "INSERT INTO obligations (set_name,id,facts) VALUES (?,?,?) ON CONFLICT(set_name,id) "
             "DO UPDATE SET facts=excluded.facts WHERE obligations.facts<>excluded.facts",
             (set_name, identity, machine_json(facts)))
+        if set_name in store_hot_facts.REQUEST_SETS:
+            self.conn.execute("UPDATE obligations SET request_root_task_id=? WHERE set_name=? AND id=? "
+                              "AND request_root_task_id IS NULL", (store_hot_facts.request_root(facts), set_name, identity))
 
     def delete_row(self, set_name: str, identity: str) -> None:
         self.conn.execute("DELETE FROM obligations WHERE set_name=? AND id=?", (set_name, identity))
@@ -1291,13 +1305,16 @@ class Txn:
         return None if record is None else json.loads(record["facts"])
 
     def put_custody(self, run_id: str, facts: Dict[str, Any], *, state: str) -> None:
+        columns = store_hot_facts.custody_columns(facts)
         self.conn.execute(
-            "INSERT INTO custody_runs (run_id, task_id, project_id, invocation_id, state, facts, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET task_id=excluded.task_id, "
+            "INSERT INTO custody_runs (run_id, task_id, project_id, invocation_id, state, facts, updated_at, "
+            f"{','.join(columns)}, write_seq) VALUES ({','.join('?' * (7 + len(columns)))}, 1) "
+            "ON CONFLICT(run_id) DO UPDATE SET task_id=excluded.task_id, "
             "project_id=excluded.project_id, invocation_id=excluded.invocation_id, state=excluded.state, "
-            "facts=excluded.facts, updated_at=excluded.updated_at",
+            "facts=excluded.facts, updated_at=excluded.updated_at, write_seq=custody_runs.write_seq+1, "
+            + ",".join(f"{name}=excluded.{name}" for name in columns),
             (run_id, str(facts.get("task_id") or ""), str(facts.get("project_id") or ""),
-             str(facts.get("invocation_id") or ""), state, machine_json(facts), utc_now_iso()))
+             str(facts.get("invocation_id") or ""), state, machine_json(facts), utc_now_iso(), *columns.values()))
 
     # -- the custody outbox: an emitted event waits here between its COMMIT and its chain append.
     def outbox_put(self, event: Dict[str, Any]) -> None:
