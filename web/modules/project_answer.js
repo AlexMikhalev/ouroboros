@@ -11,7 +11,6 @@ import { createSystemMessageActions } from './ui_helpers.js';
 import { tr } from './i18n.js';
 import { projectReference } from './project_reference.js';
 import { terminalTimeNote } from './utils.js';
-import { mountResultFilesReader } from './result_files.js';
 
 export const PROJECT_ROW_TYPES = new Set(['project_started', 'project_handoff', 'project_completion_summary']);
 
@@ -27,65 +26,27 @@ export function appendProjectRow(addMessage, msg, text, opts) {
 }
 
 // The fade says "there is more": it appears only when the fold really hides text. The clamp
-// itself is unconditional CSS, so toggling the class never moves layout. A row mounted while
+// itself is unconditional CSS, so measuring the fade never moves layout. A row mounted while
 // Chat is not the visible page has no layout box (clientHeight 0): it is left alone and
 // measured when Chat is shown; a resize re-measures, because the width decides the height.
-// An expanded answer keeps its Show less until the owner folds it again.
 function markFold(bubble) {
     const message = bubble.querySelector('.message');
-    if (!message || !message.clientHeight || bubble.classList.contains('is-expanded')) return;
+    if (!message || !message.clientHeight) return;
     const folded = message.scrollHeight > message.clientHeight + 1;
     bubble.classList.toggle('is-folded', folded);
     syncFold(bubble, message, folded);
 }
 
-// Collapsed text offers no keyboard stops (pointer clicks still reach visible links): Show full
-// is the way in, so focus never lands on clipped text. Later Markdown regions are re-marked here
-// on every measure, and a scrolling table re-marks itself once the attribute leaves.
+// Folded text offers no keyboard stops (pointer clicks still reach visible links): the Project
+// reference leads to the complete answer. The table enhancer respects the fold even
+// when it registers later; removing its tabindex lets it restore normal keyboard use.
 const FOCUSABLE = 'a[href], button, input, select, textarea, summary, [tabindex]';
 function syncFold(bubble, message, collapsed) {
-    const toggle = bubble.querySelector(':scope > .system-message-actions > [data-answer-fold]');
-    if (toggle) toggle.hidden = !collapsed && !bubble.classList.contains('is-expanded');
-    for (const node of message.querySelectorAll(collapsed ? FOCUSABLE : '[data-fold-stop]')) {
+    for (const node of message.querySelectorAll(collapsed ? FOCUSABLE : '[data-fold-stop], .md-table-wrap[tabindex]')) {
         node.toggleAttribute('data-fold-stop', collapsed);
         if (collapsed) node.setAttribute('tabindex', '-1');
         else node.removeAttribute('tabindex');
     }
-}
-
-function setFold(bubble, expand, write) {
-    const message = bubble.querySelector('.message');
-    const toggle = bubble.querySelector(':scope > .system-message-actions > [data-answer-fold]');
-    if (!message || !toggle) return;
-    const feed = bubble.closest('#chat-messages, .chat-messages');
-    const before = toggle.getBoundingClientRect().top;
-    write(() => {
-        bubble.classList.toggle('is-expanded', expand);
-        bubble.classList.toggle('is-folded', !expand);
-        message.scrollTop = 0;
-        syncFold(bubble, message, !expand);
-        toggle.setAttribute('aria-expanded', String(expand));
-        toggle.textContent = expand ? tr('result.show_less', 'Show less') : tr('result.show_full', 'Show full');
-        return true;
-    }, expand ? undefined : { excludeAnchorNode: bubble });
-    // Folding again keeps the control under the pointer once the viewport has settled.
-    if (!expand && feed) feed.scrollTop += toggle.getBoundingClientRect().top - before;
-}
-
-function mountFoldToggle(bubble, actions, write) {
-    const toggle = bubble.ownerDocument.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'btn btn-xs btn-default';
-    toggle.dataset.answerFold = '';
-    toggle.hidden = true;
-    toggle.setAttribute('aria-expanded', 'false');
-    toggle.textContent = tr('result.show_full', 'Show full');
-    toggle.addEventListener('click', () => setFold(bubble, !bubble.classList.contains('is-expanded'), write));
-    // Backstop for a stop added after the last measure: keyboard focus opens the answer.
-    bubble.querySelector('.message')?.addEventListener('focusin', (event) => {
-        if (bubble.classList.contains('is-folded') && event.target?.matches?.(':focus-visible')) setFold(bubble, true, write);
-    });
-    actions.append(toggle);
 }
 
 // One pair of window listeners for the app's lifetime, however many rows exist: a row holds
@@ -111,8 +72,8 @@ function watchFolds() {
 }
 
 export function decorateProjectRow(bubble, { role = 'system', projectId = '', projectName = '', terminalTime, addedAt,
-    systemType = '', completion = systemType === 'project_completion_summary', taskId = '',
-    completionLimitation = '', limitation = completionLimitation, fetchDetail, renderFile, onDomWrite = (write) => write() } = {}) {
+    systemType = '', completion = systemType === 'project_completion_summary',
+    completionLimitation = '', limitation = completionLimitation } = {}) {
     if (!bubble || !projectId) return null;
     if (role === 'assistant') {
         bubble.classList.add('project-answer');
@@ -133,9 +94,7 @@ export function decorateProjectRow(bubble, { role = 'system', projectId = '', pr
         note.className = 'msg-provenance';
         note.textContent = terminalTimeNote(terminalTime, addedAt);
         bubble.insertBefore(note, actions);
-        if (taskId && fetchDetail) mountResultFilesReader(bubble, actions, taskId, fetchDetail, renderFile, onDomWrite);
     }
-    if (role === 'assistant') mountFoldToggle(bubble, actions, onDomWrite);
     return actions;
 }
 

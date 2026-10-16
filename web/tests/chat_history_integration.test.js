@@ -188,7 +188,7 @@ test('reading to the oldest page hides the button; ↓ returns to the present wi
     assert.equal(new Set(ids).size, ids.length, 'a replayed page mounts no duplicate row');
 });
 
-test('a Project final whose page was released mounts again with its Files; a mounted one absorbs a retry', async (t) => {
+test('a Project final whose page was released mounts again with its Project reference; a mounted one absorbs a retry', async (t) => {
     offScreen(t);
     // The Project reference sits after the message (`Element.after`), which this stub lacks.
     ElementStub.prototype.after = function (node) {
@@ -215,8 +215,9 @@ test('a Project final whose page was released mounts again with its Files; a mou
     const [again] = finals();
     assert.ok(again, 'the read-back page mounts its final again');
     assert.match(again.innerHTML, /Done: PR #7 merged\./);
-    assert.deepEqual(again.querySelector('.system-message-actions').children.slice(1).map(node => node.textContent),
-        ['Files', 'Show full']);
+    const actions = again.querySelector('.system-message-actions');
+    assert.equal(actions.children.length, 1);
+    assert.equal(actions.children[0].dataset.intent, 'open-project');
     // A transport retry of the mounted delivery is the same bubble at its original time.
     f.emit({ ...final, content: final.text, history_id: undefined, ts: '2026-09-12T11:05:00.000Z' });
     assert.deepEqual(finals(), [again]);

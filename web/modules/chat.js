@@ -2291,7 +2291,7 @@ export function createChatInstance({
         if (!bubble.classList.contains('project-handoff')) {
             if (!isProgress && shown) chatMedia.attachCopyControl(bubble, String(shown));
             if (!projectEntry && PROJECT_ROW_TYPES.has(systemType)) decorateProjectRow(bubble, { ...meta, ...opts, role,
-                addedAt: ts, fetchDetail: fetchTaskDetailStrict, renderFile: chatMedia.buildDocumentBubble, onDomWrite: withStableViewport });
+                addedAt: ts });
         }
         syncSavedProjectContext(bubble, opts.originProjected, opts.originId);
         wireSkillReviewDisclosure(bubble, { onDomWrite: withStableViewport });

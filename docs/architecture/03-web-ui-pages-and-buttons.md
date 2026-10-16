@@ -67,7 +67,7 @@ Unavailable index, unreadable members and unknown publication addresses yield `c
 
 Host task facts attach to its card by producer-stamped `card_row` (`timeline`/`reviews`) and `card_row_id` (§11.1); without a card they render standalone System words. Finality is row-specific: durable `task_summary.outcome_phase` twins `log_events.js` via `project_dialogue.outcome_phase`/`OUTCOME_PHASE_HEADLINE`; pre-finalization carries `outcome_final=false`, no verdict. Terminal summaries append `_completion_verdict`; Main's completion carries plain headline/verdict without `outcome_phase`. `TASK_CAUSE_PHRASES` supplies one sentence from typed execution reason, or nonaccepted acceptance reason; unknown codes stay raw. Reviewer rationale stays on results/in Logs: host rows never present unaccepted claims as the whole story.
 
-Nonclean answers carry one `completion_reason` (verdict/outcome plus preparation-time source delivery) through live/history/snapshots, never parsed prose/reviews. Clean answers have none; reason-only endings stay System voice without duplication. Main Files (DESIGN "Project completion mirror") reads/downloads immutable `file_ref` bytes; history never rebuilds inventory.
+Nonclean answers carry one `completion_reason` (outcome/verdict and source delivery) through live/history/snapshots, never parsed prose/reviews. Clean answers have none; reason-only endings stay System voice without duplication. Main's folded preview opens the answer/documents in Project; task Files and quiz materials stay separate (DESIGN "Project completion mirror").
 
 #### Project handoff receipts
 
