@@ -824,3 +824,59 @@ def test_companion_tells_a_dropped_socket_from_an_ended_call(tmp_path, fake_door
     message = companion.status()["message"]
     assert "the host closed the meeting audio socket (peer_send_timeout)" in message
     assert "call ended" not in message
+
+
+# ---- the lifeline: the companion lives exactly as long as the server that started it ---------------
+
+def point_lifeline(monkeypatch, module, *, start: int, named):
+    """Give a companion module a parent: ``start`` is its parent at start, ``named`` the host's name for it.
+
+    ``named=None`` means the host put no name in the environment. The returned dict's
+    ``now`` is the companion's current parent, which a test changes to re-parent it.
+    """
+    ppid = {"now": start}
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    monkeypatch.setattr(module.os, "getppid", lambda: ppid["now"])
+    monkeypatch.setattr(module, "_START_PARENT", start)
+    if named is None:
+        monkeypatch.delenv(module.PARENT_PID_ENV, raising=False)
+    else:
+        monkeypatch.setenv(module.PARENT_PID_ENV, str(named))
+    return ppid
+
+
+def _join_lifelines() -> None:
+    for thread in [thread for thread in threading.enumerate() if thread.name == "meeting-lifeline"]:
+        thread.join(2.0)
+
+
+def test_the_lifeline_keeps_a_pid1_server_and_ends_with_a_reparented_orphan(monkeypatch):
+    monkeypatch.setattr(meeting_capture, "LIFELINE_SEC", 0.01)
+    point_lifeline(monkeypatch, meeting_capture, start=1, named=1)  # a container's server is PID 1
+    assert meeting_capture._parent_alive(1), "a PID-1 server that started the companion is a live parent"
+    stop = threading.Event()
+    meeting_capture._watch_parent(stop)
+    try:
+        assert not stop.wait(0.3), "the companion must not quit under a live PID-1 server"
+    finally:
+        stop.set()
+        _join_lifelines()
+    ppid = point_lifeline(monkeypatch, meeting_capture, start=4321, named=4321)  # a desktop server
+    stop = threading.Event()
+    meeting_capture._watch_parent(stop)
+    try:
+        assert not stop.wait(0.1)
+        ppid["now"] = 1  # the server died and init adopted the companion
+        assert stop.wait(2.0), "a re-parented orphan exits"
+    finally:
+        stop.set()
+        _join_lifelines()
+    ppid["now"] = 900  # adopted by a subreaper instead
+    assert not meeting_capture._parent_alive(4321)
+    # Orphaned before it started (its parent is no longer the named server), or a PID 1 nobody named.
+    point_lifeline(monkeypatch, meeting_capture, start=1, named=4321)
+    assert meeting_capture._lifeline_parent() == 0 and not meeting_capture._parent_alive(0)
+    point_lifeline(monkeypatch, meeting_capture, start=1, named=None)
+    assert meeting_capture._lifeline_parent() == 0
+    point_lifeline(monkeypatch, meeting_capture, start=777, named=None)
+    assert meeting_capture._lifeline_parent() == 777

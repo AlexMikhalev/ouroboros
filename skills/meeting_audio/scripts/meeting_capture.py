@@ -34,6 +34,8 @@ from meeting_peer import DoorPeer, PeerRefused  # noqa: E402
 
 PARENT_PID_ENV = "OUROBOROS_PARENT_PID"
 LIFELINE_SEC = 0.5
+# The process that started this companion, read before anything else can delay it.
+_START_PARENT = os.getppid()
 
 # Door refusals in plain words; anything else is reported with its code.
 _DOOR_REFUSALS = {
@@ -380,8 +382,33 @@ class MeetingCompanion:
             pass
 
 
+def _lifeline_parent() -> int:
+    """The process this companion belongs to, or 0 when it was gone before the companion started.
+
+    The host names itself in ``OUROBOROS_PARENT_PID``. A container's server is PID 1,
+    and PID 1 also adopts orphans, so a parent pid alone cannot tell a live server
+    from an adoption; the name can: the parent at start must be the named one. A
+    companion nobody named keeps refusing PID 1. Windows never re-parents a child,
+    so there the named process itself is watched.
+    """
+    try:
+        named = int(os.environ.get(PARENT_PID_ENV) or 0)
+    except ValueError:
+        named = 0
+    if sys.platform == "win32":
+        return named or _START_PARENT
+    if named:
+        return _START_PARENT if named == _START_PARENT else 0
+    return _START_PARENT if _START_PARENT > 1 else 0
+
+
 def _parent_alive(pid: int) -> bool:
-    if pid <= 1:
+    """Whether the parent from ``_lifeline_parent`` is still there.
+
+    On POSIX it is gone once it is no longer this process's parent: an orphan is
+    re-parented to init, launchd or a subreaper, so a PID-1 server stays a live parent.
+    """
+    if pid <= 0:
         return False
     if sys.platform == "win32":  # pragma: no cover - Windows only
         import ctypes
@@ -399,10 +426,7 @@ def _parent_alive(pid: int) -> bool:
 
 
 def _watch_parent(stop_event: threading.Event) -> None:
-    try:
-        parent = int(os.environ.get(PARENT_PID_ENV) or 0) or os.getppid()
-    except ValueError:
-        parent = os.getppid()
+    parent = _lifeline_parent()
 
     def watch() -> None:
         while not stop_event.wait(LIFELINE_SEC):

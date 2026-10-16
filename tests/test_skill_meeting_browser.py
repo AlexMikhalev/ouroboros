@@ -26,7 +26,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.test_skill_meeting_audio import FakeAPI, FakeDoor, RacingPeer, out_frame, serve_fake_door, until
+from tests.test_skill_meeting_audio import (
+    FakeAPI,
+    FakeDoor,
+    RacingPeer,
+    out_frame,
+    point_lifeline,
+    serve_fake_door,
+    until,
+)
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SKILL_DIR = REPO_ROOT / "skills" / "meeting_browser"
@@ -458,6 +466,21 @@ def test_a_closed_window_takes_no_more_call_audio(tmp_path):
     session.close("left")
     session.feed(b"\x01\x00" * 4, 1)
     assert session._commands.qsize() == 1  # only the close command; the audio was not queued
+
+
+def test_a_pid1_server_is_a_live_parent_and_a_reparented_orphan_is_not(monkeypatch):
+    point_lifeline(monkeypatch, meeting_participant, start=1, named=1)  # a container's server is PID 1
+    assert meeting_participant._parent_alive(1), "a PID-1 server that started the companion is a live parent"
+    assert meeting_participant._lifeline_parent() == 1
+    ppid = point_lifeline(monkeypatch, meeting_participant, start=4321, named=4321)  # a desktop server
+    parent = meeting_participant._lifeline_parent()
+    assert parent == 4321 and meeting_participant._parent_alive(parent)
+    ppid["now"] = 1  # the server died and init adopted the companion
+    assert not meeting_participant._parent_alive(parent)
+    point_lifeline(monkeypatch, meeting_participant, start=1, named=4321)  # orphaned before it started
+    assert meeting_participant._lifeline_parent() == 0 and not meeting_participant._parent_alive(0)
+    point_lifeline(monkeypatch, meeting_participant, start=1, named=None)  # a PID 1 nobody named
+    assert meeting_participant._lifeline_parent() == 0
 
 
 def test_probe_records_pass_only_when_every_fact_held(tmp_path, monkeypatch):
