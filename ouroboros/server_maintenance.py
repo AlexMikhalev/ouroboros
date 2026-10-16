@@ -803,10 +803,9 @@ def _startup_prune_sweeps(*, preserve_task_sources=False, recovery_report=None):
     _STARTUP_PRUNES_OWED[0] = _STARTUP_TREES_OWED[0] = _STARTUP_SOURCE_PRUNES_OWED[0] = True
     _STARTUP_RECOVERY_GAPS[0] = bool(preserve_task_sources and (
         recovery_report is None or recovery_report.get("errors") or "*" in recovery_report.get("unresolved", [])))
-    if not preserve_task_sources:
+    if not preserve_task_sources:  # the atomic-temp walk is the maintenance child's temp_sweep job
         from ouroboros.utils import sweep_stale_temp_files
         sweep_stale_temp_files(DATA_DIR, atomic_temps=False)
-        _STARTUP_TEMP_SWEEP_OWED[0] = True
 
 
 def _run_deferred_startup_prunes():
@@ -821,7 +820,6 @@ def _run_deferred_startup_prunes():
             if _STARTUP_TREES_OWED[0]:
                 prune_task_trees(DATA_DIR, exclude_root_ids=exclusions)
                 _STARTUP_TREES_OWED[0] = False
-                _STARTUP_TEMP_SWEEP_OWED[0] = True
             if _STARTUP_SOURCE_PRUNES_OWED[0]:
                 try:
                     from ouroboros.owner_mailbox import sweep_settled_owner_mailboxes
@@ -995,9 +993,6 @@ def _prune_delegated_snapshots() -> None:
 # Memory only: where the last drive-custody pass stopped in each drive layout, so a bounded
 # pass continues instead of re-attempting the same first drives (no ledger, no timer).
 _DRIVE_PRUNE_CURSOR = {"headless": "", "direct": ""}
-# Memory only: startup owes the first reconcile pass ONE whole-tree sweep of orphaned atomic
-# temp files (a walk over the data root that no longer delays readiness).
-_STARTUP_TEMP_SWEEP_OWED = [False]
 
 
 def _run_periodic_reconcile_sweep(marker: list, stop_event: Any = None, latch: Any = None) -> None:
@@ -1025,13 +1020,6 @@ def _run_periodic_reconcile_sweep(marker: list, stop_event: Any = None, latch: A
 
         collect_orphaned_operations_softly(DATA_DIR, stop=lambda: _stop_requested(stop_event))
         replay_owed_late_reviews(DATA_DIR, stop=lambda: _stop_requested(stop_event))  # owed rows only
-        if _STARTUP_TEMP_SWEEP_OWED[0]:
-            from ouroboros.utils import sweep_stale_temp_files
-
-            _STARTUP_TEMP_SWEEP_OWED[0] = False
-            removed = sweep_stale_temp_files(pathlib.Path(DATA_DIR), scripts=False)
-            if removed:
-                log.info("Removed %d orphaned atomic temp file(s) left by a hard kill", removed)
         if _stop_requested(stop_event):
             return
         _run_drive_custody_pass(stop_event)

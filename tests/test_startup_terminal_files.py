@@ -986,7 +986,6 @@ def test_unknown_startup_recovery_keeps_coarse_tree_and_temp_preservation(roots,
         delete_result(root, "unresolved")
     else:
         unreadable_result(monkeypatch, "unresolved")
-    monkeypatch.setattr(maintenance, "_STARTUP_TEMP_SWEEP_OWED", [False])
     monkeypatch.setattr("ouroboros.retention.age_cutoff", lambda *a, **kw: 4_000_000_000)
     maintenance._startup_prune_sweeps(preserve_task_sources=True, recovery_report=report)
-    assert tree.exists() and maintenance._STARTUP_TEMP_SWEEP_OWED == [False]
+    assert tree.exists()

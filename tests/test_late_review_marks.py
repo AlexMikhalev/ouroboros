@@ -388,7 +388,7 @@ def _sweep(root, monkeypatch):
     from ouroboros import server_maintenance as maintenance
 
     monkeypatch.setattr(maintenance, "DATA_DIR", root)
-    for name in ("_STARTUP_PRUNES_OWED", "_STARTUP_TREES_OWED", "_STARTUP_SOURCE_PRUNES_OWED", "_STARTUP_TEMP_SWEEP_OWED"):
+    for name in ("_STARTUP_PRUNES_OWED", "_STARTUP_TREES_OWED", "_STARTUP_SOURCE_PRUNES_OWED"):
         monkeypatch.setattr(maintenance, name, [False])
     monkeypatch.setattr(maintenance, "_periodic_zombie_reconcile", lambda **_kw: None)
     monkeypatch.setattr(maintenance, "_run_drive_custody_pass", lambda *_a: None)

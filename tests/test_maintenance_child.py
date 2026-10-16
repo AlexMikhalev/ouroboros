@@ -125,7 +125,7 @@ def test_activity_backfill_rests_on_its_second_run(data, opened, monkeypatch):
     assert maintenance.run_job(data, "activity_backfill")["state"] == "done"
     before, decodes = _revision(data), _decodes(monkeypatch)
     opened.clear()
-    assert maintenance.run_job(data, "activity_backfill") == {"state": "done", "items": 0}
+    assert maintenance.run_job(data, "activity_backfill") is None  # at rest: only its row was read
     assert _under(opened, data / "archive") == [] and _under(opened, data / "logs") == []
     assert decodes == [] and _revision(data) == before
     assert "activity_backfill" not in maintenance.due(data)
@@ -184,7 +184,7 @@ def test_child_ref_promotion_rests_on_its_second_run(tmp_path, opened, monkeypat
     assert "child_ref_promotion" not in maintenance.due(parent)
     before, decodes = _revision(parent), _decodes(monkeypatch)
     opened.clear()
-    assert maintenance.run_job(parent, "child_ref_promotion") == {"state": "done", "items": 0}
+    assert maintenance.run_job(parent, "child_ref_promotion") is None  # at rest: only its facts were read
     assert decodes == [] and _revision(parent) == before
     assert _under(opened, parent / "observability") == [] and _under(opened, child / "observability") == []
 
@@ -212,3 +212,37 @@ def test_child_ref_promotion_killed_after_k_members_resumes_at_k(tmp_path, monke
                             parent_root, child, task_id, result, **kw))
     assert maintenance.run_job(parent, "child_ref_promotion")["state"] == "done"
     assert sorted(walked) == ["t1", "t2", "t3"], "a member remembered before the kill was walked again"
+
+
+def test_planner_statistics_once_per_store_and_again_after_tenfold_growth(data):
+    from ouroboros.task_results import write_task_result
+
+    for index in range(3):
+        write_task_result(data, f"task-{index}", "completed", result="answer")
+    assert "sqlite_analyze" not in maintenance.due(data), "never by itself a reason to spawn the child"
+    assert maintenance.run_job(data, "sqlite_analyze") == {"state": "done", "items": 3}
+    with store.open_store(data, write=False) as txn:
+        assert txn.conn.execute("SELECT COUNT(*) FROM sqlite_stat1 WHERE tbl='tasks'").fetchone()[0] > 0
+    before = _revision(data)
+    assert maintenance.run_job(data, "sqlite_analyze") is None and _revision(data) == before
+    for index in range(3, 30):
+        write_task_result(data, f"task-{index}", "completed", result="answer")
+    assert maintenance.run_job(data, "sqlite_analyze") == {"state": "done", "items": 30}
+
+
+def test_legacy_reconcile_runs_only_when_scheduled_and_tolerates_a_body_without_it(data, monkeypatch):
+    from ouroboros import store_import
+
+    calls = []
+    monkeypatch.setattr(store_import, "run_legacy_reconcile",
+                        lambda root, **kw: calls.append(kw) or maintenance_jobs.record(root, "legacy_reconcile",
+                                                                                       state="done", done=4),
+                        raising=False)
+    assert maintenance.run_job(data, "legacy_reconcile") is None and calls == [], "never scheduled: never run"
+    maintenance_jobs.record(data, "legacy_reconcile", state="pending", reason="a store-unaware body ran")
+    assert maintenance.due(data) == ["legacy_reconcile"], "a scheduled reconcile is a reason to spawn"
+    assert maintenance.run_job(data, "legacy_reconcile") == {"state": "done", "items": 4}
+    assert set(calls[0]) == {"should_stop"} and maintenance.due(data) == []
+    monkeypatch.delattr(store_import, "run_legacy_reconcile")
+    maintenance_jobs.record(data, "legacy_reconcile", state="pending")
+    assert maintenance.run_job(data, "legacy_reconcile") == {"state": "pending", "items": 0}

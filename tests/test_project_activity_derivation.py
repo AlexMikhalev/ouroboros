@@ -90,7 +90,7 @@ def test_telemetry_only_new_project_reads_inactive_and_get_never_scans(tmp_path,
     assert (data / "state" / "projects.json").read_bytes() == registry_before, (
         "GET path must never write the registry"
     )
-    assert _backfill(data)["state"] == "done", "a project created later is never a candidate"
+    assert _backfill(data) is None, "a project created later is never a candidate: the job rests"
 
 
 def test_derivation_paths_owner_ui_binding_and_revision(tmp_path):
@@ -127,7 +127,7 @@ def test_backfill_runs_once_per_installation_not_per_process(tmp_path, monkeypat
     # durable; no module state remembers anything): none rescans the chain.
     pr.reconcile_projects(data)
     assert "activity_backfill" not in maintenance.due(data)
-    assert _backfill(data)["state"] == "done"
+    assert _backfill(data) is None
     assert scans == []
     assert "thread_activity_seen" not in pr.get_reserved_project(data, "late")
     assert _summary_row(data, "late")["has_thread_activity"] is False

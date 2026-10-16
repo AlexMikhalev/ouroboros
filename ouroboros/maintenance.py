@@ -113,13 +113,8 @@ def _activity_sources(root: pathlib.Path) -> List[tuple]:
     cursor and an interrupted run resumes past what it read."""
     sources = [("live", f"{index}-{name}", root / "logs" / name)
                for index, name in enumerate(("chat.jsonl", "progress.jsonl"))]
-    try:
-        with os.scandir(root / "archive") as entries:
-            names = sorted(entry.name for entry in entries if entry.name.endswith(".jsonl"))
-    except FileNotFoundError:
-        names = []
     for family in ("chat", "progress"):
-        sources.extend((family, name, root / "archive" / name) for name in names if name.startswith(family + "_"))
+        sources.extend((family, path.name, path) for path in sorted((root / "archive").glob(f"{family}_*.jsonl")))
     return sources
 
 
@@ -225,6 +220,69 @@ def _any_entry(directory: pathlib.Path) -> bool:
         return False
 
 
+def _legacy_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
+    """Scheduled (``pending``) by the boot detector or the explicit command (``store_import``);
+    an interrupted run (``running``) resumes at its cursor; a failed one waits to be scheduled."""
+    return row.get("state") in {"pending", "running"}
+
+
+def _legacy_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, Any]:
+    """``store_import.run_legacy_reconcile``: the reconcile of the files a store-unaware body wrote,
+    root and every descendant drive, with its own durable cursor in this job's row."""
+    from ouroboros import store_import
+
+    reconcile = getattr(store_import, "run_legacy_reconcile", None)
+    if reconcile is None:  # a body without the job: the row waits for one that has it
+        return {"state": "pending", "items": 0}
+    row = reconcile(root, should_stop=should_stop) or {}
+    return {"state": str(row.get("state") or "unknown"), "items": int(row.get("done") or 0)}
+
+
+def _release() -> str:
+    from ouroboros import __version__
+
+    return str(__version__)
+
+
+def _temp_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
+    """Once per installed release: a hard kill's orphaned atomic temps are reaped by the next
+    release's first child run. Never by itself a reason to spawn the child."""
+    return child and row.get("release") != _release()
+
+
+def _temp_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, Any]:
+    """The atomic writers' directories only (``utils.ATOMIC_TEMP_DIRS``), never the whole root or
+    ``observability/``; the age guard keeps any in-flight write's temp. The startup sweep of the
+    ``tmp_scripts`` fallback (no script can be live then) stays the server's."""
+    from ouroboros.utils import sweep_stale_temp_files
+
+    removed = sweep_stale_temp_files(root, scripts=False)
+    maintenance_jobs.record(root, "temp_sweep", state="done", release=_release(), removed=removed)
+    return {"state": "done", "items": removed}
+
+
+def _task_rows(root: pathlib.Path) -> int:
+    with store.open_store(root, write=False) as txn:
+        return int(txn.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0])
+
+
+def _analyze_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
+    """Planner statistics once per store file (this row lives in it), and again once the task
+    table grew tenfold since: statistics describe the data's magnitude, so a fresh install's
+    would mislead the planner as it grows. Never by itself a reason to spawn the child."""
+    if not child:
+        return False
+    return row.get("state") != "done" or _task_rows(root) >= 10 * max(1, int(row.get("tasks") or 0))
+
+
+def _analyze_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, Any]:
+    with store.open_store(root, write=True) as txn:
+        tasks = int(txn.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0])
+        txn.conn.execute("ANALYZE")
+    maintenance_jobs.record(root, "sqlite_analyze", state="done", tasks=tasks)
+    return {"state": "done", "items": tasks}
+
+
 def _packing_inputs(root: pathlib.Path) -> Dict[str, Any]:
     from ouroboros import evidence_packer
 
@@ -266,9 +324,12 @@ def _packing_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[st
 # order. ``child`` is False for the server's look: a job may then decline to be a reason to spawn
 # (it still runs whenever the child runs for another reason).
 JOBS: Dict[str, tuple] = {
+    "legacy_reconcile": (_legacy_due, _legacy_run),
     "activity_backfill": (_activity_due, _activity_run),
     "child_ref_promotion": (_promotion_due, _promotion_run),
-    "evidence_packing": (_packing_due, _packing_run),
+    "temp_sweep": (_temp_due, _temp_run),
+    "sqlite_analyze": (_analyze_due, _analyze_run),
+    "evidence_packing": (_packing_due, _packing_run),  # last: its quiet fact follows every other write
 }
 JOB_NAMES = tuple(JOBS)
 
@@ -286,30 +347,33 @@ def _contention(exc: BaseException) -> bool:
     return isinstance(exc, store.StoreBusy) or getattr(exc, "reason", None) == "contention"
 
 
-def run_job(root: Any, name: str, *, should_stop: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
-    """Run one named job in THIS process (the child's step; tests and the cost contract call it)."""
-    return JOBS[name][1](pathlib.Path(root), should_stop or (lambda: False))
+def run_job(root: Any, name: str, *, should_stop: Optional[Callable[[], bool]] = None) -> Optional[Dict[str, Any]]:
+    """Run one named job in THIS process when its own facts say work may wait (the child's step;
+    tests and the cost contract call it); ``None`` when the job is at rest: only its facts were read."""
+    root = pathlib.Path(root)
+    is_due, run_one = JOBS[name]
+    if not is_due(root, maintenance_jobs.job(root, name) or {}, _store_facts(root), True):
+        return None
+    return run_one(root, should_stop or (lambda: False))
 
 
 def run(root: Any, *, should_stop: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """The child's pass: every due job in order; one job's failure never skips the next."""
     root, stop = pathlib.Path(root), should_stop or (lambda: False)
     report: Dict[str, Any] = {"status": "completed", "jobs": {}}
-    rows, facts = maintenance_jobs.jobs(root), _store_facts(root)
-    for name, (is_due, run_one) in JOBS.items():
+    for name in JOBS:
         if stop():
             break
         try:
-            if not is_due(root, rows.get(name) or {}, facts, True):
-                continue
-            outcome = run_one(root, stop)
+            outcome = run_job(root, name, should_stop=stop)
         except Exception as exc:
             if not _contention(exc):
                 log.warning("Maintenance job %s failed", name, exc_info=True)
                 report["status"] = "failed"
             outcome = {"state": "pending" if _contention(exc) else "failed", "items": 0}
-        report["jobs"][name] = {"state": str(outcome.get("state") or "unknown"), "items": int(outcome.get("items") or 0)}
-        rows, facts = maintenance_jobs.jobs(root), _store_facts(root)
+        if outcome is not None:
+            report["jobs"][name] = {"state": str(outcome.get("state") or "unknown"),
+                                    "items": int(outcome.get("items") or 0)}
     return report
 
 

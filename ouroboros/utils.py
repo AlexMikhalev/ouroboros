@@ -336,6 +336,23 @@ def atomic_write_json(path: pathlib.Path, payload: Any, *, trailing_newline: boo
     write_text_atomic(pathlib.Path(path), content, fsync=fsync)
 
 
+# Where the atomic writers place their temp siblings (the data root's own files aside): the
+# temp sweep walks only these, pruning trees with an owner of their own (a child drive goes
+# whole with its drive's GC; checkouts and runtimes are foreign). Never ``observability/``.
+ATOMIC_TEMP_DIRS = ("state", "logs", "memory", "projects", "task_results")
+_ATOMIC_TEMP_PRUNED = (("state", "headless_tasks"), ("state", "review_checkouts"), ("state", "cx"))
+
+
+def _atomic_temp_candidates(root: pathlib.Path) -> Iterator[pathlib.Path]:
+    yield from root.glob(".*.tmp.*")
+    pruned = {root.joinpath(*parts) for parts in _ATOMIC_TEMP_PRUNED}
+    for rel in ATOMIC_TEMP_DIRS:
+        for current, dirs, files in os.walk(root / rel):  # never follows a symlinked directory
+            here = pathlib.Path(current)
+            dirs[:] = [name for name in dirs if here / name not in pruned]
+            yield from (here / name for name in files if name.startswith(".") and ".tmp." in name)
+
+
 def sweep_stale_temp_files(root: pathlib.Path, *, min_age_sec: float = 3600.0,
                            atomic_temps: bool = True, scripts: bool = True) -> int:
     """Remove orphaned atomic-write temp files left behind by a hard kill.
@@ -343,8 +360,9 @@ def sweep_stale_temp_files(root: pathlib.Path, *, min_age_sec: float = 3600.0,
     ``atomic_write_json`` writes to a unique ``.{name}.tmp.<pid>.<tid>.<uuid>``
     sibling then ``os.replace``s it into place; a SIGKILL between create and
     rename can orphan the temp file (its try/finally cleanup never runs). This
-    sweeps the tree for such temp files older than ``min_age_sec`` — the age
-    guard avoids deleting a temp file from an in-flight write in another process.
+    sweeps the atomic writers' directories (``ATOMIC_TEMP_DIRS``, never the whole
+    root) for such temp files older than ``min_age_sec`` — the age guard avoids
+    deleting a temp file from an in-flight write in another process.
     Returns the number removed. Best-effort: never raises.
 
     Only files whose suffix after the final ``.tmp.`` is the atomic signature
@@ -356,8 +374,8 @@ def sweep_stale_temp_files(root: pathlib.Path, *, min_age_sec: float = 3600.0,
     ``finally``, so one that survived is a hard-kill orphan. Only the
     TOP-LEVEL fallback dir is swept here — task-drive copies die with their
     drive's own GC prune — and only at startup, when no script can be live
-    (``scripts``); the whole-tree walk for atomic temps (``atomic_temps``) is the
-    expensive half and runs off the loop thread, in the first reconcile pass.
+    (``scripts``); the walk for atomic temps (``atomic_temps``) is the maintenance
+    child's ``temp_sweep`` job, once per installed release (ouroboros/maintenance.py).
     """
     root = pathlib.Path(root)
     if not root.is_dir():
@@ -366,7 +384,7 @@ def sweep_stale_temp_files(root: pathlib.Path, *, min_age_sec: float = 3600.0,
     removed = 0
     now = time.time()
     try:
-        candidates = list(root.rglob(".*.tmp.*")) if atomic_temps else []
+        candidates = list(_atomic_temp_candidates(root)) if atomic_temps else []
         if scripts:
             candidates.extend(root.glob("tmp_scripts/script_*"))
     except OSError:

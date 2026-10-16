@@ -583,38 +583,39 @@ def test_drive_custody_rides_the_reconcile_pass_bounded_and_never_startup(tmp_pa
     assert drive.is_dir(), "a closed generation settles nothing"
 
 
-def test_startup_sweeps_only_the_script_fallback_and_owes_the_tree_walk_to_the_first_pass(tmp_path, monkeypatch):
-    """The whole-tree walk for orphaned atomic temp files left the startup path (it delayed
-    readiness by hundreds of thousands of stat calls): startup sweeps only the top-level
-    tmp_scripts fallback, and the first off-loop reconcile pass of the generation sweeps the
-    tree once; a deferred startup owes nothing."""
+def test_startup_sweeps_only_the_script_fallback_and_the_temp_walk_is_the_childs_job(tmp_path, monkeypatch):
+    """The walk for orphaned atomic temp files left the startup path (it delayed readiness by
+    hundreds of thousands of stat calls) and the server process: startup sweeps only the
+    top-level tmp_scripts fallback (no script can be live then), no reconcile pass walks for
+    temps, and the maintenance child's temp_sweep job reaps them in the atomic writers'
+    directories once per installed release, never once per process."""
+    from ouroboros import maintenance
     from ouroboros import server_maintenance as sm
 
     monkeypatch.setattr(sm, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(sm, "_STARTUP_TEMP_SWEEP_OWED", [False])
     monkeypatch.setattr(sm, "_periodic_zombie_reconcile", lambda **kwargs: None)
     monkeypatch.setattr(sm, "_run_drive_custody_pass", lambda stop_event=None: None)
+    monkeypatch.setattr(sm, "_tick_maintenance_child", lambda: None)
     aged = time.time() - 7200
     script = tmp_path / "tmp_scripts" / "script_dead.py"
     orphan = tmp_path / "state" / "deep" / ".state.json.tmp.1.2.abc"
-    for path in (script, orphan):
+    evidence = tmp_path / "observability" / "blobs" / ".blob.json.gz.tmp.abc"  # never walked
+    for path in (script, orphan, evidence):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("x", encoding="utf-8")
         os.utime(path, (aged, aged))
 
     sm._startup_prune_sweeps()
-    assert not script.exists() and orphan.exists() and sm._STARTUP_TEMP_SWEEP_OWED == [True]
-
+    assert not script.exists() and orphan.exists()
     assert sm._RECONCILE_SWEEP_LOCK.acquire(blocking=False)
     sm._run_periodic_reconcile_sweep([0.0], threading.Event())
-    assert not orphan.exists() and sm._STARTUP_TEMP_SWEEP_OWED == [False]
+    assert orphan.exists(), "the server process walks for no temp"
 
+    assert maintenance.run_job(tmp_path, "temp_sweep")["items"] == 1
+    assert not orphan.exists() and evidence.exists()
     orphan.write_text("x", encoding="utf-8")
     os.utime(orphan, (aged, aged))
-    assert sm._RECONCILE_SWEEP_LOCK.acquire(blocking=False)
-    sm._run_periodic_reconcile_sweep([0.0], threading.Event())
-    assert orphan.exists(), "the walk runs once per generation, not every pass"
-
-    monkeypatch.setattr(sm, "_STARTUP_TEMP_SWEEP_OWED", [False])
-    sm._startup_prune_sweeps(preserve_task_sources=True)
-    assert sm._STARTUP_TEMP_SWEEP_OWED == [False]
+    assert maintenance.run_job(tmp_path, "temp_sweep") is None, "once per release, not per process or pass"
+    assert orphan.exists()
+    monkeypatch.setattr(maintenance, "_release", lambda: "a newer release")
+    assert maintenance.run_job(tmp_path, "temp_sweep")["items"] == 1 and not orphan.exists()
