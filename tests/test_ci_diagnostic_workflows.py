@@ -380,7 +380,8 @@ def _run_shell(step, tmp_path, *, diagnostic="viewport", result=0, scope="all"):
 def test_actual_producer_shell_preserves_success_and_failure_exit(tmp_path, workflow, job, step, result):
     completed, args = _run_shell(_steps(workflow, job)[step], tmp_path, result=result)
     assert completed.returncode == result, completed.stderr
-    assert args.count("pytest") == 1 and "summarize" not in args
+    # One producer: pytest itself, or the owned runner that forwards its pytest arguments.
+    assert args.count("pytest") + args.count("scripts/run_tests.py") == 1 and "summarize" not in args
 
 
 OFFICIAL, FORK, TAG = "razzant/ouroboros", "someone/private-copy", "refs/tags/v7.5.2"

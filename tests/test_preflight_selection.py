@@ -123,6 +123,7 @@ def test_adoption_accepts_a_full_receipt_of_exactly_the_named_commit(candidate):
     _commit_all(repo)
     sha = pr._run_git(repo, ["rev-parse", "HEAD"]).stdout.strip()
     assert pr.run_hermetic_pytest(repo, ctx=candidate) is None  # a full green run mints the durable receipt
+    assert adoption_test_evidence(candidate.drive_root, repo, sha, ctx=candidate)["source"] == "proof"
     (repo / "leaf.py").write_text("value = 99\n", encoding="utf-8")  # later dirty bytes do not matter
     evidence = adoption_test_evidence(candidate.drive_root, repo, sha)
     assert evidence["tier"] == "full" and evidence["source"] == "receipt" and evidence["head"] == sha
@@ -130,6 +131,36 @@ def test_adoption_accepts_a_full_receipt_of_exactly_the_named_commit(candidate):
     later = pr._run_git(repo, ["rev-parse", "HEAD"]).stdout.strip()
     with pytest.raises(ValueError, match="full_tests=true"):  # another commit has no full run on record
         adoption_test_evidence(candidate.drive_root, repo, later)
+
+
+def test_a_green_run_of_uncommitted_bytes_never_qualifies_the_commit_beneath_them(candidate):
+    from ouroboros.preflight_receipts import capture_executing_source_baseline
+
+    capture_executing_source_baseline()
+    repo = candidate.repo_dir
+    (repo / "tests/test_unrelated.py").write_text("def test_other(): assert True\n", encoding="utf-8")
+    (repo / "leaf.py").write_text("value = 3\n", encoding="utf-8")  # the committed body fails test_leaf
+    _commit_all(repo)
+    sha = pr._run_git(repo, ["rev-parse", "HEAD"]).stdout.strip()
+    (repo / "leaf.py").write_text("value = 2\n", encoding="utf-8")  # an uncommitted repair turns the run green
+    assert pr.run_hermetic_pytest(repo, ctx=candidate) is None and candidate._preflight_test_proof.head == sha
+    with pytest.raises(ValueError, match="full_tests=true"):  # neither the proof nor its receipt is that commit
+        adoption_test_evidence(candidate.drive_root, repo, sha, ctx=candidate)
+
+
+def test_a_run_admitted_one_worker_still_leaves_adoption_its_receipt(candidate, monkeypatch):
+    from ouroboros.preflight_receipts import capture_executing_source_baseline
+
+    capture_executing_source_baseline()
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "1")  # a small machine's budget admits one worker
+    repo = candidate.repo_dir
+    (repo / "tests/test_unrelated.py").write_text("def test_other(): assert True\n", encoding="utf-8")
+    _commit_all(repo)
+    sha = pr._run_git(repo, ["rev-parse", "HEAD"]).stdout.strip()
+    assert pr.run_hermetic_pytest(repo, ctx=candidate) is None
+    assert candidate._preflight_test_disclosure["receipt"]["status"] == "published"
+    evidence = adoption_test_evidence(candidate.drive_root, repo, sha)  # the supervisor path has no task ctx
+    assert evidence["source"] == "receipt" and evidence["head"] == sha
 
 
 def test_evolution_publication_refuses_selected_but_accepts_full(candidate, monkeypatch):
@@ -142,6 +173,7 @@ def test_evolution_publication_refuses_selected_but_accepts_full(candidate, monk
     assert pr.run_hermetic_pytest(ctx.repo_dir, ctx=ctx, selected=True, phase=pr.PRE_COMMIT_PHASE) is None
     assert "EVOLUTION_PUBLICATION_STOPPED" in _evolution_test_publication_stop(ctx, ctx._preflight_test_proof.head, "")
     (ctx.repo_dir / "tests/test_unrelated.py").write_text("def test_other(): assert True\n", encoding="utf-8")
+    _commit_all(ctx.repo_dir)  # evolution's forced full run follows its commit, on exactly that tree
     assert pr.run_hermetic_pytest(ctx.repo_dir, ctx=ctx) is None
     assert _evolution_test_publication_stop(ctx, ctx._preflight_test_proof.head, "") == ""
 

@@ -230,10 +230,11 @@ def test_unowned_worker_death_lets_running_tests_finish(tmp_path, monkeypatch):
                 Path({str(finished)!r}).write_text('finished', encoding='utf-8')
         """,
     }, workers=2, owned=False)
-    assert code != 0, output
+    assert code == 1, output  # xdist's own crash handling: a failed run, not an interrupted one
     assert finished.exists(), output
     data = json.loads((evidence / "results.json").read_text(encoding="utf-8"))
     assert data["worker_crash"]["reason"].startswith("xdist worker")
+    assert data["worker_crash"]["unfinished"] == []  # recorded at the end, after the survivor finished
 
 
 @pytest.mark.parametrize("phase", ["collection", "idle"])

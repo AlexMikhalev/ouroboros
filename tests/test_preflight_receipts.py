@@ -253,7 +253,7 @@ def test_a_new_process_reuses_a_complete_run_through_the_canonical_root_and_star
     [path] = _receipt_files(canonical)
     record = json.loads(path.read_text(encoding="utf-8"))
     assert path.stem == first["receipt"]["key"]
-    assert record["lanes"] == {"node": "passed", "parallel_workers": 2, "serial": "passed"}
+    assert record["lanes"] == {"node": "passed", "parallel_workers": 2, "admitted_workers": 2, "serial": "passed"}
     assert (record["authenticity"], record["task_id"], record["phase"]) == ("unsigned", "task-a", pr.PRE_COMMIT_PHASE)
 
     # Another life: another cwd, task drive, phase, launch descriptors and containment
@@ -718,6 +718,9 @@ _UNUSABLE = {
                            "the node lane does not match the recipe this candidate requires"),
     "one_worker": (True, lambda text, doc: _replace(doc, lanes={**doc["lanes"], "parallel_workers": 1}),
                    "the parallel/serial lane evidence is incomplete"),
+    "no_admitted_worker": (True, lambda text, doc: _replace(doc, lanes={**doc["lanes"], "parallel_workers": 1,
+                                                                        "admitted_workers": 0}),
+                           "the parallel/serial lane evidence is incomplete"),
     "serial_missing": (True, lambda text, doc: _replace(doc, pass_seconds={"parallel": 1.0}),
                        "the executed passes are not the parallel and serial lanes"),
     "no_origin_time": (True, lambda text, doc: json.dumps({k: v for k, v in doc.items() if k != "created_at"}),

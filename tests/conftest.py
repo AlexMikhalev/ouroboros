@@ -576,6 +576,9 @@ def pytest_sessionstart(session):  # noqa: ARG001
 
 
 def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
+    crash = getattr(session.config, "_ouroboros_unowned_crash", None)
+    if crash and not getattr(session.config, "_ouroboros_worker_crash", None):
+        _record_worker_crash(*crash)  # after the run, so "unfinished" names only what never finished
     # Under pytest-xdist this hook fires on the controller AND every worker process against the
     # SHARED repo root. Run the repo-root pollution sweep + exitstatus mutation ONLY on the
     # controller (the single authority): otherwise workers race the same shutil.rmtree and each
@@ -1278,9 +1281,15 @@ def pytest_testnodedown(node, error):  # noqa: ARG001
         return
     session = getattr(node.config, "_ouroboros_session", None)
     reason = f"xdist worker {node.gateway.id} died: {error}"
+    controller = node.config.pluginmanager.get_plugin("dsession")
+    if not _owned_run():
+        # Nobody outer reaps this run: xdist's own crash handling lets running tests finish
+        # and clean up their children. The facts are recorded when the session ends.
+        if controller is not None and not hasattr(node.config, "_ouroboros_unowned_crash"):
+            node.config._ouroboros_unowned_crash = (node, reason, controller.sched)
+        return
     if session is not None:
         session.shouldfail = reason
-    controller = node.config.pluginmanager.get_plugin("dsession")
     if controller is not None:
         # xdist's loop reads its own shouldstop, not Session.shouldfail. Stop
         # scheduling before it redistributes the dead worker's pending items.
@@ -1298,15 +1307,14 @@ def pytest_testnodedown(node, error):  # noqa: ARG001
             pending = bool(scheduler.node2pending.get(node))
         if getattr(scheduler, "collection", None) is None or not pending:
             _record_worker_crash(node, reason, scheduler)
-            if _owned_run():
-                pytest.exit(reason, returncode=1)
+            pytest.exit(reason, returncode=1)
 
 
 def _owned_run() -> bool:
     """An outer ProcessContainer will reap this run, so aborting live workers strands nothing.
 
-    Without one (CI steps, a bare pytest), xdist's own shutdown lets running tests finish
-    and clean up their children: nobody else would.
+    Without one (a bare pytest), xdist's own crash handling lets running tests finish and
+    clean up their children: nobody else would.
     """
     from ouroboros.process_containment import CONTAINMENT_ENV_PREFIX
 

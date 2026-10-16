@@ -14,13 +14,25 @@ _HOW = ("a run that also carried uncommitted or untracked files does not count; 
         "from a clean checkout so the post-commit run tests exactly this tree, then request the restart again")
 
 
+def _git(repo, *args):
+    return subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True, timeout=60)
+
+
+def _commit_tree(repo, commit) -> str:
+    tree = _git(repo, "rev-parse", "--verify", f"{commit}^{{tree}}")
+    return "" if tree.returncode else tree.stdout.strip()
+
+
 def full_proof_error(ctx, repo, commit="") -> str:
     from ouroboros.commit_admission import preflight_test_proof_matches
 
     proof = getattr(ctx, "_preflight_test_proof", None)
     try:
+        # A named commit needs a run of exactly its tree: green uncommitted or untracked
+        # bytes on top of it are another body.
         if (getattr(ctx, "_preflight_tests_passed", False) and proof is not None
-                and (not commit or proof.head == commit) and preflight_test_proof_matches(ctx, repo)):
+                and (not commit or (proof.head == commit and proof.tree == proof.index_tree == _commit_tree(repo, commit)))
+                and preflight_test_proof_matches(ctx, repo)):
             return ""
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         pass
@@ -31,21 +43,18 @@ def receipt_for_commit(data_dir, repo, commit) -> dict:
     """A coherent durable receipt of a complete full run of exactly ``commit``, or ``{}``."""
     from ouroboros.preflight_receipts import RECEIPT_SCHEMA, RECEIPTS_DIR, _record_problem
 
-    def git(*args):
-        return subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True, timeout=60)
-
-    tree = git("rev-parse", "--verify", f"{commit}^{{tree}}")
-    if tree.returncode:
+    tree = _commit_tree(repo, commit)
+    if not tree:
         return {}
-    tree = tree.stdout.strip()
     # The run must have carried the Node lane exactly when this commit has web tests.
-    node_ran = any(name.endswith(".test.js") for name in git("ls-tree", "-r", "--name-only", commit, "--",
-                                                              "web/tests").stdout.split())
+    node_ran = any(name.endswith(".test.js") for name in _git(repo, "ls-tree", "-r", "--name-only", commit, "--",
+                                                               "web/tests").stdout.split())
     for path in sorted((Path(data_dir) / "state" / RECEIPTS_DIR).glob("*.json")):
         try:
             document = json.loads(path.read_text(encoding="utf-8"))
             identity = document["identity"]
-            if (identity["schema"] == RECEIPT_SCHEMA and identity["head"] == commit and identity["tree"] == tree
+            if (identity["schema"] == RECEIPT_SCHEMA and identity["head"] == commit
+                    and identity["tree"] == identity["index_tree"] == tree
                     and not _record_problem(document, identity, node_ran)):
                 return {"source": "receipt", "key": path.stem, "head": commit, "tree": tree,
                         "created_at": document["created_at"], "phase": document["phase"]}
