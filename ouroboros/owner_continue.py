@@ -69,6 +69,9 @@ TECHNICAL_REASON_CODES = frozenset({
     # is not retried automatically (replaying would repeat effects), and its saved
     # source is retained: an explicit Continue is exactly its manual path (#1543).
     "worker_crash_owner_wait", "worker_crash_budget_pausing",
+    # A positively reconciled orphan is a technical interruption, not an
+    # unrecorded cause. Continue still rechecks owner sources and live custody.
+    "orphaned_running_after_worker_restart", "interrupted_retry_lost",
     # A billing or dispatch-fence authority that could not be read, where no exact pause was saved.
     "billing_authority_unreadable", "control_authority_unreadable",
 })
