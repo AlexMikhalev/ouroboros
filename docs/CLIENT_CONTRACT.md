@@ -179,9 +179,9 @@ Replace `<model-id>` with the endpoint's model id. An empty review pool is an ex
 
 `GET /api/state` (`StateResponse`) contains:
 - **Readiness:** `supervisor_ready` and `supervisor_error`.
-- **Activity:** `active_chat_activities`. The older `active_direct_turns` is kept for compatibility.
+- **Activity:** global root census `active_chat_activities`: `last_line`/`last_line_at`, `tool_calls`, `detached`, `project_id`/`project_name`; legacy `active_direct_turns` retained.
 - **Projects:** `projects` (a compact feed that may be capped) and `project_chat_ids` (the complete set).
-- **Current decisions:** `current_questions` exposes outstanding questions independently of the recent history page; `main_attention` exposes human-required task actions. Their `*_complete` flags and `*_gaps` distinguish a complete empty set from unavailable evidence. Retain earlier content on incomplete reads, without granting stale controls.
+- **Current decisions:** `current_questions` and `main_attention` expose questions and required actions independently of history. `*_complete`/`*_gaps` distinguish empty from unknown; retain incomplete content without stale controls.
 - **Modes and budget:** the access and context modes, and money figures in which `null` means unknown.
 - **Checkout:** `sha` is the first 8 characters of the checkout's commit; `branch` is `null` for a detached HEAD or unknown branch.
 - **`served_ui`.**
