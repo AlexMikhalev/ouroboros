@@ -265,6 +265,18 @@ test('continued later in the room: a new root in its Project makes the settled p
     } finally { f.close(); }
 });
 
+test('a queued successor whose start the census does not know still stands at the work\'s place', async () => {
+    const details = {};
+    const f = fixture({ details });
+    try {
+        const node = await runningPortal(f);
+        details['w-1'] = failedDetail(continuedBy());
+        f.state({ task_bindings: bindings, active_chat_activities: [successorRow({ started_at: 0 })] });
+        await settle();
+        assertFollowed(f, node);
+    } finally { f.close(); }
+});
+
 test('after a Main reload the start row binds the work and its record names the successor: the same one card', async () => {
     const history = [
         { role: 'user', text: 'audit the projects in their own room', ts: '2026-10-10T11:59:00Z', chat_id: 1, source: 'web',

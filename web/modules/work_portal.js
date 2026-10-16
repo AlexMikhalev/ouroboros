@@ -218,7 +218,9 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
         follows.delete(successorId);
         const record = card.get(successorId);
         if (!record || record.isSubagent) return false;
-        card.reanchor(record, Number(row.started_at) * 1000);
+        // A queued row may not know its start (0): stamping that would pin the card above the whole feed.
+        const startedSec = Number(row.started_at);
+        if (startedSec > 0) card.reanchor(record, startedSec * 1000);
         const changed = bind(record, { id: projectId, name: key(row.project_name) });
         card.show(record);
         return Boolean(changed || record.root.isConnected);
