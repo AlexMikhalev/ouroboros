@@ -257,7 +257,7 @@ test('the Starting… header follows the phase: starting, chat ready, failed', (
     assert.equal(computeDerivedChatStatus({ supervisorStarting: false, bootPhase: FAILED }).text, 'Online',
         'readiness outranks the phase: a ready supervisor is Online whatever the boot said');
     assert.equal(computeDerivedChatStatus({ supervisorStarting: true, bootPhase: CHAT_READY, queuedManagedCount: 1 }).text,
-        'Queued...', 'work keeps its own word beside the phase');
+        'Queued', 'work keeps its own word beside the phase');
 });
 
 test('Main: the header paints the phase from the snapshot and forgets it on disconnect', async () => {
