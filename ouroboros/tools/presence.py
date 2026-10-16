@@ -144,7 +144,6 @@ def _configure_presence(ctx: ToolContext, action: str, **params: Any) -> str:
             overrides = PresenceRuntimeOverrides() if reset else PresenceRuntimeOverrides(
                 model_slot=(str(params.get("model_slot") or "").strip() or None),
                 inline_max_rounds=params.get("inline_max_rounds"),
-                execution=(str(params.get("execution") or "").strip() or None),
             )
             updated = replace(state, runtime_overrides=overrides)
             save_presence_state(
@@ -156,9 +155,7 @@ def _configure_presence(ctx: ToolContext, action: str, **params: Any) -> str:
             return json.dumps(
                 {
                     "ok": True,
-                    # ``execution`` appears only when set, the shape earlier callers pinned.
-                    "runtime_overrides": {key: value for key, value in asdict(overrides).items()
-                                          if key != "execution" or value is not None},
+                    "runtime_overrides": asdict(overrides),
                     "state_fingerprint": presence_state_fingerprint(updated),
                 },
                 sort_keys=True,
@@ -472,10 +469,6 @@ def get_tools() -> List[ToolEntry]:
                         "argument_bindings": {"type": "array", "items": {"type": "object"}},
                         "model_slot": {"type": "string", "enum": ["main", "light"]},
                         "inline_max_rounds": {"type": "integer", "minimum": 1},
-                        "execution": {
-                            "type": "string", "enum": ["event", "call"],
-                            "description": "action=runtime: call lets this binding open one live audio session per conversation; event (default) keeps bounded text turns.",
-                        },
                         "reset_runtime": {"type": "boolean"},
                     },
                     "required": ["action"],
