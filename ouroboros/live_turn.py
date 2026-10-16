@@ -688,6 +688,8 @@ class _LiveCall:
     def _on_final_caption(self, event: Caption) -> None:
         text = str(event.text or "").strip()
         if not text:
+            if event.speaker == SPEAKER_OWNER:
+                self._input_source(event.item_id)  # an input with no words still settles its place
             return
         # Who spoke is read from the audio that formed this input item; an item the provider
         # never placed falls back to what fed the engine since its last input caption: a

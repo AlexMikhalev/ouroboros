@@ -251,7 +251,12 @@ class OpenAIRealtimeEngine(RealtimeTransport):
                 self._active_response = ""
                 self._response_requested = False
             self._schedule_response()
-        elif kind in ("error", "conversation.item.input_audio_transcription.failed"):
+        elif kind == "conversation.item.input_audio_transcription.failed":
+            # One input the transcription model could not read: the session goes on, and
+            # that item simply yields no words (an empty final caption retires it).
+            if message.get("item_id"):
+                self._emit(Caption("owner", "", True, str(message["item_id"])))
+        elif kind == "error":
             error = message.get("error") or {}
             code = error.get("code") or error.get("type")
             if code in ("session_expired", "session_timeout", "session_duration_exceeded"):
@@ -279,11 +284,7 @@ class OpenAIRealtimeEngine(RealtimeTransport):
                 retryable = code in ("server_error", "rate_limit_exceeded")
                 category = {"rate_limit_exceeded": "rate_limit", "invalid_api_key": "authentication",
                             "invalid_request_error": "invalid_request"}.get(code, "provider")
-                event = EngineError(category, "OpenAI rejected a live event.", retryable)
-                if kind == "conversation.item.input_audio_transcription.failed":
-                    self._emit(event)
-                else:
-                    await self._fail(event)
+                await self._fail(EngineError(category, "OpenAI rejected a live event.", retryable))
 
 
 register_engine("openai", OpenAIRealtimeEngine)

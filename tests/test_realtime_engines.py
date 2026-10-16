@@ -142,6 +142,18 @@ async def test_a_reworded_instruction_refusal_is_still_a_context_length_refusal(
     event = selected(events, EngineError)[0]
     assert event.kind == "context_length" and json.loads(event.message) == {"field": "session.instructions"}
 
+
+@run_async
+async def test_one_unreadable_input_yields_no_words_and_the_session_goes_on():
+    engine, connection, events, collector = await opened("openai")
+    socket = connection.sockets[0]
+    await feed(engine, socket, {"type": "conversation.item.input_audio_transcription.failed", "item_id": "noise",
+                                "content_index": 0, "error": {"type": "transcription_error",
+                                                              "code": "audio_unintelligible", "message": "unclear"}})
+    assert selected(events, Caption)[-1] == Caption("owner", "", True, "noise")
+    assert not selected(events, EngineError) and not socket.closed
+    await finished(engine, collector)
+
 @run_async
 async def test_native_vad_cancel_racing_host_interrupt_keeps_session_open():
     engine, connection, events, collector = await opened("openai")
