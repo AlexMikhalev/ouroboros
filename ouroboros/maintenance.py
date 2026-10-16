@@ -74,6 +74,118 @@ def _now() -> str:
 
 # ---- jobs ------------------------------------------------------------------------------------
 
+def _identity(path: pathlib.Path) -> Optional[List[int]]:
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return [stat.st_ino, stat.st_size, stat.st_mtime_ns]
+
+
+def _activity_waiting_on(root: pathlib.Path) -> Dict[str, Any]:
+    """What a failed activity backfill read besides one segment: the registry and the archive."""
+    from ouroboros import projects_registry as registry
+
+    return {"registry": _identity(registry.registry_file(root)), "archive": _identity(root / "archive")}
+
+
+def _activity_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
+    """Once per installation; a failed run waits for the registry or the archive to change. A root
+    without a registry holds no project to look for, so it is no reason to spawn the child."""
+    from ouroboros import projects_registry as registry
+
+    state = row.get("state")
+    if state == "done":
+        return False
+    if state == "failed":
+        return row.get("waiting_on") != _activity_waiting_on(root)
+    return child or registry.registry_file(root).is_file()
+
+
+def _activity_sources(root: pathlib.Path) -> List[tuple]:
+    """``(family, order key, path)``: the live chat and progress files, then each archived family
+    oldest first. Archive names sort chronologically, so a segment rotated later sorts after any
+    cursor and an interrupted run resumes past what it read."""
+    sources = [("live", f"{index}-{name}", root / "logs" / name)
+               for index, name in enumerate(("chat.jsonl", "progress.jsonl"))]
+    try:
+        with os.scandir(root / "archive") as entries:
+            names = sorted(entry.name for entry in entries if entry.name.endswith(".jsonl"))
+    except FileNotFoundError:
+        names = []
+    for family in ("chat", "progress"):
+        sources.extend((family, name, root / "archive" / name) for name in names if name.startswith(family + "_"))
+    return sources
+
+
+def _activity_scan(path: pathlib.Path, wanted: set) -> set:
+    """The WANTED chat ids that have a row in PATH; a digit prefilter skips decoding other rows."""
+    tokens = {chat_id: str(chat_id).encode("ascii") for chat_id in wanted}
+    found: set = set()
+    try:
+        handle = open(path, "rb")
+    except FileNotFoundError:
+        return found  # rotated meanwhile: the rows sit in a newer segment of the chain
+    with handle:
+        for raw in handle:
+            if not any(token in raw for chat_id, token in tokens.items() if chat_id not in found):
+                continue
+            try:
+                chat_id = int(json.loads(raw).get("chat_id") or 1)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if chat_id in tokens:
+                found.add(chat_id)
+                if len(found) == len(tokens):
+                    break
+    return found
+
+
+def _activity_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, Any]:
+    """One pass over the chat chain for the legacy candidates the first look fixed
+    (``projects_registry.legacy_activity_candidates``): a project seen is flagged through the
+    registry's own ``update_project``; the row records the cursor after every source, then the
+    flagged and the empty ids with the coverage read. A project created later is never a
+    candidate: its activity is written with its rows (``visible_revision``)."""
+    from ouroboros import projects_registry as registry
+
+    row = maintenance_jobs.job(root, "activity_backfill") or {}
+    if row.get("state") == "done":
+        return {"state": "done", "items": 0}
+    try:
+        if not isinstance(row.get("candidates"), dict):
+            candidates = registry.legacy_activity_candidates(root)
+            row = maintenance_jobs.record(root, "activity_backfill", state="running", error=None, waiting_on=None,
+                                          candidates={str(key): pid for key, pid in candidates.items()},
+                                          seen=[], cursor={}, done=0, total=None)
+        candidates = {int(key): str(pid) for key, pid in row["candidates"].items()}
+        seen, cursor = {int(key) for key in row.get("seen") or []}, dict(row.get("cursor") or {})
+        done = int(row.get("done") or 0)
+        for family, key, path in (_activity_sources(root) if set(candidates) - seen else ()):
+            wanted = set(candidates) - seen
+            if not wanted:
+                break
+            if should_stop():
+                return {"state": "pending", "items": done}
+            if key <= str(cursor.get(family) or ""):
+                continue
+            seen |= _activity_scan(path, wanted)
+            cursor[family], done = key, done + 1
+            maintenance_jobs.record(root, "activity_backfill", cursor=cursor, seen=sorted(seen), done=done)
+    except Exception as exc:  # the registry or a segment could not be read: wait for them to change
+        if not _contention(exc):
+            maintenance_jobs.record(root, "activity_backfill", state="failed", error=type(exc).__name__,
+                                    waiting_on=_activity_waiting_on(root))
+        raise
+    flagged = [pid for key, pid in sorted(candidates.items())
+               if key in seen and registry.update_project(root, pid, thread_activity_seen=True) is not None]
+    empty = sorted(pid for key, pid in candidates.items() if key not in seen)
+    maintenance_jobs.record(root, "activity_backfill", state="done", flagged=flagged, empty=empty,
+                            coverage={"sources_read": done, "through": cursor}, total=done)
+    return {"state": "done", "items": done}
+
+
+
 def _any_entry(directory: pathlib.Path) -> bool:
     """Whether DIRECTORY holds anything (one scandir that stops at the first entry)."""
     try:
@@ -124,6 +236,7 @@ def _packing_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[st
 # order. ``child`` is False for the server's look: a job may then decline to be a reason to spawn
 # (it still runs whenever the child runs for another reason).
 JOBS: Dict[str, tuple] = {
+    "activity_backfill": (_activity_due, _activity_run),
     "evidence_packing": (_packing_due, _packing_run),
 }
 JOB_NAMES = tuple(JOBS)

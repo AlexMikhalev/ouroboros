@@ -17,7 +17,7 @@ from ouroboros.contracts.chat_id_policy import project_chat_id
 from ouroboros.contracts.schema_versions import with_schema_version
 from ouroboros.project_facts import sanitize_project_id
 from ouroboros.store import open_store
-from ouroboros.utils import atomic_write_json, iter_jsonl_objects, read_json_dict, utc_now_iso, strip_markdown
+from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso, strip_markdown
 
 log = logging.getLogger(__name__)
 
@@ -1056,8 +1056,8 @@ def update_project(
         return None
     allowed = {
         "name", "working_dir", "last_active_at", "provenance", "clone_url", "trusted_at",
-        # Write-once legacy-activity fact seeded by the boot-reconcile backfill
-        # (_backfill_thread_activity); read by projects_summary's derivation.
+        # Write-once legacy-activity fact seeded once per installation by the maintenance
+        # child's ``activity_backfill`` job; read by projects_summary's derivation.
         "thread_activity_seen",
         # Durable pointer to the project's newest finalized task result
         # (stamped by record_task_finalization; read first by
@@ -1349,103 +1349,39 @@ def reconcile_projects(drive_root: Any) -> int:
                     log.info("Project registry reconcile: %d store(s) registered", added)
     except Exception:
         log.warning("Project registry reconcile failed", exc_info=True)
-    _backfill_thread_activity(drive_root)
     return added
 
 
-# Drive roots whose legacy thread-activity backfill already ran in this process.
-# The scan is a boot-reconcile concern: once per process per root is enough,
-# because everything AFTER the backfill is covered by the registry-facts
-# derivation in projects_summary (visible_revision/bindings/origin).
-_ACTIVITY_BACKFILL_DONE: set = set()
-
-
-def _backfill_thread_activity(drive_root: Any) -> int:
-    """One-time archive-aware seeding of the durable ``thread_activity_seen`` flag.
-
-    ``projects_summary`` derives thread activity from registry facts alone
-    (origin, bindings, ``visible_revision``) — but a legacy project whose
-    activity predates the ``visible_revision`` counter would read inactive
-    forever. So the boot reconcile scans live + archived chat/progress logs
-    ONCE per process for a row carrying each such project's chat_id, and
-    persists a write-once flag through the registry's own write path
-    (``update_project``). This never runs on the GET path, never removes the
-    flag, and a scan that finds nothing simply leaves the project inactive.
-    The done-marker is set only AFTER a successful scan/write pass, so a
-    transiently failed backfill retries on the next reconcile tick instead of
-    silently waiting for a process restart.
-    """
-    key = str(pathlib.Path(drive_root).resolve(strict=False))
-    if key in _ACTIVITY_BACKFILL_DONE:
-        return 0
-    flagged = 0
-    try:
-        bindings = _load_bindings(drive_root).get("bindings", {})
-        bound_pids = {
-            str(row.get("project_id") or "")
-            for row in bindings.values()
-            if isinstance(row, dict)
-        }
-        candidates: Dict[int, str] = {}
-        with _LOCK:
-            projects = _load(drive_root)["projects"]
-        for project in projects:
-            # update_project persists only ACTIVE rows; deleting/tombstoned
-            # projects keep deriving from origin/bindings/visible_revision.
-            if project.get("lifecycle") != PROJECT_ACTIVE:
-                continue
-            if project.get("thread_activity_seen"):
-                continue
-            pid = str(project.get("id") or "")
-            if (
-                not pid
+def legacy_activity_candidates(drive_root: Any) -> Dict[int, str]:
+    """chat id -> project id of every ACTIVE project whose thread activity no registry fact proves
+    (``owner_ui`` origin, a task binding, ``visible_revision`` or the write-once
+    ``thread_activity_seen`` flag): the legacy class whose activity predates the revision counter.
+    The maintenance child's ``activity_backfill`` job reads the chat chain once for them and
+    persists the flag through ``update_project`` (ouroboros/maintenance.py); nothing here scans."""
+    bindings = _load_bindings(drive_root).get("bindings", {})
+    bound = {str(row.get("project_id") or "") for row in bindings.values() if isinstance(row, dict)}
+    with _LOCK:
+        projects = _load(drive_root)["projects"]
+    candidates: Dict[int, str] = {}
+    for project in projects:
+        pid = str(project.get("id") or "")
+        # update_project persists only ACTIVE rows; deleting/tombstoned projects keep deriving.
+        if (project.get("lifecycle") != PROJECT_ACTIVE or project.get("thread_activity_seen") or not pid
                 or str(project.get("origin") or "") == "owner_ui"
-                or int(project.get("visible_revision") or 0) > 0
-                or pid in bound_pids
-            ):
-                continue  # already active by derivation — no flag needed
-            try:
-                cid = int(project.get("chat_id") or 0)
-            except (TypeError, ValueError):
-                cid = 0
-            if cid:
-                candidates[cid] = pid
-        if not candidates:
-            _ACTIVITY_BACKFILL_DONE.add(key)
-            return 0
-        logs_dir = pathlib.Path(drive_root) / "logs"
-        archive_dir = pathlib.Path(drive_root) / "archive"
-        paths = [logs_dir / "chat.jsonl", logs_dir / "progress.jsonl"]
-        if archive_dir.is_dir():
-            paths.extend(sorted(archive_dir.glob("chat_*.jsonl"), reverse=True))
-            paths.extend(sorted(archive_dir.glob("progress_*.jsonl"), reverse=True))
-        seen: set = set()
-        for path in paths:
-            if len(seen) == len(candidates):
-                break
-            if not path.is_file():
-                continue
-            try:
-                for row in iter_jsonl_objects(path):
-                    try:
-                        cid = int(row.get("chat_id") or 1)
-                    except (TypeError, ValueError):
-                        continue
-                    if cid in candidates and cid not in seen:
-                        seen.add(cid)
-                        if len(seen) == len(candidates):
-                            break
-            except Exception:
-                log.debug("thread-activity backfill scan failed for %s", path, exc_info=True)
-        for cid in sorted(seen):
-            if update_project(drive_root, candidates[cid], thread_activity_seen=True) is not None:
-                flagged += 1
-        if flagged:
-            log.info("Thread-activity backfill: %d legacy project(s) flagged", flagged)
-        _ACTIVITY_BACKFILL_DONE.add(key)
-    except Exception:
-        log.warning("Thread-activity backfill failed", exc_info=True)
-    return flagged
+                or int(project.get("visible_revision") or 0) > 0 or pid in bound):
+            continue
+        try:
+            chat_id = int(project.get("chat_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if chat_id:
+            candidates[chat_id] = pid
+    return candidates
+
+
+def registry_file(drive_root: Any) -> pathlib.Path:
+    """The registry document (its identity is an input a failed activity backfill waits on)."""
+    return _registry_path(drive_root)
 
 
 def ensure_project_workspace(drive_root: Any, project_id: str, repo_dir: Any,
@@ -1497,8 +1433,8 @@ def projects_summary(drive_root: Any, *, limit: int = 50, chat_id: Any = None) -
         # first visible row — exactly the junk-row shape this filter exists
         # to hide. Legacy projects whose activity predates the
         # visible_revision counter are covered by the write-once
-        # `thread_activity_seen` flag seeded at boot reconcile
-        # (_backfill_thread_activity).
+        # `thread_activity_seen` flag the maintenance child's
+        # `activity_backfill` job seeds once per installation.
         pid = str(project.get("id") or "")
         # v6.59.0: a project the OWNER explicitly created in the UI is always shown —
         # the activity filter exists to hide junk reconcile rows, not a fresh project

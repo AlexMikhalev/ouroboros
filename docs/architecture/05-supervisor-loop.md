@@ -88,7 +88,7 @@ History-sized work never runs on a server thread: it is a named job of the one m
 |---|---|
 | supervisor loop thread | the tick; `_periodic_supervisor_maintenance` dispatches the rows below, O(1) inline |
 | server duty threads | 20 s cancel, delivery, question, pause-notice, usage and synthesis duties; schedules; cold custody; owner Pause; 600 s custody; the reconcile pass: zombie and orphan heal, preparations, project registry, review collection, late reviews, drive settlement (queue lock and liveness probe), then the dispatcher |
-| maintenance child | `evidence_packing`: stop-aware, archive-first discovery exits at the first changed stamp, then one pass with its own fresh `PackSweep` baseline/refresh/journal and unlink authority; a pass that unlinked owes one more look |
+| maintenance child | `activity_backfill`: once per installation, one pass over the chat chain for legacy projects no registry fact shows active, with a cursor per source; `evidence_packing`: stop-aware, archive-first discovery exits at the first changed stamp, then one pass with its own fresh `PackSweep` baseline/refresh/journal and unlink authority; a pass that unlinked owes one more look |
 
 A child job never takes the queue lock or proves a task's liveness: queue-owned recovery and settlement stay in the server, addressed. The dispatch thread and the child stay in the exit census until they return.
 
