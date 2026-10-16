@@ -177,24 +177,23 @@ def _restore_saved_clocks(ctx: Any, task: Dict[str, Any]) -> None:
         except Exception:
             saved_wait = {}  # the loop discloses the unreadable source itself
     if saved_wait and ctx.model_wait_context is not None:
-        from ouroboros.model_wait import adopt_handoff_clock
+        from ouroboros.model_wait import adopt_handoff_clock, native_sleep_started_at
 
         model_state = saved_wait.get("model_wait") or {}
-        if recovered:  # confirmed after the checkpoint, folded by the supervisor (#939)
-            model_state = adopt_handoff_clock(model_state, ctx.working_recovery)
+        # Both native waits and working recovery carry confirmed post-checkpoint clocks.
+        model_state = adopt_handoff_clock(model_state, ctx.working_recovery if recovered else ctx.owner_wait_resume)
         if (saved_wait.get("_working_handoff") or {}).get("source_task_id", ctx.task_id) != ctx.task_id:
             # A new execution keeps the cumulative clock, without importing
             # the old task owner's model-choice/control overrides.
             model_state = {key: model_state[key] for key in ("quota_clock", "budget_paused_sec")
                            if key in model_state}
-        # started_at stays the ORIGINAL start; the granted paused interval is
-        # the separate carrier the finite lifetime subtracts (#1196). A budget
-        # grant supplies the CURRENT cumulative value; an owner-wait restart
-        # of a previously paused task has none to supply, and the serializer's
-        # own saved carrier is used instead (``restore_continuation``, F5).
+        # Preserve the original origin; budget grants supply their own current total.
         ctx.model_wait_context.restore_continuation(
             model_state, started_at=ctx.task_started_at,
             budget_paused_sec=(ctx.budget_pause_resume or {}).get("paused_duration_sec"))
+        if (sleep_started := native_sleep_started_at(ctx.owner_wait_resume)) is not None:
+            from ouroboros.model_sleep import begin
+            begin(ctx, started_at=sleep_started)  # controls see the open sleep before the loop rejoins it
 
 
 def _retire_working_checkpoint(ctx: Any, task: Dict[str, Any]) -> None:
