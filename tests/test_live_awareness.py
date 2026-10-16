@@ -86,6 +86,28 @@ def test_room_rows_become_context_items_without_self_echo(tmp_path):
     assert rooms.drain() == []
 
 
+def test_the_hidden_partition_is_a_room_and_a_row_without_a_chat_id_is_not_it(tmp_path):
+    """Chat 0 (the hidden partition) is a real room; a row without an id is the chain's legacy
+    main-chat row, live and in catch-up alike, never chat 0."""
+    hidden, main = [], []
+    live_awareness.register_room_listener(0, hidden.append)
+    live_awareness.register_room_listener(1, main.append)
+    try:
+        for record in ({"chat_id": 0, "text": "a review panel row"}, {"text": "a row without an id"},
+                       {"chat_id": None, "text": "a row with a null id"}, {"chat_id": "", "text": "a blank id"}):
+            live_awareness.notify_chat_row(tmp_path, {"direction": "in", "ts": utc_now_iso(), **record})
+    finally:
+        live_awareness.unregister_room_listener(0, hidden.append)
+        live_awareness.unregister_room_listener(1, main.append)
+    assert [row["text"] for row in hidden] == ["a review panel row"]
+    assert [row["text"] for row in main] == ["a row without an id", "a row with a null id", "a blank id"]
+    hidden_room = live_awareness.RoomRows(tmp_path, 0, "t-call", "call-0", utc_now_iso())
+    main_room = live_awareness.RoomRows(tmp_path, 1, "t-call", "call-1", utc_now_iso())
+    zero, absent = {"chat_id": 0, "direction": "in", "text": "x"}, {"direction": "in", "text": "x"}
+    assert hidden_room.accepts(zero) and not hidden_room.accepts(absent)
+    assert main_room.accepts(absent) and not main_room.accepts(zero)
+
+
 def test_two_identical_lines_are_two_facts_but_one_row_is_one(tmp_path):
     rooms = live_awareness.RoomRows(tmp_path, 1, "t-call", "call-1", utc_now_iso())
     rooms.start()

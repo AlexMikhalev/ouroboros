@@ -49,6 +49,18 @@ def unregister_room_listener(chat_id: int, callback: Callable[[Dict[str, Any]], 
             _LISTENERS.pop(int(chat_id), None)
 
 
+def row_room(row: Dict[str, Any]) -> int:
+    """The room a row belongs to, as the chat chain addresses it.
+
+    0 is the hidden partition, a real room; only a missing or unreadable id is the
+    legacy main-chat row (``chat_chain`` files it under 1), so the live notification
+    and the catch-up read agree.
+    """
+    from supervisor.message_bus import coerce_chat_identity
+
+    return coerce_chat_identity(row.get("chat_id"))
+
+
 def notify_chat_row(root: Any, record: Dict[str, Any]) -> None:
     """Called by ``message_bus.log_chat`` once a row is on disk; never raises.
 
@@ -56,10 +68,7 @@ def notify_chat_row(root: Any, record: Dict[str, Any]) -> None:
     is not a fact of the room. Listeners are copied under the lock and run
     outside it, so a slow listener cannot hold the chat writer.
     """
-    try:
-        chat_id = int(record.get("chat_id") or 0)
-    except (TypeError, ValueError):
-        return
+    chat_id = row_room(record)
     with _LISTENERS_LOCK:
         if not _LISTENERS:
             return
@@ -135,10 +144,7 @@ class RoomRows:
         """The skip rules: the room's rows except the call's own and Main's mirrors."""
         from ouroboros.project_dialogue import MAIN_PINNED_ROW_TYPES
 
-        try:
-            row_chat = int(row.get("chat_id") or 0)
-        except (TypeError, ValueError):
-            return False
+        row_chat = row_room(row)
         if self._member is not None:
             if not self._member(row_chat, row):
                 return False
