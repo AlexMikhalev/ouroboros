@@ -638,19 +638,15 @@ def _finish_advisory_author(ctx: _TaskAcceptanceContext) -> bool:
     disposition = str(stance.get("agent_disposition") or "")
     if not intent or (disposition and disposition not in {"accepted", "rejected", "partial", "deferred"}):
         return False
-    # Only a FINISH binds to the reviewed feedback and to the three freshness
-    # facts. A stop grants nothing, so nothing about it has to be fresh (TZ-2
-    # C4): the service teardown before the panel changes the evidence
-    # fingerprint, and rejecting the stop for that bought a panel whose
-    # advisory author_finish then read as Done over "not ready".
+    # Finish binds feedback and fresh evidence. Stop grants nothing: teardown
+    # may change the fingerprint, but must not turn unfinished work into Done.
     if action != "stop":
         from ouroboros.acceptance_settlement import acceptance_wait_chosen, panel_awaiting_this_turn
 
         awaited = panel_awaiting_this_turn(ctx.tools._ctx, ctx.llm_trace)
         waiting = awaited or feedback
-        # A no-panel host outcome (refused launch, unavailable review) has no
-        # reviewer left to settle: its exposure is the settled feedback. Only a
-        # physical panel can still be pending or unread.
+        # No-panel outcome exposure is settled feedback; only physical critics
+        # can still be pending or unread.
         if acceptance_wait_chosen(ctx.tools._ctx) and waiting and waiting is not outcome and (
                 acceptance_run_pending(waiting) or not waiting.get("settled_feedback_delivered")):
             return False
@@ -662,14 +658,22 @@ def _finish_advisory_author(ctx: _TaskAcceptanceContext) -> bool:
                 or intent.get("owner_directives") != len(getattr(ctx.tools._ctx, "_owner_directives", []) or [])
                 or intent.get("evidence_fingerprint") != delivery_evidence_fingerprint(ctx.tools._ctx, ctx.llm_trace)):
             return False
+        from types import SimpleNamespace
+
+        from ouroboros.review_substrate import task_acceptance_is_clean
+
+        if ((not feedback.get("superseded_by_revision")
+             or feedback.get("superseded_reason") == "delivery_candidate_replaced")
+                and task_acceptance_is_clean(SimpleNamespace(**feedback))):
+            return False  # Clean/current or text-only rewrite: let ordinary approval/rejoin decide.
     from ouroboros.review_records import build_author_disposition
 
     author = build_author_disposition(
-        disposition=disposition, rationale=str(stance.get("agent_rationale") or ""),
+        disposition=disposition, rationale=str(stance.get("agent_rationale") or "Explicit completion selection."),
         subject_hash=ctx.review_binding["binding_hash"],
         reviewer_signal=str((feedback or {}).get("aggregate_signal") or ""),
         enforcement="blocking" if review_enforcement_blocks(_loop().get_review_enforcement()) else "advisory",
-        action=action,
+        action=action, source=str((getattr(ctx.tools._ctx, "_completion_selected", None) or {}).get("source") or "author"),
     )
     from ouroboros.task_results import project_task_acceptance_review_capacity
 
@@ -682,9 +686,7 @@ def _finish_advisory_author(ctx: _TaskAcceptanceContext) -> bool:
         return True
     ctx.tools._ctx._task_acceptance_reviewed = True
     if action == "stop":
-        # A stop binds no subject, so an earlier panel's cannot reopen review on the next
-        # delivery pass; only the author's next decision (merge_agent_acceptance_stance)
-        # or owner input does.
+        # Stop binds no subject; only a new author act or owner input reopens it.
         ctx.tools._ctx._task_acceptance_reviewed_subject = ""
     ctx.tools._ctx._task_acceptance_pending = ""
     _loop()._mark_root_acceptance_checkpoint(
@@ -822,7 +824,7 @@ def _apply_task_acceptance_result(
         capsule = (f"[Acceptance review outcome] {result.aggregate_signal}. "
                    + _slot_cause_clause(result)
                    + " No clean acceptance was established. Inspect this outcome, request another review only if useful and permitted, "
-                   "or choose author_action='stop'. Advisory may explicitly finish with a rationale; Blocking still requires fresh approval.")
+                   "or choose author_action='stop' with a rationale. Advisory may explicitly finish; Blocking still requires fresh approval.")
     if pass_ok:
         _loop()._set_acceptance_decision(ctx.llm_trace, {
             "status": ACCEPTANCE_REVISION_REQUESTED,
@@ -944,7 +946,7 @@ def _offer_acceptance_refusal(ctx: _TaskAcceptanceContext, reason: str, *, host_
         (f"Acceptance host processing failed: {reason}. Original reviewer evidence is retained; no replacement review was called. " if host_failure else
          f"Acceptance review could not start: {reason}. No new reviewer was called. ") +
         "You may preserve corrections or stop; Blocking grants no advancement without fresh review. "
-        "Advisory may finish explicitly with a rationale."), "review_feedback": [{
+        "Advisory may finish explicitly; stop requires a rationale."), "review_feedback": [{
             "task_id": ctx.task_id, "outcome_binding_hash": binding}]})
     _loop()._set_acceptance_decision(ctx.llm_trace, {"status": ACCEPTANCE_REVISION_REQUESTED,
         "reason": "review_outcome_received", "source": "task_acceptance_review",
