@@ -28,7 +28,7 @@ LOCK_NAME = "current.lock"  # the name-tier lock around every access
 IMPORT_LOCK_NAME = "current_import.lock"
 GENERATION = 8  # the lifecycle generation that owns the store
 GENERATION_KEY = "current_store_generation"  # in state/migrations.json
-SCHEMA_VERSION = 3  # 2: owner questions; 3: pending review collection
+SCHEMA_VERSION = 4  # 2: owner questions; 3: acceptance collection; 4: plan collection
 STORE_WAIT_SEC = 10.0
 TIER_ENFORCED, TIER_NAME = "enforced", "name"
 PUBLISHED, EXPORTING, RETIRED = "published", "exporting", "retired"
@@ -51,6 +51,8 @@ FLAG_COLUMNS = {"synthesis": "owes_synthesis", "terminal_projection": "owes_term
 ROW_BACKED_FIELDS: Tuple[str, ...] = ("launch_handoffs", "model_waits", "retired_model_consumers")
 REVIEW_COLLECTION_INDEX = ("CREATE INDEX IF NOT EXISTS tasks_review_collection ON tasks(review_collection_pending, task_id) "
                            "WHERE review_collection_pending IS NULL OR review_collection_pending=1;")
+PLAN_COLLECTION_INDEX = ("CREATE INDEX IF NOT EXISTS tasks_plan_collection ON tasks(plan_collection_pending, task_id) "
+                         "WHERE plan_collection_pending IS NULL OR plan_collection_pending=1;")
 _SCHEMA = """
 CREATE TABLE tasks (
   task_id TEXT PRIMARY KEY, status TEXT, parent_task_id TEXT, root_task_id TEXT, delegation_role TEXT,
@@ -61,7 +63,7 @@ CREATE TABLE tasks (
   has_pending_promotion INTEGER NOT NULL DEFAULT 0, has_pause_notices INTEGER NOT NULL DEFAULT 0,
   delegated_runs_unreconciled INTEGER NOT NULL DEFAULT 0, pending_drive INTEGER NOT NULL DEFAULT 0,
   has_owner_questions INTEGER,
-  review_collection_pending INTEGER);
+  review_collection_pending INTEGER, plan_collection_pending INTEGER);
 CREATE INDEX tasks_parent ON tasks(parent_task_id); CREATE INDEX tasks_root ON tasks(root_task_id);
 CREATE INDEX tasks_status ON tasks(status); CREATE INDEX tasks_project ON tasks(project_id);
 CREATE INDEX tasks_ts ON tasks(ts, task_id); CREATE INDEX tasks_updated ON tasks(updated_at, task_id);
@@ -78,7 +80,7 @@ CREATE INDEX custody_project ON custody_runs(project_id) WHERE project_id<>'';
 CREATE INDEX custody_invocation ON custody_runs(invocation_id) WHERE invocation_id<>'';
 CREATE TABLE custody_outbox (event_id TEXT PRIMARY KEY, run_id TEXT, task_id TEXT, event TEXT NOT NULL, created_at TEXT);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-""" + REVIEW_COLLECTION_INDEX + "".join(f"CREATE INDEX tasks_{column} ON tasks({column}) WHERE {column}=1;\n"
+""" + REVIEW_COLLECTION_INDEX + PLAN_COLLECTION_INDEX + "".join(f"CREATE INDEX tasks_{column} ON tasks({column}) WHERE {column}=1;\n"
               for column in FLAG_COLUMNS.values())
 
 
@@ -754,6 +756,7 @@ def typed_columns(document: Dict[str, Any], *, pending_drive: Optional[bool] = N
     derived from their carriers, and the obligation flags from the existing predicates."""
     from ouroboros.dialogue_provenance import presence_metadata_binding, presence_record_binding
     from ouroboros.obligations import result_memberships, review_collection_pending
+    from ouroboros.plan_record import PLAN_RECORD_KEY, collection_pending
 
     names = result_memberships(document)
     columns: Dict[str, Any] = {}
@@ -773,6 +776,7 @@ def typed_columns(document: Dict[str, Any], *, pending_drive: Optional[bool] = N
         columns[column] = int(name in names)
     columns["pending_drive"] = int("nonterminal" in names if pending_drive is None else pending_drive)
     columns["review_collection_pending"] = int(review_collection_pending(document))
+    columns["plan_collection_pending"] = int(collection_pending(document.get(PLAN_RECORD_KEY)))
     return columns
 
 

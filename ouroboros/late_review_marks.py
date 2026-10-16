@@ -223,29 +223,27 @@ def _collect_ended_plan_asks(drive_root: Any, stop: Any) -> int:
     keeps the reply in its room. The ask's pending seat is the duty, so nothing else is written for it; a seat
     with no retained outcome stays pending and is never cleaned."""
     from ouroboros import plan_record  # D15->D06 is lazy-only
-    from ouroboros.task_store import ids_with_fields  # D15->D17 is lazy-only
+    from ouroboros.task_store import plan_collection_candidates  # D15->D17 is lazy-only
     from ouroboros.tools.plan_ask import collect_pending  # D15->D06 is lazy-only
 
     root, settled = pathlib.Path(drive_root), 0
     try:
-        candidates = ids_with_fields(root, (plan_record.PLAN_RECORD_KEY,))
+        for task_id in plan_collection_candidates(root, stop=stop):
+            if stop is not None and stop():
+                break
+            try:
+                record = plan_record.load_plan_record(root, task_id)
+                pending = {(ask.get("ask_id"), seat.get("seat_id")) for ask, seat in plan_record.pending_participants(record)}
+                if not pending or ended_task_row(root, task_id) is None:
+                    continue
+                after = collect_pending(None, record, state_root=root, task_id=task_id)
+            except Exception:
+                log.warning("plan record of %s: its pending seats stay pending", task_id, exc_info=True)
+                continue
+            settled += sum(1 for ask in after.get("asks") or [] for seat in ask.get("participants") or []
+                           if (ask.get("ask_id"), seat.get("seat_id")) in pending and seat.get("status") != "pending")
     except Exception:
         log.warning("plan records are unreadable; their pending seats stay pending", exc_info=True)
-        return 0
-    for task_id in candidates:
-        if stop is not None and stop():
-            break
-        try:
-            record = plan_record.load_plan_record(root, task_id)
-            pending = {(ask.get("ask_id"), seat.get("seat_id")) for ask, seat in plan_record.pending_participants(record)}
-            if not pending or ended_task_row(root, task_id) is None:
-                continue
-            after = collect_pending(None, record, state_root=root, task_id=task_id)
-        except Exception:
-            log.warning("plan record of %s: its pending seats stay pending", task_id, exc_info=True)
-            continue
-        settled += sum(1 for ask in after.get("asks") or [] for seat in ask.get("participants") or []
-                       if (ask.get("ask_id"), seat.get("seat_id")) in pending and seat.get("status") != "pending")
     return settled
 
 
