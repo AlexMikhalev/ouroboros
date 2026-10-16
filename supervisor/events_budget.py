@@ -756,6 +756,17 @@ HOLD_INVALID_ACCEPTANCE_FENCE_SNAPSHOT = HOLD_RESTORE_REFUSED_PREFIX + "invalid_
 HOLD_INVALID_BUDGET_FENCE_SNAPSHOT = HOLD_RESTORE_REFUSED_PREFIX + "invalid_budget_fence_snapshot"
 
 
+def hold_selectable(task: Dict[str, Any], hold: Dict[str, Any]) -> bool:
+    """Whether this hold has an explicit selection path; selection still revalidates authority."""
+    from ouroboros.budget_pause import RESTORE_REFUSAL_RECORD_UNREADABLE
+    from supervisor.task_admission import governing_continuation
+
+    return hold.get("reason") in SELECTABLE_HOLD_REASONS or (
+        hold.get("reason") in {HOLD_RESTORE_REFUSED_PREFIX + "owner_wait_source_unavailable",
+                               HOLD_RESTORE_REFUSED_PREFIX + RESTORE_REFUSAL_RECORD_UNREADABLE}
+        and governing_continuation(task) == "owner_wait" and isinstance(task.get("_owner_wait_resume"), dict))
+
+
 def budget_resume_dispatch_allowed(q: Any, task: Dict[str, Any]) -> Optional[bool]:
     """A child selection belongs to the CURRENT root grant and fence only.
 
@@ -983,15 +994,15 @@ def select_held_budget_row(q: Any, task: Dict[str, Any], hold: Dict[str, Any],
                            *, selected_by: str, observation: Dict[str, Any]) -> Dict[str, Any]:
     """Record an explicit selection on a held row (queue lock held).
 
-    The hold is released ONLY here, and only for a row that still proves it
-    never dispatched. A model-issued selection additionally needs the live
+    Release requires current saved-continuation or never-dispatched evidence.
+    A model-issued selection additionally needs the live
     owner-derived Resume grant of its root: lifting a fence granted eligibility,
     never continuation.
     """
     task_id = str(task.get("id") or "")
     result_root = pathlib.Path(task.get("budget_drive_root") or q.DRIVE_ROOT)
     root_task_id = str(hold.get("root_task_id") or task.get("root_task_id") or task_id)
-    if hold.get("reason") not in SELECTABLE_HOLD_REASONS:
+    if not hold_selectable(task, hold):
         return {"ok": False, "error": str(hold.get("reason") or "budget_hold_unresolved")}
     if observation.get("error"):
         return {"ok": False, "error": observation["error"]}
@@ -1183,7 +1194,7 @@ def explicit_resume_required(q: Any, task: Dict[str, Any], *, owner_paused: bool
         if hold is None and pause.get("reason") == "sleep":
             return False
     elif hold is not None and (hold.get("reason") == HOLD_CONTINUATION_WRITER
-                               or hold.get("reason") not in SELECTABLE_HOLD_REASONS):
+                               or not hold_selectable(task, hold)):
         return False
     task_id = str(task.get("id") or "")
     root_id = str(task.get("root_task_id") or task_id)
