@@ -155,11 +155,21 @@ class ChatHistoryWindow(TypedDict, total=False):
     latest_absent: bool
 
 
+class ChatHistoryAnchor(TypedDict, total=False):
+    """What an ``around=task:<id>`` read found: ``found`` (its page lands on ``history_id``), ``absent``
+    (the thread's saved history holds no row of the task a client could show) or ``moved`` (another
+    thread's)."""
+
+    state: Required[str]
+    task_id: Required[str]
+    history_id: str
+
+
 class ChatHistoryResponse(TypedDict, total=False):
     """``GET /api/chat/history``: conversation rows oldest first; replay evidence may follow them
-    regardless of timestamp and recur across pages. An error answer (400 history_cursor_invalid,
-    409 history_view_changed or history_delta_reset, 503 history_source_unavailable or migrating)
-    keeps this shape with no rows, ``has_more`` true and the cursor that was sent as ``next_cursor``."""
+    regardless of timestamp and recur across pages. An error answer (400 history_cursor_invalid or
+    history_around_invalid, 409 history_view_changed or history_delta_reset, 503 history_source_unavailable
+    or migrating) keeps this shape with no rows, ``has_more`` true and the cursor that was sent as ``next_cursor``."""
 
     messages: Required[List[ChatHistoryMessage]]
     has_more: Required[bool]
@@ -170,10 +180,11 @@ class ChatHistoryResponse(TypedDict, total=False):
     window: Required[ChatHistoryWindow]
     coverage: ChatHistoryCoverage
     error: str
+    anchor: ChatHistoryAnchor  # an ``around`` read only
     reason_code: str
 
 
 __all__ = [
     "ChatHistoryPosition", "ChatHistoryQuiz", "ChatHistoryMessage",
-    "ChatHistoryCoverage", "ChatHistoryWindow", "ChatHistoryResponse",
+    "ChatHistoryCoverage", "ChatHistoryWindow", "ChatHistoryAnchor", "ChatHistoryResponse",
 ]

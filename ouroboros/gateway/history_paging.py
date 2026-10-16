@@ -14,15 +14,18 @@ import base64
 import hashlib
 import io
 import json
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
+from datetime import datetime
 from pathlib import Path
 
+from ouroboros import task_store
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.gateway import _helpers
 from ouroboros.gateway._helpers import _TAIL_WINDOW_START_BYTES
 from ouroboros.gateway.history_segments import segment_summary
 from ouroboros.jsonl_tail import JsonlChainSnapshot
 from ouroboros.project_dialogue import _ANNOTATIONS_NAME, ORIGIN_ADDRESSED_NOTICE_TYPES
+from ouroboros.store import StoreError
 from ouroboros.subagent_messages import CARD_ROW_PLACEMENTS, is_task_card_message, subagent_message_meta
 
 _SOURCES = ("chat", "progress")
@@ -47,6 +50,9 @@ PROJECTION_FAILED = "projection_failed"
 # renders them before a child's words are routed to its card, and their
 # producers (message_bus ``send_photo`` ...) count every one.
 _STANDALONE_KINDS = ("document", "links", "photo", "video", "quiz")
+# A read around one task (``around=task:<id>``, DESIGN "Room work status") holds a quarter of
+# each stream's quota before the task's earliest row in the room and the rest from it on.
+_AROUND_OLDER_SHARE = 4
 
 
 def progress_quota_predicate(row_matches_thread, stored_chat_id):
@@ -64,10 +70,35 @@ def progress_quota_predicate(row_matches_thread, stored_chat_id):
     return counts
 
 
+def room_member_predicate(row_matches_thread, stored_chat_id):
+    """Whether a stored row belongs to the room, by the room rule history uses for every row."""
+    def member(entry, progress=False):
+        return bool(row_matches_thread(stored_chat_id(entry.get("chat_id"), 1),
+                                       {"is_progress": True, **entry} if progress else entry))
+    return member
+
+
 class HistoryCursorError(ValueError):
     def __init__(self, reason: str, status: int = 409):
         super().__init__(reason)
         self.reason, self.status = reason, status
+
+
+def parse_around(value):
+    """The task an around read lands on: ``task:<task_id>``, the one address it takes (400 otherwise)."""
+    kind, _sep, task_id = str(value or "").partition(":")
+    if kind != "task" or not task_id or len(task_id) > 128 or any(char.isspace() for char in task_id):
+        raise HistoryCursorError("history_around_invalid", 400)
+    return task_id
+
+
+def task_began(data_dir, task_id):
+    """When the task's stored facts say it began (epoch seconds), or None when they cannot say."""
+    try:
+        stamp = task_store.task_facts(data_dir, where="task_id = ?", params=(task_id,)).get(task_id, {}).get("ts")
+        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp() if stamp else None
+    except (StoreError, ValueError):
+        return None
 
 
 def room_view_fingerprint(thread_id, project_ids, source_refs, bindings):
@@ -277,6 +308,59 @@ class HistorySource(JsonlChainSnapshot):
             before = start
         return list(reversed(selected)), before, gaps
 
+    def task_pivot(self, task_id, member, since=None, lens=None):
+        """``(state, row)`` of ``task_id`` in this stream: ``found`` and its earliest row of the room,
+        ``moved`` when its rows here all belong to another room, ``none`` when the stream holds none.
+        Oldest first; a closed archive is read only
+        when its summary may name the task, it was written to after the task began (``since``) and
+        the room's lens admits it, so a press costs the archives of the task's own time."""
+        self._warmed([{"task_id": task_id}])  # its lineage, before membership is judged
+        seen = False
+        for index, (path, stat, live) in enumerate(self.snapshot["entries"]):
+            base, end = self.segment(index)
+            if base >= end:
+                continue
+            if not live:
+                if since is not None and stat.st_mtime < since or self._ruled_out(index, lens):
+                    continue  # last written before the task began, or holding none of the room's rows
+                summary = segment_summary(path, stat)
+                if summary is not None and task_id not in summary.task_ids:
+                    continue
+            for row in self._entries(base, end, set()):
+                if str(row.get("task_id") or "") != task_id:
+                    continue
+                if member(row):
+                    return "found", row
+                seen = True
+        return ("moved" if seen else "none"), None
+
+    def ahead(self, start, want, counts, gaps, lens=None, ceiling=None):
+        """The room's rows from ``start`` on, oldest first, until ``want`` counted rows, the chain's
+        end or the read ceiling (the mirror of ``older``); returns them and where the read stopped."""
+        ceiling = _READ_CEILING_BYTES if ceiling is None else ceiling
+        rows, counted, read, position = [], 0, 0, start
+        while position < self.upper and counted < want and read < ceiling:
+            index = bisect_right(self.snapshot["ends"], position)
+            _base, end = self.segment(index)
+            if self._ruled_out(index, lens):
+                position = end
+                continue
+            window, stop = _READ_BYTES, end
+            while position + window < end:
+                newline = self._read(position, position + window).rfind(b"\n")
+                if newline >= 0:
+                    stop = position + newline + 1
+                    break
+                window *= 2  # one large JSONL row keeps its existing support
+            for entry in self._warmed(self._entries(position, stop, gaps)):
+                rows.append(entry)
+                counted += bool(counts(entry))
+                if counted >= want:
+                    return rows, entry["_history_end"]
+            read += stop - position
+            position = stop
+        return rows, position
+
     def replay(self, lower, before, lens=None):
         """Re-read one frozen page; the archives its first read ruled out stay unread
         (same room view, immutable archives), so a replay costs what that read did."""
@@ -311,9 +395,17 @@ def chain_witness(reader):
     return ".".join(witnesses[-_CHAIN_WITNESSES:]) or "empty"
 
 
-def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, caps, lens=None, notes="", warm=None):
+def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, caps, lens=None, notes="", warm=None,
+                        around=None, thread_filter=None):
     """``lens``: the room's archive filter (``history_segments.room_segment_lens``); ``notes``:
-    ``notes_stamp``; ``warm``: the room rule's lineage batch read, given rows before they are counted."""
+    ``notes_stamp``; ``warm``: the room rule's lineage batch read, given rows before they are counted;
+    ``around``: ``task:<id>``, the page around that task (``_select_around``); ``thread_filter``: the
+    room rule and stored-chat coercion it decides membership with (``room_member_predicate``)."""
+    if around is not None:
+        if cursor:
+            raise HistoryCursorError("history_around_invalid", 400)  # a page starts at one place
+        return _select_around(data_dir, thread_id, view, parse_around(around), quotas, predicates, lens, warm,
+                              room_member_predicate(*thread_filter))
     continuation = decode_cursor(cursor, thread_id, view) if cursor else None
     if continuation and continuation["kind"] == "after" and (
             continuation["notes"] != notes or _settled_since(data_dir, continuation["tasks"])):
@@ -393,6 +485,47 @@ def _settled_since(data_dir, tasks):
     return False
 
 
+def _select_around(data_dir, thread_id, view, task_id, quotas, predicates, lens, warm, member):
+    """The page around one task in this room (DESIGN "Room work status"): per stream, a quarter of
+    the quota of the room's rows before the task's earliest row of the room, that row, and the rest
+    after it -- never a walk of the chain from the present. ``anchor`` says what was found:
+    ``found`` and the row a client lands on, ``moved`` (the task's rows belong to another room) or
+    ``absent`` (the chain holds no row of it a client could show). A stream holding none of the task's
+    rows has no known place near it: the page and the chain it starts carry none of that stream (its
+    quota is 0, so its coverage is unknown) and the page names the gap (``around_unpositioned``)."""
+    paths = {"chat": data_dir / "logs" / "chat.jsonl", "progress": data_dir / "logs" / "progress.jsonl"}
+    quotas = dict(quotas)
+    page = {"v": 1, "chat_id": thread_id, "view": view, "upper": {}, "unfinished": [], "quotas": quotas,
+            "recent": False, "after": False, "replayed": False, "quiet": False, "lens": lens,
+            "selections": {}, "before": {}, "page_ends": {}, "chains": {}}
+    since, readers, pivots, states = task_began(data_dir, task_id), {}, {}, set()
+    for source in _SOURCES:
+        reader = readers[source] = HistorySource(paths[source], source)
+        reader.warm = warm
+        page["upper"][source], page["chains"][source] = reader.upper, chain_witness(reader)
+        if reader.unfinished_live_line:
+            page["unfinished"].append(source)
+        progress = source == "progress"
+        state, pivots[source] = reader.task_pivot(task_id, lambda row, progress=progress: member(row, progress),
+                                                  since, lens)
+        states.add(state)
+    for source, quota in (("chat", "human"), ("progress", "progress")):
+        reader, pivot, counts, want = readers[source], pivots[source], predicates[source], quotas[quota]
+        if pivot is None or not any(pivots.values()):
+            page["selections"][source], quotas[quota] = ([], 0, {"around_unpositioned"}), 0
+            page["before"][source] = page["page_ends"][source] = 0
+            continue
+        start, older_want, gaps = pivot["history_position"]["offset"], want // _AROUND_OLDER_SHARE, set()
+        older, lower, older_gaps = reader.older(start, older_want, counts, lens) if older_want else ([], start, set())
+        newer, end = reader.ahead(pivot["_history_end"], want - older_want - bool(counts(pivot)), counts, gaps, lens)
+        page["selections"][source] = (older + [pivot] + newer, lower, gaps | older_gaps | reader._boundary_gaps(end))
+        page["before"][source], page["page_ends"][source] = lower, end
+    anchor = pivots["chat"] or pivots["progress"]
+    page["anchor"] = ({"state": "found", "task_id": task_id, "history_id": anchor["history_id"]} if anchor else
+                      {"state": "moved" if "moved" in states else "absent", "task_id": task_id})
+    return page
+
+
 def history_page_coverage(page, stream_gaps):
     """Delivered physical spans, called AFTER quota/lineage deferrals.
 
@@ -423,6 +556,9 @@ def history_page_tokens(page, messages=(), reads=None):
     if any(selection[0] is None for selection in page["selections"].values()):
         return {"has_more": True, "next_cursor": None, "page_cursor": None,
                 "reason_code": "history_source_unavailable"}
+    anchor = page.get("anchor")
+    if anchor is not None and anchor["state"] != "found":  # an around read with no place to land: no page
+        return {"has_more": False, "next_cursor": None, "page_cursor": None, "anchor": anchor}
     state = {key: page[key] for key in ("v", "chat_id", "view", "upper", "unfinished", "quotas")}
     before = {source: position if page["quotas"]["human" if source == "chat" else source] else 0
               for source, position in page["before"].items()}
@@ -451,6 +587,7 @@ def history_page_tokens(page, messages=(), reads=None):
                                       "recent": page["recent"]}),
         # The newest page names where the next read of new arrivals starts.
         **({"after_cursor": after_cursor} if after_cursor and page["recent"] and not page["replayed"] else {}),
+        **({"anchor": anchor} if anchor is not None else {}),
     }
 
 

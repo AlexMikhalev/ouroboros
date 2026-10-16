@@ -1417,7 +1417,7 @@ def _assemble_history_response(
     thread_id: int,
     n_human: int,
     n_progress: int,
-    cursor: Optional[str] = None,
+    cursor: Optional[str] = None, around: Optional[str] = None,
 ) -> bytes:
     """Select and project recent/archive history in the endpoint's one worker.
 
@@ -1441,7 +1441,7 @@ def _assemble_history_response(
                                 "progress": progress_quota_predicate(row_matches_thread, _stored_chat_id)},
                                {"human": _MAX_N_HUMAN, "progress": _MAX_N_PROGRESS},
                                room_segment_lens(thread_id, project_chat_ids, project_source_refs, rooms),
-                               notes, rooms.warm)
+                               notes, rooms.warm, around, (row_matches_thread, _stored_chat_id))
     selections, before, recent = page["selections"], page["before"], page["recent"]
     n_human, n_progress = page["quotas"]["human"], page["quotas"]["progress"]
     historical_terminals: Dict[str, dict] = {}
@@ -1463,7 +1463,7 @@ def _assemble_history_response(
     combined.extend(progress_rows)
     candidates = list(combined)
     combined = _fold_task_bound_skill_reviews(combined)
-    lifecycle_row = _active_lifecycle_row(row_matches_thread) if not cursor or page["after"] else None
+    lifecycle_row = _active_lifecycle_row(row_matches_thread) if not (cursor or around) or page["after"] else None
     if lifecycle_row is not None:
         combined.append(lifecycle_row)
     try:
@@ -1583,9 +1583,10 @@ def make_chat_history_endpoint(data_dir: pathlib.Path):
         thread_id = _int_param("chat_id", 1, 2**31 - 1) or 1
         # ONE thread hop for the whole assembly (perf2 P3): reads, transforms,
         # slicing, annotation, and the JSON encode all run off the event loop.
-        cursor = request.query_params.get("cursor")
+        cursor, around = (request.query_params.get(name) for name in ("cursor", "around"))
         try:
-            body = await asyncio.to_thread(_assemble_history_response, data_dir, thread_id, n_human, n_progress, cursor)
+            body = await asyncio.to_thread(_assemble_history_response, data_dir, thread_id, n_human, n_progress,
+                                           cursor, around)
         except (HistoryCursorError, JsonlChainUnreadable, OSError, StoreMigrating) as exc:
             reason = (exc.reason if isinstance(exc, HistoryCursorError) else
                       "migrating" if isinstance(exc, StoreMigrating) else "history_source_unavailable")
