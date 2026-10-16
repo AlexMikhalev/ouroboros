@@ -31,26 +31,26 @@ def _saved_pause(root, monkeypatch, workers, *, project=False):
 
 
 @contextmanager
-def _result_gap(root, monkeypatch, kind):
+def _result_gap(root, monkeypatch, kind, *, task_id="saved"):
     with monkeypatch.context() as patch:
         if kind == "unreadable":
-            unreadable_result(patch, "saved", root=root)
+            unreadable_result(patch, task_id, root=root)
         else:
             # Only this result observation is contended. Cancellation authority
             # and the snapshot remain readable, as in the real pending failure.
             original = task_results.load_task_result
             calls = []
 
-            def busy_read(drive, task_id, **kwargs):
-                if str(task_id) != "saved":
-                    return original(drive, task_id, **kwargs)
+            def busy_read(drive, tid, **kwargs):
+                if str(tid) != task_id:
+                    return original(drive, tid, **kwargs)
                 temporary_root = Path(os.environ.get("OUROBOROS_TEST_TEMP_ROOT") or tempfile.gettempdir())
                 assert root.resolve().is_relative_to(temporary_root.resolve())
                 conn = store.connect(store.store_path(root), store.TIER_ENFORCED)
                 try:
                     conn.execute("BEGIN EXCLUSIVE")
                     with store.acquisition_budget(0):
-                        return original(drive, task_id, **kwargs)
+                        return original(drive, tid, **kwargs)
                 except store.StoreBusy as exc:
                     assert exc.reason == "contention" and exc.rollback_confirmed
                     calls.append(exc)
@@ -151,3 +151,52 @@ def test_saved_pause_does_not_override_known_terminal_or_stop(tmp_path, monkeypa
     if outcome == "completed":
         row = task_results.load_task_result(tmp_path, "saved")
         assert row["status"] == "completed" and row["result"] == "retained answer"
+
+
+@pytest.mark.parametrize("entry", ["live", "restore"])
+@pytest.mark.parametrize("gap", ["busy", "unreadable"])
+def test_native_warm_handoff_survives_result_gap_until_explicit_resume(tmp_path, monkeypatch, entry, gap):
+    """#1917's native carrier and the shared unreadable-result rule conserve the same work."""
+    from ouroboros import owner_wait
+    from tests.test_warm_restart_retention import _handoff, _park, _pool_events
+
+    queue, state, workers = _install_queue(tmp_path, monkeypatch)
+    events = _pool_events(workers, monkeypatch)
+    ctx, limit, wait, _task = _park(tmp_path, workers, "sleep")
+    original = read_actor_source_bytes(tmp_path, "saved-warm", wait["source_ref"])
+    # The real current selector writes the native handoff. An unacknowledged
+    # stop does not authorize its return; later explicit Resume owns recovery.
+    selected = _handoff(tmp_path, workers, wait, ack=False)
+    assert selected == {"saved-warm"}
+    assert workers.kill_workers(force=True, terminal_status="cancelled", result_reason="Server shutdown.",
+                                stop_source="server_shutdown", retain_saved_work=True, preserve_pending=True,
+                                preserve_running_task_ids=selected)
+    [pending] = workers.PENDING
+    carrier = copy.deepcopy(pending["_owner_wait_resume"])
+    assert carrier["wait_id"] == wait["wait_id"] and not pending.get("_budget_pause")
+    if entry == "restore":
+        workers.PENDING.clear()
+    with _result_gap(tmp_path, monkeypatch, gap, task_id="saved-warm"):
+        if entry == "restore":
+            assert queue.restore_pending_from_snapshot() == 1
+        else:
+            with queue._queue_lock:
+                assert workers._drop_cancelled_pending()
+        [kept] = workers.PENDING
+        assert kept["_owner_wait_resume"] == carrier and kept["_attempt"] == 1
+        assert not kept.get("_terminalization_retry") and not kept.get("_budget_pause_resume")
+        assert not kept.get("_project_admission_restore_hold")
+    with queue._queue_lock:
+        assert workers._drop_cancelled_pending()
+    assert not owner_wait.restore_owner_wait_allowed(tmp_path, kept)
+    assert not kept.get("_budget_pause_resume") and workers.RUNNING == {}
+    assert not [event for event in events if event.get("type") == "task_done"]
+    assert read_actor_source_bytes(tmp_path, "saved-warm", wait["source_ref"]) == original
+    monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 5.0)
+    resumed = queue.resume_budget_paused_task("saved-warm")
+    assert resumed["ok"], resumed
+    assert not kept.get("_owner_wait_resume") and kept["_budget_pause_resume"]["grant_id"]
+    ctx.budget_pause_resume = kept["_budget_pause_resume"]
+    saved = budget_pause.load_budget_pause(ctx)
+    assert saved["messages"] == limit.messages and saved["task_attempt"] == 1
+    assert read_actor_source_bytes(tmp_path, "saved-warm", wait["source_ref"]) == original
