@@ -322,8 +322,12 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
             if not result:
                 from ouroboros.task_results import load_task_result
 
-                result = load_task_result(ctx.DRIVE_ROOT, task_id, strict=True) or {}
-            progress_meta = completion_event_view({**evt, "progress_meta": progress_meta or {}}, result).get("progress_meta")
+                try:
+                    result = load_task_result(ctx.DRIVE_ROOT, task_id, strict=True) or {}
+                except Exception:
+                    log.debug("legacy completion metadata unavailable for %s; keeping retained text", task_id, exc_info=True)
+                    result = {}
+            progress_meta = completion_event_view(ctx.DRIVE_ROOT, {**evt, "progress_meta": progress_meta or {}}, result).get("progress_meta")
         if progress_meta and "executor_observation" in progress_meta:
             progress_meta = dict(progress_meta)
             observation = executor_observation_meta(

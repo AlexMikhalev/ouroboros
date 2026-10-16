@@ -184,3 +184,41 @@ def test_files_questions_and_project_replies_are_independent(tmp_path, monkeypat
     monkeypatch.setattr(media_plugin, "TelegramClient", lambda *_a, **_kw: quiz_client)
     asyncio.run(media_plugin._make_quiz(_Api(tmp_path))({**_EVENT, "transport": {"kind": "telegram"}, "wait_for_answer": True}))
     assert len(quiz_client.panels) == 1 and "Which db?" in quiz_client.panels[0][1]
+
+
+@pytest.mark.parametrize("lane", ["periodic", "mirror"])
+def test_degraded_review_history_never_leaves_a_bare_warning(lane, tmp_path, monkeypatch):
+    # Independent Claude reproduction: a retained DEGRADED wave precedes the
+    # accepted earlier PASS. Filtering provenance must not erase the only reason
+    # when the derived objective still prevents a positively neutral phone view.
+    trace = _reviewed_trace()
+    trace["review_runs"].insert(0, {"authority": "host_root", "panel_id": "p0", "binding_hash": "b1",
+        "aggregate_signal": "DEGRADED", "degraded": True,
+        "actors": [{"signal": "DEGRADED", "parsed": {"verdict": "DEGRADED"}}]})
+    record = {**outcomes.derive_loop_outcome("The answer is retained.", {}, trace),
+              "task_id": "degraded-review", "status": "completed", "chat_id": 1}
+    before = copy.deepcopy(record)
+    if lane == "periodic":
+        nt = _load()
+        api, data = _api(tmp_path)
+        monkeypatch.setattr(nt, "TelegramClient", _Rec)
+        summary = terminal_projection._project_row("degraded-review", record, {}, {"chat_id": 1})
+        notice = summary["completion_notice"]
+        _write_rows(data, [summary])
+        _Rec.sent = []
+        asyncio.run(nt._check_tasks_notify(api, {"TELEGRAM_NOTIFY_TASKS": "on"}, 42, {"notified_task_ids": []}, "en"))
+        sent = _Rec.sent[0][1]
+    else:
+        from tests.test_project_completion_mirror import _enqueue_row
+        from tests.test_completion_legacy_replay import _legacy_sender
+        from tests.test_telegram_subagent_cards import _Rec as MirrorRec
+
+        event = _enqueue_row(tmp_path / "host", monkeypatch, {k: v for k, v in record.items() if k != "task_id"})
+        notice = event["progress_meta"]["completion_notice"]
+        send, _frames = _legacy_sender(tmp_path / "host", monkeypatch)
+        send(event)
+        sent = MirrorRec.sent[0][1]
+    assert record == before
+    assert not notice["neutral"]  # do not invent finished/approved from degraded facts
+    assert notice["detail"] and "earlier version" in notice["detail"], sent
+    assert "earlier version" in sent
