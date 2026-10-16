@@ -266,6 +266,41 @@ def test_a_stop_after_a_send_already_waiting_on_the_transport_closes_the_call(ha
     text, usage, _trace = h.finish(timeout=5.0)
     assert usage["live_call"]["ended"] == "owner_stop" and engine.closed
 
+
+def test_a_delivery_boundary_acknowledges_only_the_mail_sent_before_it(harness, monkeypatch, tmp_path):
+    from ouroboros.owner_mailbox import drain_owner_entries, write_owner_message
+
+    original, gates, started = FakeEngine.send, {}, {}
+
+    async def held_send(self, command):  # each mailbox send waits until the test releases it
+        if isinstance(command, ContextItem) and command.source == "mailbox":
+            word = "first" if "first" in command.text else "second"
+            started[word] = True
+            gate = gates.setdefault(word, asyncio.Event())
+            await gate.wait()
+        await original(self, command)
+
+    def unacknowledged():
+        return {entry.get("msg_id") or entry.get("id") for entry in drain_owner_entries(tmp_path, "t-call", set(), 1)}
+
+    monkeypatch.setattr(FakeEngine, "send", held_send)
+    h = harness()
+    engine = h.start()
+    assert write_owner_message(tmp_path, "the first words", "t-call", msg_id="mail-first")
+    assert _wait_for(lambda: started.get("first"))
+    assert write_owner_message(tmp_path, "the second words", "t-call", msg_id="mail-second")
+    assert _wait_for(lambda: "mail-second" in h.task_row().get("live_call", {}).get("consumed_mailbox_ids", [])
+                     or any("second" in str(m.get("content")) for m in h.messages))
+    loop = engine._loop
+    loop.call_soon_threadsafe(gates.setdefault("first", asyncio.Event()).set)
+    assert _wait_for(lambda: started.get("second"))  # the first is delivered, the second is waiting
+    assert _wait_for(lambda: "mail-first" not in unacknowledged())
+    assert "mail-second" in unacknowledged()  # its own boundary has not been reached
+    loop.call_soon_threadsafe(gates.setdefault("second", asyncio.Event()).set)
+    assert _wait_for(lambda: "mail-second" not in unacknowledged())
+    h.stop()
+    h.finish()
+
 def test_joins_leaves_and_context_while_connecting_wait_for_the_live_session(harness, monkeypatch):
     _slow_opening(monkeypatch)
     h = harness()

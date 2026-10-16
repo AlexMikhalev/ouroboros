@@ -74,7 +74,11 @@ BATCH_SETTLE_WAIT_S = 5.0
 
 # ---- seams the lanes meet at (tests replace these) --------------------------------
 
-_ACK = object()  # the delivery task's marker: acknowledge the content delivered before it
+@dataclass(frozen=True)
+class _Acks:
+    """A delivery boundary: the content acknowledgements owed for what was posted before it."""
+
+    callbacks: Tuple[Callable[[], Any], ...]
 
 
 def _hub_for(call_id: str):
@@ -185,7 +189,6 @@ class _LiveCall:
         # Context and content acknowledgements leave in order through one delivery task, so a
         # send waiting on the transport never holds the mailbox, the peers or a close decision.
         self._outbox: Optional[asyncio.Queue] = None
-        self._ack_posted = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._reader_stop = threading.Event()
         self._reader: Optional[threading.Thread] = None
@@ -527,16 +530,22 @@ class _LiveCall:
             self._outbox.put_nowait(item)
 
     async def _deliver_forever(self) -> None:
-        from ouroboros.working_checkpoint import flush_content_acks
-
         while True:
             item = await self._outbox.get()
-            if item is _ACK:
+            if isinstance(item, _Acks):
                 # Content is acknowledged only once a live session holds it and the checkpoint
-                # is written; while no session is live the entries wait (and are redelivered).
-                self._ack_posted = False
+                # is written; otherwise its acknowledgements wait for a later boundary (and
+                # unacknowledged entries are redelivered).
                 if self.engine is not None and not self.closing and self._checkpoint():
-                    flush_content_acks(self.ctx)
+                    for ack in item.callbacks:
+                        try:
+                            ack()
+                        except Exception:
+                            log.warning("live call %s mail ACK unwritten; it will be delivered again",
+                                        self.spec.call_id, exc_info=True)
+                else:
+                    self.ctx._pending_content_acks = [*item.callbacks,
+                                                      *(getattr(self.ctx, "_pending_content_acks", None) or [])]
                 continue
             await self._send(item)
 
@@ -860,12 +869,12 @@ class _LiveCall:
             if controls.get("hurry"):
                 await self._context(ContextItem(text="The owner pressed Hurry: finish what you are saying and wrap up.",
                                                 source="owner_control"))
-        # The acknowledgement follows the delivery of everything posted before it.
-        pending_acks = bool(getattr(self.ctx, "_pending_content_acks", None))
-        if ((scratch or controls or pending_acks) and self.engine is not None and not self.closing
-                and not self._ack_posted):
-            self._ack_posted = True
-            self._post(_ACK)
+        # A boundary after everything posted so far owes exactly the acknowledgements taken
+        # now; later mail waits for its own boundary.
+        pending = list(getattr(self.ctx, "_pending_content_acks", None) or [])
+        if (scratch or controls or pending) and self.engine is not None and not self.closing:
+            self.ctx._pending_content_acks = []
+            self._post(_Acks(tuple(pending)))
 
     def _checkpoint(self) -> bool:
         """The call's durable state on its task row; content ACKs wait for this write."""
