@@ -46,17 +46,20 @@ COPY --from=python-standalone /opt/python-standalone /opt/python-standalone
 # per-release dependency layer would rebuild.
 ARG PLAYWRIGHT_VERSION=1.62.0
 ENV PATH="/opt/python-standalone/bin:${PATH}" \
+    LANG=C.UTF-8 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1
 
-# System dependencies: git for the agent's own history and updates, plus
-# every Chromium/WebKit native library from Playwright's authoritative list.
+# System dependencies: what the python:3.10-slim base used to carry (CA
+# certificates for HTTPS and git, netbase, tzdata), git for the agent's own
+# history and updates, plus every Chromium/WebKit native library from
+# Playwright's authoritative list.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update \
-    && apt-get install -y --no-install-recommends git \
+    && apt-get install -y --no-install-recommends ca-certificates git netbase tzdata \
     && uvx --from "playwright==${PLAYWRIGHT_VERSION}" playwright install-deps chromium webkit \
     && uvx --from "playwright==${PLAYWRIGHT_VERSION}" playwright install chromium webkit
 
