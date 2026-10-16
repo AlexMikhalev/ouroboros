@@ -585,7 +585,7 @@ def _enforce_task_timeouts_locked(
     # a later graceful request can never extend either hard axis.
     from supervisor.owner_stop import running_owner_stop_tasks
     from supervisor.restart_retention import RETAINED_FOR_BOOT
-    from supervisor.worker_owner_wait import has_owner_wait_checkpoint
+    from supervisor.worker_owner_wait import has_owner_wait_checkpoint, waiting_on_owner
 
     owner_stop_held = running_owner_stop_tasks(
         _queue().DRIVE_ROOT, grace_sec=_queue().FINALIZATION_GRACE_SEC,
@@ -635,13 +635,10 @@ def _enforce_task_timeouts_locked(
         lease_ts = meta.get("external_wait_lease_until")
         active_llm_call = meta.get("active_llm_call")
         llm_call_in_flight = isinstance(active_llm_call, dict) and active_llm_call.get("task_attempt") == attempt
-        owner_wait = meta.get("owner_wait")
-        waiting_on_owner = (isinstance(owner_wait, dict) and owner_wait.get("state") == "waiting"
-                            and owner_wait.get("task_attempt") == attempt)
         progressing = (own_progress or subtree_progressing or _queue()._has_pending_descendant(task_id)
                        or (isinstance(lease_ts, (int, float)) and float(lease_ts) > now)
                        or llm_call_in_flight
-                       or model_waiting(meta) or waiting_on_owner
+                       or model_waiting(meta) or waiting_on_owner(meta, attempt)
                        or _active_operation_progressing(meta, now))
         ceiling_reached = abs_ceiling is not None and runtime_sec >= float(abs_ceiling)
         if (ceiling_reached and not task.get("parent_task_id")
