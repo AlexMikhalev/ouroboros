@@ -13,9 +13,9 @@ export const WAIT_FIELDS = ['wait_for_answer', 'wait_ended_at', 'owner_wait_stat
 // rows Python actually emits.
 const STATUS = {
     waiting: 'Waiting for your answer',
-    open: 'Unanswered · an answer is still accepted',
-    resumed: 'Unanswered · the task continued; an answer is still accepted',
-    expired_terminal: 'Unanswered · the task finished; a late answer is accepted as your message',
+    open: 'Unanswered',
+    resumed: 'Unanswered · task continued',
+    expired_terminal: 'Unanswered · task finished',
     answered: 'You answered',
     superseded: 'Replaced by a newer question',
     closed: 'Question closed',
@@ -38,7 +38,7 @@ export function waitFacts(row = {}) {
 const deliveryOwed = row => ['answered', 'closed'].includes(row.quiz_state || row.state)
     && row.question_delivery?.state === 'owed';
 // An owed delivery keeps a settled card current in Main; an unknown the owner removed keeps its
-// honest status but no longer holds a place in Needs you.
+// honest status but no longer counts as pending.
 export const questionDeliveryPending = row => deliveryOwed(row) && row.question_delivery?.dismissed !== true;
 export const unknownDeliveryRemovable = row => questionDeliveryPending(row)
     && (row.quiz_state || row.state) === 'answered' && row.question_delivery?.reason_code === 'late_answer_delivery_unknown';
@@ -148,7 +148,11 @@ export function renderOwnerAnswer(card, comment) {
     return true;
 }
 
-// The same answer and explicit no-answer closure controls serve Main and Project.
+const CLOSE_GLYPH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+
+// The same answer and explicit no-answer closure controls serve Main and Project. Closing is one
+// quiet × at the end of the card's head (a tall card's foot can be screens away), one tap with no
+// reason to type; it waits while an answer is typed, so a mis-tap never discards the owner's words.
 export function appendQuestionReplyControls(card, quiz, { submit, close, showToast, onDomWrite }) {
     const box = document.createElement('div');
     box.className = 'chat-quiz-comment-box';
@@ -158,9 +162,15 @@ export function appendQuestionReplyControls(card, quiz, { submit, close, showToa
     const send = document.createElement('button');
     send.type = 'button'; send.className = 'chat-quiz-send';
     send.textContent = tr('quiz.send_answer', 'Send my answer'); send.disabled = true;
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button'; closeButton.className = 'chat-quiz-close';
+    const closeLabel = tr('quiz.close_question', 'Close question without answering');
+    closeButton.setAttribute('aria-label', closeLabel); closeButton.title = closeLabel;
+    closeButton.innerHTML = CLOSE_GLYPH;
     field.addEventListener('input', () => onDomWrite(() => {
-        send.disabled = !ANSWERABLE_QUIZ_STATES.includes(card.dataset.state)
-            || !String(field.value || '').trim() || field.value.length > MAX_DECISION_COMMENT;
+        const answerable = ANSWERABLE_QUIZ_STATES.includes(card.dataset.state);
+        send.disabled = !answerable || !String(field.value || '').trim() || field.value.length > MAX_DECISION_COMMENT;
+        closeButton.disabled = !answerable || Boolean(String(field.value || '').trim());
         return true;
     }));
     send.addEventListener('click', () => {
@@ -170,26 +180,12 @@ export function appendQuestionReplyControls(card, quiz, { submit, close, showToa
         }
         submit(String(field.value));
     });
+    closeButton.addEventListener('click', () => {
+        if (closeButton.disabled || !ANSWERABLE_QUIZ_STATES.includes(card.dataset.state)) return;
+        close('');
+    });
     box.append(field, send); bindEnterSubmit(field, send);
-    const disclosure = document.createElement('details');
-    disclosure.className = 'chat-quiz-close';
-    const summary = document.createElement('summary');
-    summary.textContent = tr('quiz.close_without_answer', 'Close without answering');
-    const reason = document.createElement('textarea');
-    reason.className = 'chat-quiz-close-reason ui-control'; reason.rows = 2; reason.maxLength = MAX_DECISION_COMMENT;
-    reason.setAttribute('aria-label', tr('quiz.close_reason', 'Reason for closing'));
-    reason.placeholder = tr('quiz.close_reason', 'Reason for closing');
-    const confirm = document.createElement('button');
-    confirm.className = 'chat-quiz-close-submit btn btn-default'; confirm.type = 'button';
-    confirm.textContent = tr('quiz.close_question', 'Close question'); confirm.disabled = true;
-    reason.addEventListener('input', () => {
-        confirm.disabled = !ANSWERABLE_QUIZ_STATES.includes(card.dataset.state)
-            || !String(reason.value || '').trim() || reason.value.length > MAX_DECISION_COMMENT;
-    });
-    confirm.addEventListener('click', () => {
-        if (confirm.disabled || !ANSWERABLE_QUIZ_STATES.includes(card.dataset.state)) return;
-        close(String(reason.value));
-    });
-    disclosure.append(summary, reason, confirm); box.append(disclosure); card.append(box);
+    (card.querySelector('.chat-quiz-head-end') || card.querySelector('.chat-quiz-head') || box).append(closeButton);
+    card.append(box);
     return field;
 }

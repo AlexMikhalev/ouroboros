@@ -116,6 +116,32 @@ def test_owner_close_delivers_typed_noanswer_and_retry_preserves_winner(runtime)
     assert not [row for row in rows if row.get("type") == "quiz_answer"]
 
 
+@pytest.mark.parametrize("words", ["omitted", ""])
+def test_owner_close_over_http_needs_no_words_and_refuses_an_invalid_reason(tmp_path, monkeypatch, words):
+    """``POST /api/decisions``: one tap closes. The owner's words stay optional text of at most
+    2000 characters; their absence records the standard sentence, anything else is refused."""
+    from tests.test_quiz_answer import _decision_app, _post
+    from tests.test_quiz_late_answer import _late_bridge
+
+    write_task_result(tmp_path, "task", "running", chat_id=1)
+    for qid in ("tapped", "typed"):
+        owner_quiz.record_asked(tmp_path, "task", quiz_id=qid, question="Proceed?", options=["Yes", "No"], chat_id=1)
+    _late_bridge(tmp_path, monkeypatch)  # a real bridge; both cards' Main publication is witnessed
+    app = _decision_app(tmp_path, monkeypatch)
+    tap = {"request_id": "tap", "decision_id": "quiz:task:tapped", "action": "close"}
+    for invalid in (7, ["Withdrawn"], "x" * 2001):
+        reply = _post(app, {**tap, "reason": invalid})
+        assert reply.status_code == 400 and reply.json()["reason_code"] == "close_reason_invalid", reply.text
+    assert owner_quiz.quiz_states(tmp_path, "task")["tapped"]["state"] == "open"
+    reply = _post(app, tap if words == "omitted" else {**tap, "reason": words})
+    assert reply.status_code == 200 and reply.json()["state"] == "closed", reply.text
+    assert reply.json()["closed_reason"] == owner_quiz.OWNER_CLOSE_REASON == "Closed by the owner without an answer."
+    assert owner_quiz.quiz_states(tmp_path, "task")["tapped"]["closed_reason"] == owner_quiz.OWNER_CLOSE_REASON
+    longest = "x" * 2000
+    reply = _post(app, {"request_id": "typed", "decision_id": "quiz:task:typed", "action": "close", "reason": longest})
+    assert reply.status_code == 200 and reply.json()["closed_reason"] == longest, reply.text
+
+
 def test_owner_closure_mailbox_failure_recovers_automatically(runtime, monkeypatch):
     from ouroboros import owner_mailbox
 

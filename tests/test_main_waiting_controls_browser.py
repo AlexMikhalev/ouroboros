@@ -1,5 +1,9 @@
 """Missing #1660 controls/quietness only; the existing consumer journeys stay intact.
 
+A task that cannot continue without the owner is one System message in Main's feed with the
+task's own controls; a task waiting on nothing the owner must do posts none, and Main's waiting
+pill stays hidden.
+
 The gateway, SPA, decision transport and task producers are real. Model judgments
 and provider access are fixture-local. Evidence is retained on both RED and GREEN
 via OUROBOROS_BROWSER_EVIDENCE_OUT; reached/not-reached stages name the proof limit.
@@ -20,7 +24,7 @@ from tests.system_e2e.harness import (
 from tests.system_e2e.test_system_scenarios_w3a import _completion_step
 from tests.test_main_consumer_journeys_browser import (
     _ControlsAuthRefusalStub, _controls_capture, _controls_evidence,
-    _controls_open_attention, _controls_project_closed,
+    _controls_owner_action, _controls_project_closed,
 )
 from tests.test_main_materials_browser import _m1660_material_question
 from tests.test_main_results_browser import _nf_observe, _nf_retain
@@ -117,10 +121,8 @@ def _manual_card(page, oracle, facts, task_id):
     state = _census(page, facts, "manual_census")
     projected = next(row for row in state["main_attention"] if row["task_id"] == task_id)
     assert projected["model_waits"][waiting["wait_id"]]["revision"] == waiting["revision"]
-    _controls_open_attention(page)
     _controls_project_closed(page)
-    control = page.locator(f'.main-attention-task[data-task-id="{task_id}"] '
-                           f'.model-wait-row[data-wait-id="{waiting["wait_id"]}"]')
+    control = _controls_owner_action(page, task_id).locator(f'.model-wait-row[data-wait-id="{waiting["wait_id"]}"]')
     control.get_by_role("button", name="Change model or account", exact=True).wait_for()
     return waiting, control
 
@@ -202,7 +204,7 @@ def test_main_change_model_applies_wait_role_and_reads_resumed_result(wait_clone
             facts["reached"].append("Main result read")
             state = _census(page, facts, "resolved_census")
             assert not any(row["task_id"] == task_id for row in state["main_attention"])
-            expect(page.locator(f'.main-attention-task[data-task-id="{task_id}"]')).to_have_count(0)
+            expect(_controls_owner_action(page, task_id)).to_have_count(0)
             facts["reached"].append("cold census retired wait")
 
 
@@ -219,7 +221,7 @@ def test_webkit_main_material_reader_then_model_wait_settings_entry(wait_clone, 
             task_id = _start(server, facts, marker)
             waiting, control = _manual_card(page, oracle, facts, task_id)
             facts["reached"].append("manual wait visible")
-            card = page.locator(f'.main-attention .project-question-card[data-quiz-id="{facts["seed"]["quiz_id"]}"]')
+            card = page.locator(f'#chat-messages .project-question-card[data-quiz-id="{facts["seed"]["quiz_id"]}"]')
             image = card.locator("img.chat-file-thumb")
             expect(image).to_be_visible()
             page.wait_for_function("img => img.complete && img.naturalWidth === 240 && img.naturalHeight === 120",
@@ -282,8 +284,8 @@ def test_main_own_pause_stays_quiet_after_complete_census(wait_clone, tmp_path):
                 activity = next(row for row in state["active_chat_activities"] if row["activity_id"] == task_id)
                 assert activity["phase"] == "budget_paused" and activity["pause_cause"] == "owner", activity
                 assert not state["main_attention"] and not state["current_questions"]
-                expect(page.locator(".main-attention")).to_be_hidden()
-                expect(page.locator(f'.main-attention-task[data-task-id="{task_id}"]')).to_have_count(0)
+                expect(page.locator("#chat-messages .chat-bubble.owner-action")).to_have_count(0)
+                expect(page.locator("#page-chat .chat-question-nav")).to_be_hidden()
                 _controls_capture(page, evidence, "main-owner-pause-quiet")
                 facts["reached"].append("complete census quiet")
                 assert not gate.timed_out and len(stub.kinds()) == 1
@@ -364,7 +366,8 @@ def test_main_observable_automatic_wait_is_quiet_until_manual_action_required(wa
                             activity = next(row for row in state["active_chat_activities"] if row["activity_id"] == task_id)
                             assert activity["model_waits"][waiting["wait_id"]] == waiting
                             assert not state["main_attention"] and not state["current_questions"]
-                            expect(page.locator(".main-attention")).to_be_hidden()
+                            expect(page.locator("#chat-messages .chat-bubble.owner-action")).to_have_count(0)
+                            expect(page.locator("#page-chat .chat-question-nav")).to_be_hidden()
                             expect(page.locator(f'#chat-messages .chat-live-card[data-task-id="{task_id}"]')).to_have_count(0)
                             _controls_capture(page, evidence, "main-automatic-wait-quiet")
                             facts["reached"].append("complete automatic census quiet")
@@ -382,8 +385,7 @@ def test_main_observable_automatic_wait_is_quiet_until_manual_action_required(wa
                             state = _census(page, facts, "manual_census")
                             projected = next(row for row in state["main_attention"] if row["task_id"] == task_id)
                             assert projected["model_waits"][waiting["wait_id"]] == manual
-                            _controls_open_attention(page)
-                            control = page.locator(f'.main-attention-task[data-task-id="{task_id}"] '
+                            control = _controls_owner_action(page, task_id).locator(
                                 f'.model-wait-row[data-wait-id="{waiting["wait_id"]}"]')
                             automatic = control.locator("[data-wait-auto]")
                             expect(automatic).to_be_visible()
@@ -403,7 +405,8 @@ def test_main_observable_automatic_wait_is_quiet_until_manual_action_required(wa
                             assert wait_until(lambda: oracle.task_result(task_id)["model_waits"][waiting["wait_id"]].get("applied_request_id") == submitted["request_id"], 30)
                             state = _census(page, facts, "automatic_again_census")
                             assert not state["main_attention"]
-                            expect(page.locator(".main-attention")).to_be_hidden()
+                            expect(page.locator("#chat-messages .chat-bubble.owner-action")).to_have_count(0)
+                            expect(page.locator("#page-chat .chat-question-nav")).to_be_hidden()
                             facts["reached"].append("Main restored automatic continuation")
                             recovered.set()
                             assert future.result(timeout=60) == arguments

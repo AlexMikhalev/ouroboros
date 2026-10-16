@@ -422,14 +422,16 @@ ESCALATE_TOOL_SCHEMA: Dict[str, Any] = {
         "turn; a waited question keeps it alive. How many decisions to raise and when "
         "remains your judgment. Unanswered questions remain available from Main after the "
         "task ends. To explicitly retire a question, use action=close, quiz_id and a "
-        "non-empty reason; question_task_id may identify a recorded Continue or retry predecessor. "
-        "Closing is your decision with an explanation, never the human's approval. "
+        "non-empty reason; question_task_id may identify a recorded Continue or retry predecessor, "
+        "or another task that has already finished. Before you finish, close each of your own "
+        "unanswered questions whose answer would no longer change anything, saying why; leave the "
+        "rest open. Closing is your decision with an explanation, never the human's approval. "
         "Materials may name existing task artifacts needed for the decision."
     ),
     "parameters": {"type": "object", "properties": {
         "action": {"type": "string", "enum": ["ask", "close"], "default": "ask"},
         "quiz_id": {"type": "string", "description": "Existing question to close; used only with action=close."},
-        "question_task_id": {"type": "string", "description": "Question author for action=close; defaults to this task. Only your own or a recorded Continue/retry predecessor's question may be closed."},
+        "question_task_id": {"type": "string", "description": "Question author for action=close; defaults to this task. Your own, a recorded Continue/retry predecessor's, or an already finished task's question may be closed; another live task's may not."},
         "reason": {"type": "string", "description": "Required explanation shown beside an explicitly closed question. Silence or task completion is not approval."},
         "materials": {"type": "array", "items": {"type": "object", "properties": {
             "task_id": {"type": "string", "description": "Artifact's owning task; defaults to this task. Your task, descendants and recorded Continue/retry predecessors are supported."},
@@ -826,7 +828,7 @@ def _close_owner_question(ctx: ToolContext, quiz_id: str, reason: str, question_
     task_id = str(getattr(ctx, "task_id", "") or "")
     meta = getattr(ctx, "task_metadata", {}) or {}
     if not task_id or meta.get("parent_task_id") or meta.get("delegation_role") not in (None, "", "root"):
-        return argument_refusal(ctx, "QUIZ_CLOSE_UNAVAILABLE", ["Only an active root may close its own owner question."], effect="The question remains unchanged.")
+        return argument_refusal(ctx, "QUIZ_CLOSE_UNAVAILABLE", ["Only an active root may close an owner question."], effect="The question remains unchanged.")
     root = pathlib.Path(str(meta.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
     source_task = str(question_task_id or task_id)
     outcome = record_closed(root, source_task, quiz_id=quiz_id, reason=reason, actor_task_id=task_id)
