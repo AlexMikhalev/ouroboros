@@ -21,7 +21,7 @@
  */
 import { apiClient, fetchTaskDetailStrict } from './api_client.js';
 import { showToast } from './toast.js';
-import { normalizeLogTs } from './log_events.js';
+import { isTerminalTaskDetail, normalizeLogTs } from './log_events.js';
 import { censusTaskFacts, liveCardLabel, syncParkedPhase } from './task_phase_chip.js';
 import { boundActivityPreview, projectIdFromTask, refitCollapsedActivity, renderCollapsedActivity, taskCostProjection } from './chat_activity.js';
 import { DURABLE_RECEIPTS, receiptNotice } from './project_handoff.js';
@@ -118,8 +118,10 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
     const projects = new Map();
     // History reads newest pages first: a final can arrive before the older row that binds its card.
     const completions = new Map();
-    // An admitted successor of a portal's work -> that portal's record, until the successor's census row is here.
+    // An admitted successor of a portal's work -> that portal's record, until the successor's card is here.
     const follows = new Map();
+    // Followed successors whose own record is being read (one read at a time each).
+    const hydrating = new Set();
     // `predecessor|root` pairs whose record already said whether that root is its Continue.
     const asked = new Set();
 
@@ -228,12 +230,43 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
         return Boolean(changed || record.root.isConnected);
     }
 
+    // A successor the census does not list (it may have ended before any census saw it) keeps its own durable record,
+    // read through the existing task read; that record is then its whole present here. Read once: an absent record
+    // keeps the old card, a failed read asks again at the next census.
+    function hydrate(successorId) {
+        if (census.has(successorId) || !follows.has(successorId) || hydrating.has(successorId)) return;
+        hydrating.add(successorId);
+        void fetchTaskDetailStrict(successorId).then((detail) => {
+            if (detail) onDomWrite(() => adoptRecord(successorId, detail));
+            else follows.delete(successorId);
+        }, () => {}).finally(() => hydrating.delete(successorId));
+    }
+
+    // The record names the successor's Project and outcome: its card is minted as that Project's portal at its own
+    // start, settled from its durable outcome, and the episode chain gives it the work's place and first name. A
+    // record that names no Project is no portal's successor: the old card stays.
+    function adoptRecord(successorId, detail) {
+        if (census.has(successorId) || !isPortal(follows.get(successorId))) return false;
+        const projectId = key(bindings[successorId]?.project_id) || key(detail?.project_id);
+        follows.delete(successorId);
+        const record = projectId ? card.get(successorId) : null;
+        if (!record || record.isSubagent) return false;
+        const startedAt = Date.parse(String(detail.terminal_time?.attempt?.started_at || ''));
+        if (Number.isFinite(startedAt)) card.reanchor(record, startedAt);
+        let changed = bind(record, { id: projectId, name: key(detail.project_name) });
+        if (!record.finished && isTerminalTaskDetail(detail)) changed = card.summary({ ...detail, task_id: successorId }) || changed;
+        card.show(record);
+        return Boolean(changed || record.root.isConnected);
+    }
+
     /** The episode chain's hand-off: a portal's admitted successor, which runs where Main sees no frame of it. */
     function follow(successorId, predecessor) {
         const id = key(successorId);
         if (!isMain || !id || !isPortal(predecessor)) return false;
         follows.set(id, predecessor);
-        return Boolean(onDomWrite(() => adopt(id)));
+        const adopted = Boolean(onDomWrite(() => adopt(id)));
+        if (!adopted) hydrate(id);
+        return adopted;
     }
 
     // Read a settled card's own record once for one root that may be its Continue; the card's normal detail path
@@ -303,6 +336,7 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
             for (const successorId of [...follows.keys()]) changed = adopt(successorId) || changed;
             return reconcilePortalNotes(feed) || changed;
         });
+        for (const successorId of [...follows.keys()]) hydrate(successorId);
         askContinued();
     }
 

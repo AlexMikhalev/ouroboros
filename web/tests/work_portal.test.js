@@ -39,6 +39,10 @@ function fixture({ history = [], details = {}, continues = {}, chatId = 1 } = {}
             return { ok: true, json: async () => continues[path.split('/').at(-2)] || { ok: false, error: 'not admitted' } };
         }
         if (path.startsWith('/api/tasks/')) reads.push(path.split('/').pop().split('?')[0]);
+        // `null` is a record the host does not have: its real answer, a 404.
+        if (path.startsWith('/api/tasks/') && details[path.split('/').pop().split('?')[0]] === null) {
+            return { ok: false, status: 404, json: async () => ({ error: 'task not found' }) };
+        }
         return { ok: true, json: async () => (path.startsWith('/api/chat/history') ? { messages: history, window: { complete: true } }
             : path.startsWith('/api/tasks/') ? details[path.split('/').pop().split('?')[0]] || { status: 'running' }
                 : { active_direct_turns: [] }) };
@@ -475,5 +479,95 @@ test('after a room reload its history folds the same chain: one card for the wor
         f.state({ active_chat_activities: [room({ activity_id: 'w-1-c1', cancelable: true })] });
         await settle();
         assertRoomFollowed(f, f.card('w-1'));
+    } finally { f.close(); }
+});
+
+// A successor that ended before Main's census ever listed it (astra W2 R2): the predecessor's admitted link names it and
+// its own durable record, read through the existing task read, is its whole present. The work's ONE card follows it and
+// settles from that outcome; a bound claim or an absent record changes nothing.
+const finishedSuccessor = (id = 'w-1-c1', extra = {}) => ({ task_id: id, status: 'completed', chat_id: 7, project_id: 'p-1',
+    outcome_axes: { lifecycle: { status: 'completed' }, execution: { status: 'ok' } },
+    terminal_time: { occurred_at: '2026-10-10T12:42:00Z', attempt: { started_at: '2026-10-10T12:30:00Z' } }, ...extra });
+
+function assertSettledFollow(f, folded, { id = 'w-1-c1', episodes = 2 } = {}) {
+    const next = f.card(id);
+    assert.ok(next, 'the finished successor has the work\'s card in Main');
+    for (const node of folded) assert.equal(node.hidden, true, 'every ended episode folds into it: never a second card');
+    assert.equal(next.hidden, false);
+    const feed = f.messages.children;
+    assert.equal(feed.indexOf(next), feed.indexOf(folded[0]) + folded.length, 'it stands where the work began');
+    assert.equal(feed.filter((child) => child.classList.contains('chat-live-card') && !child.hidden).length, 1,
+        'one visible card for the work');
+    assert.equal(next.dataset.portal, '1');
+    assert.equal(next.children.at(-1).getAttribute('aria-label'), 'Open project Audit', 'the Project reference closes it');
+    assert.equal(f.part(id, 'live-title').textContent, 'Audit the projects', 'the work keeps its first name');
+    assert.equal(f.part(id, 'live-phase').textContent, 'Done', 'the current episode settles from its durable outcome');
+    assert.ok(!controls(f, id).includes('Stop…') && !controls(f, id).includes('Continued'), 'a settled work offers no Stop');
+    const lines = f.part(id, 'live-episodes').innerHTML;
+    assert.equal((lines.match(/data-episode="/g) || []).length, episodes);
+    assert.match(lines, /Episode 1<\/span> · <span class="chat-live-episode-span">[^<]+<\/span> · <span class="chat-live-episode-outcome" data-tone="error">Failed<\/span>/);
+    assert.match(lines, new RegExp(`data-episode="${episodes}" data-current="1"><span class="chat-live-episode-label">Episode ${episodes}</span> · <span class="chat-live-episode-span">[^<]+–[^<]+</span></div>`),
+        'the finished current episode carries its own span; the chip is its outcome');
+}
+
+test('a successor that finished before Main\'s census is the work\'s current episode, live; a bound claim or an absent record changes nothing', async () => {
+    for (const [claim, successor] of [['bound', finishedSuccessor()], ['admitted', null], ['admitted', finishedSuccessor()]]) {
+        const details = {};
+        const f = fixture({ details });
+        try {
+            const node = await runningPortal(f);
+            details['w-1'] = failedDetail(continuedBy(claim));
+            details['w-1-c1'] = successor;
+            // Failed, continued in its room, and the successor already finished: the census lists neither.
+            f.state({ task_bindings: { ...bindings, 'w-1-c1': { project_id: 'p-1', chat_id: 7 } }, active_chat_activities: [] });
+            await settle();
+            f.frame({ role: 'system', system_type: 'project_completion_summary', task_id: 'w-1-c1', project_id: 'p-1',
+                project_name: 'Audit', content: 'The audit is complete.', ts: '2026-10-10T12:42:30Z' });
+            await settle();
+            if (claim === 'bound' || successor === null) {
+                assert.equal(f.card('w-1-c1'), null, `${claim}/${successor ? 'record' : 'no record'}: no successor card`);
+                assert.equal(node.hidden, false, 'the old card stays as it was');
+                assert.equal(f.part('w-1', 'live-phase').textContent, 'Failed');
+                assert.equal(f.reads.includes('w-1-c1'), claim !== 'bound', `${claim}: only an admitted claim reads its successor`);
+                continue;
+            }
+            assertSettledFollow(f, [node]);
+        } finally { f.close(); }
+    }
+});
+
+test('after a Main reload a finished successor named by the record still settles the work\'s one card', async () => {
+    const history = [
+        { role: 'user', text: 'audit the projects in their own room', ts: '2026-10-10T11:59:00Z', chat_id: 1, source: 'web',
+            history_id: 'h-1', row_address: 'row:1@h#1' },
+        { role: 'system', system_type: 'project_started', chat_id: 1, task_id: 'w-1', project_id: 'p-1', project_name: 'Audit',
+            task_name: 'Audit the projects', text: 'Audit › Audit the projects · Started', ts: '2026-10-10T12:00:00Z',
+            history_id: 'h-2' },
+    ];
+    const f = fixture({ history, details: { 'w-1': failedDetail(continuedBy()), 'w-1-c1': finishedSuccessor() } });
+    try {
+        await f.instance.refreshHistory({ revision: 1 });
+        await settle();
+        f.state({ task_bindings: bindings, projects: [{ id: 'p-1', name: 'Audit' }], active_chat_activities: [] });
+        await settle();
+        assertSettledFollow(f, [f.card('w-1')]);
+    } finally { f.close(); }
+});
+
+test('a chain of successors that each ended unseen follows its proven links to one card', async () => {
+    const details = {};
+    const f = fixture({ details });
+    try {
+        const node = await runningPortal(f);
+        details['w-1'] = failedDetail(continuedBy());
+        // The first successor failed too and was continued; the second finished. Each record names the next.
+        details['w-1-c1'] = finishedSuccessor('w-1-c1', { status: 'failed', reason_code: 'model_provider_failed',
+            outcome_axes: { lifecycle: { status: 'failed' } },
+            terminal_time: { occurred_at: '2026-10-10T12:35:00Z', attempt: { started_at: '2026-10-10T12:30:00Z' } },
+            continued_by: { state: 'admitted', successor_task_id: 'w-1-c2', binding: { project_id: 'p-1', chat_id: 7 } } });
+        details['w-1-c2'] = finishedSuccessor('w-1-c2');
+        f.state({ task_bindings: bindings, active_chat_activities: [] });
+        await settle();
+        assertSettledFollow(f, [node, f.card('w-1-c1')], { id: 'w-1-c2', episodes: 3 });
     } finally { f.close(); }
 });
