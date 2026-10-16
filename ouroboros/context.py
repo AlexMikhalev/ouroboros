@@ -335,22 +335,25 @@ def _task_authority_projection(env: Any, task: Dict[str, Any]) -> Dict[str, Any]
         "arguments": {"task_id": task_id, "include_authority": True},
     }
     try:
+        # One plan authority: the task's plan record (and any earlier-schema waves it still
+        # holds) as review history; capture moves it into the resident review index.
         from ouroboros.task_results import current_plan_review_wave, load_plan_review_state
         from ouroboros.review_history_view import current_plan_history
         from types import SimpleNamespace
 
         state = load_plan_review_state(canonical_root, task_id)
-        wave = current_plan_review_wave(state)
-        if state.get("waves") or state.get("current_attempt") or state.get("legacy_v1"):
-            history, operative = current_plan_history(SimpleNamespace(drive_root=canonical_root, task_id=task_id), state=state)
+        history, operative = current_plan_history(SimpleNamespace(drive_root=canonical_root, task_id=task_id), state=state)
+        legacy = bool(state.get("waves") or state.get("current_attempt") or state.get("legacy_v1"))
+        if legacy or history.get("rounds") or history.get("decision_rows") or history.get("gaps") or operative:
+            wave = current_plan_review_wave(state)
             projection["plan_review_authority"] = {
-                "current_attempt": state.get("current_attempt") or {},
-                "current_wave": {key: wave[key] for key in (
-                    "cycle_index", "request_fingerprint", "spec_hash", "aggregate", "closed", "paid",
-                    "custody_pending", "wave_artifact") if key in wave} if wave is not None else None,
+                **({"current_attempt": state.get("current_attempt") or {},
+                    "current_wave": {key: wave[key] for key in (
+                        "cycle_index", "request_fingerprint", "spec_hash", "aggregate", "closed", "paid",
+                        "custody_pending", "wave_artifact") if key in wave} if wave is not None else None} if legacy else {}),
                 "dispute_history": history, "operative_subject": operative,
-                "legacy_v1_projection": state.get("legacy_v1_projection") or {},
-                "waves_omitted": int(state.get("waves_omitted") or 0),
+                **({"legacy_v1_projection": state.get("legacy_v1_projection") or {},
+                    "waves_omitted": int(state.get("waves_omitted") or 0)} if legacy else {}),
                 "source": source,
             }
     except Exception as exc:
@@ -1128,9 +1131,7 @@ def _capture_context_core(
             "## Task Contract Discipline\n\n"
             "For non-trivial work, state your success criteria early in your plan or reasoning, "
             "then keep tool use, artifact production, and the final claim aligned with the "
-            "visible task_contract. If task_acceptance_review is available and the work is "
-            "non-trivial, effectful, headless, workspace, or delegated, call it before finalizing "
-            "unless task review mode is off."
+            "visible task_contract."
         ),
     ])
 

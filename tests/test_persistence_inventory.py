@@ -770,10 +770,12 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # Panic sweep ``state/panic_sweep_pending.json`` (``ouroboros/process_scope.py``; two section-2
 # rows and one section-4 row) and the engine's own index ``claudexor/daemon/run-scopes.json``,
 # read at Panic and covered by the existing ``claudexor/**`` row.
-# 378 -> 380 (live calls): the direct-route price catalog cache ``state/pricing/litellm.json``
+# 378 -> 377: the retired plan engine's operative-spec source (context_checkpoints/plan-spec-*.json);
+# earlier records keep theirs, nothing writes one any more.
+# 377 -> 379 (live calls): the direct-route price catalog cache ``state/pricing/litellm.json``
 # (``ouroboros/pricing_catalog.py``; a section-2 row) and the small-window section captures
 # ``state/context_views/*/*/*.md`` (``ouroboros/section_floor.py``; a section-4 row).
-EXPECTED_SCAN_PATHS = 380
+EXPECTED_SCAN_PATHS = 379
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

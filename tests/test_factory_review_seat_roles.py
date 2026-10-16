@@ -1,7 +1,7 @@
 """A direct provider's factory review seats run their ROLE's whole binding, at the consumers.
 
 The provider panel is declared as roles (``provider_models.DIRECT_PROVIDER_REVIEW_ROLES``;
-MiniMax: Main, Light, Light). A Light seat runs Light's binding — its ``(local)`` label and
+MiniMax: Main, Light, Light; the others: Main once). A Light seat runs Light's binding — its ``(local)`` label and
 processing — never Main's because the two share a model name, for review and for delegation
 alike. Without a Light binding to run (a blank or another provider's Light: the provider's
 shipped Light stands in; a local Light without a source) the seat stays the panel's plain
@@ -70,6 +70,7 @@ def test_a_panel_without_light_seats_keeps_mains_binding_beside_a_distinct_light
     _write(install, {"OPENROUTER_API_KEY": "sk-or-present-key", "ANTHROPIC_API_KEY": "sk-ant-present-key",
                      "OUROBOROS_MODEL": main, "OUROBOROS_MODEL_LIGHT": main, "USE_LOCAL_LIGHT": True,
                      **LOCAL_SOURCE, "OUROBOROS_MODEL_PROCESSING_PREFERENCES": {"main": "fast", "light": "economy"}})
-    seats, delegate = _seats_and_delegate(_task_start(), "review-3")
-    assert seats == [(main, "fast", False, "high")] * 3
+    # Anthropic's panel is Main once (owner Q5=A): one seat in Main's whole binding.
+    seats, delegate = _seats_and_delegate(_task_start(), "review-1")
+    assert seats == [(main, "fast", False, "high")]
     assert delegate == (main, False, "fast")

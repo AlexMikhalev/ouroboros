@@ -53,6 +53,7 @@ def test_tool_descriptor_owner_facades_preserve_identity():
         ("timeout_sec", 360),
         ("mutates_worktree", False),
         ("alias_for", ""),
+        ("safety_policy", ""),
     )
     assert field_contract(tool_context.ToolContext) == (
         ("repo_dir", "required"),

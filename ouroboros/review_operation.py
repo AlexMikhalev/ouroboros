@@ -119,7 +119,7 @@ def controller_state(identity: Any) -> str:
     return "alive" if live_birth == birth else "dead"
 
 
-def _operation_stop_state(root: pathlib.Path, task_id: str) -> str:
+def operation_stop_state(root: pathlib.Path, task_id: str) -> str:
     """Panic, immediate/settled cancellation, clear or unknown; unreadable authority is never clear."""
     try:
         if any((root / "state" / name).exists() for name in ("panic_stop.flag", "owner_restart_no_resume.flag")):
@@ -247,7 +247,7 @@ class ReviewOperation:
         now = time.monotonic()
         if not self._control and (control_probe_requires_current() or now - self._checked_at >= _CONTROL_RECHECK_SEC):
             try:
-                self.control_state = _operation_stop_state(self.result_root, self.task_id)
+                self.control_state = operation_stop_state(self.result_root, self.task_id)
                 if self.historical_purpose and self.control_state != "unknown":
                     from ouroboros.acceptance_late import owner_paused_controls
                     blocked, paused = owner_paused_controls(self.result_root, self.historical_purpose,
@@ -817,7 +817,7 @@ def _remote_waiting_row(root: Any, task_id: str, wait_id: str) -> Optional[Dict[
         return None
     identity = block.get("controller") or {}
     if (controller_state(identity) != "alive" or str(identity.get("session") or "") != current_custody_session_id()
-            or _operation_stop_state(pathlib.Path(root), str(task_id))):
+            or operation_stop_state(pathlib.Path(root), str(task_id))):
         return None
     return row
 
@@ -960,11 +960,9 @@ def collect_recorded_review_actor(root: Any, *, task_id: str, surface: str, row:
 
 
 def recover_review_producer(root: Any, request: Any, slot: Any, row: dict) -> Any:
-    """Resolve one known operation from its complete existing CAS, never dispatch.
-
-    The caller retains its own wave writer and aggregator. A missing terminal
-    artifact is still in flight; an unreadable or differently bound artifact is
-    custody loss with the original full source attached, never a semantic PASS.
+    """Read complete, bound producer CAS; the caller owns aggregation, never a new send.
+    Missing is pending; unreadable/differently bound is custody loss with its
+    full source, never PASS. Positive pre-start evidence needs no invocation.
     """
     from ouroboros.observability import read_call_payload
     from ouroboros.review_custody import finalize_review_actor
@@ -1013,14 +1011,8 @@ def recover_review_producer(root: Any, request: Any, slot: Any, row: dict) -> An
         if frozen_tokens and frozen_tokens != {token}:
             raise ValueError("recorded pending invocation mismatch")
         if str(getattr(slot.route, "value", slot.route)) == "agent_session":
-            from ouroboros.delegate_custody import invocation_record
-            invocation = invocation_record(root, token) if token else None
-            if not invocation or any(str(invocation.get(k) or "") != str(expected[k] or "")
-                                     for k in ("task_id", "root_task_id", "surface", "slot_id", "operation_id")):
-                raise ValueError("completed producer has no exact delegated invocation")
-            run_id = str((payload.get("usage") or {}).get("delegated_run_id") or "")
-            if run_id and run_id != str(invocation.get("run_id") or ""):
-                raise ValueError("completed producer delegated run mismatch")
+            from ouroboros.review_session_custody import validate_producer_invocation
+            validate_producer_invocation(root, token, expected, payload, outcome, error_source=suffix == "error")
         if outcome.get("operation_id") != operation or outcome.get("slot_id") != slot.slot_id:
             raise ValueError("producer actor identity mismatch")
         # The outcome is stamped before its failure is logged; this verified operation's row holds the receipt (#1578).

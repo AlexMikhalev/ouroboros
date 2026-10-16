@@ -228,8 +228,8 @@ def _run_deterministic_preflight(
         "model": "deterministic_preflight",
     }]
     # A deterministic preflight failure is a structural fact, not an LLM verdict,
-    # so it is persisted as PENDING (non-executable under EVERY enforcement mode,
-    # in every readiness/execution caller) rather than BLOCKERS (which advisory
+    # so it is persisted as PENDING (non-executable outside Cyber Pro, in every
+    # readiness/execution caller) rather than BLOCKERS (which advisory
     # enforcement would let an operator override). The skill_preflight FAIL finding
     # still records exactly why, just like the other PENDING review-time failures.
     outcome = SkillReviewOutcome(
@@ -238,7 +238,7 @@ def _run_deterministic_preflight(
         findings=findings,
         reviewer_models=["deterministic_preflight"],
         content_hash=content_hash,
-        error="deterministic skill_preflight failed before LLM review; skill is not executable",
+        error="deterministic skill_preflight failed before LLM review; the review stays PENDING",
         raw_result=preflight_raw,
     )
     if persist:
@@ -270,7 +270,7 @@ def _run_deterministic_preflight(
         # Record what the skill requests (transparency in the review block) but
         # NEVER auto-grant a skill that FAILED the deterministic preflight gate
         # (invalid manifest, sensitive-shaped file, binary payload, path escape).
-        # The PENDING status already makes it non-executable everywhere; recording
+        # The PENDING status already makes it non-executable outside Cyber Pro; recording
         # the requested keys/permissions just keeps the review block honest about
         # what the skill wanted.
         from ouroboros.skill_loader import (

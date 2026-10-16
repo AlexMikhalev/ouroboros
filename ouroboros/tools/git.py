@@ -47,7 +47,7 @@ from ouroboros.tools.commit_gate import (
     _current_review_tool_name,
     _invalidate_advisory,  # noqa: F401
     _record_commit_attempt,
-    record_bound_commit_success, prepare_author_commit_request,
+    record_bound_commit_success, prepare_author_commit_request, exact_open_peer,
     record_commit_gate_refusal, name_review_record,
     check_identical_verdict_refusal,
     check_review_cycles_ceiling,
@@ -127,28 +127,27 @@ def _free_cycle_gate(
     ctx._current_review_rebuttal_sha256 = rebuttal_sha
     ctx._current_review_contract_fingerprint = contract_fp
     root_task_id = resolve_root_task_id(ctx)
-    retry_key = _commit_review_retry_key(
-        ctx,
-        commit_message,
-        goal=goal,
-        scope=scope,
-        review_rebuttal=review_rebuttal,
-        binding_fingerprint=fp,
-    )
+    retry_key = _commit_review_retry_key(ctx, commit_message, goal=goal, scope=scope, review_rebuttal=review_rebuttal,
+                                         binding_fingerprint=fp)
     ctx._current_review_retry_key = retry_key
+    peer = exact_open_peer(ctx, commit_message, goal=goal, scope=scope, review_rebuttal=review_rebuttal, fingerprint=fp)
+    if peer is not None:  # this call repeats its exact open attempt: rejoin it, under its own paid contract
+        ctx._review_resume_pending, ctx._pending_review_attempt, pending = True, peer, peer
+        ctx._current_review_attempt_number = int(peer.attempt or 0)
+        ctx._current_review_contract_fingerprint = contract_fp = str(peer.review_contract_fingerprint or contract_fp)
+        ctx._current_review_retry_key = retry_key = str(peer.review_retry_key)
     if bool(getattr(ctx, "_review_resume_pending", False)):
         if pending is not None and str(getattr(pending, "review_retry_key", "") or "") == retry_key:
             ctx._review_reconcile_only = True
             return None
-        return {
-            "status": "blocked",
-            "message": (
-                "⚠️ REVIEWED_ATTEMPT_IN_PROGRESS: paid review work is still "
-                "unresolved for different bytes or intent. The new candidate was "
-                "not dispatched; reconcile the original exact attempt first."
-            ),
-            "block_reason": "overlap_guard",
-        }
+        if not review_enforcement_blocks("blocking"):  # Cyber: no second wave and no veto
+            from ouroboros.tools.commit_gate import _return_commit_feedback
+            return _return_commit_feedback(ctx, commit_message, commit_start, pre_fingerprint, pre_fingerprint, pending=True,
+                note="Your still-open paid review reads the live index, so this other intent waits; nothing was dispatched. ")
+        return {"status": "blocked", "message": (
+            "⚠️ REVIEWED_ATTEMPT_IN_PROGRESS: paid review work is still unresolved for different bytes or "
+            "intent. The new candidate was not dispatched; reconcile the original exact attempt first."),
+            "block_reason": "overlap_guard"}
     ctx._review_reconcile_only = False
     identical_msg = check_identical_verdict_refusal(
         ctx, fp, rebuttal_sha256=rebuttal_sha, contract_fingerprint=contract_fp
@@ -1128,6 +1127,7 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
     skip_advisory_pre_review = bool(skip_advisory_review or skip_advisory_pre_review)
     preflight_reviewer = str(preflight_reviewer or "").strip()
     _reset_commit_review_state(ctx)
+    ctx._left_review_wait = None  # a new commit act is the author's explicit next choice
     continuation = review_reference is not None or author_disposition is not None
     # A managed marker authorizes exactly one reviewed two-parent resolution.
     from supervisor.update_merge import managed_assisted_tx_for
@@ -1182,8 +1182,8 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
                 return _publish_tool_result(ctx, ToolResult(
                     status="blocked", code="LEGACY_BLOCKED", text=error))
             return error
-    if not bool(getattr(ctx, "_review_resume_pending", False)):
-        _record_commit_attempt(ctx, commit_message, "reviewing")
+    if not (getattr(ctx, "_review_resume_pending", False) or getattr(ctx, "_review_open_peers", None)):
+        _record_commit_attempt(ctx, commit_message, "reviewing")  # open peers: identity decides after staging
     try:
         lock = _acquire_git_lock(ctx)
     except (TimeoutError, Exception) as e:
@@ -1436,7 +1436,9 @@ def _run_git_network_cmd(cmd: List[str], cwd: pathlib.Path) -> str:
 def get_tools() -> List[ToolEntry]:
     reviewed_commit_description = (
         "Commit already-changed files through the unified reviewed commit workflow: free deterministic checks, "
-        "the tests preflight, then the review panel (both questions), which is the gate. preflight_reviewer optionally buys "
+        "the tests preflight, then the review panel (both questions). Blocking gates on its verdict; under Advisory or "
+        "Cyber Pro every outcome, PASS and pending included, returns before commit/tag/push and the commit is your explicit "
+        "continuation (review_reference + author_disposition). preflight_reviewer optionally buys "
         "ONE named row's early look at the worktree first (review_change surface=preflight): it informs, never "
         "gates, and its record never answers the panel. Without it the commit records preflight not_performed, "
         "a fact rather than a bypass. reviewers/reason compose the panel by review_change's rule (in Cyber Pro the "
@@ -1457,7 +1459,7 @@ def get_tools() -> List[ToolEntry]:
         "reason": {"type": "string", "default": "", "description": "Why the panel named in reviewers is composed as it is; recorded with the review (a narrowed panel without one is recorded reason_missing)."},
         "skip_advisory_review": {"type": "boolean", "default": False, "description": skip_advisory_description},
         "goal": {"type": "string", "default": "", "description": "High-level goal of this change. Used by the panel's coupling questions to judge completeness."}, "scope": {"type": "string", "default": "", "description": "Declared scope boundary. Without a goal it is the intended transformation the panel's coupling questions judge the change against (completeness, forgotten adjacent surfaces)."},
-        "review_reference": {"type": "object", "description": "Exact reference returned by this task's prior commit review, for free informed Advisory continuation."},
+        "review_reference": {"type": "object", "description": "Exact reference a prior commit call of this task returned, for the free explicit Advisory or Cyber Pro continuation."},
         "author_disposition": {"type": "object", "additionalProperties": False,
             "properties": {"disposition": {"type": "string", "enum": ["accepted", "rejected", "partial", "deferred"]}, "rationale": {"type": "string"}},
             "required": ["disposition", "rationale"], "description": "Explicitly accept the current attributed candidate after reading the referenced outcome. Never overrides Blocking."},

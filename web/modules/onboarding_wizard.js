@@ -608,7 +608,7 @@ import { accountRowFacts } from './harness_accounts.js';
         }
         rows.push(['Agents', agentsSummaryValue()]);
         rows.push(['Reviewers', reviewPoolRows(catalogDraft()).map(reviewerSummary).join(' · ')
-            || 'None — reviews will report “not performed”']);
+            || 'None — the main model reviews alone']);
         if (trim(state.skillsRepoPath)) {
             rows.push(['Skills repo', trim(state.skillsRepoPath)]);
         }
@@ -872,7 +872,7 @@ import { accountRowFacts } from './harness_accounts.js';
         const count = reviewPoolRows(catalogDraft()).length;
         if (count) return `Reviewers: ${count} — the rows marked Reviewer under Models → Available subagents. Outside Cyber Pro each of them reviews every change to Ouroboros itself; in Cyber Pro the agent composes the panel from them.`;
         if (agentsStep?.previewError) return 'Automatic reviewers are unavailable. Mark rows as Reviewer under Models → Available subagents, or use Main on the summary.';
-        return (catalogDraft()?.items || []).length ? 'No row is marked Reviewer, so reviews will report “not performed”. Mark rows under Models → Available subagents.'
+        return (catalogDraft()?.items || []).length ? 'No row is marked Reviewer, so the main model reviews alone. Mark rows under Models → Available subagents for a second opinion.'
             : 'Reviewers will be prepared from your connected access.';
     }
 

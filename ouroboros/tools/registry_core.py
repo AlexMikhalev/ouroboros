@@ -1355,7 +1355,7 @@ class ToolRegistry:
             if block_result is not None:
                 return block_result
 
-        # LLM safety supervisor.
+        # LLM safety supervisor; only this first-party path carries a declaration.
         from ouroboros.safety import check_safety
         is_safe, safety_msg = check_safety(
             name,
@@ -1364,6 +1364,7 @@ class ToolRegistry:
             ctx=self._ctx,
             python_resolution=interpreter_resolution,
             resolved_binding=resolved_binding,
+            declared_policy=entry.safety_policy,
         )
         if not is_safe:
             return ToolResult(status="blocked", code="SAFETY_VIOLATION", text=safety_msg)

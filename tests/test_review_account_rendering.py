@@ -35,13 +35,12 @@ def _assert_reviewer_text(text, texts):
     assert all(at >= 0 for at in positions) and positions == sorted(positions), positions
 
 
-def test_plan_packet_shows_selected_text_while_canonical_capsules_stay_exact(harness):
+def test_selected_history_shows_selected_text_while_canonical_capsules_stay_exact(harness):
     from ouroboros.context import _task_authority_projection
     from ouroboros.tools.plan_packet import _json_block
-    from tests.test_plan_review_engine import _call
     from types import SimpleNamespace
 
-    ctx, sub = first_plan(harness)
+    ctx = first_plan(harness)
     _, receipt, _ = _apply(ctx, _capture(ctx), note=LITERAL, review_notes=notes_for(ctx))
     assert receipt["status"] == "applied", receipt
     source_ref = receipt["selected_review_history_view"]["source_ref"]
@@ -68,21 +67,14 @@ def test_plan_packet_shows_selected_text_while_canonical_capsules_stay_exact(har
                                          {"id": ctx.task_id})
     _, tail = view.capture_review_history_messages(runtime, task_id=ctx.task_id, drive_root=ctx.drive_root)
     assert view.selected_actor_capsules(selected["actor_account"])[0] in tail
-    plan = "Check the _context_capsule and route_fp wording in every caption."
-    _call(harness.make_ctx(), plan=plan)
-    packet = "\n".join(str(message.get("content")) for message in sub.calls[-1]["request"].messages)
-    assert plan in packet and "literal text of my account" in packet
-    for key in ("summary_contract_digest", "measurement_basis", "source_unit_sha256", "source_length_chars"):
-        assert key not in packet, key
     assert read_actor_source_bytes(ctx.drive_root, ctx.task_id, source_ref) == retained
 
 
 def test_multiple_local_accounts_render_every_text_in_order(harness, monkeypatch):
-    from tests.test_plan_review_engine import _call
     from tests.test_review_local_accounts import FIRST, SECOND, two_folds
     from tests.test_review_view_integration import _three
 
-    ctx, sub, _ = _three(harness, monkeypatch)
+    ctx, _ = _three(harness)
     _, _, _, _, receipt, _ = two_folds(ctx)
     history, operative = view.current_plan_history(ctx)
     selected = view.selected_review_history(history, drive_root=ctx.drive_root, task_id=ctx.task_id,
@@ -91,11 +83,6 @@ def test_multiple_local_accounts_render_every_text_in_order(harness, monkeypatch
     assert texts == _texts(selected["actor_account"]) and len(texts) == 2
     assert FIRST in texts[0] and SECOND in texts[1]
     assert "capsules" in selected["actor_account"]  # canonical collection is unchanged
-    _call(harness.make_ctx(), plan="Check the final accessible chart export.")
-    packet = "\n".join(str(message.get("content")) for message in sub.calls[-1]["request"].messages)
-    assert FIRST in packet and SECOND in packet and packet.index(FIRST) < packet.index(SECOND)
-    for key in BOOKKEEPING:
-        assert key not in packet, key
 
 
 @pytest.mark.parametrize("surface", ["commit", "change"])

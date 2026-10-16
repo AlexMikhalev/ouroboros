@@ -491,7 +491,8 @@ def _run_stop(root: pathlib.Path, deadline: float) -> Dict[str, Any]:
                      "retries them", len(remaining))
         try:
             append_jsonl(root / "logs" / "supervisor.jsonl", {
-                "ts": utc_now_iso(), "type": "owned_stop_unconfirmed", "records": remaining})
+                "ts": utc_now_iso(), "type": "owned_stop_unconfirmed", "records": remaining},
+                lock_timeout_sec=max(0.0, min(2.0, deadline - time.monotonic())))
         except Exception:
             log.debug("Failed to record the unconfirmed owned stop", exc_info=True)
     return {"state": "unconfirmed" if remaining else "completed", "targets": len(targets),

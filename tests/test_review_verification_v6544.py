@@ -545,7 +545,7 @@ def _acceptance_harness(monkeypatch, tmp_path, review_result, *, enforcement="bl
     if passes_done:
         ctx._task_acceptance_improvement_passes = passes_done
     trace = dict(prior_trace or {})
-    trace.setdefault("tool_calls", [{"tool": "write_file", "args": {"path": "x.py"}}])
+    trace.setdefault("tool_calls", [{"tool": "write_file", "args": {"path": "x.py"}, "is_error": False}])
     messages = [{"role": "system", "content": ""}, {"role": "user", "content": "goal"}]
     tools = SimpleNamespace(_ctx=ctx)
     out = loop_mod._run_task_acceptance_review_once(
@@ -553,6 +553,20 @@ def _acceptance_harness(monkeypatch, tmp_path, review_result, *, enforcement="bl
         llm_trace=trace, drive_root=tmp_path, messages=messages, emit_progress=lambda _m, *, incident=None: None,
     )
     return out, ctx, trace, messages
+
+
+def _author_reads_feedback(ctx, trace, messages, tmp_path):
+    """A settled PASS reaches its author before the decision (G1, #1737/#1741):
+    the request that carried it returns, then the same paid panel is reused."""
+    import ouroboros.loop as loop_mod
+    from ouroboros.acceptance_settlement import expose_acceptance_feedback
+
+    assert messages[-1]["review_feedback"]
+    expose_acceptance_feedback(trace, messages, "t")
+    return loop_mod._run_task_acceptance_review_once(
+        tools=SimpleNamespace(_ctx=ctx), content="done", task_id="t", task_type="task",
+        llm_trace=trace, drive_root=tmp_path, messages=messages, emit_progress=lambda _m, *, incident=None: None,
+    )
 
 
 def _blocked_result():
@@ -727,10 +741,11 @@ def test_clean_re_review_disposes_open_obligations(monkeypatch, tmp_path):
     prior = {"acceptance_obligations": [
         {"id": "ob-1", "item": "broken", "recommendation": "fix", "status": "open", "disposition": ""},
     ]}
-    out, ctx, trace, _messages = _acceptance_harness(
+    out, ctx, trace, messages = _acceptance_harness(
         monkeypatch, tmp_path, solved, prior_trace=prior,
     )
-    assert out is False
+    assert out is True
+    assert _author_reads_feedback(ctx, trace, messages, tmp_path) is False
     ob = trace["acceptance_obligations"][0]
     assert ob["status"] == "disposed_by_re_review" and ob["disposition"] == "addressed"
     assert trace["acceptance_decision"]["status"] == "accepted"
@@ -763,11 +778,12 @@ def test_clean_pass_with_dissent_bullet_still_disposes_obligations(monkeypatch, 
     prior = {"acceptance_obligations": [
         {"id": "ob-1", "item": "broken", "recommendation": "fix", "status": "open", "disposition": ""},
     ]}
-    out, ctx, trace, _messages = _acceptance_harness(
+    out, ctx, trace, messages = _acceptance_harness(
         monkeypatch, tmp_path, clean_with_dissent, passes_done=1, prior_trace=prior,
         budget_profile={"max_improvement_passes": 1},
     )
-    assert out is False
+    assert out is True
+    assert _author_reads_feedback(ctx, trace, messages, tmp_path) is False
     ob = trace["acceptance_obligations"][0]
     assert ob["status"] == "disposed_by_re_review" and ob["disposition"] == "addressed"
     assert trace["acceptance_decision"]["status"] == "accepted"

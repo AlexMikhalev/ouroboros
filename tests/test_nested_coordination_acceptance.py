@@ -702,9 +702,12 @@ def test_depth3_control_plane_reaches_root_acceptance(tmp_path, monkeypatch):
         False,
         "skipped_child_advisory",
     )
+    # A queued root alone proves no production (#1731): the root nominates its synthesis.
+    from tests.test_loop_acceptance_gate import _nominate_acceptance
+    nominated = _nominate_acceptance({"tool_calls": []}, task_id="root", subject="root synthesis")
     assert _task_acceptance_eligible(
         "required",
-        {},
+        nominated,
         False,
         is_root_task=True,
     )[0] is True

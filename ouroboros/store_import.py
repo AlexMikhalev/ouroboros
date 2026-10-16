@@ -138,11 +138,14 @@ def _ensure(root: pathlib.Path, path: pathlib.Path, *, rederive: bool = False) -
 
 
 def _upgrade_review_collection(txn: Txn) -> None:
-    """Schema only: old bodies stay unknown until the ordinary collector visits them.
+    """Schema only: old bodies stay unknown until their ordinary collector visits them.
     DDL and its version commit together; an interrupted upgrade is retried in place."""
-    if "review_collection_pending" not in {row["name"] for row in txn.conn.execute("PRAGMA table_info(tasks)")}:
-        txn.conn.execute("ALTER TABLE tasks ADD COLUMN review_collection_pending INTEGER")
-    txn.conn.execute(store.REVIEW_COLLECTION_INDEX)
+    columns = {row["name"] for row in txn.conn.execute("PRAGMA table_info(tasks)")}
+    for column, index in (("review_collection_pending", store.REVIEW_COLLECTION_INDEX),
+                          ("plan_collection_pending", store.PLAN_COLLECTION_INDEX)):
+        if column not in columns:
+            txn.conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} INTEGER")
+        txn.conn.execute(index)
     if int(txn.meta("schema_version") or 1) < store.SCHEMA_VERSION:
         txn.set_meta("schema_version", store.SCHEMA_VERSION)
 
@@ -164,7 +167,8 @@ def _derive_flag_columns(txn: Txn, *, rederive: bool = False) -> Dict[str, Any]:
     every later write applies (``result_memberships``) over its document; an undecodable body is
     owed (unknown is never absence) until its next write recomputes it. Cost: one narrow pass over
     ``tasks`` per boot, a body decode per underived row; ``rederive`` (the explicit rebuild)
-    forgets every nullable flag first, so it decodes every body."""
+    forgets every nullable flag first, so it decodes every body. Only complete schema
+    preparation publishes the version; this flag-only step may also run during export."""
     columns = {record["name"]: record["notnull"] for record in txn.conn.execute("PRAGMA table_info(tasks)")}
     added = sorted(name for name, column in store.FLAG_COLUMNS.items() if column not in columns)
     for name in added:
@@ -185,8 +189,6 @@ def _derive_flag_columns(txn: Txn, *, rederive: bool = False) -> Dict[str, Any]:
             names = set(nullable)
         txn.conn.execute(f"UPDATE tasks SET {', '.join(f'{column}=?' for column in nullable.values())} WHERE task_id=?",
                          (*(int(name in names) for name in nullable), task_id))
-    if added:
-        txn.set_meta("schema_version", store.SCHEMA_VERSION)
     return {**({"flag_columns_added": added} if added else {}),
             **({"flag_rows_derived": len(underived)} if underived else {})}
 

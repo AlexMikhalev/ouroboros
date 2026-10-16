@@ -13,7 +13,7 @@ import threading
 import pytest
 
 from ouroboros import budget_pause, cancel_intents, owner_pause, store
-from supervisor import queue, workers
+from supervisor import queue
 from supervisor.owner_pause_control import request_owner_pause
 from tests.test_execution_clock_resume_handover import clock  # noqa: F401
 from tests.test_retry_pause_generations import _park, _running_actor

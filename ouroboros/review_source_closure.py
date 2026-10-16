@@ -42,7 +42,7 @@ _METADATA_FIELDS = frozenset({
     'required_sources', 'late_settlement', 'reviewer_outputs', 'emitted_answer', 'delivered',
     'tool_trajectory', 'tool_trajectory_selected', '__unresolved_partial_artifacts__',
     'owner_requirements_and_decisions', 'plan_claims_exhibit', 'acceptance_support_refs',
-    'skill_lifecycle_history_coverage', 'evidence_manifest',
+    'skill_lifecycle_history_coverage', 'evidence_manifest', 'acceptance_material', 'selected_answer', 'workspace', 'observed_effects',
 })
 
 
@@ -65,7 +65,7 @@ def source_carrier(value: dict, key: str, carrier: str) -> str:
     if carrier == 'contract':
         return {'predecessor_authority': 'task_result', 'attachment_manifest_ref': 'metadata'}.get(key, '')
     if carrier == 'task_result':
-        return {'task_contract': 'contract', 'trace_refs': 'trace', 'plan_review_state': 'plan_state',
+        return {'task_contract': 'contract', 'trace_refs': 'trace', 'plan_review_state': 'plan_state', 'plan_record': 'plan_record',
                 'review_evidence': 'evidence', 'review_projection': 'metadata', 'loop_outcome': 'metadata',
                 'completion_observations': 'metadata', 'owner_wait': 'metadata',
                 'verification_ledger': 'metadata', 'root_phase_checkpoint': 'metadata',
@@ -81,6 +81,19 @@ def source_carrier(value: dict, key: str, carrier: str) -> str:
         return 'call_request' if key == 'kwargs' else 'message'
     if carrier == 'plan_state':
         return {'waves': 'plan_wave', 'current_attempt': 'plan_attempt'}.get(key, '')
+    # The planning organ's record: exact revision texts and each participant's retained
+    # delivery/reply (``plan_record``), every one a task source the closure follows.
+    if carrier == 'plan_record':
+        return {'revisions': 'plan_revisions', 'asks': 'plan_asks'}.get(key, '')
+    if carrier == 'plan_revisions':
+        return 'metadata' if key == 'text_ref' else ''
+    if carrier == 'plan_asks':
+        return {'participants': 'plan_participants', 'dialogue_ref': 'plan_source_entry'}.get(key, '')
+    if carrier == 'plan_participants':
+        return {'delivery_ref': 'plan_source_entry', 'reply_ref': 'plan_source_entry',
+                'prompt_ref': 'metadata', 'response_ref': 'metadata'}.get(key, '')
+    if carrier == 'plan_source_entry':
+        return 'metadata' if key == 'ref' else ''
     if carrier == 'plan_attempt':
         return 'metadata' if key in {'author_subject', 'submitted_subject'} else ''
     if carrier == 'plan_wave':
@@ -116,6 +129,8 @@ def source_carrier(value: dict, key: str, carrier: str) -> str:
         return 'trace'
     if key == 'plan_review_state':
         return 'plan_state'
+    if key == 'plan_record':
+        return 'plan_record'
     if key == 'response_ref':
         return 'response_ref'
     return 'metadata' if key in _REF_FIELDS | _METADATA_FIELDS else ''

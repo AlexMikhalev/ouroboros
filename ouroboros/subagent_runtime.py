@@ -31,7 +31,7 @@ from ouroboros.configured_subagents import (
     roster_handles,
 )
 from ouroboros.delegate_shared import delegate_payload
-from ouroboros.route_spec import RouteSpec, model_named_effort, route_spec_dict
+from ouroboros.route_spec import ROUTE_KIND_API_MODEL, RouteSpec, model_named_effort, route_spec_dict
 from ouroboros.runtime_mode_policy import effort_range_binds
 from ouroboros.settings_integrity import SETTINGS_ENV_LOCK, TaskSettingsSnapshot, live_effort_range, runtime_setting
 from ouroboros.settings_scales import choose_effort, effort_fact, effort_range
@@ -85,8 +85,38 @@ def effective_runtime_subagent_settings(settings: Mapping[str, Any]) -> dict[str
     return effective
 
 
+def offered_subagents(settings: Mapping[str, Any]) -> ConfiguredSubagentsResolution:
+    """The catalog NEW work chooses from (:func:`resolve_configured_subagents`): a valid,
+    switched-on catalog with no rows at all offers the Main model as its one base agent —
+    with no agent configured, the default model is the base agent. The row is stored id
+    ``main``, Main's model as a catalog row runs it under ``settings`` (route, account pin,
+    processing: ``subscription_install_presets.role_route_binding``) and is never saved. A
+    Main without access offers nothing, as before; a switched-off catalog stays off."""
+    resolution = resolve_configured_subagents(settings)
+    config = resolution.config
+    if (config is None or config.items or not config.enabled
+            or resolution.source in {SOURCE_INVALID, SOURCE_UNDECIDED}):
+        return resolution
+    from ouroboros.configured_subagents import PRIMARY_RECOMMENDATION, make_configured_subagents
+    from ouroboros.subscription_install_presets import role_route_binding
+
+    binding = role_route_binding(settings, "main")
+    if not binding:
+        return resolution
+    target, pin = binding["route"]["target_id"], binding["route"].get("credential_profile_id", "")
+    try:
+        offered = make_configured_subagents([ConfiguredSubagent(
+            subagent_id="main", recommended_use=PRIMARY_RECOMMENDATION,
+            route=RouteSpec(ROUTE_KIND_API_MODEL, target, pin),
+            processing_preference=binding.get("processing_preference", ""))])
+    except ValueError:  # a Main the catalog cannot carry offers nothing: the typed empty-list refusal stands
+        return resolution
+    return dataclass_replace(resolution, config=offered)
+
+
 def model_visible_subagent_catalog(settings: Mapping[str, Any]) -> dict[str, Any]:
-    """Project saved, dispatchable rows as facts, without probing or ranking them.
+    """Project saved, dispatchable rows as facts, without probing or ranking them
+    (a switched-on catalog with no rows offers the Main model, :func:`offered_subagents`).
 
     Facts only: how to choose among rows is the mind's own prose
     (``prompts/SYSTEM.md`` §Delegation), never a host-authored sentence here.
@@ -94,7 +124,7 @@ def model_visible_subagent_catalog(settings: Mapping[str, Any]) -> dict[str, Any
     stored key and the list fingerprint stay host-side in snapshots.
     """
 
-    resolution = resolve_configured_subagents(settings)
+    resolution = offered_subagents(settings)
     config = resolution.config
     if (
         resolution.source in {SOURCE_INVALID, SOURCE_UNDECIDED}
@@ -163,7 +193,7 @@ _REVIEW_RULES = {
 
 _REVIEW_SURFACES = {
     "commit_gate": "every pool row outside Cyber Pro; composed from the pool in Cyber Pro (reason recorded)",
-    "plan_review": "every pool row",
+    "plan_review": "ask='council' = every pool row; ask=[ids] = those rows",
     "task_acceptance": {"root": "every pool row", "child": "≤1 from the pool; with several, name one as reviewer"},
     "preflight": "one enabled catalog row you name: commit_reviewed(preflight_reviewer=…); none → recorded as not performed",
     "system_review": "/review: one enabled catalog row, default Main",
@@ -274,9 +304,10 @@ def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None) -> str:
     ``seat_id`` is the stored row id the records carry. Above four seats the rows shrink to ``{seat_id, model}``
     and ``omitted`` counts them; ``coupling_unanswerable: true`` (:func:`coupling_unanswerable`) is a block fact,
     so the shrink keeps it. ``source`` is ``structured`` (a non-empty pool), ``empty`` (a readable catalog
-    with no marked row — a loud, configured fact, never a default panel) or ``error`` (a malformed catalog or a
-    refused migration). Stable for the task (cache-marked prefix); the task's recent ledger records ride
-    separately in the changing part (:func:`review_records_block`)."""
+    with no marked row — a loud, configured fact whose one seat is the Main model reviewing alone,
+    ``main_self_review: true``) or ``error`` (a malformed catalog or a refused migration). A seat without a
+    catalog row (the Main seat) is named by its ``seat_id``. Stable for the task (cache-marked prefix); the
+    task's recent ledger records ride separately in the changing part (:func:`review_records_block`)."""
     from ouroboros import reviewer_slot_config as rs
     from ouroboros.config import get_review_enforcement, get_runtime_mode, runtime_settings, task_settings_scope
     from ouroboros.configured_subagents import SUBAGENTS_SETTING, parse_configured_subagents
@@ -304,7 +335,7 @@ def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None) -> str:
                 session = slot.route is ReviewRouteKind.AGENT_SESSION
                 pool.append({
                     "seat_id": slot.slot_id,
-                    "subagent_id": handles.get(slot.subagent_id, slot.subagent_id),
+                    "subagent_id": handles.get(slot.subagent_id, slot.subagent_id) or slot.slot_id,
                     "model": slot.model, "effort": slot.effort,
                     "delivery": "session" if session else ("native" if slot.native_retrieval else "packet"),
                     "cost_hint": SESSION_SEAT_COST_HINT if session else _api_review_cost_hint(slot),
@@ -312,6 +343,8 @@ def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None) -> str:
                 # A session seat logs in itself; an api seat answers only with its provider's key.
                 if not session and not model_has_credentials_in_settings(slot.model, dict(settings)):
                     without_credentials.append(pool[-1]["subagent_id"])
+        # No marked row: the seats built are the one Main seat (``review_pool_slots``).
+        main_alone = state["state"] == "empty" and bool(slots)
         migration = _review_migration_facts(settings)
         if migration.get("error") and source != "error":
             source, error = "error", migration["error"]
@@ -330,6 +363,8 @@ def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None) -> str:
         "rule": _REVIEW_RULES["cyber_pro" if runtime_mode_at_least(mode, "cyber_pro") else enforcement],
         "pool": pool,
         "pool_empty": source == "empty",
+        # The Main model reviews alone: one model, no second opinion, its own work.
+        **({"main_self_review": True} if main_alone else {}),
         **({"coupling_unanswerable": True} if unanswerable else {}),
         # VD3-08: the seats this install holds no credentials for (the fact Settings shows
         # from the same payload field); every seat of the pool is the loud one.
@@ -456,7 +491,7 @@ def apply_task_start_settings_or_disclose(task_id: str, emit_live_log: Any) -> T
 def _resolution(
     settings: Mapping[str, Any], *, allow_undecided_legacy: bool,
 ) -> ConfiguredSubagentsResolution:
-    resolution = resolve_configured_subagents(settings)
+    resolution = offered_subagents(settings)
     if resolution.source == SOURCE_INVALID:
         raise SubagentSelectionError(
             "subagent_configuration_invalid",

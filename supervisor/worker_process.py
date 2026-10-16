@@ -36,7 +36,7 @@ WORKER_LOG_SINK_SUPPRESSED_TYPES = frozenset({
     "tool_call", "tool_call_started", "tool_call_timeout",
     "llm_round", "task_checkpoint", "task_done", "llm_usage",
     "provider_incomplete_response", "llm_empty_response", "provider_body_error",
-    "review_cycles_exhausted", "plan_review_advisory_open",
+    "review_cycles_exhausted",
 })
 
 

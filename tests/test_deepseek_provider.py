@@ -70,7 +70,7 @@ class TestRegistry:
         assert DEEPSEEK_DIRECT_DEFAULTS["main"] == "deepseek::deepseek-v4-pro"
         assert DEEPSEEK_DIRECT_DEFAULTS["light"] == "deepseek::deepseek-v4-flash"
         assert DEEPSEEK_DIRECT_DEFAULTS["deep_self_review"] == "deepseek::deepseek-v4-pro"
-        assert DIRECT_PROVIDER_REVIEW_ROLES["deepseek"] == ("main", "main", "main")
+        assert DIRECT_PROVIDER_REVIEW_ROLES["deepseek"] == ("main",)
 
     def test_migrate_and_normalize_round_trip(self):
         assert migrate_model_value("deepseek", "deepseek/deepseek-v4-pro") == "deepseek::deepseek-v4-pro"
@@ -99,7 +99,7 @@ class TestSingleProviderIndependence:
         doc = {"DEEPSEEK_API_KEY": "sk-x", "OUROBOROS_MODEL": "deepseek::deepseek-v4-pro",
                "OUROBOROS_MODEL_LIGHT": "deepseek::deepseek-v4-flash"}
         # PR-3: the provider panel is minted as catalog rows, not multiplied at read time.
-        assert [row["route"]["target_id"] for row in factory_review_rows(doc)] == ["deepseek::deepseek-v4-pro"] * 3
+        assert [row["route"]["target_id"] for row in factory_review_rows(doc)] == ["deepseek::deepseek-v4-pro"]
         from ouroboros.reviewer_slot_config import review_pool_slots
         from tests.review_pool_rosters import set_review_pool
 

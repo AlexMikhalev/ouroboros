@@ -122,49 +122,6 @@ def test_incomplete_or_unreadable_cas_keeps_custody_without_redispatch(completed
     assert len(calls) == 1
 
 
-from tests.test_plan_review_engine import harness, _call, _control, _patch_health, _state, CLEAN  # noqa: E402,F401
-
-
-def test_public_plan_owner_reloads_wave_and_reaggregates_without_paid_cycle(harness, monkeypatch):  # noqa: F811 - imported pytest fixture
-    from ouroboros.tools import plan_review_runtime
-    release, finished = threading.Event(), threading.Event()
-    calls, completions = [], []
-    class Slow:
-        def chat(self, **kwargs):
-            calls.append(kwargs["model"])
-            assert release.wait(10)
-            return {"content": CLEAN}, {"prompt_tokens": 2, "completion_tokens": 1}
-    original = custody._settle_review_attempt
-    def settle(*args, **kwargs):
-        original(*args, **kwargs)
-        completions.append(1)
-        if len(completions) == 3:
-            finished.set()
-    monkeypatch.setattr(plan_review_runtime, "LLMClient", Slow)
-    monkeypatch.setattr(custody, "_settle_review_attempt", settle)
-    monkeypatch.setattr(custody, "_logical_timeout", lambda *_: 0.03)
-    _patch_health(monkeypatch, lambda _slots: {})
-    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
-    try:
-        first = _call(harness.make_ctx())
-        assert _control(first) == {"outcome": "DEGRADED", "closed": False}
-        original_wave = _state(harness)["waves"][-1]
-        release.set()
-        assert finished.wait(10)
-        # A brand-new ToolContext cannot borrow the old process-local actor cache.
-        second = _call(harness.make_ctx())
-        assert _control(second) == {"outcome": "GREEN", "closed": True}
-        state = _state(harness)
-        assert state["cycles_paid"] == 1
-        assert state["waves"][-1]["retry_key"] == original_wave["retry_key"]
-        assert [row["operation_id"] for row in state["waves"][-1]["actors"]] == [row["operation_id"] for row in original_wave["actors"]]
-        assert len(calls) == 3
-        assert _control(_call(harness.make_ctx())) == {"outcome": "GREEN", "closed": True}
-        assert len(calls) == 3
-    finally:
-        release.set()
-
-
 @pytest.mark.parametrize("completed_late", ["FAIL"], indirect=True)
 def test_late_fail_keeps_its_full_source_and_veto(completed_late):
     result = recover(completed_late)

@@ -420,12 +420,12 @@ export function createChatInstance({
     const liveCardRecords = new Map();
     // The room's work status in its header (room_work.js), mounted once the owners it reads exist.
     let roomWork = null;
-    // A wait materializes the real task record; its open/closed state is one
+    // A wait creates its task record; its open/closed state is one
     // input of the block predicate, so the block appears with the controls and
     // leaves with them (the record and its no-reopen wait ledger stay).
     const modelWaits = createModelWaitController({
         getRecord: (id, create = true) => (create ? getLiveCardRecord(id) : liveCardRecords.get(id)),
-        openSettings: openSettingsTab, onDomWrite: withStableViewport,
+        openSettings: openSettingsTab, onDomWrite: withStableViewport, notify: showToast,
         onChange: (id) => { ensureLiveCardVisible(liveCardRecords.get(id)); syncChatStatus(); },
     });
     function disposeLiveCard(id, preserveWaits = false) {

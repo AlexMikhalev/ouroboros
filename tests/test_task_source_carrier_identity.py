@@ -40,16 +40,17 @@ def _compact(ref: dict) -> dict:
 
 
 def _record_plan(root: pathlib.Path, task_id: str) -> tuple[dict, dict]:
-    """The real plan-review writer: exact wave and spec sources plus the hot index."""
-    from ouroboros.tools import plan_review_artifacts, plan_spec
+    """A finished plan-review record as the retired engine's exact-wave writer left it: exact
+    wave and spec sources plus the hot index (``tests/_legacy_plan_shared.record_exact_wave``)."""
+    from ouroboros.contracts.task_contract import normalize_acceptance_claims
+    from ouroboros.tools import plan_spec
+    from tests import _legacy_plan_shared as legacy
 
-    spec, errors = plan_spec.normalize_spec({"goal": "Keep the tower", "acceptance_claims": ["three levels"]})
-    assert not errors
+    spec = {"goal": "Keep the tower", "acceptance_claims": normalize_acceptance_claims(["three levels"])}
     wave = {"schema_version": 2, "cycle_index": 1, "request_fingerprint": FINGERPRINT, "goal": spec["goal"],
             "spec": spec, "spec_hash": plan_spec.spec_hash(spec), "aggregate": "GREEN", "closed": True,
             "findings": [], "dispositions": [], "paid": True}
-    plan_review_artifacts.record_exact_wave(root, task_id, wave, copy.deepcopy(wave),
-                                            need_evidence_seen=[], page_size=32)
+    legacy.record_exact_wave(root, task_id, copy.deepcopy(wave))
     return spec, load_task_result(root, task_id)["plan_review_state"]
 
 

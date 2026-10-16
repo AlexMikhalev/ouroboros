@@ -6,6 +6,7 @@ from ouroboros.tools import git
 from ouroboros.mutation_attribution import capture_mutation_baseline
 from ouroboros.task_results import write_task_result
 from ouroboros.review_state import load_state
+from ouroboros.tools.scope_review_contract import COUPLING_QUESTION_IDS
 from tests.test_git_review_preflight_gate import candidate  # noqa: F401
 
 
@@ -61,39 +62,13 @@ def test_commit_finish_requires_received_outcome(candidate, monkeypatch, basis):
     assert changed is (basis in {"explicit_prior", "custody_lost"}), second
     if basis in {"none", "unrelated_prior"}:
         assert "needs received feedback" in second
-        assert "continuation is not available yet" in first
+        assert "informed continuation needs received feedback" in first
     assert len(calls) == (2 if basis in {"unrelated_prior", "explicit_prior"} else 1)
     retained = next(item for item in load_state(ctx.drive_root).attempts if item.attempt == row.attempt)
     assert retained.triad_raw_results == row.triad_raw_results and retained.late_result_pending
 
 
 from types import SimpleNamespace
-from tests.test_plan_review_engine import harness, _call  # noqa: F401
-from ouroboros.task_results import load_plan_review_state
-from ouroboros.tools import plan_review as pr
-
-
-def test_no_feedback_pending_plan_cannot_author_finish(harness, monkeypatch):  # noqa: F811
-    h = harness
-    h.state['enforcement'] = 'advisory'
-    monkeypatch.setenv('OUROBOROS_REVIEW_ENFORCEMENT', 'advisory')
-    monkeypatch.setenv('OUROBOROS_REVIEW_MAX_CYCLES', '1')
-    import ouroboros.review_substrate as review_substrate
-    def substrate(request, *, slots, drive_root, llm, usage_ctx=None):
-        return SimpleNamespace(actors=[{
-            'slot_id':slot.slot_id,'model':slot.model,'status':'error','raw_text':'',
-            'error':'logical wait expired','usage':{'physical_attempt_state':'dispatched'},
-            'prompt_ref':{},'response_ref':{},'operation_id':f'op-{slot.slot_id}',
-            'operation_state':'in_flight','late_result_pending':True} for slot in slots])
-    monkeypatch.setattr(review_substrate, 'run_review_request', substrate)
-    ctx = h.make_ctx()
-    _call(ctx)
-    wave = load_plan_review_state(h.drive, ctx.task_id)['waves'][-1]
-    assert wave['custody_pending'] and not wave['findings']
-    second = pr._handle_plan_task(ctx, review_disposition={
-        'review_fingerprint':wave['request_fingerprint'],'items':[], 'author_action':'finish',
-        'author_disposition':{'disposition':'accepted','rationale':'Proceed without reviewer feedback.'}})
-    assert 'Advisory author finish permits proceeding' not in second, 'Accepted plan with every reviewer unresolved and no feedback'
 
 
 def test_unavailable_triad_requires_author_handback(candidate, monkeypatch):  # noqa: F811
@@ -139,34 +114,6 @@ def test_received_outcome_keeps_live_custody_distinct(rows, terminal, expected):
     assert rows == before
 
 
-@pytest.mark.parametrize("action", ["finish", "stop"])
-def test_plan_all_pending_retains_custody_and_allows_stop(harness, monkeypatch, action):  # noqa: F811
-    import ouroboros.review_substrate as substrate
-    h = harness
-    h.state["enforcement"] = "advisory"
-    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
-    def running(request, *, slots, **kwargs):
-        return SimpleNamespace(actors=[{"slot_id": slot.slot_id, "status": "error", "raw_text": "",
-            "operation_state": "pending_dispatch", "operation_id": "held-" + slot.slot_id,
-            "late_result_pending": True, "error": "No response yet"} for slot in slots])
-    monkeypatch.setattr(substrate, "run_review_request", running)
-    ctx = h.make_ctx()
-    _call(ctx)
-    before = load_plan_review_state(h.drive, ctx.task_id)
-    wave = before["waves"][-1]
-    result = pr._handle_plan_task(ctx, review_disposition={
-        "review_fingerprint": wave["request_fingerprint"], "items": [], "author_action": action,
-        "author_disposition": {"disposition": "deferred", "rationale": "Keep all original review operations."}})
-    after = load_plan_review_state(h.drive, ctx.task_id)
-    assert ("Current author plan saved" in result) is (action == "stop")
-    from ouroboros.tools.plan_review_artifacts import authority_wave
-    assert len(after["waves"]) == len(before["waves"])
-    for old, new in zip(before["waves"], after["waves"]):
-        assert old["wave_artifact"] == new["wave_artifact"]
-        assert authority_wave(h.drive, ctx.task_id, old) == authority_wave(h.drive, ctx.task_id, new)
-    assert after["cycles_paid"] == before["cycles_paid"]
-
-
 def test_invalid_task_author_action_publishes_typed_error(tmp_path, monkeypatch):
     from ouroboros.tools.registry import ToolRegistry
     from ouroboros.tools.tool_result import ToolResult
@@ -192,57 +139,12 @@ def test_clean_commit_path_and_structured_advice_are_distinct(candidate, monkeyp
     monkeypatch.setattr(git, "_run_parallel_review", reviewer)
     result = git._run_reviewed_stage_cycle(ctx, "Review changed candidate", 0,
         skip_advisory_pre_review=True, require_release_tag=False)
-    assert result["status"] == ("passed" if kind == "clean" else "reviewed")
+    # #1741: under Advisory a clean PASS also returns before Git; only its recorded advice differs.
+    assert result["status"] == "reviewed"
+    row = load_state(ctx.drive_root).attempts[-1]
+    assert row.phase == "review_only" and bool(row.advisory_findings or ctx._last_review_advisory_findings) is (kind == "advisory")
     # Every dispatched wave leaves one durable review ledger record the result names.
-    assert (result if kind == "clean" else result["review_reference"])["review_record_id"]
-
-
-@pytest.mark.parametrize("basis", ["partial", "custody_lost", "explicit_prior", "unrelated_prior"])
-def test_plan_choice_uses_only_its_named_outcome(harness, monkeypatch, basis):  # noqa: F811
-    import ouroboros.review_substrate as substrate
-    from tests.test_plan_review_engine import _finding
-    h = harness
-    h.state["enforcement"] = "advisory"
-    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
-    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "unlimited")
-    ctx = h.make_ctx()
-    criticism = json.dumps([_finding("amount", "blocking", breaks="claim_1")])
-    prior_fp = ""
-    if basis in {"explicit_prior", "unrelated_prior"}:
-        h.install({slot: criticism for slot in ("s1", "s2", "s3")})
-        _call(ctx)
-        prior_fp = load_plan_review_state(h.drive, ctx.task_id)["waves"][-1]["request_fingerprint"]
-    calls = []
-    def current(request, *, slots, **kwargs):
-        calls.append(request)
-        actors = []
-        for index, slot in enumerate(slots):
-            received = basis == "partial" and index == 0
-            state = "settled" if received else "custody_lost" if basis == "custody_lost" else "in_flight"
-            actors.append({"slot_id": slot.slot_id, "status": "ok" if received else "error",
-                "raw_text": criticism if received else "", "error": "" if received else "Outcome unavailable",
-                "operation_id": "current-" + slot.slot_id, "operation_state": state,
-                "late_result_pending": not received})
-        return SimpleNamespace(actors=actors)
-    monkeypatch.setattr(substrate, "run_review_request", current)
-    _call(ctx, plan="A distinct plan whose review is still being collected.")
-    before = load_plan_review_state(h.drive, ctx.task_id)
-    wave = before["waves"][-1]
-    if basis == "partial":
-        assert wave["custody_pending"] and wave["counts"]["parseable"] == 1
-        assert wave["actors"][0]["ok"] is True and wave["findings"]
-    result = _call(ctx, plan="Current author-selected revised plan.", review_disposition={
-        "review_fingerprint": prior_fp if basis == "explicit_prior" else wave["request_fingerprint"],
-        "items": [], "author_action": "finish",
-        "author_disposition": {"disposition": "partial", "rationale": "I am responding to the explicitly named outcome."}})
-    assert ("Current author plan saved" in result) is (basis != "unrelated_prior"), result
-    after = load_plan_review_state(h.drive, ctx.task_id)
-    assert len(calls) == 1 and after["cycles_paid"] == before["cycles_paid"]
-    from ouroboros.tools.plan_review_artifacts import authority_wave
-    assert len(after["waves"]) == len(before["waves"])
-    for old, new in zip(before["waves"], after["waves"]):
-        assert old["wave_artifact"] == new["wave_artifact"]
-        assert authority_wave(h.drive, ctx.task_id, old) == authority_wave(h.drive, ctx.task_id, new)
+    assert result["review_reference"]["review_record_id"]
 
 
 @pytest.mark.parametrize("prior_feedback", [False, True])
@@ -253,6 +155,7 @@ def test_repeated_exposed_host_failure_does_not_pump_author_rounds(tmp_path, mon
     from ouroboros.acceptance_settlement import expose_acceptance_feedback
     from ouroboros.contracts.task_contract import build_task_contract
     from tests.test_acceptance_publication import _context
+    from tests.test_loop_acceptance_gate import _nominate_acceptance
     ctx = _context(tmp_path)
     ctx.task_contract = build_task_contract({"id": "applied", "root_task_id": "applied"})
     ctx._task_acceptance_reviewed = False
@@ -272,6 +175,7 @@ def test_repeated_exposed_host_failure_does_not_pump_author_rounds(tmp_path, mon
     monkeypatch.setattr(loop, "_execute_task_acceptance_panel", review)
     monkeypatch.setattr(acceptance, "_apply_task_acceptance_result", fail_apply)
     trace = {"tool_calls": []}
+    _nominate_acceptance(trace, task_id="applied", subject="Unchanged complete answer")
     if prior_feedback:
         trace["review_runs"] = [{"authority": "host_root", "binding_hash": "earlier", "feedback_delivered": True}]
     messages = []
@@ -297,8 +201,7 @@ def test_repeated_exposed_host_failure_does_not_pump_author_rounds(tmp_path, mon
 
 
 _COUPLING_PASS = [{"item": item, "verdict": "PASS", "severity": "advisory", "reason": f"{item} checked against the diff and its callers"}
-                  for item in ("intent_alignment", "forgotten_touchpoints", "cross_surface_consistency", "regression_surface",
-                               "prompt_doc_sync", "architecture_fit", "cross_module_bugs", "implicit_contracts")]
+                  for item in COUPLING_QUESTION_IDS]
 _CRITICAL = {"item": "secrets_check", "verdict": "FAIL", "severity": "critical", "reason": "a key is committed"}
 
 
@@ -390,7 +293,7 @@ def test_not_dispatched_is_the_first_branch():
 _SEATS = (("s1", "openai/a"), ("s2", "anthropic/b"), ("s3", "google/c"))
 _RETRIEVING_PANEL = {**_PANEL, "retrieves": [True] * 3, "parts": [("change", "coupling")] * 3, "brief_shas": ["b1", "b2", "b3"]}
 _PACKET_PANEL = {**_PANEL, "retrieves": [False] * 3, "parts": [("change",)] * 3, "brief_shas": ["", "", ""]}
-_TERSE = _two_part(coupling=[{**row, "reason": "ok"} for row in _COUPLING_PASS])
+_REASONLESS = _two_part(coupling=[{**row, "reason": ""} for row in _COUPLING_PASS])
 
 
 def _prepared(ctx, panel, *, blocking=True):
@@ -411,25 +314,25 @@ def _dispatch(ctx, monkeypatch, panel, results, *, blocking=True):
 @pytest.mark.parametrize("enforcement", ["blocking", "advisory"])
 def test_three_uncountable_coupling_answers_are_named_per_seat(candidate, monkeypatch, enforcement):  # noqa: F811
     """Three retrieving seats each answer Part 2 with a matrix the gate cannot count
-    (terse PASS reasons). NOT_PERFORMED names every seat's own error — in the block
+    (PASS rows without a reason). NOT_PERFORMED names every seat's own error — in the block
     (blocking) or in the author's advisory list beside the typed per-seat entries
     (advisory) — and does not send the owner to configure a retrieving seat: the
     pool has three. That advice belongs to a panel in which no seat read the work."""
     ctx = candidate
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", enforcement)
     blocking = enforcement == "blocking"  # the assembled wave carries the enforcement into the dispatch
-    error = _dispatch(ctx, monkeypatch, _RETRIEVING_PANEL, [_seat(s, m, _TERSE) for s, m in _SEATS], blocking=blocking)
+    error = _dispatch(ctx, monkeypatch, _RETRIEVING_PANEL, [_seat(s, m, _REASONLESS) for s, m in _SEATS], blocking=blocking)
     assert ctx._last_review_verdict["reason"] == "coupling_not_performed"
     text = error if enforcement == "blocking" else ctx._review_advisory[0]
     assert (error is None) is (enforcement == "advisory")
     assert "Part 2" in text and "asked of: s1, s2, s3" in text
     for seat_id, model in _SEATS:
         line = text.split(f"- {seat_id} ({model}): ", 1)
-        assert len(line) == 2 and "PASS reason is too terse" in line[1].split("\n- ")[0], text
+        assert len(line) == 2 and "missing reason" in line[1].split("\n- ")[0], text
     assert "configure a retrieving reviewer seat" not in text
     typed = ctx._last_review_advisory_findings
     assert [(f["item"], f["model"]) for f in typed] == [("review_coupling_unanswered", m) for _s, m in _SEATS]
-    assert all("too terse" in f["reason"] for f in typed)
+    assert all("missing reason" in f["reason"] for f in typed)
     if enforcement == "advisory":
         assert ctx._review_advisory[1:] == typed, "the early branch keeps the wave's typed diagnostics for the author"
     # No seat could read the work: the same branch, and now the advice is the pool.
@@ -447,9 +350,9 @@ def test_a_critical_in_an_uncountable_matrix_stays_visible_under_an_aggregate_pa
     in the record's advisory findings and on the seat's own ledger row."""
     ctx = candidate
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
-    broken = [{**_COUPLING_PASS[7], "verdict": "FAIL", "severity": "critical",
+    broken = [{**_COUPLING_PASS[-1], "verdict": "FAIL", "severity": "critical",
                "reason": "the new helper bypasses the documented invariant on a live path"},
-              {**_COUPLING_PASS[0], "reason": "ok"}, *_COUPLING_PASS[1:7]]
+              {**_COUPLING_PASS[0], "reason": ""}, *_COUPLING_PASS[1:-1]]
     results = [_seat("s1", "openai/a", _two_part(coupling=broken)), _seat("s2", "anthropic/b", _two_part()),
                _seat("s3", "google/c", _two_part())]
     error = _dispatch(ctx, monkeypatch, _RETRIEVING_PANEL, results)
@@ -488,9 +391,9 @@ def test_a_discarded_critical_reaches_the_author_when_the_whole_row_is_uncountab
     whose text carries no object at all has no answers to diagnose and ends at the row-level entry."""
     ctx = candidate
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
-    broken = [{**_COUPLING_PASS[7], "verdict": "FAIL", "severity": "critical",
+    broken = [{**_COUPLING_PASS[-1], "verdict": "FAIL", "severity": "critical",
                "reason": "the new helper bypasses the documented invariant on a live path"},
-              {**_COUPLING_PASS[0], "reason": "ok"}, *_COUPLING_PASS[1:7]]
+              {**_COUPLING_PASS[0], "reason": ""}, *_COUPLING_PASS[1:-1]]
     s1_text = "I could not finish reading the diff in time." if unreadable else _two_part(coupling=broken, clean=False)
     results = [_seat("s1", "openai/a", s1_text), _seat("s2", "anthropic/b", _two_part()), _seat("s3", "google/c", _two_part())]
     error = _dispatch(ctx, monkeypatch, _RETRIEVING_PANEL, results)

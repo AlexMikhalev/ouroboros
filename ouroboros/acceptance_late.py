@@ -6,7 +6,7 @@ owners. This adapter never resumes an author or rebuilds historical evidence.
 Authority: a late review needs an owner chat, quiz or mailbox ``owner_source``
 newer than the frozen answer; the target may sit in any Project. ``amend_cap``
 only records an absolute original-root cap (no panel, no claim); ``review`` runs
-the full triad over the frozen terminal root even with review mode off.
+the full triad over the frozen terminal root unless result review is Off.
 Bindings: Stop, Panic, review prohibitions, Pauses/budget fences, calendar
 deadlines, original-root and live global caps with in-flight holds. Hurry and
 finalize-now block only unstarted automatic work, not a later explicit request;
@@ -202,6 +202,9 @@ def run_historical_acceptance(ctx: Any, *, task_id: str, debt_id: str,
                    for p in (row.get('review_operations') or {}).values())
     if existing or any(claim.get('paid_identity') == paid for claim in claims.values()):
         return _collect_existing(ctx, row, retry_key, collect=not automatic)
+    from ouroboros.config import get_task_review_mode
+    if get_task_review_mode() == 'off':
+        return refused('review_mode_off')
     receipt = _receipt(root, debt)
     if not receipt:
         return refused('exact_delivery_unconfirmed')
@@ -215,12 +218,6 @@ def run_historical_acceptance(ctx: Any, *, task_id: str, debt_id: str,
                    schema_version=1, automatic=automatic, caller_task_id='' if automatic else str(ctx.task_id),
                    caller_deadline_at='' if automatic else _owner_deadline_at(ctx),
                    owner_source_ref=None if automatic else prepared['owner_source_ref'])
-    # Fast owner exclusions avoid creating automatic preparation duty for mode
-    # off. Full frozen/current controls and money are checked by the owner worker.
-    if automatic:
-        from ouroboros.config import get_task_review_mode
-        if get_task_review_mode() == 'off':
-            return refused('review_mode_off')
     try:
         return prepare_historical_operation(root=root, purpose=purpose, event_queue=getattr(ctx, 'event_queue', None),
             background=automatic, work=lambda operation: _run_historical_acceptance(
@@ -410,6 +407,9 @@ def _run_historical_acceptance(ctx: Any, *, task_id: str, debt_id: str,
             time.sleep(_HOLD_POLL_SEC)  # existing owner-hold observation cadence
         if blocked:
             return refused(blocked[0])
+        from ouroboros.config import get_task_review_mode
+        if get_task_review_mode() == 'off':
+            return refused('review_mode_off')  # Resume can finish preparation, never override Off.
         lineage = resolve_task_lineage(task_id, metadata=row.get('metadata'), **{
             key: row.get(key) for key in ('root_task_id', 'parent_task_id', 'delegation_role', 'original_task_id', 'timeout_retry_from')})
         if not lineage['is_root_task'] or lineage['root_task_id'] != accounting_id:

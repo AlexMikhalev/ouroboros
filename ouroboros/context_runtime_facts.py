@@ -273,7 +273,7 @@ def _project_room_fact(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 def _runtime_budget_info(env: Any, task: Dict[str, Any], ctx: Any = None) -> Dict[str, Any]:
     """Start-of-task budget block: global projection + the STATIC per-task tree cap,
     written once at task start so the cached prefix stays byte-stable (DEVELOPMENT
-    cache_friendliness item 28); live wallet and tree spend ride the per-round facts
+    cache_friendliness item 24); live wallet and tree spend ride the per-round facts
     line (``loop_messages.context_facts_line``)."""
     try:
         from ouroboros.usage_accounting import usage_projection

@@ -1,7 +1,9 @@
-"""Selected author plans in the existing immutable task-source graph.
+"""Selected author plans of earlier-schema (v2) plan records, read-only.
 
-The hot state keeps one head. Each selection retains its actual stance and
-predecessor, independently of which critic wave a later attempt selects.
+A v2 record keeps one head in its hot state; each selection retained its actual
+stance and predecessor in the immutable task-source graph, independently of which
+critic wave a later attempt selected. These readers walk that graph for the
+review-history views and their mirror de-duplication; nothing writes it any more.
 """
 from __future__ import annotations
 
@@ -19,145 +21,6 @@ def _read(drive_root: Any, task_id: str, ref: dict) -> dict:
             or (not isinstance(value.get("spec"), dict) and not value.get("source_unavailable"))):
         raise ValueError("author plan source identity mismatch")
     return value
-
-
-def _persist(drive_root: Any, task_id: str, value: dict) -> dict:
-    from ouroboros.artifacts import store_actor_source_bytes
-    return store_actor_source_bytes(drive_root, task_id, category="context_checkpoints",
-        source_id=f"plan-author-{value['fingerprint']}", extension="json",
-        data=json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8"))
-
-
-def retain_author_selection(drive_root: Any, task_id: str, state: dict, subject: dict, fingerprint: str) -> dict:
-    """Retain the exact available source plus its recorded stance before overwrite.
-
-    Also upgrades a still-reachable legacy selection at the next existing write
-    seam. No directory search can recover an already lost legacy stance.
-    """
-    ref = subject["source_ref"]
-    head = state.get("author_history_head") or {}
-    if head == ref:
-        return copy.deepcopy(subject)
-    value = _read(drive_root, task_id, ref)
-    author = validate_author_disposition(subject.get("author_disposition"), subject_hash=fingerprint)
-    if value.get("fingerprint") != fingerprint or author is None:
-        raise ValueError("author selection does not match its source")
-    value.update(author_disposition=copy.deepcopy(subject["author_disposition"]),
-                 review_fingerprint=subject["review_fingerprint"], selected_source_ref=ref,
-                 previous_author_subject=head)
-    if "review_wave_artifact" in subject:
-        value["review_wave_artifact"] = copy.deepcopy(subject["review_wave_artifact"])
-    saved = _persist(drive_root, task_id, value)
-    state["author_history_head"] = saved
-    return {**copy.deepcopy(subject), "source_ref": saved}
-
-
-def retain_previous_selection(drive_root: Any, task_id: str, state: dict) -> None:
-    """Keep a legacy current selection before another attempt or wave replaces it."""
-    attempt = state.get("current_attempt") or {}
-    if attempt.get("author_subject"):
-        subject = attempt["author_subject"]
-        try:
-            _read(drive_root, task_id, subject["source_ref"])
-            attempt["author_subject"] = retain_author_selection(
-                drive_root, task_id, state, subject, attempt["fingerprint"])
-        except (OSError, KeyError, TypeError, ValueError) as exc:
-            # A lost historical plan cannot prevent a NEW attempt or erase the
-            # stance still available in hot state. Retain that fact, no fake spec.
-            value = {"kind": "plan_author_subject", "fingerprint": attempt["fingerprint"],
-                     "review_fingerprint": subject["review_fingerprint"],
-                     "author_disposition": copy.deepcopy(subject["author_disposition"]),
-                     "selected_source_ref": subject["source_ref"],
-                     "previous_author_subject": state.get("author_history_head") or {},
-                     "source_unavailable": f"selected plan source unavailable ({type(exc).__name__})"}
-            if "review_wave_artifact" in subject:
-                value["review_wave_artifact"] = subject["review_wave_artifact"]
-            state["author_history_head"] = _persist(drive_root, task_id, value)
-
-
-class _Retention:
-    """The retention I/O of ``retain_previous_selection`` run BEFORE the store transaction, over
-    the CURRENT state (``state`` is the prepared outcome); called inside the mutator it applies
-    that outcome while the current attempt is still the one it prepared for, and raises
-    ``Reprepare`` otherwise, so the whole write repeats outside the lock — never inline I/O."""
-
-    def __init__(self, drive_root: Any, task_id: str) -> None:
-        from ouroboros import task_results as results
-        from ouroboros.task_store import read_document
-
-        document = read_document(drive_root, task_id) or {}
-        before = results._validated_plan_review_state(document.get(results.PLAN_REVIEW_STATE_KEY))
-        self.attempt_before = copy.deepcopy(before.get("current_attempt") or {})
-        self.state = copy.deepcopy(before)
-        retain_previous_selection(drive_root, task_id, self.state)
-
-    def __call__(self, state: dict) -> None:
-        from ouroboros.task_store import Reprepare
-
-        if (state.get("current_attempt") or {}) != self.attempt_before:
-            raise Reprepare("retention")
-        subject = (self.state.get("current_attempt") or {}).get("author_subject")
-        if subject is not None and state.get("current_attempt"):
-            state["current_attempt"]["author_subject"] = copy.deepcopy(subject)
-        if "author_history_head" in self.state:
-            state["author_history_head"] = copy.deepcopy(self.state["author_history_head"])
-
-
-def prepared_retention(drive_root: Any, task_id: str) -> _Retention:
-    return _Retention(drive_root, task_id)
-
-
-def record_attempt(drive_root: Any, task_id: str, *, fingerprint: str, status: str, reason: str,
-                   author_subject: dict | None, submitted_subject: dict | None = None) -> dict:
-    """The existing locked attempt producer, with author-source retention first."""
-    from ouroboros import task_results as results
-
-    if not results._PLAN_REVIEW_HASH_RE.fullmatch(str(fingerprint or "")):
-        raise ValueError("PLAN_REVIEW_STATE_INVALID: current attempt fingerprint is invalid")
-    if status not in results._PLAN_REVIEW_ATTEMPT_STATUSES:
-        raise ValueError("PLAN_REVIEW_STATE_INVALID: current attempt status is invalid")
-
-    submitted = None
-    if submitted_subject is not None:
-        try:
-            submitted = _persist(drive_root, task_id, {"kind": "plan_submitted_subject", "fingerprint": fingerprint,
-                "spec": submitted_subject["spec"], "plan_prose": submitted_subject["plan_prose"]})
-        except (OSError, ValueError):
-            # A failed new source must not leave an old closed plan current.
-            record_attempt(drive_root, task_id, fingerprint=fingerprint, status="unavailable",
-                           reason="submitted_source_unavailable", author_subject=None)
-            raise
-
-    from ouroboros.task_store import Reprepare, prepared_write
-
-    def write(_needs: set) -> dict:
-        retain = prepared_retention(drive_root, task_id)
-        head_before = copy.deepcopy(retain.state.get("author_history_head") or {})
-        selected, head_after = None, head_before
-        if author_subject is not None:  # the selection's source read and write happen out here
-            staged = {"author_history_head": copy.deepcopy(head_before)}
-            selected = retain_author_selection(drive_root, task_id, staged, author_subject, fingerprint)
-            head_after = staged["author_history_head"]
-
-        def record(state: dict) -> dict:
-            previous = state.get("current_attempt") or {}
-            retained = submitted or (previous.get("submitted_subject") if previous.get("fingerprint") == fingerprint else None)
-            retain(state)
-            if author_subject is not None:
-                if (state.get("author_history_head") or {}) != head_before:
-                    raise Reprepare("selection")  # another writer moved the head: select again outside
-                state["author_history_head"] = copy.deepcopy(head_after)
-            state["current_attempt"] = {"fingerprint": fingerprint, "status": status,
-                                        "reason": str(reason or "")[:results._PLAN_REVIEW_REASON_MAX_CHARS]}
-            if selected is not None:
-                state["current_attempt"]["author_subject"] = copy.deepcopy(selected)
-            elif retained:
-                state["current_attempt"]["submitted_subject"] = retained
-            return state
-
-        return results._update_plan_review_state(drive_root, task_id, record)
-
-    return prepared_write(write)
 
 
 def author_selections(drive_root: Any, task_id: str, state: dict) -> tuple[list, list]:

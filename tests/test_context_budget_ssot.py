@@ -35,7 +35,7 @@ def test_agent_context_budget_values_pinned():
 
 
 def test_reclaim_low_water_divisor_is_one_constant_read_at_call_time(monkeypatch):
-    """CHECKLISTS item 19: the fit consumes the SSOT name (no bare literal), reads it
+    """CHECKLISTS item 18: the fit consumes the SSOT name (no bare literal), reads it
     at call time so changing the one constant changes every pass, and the margin and
     the later reply facts are APPENDED measurement fields (older readers stay positional-safe)."""
     from ouroboros import context_fit

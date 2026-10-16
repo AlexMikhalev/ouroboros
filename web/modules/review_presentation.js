@@ -6,6 +6,7 @@ import { isStoreMigrating, taskSourceDownloadUrl } from './api_client.js';
 import { harnessIdentityMarkup } from './harness_presentation.js';
 import { reconcileReviewMarkup } from './review_dom_patch.js';
 import { actorAwaiting, actorUnresolved, formatReviewProjection } from './review_record_card.js';
+import { planRecordEngaged, planRecordGroup } from './plan_record_presentation.js';
 export { formatReviewProjection } from './review_record_card.js';
 
 const escapeHtmlText = escapeHtmlAttr;
@@ -665,6 +666,7 @@ function legacyPlanReviewGroup(owner, stateRecord) {
 
 export function planReviewGroupFromTaskDetail(detail, ownerTaskId = '') {
     const owner = text(ownerTaskId || detail?.task_id);
+    if (owner && planRecordEngaged(detail?.plan_record)) return planRecordGroup(owner, detail.plan_record, detail);
     const stateRecord = detail?.plan_review_state;
     if (!owner || !stateRecord || typeof stateRecord !== 'object') return null;
     if (stateRecord.schema_version === 1) return legacyPlanReviewGroup(owner, stateRecord);

@@ -861,35 +861,48 @@ def test_review_retry_rail_honors_logical_root_cancel_from_physical_retry_leaf(
     assert result.actors[0]["raw_text"] == raw_text
 
 
-def test_a_collection_while_a_released_slot_runs_keeps_the_settled_roster(tmp_path):
+def test_a_collection_while_a_released_slot_runs_keeps_the_settled_roster(tmp_path, monkeypatch):
     """Fix cycle 4, J2: a $0 collection (drain window 0, reconcile_only) while released
     slots are still running re-registers the released wave. The outcomes already recorded
     for that wave must survive the re-registration: otherwise the roster shrinks to the
-    still-pending slots and the final settled-wave frame under-counts, while the frame
-    promises fewer than the roster size only when a slot timed out before the release.
-    One frame is still written for the wave, once every roster slot has an outcome."""
+    still-pending slots and the settled wave the last settlement hands the plan ask's hook
+    under-counts. One frame is still written for the ask, once every roster slot has an
+    outcome."""
     import threading
     import time
     from types import SimpleNamespace
 
     import ouroboros.review_custody as custody
     from ouroboros.review_substrate import ReviewSlot
+    from ouroboros.tools import plan_ask
     from tests.test_plan_review_event_route import (
+        _TASK,
         _custody_kwargs,
         _held_worker,
         _mailbox_entries,
+        _plant_ask,
     )
 
     slots = [ReviewSlot(slot_id=f"s{index}", model=f"m/{index}", timeout_sec=30.0)
              for index in (1, 2, 3)]
+    _plant_ask(tmp_path, slots)
+    settled_waves = []
+    real_hook = plan_ask.settle_released_reply
+
+    def hook(*args, **kwargs):
+        if kwargs.get("settled_wave"):
+            settled_waves.append((dict(kwargs["settled_wave"]), kwargs.get("roster_size")))
+        return real_hook(*args, **kwargs)
+
+    monkeypatch.setattr(plan_ask, "settle_released_reply", hook)
     release = {slot.slot_id: threading.Event() for slot in slots}
     entered = {slot.slot_id: threading.Event() for slot in slots}
     _calls, run_slot = _held_worker(slots, {}, release, entered)
     progress = []
     ctx = SimpleNamespace(drive_root=tmp_path, emit_progress_fn=progress.append)
     request, kwargs = _custody_kwargs(
-        tmp_path, surface="plan_review", retry_key="plan_review:" + "e" * 64 + ":1",
-        slots=slots, run_slot=run_slot, ctx=ctx)
+        tmp_path, surface="plan_review", retry_key=f"plan_ask:{_TASK}:a1",
+        slots=slots, run_slot=run_slot, ctx=ctx, plan_ask_id="a1")
     request.drain_deadline = time.monotonic()
     deadline = time.time() + 10
     try:
@@ -918,7 +931,8 @@ def test_a_collection_while_a_released_slot_runs_keeps_the_settled_roster(tmp_pa
             event.set()
     frames = _mailbox_entries(tmp_path, request.task_id)
     assert len(frames) == 1, [frame["text"] for frame in frames]
-    assert "3 of 3 reviewer slot(s) settled (3 ok, 0 failed)" in frames[0]["text"]
+    assert frames[0]["text"].startswith("Plan ask a1: every participant settled — 3 answered")
+    assert settled_waves == [({"s1": "ok", "s2": "ok", "s3": "ok"}, 3)]
     assert not custody._RELEASED_WAVES
 
 
