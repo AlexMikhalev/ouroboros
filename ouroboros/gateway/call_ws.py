@@ -156,11 +156,15 @@ async def serve_peer(websocket: WebSocket, hub: LiveCallHub, *, role: str,
         except CallPeerError as exc:
             await websocket.close(code=1008, reason=exc.code)
 
+    # One receive stays pending across poll ticks: cancelling a receive on a timeout can
+    # drop a message it has already taken off the socket (asyncio.wait_for on 3.10).
+    receiving = None
     try:
         while True:
-            try:
-                event = await asyncio.wait_for(websocket.receive(), SOCKET_POLL_SECONDS)
-            except asyncio.TimeoutError:
+            if receiving is None:
+                receiving = asyncio.ensure_future(websocket.receive())
+            done, _ = await asyncio.wait({receiving}, timeout=SOCKET_POLL_SECONDS)
+            if not done:
                 if sender is None and hub.closed:
                     reason = "call_closed"
                     break
@@ -168,6 +172,7 @@ async def serve_peer(websocket: WebSocket, hub: LiveCallHub, *, role: str,
                     await sender
                     break
                 continue
+            event, receiving = receiving.result(), None
             if event["type"] == "websocket.disconnect":
                 break
             if event.get("bytes") is not None:
@@ -203,6 +208,10 @@ async def serve_peer(websocket: WebSocket, hub: LiveCallHub, *, role: str,
         reason = exc.code
         await websocket.close(code=1008, reason=reason)
     finally:
+        if receiving is not None:
+            receiving.cancel()
+            with suppress(asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
+                await receiving
         if sender is not None:
             sender.cancel()
             with suppress(asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
