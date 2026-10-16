@@ -15,6 +15,7 @@ from contextlib import suppress
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ouroboros import call_protocol as cp
@@ -230,3 +231,9 @@ async def ws_call(websocket: WebSocket) -> None:
         await websocket.close(code=1008, reason="owner_call_required")
         return
     await serve_peer(websocket, hub, role=cp.PEER_OWNER)
+
+
+def call_routes() -> list:
+    """The owner surface's call door and audio socket, mounted beside the JSON ``/ws``."""
+    return [Route("/api/call/open", endpoint=api_call_open, methods=["POST"]),
+            WebSocketRoute("/ws/call/{call_id}", endpoint=ws_call)]
