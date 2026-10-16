@@ -732,7 +732,7 @@ class Memory:
             return []
 
     def read_task_recent(
-        self, log_name: str, task_id: str, want: int, *, iter_objects=None, list_archives=None,
+        self, log_name: str, task_id: str, want: int, *, iter_objects=None, list_archives=None, stat=None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """The newest ``want`` rows of ONE task (or of the log when ``task_id`` is
         empty) through the bounded rotation-aware reader (razzant/ouroboros#131);
@@ -744,8 +744,8 @@ class Memory:
         for its tail. ``coverage`` states what the window was and whether the
         quota went unmet while older archives stayed unopened (BIBLE P1: the
         section discloses it; ``read_file`` on the log pages the rest).
-        ``iter_objects`` and ``list_archives`` are the reader's parser and
-        archive-listing seams, passed through unchanged.
+        ``iter_objects``, ``list_archives`` and ``stat`` are the reader's parser,
+        archive-listing and metadata seams, passed through unchanged.
         """
         from ouroboros.jsonl_tail import read_rotated_jsonl_entries
         from ouroboros.tool_call_log import counts_as_call, logical_calls
@@ -768,7 +768,7 @@ class Memory:
             rows = read_rotated_jsonl_entries(
                 self.logs_path(log_name), self.drive_root / "archive", stem,
                 max(1, int(want)), counts, coverage=coverage,
-                iter_objects=iter_objects, list_archives=list_archives,
+                iter_objects=iter_objects, list_archives=list_archives, stat=stat,
             )
         except Exception:
             log.warning("Failed to read recent %s rows", log_name, exc_info=True)

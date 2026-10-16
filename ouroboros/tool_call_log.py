@@ -194,16 +194,16 @@ def logical_calls(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def replay_evidence(drive_root: pathlib.Path, task_id: str, want: int = 200, *, iter_objects=None,
-                    list_archives=None, memory=None) -> Dict[str, Any]:
+                    list_archives=None, memory=None, stat=None) -> Dict[str, Any]:
     """Bounded canonical invocation facts for history, independent of frozen wait metrics.
 
-    ``iter_objects`` and ``list_archives`` are the reader's parser and archive-listing seams;
-    ``memory`` a ``Memory`` of ``drive_root`` shared by one read's tasks."""
+    ``iter_objects``, ``list_archives`` and ``stat`` are the reader's parser, archive-listing and
+    metadata seams; ``memory`` a ``Memory`` of ``drive_root`` shared by one read's tasks."""
     from ouroboros.memory import Memory
     from ouroboros.tool_capabilities import routing_action_for_tool
 
     rows, coverage = (memory or Memory(drive_root)).read_task_recent(
-        "tools.jsonl", task_id, want, iter_objects=iter_objects, list_archives=list_archives)
+        "tools.jsonl", task_id, want, iter_objects=iter_objects, list_archives=list_archives, stat=stat)
     observations = []
     legacy = {"calls": 0, "errors": 0, "wait_ended": False, "unknown": False}
     for call in logical_calls(rows):
@@ -252,9 +252,9 @@ def replay_evidence_for_tasks(drive_root: pathlib.Path, task_ids: Iterable[str])
     Only selected tasks are retained. Tail windows still double and archive
     backfill stays bounded by the existing reader; no cache survives this request.
     Each window is read in one call and an (immutable) archive stat'ed once: a buffered
-    4 KiB line walk (hundreds of reads per window) and a stat per task each handed the
-    server's interpreter lock away, which under load made this stage seconds of the page.
-    The live file is stat'ed on every use, so a source that grows mid-request is re-read.
+    4 KiB line walk (hundreds of reads per window) and stats per task and window each handed
+    the server's interpreter lock away, which under load made this stage seconds of the page.
+    The live file is stat'ed once per task, so a source that grows mid-request is re-read.
     """
     import io
 
@@ -263,6 +263,12 @@ def replay_evidence_for_tasks(drive_root: pathlib.Path, task_ids: Iterable[str])
 
     selected = dict.fromkeys(task_ids)
     windows, listings, stats = {}, {}, {}
+
+    def stat(path):
+        info = stats.get(path)
+        if info is None:
+            info = stats[path] = path.stat()
+        return info
 
     def list_archives(archive_dir, archive_prefix, gaps=None):
         # One enumeration per request; its unreadable_source gap is replayed to every task.
@@ -276,9 +282,7 @@ def replay_evidence_for_tasks(drive_root: pathlib.Path, task_ids: Iterable[str])
         return list(paths)
 
     def parse(path, *, tail_bytes=None, gap_reasons=None):
-        info = stats.get(path)
-        if info is None or path.parent.name != "archive":  # archives never change; the live file grows
-            info = stats[path] = path.stat()
+        info = stat(path)
         stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
         if windows.get(path, (None,))[0] != stamp:
             windows[path] = stamp, {}
@@ -300,6 +304,10 @@ def replay_evidence_for_tasks(drive_root: pathlib.Path, task_ids: Iterable[str])
 
     from ouroboros.memory import Memory
 
-    memory = Memory(drive_root)  # one log path resolution for every task of the read
-    return {task_id: replay_evidence(drive_root, task_id, iter_objects=parse, list_archives=list_archives, memory=memory)
-            for task_id in selected}
+    memory, evidence = Memory(drive_root), {}  # one log path resolution for every task of the read
+    for task_id in selected:
+        for path in [path for path in stats if path.parent.name != "archive"]:
+            del stats[path]  # archives never change; the live file is stat'ed again for each task
+        evidence[task_id] = replay_evidence(drive_root, task_id, iter_objects=parse, list_archives=list_archives,
+                                            memory=memory, stat=stat)
+    return evidence

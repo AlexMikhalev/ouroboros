@@ -45,6 +45,7 @@ class TaskReads:
         self._queue: Dict[str, Dict[str, Any]] = {}
         self._intents: Dict[str, Dict[str, Any]] = {}
         self._events: Any = None
+        self._stamps: Dict[str, Optional[tuple]] = {}  # child store stamps, one stat per read
         self.store_reads = 0  # store transactions this read opened (cost evidence for tests)
 
     # -- documents ------------------------------------------------------------------------
@@ -55,7 +56,9 @@ class TaskReads:
         wanted = sorted({str(task_id) for task_id in task_ids if (key, str(task_id)) not in self._documents})
         if not wanted:
             return
-        stamp = _store_stamp(root) if root != self.root else None
+        if root != self.root and key not in self._stamps:
+            self._stamps[key] = _store_stamp(root)
+        stamp = self._stamps.get(key) if root != self.root else None
         with _REPLICAS_LOCK:
             cached = _REPLICAS.get(key) if stamp is not None else None
             if cached is not None and cached[0] == stamp and all(tid in cached[1] for tid in wanted):
