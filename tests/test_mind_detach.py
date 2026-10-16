@@ -65,6 +65,7 @@ def test_ready_detach_arms_then_parks_same_id_and_sleep_grant_is_single_use(tmp_
     assert restored["detached_at"] == durable["detached_at"]
     assert restored["tool_profile"] == "operator_control"
     assert not any(outcome.get("ok") for outcome in wake_ready_sleepers(q))
+    assert q.resume_budget_paused_task("head")["ok"], "explicit Resume can release the retained sleep"
 
 
 @pytest.mark.parametrize("kind", ["service", "delegated_run", "running_member", "member_custody", "custody_unreadable"])
@@ -104,6 +105,18 @@ def test_unreadable_custody_root_is_an_explicit_detach_blocker(tmp_path, monkeyp
     monkeypatch.setattr(delegate_custody, "custody_root", unavailable)
     blockers = model_sleep.cold_blockers(ctx, chosen={"intent": "continue_in_background"})
     assert blockers[0] == {"kind": "custody_unreadable", "detail": "custody root unavailable"}
+
+
+def test_detach_bypasses_selector_readiness_but_keeps_ending_controls(tmp_path, monkeypatch):
+    from ouroboros import model_sleep
+
+    monkeypatch.setattr(model_sleep, "wake_reason", lambda *_a: "control:finalize_now")
+    ctx, _limit, result = _arm(tmp_path, monkeypatch)
+    assert result["error"] == "detach_control_pending"
+    assert not getattr(ctx, "_model_sleep", None)
+    monkeypatch.setattr(model_sleep, "wake_reason", lambda *_a: "timeout")
+    ctx, _limit, result = _arm(tmp_path, monkeypatch)
+    assert result["status"] == "detach_armed" and ctx._model_sleep
 
 
 def test_pooled_noop_and_pool_failure_keeps_head(tmp_path, monkeypatch):

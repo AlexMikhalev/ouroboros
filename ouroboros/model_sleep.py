@@ -424,7 +424,7 @@ def request_sleep(ctx: Any, chosen: Dict[str, Any], mode: str) -> Dict[str, Any]
     from ouroboros.model_detach import is_detach
 
     ready = wake_reason(ctx, chosen)
-    if ready and not is_detach(chosen):
+    if ready and (not is_detach(chosen) or ready.startswith("control:")):
         questions = [] if ready.startswith("control:") else question_sources(ctx)
         return {"reason": "ready", "woke_by": ready, "slept": False, "mode": mode,
                 **({"questions": questions} if questions else {})}
@@ -552,6 +552,8 @@ def enter_cold_sleep(limit_ctx: Any) -> None:
             + ". Sleep warm, wait for it, or stop it first.")})
         return
     request_pause(limit_ctx, rail=RAIL_MODEL_SLEEP, scope="task", reason_text="The model chose a cold sleep.")
+    if getattr(ctx, "_owner_wait_requested", "") == "sleep:" + str(sleep.get("sleep_id") or ""):
+        ctx._owner_wait_requested, ctx._owner_wait_deadline_at = "", ""
     ctx._model_sleep = None  # no continuation owner: the ordinary loop continues awake
 
 

@@ -69,6 +69,8 @@ def arm_detach(ctx: Any, reason: str) -> dict:
         result = request_sleep(ctx, chosen, MODE_COLD)
     except ColdSleepBlocked as exc:
         return {"ok": False, "error": "detach_blocked", "blockers": exc.blockers}
+    if result.get("reason") != "sleep_armed":
+        return {**result, "ok": False, "error": "detach_control_pending"}
     return {**result, "ok": True, "status": "detach_armed", "task_id": ctx.task_id,
             "note": "The same work and id continue in a pooled worker after this tool batch. "
                     "It becomes eligible immediately, subject to capacity, leases and holds. " + LOST_HANDLES}

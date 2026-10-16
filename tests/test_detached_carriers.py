@@ -8,7 +8,8 @@ import pytest
 from tests._budget_pause_exact_helpers import _install_queue
 
 
-def test_worker_completion_exposes_attempt_owner_without_erasing_chat_origin(tmp_path, monkeypatch):
+@pytest.mark.parametrize("kind", ["direct", "pooled"])
+def test_completion_uses_attempt_owner_without_erasing_chat_origin(tmp_path, monkeypatch, kind):
     from ouroboros.task_results import write_task_result
     from ouroboros.task_status import execution_owner_record
     from supervisor.events_task_done import _handle_task_done
@@ -18,12 +19,23 @@ def test_worker_completion_exposes_attempt_owner_without_erasing_chat_origin(tmp
     pushed, sent = [], []
     ctx = _mk_ctx(tmp_path, sent, pushed)
     task = {"id": "detached", "type": "task", "_is_direct_chat": True, "_attempt": 2, "chat_id": 7}
-    owner = execution_owner_record(tmp_path, task, "pooled")
+    owner = execution_owner_record(tmp_path, task, kind)
+    task["_execution_owner"] = owner
     write_task_result(tmp_path, "detached", "completed", _is_direct_chat=True,
                       execution_owner=owner, task_attempt=2, result="done", chat_id=7)
     ctx.RUNNING["detached"] = {"task": task, "attempt": 2}
-    _handle_task_done({"type": "task_done", "task_id": "detached", "task_type": "task",
-                       "status": "completed", "chat_id": 7, "_is_direct_chat": True}, ctx)
+    from supervisor import task_reaper
+    prepared = []
+    monkeypatch.setattr(task_reaper, "enqueue_terminal_file_recovery",
+                        lambda _ctx, _event, _task: prepared.append(_task["id"]) or True)
+    event = {"type": "task_done", "task_id": "detached", "task_type": "task",
+             "status": "completed", "chat_id": 7, "_is_direct_chat": True}
+    _handle_task_done(event, ctx)
+    if kind == "pooled":
+        assert prepared == ["detached"] and not pushed
+        _handle_task_done({**event, "_files_prepared_attempt": 2}, ctx)
+    else:
+        assert not prepared
     event = next(row for row in pushed if row.get("type") == "task_done")
     assert event["_is_direct_chat"] is True and event["execution_owner"] == owner
 
