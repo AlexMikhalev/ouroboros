@@ -404,7 +404,7 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
     if around is not None:
         if cursor:
             raise HistoryCursorError("history_around_invalid", 400)  # a page starts at one place
-        return _select_around(data_dir, thread_id, view, parse_around(around), quotas, predicates, lens, warm,
+        return _select_around(data_dir, thread_id, view, parse_around(around), quotas, predicates, lens, notes, warm,
                               room_member_predicate(*thread_filter))
     continuation = decode_cursor(cursor, thread_id, view) if cursor else None
     if continuation and continuation["kind"] == "after" and (
@@ -485,7 +485,7 @@ def _settled_since(data_dir, tasks):
     return False
 
 
-def _select_around(data_dir, thread_id, view, task_id, quotas, predicates, lens, warm, member):
+def _select_around(data_dir, thread_id, view, task_id, quotas, predicates, lens, notes, warm, member):
     """The page around one task in this room (DESIGN "Room work status"): per stream, a quarter of
     the quota of the room's rows before the task's earliest row of the room, that row, and the rest
     after it -- never a walk of the chain from the present. ``anchor`` says what was found:
@@ -496,7 +496,7 @@ def _select_around(data_dir, thread_id, view, task_id, quotas, predicates, lens,
     paths = {"chat": data_dir / "logs" / "chat.jsonl", "progress": data_dir / "logs" / "progress.jsonl"}
     quotas = dict(quotas)
     page = {"v": 1, "chat_id": thread_id, "view": view, "upper": {}, "unfinished": [], "quotas": quotas,
-            "recent": False, "after": False, "replayed": False, "quiet": False, "lens": lens,
+            "recent": False, "after": False, "replayed": False, "quiet": False, "lens": lens, "notes": notes,
             "selections": {}, "before": {}, "page_ends": {}, "chains": {}}
     since, readers, pivots, states = task_began(data_dir, task_id), {}, {}, set()
     for source in _SOURCES:
