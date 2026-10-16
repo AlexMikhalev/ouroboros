@@ -90,11 +90,11 @@ def test_store_published_before_the_question_flag_gains_it_once_at_boot(tmp_path
 
 def schema_one_write(root, document):
     """A schema-1 body's ``Txn.store_task`` on an upgraded store (a rollback's write): its own
-    column list, which predates both nullable additions; it never touches ``schema_version``."""
+    column list, which predates the nullable additions; it never touches ``schema_version``."""
     task_id = str(document["task_id"])
     with store.open_store(root, write=True) as txn:
         columns = {key: value for key, value in store.typed_columns(document).items()
-                   if key not in {"has_owner_questions", "review_collection_pending"}}
+                   if key not in {"has_owner_questions", "review_collection_pending", "plan_collection_pending"}}
         columns["write_seq"] = (txn.row(task_id, "write_seq") or 0) + 1
         txn.conn.execute("INSERT OR REPLACE INTO task_bodies (task_id, body) VALUES (?, ?)",
                          (task_id, store.encode_document(document)))

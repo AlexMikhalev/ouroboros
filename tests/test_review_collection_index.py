@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import queue
+import re
 
 import pytest
 
@@ -88,29 +89,31 @@ def test_unknown_review_shapes_never_certify_no_work(tmp_path, fields):
 
 
 def _legacy_store(root, *rows, owned_root, tier=store.TIER_ENFORCED, shape="v1"):
-    """Actual v1 or either independently published v2, with that writer's column list."""
+    """Actual v1, either independent v2, or v3, with that writer's column list."""
     assert root.resolve().is_relative_to(owned_root.resolve()), "fixture store must stay inside its tmp_path"
     path = store.store_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    known = _SCHEMA_SHAPES[shape]
+    known = ("has_owner_questions", "review_collection_pending") if shape == "v3" else _SCHEMA_SHAPES[shape]
     schema = store._SCHEMA
     for column, index in (
         ("has_owner_questions", "CREATE INDEX tasks_has_owner_questions ON tasks(has_owner_questions) WHERE has_owner_questions=1;\n"),
         ("review_collection_pending", store.REVIEW_COLLECTION_INDEX),
+        ("plan_collection_pending", store.PLAN_COLLECTION_INDEX),
     ):
         if column not in known:
-            schema = schema.replace(f",\n  {column} INTEGER", "").replace(index, "")
+            schema = re.sub(rf",\s*{column} INTEGER", "", schema).replace(index, "")
     conn = store.connect(path, tier, create=True)
     try:
         conn.executescript(schema)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
         assert columns & {"has_owner_questions", "review_collection_pending"} == set(known)
+        assert "plan_collection_pending" not in columns
         conn.execute(f"PRAGMA application_id={store._APPLICATION_ID[tier]}")
         conn.execute("BEGIN IMMEDIATE")
         for row in rows:
             _old_replace(conn, row, known=known)
         txn = store.Txn(conn)
-        txn.set_meta("schema_version", 1 if shape == "v1" else 2)
+        txn.set_meta("schema_version", 3 if shape == "v3" else (1 if shape == "v1" else 2))
         txn.set_meta("lock_tier", tier)
         txn.set_meta("phase", store.PUBLISHED)
         store.commit(conn)
@@ -120,7 +123,7 @@ def _legacy_store(root, *rows, owned_root, tier=store.TIER_ENFORCED, shape="v1")
 
 def _old_replace(conn, row, *, known=()):
     columns = store.typed_columns(row)
-    for column in ("has_owner_questions", "review_collection_pending"):
+    for column in ("has_owner_questions", "review_collection_pending", "plan_collection_pending"):
         if column not in known:
             columns.pop(column)
     previous = conn.execute("SELECT write_seq FROM tasks WHERE task_id=?", (row["task_id"],)).fetchone()
@@ -140,9 +143,10 @@ def _flag(root, task_id):
 def _combined_schema(txn):
     assert txn.meta("schema_version") == store.SCHEMA_VERSION
     columns = {row["name"]: row for row in txn.conn.execute("PRAGMA table_info(tasks)")}
-    assert all(columns[name]["notnull"] == 0 for name in ("has_owner_questions", "review_collection_pending"))
+    assert all(columns[name]["notnull"] == 0 for name in (
+        "has_owner_questions", "review_collection_pending", "plan_collection_pending"))
     indexes = {row["name"] for row in txn.conn.execute("PRAGMA index_list(tasks)")}
-    assert {"tasks_has_owner_questions", "tasks_review_collection"} <= indexes
+    assert {"tasks_has_owner_questions", "tasks_review_collection", "tasks_plan_collection"} <= indexes
 
 
 def _question_document(task_id):
@@ -219,6 +223,41 @@ def test_interrupted_schema_upgrade_rolls_back_and_retries(tmp_path, monkeypatch
     with store.open_store(tmp_path, write=False) as txn:
         _combined_schema(txn)
         assert txn.row("task", "has_owner_questions") == 1 and txn.body_text("task") == raw
+
+
+@pytest.mark.parametrize("resume", ["writer", "collector", "boot"])
+def test_partial_export_upgrade_does_not_publish_a_complete_schema_version(tmp_path, resume):
+    original = {**_question_document("task"), "review_operations": {"op": _operation()}}
+    _legacy_store(tmp_path, original, owned_root=tmp_path)
+    with store.open_store(tmp_path, write=True) as txn:
+        txn.set_meta("phase", store.EXPORTING)
+    assert store_import.ensure_current_store(tmp_path, with_children=False)["status"] == "switch_pending"
+    with store.open_store(tmp_path, write=False, service=True) as txn:
+        columns = {row["name"] for row in txn.conn.execute("PRAGMA table_info(tasks)")}
+        assert "has_owner_questions" in columns and "review_collection_pending" not in columns
+        assert txn.meta("schema_version") == 1
+        assert txn.load("task") == original and txn.row("task", "write_seq") == 1
+    with pytest.raises(store.StoreRetired):
+        task_store.patch_document(tmp_path, "task", lambda _: pytest.fail("export is not writable"))
+    assert list(task_store.review_collection_candidates(tmp_path)) == []
+    with store.open_store(tmp_path, write=True, service=True) as txn:
+        txn.set_meta("phase", store.PUBLISHED)
+    calls = []
+    if resume == "writer":
+        def mutate(row):
+            with store.open_store(tmp_path, write=False) as txn:
+                _combined_schema(txn)
+            calls.append(row)
+            return row
+        assert task_store.patch_document(tmp_path, "task", mutate) == original
+        assert calls == [original]
+    elif resume == "boot":
+        store_import.ensure_current_store(tmp_path, with_children=False)
+    assert list(task_store.review_collection_candidates(tmp_path)) == ["task"]
+    with store.open_store(tmp_path, write=False) as txn:
+        _combined_schema(txn)
+        assert txn.load("task") == original
+        assert txn.row("task", "has_owner_questions", "write_seq") == (1, 2 if resume == "writer" else 1)
 
 
 @pytest.mark.parametrize("shape", _SCHEMA_SHAPES)

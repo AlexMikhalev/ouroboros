@@ -18,6 +18,7 @@ pytest plugins).
 from __future__ import annotations
 
 import pathlib
+import os
 import shutil
 import subprocess
 import time
@@ -75,6 +76,22 @@ def resolve_node() -> Optional[str]:
     except Exception:
         bundled = None
     return bundled or shutil.which("node")
+
+
+def node_environment(env: dict) -> dict:
+    """Give Python tests and their children the Node selected for the web lane.
+    Preserve other PATH entries; discovery alone adds no runtime requirement or probe."""
+    projected = dict(env)
+    node = resolve_node()
+    if node:
+        current = shutil.which("node", path=env.get("PATH", os.defpath))
+        if pathlib.Path(node).is_absolute() and os.path.normcase(node) == os.path.normcase(current or ""):
+            return projected  # The selected Node is already reachable; keep other tool precedence.
+        directory = str(pathlib.Path(node).absolute().parent)
+        entries = env.get("PATH", "").split(os.pathsep) if env.get("PATH") else []
+        projected["PATH"] = os.pathsep.join([directory, *(entry for entry in entries
+            if os.path.normcase(entry) != os.path.normcase(directory))])
+    return projected
 
 
 def _version_tuple(version: str) -> tuple:
