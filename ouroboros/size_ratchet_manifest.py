@@ -125,6 +125,7 @@ BAND_PATHS = {
     "ouroboros/gateway/extensions.py": "Extensions HTTP surface re-entered the band when the module endpoint moved to the in-memory reviewed bundle (widgets lifecycle 1a); shrink next touch.",
     "ouroboros/gateway/host_service.py": "The one loopback callback boundary for reviewed skills: token auth, the chat/decision/presence/WS-relay routes and, with #667, the operation read/cancel that joins existing chat, routing, turn and task records; one trust boundary, one module.",
     "ouroboros/gateway/settings.py": "Shrank INTO the band from 1532 lines: the scope-slot window-floor owner capability-ack path was removed with the scope packet (scope-review-retrieval sprint); shrink-only residue, no new content.",
+    "ouroboros/headless.py": "The bounded drive selector belongs beside the two existing layout pruners, sharing their age, custody, cursor and report contract; extracting a one-caller fragment would split that authority.",
     "ouroboros/launcher_bootstrap.py": "Native seed version resync keeps manifest parsing and equal-version payload diagnostics with the existing bootstrap owner; no separate loader or overwrite policy.",
     "ouroboros/llm_claudexor.py": "One model-operation owner keeps request, dispatch, result custody and content-free activity observations together; no second polling or state owner.",
     "ouroboros/loop_acceptance.py": "the local preparation incident rides the acceptance decision: incident ride-along, the exposed-stance finish intent and the forced-rail cause split live beside the decision authority they qualify (#1223-#1224)",
@@ -138,6 +139,7 @@ BAND_PATHS = {
     "ouroboros/model_wait.py": "The existing task wait owner coordinates confirmed resource waits, owner controls and warm/cold sleep through shared clocks and custody; keeping their wake and interruption rules together preserves one authority path.",
     "ouroboros/observability.py": "Owns forensic call and blob storage, exact-version readers and result-reference custody; graph traversal is independently owned by source_retention.",
     "ouroboros/owner_pause.py": "The existing launch-admission owner keeps ordinary tool and delegated-start claims under the same Pause boundary, with positive pre-effect contention retried outside its holds and no replay of handed work.",
+    "ouroboros/owner_wait.py": "The existing native continuation owner keeps checkpoint, warm wait and restart handoff together; the published planning/review integration re-entered the band without recording this unchanged module.",
     "ouroboros/preflight_runner.py": None,
     "ouroboros/presence_runner.py": "Presence turn admission, durable retry identity and transport custody remain one owner; separating them now would duplicate the gate and receipt seam.",
     "ouroboros/process_custody.py": "The existing process custody owner retains task-bound invocation evidence before spawn and transfers it only after the independent process receipt; the same spawn path preserves unbound callers without another custody layer.",
@@ -163,7 +165,7 @@ BAND_PATHS = {
     "ouroboros/subagents.py": "D07 split brought the dispatch monolith DOWN from 1593 into the band (->1370); route-health family extracted to subagent_route_health.py, shrink-only direction",
     "ouroboros/task_custody.py": "Entered the band from 973 lines (TZ-1 PR-2 exact-review repair): the per-row input closure the mailbox cleanup and the drive settlement share (held projections re-verified, absent ones carried under the custody lock), the create-only placement and the generation fences at each publication boundary belong to the one custody owner; splitting them would separate the interlock from the effects it fences. Shrink-only from here.",
     "ouroboros/task_pacing.py": "Cost-ceiling SSOT grew into the band while absorbing the cache-aware wrap-up reservation, the prepared/prospective wrap-up candidates, the deciding-spend basis vocabulary and the exhausted-ceiling texts; one owner for pacing decisions instead of a second pricing authority beside usage_accounting.py (at its ceiling).",
-    "ouroboros/task_results.py": "Left the 1501-1600 band (1558 → 1088) when the retired plan-review engine's state writers were deleted: the task-result lifecycle writer stays beside the read-only readers of earlier-schema plan state.",
+    "ouroboros/task_results.py": "Left the 1501-1600 band (1558 \u2192 1088) when the retired plan-review engine's state writers were deleted: the task-result lifecycle writer stays beside the read-only readers of earlier-schema plan state.",
     "ouroboros/task_status.py": None,
     "ouroboros/tools/browser.py": None,
     "ouroboros/tools/chronicle.py": "Account and selection writers and exact revision reads extend the existing chronicle tool surface and its actor provenance rules.",
@@ -230,6 +232,7 @@ BAND_PATHS = {
     "tests/test_llm_provider_routing.py": "Entered the band from 1000 lines: the issue #468 shape-first reasoning classifier added its single-form/roster/mixed-artifact unit table, the gap-merge cases against the owner provider policy, and the pin-telemetry guards beside the dispatch and reroute tests they constrain.",
     "tests/test_loop_transport_wait.py": "Contract suite for the transport-wait episode: classification, custody, round-level wait, terminals, and the final-review regression pins live together as one coherent surface.",
     "tests/test_managed_review_subject.py": "Lane L-review contract suite: the managed resolution-delta subject (gate/advisory surfaces, M0 fallback), Q25-A admission, Q28-A yield outcomes and enforcement-honest advisory texts grew past 1000 across the adversarial fix round; one subject, one suite.",
+    "tests/test_mcp_client.py": "The existing MCP client contract suite now supplies both installation-scope states to its two stdio transport tests; their shared fake sessions and exact argv/environment assertions stay together rather than duplicating a fixture in a size-only split.",
     "tests/test_native_tool_round_executor.py": "One suite per executor contract: the native tool-round episode's bounds, floors, custody facts and delivery shapes are one behaviour pinned together; split at the next natural seam (custody vs bounds), not by size.",
     "tests/test_nested_rights_depth.py": "Nested-rights depth suite shrank into the band when the semantic duplicate-gate stubs left (#884); one contract, one file; shrink next touch.",
     "tests/test_observability_outcomes_v2.py": None,
@@ -296,5 +299,5 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "tests/test_devtools_benchmarks.py": 326504,
+    "tests/test_devtools_benchmarks.py": 324631,
 }

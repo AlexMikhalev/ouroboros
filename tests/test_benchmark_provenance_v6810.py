@@ -651,7 +651,7 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     "option_index_required": (False, "gateway/task_decision.py quiz-answer HTTP 400 validation; an owner-UI refusal, never a trial rail"),
     "action_invalid": (False, "gateway/task_decision.py rejects an unknown owner decision action (HTTP 400); no task transition"),
     "close_payload_invalid": (False, "gateway/task_decision.py rejects answer fields or a non-quiz target for closure (HTTP 400); no task transition"),
-    "close_reason_required": (False, "gateway/task_decision.py requires a valid explicit closure reason (HTTP 400); the question remains unanswered, no task transition"),
+    "close_reason_invalid": (False, "gateway/task_decision.py refuses a closure reason that is not text or exceeds 2000 characters (HTTP 400); a blank one records the owner's standard sentence; the question remains unanswered, no task transition"),
     "quiz_close_failed": (False, "gateway/task_decision.py closure ingress failed (HTTP 503); question delivery may remain owed, but no task attempt was truncated"),
     "dismiss_payload_invalid": (False, "gateway/task_decision.py rejects answer fields or a non-quiz target for the owner's removal of an unknown delivery (HTTP 400); no task transition"),
     "quiz_dismiss_failed": (False, "gateway/task_decision.py removal ingress failed (HTTP 503); the answer and its unknown delivery stay as recorded, no task attempt was truncated"),

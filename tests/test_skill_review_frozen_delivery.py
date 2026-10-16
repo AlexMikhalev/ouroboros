@@ -392,7 +392,7 @@ def test_a_hash_that_moved_before_its_view_was_kept_refuses_typed_and_recovers_a
                                        monkeypatch=monkeypatch)
     assert calls == [] and "changed after its review packs were built" in error
     assert _views(tmp_path) == []  # nothing published under the reviewed hash's name, no staging left
-    (skill.skill_dir / "lib.py").write_text("v1\n", encoding="utf-8")
+    (skill.skill_dir / "lib.py").write_bytes(b"v1\n")
     (_r, _e, _t, error), calls = _pass(tmp_path, skill, content_hash, _native_plan("native"), packs=packs,
                                        monkeypatch=monkeypatch)
     view = _frozen_view(calls[0])

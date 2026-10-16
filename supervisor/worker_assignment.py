@@ -13,7 +13,7 @@ import pathlib
 import time
 from typing import Any, Dict, Optional
 
-from ouroboros.model_wait import budget_paused_seconds, settle_execution_carry
+from ouroboros.model_wait import budget_paused_seconds, native_sleep_started_at, settle_execution_carry
 from supervisor.events_budget import budget_fence_selected, budget_hold_fact
 from supervisor.queue import _queue_lock
 
@@ -67,6 +67,9 @@ def _tick_parked_work(queue: Any) -> None:
         _handle_budget_pause({"phase": "consumed", "task_id": task_id,
             "task_attempt": attempt, "pause_id": resume.get("pause_id"),
             "grant_id": resume.get("grant_id")}, _pool())
+    from supervisor.worker_owner_wait import retry_pending_owner_waits
+
+    retry_pending_owner_waits(_pool())
     try:
         from supervisor.sleep_wake import wake_ready_sleepers
 
@@ -743,6 +746,7 @@ def assign_tasks() -> None:
                 w.busy_task_id = task["id"]
                 now_ts = time.time()
                 resume = task.get("_owner_wait_resume") or task.get("_budget_pause_resume") or task.get("_working_recovery") or {}
+                sleeping = resume.get("sleep_exclusion_since") or native_sleep_started_at(task.get("_owner_wait_resume"))
                 _pool().RUNNING[task["id"]] = {
                     "task": _settled_running_task(task, resume), "worker_id": w.wid,
                     "started_at": float(resume.get("started_at") or now_ts), "last_heartbeat_at": now_ts,
@@ -754,8 +758,7 @@ def assign_tasks() -> None:
                     # reader for either handoff: a budget grant names it
                     # ``paused_duration_sec``, an owner-wait restart ``budget_paused_sec``.
                     "budget_paused_sec": budget_paused_seconds(resume),
-                    **({"sleep_parked_at": float(resume["sleep_exclusion_since"])}
-                       if resume.get("sleep_exclusion_since") else {}),
+                    **({"sleep_parked_at": float(sleeping)} if sleeping is not None else {}),
                     "soft_sent": False, "attempt": int(task.get("_attempt") or 1),
                 }
                 # A started task publishes no row: its own card says so (the agent's

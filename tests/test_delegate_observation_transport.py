@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -196,6 +197,60 @@ def test_a_received_refusal_carries_no_observation_reason():
             gateway.get_run("run-existing")
         assert caught.value.observation_timeout is False
         assert caught.value.observation_reason == ""
+    finally:
+        gateway.close()
+
+
+@pytest.mark.parametrize("method,path,family", [
+    ("GET", "/v2/agent-capabilities?model=private-query", "/v2/agent-capabilities"),
+    ("GET", "/v2/trust?repoRoot=%2Fprivate%2Frepo", "/v2/trust"),
+    ("GET", "/v2/runs/private-id/artifacts/private-file?token=private-query", "/v2/runs/..."),
+    ("POST", "/v2/threads/private-id/turns", "/v2/threads/..."),
+])
+def test_control_failure_names_the_request_without_private_values(monkeypatch, method, path, family):
+    calls, failures = [], []
+
+    def fail(request):
+        calls.append(request)
+        error = httpx.ReadTimeout(f"timed out on {request.url}; private-exception", request=request)
+        failures.append(error)
+        raise error
+
+    gateway = gateway_module.ClaudexorGateway(gateway_module.DaemonEndpoint("127.0.0.1", 1, "private-token"))
+    gateway.close()
+    gateway._client = httpx.Client(base_url="http://127.0.0.1:1", transport=httpx.MockTransport(fail))
+    clock = iter((10.0, 70.125))
+    monkeypatch.setattr(gateway_module, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    try:
+        with pytest.raises(gateway_module.ClaudexorUnavailable) as caught:
+            gateway._request(method, path, json_body={"text": "private-body"})
+        error = caught.value
+        assert str(error) == f"Claudexor control {method} {family} failed after 60.125s: ReadTimeout"
+        assert error.code == "daemon_unreachable" and error.status_code == 0
+        assert error.observation_reason == "observation_read_timeout" and not error.reported_cause
+        assert error.__cause__ is failures[0] and len(calls) == 1
+        assert not getattr(error, "delegated_start_unrequested", False), "the transport cannot prove a POST was unaccepted"
+    finally:
+        gateway.close()
+
+
+@pytest.mark.parametrize("bound,read,connect", [(None, 60.0, 5.0), (0.0, 0.000001, 0.000001), (12.0, 12.0, 5.0)])
+def test_control_and_live_message_keep_the_same_timeout_wire(bound, read, connect):
+    calls = []
+
+    def answer(request):
+        calls.append(dict(request.extensions["timeout"]))
+        return httpx.Response(200, json={"accepted": True, "outcome": "accepted"})
+
+    gateway = gateway_module.ClaudexorGateway(gateway_module.DaemonEndpoint("127.0.0.1", 1, "fixture"))
+    gateway.close()
+    gateway._client = httpx.Client(base_url="http://127.0.0.1:1", transport=httpx.MockTransport(answer),
+                                 timeout=httpx.Timeout(60.0, connect=5.0))
+    try:
+        assert gateway.get_run("run-existing", timeout_sec=bound)["accepted"] is True
+        assert gateway.send_run_message("run-existing", "continue", idempotency_key="message", timeout_sec=bound)["accepted"] is True
+        expected = {"connect": connect, "read": read, "write": read, "pool": read}
+        assert calls == [expected, expected]
     finally:
         gateway.close()
 

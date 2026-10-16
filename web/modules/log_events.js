@@ -475,6 +475,11 @@ const TASK_CAUSE_PHRASES = {
     terminal_plan_review_open: "The plan review was still open when this answer was delivered",
     child_results_deferred: "Some sub-task results were deferred instead of being folded into this answer",
     tool_failure: "A tool this task used failed and nothing recovered it",
+    receipt_absent: "No host verification receipt was recorded; this does not establish whether other checks ran.",
+    expected_output_ungrounded: "The declared output has no recorded tool work or structured final answer to support it.",
+    residual_tool_errors_without_review: "Tool errors remain in the record and the result has not been evaluated.",
+    artifacts_unavailable: "Some result files are missing or could not be preserved.",
+    partial_result: "The result is partial; remaining work is described in task details.",
     task_exception: "The task stopped on an internal error",
     // Recovery finalized a dead attempt from its registered answer; the Done card's delivery
     // disposition keys (the row's typed terminal_delivery), rendered by terminalDeliveryClause.
@@ -502,26 +507,18 @@ export function terminalDeliveryClause(delivery) {
 // The cause lookup the shared acceptance presenter receives: no second path reads the table.
 const causePhraseLookup = (key) => (TASK_CAUSE_PHRASES[String(key || '')] ? taskReasonPhrase(key) : '');
 
-// The custody overlay stamps this code as the row's reason_code while a
-// delegated run is still unreconciled, and the debt then heals from the WRITE
-// side while the stored code may not be rewritten. So the code outlives the
-// fact, and the debt list the record CARRIES is the only fresh truth. ONE rule
-// from ONE source on every surface: a non-empty list names the debt beside the
-// execution reason, while an empty list or none at all leaves the execution
-// reason standing alone. Nothing is inferred from absence, because the live
-// task_done event carries the stored list too (agent_task_pipeline
-// ._custody_debt_event_fields), so a record without one is a record that states
-// nothing about the debt. The browser twin of
-// project_dialogue._custody_debt_reason: the debt is a warning BESIDE the rail
-// cause, never a replacement, and any other code passes through untouched.
+// Custody heals on the write side without rewriting reason_code. Only the
+// carried nonempty delegated_runs_unreconciled list states a current debt;
+// absence states none, not proof of reconciliation. Live task_done carries
+// that list too (_custody_debt_event_fields). Twin: _custody_debt_reason.
+// Debt stands beside the execution cause; other codes pass through unchanged.
 const CUSTODY_DEBT_REASON = 'delegated_custody_unreconciled';
 
 function custodyDebtReason(record) {
     const raw = String(record?.reason_code || '');
-    if (raw !== CUSTODY_DEBT_REASON) return [raw, ''];
     const debt = record?.delegated_runs_unreconciled;
     return [
-        String(record?.outcome_axes?.execution?.reason_code || ''),
+        raw === CUSTODY_DEBT_REASON ? String(record?.outcome_axes?.execution?.reason_code || '') : raw,
         Array.isArray(debt) && debt.length ? CUSTODY_DEBT_REASON : '',
     ];
 }
@@ -569,8 +566,8 @@ function terminalLimitations(record, reason, held = false) {
     return [deferred ? taskReasonPhrase('child_results_deferred') : '', open ? taskReasonPhrase(planReviewKey(record, planKey)) : ''];
 }
 
-// One line for the primary cause and standing limitations; equivalent clauses
-// appear once. The twin of project_dialogue._completion_verdict.
+// Independent functional causes precede review provenance, never replacing it.
+// Twin of project_dialogue._completion_verdict; neither renderer mutates health.
 export function taskReasonDetail(evt) {
     const record = normalizeTaskTerminalRecord(evt);
     const decision = record.outcome_axes?.review?.acceptance_decision
@@ -579,46 +576,48 @@ export function taskReasonDetail(evt) {
     const decisionCause = String(decision?.reason || '');
     const objective = record.outcome_axes?.objective;
     const completion = record.task_completion ?? record.outcome_axes?.execution?.task_completion;
-    // A healed debt is never restored: naming it again would state a debt the
-    // same record shows as empty. Resolved once for every branch.
-    const [reason, custody] = custodyDebtReason(record);
+    const [storedReason, custody] = custodyDebtReason(record);
+    const reason = ['', 'final_message'].includes(storedReason)
+        ? String(record.outcome_axes?.execution?.reason_code || storedReason) : storedReason;
     const origin = record.cancel_origin;
     const held = severity === 'error' && String(objective?.source || '').startsWith('plan_review_');
-    let clause;
-    if (taskStoppedWithSummary(evt)) {
-        // An owner-requested stop is a success and carries its own marker instead.
-        clause = '';
-    } else if (((severity !== 'error' && severity !== 'cancelled') || (explicitAuthorStop(decision) && severity === 'error'))
-        && decision?.status && (decision.status !== 'accepted' || Object.hasOwn(TASK_CAUSE_PHRASES, decisionCause))) {
-        // A REVIEW-caused warning, or the explicit author stop that ended a red card, speaks through the
-        // decision's TRUE typed reason (an accepted one only with a sentence); reviewer prose stays in the card.
-        clause = taskReasonPhrase(decisionCause);
-    } else if (severity === "cancelled" && origin && typeof origin === "object"
+    const reviewCause = !taskStoppedWithSummary(evt) && decision?.status
+        && (decision.status !== 'accepted' || Object.hasOwn(TASK_CAUSE_PHRASES, decisionCause))
+        && (['done', 'warn'].includes(severity) || explicitAuthorStop(decision)) ? decisionCause : '';
+    const bypass = { budget_exhausted: 'acceptance_bypassed_budget_exhausted', round_limit: 'acceptance_bypassed_round_limit',
+        finalization_grace: 'acceptance_bypassed_deadline', deadline_local: 'acceptance_bypassed_deadline',
+        provider_unavailable: 'acceptance_bypassed_provider_unavailable', context_overflow: 'acceptance_bypassed_context_overflow',
+        children_unabsorbed: 'acceptance_bypassed_children_unabsorbed', owner_requested_finalization: 'acceptance_bypassed_owner_requested_finalization' };
+    let clause = '';
+    if (taskStoppedWithSummary(evt)) clause = '';
+    else if (severity === "cancelled" && origin && typeof origin === "object"
         && !Array.isArray(origin) && Object.keys(origin).length) {
         clause = joinCauseClauses(cancelCauseClauses(origin, record));
     } else if (held) {
-        // A task HELD by a blocking plan review states the objective's own reason, so it
-        // never reads as work that went on.
         clause = taskReasonPhrase(String(objective.reason || ''));
-    } else if (!evt?.reason_code || evt.reason_code === 'final_message') {
-        // A clean finish over a plan review that was only awaited states that fact; an amber
-        // or red card owes its colour to something else, so the fact never sits in its cause slot.
+    } else if (!reason || reason === 'final_message') {
         clause = completion?.action === 'stop' && severity !== 'cancelled' ? taskReasonPhrase('author_stop')
             : severity === 'done' && record.outcome_axes?.execution?.plan_review === 'awaiting' ? taskReasonPhrase('plan_review_awaiting') : '';
     } else {
-        // The current execution reason speaks when there is one (the open plan review by its
-        // class), otherwise the row states no cause and leaves the headline to its own axis.
         const receiptVeto = objective?.receipt_veto;
-        clause = !reason ? '' : receiptVeto?.reason === reason && receiptVeto.detail
+        clause = receiptVeto?.reason === reason && receiptVeto.detail
             ? String(receiptVeto.detail).split(/\s+/).filter(Boolean).join(' ')
             : taskReasonPhrase(reason === 'plan_review_advisory' ? planReviewKey(record, reason) : reason);
     }
+    if (reviewCause && (reason === reviewCause || bypass[reason] === reviewCause)) clause = '';
+    const excluded = ['', 'delegated_custody_unreconciled', 'terminal_delivery_unknown', 'terminal_delivery_exhausted'];
+    const warnings = [...(Array.isArray(objective?.warnings) ? objective.warnings : []), objective?.warning || ''];
+    const warningClauses = warnings.filter(w => !excluded.includes(w)).map(taskReasonPhrase);
+    const artifacts = record.artifact_bundle?.status || record.artifact_status || record.outcome_axes?.artifacts?.status;
+    if (['failed', 'missing'].includes(artifacts)) warningClauses.push(taskReasonPhrase('artifacts_unavailable'));
+    if (decision?.open_obligations?.length) warningClauses.push(taskReasonPhrase('open_obligations'));
+    if (objective?.status === 'best_effort' && !clause && !objective.deferred_count && !taskStoppedWithSummary(evt)
+        && ['', 'previous_revision_accepted'].includes(reviewCause)) warningClauses.push(taskReasonPhrase('partial_result'));
     const rationale = completion?.action === 'stop' ? plainCauseText(completion.rationale, 0) : authorStopRationale(decision);
-    const line = joinCauseClauses([clause, rationale, ...acceptanceIncidentClauses(decision, reason, causePhraseLookup),
+    const line = joinCauseClauses([clause, ...warningClauses, taskReasonPhrase(reviewCause), rationale,
+        ...acceptanceIncidentClauses(decision, reason, causePhraseLookup),
         ...terminalLimitations(record, reason, held), custody ? taskReasonPhrase(custody) : '',
         terminalDeliveryClause(record.terminal_delivery)]);  // the host twin appends the delivery clause last too
-    // Cancellation's host/browser sentence has identical punctuation. Other
-    // cause policy stays with the runtime owner of this shared seam.
     return severity === 'cancelled' && line && !/[.!?…)\u2026]$/.test(line) ? `${line}.` : line;
 }
 

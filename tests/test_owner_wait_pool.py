@@ -85,7 +85,7 @@ def pool(tmp_path, monkeypatch):
     write_task_result(tmp_path, "owner", "running", result="prepared", total_rounds=7)
     source = store_actor_source_bytes(tmp_path, "owner", category="context_checkpoints",
                                      source_id="wait", data=b'{"effects":"done"}', extension="json")
-    wait = {"wait_id": "wait", "task_attempt": 3, "quiz_id": "quiz", "source_ref": source,
+    wait = {"wait_id": "wait", "task_attempt": 3, "reason": "owner", "quiz_id": "quiz", "source_ref": source,
             "execution_drive_root": str(tmp_path), "started_at": started}
     event = {"type": "owner_wait", "task_id": "owner", "worker_id": 0, "pid": 42,
              "task_attempt": 3, "wait_id": "wait", "phase": "park", "checkpoint": wait}

@@ -7,9 +7,10 @@ when everything matches, shown to reviewers, unsigned. This module keeps ONE
 small JSON per exact identity under the caller's canonical data root. Only
 ``preflight_runner.run_hermetic_pytest`` writes it, after a complete default
 run (the node lane when the candidate carries web tests, the parallel
-``not serial`` pass green on at least two observed xdist workers, the flag-free
-serial pass, a proven containment reap), and only that runner reads it, at its
-existing reuse seam after the baseline and assembly checks.
+``not serial`` pass green on two observed xdist workers or the one admitted, the
+flag-free serial pass, a proven containment reap). That runner reads it at its
+existing reuse seam after the baseline and assembly checks; adoption reads it for
+exactly its commit (``preflight_qualification.receipt_for_commit``).
 
 The identity is the process-held proof (tested HEAD, tree, index and effective
 workload), the installation the test interpreter loads (probed under the exact
@@ -219,8 +220,8 @@ def _record_problem(document: Any, identity: dict, node_ran: bool) -> str:
 
     Proportional coherence, not a forgery defence (the file is unsigned): the lanes must
     be the ones THIS identity's recipe requires — the node lane exactly when the candidate
-    carries web tests, a non-empty parallel lane on at least two observed workers, the
-    serial lane — and the record must keep the provenance of the run that wrote it.
+    carries web tests, a non-empty parallel lane on two observed workers (or the one the
+    budget admitted), the serial lane — and the record must keep its run's provenance.
     """
     if not isinstance(document, dict):
         return "not a JSON object"
@@ -231,8 +232,10 @@ def _record_problem(document: Any, identity: dict, node_ran: bool) -> str:
     lanes, seconds = document.get("lanes"), document.get("pass_seconds")
     if not isinstance(lanes, dict) or lanes.get("node") != ("passed" if node_ran else "absent"):
         return "the node lane does not match the recipe this candidate requires"
-    workers = lanes.get("parallel_workers")
-    if type(workers) is not int or workers < 2 or lanes.get("serial") not in ("passed", "empty"):
+    # The live proof's rule: two observed workers, or the one the memory budget admitted.
+    workers, admitted = lanes.get("parallel_workers"), lanes.get("admitted_workers", 2)
+    if (type(workers) is not int or type(admitted) is not int or admitted < 1
+            or workers < min(2, admitted) or lanes.get("serial") not in ("passed", "empty")):
         return "the parallel/serial lane evidence is incomplete"
     if (not isinstance(seconds, dict) or set(seconds) != {"parallel", "serial"}
             or any(type(value) not in (int, float) or value < 0 for value in seconds.values())):
@@ -270,6 +273,8 @@ class FullGateReceipt:
             return cls(None, {}, "no tested subject (no caller ctx, or the checkout could not be bound)")
         if [spec.label for spec in passes] != ["parallel", "serial"] or probe_module not in passes[0].args:
             return cls(None, {}, "not the complete default recipe")
+        if subject.tier != "full":
+            return cls(None, {}, "selected evidence cannot mint a FullGateReceipt")
         root = canonical_data_root(ctx)
         if root is None:
             return cls(None, {}, "no canonical data root")
@@ -317,9 +322,9 @@ class FullGateReceipt:
         """Write the receipt after a complete green run whose identity held throughout.
 
         Called only once every lane is green and containment proven. A source or
-        installation that moved during the run, an empty parallel lane or fewer than
-        two observed workers decline; a write failure is logged. Neither changes the
-        verdict the runner returns.
+        installation that moved during the run, an empty parallel lane or fewer
+        observed workers than the gate requires (two, or the one admitted) decline; a
+        write failure is logged. Neither changes the verdict the runner returns.
         """
         from ouroboros import preflight_runner as pr
         from ouroboros.utils import atomic_write_json, utc_now_iso
@@ -327,9 +332,9 @@ class FullGateReceipt:
         if self.path is None:
             return
         try:
-            workers = len(pr._observed_worker_ids(temp_root))
+            workers, admitted = len(pr._observed_worker_ids(temp_root)), pr._allocated_worker_count(temp_root)
             reason = ("the parallel pass collected no tests" if "parallel" in empty_passes else
-                      f"{workers} observed xdist worker(s)" if workers < pr._MIN_PREFLIGHT_WORKERS else "")
+                      f"{workers} observed xdist worker(s)" if workers < min(pr._MIN_PREFLIGHT_WORKERS, admitted) else "")
             if not reason:
                 reason = _source_status()[1]
             if not reason:
@@ -344,7 +349,7 @@ class FullGateReceipt:
                 "schema": RECEIPT_SCHEMA, "identity": self.identity, "result": "passed",
                 "authenticity": "unsigned",
                 "lanes": {"node": "passed" if self.node_ran else "absent", "parallel_workers": workers,
-                          "serial": "empty" if "serial" in empty_passes else "passed"},
+                          "admitted_workers": admitted, "serial": "empty" if "serial" in empty_passes else "passed"},
                 "pass_seconds": dict(timings), "phase": phase,
                 "task_id": str(getattr(ctx, "task_id", "") or ""), "created_at": utc_now_iso(),
             })
@@ -392,7 +397,7 @@ def execution_exhibit(ctx: Any, *, otherwise: str = "") -> dict:
             "the run completed but minted no proof of the tested subject" if completed
             else "no green hermetic run (disabled or no applicable suite)")}
     try:
-        bound = preflight_test_proof_matches(ctx, ctx.repo_dir)
+        bound = preflight_test_proof_matches(ctx, ctx.repo_dir, require_full=False)
     except Exception:
         bound = False
     if not bound:
@@ -406,7 +411,9 @@ def execution_exhibit(ctx: Any, *, otherwise: str = "") -> dict:
     recipe = (["node"] if proof.workload[4] else []) + [str(spec[0]) for spec in proof.workload[0]]
     empty = event.get("empty_lanes")
     empty = [lane for lane in recipe if lane in empty] if isinstance(empty, list) else None
-    return {"status": "passed", "authenticity": "unsigned", "evidence": evidence,
+    return {"status": "passed", "authenticity": "unsigned", "evidence": evidence, "tier": proof.tier,
+            **{key: event[key] for key in ("base", "policy", "rule", "files", "reasons", "extra_tests",
+                                           "full_tests", "test_reason", "expected_files", "omitted_files", "inventory") if key in event},
             "lanes": [lane for lane in recipe if lane not in empty] if empty is not None else [],
             **({"empty_lanes": empty} if empty else {}),
             "tested": {"head": proof.head, "tree": proof.tree, "index_tree": proof.index_tree},
@@ -447,8 +454,12 @@ def execution_section(exhibit: Any) -> str:
                     else "; which of its lanes ran tests is not disclosed")
         if empty:
             observed += f"; lanes {', '.join(empty)} collected no tests, so no test ran there"
+        scope = ""
+        if exhibit.get("tier") == "selected" and isinstance(exhibit.get("files"), list):
+            scope = (f" over {len(exhibit['files'])} selected test modules ({exhibit.get('omitted_files', 0)} "
+                     f"not run; {exhibit.get('rule', 'floor, direct importers and widening')})")
         return ("## Preflight test execution (host fact)\n"
-                f"The hermetic test gate passed{observed}.\n"
+                f"The {exhibit.get('tier', 'full')} hermetic test gate passed{scope}{observed}.\n"
                 f"Tested checkout: HEAD {tested.get('head')}, tree {tested.get('tree')}, index "
                 f"{tested.get('index_tree')}. Evidence: {how}.\n"
                 "Unsigned host fact, not a verdict: decide yourself which further checks this change needs.")

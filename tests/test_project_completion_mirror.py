@@ -107,6 +107,7 @@ def test_the_answer_survives_live_frame_durable_row_and_history_replay(monkeypat
         progress_meta={"project_id": "launch", "project_name": "Launch",
                        "target_label": "Launch › Ship release", "status": "completed",
                        "completion_answer": ANSWER,
+                       "completion_notice": {"neutral": True, "detail": "", "phase": "warn", "salvage": ""},
                        "terminal_time": {"v": 1, "source": "executor_terminal", "occurred_at": "2026-09-24T18:18:27Z"}},
     )
 
@@ -132,6 +133,8 @@ def test_the_answer_survives_live_frame_durable_row_and_history_replay(monkeypat
     assert replayed["completion_answer"] == ANSWER
     assert replayed["text"] == stored["text"]
     assert replayed["terminal_time"] == stored["terminal_time"] == live["terminal_time"]
+    assert replayed["completion_notice"] == stored["completion_notice"] == live["completion_notice"] == {
+        "neutral": True, "detail": "", "phase": "warn", "salvage": ""}
 
 
 def test_a_row_without_the_key_replays_without_it(monkeypatch, tmp_path):

@@ -166,6 +166,53 @@ def _prepare(root: Any, tid: str, task: dict, event: dict) -> tuple[dict, bool]:
                              _field_projector=prepare), minted
 
 
+def completion_notice(record: dict) -> dict:
+    """Compact transport view computed before projection loses custody/cancel facts.
+
+    Neutral means a finished, execution-ok record has only technical caveats,
+    never success or reviewer approval. Unknown/partial rows retain their causes.
+    """
+    from ouroboros import project_dialogue as dialogue
+
+    axes = record.get("outcome_axes") or {}
+    execution, objective = axes.get("execution") or {}, axes.get("objective") or {}
+    delivery = record.get("terminal_delivery") or {}
+    detail = dialogue._join_cause_clauses([
+        dialogue._completion_verdict(record, {}, include_review_details=False),
+        dialogue.terminal_delivery_clause(delivery.get("state", ""), delivery.get("preserved_path", "")),
+    ])
+    full, phase = dialogue._completion_verdict(record, {}), dialogue.outcome_phase(record, {})
+    neutral = (not detail and bool(full) and execution.get("status") == "ok"
+               and objective.get("status") in {"pass", "not_evaluated"} and phase in {"done", "warn"})
+    return {"neutral": neutral, "detail": detail or ("" if neutral else full or str(record.get("reason_detail") or "")), "phase": phase}
+
+
+def completion_event_view(root: Any, event: dict, record: dict) -> dict:
+    """Add transport metadata to a pre-upgrade Main event, never rewrite its bytes.
+
+    Both canonical readiness and the outbox can replay an old event. Its loaded
+    result supplies the salvage distinction; missing source keeps the old view
+    rather than guessing that the retained text contains only a status.
+    """
+    meta = event.get("progress_meta") if isinstance(event.get("progress_meta"), dict) else {}
+    if (event.get("system_type") != "project_completion_summary"
+            or isinstance(meta.get("completion_notice"), dict) or not record):
+        return event
+    from ouroboros.project_dialogue import _completion_excerpt
+
+    try:
+        # Source delivery is independent registry truth, not a field of the result.
+        source_delivery = _delivery_disposition(root, str(event.get("task_id") or ""))
+        salvage = _completion_excerpt(record, chat_id=event.get("chat_id"), salvage_only=True)
+        if salvage:
+            salvage += " Open the Project for details."
+        return {**event, "progress_meta": {**meta, "completion_notice": {
+            **completion_notice({**record, "terminal_delivery": source_delivery}), "salvage": salvage}}}
+    except Exception:
+        log.debug("legacy completion metadata unavailable; keeping retained text", exc_info=True)
+        return event
+
+
 def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dict | None = None) -> dict:
     from ouroboros import project_dialogue as dialogue
     from ouroboros.project_facts import resolve_project_id
@@ -199,6 +246,7 @@ def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dic
         dialogue._completion_verdict(row, event),
         dialogue.terminal_delivery_clause(delivery.get("state", ""), delivery.get("preserved_path", "")),
     ])
+    notice = completion_notice({**event, **row, "terminal_delivery": delivery})
     excerpt = dialogue._completion_excerpt(row, chat_id=chat_id, salvage_only=True)
     text += "".join(f" {part}" for part in (verdict, excerpt) if part)
     from ouroboros.dialogue_provenance import presence_provenance_fields
@@ -218,6 +266,7 @@ def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dic
         "outcome_axes": row.get("outcome_axes") or {}, "reason_code": str(row.get("reason_code") or ""),
         "result_ref": {"kind": "task_result", "task_id": tid, "reader": "get_task_result"}, "text": text,
         **({"reason_detail": verdict} if verdict else {}),
+        "completion_notice": notice,
         **({"terminal_projection_token": ready["token"]} if ready.get("token") else {}),
         # The typed delivery disposition the browser card renders (log_events.terminalDeliveryClause).
         **({"terminal_delivery": delivery} if delivery else {}),
@@ -383,7 +432,7 @@ def retain_main_delivery(root: Any, tid: str, event: dict) -> dict:
         return event  # legacy caller; normal terminal settlement has readiness
     saved = ready.get("main_delivery")
     if isinstance(saved, dict) and isinstance(saved.get("event"), dict):
-        return dict(saved["event"])
+        return completion_event_view(root, dict(saved["event"]), stored)
     retained = {**event, "ts": event.get("ts") or utc_now_iso(), "terminal_projection_token": ready["token"]}
 
     def retain(current, _patch):

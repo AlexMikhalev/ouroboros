@@ -10,6 +10,7 @@ second scheduler, queue, or durable wait store.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 from ouroboros.owner_wait import set_owner_wait
@@ -20,6 +21,7 @@ from supervisor.worker_pool_lifecycle import (
 )
 
 log = logging.getLogger(__name__)
+_PENDING_PARK = "owner_wait_park_pending"
 
 
 def _pool():
@@ -30,10 +32,40 @@ def _pool():
 def has_owner_wait_checkpoint(meta: dict, task_attempt: int) -> bool:
     """Whether this attempt saved work that an automatic retry would replay."""
     task = meta.get("task")
-    wait = meta.get("owner_wait") or (
+    wait = ((meta.get(_PENDING_PARK) or {}).get("event") or {}).get("checkpoint") or meta.get("owner_wait") or (
         task.get("_owner_wait_resume") if isinstance(task, dict) else None)
     return (isinstance(wait, dict) and wait.get("task_attempt") == task_attempt
             and bool(wait.get("source_ref")))
+
+
+def waiting_on_owner(meta: dict, task_attempt: int) -> bool:
+    """A current park request spares idle time before ACK too; refusal retains only custody."""
+    pending = meta.get(_PENDING_PARK) or {}
+    wait = (pending.get("event") or {}).get("checkpoint") if pending else meta.get("owner_wait")
+    return (not pending.get("refused") and isinstance(wait, dict)
+            and wait.get("task_attempt") == task_attempt
+            and (bool(wait.get("source_ref")) if pending else wait.get("state") == "waiting"))
+
+
+def _park_clock(meta: dict, wait: dict, pending: dict) -> tuple[bool, Any, Any]:
+    """Validate this worker's closed total and actual open interval; missing is not zero."""
+    cold = (meta["task"].get("_budget_pause_resume") or {}).get("sleep_exclusion_since")
+    sleeping = isinstance(wait.get("sleep"), dict) or wait.get("reason") == "owner_pause"
+    paused, started = wait.get("budget_paused_sec"), wait.get("sleep_started_at") if sleeping else None
+    if sleeping and started is None and wait.get("reason") == "owner_pause":
+        from ouroboros.deadline_utils import parse_deadline_ts
+
+        recorded = parse_deadline_ts((wait.get("owner_pause") or {}).get("parked_at"))
+        started = recorded.timestamp() if recorded else None
+    def number(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    if (paused is not None or cold or sleeping or pending.get("clock_error")) and (
+            not number(paused) or paused < float(meta.get("budget_paused_sec") or 0)):
+        return False, None, None
+    if (sleeping and (not number(started) or started <= 0)
+            or cold and not pending.get("clock_projected") and meta.get("sleep_parked_at") != cold):
+        return False, None, None
+    return True, paused, started
 
 
 def _command(worker: Any, task_id: str, wait: dict, phase: str, **extra: Any) -> None:
@@ -42,8 +74,21 @@ def _command(worker: Any, task_id: str, wait: dict, phase: str, **extra: Any) ->
                      "phase": phase, **extra})
 
 
+def retry_pending_owner_waits(ctx: Any) -> None:
+    """The existing assignment tick retries each still-owned park once, without a store wait."""
+    with _queue_lock:
+        pending = [(task_id, meta, meta[_PENDING_PARK]) for task_id, meta in ctx.RUNNING.items()
+                   if meta.get(_PENDING_PARK) and not meta[_PENDING_PARK].get("refused")]
+    for task_id, meta, request in pending:
+        with _queue_lock:
+            if ctx.RUNNING.get(task_id) is not meta or meta.get(_PENDING_PARK) is not request:
+                continue
+        handle_owner_wait(request["event"], ctx)
+
+
 def handle_owner_wait(event: dict, ctx: Any) -> None:
     """Acknowledge only the current physical attempt's durable park or wake."""
+    from ouroboros.store import acquisition_budget, StoreBusy
     from supervisor import queue
 
     task_id, wait_id = str(event.get("task_id") or ""), str(event.get("wait_id") or "")
@@ -81,35 +126,49 @@ def handle_owner_wait(event: dict, ctx: Any) -> None:
         if current.get("wait_id") == wait_id and not getattr(worker, "active_capacity", True):
             _command(worker, task_id, current, "parked")
             return
+        pending = meta.get(_PENDING_PARK)
+        if pending and pending["event"].get("wait_id") != wait_id:
+            return  # One physical stack can owe only its current park acknowledgement.
+        if pending and pending.get("refused"):
+            return  # The rejected checkpoint prevents replay; it is not another park attempt.
+        if pending is None:
+            pending = meta[_PENDING_PARK] = {"event": {**event, "checkpoint": dict(wait)}}
         wait = {**wait, "started_at": meta["started_at"], "state": "waiting"}
-        park_interval_added = False
+        resume = meta["task"].get("_budget_pause_resume") or {}
+        cold_interval = resume.get("sleep_exclusion_since")
+        valid_clock, paused, parked_at = _park_clock(meta, wait, pending)
+        if not valid_clock:
+            if not pending.get("clock_error"):
+                log.warning("Owner wait clock unavailable or contradictory for %s; park retained", task_id)
+                pending["clock_error"] = True
+            return
+        if paused is not None:
+            # Current worker/source facts govern its LIVE clock even before the
+            # park commits. Neither this projection nor its pending request lends capacity.
+            meta["budget_paused_sec"] = float(paused)
+            if parked_at is not None:
+                meta["sleep_parked_at"] = parked_at
+            elif cold_interval:
+                meta.pop("sleep_parked_at", None)
+            pending["clock_projected"] = True
+        park_written = False
         try:
-            # A warm wait may arrive before the cold consumption notification
-            # (or its repair tick). Fold that exact interval before installing
-            # the new one; a stale consumed event cannot own the warm interval.
-            resume = meta["task"].get("_budget_pause_resume") or {}
-            if resume.get("sleep_exclusion_since"):
-                from supervisor.events_budget import _handle_budget_pause
+            # A contended write rolls back before the next tick. Never hold Q or
+            # the event loop waiting for SQLite; the physical request stays owned.
+            with acquisition_budget(0):
+                wait = set_owner_wait(ctx.DRIVE_ROOT, task_id, wait,
+                                      expected_wait_id=current.get("wait_id"),
+                                      expected_state=current.get("state"))
+            park_written = True
+            if cold_interval:
+                from supervisor.events_budget import finish_resume_clock
 
-                _handle_budget_pause({"phase": "consumed", "task_id": task_id,
-                    "task_attempt": attempt, "pause_id": resume.get("pause_id"),
-                    "grant_id": resume.get("grant_id")}, ctx)
-                if (meta["task"].get("_budget_pause_resume") or {}).get("sleep_exclusion_since"):
-                    raise RuntimeError("cold sleep consumption is not yet confirmed")
-            wait = set_owner_wait(ctx.DRIVE_ROOT, task_id, wait)
+                # The committed park retires only the old clock marker. Explicit
+                # Resume selection and the truthful new open interval stay intact.
+                finish_resume_clock(meta, float(paused))
+                if parked_at is not None:
+                    meta["sleep_parked_at"] = parked_at
             meta["owner_wait"] = wait
-            park_interval_added = ("sleep_parked_at" not in meta
-                                   and (isinstance(wait.get("sleep"), dict) or wait.get("reason") == "owner_pause"))
-            if isinstance(wait.get("sleep"), dict):
-                # A model sleep is not execution: excluded live until the task runs again.
-                meta.setdefault("sleep_parked_at", _pool().time.time())
-            elif wait.get("reason") == "owner_pause":
-                from ouroboros.deadline_utils import parse_deadline_ts
-
-                # Include time spent awaiting this acknowledgement, without restarting
-                # the interval if the same park event is delivered again.
-                parked = parse_deadline_ts((wait.get("owner_pause") or {}).get("parked_at"))
-                meta.setdefault("sleep_parked_at", parked.timestamp() if parked else _pool().time.time())
             # A spent exact-budget carrier still on this row is retired by the
             # revocation seam's ``_owner_wait_resume`` branch when the restart
             # reads the durable grant as consumed (#1196, F3); it decides nothing
@@ -118,12 +177,17 @@ def handle_owner_wait(event: dict, ctx: Any) -> None:
             if not queue.persist_queue_snapshot(reason="owner_wait_parked"):
                 raise RuntimeError("owner wait queue snapshot was not persisted")
         except Exception as exc:
+            if (not park_written and isinstance(exc, StoreBusy) and exc.reason == "contention"
+                    and getattr(exc, "rollback_confirmed", None) is not False):
+                return
+            pending["refused"] = str(exc) or type(exc).__name__
             worker.active_capacity = True
             meta.pop("owner_wait", None)
-            if park_interval_added:
-                meta.pop("sleep_parked_at", None)
+            # The worker is still in this wait until it receives the refusal.
+            # Keep its known clock/checkpoint facts, without a parked ACK or retry.
             _command(worker, task_id, wait, "refused", reason=str(exc))
             return
+        meta.pop(_PENDING_PARK, None)
         _command(worker, task_id, wait, "parked")
 
 

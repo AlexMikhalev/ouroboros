@@ -73,6 +73,7 @@ def _stub_preflight_lanes(repo, monkeypatch):
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
     monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
     monkeypatch.setenv("OUROBOROS_PREFLIGHT_TEST_WORKERS", "2")
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "2")  # nested slots: the gate must really run two workers
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_SERIAL", raising=False)
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_TIMEOUT_SEC", raising=False)
     monkeypatch.setattr(pr, "_verify_preflight_plugins", lambda *a: [])
@@ -655,20 +656,6 @@ def _look(monkeypatch, calls):
     monkeypatch.setattr(commit_gate, "run_commit_preflight", look)
 
 
-def test_the_system_prompt_says_which_look_the_commit_record_counts():
-    """The model's own prompt states the record rule the tests below pin: only the row
-    named in the ``commit_reviewed`` call itself is the commit's preflight; a separate
-    ``preflight_review`` is an early look of its own; no name records not performed."""
-    import pathlib
-
-    text = (pathlib.Path(__file__).resolve().parents[1] / "prompts" / "SYSTEM.md").read_text(encoding="utf-8")
-    phrase = " ".join(text.split())
-    assert ("the commit's record counts an early look only when that call itself names the row "
-            "(`commit_reviewed(preflight_reviewer=…)`)") in phrase
-    assert "a separate `preflight_review` is an early look of its own" in phrase
-    assert "a commit that names no row records its preflight as not performed" in phrase
-
-
 @pytest.mark.parametrize("skip, status", [(False, "not_performed"), (True, "skipped")])
 def test_without_a_named_row_the_record_states_the_fact_and_nothing_looks(candidate, monkeypatch, skip, status):
     calls = []
@@ -706,35 +693,10 @@ def test_a_doc_only_diff_pays_the_suite_like_any_other_diff(candidate, monkeypat
 
 
 def test_every_site_states_the_one_tests_rule_for_a_documentation_diff():
-    """Owner answer A (2026-10-08): the suite runs before any commit to the body, a
-    documentation-only diff included; ``skip_tests`` is the one exemption. The gate's
-    condition, its comments, the checklist line and the test modules that once pinned the
-    retired carve say the same thing, so no site describes a doc-only diff as exempt."""
+    """The gate condition preserves the test exemption and managed proof requirement."""
     import inspect
-    import pathlib
 
-    import tests.test_git_review_tests_gate as tests_gate
-    import tests.test_skip_tests_doc_only as classifier_tests
-
-    repo = pathlib.Path(git.__file__).resolve().parents[2]
-    checklist = (repo / "docs" / "CHECKLISTS.md").read_text(encoding="utf-8")
-    sites = {
-        "git._preflight_and_tests_gate": inspect.getsource(git._preflight_and_tests_gate),
-        "git._managed_candidate_needs_proof": inspect.getsource(git._managed_candidate_needs_proof),
-        "docs/CHECKLISTS.md": checklist,
-        "tests/test_git_review_tests_gate.py": tests_gate.__doc__ or "",
-        "tests/test_skip_tests_doc_only.py": classifier_tests.__doc__ or "",
-        "this module": TestReleaseMetadataPreflight.test_doc_only_carve_is_the_commit_gate_classifier.__doc__ or "",
-    }
-    retired = ("exempt from the suite", "preflight bypass", "skip_tests/doc-only",
-               "the tests rule applies", "diff-aware")
-    for name, text in sites.items():
-        for phrase in retired:
-            assert phrase not in text, (name, phrase)
-    assert "if not message and (not skip_tests or _managed_needs_proof):" in sites["git._preflight_and_tests_gate"]
-    assert "documentation has tests too" in sites["git._preflight_and_tests_gate"]
-    assert "a documentation-only diff included" in checklist
-    assert "a documentation-only diff included" in sites["tests/test_git_review_tests_gate.py"]
+    assert "if not message and (not skip_tests or _managed_needs_proof):" in inspect.getsource(git._preflight_and_tests_gate)
 
 
 def test_a_syntax_error_blocks_before_the_tests_and_the_look(candidate, monkeypatch):

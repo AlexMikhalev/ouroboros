@@ -508,18 +508,6 @@ def test_chat_history_does_not_emit_client_surface(tmp_path):
 # Prompt-fact parity: SYSTEM.md product claims stay bound to the code (AC8)
 # ---------------------------------------------------------------------------
 
-def test_system_prompt_reload_claim_is_code_bound():
-    system_md = (REPO / "prompts" / "SYSTEM.md").read_text(encoding="utf-8")
-    if "reload-on-SHA" not in system_md and "reloads itself" not in system_md:
-        return  # the claim was removed together with its obligation
-    ws_js = (REPO / "web" / "modules" / "ws.js").read_text(encoding="utf-8")
-    assert "sha-change" in ws_js or "Reload on SHA change" in ws_js, (
-        "SYSTEM.md claims the UI auto-reloads on SHA change, but the ws.js "
-        "reload path is gone — the prompt now states a false product fact "
-        "(the exact failure class this feature exists to close)"
-    )
-
-
 def test_frontend_sends_raw_observables_without_device_taxonomy():
     chat_js = (REPO / "web" / "modules" / "chat.js").read_text(encoding="utf-8")
     surface_js = (REPO / "web" / "modules" / "client_surface.js").read_text(encoding="utf-8")

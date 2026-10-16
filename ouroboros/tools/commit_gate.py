@@ -1343,6 +1343,7 @@ def _review_ledger_facts(ctx: ToolContext, commit_message: str, *, goal: str, sc
         "critical_findings": list(combined_findings or getattr(ctx, "_last_review_critical_findings", []) or []),
         "advisory_findings": list(getattr(ctx, "_last_review_advisory_findings", []) or []),
         "tests": _review_tests_facts(ctx, tests_passed),
+        "test_request": dict(getattr(ctx, "_commit_test_request", None) or {}),
         "preflight": _review_preflight_facts(ctx),
         # The exhibit frozen before this attempt's dispatch, never re-derived at settle.
         "preflight_execution": dict(getattr(ctx, "_preflight_execution", None) or {"status": "unobserved"}),
@@ -1362,19 +1363,16 @@ def name_review_record(ctx: ToolContext, result: Any) -> Any:
 
 
 def _review_tests_facts(ctx: ToolContext, tests_passed: Any) -> Dict[str, Any]:
-    """``passed`` only for THIS candidate: the runner's flag is process state that outlives
-    the checkout it tested, so it counts only when the process-held test proof still covers
-    the current tree/index/workload (``commit_admission.PreflightTestProof``); a skipped
-    or stale run is ``NOT_RUN`` with its reason, never a passed result borrowed from an
-    earlier candidate. The exhibit this attempt froze for its seats governs too: one that
-    never entered the tests (a deterministic refusal) is ``NOT_RUN`` although a kept
-    earlier proof still covers the candidate."""
+    """Passed requires a proof covering this tree/index/workload, not merely a kept flag.
+    Skipped/stale runs are NOT_RUN. The frozen exhibit governs too: deterministic
+    refusal means tests never started, even when an older proof still covers the tree.
+    """
     if tests_passed is not True:
         return {"policy": "NOT_RUN", "result": "unknown"}
     try:
         from ouroboros.commit_admission import preflight_test_proof_matches
 
-        bound = bool(preflight_test_proof_matches(ctx, ctx.repo_dir))
+        bound = bool(preflight_test_proof_matches(ctx, ctx.repo_dir, require_full=False))
     except Exception:
         bound = False
     exhibit = getattr(ctx, "_preflight_execution", None)

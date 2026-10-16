@@ -6,13 +6,13 @@ import { showToast } from './toast.js';
 import { tx } from './i18n.js';
 import { hostRowDisplayText } from './host_notice_text.js';
 import { ORIGIN_ADDRESSED_NOTICE_TYPES, childRowPlacement, replayConcludesTask } from './chat_row_placement.js';
-import { appendProjectRow, decorateProjectRow, PROJECT_ROW_TYPES, syncSavedProjectContext } from './project_answer.js';
+import { appendProjectRow, decorateProjectRow, PROJECT_ROW_TYPES, refreshProjectAnswerFold, syncSavedProjectContext } from './project_answer.js';
 import { createProjectHandoffs, receiptNotice } from './project_handoff.js';
 import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
 import { attachmentCaption, attachmentViews, composerText, createComposerAttachments, createUnconfirmedSends } from './chat_attachments.js';
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
-import { createMainAttention } from './main_attention.js';
+import { createMainWaiting } from './main_waiting.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
 import { clientSurfaceField } from './client_surface.js';
 import { syncSettledItems } from './settled_card.js';
@@ -329,10 +329,9 @@ export function createChatInstance({
         stampNodeTimestamp,
         onDomWrite: withStableViewport,
     });
-    const mainAttention = isMain ? createMainAttention({ mount: inputArea, openSettings: openSettingsTab,
-        refresh: () => refreshHeaderControlState(true), mutate: withStableViewport,
-        syncQuestions: (...args) => chatDecision.syncCurrentQuestions(...args),
-        connectQuestions: value => chatDecision.setConnected(value) }) : null;
+    const mainWaiting = isMain ? createMainWaiting({ page, messagesDiv, insertMessageNode, stampNodeTimestamp,
+        openSettings: openSettingsTab, refresh: () => refreshHeaderControlState(true), mutate: withStableViewport,
+        decision: () => chatDecision, revealQuestion: (...a) => revealQuestion(...a), reading: () => reading }) : null;
     const chatDecision = createChatDecision({
         apiFetch,
         frameNode: chatMedia.bubbleFrameNode,
@@ -345,8 +344,7 @@ export function createChatInstance({
         onDomWrite: withStableViewport,
         isMain, chatId,
         insertMessageNode,
-        currentQuestionHost: mainAttention?.questions,
-        onQuestionsChanged: mainAttention?.update,
+        onQuestionsChanged: mainWaiting?.refresh,
         // A settled Main question mirror leaves through the ordinary retirement path.
         removeMessageNode: (node) => withStableViewport(() => { releaseMessageNode(node); return true; },
             { excludeAnchorNode: node }),
@@ -612,7 +610,7 @@ export function createChatInstance({
         if (data) void refreshChildProjectHolds();
         syncHeaderControlState(data ?? { accounting: { available: false } });
         handoffs?.snapshot(data);
-        mainAttention?.snapshot(data, snapshotRequestedAt);
+        mainWaiting?.snapshot(data, snapshotRequestedAt);
         hostReady = supervisorReady(data) ?? hostReady;
         const activities = Array.isArray(data?.active_chat_activities)
             ? data.active_chat_activities
@@ -682,9 +680,16 @@ export function createChatInstance({
     }
 
     function enhanceMountedMarkdown(root) {
+        // Late diagrams/fallbacks can add keyboard stops after the fold was measured.
+        // Refresh only their own bubble, inside the existing viewport transaction.
+        const foldedWrite = writer => (mutate, options) => writer(() => {
+            const changed = mutate();
+            refreshProjectAnswerFold(root.closest?.('.project-answer'));
+            return changed;
+        }, options);
         return enhanceChatMarkdown(root, {
-            onDomWrite: _remoteActivityDepth > 0 ? withRemoteActivity : withStableViewport,
-            onThemeDomWrite: withStableViewport,
+            onDomWrite: foldedWrite(_remoteActivityDepth > 0 ? withRemoteActivity : withStableViewport),
+            onThemeDomWrite: foldedWrite(withStableViewport),
         });
     }
     const {
@@ -2291,7 +2296,7 @@ export function createChatInstance({
         if (!bubble.classList.contains('project-handoff')) {
             if (!isProgress && shown) chatMedia.attachCopyControl(bubble, String(shown));
             if (!projectEntry && PROJECT_ROW_TYPES.has(systemType)) decorateProjectRow(bubble, { ...meta, ...opts, role,
-                addedAt: ts, fetchDetail: fetchTaskDetailStrict, renderFile: chatMedia.buildDocumentBubble, onDomWrite: withStableViewport });
+                addedAt: ts });
         }
         syncSavedProjectContext(bubble, opts.originProjected, opts.originId);
         wireSkillReviewDisclosure(bubble, { onDomWrite: withStableViewport });
@@ -3718,7 +3723,7 @@ export function createChatInstance({
 
     onWs('open', (msg) => {
         handoffs?.setConnected(true);
-        mainAttention?.setConnected(true);
+        mainWaiting?.setConnected(true);
         refreshHeaderControlState(true);
         syncChatStatus();
         // The socket's previouslyConnected covers newly mounted Projects too;
@@ -3757,7 +3762,7 @@ export function createChatInstance({
     onWs('close', () => {
         unconfirmed.unsettle();
         handoffs?.setConnected(false);
-        mainAttention?.setConnected(false);
+        mainWaiting?.setConnected(false);
         withStableViewport(() => {
             for (const [id, activity] of activeDirectActivities) {
                 activeDirectActivities.set(id, { ...activity, _activityUnconfirmed: true });
@@ -3830,7 +3835,7 @@ export function createChatInstance({
             roomWork?.destroy();
             chatDecision.destroy();
             modelWaits.destroy();
-            mainAttention?.destroy();
+            mainWaiting?.destroy();
             handoffs?.destroy();
             window.removeEventListener('ouro:page-shown', handlePageShown);
             document.removeEventListener('visibilitychange', handlePageShown);

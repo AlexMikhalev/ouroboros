@@ -61,9 +61,9 @@ def _row_chat_id(row: Dict[str, Any]) -> int:
 # rows this module actually emits by web/tests/fixtures/question_presentation_parity.json.
 QUESTION_STATUS = {
     "waiting": "Waiting for your answer",
-    "open": "Unanswered · an answer is still accepted",
-    "resumed": "Unanswered · the task continued; an answer is still accepted",
-    "expired_terminal": "Unanswered · the task finished; a late answer is accepted as your message",
+    "open": "Unanswered",
+    "resumed": "Unanswered · task continued",
+    "expired_terminal": "Unanswered · task finished",
     "answered": "You answered",
     "answer_pending": "Answer recorded · delivery pending",
     "answer_unknown": "Answer recorded · delivery unknown",
@@ -844,6 +844,11 @@ TASK_CAUSE_PHRASES = {
     "terminal_plan_review_open": "The plan review was still open when this answer was delivered",
     "child_results_deferred": "Some sub-task results were deferred instead of being folded into this answer",
     "tool_failure": "A tool this task used failed and nothing recovered it",
+    "receipt_absent": "No host verification receipt was recorded; this does not establish whether other checks ran.",
+    "expected_output_ungrounded": "The declared output has no recorded tool work or structured final answer to support it.",
+    "residual_tool_errors_without_review": "Tool errors remain in the record and the result has not been evaluated.",
+    "artifacts_unavailable": "Some result files are missing or could not be preserved.",
+    "partial_result": "The result is partial; remaining work is described in task details.",
     "task_exception": "The task stopped on an internal error",
     # Recovery finalized a dead attempt from its already registered answer instead of a retry
     # (working_checkpoint.adopt_registered_answer): the answer stands, the packaging does not.
@@ -1164,22 +1169,14 @@ def _completion_excerpt(result: Dict[str, Any], *, chat_id: Any = None,
 
 
 def _custody_debt_reason(reason: str, result: Dict[str, Any], event: Dict[str, Any]) -> tuple:
-    """Split a stored custody-debt code into (execution reason, custody clause).
+    """Current debt stands beside the execution cause, including a retained rail.
 
-    The custody overlay stamps ``delegated_custody_unreconciled`` as the row's
-    reason_code, and the debt then HEALS from the write side while
-    ``docs/ARCHITECTURE.md`` forbids that refresh rewriting reason_code. So the
-    stored code outlives the fact: nine of fourteen terminal rows named a debt
-    the same record showed as empty. Render time holds the only fresh truth, and
-    the fresh truth is the row's own ``delegated_runs_unreconciled`` list.
-
-    The debt is a WARNING BESIDE the rail cause, never a replacement: when both
-    are real the caller states them in one line. Any other reason code passes
-    through untouched."""
+    Write-side healing preserves reason_code, so only the record's current debt
+    list names a debt. Absence is not proof of reconciliation. When the stored
+    reason is the custody overlay, recover the execution reason beneath it.
+    """
     from ouroboros.outcomes import WARN_DELEGATED_CUSTODY_UNRECONCILED
 
-    if reason != WARN_DELEGATED_CUSTODY_UNRECONCILED:
-        return reason, ""
     debt: Any = None
     execution_reason = ""
     for source in (result, event):
@@ -1188,7 +1185,8 @@ def _custody_debt_reason(reason: str, result: Dict[str, Any], event: Dict[str, A
         axes = source.get("outcome_axes") if isinstance(source.get("outcome_axes"), dict) else {}
         execution = axes.get("execution") if isinstance(axes.get("execution"), dict) else {}
         execution_reason = execution_reason or str(execution.get("reason_code") or "")
-    return execution_reason, (WARN_DELEGATED_CUSTODY_UNRECONCILED if debt else "")
+    return (execution_reason if reason == WARN_DELEGATED_CUSTODY_UNRECONCILED else reason,
+            WARN_DELEGATED_CUSTODY_UNRECONCILED if debt else "")
 
 
 # The open-review classes that state a standing limitation (never the merely awaited case).
@@ -1247,24 +1245,29 @@ def _join_cause_clauses(clauses: List[str]) -> str:
                       for index, c in enumerate(kept))
 
 
-def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
+def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any], *, include_review_details: bool = True) -> str:
     """Every simultaneous cause this record holds, as ONE terminated host clause.
 
-    Primary cause and standing limitations each appear once. Held tasks state
-    their objective's reason. Only the author's stop rationale reaches this line; reviewer
-    prose stays in review detail. Python twin of ``taskReasonDetail``.
+    Functional causes precede independent review caveats; neither replaces the other.
+    The compact phone view leaves pure provenance in details, never rewriting axes.
+    Unknown review obligations remain visible. Python twin of ``taskReasonDetail``.
     """
     from ouroboros.outcomes import (
-        ACCEPTANCE_ACCEPTED, REASON_FINAL_MESSAGE, REASON_OWNER_REQUESTED_FINALIZATION, plan_review_awaiting,
+        ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASON_BY_RAIL, REASON_FINAL_MESSAGE,
+        REASON_OWNER_REQUESTED_FINALIZATION, plan_review_awaiting,
     )
 
     decision: Dict[str, Any] = {}
     veto: Dict[str, Any] = {}
     objective: Dict[str, Any] = {}
     completion: Dict[str, Any] = {}
+    review: Dict[str, Any] = {}
+    execution: Dict[str, Any] = {}
+    artifacts: Dict[str, Any] = {}
     for source in (event, result):
         axes = source.get("outcome_axes") if isinstance(source.get("outcome_axes"), dict) else {}
-        execution = axes.get("execution") if isinstance(axes.get("execution"), dict) else {}
+        execution = axes.get("execution") if isinstance(axes.get("execution"), dict) else execution
+        artifacts = axes.get("artifacts") if isinstance(axes.get("artifacts"), dict) else artifacts
         value = source.get("task_completion", execution.get("task_completion"))
         if isinstance(value, dict):
             completion = value
@@ -1272,25 +1275,33 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
         if isinstance(objective.get("receipt_veto"), dict):
             veto = objective["receipt_veto"]
         for holder in (source.get("review_status"), axes.get("review")):
-            if isinstance(holder, dict) and isinstance(holder.get("acceptance_decision"), dict):
-                decision = holder["acceptance_decision"]
+            if isinstance(holder, dict):
+                review = holder
+                if isinstance(holder.get("acceptance_decision"), dict):
+                    decision = holder["acceptance_decision"]
     status = str(decision.get("status") or "").strip()
     cause = str(decision.get("reason") or "")
     raw_reason = str(result.get("reason_code") or event.get("reason_code") or "")
     origin = result.get("cancel_origin") or event.get("cancel_origin")
     phase = outcome_phase(result, event)
-    # Resolved once for every branch: the custody debt is a standing limitation
-    # of the same answer, not a property of the branch that happened to fire.
     reason, custody = _custody_debt_reason(raw_reason, result, event)
+    if reason in {REASON_FINAL_MESSAGE, ""}:
+        reason = str(execution.get("reason_code") or reason)
+    review_cause = (cause if status and (status != ACCEPTANCE_ACCEPTED or cause in TASK_CAUSE_PHRASES)
+                    and (phase in {"done", "warn"} or recorded_author_stop(decision)) else "")
+    # Author-accepted completion is not reviewer approval. Required mode, explicit
+    # debts and unknown enforcement are not inferred optional from a reason string.
+    trigger = str(review.get("trigger") or "").removesuffix("_after_agent_tool").removesuffix("_after_agent_advisory")
+    author_closed = (objective.get("status") == "pass" and objective.get("source") == "author_acceptance"
+                     and decision.get("enforcement") == "advisory"
+                     and trigger in {"auto_effect", "auto_contract", "auto_agent_request"}
+                     and not decision.get("open_obligations") and not review.get("acceptance_obligations"))
+    if not include_review_details and (review_cause == "previous_revision_accepted"
+                                      or (review_cause == "author_finish" and author_closed and review.get("status") != "fail")):
+        review_cause = ""
     held = phase == "error" and str(objective.get("source") or "").startswith("plan_review_")
     if raw_reason == REASON_OWNER_REQUESTED_FINALIZATION:
-        clause = ""  # an owner-requested stop is a success and carries its own marker
-    elif (status and (status != ACCEPTANCE_ACCEPTED or cause in TASK_CAUSE_PHRASES)
-            and (phase in {"done", "warn"} or (recorded_author_stop(decision) and phase == "error"))):
-        # An explicit author stop is the fact that ended the task (its objective is
-        # blocked, so the card is red); the decision's typed reason — its TRUE cause,
-        # not always ``author_stop`` — speaks over the delivery step.
-        clause = TASK_CAUSE_PHRASES.get(cause, cause)
+        clause = review_cause = ""  # an owner-requested stop carries its own marker
     elif phase == "cancelled" and isinstance(origin, dict) and origin:
         # The recorded cause and the relation the record PROVES (#1061).
         from supervisor.cancel_publication import cancel_cause_clauses
@@ -1299,7 +1310,7 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
     elif held:
         # A task HELD by a blocking plan review states the objective's own reason.
         clause = TASK_CAUSE_PHRASES.get(str(objective.get("reason") or ""), str(objective.get("reason") or ""))
-    elif raw_reason in {REASON_FINAL_MESSAGE, ""}:
+    elif reason in {REASON_FINAL_MESSAGE, ""}:
         clause = (TASK_CAUSE_PHRASES["author_stop"] if completion.get("action") == "stop" and phase != "cancelled"
                   else TASK_CAUSE_PHRASES["plan_review_awaiting"] if plan_review_awaiting(event, result) and phase == "done" else "")
     else:
@@ -1310,7 +1321,27 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
         key = _plan_review_key(result, event, reason) if reason == "plan_review_advisory" else reason
         clause = (" ".join(strip_markdown(str(detail)).split()) if detail
                   else TASK_CAUSE_PHRASES.get(key, key))
-    line = _join_cause_clauses([clause, _author_stop_rationale(decision, completion),
+    # The bypass sentence already names its rail; do not repeat the same cause.
+    if review_cause and (reason == review_cause or ACCEPTANCE_BYPASS_REASON_BY_RAIL.get(reason) == review_cause):
+        clause = ""
+    warnings = list(objective.get("warnings") or []) if isinstance(objective.get("warnings"), list) else []
+    warnings.append(objective.get("warning") or "")
+    excluded = {"", "delegated_custody_unreconciled", "terminal_delivery_unknown", "terminal_delivery_exhausted"}
+    if not include_review_details:
+        excluded.add("receipt_absent")
+    warning_clauses = [TASK_CAUSE_PHRASES.get(str(w), str(w)) for w in warnings if str(w) not in excluded]
+    record = {**event, **result}
+    bundle = record.get("artifact_bundle") if isinstance(record.get("artifact_bundle"), dict) else {}
+    artifact_status = bundle.get("status") or record.get("artifact_status") or artifacts.get("status")
+    if artifact_status in {"failed", "missing"}:
+        warning_clauses.append(TASK_CAUSE_PHRASES["artifacts_unavailable"])
+    if decision.get("open_obligations"):
+        warning_clauses.append(TASK_CAUSE_PHRASES["open_obligations"])
+    if (objective.get("status") == "best_effort" and not clause and not objective.get("deferred_count")
+            and raw_reason != REASON_OWNER_REQUESTED_FINALIZATION and review_cause in {"", "previous_revision_accepted"}):
+        warning_clauses.append(TASK_CAUSE_PHRASES["partial_result"])
+    line = _join_cause_clauses([clause, *warning_clauses, TASK_CAUSE_PHRASES.get(review_cause, review_cause),
+                                _author_stop_rationale(decision, completion),
                                 *incident_cause_clauses(decision, reason, TASK_CAUSE_PHRASES),
                                 *_terminal_limitations(result, event, reason, held=held),
                                 TASK_CAUSE_PHRASES.get(custody, custody) if custody else ""])
@@ -1330,18 +1361,10 @@ def _author_stop_rationale(decision: Dict[str, Any], completion: Optional[Dict[s
 def _run_lives_in_its_project(
     drive_root: Any, task_id: str, project_id: str, task: Dict[str, Any], result: Dict[str, Any],
 ) -> Optional[bool]:
-    """Did this run's work actually go into that project's room?
+    """Only explicit room addressing or a durable binding proves membership.
 
-    Two facts answer yes, and only these two. The run was ADDRESSED there —
-    admission resolves a registered project's thread, and a scoped run cannot be
-    addressed anywhere else. Or the run is BOUND to it, which is how a task that
-    started unscoped joins a project mid-flight; a binding re-homes every row it
-    already wrote, including the ones written before the project existed.
-
-    Registration alone is not that fact. A run scoped to an id nobody had
-    registered yet is admitted to the hidden partition; if that id is registered
-    while the run is still going, a room appears its rows never entered, and
-    answering "a room exists" is how the reported defect comes back.
+    A binding re-homes earlier rows too. Registration alone proves nothing: a
+    hidden admission can predate its room, leaving that room empty of this run.
     """
     try:
         from ouroboros.projects_registry import get_reserved_project, project_binding_for_task
@@ -1482,6 +1505,7 @@ def project_completion_delivery_outcome(
         if excerpt:
             excerpt = f"{excerpt} Open the Project for details."
         from ouroboros.terminal_time import terminal_time_fact
+        from ouroboros.terminal_projection import completion_notice
 
         event = {
             "type": "send_message", "chat_id": 1, "task_id": tid,
@@ -1495,6 +1519,8 @@ def project_completion_delivery_outcome(
                 "project_name": snapshot["project_name"],
                 "target_label": snapshot["target_label"], "status": status,
                 "terminal_time": terminal_time_fact(result),
+                "completion_notice": {**completion_notice({**task_done_event, **result, "terminal_delivery": delivery}),
+                                      "salvage": excerpt},
                 **({"completion_reason": verdict or OUTCOME_PHASE_HEADLINE[outcome_phase(result, task_done_event)]}
                    if verdict or outcome_phase(result, task_done_event) != "done" else {}),
                 **mirrored_answer(result, outcome_phase(result, task_done_event)),

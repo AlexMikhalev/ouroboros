@@ -51,6 +51,8 @@ def reexports(manifest):
 # ---------------------------------------------------------------------------
 
 def test_owner_of_resolves_a_module_path_a_dotted_module_and_a_symbol():
+    from ouroboros.code_intelligence import build_code_inventory
+
     (llm,) = owner_of(REPO, "ouroboros/llm.py")
     assert (llm.domain, llm.via) == ("D02", "module_path")
     assert llm.domain_title  # the human vocabulary rides along
@@ -60,7 +62,14 @@ def test_owner_of_resolves_a_module_path_a_dotted_module_and_a_symbol():
         "supervisor/state.py", "D08", "dotted_module",
     )
 
-    owners = owner_of(REPO, "protected_path_category")
+    # This oracle asks about one real definition, not every repository language.
+    # Keep the live carrier/parse witness without indexing tests, JS and fixtures;
+    # the tiny repository below exercises owner_of's default inventory path.
+    inventory = build_code_inventory(
+        REPO, scope="ouroboros/runtime_mode_policy.py", persist=False,
+    )
+    assert not inventory.enumeration_limits
+    owners = owner_of(REPO, "protected_path_category", inventory=inventory)
     assert any(
         (o.module, o.domain, o.via) == ("ouroboros/runtime_mode_policy.py", "D13", "symbol_definition")
         for o in owners
@@ -342,6 +351,10 @@ def test_query_code_owner_of_qualifies_partial_symbol_coverage(tmp_path, monkeyp
     (repo / "ouroboros" / "a.py").write_text("def shared():\n    pass\n", encoding="utf-8")
     (repo / "ouroboros" / "z.py").write_text(
         "def shared():\n    pass\n\n\ndef late():\n    pass\n", encoding="utf-8")
+    assert [(row.module, row.via) for row in owner_of(repo, "shared")] == [
+        ("ouroboros/a.py", "symbol_definition"),
+        ("ouroboros/z.py", "symbol_definition"),
+    ]
     registry = ToolRegistry(repo_dir=repo, drive_root=tmp_path / "data")
 
     def owner(arg):

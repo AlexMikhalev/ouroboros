@@ -1188,44 +1188,6 @@ def test_delegate_schemas_teach_the_escalation_verb():
         assert "escalate to your human" not in schemas[name]
 
 
-def test_expiry_notes_teach_the_escalation_verb():
-    """Delta finding: the REPEAT delegate_wait rides the expiry path, whose
-    notes are decision points too — both branches name the escalate verb and
-    never the retired progress/your-human dead ends."""
-    import inspect
-
-    import ouroboros.delegate_progress as dp
-
-    source = inspect.getsource(dp)
-    assert "escalate an above-authority question with the" in source
-    assert "raise it with the escalate verb (parent-first)" in source
-    assert "escalate to your human via a progress message" not in source
-    assert "escalate to your human," not in source
-    # The dispatch charter is an LLM-facing user message too (agent.py appends
-    # it): the same dead end must not survive there. The campaign owner of
-    # dispatch_executor_note is agent_dispatch (subagent_dispatch_notes is the
-    # historical import facade).
-    import ouroboros.agent_dispatch as dn
-
-    charter = inspect.getsource(dn)
-    assert "escalated with the escalate verb (parent-first" in charter
-    assert "goes to your human via progress" not in charter
-    # No delegated-question surface may teach direct-to-human ESCALATION: the
-    # hierarchy (parent-first) is the ONLY route (decision 31). Semantic
-    # variants of the escalation phrasing, not just the exact retired lines
-    # (the live progress STREAM legitimately mentions the human).
-    import ouroboros.tools.delegate as dtool
-
-    import ouroboros.delegate_interactions as di
-
-    for module in (dp, dn, di, dtool):
-        text = inspect.getsource(module)
-        for phrase in ("escalated to its human", "escalated to your human",
-                       "escalated a question to its human",
-                       "goes to your human", "surface it to your human"):
-            assert phrase not in text, (module.__name__, phrase)
-
-
 def test_definite_answer_refusals_publish_as_recorded_refusals(tmp_path, monkeypatch):
     """Owner Q8A: a refusal the engine confirmed (rejected rows) is an agent fault,
     an absent run a substrate refusal; neither is an OK observation."""

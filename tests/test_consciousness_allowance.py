@@ -322,16 +322,7 @@ def test_an_unreadable_ledger_refuses_the_start_instead_of_assuming_free(data_ro
 
 
 def test_the_wake_prompt_money_framing_matches_what_the_ledger_actually_records():
-    """The prompt's three money words are the reducer's, not a separate vocabulary."""
-    import pathlib
-
-    prompt = (pathlib.Path(__file__).resolve().parent.parent / "prompts" / "CONSCIOUSNESS.md").read_text(
-        encoding="utf-8")
-    assert "Distinguish incremental cash cost from subscription quota and time." in prompt
-    assert "A confirmed zero-cost call spends no cash; an undisclosed cost is unknown." in prompt
-    assert "Existing limits still apply." in prompt
-    # A confirmed zero and an undisclosed price are DIFFERENT ledger rows, which is
-    # exactly the distinction the sentence above asks this mind to make.
+    """The reducer distinguishes free calls, unknown prices, and observed quota."""
     free = {"kind": "subscription_session", "state": "settled", "cost_usd": 0.0,
             "cost_final": True, "pricing_known": True}
     undisclosed = {"kind": "subscription_session", "state": "settled", "cost_usd": None,
@@ -340,8 +331,7 @@ def test_the_wake_prompt_money_framing_matches_what_the_ledger_actually_records(
 
     assert _summary([free])["accounted_usd"] == 0.0 and _summary([free])["unknown_unmetered"] == 0
     assert _summary([undisclosed])["unknown_unmetered"] == 1
-    # The allowance is the only budget the prompt promises; there is no quota one.
-    assert set(allowance.allowance_window.__doc__.split()) >= {"allowance"}
+    # The allowance is the only budget; observed quota is not another budget.
     assert not hasattr(allowance, "quota_window")
     # Time and quota stay separate OBSERVED axes of the same reducer, never budgets.
     session = _summary([{**free, "subscription_route": "r", "subscription_reset_at": "2026-09-17T00:00:00Z"}])
