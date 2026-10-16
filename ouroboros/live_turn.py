@@ -9,11 +9,20 @@ owner row written WITHOUT opening an owner turn, Ouroboros speech as the turn's
 own narration with its played mark), tool calls on one serialized batch worker
 (``live_tool_batch``), the owner's mailbox (Stop, Hurry, typed words) drained on a
 short tick with deferred acknowledgement, and the room's new rows
-(``live_awareness``) fed in as context. Provider session caps and transport
-losses are reconnects with a host-built history view (or the provider's resume
-handle), never the end of the call. The driver returns the loop's ordinary
-``(text, usage, llm_trace)`` triple with a host-authored terminal
-(``terminal_origin=host_notice``) that points at the transcript.
+(``live_awareness``, caught up from the instant the agent captured the context)
+fed in as context. Provider session caps and transport losses are reconnects
+with a host-built history view (or the provider's resume handle), never the end
+of the call. Context the call heard (room rows, peer observations, Hurry) is part
+of its transcript, so a reopened session replays it; while no session is live,
+context waits in a queue and no mail is acknowledged. The mailbox, the peers and
+the tool lane run from the first moment, so a Stop during the connection cancels
+the opening and closes whatever the provider opened. A tool result the transport
+refuses becomes a typed failure the model hears. The route's documented limits
+(window, reply allowance, instruction cap) shape the first open, so the call does
+not fail once to learn them; the price quote is warmed on the turn thread before
+the loop starts, so no catalog fetch ever runs on it. The driver returns the
+loop's ordinary ``(text, usage, llm_trace)`` triple with a host-authored
+terminal (``terminal_origin=host_notice``) that points at the transcript.
 """
 
 from __future__ import annotations
@@ -35,12 +44,14 @@ from ouroboros.gateways.realtime_engine import (
     SPEAKER_OUROBOROS, SPEAKER_OWNER, USAGE_KEYS,
     AudioIn, AudioOut, Caption, Close, Closed, ContextItem, EngineError, GoAway, Interrupt, PlayedAudio, Ready,
     ResponseDone, ResponseStarted, ResumeCheckpoint, SessionConfig, SpeechStarted, ToolCall, ToolCallCancelled,
-    TranscriptionUsage,
+    ToolResult, TranscriptionUsage, UpdateTools,
 )
+from ouroboros.gateways.realtime_transport import LiveEngineRefusal
 from ouroboros.live_call_route import (
-    call_minutes_ceiling, initial_call_schemas, native_search_enabled, recover_call_context, resolve_call_route,
+    call_minutes_ceiling, fit_call_instructions, initial_call_schemas, native_search_enabled, recover_call_context,
+    resolve_call_route,
 )
-from ouroboros.live_tool_batch import ToolBatchWorker, text_of
+from ouroboros.live_tool_batch import ToolBatchWorker, images_of, text_of
 from ouroboros.usage_accounting import BudgetExceeded
 
 log = logging.getLogger(__name__)
@@ -104,11 +115,15 @@ class _LiveCall:
     """One call from open to close, on the turn's thread with its own event loop."""
 
     def __init__(self, *, messages, tools, llm, drive_logs, emit_progress, incoming_messages, task_id, task_type,
-                 event_queue, drive_root, spec: CallSpec, task: Optional[Dict[str, Any]] = None) -> None:
+                 event_queue, drive_root, spec: CallSpec, task: Optional[Dict[str, Any]] = None,
+                 context_captured_at: str = "") -> None:
         self.messages, self.tools, self.llm, self.drive_logs = messages, tools, llm, drive_logs
         self.task = task if isinstance(task, dict) else {}
         self.emit_progress, self.incoming, self.task_id = emit_progress, incoming_messages, task_id
         self.task_type, self.event_queue, self.drive_root, self.spec = task_type, event_queue, drive_root, spec
+        # The instant the turn's context was captured: the room feed catches up from
+        # there, so a row accepted while the context was being prepared is not lost.
+        self.context_captured_at = context_captured_at
         self.ctx = tools._ctx
         self.route = resolve_call_route(spec, drive_root)
         self.llm_trace: Dict[str, Any] = {"reasoning_notes": ["live_call"], "tool_calls": []}
@@ -140,11 +155,17 @@ class _LiveCall:
         # Meeting peers whose microphone feeds the session. While one is present the
         # engine hears a mix, so its input captions are never written as the owner's words.
         self.meeting_mics: set = set()
+        # Whether meeting audio reached the engine since its last input caption: the
+        # words of that caption came from the mix even if the meeting peer left meanwhile.
+        self.meeting_audio_since_caption = False
         # Participants whose audio the platform reported flowing since the last heard
         # caption: exactly one names that utterance's speaker, otherwise it stays unnamed.
         self.voices_since_caption: set = set()
         self.empty_since: Optional[float] = None
         self.owner_msg_seen: set = set()
+        # Context and results that arrived while no session was live: delivered to a
+        # resumed session, dropped when a reopened session replays the history view.
+        self._queued: List[Any] = []
         self._closed = asyncio.Event()
         self._hub_events: Optional[asyncio.Queue] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -164,6 +185,10 @@ class _LiveCall:
         self.hub = _hub_for(self.spec.call_id)
         if self.hub is None:
             return self._terminal("no_hub", failure=("live_call_hub_missing", "the call's peer hub is not open"))
+        # The tariff quote is fetched here, on the turn thread, before the call's event
+        # loop exists; inside the loop every ledger lookup reads the warmed catalog only.
+        self._settle_safely(lambda: _ledger().warm_quote(engine=self.spec.engine, model=self.spec.model,
+                                                         drive_root=self.drive_root))
         try:
             asyncio.run(self._main())
         finally:
@@ -194,22 +219,35 @@ class _LiveCall:
         exit_ctx = _LoopExitContext(self.tools, self.drive_root, self.task_id, self.event_queue, self.drive_logs,
                                     self.usage, self.llm_trace, self.ctx, getattr(self.ctx, "_execution_trace", None))
         self.ctx._execution_trace = self.llm_trace
-        self.rooms = RoomRows(self.drive_root, self.spec.chat_id, self.task_id, self.spec.call_id, self.started_at_iso)
+        self.rooms = RoomRows(self.drive_root, self.spec.chat_id, self.task_id, self.spec.call_id,
+                              self.context_captured_at or self.started_at_iso)
         self.fanout = UtteranceFanout(self.drive_root, self.spec.chat_id, self.task_id, self.spec.call_id)
         self.rooms.start()
         self._reader = threading.Thread(target=self._read_hub, name=f"call-hub-{self.task_id}", daemon=True)
         self._reader.start()
-        tasks: List[asyncio.Task] = []
+        # The owner's mailbox, the peers and the tool lane run from the first moment, so a
+        # Stop, a join or a control is handled while the provider connection is still pending.
+        tasks: List[asyncio.Task] = [asyncio.create_task(self._pump_hub()), asyncio.create_task(self._tick()),
+                                     asyncio.create_task(self.tools_lane.run_forever())]
         try:
+            fit_call_instructions(self.ctx, self.messages, self.tool_schemas, self.route)
+            opening = asyncio.create_task(self._open_engine())
+            closed = asyncio.create_task(self._closed.wait())
+            await asyncio.wait({opening, closed}, return_when=asyncio.FIRST_COMPLETED)
+            if not opening.done():
+                # Stop (or another close) during the connection: the opening is cancelled
+                # and whatever the provider already opened is closed, so no session is paid for.
+                opening.cancel()
             try:
-                await self._open_engine(history=self._history_view())
+                await opening
+            except asyncio.CancelledError:
+                if not self.closing:
+                    raise
             except Exception as exc:
                 log.warning("live call %s could not open its engine", self.spec.call_id, exc_info=True)
                 self.failure = ("live_engine_unavailable", f"{type(exc).__name__}: {exc}")
                 self._begin_close("engine_unavailable")
-            if not self.closing:
-                tasks = [asyncio.create_task(self._pump_hub()), asyncio.create_task(self._tick()),
-                         asyncio.create_task(self.tools_lane.run_forever())]
+            closed.cancel()
             await self._closed.wait()
         except BudgetExceeded as exc:
             self.budget_error = exc
@@ -289,9 +327,19 @@ class _LiveCall:
         return SessionConfig(route=self.route.engine, instructions=instructions, tools=tuple(self.tool_schemas),
                              history=history, native_search=native_search_enabled(self.spec), resume_handle=resume_handle)
 
-    async def _open_engine(self, *, history: Tuple[Dict[str, Any], ...] = (), resume_handle: str = "") -> None:
+    async def _open_engine(self, *, resume_handle: str = "") -> None:
         engine = self.llm.open_live(self.route.engine)
-        await engine.open(self._session_config(history=history, resume_handle=resume_handle))
+        # The history view holds every transcript row up to this count; context recorded
+        # after it, while the connection was pending, is delivered once the session is live.
+        history, cut = ((), -1) if resume_handle else (self._history_view(), len(self.messages))
+        try:
+            await engine.open(self._session_config(history=history, resume_handle=resume_handle))
+        except asyncio.CancelledError:
+            try:  # the call ended while connecting: whatever was opened is closed at once
+                await asyncio.wait_for(engine.close("cancelled"), timeout=BATCH_SETTLE_WAIT_S)
+            except Exception:
+                log.debug("cancelled engine close failed", exc_info=True)
+            raise
         self.engine, self.epoch, self.session_started = engine, self.epoch + 1, time.monotonic()
         self.hub.set_engine_rates(self.route.engine.input_rate, self.route.engine.output_rate)
         if self.empty_since is None and not self.hub.peers():
@@ -299,15 +347,33 @@ class _LiveCall:
             # a peer whose socket never arrived must not hold the session (or a Presence slot).
             self.empty_since = time.monotonic()
         asyncio.create_task(self._pump_engine(engine, self.epoch))
+        queued, self._queued = self._queued, []
+        for rows_then, command in queued:
+            # A resumed session keeps what it was sent before the loss, so everything that
+            # waited is new to it; a replayed history view already holds the rows it covers.
+            if resume_handle or rows_then > cut:
+                await self._send(command)
 
     def _history_view(self) -> Tuple[Dict[str, Any], ...]:
-        """The dialogue so far as plain items (text only; the system text travels as instructions)."""
+        """The dialogue so far as items: text, plus the images a user row carries.
+
+        Both engines accept images on a user history item; an image on any other
+        row cannot travel in history, so its absence is named in the item.
+        """
         view: List[Dict[str, Any]] = []
         for msg in self.messages[1:] if self.messages and self.messages[0].get("role") == "system" else self.messages:
             role = str(msg.get("role") or "")
             if role not in ("user", "assistant", "tool"):
                 continue
-            item: Dict[str, Any] = {"role": role, "content": text_of(msg.get("content"))}
+            content, text = msg.get("content"), text_of(msg.get("content"))
+            images = images_of(content)
+            if images and role == "user":
+                parts = [part for part in content if isinstance(part, dict) and part.get("type") in ("text", "image_url")]
+                item: Dict[str, Any] = {"role": role, "content": parts}
+            elif images:
+                item = {"role": role, "content": f"{text}\n[{len(images)} image(s) of this row cannot be replayed in history]"}
+            else:
+                item = {"role": role, "content": text}
             for key in ("tool_calls", "tool_call_id", "name"):
                 if msg.get(key):
                     item[key] = msg[key]
@@ -333,7 +399,7 @@ class _LiveCall:
         handle = self.resume_handle if resume else ""
         for attempt_no in range(RECONNECT_ATTEMPTS):
             try:
-                await self._open_engine(history=() if handle else self._history_view(), resume_handle=handle)
+                await self._open_engine(resume_handle=handle)
                 self.reconnects += 1
                 self.reconnecting = False
                 return
@@ -347,11 +413,31 @@ class _LiveCall:
     async def _send(self, command: Any) -> None:
         engine = self.engine
         if engine is None:
+            if isinstance(command, (ContextItem, ToolResult, UpdateTools)) and not self.closing:
+                self._queued.append((len(self.messages), command))  # audio and playback marks are transient; context waits
             return
         try:
             await engine.send(command)
+        except LiveEngineRefusal as exc:
+            log.debug("engine refused %s (%s)", type(command).__name__, exc.code, exc_info=True)
+            if isinstance(command, ToolResult) and exc.code != "closed":
+                await self._refused_tool_result(engine, command, exc)
         except Exception:
             log.debug("engine send failed (%s)", type(command).__name__, exc_info=True)
+
+    async def _refused_tool_result(self, engine: Any, command: ToolResult, refusal: LiveEngineRefusal) -> None:
+        """The transport could not carry a tool's result: the model learns that, typed, not silence."""
+        images = f" and {len(command.images)} image(s), which no history view replays," if command.images else ""
+        notice = (f"⚠️ TOOL_RESULT_REFUSED ({refusal.code}): the live session could not carry the result of tool "
+                  f"call {command.call_id}: {refusal}. The tool did run; its {len(command.output)}-character text"
+                  f"{images} stays in the turn's transcript. Ask again with a narrower request if you need it spoken.")
+        try:
+            await engine.send(ToolResult(call_id=command.call_id, output=notice))
+        except Exception:
+            try:  # the call id itself is what the session refuses: the notice travels as context
+                await engine.send(ContextItem(text=notice, source="tool_result_refused"))
+            except Exception:
+                log.warning("live call %s could not report a refused tool result", self.spec.call_id, exc_info=True)
 
     # ---- pumps -------------------------------------------------------------------
 
@@ -411,9 +497,19 @@ class _LiveCall:
 
     # ---- hub events ---------------------------------------------------------------
 
+    async def _context(self, item: ContextItem) -> None:
+        """Context the call heard is part of its transcript: a reopened session replays it."""
+        if not item.text.strip():
+            return
+        self.messages.append({"role": "user", "content": item.text, "_call_row": True, "_context_source": item.source})
+        await self._send(item)
+
     async def _on_hub_event(self, event: Any) -> None:
         if isinstance(event, PeerAudio):
-            if not self.closing and not self.reconnecting and event.peer_id not in self.muted_peers:
+            if (self.engine is not None and not self.closing and not self.reconnecting
+                    and event.peer_id not in self.muted_peers):
+                if event.role == PEER_MEETING:
+                    self.meeting_audio_since_caption = True
                 await self._send(AudioIn(pcm=event.pcm, rate=self.route.engine.input_rate))
         elif isinstance(event, PeerControl):
             kind = str(event.message.get("type") or "")
@@ -431,14 +527,14 @@ class _LiveCall:
             elif kind == "bye" and event.role == PEER_OWNER:
                 self._begin_close("owner_bye")
             elif kind == "context":
-                await self._send(ContextItem(text=str(event.message.get("text") or ""),
-                                             source=f"peer:{event.role}:{event.message.get('source') or 'observation'}"))
+                await self._context(ContextItem(text=str(event.message.get("text") or ""),
+                                                source=f"peer:{event.role}:{event.message.get('source') or 'observation'}"))
             elif kind == "participant":
                 label, speaking = str(event.message.get("label") or "someone"), bool(event.message.get("speaking"))
                 if speaking and event.message.get("label"):
                     self.voices_since_caption.add(label)
-                await self._send(ContextItem(text=f"{label} {'started' if speaking else 'stopped'} speaking",
-                                             source="meeting_participant"))
+                await self._context(ContextItem(text=f"{label} {'started' if speaking else 'stopped'} speaking",
+                                                source="meeting_participant"))
         elif isinstance(event, PeerJoined):
             self.empty_since = None
             if event.peer.role == PEER_MEETING and event.peer.mic:
@@ -510,19 +606,31 @@ class _LiveCall:
     async def _barge_in(self) -> None:
         self.hub.flush()
         # A response can have several audio items queued ahead of playback.
-        # Flush/truncate every unfinished item, including an earlier commentary.
+        # Flush/truncate every item with audio still unplayed, an earlier commentary
+        # included. A finished item (its final caption arrived) that the peer has played
+        # to its end was heard whole: it is left alone, so the owner's next turn never
+        # rewrites it as interrupted. An item still generating is cut even when playback
+        # has caught up with the frames delivered so far.
         for item in tuple(self.spoken.keys() - self.cancelled_items):
+            spoken, played = self.spoken[item], self.played_ms.get(item, 0)
+            if spoken.final_at and played >= spoken.audio_ms:
+                continue
             self.cancelled_items.add(item)
-            self.spoken[item].interrupted = True
-            await self._send(Interrupt(item_id=item, played_ms=self.played_ms.get(item, 0)))
-            if self.spoken[item].final_at:
+            spoken.interrupted = True
+            await self._send(Interrupt(item_id=item, played_ms=played))
+            if spoken.final_at:
                 self._write_spoken_row(item)
 
     def _on_final_caption(self, event: Caption) -> None:
         text = str(event.text or "").strip()
         if not text:
             return
-        if event.speaker == SPEAKER_OWNER and (self.spec.presence_binding_id or self.meeting_mics):
+        # Who spoke is decided by what fed the engine since its last input caption: a
+        # meeting microphone attached, or meeting audio already sent (its peer may have left).
+        heard = self.spec.presence_binding_id or self.meeting_mics or self.meeting_audio_since_caption
+        if event.speaker == SPEAKER_OWNER:
+            self.meeting_audio_since_caption = False
+        if event.speaker == SPEAKER_OWNER and heard:
             self._on_heard(text, event.item_id)
         elif event.speaker == SPEAKER_OWNER:
             self.counts["owner"] += 1
@@ -548,6 +656,7 @@ class _LiveCall:
         self.counts["heard"] += 1
         self.messages.append({"role": "user", "content": f"[Heard in the call] {text}", "_call_row": True})
         self.fanout.note("heard in the call", text)
+        self.tools_lane.reset_rounds()  # a correspondent spoke: a Presence call's round count starts again
         if self.spec.presence_binding_id:
             self._write_presence_heard(text, item_id)
             return
@@ -608,18 +717,29 @@ class _LiveCall:
 
     # ---- the ledger ----------------------------------------------------------------
 
-    def _attempt_for(self, key: str) -> Any:
+    def _attempt_for(self, key: str, *, usage: Optional[Dict[str, Any]] = None,
+                     raw_usage: Optional[Dict[str, Any]] = None, status: str = "") -> Any:
         if key not in self.attempts:
-            self.attempts[key] = _ledger().reserve_live_response(
-                engine=self.spec.engine, model=self.spec.model, call_id=self.spec.call_id, response_key=key,
-                task_id=self.task_id, rendered_mode=str(getattr(self.ctx, "active_context_mode", "") or "nano"),
-                drive_root=self.drive_root)
+            mode = str(getattr(self.ctx, "active_context_mode", "") or "nano")
+            try:
+                self.attempts[key] = _ledger().reserve_live_response(
+                    engine=self.spec.engine, model=self.spec.model, call_id=self.spec.call_id, response_key=key,
+                    task_id=self.task_id, rendered_mode=mode, drive_root=self.drive_root)
+            except BudgetExceeded as exc:
+                # The provider already started (or finished) this response: the budget
+                # refuses the call, not the provider's charge, which stays on the ledger.
+                reason = str(exc)
+                self._settle_safely(lambda: _ledger().record_refused_live_response(
+                    engine=self.spec.engine, model=self.spec.model, call_id=self.spec.call_id, response_key=key,
+                    task_id=self.task_id, rendered_mode=mode, drive_root=self.drive_root, reason=reason,
+                    usage=dict(usage or {}), raw_usage=dict(raw_usage or {}), status=status or "budget_refused"))
+                raise
         return self.attempts[key]
 
     def _settle(self, event: ResponseDone) -> None:
         key = event.response_id or event.item_id
         try:
-            attempt = self._attempt_for(key)
+            attempt = self._attempt_for(key, usage=dict(event.usage), raw_usage=dict(event.raw_usage), status=event.status)
         except BudgetExceeded:
             raise
         except Exception:
@@ -647,16 +767,20 @@ class _LiveCall:
         scratch: List[Dict[str, Any]] = []
         controls = _drain_incoming_messages(scratch, self.incoming, self.drive_root, self.task_id, self.event_queue,
                                             self.owner_msg_seen, owner_ctx=self.ctx, defer_content_ack=True)
-        items = [ContextItem(text=text_of(msg.get("content")), source="mailbox") for msg in scratch]
         for msg in scratch:
             self.messages.append({**msg, "_call_row": True})
-        items.extend(self.rooms.drain())
-        if controls.get("hurry"):
-            items.append(ContextItem(text="The owner pressed Hurry: finish what you are saying and wrap up.", source="owner_control"))
-        for item in items:
+            item = ContextItem(text=text_of(msg.get("content")), source="mailbox")
             if item.text.strip():
                 await self._send(item)
-        if items or controls:
+        for item in self.rooms.drain():
+            await self._context(item)
+        if controls.get("hurry"):
+            await self._context(ContextItem(text="The owner pressed Hurry: finish what you are saying and wrap up.",
+                                            source="owner_control"))
+        # Content is acknowledged only once a live session holds it and the checkpoint
+        # is written; while no session is live the entries wait (and are redelivered).
+        pending_acks = bool(getattr(self.ctx, "_pending_content_acks", None))
+        if (scratch or controls or pending_acks) and self.engine is not None:
             if self._checkpoint():
                 flush_content_acks(self.ctx)
         if controls.get("finalize_now"):
@@ -690,15 +814,17 @@ def run_live_turn(
     messages: List[Dict[str, Any]], tools: Any, llm: Any, drive_logs: pathlib.Path,
     emit_progress: Callable[..., None], incoming_messages: queue.Queue, task_id: str, task_type: str,
     budget_remaining_usd: Optional[float], event_queue: Optional[queue.Queue], drive_root: Optional[pathlib.Path],
-    spec: CallSpec, task: Optional[Dict[str, Any]] = None,
+    spec: CallSpec, task: Optional[Dict[str, Any]] = None, context_captured_at: str = "",
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Run one live call to its end; the loop's ordinary triple with a host-authored terminal.
 
     ``budget_remaining_usd`` is read by the ledger at every response reservation
     (``BudgetExceeded`` propagates after the call is closed); it is accepted here
-    so the driver keeps the loop's calling shape.
+    so the driver keeps the loop's calling shape. ``context_captured_at`` is the
+    instant the agent captured the turn's context; the room feed catches up from it.
     """
     call = _LiveCall(messages=messages, tools=tools, llm=llm, drive_logs=drive_logs, emit_progress=emit_progress,
                      incoming_messages=incoming_messages, task_id=task_id, task_type=task_type,
-                     event_queue=event_queue, drive_root=drive_root, spec=spec, task=task)
+                     event_queue=event_queue, drive_root=drive_root, spec=spec, task=task,
+                     context_captured_at=context_captured_at)
     return call.run()

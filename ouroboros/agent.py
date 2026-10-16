@@ -837,6 +837,9 @@ class OuroborosAgent:
         # A live call resolves its engine route BEFORE the context is fitted, so the
         # fit measures against the realtime window and the call's initial tool view.
         live_plan = call_context_plan(task, self.tools, self.env.drive_root)
+        # The instant before the room's chat is read for the context: a live call's
+        # room feed catches up from here, so no row accepted meanwhile is lost.
+        context_captured_at = utc_now_iso()
         messages, cap_info = build_llm_messages(
             env=self.env,
             memory=self.memory,
@@ -849,6 +852,7 @@ class OuroborosAgent:
         )
         if live_plan is not None:
             cap_info["live_call_spec"] = live_plan.spec
+            cap_info["live_call_context_captured_at"] = context_captured_at
         # The second of the three places a reduction must reach (the durable record
         # above is the first, `[SUBTASK_OUTCOME]` the third). It is appended HERE,
         # after the context is built, because it is a fact about THIS dispatch —
@@ -1087,6 +1091,7 @@ class OuroborosAgent:
                         task_id=str(task.get("id") or ""), task_type=task_type_str,
                         budget_remaining_usd=budget_remaining, event_queue=self._event_queue,
                         drive_root=self.env.drive_root, spec=live_spec, task=task,
+                        context_captured_at=str(cap_info.get("live_call_context_captured_at") or ""),
                     )
                 except (BudgetExceeded, BudgetPauseRequested):
                     raise
