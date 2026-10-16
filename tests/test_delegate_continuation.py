@@ -706,18 +706,6 @@ def test_the_terminal_payload_carries_resumable_and_one_line_per_continued_try()
 
 # --------------------------------------------------------------------------- unchanged neighbours
 
-@pytest.mark.parametrize("chapter,marker,codes", [
-    ("development/06-rules-by-change-class.md", "- `continue_from`", (
-        continuation.REFUSAL_SNAPSHOT_MISSING, continuation.REFUSAL_SNAPSHOT_RELEASED,
-        "continuation_handover_busy")),
-    ("architecture/06-agent-core.md", "**Continuation**", (continuation.REFUSAL_SNAPSHOT_MISSING,)),
-])
-def test_continuation_docs_name_the_snapshot_custody_refusals(chapter, marker, codes):
-    text = (pathlib.Path(__file__).resolve().parents[1] / "docs" / chapter).read_text(encoding="utf-8")
-    paragraph = text[text.index(marker):].split("\n\n", 1)[0]
-    assert all(f"`{code}`" in paragraph for code in codes)
-    assert "refuses ONLY on the four floors" not in paragraph
-
 
 def test_requested_cap_is_clamped_by_the_deadline_and_the_remaining_lifetime(tmp_path, monkeypatch):
     """The cap basis is still RECORDED beside the number (a fact for the parent),

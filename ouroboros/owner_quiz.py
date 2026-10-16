@@ -57,6 +57,8 @@ _QUIZ_CAP = 16
 
 # The explicit closure facts every card view copies beside the answer facts.
 CLOSURE_FIELDS = ("closed_reason", "closed_at", "closed_by_task_id", "closed_actor", "closed_request_id")
+# The owner closes in one tap; a closure without the owner's words records this sentence.
+OWNER_CLOSE_REASON = "Closed by the owner without an answer."
 
 def current_question(block: Any) -> bool:
     """Unanswered remains current after its author finishes, until explicit closure."""
@@ -434,18 +436,22 @@ def record_closed(
     drive_root: Any, task_id: str, *, quiz_id: str, reason: str, actor_task_id: str = "",
     actor: str = "model", request_id: str = "",
 ) -> Dict[str, Any]:
-    """A model closes its own question or a recorded Continue/retry predecessor's.
+    """The owner closes any unanswered question; a model closes its own, a recorded Continue/retry
+    predecessor's, or a question whose task already finished (``expired_terminal``), always with
+    its own explanation. A question a live task still owns stays its own line's or the owner's.
 
     Same Project membership, shared folders and prose never grant this authority.
     Closure is not an owner answer and never carries an answer index or approval.
     """
     reason = str(reason or "")
+    if actor == "owner" and not reason.strip():
+        reason = OWNER_CLOSE_REASON
     if not reason.strip():
         return {"ok": False, "error": "close_reason_required"}
     if actor not in {"owner", "model"}:
         return {"ok": False, "error": "close_actor_invalid"}
-    if actor == "model" and not question_task_owned_by(drive_root, task_id, actor_task_id):
-        return {"ok": False, "error": "question_not_owned"}
+    # Authority beyond the author's line covers only a finished task's question (checked under the lock).
+    own_line = actor != "model" or question_task_owned_by(drive_root, task_id, actor_task_id)
     request_id = str(request_id or (f"model-close:{actor_task_id}:{quiz_id}" if actor == "model" else ""))
     if not request_id:
         return {"ok": False, "error": "request_id_required"}
@@ -463,6 +469,9 @@ def record_closed(
             return _KEEP
         if not current_question(block):
             outcome.update(ok=False, error="quiz_already_answered", state=block.get("state"), block=dict(block))
+            return _KEEP
+        if not own_line and block.get("state") != STATE_EXPIRED_TERMINAL:
+            outcome.update(ok=False, error="question_not_owned", state=block.get("state"), block=dict(block))
             return _KEEP
         delivery = block.get("delivery") or {}
         pending_publication = delivery.get("kind") == "publication" and delivery.get("state") == "owed"

@@ -522,7 +522,7 @@ def test_project_lifecycle_rows_render_design_system_action_static_contract():
         "export const PROJECT_ROW_TYPES = new Set(['project_started', 'project_handoff', 'project_completion_summary']);"
         in render
     )
-    assert "import { appendProjectRow, decorateProjectRow, PROJECT_ROW_TYPES, syncSavedProjectContext } from './project_answer.js';" in chat
+    assert "import { appendProjectRow, decorateProjectRow, PROJECT_ROW_TYPES, refreshProjectAnswerFold, syncSavedProjectContext } from './project_answer.js';" in chat
     assert "const PROJECT_ROW_TYPES" not in chat
     # One work, one card: a Main start/transfer row binds the work's own card (work_portal.js), never a
     # second entry; the remaining lifecycle rows only delegate: the lifecycle-row module puts the one Project

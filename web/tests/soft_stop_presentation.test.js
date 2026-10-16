@@ -42,9 +42,9 @@ test('Project row delegation preserves the actual producer metadata and terminal
         assert.equal(forwarded.terminalTime, frame.terminal_time);
         assert.equal(forwarded.addedAt, frame.ts);
         assert.equal(forwarded.role, 'assistant');
-        assert.equal(forwarded.fetchDetail, fetchDetail);
-        assert.equal(forwarded.renderFile, renderFile);
-        assert.equal(forwarded.onDomWrite, stableWrite, 'the fold toggles through the stable-viewport writer');
+        assert.equal(forwarded.fetchDetail, undefined, 'the Main mirror does not fetch a Files inventory');
+        assert.equal(forwarded.renderFile, undefined);
+        assert.equal(forwarded.onDomWrite, undefined, 'the fold has no in-place expansion');
         assert.equal(forwarded.fold, true, 'a completion mirror in Ouroboros\'s voice folds');
     }, frame, '', {});
 });

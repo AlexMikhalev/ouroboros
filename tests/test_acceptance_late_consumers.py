@@ -539,7 +539,6 @@ def test_terminal_http_stop_reaches_the_live_historical_operation(late, tmp_path
 
 @pytest.mark.parametrize('failed_publish', ['', 'publication', 'outbox'])
 def test_immediate_complete_and_failed_publication_retry_keep_one_supplement(late, tmp_path, monkeypatch, failed_publish):
-    import time
     from ouroboros import review_operation, review_substrate, review_projection
     from supervisor.terminal_delivery import pending_deliveries
     f = delivered(tmp_path, monkeypatch, retry=True)
@@ -549,7 +548,8 @@ def test_immediate_complete_and_failed_publication_retry_keep_one_supplement(lat
     monkeypatch.setattr("supervisor.workers.get_event_q", lambda **_kw: ctx.event_queue)
     original_run = review_substrate.run_review_request
     def synchronous(request, **kwargs):
-        request.drain_deadline = time.monotonic() + 5
+        # No dispatch barrier: drain each slot to its own window, not a wall-clock guess.
+        request.drain_deadline = None
         result = original_run(request, **kwargs)
         assert all(actor['operation_state'] not in {'pending_dispatch', 'in_flight'} for actor in result.actors)
         return result

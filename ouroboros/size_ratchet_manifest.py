@@ -125,6 +125,7 @@ BAND_PATHS = {
     "ouroboros/gateway/extensions.py": "Extensions HTTP surface re-entered the band when the module endpoint moved to the in-memory reviewed bundle (widgets lifecycle 1a); shrink next touch.",
     "ouroboros/gateway/host_service.py": "The one loopback callback boundary for reviewed skills: token auth, the chat/decision/presence/WS-relay routes and, with #667, the operation read/cancel that joins existing chat, routing, turn and task records; one trust boundary, one module.",
     "ouroboros/gateway/settings.py": "Shrank INTO the band from 1532 lines: the scope-slot window-floor owner capability-ack path was removed with the scope packet (scope-review-retrieval sprint); shrink-only residue, no new content.",
+    "ouroboros/headless.py": "The bounded drive selector belongs beside the two existing layout pruners, sharing their age, custody, cursor and report contract; extracting a one-caller fragment would split that authority.",
     "ouroboros/launcher_bootstrap.py": "Native seed version resync keeps manifest parsing and equal-version payload diagnostics with the existing bootstrap owner; no separate loader or overwrite policy.",
     "ouroboros/llm_claudexor.py": "One model-operation owner keeps request, dispatch, result custody and content-free activity observations together; no second polling or state owner.",
     "ouroboros/loop_acceptance.py": "the local preparation incident rides the acceptance decision: incident ride-along, the exposed-stance finish intent and the forced-rail cause split live beside the decision authority they qualify (#1223-#1224)",
@@ -229,6 +230,7 @@ BAND_PATHS = {
     "tests/test_llm_provider_routing.py": "Entered the band from 1000 lines: the issue #468 shape-first reasoning classifier added its single-form/roster/mixed-artifact unit table, the gap-merge cases against the owner provider policy, and the pin-telemetry guards beside the dispatch and reroute tests they constrain.",
     "tests/test_loop_transport_wait.py": "Contract suite for the transport-wait episode: classification, custody, round-level wait, terminals, and the final-review regression pins live together as one coherent surface.",
     "tests/test_managed_review_subject.py": "Lane L-review contract suite: the managed resolution-delta subject (gate/advisory surfaces, M0 fallback), Q25-A admission, Q28-A yield outcomes and enforcement-honest advisory texts grew past 1000 across the adversarial fix round; one subject, one suite.",
+    "tests/test_mcp_client.py": "The existing MCP client contract suite now supplies both installation-scope states to its two stdio transport tests; their shared fake sessions and exact argv/environment assertions stay together rather than duplicating a fixture in a size-only split.",
     "tests/test_native_tool_round_executor.py": "One suite per executor contract: the native tool-round episode's bounds, floors, custody facts and delivery shapes are one behaviour pinned together; split at the next natural seam (custody vs bounds), not by size.",
     "tests/test_nested_rights_depth.py": "Nested-rights depth suite shrank into the band when the semantic duplicate-gate stubs left (#884); one contract, one file; shrink next touch.",
     "tests/test_observability_outcomes_v2.py": None,
@@ -295,5 +297,5 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "tests/test_devtools_benchmarks.py": 326504,
+    "tests/test_devtools_benchmarks.py": 324631,
 }

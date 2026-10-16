@@ -369,16 +369,10 @@ def _commit(repo, message, files=(), delete=()):
     return _git(repo, "rev-parse", "HEAD")
 
 
-@pytest.fixture
-def replace_scene(tmp_path, monkeypatch):
-    """The real update doors (``post``; ``apply`` is replace): preflight prepare (rescue, keep ref,
-    intent), tx, checkout and the fenced rollback. Only the fetching plan, the worker fence/revival
-    and the restart callback are recorded. The local branch carries one owner commit the target
-    lacks, so a keep ref is made."""
-    from ouroboros.gateway import control
-    from supervisor import update_merge
-
-    repo = _init_repo(tmp_path)
+@pytest.fixture(scope="session")
+def replacement_history(tmp_path_factory):
+    """Build the common four-commit history once; expose immutable bytes, never its root."""
+    repo = _init_repo(tmp_path_factory.mktemp("git-lock-history"))
     root = _commit(repo, "root", {"BIBLE.md": "constitution\n", "ouroboros/store.py": "# store\n",
                                   "ouroboros/usage_store.py": "# usage\n", "seed.txt": "seed\n"})
     base = _commit(repo, "owner work", {"local.txt": "owner commit\n"})
@@ -388,6 +382,33 @@ def replace_scene(tmp_path, monkeypatch):
     _git(repo, "checkout", "-q", "ouroboros")
     (repo / ".git" / git_ops.MANAGED_REPO_META_NAME).write_text(
         json.dumps({"managed_local_branch": "ouroboros"}), encoding="utf-8")
+    paths = sorted(repo.rglob("*"))
+    directories = tuple(path.relative_to(repo) for path in paths if path.is_dir())
+    files = tuple((path.relative_to(repo), path.read_bytes(), path.stat().st_mode & 0o777)
+                  for path in paths if path.is_file())
+    return base, target, storeless, directories, files
+
+
+@pytest.fixture
+def replace_scene(tmp_path, monkeypatch, replacement_history):
+    """The real update doors (``post``; ``apply`` is replace): preflight prepare (rescue, keep ref,
+    intent), tx, checkout and the fenced rollback. Only the fetching plan, the worker fence/revival
+    and the restart callback are recorded. The local branch carries one owner commit the target
+    lacks, so a keep ref is made."""
+    from ouroboros.gateway import control
+    from supervisor import update_merge
+
+    base, target, storeless, directories, files = replacement_history
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # Every worktree file AND .git file gets its own inode: no hardlinks,
+    # shared object alternates, mutable config/index, refs or lock files.
+    for name in directories:
+        (repo / name).mkdir(parents=True, exist_ok=True)
+    for name, body, mode in files:
+        path = repo / name
+        path.write_bytes(body)
+        path.chmod(mode)
     data = tmp_path / "data"
     (data / "logs").mkdir(parents=True)
     for name, value in {"REPO_DIR": repo, "DRIVE_ROOT": data, "BRANCH_DEV": "ouroboros"}.items():

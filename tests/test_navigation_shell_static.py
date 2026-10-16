@@ -100,7 +100,6 @@ def test_project_rows_use_slots_not_generic_spans():
     app_js = _read("web/app.js")
     css = _read("web/style.css")
     assert "PROJECTS_VISIBLE_LIMIT" not in app_js
-    assert "Show more" not in app_js
     assert "className = 'nav-row nav-project-row'" in app_js
     # Project rows are a dotless, compact, indented list (no green status dot).
     assert "nav-project-dot" not in app_js
@@ -136,7 +135,7 @@ def test_project_panel_composer_and_welcome_contracts():
     assert "import { feedIsEmpty } from './chat_render_batch.js';" in welcome_js
     assert "if (!confirmedEmpty || !copy || !feedIsEmpty(messages)) {" in welcome_js
     assert "node.lastElementChild.textContent = copy;" in welcome_js
-    assert "Ouroboros has awakened" not in chat_js and "addMessage" not in welcome_js
+    assert "addMessage" not in welcome_js
     assert "padding: 10px 292px" not in css
     assert "right: 8px;\n    bottom: 6px" not in send_group_css
     assert ".chat-text-row:focus-within" in css

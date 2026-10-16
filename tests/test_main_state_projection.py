@@ -402,31 +402,41 @@ def _attention_rows(payload, task_id):
 
 
 def _main_consumer(payloads, task_id):
-    """Main's real consumer reads these exact /api/state payloads in order, as ``chat.js`` hands them over."""
+    """Main's real consumer reads these exact /api/state payloads in order, as ``chat.js`` hands them over:
+    a task that needs the owner is one System message in Main's feed with the task's own controls."""
     script = """
         import fs from 'node:fs';
         import { installDom, restoreDom } from './web/tests/chat_dom_fixture.js';
-        import { createMainAttention } from './web/modules/main_attention.js';
+        import { createMainWaiting } from './web/modules/main_waiting.js';
+        import { stampNodeTimestamp } from './web/modules/chat_activity.js';
         const { payloads, taskId } = JSON.parse(fs.readFileSync(0, 'utf8'));
         const posted = [];
         const env = installDom(async (url, init) => {
             posted.push([url, init?.method || 'GET']);
             return { ok: true, json: async () => ({ ok: true }) };
         });
+        globalThis.CSS = { escape: value => value };
         const find = (node, predicate) => predicate(node) ? node
             : node.children.reduce((found, child) => found || find(child, predicate), null);
-        const attention = createMainAttention({ mount: env.mount });
+        const page = document.createElement('div');
+        const messagesDiv = document.createElement('div');
+        const toolbar = document.createElement('div');
+        page.append(messagesDiv, toolbar);
+        env.mount.append(page);
         document.body = env.mount;
-        for (const payload of payloads) attention.snapshot(payload);
-        const card = find(env.mount, node => node.dataset.taskId === taskId);
+        const waiting = createMainWaiting({ page, messagesDiv, toolbar, stampNodeTimestamp,
+            insertMessageNode: node => messagesDiv.append(node) });
+        for (const payload of payloads) waiting.snapshot(payload);
+        const card = find(messagesDiv, node => node.dataset.ownerAction === taskId);
+        const sender = card && find(card, node => node.classList.contains('sender'));
         const resume = card && find(card, node => node.dataset.resumeRun === '1');
-        const reason = card && find(card, node => node.classList.contains('main-attention-reason'));
+        const reason = card && find(card, node => node.classList.contains('owner-action-reason'));
         const stop = card && find(card, node => node.textContent === 'Stop\\u2026');
         const enabled = Boolean(resume && !resume.disabled);
         if (enabled) await resume.listeners.get('click')[0]({ stopPropagation() {} });
-        console.log(JSON.stringify({ card: Boolean(card), resume: Boolean(resume), enabled, stop: Boolean(stop),
-            reason: reason ? reason.textContent : '', posted }));
-        attention.destroy(); restoreDom(env.prior);
+        console.log(JSON.stringify({ card: Boolean(card), sender: sender ? sender.textContent : '',
+            resume: Boolean(resume), enabled, stop: Boolean(stop), reason: reason ? reason.textContent : '', posted }));
+        waiting.destroy(); restoreDom(env.prior);
     """
     result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=Path(__file__).parents[1],
                             input=json.dumps({"payloads": payloads, "taskId": task_id}),
@@ -469,11 +479,12 @@ def test_an_interrupted_owner_resume_of_a_project_member_offers_its_existing_res
     # The answered fence no longer explains it: the row's own facts do, never "owner".
     assert (row["pause_cause"], row["attention_reason"]) == (("unknown", "resume") if returning
                                                              else ("restart", "restart"))
-    # Main's real consumer of this exact payload shows that Resume and posts it to the same route.
+    # Main's real consumer of this exact payload shows that Resume in its feed message and posts it
+    # to the same route.
     assert _main_consumer([payload], CHILD) == {
-        "card": True, "resume": True, "enabled": True, "stop": False,
+        "card": True, "sender": "System", "resume": True, "enabled": True, "stop": False,
         "posted": [[f"/api/tasks/{CHILD}/resume", "POST"]],
-        "reason": "This task needs an explicit Resume." if returning else "This task needs Resume after the restart."}
+        "reason": "Needs an explicit Resume." if returning else "Needs Resume after the restart."}
     before = read_fence(host.root, ROOT)
     response = client.post(f"/api/tasks/{CHILD}/resume")
     assert response.status_code == 200 and response.json()["ok"], response.text
@@ -556,8 +567,8 @@ def test_an_unreadable_root_keeps_the_member_unknown_and_its_main_action_unavail
     assert not _attention_rows(unknown, CHILD), "no Resume from unreadable authority"
     # Main's real consumer keeps the shown action visible but unavailable: not runnable, not silently gone.
     assert _main_consumer([shown, unknown], CHILD) == {
-        "card": True, "resume": True, "enabled": False, "stop": False, "posted": [],
-        "reason": "This task needs Resume after the restart."}
+        "card": True, "sender": "System", "resume": True, "enabled": False, "stop": False, "posted": [],
+        "reason": "Needs Resume after the restart."}
     sent = worker(host, monkeypatch)
     assert client.post(f"/api/tasks/{CHILD}/resume").status_code != 200, "the API refuses unreadable authority"
     workers.assign_tasks()
@@ -601,6 +612,7 @@ def test_a_budget_parked_direct_project_turn_is_a_queue_row_whose_resume_main_of
     assert (row["attention_reason"], row["project_id"], row["can_resume"]) == ("budget", project["id"], True)
     shown = _main_consumer([payload], "direct-park")
     assert shown["card"] and shown["enabled"] and shown["posted"] == [["/api/tasks/direct-park/resume", "POST"]]
+    assert shown["reason"] == "Paused at the spending limit. Change the limit if needed, then Resume."
 
 
 def test_a_direct_project_roots_own_warm_pause_stays_quiet_in_main(tmp_path, monkeypatch):

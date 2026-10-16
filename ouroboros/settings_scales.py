@@ -248,9 +248,8 @@ RESTART_REQUIRED_SETTINGS = frozenset({
     "OUROBOROS_HOST_SERVICE_PORT",
     # The main interface is selected once per server generation (server_web.ServedUI.apply).
     "OUROBOROS_UI_DIR",
-    # Pooled workers load the extension registry once at spawn and never
-    # reload it per task; the save-time server reload keeps the skills UI
-    # fresh, but agent tasks see the new repo only after a restart.
+    # Workers adopt the server's extension generation before task-start settings
+    # refresh; a changed repository path still requires a restart of the pool.
     "OUROBOROS_SKILLS_REPO_PATH",
     "LOCAL_MODEL_SOURCE",
     "LOCAL_MODEL_FILENAME",

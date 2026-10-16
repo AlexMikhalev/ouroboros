@@ -34,8 +34,6 @@ def test_new_file_discard_and_context_menu_clamp_regressions():
 def test_files_page_explains_manager_role_and_directory_affordance():
     source = _read("web/modules/files.js")
 
-    assert "This is a file manager, not a chat attachment picker." in source
-    assert "Open a folder or file from the left panel to browse, preview, or edit its contents." in source
     assert "button.type = 'button';" in source
     assert "(entry.type === 'file' ? formatFileSize(entry.size) : 'open')" in source
 

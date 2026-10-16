@@ -25,6 +25,7 @@ pytestmark = pytest.mark.serial
 def proof_env(monkeypatch):
     monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
     monkeypatch.setenv("OUROBOROS_PREFLIGHT_TEST_WORKERS", "2")
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "3")  # nested slots: the workers case compares two real workers with three
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_SERIAL", raising=False)
 
@@ -373,6 +374,18 @@ def test_scrubbed_owner_settings_do_not_change_test_workload(candidate, monkeypa
     monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "low")
     monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "http://unused.invalid")
     monkeypatch.setenv("PYTEST_ADDOPTS", "-k nothing")
+    assert before.covers(capture_preflight_test_subject(candidate.repo_dir))
+
+
+def test_free_memory_does_not_change_test_workload(candidate, monkeypatch):
+    """Memory admits workers at run time; the workload names the requested count."""
+    from ouroboros import test_parallelism as budget
+
+    gib = 1024 ** 3
+    monkeypatch.setattr(budget, "physical_memory", lambda: budget.MemorySnapshot(64 * gib, 48 * gib))
+    before = capture_preflight_test_subject(candidate.repo_dir)
+    monkeypatch.setattr(budget, "physical_memory", lambda: budget.MemorySnapshot(64 * gib, 7 * gib))
+    assert budget.worker_budget(os.cpu_count()) == 1  # the tight sample really admits fewer workers
     assert before.covers(capture_preflight_test_subject(candidate.repo_dir))
 
 

@@ -100,7 +100,7 @@ export function countPropertyWrites(target, key) {
 
 export function fixture({ fetchImpl, renderMarkdown, enhanceMarkdown, onDomWrite, fetchDetail, isMain = false,
     frameNode = (_msg, node) => node, insertMessageNode = null, removeMessageNode = null, focusAfterRemoval = null,
-    currentQuestionHost = null, onQuestionsChanged, rawDetail = false } = {}) {
+    onQuestionsChanged, rawDetail = false } = {}) {
     const prior = { document: globalThis.document, crypto: globalThis.crypto, window: globalThis.window };
     globalThis.document = { createElement: (tag) => new NodeStub(tag) };
     const opened = [];
@@ -138,7 +138,6 @@ export function fixture({ fetchImpl, renderMarkdown, enhanceMarkdown, onDomWrite
         insertMessageNode,
         removeMessageNode,
         focusAfterRemoval,
-        currentQuestionHost,
         onQuestionsChanged,
     });
     return { decision, toasts, calls, opened, restore: () => {

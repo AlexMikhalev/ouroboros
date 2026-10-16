@@ -6,14 +6,14 @@ import { showToast } from './toast.js';
 import { tx } from './i18n.js';
 import { hostRowDisplayText } from './host_notice_text.js';
 import { ORIGIN_ADDRESSED_NOTICE_TYPES, childRowPlacement, replayConcludesTask } from './chat_row_placement.js';
-import { appendProjectRow, decorateProjectRow, PROJECT_ROW_TYPES, syncSavedProjectContext } from './project_answer.js';
+import { appendProjectRow, decorateProjectRow, PROJECT_ROW_TYPES, refreshProjectAnswerFold, syncSavedProjectContext } from './project_answer.js';
 import { createWorkPortals, isPortal, reconcilePortalNotes } from './work_portal.js';
 import { createTaskEpisodes } from './task_episodes.js';
 import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
 import { attachmentCaption, attachmentViews, composerText, createComposerAttachments, createUnconfirmedSends } from './chat_attachments.js';
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
-import { createMainAttention } from './main_attention.js';
+import { createMainWaiting } from './main_waiting.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
 import { clientSurfaceField } from './client_surface.js';
 import { syncSettledItems } from './settled_card.js';
@@ -333,10 +333,9 @@ export function createChatInstance({
         stampNodeTimestamp,
         onDomWrite: withStableViewport,
     });
-    const mainAttention = isMain ? createMainAttention({ mount: inputArea, openSettings: openSettingsTab,
-        refresh: () => refreshHeaderControlState(true), mutate: withStableViewport,
-        syncQuestions: (...args) => chatDecision.syncCurrentQuestions(...args),
-        connectQuestions: value => chatDecision.setConnected(value) }) : null;
+    const mainWaiting = isMain ? createMainWaiting({ page, messagesDiv, insertMessageNode, stampNodeTimestamp,
+        openSettings: openSettingsTab, refresh: () => refreshHeaderControlState(true), mutate: withStableViewport,
+        decision: () => chatDecision, revealQuestion: (...a) => revealQuestion(...a), reading: () => reading }) : null;
     const chatDecision = createChatDecision({
         apiFetch,
         frameNode: chatMedia.bubbleFrameNode,
@@ -349,8 +348,7 @@ export function createChatInstance({
         onDomWrite: withStableViewport,
         isMain, chatId,
         insertMessageNode,
-        currentQuestionHost: mainAttention?.questions,
-        onQuestionsChanged: mainAttention?.update,
+        onQuestionsChanged: mainWaiting?.refresh,
         // A settled Main question mirror leaves through the ordinary retirement path.
         removeMessageNode: (node) => withStableViewport(() => { releaseMessageNode(node); return true; },
             { excludeAnchorNode: node }),
@@ -628,7 +626,7 @@ export function createChatInstance({
         if (data) void refreshChildProjectHolds();
         syncHeaderControlState(data ?? { accounting: { available: false } });
         portals.sync(data);
-        mainAttention?.snapshot(data, snapshotRequestedAt);
+        mainWaiting?.snapshot(data, snapshotRequestedAt);
         hostReady = supervisorReady(data) ?? hostReady;
         const activities = Array.isArray(data?.active_chat_activities)
             ? data.active_chat_activities
@@ -698,9 +696,16 @@ export function createChatInstance({
     }
 
     function enhanceMountedMarkdown(root) {
+        // Late diagrams/fallbacks can add keyboard stops after the fold was measured.
+        // Refresh only their own bubble, inside the existing viewport transaction.
+        const foldedWrite = writer => (mutate, options) => writer(() => {
+            const changed = mutate();
+            refreshProjectAnswerFold(root.closest?.('.project-answer'));
+            return changed;
+        }, options);
         return enhanceChatMarkdown(root, {
-            onDomWrite: _remoteActivityDepth > 0 ? withRemoteActivity : withStableViewport,
-            onThemeDomWrite: withStableViewport,
+            onDomWrite: foldedWrite(_remoteActivityDepth > 0 ? withRemoteActivity : withStableViewport),
+            onThemeDomWrite: foldedWrite(withStableViewport),
         });
     }
     const {
@@ -766,7 +771,7 @@ export function createChatInstance({
     // completion notes and receipts are not content, and visibility is not sticky.
     function blockVisible(record) {
         if (!record || record.isSubagent) return true;
-        // A moved work is a work card by definition: its portal never leaves Main (one work, one card).
+        // A moved work's portal never leaves Main (one work, one card).
         return isPortal(record) || blockHasWork(record)
             || !!(record.modelWaiting || record.cancelPendingPolicy || record.reviewAnchor)
             || stopEligible(record)
@@ -900,7 +905,7 @@ export function createChatInstance({
         if (!actions) return false;
         const btn = document.createElement('button');
         btn.type = 'button';
-        // A neutral trigger (the destructive item inside is red): Resume or Continue stays the card's one primary.
+        // Neutral trigger: Resume or Continue stays the card's one primary.
         btn.className = 'btn btn-sm btn-default';
         btn.dataset.cancelRun = '1';
         btn.textContent = TASK_CONTROL_TRIGGER_LABEL;
@@ -2255,15 +2260,12 @@ export function createChatInstance({
         if (attachments.length) chatMedia.mountAttachments(bubble, attachments, shown);
         if (!isProgress && shown) chatMedia.attachCopyControl(bubble, String(shown));
         if (!isProgress) replies.decorate(bubble, opts.reply);
-        // A Main start/transfer row that reached a bubble is an incomplete legacy row (no task or no
-        // Project to bind; a complete one binds the work's card, portals.row): plain text with Copy, as before.
-        // An answer the host tied to another room's work ends with that Project reference, unfolded (the fold is
-        // the completion mirror's).
+        // Legacy start/transfer rows without task or Project stay plain text with Copy; an answer tied to
+        // another room's work ends with that Project reference, unfolded.
         const projectRow = PROJECT_ROW_TYPES.has(systemType);
         if (projectRow ? !(isMain && ['project_handoff', 'project_started'].includes(systemType))
             : role === 'assistant' && projectId !== ownProjectId) decorateProjectRow(bubble, { ...meta, ...opts, role,
-            fold: projectRow && role === 'assistant', addedAt: ts, fetchDetail: fetchTaskDetailStrict,
-            renderFile: chatMedia.buildDocumentBubble, onDomWrite: withStableViewport });
+            fold: projectRow && role === 'assistant', addedAt: ts });
         syncSavedProjectContext(bubble, opts.originProjected, opts.originId);
         wireSkillReviewDisclosure(bubble, { onDomWrite: withStableViewport });
         stampNodeTimestamp(bubble, ts);
@@ -3694,7 +3696,7 @@ export function createChatInstance({
     let wsHasConnectedOnce = false;
 
     onWs('open', (msg) => {
-        mainAttention?.setConnected(true);
+        mainWaiting?.setConnected(true);
         refreshHeaderControlState(true);
         syncChatStatus();
         // The socket's previouslyConnected covers newly mounted Projects too;
@@ -3732,7 +3734,7 @@ export function createChatInstance({
 
     onWs('close', () => {
         unconfirmed.unsettle();
-        mainAttention?.setConnected(false);
+        mainWaiting?.setConnected(false);
         withStableViewport(() => {
             for (const [id, activity] of activeDirectActivities) {
                 activeDirectActivities.set(id, { ...activity, _activityUnconfirmed: true });
@@ -3807,7 +3809,7 @@ export function createChatInstance({
             roomWork?.destroy();
             chatDecision.destroy();
             modelWaits.destroy();
-            mainAttention?.destroy();
+            mainWaiting?.destroy();
             window.removeEventListener('ouro:page-shown', handlePageShown);
             document.removeEventListener('visibilitychange', handlePageShown);
             if (documentClickHandler) document.removeEventListener('click', documentClickHandler);

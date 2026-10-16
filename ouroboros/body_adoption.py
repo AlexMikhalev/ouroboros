@@ -127,11 +127,11 @@ def authorize(ctx: Any, commit: str, *, reason: str) -> Dict[str, Any]:
 
     mode = effective_runtime_mode(get_runtime_mode(), getattr(ctx, "task_metadata", None))
     return authorize_row(canonical_data_root(ctx), row, commit, reason=reason, runtime_mode=mode,
-                         task_id=str(getattr(ctx, "task_id", "") or ""))
+                         task_id=str(getattr(ctx, "task_id", "") or ""), ctx=ctx)
 
 
 def authorize_row(data_dir: pathlib.Path, row: Dict[str, Any], commit: str, *, reason: str,
-                  runtime_mode: str = "advanced", task_id: str = "") -> Dict[str, Any]:
+                  runtime_mode: str = "advanced", task_id: str = "", ctx: Any = None) -> Dict[str, Any]:
     """The checks and the durable handoff; shared by the tool and the evolution supervisor path."""
     from ouroboros import body_candidate
 
@@ -192,6 +192,13 @@ def authorize_row(data_dir: pathlib.Path, row: Dict[str, Any], commit: str, *, r
     if current.get("phase") in _PENDING and current.get("phase") != "authorized":
         raise AdoptionRefused(
             "ADOPTION_PENDING", f"adoption {current.get('id')} is {current.get('phase')}; it must settle first.")
+    from ouroboros.preflight_qualification import adoption_test_evidence
+
+    # Existing full green evidence of exactly this commit; adoption never runs the battery itself.
+    try:
+        qualification = adoption_test_evidence(data_dir, candidate, cand, ctx=ctx)
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        raise AdoptionRefused("ADOPTION_TESTS_REQUIRED", str(exc)) from exc
     directory = helper_dir(data_dir)
     if directory.exists():
         _archive(data_dir, current, f"replaced:{current.get('phase')}" if current else "stale_helper")
@@ -203,6 +210,7 @@ def authorize_row(data_dir: pathlib.Path, row: Dict[str, Any], commit: str, *, r
         "candidate_path": str(candidate), "task_id": task_id, "reason": str(reason or ""),
         "switch": rows, "deps_command": _dependency_command(serving, rows), "authorized_at": utc_now_iso(),
         "unreviewed_commits": unreviewed, "attempts": 0, "events": [],
+        "tests": qualification,
     }
     # The helper is captured from the body that is running, never from the candidate.
     shutil.copyfile(pathlib.Path(body_switch.__file__), directory / "switch.py")
