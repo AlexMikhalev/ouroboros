@@ -16,8 +16,9 @@ is production code.
 Boundaries (tags in the output):
 
 - ``B1``: the lifespan up to ``lifespan.startup.complete`` (the work ``/api/health`` waits for);
-  ``B1h``: the first ``/api/health`` request; ``popen_before_health``: child processes started
-  by ANY thread before that answer;
+  ``B1h``: the first ``/api/health`` request; ``popen_before_health``: child processes on that
+  path (the lifespan and the request); ``B1c``: the boot coordinator thread that runs the remaining
+  boot steps after the HTTP yield, when the tree has one (joined once readiness is known);
 - ``B2``: the threads that publish the store and initialize the supervisor (``thread_rules``),
   snapshotted when the chat bus is initialized (``B2_dialogue``) and when the supervisor reports
   ready (``B2_ready``); the supervisor is held there, before its first tick, while the requests
@@ -184,8 +185,9 @@ def _chat_frame(meter: CostMeter, client: Any, result: Dict[str, Any], tag: str,
 def run(spec: Dict[str, Any]) -> Dict[str, Any]:
     root = pathlib.Path(spec["root"])
     result: Dict[str, Any] = {"facts": spec.get("facts", {}), "errors": [], "_started": time.monotonic()}
-    meter = CostMeter(root, thread_rules=[("current-store-import", "B2"), ("supervisor-main", "B2")],
-                      lineage={"B1": "B1:spawned", "B2": "B2:spawned"})
+    meter = CostMeter(root, thread_rules=[("current-store-import", "B2"), ("supervisor-main", "B2"),
+                                          ("boot-coordinator", "B1c")],
+                      lineage={"B1": "B1:spawned", "B2": "B2:spawned", "B1c": "B1c:spawned"})
     meter.__enter__()
     try:
         import server as srv
@@ -199,10 +201,17 @@ def run(spec: Dict[str, Any]) -> Dict[str, Any]:
             response = client.get("/api/health", headers={"x-cost-boundary": "B1h"})
             _mark(result, "health")
             result["B1h"] = _summary(meter, "B1h")
-            result["popen_before_health"] = sum(counts.get("popen", 0) for counts in _all_counts(meter).values())
+            # On the path the first answer waits for: the lifespan up to its yield and the request itself.
+            result["popen_before_health"] = (result["B1"]["counts"].get("popen", 0)
+                                             + result["B1h"]["counts"].get("popen", 0))
             result.setdefault("responses", {})["B1h"] = {"status": response.status_code}
             if not events["ready"].wait(READY_TIMEOUT_SEC):
                 result["errors"].append("the supervisor never reported ready")
+            if meter.spawned.get("B1c"):  # the boot coordinator (work after the yield) ends once readiness is known
+                if meter.join_spawned("B1c", timeout=READY_TIMEOUT_SEC):
+                    result["errors"].append("the boot coordinator did not finish")
+                _mark(result, "coordinator")
+                result["B1c"] = _summary(meter, "B1c")
             try:
                 facts = spec.get("facts", {})
                 _chat_frame(meter, client, result, "B4", "cost-contract-1")

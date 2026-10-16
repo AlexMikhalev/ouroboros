@@ -36,7 +36,7 @@ from typing import Any, Callable, Dict, Iterable, List
 
 import pytest
 
-from tests._cost_meter import HISTORY, CostMeter, tagged
+from tests._cost_meter import HISTORY, VM_STEP, CostMeter, tagged
 
 pytestmark = pytest.mark.scale
 
@@ -51,16 +51,22 @@ WORK = ("connect", "statements", "begins", "commits", "writes", "json_loads", "j
           for where in (*LOCATIONS, "outside")))
 
 
-# Bytes read and characters decoded may differ by the digits of a timestamp or a duration written
-# during the boot itself (9.98 s vs 10.02 s); 4 KiB stays below the smallest unit of history here
-# (one 20 KB settled body, one ~25 KB archive segment), so one extra history item still breaks it.
+# Two explicit allowances, both absolute and both far below what one unit of history adds at
+# k=30 (every history item exists k times, so a reader that touches one per unit adds at least 29):
+# - COUNT_JITTER: the boot runs threads concurrently (store import, supervisor, boot coordinator),
+#   so one read of a CURRENT fact can happen twice when one thread misses a cache another is filling;
+# - BYTE_JITTER: bytes read and characters decoded differ by the digits of a timestamp or a duration
+#   written during the boot itself (9.98 s vs 10.02 s); 4 KiB stays below the smallest history unit
+#   here (one 20 KB settled body, one ~25 KB archive segment).
+COUNT_JITTER = 2
 BYTE_JITTER = 4096
 BYTE_KEYS = ("json_chars", *(f"read_bytes:{where}" for where in (*LOCATIONS, "outside")))
 
 
 def vm_allowance(large: int, small: int = K_SMALL) -> int:
-    """The SQLite VM steps a deeper index may add: logarithmic in the history, never a share of it."""
-    return 128 * math.ceil(math.log2(large / small))
+    """SQLite VM steps a deeper index may add (logarithmic in the history, never a share of it), plus the
+    progress-handler granularity of the statements ``COUNT_JITTER`` lets differ."""
+    return 128 * math.ceil(math.log2(large / small)) + COUNT_JITTER * VM_STEP
 
 
 # ---- measurement -------------------------------------------------------------------------------
@@ -118,7 +124,8 @@ def contract_breaches(small: Dict[str, int], large: Dict[str, int], k_large: int
                       keys: Iterable[str] = WORK) -> Dict[str, Any]:
     """Every counter that differs between the roots, and VM steps beyond ``vm_allowance``."""
     breaches: Dict[str, Any] = {key: (small.get(key, 0), large.get(key, 0)) for key in keys
-                                if abs(small.get(key, 0) - large.get(key, 0)) > (BYTE_JITTER if key in BYTE_KEYS else 0)}
+                                if abs(small.get(key, 0) - large.get(key, 0)) > (
+                                    BYTE_JITTER if key in BYTE_KEYS else COUNT_JITTER)}
     allowed = vm_allowance(k_large)
     if large.get("vm_steps", 0) > small.get("vm_steps", 0) + allowed:
         breaches["vm_steps"] = (small.get("vm_steps", 0), large.get("vm_steps", 0), f"allowance {allowed}")
@@ -133,6 +140,9 @@ def boundary(measured: Dict[Any, Any], tag: str, k: int) -> Dict[str, Any]:
 
 def assert_flat(measured: Dict[Any, Any], tag: str) -> None:
     large = measured["large"]
+    answers = [{key: value for key, value in (measured[k].get("responses", {}).get(tag) or {}).items()
+                if key in ("status", "echo")} for k in (K_SMALL, large)]
+    assert answers[0] == answers[1], f"{tag} answered differently at the two sizes: {answers}"  # a failure is not flat
     big = boundary(measured, tag, large)
     breaches = contract_breaches(boundary(measured, tag, K_SMALL)["counts"], big["counts"], large)
     touched = sorted(big.get("paths", {}).items(), key=lambda item: -item[1])[:8]
@@ -150,6 +160,14 @@ def assert_flat(measured: Dict[Any, Any], tag: str) -> None:
 def test_b1_lifespan_before_health_is_flat(measured):
     assert_flat(measured, "B1")
     assert_flat(measured, "B1h")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "WU2a: today the whole boot runs before the HTTP yield; no boot coordinator thread exists yet, so "
+    "this boundary is not reached. With WU2a the steps that move after the yield must stay flat too "
+    "(WU3a removes the archive backfill from the projects step)."))
+def test_b1_boot_steps_after_the_yield_are_flat(measured):
+    assert_flat(measured, "B1c")
 
 
 @pytest.mark.xfail(strict=True, reason=(
@@ -231,9 +249,9 @@ def second_run(run: Callable[[pathlib.Path], Any], root: pathlib.Path) -> Dict[s
 
 def rest_breaches(counts: Dict[str, int]) -> Dict[str, int]:
     """A second run writes nothing (a read transaction of the store also ends with COMMIT, so the
-    written statements are what counts) and opens, lists or reads nothing of the history."""
-    keys = ("writes", *(f"{kind}:{where}" for kind in ("open", "os_open", "scandir", "listdir", "read_bytes")
-                        for where in HISTORY))
+    written statements are what counts) and opens or reads nothing of the history. Looking whether a
+    history directory is empty is allowed; that it does not grow is the k-equality's to check."""
+    keys = ("writes", *(f"{kind}:{where}" for kind in ("open", "os_open", "read_bytes") for where in HISTORY))
     return {key: counts[key] for key in keys if counts.get(key)}
 
 
