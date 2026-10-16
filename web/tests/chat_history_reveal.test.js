@@ -152,4 +152,8 @@ test('a landing is the task’s card, else its own row, and nothing when the pag
     assert.equal(await reveal.revisit('replay:here', () => true), true);
     result = { status: 'error' };
     assert.equal(await reveal.revisit('replay:here', () => true), false);
+    result = { status: 'error', error: { status: 503 } };
+    assert.equal(await reveal.revisit('replay:here', () => true), false, 'a read that failed for now: try again');
+    result = { status: 'error', error: { status: 409 } };
+    assert.equal(await reveal.revisit('replay:here', () => true), 'gone', 'the room changed: that page is no longer there');
 });

@@ -2991,7 +2991,8 @@ export function createChatInstance({
         if (historySyncPromise) await historySyncPromise;
         await historyPager.whenIdle();
         if (destroyed || !current()) return;
-        if (historyPager.getState().canNewer || historyWindow?.horizonGap) {
+        const { canNewer, jumped } = historyPager.getState();  // a navigation's chain is not the present
+        if (canNewer || jumped || historyWindow?.horizonGap) {
             if ((await historyPager.latest()).status !== 'applied') return;
         }
         if (destroyed || !current()) return;

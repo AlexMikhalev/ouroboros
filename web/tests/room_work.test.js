@@ -345,6 +345,25 @@ test('an unloaded row reads the page around its task and lands on its card; one 
         answer();
         await settle();
         assert.equal(wantedThen, false, 'the dismissed list no longer wants that page');
+        // Pressed again after the list reopened, then dismissed again: the first look's late answer never undoes
+        // the second look's cancellation.
+        const answers = [], wanted = [];
+        historyPager.around = (address, isWanted) => new Promise((resolve) => {
+            answers.push(() => { wanted.push(isWanted()); resolve({ status: 'superseded' }); });
+        });
+        trigger.click();
+        main('t-wake').click();
+        await settle();
+        trigger.click();  // dismissed
+        trigger.click();
+        main('t-wake').click();  // the same row again
+        await settle();
+        answers[0]();
+        await settle();
+        trigger.click();  // dismissed again
+        answers[1]();
+        await settle();
+        assert.deepEqual(wanted, [false, false], 'neither look applies once its list closed'); 
     } finally { work?.destroy(); restoreDom(prior); }
 });
 
@@ -361,11 +380,12 @@ test('Back reads the page it left again, stays after a failed read and takes a f
         const badge = node('span', 'status-badge thinking', node('div', 'app-page-actions ui-chrome-group', header));
         const messages = node('div', 'chat-messages', page);
         const records = new Map(), revisits = [], presents = [];
-        let mounted = false, fails = 1;
+        let mounted = false, fails = 1, gone = false;
         const historyPager = {
             pageOf: () => 'replay:left',
             revisit: async (cursor, wanted) => {
                 revisits.push([cursor, wanted()]);
+                if (gone) return { status: 'error', error: { status: 409 } };
                 if (fails-- > 0) return { status: 'error' };
                 mounted = true;  // the page the reader left is drawn again
                 return { status: 'applied' };
@@ -402,6 +422,17 @@ test('Back reads the page it left again, stays after a failed read and takes a f
         assert.equal(back.hidden, true);
         assert.equal(live.textContent, 'Returned to where you were reading.');
         assert.deepEqual(presents, []);
+        // A page that cannot be read again (the room's view changed) ends Back instead of asking for a retry.
+        mounted = false;
+        gone = true;
+        trigger.click();
+        main().click();
+        await settle();
+        back.click();
+        await settle();
+        assert.equal(revisits.length, 3);
+        assert.equal(live.textContent, 'The earlier reading place is no longer loaded.');
+        gone = false;
         // A reader following the present goes back to it and reads no left page.
         Object.assign(reading, { stick: true, nearBottom: () => true });
         trigger.click();
@@ -410,6 +441,6 @@ test('Back reads the page it left again, stays after a failed read and takes a f
         back.click();
         await settle();
         assert.deepEqual(presents, ['newest']);
-        assert.equal(revisits.length, 2);
+        assert.equal(revisits.length, 3);
     } finally { work?.destroy(); restoreDom(prior); }
 });

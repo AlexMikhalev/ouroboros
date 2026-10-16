@@ -1011,7 +1011,7 @@ being read, and anything a long absence left unloaded below is read by the
 return to the present. Narration (task progress) keeps loading
 alongside the conversation, but only the conversation keeps the control: once the
 room's beginning is reached it leaves, even if older narration of the oldest
-cards remains unread.
+cards remains unread. A page around work that only narrated pages that narration.
 The floating `Scroll to latest message` is the one return to the present; when
 the present is already loaded it moves there and follows without a read.
 

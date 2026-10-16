@@ -794,14 +794,14 @@ export function createRoomWork({
     async function reveal(row) {
         const intent = ++navigationIntent;
         const place = departure();
-        lookups.set(row.id, { state: 'loading' });
+        lookups.set(row.id, { state: 'loading', intent });
         expanded.add(row.key);
         live.textContent = tr('room_work.lookup.loading', 'Loading its message…');
         schedule();
         const found = await history.task(row.id, () => intent === navigationIntent);
         if (!found) {
             if (intent === navigationIntent) live.textContent = '';
-            if (lookups.get(row.id)?.state === 'loading') { lookups.delete(row.id); expanded.delete(row.key); schedule(); }
+            if (lookups.get(row.id)?.intent === intent) { lookups.delete(row.id); expanded.delete(row.key); schedule(); }
             return;
         }
         lookups.delete(row.id);
@@ -855,11 +855,11 @@ export function createRoomWork({
         if (!returned && place?.cursor && history) {  // the page the reader left was let go: read it again
             const drawn = await history.revisit(place.cursor, () => intent === navigationIntent);
             if (drawn === null) return;
-            if (!drawn) {  // the read failed: Back stays for another try
+            if (drawn === false) {  // the read failed for now: Back stays for another try
                 live.textContent = 'The earlier reading place could not be read. Try again.';
                 return;
             }
-            returned = restore();
+            if (drawn === true) returned = restore();
         }
         reading.stick = false;
         reading.scroll();

@@ -149,10 +149,19 @@ def test_a_task_waiting_on_its_model_lands_on_its_waiting_card_never_another_roo
     """Its only row is the model wait its card shows: that row is in this room, so it is where the task is."""
     _history(tmp_path)
     _append(tmp_path, "progress", [{"ts": _ts(472), "chat_id": 1, "task_id": "t-waits", "type": "task_model_wait",
-                                    "content": "waiting for the model"}])
+                                    "wait_id": "w-1", "revision": 1, "content": "waiting for the model"}])
     status, page = _read(tmp_path, around="task:t-waits")
     assert status == 200 and page["anchor"]["state"] == "found"
     assert page["anchor"]["history_id"].startswith("progress:")
+    assert any(row.get("task_id") == "t-waits" for row in page["messages"]), "the waiting card is on the page"
+
+
+def test_a_task_whose_only_row_main_hides_is_absent_never_another_room(tmp_path):
+    """Main hides a task's terminal projection, yet its room rule keeps it: nothing to show, nothing moved."""
+    _history(tmp_path)
+    _append(tmp_path, "chat", [{"ts": _ts(473), "direction": "out", "chat_id": 1, "task_id": "t-silent",
+                                "type": "task_summary", "summary_kind": "terminal_result_projection", "text": "Done."}])
+    assert _read(tmp_path, around="task:t-silent")[1]["anchor"] == {"state": "absent", "task_id": "t-silent"}
 
 
 def _archive(root, name, rows, written):

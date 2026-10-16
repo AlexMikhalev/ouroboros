@@ -59,10 +59,12 @@ export function createHistoryReveal({ pager, reading, feed, records, present }) 
             if (result.status === 'applied') return { state: 'unknown', left: true };
             return { state: result.status === 'anchor' ? result.anchor.state : 'unknown' };
         },
-        // The page a reader left, read again by its cursor: true once it is drawn, null when dropped.
+        // The page a reader left, read again by its cursor: true once it is drawn, false when the read failed
+        // for now, 'gone' when it cannot be read again (the room's view changed), null when dropped.
         async revisit(cursor, isCurrent) {
             const result = await read(isCurrent, (wanted) => pager.revisit(cursor, wanted));
-            return result && result.status === 'applied';
+            if (!result || result.status === 'applied') return result && true;
+            return result.error?.status >= 400 && result.error.status < 500 ? 'gone' : false;
         },
     };
 }

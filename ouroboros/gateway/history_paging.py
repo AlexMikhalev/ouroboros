@@ -71,10 +71,13 @@ def progress_quota_predicate(row_matches_thread, stored_chat_id):
 
 
 def room_member_predicate(row_matches_thread, stored_chat_id):
-    """Whether a stored row belongs to the room, by the room rule history uses for every row."""
-    def member(entry, progress=False):
-        return bool(row_matches_thread(stored_chat_id(entry.get("chat_id"), 1),
-                                       {"is_progress": True, **entry} if progress else entry))
+    """Whether the room draws a stored row (``member``), and whether its room rule keeps the row at all
+    (``member.in_room``: a row the room hides, such as Main's terminal projection, is still its own)."""
+    def member(entry, progress=False, rule=row_matches_thread):
+        row = {"is_progress": True, **entry} if progress else entry
+        return bool(rule(stored_chat_id(entry.get("chat_id"), 1), row))
+    rule = getattr(row_matches_thread, "evidence_matches", row_matches_thread)
+    member.in_room = lambda entry, progress=False: member(entry, progress, rule)
     return member
 
 
@@ -308,9 +311,10 @@ class HistorySource(JsonlChainSnapshot):
             before = start
         return list(reversed(selected)), before, gaps
 
-    def task_pivot(self, task_id, member, since=None, lens=None):
-        """``(state, row)`` of ``task_id`` in this stream: ``found`` and its earliest row of the room,
-        ``moved`` when its rows here all belong to another room, ``none`` when the stream holds none.
+    def task_pivot(self, task_id, member, since=None, lens=None, in_room=None):
+        """``(state, row)`` of ``task_id`` in this stream: ``found`` and its earliest row the room draws,
+        ``moved`` when its rows here belong to another room (``in_room`` says which rows the room's rule
+        keeps), ``none`` when the stream holds none the room could show.
         Oldest first; a closed archive is read only
         when its summary may name the task, it was written to after the task began (``since``) and
         the room's lens admits it, so a press costs the archives of the task's own time."""
@@ -331,7 +335,7 @@ class HistorySource(JsonlChainSnapshot):
                     continue
                 if member(row):
                     return "found", row
-                seen = True
+                seen = seen or in_room is None or not in_room(row)
         return ("moved" if seen else "none"), None
 
     def ahead(self, start, want, counts, gaps, lens=None, ceiling=None):
@@ -506,8 +510,9 @@ def _select_around(data_dir, thread_id, view, task_id, quotas, predicates, lens,
         if reader.unfinished_live_line:
             page["unfinished"].append(source)
         progress = source == "progress"
-        state, pivots[source] = reader.task_pivot(task_id, lambda row, progress=progress: member(row, progress),
-                                                  since, lens)
+        state, pivots[source] = reader.task_pivot(
+            task_id, lambda row, progress=progress: member(row, progress), since, lens,
+            lambda row, progress=progress: member.in_room(row, progress))
         states.add(state)
     for source, quota in (("chat", "human"), ("progress", "progress")):
         reader, pivot, counts, want = readers[source], pivots[source], predicates[source], quotas[quota]
