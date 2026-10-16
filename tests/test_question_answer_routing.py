@@ -2,6 +2,8 @@
 import queue
 from types import SimpleNamespace
 
+import pytest
+
 from ouroboros.gateway import task_decision as td
 from ouroboros.owner_quiz import record_asked, record_publication, quiz_states
 from ouroboros.task_store import patch_document
@@ -140,3 +142,94 @@ def test_crash_after_mailbox_append_retries_same_message_identity(tmp_path, monk
     assert [r["msg_id"] for r in drain_owner_entries(tmp_path, "asker")] == [identity]
     drain(tmp_path, "asker")
     assert debt(tmp_path)["state"] == "delivered" and not _inbox(bridge)
+
+
+def sleeping_asker(tmp_path, monkeypatch, hold=""):
+    """An asker parked in its own cold sleep (the rail ``continue_in_background`` uses)."""
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from ouroboros.owner_pause import install_fence
+    from supervisor.events_budget import HOLD_OWNER_RESTART, hold_budget_row
+    from tests._budget_pause_exact_helpers import _install_queue
+    from tests.test_model_sleep import _cold_park
+    q, state, workers = _install_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(state, "budget_remaining", lambda _st, **_k: 5.0)
+    _cold_park(tmp_path, monkeypatch, workers, task_id="asker", wake_at="2099-01-01T00:00:00+00:00")
+    assert [row["_budget_pause"]["reason"] for row in q.PENDING] == ["sleep"]
+    if hold == "restart_hold":
+        hold_budget_row(q.PENDING[0], reason=HOLD_OWNER_RESTART, detail="owner Restart", result_root=tmp_path)
+    elif hold == "owner_pause":
+        install_fence(tmp_path, "asker", request_id="owner-pause")
+    record_asked(tmp_path, "asker", quiz_id="q", question="Which database?", options=["sqlite", "postgres"],
+                 assumption="sqlite", chat_id=1)
+    record_publication(tmp_path, "asker", "q", 1)
+    bridge, _frames = _late_bridge(tmp_path, monkeypatch)
+    monkeypatch.setattr(td, "request_drive_root", lambda request: tmp_path)
+    return Starlette(routes=[Route("/api/decisions", endpoint=td.api_decision_answer, methods=["POST"])]), bridge, q
+
+
+def mail(root, kind):
+    from ouroboros.owner_mailbox import drain_owner_entries
+    return [entry["msg_id"] for entry in drain_owner_entries(root, "asker") if entry["kind"] == kind]
+
+
+@pytest.mark.parametrize("hold", ["", "restart_hold", "owner_pause"])
+def test_cold_sleeping_asker_reads_its_own_answer_unless_held(tmp_path, monkeypatch, hold):
+    from ouroboros.budget_pause import budget_pause_row
+    from ouroboros.owner_pause import fence_closed, read_fence
+    from supervisor.events_budget import budget_hold_fact
+    from supervisor.sleep_wake import wake_ready_sleepers
+    app, bridge, q = sleeping_asker(tmp_path, monkeypatch, hold)
+    response = answer(app)
+    assert response.status_code == 200, response.text
+    woke = [outcome for outcome in wake_ready_sleepers(q) if outcome.get("ok")]
+    if not hold:
+        # Its own answer is its mail: one copy, no second head, and its readiness wakes it.
+        assert mail(tmp_path, "quiz_answer") == ["quiz_answer:asker:q"] and _inbox(bridge) == []
+        assert debt(tmp_path)["recipient_task_id"] == "asker"
+        assert woke and budget_pause_row(tmp_path, "asker")["sleep_ready"]["reason"] == "owner_text"
+        return
+    # A held or owner-paused sleeper is not the reader: a fresh head answers and the hold stays.
+    assert mail(tmp_path, "quiz_answer") == [] and len(_inbox(bridge)) == 1
+    assert debt(tmp_path)["route"] == "fresh_head" and not woke
+    if hold == "restart_hold":
+        assert budget_hold_fact(q.PENDING[0])["reason"] == "owner_restart_hold"
+    else:
+        assert fence_closed(read_fence(tmp_path, "asker"))
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_cold_sleeping_asker_learns_the_owner_closure_unless_held(tmp_path, monkeypatch, held):
+    from supervisor.sleep_wake import wake_ready_sleepers
+    app, _bridge, q = sleeping_asker(tmp_path, monkeypatch, "restart_hold" if held else "")
+    response = _post(app, {"decision_id": "quiz:asker:q", "request_id": "close", "action": "close"})
+    assert response.status_code == 200, response.text
+    assert mail(tmp_path, "quiz_closed") == ([] if held else ["quiz_closed:q"])
+    assert any(outcome.get("ok") for outcome in wake_ready_sleepers(q)) is not held
+
+
+@pytest.mark.parametrize("pause", ["owner_hold", "money_pause", "queued"])
+def test_retried_answer_stays_owed_to_its_unread_live_recipient(tmp_path, monkeypatch, pause):
+    app, bridge, q, task = runtime(tmp_path, monkeypatch)
+    assert answer(app).status_code == 200
+    assert debt(tmp_path)["recipient_task_id"] == "asker" and debt(tmp_path)["mailbox_at"]
+    # Paused (or parked) after the mailbox write, before its next drain.
+    if pause == "queued":
+        q.PENDING.append(q.RUNNING.pop("asker")["task"])
+    else:
+        task.update({"_owner_hold": True} if pause == "owner_hold" else {"_budget_pause": {"reason": "budget"}})
+    response = answer(app)  # the same request id, retried
+    assert response.status_code == 200, response.text
+    assert _inbox(bridge) == [] and mail(tmp_path, "quiz_answer") == ["quiz_answer:asker:q"]
+    assert debt(tmp_path)["recipient_task_id"] == "asker"
+    assert debt(tmp_path)["reason_code"] == "awaiting_recipient_read"
+    # Resume: the same work reads its one copy, exactly once.
+    task.pop("_owner_hold", None)
+    task.pop("_budget_pause", None)
+    if pause == "queued":
+        q.RUNNING["asker"] = {"task": q.PENDING.pop()}
+    ctx, _messages = drain(tmp_path, "asker")
+    assert [r["content"] for r in ctx._owner_directives] == ["exact answer"]
+    assert debt(tmp_path)["state"] == "delivered"
+    assert answer(app).status_code == 200 and _inbox(bridge) == []
+    assert getattr(drain(tmp_path, "asker")[0], "_owner_directives", []) == []

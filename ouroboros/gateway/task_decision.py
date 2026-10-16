@@ -66,7 +66,9 @@ def _live_root_task(task_id: str) -> Tuple[Optional[Dict[str, Any]], str]:
     ``task_not_live`` is NOT a hard refusal for a quiz answer — the caller
     consults the durable projection for the honest late-answer state; nor is
     ``task_settled``, a RUNNING worker whose result already settled (its
-    mailbox is no longer drained, TZ-2 D15)."""
+    mailbox is no longer drained, TZ-2 D15). ``task_not_reading`` is alive
+    (queued, held, owner- or money-paused) but reads no question mail now; an
+    unheld cold sleep still reads it here, never in room intake (D6)."""
     from supervisor import queue as q
 
     with q._queue_lock:
@@ -110,10 +112,11 @@ def _live_root_task(task_id: str) -> Tuple[Optional[Dict[str, Any]], str]:
         # drains the mailbox any more — the same fact that refuses owner mail
         # sends the answer down the late path instead of into a dead mailbox.
         return None, "task_settled"
-    from ouroboros.room_reader import is_reading
+    from ouroboros.room_reader import is_reading, unheld_cold_sleep
     from supervisor.workers import direct_chat_turn
+    drive = _task_drive_for_task(task, task_id)
     running = task_id in q.RUNNING or direct_chat_turn(task_id) is not None
-    if not is_reading(_task_drive_for_task(task, task_id), task_id, task, running=running):
+    if not (is_reading(drive, task_id, task, running=running) or unheld_cold_sleep(drive, task_id, task)):
         return None, "task_not_reading"
     return task, ""
 
@@ -522,9 +525,9 @@ async def answer_decision(drive_root: pathlib.Path, body: Any, *, source: str = 
                 task_id=task_id, reason_code=refusal,
             )
         from ouroboros.owner_quiz import (
-            CLOSURE_FIELDS, claim_quiz_delivery, mark_discharged, mark_quiz_history_written,
-            question_delivery_projection, quiz_states, record_answered, record_answer_delivery_after_terminal,
-            question_delivery_settled, record_quiz_delivery_failure, reconcile_terminal,
+            CLOSURE_FIELDS, claim_quiz_delivery, question_delivery_projection, quiz_states, record_answered,
+            record_answer_delivery_after_terminal, question_delivery_settled, record_quiz_delivery_failure,
+            reconcile_terminal,
         )
 
         if task is None and refusal != "task_not_reading":
@@ -618,7 +621,7 @@ async def answer_decision(drive_root: pathlib.Path, body: Any, *, source: str = 
             comment=str(block.get("comment") or ""),
             question_delivery=delivery_view,
         )
-    except Exception as exc:
+    except Exception:
         try:
             from ouroboros.owner_quiz import record_quiz_delivery_failure
             record_quiz_delivery_failure(drive_root, task_id, quiz_id, "quiz_delivery_failed")

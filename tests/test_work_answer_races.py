@@ -19,7 +19,7 @@ pytestmark = pytest.mark.serial
     ("successor", "before"), ("successor", "selected"), ("successor", "appended"),
     ("held_successor", "selected"),
 ])
-def test_answer_follows_reader_at_finish_without_creating_a_successor(host, monkeypatch, destination, cut):
+def test_answer_follows_reader_at_finish_without_creating_a_successor(host, monkeypatch, destination, cut):  # noqa: F811
     from ouroboros import question_answers as qa
     from ouroboros.gateway.task_decision import answer_decision, recover_question_deliveries
     from ouroboros.owner_mailbox import drain_owner_entries
@@ -110,3 +110,36 @@ def test_answer_follows_reader_at_finish_without_creating_a_successor(host, monk
         assert refused["error"] == "already_continued" and refused["successor_task_id"] == successor
     else:
         assert "continued_by" not in load_task_result(host.root, "asker")
+
+
+def test_owner_pause_after_delivery_keeps_the_answer_for_its_own_resume(host, monkeypatch):  # noqa: F811
+    from ouroboros.gateway.task_decision import answer_decision, recover_question_deliveries
+    from ouroboros.owner_mailbox import KIND_QUIZ_ANSWER, drain_owner_entries
+    from ouroboros.owner_pause import release_fence
+    from ouroboros.owner_quiz import record_asked, record_publication
+    from supervisor import message_bus
+    from supervisor.owner_pause_control import request_owner_pause
+
+    host.running["asker"] = {"task": {"id": "asker", "root_task_id": "asker", "type": "task", "chat_id": 1,
+                                      "_attempt": 1}}
+    write_task_result(host.root, "asker", "running", root_task_id="asker", chat_id=1)
+    record_asked(host.root, "asker", quiz_id="q", question="Which database?", options=["sqlite", "postgres"],
+                 assumption="sqlite", chat_id=1)
+    record_publication(host.root, "asker", "q", 1)
+    bridge, _frames = _late_bridge(host.root, monkeypatch)
+    monkeypatch.setattr(message_bus, "get_bridge", lambda: bridge)
+    body = {"decision_id": "quiz:asker:q", "request_id": "answer-1", "option_index": 1, "comment": "exact answer"}
+    assert host.run_async(answer_decision(host.root, body))[0] == 200  # delivered while it was busy
+    assert request_owner_pause("asker", request_id="owner-pause")["ok"]
+    assert host.run_async(answer_decision(host.root, body))[0] == 200  # the same request, retried
+    host.run_async(recover_question_deliveries(host.root))
+    # Pause moves the answer nowhere: no fresh head, no second copy, still owed to the paused work.
+    assert not _inbox(bridge) and debt(host.root)["recipient_task_id"] == "asker"
+    assert [entry["msg_id"] for entry in drain_owner_entries(host.root, "asker")
+            if entry["kind"] == KIND_QUIZ_ANSWER] == ["quiz_answer:asker:q"]
+    release_fence(host.root, "asker", reason="owner_resume")  # where the resumed root starts
+    ctx, _messages = drain(host.root, "asker")
+    assert [r["content"] for r in ctx._owner_directives] == ["exact answer"]
+    assert debt(host.root)["state"] == "delivered"
+    assert host.run_async(answer_decision(host.root, body))[0] == 200 and not _inbox(bridge)
+    assert getattr(drain(host.root, "asker")[0], "_owner_directives", []) == []

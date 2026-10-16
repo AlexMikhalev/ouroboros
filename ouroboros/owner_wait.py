@@ -60,8 +60,10 @@ def classify_wake(entries: list[dict], quiz_id: str) -> str:
         return "control:finalize_now"
     if KIND_OWNER_PAUSE in kinds:
         return "control:owner_pause"
-    if any(kind == KIND_QUIZ_ANSWER and row.get("msg_id") == f"quiz_answer:{quiz_id}"
-           for kind, row in zip(kinds, entries)):
+    # This card's answer: ``quiz_answer:{asker}:{quiz}``, or saved ``quiz_answer:{quiz}`` mail.
+    answers = [str(row.get("msg_id") or "") for kind, row in zip(kinds, entries) if kind == KIND_QUIZ_ANSWER]
+    if quiz_id and any(msg_id.startswith("quiz_answer:") and msg_id.rsplit(":", 1)[-1] == quiz_id
+                       for msg_id in answers):
         return "answer"
     if any(kind == KIND_QUIZ_CLOSED and row.get("msg_id") == f"quiz_closed:{quiz_id}"
            for kind, row in zip(kinds, entries)):

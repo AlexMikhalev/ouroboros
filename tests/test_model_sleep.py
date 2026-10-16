@@ -269,6 +269,23 @@ def test_a_panic_boot_holds_a_cold_sleeper_before_its_marker_is_consumed(tmp_pat
     assert budget_hold_fact(workers.PENDING[0])["reason"] == HOLD_PANIC
 
 
+def test_an_ordinary_restart_restores_a_cold_sleep_that_wakes_itself(tmp_path, monkeypatch):
+    from supervisor.events_budget import budget_hold_fact
+    from supervisor.sleep_wake import wake_ready_sleepers
+
+    queue, state, workers = _install_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(state, "budget_remaining", lambda _st, **_k: 5.0)
+    _cold_park(tmp_path, monkeypatch, workers, wake_after_sec=1)
+    # An update or crash recovery: neither the owner's Restart flag nor a Panic flag.
+    assert queue.persist_queue_snapshot(reason="before_update")
+    workers.PENDING[:] = []
+    assert queue.restore_pending_from_snapshot() == 1
+    assert budget_hold_fact(workers.PENDING[0]) is None
+    time.sleep(1.2)
+    outcome = wake_ready_sleepers(queue)
+    assert outcome[0]["ok"] is True and outcome[0]["ready"]["reason"] == "timeout"
+
+
 @pytest.mark.parametrize("source", ["mail", "task", "runs"])
 def test_read_errors_do_not_hide_a_selected_time_or_become_a_wake(tmp_path, monkeypatch, source):
     from ouroboros import delegate_custody_current, model_sleep, owner_wait, task_results

@@ -17,7 +17,7 @@ from tests.test_work_intent_races import Crash
 pytestmark = pytest.mark.serial
 
 
-def direct(host, monkeypatch):
+def direct(host, monkeypatch):  # noqa: F811
     from ouroboros import working_checkpoint
     from supervisor import active_activity, queue
 
@@ -59,7 +59,7 @@ def park(limit, task):
 
 
 @pytest.mark.parametrize("cut", ["arm", "checkpoint", "seed", "source", "pause_row", "park", "unregister", "wake_grant"])
-def test_detach_crash_prefix_restores_one_held_work_until_explicit_resume(host, monkeypatch, cut):
+def test_detach_crash_prefix_restores_the_same_work_and_runs_it_once(host, monkeypatch, cut):  # noqa: F811
     from ouroboros import owner_wait, working_checkpoint
     from supervisor import direct_pause, queue, worker_chat_lane, workers
     from supervisor.events_budget import budget_hold_fact
@@ -135,8 +135,15 @@ def test_detach_crash_prefix_restores_one_held_work_until_explicit_resume(host, 
     assert queue.restore_pending_from_snapshot() == 1
     [restored] = host.pending
     assert restored["id"] == "head" and restored["tool_profile"] == "operator_control"
-    assert restored["_is_direct_chat"] and budget_hold_fact(restored)
-    assert restored.get("_working_recovery") or restored.get("_budget_pause")
+    # An ordinary crash restores a saved detach as the same cold sleep, which wakes by its
+    # own readiness. An earlier prefix waits for explicit Resume: held working state, or
+    # the pause seed boot completed from it (no sleep selectors to wake by).
+    wakes_itself = cut in {"pause_row", "park", "unregister", "wake_grant"}
+    assert restored["_is_direct_chat"] and bool(budget_hold_fact(restored)) is (cut in {"arm", "checkpoint"})
+    if cut in {"arm", "checkpoint"}:
+        assert restored["_working_recovery"]
+    else:
+        assert restored["_budget_pause"]["reason"] == "sleep"
     from ouroboros.artifacts import read_actor_source_bytes
 
     saved = restored.get("_working_recovery") or bp.budget_pause_row(host.root, "head")
@@ -146,8 +153,12 @@ def test_detach_crash_prefix_restores_one_held_work_until_explicit_resume(host, 
     if cut in {"pause_row", "park", "unregister", "wake_grant"}:
         assert restored["detached_by"] == "mind" and restored["detached_at"] == ctx._model_sleep["detached_at"]
     for _ in range(2):
-        assert not any(result.get("ok") for result in wake_ready_sleepers(queue))
+        woke = any(result.get("ok") for result in wake_ready_sleepers(queue))
         workers.assign_tasks()
+        assert not woke or wakes_itself
+    if wakes_itself:  # no Resume needed, and exactly one dispatch
+        assert [row["id"] for row in sent] == ["head"] and list(host.running) == ["head"]
+        return
     assert not sent and not host.running and len(host.pending) == 1
     resumed = queue.resume_budget_paused_task("head")
     assert resumed["ok"], resumed
@@ -156,7 +167,7 @@ def test_detach_crash_prefix_restores_one_held_work_until_explicit_resume(host, 
 
 
 @pytest.mark.parametrize("blocker", ["no_checkpoint", "owner_stop"])
-def test_seed_cannot_invent_saved_work_or_override_stop(host, monkeypatch, blocker):
+def test_seed_cannot_invent_saved_work_or_override_stop(host, monkeypatch, blocker):  # noqa: F811
     from ouroboros import working_checkpoint
     from ouroboros.cancel_intents import has_active_intent, request_cancel
     from supervisor import queue, workers
@@ -188,7 +199,7 @@ def test_seed_cannot_invent_saved_work_or_override_stop(host, monkeypatch, block
 
 
 @pytest.mark.parametrize("pause_at", ["none", "readiness", "after_grant", "launch"])
-def test_owner_pause_vetoes_detach_wake_and_last_launch_gate(host, monkeypatch, pause_at):
+def test_owner_pause_vetoes_detach_wake_and_last_launch_gate(host, monkeypatch, pause_at):  # noqa: F811
     from ouroboros import project_placement
     from ouroboros.owner_pause import read_fence
     from supervisor import queue, sleep_wake, workers
