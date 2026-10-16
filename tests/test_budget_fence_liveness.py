@@ -243,6 +243,7 @@ def test_reservation_race_with_persistent_absence_still_refuses(tmp_path, monkey
     monkeypatch.setattr(queue_observation, "DISPATCH_PUBLICATION_WAIT_SEC", 0.2)
     clock = [0.0]
     monkeypatch.setattr(_usage_wait, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(queue_observation, "_monotonic", lambda: clock[0])
 
     def unavailable(seconds):
         assert not held
@@ -428,14 +429,15 @@ def test_repeated_publication_races_share_one_wait_budget(tmp_path, monkeypatch,
     reservation = _reserve(tmp_path, CHILD) if operation == "dispatch" else None
     clock, held, acquisitions, waits = [0.0], [], [], []
     original = ua._locked
+    original_read = queue_observation.load_queue_document
     monkeypatch.setattr(queue_observation, "DISPATCH_PUBLICATION_WAIT_SEC", 0.2)
     timer = SimpleNamespace(monotonic=lambda: clock[0])
     monkeypatch.setattr(_usage_wait, "time", timer)
+    monkeypatch.setattr(queue_observation, "_monotonic", timer.monotonic)
 
     @contextlib.contextmanager
     def locked(*args, **kwargs):
         with original(*args, **kwargs) as view:
-            clock[0] += 0.1
             acquisitions.append(True)
             assert len(acquisitions) <= 3, "publication retries reset their deadline"
             (tmp_path / "state/queue.alive").unlink()
@@ -445,6 +447,11 @@ def test_repeated_publication_races_share_one_wait_budget(tmp_path, monkeypatch,
             finally:
                 held.pop()
 
+    def read_publication(*args, **kwargs):
+        if held:
+            clock[0] += 0.05  # Charge the failed publication probe, not store acquisition.
+        return original_read(*args, **kwargs)
+
     def publish(seconds):
         assert not held
         waits.append(seconds)
@@ -452,6 +459,7 @@ def test_repeated_publication_races_share_one_wait_budget(tmp_path, monkeypatch,
         _publish(tmp_path)
 
     monkeypatch.setattr(ua, "_locked", locked)
+    monkeypatch.setattr(queue_observation, "load_queue_document", read_publication)
     monkeypatch.setattr(queue_observation, "_sleep", publish)
     with pytest.raises(ua.ControlAuthorityUnavailable, match="root budget fence authority unavailable") as refused:
         ua.mark_dispatched(reservation) if reservation else _reserve(tmp_path, CHILD)
@@ -467,9 +475,10 @@ def test_nested_precheck_near_expiry_keeps_the_outer_publication_deadline(tmp_pa
     _publish(tmp_path)
     reservation = _reserve(tmp_path, CHILD) if operation == "dispatch" else None
     clock, held, acquisitions, waits, precheck_gaps = [0.0], [], [], [], []
-    original_lock, original_probe = ua._locked, queue_observation.dispatch_probe
+    original_lock, original_read = ua._locked, queue_observation.load_queue_document
     monkeypatch.setattr(queue_observation, "DISPATCH_PUBLICATION_WAIT_SEC", 0.2)
     monkeypatch.setattr(_usage_wait, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(queue_observation, "_monotonic", lambda: clock[0])
 
     @contextlib.contextmanager
     def locked(*args, **kwargs):
@@ -482,13 +491,13 @@ def test_nested_precheck_near_expiry_keeps_the_outer_publication_deadline(tmp_pa
             finally:
                 held.pop()
 
-    def probe(root):
+    def read_publication(root, name):
         if waits and not held:
             # Publication returns, then is revoked at the next pre-lock check.
             precheck_gaps.append(clock[0])
             clock[0] += 0.001
             (tmp_path / "state/queue.alive").unlink(missing_ok=True)
-        return original_probe(root)
+        return original_read(root, name)
 
     def publish(seconds):
         assert not held
@@ -499,7 +508,7 @@ def test_nested_precheck_near_expiry_keeps_the_outer_publication_deadline(tmp_pa
         _publish(tmp_path)
 
     monkeypatch.setattr(ua, "_locked", locked)
-    monkeypatch.setattr(queue_observation, "dispatch_probe", probe)
+    monkeypatch.setattr(queue_observation, "load_queue_document", read_publication)
     monkeypatch.setattr(queue_observation, "_sleep", publish)
     token = _usage_wait._CANCEL.set(threading.Event())
     try:
