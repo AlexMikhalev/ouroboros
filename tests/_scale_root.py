@@ -13,7 +13,8 @@ active one with its rows in the OLDEST archive segment, and one bound later to a
 (``CURRENT["late_task"]``) whose rows are just as old.
 
 Unrelated history (per unit of ``k``): ``LEGACY_PER_K`` frozen ``task_results/*.json`` files
-imported at the cutover, ``SETTLED_PER_K`` settled tasks with 20-200 KB bodies written through
+imported at the cutover by the real boot preparation (``startup_migrations.prepare_startup_state``,
+which also stamps the one-time migrations as a previous boot did), ``SETTLED_PER_K`` settled tasks with 20-200 KB bodies written through
 the store, ``CHILDREN_PER_K`` child drives under ``state/headless_tasks/`` with their own
 ``current.sqlite``, archive segments of chat/progress/tools/events (``SEGMENTS_PER_K``) whose
 rows belong to OTHER rooms and are NEWER than the requested room's rows (a LIMIT cannot hide a
@@ -336,7 +337,7 @@ def _main_rows(root: pathlib.Path) -> None:
 
 def build(root: Any, k: int) -> Dict[str, Any]:
     """Build the published root (see the module docstring); returns its facts."""
-    from ouroboros import store_import
+    from ouroboros.startup_migrations import prepare_startup_state
     from supervisor import state
 
     started = time.monotonic()
@@ -357,7 +358,8 @@ def build(root: Any, k: int) -> Dict[str, Any]:
         return value
 
     facts["legacy_files"] = step("legacy_files", lambda: _legacy_files(root, k))
-    facts["import"] = step("import", lambda: store_import.ensure_current_store(root, with_children=True)["status"])
+    # The real boot preparation (import, publication, migration stamps), as the install's previous boots ran it.
+    facts["import"] = step("import", lambda: prepare_startup_state(root)["status"])
     facts.update(step("settled", lambda: _settled(root, k)))
     facts["custody_runs"] = step("custody", lambda: _custody(root, k))
     facts["segments"] = step("segments", lambda: _segments(root, k))

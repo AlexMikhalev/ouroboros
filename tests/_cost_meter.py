@@ -21,6 +21,11 @@ What is counted, per tag:
 - ``json_loads`` and ``json_chars``: every ``json.loads``/``json.load`` and its input length;
 - ``popen`` (argv[0] names kept in ``popen_names``) and ``thread_start`` (thread names).
 
+Locations (``category``): ``root`` and the history locations ``CATEGORIES`` under the data root,
+``lock`` for lock files there (how often a lock is probed follows contention between threads, not
+the amount of history), ``outside`` for everything else (the interpreter, the ancestors a path
+resolution walks), ``fd`` for an integer descriptor.
+
 Attribution (``tag_of``): the context variable ``BOUNDARY`` when set (an ASGI request or the
 lifespan task and everything it offloads with ``asyncio.to_thread``, which copies the
 context); otherwise the tag a thread received when it started: a ``thread_rules`` match by
@@ -132,6 +137,8 @@ class CostMeter:
                 return "root"
             if text.startswith(root):
                 rel = text[len(root):].replace(os.sep, "/")
+                if rel.endswith(".lock"):
+                    return "lock"  # a lock file: its retries follow contention, not history
                 for prefix, name in CATEGORIES:
                     if rel.startswith(prefix) or rel == prefix[:-1]:
                         return name

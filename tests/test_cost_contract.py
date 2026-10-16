@@ -44,10 +44,18 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 K_SMALL = 1
 CHILD_TIMEOUT_SEC = 900  # a transport bound for one child; the launcher's --timeout stops the whole tree
 LOCATIONS = ("root", *HISTORY)
+# Counted per location; lock files (``lock``) are left out: how often a lock is probed and retried
+# follows the contention between this process's threads at that instant, not the history.
 WORK = ("connect", "statements", "begins", "commits", "writes", "json_loads", "json_chars", "popen", "thread_start",
-        "stat", "scandir", "listdir", "open", "os_open", "read_bytes",
         *(f"{kind}:{where}" for kind in ("connect", "stat", "scandir", "listdir", "open", "os_open", "read_bytes")
-          for where in LOCATIONS))
+          for where in (*LOCATIONS, "outside")))
+
+
+# Bytes read and characters decoded may differ by the digits of a timestamp or a duration written
+# during the boot itself (9.98 s vs 10.02 s); 4 KiB stays below the smallest unit of history here
+# (one 20 KB settled body, one ~25 KB archive segment), so one extra history item still breaks it.
+BYTE_JITTER = 4096
+BYTE_KEYS = ("json_chars", *(f"read_bytes:{where}" for where in (*LOCATIONS, "outside")))
 
 
 def vm_allowance(large: int, small: int = K_SMALL) -> int:
@@ -110,7 +118,7 @@ def contract_breaches(small: Dict[str, int], large: Dict[str, int], k_large: int
                       keys: Iterable[str] = WORK) -> Dict[str, Any]:
     """Every counter that differs between the roots, and VM steps beyond ``vm_allowance``."""
     breaches: Dict[str, Any] = {key: (small.get(key, 0), large.get(key, 0)) for key in keys
-                                if small.get(key, 0) != large.get(key, 0)}
+                                if abs(small.get(key, 0) - large.get(key, 0)) > (BYTE_JITTER if key in BYTE_KEYS else 0)}
     allowed = vm_allowance(k_large)
     if large.get("vm_steps", 0) > small.get("vm_steps", 0) + allowed:
         breaches["vm_steps"] = (small.get("vm_steps", 0), large.get("vm_steps", 0), f"allowance {allowed}")
@@ -156,14 +164,15 @@ def test_b1_no_child_process_before_health(measured):
 @pytest.mark.xfail(strict=True, reason=(
     "WU1: the boot import re-verifies history before the chat bus exists: store_import.ensure_current_store "
     "stats every frozen task_results/*.json and opens and commits every child drive's store (k=1 -> k=30: "
-    "connect 16 -> 161, commits 14 -> 159, stat 1097 -> 16032, statements 157 -> 2216)."))
+    "connect 15 -> 131 (child stores 4 -> 91), statements 150 -> 2006, stat under state/headless_tasks "
+    "215 -> 4942, under task_results 12 -> 302). Verified: XPASS on wu1/startup 9f3a6d471."))
 def test_b2_publication_to_dialogue_is_flat(measured):
     assert_flat(measured, "B2_dialogue")
 
 
 @pytest.mark.xfail(strict=True, reason=(
-    "WU1: the same per-boot import walk precedes supervisor readiness (k=1 -> k=30: connect 71 -> 216, "
-    "commits 69 -> 214, stat 2826 -> 17761, json_loads 351 -> 5339)."))
+    "WU1: the same per-boot import walk precedes supervisor readiness (k=1 -> k=30: connect 70 -> 186, "
+    "statements 523 -> 2379, stat under state/headless_tasks 218 -> 4945). Verified: XPASS on wu1/startup 9f3a6d471."))
 def test_b2_publication_to_supervisor_ready_is_flat(measured):
     assert_flat(measured, "B2_ready")
 
@@ -221,40 +230,59 @@ def second_run(run: Callable[[pathlib.Path], Any], root: pathlib.Path) -> Dict[s
 
 
 def rest_breaches(counts: Dict[str, int]) -> Dict[str, int]:
-    """A second run commits nothing and opens, lists or reads nothing of the history."""
-    keys = ("commits", "writes", *(f"{kind}:{where}" for kind in ("open", "os_open", "scandir", "listdir", "read_bytes")
-                                   for where in HISTORY))
+    """A second run writes nothing (a read transaction of the store also ends with COMMIT, so the
+    written statements are what counts) and opens, lists or reads nothing of the history."""
+    keys = ("writes", *(f"{kind}:{where}" for kind in ("open", "os_open", "scandir", "listdir", "read_bytes")
+                        for where in HISTORY))
     return {key: counts[key] for key in keys if counts.get(key)}
 
 
-JOB_NAMES = ("activity_backfill", "child_ref_promotion", "drive_settlement", "evidence_discovery", "temp_sweep",
-             "legacy_reconcile", "sqlite_analyze")
+def _maintenance():
+    try:
+        from ouroboros import maintenance
+    except ImportError:
+        return None
+    return maintenance
+
+
+# The jobs the plan names; the maintenance module's own registry joins them once it exists.
+JOB_NAMES = tuple(dict.fromkeys(("activity_backfill", "child_ref_promotion", "drive_settlement", "evidence_discovery",
+                                 "temp_sweep", "legacy_reconcile", "sqlite_analyze",
+                                 *getattr(_maintenance(), "JOBS", {}))))
 
 
 def job_runner(name: str) -> Callable[[pathlib.Path], Any]:
-    """The named job's runner once it exists: ``ouroboros.maintenance.JOBS[name]`` or, for the legacy
-    reconcile, ``store_import.run_legacy_reconcile``; skipped while absent."""
-    try:
-        from ouroboros import maintenance
-        runner = getattr(maintenance, "JOBS", {}).get(name)
-    except ImportError:
-        runner = None
-    if runner is None and name == "legacy_reconcile":
+    """One named job's run in this process: ``maintenance.run_job(root, name)`` once the job is registered,
+    WU1's ``store_import.run_legacy_reconcile`` for the legacy reconcile; skipped while absent."""
+    maintenance = _maintenance()
+    if maintenance is not None and name in getattr(maintenance, "JOBS", {}):
+        return lambda root: maintenance.run_job(root, name, should_stop=lambda: False)
+    if name == "legacy_reconcile":
         from ouroboros import store_import
         runner = getattr(store_import, "run_legacy_reconcile", None)
-    if runner is None:
-        pytest.skip(f"maintenance job {name!r} does not exist on this tree yet")
-    return lambda root: runner(root, progress=lambda *_a, **_k: None, should_stop=lambda: False)
+        if runner is not None:
+            return lambda root: runner(root, progress=None, should_stop=lambda: False)
+    pytest.skip(f"maintenance job {name!r} does not exist on this tree yet")
+
+
+def _rests_at_every_size(measured: Dict[Any, Any], run: Callable[[pathlib.Path], Any], what: str) -> None:
+    large = measured["large"]
+    rested = {k: second_run(run, pathlib.Path(measured[k]["root"])) for k in (K_SMALL, large)}
+    for k, counts in rested.items():
+        assert not rest_breaches(counts), (what, k, rest_breaches(counts))
+    assert not contract_breaches(rested[K_SMALL], rested[large], large), (what, rested)
 
 
 @pytest.mark.parametrize("name", JOB_NAMES)
 def test_b6_each_job_rests_on_its_second_run(measured, name):
-    run = job_runner(name)
-    large = measured["large"]
-    rested = {k: second_run(run, pathlib.Path(measured[k]["root"])) for k in (K_SMALL, large)}
-    for k, counts in rested.items():
-        assert not rest_breaches(counts), (name, k, rest_breaches(counts))
-    assert not contract_breaches(rested[K_SMALL], rested[large], large), (name, rested)
+    _rests_at_every_size(measured, job_runner(name), name)
+
+
+def test_b6_the_maintenance_pass_rests_on_its_second_run(measured):
+    maintenance = _maintenance()
+    if maintenance is None or not callable(getattr(maintenance, "run", None)):
+        pytest.skip("the maintenance child's pass does not exist on this tree yet")
+    _rests_at_every_size(measured, lambda root: maintenance.run(root, should_stop=lambda: False), "maintenance.run")
 
 
 # ---- the instrument itself, both directions --------------------------------------------------------
