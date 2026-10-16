@@ -1338,15 +1338,11 @@ def _reopen_owner_fence(ctx: Any, usage: Dict[str, Any], *, fence_id: str = "", 
 def _resume_disclosure(ctx: Any, row: Dict[str, Any], state: Dict[str, Any], grant: Dict[str, Any],
                        refresh: Dict[str, Any], messages: list) -> None:
     """The resumed model's first facts: UNKNOWN host rows and how it continued, or its wake."""
-    # The grant re-observed custody at Resume time and wrote that observation
-    # on the row; the checkpoint's copy is the pause-time reading. Disclose the
-    # freshest one the durable rows carry.
+    # Prefer the grant-time re-observation over the checkpoint's pause-time copy;
+    # label its age so fresh evidence never appears stale (or vice versa).
     fresh_observation = row.get("external_runs") if isinstance(row.get("external_runs"), dict) else None
     external_observation = fresh_observation if fresh_observation is not None else (
         state.get("external_runs") or {})
-    # Name WHICH reading this is: the grant's re-observation and the checkpoint's
-    # pause-time copy license different amounts of trust, and a list labelled as
-    # pause-time history reads as stale even when it is the fresh one.
     external_basis = ("re-observed at this Resume" if fresh_observation is not None
                       else "as recorded at the pause, NOT re-observed")
     external = external_observation.get("runs") or []
@@ -1382,6 +1378,9 @@ def _resume_disclosure(ctx: Any, row: Dict[str, Any], state: Dict[str, Any], gra
     from ouroboros.working_checkpoint import close_unanswered_calls
 
     close_unanswered_calls(messages, kind)
+    from ouroboros.owner_wait import owner_pause_resume_notice
+    if row.get("retained_owner_wait_id") and state.get("owner_pause"):
+        messages.append(owner_pause_resume_notice(ctx, state, "owner_input", cold=True))
     messages.append({"role": "user", "content": (
         f"[SYSTEM NOTICE]\nThis task continued from its {kind} after an explicit owner Resume "
         f"(paused {ctx._budget_paused_sec:.0f}s; rail: {row.get('rail')}; planning threshold "

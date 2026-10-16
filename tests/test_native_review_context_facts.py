@@ -243,6 +243,7 @@ def test_native_inspection_respects_reported_anthropic_input(tmp_path, monkeypat
 
 def test_authored_note_without_inspect_applies_even_when_view_still_exceeds_old_limit(tmp_path, monkeypatch):
     from ouroboros import context_compaction
+    from ouroboros.tools.compact_context import get_tools
 
     monkeypatch.setattr(context_compaction, "_call_summarizer", lambda *a, **k: pytest.fail("authored request called a helper"))
     note = "I read the exact source and retain its first and last facts."
@@ -253,6 +254,12 @@ def test_authored_note_without_inspect_applies_even_when_view_still_exceeds_old_
     ])
     executor = _executor(tmp_path, llm, task="immutable assignment " * 48_000)
     result = executor.execute()
+    delivered = next(tool["function"] for tool in llm.calls[0]["tools"]
+                     if tool["function"]["name"] == "compact_context")
+    assert delivered == get_tools()[0].schema
+    guidance = delivered["parameters"]["properties"]["working_note"]["description"]
+    assert "future reader" in guidance and "within those sources" in guidance
+    assert "unaffected branches" in guidance and "invent no detail" in guidance
     receipt = executor._view_receipt
     assert receipt["status"] == "applied" and result.usage["native_view_changes"] == 1
     after = llm.calls[-1]

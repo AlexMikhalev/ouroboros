@@ -78,8 +78,7 @@ class _PresendWait:
         if self.interactive_bound is not None and elapsed >= self.interactive_bound:
             from ouroboros.llm_attempt import PhysicalDispatchInterrupted
             raise PhysicalDispatchInterrupted("accounting_wait_expired")
-        remaining = DISPATCH_PUBLICATION_WAIT_SEC - max(self.publication_waited,
-            time.monotonic() - self.publication_started if self.publication_started is not None else 0.0)
+        remaining = DISPATCH_PUBLICATION_WAIT_SEC - self.publication_waited
         if pending and remaining <= 0:
             raise ControlAuthorityUnavailable(str(error), cause="dispatch_publication_unconfirmed") from error
         if not self.owned and elapsed >= USAGE_LOCK_TIMEOUT_SEC:
@@ -87,10 +86,27 @@ class _PresendWait:
         if not self.entered:
             self.entered = True
             _hold(self.owner, "entered", self.started, self.episode_id)
-        delay = min(DISPATCH_PUBLICATION_POLL_SEC, remaining) if pending else ACQUISITION_SLICE_SEC
+        return min(DISPATCH_PUBLICATION_POLL_SEC, remaining) if pending else ACQUISITION_SLICE_SEC
+
+    @contextlib.contextmanager
+    def wait(self, error):
+        """Charge only a publication probe and its wait, across reacquisitions.
+
+        A contended store neither proves continuous publication absence nor resets
+        the already spent publication budget. Other elapsed bounds remain separate.
+        """
+        from ouroboros.queue_observation import DispatchPublicationPending
+
+        pending = isinstance(error, DispatchPublicationPending)
         if pending:
-            self.publication_waited += delay
-        return delay
+            self.publication_waited += error.probe_elapsed_sec
+        delay = self.delay(error)
+        started = time.monotonic()
+        try:
+            yield delay
+        finally:
+            if pending:
+                self.publication_waited += max(delay, time.monotonic() - started)
 
     def close(self):
         if self.entered:
@@ -116,8 +132,8 @@ def retry_presend(function, *, check=True):
                         _check()
                     return function()
             except Exception as exc:
-                delay = episode.delay(exc)  # callback's transaction and launch lock have exited
-                queue_observation._sleep(delay)
+                with episode.wait(exc) as delay:  # transaction/launch lock have exited
+                    queue_observation._sleep(delay)
     finally:
         episode.close()
 
@@ -135,7 +151,8 @@ async def retry_presend_async(function, *, check=True):
                         _check()
                     return function()
             except Exception as exc:
-                await asyncio.sleep(episode.delay(exc))
+                with episode.wait(exc) as delay:
+                    await asyncio.sleep(delay)
     finally:
         episode.close()
 

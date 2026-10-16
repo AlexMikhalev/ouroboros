@@ -644,11 +644,13 @@ def revalidate_project_holds() -> None:
     from ouroboros.projects_registry import _load_bindings, project_binding_for_task
     from ouroboros.owner_wait import restore_owner_wait_allowed
     from ouroboros.delegate_recovery import planned_handoff_resume_allowed
+    from supervisor.events_budget import BUDGET_HOLD_KEY, HOLD_RESTORE_REFUSED_PREFIX, budget_hold_fact
 
     held = [task for task in queue.PENDING if task.get("_project_admission_restore_hold")]
     if not held:
         return
-    effects = ("_project_admission_restore_hold", "_terminalization_retry", "_owner_hold")
+    effects = ("_project_admission_restore_hold", "_terminalization_retry", "_owner_hold",
+               "_owner_wait_resume", "_budget_pause", "_budget_pause_resume", BUDGET_HOLD_KEY)
     before = [copy.deepcopy({key: task[key] for key in effects if key in task}) for task in held]
     counts = Counter(row.get("id") for row in queue.PENDING)
     # Restore's parent rule, re-read at release: exact continuations are saved work.
@@ -679,7 +681,28 @@ def revalidate_project_holds() -> None:
             # An owner-wait continuation is judged on its exact authority apart from that
             # deadline (#939): unreadable keeps custody (raises), refused takes the shutdown custody.
             owner_resume = restore_owner_wait_allowed(queue.DRIVE_ROOT, task, strict=True, expiring=expired)
-            if task.get("_owner_wait_resume") and not owner_resume:
+            if task.get("_owner_wait_resume") and (
+                    task["_owner_wait_resume"].get("reason") == "owner_pause" or not owner_resume):
+                from supervisor.restart_retention import (
+                    park_saved_pause, saved_sleep_hold_reason, pause_ids, unseen_pause, _latch_unseen_pause)
+
+                before_pause = pause_ids(task)
+                parked = park_saved_pause(task, int(task.get("_attempt") or 1), queue.DRIVE_ROOT,
+                    pause_source="project_hold_owner_wait", sleep_hold_reason=saved_sleep_hold_reason(queue.DRIVE_ROOT))
+                if parked is not None:
+                    task.update(parked)
+                    if "_owner_wait_resume" not in parked:
+                        task.pop("_owner_wait_resume", None)
+                    if unseen_pause(task, before_pause):
+                        _latch_unseen_pause(task)
+                    continue  # retained pause, or its failed conversion; never a Stop
+                if (budget_hold_fact(task) or {}).get("reason") == HOLD_RESTORE_REFUSED_PREFIX + "owner_wait_source_unavailable":
+                    from ouroboros.cancel_intents import has_active_intent
+
+                    wait = (load_task_result(queue.DRIVE_ROOT, tid, strict=True) or {}).get("owner_wait") or {}
+                    if (wait.get("state") == "waiting" and wait.get("wait_id") == task["_owner_wait_resume"].get("wait_id")
+                            and not has_active_intent(queue.DRIVE_ROOT, tid, strict=True)):
+                        continue  # only the unavailable live source keeps this retention hold
                 _fence_snapshot_running_rows([{"id": tid}], restored_ids=set())
                 continue  # the same shutdown custody as an unresumable restore
             if expired:

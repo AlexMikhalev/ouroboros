@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+from pathlib import Path
 import queue
 from types import SimpleNamespace
 
@@ -98,6 +99,69 @@ def test_main_records_and_applies_authored_view_without_manual_observation(main_
     assert any(m.get("tool_call_id") == "compact" for m in after)
     assert "I retained the trailing conclusion." in str(after)
     assert "[Context view receipt]" in str(after)
+
+
+@pytest.mark.parametrize("role", ["root", "subagent"])
+@pytest.mark.parametrize("mode", ["nano", "low", "max"])
+def test_retelling_instructions_and_authored_account_reach_next_send(main_loop, tmp_path, monkeypatch, role, mode):
+    """Mode-specific context assembly, then shared-loop delivery; not model adherence."""
+    from ouroboros import context
+    from ouroboros.tools.compact_context import get_tools
+    from tests.test_doc_context import _make_env_and_memory
+
+    f = main_loop
+    monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", mode)
+    env, memory = _make_env_and_memory(tmp_path / "context")
+    system = (Path(__file__).resolve().parents[1] / "prompts/SYSTEM.md").read_text(encoding="utf-8")
+    env.repo_path("prompts/SYSTEM.md").write_text(system, encoding="utf-8")
+    task = {"id": "authored-main", "type": "task", "text": "Investigate the proposed label change.",
+            "delegation_role": role}
+    if role == "subagent":
+        task["configured_subagent"] = {"route": {"kind": "api_model"}}
+    f.messages, _ = context.build_llm_messages(env, memory, task, ctx=f.ctx)
+    schema = get_tools()[0].schema
+    note = ("The reader loses the work's name among repeated labels; the proposal helps identify it. "
+            "The owner approved label research, then cancelled only that branch; storage research remains approved. "
+            "Implementation is still a proposal, not permission. The layout consequence is inferred; native behavior is unknown.")
+    f.source = note + "\n" + f.source
+    (f.ctx.repo_dir / "evidence.txt").write_text(f.source, encoding="utf-8")
+    restored = {}
+
+    def compact(kwargs):
+        inspected = json.loads(next(m["content"] for m in kwargs["messages"] if m.get("tool_call_id") == "inspect"))
+        restored.update(next(unit["restore_ref"] for unit in inspected["units"] if unit["kind"] == "tool"))
+        return call("compact_context", {"working_note": note, "keep_unit_ids": []}, "compact")
+
+    def restore(kwargs):
+        accounts = [block["text"] for message in kwargs["messages"]
+                    if message.get("role") == "assistant" and not message.get("tool_calls")
+                    and isinstance(message.get("content"), list)
+                    for block in message["content"]
+                    if block.get("type") == "text" and block.get("_context_capsule")]
+        assert any(text == "[Actor-authored working view; exact source retained by checkpoint]\n" + note
+                   for text in accounts)
+        assert not any(m.get("tool_call_id") == "read" for m in kwargs["messages"])
+        return call("compact_context", {"restore_unit_refs": [restored]}, "restore")
+
+    f.run([call("read_file", {"path": "evidence.txt"}, "read"),
+           call("compact_context", {"inspect": True}, "inspect"), compact, restore, {"content": "done"}])
+    first, after = f.inputs[0], f.inputs[-1]
+    assert system in "\n".join(block["text"] for block in first["messages"][0]["content"])
+    assert "later reader, not only my present understanding" in system
+    assert "who decided what within which scope" in system
+    assert "supersede only what they actually change" in system
+    delivered = next(tool["function"] for tool in first["tools"] if tool["function"]["name"] == "compact_context")
+    assert delivered == schema
+    guidance = delivered["parameters"]["properties"]["working_note"]["description"]
+    assert "future reader" in guidance and "within those sources" in guidance
+    assert "unaffected branches" in guidance and "invent no detail" in guidance
+    assert "raw evidence remains retrievable" in delivered["description"].lower()
+    assert f.ctx._context_view_receipt["status"] == "applied"
+    visible = "\n".join(m["content"] if isinstance(m.get("content"), str) else
+                        "\n".join(b.get("text", "") for b in (m.get("content") or []) if isinstance(b, dict))
+                        for m in after["messages"])
+    assert note in visible and f.source.splitlines()[-1] in visible
+    assert first["messages"][:2] == after["messages"][:2]
 
 
 def test_explicit_recent_count_compacts_older_units_with_authored_note(main_loop):
