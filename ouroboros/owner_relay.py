@@ -56,7 +56,8 @@ def retain_owner_message(ctx, row=None, *, client_message_id="") -> None:
     if row is None and client_message_id and getattr(ctx, "drive_root", None):
         from supervisor.message_ingress import accepted_chat_message
         from ouroboros.tool_access import canonical_data_root
-        row = accepted_chat_message(canonical_data_root(ctx), int(getattr(ctx, "current_chat_id", 1)),
+        chat_id = getattr(ctx, "current_chat_id", None)  # a context may carry no chat: Main's lookup
+        row = accepted_chat_message(canonical_data_root(ctx), 1 if chat_id is None else int(chat_id),
                                     client_message_id)
     if _owner_row(row):
         held_owner_messages(ctx)[format_address(row_address(row))] = copy.deepcopy(row)
