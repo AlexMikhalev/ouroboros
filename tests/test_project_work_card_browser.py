@@ -502,3 +502,51 @@ def test_project_glyph_is_a_tinted_mark_never_a_solid_tile(project_chat):
         assert mark["glyph"] == mark["name"] == mark["ink"], mark
         assert mark["glyph_on_tile"] >= 3, mark
         assert mark["tile_on_beneath"] * 2 < mark["name_on_beneath"], mark
+
+
+@pytest.mark.parametrize("journey", ["live", "reload"])
+def test_main_portal_follows_a_successor_that_already_finished(project_chat, journey, tmp_path):
+    """Astra W2 R2: a moved work fails, is continued in its room, and the successor finishes before Main's next census
+    (or Main is opened after it finished). The census lists neither ended work; the predecessor's record names the
+    admitted successor and the successor's own record holds its outcome. Main's ONE card still follows it: the work's
+    place, first name and Project footer, the ended episode as one line, the current episode settled from its record."""
+    page, expect = project_chat["page"], project_chat["expect"]
+    expect(_card(page, "creation")).to_be_visible()
+    quick = "creation-cquick"
+    binding = {"project_id": "alpha", "chat_id": 7}
+    project_chat["details"]["creation"] = _interrupted(
+        continued_by={"state": "admitted", "successor_task_id": quick, "action_nonce": "n-2", "binding": binding},
+        continuation_offer={"eligible": False, "refusal": "already_continued", "state": "admitted", "successor_task_id": quick})
+    project_chat["details"][quick] = {
+        "task_id": quick, "status": "completed", "chat_id": 7, "project_id": "alpha",
+        "outcome_axes": {"lifecycle": {"status": "completed"}, "execution": {"status": "ok"}},
+        "terminal_time": {"occurred_at": "2026-10-08T14:12:00Z", "attempt": {"started_at": "2026-10-08T14:10:00Z"}}}
+    state = project_chat["state"]
+    state["task_bindings"][quick] = binding
+    state["active_chat_activities"] = [row for row in state["active_chat_activities"] if row["activity_id"] != "creation"]
+    page.evaluate("s => chat.hydrateStateSnapshot(s)", state)
+    # Its final reaches Main as the author's own row; that row stays a row, the card settles from the record.
+    page.evaluate("""id => emit('chat', {chat_id: 1, task_id: id, role: 'assistant', content: 'The audit is complete.',
+        project_id: 'alpha', project_name: 'Project Alpha', system_type: 'project_completion_summary',
+        ts: '2026-10-08T14:12:00Z'})""", quick)
+    if journey == "reload":
+        page.reload()
+        page.wait_for_function("() => window.chat && document.querySelector('#chat-messages .chat-bubble')")
+        page.evaluate("s => chat.hydrateStateSnapshot(s)", state)
+    card = _card(page, quick)
+    expect(card).to_be_visible(timeout=15000)
+    expect(_card(page, "creation")).to_be_hidden()
+    assert _visible_cards(page) == [quick, "transfer"], "one card for the work, at its first place"
+    expect(card).to_have_attribute("data-portal", "1")
+    expect(card.locator('[data-live-title]')).to_have_text("Review runner › integration")
+    expect(card.locator('.chat-live-phase').first).to_have_text("Done")
+    expect(card.locator('.chat-live-actions > button')).to_have_text(["Reply"])
+    footer = card.locator(':scope > .chat-live-bound-pointer')
+    expect(footer).to_have_attribute("aria-label", "Open project Project Alpha")
+    episodes = card.locator('.chat-live-episode')
+    expect(episodes).to_have_count(2)
+    expect(episodes.nth(0)).to_contain_text("Episode 1 · 13:57–14:09 · Failed")
+    expect(episodes.nth(1)).to_have_text("Episode 2 · 14:10–14:12")
+    expect(episodes.nth(1)).to_have_attribute("data-current", "1")
+    assert page.locator('#chat-messages [data-continue-task]:visible').count() == 0, "no Continued stands as its action"
+    card.screenshot(path=_evidence(tmp_path, project_chat, f"finished-successor-{journey}"), animations="disabled")
