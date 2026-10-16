@@ -299,20 +299,44 @@ def test_presence_admission_uses_binding_and_never_owner_entry(tmp_path, monkeyp
     value = cp.CallSpec(uuid.uuid4().hex, 1234, "google", "test", opened_by=cp.OPENED_BY_SKILL,
                         presence_binding_id="binding")
 
-    async def admit(ctx, skill, binding):
+    asked = []
+
+    async def admit(ctx, skill, binding, payload):
+        asked.append((skill, binding, payload.get("event"), payload.get("label")))
         open_hub(value)
-        return {"admitted": True, "call_id": value.call_id, "reason": ""}
+        return value.call_id
 
     monkeypatch.setattr(host_call, "_admit_presence_call", admit)
+    event = {"source_event_id": "zoom-join-1", "provider": "zoom", "text": "Joined the Zoom meeting"}
     try:
         with TestClient(create_host_service_app(tmp_path), headers={"x-skill-token": "skill-token"}) as client:
-            response = client.post("/call/open", json={"binding_id": "binding", "role": "meeting"})
+            response = client.post("/call/open", json={"binding_id": "binding", "role": "meeting",
+                                                       "event": event, "label": "Weekly sync"})
             assert response.status_code == 200, response.text
             with client.websocket_connect(response.json()["peer_path"]) as ws:
                 hello(ws, "meeting", speaker=False)
             assert admitted and all(row == ("meeting", "binding") for row in admitted)
+            assert asked == [("meeting", "binding", event, "Weekly sync")]
     finally:
         close_hub(value.call_id)
+
+
+@pytest.mark.parametrize("code,status", [("presence_call_busy", 409), ("presence_call_not_enabled", 403),
+                                         ("presence_call_engine_unset", 503)])
+def test_a_presence_refusal_reaches_the_companion_in_plain_words(tmp_path, monkeypatch, code, status):
+    from ouroboros.presence_call import PresenceCallRefused
+
+    seed_skill(tmp_path)
+    monkeypatch.setattr(host_call, "_binding", lambda ctx, skill, binding: None)
+
+    async def refuse(ctx, skill, binding, payload):
+        raise PresenceCallRefused(code, "The call did not open; the reason is in the code.")
+
+    monkeypatch.setattr(host_call, "_admit_presence_call", refuse)
+    with TestClient(create_host_service_app(tmp_path), headers={"x-skill-token": "skill-token"}) as client:
+        response = client.post("/call/open", json={"binding_id": "binding", "role": "meeting", "event": {}})
+    assert response.status_code == status
+    assert response.json() == {"ok": False, "code": code, "error": "The call did not open; the reason is in the code."}
 
 
 def test_published_call_contract_shapes_and_permission_twin():

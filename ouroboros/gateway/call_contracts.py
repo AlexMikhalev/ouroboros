@@ -6,7 +6,7 @@ publish that protocol to replaceable clients and validate the two call doors.
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Any, Dict
 
 try:
     from typing import Literal, NotRequired, TypedDict
@@ -45,6 +45,8 @@ class HostCallOpenRequest(TypedDict):
     role: Literal["meeting"]
     call_id: NotRequired[str]
     binding_id: NotRequired[str]
+    event: NotRequired[Dict[str, Any]]   # a Presence call's source event (the /presence/turn shape)
+    label: NotRequired[str]
     mic: NotRequired[bool]
     speaker: NotRequired[bool]
 

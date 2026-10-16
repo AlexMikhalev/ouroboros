@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import pathlib
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -24,6 +25,15 @@ from ouroboros.gateway.schema import validate_ingress
 log = logging.getLogger(__name__)
 
 
+# HTTP status of a Presence call refusal; any other admission code is a conflict.
+_REFUSAL_STATUS = {
+    "presence_call_not_enabled": 403, "presence_origin_mismatch": 403, "presence_binding_wrong_transport": 403,
+    "presence_event_invalid": 400, "presence_identity_missing": 400, "presence_call_invalid_setting": 400,
+    "presence_call_engine_unset": 503, "presence_call_model_unset": 503,
+    "presence_call_hub_unavailable": 503, "presence_call_not_started": 503,
+}
+
+
 def _token_digest(token: str) -> str:
     return hashlib.sha256(token.strip().encode("utf-8")).hexdigest()
 
@@ -34,16 +44,19 @@ def _binding(ctx, skill: str, binding_id: str):
     return load_presence_binding(ctx.data_dir, skill, binding_id)
 
 
-async def _admit_presence_call(ctx, skill: str, binding_id: str) -> dict:
+async def _admit_presence_call(ctx, skill: str, binding_id: str, payload: dict) -> str:
     """Presence owns its gate, ceiling, turn and hub lifetime; the door only asks.
 
-    The Presence lane supplies this async entry point with an admission receipt
-    containing ``admitted``, ``call_id`` and ``reason``. It authenticates the
-    binding's transport again at the admission transaction.
+    The binding's transport is authenticated again inside the admission, which
+    returns once the call's turn has started; a refusal raises its typed reason.
     """
-    from ouroboros.presence_call import admit_presence_call
+    from ouroboros.presence_call import open_presence_call
+    from supervisor.workers import REPO_DIR, get_event_q
 
-    return await admit_presence_call(ctx, skill, binding_id)
+    opened = await _bounded_host_read(ctx, lambda: open_presence_call(
+        drive_root=ctx.data_dir, repo_dir=pathlib.Path(REPO_DIR), skill_name=skill, binding_id=binding_id,
+        event=payload.get("event") or {}, label=str(payload.get("label") or ""), event_queue=get_event_q()))
+    return opened.call_id
 
 
 async def api_host_call_open(request: Request) -> JSONResponse:
@@ -62,10 +75,13 @@ async def api_host_call_open(request: Request) -> JSONResponse:
         if binding_id:
             await _bounded_host_read(ctx, lambda: _binding(ctx, skill, binding_id))
         if not call_id:
-            result = await _admit_presence_call(ctx, skill, binding_id)
-            if not result.get("admitted"):
-                return refusal(result.get("reason") or "presence_call_refused", 409)
-            call_id = result["call_id"]
+            from ouroboros.presence_call import PresenceCallRefused
+
+            try:
+                call_id = await _admit_presence_call(ctx, skill, binding_id, payload)
+            except PresenceCallRefused as exc:
+                code = exc.code or "presence_call_refused"
+                return refusal(code, _REFUSAL_STATUS.get(code, 409), str(exc.message or ""))
         hub = get_hub(call_id)
         if hub is None or hub.closed:
             return refusal("call_not_found", 404)
