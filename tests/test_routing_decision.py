@@ -648,7 +648,8 @@ def test_decision_turn_reads_every_recorded_act_on_the_same_message_as_facts(tmp
     assert [(act["action"], act["target"], act["status"]) for act in contract["message_routing_acts"]] == [
         ("promote_chat_to_task", "root-a", "unconfirmed"), ("steer_task", "root-b", "delivered")]
     assert "Each receipt identifies the work" in contract["message_routing_acts_note"]
-    assert set(contract["valid_actions"]) >= {"start_task", "steer_task"}
+    # The verbs are start_task/tell_task; the recorded acts keep their frozen receipt names.
+    assert set(contract["valid_actions"]) >= {"start_task", "tell_task"}
     single = _decision_turn_metadata(_decision_ctx(tmp_path), 1, "cm-other", {})["routing_contract"]
     assert "message_routing_acts" not in single and single["message_routing_receipt"]["target"] == "root-c"
 
