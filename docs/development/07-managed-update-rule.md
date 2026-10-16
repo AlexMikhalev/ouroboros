@@ -12,6 +12,7 @@ Managed updates rewrite the live tree under owner authority while other work run
 - A managed merge commit requires a green full suite on the exact candidate (“The tiered commit and CI gates”). Any non-commit resolver terminal rolls back and best-effort preserves the attempt on its failed-update branch; recovery needs the fresh rescue, not that branch. Boot holds a Paused commit (`postcommit_resume`); its Stop rolls back.
 - Fresh rescue precedes every destructive rollback and boot re-materialization; a capture failure is fail-open but durably disclosed with a transaction pointer (the choke point: ARCHITECTURE §2).
 - Manual Restore fences writers and pins HEAD before reset. Promotion resolves one development SHA for local QA and remote push.
+- Bootstrap may reuse `git_bootstrap.json` only for the same clean repository/branch/HEAD and dependency fingerprint with no transaction markers. Every checkout or rollback invalidates it through `git_ops_reset`; only a successful smoke over unchanged inputs recreates it. Test both the zero-reset/zero-smoke repeat and invalidation by changes or transactions.
 
 Enforcement: `tests/test_update_merge_policy.py`, `tests/test_update_dirty_stash.py`, `tests/test_update_stash_recovery.py` (real Git, crash/replay, Restart), `tests/test_update_hardening.py`, `tests/test_update_tx_corrupt_quarantine.py`.
 
