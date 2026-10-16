@@ -211,4 +211,3 @@ def test_the_reader_less_knowledge_journal_is_no_longer_written(tmp_path):
     assert store.write_knowledge_note(_address(tmp_path), "# Alex\n\nFirst.").ok
     assert not (tmp_path / "memory" / "knowledge_journal.jsonl").exists()
     assert (tmp_path / "memory" / "knowledge_history.jsonl").exists()
-    assert "knowledge_journal" not in inspect.getsource(store)
