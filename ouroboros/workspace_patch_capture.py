@@ -144,7 +144,12 @@ def write_workspace_patch_artifacts(
     # order and reads the verdict instead of spawning ``git diff --numstat`` per file.
     binary_verdicts = untracked_binary_verdicts(root, binary_verdict_candidates(root, untracked), warnings=diagnostics)
     for rel in untracked:
-        _want_sha = scratch_sha_by_rel.get(rel) or scratch_sha_by_abs.get(os.path.normcase(str((root / rel).resolve(strict=False))))
+        _want_sha = scratch_sha_by_rel.get(rel)
+        if not _want_sha and scratch_sha_by_abs:  # resolved only to match a declared scratch path
+            try:
+                _want_sha = scratch_sha_by_abs.get(os.path.normcase(str((root / rel).resolve(strict=False))))
+            except (OSError, RuntimeError):  # a link that cannot be resolved (a loop) is no scratch file
+                _want_sha = None
         if _want_sha:
             try:
                 _cur_sha = sha256((root / rel).read_bytes()).hexdigest()
