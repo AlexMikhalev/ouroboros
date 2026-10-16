@@ -1058,12 +1058,28 @@ def test_every_canonical_store_publisher_takes_the_one_custody_lock(tmp_path):
     settlement, so it takes the same custody lock and answers ``CustodyBusy`` while it is held."""
     data, drive, _store = _nested_child(tmp_path)
     task = {"id": TASK, "drive_root": str(drive)}
+    lock_budget = 0.01  # Exercise real contention without waiting out the production budget.
     with task_custody.task_custody_lock(data, TASK) as locked:
         assert locked
         with pytest.raises(task_custody.CustodyBusy):
-            headless.finalize_task_artifacts(data, task)
+            headless.finalize_task_artifacts(data, task, lock_timeout_sec=lock_budget)
     assert not (artifacts.task_artifact_dir_path(data, TASK) / "memory_export.json").exists()
-    assert headless.finalize_task_artifacts(data, task)  # released: the same work completes
+    assert headless.finalize_task_artifacts(data, task, lock_timeout_sec=lock_budget)  # released: the same work completes
+
+
+def test_artifact_publication_keeps_the_production_lock_budget(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    budgets = []
+
+    def unavailable(_root, _task_id, *, timeout_sec):
+        budgets.append(timeout_sec)
+        return nullcontext(False)
+
+    monkeypatch.setattr(task_custody, "task_custody_lock", unavailable)
+    with pytest.raises(task_custody.CustodyBusy):
+        headless.finalize_task_artifacts(tmp_path, {"id": TASK})
+    assert budgets == [30.0]  # Production publication may wait for a competing writer.
 
 
 @pytest.mark.parametrize("when", ["before_the_custody_lock", "before_the_row_lock"])
