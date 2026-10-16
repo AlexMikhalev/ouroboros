@@ -8626,10 +8626,10 @@ textarea.chat-input {
 .chat-link-button:hover { background: var(--accent-18); }
 
 /* The bubble owns the width floor against the definite transcript column:
-   260px card plus its 28px bubble padding and 2px border. A child percentage
+   260px card plus the bubble's side padding and 2px border. A child percentage
    alone would lose that floor in a shrink-to-fit bubble, even on desktop. */
 .chat-bubble:has(> .chat-quiz-card) {
-    min-width: min(290px, 100%);
+    min-width: min(calc(260px + 2 * var(--space-4) + 2px), 100%);
     margin-inline: 0;
 }
 /* Owner quiz card (design system: born on tokens; DESIGN.md "Quiz card"). */
