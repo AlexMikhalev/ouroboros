@@ -84,7 +84,7 @@ safety, budget, transport and evidence expiry. A missing channel is a capability
 host-attested owner-origin root a Main voice; no chat number, Main's included, is owner
 proof.
 
-`prompts/SYSTEM.md` is tier-0 for every Main and task profile in both context modes and
+`prompts/SYSTEM.md` is tier-0 for every Main and task profile in every context mode and
 competes with the task for context. It carries identity and tone, the decision loop,
 cross-tool policy, prohibitions and safety invariants stated once, and the memory
 contract's resident rule: active summaries stay in the index, archived sources remain
@@ -124,9 +124,7 @@ review-only.
 ### Documentation contract
 
 `docs/ARCHITECTURE.md` is the present-tense map of the body in BIBLE P6's three layers:
-what exists and where, how it flows, why. `docs/DEVELOPMENT.md` is how the body is
-changed: one rule per change class, each naming its enforcing test, gate or CI lane or
-saying review-only. ARCHITECTURE, CHECKLISTS, BIBLE, DESIGN and `config.py` are pointed
+what exists and where, how it flows, why. ARCHITECTURE, CHECKLISTS, BIBLE, DESIGN and `config.py` are pointed
 to, never restated; the ARCHITECTURE settings and endpoint tables are test-checked
 registries of those owners, not second authorities.
 
@@ -169,17 +167,15 @@ scanned.
 
 Size is pairwise: a change ends each composed book, entrypoint included, no
 larger than at its event base, so text it adds is paid by shortening the same
-book. A stored budget only moved up and per-change grants made every growth a
-cheap self-raise; comparing tip with base leaves no number to raise. The
-official-CI `size_ratchet` lane blocks growth on owner, member and collaborator
+book. Comparing tip with base leaves no stored budget or grant a change could
+raise for itself. The official-CI `size_ratchet` lane blocks growth on owner, member and collaborator
 pull requests and on pushes to `ouroboros`; outside contributors and forks receive
 warnings. The repository owner's `book-growth` label exempts its PR and the exact
 commit that lands it. Local surfaces never block: the edit
 tools, `plan_task`, the free `preflight_review(deterministic_only=True)` diagnostic
 and `codebase_health` report the running balance as a fact. Contribution is measured
 against the displayed merge-base of the cached official development ref; an unknown
-base stays unknown, and no network refresh is implied. Free diagnostics label book
-bytes as worktree separately from the selected release-metadata source.
+base stays unknown, and no network refresh is implied.
 Equivalent historical prose stays review-only under CHECKLISTS item 5.
 
 ### Current state first (ARCHITECTURE invariant 10)
@@ -354,10 +350,7 @@ streamed wire recorded (redacted) into `tests/fixtures/llm_wire/` and replayed, 
 a hand-written fixture is not evidence of a dialect.
 
 Local-only installs keep their local route; an unauthored slot is proposed blank,
-explicit owner values stay. Scope runs in every context-size mode; window
-evidence governs send sizing, not review authority. Reading coverage is diagnostic
-under BIBLE P3: missing observations do not discard a received verdict or remove a
-responding reviewer from quorum. Current model ids and defaults belong in code and
+explicit owner values stay. Current model ids and defaults belong in code and
 config, not here: a new active consumer reads
 `provider_models.ACTIVE_MODEL_SETTING_KEYS`; `LEGACY_MODEL_SETTING_KEYS` is migration
 only, and `OUROBOROS_MODEL_HEAVY` with its paired `USE_LOCAL_HEAVY` only seeds a
