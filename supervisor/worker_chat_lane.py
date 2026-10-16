@@ -527,7 +527,6 @@ def _execute_chat_task(admitted: Dict[str, Any]) -> bool:
                     and event.get("_is_direct_chat") and isinstance(checkpoint, dict)):
                 remaining.append(event)
                 continue
-            task_id = str(event.get("task_id") or task.get("id") or "")
             from supervisor.direct_pause import park_direct_pause
             if not park_direct_pause(task, event):
                 remaining.append(event)

@@ -18,7 +18,7 @@ from tests.test_swarm_host_admission import host, rows  # noqa: F401
 pytestmark = pytest.mark.serial
 
 
-def move(host, entrance, pid):
+def move(host, entrance, pid):  # noqa: F811
     if entrance == "owner":
         from ouroboros.gateway.projects import api_project_from_task
 
@@ -42,7 +42,7 @@ def move(host, entrance, pid):
 
 
 @pytest.mark.parametrize("winner", ["owner", "mind"])
-def test_button_and_mind_capture_unbound_then_commit_one_placement(host, monkeypatch, winner):
+def test_button_and_mind_capture_unbound_then_commit_one_placement(host, monkeypatch, winner):  # noqa: F811
     task = {"id": "one", "root_task_id": "one", "chat_id": 1, "workspace_root": "unchanged"}
     host.running["one"] = {"task": task}
     before = copy.deepcopy(task)
@@ -81,7 +81,7 @@ def test_button_and_mind_capture_unbound_then_commit_one_placement(host, monkeyp
 
 @pytest.mark.parametrize("entrance", ["owner", "mind"])
 @pytest.mark.parametrize("delete_first", [False, True])
-def test_destination_deletion_fences_both_placement_doors(host, monkeypatch, entrance, delete_first):
+def test_destination_deletion_fences_both_placement_doors(host, monkeypatch, entrance, delete_first):  # noqa: F811
     create_project(host.root, "room", name="Room")
     real_move = placement.move_task_to_project
 

@@ -458,7 +458,6 @@ def _promote_supervisor(tmp_path, running, enqueued):
 def test_separate_work_keeps_the_callers_unmet_swarm_obligation(_projects_root, monkeypatch, drained_owner):
     """Starting independent work never releases the caller's planning obligation."""
     import supervisor.queue as queue_mod
-    from ouroboros.owner_hurry import force_plan_decision
     from ouroboros.task_results import load_task_result
     from ouroboros.tools.control import _start_task
     from supervisor.events_project_routing import _handle_promote_chat_to_task

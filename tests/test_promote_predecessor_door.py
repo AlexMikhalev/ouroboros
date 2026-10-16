@@ -2,7 +2,6 @@
 
 import types
 import pytest
-from tests._store_shared import delete_result, result_exists
 
 def _host_ctx(tmp_path, *, pending=None, running=None):
     return types.SimpleNamespace(

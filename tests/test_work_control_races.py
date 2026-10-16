@@ -18,7 +18,7 @@ pytestmark = pytest.mark.serial
 
 
 @pytest.mark.parametrize("winner", ["owner", "mind"])
-def test_continue_button_and_tool_capture_then_claim_once(host, monkeypatch, winner):
+def test_continue_button_and_tool_capture_then_claim_once(host, monkeypatch, winner):  # noqa: F811
     from ouroboros import owner_continue
     from ouroboros.gateway.task_continue import api_task_continue
     from ouroboros.tool_call_log import invocation_scope
@@ -74,7 +74,7 @@ def test_continue_button_and_tool_capture_then_claim_once(host, monkeypatch, win
 
 
 @pytest.mark.parametrize("pause_first", [False, True])
-def test_retried_tell_crosses_pause_once_and_keeps_owed_mail(host, pause_first):
+def test_retried_tell_crosses_pause_once_and_keeps_owed_mail(host, pause_first):  # noqa: F811
     from ouroboros.owner_mailbox import drain_owner_entries, mail_read_state
     from ouroboros.owner_pause import read_fence
     from ouroboros.tools.control_relay import _tell_task

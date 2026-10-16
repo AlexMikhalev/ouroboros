@@ -486,12 +486,10 @@ def test_a_late_answer_bypasses_an_unrelated_project_reader(tmp_path, monkeypatc
     """End to end through the real bridge intake: a late answer in a Project room
     with exactly one live root lands in THAT root's mailbox as the owner's words
     with its typed late_answer provenance, so the drain can rebuild the frame."""
-    import queue as queue_mod
     from types import SimpleNamespace
 
     import server
     import supervisor.message_bus as mb
-    from ouroboros.loop_round_limits import _drain_incoming_messages
     from ouroboros.owner_mailbox import drain_owner_entries
     from ouroboros.projects_registry import create_project
 

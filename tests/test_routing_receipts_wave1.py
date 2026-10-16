@@ -167,7 +167,7 @@ def test_a_delivered_task_authored_steer_is_confirmed_under_its_own_id(tmp_path,
     message that already arrived. A task speaking for itself is told its message
     was WRITTEN (wave 2: it lands as a task message, never as owner text)."""
     import supervisor.queue as queue
-    from ouroboros.owner_mailbox import KIND_TASK_MESSAGE, drain_owner_entries
+    from ouroboros.owner_mailbox import drain_owner_entries
     from ouroboros.tools.control import _tell_task
 
     monkeypatch.setattr(queue, "DRIVE_ROOT", str(tmp_path))

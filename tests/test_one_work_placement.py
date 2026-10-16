@@ -178,7 +178,7 @@ def test_live_memory_reads_follow_binding_without_reloading_or_rescoping(runtime
     assert ctx.project_id == ""
 
 
-def test_real_assignment_acquires_destination_before_changing_folder(host, tmp_path, monkeypatch):
+def test_real_assignment_acquires_destination_before_changing_folder(host, tmp_path, monkeypatch):  # noqa: F811
     from tests.test_main_project_consistency import admit_main
     from tests.test_project_hold_recovery import worker
     from supervisor import workers
@@ -203,7 +203,7 @@ def test_real_assignment_acquires_destination_before_changing_folder(host, tmp_p
     assert workers.RUNNING["one"]["task"]["project_id"] == "room"
 
 
-def test_real_admission_never_adopts_shared_origin(host):
+def test_real_admission_never_adopts_shared_origin(host):  # noqa: F811
     from ouroboros.project_dialogue import build_owner_message_ref
     from supervisor.events_project_routing import _handle_promote_chat_to_task
 
@@ -222,7 +222,7 @@ def test_real_admission_never_adopts_shared_origin(host):
     assert project_binding_for_task(host.root, "separate") is None
 
 
-def test_restore_of_old_execution_scope_readmits_committed_move(host, tmp_path, monkeypatch):
+def test_restore_of_old_execution_scope_readmits_committed_move(host, tmp_path, monkeypatch):  # noqa: F811
     from tests.test_main_project_consistency import admit_main
     from tests.test_project_hold_recovery import resume_after_app_stop, worker
     from supervisor import queue, workers
