@@ -374,3 +374,10 @@ test('the call strip shows owner words for a server reason and keeps the code in
         }
     }
 });
+
+test('a long answer arriving faster than it plays is held, not a failed call', () => {
+    const buffer = new PlaybackBuffer(1000, () => {});
+    const second = { item_id: 'long', epoch: 0, rate: 1000, pcm: new Int16Array(1000) };
+    for (let i = 0; i < 30; i++) assert.equal(buffer.push(second), true);  // thirty seconds in one burst
+    assert.equal(buffer.queued, 30000);
+});

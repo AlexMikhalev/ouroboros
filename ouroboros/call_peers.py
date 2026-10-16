@@ -21,11 +21,12 @@ from typing import Any
 
 from ouroboros import call_protocol as cp
 
-# Physical transport bounds: one second of capture per track; ten seconds of
-# outbound PCM to absorb faster-than-playback provider bursts before socket
-# drainage (under 1 MiB per peer at 48 kHz); bounded controls and peer/track sets.
+# Physical transport bounds: one second of capture per track; ten minutes of
+# outbound PCM, because a provider sends a whole answer many times faster than it
+# plays and a slow socket drains it over the answer's length (held only while
+# queued, under 60 MiB per peer at 48 kHz); bounded controls and peer/track sets.
 AUDIO_QUEUE_FRAMES = 50
-OUTPUT_QUEUE_FRAMES = 500
+OUTPUT_QUEUE_FRAMES = 30_000
 CONTROL_QUEUE_MESSAGES = 128
 MAX_PEERS = 32
 MAX_STREAMS = 16

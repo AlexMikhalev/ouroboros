@@ -5,7 +5,9 @@ export const HEADER_SIZE = 16;
 export const MAX_FRAME_PAYLOAD = 64 * 1024;
 export const CAPTURE_MS = 20;
 export const JITTER_MS = 40;
-export const MAX_BUFFER_SECONDS = 10; // Physical playback memory/latency bound.
+// Physical memory bound: a provider sends a whole answer many times faster than it plays,
+// so a long answer queues here; frames are held only as they arrive, nothing is preallocated.
+export const MAX_BUFFER_SECONDS = 600;
 
 export function encodeFrame({ kind = 1, epoch = 0, seq = 0, rate, stream = 0, pcm }) {
     if (!(pcm instanceof Int16Array) || pcm.byteLength > MAX_FRAME_PAYLOAD)
