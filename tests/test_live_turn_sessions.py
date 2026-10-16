@@ -13,6 +13,8 @@ import json
 import threading
 import time
 
+import pytest
+
 from ouroboros import live_turn
 from ouroboros.call_protocol import (
     STATE_CLOSING, STATE_CONNECTING, STATE_LIVE, PeerAudio, PeerInfo, PeerJoined, PeerLeft,
@@ -702,3 +704,37 @@ def test_later_meeting_captions_landing_first_leave_the_earlier_owner_words_the_
     assert h.chat_rows()[0]["text"] == "owner words"
     h.stop()
     h.finish()
+
+
+@pytest.mark.parametrize("asked_epoch,delivered", [(2, ToolResult), (1, ContextItem)])
+def test_a_round_limit_answer_goes_to_the_session_that_asked_or_stays_as_context(asked_epoch, delivered):
+    from types import SimpleNamespace
+
+    from ouroboros.live_tool_batch import ToolBatchWorker
+
+    sent: list = []
+
+    async def send(command):
+        sent.append(command)
+
+    call = SimpleNamespace(spec=SimpleNamespace(presence_binding_id="b" * 32, call_id="c"), task_id="t",
+                           ctx=SimpleNamespace(inline_max_rounds=1), epoch=2, _send=send, _checkpoint=lambda: True)
+    lane = ToolBatchWorker(call)
+    lane.round_origins = {"earlier-response"}  # this input's one allowed round is spent
+    lane.claimed = {"late": asked_epoch}
+    lane.pending = [(asked_epoch, ToolCall("late", "web_search", "{}"), "next-response")]
+
+    async def one_take():
+        task = asyncio.create_task(lane.run_forever())
+        while not sent:
+            await asyncio.sleep(0.01)
+        task.cancel()
+
+    asyncio.run(asyncio.wait_for(one_take(), 5))
+    lane.shutdown()
+    (answer,) = sent
+    assert isinstance(answer, delivered)
+    text = answer.output if delivered is ToolResult else answer.text
+    assert "TOOL_ROUND_LIMIT" in text
+    if delivered is ContextItem:
+        assert answer.source == "tool_result_retained"
