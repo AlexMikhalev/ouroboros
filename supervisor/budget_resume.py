@@ -23,9 +23,8 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from ouroboros.utils import utc_now_iso
-
 from ouroboros.control_actor import control_actor, mind_resume_refusal
+from ouroboros.utils import utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -221,8 +220,7 @@ def resume_warm_owner_pause_root(task_id: str, *, selected_by: str = "") -> Opti
         return {'ok': False, 'error': 'owner_pause_custody_unreadable'}
     grant = {**control_actor(), "grant_id": uuid.uuid4().hex, "granted_at": utc_now_iso(), "granted_at_ts": time.time(),
              "single_use": True, "selected_by": str(selected_by or "owner"), "authority": "explicit_resume",
-             'root_resume_basis': root_state['basis'],
-             "generation": int(fence.get("generation") or 0), "warm": True}
+             'root_resume_basis': root_state['basis'], "generation": int(fence.get("generation") or 0), "warm": True}
     projected = None
     if actor:
         # The census above passed never-started members on the durable fence alone when the
@@ -511,8 +509,7 @@ def _grant_exact_resume(task: Dict[str, Any], pause: Dict[str, Any], *, selected
     generation = int(row.get("resume_generation") or 0) + 1
     pause_generation = int(row.get("pause_generation") or 0)
     grant = {
-        **control_actor(),
-        **({"owner_pause_fence_id": owner_fence_id} if owner_fence_id else {}),
+        **control_actor(), **({"owner_pause_fence_id": owner_fence_id} if owner_fence_id else {}),
         "grant_id": uuid.uuid4().hex, "granted_at": utc_now_iso(), "granted_at_ts": now,
         "single_use": True, "paused_duration_sec": prior_paused + max(0.0, now - paused_at),
         "executed_sec_before_pause": round(executed_sec, 3),
