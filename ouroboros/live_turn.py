@@ -37,7 +37,9 @@ from ouroboros.gateways.realtime_engine import (
     ResponseDone, ResponseStarted, ResumeCheckpoint, SessionConfig, SpeechStarted, ToolCall, ToolCallCancelled,
     TranscriptionUsage,
 )
-from ouroboros.live_call_route import call_minutes_ceiling, initial_call_schemas, native_search_enabled, resolve_call_route
+from ouroboros.live_call_route import (
+    call_minutes_ceiling, initial_call_schemas, native_search_enabled, recover_call_context, resolve_call_route,
+)
 from ouroboros.live_tool_batch import ToolBatchWorker, text_of
 from ouroboros.usage_accounting import BudgetExceeded
 
@@ -185,6 +187,7 @@ class _LiveCall:
             self.tools, list(initial_call_schemas(self.tools, self.spec)), self.messages, context_mode="nano")
         self.ctx.event_queue, self.ctx.task_id, self.ctx.messages = self.event_queue, self.task_id, self.messages
         self.ctx._accumulated_usage = self.usage
+        self.ctx.active_context_mode = getattr(getattr(self.ctx, "context_fit_plan", None), "initial_mode", "nano")
         self.stateful_executor = StatefulToolExecutor()
         exit_ctx = _LoopExitContext(self.tools, self.drive_root, self.task_id, self.event_queue, self.drive_logs,
                                     self.usage, self.llm_trace, self.ctx, getattr(self.ctx, "_execution_trace", None))
@@ -289,8 +292,6 @@ class _LiveCall:
         await engine.open(self._session_config(history=history, resume_handle=resume_handle))
         self.engine, self.epoch, self.session_started = engine, self.epoch + 1, time.monotonic()
         self.hub.set_engine_rates(self.route.engine.input_rate, self.route.engine.output_rate)
-        self.state = STATE_LIVE
-        self.hub.send_state(STATE_LIVE)
         if self.empty_since is None and not self.hub.peers():
             # A call nobody attached to yet runs the same rejoin grace as one everyone left:
             # a peer whose socket never arrived must not hold the session (or a Presence slot).
@@ -482,7 +483,9 @@ class _LiveCall:
         elif isinstance(event, GoAway):
             asyncio.create_task(self._reconnect("go_away", resume=True))
         elif isinstance(event, EngineError):
-            if event.retryable:
+            if recover_call_context(self.ctx, self.messages, self.tool_schemas, event):
+                await self._reconnect("context_length", resume=False)
+            elif event.retryable:
                 asyncio.create_task(self._reconnect(f"engine_error:{event.kind}", resume=True))
             else:
                 self.failure = ("live_engine_error", f"{event.kind}: {event.message}")
@@ -491,6 +494,8 @@ class _LiveCall:
             if not self.closing:
                 asyncio.create_task(self._reconnect(f"transport_lost:{event.reason}", resume=True))
         elif isinstance(event, Ready):
+            self.state = STATE_LIVE
+            self.hub.send_state(STATE_LIVE)
             effective = dict(event.effective or {})
             if effective.get("input_rate") or effective.get("output_rate"):
                 self.hub.set_engine_rates(int(effective.get("input_rate") or self.route.engine.input_rate),

@@ -14,6 +14,7 @@ so the agent (context preparation) and the driver (the session) read one answer.
 from __future__ import annotations
 
 import logging
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -161,3 +162,47 @@ def native_search_enabled(spec: CallSpec) -> bool:
         return False
     raw = (_call_setting("OUROBOROS_CALL_NATIVE_SEARCH") or "true").lower()
     return raw in ("1", "true", "yes", "on")
+
+
+def recover_call_context(ctx: Any, messages: List[Dict[str, Any]], schemas: List[Dict[str, Any]], error: Any) -> bool:
+    """An actual size refusal earns a strictly smaller ordinary projection.
+
+    Max keeps its books until the provider refuses, just like a text turn. The
+    provider's instruction-field limit is not substituted for the model window:
+    Low/Nano retain tier zero and address the same captured reference sources.
+    Estimates alone never refuse a call or trigger this recovery.
+    """
+    from ouroboros.live_tool_batch import text_of
+    from ouroboros.loop_model_call import _adopt_view_facts
+
+    plan = getattr(ctx, "context_fit_plan", None)
+    if error.kind != "context_length" or plan is None:
+        return False
+    try:
+        evidence = json.loads(error.message)
+        deficit = int(evidence["input_tokens"]) - int(evidence["limit_tokens"])
+        if evidence["field"] != "session.instructions" or int(evidence["limit_tokens"]) <= 0 or deficit <= 0:
+            return False
+    except (ValueError, TypeError, KeyError):
+        return False
+    mode = str(getattr(ctx, "active_context_mode", "") or plan.initial_mode)
+    next_mode = {"max": "low", "low": "nano"}.get(mode)
+    if not next_mode or not messages or messages[0].get("role") != "system":
+        return False
+    rebound = plan.reproject_for_route(
+        window_tokens=plan.window_tokens, known_window=bool(plan.window_tokens),
+        ratio=plan.projection(mode).calibration_ratio, output_reserve=plan.output_reserve_tokens,
+        tool_schemas=schemas, start_mode=mode, current_messages=messages,
+        refused_tokens=deficit, select_mode=next_mode)
+    candidate = rebound.reproject_transcript(messages, next_mode)
+    before, after = (len(text_of(rows[0]["content"]).encode("utf-8")) for rows in (messages, candidate))
+    if after >= before:
+        return False
+    messages[:] = candidate
+    ctx.context_fit_plan, ctx.active_context_mode = rebound, next_mode
+    _adopt_view_facts(ctx, rebound, next_mode)
+    trace = getattr(ctx, "_execution_trace", None)
+    if isinstance(trace, dict):
+        trace.setdefault("live_context_recovery", []).append({**evidence, "from": mode, "to": next_mode,
+                                                              "before_bytes": before, "after_bytes": after})
+    return True

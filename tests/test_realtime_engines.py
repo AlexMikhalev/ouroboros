@@ -112,6 +112,25 @@ def selected(events, kind):
     return [event for event in events if isinstance(event, kind)]
 
 
+@pytest.mark.parametrize("valid", [True, False])
+@run_async
+async def test_recorded_instruction_refusal_retains_only_capacity_evidence(valid):
+    engine, connection, events, collector = await opened("openai")
+    # Recorded from the real integrated probe, before any audio was sent.
+    error = {"type": "invalid_request_error", "code": "invalid_value", "param": "session.instructions",
+             "message": "Instructions cannot be longer than 65536 tokens, you have provided 186324 tokens."}
+    if not valid:
+        error["param"] = "session.tools"
+    await feed(engine, connection.sockets[0], {"type": "error", "error": error})
+    await finished(engine, collector)
+    event = selected(events, EngineError)[0]
+    if valid:
+        assert event.kind == "context_length" and not event.retryable
+        assert json.loads(event.message) == {"limit_tokens": 65536, "input_tokens": 186324, "field": "session.instructions"}
+    else:
+        assert event.kind == "provider"
+
+
 @pytest.mark.parametrize("name", ["text_tool_exchange.json", "audio_tool_exchange.json", "adapter_audio_exchange.json"])
 @run_async
 async def test_recorded_openai_exchange(name):

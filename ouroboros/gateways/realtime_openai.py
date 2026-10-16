@@ -11,6 +11,7 @@ import asyncio
 import base64
 from collections import deque
 import json
+import re
 from urllib.parse import urlencode
 
 from ouroboros.gateways.realtime_engine import (
@@ -256,6 +257,15 @@ class OpenAIRealtimeEngine(RealtimeTransport):
                 self._response_requested = False
                 self._need_response = True
             else:
+                # The instruction field has its own physical limit, separate
+                # from the model window. Retain only measured numbers so the
+                # host can use its ordinary actual-refusal projection ladder.
+                size = re.fullmatch(r"Instructions cannot be longer than (\d+) tokens, you have provided (\d+) tokens\.",
+                                    str(error.get("message") or ""))
+                if code == "invalid_value" and error.get("param") == "session.instructions" and size:
+                    await self._fail(EngineError("context_length", json.dumps({
+                        "limit_tokens": int(size[1]), "input_tokens": int(size[2]), "field": "session.instructions"})))
+                    return
                 retryable = code in ("server_error", "rate_limit_exceeded")
                 category = {"rate_limit_exceeded": "rate_limit", "invalid_api_key": "authentication",
                             "invalid_request_error": "invalid_request"}.get(code, "provider")

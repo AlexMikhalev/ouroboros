@@ -26,7 +26,7 @@ from ouroboros.call_protocol import (
 from ouroboros.gateways.realtime_engine import (
     ENGINE_GOOGLE, ENGINE_OPENAI, SPEAKER_OUROBOROS, SPEAKER_OWNER,
     AudioIn, AudioOut, Caption, Close, ContextItem, EngineError, GoAway, Interrupt, PlayedAudio,
-    ResponseDone, ResponseStarted, ResumeCheckpoint, SpeechStarted, ToolCall, ToolCallCancelled, ToolResult,
+    Ready, ResponseDone, ResponseStarted, ResumeCheckpoint, SpeechStarted, ToolCall, ToolCallCancelled, ToolResult,
     TranscriptionUsage, UpdateTools,
 )
 from ouroboros.usage_accounting import BudgetExceeded
@@ -52,6 +52,8 @@ def _spec(**overrides) -> CallSpec:
 class FakeEngine:
     """``LiveEngine``: records the session config and every command; the test pushes events."""
 
+    auto_ready = True
+
     def __init__(self) -> None:
         self.config = None
         self.sent: list = []
@@ -63,6 +65,8 @@ class FakeEngine:
         self.config = config
         self._loop = asyncio.get_running_loop()
         self._queue = asyncio.Queue()
+        if self.auto_ready:
+            self._queue.put_nowait(Ready({"input_rate": 24000, "output_rate": 24000}))
 
     async def send(self, command) -> None:
         self.sent.append(command)
@@ -290,6 +294,44 @@ def harness(monkeypatch, tmp_path):
 
 
 # --- opening -------------------------------------------------------------------
+
+
+def test_live_state_waits_for_provider_confirmation(harness, monkeypatch):
+    monkeypatch.setattr(FakeEngine, "auto_ready", False)
+    h = harness()
+    engine = h.start()
+    assert h.hub.states == [(STATE_CONNECTING, "")]
+    engine.push(Ready({"input_rate": 24000, "output_rate": 24000}))
+    assert _wait_for(lambda: h.hub.states[-1] == (STATE_LIVE, ""))
+    h.stop()
+    h.finish()
+
+
+def test_actual_context_refusal_reopens_with_strictly_smaller_projection(harness):
+    from ouroboros.context_fit import ContextFitPlan, ContextFitProjection
+
+    h = harness()
+    core = "Protected tier zero. "
+    full, addressed = core + "Reference text. " * 200, core + "Read the full reference source."
+    projection = lambda mode, text: ContextFitProjection(mode, json.dumps(text), len(text), len(text), 1)
+    h.ctx.context_fit_plan = ContextFitPlan("capture", "max", "max", "model", "openai", "route", "confirmed",
+        False, 128000, 32000, json.dumps("original input"), projection("max", full), projection("low", addressed),
+        nano_projection=projection("nano", addressed))
+    h.messages[0]["content"] = full
+    engine = h.start()
+    refusal = EngineError("context_length", json.dumps({"limit_tokens": 65536, "input_tokens": 186324,
+                                                       "field": "session.instructions"}))
+    engine.push(refusal)
+    assert _wait_for(lambda: len(h.llm.engines) == 2 and h.engine().config is not None)
+    assert h.engine().config.instructions == addressed
+    assert h.engine().config.history == engine.config.history
+    assert h.ctx.active_context_mode == "low"
+    assert engine.closed == ["context_length"]
+    # No identical retry when the protected projection itself is refused.
+    h.engine().push(refusal)
+    _, usage, trace = h.finish()
+    assert len(h.llm.engines) == 2 and usage["execution_status"] == "infra_failed"
+    assert trace["live_context_recovery"][0]["input_tokens"] == 186324
 
 
 def test_the_session_opens_with_the_fitted_instructions_and_the_nano_view(harness):
