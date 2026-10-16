@@ -352,38 +352,24 @@ def _copy_task_summary_metadata(rec: Dict[str, Any], entry: Dict[str, Any]) -> N
     rec.update({key: entry[key] for key in ("outcome_phase", "outcome_final", "initiator") if key in entry})
 
 
-def _load_terminal_result(
-    data_dir: pathlib.Path,
-    task_id: str,
-    cache: Dict[str, Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Read effective facts once for lineage/annotation, without artifact materialization.
-    Migration must reach the HTTP boundary, never become an absent terminal fact.
-    """
-    if task_id in cache:
-        return cache[task_id]
-    try:
-        from ouroboros.task_status import load_effective_task_result
+_READS = ("task_reads",)  # the request's batch reader inside its result cache (never a task id)
 
-        result = load_effective_task_result(data_dir, task_id, materialize_artifacts=False)
-    except StoreMigrating:
-        raise
-    except Exception:
-        result = None
-    if result:
-        cache[task_id] = result
-    else:
-        # Empty effective read is not proof of absence: an unavailable store retains
-        # uncertainty; only a store that answers "no row" proves the result absent.
-        from ouroboros.task_store import exists
-        cache[task_id] = {}
+
+def _load_terminal_result(data_dir: pathlib.Path, task_id: str, cache: Dict[Any, Any]) -> Dict[str, Any]:
+    """Effective facts once per request for lineage/annotation, without artifact materialization,
+    through the request's ``TaskReads`` (prefetched by ``_assemble_history_response``). Migration
+    reaches the HTTP boundary; an unavailable read keeps uncertainty ({}), and only the store's own
+    answer of "no row" proves the result absent."""
+    if task_id not in cache:
+        from ouroboros.task_reads import TaskReads
+
+        reads = cache.setdefault(_READS, TaskReads(data_dir))
         try:
-            if not exists(data_dir, task_id):
-                cache[task_id] = {"_history_result_absent": True}
+            cache[task_id] = reads.effective(task_id) or ({"_history_result_absent": True} if reads.absent(task_id) else {})
         except StoreMigrating:
             raise
         except Exception:
-            pass
+            cache[task_id] = {}
     return cache[task_id]
 
 
@@ -1470,7 +1456,16 @@ def _assemble_history_response(
     lifecycle_row = _active_lifecycle_row(row_matches_thread) if not cursor else None
     if lifecycle_row is not None:
         combined.append(lifecycle_row)
-    result_cache: Dict[str, Dict[str, Any]] = {}  # every task result below is read once per request
+    result_cache: Dict[Any, Any] = {}  # every task result below is read once per request, in batches
+    try:
+        from ouroboros.task_reads import TaskReads
+
+        result_cache[_READS] = TaskReads(data_dir)
+        result_cache[_READS].prefetch(row.get("task_id") for row in combined)
+    except StoreMigrating:
+        raise
+    except Exception:
+        log.debug("Batched task facts unavailable; reading per task", exc_info=True)
     arrival = latest_arrival(combined, page, data_dir, row_matches_thread, _stored_chat_id, chat_gaps, lambda task_id: (
         _load_terminal_result(data_dir, task_id, result_cache))) if thread_id in project_chat_ids else (
         {} if classified or thread_id == 1 else {"latest_message": None})  # an unclassified room may be a Project

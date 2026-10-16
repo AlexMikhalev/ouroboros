@@ -672,6 +672,7 @@ def load_effective_task_result(
     task_id: str,
     *,
     materialize_artifacts: bool = True,
+    reads: Any = None,
 ) -> Dict[str, Any]:
     try:
         tid = validate_task_id(task_id)
@@ -679,8 +680,9 @@ def load_effective_task_result(
         return {}
     return effective_task_result(
         drive_root,
-        load_task_result(drive_root, tid) or {},
+        (reads.load(drive_root, tid) if reads is not None else load_task_result(drive_root, tid)) or {},
         materialize_artifacts=materialize_artifacts,
+        reads=reads,
     )
 
 
@@ -802,6 +804,7 @@ def _apply_cancel_state_projection(
     drive_root: pathlib.Path,
     requested_task_id: str,
     merged: Dict[str, Any],
+    reads: Any = None,
 ) -> None:
     """Overlay durable cancel intent on one effective, non-authoritative view.
 
@@ -819,14 +822,15 @@ def _apply_cancel_state_projection(
             return
         from ouroboros.cancel_intents import cancel_state_fields
 
+        intents = reads.cancel_intents(drive_root) if reads is not None else None
         cancel_fields = cancel_state_fields(
-            pathlib.Path(drive_root), requested_task_id,
+            pathlib.Path(drive_root), requested_task_id, intents=intents,
         )
         if not cancel_fields:
             physical_task_id = str(merged.get("task_id") or "").strip()
             if physical_task_id and physical_task_id != requested_task_id:
                 cancel_fields = cancel_state_fields(
-                    pathlib.Path(drive_root), physical_task_id,
+                    pathlib.Path(drive_root), physical_task_id, intents=intents,
                 )
         merged.update(cancel_fields)
     except Exception:
@@ -841,6 +845,7 @@ def effective_task_result(
     _seen: frozenset[str] = frozenset(),
     _events_index: Optional[_EventsTailIndex] = None,
     _boot: bool = False,
+    reads: Any = None,
 ) -> Dict[str, Any]:
     """Merge parent result, child-drive result, and active queue state.
 
@@ -860,7 +865,12 @@ def effective_task_result(
     ``_events_index`` optionally shares ONE parsed events-tail across a batch of
     rows (the task-list request), so N stale-running rows cost one tail read
     instead of N; ``None`` keeps the per-call read for single-row callers.
+    ``reads`` (``task_reads.TaskReads``) serves every document, the queue snapshot, the cancel
+    intents and the events tail of a read of many tasks from its batches.
     """
+    load = reads.load if reads is not None else load_task_result
+    if reads is not None and _events_index is None:
+        _events_index = reads.events_index
 
     if not result:
         return {}
@@ -869,14 +879,14 @@ def effective_task_result(
         return dict(result)
     retry_id = str(result.get("superseded_by") or result.get("retry_task_id") or "").strip()
     if retry_id and retry_id != task_id and retry_id not in _seen:
-        retry_result = load_task_result(drive_root, retry_id) or {}
+        retry_result = load(drive_root, retry_id) or {}
         if retry_result:
             effective_retry = effective_task_result(
                 pathlib.Path(drive_root),
                 retry_result,
                 materialize_artifacts=materialize_artifacts,
                 _seen=frozenset(set(_seen) | {task_id}),
-                _events_index=_events_index, _boot=_boot,
+                _events_index=_events_index, _boot=_boot, reads=reads,
             )
             if effective_retry:
                 merged_retry = dict(effective_retry)
@@ -923,7 +933,7 @@ def effective_task_result(
                         rid for rid in inherited if rid not in own
                     ]
                 _apply_cancel_state_projection(
-                    pathlib.Path(drive_root), task_id, merged_retry,
+                    pathlib.Path(drive_root), task_id, merged_retry, reads,
                 )
                 return merged_retry
 
@@ -932,7 +942,7 @@ def effective_task_result(
     child_text = ""
     if not cancellation_blocks_child_result(result):
         for child_drive in _child_drive_candidates(result):
-            child_result = load_task_result(child_drive, task_id) or {}
+            child_result = load(child_drive, task_id) or {}
             if child_result:
                 child_text = str(child_drive)
                 break
@@ -995,7 +1005,8 @@ def effective_task_result(
     terminal_projection = ""
     parent_status = str(merged.get("status") or "").lower()
     if parent_status not in FINAL_STATUSES:
-        queue_snapshot = _load_queue_snapshot(pathlib.Path(drive_root))
+        queue_snapshot = (reads.queue_snapshot(drive_root) if reads is not None
+                          else _load_queue_snapshot(pathlib.Path(drive_root)))
         queue_status, queue_task = _queue_task_status(queue_snapshot, task_id)
         if queue_status and queue_status != "unknown":
             merged["status"] = _merge_queue_status(parent_status, queue_status, queue_task)
@@ -1064,7 +1075,7 @@ def effective_task_result(
     # stays honest (running/scheduled) until the supervisor settles the teardown.
     # A legacy ``cancel_requested`` status (old files awaiting boot migration)
     # projects the same pending state.
-    _apply_cancel_state_projection(pathlib.Path(drive_root), task_id, merged)
+    _apply_cancel_state_projection(pathlib.Path(drive_root), task_id, merged, reads)
     merged["execution_observation"] = task_execution_observation(drive_root, merged, queue_snapshot=queue_snapshot)
     if terminal_projection:
         # This read inferred a terminal; a later persisted terminal is a recorded
