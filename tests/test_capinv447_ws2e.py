@@ -414,7 +414,7 @@ def test_list_tools_follows_next_cursor(monkeypatch):
             )
 
     monkeypatch.setattr(mcp_client, "_MCP_SDK_AVAILABLE", True)
-    monkeypatch.setattr(mcp_client, "StdioServerParameters", lambda *, command, args: None)
+    monkeypatch.setattr(mcp_client, "StdioServerParameters", lambda *, command, args, env=None: None)
     monkeypatch.setattr(mcp_client, "stdio_client", fake_stdio)
     monkeypatch.setattr(mcp_client, "ClientSession", Session)
 
