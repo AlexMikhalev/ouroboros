@@ -1,3 +1,5 @@
+import pytest
+
 from ouroboros.loop_tool_execution import _extract_result_metadata, _is_tool_execution_failure
 from ouroboros.tools.tool_result import (
     LegacyTextResultAdapter,
@@ -418,24 +420,18 @@ def test_shell_regex_autocorrect_nonzero_still_fails():
     assert _extract_result_metadata("run_command", result, True)["status"] == "non_zero_exit"
 
 
-def test_live_tool_log_payload_includes_structured_result_metadata(tmp_path, monkeypatch):
-    import pathlib
+@pytest.mark.parametrize("process_exit", [None, -9], ids=["no-process", "signal-exit"])
+def test_live_tool_log_payload_includes_structured_result_metadata(tmp_path, monkeypatch, process_exit):
+    import json
     import threading
+    import time
     from types import SimpleNamespace
 
     import ouroboros.loop_tool_execution as loop_tool_execution
     from ouroboros.loop_tool_execution import _execute_with_timeout
+    from ouroboros.tools.process_facts import publish_process_facts
     from ouroboros.tools.tool_result import ToolResult
 
-    source = (pathlib.Path(__file__).resolve().parents[1] / "ouroboros" / "loop_tool_execution.py").read_text(encoding="utf-8")
-
-    assert '"status": result_meta.get("status")' in source
-    # The typed process facts reach the live log through ONE projection shared
-    # with the tools.jsonl row (typed-process-facts lane), so the payload names
-    # every member the merge produced — exit_code and signal included — and a
-    # member the call never published stays absent instead of reading as null.
-    # (the live finished frame of every branch comes from _emit_finished; #1316).
-    assert source.count("**_process_fact_fields(result_meta)") >= 2
     projected = loop_tool_execution._process_fact_fields(
         {"status": "x", "exit_code": -9, "signal": "SIGKILL", "killed_by_host": True}
     )
@@ -457,6 +453,9 @@ def test_live_tool_log_payload_includes_structured_result_metadata(tmp_path, mon
         # descheduled between submit and its 1ms wait, which then found the
         # future already done and took the in-time branch.
         late_notice.wait(30)
+        if process_exit is not None:
+            publish_process_facts(returncode=process_exit, started_ts=time.monotonic(), killed_by_host=True)
+            return ToolResult(status="error", code="SHELL_EXIT_ERROR", text="process failed")
         return ToolResult(status="ok", code="OK", text="OK")
 
     # D10 emptied FOREGROUND_MUTATIVE_TOOLS (claude_code_edit was its only
@@ -478,10 +477,21 @@ def test_live_tool_log_payload_includes_structured_result_metadata(tmp_path, mon
         task_id="task-1",
     )
 
-    assert result["result"] == "OK"
+    assert result["result"] == ("OK" if process_exit is None else "process failed")
     payloads = [event.get("data") or {} for event in live_events]
     assert any(payload.get("type") == "tool_call_late" for payload in payloads)
     assert any(payload.get("terminal_wait") is True for payload in payloads)
+    [finished] = [row for row in payloads if row.get("type") == "tool_call_finished"]
+    rows = [json.loads(line) for line in (drive_logs / "tools.jsonl").read_text(encoding="utf-8").splitlines()]
+    [settled] = [row for row in rows if row.get("type") == "tool_call"]
+    for row in (finished, settled):
+        assert row["status"] == ("ok" if process_exit is None else "non_zero_exit")
+        if process_exit is None:
+            assert not {"exit_code", "signal", "killed_by_host", "duration_ms"}.intersection(row)
+        else:
+            assert (row["exit_code"], row["signal"], row["killed_by_host"]) == (-9, "SIGKILL", True)
+            assert isinstance(row["duration_ms"], int) and row["duration_ms"] >= 0
+            assert "pre_exec_failure" not in row and "timed_out" not in row
 
 
 # Moved here from tests/test_loop_misc.py: both assert what the SINGLE

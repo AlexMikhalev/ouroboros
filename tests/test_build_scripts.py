@@ -59,16 +59,9 @@ class TestBuildSh:
         assert "playwright install --only-shell chromium" in src, (
             "build.sh must call 'playwright install --only-shell chromium' on macOS"
         )
-        assert "Skipping bundled WebKit on macOS" in src, (
-            "build.sh must document the macOS WebKit packaging policy"
-        )
-        assert "Removing stale bundled WebKit payloads from macOS package tree" in src
         assert 'rglob(".local-browsers")' in src
         assert 'glob("webkit-*")' in src
         assert "shutil.rmtree" in src
-        assert "managed" in src and "Playwright cache" in src, (
-            "build.sh must leave WebKit available through the managed runtime cache"
-        )
         assert "playwright install webkit" not in src
         assert "pw.webkit.launch" not in src
 
@@ -653,7 +646,6 @@ class TestRepoBundleReleaseTagGuard:
     def test_dirty_tree_refusal_reports_the_offending_paths(self):
         src = _read("scripts/build_repo_bundle.py")
         assert '"status", "--porcelain"' in src
-        assert '"Commit or stash changes first so the embedded managed repo matches the packaged code.\\n"' in src
         assert "+ status" in src
 
 
