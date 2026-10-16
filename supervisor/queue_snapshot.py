@@ -708,7 +708,7 @@ def _park_pausing_running_rows(running_rows: list, snapshot_pending: list, *,
     pause authority proves nothing and keeps it too; so does an explicit Stop.
     Rows already in the pending snapshot are never duplicated.
     """
-    from supervisor.restart_retention import park_saved_pause
+    from supervisor.restart_retention import PAUSE_REQUEST_ONLY, park_saved_pause, pause_retention
 
     pending_ids = {str(row.get("id") or "") for row in snapshot_pending if isinstance(row, dict)}
     parked: list = []
@@ -721,6 +721,19 @@ def _park_pausing_running_rows(running_rows: list, snapshot_pending: list, *,
             continue
         attempt = int(row.get("attempt") or task.get("_attempt") or 1)
         result_root = pathlib.Path(task.get("budget_drive_root") or _queue().DRIVE_ROOT)
+        try:
+            if pause_retention(result_root, task_id, attempt) == PAUSE_REQUEST_ONLY:
+                from ouroboros.budget_pause import budget_pause_row
+                from ouroboros.cancel_intents import has_active_intent
+                from ouroboros.working_checkpoint import complete_pause_from_working
+
+                # This process is dead. Preserve its saved cognition under the same
+                # pause; a working retry alone would leave the sleep launch fence shut.
+                if not has_active_intent(result_root, task_id, strict=True):
+                    complete_pause_from_working(result_root, task_id,
+                                                budget_pause_row(result_root, task_id), attempt)
+        except Exception:
+            log.warning("Could not complete interrupted pause of %s from saved work", task_id, exc_info=True)
         parked_task = park_saved_pause(task, attempt, result_root, pause_source="restart_during_pausing",
                                        sleep_hold_reason=sleep_hold_reason)
         if parked_task is not None:

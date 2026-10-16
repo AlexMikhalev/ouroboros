@@ -96,7 +96,9 @@ def deliver_answer(root, asker: str, quiz_id: str, block: dict, live_reader, fal
                 return False, ""
             return False, "quiz_history_write_pending"
     recipient, task = reading_recipient(root, asker, live_reader)
-    if task is not None:
+    attempted = set()
+    while task is not None and recipient not in attempted:
+        attempted.add(recipient)
         agent = get_direct_chat_agent(recipient)
         lock = getattr(agent, "_owner_message_admission_lock", None) or q._queue_lock
         with lock:
@@ -116,6 +118,9 @@ def deliver_answer(root, asker: str, quiz_id: str, block: dict, live_reader, fal
                     return False, "mailbox_write_failed"
                 _update_delivery(root, asker, quiz_id, {"mailbox_at": utc_now_iso()})
                 return False, "awaiting_recipient_read"
+        # The selected reader ended before admission. Follow its existing
+        # Continue under that recipient's own lock before using a fresh head.
+        recipient, task = reading_recipient(root, admitted_successor(root, recipient), live_reader)
     # No reader. Named ingress carries an explicit question-answer fact, which
     # bypasses ordinary room intake and cannot release any old task's hold.
     block = _update_delivery(root, asker, quiz_id, {"recipient_task_id": "", "msg_id": f"quiz_late_answer:{asker}:{quiz_id}",
