@@ -43,6 +43,9 @@ from tests._zoom_meeting_fakes import (
     FakeZoom,
     ManualLoop,
     _libc,
+    drive_to_audio,
+    join_args,
+    open_call_via_audio,
     serve_app,
     start_fake_door,
 )
@@ -108,31 +111,6 @@ def make_bot(zoom, tmp_path, fake, *, door=None, refuse=None, **kwargs):
                                 host_token=HOST_TOKEN, clock=lambda: loop.now, **options)
     _LIVE_BOTS.append(bot)
     return bot, loop, peers, bodies
-
-
-def join_args(zoom, **overrides):
-    args = {"meeting_number": MEETING, "passcode": PASSCODE, "display_name": "", "binding_id": BINDING,
-            "account_id": zoom.companion_link.app_account_id(CLIENT_ID), "on_behalf_token": OBF,
-            "requested_by": {"id": "task:t-1", "display_name": "", "requested_via": "web", "task_id": "t-1"}}
-    args.update(overrides)
-    return args
-
-
-def drive_to_audio(fake, loop, *, raw_allowed=True):
-    loop.run_ready()
-    fake.auth()
-    loop.run_ready()
-    fake.status("MEETING_STATUS_INMEETING")
-    loop.advance(2.0)
-    fake.mic()
-    loop.advance(3.0)
-    if raw_allowed:
-        loop.advance(1.5)
-
-
-def open_call_via_audio(fake, loop, bot):
-    fake.mixed(b"\x01\x00" * 320)
-    loop.pump(lambda: bot.state == "in_call")
 
 
 # ---- manifest -------------------------------------------------------------------------
@@ -566,32 +544,27 @@ def test_pacer_flush_drops_queued_voice_and_stale_epochs(zoom):
 
 
 def test_a_failing_microphone_send_is_logged_once_per_streak_with_its_count(zoom, caplog):
-    now, attempts = [0.0], []
+    now, attempts, stop = [0.0], [], threading.Event()
     outcomes = [False, False, False, True, False, False]  # three fail, one goes through, two fail until stop
-    stop = threading.Event()
 
     def send(frame):
         attempts.append(frame)
+        if len(attempts) == len(outcomes):
+            stop.set()
         if not outcomes[len(attempts) - 1]:
             raise OSError("the SDK refused the audio frame")
 
-    def sleep(seconds):
-        now[0] += seconds
-        if len(attempts) == len(outcomes):
-            stop.set()
-
-    pacer = zoom.meeting_peer.OutboundPacer(send, rate=32000, clock=lambda: now[0], sleep=sleep)
+    pacer = zoom.meeting_peer.OutboundPacer(send, rate=32000, clock=lambda: now[0],
+                                            sleep=lambda seconds: now.__setitem__(0, now[0] + seconds))
     pacer.feed(b"\x01\x00" * 640 * len(outcomes), 0)  # one exact 20 ms frame per attempt
     with caplog.at_level(logging.WARNING, logger="zoom_bot.peer"):
         pacer.run(stop)
-    records = [(record.levelno, record.getMessage(), record.exc_info is not None)
-               for record in caplog.records if record.name == "zoom_bot.peer"]
-    assert records == [
-        (logging.ERROR, "virtual microphone send failed", True),
-        (logging.WARNING, "virtual microphone send recovered after 3 failed frames", False),
-        (logging.ERROR, "virtual microphone send failed", True),
-        (logging.WARNING, "virtual microphone send still failing when the voice stopped: 2 failed frames", False),
-    ]
+    assert [(record.levelname, record.getMessage(), record.exc_info is not None)
+            for record in caplog.records if record.name == "zoom_bot.peer"] == [
+        ("ERROR", "virtual microphone send failed", True),
+        ("WARNING", "virtual microphone send recovered after 3 failed frames", False),
+        ("ERROR", "virtual microphone send failed", True),
+        ("WARNING", "virtual microphone send still failing when the voice stopped: 2 failed frames", False)]
     assert len(attempts) == 6 and pacer.sent_frames == 1
 
 

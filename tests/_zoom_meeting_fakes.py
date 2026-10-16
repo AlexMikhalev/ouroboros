@@ -6,7 +6,8 @@ fields, so a misspelt SDK call fails in a test instead of on a server. ``ManualL
 is the GLib loop's interface on virtual time. ``start_fake_door`` serves the Host
 Service door (``/identity``, ``POST /call/open``, ``WS /call/{id}/peer``) as a real
 Starlette app on a loopback port; ``serve_app`` serves any app that way, the real Host
-Service included.
+Service included. ``join_args``, ``drive_to_audio`` and ``open_call_via_audio`` are the
+steps a test takes to reach a joined meeting whose audio opened a call.
 """
 
 from __future__ import annotations
@@ -467,6 +468,33 @@ class FakeCompanion:
                 else "", "account_id": self.account, "credentials": True,
                 "sdk": {"available": self.sdk, "detail": "" if self.sdk else "zoom_meeting_sdk is not importable"},
                 "last_outcome": self.join_outcome}
+
+
+# ---- drivers: the steps a test takes to reach a joined meeting with audio ------------
+
+def join_args(zoom, **overrides):
+    args = {"meeting_number": MEETING, "passcode": PASSCODE, "display_name": "", "binding_id": BINDING,
+            "account_id": zoom.companion_link.app_account_id(CLIENT_ID), "on_behalf_token": OBF,
+            "requested_by": {"id": "task:t-1", "display_name": "", "requested_via": "web", "task_id": "t-1"}}
+    args.update(overrides)
+    return args
+
+
+def drive_to_audio(fake, loop, *, raw_allowed=True):
+    loop.run_ready()
+    fake.auth()
+    loop.run_ready()
+    fake.status("MEETING_STATUS_INMEETING")
+    loop.advance(2.0)
+    fake.mic()
+    loop.advance(3.0)
+    if raw_allowed:
+        loop.advance(1.5)
+
+
+def open_call_via_audio(fake, loop, bot):
+    fake.mixed(b"\x01\x00" * 320)
+    loop.pump(lambda: bot.state == "in_call")
 
 
 def start_fake_door(token: str = HOST_TOKEN):
