@@ -103,6 +103,8 @@ _START_TASK_DESCRIPTION = (
     "Start a NEW, separate independent work with its own task id and card. "
     "The work reading the current request already exists and can do that request itself. "
     "move_to_project places THIS work in a room with the same id. "
+    "For an EXISTING artifact, ground-truth its existence with one cheap probe "
+    "(list_skills/list_files): memory of past work is not evidence it still exists. "
     "Give the separate work a short title and objective. project_name creates a named room; "
     "project_id selects an existing room. workspace_root selects its folder; "
     "workspace='none' opts out of the room's default folder. "
