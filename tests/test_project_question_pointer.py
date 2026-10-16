@@ -163,7 +163,7 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     asked_at = quiz_states(tmp_path, "t1")["q1"]["asked_at"]
     reads = []
     real = task_store.read_document
-    monkeypatch.setattr(task_store, "read_document", lambda root, tid: (reads.append(str(tid)), real(root, tid))[1])
+    monkeypatch.setattr(task_store, "read_document", lambda root, tid, **kw: (reads.append(str(tid)), real(root, tid, **kw))[1])
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert rows[0]["required_question"]["quiz_state"] == "open"
     assert rows[0]["required_question"]["text"] == "Waiting for your answer in Waiting Project"

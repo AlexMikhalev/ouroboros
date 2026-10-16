@@ -211,7 +211,7 @@ def snapshot(requests):
             with store.open_store(root, write=False) as txn:
                 rows = _read_rows(txn, ids)
             facts.update({(root, tid): row for tid, row in rows.items()})
-        except (store.StoreError, ValueError, TypeError) as exc:
+        except Exception as exc:
             facts.update({(root, tid): exc for tid in ids})
     token = _SNAPSHOT.set(facts)
     try:
@@ -325,7 +325,10 @@ def run_hot_facts(root: Any, *, progress=None, should_stop=None) -> dict:
                         if stop():
                             return record(state="pending", cursor=cursor, done=done)
                         waiting = {"table": scope, "id": tid, "stamp": input_stamp(seq)}
-                        values = derive(json.loads(raw))
+                        document = json.loads(raw)
+                        values = derive(document)
+                        if table == "tasks":
+                            values["control_valid"] &= int(str(document.get("task_id") or "") == tid)
                         with store.open_store(root, write=True) as txn:
                             changed = txn.conn.execute(
                                 f"UPDATE {table} SET {','.join(name + '=?' for name in values)} "

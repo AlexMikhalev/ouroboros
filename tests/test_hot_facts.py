@@ -124,6 +124,21 @@ def test_derivation_cas_cannot_overwrite_a_racing_writer(tmp_path, monkeypatch):
         assert txn.row("task", "budget_pause_state", "budget_pause_attempt") == ("resumed", 2)
 
 
+def test_derivation_keeps_mismatched_task_identity_unreadable(tmp_path):
+    with store.open_store(tmp_path, write=True) as txn:
+        _old_task(txn, "bad")
+        _old_task(txn, "good")
+        document = txn.load("bad")
+        document["task_id"] = "another"
+        txn.conn.execute("UPDATE task_bodies SET body=? WHERE task_id='bad'", (store.encode_document(document),))
+    for derive in (False, True):
+        if derive:
+            assert hot.run_hot_facts(tmp_path)["state"] == "done"
+        with pytest.raises(ValueError, match="authority is unreadable"):
+            hot.read(tmp_path, "bad")
+        assert hot.read(tmp_path, "good")["control_valid"] == 1
+
+
 def test_old_custody_upsert_invalidates_columns_in_its_own_transaction(tmp_path):
     with store.open_store(tmp_path, write=True) as txn:
         txn.put_custody("run", {"run_id": "run", "task_id": "task", "root_task_id": "old"}, state="held")

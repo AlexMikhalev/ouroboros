@@ -78,6 +78,11 @@ Apply ARCHITECTURE §10 invariant 10 to current-state readers:
 `tests/test_hot_facts*.py` hold Stop and custody selection results fixed while unrelated
 settled history grows from 20 to 2,000 rows. They count SQL statements, VM steps and
 decoded JSON bytes, and compare typed selectors with the previous JSON predicates.
+The activity census reads controls and phases in one short transaction per addressed
+store, outside the queue lock, with no task-body reads for derived rows. Its card and
+question materializer remains a separate reader. An unavailable store stays unknown
+throughout the request; a later request reads anew. The tests also prove snapshot
+release before display consumers run and signature/body coherence on a racing write.
 New current facts belong in the changing transition's transaction. Legacy derivation
 uses a named durable job and sequence/source CAS; a process-local flag cannot prove
 an installation's migration finished. Passive readers fall back only for underived rows.

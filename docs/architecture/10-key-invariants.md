@@ -40,6 +40,11 @@ Only underived rows need legacy decoding. The schema gate installs columns witho
 decoding bodies; `run_hot_facts(root, progress=..., should_stop=...)` supplies the
 maintenance child's resumable `hot_facts` job. Its sequence/source CAS preserves
 racing writers, and a damaged input waits for its own change. Bodies remain unchanged.
+The live-activity census copies its queue and owner registries before reading addressed
+control/phase facts in one short transaction per store. That transaction ends before
+display consumers run; the request snapshot never authorizes mutations and never
+survives the request. Unknown reads stay unknown without per-member retries. Card and
+question details use their existing body reader and its matching write signature.
 
 ### 10.1 Continuity data-flow map
 
