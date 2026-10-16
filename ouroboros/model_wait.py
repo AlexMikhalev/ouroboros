@@ -221,6 +221,13 @@ def stamp_execution_handoff(successor: dict, meta: dict | None, now: float | Non
     successor["_execution_handoff_sec"] = execution_elapsed_seconds(closed, time.time() if now is None else now)
 
 
+def native_sleep_started_at(handoff: Any) -> float | None:
+    """The selected native sleep's recorded open start; absent/invalid is unknown."""
+    started = handoff.get("sleep_started_at") if isinstance(handoff, dict) and handoff.get("reason") == "sleep" else None
+    return float(started) if (isinstance(started, (int, float)) and not isinstance(started, bool)
+                             and math.isfinite(started) and started > 0) else None
+
+
 def settle_execution_carry(task: dict, *, origin_preserved: bool) -> float:
     """Settle the ended total once at handoff, excluding queued time for #939."""
     handoff = task.pop("_execution_handoff_sec", None)
@@ -235,7 +242,11 @@ def settle_execution_carry(task: dict, *, origin_preserved: bool) -> float:
                 key = next(key for key in ("_owner_wait_resume", "_budget_pause_resume", "_working_recovery")
                            if task.get(key))
                 resume = dict(task[key])
-                queued = max(0.0, execution_elapsed_seconds({**resume, "task": task}, time.time()) - total)
+                # A returning native sleep already owns the interval across stop/boot;
+                # it cannot also become a closed queue exclusion at this assignment.
+                sleeping = native_sleep_started_at(resume) if key == "_owner_wait_resume" else None
+                queued = max(0.0, execution_elapsed_seconds(
+                    {**resume, "task": task, "sleep_parked_at": sleeping}, time.time()) - total)
                 resume["budget_paused_sec"] = budget_paused_seconds(resume) + queued
                 task[key] = resume
     return execution_consumed_seconds(task)
