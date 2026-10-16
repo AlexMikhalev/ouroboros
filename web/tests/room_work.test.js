@@ -203,7 +203,7 @@ test('a pending send never replaces an already represented turn or leaves a ghos
     } finally { work?.destroy(); restoreDom(prior); }
 });
 
-test('the amber dot is the owner\'s question beside any other word; the control paints the producer\'s tone', () => {
+test('the one mark after the word turns amber for the owner\'s question beside any other word; the control paints the producer\'s tone', () => {
     const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));
     let work;
     try {
@@ -223,21 +223,25 @@ test('the amber dot is the owner\'s question beside any other word; the control 
             ws: { isConnected: () => true }, reading: { cancel() {}, scroll() {} },
             activeDirectActivities: activities, liveCardRecords: new Map(), pendingSubmissions: new Map() });
         const trigger = titleRow.children.find(el => el.classList.contains('rw-trigger'));
-        const amber = trigger.children.find(el => el.classList.contains('rw-amber'));
+        // The word leads; its one mark (three dots or one) follows it, and nothing else is a dot.
+        const order = trigger.children.map(el => el.className.split(' ').find(c => /^(status-badge|rw-mark|rw-dots|rw-caret)$/.test(c)))
+            .filter(Boolean);
+        assert.deepEqual(order, ['status-badge', 'rw-mark', 'rw-dots', 'rw-caret']);
+        assert.equal(trigger.children.some(el => el.classList.contains('rw-amber')), false);
         const paint = (text, tone, dots) => {
             badge.textContent = text;
             Object.assign(badge.dataset, { tone, dots });
             work.update();
-            return [trigger.dataset.tone, amber.hidden];
+            return [trigger.dataset.tone, trigger.dataset.wait !== '1'];
         };
         // Before the producer's first answer (no tone on the badge) the control never claims Online.
         work.update();
         assert.equal(trigger.dataset.tone, 'offline');
-        // Queued outranks the answer wait in the word; the question is still announced by the amber dot.
+        // Queued outranks the answer wait in the word; the question still turns the mark amber.
         assert.deepEqual(paint('Queued', 'queued', 'still'), ['queued', false]);
         assert.deepEqual(paint('Working', 'live', 'moving'), ['live', false]);
         assert.deepEqual(paint('Paused · owner pause', 'held', 'one'), ['held', false]);
-        // The word already says it: no second dot.
+        // The word already says it: the mark keeps the word's own tone.
         assert.deepEqual(paint('Waiting for your answer', 'wait', 'one'), ['wait', true]);
         // Without a question there is no amber, whatever the word.
         activities.delete('t-ask');

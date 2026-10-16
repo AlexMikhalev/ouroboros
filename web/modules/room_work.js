@@ -120,10 +120,10 @@ export function createRoomWork({
     trigger.setAttribute('aria-haspopup', 'dialog');
     trigger.setAttribute('aria-expanded', 'false');
     trigger.setAttribute('aria-controls', `${uid}-surface`);
+    // The status's one mark follows its word, as on the sidebar's rows: three dots or one.
     const dots = marker('rw-dots');
-    const lead = decorative(element('span', 'rw-lead'));
-    const amber = decorative(element('span', 'rw-amber'));
-    // Said as well as drawn: moving work with something waiting names the wait in the control's name.
+    const dot = decorative(element('span', 'rw-mark'));
+    // Said as well as drawn: work with a question waiting names the wait in the control's name.
     const waitNote = element('span', 'rw-sr', 'A question waits for your answer');
     const caret = decorative(element('span', 'rw-caret'));
     const badgeParent = statusBadge.parentNode;
@@ -132,7 +132,7 @@ export function createRoomWork({
     // One bar per room: the Project panel bar, or Main's header. The status follows the room's own title in the
     // bar's title row, so a changing word takes the title's room and never moves a neighbour.
     const bar = panel?.querySelector?.('.project-panel-bar') || (asPanel ? null : page.querySelector('.chat-page-header'));
-    trigger.append(lead, dots, statusBadge, amber, waitNote, caret);
+    trigger.append(statusBadge, dot, dots, waitNote, caret);
     const titleRow = bar?.querySelector('.app-page-title-row');
     if (titleRow) titleRow.appendChild(trigger);
     else badgeParent?.insertBefore(trigger, badgeNext);
@@ -664,11 +664,11 @@ export function createRoomWork({
         // Owner 15.10 (3C): live work keeps three moving dots, queued work three still dots; a fact is one dot.
         dots.hidden = dotsMode === 'one';
         dots.dataset.state = dotsMode === 'moving' ? 'working' : 'queued';
-        lead.hidden = !dots.hidden;
-        // A second, amber dot means one thing (4A): a question waits for the owner's answer and the word does not
-        // already say so — beside Working, Queued, a pause or an access wait alike.
+        dot.hidden = !dots.hidden;
+        // One mark, one more fact (owner 16.10): the mark turns amber while a question waits for the owner's answer
+        // and the word does not already say so — beside Working, Queued, a pause or an access wait alike.
         const mixed = !['offline', 'starting', 'wait'].includes(tone) && current.some((row) => row.question);
-        amber.hidden = !mixed;
+        trigger.dataset.wait = mixed ? '1' : '0';
         waitNote.hidden = !mixed;
         if (!listed && open) close({ restoreFocus: false });
     }

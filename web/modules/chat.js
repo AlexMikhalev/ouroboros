@@ -220,11 +220,9 @@ export function createChatInstance({
     const page = document.createElement('div');
     page.id = asPanel ? `panel-${idPrefix}` : 'page-chat';
     page.className = asPanel ? 'chat-instance-panel' : 'page active';
-    // A project panel reuses the lean `.project-panel-bar` (title + close) from
-    // index.html, so it renders a minimal status-only header — NOT the overlay
-    // page header (that would duplicate the title and drag in the GLOBAL
-    // Evolve/Restart/Panic/budget chrome, which belongs to the one agent, not a
-    // single project thread). The main chat keeps the full overlay header.
+    // A project panel reuses index.html's `.project-panel-bar` (title + close): a
+    // status-only header, never the page header's global agent chrome (Restart,
+    // Panic, budget). Main keeps the full header.
     const headerHtml = asPanel
         ? `<div class="chat-panel-statusbar"><span id="chat-status" class="status-badge offline">Connecting…</span></div>`
         : renderPageHeader({
@@ -535,8 +533,7 @@ export function createChatInstance({
     }
 
     function setStatus({ kind, text, tone = 'online', dots = 'one' }) {
-        // replay frames never touch the badge; the reducer
-        // (syncChatStatus) writes it once after the batch: one producer's word, tone and dots.
+        // Replay frames never touch the badge; syncChatStatus writes the producer's word, tone and dots once.
         if (!statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
         statusBadge.textContent = text;

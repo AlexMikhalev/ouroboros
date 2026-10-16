@@ -58,7 +58,7 @@ ROOM_FACTS = """(scope) => {
     return {
         exists: Boolean(trigger), tone: trigger?.dataset.tone || '', disabled: Boolean(trigger?.disabled),
         hidden: Boolean(trigger?.hidden), expanded: trigger?.getAttribute('aria-expanded') || '',
-        badge: text(trigger?.querySelector('.status-badge')), amber: shown(trigger?.querySelector('.rw-amber')),
+        badge: text(trigger?.querySelector('.status-badge')), amber: trigger?.dataset.wait === '1',
         waitNote: shown(trigger?.querySelector('.rw-sr')), surfaceHidden: surface ? surface.hidden : null,
         rows, groups: [...(surface?.querySelectorAll('.rw-group') || [])].map(text),
         note: shown(note) ? text(note) : '', back: shown(back) ? text(back) : '',
@@ -379,7 +379,7 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
         ])
     page = open_app(room_ui, transport)
     closed = wait_facts(page, "main", lambda f: f["tone"] == "live" and not f["disabled"], "a live control")
-    # Moving work with something waiting keeps its live chip and adds one amber dot, said in words too.
+    # Moving work with something waiting keeps its live word and turns its one mark amber, said in words too.
     assert closed["amber"] and closed["waitNote"], closed
     assert closed["surfaceHidden"] and closed["expanded"] == "false"
     trigger(page).click()
@@ -1006,7 +1006,7 @@ _BAR_GEOMETRY = """(scope) => {
         const r = el.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
         return Boolean(hit) && (hit === el || el.contains(hit)); });
     return { bar: box(bar), title: box(title), trigger: box(trigger), neighbours, word: badge.textContent.trim(),
-             clipped: badge.scrollWidth > badge.clientWidth + 0.5, amber: !trigger.querySelector('.rw-amber').hidden,
+             clipped: badge.scrollWidth > badge.clientWidth + 0.5, amber: trigger.dataset.wait === '1',
              shade: shade && !shade.hidden ? box(shade) : null, shadeAlpha: shade ? alpha(getComputedStyle(shade).backgroundColor) : null,
              reachable, vw: innerWidth, vh: innerHeight, overflow: document.documentElement.scrollWidth - innerWidth };
 }"""
@@ -1099,7 +1099,7 @@ def assert_word_never_moves_the_bar(page, transport, room, tag):
         assert not moved, ("a word never moves a neighbouring control", name, sample["word"], moved)
         assert not sample["clipped"], ("the status word stays whole; the title ellipsizes first", name, sample)
         assert sample["overflow"] <= 0, (name, sample)
-    # The amber dot says only that a question waits beside another word, never beside its own.
+    # The amber mark says only that a question waits beside another word, never beside its own.
     assert samples["live+answer"]["amber"] and samples["live+answer"]["word"] == samples["live"]["word"], samples
     assert samples["answer"]["word"] == "Waiting for your answer" and not samples["answer"]["amber"], samples["answer"]
     assert not any(sample["amber"] for name, sample in samples.items() if name != "live+answer"), samples

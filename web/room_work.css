@@ -11,8 +11,8 @@
    Names stay --text-primary at 400; local dimensions are variables on .rw-surface, never a type size. */
 
 /* ---- the status control ---------------------------------------------------------------------------
-   A status sentence (DESIGN §4 tone primitive): the dot carries the state, the short word says it in its
-   status ink, and nothing is filled. Pressing is the only fill: a neutral tint on hover and while open.
+   The short word in its status ink, then one mark (three dots or one), as on the sidebar's rows; nothing is
+   filled. Pressing is the only fill: a neutral tint on hover and while open.
    It follows the title, so a longer word takes the title's room, never a neighbour's; it stays whole until the
    title reaches its floor, and is said whole in the control's name either way. */
 .rw-trigger {
@@ -71,11 +71,14 @@
 .rw-trigger[data-open="1"] { background: rgba(var(--neutral-rgb), 0.11); }
 
 /* ---- marks shared by the control and the rows ------------------------------------------------------ */
-.rw-lead { flex: none; box-sizing: border-box; width: 7px; height: 7px; border-radius: 50%; background: var(--rw-dot); }
-.rw-lead[hidden], .rw-amber[hidden], .rw-caret[hidden], .rw-secondary[hidden], .rw-where[hidden], .rw-chev[hidden] { display: none; }
-.rw-trigger[data-tone="unknown"] .rw-lead,
+.rw-lead, .rw-mark { flex: none; box-sizing: border-box; width: 7px; height: 7px; border-radius: 50%; background: var(--rw-dot); }
+.rw-lead[hidden], .rw-mark[hidden], .rw-caret[hidden], .rw-secondary[hidden], .rw-where[hidden], .rw-chev[hidden] { display: none; }
+.rw-trigger[data-tone="unknown"] .rw-mark,
 .rw-row:is([data-tone="unknown"], [data-tone="ended"]) .rw-lead { background: transparent; border: 1.5px solid currentColor; }
-.rw-amber { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); }
+/* The status's one mark follows its word; a question waiting for the owner turns that mark amber (the word keeps its
+   ink), so live work with a question shows amber moving dots, never a second mark. */
+.rw-trigger[data-wait="1"] { --rw-dot: var(--amber); }
+.rw-trigger[data-wait="1"] .rw-dots { color: var(--amber); }
 .rw-caret, .rw-chev { flex: none; display: inline-flex; width: 10px; height: 10px; align-items: center; justify-content: center; }
 .rw-caret::before, .rw-chev::before {
     content: '';
@@ -331,20 +334,18 @@
     .rw-caret::before, .rw-chev::before { transition: none; }
 }
 
-/* ---- Airy dopamine (light): the Shade is a floating sheet; its controls are the shared capsule tones ------------- */
-:root[data-theme="light"] .rw-shade, :root[data-theme="light"] .chat-page-header .rw-shade {
+/* ---- Airy dopamine (DESIGN.md design bible): the Shade is a floating sheet; its controls are the shared capsule tones -- */
+:root[data-theme] .rw-shade, :root[data-theme] .chat-page-header .rw-shade {
     border-bottom-color: transparent;
     border-radius: 0 0 var(--radius-sheet) var(--radius-sheet);
 }
-:root[data-theme="light"] .rw-row { border-radius: var(--radius-inner); }
-:root[data-theme="light"] .rw-row .rw-pill {
+:root[data-theme] .rw-row { border-radius: var(--radius-inner); }
+:root[data-theme] .rw-row .rw-pill {
     border-color: transparent; border-radius: var(--pill-radius);
-    transition: var(--motion-tone), var(--motion-press);
+    transition: var(--motion-tone);
 }
-@media (prefers-reduced-motion: no-preference) {
-    :root[data-theme="light"] .rw-row .rw-pill:not(:disabled):active { transform: scale(0.97); box-shadow: none; transition-duration: 60ms; }
-}
-:root[data-theme="light"] .rw-row .rw-pill-question { background: var(--tone-amber); color: var(--status-warn-fg); }
-:root[data-theme="light"] .rw-row .rw-pill-question:hover { background: var(--tone-amber-hover); }
-:root[data-theme="light"] .rw-row .rw-pill-resume { background: var(--surface-object); color: var(--text-primary); box-shadow: var(--elev-rest); }
-:root[data-theme="light"] .rw-row .rw-pill-resume:hover { background: var(--surface-object); box-shadow: var(--elev-float); }
+:root[data-theme] .rw-row .rw-pill:not(:disabled):active { transform: none; filter: var(--press); }
+:root[data-theme] .rw-row .rw-pill-question { background: var(--tone-amber); color: var(--status-warn-fg); box-shadow: var(--elev-rest); }
+:root[data-theme] .rw-row .rw-pill-question:hover { background: var(--tone-amber-hover); }
+:root[data-theme] .rw-row .rw-pill-resume { background: var(--surface-capsule); color: var(--text-primary); box-shadow: var(--elev-rest); }
+:root[data-theme] .rw-row .rw-pill-resume:hover { background: var(--surface-capsule-hover); box-shadow: var(--elev-rest); }

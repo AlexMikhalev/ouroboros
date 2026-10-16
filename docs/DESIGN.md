@@ -18,74 +18,89 @@ composition, not a second shared palette. This file names roles, not an inventor
 ## Design bible: "Airy dopamine"
 
 This distils the interface Ouroboros already has into rules, so every agent extends
-it the same way. Every rule below derives from these lines; a component that needs
-its own exception is a design defect.
+it the same way. Every rule below derives from these lines and holds in both themes;
+a component that needs its own exception is a design defect.
 
-**In one sentence (for a designer).** A light, borderless soft UI: a plain white
-room; pastel, voice-tinted objects floating on a soft two-level shadow; every
-control a capsule in one of three tones; one crimson accent and candy-coloured
-status chips; Apple system type in four sizes; springy micro-motion. iOS airiness
-with Material 3 tonal colour, and no gradients, glows, textures, outlines or
-neumorphism.
+**In one sentence (for a designer).** A light, borderless soft UI in two themes: a
+plain room (white, or graphite); voice-tinted objects resting on a soft shadow;
+everything pressable a capsule standing on that shadow in one of three tones, whose
+states change its colour, never its height, as on macOS; one crimson accent and
+candy-coloured status chips; Apple system type in four sizes. iOS airiness with
+Material 3 tonal colour, and no gradients, glows, textures, outlines or neumorphism.
 
 **Principles**
 
-1. **The room is plain.** Page, sidebar and panel backgrounds are white or one
-   near-white step. Never a gradient, glow, wash or texture behind content.
-2. **Objects float; they are not outlined.** A bubble, card, group or button is a
-   filled shape resting on the *rest* shadow. What floats over moving content (the
-   Shade, menus, the composer field, dialogs) takes the *float* shadow. Inside an
-   object a group or row is a *tray*, a soft neutral fill without a shadow, and
-   fills never stack. Only fields keep a hairline, because an editable box must
-   read as editable; the composer's field floats instead, and focus gives it the
-   field's ring.
-3. **Colour says who and what.** Each voice tints its own objects: the owner
-   lavender-blue, Ouroboros blush, System amber, a Project fuchsia. A state is a
-   candy tint with its own ink, or a dot and a word. Hue says identity and fill
-   strength importance, so a mark that only identifies stays quieter than the name
-   it marks. Crimson is the one brand accent: live dots, the chosen place, the
-   primary action. Colour lives on objects, never on the room.
-4. **One control, three tones.** Everything pressable is a capsule: *neutral*
-   (white, rest shadow), *tonal* (its hue's tint and ink: crimson for the primary
-   action and the chosen tab or place, green for save, red for danger, amber for
-   the owner's turn) or *quiet* (no fill, for low emphasis). No outlines and no
-   second shape. A label that acts takes the primary ink, one that names a setting
-   or an unchosen option the secondary ink, a value or a chosen state its tone's
-   ink. A status chip is a flat tint without a shadow: a pressable look belongs to
-   what can be pressed.
-5. **Air is spacing, never paleness.** Text keeps reading contrast; lightness
-   comes from room between and inside objects and from the absence of lines.
-6. **Motion answers touch.** A capsule sinks on press with a spring; live work
-   loops as three moving dots; nothing else animates by itself, and a state change
-   never moves a neighbour or resizes a bar.
+1. **The room is plain.** Page, sidebar and panel backgrounds are the room colour or
+   one step off it. Never a gradient, glow, wash, texture or animation behind content.
+2. **Objects rest; they are not outlined.** A bubble, card or group is a filled shape
+   on the *rest* shadow. What floats over moving content (the Shade, menus, the
+   composer field, dialogs, ↓ latest) takes the *float* shadow. Inside an object a
+   group or row is a *tray*, a soft neutral fill without a shadow, and fills never
+   stack. Only fields keep a hairline, because an editable box must read as editable;
+   the composer's field floats instead, and focus gives it the field's ring. On a dark
+   room a shadow barely shows, so each height is also a lighter surface: room, object,
+   capsule.
+3. **Colour says who and what.** Each voice tints its own objects: the owner blue,
+   Ouroboros blush, System amber, a Project fuchsia. A state is a candy tint with its
+   own ink, or a dot and a word. Hue says identity and fill strength importance, so a
+   mark that only identifies stays quieter than the name it marks. Crimson is the one
+   brand accent: live dots, the chosen place, the primary action. Colour lives on
+   objects, never on the room.
+4. **One control, three tones, one height.** Everything pressable with a body is a
+   capsule standing on the rest shadow in every state: *neutral* (the capsule surface)
+   or *tonal* (its hue's tint and ink: crimson for the primary action and the chosen
+   tab or place, green for save, red for danger, amber for the owner's turn). A
+   *quiet* control (a link, a filter, an icon, a navigation row) has no body and never
+   stands. A state changes colour, never height: hover deepens the fill, a press
+   deepens it again, a chosen or switched-on capsule takes its tone and keeps standing;
+   what cannot be pressed now loses its shadow. No outlines and no second shape; an
+   offered answer with a detail line is still a capsule. A label that acts takes the
+   primary ink; a setting's name or an unchosen option the secondary ink; a setting's
+   value the meta ink, never the darkest; a chosen state its tone's ink. A status chip
+   is a flat tint: standing on a shadow means pressable.
+5. **Air is spacing, never paleness.** Text keeps reading contrast; lightness comes
+   from room between and inside objects and from the absence of lines. Nothing is
+   faded to say "not yet known"; it says so in words or with an unlit mark.
+6. **Colour answers touch.** A press answers with the capsule's own colour, never a
+   sink or a lift; live work loops as three moving dots; nothing else animates by
+   itself, and a state change never moves a neighbour, resizes a bar or changes a
+   height.
 
-**Seed (light theme; dark derives later from the same rules)**
+**Seed (light | dark)**
 
-- Shadows: *rest* `0 1px 2px rgb(28 33 51 / .05), 0 6px 18px rgb(28 33 51 / .06)`;
-  *float* `0 2px 6px rgb(28 33 51 / .06), 0 18px 44px rgb(28 33 51 / .11)`;
-  *press* drops the shadow and scales to .97.
-- Radii by role: capsule `999px` (every control and chip) · object `18px`
-  (bubbles, cards, groups, menus) · inner `12px` (trays and rows inside an object)
-  · sheet `24px` (the Shade's lower corners).
-- Colour: room `#ffffff`, sidebar `#fafbfc`, tray the neutral at 3 %; owner
-  `#e9eef9`; Ouroboros `#fdf2f4` (task card `#fff8f9`); crimson `#c93545`, ink
-  `#bf2f40`. Tonal fills, rest/hover: crimson 10/14 %, green 14/22 %, red
-  10/16 %, amber 18/26 %; inks are the status tokens.
+| Role | Light | Dark |
+| --- | --- | --- |
+| Room · sidebar | `#ffffff` · `#fafbfc` | `#1c1c1e` · `#202023` |
+| Object · capsule (hover) · float | `#ffffff` · `#ffffff` (`#f5f6f8`) · `#ffffff` | `#262629` · `#343438` (`#3c3c41`) · `#2c2c30` |
+| Tray | neutral 3 % | neutral 5 % |
+| Owner · Ouroboros · task card | `#e9eef9` · `#fdf2f4` · `#fff8f9` | `#22365a` · `#362b2f` · `#2b2729` |
+| Crimson ink | `#bf2f40` on crimson `#c93545` | `#f07a86` |
+| Tonal fill, rest/hover | crimson 10/14 %, green 14/22, red 10/16, amber 18/26 | crimson 22/30 %, green, red, amber 16/24 |
+| Rest shadow | `0 1px 2px rgb(28 33 51 / .05), 0 6px 18px rgb(28 33 51 / .06)` | `0 1px 2px rgb(0 0 0 / .45), 0 6px 18px rgb(0 0 0 / .32)` |
+| Float shadow | `0 2px 6px rgb(28 33 51 / .06), 0 18px 44px rgb(28 33 51 / .11)` | `0 2px 6px rgb(0 0 0 / .5), 0 18px 44px rgb(0 0 0 / .55)` |
+| Press | `brightness(.95)` | `brightness(1.12)` |
+
+- Radii by role, both themes: capsule `999px` (every control and chip) · object `18px`
+  (bubbles, cards, groups, menus) · inner `12px` (trays and rows inside an object) ·
+  sheet `24px` (the Shade's lower corners).
 - Type: the system face (SF Pro on Apple), 12 / 14 / 16 / 24; weight 400 to read,
-  500 for a status word or a root's title, 600 for labels and controls.
+  500 for a status word, a root's title or a setting's name, 600 for labels,
+  controls and a setting's value.
 - Space: 4 / 8 / 12 / 16 / 24; 14 between messages; 12 x 18 inside a bubble.
-- Motion: 120 ms for colour and shadow; a quick sink and a 240 ms sprung release
-  for press (`--motion-tone`, `--motion-press`); the three-dot loop only while work runs.
-- Where it lives: the values are `web/ui.css` tokens (`--elev-*`, `--radius-object`
-  / `-inner` / `-sheet`, `--surface-object` / `-tray` / `-side`, `--voice-*`,
-  `--tone-*`); the recipes are ui.css "One control, three tones" and style.css
-  "Airy dopamine". A page maps its own elements onto these roles and adds no recipe.
+- Motion: 120 ms for colour and shadow (`--motion-tone`); no press motion; the
+  three-dot loop only while work runs.
+- Where it lives: the values are `web/ui.css` tokens, dark in `:root` and light in
+  `:root[data-theme="light"]` (`--elev-*`, `--radius-object` / `-inner` / `-sheet`,
+  `--surface-object` / `-capsule` / `-float` / `-tray` / `-side`, `--voice-*`,
+  `--tone-*`, `--press`); the recipes are ui.css "One control, three tones" and
+  style.css "Airy dopamine", written once for both themes. A page maps its own
+  elements onto these roles and adds no recipe.
 
 
 The shell offers **Settings → Appearance → Light / Dark / System**. New clients
 start on System; explicit Light or Dark remains pinned. The shared semantic
-palettes in `web/ui.css` preserve geometry and status meanings. Light uses white
-reading surfaces, dark text and an opaque header, with decorative matrix hidden.
+palettes in `web/ui.css` preserve geometry and status meanings. Both themes follow
+the design bible above; neither has a decorative background.
 On Windows the desktop window keeps its ordinary system caption, buttons, Snap and
 resizing; only their light or dark tint follows the painted palette — the system
 tint, not the page's colour — and a High Contrast theme keeps its own colours.
@@ -321,8 +336,11 @@ once through their owner endpoint, show the server's refusal as a toast and read
 one saved value back from `/api/state`, so Main and every Project composer agree;
 Settings has no effort section.
 
-Each is a **capsule** of the pills' height — ring, name, value: `Context Max`,
-`Effort X-High`. Closed, Effort names only the recommended level; its ring (a 300°
+Each is a neutral **capsule** of the pills' height — ring, name, value: `Context Max`,
+`Effort X-High`; the name in the secondary ink at 500, the value in the meta ink at
+600, and the only colour the ring's lit arc (crimson; Low amber, Nano the Project's).
+Until `/api/state` reports the range the ring stays unlit and the value secondary,
+never a faded capsule. Closed, Effort names only the recommended level; its ring (a 300°
 arc: band minimum..maximum, dot recommended) and the button's name carry the range.
 Context's ring is three arcs, the chosen one lit: one of three modes, never a fill
 level or capacity. A capsule opens **inline**, never as a dropdown, one at a time;
@@ -782,12 +800,10 @@ preference when it opens and on every reconnect; there is no file watcher.
 
 ## 5. Card and section composition
 
-- A panel is one `.ui-card`-family surface. In the light theme a card on the
-  room is an object (`--surface-object` on `--elev-rest`, `--radius-object`, no
-  border) and a group or row inside it a tray (`--surface-tray`,
-  `--radius-inner`); a tray inside a tray drops its fill. The dark theme keeps
-  `--ui-card-border`, `--ui-card-bg` and `--radius`, with nested emphasis on
-  `--ui-card-bg-soft`, never a second border weight.
+- A panel is one `.ui-card`-family surface. A card on the room is an object
+  (`--surface-object` on `--elev-rest`, `--radius-object`, no border) and a group
+  or row inside it a tray (`--surface-tray`, `--radius-inner`); a tray inside a
+  tray drops its fill, never a second border weight.
 - A section is: title (`--type-section`) → optional one-paragraph description
   (`--type-body`, `--text-meta`) → content → optional note (`--type-meta`,
   `--text-meta`). The description explains what the section decides; the note
@@ -1022,13 +1038,13 @@ reconciliation.
 
 ### Room work status
 
-Each room's bar has one status, right after its title: a status sentence (§4),
-the dot and word in the status ink with no frame at rest, a neutral tint on hover
-and while open, a caret when it opens. Live work moves three dots, queued work
-holds three still ones, any other fact shows one. One producer
+Each room's bar has one status, right after its title: the short word in its
+status ink, then one mark, as on the sidebar's rows; no frame at rest, a neutral
+tint on hover and while open, a caret when it opens. Live work moves three dots,
+queued work holds three still ones, any other fact shows one. One producer
 (`computeDerivedChatStatus`) gives the word, tone and dots together, in the
-cards' short words; a small amber dot says only that a question waits for the
-owner's answer, unless the word already says so. The title ellipsizes first, and
+cards' short words; while a question waits for the owner's answer the mark turns
+amber (moving if work runs), unless the word already says so. The title ellipsizes first, and
 a new word never moves a neighbour or resizes the bar. When there is work to
 show, pressing the status, or ↓/↑ on it, unfolds that room's work and only that
 room's as one Shade under the bar, the same in every room: its census rows, the
@@ -1202,14 +1218,15 @@ answer keep both forms readable. Anatomy, top to bottom:
    started and when the owner last wrote in this chat, with unknown facts said
    as unknown; the line is absent when the card carries no `host_facts`.
 3. **Stake** — optional one-liner (`At stake: …`), `--type-meta`, `--text-meta`.
-4. **Options** — zero to six real owner actions: buttons with `--text-primary` labels,
-   legible at rest; an optional per-option detail steps down to meta ink.
-   After settlement buttons drop to `--text-disabled`; the chosen option keeps
-   the ok pair. Options are capped by the shared Python↔JS constant
+4. **Options** — zero to six real owner actions: neutral capsules standing on the
+   rest shadow (a choice, never a field), `--text-primary` labels legible at rest;
+   an optional per-option detail steps down to meta ink inside the capsule. After
+   settlement they lie flat in `--text-disabled`; the chosen option takes the ok
+   pair. Options are capped by the shared Python↔JS constant
    (`MAX_QUIZ_OPTIONS`); with none, the free answer is the whole answer.
 5. **Free answer** — while the card is open, a compact always-visible field
-   (`Your answer or comment…`) with a `Send my answer` button, enabled only
-   once something is typed; it is a message field, so Enter sends and
+   (`Your answer or comment…`, the field's hairline) with a `Send my answer`
+   crimson capsule, enabled and standing only once something is typed; it is a message field, so Enter sends and
    Shift+Enter breaks the line (§3 "Controls and editable choices"). No option
    ever has to be the least wrong one: the text rides with an option click as
    the owner's remark, or goes alone as the owner's own answer. It uses the
@@ -1223,13 +1240,14 @@ answer keep both forms readable. Anatomy, top to bottom:
    answer remains literal text.
 6. **Assumption or waiting** — the signature line (`Continuing meanwhile: …`
    for optional clarification, an explicit waiting statement for required input),
-   `--type-meta`, `--text-meta`, separated by a hairline. While the card is
+   `--type-meta`, `--text-meta`, parted by space. While the card is
    open it names the default path. The optional assumption remains after settlement
    as the record of work continued meanwhile. Required waiting copy disappears
    when the card settles; the status and recorded owner answer remain.
 
-The card uses tokens for every type size and colour, including pill radius and
-option gap. Every focusable element shares the 2px `--focus-accent-border` ring
+Inside a bubble the card adds no box: the bubble is its object. `Close without
+answering` is a quiet disclosure in the meta size. The card uses tokens for every
+type size and colour, including pill radius and option gap. Every focusable element shares the 2px `--focus-accent-border` ring
 with 2px offset. Component min/max widths keep local literals, as elsewhere in chat.
 
 **Project question mirror.** Main's **Needs you** disclosure above the composer (collapsed by default with its count; scroll-bounded when open) keeps every accepted unanswered Project question reachable beyond loaded history. It is the Project's own `buildQuizCard` card, whole as anatomized above, in an assistant bubble. The Project reference beside `Question` opens the exact original; answers, materials and recovery controls work in Main. It uses the shared ring and `--project` tints; names ellipsize (full titles) before status; narrow heads wrap. History, live pointers and the section share one task/quiz card and lifecycle wording. Optional, resumed and terminal-author questions stay answerable until answered or closed with a reason; no display/history cap drops them. Replaced questions stay read-only. The owner closes from the form; a model only its own or a host-proven continued task line. Closure records a reason, never an answer/approval. A late answer left delivery-unknown by a restart offers Remove from Needs you (no resend, never marked delivered). Publication destination stays fixed across Project conversion; current room membership controls display. Explicit materials use registered task artifacts and the existing reader.
@@ -1795,8 +1813,8 @@ contract already applies everywhere.
 
 `tests/test_web_typography_static.py` guards the migrated set only. Extending
 the guard and migrating the corresponding family or region are the same commit.
-The light theme's materials (objects, trays, sheets and the three capsule tones of
-the design bible) reach every page through the light blocks of ui.css, style.css and
+The bible's materials (objects, trays, sheets and the three capsule tones) reach
+every page in both themes through the "Airy dopamine" blocks of ui.css, style.css and
 the page sheets; that mapping is not a typography migration of those pages.
 
 ### Author freedom
