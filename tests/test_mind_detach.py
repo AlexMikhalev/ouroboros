@@ -42,7 +42,8 @@ def test_ready_detach_arms_then_parks_same_id_and_sleep_grant_is_single_use(tmp_
         budget_pause.enter_cold_sleep(limit)
     pause = raised.value.pause
     assert pause["resume_point"]["unanswered_tool_call_ids"] == []
-    task = {"id": "head", "_is_direct_chat": True, "_attempt": 1, "tool_profile": "operator_control"}
+    task = {"id": "head", "type": "task", "chat_id": 0, "_is_direct_chat": True,
+            "_attempt": 1, "tool_profile": "operator_control"}
     assert park_direct_pause(task, budget_pause.pause_event(task, pause))
     assert len(workers.PENDING) == 1 and workers.PENDING[0]["id"] == "head"
     parked = workers.PENDING[0]
@@ -55,6 +56,15 @@ def test_ready_detach_arms_then_parks_same_id_and_sleep_grant_is_single_use(tmp_
     assert grant["selected_by"] == "sleep_wake"
     assert wake_ready_sleepers(q) == []
     assert budget_pause.budget_pause_row(tmp_path, "head")["grant"] == grant
+    # Restart without an acknowledged handoff retains this ready sleep for Resume.
+    assert q.persist_queue_snapshot(reason="detached-before-restart")
+    workers.PENDING[:] = []
+    assert q.restore_pending_from_snapshot() == 1
+    restored = workers.PENDING[0]
+    assert restored["id"] == "head" and restored["_is_direct_chat"]
+    assert restored["detached_at"] == durable["detached_at"]
+    assert restored["tool_profile"] == "operator_control"
+    assert not any(outcome.get("ok") for outcome in wake_ready_sleepers(q))
 
 
 @pytest.mark.parametrize("kind", ["service", "delegated_run", "running_member", "member_custody", "custody_unreadable"])
@@ -79,6 +89,21 @@ def test_detach_does_not_accept_transfer_eligible_runs(tmp_path, monkeypatch):
     assert not model_sleep.cold_blockers(ctx, allow_transfer=True)
     assert model_sleep.cold_blockers(ctx, chosen={"intent": "continue_in_background"}, allow_transfer=True) == [
         {"kind": "delegated_run", "run_id": "r", "invocation_id": "i"}]
+
+
+def test_unreadable_custody_root_is_an_explicit_detach_blocker(tmp_path, monkeypatch):
+    from ouroboros import delegate_custody, model_sleep
+    from tests.test_model_sleep import _ctx
+
+    ctx = _ctx(tmp_path)
+    assert model_sleep.cold_blockers(ctx) == []
+
+    def unavailable(_ctx):
+        raise OSError("custody root unavailable")
+
+    monkeypatch.setattr(delegate_custody, "custody_root", unavailable)
+    blockers = model_sleep.cold_blockers(ctx, chosen={"intent": "continue_in_background"})
+    assert blockers[0] == {"kind": "custody_unreadable", "detail": "custody root unavailable"}
 
 
 def test_pooled_noop_and_pool_failure_keeps_head(tmp_path, monkeypatch):
@@ -173,3 +198,31 @@ def test_raise_after_saved_pause_parks_before_unregister_without_error_terminal(
         "chat_id": 7, "registry": SimpleNamespace(unregister=unregister)})
     assert released == ["head"] and not emitted
     assert not budget_pause.dispatch_fenced("head")
+
+
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_failed_pause_source_stays_visible_without_dispatch_authority(tmp_path, monkeypatch, unreadable):
+    from ouroboros import budget_pause, working_checkpoint
+    from supervisor.direct_pause import recover_direct_pause
+    from supervisor.events_budget import HOLD_SAVED_WORK, HOLD_UNSAVED_PAUSE, budget_hold_fact
+
+    _q, _state, workers = _install_queue(tmp_path, monkeypatch)
+    task = {"id": "head", "type": "task", "chat_id": 0, "_attempt": 1, "_is_direct_chat": True}
+    assert not recover_direct_pause(task)
+    assert not workers.PENDING
+
+    def read(*_a):
+        if unreadable:
+            raise OSError("pause store unavailable")
+        return {"state": "pausing", "task_attempt": 1}
+
+    monkeypatch.setattr(budget_pause, "budget_pause_row", read)
+    monkeypatch.setattr(working_checkpoint, "complete_pause_from_working", lambda *_a: None)
+    assert recover_direct_pause(task)
+    assert len(workers.PENDING) == 1
+    held = workers.PENDING[0]
+    assert held["id"] == "head" and held["_is_direct_chat"]
+    assert budget_hold_fact(held)["reason"] == (HOLD_SAVED_WORK if unreadable else HOLD_UNSAVED_PAUSE)
+    assert not budget_hold_fact(held)["dispatchable"]
+    assert not held.get("_budget_pause_resume")
+    assert recover_direct_pause(task) and len(workers.PENDING) == 1

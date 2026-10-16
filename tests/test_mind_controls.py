@@ -109,3 +109,17 @@ def test_continue_after_owner_stop_is_not_authorized_by_a_mind(tmp_path, monkeyp
     _install_queue(tmp_path, monkeypatch)
     _interrupted(tmp_path, origin={"source": source, "reason": "owner_stop"})
     assert not _apply(_event("continue_task", "pred-1"))["ok"]
+
+
+def test_control_refusal_arrives_as_system_task_mail_not_owner_words(tmp_path, monkeypatch):
+    from ouroboros.owner_mailbox import _mailbox_path
+    from supervisor.events_mind_controls import handle_mind_task_control
+
+    _install_queue(tmp_path, monkeypatch)
+    pushed = []
+    ctx = SimpleNamespace(DRIVE_ROOT=tmp_path, bridge=SimpleNamespace(push_log=pushed.append))
+    handle_mind_task_control(_event("pause_task", "unknown"), ctx)
+    record = json.loads(_mailbox_path(tmp_path, "mind-root").read_text(encoding="utf-8").splitlines()[0])
+    assert record["kind"] == "task_message" and record["provenance"] == "system"
+    assert json.loads(record["text"])["outcome"]["error"] == "task_not_live"
+    assert pushed[0]["actor_task_id"] == "mind-root"

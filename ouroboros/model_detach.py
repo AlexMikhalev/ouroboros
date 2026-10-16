@@ -47,7 +47,7 @@ def preserve_owner_question(ctx: Any, messages: list) -> None:
 
 
 def arm_detach(ctx: Any, reason: str) -> dict:
-    from ouroboros.model_sleep import MODE_COLD, cold_blockers, request_sleep
+    from ouroboros.model_sleep import MODE_COLD, ColdSleepBlocked, request_sleep
     from ouroboros.utils import in_worker_process, utc_now_iso
 
     owner = (getattr(ctx, "task_metadata", None) or {}).get("_execution_owner") or {}
@@ -65,10 +65,10 @@ def arm_detach(ctx: Any, reason: str) -> dict:
     chosen = {"intent": "continue_in_background", "reason": str(reason or ""),
               "detached_at": time.time(), "detached_by": "mind", "wake_at": utc_now_iso(),
               "senders": [], "tasks": [], "runs": [], "any_mail": False}
-    blockers = cold_blockers(ctx, chosen=chosen)
-    if blockers:
-        return {"ok": False, "error": "detach_blocked", "blockers": blockers}
-    result = request_sleep(ctx, chosen, MODE_COLD)
+    try:
+        result = request_sleep(ctx, chosen, MODE_COLD)
+    except ColdSleepBlocked as exc:
+        return {"ok": False, "error": "detach_blocked", "blockers": exc.blockers}
     return {**result, "ok": True, "status": "detach_armed", "task_id": ctx.task_id,
             "note": "The same work and id continue in a pooled worker after this tool batch. "
                     "It becomes eligible immediately, subject to capacity, leases and holds. " + LOST_HANDLES}

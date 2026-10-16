@@ -56,6 +56,13 @@ def _continue_task(ctx, task_id: str, reason: str = "") -> str:
     return _request_control(ctx, "continue_task", task_id, reason)
 
 
+def _control_schema(name: str, description: str) -> dict:
+    return {"name": name, "description": description,
+            "parameters": {"type": "object", "properties": {
+                "task_id": {"type": "string", "description": "Exact id of host-listed work."},
+                "reason": {"type": "string"}}, "required": ["task_id", "reason"]}}
+
+
 def mind_tool_entries() -> list:
     from ouroboros.model_detach import LOST_HANDLES
 
@@ -67,20 +74,17 @@ def mind_tool_entries() -> list:
             + LOST_HANDLES + " From a pooled executor this is a no-op. Owner-question waits stay warm.",
         "parameters": {"type": "object", "properties": {"reason": {"type": "string"}},
                        "required": ["reason"]},
-    }, _continue_in_background), *[
-        ToolEntry(name, {"name": name, "description": description,
-                        "parameters": {"type": "object", "properties": {
-                            "task_id": {"type": "string", "description": "Exact id of host-listed work."},
-                            "reason": {"type": "string"}}, "required": ["task_id", "reason"]}}, handler)
-        for name, handler, description in (
-            ("pause_task", _pause_task, "Request Pause of a listed work through the owner's tree-pause control. "
+    }, _continue_in_background),
+        ToolEntry("pause_task", _control_schema("pause_task",
+             "Request Pause of a listed work through the owner's tree-pause control. "
              "The record names you. Started reviews may finish while the task pauses. Self-pause is refused: "
-             "sleep with await_messages or escalate. The outcome arrives in your task mailbox."),
-            ("resume_task", _resume_task, "Request Resume of listed paused work through the owner's existing grants. "
+             "sleep with await_messages or escalate. The outcome arrives in your task mailbox."), _pause_task),
+        ToolEntry("resume_task", _control_schema("resume_task",
+             "Request Resume of listed paused work through the owner's existing grants. "
              "It preserves spent money, clocks and review history; capacity and holds still apply. "
-             "Only the owner can release a Panic hold. The outcome arrives in your task mailbox."),
-            ("continue_task", _continue_task, "Request one successor episode of listed interrupted work through "
+             "Only the owner can release a Panic hold. The outcome arrives in your task mailbox."), _resume_task),
+        ToolEntry("continue_task", _control_schema("continue_task",
+             "Request one successor episode of listed interrupted work through "
              "the same Continue action as the owner's button. Author-finished work, owner Stop/Panic and "
              "hard money/deadline stops refuse. Repeated delivery of this call reuses its one successor. "
-             "The outcome arrives in your task mailbox."),
-        )]]
+             "The outcome arrives in your task mailbox."), _continue_task)]

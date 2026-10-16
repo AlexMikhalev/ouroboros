@@ -43,16 +43,47 @@ def recover_direct_pause(task: dict) -> bool:
         row = budget_pause_row(task.get("budget_drive_root") or pool.DRIVE_ROOT, str(task["id"]))
         if not death_returns_to_pause(row, int(task.get("_attempt") or 1)):
             return False
+        if not row.get("source_ref"):
+            from ouroboros.working_checkpoint import complete_pause_from_working
+            row = complete_pause_from_working(task.get("budget_drive_root") or pool.DRIVE_ROOT,
+                str(task["id"]), row, int(task.get("_attempt") or 1)) or row
         if row.get("source_ref"):
             event = pause_event(task, row)
             if not park_direct_pause(task, event):
                 pool.get_event_q().put(event)
         else:
-            log.error("Direct turn %s ended during pausing before its source was saved; retained for recovery",
-                      task["id"])
+            retain_direct_hold(task, unsaved=True)
         return True
     except Exception:
         log.error("Direct turn %s pause evidence unreadable; recovery decides its exception", task["id"], exc_info=True)
+        retain_direct_hold(task, unsaved=False)
         return True
     finally:
         end_dispatch_fence(str(task["id"]))
+
+
+def retain_direct_hold(task: dict, *, unsaved: bool) -> None:
+    """Keep a failed inline park visible on the existing queue, with no replay grant."""
+    import pathlib
+    import time
+    from ouroboros.budget_pause import parkable_direct_task
+    from supervisor import queue as q, workers as pool
+    from supervisor.events_budget import HOLD_SAVED_WORK, HOLD_UNSAVED_PAUSE, hold_budget_row
+
+    with q._queue_lock:
+        if str(task["id"]) in pool.RUNNING or any(row.get("id") == task["id"] for row in pool.PENDING):
+            return  # an already-published owner wins
+        held = parkable_direct_task(task)
+        held.setdefault("priority", 0)
+        held.setdefault("queued_at", time.time())
+        hold_budget_row(held, reason=HOLD_UNSAVED_PAUSE if unsaved else HOLD_SAVED_WORK,
+                        detail="Inline actor ended while pausing; saved continuation unavailable. Explicit control required.",
+                        result_root=pathlib.Path(task.get("budget_drive_root") or pool.DRIVE_ROOT),
+                        existing_result_only=True)
+        pool.PENDING.append(held)
+        q.sort_pending()
+        try:
+            if not q.persist_queue_snapshot(reason="direct_pause_recovery_held"):
+                log.error("Direct pause hold of %s could not be snapshotted; live queue retains it", task["id"])
+        except Exception:
+            log.error("Direct pause hold snapshot failed for %s; live queue retains it", task["id"], exc_info=True)

@@ -332,8 +332,11 @@ def cold_blockers(ctx: Any, *, chosen: Dict[str, Any] | None = None,
     if detach:
         transferred = ()
     blockers: List[Dict[str, str]] = []
-    observed = observe_task_runs(custody.custody_root(ctx), str(ctx.task_id), reason="cold_sleep_check",
-                                 request_stop=False)
+    try:
+        observed = observe_task_runs(custody.custody_root(ctx), str(ctx.task_id), reason="cold_sleep_check",
+                                     request_stop=False)
+    except Exception as exc:
+        observed = {"custody_read": "failed", "error": str(exc), "runs": []}
     if observed.get("custody_read") != "ok":
         blockers.append({"kind": "custody_unreadable", "detail": str(observed.get("error") or "")})
     allowed = {tuple(pair) for pair in transferred}
@@ -398,6 +401,15 @@ def cold_blockers(ctx: Any, *, chosen: Dict[str, Any] | None = None,
     return blockers
 
 
+class ColdSleepBlocked(ValueError):
+    def __init__(self, blockers):
+        self.blockers = blockers
+        super().__init__("a cold sleep would leave this task's own work unwatched: "
+                         + "; ".join(f"{b['kind']} {b.get('run_id') or b.get('name') or b.get('detail') or ''}"
+                                     for b in blockers)
+                         + " — sleep warm, wait for them, or stop them first")
+
+
 def request_sleep(ctx: Any, chosen: Dict[str, Any], mode: str) -> Dict[str, Any]:
     """Check, then arm the sleep: warm parks after this tool batch
     (``wait_after_tools``), cold at the next round boundary (``enter_cold_sleep``).
@@ -439,10 +451,7 @@ def request_sleep(ctx: Any, chosen: Dict[str, Any], mode: str) -> Dict[str, Any]
     if mode == MODE_COLD:
         blockers = cold_blockers(ctx, chosen=chosen, allow_transfer=True)
         if blockers:
-            raise ValueError("a cold sleep would leave this task's own work unwatched: "
-                             + "; ".join(f"{b['kind']} {b.get('run_id') or b.get('name') or b.get('detail') or ''}"
-                                         for b in blockers)
-                             + " — sleep warm, wait for them, or stop them first")
+            raise ColdSleepBlocked(blockers)
     sleep_id = uuid.uuid4().hex
     ctx._owner_wait_requested = f"sleep:{sleep_id}"
     ctx._model_sleep = {"sleep_id": sleep_id, "mode": mode, **chosen}
