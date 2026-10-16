@@ -18,7 +18,7 @@ from ouroboros.gateway.owner_settings import (
     settings_document_mutation,
     unsaved_error,
 )
-from ouroboros.settings_scales import EFFORT_RANGE_KEYS, EFFORT_SCALE, effort_range, effort_rank
+from ouroboros.settings_scales import EFFORT_FORMAT_KEY, EFFORT_RANGE_KEYS, EFFORT_SCALE, effort_range, effort_rank
 
 # The body's fields, in the order of ``EFFORT_RANGE_KEYS`` (min, recommended = TASK, max).
 RANGE_FIELDS = ("min", "recommended", "max")
@@ -62,6 +62,7 @@ def _api_owner_effort_range_sync(request: Request, body: Any) -> JSONResponse:
 
     def _set_range(current: Dict[str, Any]) -> Dict[str, Any]:
         current.update(values)
+        current[EFFORT_FORMAT_KEY] = 1
         return current
 
     with settings_document_mutation():

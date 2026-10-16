@@ -73,14 +73,14 @@ def _seed_rows(data: dict, baseline: Mapping[str, Any]) -> bool:
     return changed
 
 
-def ensure_project_cognition(drive_root: Any, *, main_settings: Mapping[str, Any] | None = None) -> None:
+def ensure_project_cognition(drive_root: Any, *, baseline: Mapping[str, Any] | None = None) -> None:
     """Freeze existing rooms before Main changes, or during ordinary boot reconcile."""
     from ouroboros import projects_registry as registry
 
     path = registry._registry_path(drive_root)
     if not path.exists():
         return
-    baseline = main_cognition(main_settings)
+    baseline = main_cognition() if baseline is None else baseline
     with registry._file_write_lock(path):
         data = registry._load(drive_root, strict=True, project_id="")
         if _seed_rows(data, baseline):
@@ -91,11 +91,11 @@ def preserve_project_cognition(settings: Mapping[str, Any], settings_path: Path)
     """Settings-write prologue; the caller already owns the settings file lock."""
     from ouroboros import config
 
-    current = config.load_settings_lock_held()
-    if main_cognition(current) != cognition_from_settings(settings):
+    current = main_cognition(config.load_settings_lock_held())
+    if current != cognition_from_settings(settings):
         # The file's parent is its actual data root, including isolated readers
         # that replace SETTINGS_PATH without replacing the module's DATA_DIR.
-        ensure_project_cognition(settings_path.parent, main_settings=current)
+        ensure_project_cognition(settings_path.parent, baseline=current)
 
 
 def update_project_cognition(drive_root: Any, project_id: str, *, context_mode: str | None = None,

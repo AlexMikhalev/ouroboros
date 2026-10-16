@@ -980,7 +980,8 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
             context?.syncState(values); effort?.syncState(values); fitNames();
         },
         hasPendingSave: () => Boolean(context?.hasPendingSave() || effort?.hasPendingSave()),
-        pendingSave: async () => (await Promise.all([context?.pendingSave(), effort?.pendingSave()])).every(ok => ok !== false),
+        pendingSave: async () => (await Promise.all([context, effort]
+            .filter(control => control?.hasPendingSave()).map(control => control.pendingSave()))).every(ok => ok !== false),
         destroy() {
             destroyed = true;
             stopObserving();

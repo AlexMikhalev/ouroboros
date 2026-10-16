@@ -321,7 +321,7 @@ test('hover opens only where the button stays under the mouse; alone or scrollin
     row.appendChild(pills);
     const styles = new Map([[row, { paddingLeft: '8px', paddingRight: '8px', columnGap: '8px' }]]);
     const win = { ...hoverWindow(true), getComputedStyle: (node) => styles.get(node) || {} };
-    const control = createEffortRangeControl({ row, doc, win, saveEffortRange: async (body) => { posts.push(['/api/owner/effort-range', body]); return { project_id: projectId, effort_range: body }; }, showToast: () => {} });
+    const control = createEffortRangeControl({ row, doc, win, saveEffortRange: async body => ({ effort_range: body }), showToast: () => {} });
     const el = control.el;
     el.querySelector('.chat-effort-head').getBoundingClientRect = () => ({ width: 30 });
     el.querySelectorAll('.chat-effort-seg').forEach((seg) => {
@@ -391,7 +391,7 @@ test('fit: beside the other controls when the strip fits there, alone when it do
         addEventListener: (type, fn) => { if (type === 'resize') resize.push(fn); }, removeEventListener: () => {},
     };
     const control = createEffortRangeControl({
-        row, doc, win, saveEffortRange: async (body) => { posts.push(['/api/owner/effort-range', body]); return { project_id: projectId, effort_range: body }; }, showToast: () => {},
+        row, doc, win, saveEffortRange: async body => ({ effort_range: body }), showToast: () => {},
     });
     const el = control.el;
     assert.equal(row.children.indexOf(el), 2, 'after the pills and the context capsule');
@@ -566,6 +566,7 @@ function mountPair({ hover = false, reply, win, withBox = false, projectId = '' 
     const toasts = [];
     const refreshes = [];
     const answer = { value: reply || { ok: true } };
+    const effortAnswer = { value: null };
     const controls = createComposerOwnerControls({
         projectId, row, box: withBox ? box : null, doc, win: win || hoverWindow(hover), byId: (suffix) => (suffix === 'context-mode' ? contextEl : null),
         apiFetch: async (url, init) => {
@@ -573,7 +574,7 @@ function mountPair({ hover = false, reply, win, withBox = false, projectId = '' 
             const response = await answer.value;
             return response.json ? response : { ...response, json: async () => ({ project_id: projectId, context_mode: body.mode }) };
         },
-        saveEffortRange: async (body) => { posts.push(['/api/owner/effort-range', body]); return { project_id: projectId, effort_range: body }; },
+        saveEffortRange: async (body) => { posts.push(['/api/owner/effort-range', body]); return effortAnswer.value || { project_id: projectId, effort_range: body }; },
         showToast: (message, tone) => toasts.push([message, tone]),
         refreshState: (force) => refreshes.push(force),
     });
@@ -581,7 +582,7 @@ function mountPair({ hover = false, reply, win, withBox = false, projectId = '' 
     const effortEl = controls.effort.el;
     const seg = (mode) => contextEl.querySelectorAll('.chat-seg').find((node) => node.dataset.mode === mode);
     return {
-        controls, row, box, doc, contextEl, effortEl, posts, toasts, refreshes, answer, seg,
+        controls, row, box, doc, contextEl, effortEl, posts, toasts, refreshes, answer, effortAnswer, seg,
         contextHead: contextEl.querySelector('.chat-context-head'), effortHead: effortEl.querySelector('.chat-effort-head'),
         press: (head, detail = 1) => fire(head, 'click', { detail }),
         choose: (mode) => fire(contextEl, 'click', { target: { closest: (selector) => (selector === '.chat-seg' ? seg(mode) : null) } }),
@@ -935,8 +936,45 @@ test('Main and two projects read and save only their room, including delayed con
     assert.equal(main.contextEl.dataset.contextMode, 'max');
     assert.equal(beta.contextEl.dataset.contextMode, 'nano');
     alpha.answer.value = { ok: true, json: async () => ({ project_id: 'beta', context_mode: 'max' }) };
-    await alpha.choose('max');
+    const refused = alpha.choose('max');
+    const send = alpha.controls.pendingSave();
+    await refused;
     assert.equal(alpha.contextEl.dataset.contextMode, 'nano', 'foreign-scope response cannot repaint this room');
-    assert.equal(await alpha.controls.pendingSave(), false);
+    assert.equal(await send, false, 'the save this Send awaited was refused');
+    assert.equal(await alpha.controls.pendingSave(), true, 'a reported refusal does not block a later Send');
     for (const m of [main, alpha, beta]) m.controls.destroy();
 });
+
+for (const failed of ['context', 'effort']) for (const accepts of [true, false]) {
+    test(`Send waits only for pending controls: old ${failed} refusal, new save ${accepts ? 'accepted' : 'refused'}`, async () => {
+        const m = mountPair({ projectId: 'alpha' });
+        const effort = () => {
+            const handle = m.controls.effort.el.querySelector('.chat-effort-rec');
+            for (const fn of handle.listeners.get('keydown') || []) fn({ key: 'ArrowRight', currentTarget: handle, preventDefault() {} });
+        };
+        try {
+            if (failed === 'context') {
+                m.answer.value = { ok: false, json: async () => ({ error: 'Earlier refusal' }) };
+                await m.choose('low');
+            } else {
+                m.effortAnswer.value = Promise.reject(new Error('Earlier refusal'));
+                effort(); await m.controls.effort.pendingSave();
+            }
+            assert.equal(m.toasts.length, 1);
+            assert.equal(m.controls.hasPendingSave(), false);
+            let resolve, reject;
+            const pending = new Promise((yes, no) => { resolve = yes; reject = no; });
+            if (failed === 'context') { m.effortAnswer.value = pending; effort(); }
+            else { m.answer.value = pending; void m.choose('low'); }
+            assert.equal(m.controls.hasPendingSave(), true);
+            const send = m.controls.pendingSave();
+            if (!accepts) reject(new Error('Current refusal'));
+            else resolve(failed === 'context'
+                ? { project_id: 'alpha', effort_range: { min: 'low', recommended: 'high', max: 'high' } }
+                : { ok: true });
+            assert.equal(await send, accepts, 'only this pending save decides whether Send proceeds');
+            assert.equal(m.toasts.length, accepts ? 1 : 2, 'a refused current save remains visible');
+            assert.equal(m.controls.hasPendingSave(), false);
+        } finally { m.controls.destroy(); }
+    });
+}

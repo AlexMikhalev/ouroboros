@@ -640,16 +640,13 @@ class OuroborosAgent:
         task = attach_task_contract(apply_consciousness_authority(task))
         from types import SimpleNamespace
         from ouroboros.settings_integrity import restore_cognition
-
         saved_start = _load_start_continuation(SimpleNamespace(
             task_id=str(task.get("id") or ""), task_attempt=task.get("_attempt"),
             drive_root=self.env.drive_root, budget_drive_root=task.get("budget_drive_root"),
             task_metadata=task.get("metadata") or {}, task_contract=task.get("task_contract") or {},
         ), task)
         restore_cognition(saved_start.get("cognition"))
-        # THE resolution, before anything durable is written about this run: the
-        # RUNNING record below is the single atomic write that states model, effort,
-        # route, profile, effective executor and the one `capability_delta` together.
+        # Resolve once, before the atomic RUNNING record stores all axes and capability_delta.
         dispatch = resolve_dispatch_axes(task)
         _record_executor_resolution(drive_logs, task, dispatch)
         sanitized_task = sanitize_task_for_event(task, drive_logs)
@@ -659,9 +656,7 @@ class OuroborosAgent:
                      **{key: str(task[key]) for key in ("root_task_id", "parent_task_id") if task.get(key)},
                      "activity_emitted_at": getattr(self, "_activity_emitted_at", None)})
         self._persist_running_record(task)
-        # Durable record first, live mirror second: the supervisor's RUNNING copy
-        # (and therefore the queue snapshot) learns the same resolution the record
-        # just persisted, across the process boundary.
+        # After persistence, mirror the same resolution to the supervisor/queue.
         emit_dispatch_resolution(self._event_queue, task, dispatch)
         self._emit_live_log(
             "context_building_started",
@@ -685,7 +680,6 @@ class OuroborosAgent:
                 })
             except Exception:
                 log.debug("Failed to emit subagent running progress", exc_info=True)
-
         task_metadata = dict(task.get("metadata") or {}) if isinstance(task.get("metadata"), dict) else {}
         for key in (
             "parent_task_id", "root_task_id", "session_id", "actor_id", "delegation_role", "role",
@@ -733,7 +727,6 @@ class OuroborosAgent:
             task_metadata["write_surface"] = str(_tc_meta["surface"])
         with self._owner_message_admission_lock:
             self._current_task_metadata = dict(task_metadata)
-
         from ouroboros.project_facts import resolve_project_id
 
         # Project scope flows to tools via ctx.project_id and to context build via

@@ -22,6 +22,7 @@ EFFORT_SCALE: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xh
 
 # The primary effort and independently ordered helper bounds (``effort_range``).
 EFFORT_RANGE_KEYS: tuple[str, ...] = ("OUROBOROS_EFFORT_MIN", "OUROBOROS_EFFORT_TASK", "OUROBOROS_EFFORT_MAX")
+EFFORT_FORMAT_KEY = "_effort_range_format"  # disk format, never an environment setting or owner knob
 # The tiers the owner's range control offers; `minimal` stays a runtime tier a stored value may name.
 OWNER_EFFORT_TIERS: tuple[str, ...] = tuple(tier for tier in EFFORT_SCALE if tier != "minimal")
 # Who decided one actor's effort (``choose_effort``); task records and chat frames carry it verbatim.
@@ -69,19 +70,29 @@ def _tier(value: Any) -> str:
     return text if text in EFFORT_SCALE else ""
 
 
-def normalize_legacy_effort_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
+def normalize_legacy_effort_settings(settings: Mapping[str, Any], *, legacy_order: bool = False) -> dict[str, Any]:
     """Materialize the old effective bounds BEFORE defaults erase their absence.
 
-    A partial legacy choice (TASK=ultra alone, for example) widened its bounds
-    around Main. A complete saved triple now means three independent marks.
+    Partial choices widened their bounds around Main. Canonical complete triples
+    are independent; the document reader alone opts into the old ordering.
     """
     result = dict(settings)
-    if any(key in settings for key in EFFORT_RANGE_KEYS) and not all(
-            _tier(settings.get(key)) for key in (EFFORT_RANGE_KEYS[0], EFFORT_RANGE_KEYS[2])):
+    if legacy_order or (any(key in settings for key in EFFORT_RANGE_KEYS) and not all(
+            _tier(settings.get(key)) for key in (EFFORT_RANGE_KEYS[0], EFFORT_RANGE_KEYS[2]))):
         low, primary, high = (_tier(settings.get(key)) or str(SETTINGS_DEFAULTS[key]) for key in EFFORT_RANGE_KEYS)
         result.update(zip(EFFORT_RANGE_KEYS, (min(low, primary, key=effort_rank), primary,
                                              max(high, primary, key=effort_rank))))
     return result
+
+
+def normalize_effort_document(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep pre-independent effective bounds, even after old writers filled defaults.
+
+    Call after selecting authored sources, before defaults hide absence. The returned
+    format marker survives ordinary saves; canonical actor/project triples need none.
+    """
+    return {**normalize_legacy_effort_settings(settings, legacy_order=settings.get(EFFORT_FORMAT_KEY) != 1),
+            EFFORT_FORMAT_KEY: 1}
 
 
 def effort_range(settings: Optional[Mapping[str, Any]] = None) -> dict[str, str]:

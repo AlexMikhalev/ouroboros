@@ -14,7 +14,7 @@ from contextlib import contextmanager, nullcontext
 from typing import Any, Dict, Iterator, List, Optional
 
 from ouroboros.contracts.chat_id_policy import project_chat_id
-from ouroboros.composer_cognition import cognition_overrides, ensure_project_cognition, main_cognition, project_cognition
+from ouroboros.composer_cognition import ensure_project_cognition, main_cognition, project_cognition
 from ouroboros.contracts.schema_versions import with_schema_version
 from ouroboros.project_facts import sanitize_project_id
 from ouroboros.store import open_store
@@ -1006,7 +1006,7 @@ def create_project(
     if not pid:
         raise ValueError(f"unusable project id: {project_id!r}")
     cognition = main_cognition()
-    ensure_project_cognition(drive_root, main_settings=cognition_overrides(cognition))
+    ensure_project_cognition(drive_root, baseline=cognition)
     with _file_write_lock(_registry_path(drive_root)), \
             project_admission_guard(drive_root, admission_basis) if admission_basis is not None else nullcontext():
         data = _load(drive_root, strict=True, project_id=pid)

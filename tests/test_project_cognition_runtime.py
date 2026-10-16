@@ -212,13 +212,17 @@ def test_env_only_legacy_effort_preserves_missing_bounds_at_every_start(monkeypa
             assert effort_range() == expected
 
 
-def test_complete_env_effort_triple_keeps_primary_independent(monkeypatch):
-    from ouroboros.settings_scales import effort_range
+@pytest.mark.parametrize("independent", [False, True])
+def test_complete_env_effort_triple_uses_the_saved_format(monkeypatch, independent):
+    from ouroboros.settings_scales import EFFORT_FORMAT_KEY, effort_range
 
+    if independent:
+        config.SETTINGS_PATH.write_text(json.dumps({EFFORT_FORMAT_KEY: 1}), encoding="utf-8")
     for key, value in {"OUROBOROS_EFFORT_MIN": "low", "OUROBOROS_EFFORT_TASK": "ultra",
                        "OUROBOROS_EFFORT_MAX": "medium"}.items():
         monkeypatch.setenv(key, value)
-    assert effort_range(config.load_settings()) == {"min": "low", "recommended": "ultra", "max": "medium"}
+    assert effort_range(config.load_settings()) == {
+        "min": "low", "recommended": "ultra", "max": "medium" if independent else "ultra"}
 
 
 @pytest.mark.parametrize("exists", [True, False])
@@ -265,3 +269,57 @@ def test_failed_reload_and_ambiguous_low_preserve_runtime_presence_on_main():
         restore_cognition(saved)
         assert config.get_context_mode() == "low" and config.get_owner_context_mode() == "max"
         assert config.resolve_effort("task") == "ultra"
+
+
+def test_project_voice_actor_keeps_its_choice_across_reconnect_while_new_work_reads_the_room(monkeypatch):
+    """The real actor entry and voice session/tool threads share one captured choice."""
+    from ouroboros import live_turn
+    from ouroboros.gateways.realtime_engine import ToolCall, ToolResult
+    from tests.test_live_turn import Harness, _spec, _wait_for
+
+    save_owner(document("old"))
+    room = create_project(config.DATA_DIR, "voice-room")
+    before, later = choice("nano", "low", "low", "medium"), choice("max", "ultra", "high", "ultra")
+    set_room("voice-room", before)
+    spec = _spec(chat_id=room["chat_id"])
+    # A new direct actor may have only its registered chat before its result exists.
+    task = {"id": "t-call", "chat_id": room["chat_id"], "metadata": {"live_call": spec.as_metadata()}}
+    h = Harness(monkeypatch, config.DATA_DIR, spec=spec, task=task)
+    run_live_turn, open_live = live_turn.run_live_turn, h.llm.open_live
+    opens, tool_reads = [], []
+
+    def enter_actor(**kwargs):
+        return admitted_agent(lambda _task: run_live_turn(**kwargs), []).handle_task(task)
+
+    def open_session(route):
+        opens.append(captured_cognition())
+        return open_live(route)
+
+    def tool_hook(call, messages, schemas):
+        tool_reads.append((captured_cognition(), live_effort_range()))
+        messages.append({"role": "tool", "tool_call_id": call["id"], "name": call["function"]["name"],
+                         "content": "Current room observed."})
+
+    monkeypatch.setattr(live_turn, "run_live_turn", enter_actor)
+    monkeypatch.setattr(h.llm, "open_live", open_session)
+    h.tool_hook = tool_hook
+    try:
+        first = h.start()
+        assert opens == [before]
+        set_room("voice-room", later)
+        new_actor = admitted_agent(lambda _task: captured_cognition(), []).handle_task(
+            {"id": "next-text", "chat_id": room["chat_id"]})
+        assert new_actor == later
+        first.end_stream()
+        assert _wait_for(lambda: len(h.llm.engines) == 2 and h.engine().config is not None)
+        second = h.engine()
+        assert opens == [before, before]
+        assert second.config.instructions == first.config.instructions
+        second.push(ToolCall(call_id="room-check", name="knowledge_read", arguments="{}"))
+        assert _wait_for(lambda: second.sent_of(ToolResult))
+        assert tool_reads == [(before, later["effort_range"])]
+        assert config.get_context_mode() == "max"  # the Project never rewrote Main
+    finally:
+        if getattr(h, "thread", None) is not None:
+            h.stop()
+            h.finish()
