@@ -621,11 +621,13 @@ textarea.ui-control { resize: vertical; }
     width: var(--ui-popup-anchor-width);
     margin: 0;
     padding: var(--space-1);
-    border: 1px solid var(--surface-border);
-    border-radius: var(--radius);
-    background: var(--ui-modal-bg);
+    border: 1px solid transparent;
+    border-radius: var(--radius-object);
+    background: var(--surface-float);
     color: var(--text-primary);
-    box-shadow: 0 20px 45px rgba(0, 0, 0, 0.35);
+    box-shadow: var(--elev-float);
+    -webkit-backdrop-filter: var(--glass);
+    backdrop-filter: var(--glass);
     list-style: none;
 }
 .ui-model-option, .ui-model-empty {
@@ -640,18 +642,20 @@ textarea.ui-control { resize: vertical; }
 .ui-model-option[aria-selected="true"] { color: var(--accent-light); background: var(--accent-12); }
 .ui-model-empty { color: var(--text-meta); }
 
-/* One menu surface; callers retain only domain meaning such as danger. */
+/* One menu surface, a float sheet like the model list above; callers retain only domain meaning such as danger. */
 .ui-popup[role="menu"] {
     display: flex;
     flex-direction: column;
     width: max-content;
     min-width: min(160px, var(--ui-popup-max-width));
     padding: var(--space-1);
-    border: 1px solid var(--surface-border);
-    border-radius: var(--radius);
-    background: var(--ui-modal-bg);
+    border: 1px solid transparent;
+    border-radius: var(--radius-object);
+    background: var(--surface-float);
     color: var(--text-primary);
-    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.32);
+    box-shadow: var(--elev-float);
+    -webkit-backdrop-filter: var(--glass);
+    backdrop-filter: var(--glass);
 }
 .ui-popup [role^="menuitem"] {
     flex: 0 0 auto;

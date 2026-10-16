@@ -8407,6 +8407,7 @@ textarea.chat-input {
     color: var(--text-meta);
 }
 .chat-quiz-option:disabled .chat-quiz-option-detail { color: var(--text-disabled); }
+.chat-quiz-option.chosen .chat-quiz-option-detail { color: var(--text-meta); }
 .chat-quiz-option-recommended {
     margin-left: var(--space-2, 8px);
     font-size: var(--type-meta);
@@ -8914,8 +8915,9 @@ textarea.chat-input {
 }
 :root[data-theme] .settings-footer { background: var(--surface-object); }
 
-/* Sheets: what floats over moving content (menus, the composer's field) takes the float surface and shadow. */
-:root[data-theme] :is(.ui-popup[role="menu"], .ui-model-options, .chat-header-menu, .task-control-menu, .marketplace-modal) {
+/* Sheets: what floats over moving content (menus, the composer's field) takes the float surface and shadow; the
+   shared menu and model list take it in ui.css, so setup has it too. */
+:root[data-theme] :is(.chat-header-menu, .task-control-menu, .marketplace-modal) {
     border-color: transparent; border-radius: var(--radius-object); background: var(--surface-float); box-shadow: var(--elev-float);
     -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass);
 }
@@ -9012,6 +9014,6 @@ textarea.chat-input {
 }
 
 /* The sidebar's places are rows of one list: quiet rows with the inner radius; the chosen place takes the crimson
-   tone's own ink, so it keeps reading contrast on its tint. */
+   tone's own ink, so it keeps reading contrast on its tint. A Project row keeps its own fuchsia. */
 :root[data-theme] :is(.nav-row, .nav-section-toggle) { border-radius: var(--radius-inner); }
-:root[data-theme] :is(.nav-row, .nav-section-toggle).active { color: var(--tone-crimson-ink); }
+:root[data-theme] :is(.nav-row, .nav-section-toggle).active:not(.nav-project-row) { color: var(--tone-crimson-ink); }
