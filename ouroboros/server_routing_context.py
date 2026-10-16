@@ -541,8 +541,8 @@ def _scoped_task_metadata(project_id: str, task_metadata: Any) -> Any:
     """Bind a chat frame's task_metadata to the thread's project via chat_id (the
     SSOT). A registered project chat scopes to its OWN project, overriding any
     client-supplied project_id; a non-project chat DROPS an untrusted client
-    project_id (work is scoped to a project only via the promote_chat_to_task tool,
-    never a raw ws frame). Prevents a stale/malformed frame (chat_id A + project_id
+    project_id (work placement uses durable binding, never a raw ws frame).
+    Prevents a stale/malformed frame (chat_id A + project_id
     B) from rendering in A while loading/writing project B's memory."""
     if project_id:
         return {**(task_metadata or {}), "project_id": project_id}

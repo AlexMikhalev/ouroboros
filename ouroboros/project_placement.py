@@ -120,6 +120,8 @@ def readmit_placement(drive_root: Any, task: dict, *, repo_dir: Any, running: An
     binding = pending_placement(drive_root, task)
     if not binding:
         return True
+    if not refresh_pending_placement(drive_root, task, binding=binding):
+        return False
     if not candidate_is_leasable(task, running_project_ids(running.values()),
                                 cold_holders=cold_project_holders(pending)):
         return False

@@ -103,7 +103,8 @@ def test_generation_change_between_prepare_and_move_refuses(runtime, tmp_path):
     assert project_binding_for_task(root, "one") is None
 
 
-def test_running_move_waits_for_boundary_and_destination_lease(runtime, tmp_path):
+@pytest.mark.parametrize("preselect", [False, True])
+def test_running_move_waits_for_boundary_and_destination_lease(runtime, tmp_path, preselect):
     root, repo, workers = runtime
     folder = tmp_path / "room-folder"
     folder.mkdir()
@@ -119,8 +120,9 @@ def test_running_move_waits_for_boundary_and_destination_lease(runtime, tmp_path
     current_folder = tmp_path / "current-room-folder"
     current_folder.mkdir()
     update_project(root, "room", working_dir=str(current_folder))
-    assert refresh_pending_placement(root, work)
-    assert work["project_id"] == "room" and work["workspace_root"] == str(repo)
+    if preselect:
+        assert refresh_pending_placement(root, work)
+        assert work["project_id"] == "room" and work["workspace_root"] == str(repo)
     workers.RUNNING["other"] = {"task": {"id": "other", "project_id": "room"}}
     assert not readmit_placement(root, work, repo_dir=repo, running=workers.RUNNING, pending=workers.PENDING)
     assert work["workspace_root"] == str(repo)

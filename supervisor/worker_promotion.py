@@ -198,11 +198,7 @@ def _admit_project_scope(
     to announce is stored on the task record and ``promote_chat_to_task`` announces
     it only after ``enqueue_task`` succeeds. Returns the caller's rejection dict, or
     ``None`` when the task is admitted (and when there is no project to admit it into).
-
-    Held by the caller under ``origin_claim_lock``: for an implicit promote the
-    origin re-read and this bind are ONE transaction against the UI conversion's
-    claim, so a sibling card cannot bind the owner message in between and leave this
-    root in Main as a second convertible unit for one piece of work."""
+    Shared origin is provenance only; this new work never adopts another root."""
     if not pid:
         return None
     from ouroboros.workspace_admission import WORKSPACE_NONE

@@ -208,17 +208,14 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("move_to_project", {
             "name": "move_to_project",
             "description": (
-                "Create (or attach to) a named Ouroboros PROJECT and bind THE CURRENT running "
-                "task to it DURABLY. Use this when you are ALREADY working a task and realize it "
-                "should be a named project (the owner asked to 'create a project called X', or the "
-                "work has grown into a real deliverable) — instead of a bare filesystem mkdir. "
-                "Unlike start_task (which starts a NEW independent task in a project), "
-                "this binds the task you are in: its journal_write and per-project knowledge start "
-                "working, and its live progress routes to the project thread. The result states "
-                "the REAL outcome the host recorded — the durable binding, a typed refusal, or "
-                "unconfirmed — never a promise. Idempotent for the same project; a task already "
-                "bound to a different project stays there (a requested name is carried to that "
-                "project as a rename). A planning obligation stays with this task."
+                "Place this work in a named Project room, keeping its task id and card. "
+                "Use it when the current request belongs in a project; only this work moves. "
+                "Its journal, knowledge tools and progress routing use the room immediately. "
+                "The current execution keeps its folder and writer lease until readmission "
+                "at the next execution boundary; knowledge is not automatically reloaded. "
+                "The result reports the recorded durable binding, refusal or unconfirmed outcome. "
+                "A task already bound to a room stays there; a requested name renames that room. "
+                "A planning obligation stays with this task."
             ),
             "parameters": {
                 "type": "object",

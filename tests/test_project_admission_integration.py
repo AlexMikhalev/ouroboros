@@ -213,6 +213,7 @@ def test_conversion_bind_failure_preserves_scope_and_exact_carrier(host, tmp_pat
     if carrier == "absent":
         prepared.pop("_project_admission")
     before = copy.deepcopy(prepared)
+    assert queue.persist_queue_snapshot()
     saved = queue.QUEUE_SNAPSHOT_PATH.read_bytes()
     marked = []
     def refuse(*args, **kwargs):

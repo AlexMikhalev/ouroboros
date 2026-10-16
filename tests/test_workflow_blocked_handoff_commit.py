@@ -19,6 +19,7 @@ from tests.test_mutation_attribution import _git, _repo
 
 
 def _admit_retained_correction(root, data, monkeypatch):
+    from ouroboros.server_routing_context import _task_result_ground_truth
     from supervisor import queue, workers
     from supervisor.events import _handle_promote_chat_to_task
 
@@ -45,6 +46,7 @@ def _admit_retained_correction(root, data, monkeypatch):
         "type": "promote_chat_to_task", "task_id": "second", "routing_token": "correction-token",
         "objective": "Finish the retained correction", "title": "Retained correction",
         "predecessor_task_id": "first", "workspace": "none", "chat_id": 1,
+        "predecessor_authority_source": _task_result_ground_truth(load_task_result(data, "first"))["authority_source"],
     }, supervisor)
     assert response["status"] == "scheduled", response
     assert len(pending) == 1 and "predecessor_task_id" not in pending[0]
