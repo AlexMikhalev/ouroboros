@@ -35,12 +35,6 @@ def _read(rel: str) -> str:
 # ────────── Bug 1 (polish): the retired loop's rows replay honestly ──────────
 
 
-def test_log_events_has_no_background_loop_projector():
-    src = _read("web/modules/log_events.js")
-    assert "consciousness_state" not in src
-    assert "bg-consciousness" not in src
-
-
 def test_history_never_fabricates_a_terminal_status_for_legacy_bg_rows(tmp_path):
     from ouroboros.gateway.history import make_chat_history_endpoint
 

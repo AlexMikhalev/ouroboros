@@ -758,16 +758,17 @@ def _file_artifact(kind: str, path: pathlib.Path, **facts: Any) -> Dict[str, Any
             "size": path.stat().st_size if path.exists() else 0, **facts}
 
 
-def finalize_task_artifacts(parent_drive_root: pathlib.Path, task: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Write patch/memory-export artifacts for a completed headless task under the task's custody lock, the
-    one lock every canonical-store publisher takes (copy-back, ref retry, settlement, mailbox cleanup), so no
-    two publishers place or list one task's files at once; a held lock is ``CustodyBusy`` (nothing failed)."""
+def finalize_task_artifacts(parent_drive_root: pathlib.Path, task: Dict[str, Any],
+                            *, lock_timeout_sec: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Publish under the custody lock shared by copy-back, ref retry, settlement and mailbox cleanup.
+    Publishers never place/list one task's files concurrently; an exhausted lock budget is ``CustodyBusy``."""
     from ouroboros.task_custody import CustodyBusy, task_custody_lock
 
     task_id = str(task.get("id") or "")
     if not task_id:
         return []
-    with task_custody_lock(parent_drive_root, task_id, timeout_sec=PUBLICATION_LOCK_SEC) as locked:
+    budget = PUBLICATION_LOCK_SEC if lock_timeout_sec is None else lock_timeout_sec
+    with task_custody_lock(parent_drive_root, task_id, timeout_sec=budget) as locked:
         if not locked:
             raise CustodyBusy(f"custody lock of {task_id} is held by another publisher")
         return _finalize_task_artifacts_locked(parent_drive_root, task, task_id)

@@ -13,6 +13,7 @@ import yaml
 
 from ouroboros.preflight_runner import LANE_EXCLUSION_EXPR, PARALLEL_PASS_FLAGS
 from tests.ci_evidence import file_shards, reconcile_shards
+from ouroboros.test_parallelism import NESTED_WORKERS_ENV
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA, RUN = "a" * 40, "42"
@@ -69,6 +70,7 @@ def test_real_pytest_manifests_and_xdist_prove_both_passes_by_whole_file(tmp_pat
             result = subprocess.run(
                 [sys.executable, "-I", "-S", str(ROOT / "scripts/safe_test.py"),
                  "--temp-parent", str(tmp_path), "--", sys.executable, str(entry), *args],
+                env={**os.environ, NESTED_WORKERS_ENV: "2"},
                 capture_output=True, text=True, encoding="utf-8", timeout=90)
             assert result.returncode == 0, result.stdout + result.stderr
             data = json.loads((public / "results.json").read_text(encoding="utf-8"))
@@ -205,7 +207,7 @@ def test_windows_matrix_keeps_the_same_passes_and_once_per_os_checks(tmp_path):
     for name in ("book_mode", "tests_size", "attachment_browser_install", "attachment_browser", "composer_browser"):
         assert "matrix.shard <= 1" in steps[name]["if"]
     for step in job["steps"]:
-        if ("node --test" in step.get("run", "") or "lint:undef" in step.get("run", "")
+        if ("run_tests.py --node" in step.get("run", "") or "lint:undef" in step.get("run", "")
                 or "test_no_core_a2a_telegram_imports.py" in step.get("run", "")):
             assert "matrix.shard <= 1" in step["if"]
     mandatory = [step for step in job["steps"] if step.get("name", "").startswith(("Require both Windows", "Upload the Windows"))]

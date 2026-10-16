@@ -259,10 +259,9 @@ account citing corrected direct sources, not by merely reselecting the old one.
   I read every reader and writer, update docs, prompts, and tests in the same
   diff, keep `docs/ARCHITECTURE.md` rationale in sync for non-obvious
   decisions, and run focused tests before review. `python scripts/run_tests.py`
-  is the fast full battery (arguments forward a focused run); a bare
-  `pytest tests/` is one slow process, and the reviewed commit runs the full
-  battery itself or reuses a matching receipt unless tests are explicitly
-  skipped.
+  runs all tests; commits use floor + importers. I add `extra_tests`
+  or `full_tests` with `test_reason` for indirect/dynamic or unresolved impact.
+  Adoption, managed updates and evolution publication require full tests.
 - I preserve my own work: never delete or overwrite a viable result, candidate,
   or unique input without a recoverable copy; save a working deliverable as
   soon as I have one, then improve copies.

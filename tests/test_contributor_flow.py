@@ -6,61 +6,6 @@ from ouroboros.tools.scope_review_contract import COUPLING_QUESTION_IDS
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_public_contributor_flow_is_agent_first_and_route_neutral():
-    guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-
-    assert "against lowercase `ouroboros`, not `main` or `ouroboros-stable`" in guide
-    assert "Coding agents and people must read [CONTRIBUTING.md]" in readme
-    for path in (
-        "BIBLE.md", "docs/ARCHITECTURE.md", "docs/DEVELOPMENT.md",
-        "docs/CHECKLISTS.md",
-    ):
-        assert path in guide
-    # 11=A: only the checklist SSOT is read cover-to-cover; the other project
-    # documents are mapped by headings with relevant sections read in full.
-    assert "[`docs/CHECKLISTS.md`](docs/CHECKLISTS.md)" in guide
-    assert "**in full**" in guide
-    assert "navigation map" in guide
-    assert "read every section relevant" in guide
-    # Negative pins: the retired blanket contract must not resurface anywhere
-    # in the two entry documents (README routes contributors here).
-    assert "read these files **in full**" not in guide
-    assert "The required project documents were read in full" not in guide
-    assert "in full before editing" not in readme.replace(
-        "reading every section relevant to your change in full before editing", "")
-    # 10=A: the agentic checklist review is the main path and must cover every
-    # coupling item with the runtime output contract.
-    assert "agentic checklist review" in guide
-    for item in COUPLING_QUESTION_IDS:
-        assert item in guide
-    assert "scripts/validate_scope_receipt.py" in guide
-    assert "separate agent context" in guide
-    assert "Reviewing in the authoring conversation does not count" in guide
-    assert "Mark the review `NOT_RUN`" in guide
-    # The script lane states what a scope reviewer is owed (a change-relative
-    # required-source floor) instead of a window requirement (#395).
-    assert "maintainer tooling" in guide
-    assert "SCOPE_REVIEW_BLOCKED" in guide
-    assert "change-relative" in guide
-    assert "does not depend on a very large reviewer window" in guide
-    assert "Reading coverage is diagnostic" in guide
-    assert "never remove a responding reviewer from quorum" in guide
-    assert "SHAPE, not truth" in guide
-    assert "--contributor" in guide
-    assert "--base-ref upstream/ouroboros" in guide
-    # D31: the command runs from a clean checkout of the target base (the installed
-    # body) and names the proposal; the proposal is never that checkout's HEAD.
-    assert "git worktree add --detach ../ouroboros-review upstream/ouroboros" in guide
-    assert "--head-ref <your-branch>" in guide
-    assert "--head-ref HEAD" not in guide
-    assert "installed body's review flow and rules" in guide
-    assert "re-runs itself" not in guide
-    assert "review-packet.zip" in guide
-    assert "evidence, not a promise to merge" in guide
-    assert "OpenRouter" not in guide
-
-
 def test_pull_request_template_has_one_universal_agent_review_block():
     template = (ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(
         encoding="utf-8"

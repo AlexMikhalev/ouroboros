@@ -987,7 +987,7 @@ def test_tests_fact_is_passed_only_for_a_candidate_bound_proof(candidate, monkey
     ctx._preflight_tests_passed = True  # the runner's flag from an EARLIER candidate survives in the process
     ctx._preflight_test_proof = None
     assert facts() == {"policy": "NOT_RUN", "result": "unknown", "reason": "tests_proof_not_for_this_candidate"}
-    monkeypatch.setattr(commit_admission, "preflight_test_proof_matches", lambda ctx, repo: True)
+    monkeypatch.setattr(commit_admission, "preflight_test_proof_matches", lambda ctx, repo, **_: True)
     assert facts() == {"policy": "run", "result": "passed", "proof": "candidate_bound"}
     ctx._preflight_tests_passed = False
     assert facts() == {"policy": "NOT_RUN", "result": "unknown"}

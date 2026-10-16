@@ -35,12 +35,22 @@ from tests.tool_classification_corpus import (
     GOLDEN_SOURCE_SHA,
     _MARKER_RE,
     build_corpus,
-    harvested_identifiers,
-    harvested_native_codes,
+    harvest_producers,
     typed_result,
 )
 
 GOLDEN_PATH = pathlib.Path(__file__).resolve().parent / "fixtures" / "legacy_tool_classification_0f715831.json"
+
+
+@pytest.fixture(scope="session")
+def producer_harvest():
+    # Rebuilt from this candidate in each pytest process; no persisted index.
+    return harvest_producers()
+
+
+@pytest.fixture(scope="session")
+def classification_corpus(producer_harvest):
+    return build_corpus(producers=producer_harvest)
 
 
 class Delta(NamedTuple):
@@ -574,9 +584,9 @@ def test_syntax_warning_suffix_keeps_the_applied_edit_successful(tool):
     assert _live_answer(Case("current:syntax-suffix:" + tool, "SYNTAX_WARNING", tool, text)) == (False, "ok")
 
 
-def test_single_classifier_matches_the_retired_pair_except_approved_deltas() -> None:
+def test_single_classifier_matches_the_retired_pair_except_approved_deltas(classification_corpus) -> None:
     golden = _golden()
-    corpus = build_corpus()
+    corpus = classification_corpus
     assert len(corpus) >= 600, "the corpus collapsed; a harvest regression would hide every delta"
 
     unexpected: list[tuple[str, dict, tuple[bool, str]]] = []
@@ -613,9 +623,9 @@ def test_every_approved_delta_names_an_owner_item() -> None:
         assert (delta.old_is_error, delta.old_status) != (delta.new_is_error, delta.new_status), subject
 
 
-def test_native_golden_answers_have_identical_retired_text_inputs() -> None:
+def test_native_golden_answers_have_identical_retired_text_inputs(classification_corpus) -> None:
     """The old pair ignores native codes; aliases must retain its exact input."""
-    corpus = {case.key: case for case in build_corpus()}
+    corpus = {case.key: case for case in classification_corpus}
     golden = _golden()
     for key, native in corpus.items():
         if not key.startswith("native:"):
@@ -632,7 +642,7 @@ def test_native_golden_answers_have_identical_retired_text_inputs() -> None:
             assert _live_answer(plain) == CURRENT_PRODUCER_CONTRACTS[identifier]
 
 
-def test_shape_golden_answers_match_their_own_identifier_line() -> None:
+def test_shape_golden_answers_match_their_own_identifier_line(classification_corpus) -> None:
     """A hand-added shape answer is derived from the golden, never invented.
 
     The retired pair is a pure text chain over the result's first marker line,
@@ -649,7 +659,7 @@ def test_shape_golden_answers_match_their_own_identifier_line() -> None:
     """
     golden = _golden()
     checked = []
-    for case in build_corpus():
+    for case in classification_corpus:
         if not case.key.startswith("shape:"):
             continue
         marker = _MARKER_RE.match(case.text.strip())
@@ -663,16 +673,16 @@ def test_shape_golden_answers_match_their_own_identifier_line() -> None:
     assert len(checked) >= 20, "the marker-led shape rows collapsed; the rule lost its witnesses"
 
 
-def test_every_delta_without_a_producer_is_named_with_its_reason() -> None:
+def test_every_delta_without_a_producer_is_named_with_its_reason(producer_harvest) -> None:
     """The two unreachable deltas stay documented, never approved: an approved row
     that cannot fire would fail the table's own staleness direction."""
     assert set(_DELTAS_WITHOUT_A_PRODUCER).isdisjoint(APPROVED_DELTAS)
     for subject, reason in _DELTAS_WITHOUT_A_PRODUCER.items():
         assert reason.strip(), subject
-    assert "SKILL_PAYLOAD_CONTROL_BLOCKED" not in harvested_identifiers()
+    assert "SKILL_PAYLOAD_CONTROL_BLOCKED" not in producer_harvest.identifiers
 
 
-def test_every_native_code_is_covered_by_the_corpus() -> None:
+def test_every_native_code_is_covered_by_the_corpus(classification_corpus, producer_harvest) -> None:
     """A producer cannot publish a code the differential has never classified.
 
     The text corpus is blind to a producer that assembles its text at runtime, and
@@ -680,8 +690,8 @@ def test_every_native_code_is_covered_by_the_corpus() -> None:
     That blind spot let four extension terminals, both MCP unavailable terminals and
     the registry's unknown-tool publish change status with no test able to notice.
     Any new native code now fails here until a corpus case exercises it."""
-    covered = {case.code for case in build_corpus() if case.code}
-    uncovered = sorted(set(harvested_native_codes()) - covered)
+    covered = {case.code for case in classification_corpus if case.code}
+    uncovered = sorted(set(producer_harvest.native_codes) - covered)
     assert not uncovered, (
         "native producer codes no corpus case classifies (add a _PRODUCER_SHAPES "
         f"entry transcribed from the producer): {uncovered}"
@@ -755,15 +765,32 @@ def test_a_control_refusal_typed_unavailable_is_the_substrates_answer() -> None:
     assert [row["tool"] for row in mistake["unresolved"]] == ["get_task_result"]
 
 
-def test_golden_covers_every_harvested_producer() -> None:
+def test_golden_covers_every_harvested_producer(producer_harvest) -> None:
     """A producer added after the cutover has no golden answer, so it fails here
     instead of silently entering the tree with an unverified classification."""
     golden = _golden()
     missing = [
-        identifier for identifier in harvested_identifiers()
+        identifier for identifier in producer_harvest.identifiers
         if f"ident:{identifier}:plain" not in golden and identifier not in CURRENT_PRODUCER_CONTRACTS
     ]
     assert not missing, f"new warning identifiers without a golden answer: {missing}"
+
+
+def test_harvest_reads_changed_and_new_producers(tmp_path):
+    """An explicit harvest is current even after the same root was read before."""
+    source = tmp_path / "ouroboros" / "producer.py"
+    source.parent.mkdir()
+    source.write_text('ToolResult(code="BEFORE", text="⚠️ BEFORE: detail")\n', encoding="utf-8")
+    before = harvest_producers(tmp_path)
+    source.write_text('ToolResult(code="AFTER", text="⚠️ AFTER: detail")\n', encoding="utf-8")
+    (source.parent / "new.py").write_text(
+        'ToolResult(code="ADDED", text=message)\n', encoding="utf-8")
+    after = harvest_producers(tmp_path)
+    assert "BEFORE" in before.identifiers and "BEFORE" not in after.identifiers
+    assert before.native_codes == ("BEFORE",)
+    assert after.native_codes == ("ADDED", "AFTER")
+    assert before.native_pairs == (("BEFORE", "BEFORE"),)
+    assert after.native_pairs == (("AFTER", "AFTER"),)
 
 
 def test_specific_identifiers_beat_their_family_and_families_beat_generic_markers() -> None:
@@ -875,9 +902,9 @@ def test_residual_text_inspection_inventory_does_not_grow() -> None:
 
 
 @pytest.mark.parametrize("case_key", ["shape:shell_no_match_autocorrected", "shape:shell_ok"])
-def test_process_facts_stay_typed_not_parsed(case_key: str) -> None:
+def test_process_facts_stay_typed_not_parsed(case_key: str, classification_corpus) -> None:
     """The three post-rules that are NOT text classification keep working off meta."""
-    case = next(item for item in build_corpus() if item.key == case_key)
+    case = next(item for item in classification_corpus if item.key == case_key)
     typed = typed_result(case)
     meta = _typed_result_metadata(case.tool, case.text, False, typed)
 
