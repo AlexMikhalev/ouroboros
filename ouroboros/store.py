@@ -1,5 +1,6 @@
 """Current facts in ``state/current.sqlite`` and the SQLite protocol shared with ``usage_store``.
-PERSIST journal, ``synchronous=FULL``; a lazy connection per file and thread, short
+PERSIST (WAL only on a fixed SQLite and proven local filesystem), ``synchronous=FULL``;
+a lazy connection per file and thread, short
 ``BEGIN IMMEDIATE`` writes, every name-tier access under its name lock. SQLite 3.24 floor.
 ``probe``/``open_store``: boot imports within the import window; first writes import absent stores;
 reads never import (facts present: ``StoreMigrating`` until publication; no facts: empty).
@@ -14,9 +15,11 @@ import errno
 import json
 import os
 import pathlib
+import re
 import shutil
 import sqlite3
 import stat
+import sys
 import threading
 import time
 import weakref
@@ -386,12 +389,123 @@ def header_tier(path: pathlib.Path, application_ids: Dict[str, int]) -> Optional
     return next((tier for tier, value in application_ids.items() if value == application_id), None)
 
 
+_LOCAL_FILESYSTEMS = frozenset({"apfs", "hfs", "ufs", "ext2", "ext3", "ext4", "xfs", "btrfs",
+                               "f2fs", "jfs", "reiserfs", "zfs", "bcachefs", "tmpfs", "ramfs",
+                               "overlay-local", "fixed"})
+
+
+def _linux_filesystem(path: pathlib.Path, mountinfo: str) -> Optional[str]:
+    """The containing mount, including bind mounts. Overlay is local only when ALL
+    backing directories are visible and themselves on known local mounts."""
+    def unescape(text: str) -> str:
+        return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), text)
+
+    mounts = []
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        try:
+            separator = fields.index("-")
+            mounts.append((pathlib.Path(unescape(fields[4])), fields[separator + 1], fields[separator + 3]))
+        except (ValueError, IndexError):
+            return None
+
+    def containing(target: pathlib.Path, seen: frozenset) -> Optional[str]:
+        candidates = [row for row in mounts if target.is_relative_to(row[0])]
+        if not candidates:
+            return None
+        mount, kind, options = max(candidates, key=lambda row: len(row[0].parts))
+        if kind != "overlay":
+            return kind
+        if mount in seen:
+            return None  # host paths hidden by this namespace cannot prove local backing
+        backing = []
+        for option in options.split(","):
+            key, _, value = option.partition("=")
+            if key in {"upperdir", "lowerdir", "workdir"}:
+                backing.extend(pathlib.Path(unescape(part)) for part in value.split(":"))
+        if not backing or any(not part.is_absolute() or not part.is_dir() for part in backing):
+            return None
+        if all(containing(part.resolve(), seen | {mount}) in _LOCAL_FILESYSTEMS for part in backing):
+            return "overlay-local"
+        return None
+
+    return containing(path.resolve(), frozenset())
+
+
+def _bsd_filesystem(path: pathlib.Path) -> Optional[str]:
+    """Read f_fstypename using the native Darwin/FreeBSD statfs ABI; other BSDs are unknown."""
+    import ctypes
+
+    u32, u64 = ctypes.c_uint32, ctypes.c_uint64
+    if sys.platform == "darwin":
+        fields = [("bsize", u32), ("iosize", ctypes.c_int32)] + [
+            (name, u64) for name in ("blocks", "bfree", "bavail", "files", "ffree")]
+        fields += [("fsid", ctypes.c_int32 * 2), ("owner", u32), ("type", u32),
+                   ("flags", u32), ("subtype", u32)]
+        symbol = "statfs64"
+    elif sys.platform.startswith("freebsd"):
+        fields = [("version", u32), ("type", u32)] + [(name, u64) for name in (
+            "flags", "bsize", "iosize", "blocks", "bfree", "bavail", "files", "ffree",
+            "syncwrites", "asyncwrites", "syncreads", "asyncreads")]
+        fields += [("spare", u64 * 10), ("namemax", u32), ("owner", u32),
+                   ("fsid", ctypes.c_int32 * 2), ("charspare", ctypes.c_char * 80)]
+        symbol = "statfs"
+    else:
+        return None
+
+    class StatFS(ctypes.Structure):
+        # Only the prefix through f_fstypename is read. Reserve space for both mount
+        # names and the ABI's remaining fields (Darwin 2168 / FreeBSD 2344 bytes).
+        _fields_ = fields + [("fstypename", ctypes.c_char * 16), ("tail", ctypes.c_char * 4096)]
+
+    statfs = getattr(ctypes.CDLL(None, use_errno=True), symbol)
+    statfs.argtypes, statfs.restype = [ctypes.c_char_p, ctypes.POINTER(StatFS)], ctypes.c_int
+    result = StatFS()
+    if statfs(os.fsencode(path), ctypes.byref(result)) != 0:
+        return None
+    return result.fstypename.decode("ascii")
+
+
+def _windows_filesystem(path: pathlib.Path) -> Optional[str]:
+    import ctypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    volume = kernel.GetVolumePathNameW
+    volume.argtypes, volume.restype = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32], ctypes.c_int
+    drive_type = kernel.GetDriveTypeW
+    drive_type.argtypes, drive_type.restype = [ctypes.c_wchar_p], ctypes.c_uint32
+    root = ctypes.create_unicode_buffer(32768)  # Windows' extended path limit
+    if not volume(str(path.resolve()), root, len(root)):
+        return None
+    return "fixed" if drive_type(root.value) == 3 else None  # DRIVE_FIXED
+
+
+def _filesystem_type(path: pathlib.Path) -> Optional[str]:
+    try:
+        if sys.platform == "win32":
+            return _windows_filesystem(path)
+        if sys.platform.startswith("linux"):
+            return _linux_filesystem(path, pathlib.Path("/proc/self/mountinfo").read_text(encoding="utf-8"))
+        kind = _bsd_filesystem(path)
+        return kind if kind in {"apfs", "hfs", "ufs"} else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _journal_mode(path: pathlib.Path, tier: str) -> str:
+    version = sqlite3.sqlite_version_info
+    fixed = (version >= (3, 51, 3) or (version[:2] == (3, 50) and version[2] >= 7)
+             or (version[:2] == (3, 44) and version[2] >= 6))
+    return "WAL" if (fixed and tier == TIER_ENFORCED and _filesystem_type(path) in _LOCAL_FILESYSTEMS) else "PERSIST"
+
+
 def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: float = 0.0,
-            shared: bool = False) -> sqlite3.Connection:
+            shared: bool = False, journal_mode: Optional[str] = None) -> sqlite3.Connection:
     """A connection with the tier's lock protocol (``sqlite3.Error`` is the caller's to type);
     ``wait_sec`` is SQLite's busy wait on the enforced tier (the name tier's one lock is the
     name protocol the caller holds). Pragmas are set once here. ``shared`` allows the store
-    owner to close an idle cached connection from the export/fork thread."""
+    owner to close an idle cached connection from the export/fork thread. An empty
+    ``journal_mode`` leaves the journal alone for the checkpoint/handoff owner."""
     query = "mode=rwc" if create else "mode=rw"
     if tier == TIER_NAME:
         query += "&vfs=" + ("win32-none" if os.name == "nt" else "unix-none")
@@ -410,20 +524,24 @@ def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: fl
             conn._store_key = key
     try:
         conn.execute("PRAGMA synchronous = FULL")
-        conn.execute("PRAGMA journal_mode = PERSIST").fetchone()
+        mode = _journal_mode(path, tier) if journal_mode is None else journal_mode
+        if mode:
+            actual = conn.execute(f"PRAGMA journal_mode = {mode}").fetchone()[0]
+            if actual != mode.lower():
+                raise sqlite3.OperationalError(f"store journal mode {actual}, expected {mode}")
         conn.execute(f"PRAGMA journal_size_limit = {JOURNAL_SIZE_LIMIT}")
-    except BaseException:
+    except BaseException as exc:
+        exc.rollback_confirmed = not conn.in_transaction
         conn.close()
         raise
     return conn
 
 
 class _CachedConnection:
-    def __init__(self, path: pathlib.Path, tier: str, conn: sqlite3.Connection) -> None:
-        self.path, self.tier, self.conn = path, tier, conn
+    def __init__(self, path: pathlib.Path, tier: str) -> None:
+        self.path, self.tier, self.conn = path, tier, None
         self.identity = file_identity(path)
-        self.lock = threading.RLock()
-        self.active = False
+        self.active = True
 
 
 class _ThreadConnections:
@@ -432,13 +550,15 @@ class _ThreadConnections:
 
     def __del__(self) -> None:
         # Thread-local values die with their thread, including short-lived request threads.
-        for entry in self.entries.values():
-            entry.conn.close()
+        with _CONNECTION_GUARD:
+            for entry in self.entries.values():
+                if entry.conn is not None:
+                    entry.conn.close()
 
 
 _LOCAL_CONNECTIONS = threading.local()
 _CONNECTION_POOLS: weakref.WeakSet = weakref.WeakSet()
-_CONNECTION_GUARD = threading.RLock()
+_CONNECTION_GUARD = threading.Condition(threading.RLock())
 
 
 @contextlib.contextmanager
@@ -458,35 +578,41 @@ def connection(path: pathlib.Path, tier: str, *, wait_sec: float = 0.0,
             pool = _LOCAL_CONNECTIONS.pool = _ThreadConnections()
             _CONNECTION_POOLS.add(pool)
         entry = pool.entries.get(key)
-        if entry is not None and (entry.identity != file_identity(path) or entry.tier != tier):
+        if entry is not None and not entry.active and (entry.identity != file_identity(path) or entry.tier != tier):
             entry.conn.close()
             del pool.entries[key]
             entry = None
         nested = entry is not None and entry.active
         if not nested:
             if entry is None:
-                entry = _CachedConnection(path, tier, opener(path, tier, wait_sec=wait_sec, shared=True))
+                entry = _CachedConnection(path, tier)
                 pool.entries[key] = entry
-            entry.lock.acquire()
             entry.active = True
     if nested:
         with contextlib.closing(opener(path, tier, wait_sec=wait_sec)) as conn:
             yield conn
         return
     try:
+        if entry.conn is None:
+            # SQLite may wait on a different process. Never hold the pool guard during
+            # that wait: unrelated stores and active transactions must keep progressing.
+            entry.conn = opener(path, tier, wait_sec=wait_sec, shared=True)
         # Acquisition budgets vary by request, unlike durability/journal pragmas.
         entry.conn.execute(f"PRAGMA busy_timeout = {max(0, int(wait_sec * 1000)) if tier == TIER_ENFORCED else 0}")
         yield entry.conn
     finally:
         try:
-            if entry.conn.in_transaction:
+            if entry.conn is not None and entry.conn.in_transaction:
                 entry.conn.execute("ROLLBACK")
         except sqlite3.Error:
             entry.conn.close()
-            pool.entries.pop(key, None)
+            entry.conn = None
         finally:
-            entry.active = False
-            entry.lock.release()
+            with _CONNECTION_GUARD:
+                if entry.conn is None:
+                    pool.entries.pop(key, None)
+                entry.active = False
+                _CONNECTION_GUARD.notify_all()
 
 
 def close_connections(path: Optional[pathlib.Path] = None) -> None:
@@ -510,7 +636,7 @@ def prepare_handoff(path: pathlib.Path, tier: str, *, wait_sec: float = STORE_WA
     """Quiescent export/switch seam: release cached handles and leave a standalone DELETE file.
     Name-tier callers hold their name lock. An older SQLite may open the resulting file."""
     close_connections(path)
-    with contextlib.closing(connect(path, tier, wait_sec=wait_sec)) as conn:
+    with contextlib.closing(connect(path, tier, wait_sec=wait_sec, journal_mode="")) as conn:
         if conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal":
             if conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]:
                 raise StoreBusy("store checkpoint busy at handoff", reason="contention")
@@ -522,10 +648,11 @@ def _before_fork() -> None:
     # Fork callers are outside store transactions. Drain other threads before copying
     # SQLite's native mutexes; the child must never inherit a reusable connection.
     _CONNECTION_GUARD.acquire()
+    while any(entry.active for pool in list(_CONNECTION_POOLS) for entry in pool.entries.values()):
+        _CONNECTION_GUARD.wait()
     for pool in list(_CONNECTION_POOLS):
         for entry in pool.entries.values():
-            with entry.lock:
-                entry.conn.close()
+            entry.conn.close()
         pool.entries.clear()
     _INODE_GUARD.acquire()
 
@@ -543,7 +670,7 @@ def _after_fork_child() -> None:
     _INODES.clear()
     _PROCESS_LOCKS.clear()
     _INODE_GUARD = threading.RLock()
-    _CONNECTION_GUARD = threading.RLock()
+    _CONNECTION_GUARD = threading.Condition(threading.RLock())
     _PROCESS_LOCKS_GUARD = threading.Lock()
     _IMPORTING_GUARD = threading.Lock()
 
@@ -970,7 +1097,7 @@ class Txn:
 
     def set_meta(self, key: str, value: Any) -> None:
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, machine_json(value)))
-        if (key == "phase" and value in (EXPORTING, RETIRED)) or key == "export_manifest":
+        if (key == "phase" and value in (EXPORTING, RETIRED)) or key in {"export_manifest", "lock_tier"}:
             self._handoff = True
 
     def phase(self) -> str:

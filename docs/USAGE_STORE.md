@@ -12,9 +12,16 @@ journal era.
 
 ## 1. Schema
 
-The shared store core opens with `journal_mode=PERSIST`, `synchronous=FULL`
+The shared store core defaults to `journal_mode=PERSIST`, `synchronous=FULL`
 and a 1 MiB idle journal size limit. A retained rollback journal avoids file
 creation/deletion on every commit; DELETE-mode older writers can interleave.
+WAL keeps FULL and requires all three facts: SQLite >= 3.51.3 (or the 3.50
+branch >= 3.50.7 / 3.44 branch >= 3.44.6), enforced locks, and a proven local
+filesystem. Darwin/FreeBSD use `statfs` (apfs/hfs/ufs); Linux uses mountinfo
+and known local filesystem types, with every overlay backing directory
+verified; Windows requires `GetDriveTypeW` = DRIVE_FIXED for the containing
+volume. Unknown or remote filesystems keep PERSIST. A working lock probe alone
+does not prove WAL shared-memory support.
 
 | table | holds |
 |---|---|
@@ -123,7 +130,10 @@ their existing per-operation budgets. Returning a lease leaves no transaction
 open. Thread exit, fork, file replacement and export release cached handles;
 the raw descriptor follows the last connection. Fork callers must be outside
 transactions. Export/retire closes all idle handles and leaves DELETE mode
-before a rename; an active lease refuses handoff with the usual busy outcome.
+after checkpointing, before a rename; an active lease refuses handoff with the
+usual busy outcome. Any switch that retains a store while changing to an older
+SQLite runtime must also call `store.prepare_handoff` after quiescing writers.
+This includes switches whose target still contains the store module.
 
 - `enforced`: SQLite's own file locks. `usage_store.hold` is the acquisition
   primitive the existing waits slice (`_usage_wait`): sends retry it in short

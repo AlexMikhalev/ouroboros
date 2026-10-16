@@ -191,7 +191,8 @@ quiesce users and call `store.prepare_handoff` before renaming a database or
 handing it to an older runtime; name-tier callers hold their name lock. Fork
 only outside transactions. Connection counts, rollback, lock retention and
 export compatibility are checked by `tests/test_store_connections.py` and
-`tests/test_store.py`.
+`tests/test_store.py`. `tests/test_store_journal.py` covers both directions of
+the version/tier/filesystem WAL gate; FULL is unchanged on both journal modes.
 
 Apply ARCHITECTURE §10 invariant 10; enforcement: "Invariant: Projection over replay (hot readers of growing stores)" below.
 
