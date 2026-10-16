@@ -59,7 +59,7 @@ def test_facts_row_writes_the_facts_and_history_replays_them(tmp_path):
         env=None,
         task={"id": "direct-1", "type": "task", "text": "hi", "chat_id": 1, "_is_direct_chat": True},
         usage={"rounds": 3, "cost": 0.0, "typed_routing_action": "promote_chat_to_task"},
-        llm_trace={"tool_calls": [{"tool": "promote_chat_to_task"}], "reasoning_notes": []},
+        llm_trace={"tool_calls": [{"tool": "start_task"}], "reasoning_notes": []},
         drive_logs=drive_logs,
     )
     row = json.loads((drive_logs / "chat.jsonl").read_text(encoding="utf-8").splitlines()[0])

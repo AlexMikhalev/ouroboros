@@ -383,26 +383,15 @@ def _request(tmp_path):
     )
 
 
-def test_an_unreadable_live_queue_still_answers_the_durable_bindings(tmp_path, monkeypatch):
-    """The enrichment fails OPEN: its residual is the stray button it was added to
-    remove, never a wrong or missing durable binding."""
-    import ouroboros.projects_registry as registry
+def test_binding_projection_needs_no_live_origin_queue(tmp_path):
     from ouroboros.gateway.state import _task_bindings_safe
     from ouroboros.projects_registry import bind_task_to_project, create_project
 
     project = create_project(tmp_path, "dinosaurs", name="Dinosaurs")
-    bind_task_to_project(
-        tmp_path, "clicked-root", "dinosaurs", project["chat_id"],
-        origin={"ref": _origin_ref(), "text": _OWNER_TEXT},
-    )
-
-    def _boom():
-        raise OSError("supervisor unreadable")
-
-    monkeypatch.setattr(registry, "live_origin_lanes", _boom)
-
+    bind_task_to_project(tmp_path, "clicked-root", "dinosaurs", project["chat_id"],
+                         origin={"ref": _origin_ref(), "text": _OWNER_TEXT})
     assert _task_bindings_safe(_request(tmp_path)) == {
-        "clicked-root": {"project_id": "dinosaurs", "chat_id": project["chat_id"]},
+        "clicked-root": {"project_id": "dinosaurs", "chat_id": project["chat_id"], "project_name": "Dinosaurs"},
     }
 
 

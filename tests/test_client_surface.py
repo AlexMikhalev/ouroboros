@@ -596,4 +596,3 @@ def test_routing_producers_attach_client_surface():
             f"{producer} no longer attaches client_surface — the fact silently "
             "dies at this transition (the is_desktop dead-wire class)"
         )
-

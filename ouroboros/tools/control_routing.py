@@ -171,15 +171,7 @@ def _finish_swarm_handoff(
 
 
 def _effective_scope_note(ctx: ToolContext, project_id: str) -> str:
-    """Where an admitted promote ACTUALLY landed, read from the admission receipt.
-
-    The requested ``project_name``/``project_id`` is the model's ask, not the
-    destination: an implicit promote's scope is re-resolved by the admission
-    handler under the origin claim lock, so a sibling card converted in the
-    emit → admission window moves the root into a project the tool never named.
-    Reporting the request as the outcome told the owner the work was in a room it
-    was not in. Empty project id means Main, which is also the truth when a
-    project scope was requested and admission granted none."""
+    """Report the separate work's recorded destination, not its requested room."""
     pid = str(project_id or "").strip()
     if not pid:
         return ""

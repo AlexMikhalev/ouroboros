@@ -400,7 +400,7 @@ def enqueue_task(
         lookup = "project_routing_fence_lookup_failed"  # the authority whose read failed
         try:
             bindings_snapshot = None
-            if not restoring_snapshot and task_id not in RUNNING:
+            if task_id not in RUNNING:
                 from ouroboros.project_placement import pending_placement, refresh_pending_placement
 
                 from ouroboros.projects_registry import _load_bindings

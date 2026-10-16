@@ -859,4 +859,3 @@ def test_a_wake_starts_fresh_work_with_no_predecessor_and_needs_no_manifest(tmp_
     promoted = _wake_routing_ctx(tmp_path)
     _start_task(promoted, "audit the logs", title="Log audit", workspace="none")
     assert "predecessor_task_id" not in promoted.pending_events[0]
-

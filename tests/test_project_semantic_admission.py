@@ -702,4 +702,3 @@ def test_named_project_consumers_keep_healthy_neighbor_available(room, tmp_path,
             assert registry.get_project(room.root, pid, strict=True)["name"] == "Updated"
     rows = json.loads(registry._registry_path(room.root).read_text(encoding="utf-8"))["projects"]
     assert next(row for row in rows if row["id"] == "other") == raw
-

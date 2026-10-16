@@ -116,6 +116,9 @@ def test_running_move_waits_for_boundary_and_destination_lease(runtime, tmp_path
     assert work == before
     del workers.RUNNING["one"]
     workers.PENDING.append(work)
+    current_folder = tmp_path / "current-room-folder"
+    current_folder.mkdir()
+    update_project(root, "room", working_dir=str(current_folder))
     assert refresh_pending_placement(root, work)
     assert work["project_id"] == "room" and work["workspace_root"] == str(repo)
     workers.RUNNING["other"] = {"task": {"id": "other", "project_id": "room"}}
@@ -123,7 +126,7 @@ def test_running_move_waits_for_boundary_and_destination_lease(runtime, tmp_path
     assert work["workspace_root"] == str(repo)
     workers.RUNNING.clear()
     assert readmit_placement(root, work, repo_dir=repo, running=workers.RUNNING, pending=workers.PENDING)
-    assert work["workspace_root"] == str(folder) and work["workspace_mode"] == "external"
+    assert work["workspace_root"] == str(current_folder) and work["workspace_mode"] == "external"
     assert work["_project_admission"]["project"]["routing_generation"] == get_project(root, "room")["routing_generation"]
 
 
@@ -215,3 +218,29 @@ def test_real_admission_never_adopts_shared_origin(host):
     assert len(host.pending) == 1 and host.pending[0]["id"] == "separate"
     assert not host.pending[0].get("project_id")
     assert project_binding_for_task(host.root, "separate") is None
+
+
+def test_restore_of_old_execution_scope_readmits_committed_move(host, tmp_path, monkeypatch):
+    from tests.test_main_project_consistency import admit_main
+    from tests.test_project_hold_recovery import resume_after_app_stop, worker
+    from supervisor import queue, workers
+
+    original = admit_main(host, tid="one")
+    assert queue.persist_queue_snapshot()
+    saved = queue.QUEUE_SNAPSHOT_PATH.read_bytes()
+    folder = tmp_path / "destination"
+    folder.mkdir()
+    create_project(host.root, "room", working_dir=str(folder))
+    move_task_to_project(host.root, "one", "room", origin=ORIGIN,
+                         basis=placement_basis(host.root, "one", "room"),
+                         running=workers.RUNNING, pending=host.pending)
+    queue.QUEUE_SNAPSHOT_PATH.write_bytes(saved)
+    host.pending.clear()
+    assert queue.restore_pending_from_snapshot() == 1
+    sent = worker(host, monkeypatch)
+    workers.assign_tasks()
+    assert not sent  # A move never grants automatic resume after app stop.
+    resume_after_app_stop(host, "one")
+    workers.assign_tasks()
+    assert [r["id"] for r in sent] == [original["id"]]
+    assert sent[0]["workspace_root"] == str(folder) and sent[0]["project_id"] == "room"

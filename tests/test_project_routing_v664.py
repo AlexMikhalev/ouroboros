@@ -408,7 +408,7 @@ def test_main_inline_decision_has_no_predecision_annotation(tmp_path, monkeypatc
     assert len(calls) == 1
     metadata = calls[0][3]["task_metadata"]
     assert metadata["main_routing_manifest"]["projects"][0]["project_id"] == "racer"
-    assert metadata["routing_contract"]["on_uncertain_or_invalid_target"] == "needs_manual_target"
+    assert "on_uncertain_or_invalid_target" not in metadata["routing_contract"]
     assert latest_chat_annotations(tmp_path) == {}
     # Typing is the only wait affordance. An inline answer emits no typed routing
     # action, so the canonical user row must never gain a transient annotation.
@@ -738,7 +738,7 @@ def test_project_routing_facts_keep_host_scope_when_registry_recheck_is_unavaila
 
     assert metadata["routing_contract"]["source_lane"] == "project"
     assert metadata["routing_contract"]["valid_actions"] == [
-        "answer_inline", "steer_task", "promote_chat_to_task", "route_to_project", "needs_manual_target",
+        "answer_inline", "steer_task", "start_task", "move_to_project",
     ]
     assert "main_routing_manifest" not in metadata
 
@@ -1128,38 +1128,3 @@ def test_project_completion_duplicate_outbox_events_deliver_one_main_row(tmp_pat
     assert sent[0][0][0] == 1
     assert sent[0][1]["system_type"] == "project_completion_summary"
     assert sent[0][1]["progress_meta"]["target_label"] == "Stable Project › Finish"
-
-
-def test_manual_target_event_persists_concrete_options_in_latest_annotation(
-    tmp_path, monkeypatch,
-):
-    from ouroboros.project_dialogue import latest_chat_annotations
-    from supervisor import message_bus
-    from supervisor.events import _handle_routing_manual_target
-
-    ws_payloads = []
-    bridge = message_bus.LocalChatBridge()
-    bridge._broadcast_fn = ws_payloads.append
-    monkeypatch.setattr(message_bus, "publish_event", lambda *_a, **_k: None)
-    ctx = types.SimpleNamespace(DRIVE_ROOT=tmp_path, bridge=bridge)
-    event = {
-        "chat_id": 9,
-        "client_message_id": "owner-choice-1",
-        "requested_target": "ghost",
-        "options": [
-            {"action": "steer_task", "task_id": "task-1", "title": "Fix tests"},
-            {"action": "new_task_in_project", "project_id": "racer", "label": "New task in Project"},
-        ],
-    }
-
-    _handle_routing_manual_target(event, ctx)
-
-    payload = ws_payloads[-1]
-    assert payload["type"] == "message_annotation"
-    assert payload["status"] == "needs_manual_target"
-    assert payload["options"][0]["label"] == "Fix tests"
-    assert payload["options"][1] == event["options"][1]
-    assert payload["suppress_bubble"] is True
-    sidecar = latest_chat_annotations(tmp_path)["owner-choice-1"]
-    assert set(sidecar) >= {"client_message_id", "action", "target", "status"}
-    assert sidecar["options"] == payload["options"]

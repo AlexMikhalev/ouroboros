@@ -1,12 +1,4 @@
-"""Delegation-budget + in-task project-scoping affordances (v6.37.0).
-
-Extracted from ``ouroboros/tools/control.py`` to keep that dispatcher module under
-the module-size hard gate. These are the cyber-racing postmortem additions: the
-typed child delegation-budget narrowing (C3.1) and the ``ensure_project_scope``
-tool handler (C4.1). ``control.py`` imports both; ``_ensure_project_scope`` reaches
-back into ``control._emit_control_event`` lazily (call-time) so there is no import
-cycle.
-"""
+"""Delegation-budget narrowing and the same-work ``move_to_project`` handler."""
 
 from __future__ import annotations
 

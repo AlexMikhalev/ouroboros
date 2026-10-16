@@ -163,5 +163,3 @@ def _events(tmp_path, kind: str) -> list:
         return []
     return [row for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
             if (row := json.loads(line)).get("type") == kind]
-
-
