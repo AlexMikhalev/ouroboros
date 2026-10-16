@@ -1,6 +1,6 @@
 """Current facts in ``state/current.sqlite`` and the SQLite protocol shared with ``usage_store``.
-Rollback journal, ``synchronous=FULL``, no WAL; one connection per transaction, ``BEGIN IMMEDIATE``
-writes, every name-tier access under its name lock. SQLite 3.24 floor supports system SQLite 3.37.
+PERSIST journal, ``synchronous=FULL``; a lazy connection per file and thread, short
+``BEGIN IMMEDIATE`` writes, every name-tier access under its name lock. SQLite 3.24 floor.
 ``probe``/``open_store``: boot imports within the import window; first writes import absent stores;
 reads never import (facts present: ``StoreMigrating`` until publication; no facts: empty).
 The write gate requires a closed import window and PUBLISHED phase; ``service`` serves the
@@ -19,6 +19,7 @@ import sqlite3
 import stat
 import threading
 import time
+import weakref
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from ouroboros.utils import append_jsonl, machine_json, utc_now_iso  # one compact JSON text: key order kept, facts round-trip
@@ -30,6 +31,7 @@ GENERATION = 8  # the lifecycle generation that owns the store
 GENERATION_KEY = "current_store_generation"  # in state/migrations.json
 SCHEMA_VERSION = 5  # 2: owner questions; 3: acceptance; 4: plans; 5: drive retention
 STORE_WAIT_SEC = 10.0
+JOURNAL_SIZE_LIMIT = 1 << 20  # retain at most 1 MiB of an idle rollback journal
 TIER_ENFORCED, TIER_NAME = "enforced", "name"
 PUBLISHED, EXPORTING, RETIRED = "published", "exporting", "retired"
 # The header's application id names the lock protocol before the file is opened ('OUCE'/'OUCN').
@@ -384,15 +386,18 @@ def header_tier(path: pathlib.Path, application_ids: Dict[str, int]) -> Optional
     return next((tier for tier, value in application_ids.items() if value == application_id), None)
 
 
-def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: float = 0.0) -> sqlite3.Connection:
+def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: float = 0.0,
+            shared: bool = False) -> sqlite3.Connection:
     """A connection with the tier's lock protocol (``sqlite3.Error`` is the caller's to type);
     ``wait_sec`` is SQLite's busy wait on the enforced tier (the name tier's one lock is the
-    name protocol the caller holds); no statement runs here, the first may wait on a commit."""
+    name protocol the caller holds). Pragmas are set once here. ``shared`` allows the store
+    owner to close an idle cached connection from the export/fork thread."""
     query = "mode=rwc" if create else "mode=rw"
     if tier == TIER_NAME:
         query += "&vfs=" + ("win32-none" if os.name == "nt" else "unix-none")
     conn = sqlite3.connect(f"{path.absolute().as_uri()}?{query}", uri=True, isolation_level=None,
-                           timeout=max(0.0, wait_sec) if tier == TIER_ENFORCED else 0.0, factory=_StoreConnection)
+                           timeout=max(0.0, wait_sec) if tier == TIER_ENFORCED else 0.0,
+                           check_same_thread=not shared, factory=_StoreConnection)
     conn.row_factory = sqlite3.Row
     if os.name != "nt":  # counted before any statement can take a lock (see ``_borrow``)
         try:
@@ -403,7 +408,148 @@ def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: fl
         with _INODE_GUARD:
             _INODES.setdefault(key, _Inode()).conns += 1
             conn._store_key = key
+    try:
+        conn.execute("PRAGMA synchronous = FULL")
+        conn.execute("PRAGMA journal_mode = PERSIST").fetchone()
+        conn.execute(f"PRAGMA journal_size_limit = {JOURNAL_SIZE_LIMIT}")
+    except BaseException:
+        conn.close()
+        raise
     return conn
+
+
+class _CachedConnection:
+    def __init__(self, path: pathlib.Path, tier: str, conn: sqlite3.Connection) -> None:
+        self.path, self.tier, self.conn = path, tier, conn
+        self.identity = file_identity(path)
+        self.lock = threading.RLock()
+        self.active = False
+
+
+class _ThreadConnections:
+    def __init__(self) -> None:
+        self.entries: Dict[str, _CachedConnection] = {}
+
+    def __del__(self) -> None:
+        # Thread-local values die with their thread, including short-lived request threads.
+        for entry in self.entries.values():
+            entry.conn.close()
+
+
+_LOCAL_CONNECTIONS = threading.local()
+_CONNECTION_POOLS: weakref.WeakSet = weakref.WeakSet()
+_CONNECTION_GUARD = threading.RLock()
+
+
+@contextlib.contextmanager
+def connection(path: pathlib.Path, tier: str, *, wait_sec: float = 0.0,
+               opener: Optional[Callable[..., sqlite3.Connection]] = None) -> Iterator[sqlite3.Connection]:
+    """Lease this thread's connection; no transaction survives a returned lease.
+
+    A nested access keeps its historical independent transaction (a temporary connection),
+    never commits or rolls back the caller's transaction. File replacement or retiering
+    invalidates the cached connection. Name-tier callers hold their name lock throughout.
+    """
+    path = pathlib.Path(os.path.abspath(path))
+    key, opener = str(path), opener or connect
+    with _CONNECTION_GUARD:
+        pool = getattr(_LOCAL_CONNECTIONS, "pool", None)
+        if pool is None:
+            pool = _LOCAL_CONNECTIONS.pool = _ThreadConnections()
+            _CONNECTION_POOLS.add(pool)
+        entry = pool.entries.get(key)
+        if entry is not None and (entry.identity != file_identity(path) or entry.tier != tier):
+            entry.conn.close()
+            del pool.entries[key]
+            entry = None
+        nested = entry is not None and entry.active
+        if not nested:
+            if entry is None:
+                entry = _CachedConnection(path, tier, opener(path, tier, wait_sec=wait_sec, shared=True))
+                pool.entries[key] = entry
+            entry.lock.acquire()
+            entry.active = True
+    if nested:
+        with contextlib.closing(opener(path, tier, wait_sec=wait_sec)) as conn:
+            yield conn
+        return
+    try:
+        # Acquisition budgets vary by request, unlike durability/journal pragmas.
+        entry.conn.execute(f"PRAGMA busy_timeout = {max(0, int(wait_sec * 1000)) if tier == TIER_ENFORCED else 0}")
+        yield entry.conn
+    finally:
+        try:
+            if entry.conn.in_transaction:
+                entry.conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            entry.conn.close()
+            pool.entries.pop(key, None)
+        finally:
+            entry.active = False
+            entry.lock.release()
+
+
+def close_connections(path: Optional[pathlib.Path] = None) -> None:
+    """Close cached handles before a rename/retire, or all handles at shutdown.
+
+    The lifecycle owner must quiesce users first. An active lease refuses the handoff
+    with StoreBusy; it is never interrupted or silently rolled back by another thread.
+    """
+    key = str(pathlib.Path(os.path.abspath(path))) if path is not None else None
+    with _CONNECTION_GUARD:
+        entries = [(pool, name, entry) for pool in list(_CONNECTION_POOLS)
+                   for name, entry in pool.entries.items() if key is None or name == key]
+        if any(entry.active for _, _, entry in entries):
+            raise StoreBusy("store connection still in use at handoff", reason="contention")
+        for pool, name, entry in entries:
+            entry.conn.close()
+            del pool.entries[name]
+
+
+def prepare_handoff(path: pathlib.Path, tier: str, *, wait_sec: float = STORE_WAIT_SEC) -> None:
+    """Quiescent export/switch seam: release cached handles and leave a standalone DELETE file.
+    Name-tier callers hold their name lock. An older SQLite may open the resulting file."""
+    close_connections(path)
+    with contextlib.closing(connect(path, tier, wait_sec=wait_sec)) as conn:
+        if conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal":
+            if conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]:
+                raise StoreBusy("store checkpoint busy at handoff", reason="contention")
+        if conn.execute("PRAGMA journal_mode = DELETE").fetchone()[0] != "delete":
+            raise StoreBusy("store journal still in use at handoff", reason="contention")
+
+
+def _before_fork() -> None:
+    # Fork callers are outside store transactions. Drain other threads before copying
+    # SQLite's native mutexes; the child must never inherit a reusable connection.
+    _CONNECTION_GUARD.acquire()
+    for pool in list(_CONNECTION_POOLS):
+        for entry in pool.entries.values():
+            with entry.lock:
+                entry.conn.close()
+        pool.entries.clear()
+    _INODE_GUARD.acquire()
+
+
+def _after_fork_parent() -> None:
+    _INODE_GUARD.release()
+    _CONNECTION_GUARD.release()
+
+
+def _after_fork_child() -> None:
+    global _INODE_GUARD, _CONNECTION_GUARD, _PROCESS_LOCKS_GUARD, _IMPORTING_GUARD
+    for entry in _INODES.values():
+        for handle in entry.files:
+            handle.close()
+    _INODES.clear()
+    _PROCESS_LOCKS.clear()
+    _INODE_GUARD = threading.RLock()
+    _CONNECTION_GUARD = threading.RLock()
+    _PROCESS_LOCKS_GUARD = threading.Lock()
+    _IMPORTING_GUARD = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(before=_before_fork, after_in_parent=_after_fork_parent, after_in_child=_after_fork_child)
 
 
 def busy(exc: BaseException) -> bool:
@@ -448,7 +594,6 @@ def transaction(conn: sqlite3.Connection, *, write: bool, commit_wait_sec: Optio
     end; ``commit_wait_sec`` is the busy wait a COMMIT spends on readers draining."""
     began = False
     try:
-        conn.execute("PRAGMA synchronous = FULL")
         conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
         began = True
         if not write:  # take the read lock now
@@ -492,6 +637,7 @@ def probe(root: Any) -> Tuple[str, Optional[str]]:
         os.stat(path)
         tier = header_tier(path, _APPLICATION_ID)
     except FileNotFoundError:
+        close_connections(path)
         return "absent", None
     except OSError as exc:
         name = errno.errorcode.get(exc.errno, str(exc.errno))
@@ -704,23 +850,35 @@ def open_store(root: Any, *, write: bool, wait_sec: float = STORE_WAIT_SEC, serv
         if tier == TIER_NAME:
             stack.enter_context(name_lock(root, LOCK_NAME, timeout_sec=wait_sec))
         try:
-            conn = connect(store_path(root), tier, wait_sec=wait_sec)
+            conn = stack.enter_context(connection(store_path(root), tier, wait_sec=wait_sec))
         except sqlite3.Error as exc:
             raise _typed(exc) from exc
-        stack.callback(conn.close)
+        handoff = False
         try:
+            changes = conn.total_changes
             with transaction(conn, write=write, commit_wait_sec=wait_sec if tier == TIER_ENFORCED else None,
                              finish=(lambda: conn.execute("ROLLBACK")) if barrier else None):
                 txn = Txn(conn, root)
-                if write and not service and (phase := txn.phase()) != PUBLISHED:
+                phase = txn.phase()
+                handoff = phase != PUBLISHED
+                if write and not service and handoff:
                     raise StoreRetired(f"current store phase is {phase}: the files are the authority")
                 yield txn
-                if barrier and conn.total_changes:
+                if barrier and conn.total_changes != changes:
                     raise StoreError("a barrier transaction wrote rows; its ROLLBACK would discard them")
-                if write and conn.total_changes:
+                if write and conn.total_changes != changes:
                     txn.set_meta("commit_seq", txn.revision() + 1)
+            handoff = handoff or txn._handoff
         except sqlite3.Error as exc:
             raise _typed(exc) from exc
+        finally:
+            if handoff:
+                stack.close()  # return the lease before closing every thread's idle handle
+                with name_lock(root, LOCK_NAME, timeout_sec=wait_sec) if tier == TIER_NAME else contextlib.nullcontext():
+                    try:
+                        prepare_handoff(store_path(root), tier, wait_sec=wait_sec)
+                    except sqlite3.Error as exc:
+                        raise _typed(exc) from exc
 
 
 def utc_stamp() -> str:
@@ -804,6 +962,7 @@ class Txn:
     def __init__(self, conn: sqlite3.Connection, root: Any = None) -> None:
         self.conn = conn
         self.root = pathlib.Path(root) if root is not None else None
+        self._handoff = False
 
     def meta(self, key: str) -> Any:
         record = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -811,6 +970,8 @@ class Txn:
 
     def set_meta(self, key: str, value: Any) -> None:
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, machine_json(value)))
+        if (key == "phase" and value in (EXPORTING, RETIRED)) or key == "export_manifest":
+            self._handoff = True
 
     def phase(self) -> str:
         return str(self.meta("phase") or PUBLISHED)

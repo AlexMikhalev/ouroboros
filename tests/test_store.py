@@ -20,6 +20,13 @@ from ouroboros.utils import machine_json
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def release_connections():
+    store.close_connections()
+    yield
+    store.close_connections()
+
+
 def publish(root: pathlib.Path, *documents: dict, tier: str = store.TIER_ENFORCED,
             phase: str = store.PUBLISHED) -> pathlib.Path:
     """A published store with ``documents``, built as the importer builds one."""
@@ -656,6 +663,7 @@ def test_a_kept_reader_reads_like_a_file_and_continues_short_reads(tmp_path, mon
 
     store_import.ensure_current_store(tmp_path)
     path = store.store_path(tmp_path)
+    store.close_connections(path)
     data = path.read_bytes()
     with store.open_for_read(path) as reader:
         assert reader.read() == data and reader.tell() == len(data)
@@ -671,12 +679,14 @@ def test_a_kept_reader_reads_like_a_file_and_continues_short_reads(tmp_path, mon
 @pytest.mark.skipif(os.name == "nt", reason="Windows keeps no shared descriptors")
 def test_store_descriptors_live_only_as_long_as_their_connections(tmp_path):
     """One descriptor per touched store file for the process lifetime ran a live server to 2,682
-    open descriptors in four hours (issue #1759); the registry closes it with the last use."""
+    open descriptors in four hours (issue #1759); explicit pool disposal releases every
+    connection and its raw descriptor, without relying on garbage collection."""
     from ouroboros import store_import
 
     roots = [tmp_path / f"drive{n}" for n in range(40)]
     for root in roots:
         store_import.ensure_current_store(root)
+    store.close_connections()
     before = len(os.listdir("/dev/fd"))
     for root in roots:
         with store.open_store(root, write=True):
@@ -684,6 +694,7 @@ def test_store_descriptors_live_only_as_long_as_their_connections(tmp_path):
             assert store.held_descriptor(store.store_path(root)) is not None  # shared while in use
         with store.open_store(root, write=False):
             pass
+        store.close_connections(store.store_path(root))
     assert len(os.listdir("/dev/fd")) <= before  # nothing kept once the transactions ended
     assert not getattr(store, "_INODES", None)
 
@@ -718,7 +729,10 @@ def test_a_reader_opened_before_a_transaction_keeps_its_lock_when_it_closes(tmp_
         reader.close()  # returning the borrow while the transaction holds the lock
         assert other_process() == "blocked"
         assert store.held_descriptor(path) is not None  # its close waits for the connection
-    assert other_process() == "acquired" and store.held_descriptor(path) is None
+    assert other_process() == "acquired"  # an idle cached connection holds no transaction
+    assert store.held_descriptor(path) is not None
+    store.close_connections(path)
+    assert store.held_descriptor(path) is None
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows keeps no shared descriptors")
@@ -729,6 +743,7 @@ def test_the_registry_survives_a_failed_close_a_finalizer_and_a_closed_reader(tm
 
     store_import.ensure_current_store(tmp_path)
     path = store.store_path(tmp_path)
+    store.close_connections(path)
     conn = store.connect(path, store.TIER_ENFORCED)
     key = (os.stat(path).st_dev, os.stat(path).st_ino)
     failures = []

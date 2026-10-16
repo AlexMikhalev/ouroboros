@@ -12,8 +12,9 @@ journal era.
 
 ## 1. Schema
 
-The database runs a rollback journal (`journal_mode=DELETE`) with
-`synchronous=FULL`.
+The shared store core opens with `journal_mode=PERSIST`, `synchronous=FULL`
+and a 1 MiB idle journal size limit. A retained rollback journal avoids file
+creation/deletion on every commit; DELETE-mode older writers can interleave.
 
 | table | holds |
 |---|---|
@@ -115,6 +116,14 @@ borrows one shared descriptor per inode that closes only when no counted
 connection has the file open, as SQLite's unix VFS defers its own closes. The connection, tier,
 file-identity and transaction core is `ouroboros/store.py`, shared with the
 current-facts store; `usage_store` keeps the money error vocabulary over it.
+
+Ordinary transactions lease one lazy connection per process, file and thread.
+Durability pragmas run at connection open; acquisition and commit waits retain
+their existing per-operation budgets. Returning a lease leaves no transaction
+open. Thread exit, fork, file replacement and export release cached handles;
+the raw descriptor follows the last connection. Fork callers must be outside
+transactions. Export/retire closes all idle handles and leaves DELETE mode
+before a rename; an active lease refuses handoff with the usual busy outcome.
 
 - `enforced`: SQLite's own file locks. `usage_store.hold` is the acquisition
   primitive the existing waits slice (`_usage_wait`): sends retry it in short
