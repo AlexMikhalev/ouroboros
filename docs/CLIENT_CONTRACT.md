@@ -245,7 +245,7 @@ In a Project response, `window.latest_message` names the latest eligible non-own
 
 `GET /api/chat/history?chat_id=<thread>` returns `ChatHistoryResponse`. The selected conversation rows are oldest first; replay evidence can follow them regardless of its timestamp and recur on other pages. Apply that evidence to the keyed card or question rather than counting it as another conversation message. Each row of `messages` is a `ChatHistoryMessage`:
 - **Always present:** `text` (live frames call it `content`), `role` (`user`, `assistant` or `system`), `ts`, `is_progress`, `system_type` (the row's kind; `""` for an ordinary message) and `task_id`.
-- **Identity:** a row read from storage has `history_id` (`"<chat|progress>:<offset>"`) and `history_position` (`{source, offset}`). Re-reading the same stored row returns the same `history_id`. `client_message_id` correlates owner messages and some quiz publications; use `role: "user"`, not this field's presence, to identify an owner row.
+- **Identity:** stored rows carry `history_id`, `history_position` and a stable `row_address` computed before projection (rows without a persisted source carry none). Reply sends that address or `task:<current-id>`; the host stores `reply_to`, with a whitespace-collapsed 160-character snippet or `unresolved: true`. `client_message_id` correlates messages; owner authorship follows `role`. Relay forwards carry `relay`; return rows carry `reply_to_relay`.
 - **Deliveries:** `msg_type` is `document`, `photo`, `video`, `links` or `quiz`, with `filename`, `mime`, `download_url`, `caption` and `size_bytes`; `actions` and `title` for links; `quiz` for a question (`quiz.quiz_id`, `quiz.state`, the recorded answer).
 - **Progress rows** (`is_progress: true`) carry the same task-progress facts live `chat` progress frames carry (`ChatOutbound`).
 - **Rows that are not messages.** Do not show these as bubbles:
@@ -348,7 +348,7 @@ data: {"seq":12,"type":"task_result","task_id":"…","data":{…}}
 
 **Removing unknown late delivery from current decisions.** For an answered quiz with unknown late-answer delivery, send `action: "dismiss"` with `decision_id` and `request_id`, and no answer, comment or reason. This removes only the outstanding delivery item; the recorded answer and unknown outcome stay in history. It neither resends the answer nor marks it delivered. A different, ineligible state is refused; read the returned facts.
 
-**Other decisions.** Routing choices (`routing:<client_message_id>:<token>`) and model-wait choices (`model_wait:<task_id>:<wait_id>`) use the same endpoint and the same idempotency rule.
+**Other decisions.** Persisted routing choices (`routing:<client_message_id>:<token>`) remain resolvable through the same endpoint and idempotency rule as model-wait choices (`model_wait:<task_id>:<wait_id>`); new routing pickers are not produced.
 
 ## 8. Stop, pause, continue, resume
 
