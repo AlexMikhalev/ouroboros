@@ -113,7 +113,7 @@ class ParticipantCompanion:
     def shutdown(self) -> None:
         current = self._current
         if current is not None:
-            self._end(current, "the participant companion stopped")
+            self._end(current, "the participant companion stopped", tell_call=True)
         if self._control is not None:
             self._control.stop()
             self._control = None
@@ -157,7 +157,7 @@ class ParticipantCompanion:
         with self._lock:
             current = self._current
         if current is not None:
-            self._end(current, "replaced by a new meeting")
+            self._end(current, "replaced by a new meeting", tell_call=True)
         name = VENDORS[vendor][0]
         holder: Dict[str, Participation] = {}
         peer = self.peer_factory(
@@ -197,7 +197,7 @@ class ParticipantCompanion:
                 self.last_event = ""
         if not published:  # the call ended or the window closed while joining: leave nothing behind
             call_ended = participation.ending
-            self._end(participation, "the browser window closed while joining")  # no-op if already ended
+            self._end(participation, "the browser window closed while joining", tell_call=False)  # no-op if ended
             peer.close("left")
             session.close("closed")
             return _refusal("MEETING_CALL_GONE" if call_ended else "MEETING_BROWSER_FAILED",
@@ -214,7 +214,7 @@ class ParticipantCompanion:
             current = self._current
         if current is None:
             return {"ok": True, "state": "idle", "message": "not in a meeting"}
-        self._end(current, "left on request")
+        self._end(current, "left on request", tell_call=False)
         return {"ok": True, "state": "idle", "message": f"left {VENDORS[current.vendor][0]} and closed the window"}
 
     # -- events --------------------------------------------------------------------------
@@ -237,21 +237,29 @@ class ParticipantCompanion:
             text = reason if reason.startswith("the call") else f"the call ended ({reason})"
         else:  # the call may go on; only this participant's socket is gone
             text = f"the host closed the participant's call socket ({reason or 'no reason given'})"
-        self._later(self._end, participation, text)
+        self._later(self._end, participation, text, False)
 
     def _session_closed(self, participation: Optional[Participation], reason: str) -> None:
         if participation is not None:
-            self._end(participation, reason)
+            self._end(participation, reason, tell_call=True)
 
-    def _end(self, participation: Participation, reason: str) -> None:
+    def _end(self, participation: Participation, reason: str, tell_call: bool) -> None:
+        """Leave the meeting; ``tell_call`` when the call would not otherwise learn it.
+
+        A leave the mind asked for, or a socket the host already closed, needs no
+        note; a window that closed or crashed, a replacement and a companion exit do.
+        """
+        name = VENDORS[participation.vendor][0]
         with self._lock:
             if participation.ending:
                 return
             participation.ending = True
             if self._current is participation:
                 self._current = None
-            self.last_event = f"{reason} (was in {VENDORS[participation.vendor][0]})"
+            self.last_event = f"{reason} (was in {name})"
         if participation.peer is not None:
+            if tell_call:
+                participation.peer.send_context(f"Ouroboros left {name}: {reason}.", source="meeting_browser")
             participation.peer.close("left")
         participation.session.close(reason)
 

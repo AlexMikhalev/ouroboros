@@ -446,6 +446,29 @@ def test_leave_and_a_closed_window_end_the_participation(tmp_path, fake_door):
     assert "the browser window was closed" in companion.status()["message"]
 
 
+@pytest.mark.serial
+def test_a_participant_that_drops_out_tells_the_call_and_a_requested_leave_does_not(tmp_path, fake_door):
+    vendors.record_probe(tmp_path, "meet", vendors.PASS, {})
+    companion = participant(tmp_path, fake_door)
+
+    def sent(kind):
+        return [control for control in fake_door.controls if control.get("type") == kind]
+
+    assert companion.join("call-1", MEET)["ok"]
+    FakeSession.instances[-1].on_closed("the browser window was closed")  # closed or crashed by itself
+    assert until(lambda: len(sent("bye")) == 1)  # a context goes before the bye on the same socket
+    assert sent("context") == [{"type": "context", "text": "Ouroboros left Google Meet: the browser window was closed.",
+                                "source": "meeting_browser"}]
+    assert companion.join("call-1", MEET)["ok"]
+    companion.leave()  # the mind asked for it and its tool result says so
+    assert until(lambda: len(sent("bye")) == 2)
+    assert len(sent("context")) == 1
+    assert companion.join("call-1", MEET)["ok"]
+    companion.shutdown()  # the skill was disabled or the host stopped the companion
+    assert until(lambda: len(sent("bye")) == 3)
+    assert sent("context")[-1]["text"] == "Ouroboros left Google Meet: the participant companion stopped."
+
+
 def test_join_leaves_nothing_behind_when_the_call_closes_while_attaching(tmp_path):
     vendors.record_probe(tmp_path, "meet", vendors.PASS, {})
     FakeSession.instances = []
