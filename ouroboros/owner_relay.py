@@ -80,22 +80,25 @@ def quote_rows(ctx, handles) -> tuple[list, str]:
         return [], "QUOTE_NOT_HELD: choose only held owner handles: " + json.dumps(list(held), ensure_ascii=False)
     if not handles:
         return [], ""
-    from ouroboros.projects_registry import list_reserved_projects
     from ouroboros.tool_access import canonical_data_root
-    labels = {int(p["chat_id"]): p["name"] for p in list_reserved_projects(canonical_data_root(ctx))}
-    quotes = []
-    for handle in dict.fromkeys(handles):
-        row = held[handle]
-        chat_id = int(row.get("chat_id", 1))
-        quotes.append({"text": owner_text(row), "attachments": copy.deepcopy(row.get("attachments") or []),
-                       "source": {"chat_id": chat_id, "label": labels.get(chat_id, "Main"),
-                                  "ts": str(row.get("ts") or ""), "address": handle,
-                                  "client_message_id": str(row.get("client_message_id") or "")},
-                       "owner_row": copy.deepcopy(row)})
-        if row.get("type") == "quiz_answer":
-            from ouroboros.owner_quiz import recorded_answer_frame
-            quotes[-1]["question_frame"] = recorded_answer_frame(row["quiz"])
-    return quotes, ""
+    root = canonical_data_root(ctx)
+    return [owner_quote(root, held[handle], address=handle) for handle in dict.fromkeys(handles)], ""
+
+
+def owner_quote(root, row: dict, *, address: str = "") -> dict:
+    """One retained owner row as a quote: exact words, attachments and where/when."""
+    from ouroboros.projects_registry import list_reserved_projects
+    labels = {int(p["chat_id"]): p["name"] for p in list_reserved_projects(root)}
+    chat_id = int(row.get("chat_id", 1))
+    quote = {"text": owner_text(row), "attachments": copy.deepcopy(row.get("attachments") or []),
+             "source": {"chat_id": chat_id, "label": labels.get(chat_id, "Main"), "ts": str(row.get("ts") or ""),
+                        "address": address or format_address(row_address(row)),
+                        "client_message_id": str(row.get("client_message_id") or "")},
+             "owner_row": copy.deepcopy(row)}
+    if row.get("type") == "quiz_answer":
+        from ouroboros.owner_quiz import recorded_answer_frame
+        quote["question_frame"] = recorded_answer_frame(row["quiz"])
+    return quote
 
 
 def relay_envelope(relay_id: str, quotes: list, *, chat_id: int) -> dict:

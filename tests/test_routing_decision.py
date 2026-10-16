@@ -126,8 +126,11 @@ def test_steer_click_dispatches_the_verbatim_message_and_settles(tmp_path, monke
     (evt,) = queue.events
     assert evt["type"] == "steer_task" and evt["target_task_id"] == "t-live"
     assert evt["routing_token"] == dispatch_token
-    assert evt["message"].startswith("please fix the CI flake")
-    assert "[Owner picker comment] prefer a revert" in evt["message"]
+    # His words travel verbatim as a verified quote of his retained row; the note is his comment.
+    [quote] = evt["quotes"]
+    assert quote["text"] == quote["owner_row"]["text"] == "please fix the CI flake"
+    assert quote["source"]["client_message_id"] == "cm-1"
+    assert evt["message"] == "[Owner picker comment] prefer a revert"
     assert evt["attachment_uploads"] == [{"path": "/up/a.png", "label": "a.png"}]
     # Origin provenance rides BY VALUE, same rail as the LLM promote path.
     assert evt["source_ref"]["client_message_id"] == "cm-1"
@@ -174,7 +177,10 @@ def _manual_picker(tmp_path, monkeypatch, **effort):
     sup.bridge._broadcast_fn = frames.append
     sup.bridge._chat_transports = {}
     monkeypatch.setattr(message_bus, "publish_event", lambda *a, **k: None)
-    monkeypatch.setattr(message_bus, "log_chat", lambda *a, **k: None)
+    # Best-effort rows stay quiet; a durable write (require_write) returns its stored row or raises.
+    real_log_chat = message_bus.log_chat
+    monkeypatch.setattr(message_bus, "log_chat",
+                        lambda *a, **k: real_log_chat(*a, **k) if k.get("require_write") else None)
     handlers = {
         "promote_chat_to_task": events._handle_promote_chat_to_task,
         "steer_task": events._handle_steer_task,
@@ -283,8 +289,10 @@ def test_existing_task_picker_click_does_not_apply_or_report_new_root_effort(tmp
     assert load_task_result(tmp_path, "t-live") == before
     mailbox = _mailbox_path(tmp_path, "t-live")
     [mail] = [json.loads(line) for line in mailbox.read_text().splitlines()]
-    assert mail["text"] == "original owner words"
-    assert mail["kind"] == "owner_text"
+    # His own click delivers his retained words as a verified quote (owner force), not as context.
+    assert mail["kind"] == "relay_entry" and mail["text"] == ""
+    assert [row["text"] for row in mail["owner_rows"]] == ["original owner words"]
+    assert [quote["text"] for quote in mail["relay"]["quotes"]] == ["original owner words"]
     closing = chat_annotation_receipt(tmp_path, "cm-1", card["routing_token"])
     assert "reasoning_effort" not in closing
     assert frames[-1]["status"] == "delivered" and "reasoning_effort" not in frames[-1]
@@ -295,6 +303,10 @@ def test_existing_task_picker_click_does_not_apply_or_report_new_root_effort(tmp
     assert replay.status_code == 200 and replay.json()["duplicate"] is True
     assert "reasoning_effort" not in replay.json()
     assert len(queue.events) == 2 and len(mailbox.read_text().splitlines()) == 1
+    # One visible relay row in the work's room, even after the replay (K4).
+    chat_rows = [json.loads(line) for line in (tmp_path / "logs" / "chat.jsonl").read_text().splitlines()]
+    [relay_row] = [row for row in chat_rows if row.get("type") == "relay_entry"]
+    assert relay_row["task_id"] == "t-live" and relay_row["relay"]["quotes"][0]["text"] == "original owner words"
 
 
 def test_dead_queue_returns_a_retriable_503(tmp_path, monkeypatch):
