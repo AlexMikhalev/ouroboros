@@ -1,7 +1,9 @@
 """Reviewed companions attach as meeting peers under a call-scoped direction grant.
 
 A skill token never admits an owner turn. Only Presence's binding admission may
-create a new skill-opened call; ordinary attachments name an existing hub.
+create a new skill-opened call, and opening one is a Presence turn: it needs the
+transport skill's ``presence`` grant beside ``call_peer``, as ``/presence/turn``
+does. Ordinary attachments name an existing hub and need ``call_peer`` alone.
 """
 
 from __future__ import annotations
@@ -63,13 +65,19 @@ async def api_host_call_open(request: Request) -> JSONResponse:
     ctx = request.app.state.host_service_context
     raw_token = request.headers.get("x-skill-token", "")
     try:
-        skill, _ = await _authenticated(ctx, raw_token, "call_peer")
+        skill, token_payload = await _authenticated(ctx, raw_token, "call_peer")
         payload = await read_call_body(request)
         if validate_ingress(payload, HostCallOpenRequest):
             raise CallPeerError("invalid_call_request")
         call_id, binding_id = payload.get("call_id", ""), payload.get("binding_id", "")
         if not call_id and not binding_id:
             raise CallPeerError("call_or_binding_required")
+        if not call_id:
+            try:
+                await _bounded_host_read(ctx, lambda: ctx.require_permission(skill, token_payload, "presence"))
+            except HostServiceAuthError:
+                return refusal("presence_forbidden", 403,
+                               "Opening a Presence call needs this skill's presence grant as well as call_peer.")
         if not ctx.rate_limiter.allow(f"{skill}:call"):
             return refusal("call_rate_limited", 429)
         if binding_id:

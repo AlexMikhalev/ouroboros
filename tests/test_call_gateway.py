@@ -30,19 +30,22 @@ from ouroboros.utils import atomic_write_json
 EVENT_WAIT_S = 10
 
 
-def seed_skill(root, *, name="meeting", token="skill-token", granted=True, reviewed=True):
+def seed_skill(root, *, name="meeting", token="skill-token", granted=True, reviewed=True,
+               permissions=("call_peer",), granted_permissions=None):
+    declared = list(permissions)
     directory = root / "skills" / "external" / name
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "SKILL.md").write_text(
         f"---\nname: {name}\ndescription: Audio companion\nversion: 1\n"
-        "type: extension\nentry: plugin.py\npermissions: [call_peer, companion_process]\n---\n# Audio\n")
+        f"type: extension\nentry: plugin.py\npermissions: [{', '.join(declared + ['companion_process'])}]\n"
+        "---\n# Audio\n")
     (directory / "plugin.py").write_text("def register(api): pass\n")
     content_hash = compute_content_hash(directory, manifest_entry="plugin.py")
     save_enabled(root, name, True)
     save_review_state(root, name, SkillReviewState(status="pass" if reviewed else "fail", content_hash=content_hash))
+    grants = list(declared if granted_permissions is None else granted_permissions) if granted else []
     save_skill_grants(root, name, [], content_hash=content_hash, requested_keys=[],
-                      granted_permissions=["call_peer"] if granted else [],
-                      requested_permissions=requested_skill_permissions(["call_peer"]))
+                      granted_permissions=grants, requested_permissions=requested_skill_permissions(declared))
     atomic_write_json(root / "state" / "skills" / name / "auth_token.json",
                       {"token": token, "content_hash": content_hash})
 
@@ -318,7 +321,7 @@ def test_host_grant_is_bound_to_call_token_and_directions(tmp_path, hub):
 def test_presence_admission_uses_binding_and_never_owner_entry(tmp_path, monkeypatch):
     from supervisor import worker_chat_lane
 
-    seed_skill(tmp_path)
+    seed_skill(tmp_path, permissions=("call_peer", "presence"))
     admitted = []
     monkeypatch.setattr(host_call, "_binding", lambda ctx, skill, binding: admitted.append((skill, binding)))
     monkeypatch.setattr(worker_chat_lane, "handle_call_direct",
@@ -353,7 +356,7 @@ def test_presence_admission_uses_binding_and_never_owner_entry(tmp_path, monkeyp
 def test_a_presence_refusal_reaches_the_companion_in_plain_words(tmp_path, monkeypatch, code, status):
     from ouroboros.presence_call import PresenceCallRefused
 
-    seed_skill(tmp_path)
+    seed_skill(tmp_path, permissions=("call_peer", "presence"))
     monkeypatch.setattr(host_call, "_binding", lambda ctx, skill, binding: None)
 
     async def refuse(ctx, skill, binding, payload):
@@ -364,6 +367,44 @@ def test_a_presence_refusal_reaches_the_companion_in_plain_words(tmp_path, monke
         response = client.post("/call/open", json={"binding_id": "binding", "role": "meeting", "event": {}})
     assert response.status_code == status
     assert response.json() == {"ok": False, "code": code, "error": "The call did not open; the reason is in the code."}
+
+
+@pytest.mark.parametrize("granted", [("call_peer",), ("presence",), ("call_peer", "presence")])
+def test_opening_a_presence_call_needs_presence_beside_call_peer_and_attaching_needs_call_peer(
+        tmp_path, hub, monkeypatch, granted):
+    """Opening a Presence call is a Presence turn (the grant /presence/turn requires); joining an
+    existing call, a Presence call included, needs call_peer alone."""
+    seed_skill(tmp_path, permissions=("call_peer", "presence"), granted_permissions=granted)
+    monkeypatch.setattr(host_call, "_binding", lambda ctx, skill, binding: None)
+    presence_call = cp.CallSpec(uuid.uuid4().hex, 1234, "google", "test", opened_by=cp.OPENED_BY_SKILL,
+                                presence_binding_id="binding")
+    admitted = []
+
+    async def admit(ctx, skill, binding, payload):
+        admitted.append(binding)
+        return open_hub(presence_call).call_id
+
+    monkeypatch.setattr(host_call, "_admit_presence_call", admit)
+    try:
+        with TestClient(create_host_service_app(tmp_path), headers={"x-skill-token": "skill-token"}) as client:
+            opened = client.post("/call/open", json={"binding_id": "binding", "role": "meeting", "event": {}})
+            owner_call = client.post("/call/open", json={"call_id": hub.call_id, "role": "meeting"})
+            open_hub(presence_call)
+            running = client.post("/call/open", json={"call_id": presence_call.call_id, "role": "meeting"})
+    finally:
+        close_hub(presence_call.call_id)
+    if "call_peer" not in granted:
+        for response in (opened, owner_call, running):
+            assert response.status_code == 403 and response.json()["code"] == "call_peer_forbidden"
+        assert admitted == []
+        return
+    assert owner_call.status_code == running.status_code == 200, (owner_call.text, running.text)
+    if "presence" in granted:
+        assert opened.status_code == 200 and admitted == ["binding"]
+    else:
+        assert opened.status_code == 403 and admitted == []
+        assert opened.json() == {"ok": False, "code": "presence_forbidden", "error": (
+            "Opening a Presence call needs this skill's presence grant as well as call_peer.")}
 
 
 def test_published_call_contract_shapes_and_permission_twin():
