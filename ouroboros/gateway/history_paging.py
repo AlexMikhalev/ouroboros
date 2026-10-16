@@ -30,6 +30,9 @@ _READ_BYTES = 64 * 1024
 # Physical bound on the bytes one request parses per stream; the cursor resumes
 # where a read stopped, so it bounds latency, never what a room can reach.
 _READ_CEILING_BYTES = 16 * 1024 * 1024
+# Physical bound on what one ``after`` read replays per stream: a window that fell further
+# behind (a client offline for hours) takes a fresh recent page instead (``history_delta_reset``).
+_DELTA_CEILING_BYTES = 2 * 1024 * 1024
 # The newest-arrival search every recent Project read pays for; a bound reached
 # first is carried on by the chain's cursors (``latest_before``/``quiet``).
 _ARRIVAL_SEARCH_BYTES = 512 * 1024
@@ -85,7 +88,7 @@ def decode_cursor(value, thread_id, view):
             raise ValueError
         decoded = base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
         cursor = json.loads(decoded)
-        if not isinstance(cursor, dict) or cursor.get("v") != 1 or cursor.get("kind") not in {"older", "page"}:
+        if not isinstance(cursor, dict) or cursor.get("v") != 1 or cursor.get("kind") not in {"older", "page", "after"}:
             raise ValueError
         for field in ("upper", "before"):
             if set(cursor[field]) != set(_SOURCES):
@@ -285,6 +288,7 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
         if any(quotas[key] > caps[key] for key in quotas):
             raise HistoryCursorError("history_cursor_invalid", 400)
     recent = not continuation or (continuation["kind"] == "page" and continuation["recent"])
+    after = bool(continuation) and continuation["kind"] == "after"
     selections, upper, before, page_ends, chains, unfinished = {}, {}, {}, {}, {}, []
     paths = {"chat": data_dir / "logs" / "chat.jsonl", "progress": data_dir / "logs" / "progress.jsonl"}
     for source, quota in (("chat", "human"), ("progress", "progress")):
@@ -297,7 +301,17 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
             if reader.unfinished_live_line:
                 unfinished.append(source)
             page_ends[source] = continuation["before"][source] if continuation else reader.upper
-            if continuation and continuation["kind"] == "page":
+            if continuation and continuation["kind"] == "after":
+                # Rows the window has not seen: everything appended after its last read, read fresh.
+                reader = HistorySource(paths[source], source)
+                upper[source], chains[source], unfinished[:] = reader.upper, chain_witness(reader), [
+                    *(name for name in unfinished if name != source), *([source] if reader.unfinished_live_line else [])]
+                page_ends[source] = reader.upper
+                seen = continuation["upper"][source]
+                if not seen <= reader.upper or reader.upper - seen > _DELTA_CEILING_BYTES:
+                    raise HistoryCursorError("history_delta_reset")
+                selections[source] = reader.replay(seen, reader.upper, lens)
+            elif continuation and continuation["kind"] == "page":
                 selections[source] = reader.replay(continuation["lower"][source], page_ends[source], lens)
             elif continuation:
                 selections[source] = reader.older(page_ends[source], quotas[quota], predicates[source], lens)
@@ -311,7 +325,7 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
             selections[source] = (None, 0, {"source_unavailable"})
         before[source] = selections[source][1]
     return {"v": 1, "chat_id": thread_id, "view": view, "upper": upper, "unfinished": unfinished,
-            "quotas": quotas, "recent": recent, "replayed": bool(continuation),
+            "quotas": quotas, "recent": recent, "after": after, "replayed": bool(continuation),
             "quiet": bool(continuation and continuation["quiet"]), "lens": lens,
             "selections": selections, "before": before, "page_ends": page_ends, "chains": chains}
 
@@ -345,6 +359,9 @@ def history_page_tokens(page):
     before = {source: position if page["quotas"]["human" if source == "chat" else source] else 0
               for source, position in page["before"].items()}
     has_more = bool(before["chat"]) if page["quotas"]["human"] else any(before.values())
+    if page.get("after"):  # a read of what arrived after the window's last read: it never pages older
+        return {"has_more": False, "next_cursor": None, "page_cursor": None,
+                "after_cursor": encode_cursor({**state, "kind": "after", "before": dict(page["upper"]), "quiet": False})}
     return {
         "has_more": has_more,
         "next_cursor": encode_cursor({**state, "kind": "older", "before": before,
@@ -352,6 +369,9 @@ def history_page_tokens(page):
         "page_cursor": encode_cursor({**state, "kind": "page", "before": page["page_ends"], "quiet": page["quiet"],
                                       "lower": {source: value[1] for source, value in page["selections"].items()},
                                       "recent": page["recent"]}),
+        # The newest page names where the next read of new arrivals starts.
+        **({"after_cursor": encode_cursor({**state, "kind": "after", "before": dict(page["upper"]), "quiet": False})}
+           if page["recent"] and not page["replayed"] else {}),
     }
 
 
