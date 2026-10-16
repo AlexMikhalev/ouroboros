@@ -8,7 +8,15 @@ from __future__ import annotations
 
 import ast
 import os
+import sys
+import tempfile
 from pathlib import Path
+
+
+def default_temp_parent() -> Path:
+    """A short macOS root keeps nested multiprocessing sockets inside AF_UNIX's path limit.
+    Other platforms retain their normal temporary-directory selection."""
+    return Path("/tmp") if sys.platform == "darwin" else Path(tempfile.gettempdir())
 
 
 def settings_keys() -> set[str]:

@@ -597,7 +597,8 @@ def _fake_node(directory) -> str:
 
 
 @pytest.mark.parametrize("change", ["head", "tree", "index", "env", "workers", "timeout", "node",
-                                  "launch_only", "launch_only_windows"])
+    "launch_only", "launch_only_windows",
+    pytest.param("temp_only", marks=pytest.mark.skipif(sys.platform != "darwin", reason="macOS short temp parent"))])
 def test_each_bound_input_misses_while_launch_descriptors_and_containment_do_not(tmp_path, monkeypatch,
                                                                                 stubbed_lanes, change):
     receipts.capture_executing_source_baseline()
@@ -627,6 +628,14 @@ def test_each_bound_input_misses_while_launch_descriptors_and_containment_do_not
         node_b.parent.mkdir()
         shutil.copy2(node_a, node_b)
         monkeypatch.setattr("ouroboros.preflight_node.resolve_node", lambda: str(node_b))
+    elif change == "temp_only":
+        import tempfile
+
+        ambient = tmp_path / ("another-long-temp-" * 8)
+        ambient.mkdir()
+        for key in ("TMPDIR", "TEMP", "TMP"):
+            monkeypatch.setenv(key, str(ambient))
+        monkeypatch.setattr(tempfile, "tempdir", str(ambient))
     else:
         for key, value in _launch_env("another-launch").items():
             # Windows imports environment names in uppercase, including mixed-case launchd keys.
@@ -634,7 +643,7 @@ def test_each_bound_input_misses_while_launch_descriptors_and_containment_do_not
     ctx = _ctx(repo, canonical, "second")
     assert pr.run_hermetic_pytest(repo, ctx=ctx) is None
     status = ctx._preflight_test_disclosure["receipt"]["status"]
-    if change in {"launch_only", "launch_only_windows"}:
+    if change in {"launch_only", "launch_only_windows", "temp_only"}:
         assert (status, len(stubbed_lanes), len(_receipt_files(canonical))) == ("reused", ran, 1)
     else:
         assert (status, len(_receipt_files(canonical))) == ("published", 2) and len(stubbed_lanes) > ran
