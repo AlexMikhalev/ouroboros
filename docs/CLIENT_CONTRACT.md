@@ -303,6 +303,8 @@ Frames sent while you were disconnected are not resent: history and the task rea
 
 **Reading tasks:** `GET /api/tasks` (filters `status`, `limit`, `queue_only`) and `GET /api/tasks/{task_id}`. Records identify `task_id`, `status`, `ts` and `updated_at`; `result`, artifacts and evidence appear when available. List rows omit bulky evidence; read the detail for the result. `status` accepts a comma-separated filter; `limit` defaults to 50, positive values cap at 500, and `0` requests all rows. `queue_only=1` returns `{tasks:[], queue}` without history.
 
+A Project completion frame/history row may carry `completion_notice`: `{neutral: bool, detail: string, phase: string, salvage?: string}`. This compact transport view is not a verdict: neutral means technical caveats stay in task details, never independently approved success. Full outcome/answer fields remain authoritative; `salvage` preserves the existing intermediate excerpt. Older rows may omit it; replay can derive the missing metadata from the canonical result without rewriting retained text. With no recoverable source, transports retain the legacy text rather than assuming it is status-only.
+
 The terminal lifecycle set is exactly `completed`, `failed`, `cancelled`, `rejected_duplicate`. Other values, including `requested`, `scheduled`, `running`, `interrupted` and a pause or pending cancellation, do not prove completion. Terminal lifecycle alone does not mean objective success.
 
 **Following a task.** Both event methods answer `text/event-stream`:
