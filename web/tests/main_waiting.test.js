@@ -205,6 +205,28 @@ test('a late answer whose delivery is unknown is an owner action the pill reache
     assert.equal(main.shown(), null, 'an owed delivery the core still retries needs nobody');
 });
 
+// The census arrives every few seconds; an answer or close this tab already saw must not leave the
+// pill counting it, or pointing a press at a card that has left the feed.
+test('what this tab already saw settle leaves the count at once, before the next census', async t => {
+    const seen = new Map();
+    const main = mainPage(t, { observedQuestion: (task, quiz) => seen.get(`${task}:${quiz}`) || null });
+    main.feed.scrollTop = 100 * ROW;
+    const late = question('late', { quiz_state: 'answered', ts: '2020-01-01T10:00:00Z',
+        question_delivery: { kind: 'answer', state: 'owed', reason_code: 'late_answer_delivery_unknown' } });
+    main.waiting.snapshot(census({ questions: [question('done', { ts: '2020-01-01T08:00:00Z' }), question('next'), late] }));
+    assert.equal(main.shown().text, '3 waiting');
+    seen.set('task-1:done', { state: 'closed' });
+    main.waiting.refresh();
+    assert.equal(main.shown().text, '2 waiting', 'the close this tab saw leaves the count');
+    await main.press();
+    assert.equal(main.calls.mounted.at(-1).quiz_id, 'next', 'and a press never goes to it');
+    seen.set('task-1:next', { state: 'open' });
+    seen.set('task-1:late', { state: 'answered', question_delivery: { kind: 'answer', state: 'owed', dismissed: true } });
+    main.feed.scrollTop = 100 * ROW;
+    main.waiting.refresh();
+    assert.equal(main.shown().text, '1 question', 'a pending answer the owner removed waits no more; an open one still does');
+});
+
 test('the pill mounts a row the latest census named live, and one kept from an older read withheld', async t => {
     const main = mainPage(t);
     main.feed.scrollTop = 100 * ROW;

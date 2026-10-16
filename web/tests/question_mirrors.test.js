@@ -414,6 +414,22 @@ test('failed, missing and foreign canonical reads keep a safe Project recovery p
     }
 }));
 
+test('a Main card that settles asks the waiting pill to recount, and its lifecycle stays readable', () => withTimers(async () => {
+    let recounts = 0;
+    const fx = mainFixture({ onQuestionsChanged: () => { recounts += 1; } });
+    try {
+        fx.add({ ...WAITING });
+        assert.deepEqual(fx.decision.observedQuestion('t-1', 'qz-1'), { state: 'open', question_delivery: undefined });
+        const before = recounts;
+        fx.decision.applyQuizStateFrame({}, { task_id: 't-1', quiz_id: 'qz-1', state: 'open', owner_wait_state: 'resumed' });
+        assert.equal(recounts, before, 'a change that keeps it answerable is no recount');
+        fx.decision.applyQuizStateFrame({}, { task_id: 't-1', quiz_id: 'qz-1', state: 'answered', answered_index: 1 });
+        assert.ok(recounts > before, 'settling is');
+        assert.equal(fx.decision.observedQuestion('t-1', 'qz-1').state, 'answered');
+        assert.equal(fx.decision.observedQuestion('t-1', 'other'), null);
+    } finally { fx.decision.destroy(); fx.restore(); }
+}));
+
 // Main's waiting pill mounts a question beyond the loaded history from its own census rows: one the
 // current census named is live at once; one kept from an older read (a gap, a failed read, a
 // reconnect) is withheld until its own canonical read, so a stale "unanswered" never takes input.

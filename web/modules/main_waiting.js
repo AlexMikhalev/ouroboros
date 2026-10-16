@@ -19,6 +19,7 @@ const ARROW = '<svg class="chat-question-nav-arrow" width="12" height="12" viewB
 // answer whose delivery a restart left unknown waits on the owner too: only they can remove it
 // from pending, and its card offers that.
 const UNANSWERED = ['open', 'expired_terminal'];
+const SETTLED = ['answered', 'closed', 'superseded'];
 const waitsAnswer = row => UNANSWERED.includes(row.quiz_state);
 const waitsOwner = row => waitsAnswer(row) || (Boolean(row.project_id) && unknownDeliveryRemovable(row));
 const rowKey = row => `${row.task_id}:${row.quiz_id}`;
@@ -38,7 +39,7 @@ const REASONS = { budget: 'Paused at the spending limit. Change the limit if nee
 
 export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNode, stampNodeTimestamp, openSettings,
     refresh = () => {}, mutate = fn => fn(), syncQuestions = () => {}, connectQuestions = () => {},
-    mountQuestion = () => false, revealQuestion = () => {}, beginReading = () => {} }) {
+    mountQuestion = () => false, revealQuestion = () => {}, beginReading = () => {}, observedQuestion = () => null }) {
     const pill = document.createElement('button');
     pill.type = 'button';
     pill.className = 'chat-question-nav';
@@ -137,10 +138,18 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
     }
 
     // ---- the pill: the oldest waiting target first, then onward, cycling
+    // What this tab already saw settle (an answer, a close, a removal from pending) leaves the
+    // count at once; the next census only confirms it.
+    function stillWaits(row) {
+        const seen = observedQuestion(row.task_id, row.quiz_id);
+        if (!seen) return true;
+        if (waitsAnswer(row)) return !SETTLED.includes(seen.state);
+        return seen.question_delivery?.dismissed !== true && seen.question_delivery?.state !== 'delivered';
+    }
     const identity = t => (t.kind === 'question' ? `q:${t.row.task_id}:${t.row.quiz_id}` : `a:${t.id}`);
     // Question rows carry ISO times, feed nodes epoch milliseconds: both order as milliseconds.
     function targets() {
-        const list = questions.map(row => ({ kind: 'question', row, at: Date.parse(row.ts || '') || 0 }));
+        const list = questions.filter(stillWaits).map(row => ({ kind: 'question', row, at: Date.parse(row.ts || '') || 0 }));
         for (const [id, record] of records) list.push({ kind: 'action', id, row: record.row, at: Number(record.bubble.dataset.ts) || 0 });
         return list.sort((a, b) => a.at - b.at || identity(a).localeCompare(identity(b)));
     }

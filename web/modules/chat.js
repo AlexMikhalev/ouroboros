@@ -335,6 +335,7 @@ export function createChatInstance({
         syncQuestions: (...args) => chatDecision.syncCurrentQuestions(...args),
         connectQuestions: value => chatDecision.setConnected(value),
         mountQuestion: (row, authority) => chatDecision.appendQuestionPointer(row, authority),
+        observedQuestion: (taskId, quizId) => chatDecision.observedQuestion(taskId, quizId),
         revealQuestion: (taskId, quizId) => revealQuestion(taskId, quizId, { focus: 'question' }),
         beginReading: () => { reading.claim(); reading.stick = false; } }) : null;
     const chatDecision = createChatDecision({

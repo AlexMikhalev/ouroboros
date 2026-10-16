@@ -100,6 +100,13 @@ export function createChatDecision({
         return { ...frame, ...next };
     }
 
+    // What this tab has seen of a question's lifecycle: Main's waiting pill drops one that settled
+    // here at once instead of waiting for the next census.
+    function observedQuestion(taskId, quizId) {
+        const known = observations.get(questionKey(taskId, quizId));
+        return known ? { state: known.state, question_delivery: known.question_delivery } : null;
+    }
+
     // The detail projects the shared room resolver for this exact quiz. Stored task context
     // and publication/reply addresses do not prove where its question is displayed now.
     const questionInRoom = (room, projectId) => room?.state === 'known' && Number.isInteger(room.chat_id)
@@ -644,6 +651,7 @@ export function createChatDecision({
             if (focused && (!card.contains?.(active) || active?.disabled)) card.querySelector('.chat-quiz-question')?.focus?.({ preventScroll: true });
             if (state === 'answered' || state === 'closed') settleMirror(mirror);
         }
+        if (written && isMain && !answerable && state !== 'unknown') onQuestionsChanged();
         return written;
     }
 
@@ -1026,7 +1034,7 @@ export function createChatDecision({
         for (const view of [...mirrors.values()]) if (root.contains(view.bubble)) releaseMirror(view);
     }
 
-    return { buildQuizCard, buildQuestionPointer, appendQuestionPointer, appendActivityQuestion, syncCurrentQuestions, readQuestion, revealQuestion, setCardState, applyQuizStateFrame, renderRoutingDecision,
+    return { buildQuizCard, buildQuestionPointer, appendQuestionPointer, appendActivityQuestion, syncCurrentQuestions, observedQuestion, readQuestion, revealQuestion, setCardState, applyQuizStateFrame, renderRoutingDecision,
         releaseViews,
         setConnected(value) {
             connected = value;
