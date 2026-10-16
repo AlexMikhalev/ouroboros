@@ -481,6 +481,8 @@ def test_real_supervisor_orders_custody_recovery_before_prune(roots, monkeypatch
 
     _supervisor_harness(monkeypatch, tmp_path, ["stop"])
     order = []
+    open_dialogue = server._open_dialogue
+    monkeypatch.setattr(server, "_open_dialogue", lambda settings, **kw: order.append("dialogue") or open_dialogue(settings, **kw))
     monkeypatch.setattr(server, "_migrate_startup_cancel_latches", lambda root: order.append("migrate"))
     monkeypatch.setattr(server, "_startup_worker_pids", lambda root: order.append("capture-pids") or {777})
     monkeypatch.setattr(queue, "restore_pending_from_snapshot",
@@ -497,7 +499,8 @@ def test_real_supervisor_orders_custody_recovery_before_prune(roots, monkeypatch
     monkeypatch.setattr(server, "_startup_prune_sweeps", lambda **kw: order.append(("prune", kw["preserve_task_sources"])))
     server._run_supervisor({})
     assert server._supervisor_error is None
-    assert order == ["capture-pids", "restore", "kill", "spawn", "custody", "recover", ("prune", True)]
+    assert order == ["dialogue", "capture-pids", "restore", "kill", "spawn", "custody", "recover", ("prune", True)], \
+        "the dialogue is attached before any repair; recovery precedes the prune"
 
 
 def test_supervisor_init_failure_keeps_boot_recovery_owner():

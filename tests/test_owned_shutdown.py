@@ -765,11 +765,20 @@ def test_every_door_joins_the_one_stop_and_the_boot_retry_precedes_launches():
     from ouroboros import server_restart
 
     lifespan = inspect.getsource(server.lifespan)
-    boot = lifespan.index("finish_unconfirmed_stops(lifespan_drive_root)")
-    assert boot < lifespan.index("start_inherited_import(lifespan_drive_root)")
-    for later in ("auto_start_local_model", "warm_owned_daemon()", "create_host_service_app(",
-                  "_reload_extensions(lifespan_drive_root", "_start_supervisor_if_needed(settings)"):
-        assert boot < lifespan.index(later), later
+    # The boot coordinator's step list is the order: the owned-stop retry is its first step, every
+    # launch (background services, the Host Service, the extension reload) a later one, and the
+    # supervisor start waits for the extensions' event behind them.
+    steps = lifespan[lifespan.index("    steps = ["):lifespan.index("    start_boot_coordinator(steps")]
+    order = [name for name in ("owned_stops", "inherited_records", "services", "host_service", "extensions")
+             if f'("{name}", ' in steps]
+    assert order == ["owned_stops", "inherited_records", "services", "host_service", "extensions"]
+    assert steps.index('("owned_stops", ') < steps.index('("inherited_records", ') < steps.index('("services", ') \
+        < steps.index('("host_service", ') < steps.index('("extensions", ')
+    for launch, step in (("auto_start_local_model", "_services"), ("warm_owned_daemon()", "_services"),
+                         ("create_host_service_app(", "_serve_host_service"), ("_reload_extensions(lifespan_drive_root", "_extensions")):
+        assert launch in lifespan[lifespan.index(f"def {step}("):], launch
+    gate = lifespan[lifespan.index("def _after_extensions("):lifespan.index("store_switch.when_ready(")]
+    assert gate.index("_await_extensions_ready(body_stop)") < gate.index("start_body()") < gate.index("_start_supervisor_if_needed(settings)")
     teardown = lifespan.split("\n    finally:\n", 1)[1]
     assert teardown.index("kill_workers(") < teardown.index("stop_owned_work(lifespan_drive_root)")
     emergency = inspect.getsource(server._emergency_process_cleanup)

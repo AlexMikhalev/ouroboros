@@ -13,7 +13,7 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | Method | Path | Note |
 |---|---|---|
 | GET | `/` | |
-| GET | `/api/health` | |
+| GET | `/api/health` | 200 as soon as the socket serves, during boot too; `boot` carries the phase document (§2 Boot order) |
 | GET | `/api/contract` | |
 | GET | `/api/state` | |
 | GET | `/api/extensions` | installed-skill projection; never fetches the hub catalog |

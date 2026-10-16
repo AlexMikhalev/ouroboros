@@ -127,6 +127,19 @@ def _patch_lifespan_for_drive_root_test(monkeypatch, srv, settings: dict):
     monkeypatch.setattr("ouroboros.server_auth.get_configured_network_password", lambda: "")
 
 
+def _boot_step_ended(client, name: str, timeout: float = 30.0) -> None:
+    """The boot runs its steps while the socket serves: wait for one to end (``/api/health.boot``)."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        steps = {row["name"]: row["state"] for row in client.get("/api/health").json()["boot"]["steps"]}
+        if steps.get(name) in {"done", "failed"}:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"boot step {name} did not end")
+
+
 def test_testclient_lifespan_reload_all_uses_app_state_drive_root(tmp_path, monkeypatch):
     from starlette.testclient import TestClient
     import server as srv
@@ -151,8 +164,8 @@ def test_testclient_lifespan_reload_all_uses_app_state_drive_root(tmp_path, monk
         lambda root, _reader, *, repo_path=None: calls.append((pathlib.Path(root), repo_path)) or {},
     )
 
-    with TestClient(srv.app):
-        pass
+    with TestClient(srv.app) as client:
+        _boot_step_ended(client, "extensions")
 
     assert calls == [(drive_root, str(repo_root))]
 
@@ -185,6 +198,7 @@ def test_testclient_settings_hot_reload_uses_app_state_drive_root(tmp_path, monk
     )
 
     with TestClient(srv.app) as client:
+        _boot_step_ended(client, "extensions")
         response = client.post("/api/settings", json={"OUROBOROS_SKILLS_REPO_PATH": str(new_repo)})
 
     assert response.status_code == 200, response.text

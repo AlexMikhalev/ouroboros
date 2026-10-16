@@ -411,10 +411,11 @@ def test_a_display_read_on_a_fresh_install_creates_the_empty_store(root):
     assert (root / usage_store.STORE_REL).exists()
 
 
-def test_the_server_imports_the_journal_at_lifespan_start_on_every_door():
-    """The import runs where the other lifecycle jobs run (before any request, worker or supervisor), so a
-    providerless install that never starts the supervisor imports too. The lifecycle import owner is the
-    boot door (`store_switch.start` runs `prepare_startup_state` under the import window)."""
+def test_the_server_imports_the_journal_as_a_boot_step_on_every_door():
+    """The import is a named step of the boot coordinator (before any worker or supervisor, while the
+    socket already serves), so a providerless install that never starts the supervisor imports too. The
+    lifecycle import owner is the boot door (`store_switch.start` runs `prepare_startup_state` under the
+    import window)."""
     import inspect
 
     import server
@@ -422,7 +423,8 @@ def test_the_server_imports_the_journal_at_lifespan_start_on_every_door():
     source = inspect.getsource(server.lifespan)
     assert "prepare_startup_state(" not in source
     assert source.index("store_switch.start(") < source.index("usage_store.migrate_from_journal(") \
-        < source.index("yield")
+        < source.index('("usage_store", _usage_store)') < source.index("\n        yield\n")
+    assert "if startup_provider_ready" not in source[source.index("def _usage_store"):source.index("def _skills")]
 
 
 def test_an_import_interrupted_before_publication_is_redone_from_scratch(root, monkeypatch):

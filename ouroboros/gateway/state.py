@@ -107,11 +107,21 @@ def _evolution_state_public(evolution_state: Dict[str, Any]) -> Dict[str, Any]:
     return {**evolution_state, "campaign": {**campaign, "history": history}}
 
 
-async def api_health(_request: Request) -> JSONResponse:
+def _boot_document(request: Request) -> Dict[str, Any]:
+    """The ``boot`` object: this process's phases and steps (``server_liveness.BOOT``), the
+    supervisor latches the server attached to the app, the store's named-job rows."""
+    from ouroboros.server_liveness import boot_document
+
+    return boot_document(request_drive_root(request), getattr(request.app, "state", None))
+
+
+async def api_health(request: Request) -> JSONResponse:
+    """Answers 200 as soon as the socket serves, during boot too; ``boot`` carries the phase."""
     from ouroboros.gateway.schema import GATEWAY_ABI_VERSION
 
     runtime_version = get_version()
     app_version = os.environ.get("OUROBOROS_APP_VERSION", "").strip() or runtime_version
+    boot = await asyncio.to_thread(_boot_document, request)  # one indexed store read, off the loop
     return JSONResponse({
         "status": "ok",
         # legacy field for backward compatibility
@@ -120,6 +130,7 @@ async def api_health(_request: Request) -> JSONResponse:
         "app_version": app_version,
         # The wire-contract carrier a client checks before relying on GET /api/contract.
         "abi_version": GATEWAY_ABI_VERSION,
+        "boot": boot,
     })
 
 
@@ -170,6 +181,7 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
     # value from settings; keeping zero here makes that state explicit.
     limit = max(0.0, float(TOTAL_BUDGET_LIMIT or 0.0))
     drive_root = request_drive_root(request)
+    boot = _boot_document(request)
     accounting_available = True
     try:
         # The writer's slim snapshot (totals, marker, OpenRouter bucket): this response
@@ -258,6 +270,7 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
         # Resolved here so the checkout file reads stay on the snapshot thread.
         "runtime_identity": _runtime_repo_identity(st),
         "workers_alive": alive,
+        "boot": boot,
         "workers_total": total_w,
         "pending_count": len(PENDING),
         "running_count": len(RUNNING),
@@ -846,6 +859,7 @@ async def api_state(request: Request) -> JSONResponse:
             ),
             "supervisor_ready": bool(supervisor_ready.is_set()) if supervisor_ready else False,
             "supervisor_error": get_supervisor_error() if callable(get_supervisor_error) else None,
+            "boot": snap["boot"],  # the boot phases the header paints (Starting… → chat ready → Online)
             "runtime_mode": get_runtime_mode(),
             "context_mode": get_context_mode(),
             # Frozen one-window compatibility field. Persistent auto-Low is retired.

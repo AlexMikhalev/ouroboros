@@ -108,6 +108,7 @@ def test_an_overdue_note_reaches_extension_subscribers_on_a_provider_boot(host, 
     _patch_lifespan_for_drive_root_test(monkeypatch, srv, {})
     monkeypatch.setattr(srv, "has_startup_ready_provider", lambda _settings: True)
     monkeypatch.setattr(srv, "_boot_managed_update_tasks", lambda: None)
+    monkeypatch.setattr(srv, "_open_dialogue", lambda *_a, **_k: None)  # this fixture's bus and bridge stay
     delivered = []
     first_tick_finished = threading.Event()
 
