@@ -287,7 +287,7 @@ class RoomIndexView:
         if not path.is_file():
             raise IndexUnavailable("room index not built yet")
         try:
-            self.db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+            self.db = sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True, timeout=5)
             if self.db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
                 raise IndexUnavailable("room index schema differs")
             self.segments = {stream: [] for stream in STREAMS}
@@ -456,14 +456,17 @@ class RoomIndexKeeper:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._stopped = threading.Event()
+        self._lifespan = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._backfill: Optional[threading.Thread] = None
         self._process = None
 
-    def start(self, data_root: Any, repo_dir: Any) -> None:
+    def start(self, data_root: Any, repo_dir: Any, lifespan: Optional[threading.Event] = None) -> None:
+        """Follow ``data_root`` until ``stop`` or the server lifespan's own stop (``lifespan``) is set."""
         with self._lock:
             if self._thread is not None or self._stopped.is_set():
                 return
+            self._lifespan = lifespan or self._lifespan
             self._thread = threading.Thread(target=self._follow, args=(pathlib.Path(data_root), pathlib.Path(repo_dir)),
                                             name="room-index", daemon=True)
             self._thread.start()
@@ -486,7 +489,7 @@ class RoomIndexKeeper:
 
     def _follow(self, root: pathlib.Path, repo_dir: pathlib.Path) -> None:
         seen = None
-        while not self._stopped.is_set():
+        while not (self._stopped.is_set() or self._lifespan.is_set()):
             stamp = chain_stamp(root)
             if stamp != seen:
                 try:

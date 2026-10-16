@@ -300,6 +300,13 @@ def test_the_keeper_follows_the_chains_and_hands_a_large_backfill_to_its_child(t
         keeper.stop()
         keeper._thread.join(5)
     assert not keeper._thread.is_alive()
+    # The server's lifespan ending stops the follower as well (its teardown sets that event).
+    lifespan, keeper = threading.Event(), room_index.RoomIndexKeeper()
+    keeper.start(tmp_path, tmp_path, lifespan)
+    assert keeper._thread.is_alive()
+    lifespan.set()
+    keeper._thread.join(5)
+    assert not keeper._thread.is_alive()
 
 
 def test_the_child_report_keeps_only_its_known_fields():

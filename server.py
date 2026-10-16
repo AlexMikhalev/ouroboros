@@ -1369,7 +1369,7 @@ async def lifespan(app):
     if not pytest_default_real_data_dir:
         from ouroboros.claudexor_daemon import warm_owned_daemon
         warm_owned_daemon()  # provisioned homes only; one background ensure, off the startup path
-        room_index_keeper.start(lifespan_drive_root, REPO_DIR)  # every door, provider or not: rooms read through it
+        room_index_keeper.start(lifespan_drive_root, REPO_DIR, body_stop)  # every door: rooms read through it
 
     host_service_task = None
     host_service_server = None
