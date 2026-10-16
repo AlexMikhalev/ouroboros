@@ -28,7 +28,7 @@ Mechanism: ARCHITECTURE §13; §6 "Skills and extensions". Enforcement: `tests/t
 - A `type: extension` skill with a reviewed isolated dependency env or a payload-native marker (`.so`, `.dylib`, `.dll`, `.pyd`) never imports `plugin.py` or runs handlers inside `server.py`, even when the dependency tree looks pure-Python: `extension_process_runner` dispatches it in short-lived child processes; only no-dependency pure-Python extensions use `extension_loader`'s in-process PluginAPI. Containment, not admission: a native payload still faces skill review.
 - A child crash, invalid JSON, timeout or abort answers as a normal tool error, HTTP 502 or WS log message; a child `SIGABRT` is a handled extension failure, not a server crash. Add no host-process fallback importing native-risk modules.
 
-Mechanism: ARCHITECTURE §13. Enforcement: `tests/test_extension_process_runner.py`.
+Catalog caching requires exhaustive `catalog_inputs` (settings and child-environment keys), with no other registration inputs or required side effects. Unknown inputs keep the child run. Verify repeated boot has zero copies/catalog children and changed inputs invalidate only affected extensions (`tests/test_extension_boot_cache.py`); isolation remains covered by `tests/test_extension_process_runner.py`. Mechanism: ARCHITECTURE §13.
 
 ### Declared skill resources and builds
 

@@ -42,6 +42,8 @@ class _ExtensionRegistrations:
     content_hash: Optional[str] = None
     skill_dir: Optional[str] = None
     import_root: Optional[str] = None
+    runtime_identity: str = ""
+    catalog_identity: Optional[str] = None
     # ABI-9: minted at each atomic publication; stamped into the dispatch
     # surfaces (tools/routes/ws) so physical-call provenance can name the
     # exact published generation it dispatched against.

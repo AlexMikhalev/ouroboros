@@ -20,7 +20,7 @@ import os
 import pathlib
 import re  # noqa: F401
 import secrets  # noqa: F401
-import shutil
+import shutil  # noqa: F401 — facade compatibility
 import sys
 import threading
 import time  # noqa: F401
@@ -68,6 +68,8 @@ from ouroboros.extension_import_staging import (
     _purge_extension_bytecode,  # noqa: F401
     _stage_extension_import_tree,
     _sweep_stale_extension_imports,
+    extension_import_identity,
+    release_extension_import_tree,
 )
 from ouroboros.extension_liveness import (
     _apply_deps_block,  # noqa: F401
@@ -380,6 +382,14 @@ def reconcile_extension(
             _finalize_extension_reconcile(state, drive_root, skill_name, reason="desired_disabled", health_stamp=health_stamp)
             return state
 
+        if was_live and subject is not None:
+            with _lock:
+                bundle = _extensions.get(skill_name)
+            if bundle and bundle.runtime_identity:
+                was_live = bundle.runtime_identity == extension_import_identity(subject)
+            if was_live and bundle and bundle.catalog_identity is not None:
+                from ouroboros.extension_process_runner import extension_catalog_identity
+                was_live = bundle.catalog_identity == extension_catalog_identity(subject, drive_root, settings_reader)
         if was_live:
             state["action"] = "extension_already_live"
             if is_server_process():
@@ -636,7 +646,7 @@ def load_extension(
     state_dir = skill_state_dir(drive_root, skill.name)
     child_in_process_load = _force_in_process and os.environ.get("OUROBOROS_EXTENSION_PROCESS_CHILD") == "1"
     if not child_in_process_load:
-        _sweep_stale_extension_imports(drive_root, skill.name)
+        _sweep_stale_extension_imports(drive_root, skill.name, keep_hashes=(current_hash,))
     try:
         from ouroboros.skill_dependencies import auto_install_specs_for_skill
 
@@ -675,6 +685,7 @@ def load_extension(
                     drive_root=pathlib.Path(drive_root),
                     repo_dir=pathlib.Path(__file__).resolve().parents[1],
                     skills_repo_path=skill.skill_dir.parent,
+                    settings_reader=settings_reader,
                 )
                 # ABI-9: surfaces AND companions publish as ONE staged
                 # snapshot; the seam routes any failure to dispose+unload.
@@ -689,6 +700,10 @@ def load_extension(
                     current_hash=current_hash,
                     plugin_api_generation=negotiation.generation,
                 )
+                with _lock:
+                    bundle = _extensions[skill.name]
+                    bundle.runtime_identity = extension_import_identity(skill)
+                    bundle.catalog_identity = catalog.get("_cache_identity")
                 return None
         except Exception as exc:
             unload_extension(skill.name)
@@ -753,6 +768,8 @@ def load_extension(
             with _lock:
                 _extension_modules[skill.name] = module
                 bundle = _extensions.get(skill.name)
+                if bundle:
+                    bundle.runtime_identity = staged_import_root.name
                 for tool_name in list(bundle.tools if bundle else []):
                     if tool_name in _tools:
                         _tools[tool_name]["skills_repo_path"] = str(skill.skill_dir.parent)
@@ -774,7 +791,7 @@ def load_extension(
     finally:
         if skill.name not in _extensions:
             if staged_import_root is not None:
-                shutil.rmtree(staged_import_root, ignore_errors=True)
+                release_extension_import_tree(staged_import_root)
     return None
 
 
@@ -867,7 +884,7 @@ def _unload_extension_locked(skill_name: str) -> None:
             if mod_name == prefix or mod_name.startswith(prefix + "."):
                 sys.modules.pop(mod_name, None)
         if import_root is not None:
-            shutil.rmtree(import_root, ignore_errors=True)
+            release_extension_import_tree(import_root)
     finally:
         with _lock:
             _unloading.discard(skill_name)
@@ -887,8 +904,11 @@ def reload_all(
     skill_names = {s.name for s in skills if s.manifest.is_extension()}
     with _lock:
         loaded_names = set(_extensions.keys())
+    # Also reclaim removed payloads after a process restart (empty registry).
+    state_skills = pathlib.Path(drive_root) / "state" / "skills"
+    cached_names = {p.name for p in state_skills.iterdir() if (p / "__extension_imports").is_dir()} if state_skills.is_dir() else set()
     results: Dict[str, Any] = {}
-    for gone in loaded_names - skill_names:
+    for gone in (loaded_names | cached_names) - skill_names:
         try:
             unload_extension(gone)
             _sweep_stale_extension_imports(drive_root, gone)
@@ -899,7 +919,7 @@ def reload_all(
         if not skill.manifest.is_extension():
             continue
         try:
-            _sweep_stale_extension_imports(drive_root, skill.name)
+            _sweep_stale_extension_imports(drive_root, skill.name, keep_hashes=(skill.content_hash,))
             state = reconcile_extension(
                 skill.name,
                 drive_root,
