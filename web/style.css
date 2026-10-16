@@ -9298,6 +9298,9 @@ textarea.chat-input {
 }
 :root[data-theme] .chat-live-summary-button { padding: 16px 20px 12px; }
 :root[data-theme] .chat-live-actions { padding: 0 20px 16px; gap: var(--space-2); }
+/* The work card's foot (meta line, its one action row) and its Project footer share the card's insets. */
+:root[data-theme] :is(.chat-live-foot, .chat-live-bound-pointer) { padding-inline: 20px; }
+:root[data-theme] .chat-live-foot-end > .chat-live-actions { padding: 0; }
 :root[data-theme] :is(.chat-live-phase, .chat-live-line-phase) { border-color: transparent; }
 /* A Project entry is the Project's voice: its tint, one resting object in every shell it replaces (a task card, a
    history row); an unsaved entry keeps its dashed edge, which is a state, not an outline. */
