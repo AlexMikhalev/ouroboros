@@ -10,6 +10,7 @@ import pytest
 from devtools.benchmarks.common.server_runner import _api
 from tests.test_owner_wait_integration import wait_clone as clone_fixture
 from tests.test_native_owner_wait_browser import chat_connection
+from tests.test_ui_coherence_browser import pill_landing
 from tests.system_e2e.harness import (
     ArtifactOracle, KeylessIsolatedServer, ScriptedStubModel, keyless_settings,
     wait_durable_result, wait_until, write_settings_file,
@@ -94,8 +95,12 @@ def _seed_early_failure(root):
 
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
 def test_main_current_optional_question_survives_history_horizon_and_reload(wait_clone, tmp_path, engine):
-    """A real candidate serves a terminal optional ask absent from initial Main history."""
-    from playwright.sync_api import sync_playwright
+    """A real candidate serves a terminal optional ask absent from initial Main history.
+
+    The census names it and mounts nothing; Main's waiting pill counts it, mounts its copy at its
+    own date, lands the card under the chat header with the question focused; the copy takes a
+    late answer and leaves, and the pill with it. The same holds after a reload."""
+    from playwright.sync_api import expect, sync_playwright
     from ouroboros.gateway.history import _DEFAULT_N_HUMAN
     from ouroboros.owner_quiz import record_asked, record_publication, reconcile_terminal, quiz_states, mark_published
     from ouroboros.project_dialogue import project_question_pointer
@@ -142,14 +147,35 @@ def test_main_current_optional_question_survives_history_horizon_and_reload(wait
                 page = browser.new_page(viewport={"width": 1100, "height": 900}, reduced_motion="reduce")
                 try:
                     page.goto(server.base_url, wait_until="domcontentloaded")
-                    card = page.locator(f'.main-attention .project-question-card[data-quiz-id="{quiz_id}"]')
-                    page.locator('.main-attention-summary').click(timeout=30000)
-                    card.get_by_text("Unanswered · the task finished; a late answer is accepted as your message", exact=True).wait_for()
-                    assert card.locator('.chat-quiz-comment').count() == 1
-                    page.reload()
-                    page.locator('.main-attention-summary').click(timeout=30000)
+                    card = page.locator(f'#chat-messages .project-question-card[data-quiz-id="{quiz_id}"]')
+                    pill = page.locator('#page-chat .chat-toolbar-row > button.chat-question-nav')
+                    landings = []
+                    for visit in ("first", "reloaded"):
+                        if visit == "reloaded":
+                            page.reload()
+                        # The census names the question beyond the loaded history; it mounts no copy.
+                        expect(pill).to_be_visible(timeout=30000)
+                        expect(pill).to_have_text("1 question")
+                        expect(pill).to_have_attribute("aria-label", "1 unanswered: show the next question")
+                        assert card.count() == 0, "the census never mounts a copy"
+                        pill.click()
+                        card.get_by_text("Unanswered · task finished", exact=True).wait_for()
+                        landing = pill_landing(page, quiz_id)
+                        landings.append(landing)
+                        assert landing["focused"], landing
+                        assert landing["below_header"] >= 0 and landing["above_composer"] >= 0, landing
+                        assert abs(landing["below_header"] - 12) <= 3 or landing["scroll_top"] == 0, landing
+                        expect(pill).to_be_hidden()  # its only target is on screen
+                        assert card.locator('.chat-quiz-comment').count() == 1
                     card.get_by_text("Accessible web edition", exact=True).wait_for()
                     page.screenshot(path=str(evidence / f"{engine}-main-old-optional.png"), animations="disabled")
+                    # One quiet x closes the question; it waits while an answer is typed.
+                    close = card.get_by_role("button", name="Close question without answering", exact=True)
+                    expect(close).to_be_enabled()
+                    card.locator('.chat-quiz-comment').fill("A draft that must not be discarded")
+                    expect(close).to_be_disabled()
+                    card.locator('.chat-quiz-comment').fill("")
+                    expect(close).to_be_enabled()
                     with page.expect_response(lambda response: response.url.endswith('/api/decisions')
                                               and response.request.method == 'POST') as answer:
                         card.get_by_role("button", name="PDF Printable edition").click()
@@ -161,10 +187,11 @@ def test_main_current_optional_question_survives_history_horizon_and_reload(wait
                     assert stored["state"] == "answered" and stored["answered_index"] == 0
                     assert stored["publication_chat_id"] == project["chat_id"]
                     card.wait_for(state="detached", timeout=15000)
+                    expect(pill).to_be_hidden(timeout=15000)
                     (evidence / f"{engine}-main-old-optional.json").write_text(json.dumps({
                         "task_id": task_id, "quiz_id": quiz_id, "project": project,
                         "initial_history_rows": len(history), "confirmation": confirmation,
-                        "server_pid": server.proc.pid, "server_url": server.base_url,
+                        "landings": landings, "server_pid": server.proc.pid, "server_url": server.base_url,
                     }, indent=2))
                 finally:
                     browser.close()
@@ -241,12 +268,11 @@ def test_ui_results_and_required_question_journey(wait_clone, tmp_path, monkeypa
                         assert task
                         wait = wait_until(lambda: (block if (block := oracle.task_result(task["id"]).get("owner_wait", {})).get("state") == "waiting" else None), 90)
                         assert wait
-                        pointer = page.locator(f'.main-attention .project-question-card[data-task-id="{task["id"]}"]')
-                        page.locator('.main-attention-summary').click()
+                        pointer = page.locator(f'#chat-messages .project-question-card[data-task-id="{task["id"]}"]')
                         pointer.get_by_text("Waiting for your answer", exact=True).wait_for(timeout=30000)
                         # Main mirrors the Project's own form: the options with their details, the
                         # stake and the own-answer field, plus the chip that opens the Project.
-                        main_question = page.locator('.main-attention .chat-bubble.project-question').filter(
+                        main_question = page.locator('#chat-messages .chat-bubble.project-question').filter(
                             has=page.locator(f'.project-question-card[data-task-id="{task["id"]}"]'))
                         assert main_question.locator('.chat-quiz-option').count() == 2
                         assert main_question.locator('.chat-quiz-comment').count() == 1
@@ -305,7 +331,7 @@ def test_ui_results_and_required_question_journey(wait_clone, tmp_path, monkeypa
                         page.goto(server.base_url, wait_until="domcontentloaded")
                         # An answered question never enters Main again; its Project replays the record.
                         page.locator('#chat-messages .chat-live-card[data-task-id="parent1"]').wait_for(timeout=30000)
-                        assert page.locator('.main-attention .project-question-card').count() == 0
+                        assert page.locator('#chat-messages .project-question-card').count() == 0
                         page.evaluate("""([project, task, quiz]) => window.dispatchEvent(new CustomEvent('ouro:open-project',
                             {detail: {project, task_id: task, quiz_id: quiz}}))""", [project, task["id"], wait["quiz_id"]])
                         replay_quiz = page.locator('.chat-quiz-card').filter(has_text="Which evidence should the report use?")

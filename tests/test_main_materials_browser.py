@@ -128,11 +128,9 @@ def test_main_question_materials_reader_and_keyboard(wait_clone, tmp_path, width
                 page = browser.new_page(viewport=receipt['viewport'], reduced_motion='reduce')
                 try:
                     page.goto(server.base_url, wait_until='domcontentloaded')
-                    summary = page.locator('.main-attention-summary')
-                    summary.wait_for(timeout=30000)
-                    summary.focus()
-                    page.keyboard.press('Enter')
-                    card = page.locator(f'.main-attention .project-question-card[data-quiz-id="{receipt["quiz_id"]}"]')
+                    # The Project question's Main copy stands in the feed at its ask.
+                    card = page.locator(f'#chat-messages .project-question-card[data-quiz-id="{receipt["quiz_id"]}"]')
+                    card.wait_for(timeout=30000)
                     materials = card.locator('.chat-quiz-materials')
                     expect(materials.locator('.chat-file-card')).to_have_count(3)
                     image = materials.locator('img.chat-file-thumb')
@@ -148,6 +146,8 @@ def test_main_question_materials_reader_and_keyboard(wait_clone, tmp_path, width
                         assert hashlib.sha256(actual).hexdigest() == material['sha256']
                     receipt['stages'].append('PNG decoded at 240x120; all material bytes match registered custody')
                     document = materials.get_by_role('button', name='decision-brief.md', exact=False)
+                    # The keyboard starts at the question text, where Main's waiting pill lands a question.
+                    card.locator('.chat-quiz-question').focus()
                     _m1660_tab_to(page, document)
                     expect(document).to_be_focused()
                     page.keyboard.press('Enter')
@@ -203,8 +203,8 @@ def test_main_question_unavailable_material_is_explicit(wait_clone, tmp_path):
                 page = browser.new_page(viewport={'width': 1100, 'height': 900}, reduced_motion='reduce')
                 try:
                     page.goto(server.base_url, wait_until='domcontentloaded')
-                    page.locator('.main-attention-summary').click(timeout=30000)
-                    card = page.locator(f'.main-attention .project-question-card[data-quiz-id="{receipt["quiz_id"]}"]')
+                    card = page.locator(f'#chat-messages .project-question-card[data-quiz-id="{receipt["quiz_id"]}"]')
+                    card.wait_for(timeout=30000)
                     with page.expect_response(lambda response: response.url.endswith(material['download_url'])) as read:
                         card.get_by_role('button', name='supporting-notes.txt', exact=False).click()
                     receipt['response_status'] = read.value.status

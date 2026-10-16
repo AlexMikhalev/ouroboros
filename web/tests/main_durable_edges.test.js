@@ -3,7 +3,8 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createChatInstance } from '../modules/chat.js';
 import { taskArtifactDownloadUrl } from '../modules/api_client.js';
-import { createMainAttention } from '../modules/main_attention.js';
+import { stampNodeTimestamp } from '../modules/chat_activity.js';
+import { createMainWaiting } from '../modules/main_waiting.js';
 import { installDom, restoreDom, ElementStub, walkCard } from './chat_dom_fixture.js';
 import { fixture as mediaFixture, NodeStub } from './helpers/media_dom.js';
 
@@ -94,18 +95,25 @@ test('Main child wait uses child revision for auto-off and the existing sign-in 
         model: 'claudexor::codex=test-model', auto_continue: true, credential_harness: 'codex', credential_profile_id: 'fixture' };
     const env = installDom(async (url, init) => { calls.push({ url, body: JSON.parse(init.body) });
         return { ok: true, json: async () => ({ ok: true, wait }) }; });
-    const attention = createMainAttention({ mount: env.mount, openSettings: page => { settings.push(page); return false; } });
+    // The child's wait is one owner-action System message in Main's feed.
+    const feed = document.createElement('div');
+    env.mount.append(feed);
+    const waiting = createMainWaiting({ page: env.mount, messagesDiv: feed, toolbar: null, stampNodeTimestamp,
+        insertMessageNode: node => { feed.append(node); return true; },
+        openSettings: page => { settings.push(page); return false; } });
     try {
-        attention.snapshot({ main_attention_complete: true, main_attention: [projected || { task_id: 'child', root_task_id: 'root',
+        waiting.snapshot({ main_attention_complete: true, main_attention: [projected || { task_id: 'child', root_task_id: 'root',
             project_id: 'build', phase: 'working', task_attempt: 3, model_waits: { login: wait } }] });
-        const login = find(env.mount, node => Object.hasOwn(node.dataset, 'waitLogin'));
+        const message = find(feed, node => node.dataset.ownerAction === 'child');
+        assert.ok(message?.classList.contains('owner-action'), 'the child task, not its root, owns the message');
+        const login = find(message, node => Object.hasOwn(node.dataset, 'waitLogin'));
         assert.ok(login); login.click(); await turn(); assert.deepEqual(settings, ['providers']);
-        const auto = find(env.mount, node => Object.hasOwn(node.dataset, 'waitAuto'));
+        const auto = find(message, node => Object.hasOwn(node.dataset, 'waitAuto'));
         auto.checked = false;
         for (const handler of auto.listeners.get('change')) await handler({ target: auto });
         assert.equal(calls[0].body.decision_id, 'model_wait:child:login');
         assert.equal(calls[0].body.revision, 3); assert.equal(calls[0].body.auto_continue, false);
-    } finally { attention.destroy(); restoreDom(env.prior); }
+    } finally { waiting.destroy(); restoreDom(env.prior); }
 });
 
 test('native Project nonclean final keeps one answer and limitation live and after actual history assembly', async t => {

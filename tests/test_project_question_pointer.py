@@ -121,7 +121,7 @@ def test_an_optional_question_projects_into_main_with_its_assumption_and_never_r
     assert live["system_type"] == "project_question_pointer" and live["chat_id"] == 1
     assert live["assumption"] == "WebP meanwhile" and live["recommended_index"] == 1
     assert live["options"] == ["PNG", "WebP"] and "wait_for_answer" not in live
-    assert live["content"] == "Unanswered · an answer is still accepted in Mixed Project"
+    assert live["content"] == "Unanswered in Mixed Project"
 
     # The same task now waits on a newer required question.
     assert _escalate(ctx, question="Publish?", wait_for_answer=True,
@@ -135,7 +135,7 @@ def test_an_optional_question_projects_into_main_with_its_assumption_and_never_r
     calm, waiting = main[optional["quiz_id"]], main[required["quiz_id"]]
     assert "owner_wait_state" not in calm and "wait_for_answer" not in calm
     assert calm["assumption"] == "WebP meanwhile" and calm["recommended_index"] == 1
-    assert calm["text"] == "Unanswered · an answer is still accepted in Mixed Project"
+    assert calm["text"] == "Unanswered in Mixed Project"
     assert waiting["owner_wait_state"] == "waiting" and waiting["recommended_index"] == 0
     assert waiting["text"] == "Waiting for your answer in Mixed Project"
     # The Project room's own card of the optional question reads the same facts.
@@ -185,7 +185,7 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     previous_reads = reads.count("t1")
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert rows[0]["required_question"]["owner_wait_state"] == "resumed"
-    assert rows[0]["required_question"]["text"] == "Unanswered · the task continued; an answer is still accepted in Waiting Project"
+    assert rows[0]["required_question"]["text"] == "Unanswered · task continued in Waiting Project"
     assert reads.count("t1") == previous_reads + 1
     gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert reads.count("t1") == previous_reads + 1
@@ -197,7 +197,7 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     gs._FINALIZING_MEMO.clear()
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     pointer = rows[0]["required_question"]
-    assert pointer["text"] == "Unanswered · the task continued; an answer is still accepted in Waiting Project"
+    assert pointer["text"] == "Unanswered · task continued in Waiting Project"
     assert pointer["owner_wait_resume_reason"] == "timeout"
 
 
@@ -260,7 +260,7 @@ def test_project_room_quiz_row_carries_the_wait_facts(tmp_path):
     room = json.loads(_assemble_history_response(tmp_path, project["chat_id"], 10, 0))["messages"]
     assert room[0]["quiz"]["owner_wait_state"] == "resumed" and room[0]["quiz"]["wait_for_answer"] is True
     main = json.loads(_assemble_history_response(tmp_path, 1, 10, 0))["messages"]
-    assert main[0]["text"] == "Unanswered · the task continued; an answer is still accepted in Resumed Project"
+    assert main[0]["text"] == "Unanswered · task continued in Resumed Project"
     set_owner_wait(tmp_path, "t1", {"quiz_id": "q2", "wait_id": "w2", "state": "waiting"})
     room = json.loads(_assemble_history_response(tmp_path, project["chat_id"], 10, 0))["messages"]
     assert room[0]["quiz"]["owner_wait_state"] == "resumed"

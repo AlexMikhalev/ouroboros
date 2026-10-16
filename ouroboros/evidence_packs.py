@@ -220,7 +220,7 @@ def index_tier(root: pathlib.Path) -> str:
     return store.TIER_ENFORCED if kernel_file_locks_enforced(root / "state" / store.LOCK_NAME) else store.TIER_NAME
 
 
-def _index_valid(path: pathlib.Path, tier: str) -> bool:
+def _index_valid(path: pathlib.Path, tier: str, *, wait_sec: float = INDEX_WAIT_SEC) -> bool:
     identity = store.file_identity(path)
     if identity is None:
         return False
@@ -234,9 +234,13 @@ def _index_valid(path: pathlib.Path, tier: str) -> bool:
     if store.header_tier(path, _APPLICATION_ID) != tier:
         return False
     try:
-        with contextlib.closing(store.connect(path, tier, wait_sec=INDEX_WAIT_SEC)) as conn:
+        with contextlib.closing(store.connect(path, tier, wait_sec=wait_sec)) as conn:
             ok = conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
             version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    except sqlite3.OperationalError as exc:
+        if store.busy(exc):
+            raise store.StoreBusy("evidence index validation busy", reason="contention") from exc
+        return False
     except sqlite3.Error:
         return False
     valid = ok and version is not None and version[0] == str(INDEX_SCHEMA_VERSION)
@@ -278,13 +282,18 @@ def _rebuild_index(root: pathlib.Path, path: pathlib.Path, tier: str) -> None:
     store.fsync_directory(path.parent)
 
 @contextlib.contextmanager
-def open_index(root: Any, *, write: bool = False, wait_sec: float = INDEX_WAIT_SEC) -> Iterator[sqlite3.Connection]:
+def open_index(root: Any, *, write: bool = False, wait_sec: float = INDEX_WAIT_SEC,
+               rebuild: bool = True) -> Iterator[sqlite3.Connection]:
     """One transaction on the index cache under the name lock; a missing, damaged or
-    other-version cache is rebuilt from the sidecars first. ``store.StoreBusy`` on contention."""
+    other-version cache is rebuilt from the sidecars first. ``rebuild=False`` is
+    advisory discovery: unavailable cache raises instead of walking all sidecars.
+    ``store.StoreBusy`` on contention."""
     root = pathlib.Path(root)
     path, tier = packs_dir(root) / INDEX_NAME, index_tier(root)
     with store.name_lock(root, INDEX_LOCK_NAME, timeout_sec=wait_sec):
-        if not _index_valid(path, tier):
+        if not _index_valid(path, tier, wait_sec=wait_sec):
+            if not rebuild:
+                raise sqlite3.DatabaseError("evidence index requires reconstruction")
             _rebuild_index(root, path, tier)
         with contextlib.closing(store.connect(path, tier, wait_sec=wait_sec)) as conn:
             with store.transaction(conn, write=write):
@@ -670,8 +679,9 @@ def task_settlement_facts(root: Any, task_id: str, *, obligation_rows: Optional[
     }
 
 
-def settlement_external(root: Any) -> dict:
-    """One money query and one outbox read for every task in a pass; None stays unknown."""
+def settlement_external(root: Any, *, timeout_sec: Optional[float] = None) -> dict:
+    """One money query and outbox read per pass. A bounded advisory read propagates
+    unavailability to defer discovery; ordinary child reads keep unknown as None."""
     from ouroboros import usage_store
     from ouroboros.usage_ledger import LEDGER_REL
     from supervisor.terminal_delivery import pending_deliveries
@@ -680,15 +690,20 @@ def settlement_external(root: Any) -> dict:
     money = set()
     if (root / usage_store.STORE_REL).exists() or (root / LEDGER_REL).exists():
         try:
-            with usage_store.hold(root, write=False, migrate=False) as txn:
+            with usage_store.hold(root, write=False, migrate=False,
+                                  **({"timeout_sec": timeout_sec} if timeout_sec is not None else {})) as txn:
                 money = {row[0] for row in txn.conn.execute(
                     "SELECT DISTINCT task_id FROM attempts WHERE kind='attempt' "
                     "AND state IN ('reserved','dispatched','unresolved')")}
         except Exception:
+            if timeout_sec is not None:
+                raise
             money = None
     try:
         delivery = {str(event.get("task_id") or "") for event in pending_deliveries(root, strict=True)}
     except Exception:
+        if timeout_sec is not None:
+            raise
         delivery = None
     return {"money": money, "delivery": delivery}
 

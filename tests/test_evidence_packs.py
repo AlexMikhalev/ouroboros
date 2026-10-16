@@ -564,7 +564,9 @@ def test_packer_tick_rests_without_candidates_and_the_sweep_remembers_evaluated_
 
     monkeypatch.setattr(process_custody, "spawn_supervised", lambda *a, **k: pytest.fail("spawned without candidates"))
     unit = packer.EvidencePacker()
-    assert unit.tick(root, REPO) is False and unit.tick(root, REPO) is False
+    assert unit.tick(root, REPO) is False and unit.tick(root, REPO) is True
+    unit._thread.join(10)
+    assert not unit._thread.is_alive()
     _task(root, "live", blobs=1, status="running")
     assert packer.changed_tasks(root) == ["live"]
     _run(root)  # evaluated, not settled: recorded so the next tick does not re-read it
