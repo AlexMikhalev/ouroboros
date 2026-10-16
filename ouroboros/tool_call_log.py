@@ -250,12 +250,18 @@ def replay_evidence_for_tasks(drive_root: pathlib.Path, task_ids: Iterable[str])
 
     Only selected tasks are retained. Tail windows still double and archive
     backfill stays bounded by the existing reader; no cache survives this request.
+    Each window is read in one call and an (immutable) archive stat'ed once: a buffered
+    4 KiB line walk (hundreds of reads per window) and a stat per task each handed the
+    server's interpreter lock away, which under load made this stage seconds of the page.
+    The live file is stat'ed on every use, so a source that grows mid-request is re-read.
     """
+    import io
+
     from ouroboros.jsonl_tail import archive_segments
-    from ouroboros.utils import iter_jsonl_objects
+    from ouroboros.utils import iter_jsonl_objects, jsonl_window
 
     selected = dict.fromkeys(task_ids)
-    windows, listings = {}, {}
+    windows, listings, stats = {}, {}, {}
 
     def list_archives(archive_dir, archive_prefix, gaps=None):
         # One enumeration per request; its unreadable_source gap is replayed to every task.
@@ -269,14 +275,21 @@ def replay_evidence_for_tasks(drive_root: pathlib.Path, task_ids: Iterable[str])
         return list(paths)
 
     def parse(path, *, tail_bytes=None, gap_reasons=None):
-        info = path.stat()
+        info = stats.get(path)
+        if info is None or path.parent.name != "archive":  # archives never change; the live file grows
+            info = stats[path] = path.stat()
         stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
         if windows.get(path, (None,))[0] != stamp:
             windows[path] = stamp, {}
         parsed = windows[path][1]
         if tail_bytes not in parsed:
             gaps: set = set()
-            rows = [row for row in iter_jsonl_objects(path, tail_bytes=tail_bytes, gap_reasons=gaps)
+            try:
+                with path.open("rb") as handle:
+                    data = jsonl_window(handle, info.st_size, tail_bytes)
+            except FileNotFoundError:
+                data = b""  # rotated away after its stat: the line reader's own absence answer
+            rows = [row for row in iter_jsonl_objects(path, gap_reasons=gaps, _handle=io.BytesIO(data))
                     if str(row.get("task_id") or "").strip() in selected]
             parsed[tail_bytes] = rows, gaps
         rows, gaps = parsed[tail_bytes]

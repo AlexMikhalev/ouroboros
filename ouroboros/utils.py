@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import datetime as _dt
 import hashlib
+import io
 import json
 import logging
 import math
@@ -651,6 +652,20 @@ def append_jsonl(
     return _written
 
 
+def jsonl_window(handle: Any, size: int, tail_bytes: Optional[int] = None) -> bytes:
+    """The lines a reader of the last ``tail_bytes`` of a ``size``-byte file sees, read in ONE
+    call: a cut window drops its partial first line. A buffered line walk instead hands the
+    interpreter lock away once per few kilobytes, which a loaded server pays in seconds."""
+    if tail_bytes is None or size <= tail_bytes:
+        return handle.read(size)
+    handle.seek(size - tail_bytes - 1)
+    data = handle.read(tail_bytes + 1)
+    if data[:1] == b"\n":
+        return data[1:]
+    newline = data.find(b"\n")
+    return data[newline + 1:] if newline >= 0 else b""
+
+
 def iter_jsonl_objects(
     path: pathlib.Path,
     max_entries: Optional[int] = None,
@@ -659,19 +674,16 @@ def iter_jsonl_objects(
     gap_reasons: Optional[set[str]] = None,
     _handle: Any = None,  # Internal borrowed stream; its caller owns closing.
 ) -> Iterator[Any]:
-    """Yield parseable JSONL entries; max_entries applies to raw tail lines."""
+    """Yield parseable JSONL entries; max_entries applies to raw tail lines.
+    A bounded tail is read in one call (``jsonl_window``); a whole file streams."""
     path = pathlib.Path(path)
     if (max_entries is not None and max_entries <= 0) or (tail_bytes is not None and tail_bytes <= 0):
         return
     try:
         with (contextlib.nullcontext(_handle) if _handle is not None else path.open("rb")) as handle:
             if tail_bytes is not None:
-                file_size = path.stat().st_size
-                if file_size > tail_bytes:
-                    start = file_size - tail_bytes
-                    handle.seek(start - 1)
-                    if handle.read(1) != b"\n":
-                        handle.readline()
+                handle = io.BytesIO(jsonl_window(handle, os.fstat(handle.fileno()).st_size
+                                                 if _handle is None else path.stat().st_size, tail_bytes))
             if max_entries:
                 # Keep one raw sentinel so callers can distinguish an exact
                 # bounded tail from a suffix. Parsed-object counts cannot prove

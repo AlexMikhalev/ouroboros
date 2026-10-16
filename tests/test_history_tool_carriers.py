@@ -210,15 +210,16 @@ def test_shared_noisy_log_windows_are_decoded_once_per_request(tmp_path, monkeyp
     parser = utils.iter_jsonl_objects
     decoded = []
 
-    def observed(source, *, tail_bytes=None, gap_reasons=None):
-        decoded.append((source, tail_bytes))
-        yield from parser(source, tail_bytes=tail_bytes, gap_reasons=gap_reasons)
+    def observed(source, **kwargs):
+        # The replay hands each window over as one read (no buffered 4 KiB line walk).
+        decoded.append((source, kwargs["_handle"].getbuffer().nbytes))
+        yield from parser(source, **kwargs)
 
     monkeypatch.setattr(utils, "iter_jsonl_objects", observed)
     result = replay_evidence_for_tasks(tmp_path, ["root", "second"])
     assert all(len(evidence["observations"]) == 1 for evidence in result.values())
     assert len(decoded) == len(set(decoded)), "selected tasks share the same physical parse"
-    assert sum(min(path.stat().st_size, window or path.stat().st_size) for _, window in decoded) < 3 * path.stat().st_size
+    assert sum(window for _, window in decoded) < 3 * path.stat().st_size
     before = len(decoded)
     replay_evidence_for_tasks(tmp_path, ["root"])
     assert len(decoded) > before, "no cross-request memo can hide new settlements"
