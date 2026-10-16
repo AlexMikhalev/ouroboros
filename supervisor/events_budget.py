@@ -224,6 +224,8 @@ def _resume_observation(meta: dict, drive_root: Any) -> dict:
     from ouroboros.budget_pause import budget_pause_row
 
     task = meta["task"]
+    if not (task.get("_budget_pause_resume") or {}).get("sleep_exclusion_since"):
+        return {}  # No pending clock observation: ordinary recovery needs no storage read.
     return budget_pause_row(pathlib.Path(task.get("budget_drive_root") or drive_root), task["id"])
 
 

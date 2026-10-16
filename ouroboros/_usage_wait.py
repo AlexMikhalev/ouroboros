@@ -89,7 +89,7 @@ class _PresendWait:
         return min(DISPATCH_PUBLICATION_POLL_SEC, remaining) if pending else ACQUISITION_SLICE_SEC
 
     @contextlib.contextmanager
-    def wait(self, error, attempt_started):
+    def wait(self, error):
         """Charge only a publication probe and its wait, across reacquisitions.
 
         A contended store neither proves continuous publication absence nor resets
@@ -99,7 +99,7 @@ class _PresendWait:
 
         pending = isinstance(error, DispatchPublicationPending)
         if pending:
-            self.publication_waited += max(0.0, time.monotonic() - attempt_started)
+            self.publication_waited += error.probe_elapsed_sec
         delay = self.delay(error)
         started = time.monotonic()
         try:
@@ -126,14 +126,13 @@ def retry_presend(function, *, check=True):
     episode = _PresendWait(check)
     try:
         while True:
-            attempt_started = time.monotonic()
             try:
                 with admission_acquisition():
                     if check or episode.publication_started is not None:
                         _check()
                     return function()
             except Exception as exc:
-                with episode.wait(exc, attempt_started) as delay:  # transaction/launch lock have exited
+                with episode.wait(exc) as delay:  # transaction/launch lock have exited
                     queue_observation._sleep(delay)
     finally:
         episode.close()
@@ -146,14 +145,13 @@ async def retry_presend_async(function, *, check=True):
     episode = _PresendWait(check)
     try:
         while True:
-            attempt_started = time.monotonic()
             try:
                 with admission_acquisition():
                     if check or episode.publication_started is not None:
                         _check()
                     return function()
             except Exception as exc:
-                with episode.wait(exc, attempt_started) as delay:
+                with episode.wait(exc) as delay:
                     await asyncio.sleep(delay)
     finally:
         episode.close()

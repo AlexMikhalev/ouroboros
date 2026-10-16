@@ -14,6 +14,7 @@ from ouroboros.artifacts import read_actor_source_bytes
 from supervisor import queue_snapshot
 from tests._budget_pause_exact_helpers import _install_queue, _pause
 from tests._store_shared import unreadable_result
+from tests.test_owner_wait_restart import restart_case  # noqa: F401
 
 
 def _saved_pause(root, monkeypatch, workers, *, project=False):
@@ -200,3 +201,44 @@ def test_native_warm_handoff_survives_result_gap_until_explicit_resume(tmp_path,
     saved = budget_pause.load_budget_pause(ctx)
     assert saved["messages"] == limit.messages and saved["task_attempt"] == 1
     assert read_actor_source_bytes(tmp_path, "saved-warm", wait["source_ref"]) == original
+
+
+@pytest.mark.parametrize("entry", ["live", "restore"])
+def test_native_project_handoff_keeps_its_verification_owner(restart_case, monkeypatch, entry):  # noqa: F811
+    from types import SimpleNamespace
+    from supervisor import queue, workers
+    from tests.test_owner_wait_restart import restore_project_wait
+    from tests.test_project_hold_recovery import worker
+
+    case = restart_case
+    restored = restore_project_wait(case, monkeypatch, registry_outage=False)
+    carrier = copy.deepcopy(restored["_owner_wait_resume"])
+    source = read_actor_source_bytes(case.root, case.task_id, carrier["source_ref"])
+    if entry == "restore":
+        assert queue.persist_queue_snapshot(reason="native-project-result-gap")
+        workers.PENDING.clear()
+    with _result_gap(case.root, monkeypatch, "unreadable", task_id=case.task_id):
+        if entry == "restore":
+            queue.restore_pending_from_snapshot()
+        else:
+            with queue._queue_lock:
+                assert workers._drop_cancelled_pending()
+        [kept] = workers.PENDING
+        assert kept["_owner_wait_resume"] == carrier
+        assert kept["_project_admission_restore_hold"]["reason"] == "project_routing_fence_lookup_failed"
+        assert not kept.get("_terminalization_retry")
+    sent = worker(SimpleNamespace(root=case.root), monkeypatch)
+    workers.assign_tasks()
+    workers.assign_tasks()
+    if entry == "restore":
+        # Project verification does not erase boot's separate saved-source hold.
+        # This test proves conservation and that each existing owner still runs.
+        assert not sent and kept["_budget_pause_hold"]
+        assert not kept.get("_project_admission_restore_hold")
+        assert kept["_owner_wait_resume"] == carrier and not kept.get("_terminalization_retry")
+        assert read_actor_source_bytes(case.root, case.task_id, carrier["source_ref"]) == source
+        return
+    assert [row["id"] for row in sent] == [case.task_id]
+    assert sent[0]["_owner_wait_resume"] == carrier and sent[0]["_attempt"] == case.attempt
+    assert not sent[0].get("_project_admission_restore_hold")
+    assert read_actor_source_bytes(case.root, case.task_id, carrier["source_ref"]) == source

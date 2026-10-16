@@ -268,10 +268,8 @@ def checkpoint_owner_wait(ctx: Any, messages: list, trace: dict, usage: dict,
                                if sleep else {}),
         **({"owner_pause": dict(pause)} if pause else {}),
         "review_binding": review_binding,
-        # When THIS owner wait began: readers date the wait by it, never by the
-        # task's ``started_at`` below (which the lifetime clocks own). The whole
-        # row rides every later write, so a planned restart keeps the stamp. A
-        # review-bound park is dated by its review operation, not here.
+        # Date this wait independently of task lifetime; the stamp survives restart.
+        # A review-bound park is dated by its review operation instead.
         **({} if review_binding else {"parked_at": utc_now_iso()}),
         "source_ref": source, "task_attempt": int(ctx.task_attempt or 1),
         "execution_drive_root": str(ctx.drive_root),
@@ -943,7 +941,7 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
     NOT restored: they died with the previous process and stay invalidated."""
     from ouroboros.loop_delivery import DeliveryCandidate
 
-    from ouroboros.model_wait import budget_paused_seconds
+    from ouroboros.model_wait import adopt_handoff_clock, budget_paused_seconds
 
     ctx = tools._ctx
     # Missing old observations are unknown, not this new process's startup seed.
@@ -961,11 +959,9 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
     ctx._sleep_interaction_seen = dict(state.get("sleep_interaction_seen") or {})
     ctx._owner_directives = state["owner_directives"]
     ctx.unconfirmed_routing_acts = [dict(act) for act in state.get("unconfirmed_routing_acts") or [] if isinstance(act, dict)]
-    # The cumulative budget-paused carrier rides EVERY same-ID continuation
-    # (#1196, F5): a cold owner-wait restore of a task that had been budget
-    # paused keeps it, so a later pause row and the delegate clock start from
-    # the same cumulative value; a budget grant overrides it with its own.
-    ctx._budget_paused_sec = budget_paused_seconds(state.get("model_wait") or {})
+    # Match the agent's native handoff clock; a budget grant overrides it separately.
+    ctx._budget_paused_sec = budget_paused_seconds(adopt_handoff_clock(
+        state.get("model_wait") or {}, getattr(ctx, "owner_wait_resume", None)))
     for key, value in {**state["route"], **state["delivery"], **state["acceptance"]}.items():
         setattr(ctx, key, value)
     candidate = state.get("delivery_candidate")
@@ -1008,12 +1004,21 @@ def resume_native_loop(tools: Any, state: dict, messages: list, trace: dict,
                        usage: dict, seen: set) -> tuple:
     """Restore the selected cold continuation and await its ordinary input grant."""
     from ouroboros.review_pause import wake_restored_left_review
+    from ouroboros.model_wait import native_sleep_started_at
+    from ouroboros import model_sleep
 
     ctx = tools._ctx
     restore_continuation_state(tools, state, messages, trace, usage, seen)
     cold_checkpoint = ctx.owner_wait_resume
-    wake_restored_left_review(ctx)  # a left review's custody ended with its process: say so, which also wakes
-    outcome = ctx.owner_wait_callback(ctx, cold_checkpoint)
+    wake_restored_left_review(ctx)  # departed review custody is disclosed and wakes its author
+    started = native_sleep_started_at(cold_checkpoint)
+    if started is not None:
+        model_sleep.begin(ctx, started_at=started)
+    try:
+        outcome = ctx.owner_wait_callback(ctx, cold_checkpoint)
+    finally:
+        if started is not None:
+            model_sleep.end(ctx)
     ctx.owner_wait_resume = None
     plan, mode = rebind_restored_route(tools, state, messages)
     messages.append({"role": "user", "content": (
@@ -1025,15 +1030,10 @@ def resume_native_loop(tools: Any, state: dict, messages: list, trace: dict,
     if isinstance(left, dict) and left.get("done") and not left.get("noticed") and left.get("notice"):
         messages.append({"role": "user", "content": str(left["notice"])})
         ctx._left_review_wait = None
-    # The bound survived the restart as an absolute stamp, so the cold
-    # continuation can ALSO end on it — and a peer wake or a hurry is no more
-    # an answer cold than warm: the same notice seam says so.
+    # The same absolute bound and wake semantics survive a cold return.
     if (cold_checkpoint or {}).get("reason") == "sleep":
-        from ouroboros import model_sleep
-
-        started = cold_checkpoint.get("sleep_started_at")  # absent on legacy rows: no invented duration
         messages.append(model_sleep.wake_notice(cold_checkpoint.get("sleep") or {}, str(outcome or ""),
-                                                max(0.0, time.time() - float(started)) if started else None))
+                                                max(0.0, time.time() - started) if started is not None else None))
         model_sleep.append_question_notice(ctx, str(outcome or ""), messages)
     else:
         append_wake_notice(ctx, cold_checkpoint or {}, outcome, messages)

@@ -65,7 +65,7 @@ def conserve_unreadable_pending(task: dict) -> bool:
 
     # Saved pauses already have their locator/hold; Project work needs
     # its verification hold installed by the unreadable-result rule.
-    return bool(exact_pause_row(task) or task.get("_owner_wait_resume") or hold_unreadable_result(task))
+    return bool(exact_pause_row(task) or hold_unreadable_result(task) or task.get("_owner_wait_resume"))
 
 
 def saved_sleep_hold_reason(result_root: Any, *, owner_restart: bool = False) -> str:

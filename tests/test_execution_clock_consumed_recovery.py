@@ -120,3 +120,16 @@ def test_consumed_worker_death_takes_terminal_custody_before_crash_retry(host, m
     result = load_task_result(host.root, 'held')
     assert result['status'] == 'failed' and result['reason_code'] == 'worker_crash_budget_pausing'
     assert not host.pending
+
+
+@pytest.mark.parametrize("resume", [None, {"authority": "explicit_resume", "grant_id": "consumed"}])
+def test_inapplicable_resume_clock_does_not_read_storage(tmp_path, monkeypatch, resume):
+    def unexpected_read(*_args, **_kwargs):
+        pytest.fail("an ordinary or already-folded clock needs no durable observation")
+
+    monkeypatch.setattr(budget_pause, "budget_pause_row", unexpected_read)
+    meta = {"task": {"id": "ordinary"}, "budget_paused_sec": 12.0}
+    if resume is not None:
+        meta["task"]["_budget_pause_resume"] = resume
+    before = copy.deepcopy(meta)
+    assert not fold_consumed_resume(meta, tmp_path) and meta == before
