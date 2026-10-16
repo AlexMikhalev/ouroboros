@@ -320,6 +320,13 @@ test('an unloaded row reads the page around its task and lands on its card; one 
         main('t-wake').click();
         await settle();
         assert.equal(asked.length, 3);
+        assert.match(text(row('t-wake')), /No message yet\./, 'the press answered again');
+        // Its details are open now: another census change keeps them open, without the stale answer.
+        activities.set('t-wake', { ...activities.get('t-wake'), phase: 'working', pause_cause: undefined });
+        work.update();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(main('t-wake').getAttribute('aria-expanded'), 'true', 'opened details survive');
+        assert.match(main('t-wake').getAttribute('aria-label'), /^Open: /, 'without the stale answer: a press asks again');
         main('t-own').click();
         await settle();
         assert.match(text(row('t-own')), /Its message could not be checked\./, 'an owner’s message is never “no message”');

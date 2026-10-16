@@ -452,7 +452,8 @@ export function createRoomWork({
         const navigable = Boolean(row.target?.isConnected);
         // An unloaded row asks the room's history on its press: until then it claims nothing about where its message is.
         const lookable = !navigable && row.kind !== 'pending' && Boolean(history) && !['absent', 'moved'].includes(row.lookup);
-        const detailable = !navigable && row.kind !== 'pending' && (!history || Boolean(row.lookup));
+        // Opened details survive a census change; a press then asks again where its message is.
+        const detailable = !navigable && row.kind !== 'pending' && (!history || Boolean(row.lookup) || expanded.has(row.key));
         const isOpen = detailable && expanded.has(row.key);
         Object.assign(el.dataset, {
             id: row.id,
