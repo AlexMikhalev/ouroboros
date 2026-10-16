@@ -298,9 +298,12 @@ async def test_openai_interrupt_uses_item_not_response_id_and_preserves_usage():
     with pytest.raises(LiveEngineRefusal):
         await engine.send(Interrupt("audio-item", -1))
     await feed(engine, socket, {"type": "input_audio_buffer.speech_started", "item_id": "owner-item"})
+    await feed(engine, socket, {"type": "input_audio_buffer.committed", "item_id": "owner-item"})
     await feed(engine, socket, {"type": "conversation.item.input_audio_transcription.completed", "item_id": "owner-item",
                                 "transcript": "Hello", "usage": {"type": "tokens", "input_tokens": 4, "input_token_details": {"audio_tokens": 4}, "output_tokens": 2}})
     assert selected(events, SpeechStarted) == [SpeechStarted()]
+    # The input item is named at its speech start and its commit, before its words arrive.
+    assert selected(events, Caption)[-3:-1] == [Caption("owner", "", False, "owner-item")] * 2
     assert selected(events, TranscriptionUsage)[0].usage["audio_input_tokens"] == 4
     assert selected(events, TranscriptionUsage)[0].usage["text_output_tokens"] == 2
     assert selected(events, Caption)[-1] == Caption("owner", "Hello", True, "owner-item")

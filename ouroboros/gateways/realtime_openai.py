@@ -187,6 +187,11 @@ class OpenAIRealtimeEngine(RealtimeTransport):
         else:
             raise LiveEngineRefusal("command", "Unsupported live engine command.")
 
+    def _name_input(self, message: dict) -> None:
+        """An empty interim caption names the input item while the host still knows what fed it."""
+        if message.get("item_id"):
+            self._emit(Caption("owner", "", False, str(message["item_id"])))
+
     def _tool_call(self, item):
         # Arguments travel as the model produced them: a malformed object is the
         # ordinary tool path's typed argument error back to the model, not a protocol
@@ -231,6 +236,9 @@ class OpenAIRealtimeEngine(RealtimeTransport):
                 self._emit(TranscriptionUsage(TRANSCRIPTION_MODEL, normalize_usage(raw), raw))
         elif kind == "input_audio_buffer.speech_started":
             self._emit(SpeechStarted())
+            self._name_input(message)
+        elif kind == "input_audio_buffer.committed":
+            self._name_input(message)
         elif kind == "response.function_call_arguments.done":
             self._tool_call(message)
         elif kind == "response.done":

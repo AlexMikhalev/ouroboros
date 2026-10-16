@@ -28,6 +28,7 @@ terminal (``terminal_origin=host_notice``) that points at the transcript.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import pathlib
 import queue
@@ -72,6 +73,9 @@ BATCH_SETTLE_WAIT_S = 5.0
 
 
 # ---- seams the lanes meet at (tests replace these) --------------------------------
+
+_ACK = object()  # the delivery task's marker: acknowledge the content delivered before it
+
 
 def _hub_for(call_id: str):
     from ouroboros.call_peers import get_hub
@@ -147,6 +151,7 @@ class _LiveCall:
         self.budget_error: Optional[BudgetExceeded] = None
         self.failure: Optional[Tuple[str, str]] = None
         self.attempts: Dict[str, Future] = {}
+        self.current_response = ""  # the response a tool call belongs to: one response is one Presence round
         # Ledger writes run in order on one thread beside the call's loop: a busy store
         # never stalls the audio, and each reservation still precedes its settlement.
         self.records = ThreadPoolExecutor(max_workers=1, thread_name_prefix="call-ledger")
@@ -162,6 +167,11 @@ class _LiveCall:
         # Whether meeting audio reached the engine since its last input caption: the
         # words of that caption came from the mix even if the meeting peer left meanwhile.
         self.meeting_audio_since_caption = False
+        # Who fed each input item, marked when the provider names it (at its speech start and
+        # commit): heard when meeting audio was sent since the previous mark or a meeting
+        # microphone was attached. Its final caption keeps that source however late it lands.
+        self.meeting_audio_since_mark = False
+        self.input_sources: Dict[str, bool] = {}
         # Participants whose audio the platform reported flowing since the last heard
         # caption: exactly one names that utterance's speaker, otherwise it stays unnamed.
         self.voices_since_caption: set = set()
@@ -172,6 +182,10 @@ class _LiveCall:
         self._queued: List[Any] = []
         self._closed = asyncio.Event()
         self._hub_events: Optional[asyncio.Queue] = None
+        # Context and content acknowledgements leave in order through one delivery task, so a
+        # send waiting on the transport never holds the mailbox, the peers or a close decision.
+        self._outbox: Optional[asyncio.Queue] = None
+        self._ack_posted = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._reader_stop = threading.Event()
         self._reader: Optional[threading.Thread] = None
@@ -211,7 +225,7 @@ class _LiveCall:
 
         loop_mod = _loop()
         self._loop = asyncio.get_running_loop()
-        self._hub_events = asyncio.Queue()
+        self._hub_events, self._outbox = asyncio.Queue(), asyncio.Queue()
         self.hub.send_state(STATE_CONNECTING)
         loop_mod._reset_turn_state(self.ctx)
         loop_mod._initialize_owner_directives(self.ctx, self.messages)
@@ -233,7 +247,8 @@ class _LiveCall:
         # The owner's mailbox, the peers and the tool lane run from the first moment, so a
         # Stop, a join or a control is handled while the provider connection is still pending.
         tasks: List[asyncio.Task] = [asyncio.create_task(self._pump_hub()), asyncio.create_task(self._tick()),
-                                     asyncio.create_task(self.tools_lane.run_forever())]
+                                     asyncio.create_task(self.tools_lane.run_forever()),
+                                     asyncio.create_task(self._deliver_forever())]
         try:
             fit_call_instructions(self.ctx, self.messages, self.tool_schemas, self.route)
             opening = asyncio.create_task(self._open_engine())
@@ -505,14 +520,32 @@ class _LiveCall:
         if not item.text.strip():
             return
         self.messages.append({"role": "user", "content": item.text, "_call_row": True, "_context_source": item.source})
-        await self._send(item)
+        self._post(item)
+
+    def _post(self, item: Any) -> None:
+        if self._outbox is not None:
+            self._outbox.put_nowait(item)
+
+    async def _deliver_forever(self) -> None:
+        from ouroboros.working_checkpoint import flush_content_acks
+
+        while True:
+            item = await self._outbox.get()
+            if item is _ACK:
+                # Content is acknowledged only once a live session holds it and the checkpoint
+                # is written; while no session is live the entries wait (and are redelivered).
+                self._ack_posted = False
+                if self.engine is not None and not self.closing and self._checkpoint():
+                    flush_content_acks(self.ctx)
+                continue
+            await self._send(item)
 
     async def _on_hub_event(self, event: Any) -> None:
         if isinstance(event, PeerAudio):
             if (self.engine is not None and not self.closing and not self.reconnecting
                     and event.peer_id not in self.muted_peers):
                 if event.role == PEER_MEETING:
-                    self.meeting_audio_since_caption = True
+                    self.meeting_audio_since_caption = self.meeting_audio_since_mark = True
                 await self._send(AudioIn(pcm=event.pcm, rate=self.route.engine.input_rate))
         elif isinstance(event, PeerControl):
             kind = str(event.message.get("type") or "")
@@ -561,26 +594,29 @@ class _LiveCall:
                 self.spoken.setdefault(event.item_id, _Spoken()).audio_ms += len(event.pcm) * 500 / event.rate
                 self.hub.play(event.pcm, event.item_id)
         elif isinstance(event, Caption):
-            self.hub.send_caption(event.speaker, event.text, event.final, event.item_id)
-            if event.final:
-                self._on_final_caption(event)
+            if event.speaker == SPEAKER_OWNER and not event.final and not event.text:
+                self._mark_input(event.item_id)  # the provider named an input item; no words yet
+            else:
+                self.hub.send_caption(event.speaker, event.text, event.final, event.item_id)
+                if event.final:
+                    self._on_final_caption(event)
         elif isinstance(event, SpeechStarted):
             await self._barge_in()
         elif isinstance(event, ToolCall):
-            self.tools_lane.enqueue(event, self.epoch)
+            self.tools_lane.enqueue(event, self.epoch, self.current_response)
         elif isinstance(event, ToolCallCancelled):
             self.tools_lane.cancel(event.call_ids)
         elif isinstance(event, ResponseStarted):
-            self.response_open = True
+            self.response_open, self.current_response = True, event.response_id or event.item_id
             self._attempt_for(event.response_id or event.item_id)
         elif isinstance(event, ResponseDone):
-            self.response_open = False
+            self.response_open, self.current_response = False, ""
             self._settle(event)
             await self._drain()
             if self.fanout.pending:
                 self.fanout.flush()
         elif isinstance(event, TranscriptionUsage):
-            self.records.submit(self._settle_safely, lambda: _ledger().record_transcription(
+            self._record(self._settle_safely, lambda: _ledger().record_transcription(
                 engine=self.spec.engine, model=event.model, call_id=self.spec.call_id, usage=dict(event.usage),
                 raw_usage=dict(event.raw_usage), task_id=self.task_id, drive_root=self.drive_root))
         elif isinstance(event, ResumeCheckpoint):
@@ -630,9 +666,12 @@ class _LiveCall:
         text = str(event.text or "").strip()
         if not text:
             return
-        # Who spoke is decided by what fed the engine since its last input caption: a
-        # meeting microphone attached, or meeting audio already sent (its peer may have left).
-        heard = self.spec.presence_binding_id or self.meeting_mics or self.meeting_audio_since_caption
+        # Who spoke is the source marked for this input item; an item the provider never
+        # named falls back to what fed the engine since its last input caption: a meeting
+        # microphone attached, or meeting audio already sent (its peer may have left).
+        source = self.input_sources.pop(event.item_id, None) if event.speaker == SPEAKER_OWNER else None
+        heard = self.spec.presence_binding_id or (
+            source if source is not None else (self.meeting_mics or self.meeting_audio_since_caption))
         if event.speaker == SPEAKER_OWNER:
             self.meeting_audio_since_caption = False
         if event.speaker == SPEAKER_OWNER and heard:
@@ -651,6 +690,12 @@ class _LiveCall:
             if spoken.interrupted or (spoken.played and spoken.played_ms >= spoken.audio_ms):
                 self._write_spoken_row(event.item_id)
             self.fanout.note(SPEAKER_OUROBOROS, text)
+
+    def _mark_input(self, item_id: str) -> None:
+        if item_id:
+            fed_by_meeting = bool(self.meeting_mics) or self.meeting_audio_since_mark
+            self.input_sources[item_id] = self.input_sources.get(item_id, False) or fed_by_meeting
+        self.meeting_audio_since_mark = False
 
     def _on_heard(self, text: str, item_id: str) -> None:
         """Input speech while meeting audio feeds the session (or in a Presence call).
@@ -726,7 +771,7 @@ class _LiveCall:
                      raw_usage: Optional[Dict[str, Any]] = None, status: str = "") -> Future:
         if key not in self.attempts:
             mode = str(getattr(self.ctx, "active_context_mode", "") or "nano")
-            self.attempts[key] = self.records.submit(self._reserve, key, mode, dict(usage or {}),
+            self.attempts[key] = self._record(self._reserve, key, mode, dict(usage or {}),
                                                      dict(raw_usage or {}), status)
             self.attempts[key].add_done_callback(self._on_reserved)
         return self.attempts[key]
@@ -760,6 +805,10 @@ class _LiveCall:
         self.budget_error = self.budget_error or exc
         self._begin_close("budget_exceeded")
 
+    def _record(self, action: Callable[..., Any], *args: Any) -> Future:
+        """Queue one ledger write in order, inside the turn's context (budget scope, settings)."""
+        return self.records.submit(contextvars.copy_context().run, action, *args)
+
     def _after_reservation(self, attempt: Future, action: Callable[[Any], Any]) -> None:
         """Queue ``action(reservation)`` behind the reservation; a refused one has nothing to settle."""
         def run() -> None:
@@ -768,7 +817,7 @@ class _LiveCall:
             except Exception:
                 return
             self._settle_safely(lambda: action(reserved))
-        self.records.submit(run)
+        self._record(run)
 
     def _abandon(self, attempt: Future, reason: str) -> None:
         self._after_reservation(attempt, lambda reserved: _ledger().abandon_live_response(reserved, reason=reason))
@@ -794,7 +843,6 @@ class _LiveCall:
 
     async def _drain(self) -> None:
         from ouroboros.loop_round_limits import _drain_incoming_messages
-        from ouroboros.working_checkpoint import flush_content_acks
 
         scratch: List[Dict[str, Any]] = []
         controls = _drain_incoming_messages(scratch, self.incoming, self.drive_root, self.task_id, self.event_queue,
@@ -805,19 +853,19 @@ class _LiveCall:
             self.messages.append({**msg, "_call_row": True})
             item = ContextItem(text=text_of(msg.get("content")), source="mailbox")
             if item.text.strip() and not self.closing:
-                await self._send(item)
+                self._post(item)
         if not self.closing:
             for item in self.rooms.drain():
                 await self._context(item)
             if controls.get("hurry"):
                 await self._context(ContextItem(text="The owner pressed Hurry: finish what you are saying and wrap up.",
                                                 source="owner_control"))
-        # Content is acknowledged only once a live session holds it and the checkpoint
-        # is written; while no session is live the entries wait (and are redelivered).
+        # The acknowledgement follows the delivery of everything posted before it.
         pending_acks = bool(getattr(self.ctx, "_pending_content_acks", None))
-        if (scratch or controls or pending_acks) and self.engine is not None and not self.closing:
-            if self._checkpoint():
-                flush_content_acks(self.ctx)
+        if ((scratch or controls or pending_acks) and self.engine is not None and not self.closing
+                and not self._ack_posted):
+            self._ack_posted = True
+            self._post(_ACK)
 
     def _checkpoint(self) -> bool:
         """The call's durable state on its task row; content ACKs wait for this write."""

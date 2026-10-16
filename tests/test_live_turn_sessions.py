@@ -13,13 +13,14 @@ import json
 import threading
 import time
 
+from ouroboros import live_turn
 from ouroboros.call_protocol import (
     STATE_CLOSING, STATE_CONNECTING, STATE_LIVE, PeerAudio, PeerInfo, PeerJoined, PeerLeft,
 )
 from ouroboros.gateways.realtime_engine import (
     ENGINE_GOOGLE, ENGINE_OPENAI, SPEAKER_OUROBOROS, SPEAKER_OWNER,
     AudioIn, AudioOut, Caption, ContextItem, GoAway, Interrupt, PlayedAudio,
-    ResponseDone, ResponseStarted, SpeechStarted, ToolCall, ToolResult,
+    ResponseDone, ResponseStarted, SpeechStarted, ToolCall, ToolResult, TranscriptionUsage,
 )
 from ouroboros.usage_accounting import BudgetExceeded
 from tests import test_live_turn as base
@@ -244,6 +245,27 @@ def test_a_stop_beside_typed_words_closes_without_waiting_for_their_send(harness
     assert usage["live_call"]["ended"] == "owner_stop"
     assert not [c for c in engine.sent_of(ContextItem) if c.source == "mailbox"]
 
+
+def test_a_stop_after_a_send_already_waiting_on_the_transport_closes_the_call(harness, monkeypatch, tmp_path):
+    from ouroboros.owner_mailbox import KIND_FINALIZE_NOW, write_owner_message
+
+    original, sending = FakeEngine.send, threading.Event()
+
+    async def held_send(self, command):  # a transport waiting to be ready again holds this send
+        if isinstance(command, ContextItem) and command.source == "mailbox":
+            sending.set()
+            await asyncio.Event().wait()
+        await original(self, command)
+
+    monkeypatch.setattr(FakeEngine, "send", held_send)
+    h = harness()
+    engine = h.start()
+    assert write_owner_message(tmp_path, "one more thing", "t-call", msg_id="owner-typed-3")
+    assert sending.wait(5)  # that send has begun and waits
+    assert write_owner_message(tmp_path, "stop", "t-call", msg_id="owner-stop", kind=KIND_FINALIZE_NOW)
+    text, usage, _trace = h.finish(timeout=5.0)
+    assert usage["live_call"]["ended"] == "owner_stop" and engine.closed
+
 def test_joins_leaves_and_context_while_connecting_wait_for_the_live_session(harness, monkeypatch):
     _slow_opening(monkeypatch)
     h = harness()
@@ -336,6 +358,26 @@ def test_a_presence_calls_autonomous_rounds_are_capped_per_input_and_reset_by_sp
     h.finish()
 
 
+
+def test_the_calls_of_one_response_are_one_presence_round_however_they_arrive(harness):
+    h = harness(spec=_spec(presence_binding_id="b" * 32, opened_by="skill"))
+    h.ctx.inline_max_rounds = 1
+    engine = h.start()
+    engine.push(ResponseStarted(item_id="i1", response_id="one-response"))
+    engine.push(ToolCall("first", "web_search", "{}"))
+    assert _wait_for(lambda: len(engine.sent_of(ToolResult)) == 1)
+    engine.push(ToolCall("second", "web_search", "{}"))  # the same response, a later batch
+    assert _wait_for(lambda: len(engine.sent_of(ToolResult)) == 2)
+    assert h.batches == [["first"], ["second"]]
+    assert not any(r.output.startswith("⚠️ TOOL_ROUND_LIMIT") for r in engine.sent_of(ToolResult))
+    engine.push(ResponseDone(item_id="i1", status="completed", response_id="one-response"))
+    engine.push(ResponseStarted(item_id="i2", response_id="next-response"))  # a further autonomous round
+    engine.push(ToolCall("third", "web_search", "{}"))
+    assert _wait_for(lambda: len(engine.sent_of(ToolResult)) == 3)
+    assert engine.sent_of(ToolResult)[2].output.startswith("⚠️ TOOL_ROUND_LIMIT")
+    h.stop()
+    h.finish()
+
 def test_an_owner_call_has_no_round_ceiling(harness):
     h = harness()
     h.ctx.inline_max_rounds = 1
@@ -367,6 +409,31 @@ def test_meeting_audio_already_sent_makes_the_delayed_caption_heard_not_owner_wo
     h.stop()
     h.finish()
 
+
+
+def test_each_input_keeps_the_source_it_was_named_with_however_late_its_caption(harness):
+    h = harness()
+    engine = h.start()
+    h.hub.feed(PeerJoined(PeerInfo("meeting-audio", "meeting", True, False)))
+    sent = 0
+    for item in ("m1", "m2"):  # two meeting utterances, named while meeting audio fed the engine
+        h.hub.feed(PeerAudio("meeting-audio", "meeting", b"\x01\x00" * 240))
+        sent += 1
+        assert _wait_for(lambda: len(engine.sent_of(AudioIn)) == sent)
+        engine.push(Caption(SPEAKER_OWNER, "", False, item))
+    h.hub.feed(PeerLeft("meeting-audio", "listen_stop"))
+    h.hub.control("context", text="after-leave-marker")
+    assert _wait_for(lambda: any(c.text == "after-leave-marker" for c in engine.sent_of(ContextItem)))
+    engine.push(Caption(SPEAKER_OWNER, "", False, "o1"))  # the owner alone, after the meeting left
+    for item, words in (("m2", "meeting words two"), ("m1", "meeting words one"), ("o1", "owner words")):
+        engine.push(Caption(SPEAKER_OWNER, words, True, item))  # the captions land late, out of order
+    assert _wait_for(lambda: len(h.chat_rows()) == 1)
+    assert h.chat_rows()[0]["text"] == "owner words"
+    heard = [m["content"] for m in h.messages if str(m.get("content")).startswith("[Heard in the call]")]
+    assert heard == ["[Heard in the call] meeting words two", "[Heard in the call] meeting words one"]
+    assert h.hub.captions and all(c[1] for c in h.hub.captions)  # interim naming captions are not shown
+    h.stop()
+    h.finish()
 
 def test_barge_in_leaves_a_finished_fully_played_item_alone(harness):
     h = harness()
@@ -513,5 +580,34 @@ def test_a_slow_ledger_write_never_holds_the_audio_and_settles_after_its_reserva
     gate.set()
     assert _wait_for(lambda: h.ledger.settled == [("r1", "completed", {"audio_output_tokens": 3})])
     assert [attempt["key"] for attempt in h.ledger.reserved] == ["r1"]
+    h.stop()
+    h.finish()
+
+
+def test_ledger_writes_run_inside_the_turns_bound_context(harness, monkeypatch):
+    import contextvars
+
+    admitted = contextvars.ContextVar("admitted_scope", default=None)  # what the agent binds on the turn thread
+    original = live_turn.run_live_turn
+
+    def bound(**kwargs):
+        admitted.set("the task's root and group limits")
+        return original(**kwargs)
+
+    monkeypatch.setattr(live_turn, "run_live_turn", bound)
+    h = harness()
+    seen: list = []
+    for name in ("reserve_live_response", "settle_live_response", "record_transcription"):
+        def reading(*args, _write=getattr(h.ledger, name), _name=name, **fields):
+            seen.append((_name, admitted.get()))
+            return _write(*args, **fields)
+        setattr(h.ledger, name, reading)
+    engine = h.start()
+    engine.push(ResponseStarted(item_id="a1", response_id="r1"))
+    engine.push(ResponseDone(item_id="a1", status="completed", usage={"audio_output_tokens": 3}, response_id="r1"))
+    engine.push(TranscriptionUsage(model="whisper-live", usage={"audio_input_tokens": 5}, raw_usage={}))
+    assert _wait_for(lambda: len(seen) == 3)
+    assert sorted(seen) == [(name, "the task's root and group limits")
+                            for name in ("record_transcription", "reserve_live_response", "settle_live_response")]
     h.stop()
     h.finish()

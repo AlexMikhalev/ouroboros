@@ -70,7 +70,8 @@ class ToolBatchWorker:
 
     def __init__(self, call: Any) -> None:
         self.call = call
-        self.pending: List[Tuple[int, ToolCall]] = []
+        # (session epoch, call, the provider response it came from: one response is one round)
+        self.pending: List[Tuple[int, ToolCall, str]] = []
         self.cancelled: set = set()
         self.executed: Dict[str, ToolResult] = {}
         # Every call id asked for and not yet answered, with the latest session epoch
@@ -79,8 +80,11 @@ class ToolBatchWorker:
         self.running = False
         self.batches = 0
         self.tool_calls = 0
-        # Autonomous rounds since the last correspondent input (a Presence call's ceiling).
-        self.rounds_since_input = 0
+        # Autonomous rounds since the last correspondent input (a Presence call's ceiling):
+        # the provider responses whose calls ran, so a response's calls share one round
+        # however they arrive; calls of no known response count one round per batch.
+        self.round_origins: set = set()
+        self._takes = 0  # names each take of the pending calls, for calls of no known response
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"call-tools-{call.task_id}")
 
     def shutdown(self) -> None:
@@ -88,7 +92,7 @@ class ToolBatchWorker:
         # call already gave it its settle window).
         self._pool.shutdown(wait=not self.running, cancel_futures=True)
 
-    def enqueue(self, tool_call: ToolCall, epoch: int) -> None:
+    def enqueue(self, tool_call: ToolCall, epoch: int, origin: str = "") -> None:
         if tool_call.call_id in self.executed:
             # The provider asked again for a call already executed (a resent request
             # after a reconnect): the retained result answers, nothing runs twice.
@@ -99,18 +103,22 @@ class ToolBatchWorker:
             self.claimed[tool_call.call_id] = epoch
             return
         self.claimed[tool_call.call_id] = epoch
-        self.pending.append((epoch, tool_call))
+        self.pending.append((epoch, tool_call, origin))
 
     def cancel(self, call_ids: Tuple[str, ...]) -> None:
         self.cancelled.update(call_ids)
-        withdrawn = {tc.call_id for _epoch, tc in self.pending if tc.call_id in call_ids}
-        self.pending = [(epoch, tc) for epoch, tc in self.pending if tc.call_id not in call_ids]
+        withdrawn = {tc.call_id for _epoch, tc, _origin in self.pending if tc.call_id in call_ids}
+        self.pending = [entry for entry in self.pending if entry[1].call_id not in call_ids]
         for call_id in withdrawn:  # never started: the claim is released with the request
             self.claimed.pop(call_id, None)
 
     def reset_rounds(self) -> None:
         """A correspondent spoke: the autonomous round count starts again."""
-        self.rounds_since_input = 0
+        self.round_origins.clear()
+
+    @property
+    def rounds_since_input(self) -> int:
+        return len(self.round_origins)
 
     def _round_limit(self) -> Optional[int]:
         if not getattr(self.call.spec, "presence_binding_id", ""):
@@ -124,17 +132,22 @@ class ToolBatchWorker:
             if not self.pending:
                 await asyncio.sleep(0.02)
                 continue
-            batch, self.pending = self.pending, []
-            limit = self._round_limit()
-            if limit is not None and self.rounds_since_input >= limit:
-                for _epoch, tc in batch:
-                    result = round_limit_result(tc.call_id, limit)
-                    self.executed[tc.call_id] = result
-                    self.claimed.pop(tc.call_id, None)
-                    await call._send(result)
+            pending, self.pending, self._takes = self.pending, [], self._takes + 1
+            limit, unnamed, batch = self._round_limit(), f"take:{self._takes}", []
+            for epoch, tc, origin in pending:
+                round_key = origin or unnamed
+                if limit is not None and round_key not in self.round_origins:
+                    if len(self.round_origins) >= limit:
+                        result = round_limit_result(tc.call_id, limit)
+                        self.executed[tc.call_id] = result
+                        self.claimed.pop(tc.call_id, None)
+                        await call._send(result)
+                        continue
+                    self.round_origins.add(round_key)
+                batch.append((epoch, tc))
+            if not batch:
                 call._checkpoint()
                 continue
-            self.rounds_since_input += 1
             self.running = True  # cleared by the worker thread itself, so a cancelled await never hides a running tool
             try:
                 changes, grown = await asyncio.get_running_loop().run_in_executor(
