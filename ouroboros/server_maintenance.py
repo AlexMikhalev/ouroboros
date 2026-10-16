@@ -1256,15 +1256,21 @@ def _run_startup_task_recovery(
         from supervisor.workspace_preparation import recover_interrupted_preparations
         preparations = recover_interrupted_preparations(drive_root, stop=_stop_requested)
         protected = _startup_live_task_ids(drive_root, include_pending=True)
-        from ouroboros.promotion_intent import reconcile_promotion_intents
-        reconcile_promotion_intents(drive_root, protected=protected)
     except Exception as exc:
         report["errors"].append(f"startup_ownership_unconfirmed: {type(exc).__name__}")
         log.warning("Startup task recovery deferred: live/pending ownership is unreadable", exc_info=True)
         return report
+    intent_errors = []
+    try:  # its own step: an unsettled new-work intent is no reason to skip the file recovery below
+        from ouroboros.promotion_intent import reconcile_promotion_intents
+        reconcile_promotion_intents(drive_root, protected=protected)
+    except Exception:
+        intent_errors.append("promotion_intent_reconcile_failed")
+        log.warning("Startup new-work intent reconciliation deferred", exc_info=True)
     report = _recover_terminal_task_files(drive_root, protected)
     report["unresolved"].extend(preparations["retained"] + preparations["uncertain"])
     report["errors"].extend(f"preparation:{item}" for item in preparations["errors"])
+    report["errors"].extend(intent_errors)
     excluded = protected | set(report["unresolved"])
     if report["errors"]:
         log.warning("Startup task file recovery has gaps: %s", report)
