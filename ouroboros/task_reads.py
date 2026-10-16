@@ -15,12 +15,14 @@ under the store file's stamp, and a stamp that moved reads again. The canonical 
 from __future__ import annotations
 
 import json
+import logging
 import pathlib
 import threading
 import time
 from collections import OrderedDict
 from typing import Any, Dict, Iterable, Optional, Tuple
 
+log = logging.getLogger(__name__)
 _REPLICAS: "OrderedDict[str, Tuple[tuple, Dict[str, Any]]]" = OrderedDict()
 _REPLICAS_MAX = 512  # child stores whose views a process keeps (one per delegated child drive)
 _REPLICAS_LOCK = threading.Lock()
@@ -56,6 +58,7 @@ class TaskReads:
         self._events: Any = None
         self._stamps: Dict[str, Optional[tuple]] = {}  # child store stamps, one stat per read
         self.versions: Dict[str, int] = {}  # canonical task id -> write_seq of the view read
+        self._successors: Dict[str, str] = {}  # canonical task id -> the successor its projection overlays
         self.store_reads = 0  # store transactions this read opened (cost evidence for tests)
 
     # -- documents ------------------------------------------------------------------------
@@ -91,7 +94,14 @@ class TaskReads:
 
     def prefetch(self, task_ids: Iterable[str]) -> None:
         """Read ``task_ids`` from the canonical root, then, a wave each, the successors and
-        child replicas their effective projection overlays."""
+        child replicas their effective projection overlays. A batch the store cannot answer now
+        is left to each ``load``, which then reads (and fails, migration included) on its own."""
+        try:
+            self._prefetch(task_ids)
+        except Exception:
+            log.debug("Batched task facts unavailable; reading per task", exc_info=True)
+
+    def _prefetch(self, task_ids: Iterable[str]) -> None:
         from ouroboros.task_results import cancellation_blocks_child_result
         from ouroboros.task_status import _child_drive_candidates
 
@@ -103,6 +113,8 @@ class TaskReads:
             for task_id in frontier:
                 document = self._peek(self.root, task_id) or {}
                 successor = str(document.get("superseded_by") or document.get("retry_task_id") or "").strip()
+                if successor:
+                    self._successors[task_id] = successor
                 if successor and successor not in seen:
                     successors.add(successor)
             seen |= successors
@@ -117,6 +129,15 @@ class TaskReads:
                     replicas.setdefault(child, set()).add(task_id)
         for child, ids in replicas.items():
             self._fetch(child, ids)
+
+    def overlaid(self, task_ids: Iterable[str]) -> set:
+        """``task_ids`` and the canonical successors their effective projections overlay, as far as
+        the batches read them: the documents whose versions say what the projection showed."""
+        found = frontier = {str(task_id) for task_id in task_ids}
+        while frontier:
+            frontier = {self._successors[tid] for tid in frontier if tid in self._successors} - found
+            found = found | frontier
+        return found
 
     def _peek(self, root: pathlib.Path, task_id: str) -> Optional[Dict[str, Any]]:
         text = self._documents.get((str(root), str(task_id)))

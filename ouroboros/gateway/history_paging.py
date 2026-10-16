@@ -22,7 +22,7 @@ from ouroboros.gateway import _helpers
 from ouroboros.gateway._helpers import _TAIL_WINDOW_START_BYTES
 from ouroboros.gateway.history_segments import segment_summary
 from ouroboros.jsonl_tail import JsonlChainSnapshot
-from ouroboros.project_dialogue import _ANNOTATIONS_NAME, ORIGIN_ADDRESSED_NOTICE_TYPES
+from ouroboros.project_dialogue import _ANNOTATIONS_NAME, MAIN_PINNED_ROW_TYPES, ORIGIN_ADDRESSED_NOTICE_TYPES
 from ouroboros.subagent_messages import CARD_ROW_PLACEMENTS, is_task_card_message, subagent_message_meta
 
 _SOURCES = ("chat", "progress")
@@ -387,9 +387,8 @@ def _settled_since(data_dir, tasks):
         if task_id not in now:
             return True
         seq, status, owes = now[task_id]
-        finalizing = owes and (status in ("completed", "failed") or status not in FINAL_STATUSES)
-        if seq != seen and status in FINAL_STATUSES and not finalizing:
-            return True
+        if seq != seen and status in FINAL_STATUSES and not (owes and status in ("completed", "failed")):
+            return True  # settled since (a cancelled record is terminal even while it owes its late phase)
     return False
 
 
@@ -427,14 +426,17 @@ def history_page_tokens(page, messages=(), reads=None):
     before = {source: position if page["quotas"]["human" if source == "chat" else source] else 0
               for source, position in page["before"].items()}
     has_more = bool(before["chat"]) if page["quotas"]["human"] else any(before.values())
-    versions = getattr(reads, "versions", {})
-    shown = {str(row.get("task_id")) for row in messages if row.get("task_id")
-             and row.get("system_type") not in ("project_question_pointer", *ORIGIN_ADDRESSED_NOTICE_TYPES)}
+    versions, overlaid = getattr(reads, "versions", {}), getattr(reads, "overlaid", set)
+    # Tasks whose facts the rows show: not an owner's row, a notice naming another room's task or a pointer.
+    shown = {str(row.get("task_id")) for row in messages if row.get("task_id") and row.get("role") != "user"
+             and row.get("system_type") not in ("project_question_pointer", *ORIGIN_ADDRESSED_NOTICE_TYPES,
+                                                *MAIN_PINNED_ROW_TYPES)}
     lifecycle = any(row.get("lifecycle_virtual") for row in messages)
     if page.get("after") and page.get("lifecycle") and not lifecycle:
         raise HistoryCursorError("history_delta_reset")  # the shown operation ended: nothing here says so
     arrivals = {**state, "kind": "after", "before": dict(page["upper"]), "quiet": False, "notes": page["notes"],
-                "tasks": {**page.get("tasks", {}), **{tid: versions[tid] for tid in sorted(shown) if tid in versions}},
+                "tasks": {**page.get("tasks", {}),
+                          **{tid: versions[tid] for tid in sorted(overlaid(shown)) if tid in versions}},
                 "newest": page.get("newest", ""), "lifecycle": lifecycle}
     after_cursor = encode_cursor(arrivals)
     after_cursor = after_cursor if len(after_cursor) <= _CURSOR_CHARS else None

@@ -106,8 +106,8 @@ test('sticky single-flight never swallows the post-completion resync', () => {
     );
     assert.match(fn, /run: \(\) => historyPager\.read\(\)/);
     assert.doesNotMatch(fn, /awaitInitialHydration/);
-    // The reconnect branch of the open handler also always reads again.
-    assert.match(chatSource, /\? historyPager\.read\(\{ fromReconnect: true \}\)/);
+    // The reconnect branch of the open handler reads the newest page whole: frames sent while away are lost.
+    assert.match(chatSource, /\? historyPager\.read\(\{ fromReconnect: true, whole: true \}\)/);
     // Every failed sync resets the sticky promise.
     assert.ok((chatSource.match(/initialHydrationPromise = null;/g) || []).length >= 3);
 });

@@ -40,7 +40,9 @@ def _counted(monkeypatch):
     return counts
 
 
-def _answered_room(root, tasks):
+def _answered_room(root, tasks, ancestors=0):
+    """``tasks`` answered rows of the room; each task has a chain of ``ancestors`` parent tasks the rows do
+    not name, which the room rule finds only through the store's lineage."""
     from ouroboros.projects_registry import create_project
 
     chat = create_project(root, "lineage", name="Lineage")["chat_id"]
@@ -50,7 +52,10 @@ def _answered_room(root, tasks):
     write(root / "logs" / "chat.jsonl", [row(index, chat_id=chat, direction="out", text=f"answer {index}",
                                              task_id=f"task-{index}") for index in range(tasks)])
     for index in range(tasks):
-        seed_result(root, f"task-{index}", {"task_id": f"task-{index}", "status": "completed", "chat_id": chat})
+        chain = [f"task-{index}", *(f"up{level}-{index}" for level in range(1, ancestors + 1))]
+        for task_id, parent in zip(chain, [*chain[1:], ""]):
+            seed_result(root, task_id, {"task_id": task_id, "status": "completed", "chat_id": chat,
+                                        "parent_task_id": parent, "root_task_id": chain[-1] if parent else ""})
     return chat
 
 
@@ -62,13 +67,13 @@ def test_a_first_read_after_start_reads_its_tasks_lineage_in_batches(tmp_path, m
     cold, warm = {}, {}
     for tasks in (3, 30):
         root = tmp_path / str(tasks)
-        chat = _answered_room(root, tasks)
+        chat = _answered_room(root, tasks, ancestors=2)  # each row's task has a parent and a grandparent
         monkeypatch.setattr(projects_registry, "_TASK_LINEAGE", {})  # nothing read yet in this process
         monkeypatch.setattr(projects_registry, "_ROOM_ANSWERS", {})
         with monkeypatch.context() as patch:
             cold[tasks] = _counted(patch)
             status, page = request(root, chat_id=str(chat))
-        assert status == 200 and len(page["messages"]) == 2 * tasks
+        assert status == 200 and len([row for row in page["messages"] if row.get("history_id")]) == 2 * tasks
         with monkeypatch.context() as patch:
             warm[tasks] = _counted(patch)
             assert request(root, chat_id=str(chat))[0] == 200

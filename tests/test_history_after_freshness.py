@@ -138,3 +138,51 @@ def test_a_window_too_large_for_its_cursor_reads_its_newest_page(tmp_path, monke
     assert status == 200 and "after_cursor" not in page_without
     status, refused = _read(tmp_path, page["after_cursor"])
     assert status == 400 and refused["reason_code"] == "history_cursor_invalid"  # longer than the bound
+
+
+def test_rows_that_show_no_task_facts_do_not_tie_the_window_to_their_task(tmp_path):
+    """An owner's row and a notice pinned to Main show no facts of their task: its later writes
+    (a Project task finishing in its own room) leave the window's delta alone."""
+    _task(tmp_path, "asked", "completed", 0)
+    _task(tmp_path, "elsewhere", "running", 1)
+    _append(tmp_path, "chat", [
+        {"ts": TS.format(0), "direction": "in", "chat_id": 1, "task_id": "asked", "text": "owner question"},
+        {"ts": TS.format(1), "direction": "system", "chat_id": 1, "task_id": "elsewhere", "type": "project_started",
+         "text": "Project started"}])
+    status, page = _read(tmp_path)
+    assert status == 200 and {"asked", "elsewhere"}.isdisjoint(_cursor(page["after_cursor"])["tasks"])
+    _task(tmp_path, "asked", "completed", 0, title="renamed")
+    _task(tmp_path, "elsewhere", "completed", 1)
+    assert _read(tmp_path, page["after_cursor"])[0] == 200
+
+
+def test_a_settled_successor_whose_facts_a_shown_row_takes_is_versioned_too(tmp_path):
+    """A retried task's row shows its successor's effective truth: the successor's later settled change
+    refuses the delta as the shown task's own would."""
+    _task(tmp_path, "old", "failed", 0, retry_task_id="new")
+    _task(tmp_path, "new", "completed", 1)
+    _answered(tmp_path, "old", 0)
+    status, page = _read(tmp_path)
+    assert status == 200 and {"old", "new"} <= set(_cursor(page["after_cursor"])["tasks"])
+    _task(tmp_path, "new", "completed", 1, title="settled again")
+    status, refused = _read(tmp_path, page["after_cursor"])
+    assert status == 409 and refused["reason_code"] == "history_delta_reset"
+
+
+def test_a_page_whose_read_failed_part_way_carries_no_after_cursor(tmp_path, monkeypatch):
+    """Rows after a projection fault are missing from that page; arrivals would go on past the hole,
+    so the window reads its newest page whole again until one read succeeds."""
+    from tests._store_shared import unreadable_result
+
+    _task(tmp_path, "asker", "running", 0, owner_quiz={"q1": {"quiz_id": "q1", "state": "open"}})
+    _append(tmp_path, "chat", [
+        {"ts": TS.format(0), "direction": "out", "type": "quiz", "chat_id": 1, "task_id": "asker", "text": "Which?",
+         "quiz": {"quiz_id": "q1", "question": "Which?", "options": ["a", "b"], "state": "open"}},
+        {"ts": TS.format(1), "direction": "out", "chat_id": 1, "task_id": "asker", "text": "after the question"}])
+    switch = unreadable_result(monkeypatch, "asker")
+    status, failed = _read(tmp_path)
+    assert status == 200 and "chat_projection_failed" in failed["window"]["truncated_by"], failed["window"]
+    assert "after_cursor" not in failed
+    switch["on"] = False  # the store answers again
+    status, page = _read(tmp_path)
+    assert status == 200 and page["after_cursor"]

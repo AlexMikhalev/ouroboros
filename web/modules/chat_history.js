@@ -240,8 +240,8 @@ export function createChatHistoryPager({
                 if (!alive() || pending !== operation) return { status: 'disposed' };
                 const result = land(data, operation);
                 // Arrivals that landed meanwhile may lie past this newest page, which let
-                // them go: they are read again from its cursor.
-                if (newChain && landedArrivals !== operation.landed && canArrive()) void arrivals(false);
+                // them go: they are read again from its cursor, else on the newest page.
+                if (newChain && landedArrivals !== operation.landed && canArrive()) void read();
                 return result;
             })
             .catch(error => {
@@ -326,6 +326,7 @@ export function createChatHistoryPager({
     return {
         getState,
         read,
+        arrivalsLanded: () => landedArrivals,
         // The first recent response owns the frozen chain. Later recent/live
         // refreshes are applied by chat itself, without registering their bodies
         // here or replacing the original page-zero continuation, unless chat asks

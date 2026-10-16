@@ -426,6 +426,8 @@ def _annotate_terminal_task_truth(
         # A parent anchored by its child's row carries that row's ts; a census anchor has none.
         for task_id, ts in (evidence_anchors or {}).items():
             represented.setdefault(task_id, ts)
+        if _READS in cache:  # anchored parents and current work were not in the page's first batch
+            cache[_READS].prefetch([*represented, *result_task_ids])
         tool_evidence_by_task = replay_evidence_for_tasks(data_dir, represented)
         for task_id, evidence in tool_evidence_by_task.items():
             result = _load_terminal_result(data_dir, task_id, cache)
@@ -1466,12 +1468,7 @@ def _assemble_history_response(
     lifecycle_row = _active_lifecycle_row(row_matches_thread) if not cursor or page["after"] else None
     if lifecycle_row is not None:
         combined.append(lifecycle_row)
-    try:
-        result_cache[_READS].prefetch(row.get("task_id") for row in combined)
-    except StoreMigrating:
-        raise
-    except Exception:
-        log.debug("Batched task facts unavailable; reading per task", exc_info=True)
+    result_cache[_READS].prefetch(row.get("task_id") for row in combined)
     arrival = latest_arrival(combined, page, data_dir, row_matches_thread, _stored_chat_id, chat_gaps, lambda task_id: (
         _load_terminal_result(data_dir, task_id, result_cache))) if thread_id in project_chat_ids else (
         {} if classified or thread_id == 1 else {"latest_message": None})  # an unclassified room may be a Project
@@ -1532,6 +1529,8 @@ def _assemble_history_response(
     messages.extend(replay_evidence_rows(messages, replay_evidence))
     tokens = history_page_tokens(page, messages, result_cache[_READS])
     stream_gaps = {"chat": chat_gaps | selections["chat"][2], "progress": progress_gaps | selections["progress"][2]}
+    if {PROJECTION_FAILED, "unreadable_source"} & (stream_gaps["chat"] | stream_gaps["progress"]):
+        tokens.pop("after_cursor", None)  # a read that failed part-way is read whole again, never continued
     window = _window_metadata(
             chat_quota_rows, progress_quota_rows, n_human, n_progress,
             {source: selections[source][1] == 0 for source in ("chat", "progress")},
