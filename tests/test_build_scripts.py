@@ -522,6 +522,22 @@ def test_python_standalone_pin_is_the_fixed_sqlite_release():
     ):
         assert platform in shell
     assert "x86_64-pc-windows-msvc" in windows
+    pinned = dict(re.findall(r'PLATFORM="([^"]+)"\n\s+SHA256="([0-9a-f]{64})"', shell))
+    assert set(pinned) == {
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+    }
+    windows_sha = re.search(r'\$Sha256 = "([0-9a-f]{64})"', windows)
+    assert windows_sha is not None
+    docker = _read("Dockerfile")
+    docker_sha = dict(re.findall(r'PLATFORM="([^"]+)"; SHA256="([0-9a-f]{64})"', docker))
+    assert docker_sha == {
+        "x86_64-unknown-linux-gnu": pinned["x86_64-unknown-linux-gnu"],
+        "aarch64-unknown-linux-gnu": pinned["aarch64-unknown-linux-gnu"],
+    }
+    assert windows_sha.group(1) not in docker_sha.values()
 
 
 # ---------------------------------------------------------------------------
@@ -571,10 +587,19 @@ class TestDockerfile:
     """
 
     def test_build_is_self_contained(self):
-        """``docker build -t ouroboros-web .`` must not depend on a locally built base tag."""
+        """``docker build -t ouroboros-web .`` must not depend on a locally built base tag.
+
+        The interpreter is the pinned python-build-standalone build, checked in
+        the image build for Python 3.10.22 and SQLite >= 3.51.3.
+        """
         src = _read("Dockerfile")
-        assert "FROM python:3.10-slim" in src
+        assert "FROM python:3.10-slim" not in src
+        assert "FROM debian:trixie-slim" in src
+        assert "ghcr.io/astral-sh/uv:" in src
         assert "FROM ${" not in src, "the image must not start from an unpublished local tag"
+        assert "sha256sum -c -" in src
+        assert "assert sqlite>=(3, 51, 3)" in src
+        assert "--python /opt/python-standalone/bin/python3" in src
 
     def test_playwright_pin_matches_lock(self):
         src = _read("Dockerfile")
