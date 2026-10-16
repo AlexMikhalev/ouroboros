@@ -19,7 +19,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ouroboros import call_protocol as cp
-from ouroboros.call_peers import CallPeerError, LiveCallHub, close_hub, get_hub, open_hub
+from ouroboros.call_peers import CallPeerError, LiveCallHub, close_hub, get_hub
 from ouroboros.gateway.call_contracts import PEER_CONTROLS, CallOpenRequest
 from ouroboros.gateway.schema import validate_ingress
 
@@ -79,14 +79,13 @@ def build_call_spec(payload: dict) -> cp.CallSpec:
 
 
 def _admit_owner_call(payload: dict) -> dict:
-    from ouroboros.call_peers import owner_hub_for_room
+    from ouroboros.call_peers import open_owner_hub
     from supervisor.worker_chat_lane import handle_call_direct
 
-    existing = owner_hub_for_room(payload["chat_id"])
-    if existing is not None:
-        return {"call_id": existing.call_id, "ws_path": f"/ws/call/{existing.call_id}", "joined": True}
     spec = build_call_spec(payload)
-    open_hub(spec)
+    hub, created = open_owner_hub(spec)  # surfaces opening at once share one call, one paid session
+    if not created:
+        return {"call_id": hub.call_id, "ws_path": f"/ws/call/{hub.call_id}", "joined": True}
     try:
         result = handle_call_direct(spec.chat_id, spec,
                                     lambda _task_id, _ok: close_hub(spec.call_id))

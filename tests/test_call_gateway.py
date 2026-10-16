@@ -164,6 +164,44 @@ def test_owner_open_honours_a_chosen_model_and_a_second_surface_joins_the_rooms_
             close_hub(spec.call_id)
 
 
+def test_two_surfaces_opening_a_room_at_once_share_one_call(monkeypatch):
+    import threading
+
+    from ouroboros import config
+    from ouroboros.gateway import call_ws
+    from supervisor import worker_chat_lane
+
+    monkeypatch.setattr(config, "load_settings", lambda: {"OUROBOROS_CALL_MODEL_OPENAI": "settings-model"})
+    admitted, both_built = [], threading.Barrier(2, timeout=5)
+    build = call_ws.build_call_spec
+
+    def build_together(payload):  # both requests finish preparing before either opens a hub
+        spec = build(payload)
+        both_built.wait()
+        return spec
+
+    def admit(chat_id, spec, on_finished):
+        admitted.append(spec)
+        return {"admitted": True, "task_id": "turn", "reason": ""}
+
+    monkeypatch.setattr(call_ws, "build_call_spec", build_together)
+    monkeypatch.setattr(worker_chat_lane, "handle_call_direct", admit, raising=False)
+    results: list = []
+    threads = [threading.Thread(target=lambda: results.append(call_ws._admit_owner_call({"chat_id": 9})))
+               for _ in range(2)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        assert len(admitted) == 1  # one paid session for the room
+        assert {result["call_id"] for result in results} == {admitted[0].call_id}
+        assert sorted(bool(result.get("joined")) for result in results) == [False, True]
+    finally:
+        for spec in admitted:
+            close_hub(spec.call_id)
+
+
 @pytest.mark.parametrize("payload", [{}, [], {"chat_id": True}, {"chat_id": "1"},
                                      {"chat_id": 1, "engine": "other"}, {"chat_id": 1, "voice": False}])
 def test_owner_rejects_invalid_open_request(owner, payload):

@@ -429,14 +429,27 @@ def get_hub(call_id: str) -> LiveCallHub | None:
         return _HUBS.get(call_id)
 
 
+def _owner_hub_locked(chat_id: int) -> LiveCallHub | None:
+    for hub in _HUBS.values():
+        if not hub.closed and hub.spec.chat_id == chat_id and hub.spec.opened_by == cp.OPENED_BY_OWNER:
+            return hub
+    return None
+
+
 def owner_hub_for_room(chat_id: int) -> LiveCallHub | None:
     """The room's open owner call, if any: a second surface joins it instead of paying for another."""
     with _REGISTRY_LOCK:
-        for hub in _HUBS.values():
-            if (not hub.closed and hub.spec.chat_id == chat_id
-                    and hub.spec.opened_by == cp.OPENED_BY_OWNER):
-                return hub
-    return None
+        return _owner_hub_locked(chat_id)
+
+
+def open_owner_hub(spec: cp.CallSpec) -> tuple[LiveCallHub, bool]:
+    """The room's one owner call in one step: ``(open hub, False)`` to join, else ``(spec's new hub, True)``."""
+    with _REGISTRY_LOCK:
+        hub = _owner_hub_locked(spec.chat_id)
+        if hub is not None:
+            return hub, False
+        hub = _HUBS[spec.call_id] = LiveCallHub(spec)
+        return hub, True
 
 
 def close_hub(call_id: str, reason: str = "finished") -> None:
