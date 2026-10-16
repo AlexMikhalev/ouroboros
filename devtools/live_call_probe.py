@@ -17,6 +17,7 @@ from dataclasses import asdict
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 import queue
 import runpy
@@ -547,6 +548,13 @@ class Probe:
             write_json(self.root / "ledger.json", facts)
 
 
+def _default_settings_source() -> str:
+    """This install's settings file, found as ``config.resolve_data_dir`` finds it."""
+    data = os.environ.get("OUROBOROS_DATA_DIR") or str(
+        Path(os.environ.get("OUROBOROS_APP_ROOT") or Path.home() / "Ouroboros") / "data")
+    return str(Path(data) / "settings.json")
+
+
 def prepare_settings(root: Path, source: Path, engine: str):
     from ouroboros.settings_defaults import SETTINGS_DEFAULTS
     from ouroboros.provider_models import OPENAI_DIRECT_DEFAULTS
@@ -624,7 +632,8 @@ def main(argv=None) -> int:
     parser.add_argument("--engine", choices=("openai", "google"), default="openai")
     parser.add_argument("--scenarios", default="all", help=",".join(SCENARIOS))
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--settings-source", default="/Users/anton/Ouroboros/data/settings.json")
+    parser.add_argument("--settings-source", default=_default_settings_source(),
+                        help="the install whose provider keys the probe uses (read, never written)")
     parser.add_argument("--fixture-dir", help="reuse exact speech fixtures from a previous isolated /tmp run")
     parser.add_argument("--timeout", type=float, default=60, help="per-scenario observation bound in seconds")
     parser.add_argument("--isolated-child", action="store_true", help=argparse.SUPPRESS)
