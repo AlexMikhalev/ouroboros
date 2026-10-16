@@ -164,7 +164,9 @@ def test_snapshot_rehomes_activity_without_changing_sources(tmp_path, monkeypatc
         "client_message_id": "", "task_attempt": 1,
         "can_resume": False, "cancelable": True,
     }
-    assert rows == [{**expected, **bindings.get("root", {})}]
+    # K8: the census row's own facts (no narration, no calls, not detached, no registered room).
+    k8 = {"last_line": "", "last_line_at": "", "tool_calls": 0, "detached": False, "project_name": ""}
+    assert rows == [{**expected, **k8, **bindings.get("root", {})}]
     assert direct_rows == original_direct
     assert registry.snapshot() == original_direct
     assert running == original_running
