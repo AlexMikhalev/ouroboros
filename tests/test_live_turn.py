@@ -307,6 +307,17 @@ def test_live_state_waits_for_provider_confirmation(harness, monkeypatch):
     h.finish()
 
 
+def test_explicit_owner_bye_ends_the_call_but_meeting_bye_does_not(harness):
+    h = harness()
+    h.start()
+    h.hub.feed(PeerControl("meeting", "meeting", {"type": "bye"}))
+    time.sleep(.05)
+    assert h.thread.is_alive()
+    h.hub.control("bye")
+    text, usage, _ = h.finish()
+    assert usage["live_call"]["ended"] == "owner_bye" and "utterances" in text
+
+
 def test_actual_context_refusal_reopens_with_strictly_smaller_projection(harness):
     from ouroboros.context_fit import ContextFitPlan, ContextFitProjection
 
@@ -492,7 +503,48 @@ def test_barge_in_flushes_the_peers_and_interrupts_the_item(harness, monkeypatch
     h.finish()
 
 
+def test_barge_in_after_final_caption_retains_playback_cut(harness):
+    h = harness()
+    engine = h.start()
+    engine.push(AudioOut(bytes(48000 * 3), 24000, "a1"))
+    engine.push(Caption(SPEAKER_OUROBOROS, "A three second sentence.", True, "a1"))
+    h.hub.control("played", item_id="a1", played_ms=1000)
+    assert _wait_for(lambda: engine.sent_of(PlayedAudio))
+    assert h.progress == []  # A final generated caption is not completed playback.
+    engine.push(SpeechStarted())
+    assert _wait_for(lambda: len(h.progress) == 1)
+    assert h.progress[0][1]["_progress_meta_override"]["spoken"]["status"] == "interrupted"
+    assert engine.sent_of(Interrupt) == [Interrupt("a1", 1000)]
+    h.hub.control("played", item_id="a1", played_ms=1100)
+    h.stop()
+    h.finish()
+    assert len(h.progress) == 1
+
+
 # --- tools -----------------------------------------------------------------------
+
+
+def test_tool_worker_keeps_call_contextvars_and_forwards_earlier_message_updates(harness, monkeypatch):
+    import contextvars
+
+    witness = contextvars.ContextVar("live_tool_scope", default="missing")
+    original = FakeEngine.open
+    async def scoped_open(self, config):
+        witness.set("call-settings-and-usage")
+        await original(self, config)
+    monkeypatch.setattr(FakeEngine, "open", scoped_open)
+    h = harness()
+    def hook(call, messages, schemas):
+        assert witness.get() == "call-settings-and-usage"
+        messages[1]["content"] = "A review updated an existing message."
+        messages.append({"role": "tool", "tool_call_id": call["id"], "content": "done"})
+    h.tool_hook = hook
+    engine = h.start()
+    engine.push(ToolCall("scoped", "web_search", "{}"))
+    assert _wait_for(lambda: engine.sent_of(ToolResult))
+    assert any(c.text == "A review updated an existing message." for c in engine.sent_of(ContextItem))
+    h.stop()
+    h.finish()
 
 
 def test_tool_calls_run_as_one_serialized_batch_and_every_change_goes_back(harness, monkeypatch, tmp_path):

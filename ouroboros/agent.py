@@ -1353,6 +1353,8 @@ class OuroborosAgent:
             # metadata: a reader that sees no key is reading an older worker or a
             # row written before the fact existed, and keeps the legacy reading.
             progress_meta["narration"] = bool(narration)
+            # Final call utterances are durable conversation rows, including their playback receipt.
+            event["is_progress"] = not (narration and bool(progress_meta.get("spoken")))
             event["progress_meta"] = progress_meta
             self._event_queue.put(event)
         except Exception:

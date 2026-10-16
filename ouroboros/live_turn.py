@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ouroboros.call_protocol import (
-    PEER_MEETING, STATE_CLOSED, STATE_CLOSING, STATE_CONNECTING, STATE_LIVE, STATE_RECONNECTING,
+    PEER_MEETING, PEER_OWNER, STATE_CLOSED, STATE_CLOSING, STATE_CONNECTING, STATE_LIVE, STATE_RECONNECTING,
     CallSpec, PeerAudio, PeerControl, PeerJoined, PeerLeft,
 )
 from ouroboros.gateways.realtime_engine import (
@@ -96,6 +96,8 @@ class _Spoken:
     played_ms: int = 0
     played: bool = False
     interrupted: bool = False
+    audio_ms: float = 0
+    ack_at: float = 0
 
 
 class _LiveCall:
@@ -400,7 +402,7 @@ class _LiveCall:
                     and now - self.session_started >= cap * 60 - SESSION_CAP_MARGIN_S):
                 asyncio.create_task(self._reconnect("session_cap", resume=False))
             for item_id, spoken in list(self.spoken.items()):
-                if spoken.final_at and now - spoken.final_at >= SPOKEN_ACK_GRACE_S:
+                if spoken.final_at and now - max(spoken.final_at, spoken.ack_at) >= SPOKEN_ACK_GRACE_S:
                     self._write_spoken_row(item_id)
             if self.empty_since is not None and now - self.empty_since >= PEER_GRACE_S:
                 self._begin_close("peers_left")
@@ -420,11 +422,14 @@ class _LiveCall:
                 self.played_ms[item_id] = max(self.played_ms.get(item_id, 0), played_ms)
                 if item_id in self.spoken:
                     self.spoken[item_id].played, self.spoken[item_id].played_ms = True, self.played_ms[item_id]
-                    if self.spoken[item_id].final_at:
+                    self.spoken[item_id].ack_at = time.monotonic()
+                    if self.spoken[item_id].final_at and played_ms >= self.spoken[item_id].audio_ms:
                         self._write_spoken_row(item_id)
                 await self._send(PlayedAudio(item_id=item_id, played_ms=played_ms))
             elif kind == "mute":
                 (self.muted_peers.add if event.message.get("muted") else self.muted_peers.discard)(event.peer_id)
+            elif kind == "bye" and event.role == PEER_OWNER:
+                self._begin_close("owner_bye")
             elif kind == "context":
                 await self._send(ContextItem(text=str(event.message.get("text") or ""),
                                              source=f"peer:{event.role}:{event.message.get('source') or 'observation'}"))
@@ -454,6 +459,7 @@ class _LiveCall:
                     # before its first frame, so played acknowledgements bind to it.
                     self.hub.send_caption(SPEAKER_OUROBOROS, "", False, event.item_id)
                 self.speaking_item = event.item_id
+                self.spoken.setdefault(event.item_id, _Spoken()).audio_ms += len(event.pcm) * 500 / event.rate
                 self.hub.play(event.pcm, event.item_id)
         elif isinstance(event, Caption):
             self.hub.send_caption(event.speaker, event.text, event.final, event.item_id)
@@ -504,10 +510,12 @@ class _LiveCall:
     async def _barge_in(self) -> None:
         self.hub.flush()
         item = self.speaking_item
-        if item:
+        if item and item in self.spoken:
             self.cancelled_items.add(item)
-            self.spoken.setdefault(item, _Spoken()).interrupted = True  # its caption, when final, is written as cut
+            self.spoken[item].interrupted = True
             await self._send(Interrupt(item_id=item, played_ms=self.played_ms.get(item, 0)))
+            if self.spoken[item].final_at:
+                self._write_spoken_row(item)
 
     def _on_final_caption(self, event: Caption) -> None:
         text = str(event.text or "").strip()
@@ -526,7 +534,7 @@ class _LiveCall:
             spoken = self.spoken.setdefault(event.item_id, _Spoken())
             spoken.text, spoken.final_at = text, time.monotonic()
             spoken.played_ms = max(spoken.played_ms, self.played_ms.get(event.item_id, 0))
-            if spoken.played or spoken.interrupted:
+            if spoken.interrupted or (spoken.played and spoken.played_ms >= spoken.audio_ms):
                 self._write_spoken_row(event.item_id)
             self.fanout.note(SPEAKER_OUROBOROS, text)
 

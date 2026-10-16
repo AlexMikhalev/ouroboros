@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
+import copy
 import functools
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -87,7 +89,7 @@ class ToolBatchWorker:
             self.running = True  # cleared by the worker thread itself, so a cancelled await never hides a running tool
             try:
                 changes, grown = await asyncio.get_running_loop().run_in_executor(
-                    self._pool, self._run_batch, [tc for _epoch, tc in batch])
+                    self._pool, contextvars.copy_context().run, self._run_batch, [tc for _epoch, tc in batch])
             except BudgetExceeded as exc:
                 call.budget_error = exc
                 call._begin_close("budget_exceeded")
@@ -109,7 +111,7 @@ class ToolBatchWorker:
             tool_calls = [{"id": tc.call_id, "type": "function",
                            "function": {"name": tc.name, "arguments": tc.arguments}} for tc in calls]
             call.messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
-            before = len(call.messages)
+            before = copy.deepcopy(call.messages)
             names_before = {schema["function"]["name"] for schema in call.tool_schemas}
             self.batches += 1
             self.tool_calls += len(calls)
@@ -118,7 +120,8 @@ class ToolBatchWorker:
                 call.llm_trace, call.emit_progress, tool_schemas=call.tool_schemas,
                 fit_candidate=functools.partial(loop_mod._measure_tool_result_batch, call.ctx,
                                                 round_id=f"{call.task_id}:call:{self.batches}"))
-            changes = [msg for msg in call.messages[before:] if not msg.get("_call_row")]
+            changes = [msg for index, msg in enumerate(call.messages) if not msg.get("_call_row")
+                       and (index >= len(before) or msg != before[index])]
             grown = {schema["function"]["name"] for schema in call.tool_schemas} != names_before
             return changes, grown
         finally:
