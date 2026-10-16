@@ -168,7 +168,7 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | GET | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/presence/work/{work_ref}` | |
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/presence/work/{work_ref}` | retains transport queue observations |
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/ui/ws-message` | |
-| POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/call/open` | `call_peer` grant: a companion joins an admitted call, or opens a Presence call |
+| POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/call/open` | `call_peer` grant: a companion joins an admitted call, or with `presence` opens a Presence call |
 | WS | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/call/{call_id}/peer` | that companion's call audio |
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/notify` | `notify_owner` grant: one signed `skill_notice` System row, no model turn |
 | WS | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/events` | |

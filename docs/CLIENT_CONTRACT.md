@@ -295,7 +295,7 @@ A room holds at most one owner call; its audio travels on its own socket, never 
 - **The socket.** Open `ws_path` with the same authentication as `/ws`. The first text frame is `hello` `{type: "hello", protocol: 1, role: "owner", mic, speaker, rate, label}`, where `rate` is the device's sample rate; the core resamples.
 - **Audio frames.** Binary frames carry a 16-byte little-endian header (magic `OC`, version 1, kind 1 = to the core or 2 = from the core, epoch u16, sequence u32, rate u32, stream u16) and then PCM16 mono.
 - **Your control frames.** `mute {muted}`, `played {item_id, played_ms}` (milliseconds of that item actually rendered) and `bye {reason}`.
-- **The core's control frames.** `state {state, reason}`, `caption {speaker, text, final, item_id}` and `flush {epoch}`.
+- **The core's control frames.** `state {state, reason}`, `caption {speaker, text, final, item_id}` and `flush {epoch}`. A `state` reason is a code (`owner_stop`, `max_minutes`, `engine_error:<kind>`, `transport_lost:<detail>`, …); a client shows its own words for it.
 - **Binding audio to an item.** Output frames carry no item id. An `ouroboros` caption, possibly empty, names the item before its first frame. After `flush`, drop every frame of an older epoch.
 - **History.** The owner's speech is stored as owner rows with `source: "call"`. Speech heard while meeting audio was in the call is a System row with `system_type: "call_heard"`. Ouroboros's speech is a narration progress row whose meta carries `spoken {call_id, item_id, status, played_ms}`, where status is `generated`, `played` or `interrupted`.
 
