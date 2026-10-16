@@ -558,6 +558,9 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
         runtime_data["owner_client"] = dict(_owner_client)
         runtime_data["owner_client_note"] = _OWNER_CLIENT_NOTE
     _current_chat = _meta.get("current_chat") if isinstance(_meta.get("current_chat"), dict) else None
+    if not declared:
+        from ouroboros.live_works import context_present
+        runtime_data["live_works_present"] = context_present(env, task)
     if not declared and _current_chat and (_current_chat.get("running_tasks") or _current_chat.get("addressable_root_tasks")):
         runtime_data["current_chat"] = _current_chat
         runtime_data["current_chat_rule"] = (

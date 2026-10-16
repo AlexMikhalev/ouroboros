@@ -174,6 +174,11 @@ def _task_result_ground_truth(row: Dict[str, Any]) -> Dict[str, Any]:
             "arguments": {"task_id": task_id, "include_authority": True},
         },
     }
+    if isinstance(row.get("promotion_admission"), dict):
+        from ouroboros.promotion_intent import promotion_intent_notice
+        out.update(promotion_admission=dict(row["promotion_admission"]),
+                   promotion_intent_available=bool(row.get("promotion_intent")),
+                   admission_notice=promotion_intent_notice(task_id, row))
     if git:
         out["workspace_git_at_start"] = {
             "head": str(git.get("head") or ""),
@@ -418,6 +423,8 @@ def _decision_turn_metadata(ctx: Any, chat_id: int, client_message_id: str, task
     steer delivery). P5-clean: surfaces state only; the agent picks the target by
     judgment among answer / tell_task / start_task / move_to_project."""
     md = dict(task_metadata) if isinstance(task_metadata, dict) else {}
+    from ouroboros.live_works import live_works_present
+    md["live_works_present"] = live_works_present(ctx.DRIVE_ROOT)
     addressable_here = _addressable_root_tasks(ctx, chat_id)
     running_here = [row for row in addressable_here if row.get("status") == "running"]
     project_id = str(md.get("project_id") or "").strip() or _project_id_for_registered_chat(
@@ -438,7 +445,7 @@ def _decision_turn_metadata(ctx: Any, chat_id: int, client_message_id: str, task
         log.warning("Unable to build Main routing manifest", exc_info=True)
         main_manifest = {"error": "routing_manifest_unavailable"} if is_main_lane else {}
     if not addressable_here and not client_message_id and not main_manifest:
-        return task_metadata
+        return md
     if addressable_here:
         md["current_chat"] = {
             "chat_id": int(chat_id or 0),

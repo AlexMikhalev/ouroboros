@@ -1505,7 +1505,7 @@ def project_completion_delivery_outcome(
             excerpt = f"{excerpt} Open the Project for details."
         from ouroboros.terminal_time import terminal_time_fact
         from ouroboros.terminal_projection import completion_notice
-
+        from ouroboros.project_completion_facts import completion_facts
         event = {
             "type": "send_message", "chat_id": 1, "task_id": tid,
             "text": (f"{snapshot['target_label']} · "
@@ -1514,6 +1514,7 @@ def project_completion_delivery_outcome(
             "role": "system", "system_type": "project_completion_summary",
             "delivery_id": f"project-completion:{tid}",
             "progress_meta": {
+                **completion_facts(drive_root, tid, task, result, task_done_event),
                 "project_id": snapshot["project_id"],
                 "project_name": snapshot["project_name"],
                 "target_label": snapshot["target_label"], "status": status,
@@ -1535,9 +1536,7 @@ def enqueue_project_completion_summary(
     drive_root: Any, evt: Dict[str, Any], task_id: str, task: Dict[str, Any],
     result: Dict[str, Any], task_done_event: Dict[str, Any],
 ) -> bool:
-    """Whether THIS call queued a live Main copy — the long-standing answer;
-    durability is the typed pair's other half, for callers that must tell a
-    duplicate from a lost one."""
+    """Whether this call queued a live Main copy; the typed pair also reports durability."""
     return project_completion_delivery_outcome(
         drive_root, evt, task_id, task, result, task_done_event,
     )[1]

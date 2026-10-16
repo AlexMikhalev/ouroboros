@@ -748,11 +748,12 @@ class ActiveDirectTurn(TypedDict):
 
 
 class ActiveChatActivity(ActiveDirectTurn):
-    """One live activity: direct turns and managed ROOT queue tasks share this shape.
-    budget_pausing includes a saved root whose tree still settles; budget_paused
-    awaits explicit Resume. Direct paused turns keep their ID/kind. Unreadable
-    live waits or Pause authority report unknown (incomplete census); unresolved owner-question detail reports
-    required_question_unavailable. Managed rows have empty client_message_id."""
+    """Global root census; phase and control facts retain their own authority."""
+    last_line: NotRequired[str]  # visible model narration, never host notes
+    last_line_at: NotRequired[str]
+    tool_calls: NotRequired[int]
+    detached: NotRequired[bool]  # durable detached_at, independent of carrier/phase
+    project_name: NotRequired[str]
     status: NotRequired[str]
     outcome_axes: NotRequired[Dict[str, Any]]
     reason_code: NotRequired[str]
@@ -768,7 +769,6 @@ class ActiveChatActivity(ActiveDirectTurn):
     late_work: NotRequired[Dict[str, Any]]  # answered root with an open late phase (D10): title, answered_at; display only
     can_resume: NotRequired[bool]
     cancelable: NotRequired[bool]
-
 class EffortRange(TypedDict):  # min ≤ recommended ≤ max, each an EFFORT_SCALE tier (the tolerant read)
     min: str
     recommended: str

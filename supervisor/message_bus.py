@@ -1374,7 +1374,7 @@ def log_chat(
         if "narration" in meta:
             record["narration"] = bool(meta["narration"])
         if record_type in ("project_started", "project_handoff", "project_completion_summary"):
-            for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer", "completion_reason", "completion_notice", "handoff_id", "terminal_time"):
+            for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer", "completion_reason", "completion_notice", "handoff_id", "terminal_time", "outcome_axes"):
                 if key in meta:
                     record[key] = meta[key]
         if meta.get("delivery_id"):
@@ -1507,6 +1507,8 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
         if progress_meta:
             progress_record.update(dict(progress_meta))
         if append_jsonl(DATA_DIR / "logs" / "progress.jsonl", progress_record):
+            from ouroboros.task_activity_facts import record_narration
+            record_narration(DATA_DIR, progress_record)
             meta.update(projection_fields(progress_record))
     else:
         stored = log_chat(

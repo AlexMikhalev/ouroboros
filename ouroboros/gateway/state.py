@@ -324,6 +324,7 @@ _FINALIZING_MEMO_MAX = 1024
 def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
     """One signature-keyed read serves outcome, finalizing, retry and question facts."""
     from ouroboros.task_store import read_document, signature
+    from ouroboros.task_activity_facts import card_facts
 
     memo_id = (str(pathlib.Path(drive_root).resolve()), task_id)
     try:
@@ -368,7 +369,7 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
         # The executor's own terminal fact or nothing: generic ts is never an answer time.
         display["late_work"] = {"title": task_presentation_name(data),
                                 "answered_at": terminal_time_fact(data).get("occurred_at") or ""}
-    facts = {"finalizing": post_task_synthesis_is_open(synthesis), "late_phase": synthesis,
+    facts = {"finalizing": post_task_synthesis_is_open(synthesis), "late_phase": synthesis, "card": card_facts(data),
              "display": display,
              # An answered root's census row (D10) carries only its own routing identity.
              "row": {key: data[key] for key in ("chat_id", "project_id", "_is_direct_chat", "queued_at")
@@ -562,11 +563,13 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
         def _activity(task_id: str, row: Dict[str, Any], phase: str, started_at: float, *, root: bool = True,
                       can_resume: bool = False, owner_resumed: bool = False) -> Dict[str, Any]:
             from ouroboros.project_admission import project_hold_fact
+            from ouroboros.task_activity_facts import card_facts
 
             if phase == "unknown" and availability is not None:
                 availability["complete"] = False
             return {
                 "activity_id": task_id,
+                "detached": card_facts(row)["detached"],
                 "chat_id": int(row.get("chat_id") or 0),
                 "project_id": str(row.get("project_id") or ""),
                 "client_message_id": "",
@@ -703,7 +706,7 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
             binding = next((owners_by_id[key] for key in (activity.get("parent_task_id"), activity.get("root_task_id"))
                 if key in owners_by_id and owners_by_id[key].get("project_id")), None)
         if isinstance(binding, dict) and not binding.get("origin_bound"):
-            for key in ("chat_id", "project_id"):
+            for key in ("chat_id", "project_id", "project_name"):
                 if binding.get(key):
                     activity[key] = binding[key]
     try:
@@ -720,7 +723,9 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
         projects = {}  # Known wait state survives missing optional Project detail.
     for activity in activities:
         try:
+            from ouroboros.task_activity_facts import enrich_activity
             facts = _task_activity_facts(drive_root, str(activity.get("activity_id") or ""))
+            enrich_activity(activity, facts, projects)
             display = dict(facts.get("display") or {})
             recorded_waits = display.pop("model_waits", {})
             attempt = int(activity.get("task_attempt") or 1)

@@ -434,7 +434,7 @@ def test_main_manifest_manual_options_include_project_roots_and_new_project_task
 
     assert metadata["routing_contract"]["source_lane"] == "main"
     assert "manual_options" not in metadata["routing_contract"]
-    assert {"start_task", "move_to_project", "steer_task"} <= set(metadata["routing_contract"]["valid_actions"])
+    assert {"start_task", "move_to_project", "tell_task"} <= set(metadata["routing_contract"]["valid_actions"])
     assert "route_to_project" not in metadata["routing_contract"]["valid_actions"]
 
 
@@ -1017,6 +1017,10 @@ def test_project_completion_enqueues_once_for_root_and_never_for_child_or_direct
         "system_type": "project_completion_summary",
         "delivery_id": "project-completion:root-project",
         "progress_meta": {
+            "outcome_axes": {"schema_version": 1, "lifecycle": {"status": "completed"},
+                "execution": {"status": "ok", "reason_code": ""}, "artifacts": {"status": "not_applicable"},
+                "objective": {"status": "not_evaluated", "source": "none"},
+                "review": {"status": "skipped", "trigger": "not_evaluated"}},
             "project_id": "launch",
             "project_name": "Launch 🚀",
             "target_label": "Launch 🚀 › Ship release",

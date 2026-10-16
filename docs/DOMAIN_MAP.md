@@ -8,7 +8,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 
 | domain | name | modules | proposed |
 |---|---|---:|---:|
-| D01 | Agent core & main loop | 53 | 0 |
+| D01 | Agent core & main loop | 55 | 0 |
 | D02 | LLM client, routing & providers | 43 | 0 |
 | D03 | Context assembly, fit & compaction | 20 | 0 |
 | D04 | Tool execution: registry, access & typed results | 22 | 0 |
@@ -24,11 +24,11 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D14 | Skills & extensions | 58 | 0 |
 | D15 | Memory, knowledge, consciousness & self-evolution | 29 | 0 |
 | D16 | Observability, usage accounting & cost | 21 | 0 |
-| D17 | Projects, workspaces & task results | 35 | 0 |
+| D17 | Projects, workspaces & task results | 36 | 0 |
 | D18 | Launcher, packaging, platform & shared substrate | 25 | 0 |
 | D19 | Frozen contracts (ABI) | 12 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **754** | **0** |
+| **total** | | **757** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -214,6 +214,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/deadline_utils.py`
 - `ouroboros/external_runs.py`
 - `ouroboros/focus.py`
+- `ouroboros/live_works.py`
 - `ouroboros/loop.py`
 - `ouroboros/loop_acceptance.py`
 - `ouroboros/loop_acceptance_review.py`
@@ -243,6 +244,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/primary_route_observation.py`
 - `ouroboros/sleep_custody.py`
 - `ouroboros/synthesis_cost_text.py`
+- `ouroboros/task_activity_facts.py`
 - `ouroboros/task_carrier.py`
 - `ouroboros/task_finalization.py`
 - `ouroboros/task_pacing.py`
@@ -924,6 +926,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/owner_words.py`
 - `ouroboros/pause_notices.py`
 - `ouroboros/project_admission.py`
+- `ouroboros/project_completion_facts.py`
 - `ouroboros/project_dialogue.py`
 - `ouroboros/project_handoff.py`
 - `ouroboros/project_lease.py`
