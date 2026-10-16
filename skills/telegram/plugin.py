@@ -1085,7 +1085,8 @@ def _make_outbound(api):
                 notice = event.get("completion_notice")
                 if not _notify_enabled(local_settings, "TELEGRAM_NOTIFY_TASKS"):
                     # Preserved intermediate output is content, not the optional status line.
-                    text = str(notice.get("salvage") or "") if isinstance(notice, dict) else ""
+                    # Unrecoverable legacy metadata must not erase unknown content.
+                    text = str(notice.get("salvage") or "") if isinstance(notice, dict) else text
                 elif isinstance(notice, dict) and isinstance(notice.get("neutral"), bool) and isinstance(notice.get("detail"), str):
                     text = _completion_text(event, str(event.get("task_id") or ""), lang)
             if not text:

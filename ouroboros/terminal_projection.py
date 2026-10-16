@@ -187,6 +187,26 @@ def completion_notice(record: dict) -> dict:
     return {"neutral": neutral, "detail": detail or ("" if full else str(record.get("reason_detail") or "")), "phase": phase}
 
 
+def completion_event_view(event: dict, record: dict) -> dict:
+    """Add transport metadata to a pre-upgrade Main event, never rewrite its bytes.
+
+    Both canonical readiness and the outbox can replay an old event. Its loaded
+    result supplies the salvage distinction; missing source keeps the old view
+    rather than guessing that the retained text contains only a status.
+    """
+    meta = event.get("progress_meta") or {}
+    if (event.get("system_type") != "project_completion_summary"
+            or isinstance(meta.get("completion_notice"), dict) or not record):
+        return event
+    from ouroboros.project_dialogue import _completion_excerpt
+
+    salvage = _completion_excerpt(record, chat_id=event.get("chat_id"), salvage_only=True)
+    if salvage:
+        salvage += " Open the Project for details."
+    return {**event, "progress_meta": {**meta, "completion_notice": {
+        **completion_notice(record), "salvage": salvage}}}
+
+
 def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dict | None = None) -> dict:
     from ouroboros import project_dialogue as dialogue
     from ouroboros.project_facts import resolve_project_id
@@ -406,7 +426,7 @@ def retain_main_delivery(root: Any, tid: str, event: dict) -> dict:
         return event  # legacy caller; normal terminal settlement has readiness
     saved = ready.get("main_delivery")
     if isinstance(saved, dict) and isinstance(saved.get("event"), dict):
-        return dict(saved["event"])
+        return completion_event_view(dict(saved["event"]), stored)
     retained = {**event, "ts": event.get("ts") or utc_now_iso(), "terminal_projection_token": ready["token"]}
 
     def retain(current, _patch):

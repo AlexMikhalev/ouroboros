@@ -1754,7 +1754,7 @@ app. It never claims approval. Missing promised output, unresolved work, deliver
 uncertainty and unmet or unknown review obligations remain material. This phone
 projection never shortens full card reasons or rewrites outcomes. The status-only
 Main mirror follows the toggle too, but preserved intermediate content does not.
-Ordinary replies, files, questions and reply-editing Silent Mode remain independent. There is no new mode, cross-channel deduplication or retroactive rewrite.
+Ordinary replies, files, questions and reply-editing Silent Mode remain independent. Unrecoverable old mirrors keep their text rather than guessing it is status-only. There is no new mode, cross-channel deduplication or retroactive rewrite.
 
 **When the client runs.** Notifications are a property of a running client, and
 there is no push channel. On the desktop the Telegram bridge runs inside the same

@@ -179,6 +179,8 @@ def _phase_word(phase: str, lang: str) -> str:
 _NOTIFY = Index("notify", {
     "task_finished": "{icon} Task {id} {word}{tail}",
     "task_finished_details": "Task {id} finished{tail}. Review and verification details are in the app.",
+    "project_finished": "{icon} {label} · {word}{tail}",
+    "project_finished_details": "{label} · finished{tail}. Review and verification details are in the app.",
     "budget": "⚠️ Budget: {pct}% (${spent} / ${total})",
 }, "push notifications about finished tasks and the budget")
 _PHASE_ICONS = {"done": "✅", "warn": "⚠️", "error": "❌", "cancelled": "🚫"}
@@ -222,9 +224,10 @@ def _completion_text(row: Dict[str, Any], tid: str, lang: str, parts=()) -> str:
         if outcome and outcome not in ("completed", "done"):
             parts.append(outcome)
     tail = (" · " + " · ".join(parts)) if parts else ""
-    message = (_NOTIFY[lang].format("task_finished_details", id=tid[:8], tail=tail)
-               if notice is not None and notice["neutral"] else
-               _NOTIFY[lang].format("task_finished", icon=icon, id=tid[:8], word=word, tail=tail))
+    label = str(row.get("target_label") or "")
+    key = "project_finished" if label else "task_finished"
+    key += "_details" if notice is not None and notice["neutral"] else ""
+    message = _NOTIFY[lang].format(key, label=label, icon=icon, id=tid[:8], word=word, tail=tail)
     reason = notice["detail"] if notice is not None else str(row.get("reason_detail") or "")
     return "\n".join(part for part in (message, reason, str((notice or {}).get("salvage") or "")) if part)
 
