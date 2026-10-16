@@ -102,6 +102,20 @@ test('a link, a field or selected words keep the browser menu; a row with nothin
         f.words.emit('contextmenu', { clientX: 1, clientY: 1 });
         assert.ok(f.openMenu(), 'a collapsed caret is no selection');
         f.openMenu().children[0].click();
+        // A right button selects the word under it (macOS) before contextmenu: that selection is the gesture's own.
+        f.doc.selection = { isCollapsed: true, anchorNode: f.words };
+        f.words.emit('pointerdown', { button: 2, pointerType: 'mouse', isPrimary: true, pointerId: 9 });
+        let cleared = false;
+        f.doc.selection = { isCollapsed: false, anchorNode: f.words, removeAllRanges() { cleared = true; } };
+        assert.equal(f.words.emit('contextmenu', { clientX: 1, clientY: 1 }).defaultPrevented, true);
+        assert.ok(f.openMenu(), 'the row menu opens over the word the right button selected');
+        assert.equal(cleared, true, 'and that gesture-made selection goes');
+        f.openMenu().emit('keydown', { key: 'Escape', target: f.openMenu().children[0] });
+        // The owner's own selection, there before the right button went down, keeps the browser's menu.
+        f.words.emit('pointerdown', { button: 2, pointerType: 'mouse', isPrimary: true, pointerId: 10 });
+        assert.equal(f.words.emit('contextmenu', { clientX: 1, clientY: 1 }).defaultPrevented, undefined);
+        assert.equal(f.openMenu(), null);
+        f.doc.selection = null;
         const event = f.plain.emit('contextmenu', { clientX: 1, clientY: 1 });
         assert.equal(event.defaultPrevented, undefined, 'an unsaved echo has no address and no Copy: nothing to offer');
         assert.equal(f.openMenu(), null);

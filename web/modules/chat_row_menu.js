@@ -27,6 +27,12 @@ export function createChatRowMenu({ feed, replies, cardOf, activityOf }) {
     let current = null;  // { menu, binding, row }
     let press = null;  // a touch that may become (or became) a long press
     let swallowClickUntil = 0;
+    let rightPress = null;  // what was selected when a right button went down, before its own default selected a word
+
+    const selectedIn = (row) => {
+        const selection = doc.getSelection?.();
+        return Boolean(selection && !selection.isCollapsed && row.contains(selection.anchorNode));
+    };
 
     const rowOf = (node) => {
         const row = node?.closest?.(ROW);
@@ -116,9 +122,14 @@ export function createChatRowMenu({ feed, replies, cardOf, activityOf }) {
         if (!row) return;
         // A long press already answered (Android also fires contextmenu for it).
         if (press?.fired || Date.now() < swallowClickUntil || current?.row === row) { event.preventDefault(); return; }
-        const selection = doc.getSelection?.();
-        if (event.target.closest(NATIVE) || (selection && !selection.isCollapsed && row.contains(selection.anchorNode))) return;
-        if (open(row, { point: { x: event.clientX, y: event.clientY } })) event.preventDefault();
+        // Words the owner selected keep the browser's menu (Copy them). A right button on macOS selects the word under
+        // it before this event; that selection is the gesture's own, not the owner's, and goes with the row menu.
+        const owned = rightPress?.row === row ? rightPress.selected : selectedIn(row);
+        rightPress = null;
+        if (event.target.closest(NATIVE) || owned) return;
+        if (!open(row, { point: { x: event.clientX, y: event.clientY } })) return;
+        event.preventDefault();
+        if (selectedIn(row)) doc.getSelection().removeAllRanges();
     }
 
     function onKeydown(event) {
@@ -136,8 +147,9 @@ export function createChatRowMenu({ feed, replies, cardOf, activityOf }) {
 
     function onPointerDown(event) {
         cancelPress();
-        if (event.pointerType !== 'touch' || !event.isPrimary) return;
         const row = rowOf(event.target);
+        rightPress = event.button === 2 && row ? { row, selected: selectedIn(row) } : null;
+        if (event.pointerType !== 'touch' || !event.isPrimary) return;
         if (!row || event.target.closest(NATIVE)) return;
         const { clientX: x, clientY: y } = event;
         const touch = { id: event.pointerId, x, y, fired: false };
