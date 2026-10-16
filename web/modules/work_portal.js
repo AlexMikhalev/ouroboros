@@ -38,7 +38,8 @@ export function bindWorkPortal(record, project = {}) {
     for (const attr of ['role', 'tabindex', 'aria-expanded', 'aria-controls']) {
         if (summary?.hasAttribute(attr)) { summary.removeAttribute(attr); changed = true; }
     }
-    const target = { id: projectId, name: key(project?.name) || projectId };
+    // An unnamed Project reads `Project` (the reference's own rule), never its id.
+    const target = { id: projectId, name: key(project?.name) };
     if (!record.portalRefEl || !record.portalRefEl.isConnected) {
         record.portalRefEl = projectReference(target, { layout: 'footer', taskId: record.groupId });
         root.appendChild(record.portalRefEl);

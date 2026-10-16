@@ -231,8 +231,9 @@ export function createChatReplies({ chatId, feed, input, key = '', reading, onDo
             return [...feed.querySelectorAll('.chat-bubble > .chat-quote[data-derived="1"]')]
                 .reduce((changed, quote) => syncDerivedQuote(quote.parentElement) || changed, false);
         }
+        // The first bubble below (past cards, which may be that bubble's own work) may now repeat or stop repeating.
         let below = around.nextElementSibling;
-        while (below && (below.hidden || !below.matches(ROWS))) below = below.nextElementSibling;
+        while (below && (below.hidden || !below.matches('.chat-bubble'))) below = below.nextElementSibling;
         return Boolean(syncDerivedQuote(around) | syncDerivedQuote(below));
     }
 

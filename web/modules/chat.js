@@ -3774,7 +3774,7 @@ export function createChatInstance({
         // app.js uses it to decide whether a reopen needs a forced repaint.
         hasPaintedHistory: () => historyLoaded && lastHistorySyncSucceeded,
         // Unsendable client-side state (staged File objects / an in-flight
-        // upload / a sent attachment message not yet saved, whose Send again
+        // upload / a sent message not yet saved, whose Send again
         // lives here). app.js must hide, not destroy, an instance holding it.
         hasPendingWork: () => composer.count > 0 || composer.busy || unconfirmed.count > 0,
         // app.js, when this room leaves the screen without being destroyed: the
