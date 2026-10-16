@@ -488,7 +488,7 @@ _MARK_MATERIAL = """buttons => {
 
 
 def test_project_glyph_is_a_tinted_mark_never_a_solid_tile(project_chat):
-    """DESIGN "Visual intent": hue names identity, fill strength names importance. The
+    """DESIGN "Design bible" (principle 3): hue says identity, fill strength importance. The
     glyph only identifies the Project, so in each theme it is project ink on a tint,
     readable, and lighter than the name it marks: never a second button in the row."""
     page, expect = project_chat["page"], project_chat["expect"]

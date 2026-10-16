@@ -15,9 +15,70 @@ Shared values and control recipes live in `web/ui.css`, loaded before page
 styles by both the SPA and the served onboarding document. Page styles own
 composition, not a second shared palette. This file names roles, not an inventory.
 
-**Visual intent:** airy, not faint: hierarchy, rhythm and light material, not
-paler or smaller text. Colour identifies at reading contrast; fill conveys
-importance. Identity marks stay subordinate; pressable looks belong to destinations.
+## Design bible: "Airy dopamine"
+
+This distils the interface Ouroboros already has into rules, so every agent extends
+it the same way. Every rule below derives from these lines; a component that needs
+its own exception is a design defect.
+
+**In one sentence (for a designer).** A light, borderless soft UI: a plain white
+room; pastel, voice-tinted objects floating on a soft two-level shadow; every
+control a capsule in one of three tones; one crimson accent and candy-coloured
+status chips; Apple system type in four sizes; springy micro-motion. iOS airiness
+with Material 3 tonal colour, and no gradients, glows, textures, outlines or
+neumorphism.
+
+**Principles**
+
+1. **The room is plain.** Page, sidebar and panel backgrounds are white or one
+   near-white step. Never a gradient, glow, wash or texture behind content.
+2. **Objects float; they are not outlined.** A bubble, card, group or button is a
+   filled shape resting on the *rest* shadow. What floats over moving content (the
+   Shade, menus, the composer field, dialogs) takes the *float* shadow. Inside an
+   object a group or row is a *tray*, a soft neutral fill without a shadow, and
+   fills never stack. Only fields keep a hairline, because an editable box must
+   read as editable.
+3. **Colour says who and what.** Each voice tints its own objects: the owner
+   lavender-blue, Ouroboros blush, System amber, a Project fuchsia. A state is a
+   candy tint with its own ink, or a dot and a word. Hue says identity and fill
+   strength importance, so a mark that only identifies stays quieter than the name
+   it marks. Crimson is the one brand accent: live dots, the chosen place, the
+   primary action. Colour lives on objects, never on the room.
+4. **One control, three tones.** Everything pressable is a capsule: *neutral*
+   (white, rest shadow), *tonal* (its hue's tint and ink: crimson for the primary
+   action and the chosen tab or place, green for save, red for danger, amber for
+   the owner's turn) or *quiet* (no fill, for low emphasis). No outlines and no
+   second shape. A label that acts takes the primary ink, one that names a setting
+   or an unchosen option the secondary ink, a value or a chosen state its tone's
+   ink. A status chip is a flat tint without a shadow: a pressable look belongs to
+   what can be pressed.
+5. **Air is spacing, never paleness.** Text keeps reading contrast; lightness
+   comes from room between and inside objects and from the absence of lines.
+6. **Motion answers touch.** A capsule sinks on press with a spring; live work
+   loops as three moving dots; nothing else animates by itself, and a state change
+   never moves a neighbour or resizes a bar.
+
+**Seed (light theme; dark derives later from the same rules)**
+
+- Shadows: *rest* `0 1px 2px rgb(28 33 51 / .05), 0 6px 18px rgb(28 33 51 / .06)`;
+  *float* `0 2px 6px rgb(28 33 51 / .06), 0 18px 44px rgb(28 33 51 / .11)`;
+  *press* drops the shadow and scales to .97.
+- Radii by role: capsule `999px` (every control and chip) · object `18px`
+  (bubbles, cards, groups, menus) · inner `12px` (trays and rows inside an object)
+  · sheet `24px` (the Shade's lower corners).
+- Colour: room `#ffffff`, sidebar `#fafbfc`, tray the neutral at 3 %; owner
+  `#e9eef9`; Ouroboros `#fdf2f4` (task card `#fff8f9`); crimson `#c93545`, ink
+  `#bf2f40`. Tonal fills, rest/hover: crimson 10/16 %, green 14/22 %, red
+  10/16 %, amber 18/26 %; inks are the status tokens.
+- Type: the system face (SF Pro on Apple), 12 / 14 / 16 / 24, weights 400 and 600.
+- Space: 4 / 8 / 12 / 16 / 24; 14 between messages; 12 x 18 inside a bubble.
+- Motion: 120 ms for colour and shadow; a 240 ms spring for press; the three-dot
+  loop only while work runs.
+- Where it lives: the values are `web/ui.css` tokens (`--elev-*`, `--radius-object`
+  / `-inner` / `-sheet`, `--surface-object` / `-tray` / `-side`, `--voice-*`,
+  `--tone-*`); the recipes are ui.css "One control, three tones" and style.css
+  "Airy dopamine". A page maps its own elements onto these roles and adds no recipe.
+
 
 The shell offers **Settings → Appearance → Light / Dark / System**. New clients
 start on System; explicit Light or Dark remains pinned. The shared semantic
@@ -500,7 +561,8 @@ Two shapes carry a tone, and they are not interchangeable:
 
 - **A status sentence** — `.ui-status[data-tone]`. Foreground only, rendered as
   dot + text. Filling it would turn every inline status into a badge and make
-  "connected" the loudest thing on the panel.
+  "connected" the loudest thing on the panel. A room's status beside its title is
+  such a sentence, with a caret when it opens, never a filled chip.
 - **A status chip** — `.ui-chip[data-tone]`. The full triple, because the chip
   *is* the status and has nothing else to carry it.
 
@@ -716,9 +778,12 @@ preference when it opens and on every reconnect; there is no file watcher.
 
 ## 5. Card and section composition
 
-- A panel is one `.ui-card`-family surface: `--ui-card-border`,
-  `--ui-card-bg`, `--radius`. Nested emphasis uses `--ui-card-bg-soft`, not a
-  second border weight.
+- A panel is one `.ui-card`-family surface. In the light theme a card on the
+  room is an object (`--surface-object` on `--elev-rest`, `--radius-object`, no
+  border) and a group or row inside it a tray (`--surface-tray`,
+  `--radius-inner`); a tray inside a tray drops its fill. The dark theme keeps
+  `--ui-card-border`, `--ui-card-bg` and `--radius`, with nested emphasis on
+  `--ui-card-bg-soft`, never a second border weight.
 - A section is: title (`--type-section`) → optional one-paragraph description
   (`--type-body`, `--text-meta`) → content → optional note (`--type-meta`,
   `--text-meta`). The description explains what the section decides; the note
@@ -953,16 +1018,24 @@ reconciliation.
 
 ### Room work status
 
-Each room's header has one status control: the header's status word (§4) in the
-shared task colours and dots. A filled chip has work to show; pressing it, or ↓/↑
-on it, lists that room's work and only that room's: its census rows, the owner's
-unconfirmed sends and unfinished cards the census has not confirmed. A Project
-with nothing else keeps its latest represented root. Main's list continues its
-header control group, which becomes its lid; a Project's unfolds as a Shade under
-its bar. A row names its work (the card's coined name or title, else the owner's
-message) in two lines that keyboard focus or open details show whole, and says
-the card's or census's own words: an outcome stays beside `Finalizing…`, an access
-wait is not an answer wait, unknown stays unknown. The name goes to the card, or
+Each room's bar has one status, right after its title: a status sentence (§4),
+the dot and word in the status ink with no frame at rest, a neutral tint on hover
+and while open, a caret when it opens. Live work moves three dots, queued work
+holds three still ones, any other fact shows one. One producer
+(`computeDerivedChatStatus`) gives the word, tone and dots together, in the
+cards' short words; a small amber dot says only that a question waits for the
+owner's answer, unless the word already says so. The title ellipsizes first, and
+a new word never moves a neighbour or resizes the bar. When there is work to
+show, pressing the status, or ↓/↑ on it, unfolds that room's work and only that
+room's as one Shade under the bar, the same in every room: its census rows, the
+owner's unconfirmed sends and unfinished cards the census has not confirmed. A
+Project with nothing else keeps its latest represented root. A row names its work
+(the card's coined name or title, else the owner's message) in two lines that
+keyboard focus or open details show whole, with the state under the name in the
+card's or census's own words: an outcome stays beside `Finalizing…`, an access
+wait is not an answer wait, unknown stays unknown, a pause keeps its cause and
+each paused remainder its own row; work outside the loaded messages says so in
+its details and accessible name. The name goes to the card, or
 opens details when the card is not loaded, finished work included; `View question`
 goes to the exact waited question and answers nothing; Resume and ⋯ are that exact
 activity's shared task controls, offered only while the census confirms it. While
