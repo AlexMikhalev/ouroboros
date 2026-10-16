@@ -284,7 +284,7 @@ Frames sent while you were disconnected are not resent: history and the task rea
 - **Errors.** An error answer keeps the same shape, with no rows and `has_more` true, and echoes the cursor you sent as `next_cursor`, so the same request can be repeated:
   - `400 history_cursor_invalid`;
   - `409 history_view_changed`: which rows belong to the thread changed (its projects or task bindings); start again without a cursor;
-  - `409 history_delta_reset`: since an `after_cursor`, more arrived than one read replays, a stored row could not be read, rows already read changed their annotations, or something the window shows changed without a new row (a settled task's facts, a skill operation that ended); read the newest page again;
+  - `409 history_delta_reset`: since an `after_cursor`, more arrived than one read replays, a stored row could not be read, owner-message annotations changed, a task the window shows settled or changed after it settled, or a shown skill operation ended; read the newest page again (in a busy room this is a common answer, not a rare one);
   - `503 history_source_unavailable` or `migrating`.
 - **Incomplete windows.** `window.complete` is true only when nothing bounded the read; `window.truncated_by` names each cause (`quota`, `page`, `lineage_cap`, or a stream gap such as `chat_source_unavailable`). Never treat an incomplete window as an empty conversation. `coverage` reports which stored bytes were delivered, for clients that page; it says nothing about chronology.
 

@@ -285,7 +285,7 @@ class HistorySource(JsonlChainSnapshot):
             base, end = self.segment(index)
             start, end = max(base, lower), min(end, before)
             if start < end and not self._ruled_out(index, lens):
-                rows.extend(self._entries(start, end, gaps))
+                rows.extend(self._warmed(self._entries(start, end, gaps)))
         return rows, lower, gaps
 
 
@@ -328,22 +328,18 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
     paths = {"chat": data_dir / "logs" / "chat.jsonl", "progress": data_dir / "logs" / "progress.jsonl"}
     for source, quota in (("chat", "human"), ("progress", "progress")):
         try:
+            # Rows an ``after`` read has not seen are everything appended after the window's last read,
+            # so it freezes the chain fresh; every other read keeps the boundary its cursor froze.
             reader = HistorySource(paths[source], source,
-                                   continuation["upper"][source] if continuation else None,
-                                   bool(continuation) and source in continuation["unfinished"])
+                                   continuation["upper"][source] if continuation and not after else None,
+                                   bool(continuation) and not after and source in continuation["unfinished"])
             reader.warm = warm
             upper[source] = reader.upper
             chains[source] = chain_witness(reader)
             if reader.unfinished_live_line:
                 unfinished.append(source)
-            page_ends[source] = continuation["before"][source] if continuation else reader.upper
+            page_ends[source] = continuation["before"][source] if continuation and not after else reader.upper
             if after:
-                # Rows the window has not seen: everything appended after its last read, read fresh.
-                reader = HistorySource(paths[source], source)
-                reader.warm = warm
-                upper[source], chains[source], unfinished[:] = reader.upper, chain_witness(reader), [
-                    *(name for name in unfinished if name != source), *([source] if reader.unfinished_live_line else [])]
-                page_ends[source] = reader.upper
                 seen = continuation["upper"][source]
                 if not seen <= reader.upper or reader.upper - seen > _DELTA_CEILING_BYTES:
                     raise HistoryCursorError("history_delta_reset")
@@ -592,19 +588,19 @@ def latest_arrival(rows, page, data_dir, row_matches_thread, stored_chat_id, pro
     spoken = sorted((row for row in feed if row.get("role") != "user" and (
         str(row.get("text") or "").strip() not in ("", "\u200b") or row.get("msg_type"))), key=offset)
     latest = next((row for row in reversed(spoken) if not words(row)), None)
-    if entries is None or PROJECTION_FAILED in projected_gaps or "incomplete_live_line" in gaps or (
-            gaps and _skipped_row_after(entries, offset(latest) if latest else start, end)):
-        return {"latest_message": None}
     # The newest time a message this read shows was sent: a later arrival sent before it sorts above
     # it, which the window's next ``after`` read can only tell from its cursor.
     newest = next((str(row.get("ts") or "") for row in sorted(feed, key=lambda row: str(row.get("ts") or ""),
                                                               reverse=True) if not words(row)), "")
+    shown = page.get("newest", "")
+    page["newest"] = max(shown, newest) if page["after"] else newest
+    if entries is None or PROJECTION_FAILED in projected_gaps or "incomplete_live_line" in gaps or (
+            gaps and _skipped_row_after(entries, offset(latest) if latest else start, end)):
+        return {"latest_message": None}
     if page["after"]:  # what arrived since the window's last read: its newest message, if one did
-        shown, page["newest"] = page.get("newest", ""), max(page.get("newest", ""), newest)
         return {"latest_message": {"history_id": latest["history_id"], "out_of_order": str(latest.get("ts") or "") < shown
                                    or any(offset(row) < offset(latest) and str(row.get("ts") or "") > str(latest.get("ts") or "")
                                           and not words(row) for row in feed)}} if latest else {}
-    page["newest"] = newest
     if not page["recent"]:
         page["quiet_below"] = latest is None
         if latest:

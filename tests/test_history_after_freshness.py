@@ -186,3 +186,31 @@ def test_a_page_whose_read_failed_part_way_carries_no_after_cursor(tmp_path, mon
     switch["on"] = False  # the store answers again
     status, page = _read(tmp_path)
     assert status == 200 and page["after_cursor"]
+
+
+def test_a_page_that_could_not_read_a_shown_task_carries_no_after_cursor(tmp_path, monkeypatch):
+    """A task whose truth the store could not answer is shown without it (a card that cannot say Done),
+    and no version of it can be watched: the window reads its newest page whole until a read succeeds."""
+    from tests._store_shared import unreadable_result
+
+    _task(tmp_path, "done", "completed", 0)
+    _answered(tmp_path, "done", 0)
+    switch = unreadable_result(monkeypatch, "done")
+    status, failed = _read(tmp_path)
+    assert status == 200 and "after_cursor" not in failed
+    switch["on"] = False
+    status, page = _read(tmp_path)
+    assert status == 200 and "done" in _cursor(page["after_cursor"])["tasks"]
+
+
+def test_a_delta_after_a_page_that_met_an_unfinished_line_still_compares_with_the_window(tmp_path):
+    from ouroboros.projects_registry import create_project
+
+    chat = create_project(tmp_path, "late", name="Late")["chat_id"]
+    _append(tmp_path, "chat", [{"ts": TS.format(5), "direction": "out", "chat_id": chat, "text": "shown answer"}],
+            raw="")
+    _append(tmp_path, "chat", [], raw=json.dumps({"ts": TS.format(6), "direction": "out", "chat_id": chat,
+                                                  "text": "being written"}))
+    _, page = _read(tmp_path, chat=chat)
+    assert page["window"]["latest_message"] is None  # the unfinished line may be the newest message
+    assert _cursor(page["after_cursor"])["newest"] == TS.format(5)

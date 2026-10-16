@@ -60,6 +60,7 @@ class TaskReads:
         self.versions: Dict[str, int] = {}  # canonical task id -> write_seq of the view read
         self._successors: Dict[str, str] = {}  # canonical task id -> the successor its projection overlays
         self.store_reads = 0  # store transactions this read opened (cost evidence for tests)
+        self.failed = False  # a read the store could not answer: what this page shows is not known to be current
 
     # -- documents ------------------------------------------------------------------------
     def _fetch(self, root: pathlib.Path, task_ids: Iterable[str]) -> None:
@@ -80,7 +81,11 @@ class TaskReads:
                     self._documents[(key, tid)] = cached[1][tid]
                 return
         self.store_reads += 1
-        found = display_documents(root, wanted, self.versions if root == self.root else None)
+        try:
+            found = display_documents(root, wanted, self.versions if root == self.root else None)
+        except Exception:
+            self.failed = True
+            raise
         for tid in wanted:
             self._documents[(key, tid)] = found.get(tid)
         if stamp is not None:

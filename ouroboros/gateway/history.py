@@ -1529,7 +1529,7 @@ def _assemble_history_response(
     messages.extend(replay_evidence_rows(messages, replay_evidence))
     tokens = history_page_tokens(page, messages, result_cache[_READS])
     stream_gaps = {"chat": chat_gaps | selections["chat"][2], "progress": progress_gaps | selections["progress"][2]}
-    if {PROJECTION_FAILED, "unreadable_source"} & (stream_gaps["chat"] | stream_gaps["progress"]):
+    if result_cache[_READS].failed or {PROJECTION_FAILED, "unreadable_source"} & (stream_gaps["chat"] | stream_gaps["progress"]):
         tokens.pop("after_cursor", None)  # a read that failed part-way is read whole again, never continued
     window = _window_metadata(
             chat_quota_rows, progress_quota_rows, n_human, n_progress,
