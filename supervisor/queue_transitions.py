@@ -380,6 +380,7 @@ def _resume_unstarted_owner_paused_root(q: Any, task: Dict[str, Any], fence: Dic
     be its current retry (#1730). Queue lock held.
     """
     from ouroboros.owner_pause import FENCE_RELEASED, launch_lock, read_fence, set_fence_state
+    from ouroboros.control_actor import control_actor
     from supervisor.events_budget import BUDGET_HOLD_KEY, OWNER_ROOT_RESUME_HOLDS, budget_hold_fact, hold_root_resume_descendants
 
     task_id, root_id = str(task.get("id") or ""), str(fence.get("root_task_id") or task.get("id") or "")
@@ -427,7 +428,8 @@ def _resume_unstarted_owner_paused_root(q: Any, task: Dict[str, Any], fence: Dic
             return {"ok": False, "error": "snapshot_not_persisted"}
         try:
             set_fence_state(root, root_id, fence_id=str(fence.get("fence_id") or ""),
-                            state=FENCE_RELEASED, release_reason="owner_resume_unstarted_root")
+                            state=FENCE_RELEASED, release_reason="owner_resume_unstarted_root",
+                            resume_actor=control_actor())
         except Exception as exc:
             rollback()
             q.persist_queue_snapshot(reason="owner_pause_root_resume_held")
@@ -496,8 +498,11 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
     ``selected_by`` names the MODEL-issued request (owner Q9); an empty value is
     the owner's own act, which needs no root grant above itself.
     """
+    from ouroboros.control_actor import control_actor, mind_resume_refusal
     q = _queue_module()
     task_id = str(task_id or "").strip()
+    if refusal := mind_resume_refusal(q.DRIVE_ROOT):
+        return refusal
     if not task_id:
         return {"ok": False, "error": "missing_task_id"}
     from supervisor.events_budget import (
@@ -507,6 +512,8 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
     external = observation = None
     with q._queue_lock:
         located = next((item for item in q.PENDING if str(item.get("id") or "") == task_id), None)
+        if refusal := mind_resume_refusal(q.DRIVE_ROOT, located):
+            return refusal
     if located is None:
         # A member parked WARM under the owner's Pause (its stack retained while a
         # started critic finishes) wakes on the fence; the owner's own Resume and
@@ -593,6 +600,8 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
         task = next((item for item in q.PENDING if str(item.get("id") or "") == task_id), None)
         if task is None:
             return {"ok": False, "error": "task_not_pending"}
+        if refusal := mind_resume_refusal(q.DRIVE_ROOT, task):
+            return refusal
         pause = task.get("_budget_pause") if isinstance(task.get("_budget_pause"), dict) else None
         if pause and pause.get("exact_continuation"):
             if task is not located or task != located_state:
@@ -692,7 +701,7 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
             STATUS_SCHEDULED,
             reason_code="",
             resource_limit={
-                **prior_pause,
+                **prior_pause, **control_actor(),
                 "status": "resumed",
                 "resumed_at": resumed_at,
                 "auto_resume": False,

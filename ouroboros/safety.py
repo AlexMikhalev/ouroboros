@@ -91,6 +91,8 @@ TOOL_POLICY: Dict[str, str] = {
     "wait_task": POLICY_SKIP,
     "wait_tasks": POLICY_SKIP,
     "await_messages": POLICY_SKIP,
+    "continue_in_background": POLICY_SKIP,
+    "pause_task": POLICY_SKIP, "resume_task": POLICY_SKIP, "continue_task": POLICY_SKIP,
     "list_projects": POLICY_SKIP,
     "switch_model": POLICY_SKIP,
     "service_status": POLICY_SKIP,

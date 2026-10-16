@@ -515,7 +515,8 @@ def claim_on_predecessor(drive_root: Any, predecessor_task_id: str, nonce: str,
         verdict = continuation_eligibility(current, predecessor_task_id)
         if not verdict["eligible"]:
             raise ValueError(verdict["refusal"])
-        claim = {"successor_task_id": binding["successor_task_id"], "action_nonce": nonce,
+        from ouroboros.control_actor import control_actor
+        claim = {**control_actor(), "successor_task_id": binding["successor_task_id"], "action_nonce": nonce,
                  "binding": dict(binding), "binding_sha256": binding_sha(binding),
                  "bound_at": utc_now_iso(), "state": "bound"}
         outcome.update(claim=claim, created=True)

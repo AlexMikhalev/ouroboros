@@ -285,6 +285,8 @@ from supervisor.queue_transitions import (  # noqa: E402, F401 -- intentional pu
 from supervisor.worker_owner_wait import handle_owner_wait  # noqa: E402
 from supervisor.worker_pool_lifecycle import handle_worker_quiescent  # noqa: E402
 
+from supervisor.events_mind_controls import handle_mind_task_control
+
 EVENT_HANDLERS = {
     "llm_usage": _handle_llm_usage,
     "external_wait_lease": _handle_external_wait_lease,
@@ -297,6 +299,7 @@ EVENT_HANDLERS = {
     "budget_pause": _handle_budget_pause,
     "budget_root_fence": _handle_budget_root_fence,
     "budget_resume_child": _handle_budget_resume_child,
+    "mind_task_control": handle_mind_task_control,
     "task_heartbeat": _handle_task_heartbeat,
     "task_dispatch_resolved": _handle_task_dispatch_resolved,
     "task_focus_updated": _handle_task_focus_updated,

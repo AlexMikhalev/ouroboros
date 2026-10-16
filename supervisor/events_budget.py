@@ -1033,7 +1033,10 @@ def select_held_budget_row(q: Any, task: Dict[str, Any], hold: Dict[str, Any],
                 "detail": "stopped while pausing, before anything was saved: there is nothing to continue"}
     if not safe:
         return {"ok": False, "error": unsafe_error, "action": "cancel_or_new_run"}
-    selection = {**hold, "selected": True, "selected_at": utc_now_iso(),
+    from ouroboros.control_actor import control_actor, mind_resume_refusal
+    if refusal := mind_resume_refusal(result_root, task):
+        return refusal
+    selection = {**hold, **control_actor(), "selected": True, "selected_at": utc_now_iso(),
                  "selected_by": str(selected_by or "owner")}
     latch = q.BUDGET_ROOT_FENCES.get(root_task_id) if task_id != root_task_id else None
     if isinstance(latch, dict) and latch.get("cause") == "owner_pause" and not hold.get("fence_id"):

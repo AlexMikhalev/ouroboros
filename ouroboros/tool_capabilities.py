@@ -45,7 +45,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "wait_task", "wait_tasks", "get_task_result",
     # Serial addressed turns: wait for an unread mailbox entry without spending
     # model rounds (slot held, clamped to the per-call ceiling, delivers nothing).
-    "await_messages",
+    "await_messages", "continue_in_background", "pause_task", "resume_task", "continue_task",
     # D#7 soft-join child controls (siblings of steer_task): inspect/decide a child's fate
     # before finalizing (peek = pure read, discard = explicit abandon, cancel = real stop).
     "cancel_task", "peek_task", "discard_child_result", "override_delegation_constraint",
@@ -439,6 +439,7 @@ def routing_action_for_tool(name: object) -> str:
 # set (``FOREGROUND_MUTATIVE_TOOLS``: publication and the file editors) joins it
 # at the authority module.
 OBSERVE_WORLD_MUTATION_TOOLS: frozenset[str] = frozenset({
+    "pause_task", "resume_task", "continue_task",
     "maintain_harness",
     # starting or steering work (steer_task stays: the nanny of a running campaign)
     "promote_chat_to_task", "schedule_subagent", "schedule_followup", "plan_task",
