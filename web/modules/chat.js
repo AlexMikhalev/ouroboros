@@ -340,7 +340,7 @@ export function createChatInstance({
         showToast,
         fetchDetail: fetchTaskDetailStrict,
         onDomWrite: withStableViewport,
-        isMain, chatId,
+        isMain, chatId, projectId,
         insertMessageNode,
         onQuestionsChanged: mainWaiting?.refresh,
         // A settled Main question mirror leaves through the ordinary retirement path.

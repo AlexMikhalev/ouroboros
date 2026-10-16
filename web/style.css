@@ -8434,6 +8434,30 @@ textarea.chat-input {
 .chat-quiz-option:active:not(:disabled) { filter: var(--press); }
 .chat-quiz-option:disabled { color: var(--text-disabled); cursor: default; background: var(--surface-tray); box-shadow: none; }
 .chat-quiz-option.chosen { color: var(--status-ok-fg); background: var(--tone-green); }
+.chat-quiz-option.pending-choice {
+    transition: none;
+    box-shadow: var(--elev-rest), inset 0 0 0 1px var(--focus-accent-border);
+    background: var(--accent-08);
+    color: var(--text-primary);
+}
+.chat-quiz-card [aria-disabled="true"] { cursor: default; }
+.chat-quiz-card [aria-disabled="true"]:not(.pending-choice) { opacity: .75; }
+.chat-quiz-card [aria-disabled="true"]:hover:not(.pending-choice) {
+    background: var(--surface-tray);
+}
+.chat-quiz-card[data-submission="sending"] .chat-quiz-dot,
+.chat-quiz-card[data-submission="unknown"] .chat-quiz-dot,
+.chat-quiz-card[data-submission="checking"] .chat-quiz-dot { background: var(--text-meta); }
+.chat-quiz-feedback {
+    display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2);
+    color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta);
+}
+.chat-quiz-feedback[hidden], .chat-quiz-feedback [hidden] { display: none; }
+.chat-quiz-submission-note, .chat-quiz-storage-note { flex-basis: 100%; white-space: pre-wrap; }
+.chat-quiz-storage-note { color: var(--status-warn-fg); }
+.chat-quiz-feedback button:focus-visible {
+    outline: 2px solid var(--focus-accent-border); outline-offset: 2px;
+}
 .chat-quiz-option-detail {
     font-weight: 400;
     font-size: var(--type-meta);
