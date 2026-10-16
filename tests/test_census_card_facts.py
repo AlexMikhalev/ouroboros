@@ -69,12 +69,20 @@ def test_moved_work_uses_narration_and_incremental_counts_without_history_reads(
         assert rows["sibling"]["last_line"] == "" and rows["sibling"]["detached"] is False
     assert reads == []
     assert next(frame for frame in frames if frame.get("narration"))['content'] == "💬 **Checking** the change"
+    record_narration(tmp_path, {"task_id": "work", "narration": True, "text": "Verification finished",
+                                "ts": "2026-10-16T12:01:00Z"})
+    record_tool_activity(context, {"fn_name": "read_file", "is_error": True})
+    refreshed = next(row for row in _chat_activities_snapshot_safe(tmp_path, bindings, direct_turns=[])
+                     if row["activity_id"] == "work")
+    assert refreshed["last_line"] == "Verification finished" and refreshed["tool_calls"] == 4
+    assert reads == []  # new task signature refreshes the memo, without a history replay
 
 
 @pytest.mark.parametrize("carrier", ["direct", "pending", "running"])
 @pytest.mark.parametrize("detached", [False, True])
 def test_detached_is_a_durable_fact_independent_of_carrier(tmp_path, monkeypatch, carrier, detached):
-    task = {"id": "work", "chat_id": 1, "_is_direct_chat": True, "detached_at": 100 if detached else None}
+    task = {"id": "work", "chat_id": 1, "_is_direct_chat": True, "detached": True,
+            "detached_at": 100 if detached else None}  # only K7's timestamp is evidence
     write_task_result(tmp_path, "work", "running", **{k: v for k, v in task.items() if k != "id"})
     _queue(monkeypatch, tmp_path, pending=[task] if carrier == "pending" else [],
            running={"work": {"task": task, "attempt": 1}} if carrier == "running" else {})

@@ -168,3 +168,24 @@ def test_a_row_without_the_key_replays_without_it(monkeypatch, tmp_path):
     response = asyncio.run(endpoint(SimpleNamespace(query_params={"chat_id": "1"})))
     row = json.loads(response.body.decode("utf-8"))["messages"][0]
     assert "completion_answer" not in row
+
+
+def test_moved_direct_completion_uses_bound_main_request_without_a_result_origin(tmp_path, monkeypatch):
+    from ouroboros.chat_references import reference_from_row
+    from ouroboros.project_dialogue import build_owner_message_ref, enqueue_project_completion_summary
+    from ouroboros.projects_registry import create_project, bind_task_to_project
+    monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(message_bus, "load_state", lambda: {"owner_id": 7})
+    origin = message_bus.log_chat("in", 1, 7, "Move this work", client_message_id="request")
+    ref = build_owner_message_ref(chat_id=1, client_message_id="request", text=origin["text"], ts=origin["ts"])
+    project = create_project(tmp_path, "room", name="Room")
+    bind_task_to_project(tmp_path, "moved", "room", project["chat_id"], origin={"ref": ref, "text": origin["text"]})
+    queued = []
+    monkeypatch.setattr("supervisor.terminal_delivery.enqueue_terminal_delivery",
+                        lambda root, event, **kwargs: queued.append(event) or True)
+    assert enqueue_project_completion_summary(tmp_path, {}, "moved",
+        {"id": "moved", "_is_direct_chat": True, "project_id": "room", "chat_id": 1},
+        {"status": "failed", "project_id": "room", "result": "Explanation", "terminal_origin": "model_final",
+         "outcome_axes": {"execution": {"status": "infra_failed"}}}, {})
+    assert queued[0]["progress_meta"]["reply_to"] == reference_from_row(origin)
+    assert queued[0]["progress_meta"]["outcome_axes"]["execution"]["status"] == "infra_failed"

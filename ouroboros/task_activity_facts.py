@@ -58,7 +58,7 @@ def card_facts(task):
     return {"last_line": str(task.get("last_line") or ""),
             "last_line_at": str(task.get("last_line_at") or ""),
             "tool_calls": calls if type(calls) is int and calls >= 0 else 0,
-            "detached": bool(task.get("detached_at") or metadata.get("detached_at") or task.get("detached"))}
+            "detached": bool(task.get("detached_at") or metadata.get("detached_at"))}
 
 
 def enrich_activity(activity, facts, projects):
