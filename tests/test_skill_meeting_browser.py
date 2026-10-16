@@ -469,6 +469,30 @@ def test_a_participant_that_drops_out_tells_the_call_and_a_requested_leave_does_
     assert sent("context")[-1]["text"] == "Ouroboros left Google Meet: the participant companion stopped."
 
 
+@pytest.mark.serial
+def test_a_browser_that_fails_to_open_closes_the_peer_it_was_granted(tmp_path, fake_door):
+    peers = []
+
+    def recording_peer(*args, **kwargs):
+        peers.append(meeting_participant.DoorPeer(*args, **kwargs))
+        return peers[-1]
+
+    class FailingSession(FakeSession):
+        def open(self):
+            raise participant_browser.SessionFailed("MEETING_BROWSER_CHROME_MISSING", "Chrome is not installed.")
+
+    companion = meeting_participant.ParticipantCompanion(tmp_path, fake_door.url, FakeDoor.token,
+                                                         session_factory=FailingSession, peer_factory=recording_peer)
+    reply = companion.join("call-1", MEET)
+    assert reply == {"ok": False, "code": "MEETING_BROWSER_CHROME_MISSING", "message": "Chrome is not installed."}
+    assert fake_door.opened == [{"role": "meeting", "call_id": "call-1", "mic": True, "speaker": True}]
+    [peer] = peers
+    with pytest.raises(meeting_participant.PeerRefused) as refused:
+        peer.attach(speaker=True)  # the failed join's direction grant is never used by this peer again
+    assert refused.value.code == "peer_closed"
+    assert fake_door.hellos == [] and companion.status()["state"] == "idle"
+
+
 def test_join_leaves_nothing_behind_when_the_call_closes_while_attaching(tmp_path):
     vendors.record_probe(tmp_path, "meet", vendors.PASS, {})
     FakeSession.instances = []
