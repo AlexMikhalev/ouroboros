@@ -155,6 +155,8 @@ def estimate_cost_optional(model: str, prompt_tokens: int, completion_tokens: in
                             provider_for_model(raw_model)) or "openrouter").strip().lower()
     if route == "local":
         return 0.0
+    if route in DIRECT_PROVIDERS and processing_mode in {"standard", "default"}:
+        processing_mode = ""  # The direct catalog's base tariff is Standard, including observed default receipts.
     if processing_mode:
         mode = {"standard": "default", "fast": "priority"}.get(processing_mode, processing_mode)
         if route != "openrouter" or mode not in {"default", "priority", "flex"}:

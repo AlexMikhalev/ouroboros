@@ -105,7 +105,8 @@ class ObservedEngine:
             await original_write(payload)
             if payload.get("type") != "input_audio_buffer.append" and "realtimeInput" not in payload:
                 if payload.get("type") == "session.update" or "setup" in payload:
-                    evidence.note("wire_sent", type=payload.get("type", "setup"), body_ref="instructions.txt")
+                    evidence.note("wire_sent", type=payload.get("type", "setup"),
+                                  body_ref=evidence.of("session_config")[-1]["instructions_ref"])
                 else:
                     evidence.note("wire_sent", payload=payload)
 
@@ -151,7 +152,8 @@ class ObservedEngine:
             if "pcm" in fields:
                 fields["pcm_bytes"] = len(fields.pop("pcm"))
             if type(event).__name__ == "Ready":
-                fields = {"effective_model": fields["effective"].get("model"), "instructions_ref": "instructions.txt"}
+                fields = {"effective_model": fields["effective"].get("model"),
+                          "instructions_ref": self.evidence.of("session_config")[-1]["instructions_ref"]}
             self.evidence.note(type(event).__name__, **fields)
             yield event
 
@@ -322,6 +324,8 @@ def money_evidence(rows: list[dict], events: list[dict], engine: str) -> tuple[b
     if engine == "openai" and not transcriptions:
         errors.append("no separate transcription attempt")
     unknown = [r["attempt_id"] for r in rows if r.get("cost_usd") is None]
+    if unknown:
+        errors.append("total includes unknown-priced attempts")
     known = sum(r.get("cost_usd") or 0 for r in rows)
     return not errors, {"errors": errors, "attempts": rows, "known_estimated_usd": known,
                         "total_cost_usd": None if unknown else known, "unknown_attempts": unknown,

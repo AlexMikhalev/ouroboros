@@ -189,6 +189,28 @@ def test_provider_mismatch_never_gets_a_direct_text_price(catalog_fixture):
     assert pricing.estimate_cost_optional("anthropic::gpt-realtime-2.1", 1000, 500, provider="openai") is None
 
 
+@pytest.mark.parametrize("mode,known", [("standard", True), ("default", True), ("priority", False), ("flex", False)])
+def test_direct_standard_receipts_use_catalog_but_other_tiers_do_not_inherit_it(catalog_fixture, mode, known):
+    result = pricing.estimate_cost_optional("openai/gpt-realtime-2.1", 1000, 500, provider="openai", processing_mode=mode)
+    assert (result == pytest.approx(.006)) if known else result is None
+    if known:
+        assert result.quote["catalog_id"] == "gpt-realtime-2.1"
+
+
+@pytest.mark.parametrize("calls,tariff,mode,known", [(2, .01, "standard", True), (0, None, "standard", True),
+    (2, None, "standard", False), (None, .01, "standard", False), (2, .01, "priority", False)])
+def test_search_receipt_includes_each_server_call_or_remains_unknown(catalog_fixture, calls, tariff, mode, known):
+    root, rows, response, _ = catalog_fixture
+    rows["gpt-realtime-2.1"]["search_context_cost_per_query"] = {"search_context_size_low": tariff}
+    response.content = json.dumps(rows).encode()
+    catalog.get_catalog_quote("gpt-realtime-2.1", provider="openai")
+    usage = {"input_tokens": 1000, "output_tokens": 500, "processing": {"observed": mode}}
+    cost = catalog.search_response_cost("gpt-realtime-2.1", usage, calls=calls, context_size="low", drive_root=root)
+    assert (cost == pytest.approx(.006 + calls * (tariff or 0))) if known else cost is None
+    assert usage["cost_coverage"] == ("complete" if known else "partial")
+    assert usage["cost_evidence"]["web_search"]["calls"] == calls
+
+
 def test_openrouter_still_uses_its_own_catalog(catalog_fixture, monkeypatch):
     _, _, _, fetch = catalog_fixture
     monkeypatch.setattr(pricing, "_fetch_live_rows", lambda *args: {"openai/gpt-realtime-2.1": (5, None, None, 10)})

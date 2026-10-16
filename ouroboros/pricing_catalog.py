@@ -217,3 +217,28 @@ def get_text_pricing(*, provider: str, model: str = "", allow_live_fetch: bool =
         name = quote["catalog_id"].removeprefix("gemini/") if provider == "google" else quote["catalog_id"]
         rows[f"{provider}/{name}"] = text_schedule(quote)
     return rows
+
+
+def search_response_cost(model: str, usage: dict, *, calls: int | None, context_size: str, drive_root=None):
+    """Price a direct search receipt from one catalog quote, including actual server tool calls.
+
+    Missing tool tariffs or call counts keep the complete amount unknown; the
+    ordinary text fallback must not silently erase a paid search component.
+    """
+    from ouroboros.pricing import _cost_from_pricing
+
+    quote = get_catalog_quote(model, provider="openai", drive_root=drive_root, allow_live_fetch=False)
+    tool_rates = (quote or {}).get("entry", {}).get("search_context_cost_per_query") or {}
+    per_call = tool_rates.get(f"search_context_size_{context_size}") if isinstance(tool_rates, dict) else None
+    tool_known = (calls == 0 or isinstance(per_call, (int, float)) and not isinstance(per_call, bool)
+                  and math.isfinite(per_call) and per_call >= 0)
+    text = (_cost_from_pricing(text_schedule(quote), int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0),
+                              int(usage.get("output_tokens") or usage.get("completion_tokens") or 0),
+                              usage, exact_cache_tiers=True) if quote else None)
+    standard = (usage.get("processing") or {}).get("observed") in (None, "", "standard", "default")
+    known = (text is not None and type(calls) is int and calls >= 0 and tool_known and standard)
+    search = (calls * (per_call or 0)) if known else None
+    usage.update(cost_basis="litellm_text_and_search", cost_coverage="complete" if known else "partial",
+                 cost_evidence={"tariff_quote": quote, "web_search": {
+                     "calls": calls, "context_size": context_size, "cost_usd": search}})
+    return text + search if known else None
