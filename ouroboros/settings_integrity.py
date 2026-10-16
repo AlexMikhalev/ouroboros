@@ -218,7 +218,7 @@ def _with_cognition(snapshot: TaskSettingsSnapshot, cognition: Mapping) -> TaskS
             or effort_rank(effort["min"]) > effort_rank(effort["max"])):
         raise ValueError("Saved actor cognition is invalid")
     values = cognition_overrides(cognition)
-    values["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"  # this is an explicit owner choice
+    values["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = cognition.get("context_mode_auto_low", "false")
     return replace(snapshot, settings=MappingProxyType({**snapshot.settings, **values}),
                    environ=MappingProxyType({**snapshot.environ, **values}))
 
@@ -235,15 +235,25 @@ def actor_settings_snapshot(snapshot: TaskSettingsSnapshot, task: Mapping, drive
     scope = (Path(task.get("budget_drive_root") or metadata.get("budget_drive_root") or drive_root),
              MappingProxyType(actor))
     snapshot = replace(snapshot, actor_scope=scope)
-    return _with_cognition(snapshot, read_cognition(scope[0], _actor_project(scope), settings=snapshot.settings))
+    project_id = _actor_project(scope)
+    if not project_id:
+        return snapshot  # preserve Main's projected values and legacy Low provenance exactly
+    return _with_cognition(snapshot, read_cognition(scope[0], project_id, settings=snapshot.environ))
 
 
 def captured_cognition() -> dict | None:
-    """Only the actor's four composer values cross a cold continuation, never credentials."""
+    """Composer values and any legacy Low provenance, never credentials."""
     from ouroboros.composer_cognition import cognition_from_settings
+    from ouroboros.context_mode_compat import owner_declared_low
 
     snapshot = _TASK_SETTINGS.get()
-    return cognition_from_settings(snapshot.settings) if snapshot is not None else None
+    if snapshot is None:
+        return None
+    cognition = cognition_from_settings(snapshot.environ)
+    marker = snapshot.environ.get("OUROBOROS_CONTEXT_MODE_AUTO_LOW", "")
+    if cognition["context_mode"] == "low" and not owner_declared_low(marker):
+        cognition["context_mode_auto_low"] = marker
+    return cognition
 
 
 def restore_cognition(cognition: Mapping | None) -> None:

@@ -219,3 +219,49 @@ def test_complete_env_effort_triple_keeps_primary_independent(monkeypatch):
                        "OUROBOROS_EFFORT_MAX": "medium"}.items():
         monkeypatch.setenv(key, value)
     assert effort_range(config.load_settings()) == {"min": "low", "recommended": "ultra", "max": "medium"}
+
+
+@pytest.mark.parametrize("exists", [True, False])
+def test_forwarded_nano_is_main_and_new_projects_choice_and_survives_restore(monkeypatch, exists):
+    from ouroboros.composer_cognition import read_cognition
+
+    if exists:
+        config.SETTINGS_PATH.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "nano")
+    for _ in range(2):
+        with task_settings_scope(snapshot({"id": "main"})):
+            assert config.get_context_mode() == config.get_owner_context_mode() == "nano"
+            saved = captured_cognition()
+    create_project(config.DATA_DIR, "from-nano")
+    assert read_cognition(config.DATA_DIR, "from-nano")["context_mode"] == "nano"
+    with task_settings_scope(snapshot({"id": "project", "project_id": "from-nano"})):
+        # A project creating another room still copies Main, not its own overlay.
+        set_room("from-nano", choice("low", "none", "low", "medium"))
+        create_project(config.DATA_DIR, "second")
+    assert read_cognition(config.DATA_DIR, "second")["context_mode"] == "nano"
+    save_owner({"OUROBOROS_CONTEXT_MODE": "max", "OUROBOROS_CONTEXT_MODE_AUTO_LOW": "false"})
+    with task_settings_scope(snapshot({"id": "resumed"})):
+        assert config.get_context_mode() == "max"
+        restore_cognition(saved)
+        assert config.get_context_mode() == config.get_owner_context_mode() == "nano"
+
+
+def test_main_copy_prefers_explicit_disk_choice_over_forwarded_context(monkeypatch):
+    monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "nano")
+    save_owner({"OUROBOROS_CONTEXT_MODE": "max", "OUROBOROS_CONTEXT_MODE_AUTO_LOW": "false"})
+    with task_settings_scope(snapshot({"id": "main"})):
+        assert config.get_context_mode() == "max"
+    assert create_project(config.DATA_DIR, "from-disk")["cognition"]["context_mode"] == "max"
+
+
+def test_failed_reload_and_ambiguous_low_preserve_runtime_presence_on_main():
+    prior = {"OUROBOROS_CONTEXT_MODE": "low", "OUROBOROS_EFFORT_TASK": "ultra"}
+    failed_reload = actor_settings_snapshot(task_settings_snapshot({}, prior), {"id": "main"}, config.DATA_DIR)
+    with task_settings_scope(failed_reload):
+        assert config.get_context_mode() == "low" and config.get_owner_context_mode() == "max"
+        assert config.resolve_effort("task") == "ultra"
+        saved = captured_cognition()
+    with task_settings_scope(task_settings_snapshot({}, {})):
+        restore_cognition(saved)
+        assert config.get_context_mode() == "low" and config.get_owner_context_mode() == "max"
+        assert config.resolve_effort("task") == "ultra"

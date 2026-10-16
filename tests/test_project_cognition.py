@@ -73,6 +73,17 @@ def test_two_projects_keep_independent_choices_and_saves_never_project_to_env(ro
     assert (root / "state/projects.json").read_bytes() == before_registry
 
 
+def test_main_effort_readback_keeps_forwarded_context(room_settings, monkeypatch):
+    root, client = room_settings
+    config.SETTINGS_PATH.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "nano")
+    values = {"min": "low", "recommended": "max", "max": "medium"}
+    response = client.post("/api/owner/effort-range", json=values)
+    assert response.status_code == 200, response.text
+    assert response.json()["cognition"] == {"context_mode": "nano", "effort_range": values}
+    assert config.get_context_mode() == "nano"
+
+
 @pytest.mark.parametrize("endpoint,body", [
     ("/api/owner/context-mode", {"mode": "nano"}),
     ("/api/owner/effort-range", {"min": "low", "recommended": "low", "max": "low"}),

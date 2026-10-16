@@ -8,10 +8,11 @@ Actor lifetimes and room resolution belong to the task-settings owner.
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
-from ouroboros.context_mode_compat import normalize_context_mode
+from ouroboros.context_mode_compat import normalize_context_mode, owner_declared_low
 from ouroboros.settings_scales import EFFORT_RANGE_KEYS, effort_range
 
 COGNITION_KEYS = ("OUROBOROS_CONTEXT_MODE", *EFFORT_RANGE_KEYS)
@@ -31,8 +32,17 @@ def cognition_overrides(cognition: Mapping[str, Any]) -> dict:
 
 def main_cognition(settings: Mapping[str, Any] | None = None) -> dict:
     from ouroboros import config
+    from ouroboros.settings_integrity import SETTINGS_ENV_LOCK
 
-    return cognition_from_settings(config.load_settings() if settings is None else settings)
+    settings = config.load_settings() if settings is None else settings
+    with SETTINGS_ENV_LOCK:
+        projected = dict(os.environ)
+        config.apply_settings_to_env(settings, environ=projected)
+    cognition = cognition_from_settings(projected)
+    # A retired auto-Low view is not an owner choice to copy into a new room.
+    if cognition["context_mode"] == "low" and not owner_declared_low(projected.get("OUROBOROS_CONTEXT_MODE_AUTO_LOW")):
+        cognition["context_mode"] = "max"
+    return cognition
 
 
 def project_cognition(project: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict:
@@ -82,7 +92,7 @@ def preserve_project_cognition(settings: Mapping[str, Any], settings_path: Path)
     from ouroboros import config
 
     current = config.load_settings_lock_held()
-    if cognition_from_settings(current) != cognition_from_settings(settings):
+    if main_cognition(current) != cognition_from_settings(settings):
         # The file's parent is its actual data root, including isolated readers
         # that replace SETTINGS_PATH without replacing the module's DATA_DIR.
         ensure_project_cognition(settings_path.parent, main_settings=current)

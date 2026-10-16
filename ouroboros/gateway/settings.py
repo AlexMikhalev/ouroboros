@@ -794,7 +794,7 @@ async def api_owner_context_mode(request: Request) -> JSONResponse:
 
 def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
     from ouroboros import config as _config
-    from ouroboros.composer_cognition import cognition_from_settings, request_project_id, update_project_cognition
+    from ouroboros.composer_cognition import main_cognition, request_project_id, update_project_cognition
 
     if not isinstance(body, dict):
         return unsaved_error("JSON body must be an object.", 400)
@@ -826,13 +826,12 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
             previous_mode = old["context_mode"]
         else:
             digest = settings_document_digest()
-            shown = _owner_read_settings_raw()
-            previous_mode = shown["OUROBOROS_CONTEXT_MODE"]
+            previous_mode = main_cognition()["context_mode"]
             _owner_update_settings(_set_context_mode, digest,
                                    authored_keys=_CONTEXT_MODE_KEYS, allow_context_lowering=True)
             os.environ["OUROBOROS_CONTEXT_MODE"] = next_mode
             os.environ["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
-            cognition = cognition_from_settings({**shown, "OUROBOROS_CONTEXT_MODE": next_mode})
+            cognition = main_cognition()
     _owner_audit(
         request,
         "context_mode",

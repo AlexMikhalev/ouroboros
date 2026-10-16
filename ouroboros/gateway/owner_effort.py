@@ -8,11 +8,10 @@ from typing import Any, Dict
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from ouroboros.composer_cognition import cognition_from_settings, request_project_id, update_project_cognition
+from ouroboros.composer_cognition import main_cognition, request_project_id, update_project_cognition
 from ouroboros.gateway._helpers import request_drive_root
 from ouroboros.gateway.owner_settings import (
     _owner_audit,
-    _owner_read_settings_raw,
     _owner_update_settings,
     owner_write_guard,
     settings_document_digest,
@@ -74,12 +73,11 @@ def _api_owner_effort_range_sync(request: Request, body: Any) -> JSONResponse:
             previous = old["effort_range"]
         else:
             digest = settings_document_digest()
-            shown = _owner_read_settings_raw()
-            previous = effort_range(shown)
+            previous = main_cognition()["effort_range"]
             _owner_update_settings(_set_range, digest, authored_keys=EFFORT_RANGE_KEYS)
             for key, value in values.items():
                 os.environ[key] = value
-            cognition = cognition_from_settings({**shown, **values})
+            cognition = main_cognition()
     _owner_audit(request, "effort_range", {"project_id": project_id, "effort_range": current, "previous_effort_range": previous})
     return JSONResponse({"ok": True, "project_id": project_id, "effort_range": current, "cognition": cognition})
 
