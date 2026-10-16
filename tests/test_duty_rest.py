@@ -106,3 +106,75 @@ def test_a_rest_is_a_kept_fact_never_debt(root):
     rest.commit()
     owed = evidence_packs.settlement_obligations(root)
     assert o.REST_SET not in owed.get("a", {}) and "nonterminal" in owed["a"]
+
+
+# ---------------------------------------------------------------- question delivery (20 s duty)
+
+import asyncio  # noqa: E402
+import datetime  # noqa: E402
+
+from ouroboros import owner_quiz, task_results  # noqa: E402
+from ouroboros.gateway.task_decision import answer_decision, recover_question_deliveries  # noqa: E402
+from supervisor import message_bus  # noqa: E402
+from tests.test_quiz_history_evidence import runtime as runtime  # noqa: E402,F401
+
+# A finished task's unanswered card as the live install holds them (no typed delivery debt): a
+# current question for Main (answerable late, owner decision В17a=A), nothing for a retry to deliver.
+EXPIRED = {"quiz_id": "q", "question": "Old choice?", "options": ["A", "B"], "state": "expired_terminal",
+           "asked_at": "2026-09-24T00:00:00+00:00", "reconciled_at": "2026-09-24T01:00:00+00:00",
+           "chat_id": 1, "publication_chat_id": 1, "publication_evidence": "history"}
+
+
+def recover(runtime):
+    return asyncio.run(recover_question_deliveries(runtime.root))
+
+
+def counted_loads(monkeypatch):
+    seen, real = [], task_results.load_task_result
+    monkeypatch.setattr(task_results, "load_task_result",
+                        lambda root, tid, *a, **k: seen.append(tid) or real(root, tid, *a, **k))
+    return seen
+
+
+def test_question_duty_rests_waiting_questions_until_a_new_fact(runtime, monkeypatch):
+    for tid in ("old-a", "old-b"):
+        task_results.write_task_result(runtime.root, tid, "completed", chat_id=1, owner_quiz={"q": dict(EXPIRED)})
+    loads = counted_loads(monkeypatch)
+    assert recover(runtime)["attempted"] == 0 and sorted(loads) == ["old-a", "old-b"]
+    assert marks(runtime.root)["question_delivery:old-a"]["waits_on"] == ["owner_answer"]
+    before, loads[:] = revision(runtime.root), []
+    assert recover(runtime)["attempted"] == 0 and loads == [] and revision(runtime.root) == before
+    assert {"old-a", "old-b"} <= set(o.members(runtime.root, "owner_questions"))  # Main still sees both
+    task_results.write_task_result(runtime.root, "old-a", "completed", note="a new fact")
+    recover(runtime)
+    assert loads == ["old-a"]  # back exactly once
+    loads[:] = []
+    recover(runtime)
+    assert loads == []
+
+
+def test_a_late_answer_wakes_its_question_and_the_retry_instant_wakes_the_owed_delivery(runtime, monkeypatch):
+    task_results.write_task_result(runtime.root, "old-a", "completed", chat_id=1, owner_quiz={"q": dict(EXPIRED)})
+    recover(runtime)
+    real_log = message_bus.log_chat
+
+    def unavailable(*args, **kwargs):
+        if kwargs.get("record_type") == "quiz_answer":
+            raise OSError("evidence unavailable")
+        return real_log(*args, **kwargs)
+
+    monkeypatch.setattr(message_bus, "log_chat", unavailable)
+    status, reply = asyncio.run(answer_decision(runtime.root, {
+        "request_id": "late-owner", "decision_id": "quiz:old-a:q", "option_index": 1}))
+    assert status == 503 and reply["question_delivery"]["state"] == "owed"
+    loads = counted_loads(monkeypatch)
+    assert recover(runtime)["attempted"] == 0 and loads == ["old-a"]  # the answer is a new fact; its retry waits
+    rest = marks(runtime.root)["question_delivery:old-a"]
+    assert rest["waits_on"] == ["quiz_history_write_failed"] and rest["due_at"]
+    loads[:] = []
+    assert recover(runtime)["attempted"] == 0 and loads == []
+    monkeypatch.setattr(message_bus, "log_chat", real_log)
+    later = (datetime.datetime.fromisoformat(rest["due_at"]) + datetime.timedelta(seconds=1)).isoformat()
+    monkeypatch.setattr(owner_quiz, "utc_now_iso", lambda: later)
+    assert recover(runtime)["attempted"] == 1 and loads[0] == "old-a"
+    assert owner_quiz.quiz_states(runtime.root, "old-a")["q"]["delivery"]["state"] == "delivered"
