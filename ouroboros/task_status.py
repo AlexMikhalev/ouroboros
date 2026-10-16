@@ -682,7 +682,7 @@ def load_effective_task_result(
         drive_root,
         (reads.load(drive_root, tid) if reads is not None else load_task_result(drive_root, tid)) or {},
         materialize_artifacts=materialize_artifacts,
-        reads=reads,
+        **({"reads": reads} if reads is not None else {}),
     )
 
 
@@ -886,7 +886,7 @@ def effective_task_result(
                 retry_result,
                 materialize_artifacts=materialize_artifacts,
                 _seen=frozenset(set(_seen) | {task_id}),
-                _events_index=_events_index, _boot=_boot, reads=reads,
+                _events_index=_events_index, _boot=_boot, **({"reads": reads} if reads is not None else {}),
             )
             if effective_retry:
                 merged_retry = dict(effective_retry)
