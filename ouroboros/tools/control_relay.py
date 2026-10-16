@@ -19,9 +19,10 @@ def _tell_task(ctx, task_id: str, note: str = "", quote: list | None = None) -> 
             text=error or "TOOL_ARG_ERROR: tell_task needs a task_id and a note or held owner quote."))
     relay_id = uuid.uuid4().hex
     message_id = next((q["source"]["client_message_id"] for q in quotes if q["source"]["client_message_id"]), "")
+    own_chat = getattr(ctx, "current_chat_id", None)  # a teller may carry no chat: Main is the return room
     event = {"type": "steer_task", "routing_token": relay_id, "relay_id": relay_id,
              "target_task_id": target, "message": note, "quotes": quotes,
-             "chat_id": int(quotes[0]["source"]["chat_id"] if quotes else getattr(ctx, "current_chat_id", 1)),
+             "chat_id": int(quotes[0]["source"]["chat_id"] if quotes else 1 if own_chat is None else own_chat),
              "client_message_id": message_id or f"{AGENT_RECEIPT_ID_PREFIX}{relay_id}",
              "issuer": {**_routing_issuer(ctx), "task_id": str(getattr(ctx, "task_id", "") or "")},
              "ts": utc_now_iso()}
