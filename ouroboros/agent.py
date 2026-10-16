@@ -834,11 +834,9 @@ class OuroborosAgent:
         from ouroboros.tool_policy import initial_tool_schemas  # the schemas count in the memory view's floor
         from ouroboros.live_call_route import call_context_plan
 
-        # A live call resolves its engine route BEFORE the context is fitted, so the
-        # fit measures against the realtime window and the call's initial tool view.
+        # A live call resolves its engine route BEFORE the context is fitted (the realtime window and
+        # initial tool view); its room feed catches up from the instant before the chat is read.
         live_plan = call_context_plan(task, self.tools, self.env.drive_root)
-        # The instant before the room's chat is read for the context: a live call's
-        # room feed catches up from here, so no row accepted meanwhile is lost.
         context_captured_at = utc_now_iso()
         messages, cap_info = build_llm_messages(
             env=self.env,
@@ -851,8 +849,7 @@ class OuroborosAgent:
             **(live_plan.fit_kwargs if live_plan is not None else {}),
         )
         if live_plan is not None:
-            cap_info["live_call_spec"] = live_plan.spec
-            cap_info["live_call_context_captured_at"] = context_captured_at
+            cap_info.update(live_call_spec=live_plan.spec, live_call_context_captured_at=context_captured_at)
         # The second of the three places a reduction must reach (the durable record
         # above is the first, `[SUBTASK_OUTCOME]` the third). It is appended HERE,
         # after the context is built, because it is a fact about THIS dispatch —
