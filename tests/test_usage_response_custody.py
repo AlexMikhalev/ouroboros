@@ -128,7 +128,7 @@ def test_subscription_consumer_cancel_keeps_wire_receipt_and_stops_before_finish
             raise
     async def run():
         operation = asyncio.create_task(receive())
-        assert await asyncio.to_thread(entered.wait, 3)
+        assert await asyncio.to_thread(entered.wait, _RECEIPT_SETUP_WAIT_SEC)
         operation.cancel()
         await asyncio.sleep(.01)
         operation.cancel()
