@@ -52,6 +52,10 @@ from ouroboros.utils import append_jsonl, atomic_write_json, machine_json, utc_n
 Record = Tuple[str, Dict[str, Any]]
 
 
+def _null_flags(columns) -> str:
+    return " OR ".join(f"{column} IS NULL" for column in store.FLAG_COLUMNS.values() if not columns.get(column)) or "0"
+
+
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -117,10 +121,11 @@ def _ensure(root: pathlib.Path, path: pathlib.Path, *, rederive: bool = False) -
             if retiered:
                 txn.conn.execute(f"PRAGMA application_id = {store._APPLICATION_ID[tier]}")
                 txn.set_meta("lock_tier", tier)
-            flags = _derive_flag_columns(txn, rederive=rederive)  # before any row write needs the column
+            flags = _derive_flag_columns(txn, rederive=rederive) if rederive or _flags_need_derivation(txn) else {}
             phase = txn.phase()
             if phase == PUBLISHED:
-                _upgrade_review_collection(txn)
+                if int(txn.meta("schema_version") or 1) < store.SCHEMA_VERSION:
+                    _upgrade_review_collection(txn)
                 report, quarantined = _reconcile(root, txn)
             export = txn.meta("export") or {}
         if phase == PUBLISHED:
@@ -157,8 +162,22 @@ def upgrade_current_schema(root: Any) -> None:
     The ordinary write gate and inherited acquisition budget also govern this DDL:
     a caller under a queue/launch lock cannot acquire an extra long import lock."""
     with store.open_store(root, write=True) as txn:
-        _derive_flag_columns(txn)  # all prior flags must exist before the version advances
-        _upgrade_review_collection(txn)
+        if _flags_need_derivation(txn):
+            _derive_flag_columns(txn)  # all prior flags must exist before the version advances
+        if int(txn.meta("schema_version") or 1) < store.SCHEMA_VERSION:
+            _upgrade_review_collection(txn)
+
+
+def _flags_need_derivation(txn: Txn) -> bool:
+    """An empty partial index proves there are no old-writer NULLs without scanning tasks.
+    Missing columns/index need one schema preparation; old REPLACE writers maintain this index too."""
+    columns = {row["name"]: row["notnull"] for row in txn.conn.execute("PRAGMA table_info(tasks)")}
+    if not set(store.FLAG_COLUMNS.values()) <= columns.keys():
+        return True
+    if not txn.conn.execute("SELECT 1 FROM sqlite_master WHERE name='tasks_underived_flags'").fetchone():
+        return True
+    return txn.conn.execute(
+        f"SELECT task_id FROM tasks INDEXED BY tasks_underived_flags WHERE {_null_flags(columns)} LIMIT 1").fetchone() is not None
 
 
 def _derive_flag_columns(txn: Txn, *, rederive: bool = False) -> Dict[str, Any]:
@@ -167,8 +186,8 @@ def _derive_flag_columns(txn: Txn, *, rederive: bool = False) -> Dict[str, Any]:
     column wrote through its own column list (``INSERT OR REPLACE``: a rollback's writes, its new
     tasks) holds NULL whatever ``meta.schema_version`` says. Each such row takes the predicate
     every later write applies (``result_memberships``) over its document; an undecodable body is
-    owed (unknown is never absence) until its next write recomputes it. Cost: one narrow pass over
-    ``tasks`` per boot, a body decode per underived row; ``rederive`` (the explicit rebuild)
+    owed (unknown is never absence) until its next write recomputes it. A partial index selects
+    only underived rows; ``rederive`` (the explicit rebuild)
     forgets every nullable flag first, so it decodes every body. Only complete schema
     preparation publishes the version; this flag-only step may also run during export."""
     columns = {record["name"]: record["notnull"] for record in txn.conn.execute("PRAGMA table_info(tasks)")}
@@ -177,13 +196,17 @@ def _derive_flag_columns(txn: Txn, *, rederive: bool = False) -> Dict[str, Any]:
         column = store.FLAG_COLUMNS[name]
         txn.conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} INTEGER")
         txn.conn.execute(f"CREATE INDEX tasks_{column} ON tasks({column}) WHERE {column}=1")
+    if added:
+        txn.conn.execute("DROP INDEX IF EXISTS tasks_underived_flags")
+    predicate = _null_flags(columns)
+    txn.conn.execute(f"CREATE INDEX IF NOT EXISTS tasks_underived_flags ON tasks(task_id) WHERE {predicate}")
     nullable = {name: column for name, column in store.FLAG_COLUMNS.items() if not columns.get(column)}
     if not nullable:
         return {}
     if rederive:
         txn.conn.execute(f"UPDATE tasks SET {', '.join(f'{column}=NULL' for column in nullable.values())}")
     underived = [record["task_id"] for record in txn.conn.execute(
-        f"SELECT task_id FROM tasks WHERE {' OR '.join(f'{column} IS NULL' for column in nullable.values())}")]
+        f"SELECT task_id FROM tasks INDEXED BY tasks_underived_flags WHERE {predicate}")]
     for task_id in underived:
         try:
             names = o.result_memberships(txn.load(task_id) or {})
@@ -452,6 +475,7 @@ def _build(tmp: pathlib.Path, tier: str, root: pathlib.Path, records: List[Recor
     with contextlib.closing(store.connect(tmp, tier, create=True)) as conn:
         conn.execute("PRAGMA synchronous = FULL")
         conn.executescript(store._SCHEMA)
+        _derive_flag_columns(Txn(conn, root))  # prepare the empty NULL index before publishing
         conn.execute(f"PRAGMA application_id = {store._APPLICATION_ID[tier]}")
         conn.execute("BEGIN IMMEDIATE")
         txn = Txn(conn, root)
