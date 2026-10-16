@@ -240,5 +240,5 @@ def search_response_cost(model: str, usage: dict, *, calls: int | None, context_
     search = (calls * (per_call or 0)) if known else None
     usage.update(cost_basis="litellm_text_and_search", cost_coverage="complete" if known else "partial",
                  cost_evidence={"tariff_quote": quote, "web_search": {
-                     "calls": calls, "context_size": context_size, "cost_usd": search}})
+                     "calls": calls, "context_size": context_size, "usd": search}})
     return text + search if known else None

@@ -25,7 +25,7 @@ from typing import Any, Callable, Dict, Iterator, Literal, Optional, Tuple, get_
 
 from ouroboros.pricing import estimate_cost_optional
 from ouroboros._usage_response import (
-    _normalized_input_token_usage, _reported_token_count, processing_receipt, observed_processing_mode, usage_from_response,
+    _normalized_input_token_usage, _reported_token_count, observed_processing_mode, usage_from_response,
     _plain, _provider_exception_facts, physical_failure_evidence, provider_failure_payload, provider_cost_value,
 )
 from ouroboros.review_dispatch import invoke_bound_api_review_paid_stamp

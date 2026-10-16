@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from ouroboros.artifacts import store_chat_media_bytes
-from ouroboros.subagent_messages import apply_chat_row_metadata
 from ouroboros.chat_uploads import attachment_views, claim_refs, same_message, stored_refs
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.event_bus import CHAT_DOCUMENT, CHAT_LINKS, CHAT_OUTBOUND, CHAT_PHOTO, CHAT_QUIZ, CHAT_QUIZ_STATE, CHAT_TYPING, CHAT_VIDEO, publish_event
@@ -30,7 +29,7 @@ from ouroboros.tools.core import (
     validate_quiz_payload,
 )
 from ouroboros.utils import utc_now_iso
-from ouroboros.subagent_messages import CARD_ROW_PLACEMENTS, SUBAGENT_MESSAGE_FIELDS, is_task_card_message
+from ouroboros.subagent_messages import apply_chat_row_metadata, is_task_card_message
 
 log = logging.getLogger(__name__)
 

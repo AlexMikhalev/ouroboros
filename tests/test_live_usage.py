@@ -12,7 +12,7 @@ from tests.test_pricing_catalog import catalog_fixture  # noqa: F401
 
 
 @pytest.fixture
-def live_root(catalog_fixture, monkeypatch):
+def live_root(catalog_fixture, monkeypatch):  # noqa: F811
     root, _, _, _ = catalog_fixture
     monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(root / "settings.json"))
     monkeypatch.setenv("TOTAL_BUDGET", "100")
@@ -32,7 +32,7 @@ def settle(attempt, **usage):
     live.settle_live_response(attempt, usage=usage, raw_usage={}, status="completed")
 
 
-def test_reserved_response_has_explicit_modality_estimate_and_mode(live_root, catalog_fixture):
+def test_reserved_response_has_explicit_modality_estimate_and_mode(live_root, catalog_fixture):  # noqa: F811
     root = live_root
     with accounting.capture_attempt_ids() as ids:
         attempt = reserve(root)
@@ -71,7 +71,7 @@ def test_all_modalities_and_cached_split_are_priced_once(live_root):
     assert accounting.usage_projection(live_root)["settled_usd"] == .003562  # six-decimal display projection
 
 
-def test_gemini_cached_modality_details(live_root, catalog_fixture):
+def test_gemini_cached_modality_details(live_root, catalog_fixture):  # noqa: F811
     import json
     _, rows, response, _ = catalog_fixture
     rows["gemini/gemini-3.8-live"].update(cache_read_input_token_cost=.1e-6,
@@ -116,7 +116,7 @@ def test_unknown_or_inconsistent_modality_keeps_whole_cost_unknown(live_root, us
     ("output_cost_per_audio_token", {"audio_output_tokens": 10}),
     ("input_cost_per_image_token", {"image_input_tokens": 10}),
     ("cache_read_input_audio_token_cost", {"audio_input_tokens": 10, "cached_input_tokens": 5})])
-def test_missing_needed_rate_is_partial_but_unused_rates_are_not_required(live_root, catalog_fixture, field, usage):
+def test_missing_needed_rate_is_partial_but_unused_rates_are_not_required(live_root, catalog_fixture, field, usage):  # noqa: F811
     import json
     _, rows, response, _ = catalog_fixture
     del rows["gpt-realtime-2.1"][field]
@@ -207,7 +207,7 @@ def test_abandonment_is_unresolved_and_late_receipt_settles_same_attempt(live_ro
     assert row["cost_usd"] == pytest.approx(.001)
 
 
-def test_transcription_has_its_own_model_and_attempt(live_root, catalog_fixture):
+def test_transcription_has_its_own_model_and_attempt(live_root, catalog_fixture):  # noqa: F811
     import json
     _, rows, response, _ = catalog_fixture
     rows["transcribe-example"] = {"litellm_provider": "openai", "input_cost_per_audio_token": 3e-6}

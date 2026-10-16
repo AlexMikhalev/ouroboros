@@ -18,7 +18,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroboros import presence_runner
 from ouroboros.gateway import host_service
 from ouroboros.gateway.host_service import create_host_service_app
 from ouroboros.presence_runner import PresenceTurnError, PresenceTurnGate

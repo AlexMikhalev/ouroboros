@@ -650,8 +650,6 @@ def _web_search_openai(
                         server_search_calls = sum(getattr(item, "type", "") == "web_search_call" for item in output)
 
         text = "".join(text_parts)
-        input_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
-        output_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
         usage["ledger_attempt_ids"] = [reservation.attempt_id]
         try:
             if response_completed:
