@@ -369,7 +369,8 @@ def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: D
             "owner_corpus": owner_corpus_rows(sources),
             "continuation": {
                 "predecessor_task_id": predecessor, "cause": verdict["cause"],
-                "owner_sources": {"original": sources.get("original"), "later": sources.get("later") or []},
+                "owner_sources": {"original": sources.get("original"), "later": sources.get("later") or [],
+                                  "held_owner_messages": sources.get("held_owner_messages") or {}},
                 "peer_context": sources.get("peer_context") or [],
                 "billing_group_id": binding.get("billing_group_id"),
                 "billing_group_limit_usd": binding.get("billing_group_limit_usd"),

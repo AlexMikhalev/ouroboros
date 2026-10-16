@@ -65,6 +65,12 @@ D19 = "Frozen contracts (ABI)"
 D20 = "Presence"
 
 [modules]
+"ouroboros/chat_references.py" = "D11"
+"ouroboros/contracts/chat_reference.py" = "D19"
+"ouroboros/owner_relay.py" = "D01"
+"ouroboros/question_answers.py" = "D11"
+"ouroboros/room_reader.py" = "D11"
+"ouroboros/tools/control_relay.py" = "D05"
 "ouroboros/openrouter_cost.py" = "D02"
 "ouroboros/obligations.py" = "D11"
 "ouroboros/startup_migrations.py" = "D11"

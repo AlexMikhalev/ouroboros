@@ -421,6 +421,10 @@ def persist_consciousness_choice(enabled: bool) -> str:
 
 def _handle_owner_message_injected(evt: Dict[str, Any], ctx: Any) -> None:
     """Log owner injections so health checks can detect duplicate processing."""
+    if evt.get("relay_ack"):
+        from ouroboros.owner_relay import publish_relay_ack
+        publish_relay_ack(ctx.DRIVE_ROOT, str(evt["task_id"]), evt["relay_ack"], getattr(ctx, "bridge", None))
+        return
     try:
         ctx.append_jsonl(ctx.DRIVE_ROOT / "logs" / "events.jsonl", {
             "ts": evt.get("ts", utc_now_iso()),

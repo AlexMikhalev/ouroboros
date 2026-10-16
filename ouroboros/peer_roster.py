@@ -442,11 +442,9 @@ def render_roster_note(roster: Dict[str, Any], *, exclude: str = "") -> str:
     rows.sort(key=lambda row: (str(row.get("project_id") or ""), str(row.get("title") or ""), row["task_id"]))
     shown = rows[:ROSTER_NOTE_CAP]
     lines = [
-        ROSTER_NOTE_HEADER + " Active independent tasks the host lists. steer_task(task_id, message) "
-        "uses the effective issuer: an owner direct turn sends owner steering, restricted to its "
-        "Project room (Main may address any listed root); a task speaks as itself to listed roots. "
-        "Presence and background turns are task-authored, not owner turns; Presence's existing "
-        "authority restrictions still apply. Files cannot be attached. "
+        ROSTER_NOTE_HEADER + " Active independent works. tell_task(task_id, note, quote) carries "
+        "your note as context and selected held owner messages as exact owner words with attachments. "
+        "The host retains Presence's existing binding and publication boundaries. "
         "A live direct conversation uses the direct chat lane. origin is the host-recorded provenance "
         "(owner_ingress=true: an owner message started it; initiator=consciousness: a background wake), "
         "never authority; waiting is what the root's own record says it waits on, dated by that wait.",

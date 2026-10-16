@@ -46,7 +46,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     # Serial addressed turns: wait for an unread mailbox entry without spending
     # model rounds (slot held, clamped to the per-call ceiling, delivers nothing).
     "await_messages",
-    # D#7 soft-join child controls (siblings of steer_task): inspect/decide a child's fate
+    # D#7 soft-join child controls (siblings of tell_task): inspect/decide a child's fate
     # before finalizing (peek = pure read, discard = explicit abandon, cancel = real stop).
     "cancel_task", "peek_task", "discard_child_result", "override_delegation_constraint",
     # The same family (#1196, owner Q9): a resumed parent selects each of its OWN
@@ -61,7 +61,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     # (kept in the core envelope so the anti-freeze ephemeral turn never needs an
     # enable_tools detour to route — though initial_tool_schemas exposes the full
     # set today, this makes the coupling explicit).
-    "list_projects", "route_to_project", "promote_chat_to_task", "steer_task",
+    "list_projects", "route_to_project", "promote_chat_to_task", "tell_task",
     "ensure_project_scope",
     *COGNITIVE_MEMORY_TOOL_NAMES,
     "chronicle_write",
@@ -416,7 +416,7 @@ FOREGROUND_MUTATIVE_TOOLS: frozenset[str] = frozenset({
 ROUTING_VERBS: dict[str, frozenset[str]] = {
     "promote_chat_to_task": frozenset({"promote_chat_to_task"}),
     "route_to_project": frozenset({"promote_chat_to_task", "routing_manual_target"}),
-    "steer_task": frozenset({"steer_task"}),
+    "tell_task": frozenset({"steer_task"}),
     "ensure_project_scope": frozenset({"ensure_project_scope"}),
 }
 
@@ -440,7 +440,7 @@ def routing_action_for_tool(name: object) -> str:
 # at the authority module.
 OBSERVE_WORLD_MUTATION_TOOLS: frozenset[str] = frozenset({
     "maintain_harness",
-    # starting or steering work (steer_task stays: the nanny of a running campaign)
+    # starting or steering work (tell_task stays: the nanny of a running campaign)
     "promote_chat_to_task", "schedule_subagent", "schedule_followup", "plan_task",
     "route_to_project", "ensure_project_scope", "delegate_start", "initiate_presence",
     "cancel_task", "resume_child_task", "override_delegation_constraint", "request_deep_self_review",

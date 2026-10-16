@@ -180,6 +180,8 @@ async def api_command(request: Request) -> JSONResponse:
     try:
         body = await request.json()
         cmd = body.get("cmd", "")
+        if not isinstance(body.get("reply_to", ""), str):
+            return json_error("reply_to must be an address string", 400)
         if cmd:
             from supervisor.message_bus import get_bridge, log_chat
 

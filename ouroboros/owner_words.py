@@ -37,7 +37,7 @@ NOT_RECORDED = "not_recorded"
 ROW_KEYS = ("text", "source", "carrier", "task_id", "ts", "ref")
 _RUN_ORIGIN_MARKERS = ("initiator", "source", "task_type")
 _ANNOTATED_ACTS = frozenset({"promote_chat_to_task", "route_to_project", "steer_task", "mailbox_delivery"})
-_ANNOTATED_STATUSES = frozenset({"scheduled", "delivered"})
+_ANNOTATED_STATUSES = frozenset({"scheduled", "delivered", "read"})
 _ORIGIN = " from task {root}"
 _HEADINGS = {
     "child": "## Words of my human that caused this work (verbatim)",
@@ -213,7 +213,10 @@ def _mailbox_carrier(drive_root: Any, task_id: str, record: Mapping[str, Any]) -
     except (OSError, ValueError):
         return []
     return [_row(entry.get("text"), source="owner_mailbox", carrier="mailbox", task_id=task_id, ts=entry.get("ts"),
-                 ref=f"msg {entry.get('msg_id')}") for entry in entries if entry.get("kind") == KIND_OWNER_TEXT]
+                 ref=f"msg {entry.get('msg_id')}") for entry in entries if entry.get("kind") == KIND_OWNER_TEXT] + [
+        _row(row.get("text"), source="owner_mailbox", carrier="relay", task_id=task_id, ts=row.get("ts"),
+             ref=_chat_ref(row)) for entry in entries if entry.get("kind") == "relay_entry"
+        for row in entry.get("owner_rows") or [] if _owner_row(row)]
 
 
 def _task_record(drive_root: Any, task_id: str) -> Dict[str, Any]:

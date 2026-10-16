@@ -305,6 +305,16 @@ def owner_sources(drive_root: Any, result: Dict[str, Any], task_id: str) -> Dict
             later.append({"source": "owner_quiz_answer" if kind == "quiz_answer" else "owner_mailbox",
                           "content": str(entry.get("text") or ""), "msg_id": msg_id,
                           "ts": str(entry.get("ts") or ""), "exact_row": entry["_exact_row"]})
+        elif kind == "relay_entry":
+            for row in entry.get("owner_rows") or []:
+                from ouroboros.chat_chain import format_address, row_address
+                address = format_address(row_address(row))
+                if address not in seen:
+                    later.append({"source": "owner_mailbox", "content": row.get("text", ""), "msg_id": address})
+                    seen[address] = (row.get("text", ""), True)
+            peers.append({"msg_id": msg_id, "ts": str(entry.get("ts") or ""),
+                          "source_task_id": str(entry.get("source_task_id") or ""),
+                          "provenance": "independent_task", "text": str(entry.get("text") or "")})
         elif kind == "task_message":
             peers.append({"msg_id": msg_id, "ts": str(entry.get("ts") or ""),
                           "source_task_id": str(entry.get("source_task_id") or ""),
@@ -357,6 +367,7 @@ def owner_sources(drive_root: Any, result: Dict[str, Any], task_id: str) -> Dict
         else:
             gaps.append("owner_source_provenance_unknown")  # never promoted to owner text
     return {"original": original, "later": later, "peer_context": peers, "gaps": list(dict.fromkeys(gaps)),
+            "held_owner_messages": {**chained.get("held_owner_messages", {}), **result.get("held_owner_messages", {})},
             "predecessor_note": {"task_id": task_id, "reader": "get_task_result",
                                  "kind": "predecessor_authored_note"}}
 

@@ -111,7 +111,7 @@ _PROMOTE_CHAT_DESCRIPTION = (
     "task there; project_id uses an existing Project. Interpret the owner's intended name, "
     "not keywords. To move THIS task instead, use ensure_project_scope. An unmet Swarm "
     "force_plan obligation moves to the new task; further work here is unplanned. "
-    "Use predecessor_task_id for one settled result (see argument); steer_task for a live root. "
+    "Use predecessor_task_id for one settled result (see argument); tell_task for a live root. "
     "workspace_root selects the working folder; by default a Project task's file/shell/git "
     "tools use its registered folder, not the Ouroboros repo. workspace='none' opts out. "
     "Owner follow-ups can steer the task. Claim creation only on OK, never PROMOTE_REJECTED "
@@ -278,25 +278,20 @@ def get_tools() -> List[ToolEntry]:
                 "reasoning_effort": _ROOT_EFFORT_PARAM,
             }, "required": ["message", "predecessor_task_id"]},
         }, _route_to_project),
-        ToolEntry("steer_task", {
-            "name": "steer_task",
-            "description": (
-                "Deliver a message to any host-listed active independent root (a running or pending "
-                "root task; hidden/headless roots included) — YOU pick from current_chat.addressable_root_tasks, "
-                "main_routing_manifest.root_tasks, or the [INDEPENDENT_ROOTS] note. Use it when a message "
-                "continues or redirects a task already in flight, instead of spawning a duplicate. Who "
-                "you are decides how it lands: in an owner conversation turn it is delivered as the "
-                "owner's steering text; from a task it is written as a message from THIS task (never "
-                "owner text, no file attachments), and the result says written, not read. The task picks "
-                "it up at its next step. If no running task clearly fits, use promote_chat_to_task "
-                "(new work) or answer inline — never steer a task you are unsure about. "
-                "A Presence-bound turn can steer only work in its own binding; the host checks it."
-            ),
+        ToolEntry("tell_task", {
+            "name": "tell_task",
+            "description": "Send a note to another work, with optional exact owner quotes selected from "
+                           "your held owner_quote_handles. The note is yours; quoted words remain the owner's. "
+                           "The work reads it at its next checkpoint. Paused work keeps the mail without resuming. "
+                           "Use forward_to_worker for messages inside your task tree. "
+                           "Presence can address work of its own binding only.",
             "parameters": {"type": "object", "properties": {
-                "task_id": {"type": "string", "description": "Id of the running task to steer (from current_chat.running_tasks)."},
-                "message": {"type": "string", "description": "The follow-up / steering message to deliver to that task."},
-            }, "required": ["task_id", "message"]},
-        }, _steer_task),
+                "task_id": {"type": "string", "description": "Work to receive the message."},
+                "note": {"type": "string", "default": "", "description": "Your own words and context."},
+                "quote": {"type": "array", "items": {"type": "string"}, "default": [],
+                          "description": "Owner row addresses held by this turn; exact words and attachments travel together."},
+            }, "required": ["task_id"]},
+        }, _tell_task),
         ToolEntry("schedule_subagent", {
             "name": "schedule_subagent",
             "description": _SCHEDULE_SUBAGENT_DESCRIPTION,
@@ -358,6 +353,7 @@ def get_tools() -> List[ToolEntry]:
             "parameters": {"type": "object", "properties": {
                 "text": {"type": "string", "description": "Message text"},
                 "reason": {"type": "string", "description": "Why you're reaching out (logged, not sent)"},
+                "reply_to_relay": {"type": "string", "description": "Reply to a drained relay in its source room. Empty selects the single open relay; omit for an ordinary room message."},
                 "destination": {"type": "string", "enum": ["current", "main"], "default": "current",
                                 "description": "'current' (default): this conversation's room. 'main': the "
                                                "owner's main chat, for a brief plain-text notice that belongs "
@@ -480,7 +476,6 @@ from ouroboros.tools.control_routing import (  # noqa: E402, F401 -- intentional
     _predecessor_selector_error,
     _promote_chat_to_task,
     _route_to_project,
-    _steer_task,
 )
 from ouroboros.tools.control_runtime import (  # noqa: E402, F401 -- intentional public re-exports
     _chat_history,
@@ -556,3 +551,5 @@ from ouroboros.tools.control_task_results import (  # noqa: E402, F401 -- intent
 # _schedule_task and HIDDEN_LEGACY_SCHEDULE_PARAMS above (the moved spans own
 # the definitions; the attribute consumer reads it off the registered handler).
 setattr(_schedule_task, "_hidden_legacy_params", HIDDEN_LEGACY_SCHEDULE_PARAMS)
+
+from ouroboros.tools.control_relay import _tell_task

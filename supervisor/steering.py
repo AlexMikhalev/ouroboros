@@ -7,17 +7,8 @@ back and keeps the dispatch table; the routing-receipt emitter stays in
 ``events.py`` (many other handlers use it) and is imported lazily here so the
 dependency stays one-way at import time.
 
-Who speaks decides how the message travels (the event's ``issuer`` fact, minted
-by the tool host-side, never by the model). An OWNER TURN steers with owner
-text: ``KIND_OWNER_TEXT``, the owner-message generation bump, the room veto and
-the owner acknowledgement/notice. A TASK speaking for itself never travels as
-owner text: its words are written as a ``KIND_TASK_MESSAGE`` row with
-``independent_task`` provenance through the same writer ``forward_to_worker``
-uses, any host-listed active independent root is addressable (owner 6C, the
-hidden partition included), no standalone chat message is sent, and the receipt plus one typed
-Logs row carry the true author and target (owner 5=A/7A). A relay retains the
-drained owner message's acknowledgement without acquiring owner authority.
-An unlabelled owner refusal is a typed System row, never Ouroboros speech.
+The issuer remains capability provenance. The atomic relay entry carries exact
+owner quotes and the teller's own contextual note, independently of its lane.
 """
 
 from __future__ import annotations
@@ -176,40 +167,11 @@ def _steer_receipt(
     return receipt
 
 
-def _owner_lane_allows(ctx: Any, task: Dict[str, Any], target: str, chat_id: int) -> bool:
-    """The room veto for an OWNER turn: its own chat's roots, a root bound to its
-    Project room, and -- from the Main lane, which sees the global manifest --
-    every root. The lane is the host registry's answer for the issuing chat, so
-    a Swarm root (no routing contract) and a picker click read the same rule."""
-    from ouroboros.server_routing_context import _main_lane_chat
-
-    if _main_lane_chat(chat_id):
-        return True  # Main, including the bound external owner, needs no registry read.
-    try:
-        if int(task.get("chat_id") or 0) == chat_id:
-            return True
-    except (TypeError, ValueError):
-        pass
-    # A converted/bound task may keep its original chat_id on the live object
-    # but belong to a project thread — match via the durable binding.
-    try:
-        from ouroboros.projects_registry import project_chat_for_task
-        from ouroboros.server_routing_context import _reserved_project_for_chat
-
-        if int(project_chat_for_task(ctx.DRIVE_ROOT, target) or 0) == chat_id:
-            return True
-        return not _reserved_project_for_chat(ctx, chat_id)
-    except Exception:
-        return False
-
-
 def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
     """Deliver a steering message to an addressable independent root.
 
-    An owner turn in a Project room is restricted to that room; one in Main may
-    address any root in the host-provided global manifest, including a
-    Project-bound root. A task speaking for itself may address any host-listed
-    active independent root (owner 6C). In every case this only enforces
+    Any turn may address an independent root. Quotes keep owner authority and
+    the note is always contextual, independently of the issuer lane. In every case this only enforces
     transport invariants and writes the active task drive; stale targets are
     reported, never silently respawned.
     """
@@ -219,7 +181,7 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         chat_id = int(evt.get("chat_id") or 0)
     except (TypeError, ValueError):
         chat_id = 0
-    if not target or not message.strip():
+    if not target or (not message.strip() and not evt.get("quotes")):
         return
     task_issued = _task_issued(evt)
     issuer_task_id = str(_issuer(evt).get("task_id") or "")
@@ -283,10 +245,8 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         refusal = "target_unknown"
     elif str(task.get("delegation_role") or "") == "subagent":
         refusal = "subagent_target"
-    elif task_issued and _presence_target_refused(ctx, evt, task):
+    elif _presence_target_refused(ctx, evt, task):
         refusal = "presence_work_not_related"
-    elif not task_issued and not _owner_lane_allows(ctx, task, target, chat_id):
-        refusal = "chat_mismatch"
     else:
         refusal = ""
     if refusal:
@@ -327,12 +287,10 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
     cancel_pending_refused = False
     active_fence = None
     staged_manifest: list = []
+    relay_entry = {}
     attachment_report = ""
     try:
         from supervisor.queue import ACCEPTANCE_FENCES, _queue_lock, _task_drive_for_task
-        from ouroboros.owner_mailbox import (
-            KIND_OWNER_TEXT, PROVENANCE_INDEPENDENT_TASK, write_owner_message, write_task_message,
-        )
         if direct_active and direct_lock is not None:
             direct_lock.acquire()
             direct_lock_held = True
@@ -347,26 +305,6 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
                 )
                 return
         drive = pathlib.Path(ctx.DRIVE_ROOT) if direct_active else _task_drive_for_task(task, target)
-        attachment_note = ""
-        # Tasks cannot attach files to peer messages: only an owner turn stages.
-        uploads = (
-            evt.get("attachment_uploads")
-            if not task_issued and isinstance(evt.get("attachment_uploads"), list) else []
-        )
-        if uploads:
-            from ouroboros.artifacts import attachment_manifest_projection, stage_task_attachments
-            from ouroboros.gateway.tasks import _render_attachment_lines
-
-            # Staging runs after the up-front cancel check (top of this handler)
-            # but BEFORE the transactional re-check below — so the manifest is
-            # kept and the re-check refusal removes the just-staged inputs
-            # (GR2-9) instead of leaving orphaned files in the artifact store
-            # of a task the supervisor is tearing down.
-            staged_manifest = stage_task_attachments(drive, target, uploads)
-            rendered = _render_attachment_lines(attachment_manifest_projection(drive, target, staged_manifest))
-            if rendered:
-                attachment_report = rendered
-                attachment_note = f"\n\n[ATTACHMENTS]\n{rendered}\n[END_ATTACHMENTS]"
         if not direct_active:
             _queue_lock.acquire()
             queue_lock_held = True
@@ -411,34 +349,16 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
             ctx, evt, target, target_label=target_label, notify=False,
         ):
             cancel_pending_refused = True
-        elif task_issued:
-            # A task's own words: a task-message row under the sender's id and
-            # the independent provenance. No owner generation moves -- a peer
-            # message supersedes no reviewed answer (owner 4=A).
-            if not write_task_message(
-                drive, message, target, source_task_id=issuer_task_id,
-                provenance=PROVENANCE_INDEPENDENT_TASK, msg_id=msg_id,
-                sender_origin=evt.get("sender_origin") if isinstance(evt.get("sender_origin"), dict) else None,
-            ):
-                raise OSError("task mailbox append was not durable")
-            delivered = True
         else:
-            if not write_owner_message(
-                drive,
-                f"{message}{attachment_note}",
-                target,
-                msg_id=msg_id,
-                kind=KIND_OWNER_TEXT,
-                client_message_id=relayed_owner_message_id,
-                client_surface=(
-                    dict(evt["client_surface"])
-                    if isinstance(evt.get("client_surface"), dict) and evt.get("client_surface")
-                    else None
-                ),
-                attachment_manifest=staged_manifest if uploads else None,
-            ):
-                raise OSError("owner mailbox append was not durable")
-            if direct_active:
+            from ouroboros.owner_relay import write_relay
+            relay_entry, newly_written = write_relay(
+                drive, target, relay_id=str(evt.get("relay_id") or routing_token or msg_id),
+                note=message, quotes=list(evt.get("quotes") or []), chat_id=chat_id,
+                teller_task_id=issuer_task_id, canonical_root=ctx.DRIVE_ROOT)
+            delivered = True
+            if not newly_written or not evt.get("quotes"):
+                active_fence = None  # context alone supersedes no reviewed owner answer
+            if direct_active and newly_written and evt.get("quotes"):
                 direct_agent._owner_message_generation = int(
                     getattr(direct_agent, "_owner_message_generation", 0) or 0
                 ) + 1
@@ -480,7 +400,9 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         # A landed act publishes no row: the receipt on the owner's message keeps
         # the staging manifest, the target's mailbox and the caller's tool result
         # keep the model's [ATTACHMENTS] block (DESIGN "Chat authorship and System rows").
+        from ouroboros.owner_relay import publish_relay
+        publish_relay(ctx.DRIVE_ROOT, target, relay_entry, getattr(ctx, "bridge", None), task)
         _steer_receipt(
             ctx, evt, target, target_label=target_label, status="delivered",
-            detail=attachment_report, attachment_manifest=staged_manifest if uploads else None,
+            detail=attachment_report, attachment_manifest=staged_manifest or None,
         )

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 from ouroboros.cost_projection import CostPresentation
+from ouroboros.contracts.chat_reference import ChatReferenceFields
 from ouroboros.storage import (  # noqa: F401 -- public re-exports
     StorageCategory, StorageError, StorageMeasurement, StorageResponse,
 )
@@ -87,16 +88,13 @@ class TransportMetadata(TypedDict, total=False):
     sender_label: str
 
 
-class ChatOutbound(TypedDict):
+class ChatOutbound(ChatReferenceFields):
     """Outbound WS chat frame."""
 
     type: Literal["chat"]
     role: Literal["user", "assistant", "system"]
     content: str
     ts: str
-    row_address: NotRequired[str]
-    reply_to: NotRequired[dict]
-    relay: NotRequired[dict]
     ingress_accepted: NotRequired[bool]  # Canonical inbound row saved; not processing/start proof.
     ingress_dispatched: NotRequired[bool]  # This live host process accepted the row and entered its dispatch.
     ingress_pending: NotRequired[bool]  # This live host process accepted the row and has entered or refused neither yet.
@@ -118,7 +116,6 @@ class ChatOutbound(TypedDict):
     rounds: NotRequired[int]
     suggested_name: NotRequired[str]
     model_execution: NotRequired[Dict[str, Any]]
-    # Project question mirrored into Main as the Project's own form; the durable question stays in Project.
     quiz_id: NotRequired[str]
     quiz_state: NotRequired[str]
     project_chat_id: NotRequired[int]
@@ -267,7 +264,7 @@ class ChatOutbound(TypedDict):
     project_thread: NotRequired[bool]
 
 
-class PhotoOutbound(TypedDict):
+class PhotoOutbound(ChatReferenceFields):
     """Outbound WS photo frame."""
 
     type: Literal["photo"]
@@ -297,7 +294,7 @@ class PhotoOutbound(TypedDict):
     project_thread: NotRequired[bool]
 
 
-class VideoOutbound(TypedDict):
+class VideoOutbound(ChatReferenceFields):
     """Outbound WS video frame."""
 
     type: Literal["video"]
@@ -323,7 +320,7 @@ class VideoOutbound(TypedDict):
     project_thread: NotRequired[bool]
 
 
-class DocumentOutbound(TypedDict):
+class DocumentOutbound(ChatReferenceFields):
     """Outbound WS document/file frame."""
 
     type: Literal["document"]
@@ -357,7 +354,7 @@ class LinkAction(TypedDict):
     url: str
 
 
-class LinksOutbound(TypedDict):
+class LinksOutbound(ChatReferenceFields):
     """Outbound group of first-class external link buttons."""
 
     type: Literal["links"]
@@ -379,7 +376,7 @@ class QuizOption(TypedDict):
     recommended: NotRequired[bool]
 
 
-class QuizOutbound(TypedDict):
+class QuizOutbound(ChatReferenceFields):
     """Outbound owner quiz card: a typed question with option buttons.
 
     Optional questions continue under ``assumption``; ``wait_for_answer`` marks
@@ -510,6 +507,9 @@ class MessageAnnotationOutbound(TypedDict):
     suppress_bubble: bool
     chat_id: NotRequired[int]
     target: NotRequired[str]
+    project_name: NotRequired[str]
+    target_task_ids: NotRequired[list[str]]
+    target_titles: NotRequired[list[str]]
     target_label: NotRequired[str]
     project_id: NotRequired[str]
     project_chat_id: NotRequired[int]
