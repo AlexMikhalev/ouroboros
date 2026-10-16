@@ -59,6 +59,9 @@ ROOM_FACTS = """(scope) => {
         exists: Boolean(trigger), tone: trigger?.dataset.tone || '', disabled: Boolean(trigger?.disabled),
         hidden: Boolean(trigger?.hidden), expanded: trigger?.getAttribute('aria-expanded') || '',
         badge: text(trigger?.querySelector('.status-badge')), amber: trigger?.dataset.wait === '1',
+        markColor: (() => { const dots = trigger?.querySelector('.rw-dots'), one = trigger?.querySelector('.rw-mark');
+            const mark = dots && !dots.hidden ? dots.querySelector('span') : one;
+            return mark ? getComputedStyle(mark).backgroundColor : ''; })(),
         waitNote: shown(trigger?.querySelector('.rw-sr')), surfaceHidden: surface ? surface.hidden : null,
         rows, groups: [...(surface?.querySelectorAll('.rw-group') || [])].map(text),
         note: shown(note) ? text(note) : '', back: shown(back) ? text(back) : '',
@@ -381,6 +384,7 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
     closed = wait_facts(page, "main", lambda f: f["tone"] == "live" and not f["disabled"], "a live control")
     # Moving work with something waiting keeps its live word and turns its one mark amber, said in words too.
     assert closed["amber"] and closed["waitNote"], closed
+    assert closed["markColor"] == "rgb(245, 158, 11)", closed  # the same mark is painted amber, not a second dot
     assert closed["surfaceHidden"] and closed["expanded"] == "false"
     trigger(page).click()
     opened = wait_facts(page, "main", lambda f: len(f["rows"]) == 7 and row(f, "rw-unknown")["name"]

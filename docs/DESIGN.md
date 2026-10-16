@@ -22,7 +22,7 @@ it the same way. Every rule below derives from these lines and holds in both the
 a component that needs its own exception is a design defect.
 
 **In one sentence (for a designer).** A light, borderless soft UI in two themes: a
-plain room (white, or graphite); voice-tinted objects resting on a soft shadow;
+plain room (white, or near-black violet with glass); voice-tinted objects resting on a soft shadow;
 everything pressable a capsule standing on that shadow in one of three tones, whose
 states change its colour, never its height, as on macOS; one crimson accent and
 candy-coloured status chips; Apple system type in four sizes. iOS airiness with
@@ -38,8 +38,8 @@ Material 3 tonal colour, and no gradients, glows, textures, outlines or neumorph
    group or row is a *tray*, a soft neutral fill without a shadow, and fills never
    stack. Only fields keep a hairline, because an editable box must read as editable;
    the composer's field floats instead, and focus gives it the field's ring. On a dark
-   room a shadow barely shows, so each height is also a lighter surface: room, object,
-   capsule.
+   room a shadow barely shows, so each height is also a lighter surface (room, object,
+   capsule), and what floats over content is glass.
 3. **Colour says who and what.** Each voice tints its own objects: the owner blue,
    Ouroboros blush, System amber, a Project fuchsia. A state is a candy tint with its
    own ink, or a dot and a word. Hue says identity and fill strength importance, so a
@@ -47,14 +47,16 @@ Material 3 tonal colour, and no gradients, glows, textures, outlines or neumorph
    brand accent: live dots, the chosen place, the primary action. Colour lives on
    objects, never on the room.
 4. **One control, three tones, one height.** Everything pressable with a body is a
-   capsule standing on the rest shadow in every state: *neutral* (the capsule surface)
+   capsule standing on the rest shadow in every state (on the float shadow when it
+   flies over moving content, like ↓ latest): *neutral* (the capsule surface)
    or *tonal* (its hue's tint and ink: crimson for the primary action and the chosen
    tab or place, green for save, red for danger, amber for the owner's turn). A
    *quiet* control (a link, a filter, an icon, a navigation row) has no body and never
    stands. A state changes colour, never height: hover deepens the fill, a press
    deepens it again, a chosen or switched-on capsule takes its tone and keeps standing;
-   what cannot be pressed now loses its shadow. No outlines and no second shape; an
-   offered answer with a detail line is still a capsule. A label that acts takes the
+   what cannot be pressed now loses its shadow. No outlines. Shape follows content: a
+   one-line control is a capsule; a choice that carries a paragraph (an offered answer)
+   is a card with the object radius, standing like every other. A label that acts takes the
    primary ink; a setting's name or an unchosen option the secondary ink; a setting's
    value the meta ink, never the darkest; a chosen state its tone's ink. A status chip
    is a flat tint: standing on a shadow means pressable.
@@ -70,14 +72,15 @@ Material 3 tonal colour, and no gradients, glows, textures, outlines or neumorph
 
 | Role | Light | Dark |
 | --- | --- | --- |
-| Room · sidebar | `#ffffff` · `#fafbfc` | `#1c1c1e` · `#202023` |
-| Object · capsule (hover) · float | `#ffffff` · `#ffffff` (`#f5f6f8`) · `#ffffff` | `#262629` · `#343438` (`#3c3c41`) · `#2c2c30` |
-| Tray | neutral 3 % | neutral 5 % |
-| Owner · Ouroboros · task card | `#e9eef9` · `#fdf2f4` · `#fff8f9` | `#22365a` · `#362b2f` · `#2b2729` |
-| Crimson ink | `#bf2f40` on crimson `#c93545` | `#f07a86` |
-| Tonal fill, rest/hover | crimson 10/14 %, green 14/22, red 10/16, amber 18/26 | crimson 22/30 %, green, red, amber 16/24 |
-| Rest shadow | `0 1px 2px rgb(28 33 51 / .05), 0 6px 18px rgb(28 33 51 / .06)` | `0 1px 2px rgb(0 0 0 / .45), 0 6px 18px rgb(0 0 0 / .32)` |
-| Float shadow | `0 2px 6px rgb(28 33 51 / .06), 0 18px 44px rgb(28 33 51 / .11)` | `0 2px 6px rgb(0 0 0 / .5), 0 18px 44px rgb(0 0 0 / .55)` |
+| Room · sidebar | `#ffffff` · `#fafbfc` | `#0d0b0f` · `#0d0b0f` |
+| Object · tray | `#ffffff` · neutral 3 % | white 3.5 % · neutral 3.5 % |
+| Capsule (hover) · float | `#ffffff` (`#f5f6f8`) · `#ffffff` | violet glass `rgb(44 34 52 / .62)` (`.72`) · `rgb(26 21 32 / .9)` |
+| Glass on controls and sheets over content | none | `blur(18px)` |
+| Owner · Ouroboros · task card | `#e9eef9` · `#fdf2f4` · `#fff8f9` | blue glass `rgb(80 120 190 / .16)`→`rgb(55 85 155 / .13)` · crimson glass `rgb(201 53 69 / .2)`→`rgb(120 24 36 / .2)` · crimson 6 % |
+| Crimson ink · on its tonal fill (crimson `#c93545`) | `#bf2f40` · `#b52b3b` | `#f07a86` · `#ffa0aa` |
+| Tonal fill, rest/hover | crimson 10/14 %, green 14/22, red 10/16, amber 18/26 | crimson 18/24 %, green, red, amber 16/24 |
+| Rest shadow | `0 1px 2px rgb(28 33 51 / .05), 0 6px 18px rgb(28 33 51 / .06)` | `0 1px 2px rgb(0 0 0 / .5), 0 8px 24px rgb(0 0 0 / .35)` |
+| Float shadow | `0 2px 6px rgb(28 33 51 / .06), 0 18px 44px rgb(28 33 51 / .11)` | `0 2px 8px rgb(0 0 0 / .55), 0 20px 50px rgb(0 0 0 / .6)` |
 | Press | `brightness(.95)` | `brightness(1.12)` |
 
 - Radii by role, both themes: capsule `999px` (every control and chip) · object `18px`
@@ -91,8 +94,8 @@ Material 3 tonal colour, and no gradients, glows, textures, outlines or neumorph
   three-dot loop only while work runs.
 - Where it lives: the values are `web/ui.css` tokens, dark in `:root` and light in
   `:root[data-theme="light"]` (`--elev-*`, `--radius-object` / `-inner` / `-sheet`,
-  `--surface-object` / `-capsule` / `-float` / `-tray` / `-side`, `--voice-*`,
-  `--tone-*`, `--press`); the recipes are ui.css "One control, three tones" and
+  `--surface-object` / `-capsule` / `-float` / `-tray` / `-side`, `--glass`, `--voice-*`,
+  `--tone-*` with `--tone-crimson-ink`, `--press`); the recipes are ui.css "One control, three tones" and
   style.css "Airy dopamine", written once for both themes. A page maps its own
   elements onto these roles and adds no recipe.
 
@@ -1218,11 +1221,11 @@ answer keep both forms readable. Anatomy, top to bottom:
    started and when the owner last wrote in this chat, with unknown facts said
    as unknown; the line is absent when the card carries no `host_facts`.
 3. **Stake** — optional one-liner (`At stake: …`), `--type-meta`, `--text-meta`.
-4. **Options** — zero to six real owner actions: neutral capsules standing on the
-   rest shadow (a choice, never a field), `--text-primary` labels legible at rest;
-   an optional per-option detail steps down to meta ink inside the capsule. After
-   settlement they lie flat in `--text-disabled`; the chosen option takes the ok
-   pair. Options are capped by the shared Python↔JS constant
+4. **Options** — zero to six real owner actions: elevated cards (the capsule surface
+   on the rest shadow with the object radius; a choice, never a field), the label in
+   `--text-primary` at 600; an optional per-option detail steps down to meta ink inside
+   the card. Hover and press change the card's colour. After settlement they lie flat
+   in `--text-disabled`; the chosen option takes the ok pair. Options are capped by the shared Python↔JS constant
    (`MAX_QUIZ_OPTIONS`); with none, the free answer is the whole answer.
 5. **Free answer** — while the card is open, a compact always-visible field
    (`Your answer or comment…`, the field's hairline) with a `Send my answer`

@@ -346,6 +346,7 @@
 }
 :root[data-theme] .rw-row .rw-pill:not(:disabled):active { transform: none; filter: var(--press); }
 :root[data-theme] .rw-row .rw-pill-question { background: var(--tone-amber); color: var(--status-warn-fg); box-shadow: var(--elev-rest); }
-:root[data-theme] .rw-row .rw-pill-question:hover { background: var(--tone-amber-hover); }
+:root[data-theme] .rw-row .rw-pill-question:not(:disabled):hover { background: var(--tone-amber-hover); }
 :root[data-theme] .rw-row .rw-pill-resume { background: var(--surface-capsule); color: var(--text-primary); box-shadow: var(--elev-rest); }
-:root[data-theme] .rw-row .rw-pill-resume:hover { background: var(--surface-capsule-hover); box-shadow: var(--elev-rest); }
+:root[data-theme] .rw-row .rw-pill-resume:not(:disabled):hover { background: var(--surface-capsule-hover); box-shadow: var(--elev-rest); }
+:root[data-theme] .rw-row .rw-pill:disabled { box-shadow: none; }

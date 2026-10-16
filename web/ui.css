@@ -3,18 +3,18 @@
 :root {
     --native-color-scheme: dark;
     --neutral-rgb: 255, 255, 255;
-    --shell-rgb: 28, 28, 30;
-    --composer-rgb: 44, 44, 48;
+    --shell-rgb: 13, 11, 15;
+    --composer-rgb: 26, 21, 32;
     --composer-hover-rgb: 38, 25, 34;
-    --modal-rgb: 38, 38, 41;
-    --menu-rgb: 44, 44, 48;
+    --modal-rgb: 18, 20, 26;
+    --menu-rgb: 12, 14, 18;
     --media-rgb: 6, 7, 10;
-    --wizard-panel-rgb: 38, 38, 41;
-    --wizard-rgb: 28, 28, 30;
+    --wizard-panel-rgb: 20, 18, 28;
+    --wizard-rgb: 11, 9, 16;
     --code-bg: #121016;
     --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    --bg-primary: #1c1c1e;
-    --bg-secondary: #202023;
+    --bg-primary: #0d0b0f;
+    --bg-secondary: #1a1520;
     --bg-card: rgba(var(--neutral-rgb), 0.06);
     --bg-hover: rgba(var(--neutral-rgb), 0.08);
     /* Type scale + foreground semantics: docs/DESIGN.md. Four sizes, no fifth. */
@@ -157,25 +157,28 @@
     --chrome-navigation-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
     --chrome-inset: calc(var(--space-1) + 1px);
     /* Airy dopamine seed (DESIGN.md design bible): the dark values; the light theme's follow in its block. One set of
-       recipes reads them in both themes. On a dark room a shadow barely shows, so height is also lightness here:
-       room < object < capsule, and a sheet over moving content is the float surface. */
-    --elev-rest: 0 1px 2px rgba(0, 0, 0, 0.45), 0 6px 18px rgba(0, 0, 0, 0.32);
-    --elev-float: 0 2px 6px rgba(0, 0, 0, 0.5), 0 18px 44px rgba(0, 0, 0, 0.55);
+       recipes reads them in both themes. The dark theme keeps its own materials: a near-black violet room, the voices
+       as crimson and blue glass, controls as glass over what scrolls under them. */
+    --elev-rest: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.35);
+    --elev-float: 0 2px 8px rgba(0, 0, 0, 0.55), 0 20px 50px rgba(0, 0, 0, 0.6);
     --chrome-shade-shadow: var(--elev-float);
     --radius-object: 18px;
     --radius-inner: 12px;
     --radius-sheet: 24px;
-    --surface-object: #262629;
-    --surface-capsule: #343438;
-    --surface-capsule-hover: #3c3c41;
-    --surface-float: #2c2c30;
-    --surface-tray: rgba(var(--neutral-rgb), 0.05);
-    --surface-side: #202023;
-    --voice-owner: #22365a;
-    --voice-ouroboros: #362b2f;
-    --voice-ouroboros-card: #2b2729;
-    --tone-crimson: rgba(240, 90, 106, 0.22);
-    --tone-crimson-hover: rgba(240, 90, 106, 0.30);
+    --surface-object: rgba(255, 255, 255, 0.035);
+    --surface-capsule: rgba(44, 34, 52, 0.62);
+    --surface-capsule-hover: rgba(60, 46, 70, 0.72);
+    --surface-float: rgba(38, 31, 46, 0.94);
+    --surface-tray: rgba(var(--neutral-rgb), 0.035);
+    --surface-side: #0d0b0f;
+    --glass: blur(18px);
+    --voice-owner: linear-gradient(135deg, rgba(80, 120, 190, 0.16), rgba(55, 85, 155, 0.13));
+    --voice-ouroboros: linear-gradient(135deg, rgba(201, 53, 69, 0.20), rgba(120, 24, 36, 0.20));
+    --voice-ouroboros-card: rgba(201, 53, 69, 0.06);
+    --tone-crimson: rgba(240, 90, 106, 0.18);
+    --tone-crimson-hover: rgba(240, 90, 106, 0.24);
+    /* A tonal capsule's crimson ink: on a dark fill the accent text is too dark for 4.5:1, so it steps lighter. */
+    --tone-crimson-ink: #ffa0aa;
     --tone-green: rgba(34, 197, 94, 0.16);
     --tone-green-hover: rgba(34, 197, 94, 0.24);
     --tone-red: rgba(239, 68, 68, 0.16);
@@ -279,12 +282,15 @@
     --surface-float: #ffffff;
     --surface-tray: rgba(var(--neutral-rgb), 0.03);
     --surface-side: #fafbfc;
+    --glass: none;
     --voice-owner: #e9eef9;
     --voice-ouroboros: #fdf2f4;
     --voice-ouroboros-card: #fff8f9;
     /* The crimson tone is the accent ladder's; its hover stops at 14 % so the ink keeps 4.5:1 on it. */
     --tone-crimson: var(--accent-10);
     --tone-crimson-hover: var(--accent-14);
+    /* One step deeper than the accent text, so a tonal capsule keeps 4.5:1 on a voice-tinted backing too. */
+    --tone-crimson-ink: #b52b3b;
     --tone-green: rgba(34, 197, 94, 0.14);
     --tone-green-hover: rgba(34, 197, 94, 0.22);
     --tone-red: rgba(239, 68, 68, 0.10);
@@ -730,7 +736,7 @@ textarea.ui-control { resize: vertical; }
 :root[data-theme] :is(.btn-default, .btn-secondary):not(:disabled):hover { border-color: transparent; background: var(--surface-capsule-hover); }
 :root[data-theme] .btn-ghost { border-color: transparent; background: transparent; box-shadow: none; }
 :root[data-theme] .btn-ghost:not(:disabled):hover { background: var(--tone-quiet-hover); }
-:root[data-theme] .btn-primary { background: var(--tone-crimson); color: var(--accent-light); box-shadow: var(--elev-rest); }
+:root[data-theme] .btn-primary { background: var(--tone-crimson); color: var(--tone-crimson-ink); box-shadow: var(--elev-rest); }
 :root[data-theme] .btn-primary:not(:disabled):hover { background: var(--tone-crimson-hover); }
 :root[data-theme] .btn-save { background: var(--tone-green); color: var(--status-ok-fg); box-shadow: var(--elev-rest); }
 :root[data-theme] .btn-save:not(:disabled):hover { background: var(--tone-green-hover); }
@@ -747,5 +753,5 @@ textarea.ui-control { resize: vertical; }
     transition: var(--motion-tone);
 }
 :root[data-theme] .theme-choice:hover { border-color: transparent; background: var(--surface-capsule-hover); }
-:root[data-theme] .theme-choice[aria-checked="true"] { border-color: transparent; background: var(--tone-crimson); color: var(--accent-light); }
+:root[data-theme] .theme-choice[aria-checked="true"] { border-color: transparent; background: var(--tone-crimson); color: var(--tone-crimson-ink); }
 :root[data-theme] :is(.ui-chip, .status-badge) { border-color: transparent; }
