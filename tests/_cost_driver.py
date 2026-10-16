@@ -19,7 +19,8 @@ Boundaries (tags in the output):
   ``B1h``: the first ``/api/health`` request; ``popen_before_health``: child processes on that
   path (the lifespan and the request); ``B1c``: the boot coordinator thread that runs the remaining
   boot steps after the HTTP yield, when the tree has one (joined once readiness is known);
-- ``B2``: the threads that publish the store and initialize the supervisor (``thread_rules``),
+- ``B2``: the threads that publish the store and initialize the supervisor (``thread_rules``) and
+  every step that waits on the store's publication (``store_switch.when_ready``) wherever it runs,
   snapshotted when the chat bus is initialized (``B2_dialogue``) and when the supervisor reports
   ready (``B2_ready``); the supervisor is held there, before its first tick, while the requests
   below are measured;
