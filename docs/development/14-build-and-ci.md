@@ -17,18 +17,20 @@ Default local pytest excludes seven costly or environment-dependent lanes — `i
 
 `skill_smoke` and `size_ratchet` tests never also carry the `serial` marker or join `_SERIAL_TEST_FILES`: the `and not <lane>` markexprs are the lane barrier, and single-lane assignment keeps each test's placement unambiguous. A new opt-in lane registers its marker in `pyproject.toml`, adds a collect-only zero-test guard in CI, and keeps the default local addopts free of network and Docker requirements.
 
-### Retiring test pins
+### Retiring tests
 
-Record the retired proposition and named behaviour-test survivor (or obsolete
-requirement) in PR evidence, not a tracked ledger. Run the survivor and a falsifying
-negative. CHECKLISTS Body item 11(d) owns the preservation rule and review.
+Each removed or rewritten test gets a verdict line in PR evidence, not a ledger:
+obsolete (what ended it), wording owned by review (which item), rewritten, or merged
+(the survivor). Wording pins retire by class: a re-runnable rule and a sampled
+independent read. A merge runs its survivor and one falsifying negative per failure
+mode. CHECKLISTS Body item 11(d) owns the review.
 
 ### Parallel CI and the `serial` marker
 
-CI runs the default suite in two passes (`.github/workflows/ci.yml`, runners `quick-test` / `full-test-runs`): a parallel pass, `-m "not serial and <the seven lane exclusions>"` with `PARALLEL_PASS_FLAGS` (`-n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread`), then a flag-free serial pass, `-m "serial and <the same exclusions>"`. Windows alone adds `--default-suite-shard=K/4` (`tests/default_lane.py`): greedy packing by collected default-node count keeps whole files together across both passes, with path/index tie breaks. Shard 1 also collects unsharded `--default-suite-manifest` witnesses in fresh processes. Two rules preserve the split:
+CI runs the default suite in two passes (`.github/workflows/ci.yml`, runners `quick-test` / `full-test-runs`): a parallel pass, `-m "not serial and <the seven lane exclusions>"` with `PARALLEL_PASS_FLAGS` (`-n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread`), then a flag-free serial pass, `-m "serial and <the same exclusions>"`. Windows alone adds `--default-suite-shard=K/4` (`tests/default_lane.py` packs whole files by collected count; shard 1 adds the unsharded manifest witnesses). Two rules preserve the split:
 
-- Mark real-process and real-port tests, and tests that mutate process-global state without reliable fixture isolation, `@pytest.mark.serial` (or add the file to `_SERIAL_TEST_FILES` in `tests/conftest.py`): under `-n` such a test flakes on kill/reap or port-reclaim timing or crashes its worker, and with `--max-worker-restart=0` a dead worker fails its whole co-located batch as spurious failures in unrelated files.
-- Keep every other test parallel-safe so it stays in the fast pass: `tmp_path` (never a fixed path), `monkeypatch.setenv`/`delenv`/`setattr` for environment and attribute changes, no execution-order assumptions. A module-global mutation reliably snapshot-and-restored by a fixture may stay in the parallel pass (pattern: `tests/conftest.py::_isolate_workspace_executor_globals`).
+- Mark `@pytest.mark.serial` (or list the file in `_SERIAL_TEST_FILES` in `tests/conftest.py`) only for a shared resource the test cannot isolate: a fixed port, a real daemon, a process-global its fixture cannot restore. An owned child, a private root or port 0 is not one. Under `-n` such a test flakes on kill/reap or port-reclaim timing or crashes its worker, and with `--max-worker-restart=0` a dead worker fails its co-located batch.
+- Keep every other test parallel-safe: `tmp_path` (never a fixed path), `monkeypatch.setenv`/`delenv`/`setattr`, no execution-order assumptions; a fixture-restored global stays parallel (`tests/conftest.py::_isolate_workspace_executor_globals`).
 
 ### The local battery entry point
 
