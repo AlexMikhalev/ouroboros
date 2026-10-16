@@ -595,6 +595,10 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
             "projects/*/knowledge/index-full.md",
             "projects/*/knowledge_history.jsonl",
         })
+    # The small-window section floor names each retained capture in section_address()
+    # and joins it to the drive root in _retain(); the resolver sees neither half alone.
+    if (root / "ouroboros" / "section_floor.py").exists():
+        paths.add("state/context_views/*/*/*.md")
     return frozenset(paths)
 
 
@@ -768,7 +772,10 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # read at Panic and covered by the existing ``claudexor/**`` row.
 # 378 -> 377: the retired plan engine's operative-spec source (context_checkpoints/plan-spec-*.json);
 # earlier records keep theirs, nothing writes one any more.
-EXPECTED_SCAN_PATHS = 377
+# 377 -> 379 (live calls): the direct-route price catalog cache ``state/pricing/litellm.json``
+# (``ouroboros/pricing_catalog.py``; a section-2 row) and the small-window section captures
+# ``state/context_views/*/*/*.md`` (``ouroboros/section_floor.py``; a section-4 row).
+EXPECTED_SCAN_PATHS = 379
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
