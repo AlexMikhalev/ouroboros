@@ -39,12 +39,6 @@ def _ui_client_routes() -> list[BaseRoute]:
     ]
 
 
-def _call_routes() -> list:
-    from ouroboros.gateway.call_ws import call_routes
-
-    return call_routes()
-
-
 def collect_routes(
     *,
     data_dir: pathlib.Path,
@@ -341,7 +335,6 @@ def collect_routes(
             # contract; the handler dispatches on the method).
             methods=["DELETE", "PATCH"],
         ),
-        *_call_routes(),
         WebSocketRoute("/ws", endpoint=ws_endpoint),
     ]
     return routes
