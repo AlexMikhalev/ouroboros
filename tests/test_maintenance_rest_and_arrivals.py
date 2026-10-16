@@ -44,6 +44,7 @@ def env(tmp_path, monkeypatch):
     root.mkdir()
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
     live, calls, reads, reports = set(), [], [], []
+    child_run = threading.local()
     monkeypatch.setattr(queue, "task_has_live_ownership", lambda task_id, **_kw: task_id in live)
     monkeypatch.setattr(queue, "DRIVE_ROOT", root)
 
@@ -66,14 +67,18 @@ def env(tmp_path, monkeypatch):
 
     def spawn(cmd, **_kwargs):  # the supervised child, in process: its own ``run_pass``
         assert cmd[1:3] == ["-m", "ouroboros.evidence_packer"]
-        reports.append(packer.run_pass(root))
+        child_run.active = True
+        try:
+            reports.append(packer.run_pass(root))
+        finally:
+            child_run.active = False
         return _FakeChild(json.dumps(reports[-1]).encode())
 
     monkeypatch.setattr(process_custody, "spawn_supervised", spawn)
     monkeypatch.setattr(process_custody, "current_custody_session_id", lambda: "session")
     packs._READERS.clear()
     yield SimpleNamespace(root=root, live=live, calls=calls, reads=reads, reports=reports, gateway=Gateway,
-                          unit=packer.EvidencePacker(), refs={}, handles={})
+                          unit=packer.EvidencePacker(), refs={}, handles={}, child_run=child_run)
     packs._READERS.clear()
 
 
@@ -233,7 +238,7 @@ def test_late_work_is_handled_by_kind_and_the_history_rests_again(env, monkeypat
     entered, release = threading.Event(), threading.Event()
 
     def stat(self, *args, **kwargs):
-        if self == target and threading.current_thread().name == "evidence-packer" and not entered.is_set():
+        if (self == target and getattr(env.child_run, "active", False) and not entered.is_set()):
             entered.set()
             assert release.wait(10)
         return original(self, *args, **kwargs)

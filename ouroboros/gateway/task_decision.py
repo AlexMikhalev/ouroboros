@@ -333,9 +333,10 @@ async def _close_quiz_decision(root: pathlib.Path, task_id: str, quiz_id: str,
     from supervisor.events_chat_delivery import _handle_send_quiz_state
     from supervisor.message_bus import get_bridge
 
+    # One tap closes: the owner's words are optional, and their absence records the standard sentence.
     reason = body.get("reason", "")
-    if not isinstance(reason, str) or not reason.strip() or len(reason) > _COMMENT_MAX:
-        return _refused("closure requires a reason of at most 2000 characters", 400, reason_code="close_reason_required")
+    if not isinstance(reason, str) or len(reason) > _COMMENT_MAX:
+        return _refused("a closure reason is text of at most 2000 characters", 400, reason_code="close_reason_invalid")
     if "option_index" in body or "comment" in body:
         return _refused("closure carries a reason, without an answer", 400, reason_code="close_payload_invalid")
     try:

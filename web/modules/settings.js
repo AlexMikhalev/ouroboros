@@ -753,7 +753,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         syncRuntimeModeBridgeState();
         syncPolicyState(page, s?._meta);
         syncPostTaskEvolutionUi();
-        refreshSafetySkipCounter();  // fire-and-forget; fills the 24h audited-skip note
+        refreshSafetySkipCounter();  // fire-and-forget; labels matches in the inspected event window
         void refreshSearchPreview();  // fire-and-forget; describes the applied search Source/Model
     }
 
@@ -1109,8 +1109,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     }
 
     async function refreshSafetySkipCounter() {
-        // 24h count of durable safety_mode_skip audit events, so the owner sees how much
-        // the reduced coverage actually waved through.
+        // Count the last-24h matches inside the returned tail, not all of that day.
         const el = byId('s-safety-skip-counter');
         if (!el) return;
         try {
@@ -1121,11 +1120,10 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
                 const t = Date.parse(String(e?.ts || ''));
                 return Number.isFinite(t) && t >= cutoff;
             }).length;
-            // Honest window note: the count scans the recent events tail (2000), so a
-            // very busy day can undercount — say "recent", never overclaim exactness.
+            // The tail may cover less than a day, including when it has no matches.
             el.textContent = n > 0
-                ? `${n} safety check(s) waved through in the last 24h (audited; recent events window).`
-                : 'No safety checks waved through in the last 24h (recent events window).';
+                ? `${n} safety check(s) waved through among inspected recent events dated within 24h.`
+                : 'No waved-through safety checks found among inspected recent events dated within 24h.';
         } catch {
             el.textContent = '';
         }

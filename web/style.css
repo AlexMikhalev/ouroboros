@@ -376,27 +376,61 @@ body.resizing-panels { user-select: none; }
 .chat-bubble.project-answer > .message > :first-child { margin-top: 0; }
 .chat-bubble.project-answer > .system-message-actions { align-items: center; padding-block: var(--space-2) var(--space-1); }
 .project-answer-limitation { color: var(--text-meta); white-space: normal; overflow-wrap: anywhere; }
-.main-attention {
-    /* Scroll-bounded above the composer; with the keyboard up it keeps the composer's reserve. */
-    --main-attention-max: 45dvh;
-    --main-attention-keyboard-min: 96px;
-    --main-attention-composer-reserve: 240px;
-    border: 1px solid var(--divider);
-    border-radius: var(--radius-md);
-    background: var(--bg-secondary);
-    color: var(--text-primary);
+/* Main's questions and owner actions (docs/DESIGN.md "Project question mirror"). The waiting
+   pill is one of the composer's pills (Swarm / Context / Effort): their row, height and type, at
+   the row's end, amber for "waits for you"; a narrow row keeps the glyph and the number. */
+.chat-question-nav {
+    order: 9;
+    margin-inline-start: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: var(--composer-control-height);
+    padding: 0 12px;
+    border: 1px solid var(--status-warn-border);
+    border-radius: 999px;
+    background: var(--status-warn-bg);
+    color: var(--status-warn-fg);
+    box-shadow: var(--composer-control-shadow);
+    font: inherit;
+    font-size: var(--composer-control-font-size);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    cursor: pointer;
 }
-.main-attention[hidden] { display: none; }
-.main-attention-summary { padding: var(--space-2) var(--space-3); cursor: pointer; font-size: var(--type-meta); color: var(--text-primary); }
-.main-attention-summary:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
-.main-attention-body { max-height: var(--main-attention-max); overflow: auto; padding: var(--space-2); overscroll-behavior: contain; }
-body.keyboard-open .main-attention-body {
-    max-height: max(var(--main-attention-keyboard-min), calc(var(--vvh, 100dvh) - var(--main-attention-composer-reserve)));
+.chat-question-nav[hidden] { display: none; }
+.chat-question-nav:hover { border-color: var(--status-warn-fg); }
+.chat-question-nav:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
+.chat-question-nav-arrow.down { transform: rotate(180deg); }
+.chat-toolbar-row[data-owner-solo] .chat-question-nav { display: none; }
+@container composer (max-width: 460px) {
+    .chat-question-nav { padding: 0 10px; gap: 4px; }
+    .chat-question-nav-word, .chat-question-nav-arrow { display: none; }
 }
-.main-attention-questions, .main-attention-actions { display: flex; flex-direction: column; gap: var(--space-2); }
-.main-attention .chat-bubble { width: 100%; max-width: 100%; box-sizing: border-box; }
-.main-attention-task { padding: var(--space-2); border-top: 1px solid var(--divider); }
-.main-attention-reason { margin-block: var(--space-2); font-size: var(--type-meta); color: var(--text-meta); }
+/* A quiz card's head ends with its status and, while it takes an answer, one quiet × that closes it. */
+.chat-quiz-head-end { margin-inline-start: auto; display: inline-flex; align-items: center; gap: var(--space-3); min-width: 0; }
+.chat-quiz-close {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid var(--ui-card-border);
+    border-radius: 50%;
+    background: var(--ui-card-bg-soft);
+    color: var(--text-meta);
+    cursor: pointer;
+}
+.chat-quiz-close:hover:not(:disabled) { color: var(--text-primary); border-color: var(--focus-accent-border); }
+.chat-quiz-close:disabled { color: var(--text-disabled); cursor: default; }
+.chat-quiz-close:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
+@media (pointer: coarse) { .chat-quiz-close::after { content: ''; position: absolute; inset: -10px; } }
+/* An owner-required action is a System message: the task, one sentence, the task's own controls. */
+.owner-action-body { display: flex; flex-direction: column; gap: var(--space-2); }
+.owner-action-reason { font-size: var(--type-meta); color: var(--text-meta); }
 .chat-quiz-materials { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-block: var(--space-2); }
 /* Under any message the reference has the row to itself, so its name may run longer than in a quiz head. */
 .system-message-actions .chat-quiz-project { margin-inline-end: 0; max-width: min(100%, 44ch); }

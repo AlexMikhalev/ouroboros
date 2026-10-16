@@ -102,6 +102,7 @@ def _legacy_store(root, *rows, owned_root, tier=store.TIER_ENFORCED, shape="v1")
     ):
         if column not in known:
             schema = re.sub(rf",\s*{column} INTEGER", "", schema).replace(index, "")
+    schema = re.sub(r",\s*drive_retention_at TEXT", "", schema)
     conn = store.connect(path, tier, create=True)
     try:
         conn.executescript(schema)
@@ -123,7 +124,7 @@ def _legacy_store(root, *rows, owned_root, tier=store.TIER_ENFORCED, shape="v1")
 
 def _old_replace(conn, row, *, known=()):
     columns = store.typed_columns(row)
-    for column in ("has_owner_questions", "review_collection_pending", "plan_collection_pending"):
+    for column in ("has_owner_questions", "review_collection_pending", "plan_collection_pending", "drive_retention_at"):
         if column not in known:
             columns.pop(column)
     previous = conn.execute("SELECT write_seq FROM tasks WHERE task_id=?", (row["task_id"],)).fetchone()

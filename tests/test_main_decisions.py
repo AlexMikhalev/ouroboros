@@ -202,6 +202,41 @@ def test_question_read_is_readonly(tmp_path):
         assert txn.revision() == revision
 
 
+@pytest.mark.parametrize("room,chat_id", [("main", 1), ("agent-to-agent", -1001)])
+def test_mains_own_unanswered_questions_are_named_by_identity_and_other_rooms_stay_out(tmp_path, room, chat_id):
+    """Main's waiting count reaches Main's own unanswered questions, whose cards are already its native
+    history: the census names each by identity and never builds a copy. Another known room that is
+    neither Main nor a Project stays out of Main, without a gap."""
+    from ouroboros.owner_quiz import mark_discharged, record_answered
+    from ouroboros.owner_wait import set_owner_wait
+
+    write_task_result(tmp_path, "author", "running", chat_id=chat_id)
+    asked = [record_asked(tmp_path, "author", quiz_id=quiz_id, question=f"{quiz_id}?", options=["Yes", "No"],
+                          wait_for_answer=quiz_id == "waited", chat_id=chat_id) for quiz_id in ("waited", "calm")]
+    for block in asked:
+        record_publication(tmp_path, "author", block["quiz_id"], chat_id)
+    set_owner_wait(tmp_path, "author", {"quiz_id": "waited", "wait_id": "w", "state": "waiting"})
+    snapshot = main_decisions_snapshot(tmp_path, [], {})
+    assert snapshot["current_questions_complete"] is True and snapshot["current_questions_gaps"] == []
+    if room != "main":
+        assert snapshot["current_questions"] == []
+        return
+    waited, calm = asked
+    assert snapshot["current_questions"] == [
+        {"task_id": "author", "quiz_id": "waited", "chat_id": 1, "native": True, "quiz_state": "open",
+         "ts": waited["asked_at"], "owner_wait_state": "waiting"},
+        {"task_id": "author", "quiz_id": "calm", "chat_id": 1, "native": True, "quiz_state": "open",
+         "ts": calm["asked_at"]}]
+    # Unanswered stays current after its author finishes; an answered one leaves once delivered.
+    reconcile_terminal(tmp_path, "author")
+    rows = main_decisions_snapshot(tmp_path, [], {})["current_questions"]
+    assert [(row["quiz_id"], row["quiz_state"], row["native"]) for row in rows] == [
+        ("waited", "expired_terminal", True), ("calm", "expired_terminal", True)]
+    record_answered(tmp_path, "author", quiz_id="calm", option_index=0, request_id="owner", allow_expired=True)
+    mark_discharged(tmp_path, "author", "calm")
+    assert [row["quiz_id"] for row in main_decisions_snapshot(tmp_path, [], {})["current_questions"]] == ["waited"]
+
+
 def test_unavailable_index_or_member_is_not_complete_empty(tmp_path, monkeypatch):
     project_task(tmp_path)
     assert main_decisions_snapshot(tmp_path, [], {})["current_questions_complete"] is True
