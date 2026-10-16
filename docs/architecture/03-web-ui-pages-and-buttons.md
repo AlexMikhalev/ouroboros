@@ -67,7 +67,7 @@ Unavailable index, unreadable members and unknown publication addresses yield `c
 
 Host task facts attach to its card by producer-stamped `card_row` (`timeline`/`reviews`) and `card_row_id` (§11.1); without a card they render standalone System words. Finality is row-specific: durable `task_summary.outcome_phase` twins `log_events.js` via `project_dialogue.outcome_phase`/`OUTCOME_PHASE_HEADLINE`; pre-finalization carries `outcome_final=false`, no verdict. Terminal summaries append `_completion_verdict`; Main's completion carries plain headline/verdict without `outcome_phase`. Cause composition follows “Task cards, errors and reason lines” below. Reviewer rationale stays on results/in Logs: host rows never present unaccepted claims as the whole story.
 
-Nonclean answers carry one `completion_reason` (outcome/verdict and source delivery) through live/history/snapshots, never parsed prose/reviews. Clean answers have none; reason-only endings stay System voice without duplication. Main's folded preview opens the answer/documents in Project; task Files and quiz materials stay separate (DESIGN "Project completion mirror").
+`completion_reason` carries nonclean outcome/verdict and source-delivery facts through live/history/snapshots, not parsed prose/reviews. Clean finals omit it; reason-only endings stay System voice, once. Main previews open Project; task Files/quiz materials stay. Late Markdown writes refresh the bubble's fold in the viewport transaction, excluding hidden keyboard stops.
 
 #### Project handoff receipts
 

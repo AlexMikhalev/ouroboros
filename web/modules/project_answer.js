@@ -29,7 +29,8 @@ export function appendProjectRow(addMessage, msg, text, opts) {
 // itself is unconditional CSS, so measuring the fade never moves layout. A row mounted while
 // Chat is not the visible page has no layout box (clientHeight 0): it is left alone and
 // measured when Chat is shown; a resize re-measures, because the width decides the height.
-function markFold(bubble) {
+export function refreshProjectAnswerFold(bubble) {
+    if (!bubble?.classList.contains('project-answer')) return;
     const message = bubble.querySelector('.message');
     if (!message || !message.clientHeight) return;
     const folded = message.scrollHeight > message.clientHeight + 1;
@@ -61,7 +62,7 @@ function refreshFoldsSoon() {
     queued = true;
     afterLayout(() => {
         queued = false;
-        document.querySelectorAll('.chat-bubble.project-answer').forEach(markFold);
+        document.querySelectorAll('.chat-bubble.project-answer').forEach(refreshProjectAnswerFold);
     });
 }
 function watchFolds() {
@@ -78,7 +79,7 @@ export function decorateProjectRow(bubble, { role = 'system', projectId = '', pr
     if (role === 'assistant') {
         bubble.classList.add('project-answer');
         watchFolds();
-        afterLayout(() => markFold(bubble));
+        afterLayout(() => refreshProjectAnswerFold(bubble));
     }
     const actions = createSystemMessageActions(projectReference({ id: projectId, name: projectName }));
     bubble.querySelector('.message')?.after(actions);

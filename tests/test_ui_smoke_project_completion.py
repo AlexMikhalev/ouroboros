@@ -418,13 +418,93 @@ def test_ui_folded_completion_excludes_late_table_focus(direct_server_with_data,
             expect(full_table).to_have_attribute('tabindex', '0')
             expect(full_table).to_have_attribute('role', 'region')
             assert full_table.get_attribute('aria-label')
-            full_table.focus()
+            # Enter by the real sequential-key path, not programmatic focus.
+            panel.locator('.chat-bubble.assistant .sender').click()
+            for _ in range(12):
+                page.keyboard.press(tab)
+                if full_table.evaluate('n => n === document.activeElement'):
+                    break
             expect(full_table).to_be_focused()
             before = full_table.evaluate('n => n.scrollLeft')
-            page.keyboard.press('ArrowRight')
+            # WebKit scrolls focused regions while held, not on a zero-duration tap
+            # (the same consumer contract as test_markdown_reading_browser.py).
+            page.keyboard.press('ArrowRight', delay=300)
             page.wait_for_function('(n) => n.scrollLeft > 0', arg=full_table.element_handle())
             assert full_table.evaluate('n => n.scrollLeft') > before
             panel.screenshot(path=str(evidence / 'project-table.png'))
+            page.locator('#project-panel-close').click()
+            expect(panel).not_to_be_visible()
+            # Change only the fixture's fold height: table width/height stay fixed.
+            # This isolates syncFold -> MutationObserver restoration from table resize.
+            # Pin the fixture table width: WebKit's page scrollbar otherwise
+            # changes its width by six pixels when the message becomes taller.
+            tables.first.evaluate('n => { n.style.width = `${n.clientWidth}px`; }')
+            page.evaluate('() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))')
+            dimensions = tables.first.evaluate('n => [n.clientWidth, n.clientHeight]')
+            message.evaluate("n => n.style.maxHeight = 'none'")
+            page.evaluate("window.dispatchEvent(new Event('resize'))")
+            expect(row).not_to_have_class(re.compile(r'\bis-folded\b'))
+            expect(tables.first).to_have_attribute('tabindex', '0')
+            assert tables.first.evaluate('n => [n.clientWidth, n.clientHeight]') == dimensions
+            observations.append({'stage': 'unfold-without-table-resize', 'table_tabindex': tables.first.get_attribute('tabindex')})
         finally:
             (evidence / 'focus.json').write_text(json.dumps(observations, indent=2), encoding='utf-8')
+            browser.close()
+
+
+@pytest.mark.ui_browser
+@pytest.mark.parametrize("engine", ["chromium", "webkit"])
+def test_ui_folded_completion_excludes_delayed_diagram_fallback(direct_server_with_data, engine):  # noqa: F811
+    """A late real Mermaid load failure cannot add a hidden keyboard stop."""
+    pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
+    import re
+    from playwright.sync_api import expect, sync_playwright
+    from ouroboros.projects_registry import create_project
+    from ouroboros.utils import append_jsonl
+
+    root = direct_server_with_data["data_dir"]
+    project = create_project(root, f"late-diagram-{engine}", name="Diagram report")
+    answer = _LONG_ANSWER + "\n\n```mermaid\ngraph TD; A-->B\n```"
+    append_jsonl(root / "logs" / "chat.jsonl", {
+        "direction": "system", "chat_id": 1, "user_id": 1, "type": "project_completion_summary",
+        "project_id": project["id"], "project_name": project["name"], "status": "completed",
+        "ts": "2026-08-22T12:00:00+00:00", "task_id": "late-diagram",
+        "text": "Diagram report · Done", "completion_answer": answer})
+    append_jsonl(root / "logs" / "chat.jsonl", {
+        "direction": "out", "chat_id": int(project["chat_id"]), "user_id": 1,
+        "ts": "2026-08-22T11:59:00+00:00", "task_id": "late-diagram", "text": answer})
+    tab = "Alt+Tab" if engine == "webkit" else "Tab"
+    with sync_playwright() as pw:
+        browser = getattr(pw, engine).launch(headless=True)
+        page = browser.new_page(viewport={"width": 1146, "height": 792})
+        pending = []
+        page.route("**/mermaid.min.js", lambda route: pending.append(route))
+        try:
+            with page.expect_request("**/mermaid.min.js"):
+                page.goto(direct_server_with_data["url"], wait_until="domcontentloaded")
+            row = page.locator('#chat-messages .project-answer[data-task-id="late-diagram"]')
+            expect(row).to_have_class(re.compile(r'\bis-folded\b'))
+            assert row.locator('[data-code-copy]').count() == 0
+            pending.pop().abort()
+            button = row.locator('[data-code-copy]')
+            expect(button).to_have_attribute('tabindex', '-1')
+            row.locator('.sender').click()
+            reference = row.locator('[data-intent="open-project"]')
+            for _ in range(12):
+                page.keyboard.press(tab)
+                assert not row.locator('.message').evaluate('n => n.contains(document.activeElement)')
+                if reference.evaluate('n => n === document.activeElement'):
+                    break
+            expect(reference).to_be_focused()
+            assert row.locator('.message').evaluate('n => n.scrollTop') == 0
+            page.unroute("**/mermaid.min.js")
+            page.route("**/mermaid.min.js", lambda route: route.abort())
+            reference.click()
+            panel = page.locator(f'#panel-pchat-{project["id"]}')
+            ordinary = panel.locator('[data-code-copy]')
+            expect(ordinary).to_be_visible()
+            assert ordinary.evaluate('n => n.tabIndex') == 0
+            ordinary.click()
+            expect(ordinary).to_have_text('Copied')
+        finally:
             browser.close()

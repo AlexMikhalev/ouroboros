@@ -6,7 +6,7 @@ import { showToast } from './toast.js';
 import { tx } from './i18n.js';
 import { hostRowDisplayText } from './host_notice_text.js';
 import { ORIGIN_ADDRESSED_NOTICE_TYPES, childRowPlacement, replayConcludesTask } from './chat_row_placement.js';
-import { appendProjectRow, decorateProjectRow, PROJECT_ROW_TYPES, syncSavedProjectContext } from './project_answer.js';
+import { appendProjectRow, decorateProjectRow, PROJECT_ROW_TYPES, refreshProjectAnswerFold, syncSavedProjectContext } from './project_answer.js';
 import { createProjectHandoffs, receiptNotice } from './project_handoff.js';
 import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
 import { attachmentCaption, attachmentViews, composerText, createComposerAttachments, createUnconfirmedSends } from './chat_attachments.js';
@@ -682,9 +682,16 @@ export function createChatInstance({
     }
 
     function enhanceMountedMarkdown(root) {
+        // Late diagrams/fallbacks can add keyboard stops after the fold was measured.
+        // Refresh only their own bubble, inside the existing viewport transaction.
+        const foldedWrite = writer => (mutate, options) => writer(() => {
+            const changed = mutate();
+            refreshProjectAnswerFold(root.closest?.('.project-answer'));
+            return changed;
+        }, options);
         return enhanceChatMarkdown(root, {
-            onDomWrite: _remoteActivityDepth > 0 ? withRemoteActivity : withStableViewport,
-            onThemeDomWrite: withStableViewport,
+            onDomWrite: foldedWrite(_remoteActivityDepth > 0 ? withRemoteActivity : withStableViewport),
+            onThemeDomWrite: foldedWrite(withStableViewport),
         });
     }
     const {

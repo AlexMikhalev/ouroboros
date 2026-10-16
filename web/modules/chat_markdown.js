@@ -743,7 +743,7 @@ function markTableOverflow(wrap) {
     // A late resize/Markdown write must not make clipped Main text a keyboard stop.
     // Keep the region semantics and selection; its Project reference opens the full table.
     const tabIndex = wrap.closest('.project-answer.is-folded') ? -1 : 0;
-    if (scrolls === wrap.hasAttribute('tabindex') && (!scrolls || wrap.tabIndex === tabIndex)) return;
+    if (scrolls && wrap.hasAttribute('tabindex') && wrap.tabIndex === tabIndex) return;
     if (scrolls) {
         wrap.setAttribute('role', 'region');
         wrap.setAttribute('aria-label', tr('code.scrollable_table', 'Scrollable table'));

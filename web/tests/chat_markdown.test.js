@@ -412,6 +412,14 @@ test('a compact surface binds only its tables, follows later writes, and an ance
             'data-scroll-start': '', role: 'region', 'aria-label': 'Scrollable table', tabindex: '0',
         });
 
+        // Unfolding may remove tabindex before the table also stops overflowing.
+        later.removeAttribute('tabindex');
+        later.scrollWidth = later.clientWidth;
+        written([{ type: 'attributes', target: later, attributeName: 'tabindex' }]);
+        assert.equal(later.hasAttribute('role'), false);
+        assert.equal(later.hasAttribute('aria-label'), false);
+        assert.equal(later.hasAttribute('tabindex'), false);
+
         // A replaced table is released; one moved within the root stays observed.
         inside.delete(first);
         written([{ addedNodes: [], removedNodes: [first] }, { addedNodes: [row], removedNodes: [row] }]);
