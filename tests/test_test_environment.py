@@ -204,14 +204,19 @@ def test_safe_test_retains_its_new_root_and_keeps_the_command_status(tmp_path):
     assert Path(result.stdout.splitlines()[-1]) == root
 
 
-# The command keeps a child in a session of its own, as tests/group_run.py keeps node's runner;
-# a "stubborn" command also ignores SIGTERM, so only the SIGKILL that follows can stop it.
+# The command keeps a child in a session of its own, as tests/group_run.py keeps node's runner.
+# It records the SIGTERM it gets; an "obedient" command then exits, a "stubborn" one keeps running,
+# so only the SIGKILL that follows can stop it.
 _TREE = """\
 import os, pathlib, signal, subprocess, sys, time
 own = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
 child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"], **own)
-if os.name != "nt" and sys.argv[2] == "stubborn":
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+def term(*_):
+    pathlib.Path(sys.argv[1] + ".term").write_text("TERM")
+    if sys.argv[2] == "obedient":
+        os._exit(0)
+if os.name != "nt":
+    signal.signal(signal.SIGTERM, term)
 pathlib.Path(sys.argv[1]).write_text(f"{os.getpid()} {child.pid}")
 time.sleep(600)
 """
@@ -235,6 +240,8 @@ def test_safe_test_timeout_stops_the_whole_tree_and_exits_124(tmp_path):
     assert result.returncode == 124, result.stderr
     assert "SAFE_TEST_TIMEOUT after 3s" in result.stderr
     assert sum(line.startswith("SAFE_TEST_RETAINED ") for line in result.stderr.splitlines()) == 1
+    if sys.platform != "win32":  # the graceful SIGTERM came before the SIGKILL that stopped it
+        assert (tmp_path / "pids.term").read_text(encoding="utf-8") == "TERM"
     assert not survivors
 
 
@@ -256,6 +263,7 @@ def test_safe_test_timeout_passes_sigterm_on_to_the_whole_tree(tmp_path):
                                              sys.executable, "-c", _TREE, str(pids), "obedient"],
                                 cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                 start_new_session=True)
+    tree = []
     try:
         tree = _recorded_tree(pids)
         os.kill(launcher.pid, signal.SIGTERM)
@@ -264,9 +272,10 @@ def test_safe_test_timeout_passes_sigterm_on_to_the_whole_tree(tmp_path):
         if launcher.poll() is None:
             kill_process_tree(launcher)
             launcher.wait()
-    survivors = kill_survivors(tree)
+        survivors = kill_survivors(tree)  # a launcher that failed to stop the tree must not leave it behind
     assert launcher.returncode == 128 + signal.SIGTERM, stderr
     assert "SAFE_TEST_RETAINED " in stderr
+    assert (tmp_path / "pids.term").read_text(encoding="utf-8") == "TERM"
     assert not survivors
 
 
