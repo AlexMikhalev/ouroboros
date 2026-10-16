@@ -29,6 +29,7 @@
  * @property {?number} spent_calls
  * @property {boolean} supervisor_ready
  * @property {?string} supervisor_error
+ * @property {BootDocument=} boot  // the boot phases (same object as /api/health.boot); the Starting… header paints them
  * @property {string} runtime_mode
  * @property {string} context_mode
  * @property {boolean} context_mode_auto_low  // frozen compatibility field; always false
@@ -51,6 +52,17 @@
  * @property {Array<Object>=} main_attention_gaps Typed gaps in current action evidence.
  * @property {import('./client_contract_types.js').ServedUiState=} served_ui  // this generation's main interface; absent on older cores
  */
+/**
+ * @typedef {Object} BootDocument  // GET /api/health.boot and GET /api/state.boot: the serving generation's phases
+ * @property {'starting'|'serving'|'ready'|'failed'} phase
+ * @property {string} since
+ * @property {boolean} dialogue_ready  // an owner message is accepted durably
+ * @property {boolean} tasks_ready  // pooled task starts are admitted
+ * @property {Array<{name: string, state: 'running'|'done'|'failed', started_at: string, ended_at: ?string, error: ?string}>} steps
+ * @property {Object<string, {state: ?string, done: ?number, total: ?number}>} jobs  // the store's named background jobs
+ * @property {?string} error
+ */
+
 /**
  * Background Consciousness alarm clock (server._describe_bg_consciousness_state over consciousness.status_snapshot). A wake-up is an ordinary Main turn; the direct-activity census owns its liveness.
  * @typedef {Object} BgConsciousnessState

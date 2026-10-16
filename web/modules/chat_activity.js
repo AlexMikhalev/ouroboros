@@ -984,6 +984,26 @@ export function supervisorReady(data) {
     return typeof data?.supervisor_ready === 'boolean' ? data.supervisor_ready : null;
 }
 
+// The host's boot phases (`/api/state.boot`, the same object as `/api/health.boot`), null
+// when the body states none: `phase`, `dialogue_ready`, `tasks_ready`, `steps`, `error`.
+export function bootPhase(data) {
+    const boot = data?.boot;
+    return boot && typeof boot === 'object' && typeof boot.phase === 'string' ? boot : null;
+}
+
+// The Starting… header's words for a boot phase: the chat accepts messages while the
+// background tasks are still being restored, or the start failed (its cause rides the
+// title). Nothing known about the phase keeps the plain Starting….
+export function startingStatus(boot) {
+    const failedStep = Array.isArray(boot?.steps) ? boot.steps.find((step) => step?.state === 'failed') : null;
+    const title = String(boot?.error || (failedStep ? `${failedStep.name}: ${failedStep.error || ''}` : '') || '');
+    if (boot?.phase === 'failed') return { kind: 'starting', text: 'Start failed', title, showDots: false };
+    if (boot?.dialogue_ready === true) {
+        return { kind: 'starting', text: 'Chat ready, restoring background tasks', title, showDots: false };
+    }
+    return { kind: 'starting', text: 'Starting…', title, showDots: false };
+}
+
 /**
  * Main-thread fan-out gate for a live WS frame.
  *
@@ -1091,6 +1111,7 @@ export function computeDerivedChatStatus({
     projectWaitLabel = '',
     pendingSubmissionsCount = 0,
     supervisorStarting = false,
+    bootPhase: boot = null,
     modelActivity = null,
 } = {}) {
     if (!isConnected) return { kind: 'offline', text: 'Reconnecting...', showDots: false };
@@ -1108,7 +1129,7 @@ export function computeDerivedChatStatus({
     // Mixed or unknown causes stay generic; paused work never claims Running.
     if (pausedManagedCount > 0) return { kind: 'online', text: pausePhaseLabel('budget_paused', pausedCause), showDots: false };
     if (projectWaitLabel) return { kind: 'online', text: projectWaitLabel, showDots: false };
-    if (supervisorStarting) return { kind: 'starting', text: 'Starting…', showDots: false };
+    if (supervisorStarting) return startingStatus(boot);
     return { kind: 'online', text: 'Online', showDots: false };
 }
 

@@ -148,6 +148,7 @@ import {
     senderLabel,
     shouldFirePanic,
     supervisorReady,
+    bootPhase,
     taskCostMeta,
     taskCostProjection,
     unconfirmedForegroundCardIds,
@@ -453,6 +454,7 @@ export function createChatInstance({
     const pendingSubmissions = new Map();
     // В9: Starting… until a snapshot says supervisor_ready; a disconnect forgets it.
     let hostReady = false;
+    let hostBoot = null; // the boot phases the Starting… header paints; forgotten with readiness
     // Bounded conclusions retain known outcomes for later cards; reusable slots clear on settlement.
     const concludedDirectActivities = new Map();
     const CONCLUDED_ACTIVITY_LEDGER_MAX = 200;
@@ -532,12 +534,13 @@ export function createChatInstance({
         }
     }
 
-    function setStatus(kind, text) {
+    function setStatus(kind, text, title = '') {
         // replay frames never touch the badge; the reducer
         // (syncChatStatus) writes it once after the batch.
         if (!statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
         statusBadge.textContent = text;
+        statusBadge.title = title; // a failed boot step's cause; empty otherwise
         roomWork?.update();
     }
 
@@ -612,6 +615,7 @@ export function createChatInstance({
         handoffs?.snapshot(data);
         mainWaiting?.snapshot(data, snapshotRequestedAt);
         hostReady = supervisorReady(data) ?? hostReady;
+        hostBoot = bootPhase(data) ?? hostBoot;
         const activities = Array.isArray(data?.active_chat_activities)
             ? data.active_chat_activities
             : data?.active_direct_turns;
@@ -3154,8 +3158,9 @@ export function createChatInstance({
     if (asPanel) {
         // Late panels missed socket open; seed from the socket and latest snapshot.
         hostReady = supervisorReady(stateSnapshots.latest?.()) ?? hostReady;
-        const seed = computeDerivedChatStatus({ supervisorStarting: !hostReady });
-        if (ws.isConnected?.()) setStatus(seed.kind, seed.text);
+        hostBoot = bootPhase(stateSnapshots.latest?.()) ?? hostBoot;
+        const seed = computeDerivedChatStatus({ supervisorStarting: !hostReady, bootPhase: hostBoot });
+        if (ws.isConnected?.()) setStatus(seed.kind, seed.text, seed.title);
     } else headerControlInterval = setInterval(refreshHeaderControlState, 3000);
     // Both Main and late panels hydrate once; each instance filters its chat.
     refreshHeaderControlState(true);
@@ -3368,12 +3373,13 @@ export function createChatInstance({
             isConnected: ws.isConnected ? ws.isConnected() : true,
             pendingSubmissionsCount: pendingSubmissions.size,
             supervisorStarting: !hostReady,
+            bootPhase: hostBoot,
         });
     }
 
     function syncChatStatus() {
         const derived = deriveChatStatus();
-        setStatus(derived.kind, derived.text);
+        setStatus(derived.kind, derived.text, derived.title);
         return setTypingIndicatorVisible(derived.showDots && foregroundCards().length === 0);
     }
 
@@ -3774,6 +3780,7 @@ export function createChatInstance({
             return changed;
         });
         hostReady = false;
+        hostBoot = null;
         hideTypingIndicatorOnly();
         syncChatStatus();
         syncHeaderControlState({ accounting: { available: false } });
