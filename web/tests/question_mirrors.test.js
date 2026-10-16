@@ -414,6 +414,46 @@ test('failed, missing and foreign canonical reads keep a safe Project recovery p
     }
 }));
 
+// Main's waiting pill mounts a question beyond the loaded history from its own census rows: one the
+// current census named is live at once; one kept from an older read (a gap, a failed read, a
+// reconnect) is withheld until its own canonical read, so a stale "unanswered" never takes input.
+test('a pointer from an older read mounts withheld until its canonical read; a current census row is live at once', async () => {
+    const reads = [];
+    const fx = mainFixture({ fetchDetail: (...args) => new Promise(resolve => reads.push([args, resolve])) });
+    try {
+        fx.decision.appendQuestionPointer({ ...WAITING, quiz_id: 'kept' }, { stale: true });
+        const kept = fx.cards()[0];
+        assert.equal(kept.dataset.state, 'unknown');
+        assert.equal(text(kept, 'chat-quiz-status-text'), 'Status unavailable');
+        assert.ok(options(kept).every(button => button.disabled));
+        assert.equal(kept.querySelector('.chat-quiz-close')?.disabled ?? true, true, 'nor can it be closed');
+        await turn();
+        assert.equal(reads.length, 1, 'it reads its canonical question at once');
+        reads[0][1]({ task_id: 't-1', project_id: 'p1', owner_quiz: {
+            kept: { quiz_id: 'kept', state: 'open', question: 'Canonical source', options: ['A', 'B'] } } });
+        await turn();
+        const confirmed = fx.cards()[0];
+        assert.equal(confirmed.dataset.state, 'open');
+        assert.ok(options(confirmed).every(button => !button.disabled), 'the confirmed form takes answers');
+        assert.equal(text(confirmed, 'chat-quiz-question'), 'Canonical source');
+        // Memory that evicted something would make an unconfirmed pointer read too; a row of the
+        // current census needs no read.
+        for (let i = 0; i < 2001; i += 1)
+            fx.decision.applyQuizStateFrame({}, { task_id: 'noise', quiz_id: `n-${i}`, state: 'open' });
+        fx.decision.appendQuestionPointer({ ...WAITING, quiz_id: 'current', ts: ASKED[1] }, { canonical: true });
+        const current = fx.cards().find(card => card.dataset.quizId === 'current');
+        assert.equal(current.dataset.state, 'open');
+        assert.ok(options(current).every(button => !button.disabled));
+        await turn();
+        assert.equal(reads.length, 1, 'no read for the current census row');
+        fx.decision.appendQuestionPointer({ ...WAITING, quiz_id: 'plain', ts: ASKED[1] });
+        assert.equal(fx.cards().find(card => card.dataset.quizId === 'plain').dataset.state, 'unknown',
+            'without either word, eviction alone still withholds');
+        await turn();
+        assert.equal(reads.length, 2);
+    } finally { fx.decision.destroy(); fx.restore(); }
+});
+
 test('an answered pointer settles a pending safe copy for five seconds', () => withTimers(async () => {
     const pending = [];
     const fx = mainFixture({ fetchDetail: () => new Promise(resolve => pending.push(resolve)) });

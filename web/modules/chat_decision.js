@@ -309,7 +309,7 @@ export function createChatDecision({
         else if (keyboard) focusAfterRemoval?.();
     }
 
-    function buildQuestionPointer(msg, canonical = false) {
+    function buildQuestionPointer(msg, canonical = false, stale = false) {
         if (disposed || !msg.task_id || !msg.quiz_id || !msg.project_id || !msg.project_chat_id) return null;
         const key = questionKey(msg.task_id, msg.quiz_id);
         const prior = mirrors.get(key);
@@ -330,7 +330,7 @@ export function createChatDecision({
             observe(msg); return null;
         }
         const view = { key, row: {}, observedAt: Date.now(), timer: null,
-            needsValidation: !canonical && forgotten,
+            needsValidation: stale || (!canonical && forgotten),
             revalidationPending: false, revalidationFailed: false };
         mirrorRow(view, msg);
         const bubble = mountMirror(view);
@@ -375,10 +375,12 @@ export function createChatDecision({
     }
 
     // A Project question's Main copy takes its own place in the feed, at the time it was asked.
-    function appendQuestionPointer(msg) {
+    // `canonical`: the row is the current census's; `stale`: an older read's, so the copy mounts
+    // withheld and takes its form only from its own canonical read.
+    function appendQuestionPointer(msg, { canonical = false, stale = false } = {}) {
         if (!isMain || !insertMessageNode) return false;
         return onDomWrite(() => {
-            const bubble = buildQuestionPointer(msg);
+            const bubble = buildQuestionPointer(msg, canonical, stale);
             if (!bubble) return false;
             const inserted = insertMessageNode(bubble) !== false;
             onQuestionsChanged();

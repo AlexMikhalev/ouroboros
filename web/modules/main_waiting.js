@@ -8,14 +8,20 @@ import { projectReference, nameProjectReference } from './project_reference.js';
 import { createTaskResumeButton, openTaskControlMenu, requestStop, hurryTaskAction,
     resumeTaskAction, ACTION_RESUME, ACTION_HURRY, TASK_CONTROL_TRIGGER_LABEL } from './task_control_menu.js';
 import { syncParkedPhase } from './task_phase_chip.js';
+import { unknownDeliveryRemovable } from './question_presentation.js';
 import { createSystemMessageActions } from './ui_helpers.js';
 import { showToast } from './toast.js';
 import { fmt, tx } from './i18n.js';
 
 const GLYPH = '<svg class="chat-question-nav-glyph" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>';
 const ARROW = '<svg class="chat-question-nav-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>';
-// An unanswered question stays current after its author ends (until answered or closed).
+// An unanswered question stays current after its author ends (until answered or closed). A late
+// answer whose delivery a restart left unknown waits on the owner too: only they can remove it
+// from pending, and its card offers that.
 const UNANSWERED = ['open', 'expired_terminal'];
+const waitsAnswer = row => UNANSWERED.includes(row.quiz_state);
+const waitsOwner = row => waitsAnswer(row) || (Boolean(row.project_id) && unknownDeliveryRemovable(row));
+const rowKey = row => `${row.task_id}:${row.quiz_id}`;
 // What a census read vouches for: complete, everything; incomplete, every question its gaps do
 // not name (a gap names a task, or a task and its quiz). A gap naming no task (index, registry or
 // bindings unavailable), an unexplained incompleteness or a failed read vouches for nothing.
@@ -40,7 +46,11 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
     pill.innerHTML = `${GLYPH}<span class="chat-question-nav-count"></span><span class="chat-question-nav-word"></span>${ARROW}`;
     toolbar?.append(pill);
     const records = new Map();
-    let questions = [];  // the canonical unanswered rows
+    let questions = [];  // the canonical rows that wait on the owner
+    // Rows the latest census named while the socket was open: only these mount with their form
+    // live. One kept from an older read (a gap, a failed read, a reconnect) mounts withheld until
+    // its own canonical read confirms it.
+    let fresh = new Set();
     let connected = true;
     let cursor = '';     // the last target shown: the next press continues after it
     const waits = createModelWaitController({ getRecord: id => records.get(id), openSettings,
@@ -54,6 +64,7 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
         const bubble = document.createElement('div');
         bubble.className = 'chat-bubble system owner-action';
         bubble.dataset.ownerAction = id;
+        bubble.tabIndex = -1;  // the pill lands keyboard focus on the message, beside its controls
         const sender = document.createElement('div');
         sender.className = 'sender';
         sender.textContent = 'System';
@@ -172,7 +183,7 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
         const target = list.length ? nextTarget() : null;
         pill.hidden = !target;
         if (!target) return;
-        const asked = list.filter(t => t.kind === 'question').length;
+        const asked = list.filter(t => t.kind === 'question' && waitsAnswer(t.row)).length;
         const acts = list.length - asked;
         const word = acts === 0 ? (asked === 1 ? 'question' : 'questions')
             : asked === 0 ? (acts === 1 ? 'action' : 'actions') : 'waiting';
@@ -200,7 +211,10 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
         if (!node && target.kind === 'question') {
             // Outside the loaded history: a Project question's copy mounts at its own date; Main's
             // own question opens through its canonical read.
-            if (target.row.project_id) { mountQuestion(target.row); node = nodeOf(target); }
+            if (target.row.project_id) {
+                mountQuestion(target.row, fresh.has(rowKey(target.row)) ? { canonical: true } : { stale: true });
+                node = nodeOf(target);
+            }
             else { await revealQuestion(target.row.task_id, target.row.quiz_id); node = nodeOf(target); }
         }
         if (node) land(node);
@@ -226,12 +240,10 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
             // incompleteness counts only for what the gaps name, never the whole list.
             const vouched = vouchedBy(data);
             syncQuestions(data ? data.current_questions : [], vouched, requestedAt);
-            const rows = (Array.isArray(data?.current_questions) ? data.current_questions : [])
-                .filter(row => UNANSWERED.includes(row.quiz_state));
+            const rows = (Array.isArray(data?.current_questions) ? data.current_questions : []).filter(waitsOwner);
             // A partial read keeps what it cannot see: never a count that silently drops to zero.
-            const seen = new Set(rows.map(row => `${row.task_id}:${row.quiz_id}`));
-            questions = [...rows, ...questions.filter(row => !seen.has(`${row.task_id}:${row.quiz_id}`)
-                && !vouched(row.task_id, row.quiz_id))];
+            fresh = new Set(rows.map(rowKey));
+            questions = [...rows, ...questions.filter(row => !fresh.has(rowKey(row)) && !vouched(row.task_id, row.quiz_id))];
             const actions = Array.isArray(data?.main_attention) ? data.main_attention : [];
             const actionsComplete = data?.main_attention_complete === true;
             mutate(() => {
@@ -254,7 +266,10 @@ export function createMainWaiting({ page, messagesDiv, toolbar, insertMessageNod
         },
         setConnected(value) {
             connected = value;
-            if (!value) for (const record of records.values()) record.available = false;
+            if (!value) {
+                fresh = new Set();  // what the closed socket last confirmed waits for the next census
+                for (const record of records.values()) record.available = false;
+            }
             mutate(() => { for (const record of records.values()) paint(record, record.row); return true; });
             connectQuestions(value);  // the question owner withdraws its forms and voids its reads in flight
         },

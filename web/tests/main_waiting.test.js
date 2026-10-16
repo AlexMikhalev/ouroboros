@@ -1,4 +1,4 @@
-// Main's waiting navigator (docs/DESIGN.md "Main questions and actions"): questions keep their
+// Main's waiting navigator (docs/DESIGN.md "Project question mirror"): questions keep their
 // place in the feed, a task that cannot continue without the owner is one System message there,
 // and one amber pill in the composer row reaches whichever of them is off screen.
 import assert from 'node:assert/strict';
@@ -97,12 +97,12 @@ function mainPage(t, { fetchImpl, ...options } = {}) {
         insert(bubble);
         return bubble;
     };
-    const calls = { sync: [], connect: [], inserted: [], stamps: [], mounted: [], revealed: [], reading: 0 };
+    const calls = { sync: [], connect: [], inserted: [], stamps: [], mounted: [], authority: [], revealed: [], reading: 0 };
     const waiting = createMainWaiting({ page, messagesDiv: feed, toolbar,
         insertMessageNode: node => { calls.inserted.push(node); return insert(node); },
         stampNodeTimestamp: (node, raw, opts) => { calls.stamps.push(raw); return stampNodeTimestamp(node, raw, opts); },
         syncQuestions: (...args) => calls.sync.push(args), connectQuestions: value => calls.connect.push(value),
-        mountQuestion: row => { calls.mounted.push(row); card(row); return true; },
+        mountQuestion: (row, authority) => { calls.mounted.push(row); calls.authority.push(authority); card(row); return true; },
         beginReading: () => { calls.reading += 1; }, ...options });
     t.after(() => waiting.destroy());
     const pill = toolbar.children.at(-1);
@@ -180,6 +180,52 @@ test('the pill counts unanswered questions and owner actions, in words that name
         question('closed', { quiz_state: 'closed', question_delivery: { kind: 'closure', state: 'owed' } }),
         question('replaced', { quiz_state: 'superseded' })] }));
     assert.equal(main.shown().text, '2 questions');
+});
+
+// A restart can leave a late answer's delivery unknown; only the owner can take it out of pending,
+// from its Main copy, so it waits on them like an action until they do.
+test('a late answer whose delivery is unknown is an owner action the pill reaches, until it is removed', async t => {
+    const main = mainPage(t);
+    main.feed.scrollTop = 100 * ROW;
+    const unknown = (patch = {}) => question('late', { quiz_state: 'answered', answered_index: 1,
+        question_delivery: { kind: 'answer', state: 'owed', reason_code: 'late_answer_delivery_unknown', ...patch } });
+    main.waiting.snapshot(census({ questions: [unknown()] }));
+    assert.deepEqual([main.shown().text, main.shown().label], ['1 action', '1 waiting for you: show the next one']);
+    const earlier = question('q1', { ts: '2020-01-01T08:00:00Z' });
+    main.waiting.snapshot(census({ questions: [earlier, unknown()] }));
+    assert.equal(main.shown().text, '2 waiting');
+    await main.press();
+    await main.press();
+    assert.deepEqual(main.calls.mounted.map(row => row.quiz_id), ['q1', 'late'], 'it mounts its read-only copy at its own date');
+    main.waiting.snapshot(census({ questions: [earlier, unknown({ dismissed: true })] }));
+    main.feed.scrollTop = 100 * ROW;
+    main.waiting.refresh();
+    assert.equal(main.shown().text, '1 question', 'once removed from pending it waits no more');
+    main.waiting.snapshot(census({ questions: [unknown({ reason_code: 'publication_address_unknown' })] }));
+    assert.equal(main.shown(), null, 'an owed delivery the core still retries needs nobody');
+});
+
+test('the pill mounts a row the latest census named live, and one kept from an older read withheld', async t => {
+    const main = mainPage(t);
+    main.feed.scrollTop = 100 * ROW;
+    const pressFor = async (id) => {
+        await main.press();
+        assert.equal(main.calls.mounted.at(-1).quiz_id, id);
+        return main.calls.authority.at(-1);
+    };
+    main.waiting.snapshot(census({ questions: [question('named', { ts: '2020-01-01T09:00:00Z' })] }));
+    assert.deepEqual(await pressFor('named'), { canonical: true }, 'the current census named it');
+    main.waiting.snapshot(census({ questions: [question('kept', { ts: '2020-01-01T09:30:00Z' })] }));
+    main.waiting.snapshot({ current_questions: [], current_questions_complete: false, main_attention: [],
+        main_attention_complete: true, current_questions_gaps: [{ task_id: 'task-1', quiz_id: 'kept', reason: 'question_source_unavailable' }] });
+    assert.equal(main.shown().text, '1 question', 'its gap keeps it counted');
+    assert.deepEqual(await pressFor('kept'), { stale: true }, 'kept from an older read: withheld until its own read');
+    main.waiting.snapshot(census({ questions: [question('reopened', { ts: '2020-01-01T10:00:00Z' })] }));
+    main.waiting.setConnected(false);
+    main.waiting.setConnected(true);
+    assert.deepEqual(await pressFor('reopened'), { stale: true }, 'a reopen before the next census confirms nothing');
+    main.waiting.snapshot(census({ questions: [question('again', { ts: '2020-01-01T10:30:00Z' })] }));
+    assert.deepEqual(await pressFor('again'), { canonical: true });
 });
 
 test('an incomplete snapshot keeps the questions it cannot see; only a complete one lets them go', t => {
@@ -355,6 +401,7 @@ test('the pill goes to the oldest target off screen, then onward past what is on
     await step();
     assert.deepEqual(landed, [['first', true], ['last', true], ['first', true], ['paused', true]],
         'each lands just under the header with focus on the question text (the message itself for an action)');
+    assert.equal(paused.tabIndex, -1, 'the action message is a programmatic focus target, not a tab stop');
     assert.equal(main.calls.reading, 4, 'every landing claims the reading position');
     assert.deepEqual([main.calls.mounted, main.calls.revealed], [[], []], 'loaded cards need no mounting');
 });

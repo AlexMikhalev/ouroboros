@@ -334,7 +334,7 @@ export function createChatInstance({
         refresh: () => refreshHeaderControlState(true), mutate: withStableViewport,
         syncQuestions: (...args) => chatDecision.syncCurrentQuestions(...args),
         connectQuestions: value => chatDecision.setConnected(value),
-        mountQuestion: row => chatDecision.appendQuestionPointer(row),
+        mountQuestion: (row, authority) => chatDecision.appendQuestionPointer(row, authority),
         revealQuestion: (taskId, quizId) => revealQuestion(taskId, quizId, { focus: 'question' }),
         beginReading: () => { reading.claim(); reading.stick = false; } }) : null;
     const chatDecision = createChatDecision({
