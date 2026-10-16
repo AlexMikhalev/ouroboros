@@ -256,6 +256,27 @@ def test_synthesis_duty_rests_owner_waits_and_unadopted_projections(tmp_path, mo
     assert bodies == []
 
 
+def test_a_projection_whose_card_becomes_producible_comes_back_once_and_settles(tmp_path, monkeypatch):
+    stuck_roots(tmp_path)
+    steady(tmp_path)
+    steady(tmp_path)
+    assert marks(tmp_path)["synthesis_recovery:unadopted-1"]["waits_on"] == ["child_files"]
+    child = str(tmp_path / "state" / "headless_tasks" / "unadopted-1" / "data")
+    write_task_result(tmp_path, "unadopted-1", "failed", headless_child_drive_root=child,
+                      child_ref_promotion={"schema_version": 1, "status": "complete"})  # the copy-back landed
+    bodies = counted_bodies(monkeypatch)
+    steady(tmp_path)
+    assert "unadopted-1" in bodies
+    settled = task_results.load_task_result(tmp_path, "unadopted-1")
+    assert settled["canonical_terminal_projection"]["summary_id"] == "task-terminal:unadopted-1"
+    assert "unadopted-1" not in o.members(tmp_path, "synthesis")  # the debt was paid, not forgotten
+    steady(tmp_path)
+    assert "synthesis_recovery:unadopted-1" not in marks(tmp_path)  # the departed member's rest is dropped
+    bodies[:] = []
+    steady(tmp_path)
+    assert bodies == []
+
+
 def test_startup_still_visits_a_paused_late_phase(tmp_path, monkeypatch):
     from ouroboros import post_task_synthesis
     from supervisor import owner_pause_control
@@ -333,6 +354,12 @@ def test_usage_duty_reads_no_unsettled_owner_and_rests_an_open_late_phase(cost_e
     bodies[:] = []
     reconcile_abandoned_usage(env.root)
     assert bodies == []
+    attempt(env, "paused-helper", logical="paused")  # a new receipt on its root moves its usage revision
+    reconcile_abandoned_usage(env.root)
+    assert "paused" in bodies
+    bodies[:] = []
+    reconcile_abandoned_usage(env.root)
+    assert "paused" not in bodies
 
 
 # ---------------------------------------------------------------- pending drives at boot
