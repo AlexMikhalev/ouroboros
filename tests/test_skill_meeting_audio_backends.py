@@ -248,6 +248,33 @@ def test_linux_uses_pipewire_when_no_pulse_server_answers(tmp_path):
     assert failed.value.code == "MEETING_AUDIO_SERVER_UNREACHABLE" and "Connection refused" in failed.value.message
 
 
+def test_audio_helpers_never_inherit_the_host_service_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOST_SERVICE_URL", "http://127.0.0.1:8770")
+    monkeypatch.setenv("HOST_SERVICE_TOKEN", "skill-secret")
+    fake, envs = FakePactl(sink_inputs=SINK_INPUTS), []
+
+    def run(argv, **kwargs):
+        envs.append(kwargs["env"])
+        return fake.run(argv, **kwargs)
+
+    def popen(argv, **kwargs):
+        envs.append(kwargs["env"])
+        return FakeProc(argv)
+
+    tools = {"parec", "pactl", "pacat"}
+    backend = capture_linux.LinuxBackend(tmp_path, which=lambda name: f"/usr/bin/{name}" if name in tools else None,
+                                         run=run, popen=popen)  # no env given: the companion's own is the base
+    capture = backend.open_capture(meeting_apps.choose(backend.running_apps(), "zoom"))
+    capture.start(lambda *a: None, lambda reason: None)
+    capture.stop()
+    voice = backend.open_voice(48000)
+    voice.start()
+    voice.close()
+    assert len(envs) > 5 and all(env["LC_ALL"] == "C" for env in envs)
+    leaked = [key for env in envs for key in env if key.upper().startswith("HOST_SERVICE_")]
+    assert leaked == [], "the token stays in the companion; no recorder, player or pactl run gets it"
+
+
 def test_virtual_microphone_unloads_exactly_the_modules_it_loaded(tmp_path):
     fake, procs = FakePactl(modules={1: ("module-device-restore", "")}), []
     backend = linux_backend(tmp_path, fake, {"pactl", "pacat"}, procs)

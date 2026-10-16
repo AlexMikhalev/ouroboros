@@ -55,7 +55,12 @@ Run = Callable[..., subprocess.CompletedProcess]
 
 
 def audio_env(base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    env = dict(os.environ if base is None else base)
+    """The helpers' environment: the companion's own without the Host Service address and token.
+
+    The token belongs to the companion process alone; no audio helper needs it.
+    """
+    env = {key: value for key, value in (os.environ if base is None else base).items()
+           if not key.upper().startswith("HOST_SERVICE_")}
     env["LC_ALL"] = "C"
     if not env.get("XDG_RUNTIME_DIR") and hasattr(os, "getuid"):
         candidate = pathlib.Path(f"/run/user/{os.getuid()}")

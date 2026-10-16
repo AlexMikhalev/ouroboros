@@ -349,11 +349,23 @@ def _parent_alive(pid: int) -> bool:
     return os.getppid() == pid
 
 
+def take_host_service() -> tuple:
+    """The Host Service address and token, removed from this process's environment.
+
+    Playwright's driver and Chrome start from this environment, and Chrome runs the
+    vendor's page; the token stays in this companion process alone.
+    """
+    address = (os.environ.get("HOST_SERVICE_URL", ""), os.environ.get("HOST_SERVICE_TOKEN", ""))
+    for key in [key for key in os.environ if key.upper().startswith("HOST_SERVICE_")]:
+        del os.environ[key]
+    return address
+
+
 def main() -> int:
     state_dir = pathlib.Path(os.environ.get("OUROBOROS_SKILL_STATE_DIR") or ".").resolve()
     state_dir.mkdir(parents=True, exist_ok=True)
-    companion = ParticipantCompanion(state_dir, os.environ.get("HOST_SERVICE_URL", ""),
-                                     os.environ.get("HOST_SERVICE_TOKEN", ""))
+    host_url, host_token = take_host_service()
+    companion = ParticipantCompanion(state_dir, host_url, host_token)
     for name in ("SIGTERM", "SIGINT", "SIGHUP"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), lambda *_: companion.stop_event.set())

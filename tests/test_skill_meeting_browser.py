@@ -15,6 +15,7 @@ import base64
 import http.server
 import json
 import math
+import os
 import pathlib
 import shutil
 import struct
@@ -466,6 +467,35 @@ def test_a_closed_window_takes_no_more_call_audio(tmp_path):
     session.close("left")
     session.feed(b"\x01\x00" * 4, 1)
     assert session._commands.qsize() == 1  # only the close command; the audio was not queued
+
+
+def test_the_host_token_stays_in_the_companion_and_never_reaches_playwright_or_chrome(tmp_path, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_SKILL_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("HOST_SERVICE_URL", "http://127.0.0.1:8770")
+    monkeypatch.setenv("HOST_SERVICE_TOKEN", "skill-secret")
+    started = []
+
+    class StoppedCompanion:
+        def __init__(self, state_dir, host_url, host_token):
+            started.append((host_url, host_token))
+            self.stop_event = threading.Event()
+            self.stop_event.set()  # only main's start-up is under test
+
+        def start(self):
+            pass
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(meeting_participant, "ParticipantCompanion", StoppedCompanion)
+    monkeypatch.setattr(meeting_participant.signal, "signal", lambda *args: None)
+    assert meeting_participant.main() == 0
+    assert started == [("http://127.0.0.1:8770", "skill-secret")]
+    assert [key for key in os.environ if key.upper().startswith("HOST_SERVICE_")] == []
+    child = subprocess.run(
+        [sys.executable, "-I", "-c", "import os; print(sorted(k for k in os.environ if k.startswith('HOST_SERVICE_')))"],
+        capture_output=True, text=True, timeout=60)
+    assert child.stdout.strip() == "[]", "Playwright's driver and Chrome start from this environment"
 
 
 def test_a_pid1_server_is_a_live_parent_and_a_reparented_orphan_is_not(monkeypatch):
