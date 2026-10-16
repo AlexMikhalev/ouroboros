@@ -3788,7 +3788,6 @@ export function createChatInstance({
         activeDirectActivities, liveCardRecords, pendingSubmissions, pendingSuggestedNames, modelWaits, stopEligible,
         cancelRunFromCard, refreshHeaderControlState, captureVisibleTimelineAnchor, restoreVisibleTimelineAnchor,
         hostReady: () => hostReady });
-    import('./call.js').then(({ mountRoomCall }) => { if (!destroyed) mountRoomCall({ page, chatId, roomWork }); });
 
     return {
         page,

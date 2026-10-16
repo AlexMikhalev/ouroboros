@@ -391,9 +391,9 @@ export function mountCall({ page, chatId, env = globalThis }) {
 
 /** Only a destroyed room hangs up; leave() also runs when the room just leaves the screen
  * (Settings, a Project, a notification), and the call goes on like a phone call. */
-export function mountRoomCall({ roomWork, mount = mountCall, ...options }) {
+export function mountRoomCall({ room, mount = mountCall, ...options }) {
     const call = mount(options);
-    const { destroy } = roomWork;
-    roomWork.destroy = () => { call.destroy(); destroy(); };
+    const { destroy } = room;
+    room.destroy = () => { call.destroy(); destroy(); };
     return call;
 }

@@ -300,11 +300,11 @@ test('the registered AudioWorklet captures real quanta at device rate and never 
 
 test('a room that only leaves the screen keeps its call; destroying the room hangs up', () => {
     const calls = [];
-    const roomWork = { leave: () => calls.push('room-leave'), destroy: () => calls.push('room-destroy') };
-    mountRoomCall({ roomWork, mount: () => ({ leave: () => calls.push('call-leave'), destroy: () => calls.push('call-destroy') }) });
-    roomWork.leave();
+    const room = { closeTransient: () => calls.push('room-leave'), destroy: () => calls.push('room-destroy') };
+    mountRoomCall({ room, mount: () => ({ leave: () => calls.push('call-leave'), destroy: () => calls.push('call-destroy') }) });
+    room.closeTransient();
     assert.deepEqual(calls, ['room-leave']);
-    roomWork.destroy();
+    room.destroy();
     assert.deepEqual(calls, ['room-leave', 'call-destroy', 'room-destroy']);
 });
 
