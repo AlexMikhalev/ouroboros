@@ -149,7 +149,8 @@ export function syncContinueAction(record, detail, { read = fetchTaskDetail } = 
     const button = existing || document.createElement('button');
     if (!existing) {
         button.type = 'button';
-        button.className = 'btn btn-xs';
+        // Continue is the one primary a settled card may offer; Continued (disabled) reads as a record.
+        button.className = 'btn btn-sm btn-primary';
         button.dataset.continueTask = String(record.groupId || '');
         actions.appendChild(button);
     }

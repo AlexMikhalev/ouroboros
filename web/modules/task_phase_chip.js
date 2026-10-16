@@ -31,6 +31,7 @@ const CHIP = {
     ownerWait: () => tr('task.chip.waiting_for_answer', 'Waiting for your answer'),
     reviewWorkFinishing: () => tr('task.chip.review_work_finishing', 'review work finishing'),
     ownerHurry: () => tr('task.chip.owner_hurry_applied', 'Owner hurry applied'),
+    background: () => tr('task.fact.in_background', 'in background'),
 };
 
 export function pausePhaseLabel(phase, cause = '', finishingReviews = false) {
@@ -175,8 +176,12 @@ function recordPhase(record = {}, terminalPhase = 'done') {
 // The private chat record is an adapter, never the shared task-fact contract.
 export function desiredLiveCardPhase(record = {}, terminalPhase = 'done') {
     const view = recordPhase(record, terminalPhase);
+    // A detached work (FINAL_DESIGN D4) that is plainly running says so beside the chip: a fact the
+    // chip's own words do not carry. Every other state keeps the chip's established wording.
+    const secondary = view.secondary || (record.detached && !record.finished && view.text === CHIP.working()
+        ? CHIP.background() : '');
     return { phase: view.phase, text: view.text, className: view.className,
-        ...(view.secondary ? { secondary: view.secondary } : {}), ...(view.detail ? { detail: view.detail } : {}) };
+        ...(secondary ? { secondary } : {}), ...(view.detail ? { detail: view.detail } : {}) };
 }
 
 /**

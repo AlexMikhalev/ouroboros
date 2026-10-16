@@ -112,9 +112,9 @@ function watchFolds() {
 
 export function decorateProjectRow(bubble, { role = 'system', projectId = '', projectName = '', terminalTime, addedAt,
     systemType = '', completion = systemType === 'project_completion_summary', taskId = '',
-    completionLimitation = '', limitation = completionLimitation, fetchDetail, renderFile, onDomWrite = (write) => write() } = {}) {
+    completionLimitation = '', limitation = completionLimitation, fetchDetail, renderFile, onDomWrite = (write) => write(), fold = role === 'assistant' } = {}) {
     if (!bubble || !projectId) return null;
-    if (role === 'assistant') {
+    if (fold) {
         bubble.classList.add('project-answer');
         watchFolds();
         afterLayout(() => markFold(bubble));
@@ -135,7 +135,8 @@ export function decorateProjectRow(bubble, { role = 'system', projectId = '', pr
         bubble.insertBefore(note, actions);
         if (taskId && fetchDetail) mountResultFilesReader(bubble, actions, taskId, fetchDetail, renderFile, onDomWrite);
     }
-    if (role === 'assistant') mountFoldToggle(bubble, actions, onDomWrite);
+    // An answer kept unfolded (one that speaks for another room's work) has no fold to toggle.
+    if (fold) mountFoldToggle(bubble, actions, onDomWrite);
     return actions;
 }
 

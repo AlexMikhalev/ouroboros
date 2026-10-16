@@ -2,7 +2,7 @@
 // Optional questions let work continue under an assumption; required questions
 // wait. Both become records after settlement; confirmed routing becomes an ack.
 import { MAX_DECISION_COMMENT, MAX_QUIZ_OPTIONS } from './api_types.js';
-import { renderRoutingAnnotation, routingOptionLabel } from './chat_activity.js';
+import { renderRoutingAnnotation, routingOptionLabel } from './routing_receipt.js';
 import { paintAttachmentOutcome } from './chat_attachments.js';
 import { nameProjectReference, projectReference } from './project_reference.js';
 import { ANSWERABLE_QUIZ_STATES, QUIZ_LIFECYCLE, questionPresentation, waitFacts, WAIT_FIELDS,
