@@ -24,11 +24,11 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D14 | Skills & extensions | 58 | 0 |
 | D15 | Memory, knowledge, consciousness & self-evolution | 29 | 0 |
 | D16 | Observability, usage accounting & cost | 21 | 0 |
-| D17 | Projects, workspaces & task results | 33 | 0 |
+| D17 | Projects, workspaces & task results | 34 | 0 |
 | D18 | Launcher, packaging, platform & shared substrate | 25 | 0 |
 | D19 | Frozen contracts (ABI) | 11 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **744** | **0** |
+| **total** | | **745** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -915,6 +915,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/headless.py`
 - `ouroboros/headless_status.py`
 - `ouroboros/history_retention.py`
+- `ouroboros/maintenance_jobs.py`
 - `ouroboros/owner_words.py`
 - `ouroboros/pause_notices.py`
 - `ouroboros/project_admission.py`
