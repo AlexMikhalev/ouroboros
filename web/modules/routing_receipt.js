@@ -101,9 +101,10 @@ export function renderRoutingAnnotation(bubble, annotation, chatId = 1) {
     if (!changed) return false;
     bubble.querySelector('.msg-routing-actions')?.remove();
     // The words went to another room: a named room chat, else (an annotation without one) any Project seen from Main.
+    // The work reading them (`read`) keeps the same destination: the receipt only grows stronger.
     const room = Number(annotation.project_chat_id) || 0;
     const destination = annotation.project_id && (room > 0 ? room !== Number(chatId) : Number(chatId) === 1)
-        && ['scheduled', 'delivered'].includes(status);
+        && ['scheduled', 'delivered', 'read'].includes(status);
     note.dataset.annotationText = text;
     note.dataset.annotationAction = String(annotation.action || '');
     note.dataset.destinationKey = destinationKey;
