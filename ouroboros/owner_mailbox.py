@@ -878,6 +878,21 @@ def mail_write_receipt(recipient_status: str, *, drain_ended: bool = False) -> D
             "read_evidence": "the recipient's task_message_acknowledged row (mail_read_state)"}
 
 
+def mailbox_holds(drive_root: pathlib.Path, task_id: str, msg_id: str) -> bool:
+    """True while TASK_ID's mailbox still carries MSG_ID: written and not yet drained away."""
+    try:
+        content = _mailbox_path(drive_root, task_id).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return False
+    for line in mailbox_lines(content):
+        try:
+            if json.loads(line).get("msg_id") == msg_id:
+                return True
+        except (ValueError, AttributeError):
+            continue
+    return False
+
+
 def mail_read_state(drive_root: pathlib.Path, task_id: str, msg_id: str) -> Optional[bool]:
     """True once the recipient acknowledged MSG_ID (its words entered a transcript), False
     while unread, None when the acknowledgement ledger could not be read completely."""

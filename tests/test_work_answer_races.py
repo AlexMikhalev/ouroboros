@@ -143,3 +143,36 @@ def test_owner_pause_after_delivery_keeps_the_answer_for_its_own_resume(host, mo
     assert debt(host.root)["state"] == "delivered"
     assert host.run_async(answer_decision(host.root, body))[0] == 200 and not _inbox(bridge)
     assert getattr(drain(host.root, "asker")[0], "_owner_directives", []) == []
+
+
+def test_a_receipt_lost_after_append_survives_a_real_owner_pause_without_a_second_reader(host, monkeypatch):  # noqa: F811
+    from ouroboros import question_answers as qa
+    from ouroboros.gateway.task_decision import answer_decision
+    from ouroboros.owner_pause import read_fence, fence_closed, release_fence
+    from ouroboros.owner_quiz import record_asked, record_publication
+    from supervisor.owner_pause_control import request_owner_pause
+    task = {"id": "asker", "root_task_id": "asker", "type": "task", "chat_id": 1, "_attempt": 1}
+    host.running["asker"] = {"task": task}
+    write_task_result(host.root, "asker", "running", root_task_id="asker", chat_id=1)
+    record_asked(host.root, "asker", quiz_id="q", question="Which database?", options=["sqlite", "postgres"],
+                 assumption="sqlite", chat_id=1)
+    record_publication(host.root, "asker", "q", 1)
+    bridge, _ = _late_bridge(host.root, monkeypatch)
+    monkeypatch.setattr("supervisor.message_bus.get_bridge", lambda: bridge)
+    body = {"decision_id": "quiz:asker:q", "request_id": "r", "option_index": 1, "comment": "exact answer"}
+    real = qa._update_delivery
+    def lose_receipt(root, asker, quiz, changes):
+        if changes.get("mailbox_at"):
+            raise OSError("mailbox append saved; delivery receipt unavailable")
+        return real(root, asker, quiz, changes)
+    monkeypatch.setattr(qa, "_update_delivery", lose_receipt)
+    assert host.run_async(answer_decision(host.root, body))[0] == 503
+    monkeypatch.setattr(qa, "_update_delivery", real)
+    paused = request_owner_pause("asker", request_id="owner-pause")
+    assert paused["ok"], paused
+    assert host.run_async(answer_decision(host.root, body))[0] == 200
+    assert _inbox(bridge) == [], "the paused work keeps its saved copy; nobody else reads it"
+    assert fence_closed(read_fence(host.root, "asker"))
+    release_fence(host.root, "asker", reason="owner_resume")
+    ctx, _ = drain(host.root, "asker")
+    assert [r["content"] for r in getattr(ctx, "_owner_directives", [])] == ["exact answer"]

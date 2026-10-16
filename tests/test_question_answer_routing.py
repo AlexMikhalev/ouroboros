@@ -233,3 +233,38 @@ def test_retried_answer_stays_owed_to_its_unread_live_recipient(tmp_path, monkey
     assert debt(tmp_path)["state"] == "delivered"
     assert answer(app).status_code == 200 and _inbox(bridge) == []
     assert getattr(drain(tmp_path, "asker")[0], "_owner_directives", []) == []
+
+
+def test_paused_recipient_keeps_its_saved_answer_and_reads_it_once(tmp_path, monkeypatch):
+    app, bridge, q, task = runtime(tmp_path, monkeypatch)
+    assert answer(app).status_code == 200
+    task["_owner_hold"] = True
+    assert answer(app).status_code == 200, "a retried answer stays with the work that holds its copy"
+    assert _inbox(bridge) == [] and debt(tmp_path)["recipient_task_id"] == "asker"
+    assert task["_owner_hold"] is True
+    task.pop("_owner_hold")
+    ctx, _ = drain(tmp_path, "asker")
+    assert [r["content"] for r in ctx._owner_directives] == ["exact answer"]
+    assert answer(app).status_code == 200 and _inbox(bridge) == []
+    assert getattr(drain(tmp_path, "asker")[0], "_owner_directives", []) == []
+
+
+def test_an_appended_answer_whose_receipt_failed_stays_with_its_paused_recipient(tmp_path, monkeypatch):
+    from ouroboros import question_answers as qa
+    app, bridge, q, task = runtime(tmp_path, monkeypatch)
+    real = qa._update_delivery
+    def lose_receipt(root, asker, quiz, changes):
+        if changes.get("mailbox_at"):
+            raise OSError("mailbox append saved; delivery receipt unavailable")
+        return real(root, asker, quiz, changes)
+    monkeypatch.setattr(qa, "_update_delivery", lose_receipt)
+    assert answer(app).status_code == 503
+    monkeypatch.setattr(qa, "_update_delivery", real)
+    task["_owner_hold"] = True
+    assert answer(app).status_code == 200
+    assert _inbox(bridge) == [], "the copy in its mailbox is the receipt: no fresh head"
+    assert debt(tmp_path)["mailbox_at"], "the missing receipt is repaired from the mailbox"
+    assert task["_owner_hold"] is True
+    task.pop("_owner_hold")
+    ctx, _ = drain(tmp_path, "asker")
+    assert [r["content"] for r in ctx._owner_directives] == ["exact answer"]

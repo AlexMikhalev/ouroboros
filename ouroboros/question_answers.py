@@ -74,7 +74,7 @@ def acknowledge_answer(root, recipient: str, entry: dict) -> None:
 
 def deliver_answer(root, asker: str, quiz_id: str, block: dict, live_reader, fallback) -> tuple[bool, str]:
     """Return (forwarded_to_fresh_head, reason); a live mailbox remains owed until ACK."""
-    from ouroboros.owner_mailbox import KIND_QUIZ_ANSWER, mail_read_state, write_owner_message
+    from ouroboros.owner_mailbox import KIND_QUIZ_ANSWER, mail_read_state, mailbox_holds, write_owner_message
     from ouroboros.owner_quiz import mark_discharged, recorded_answer_frame, quiz_states
     from ouroboros.utils import utc_now_iso
     from supervisor import queue as q
@@ -95,6 +95,11 @@ def deliver_answer(root, asker: str, quiz_id: str, block: dict, live_reader, fal
                 mark_discharged(root, asker, quiz_id)
                 return False, ""
             return False, "quiz_history_write_pending"
+    if previous and delivery.get("msg_id") and not delivery.get("mailbox_at"):
+        # The append can land before its receipt write fails: the copy still in the mailbox is the receipt.
+        if any(mailbox_holds(r, previous, delivery["msg_id"]) for r in {Path(root), Path(delivery.get("recipient_drive") or root)}):
+            repaired = _update_delivery(root, asker, quiz_id, {"mailbox_at": utc_now_iso()}).get("delivery")
+            delivery = repaired or {**delivery, "mailbox_at": utc_now_iso()}
     if previous and delivery.get("mailbox_at"):
         # An unread copy stays owed to its recipient while that work exists:
         # Pause, sleep or a hold moves it nowhere; only its end does (below).
