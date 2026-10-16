@@ -173,6 +173,12 @@ _PROVIDER_FIELDS = _rows(("id", "stateKey", "settingKey", "settingsInputId", "la
     ("openai-compatible-key", "compatibleApiKey", "OPENAI_COMPATIBLE_API_KEY", "s-compatible-key", "OpenAI-compatible API Key", "Leave empty for no auth", "API key for the endpoint. Leave empty if your server does not require authentication.", "password", "more"),
 ))
 
+# Fields that make no text model usable by themselves: companions of another field (the
+# compatible endpoint's key without its base URL, MiniMax's region, Z.ai's plan) and the
+# Google AI key, which opens live calls only. onboarding_wizard.js mirrors this set as
+# COMPANION_FIELD_KEYS plus LIVE_CALL_ONLY_KEYS.
+_NOT_TEXT_ACCESS_KEYS = frozenset({"OPENAI_COMPATIBLE_API_KEY", "MINIMAX_REGION", "ZAI_PLAN", "GOOGLE_API_KEY"})
+
 # Secret-key membership and its configured marker are re-exported from the
 # leaf wire contract so onboarding, Settings, repair, and persistence cannot drift.
 
@@ -586,11 +592,7 @@ def validate_setup_payload(data: dict, current_settings: dict) -> Tuple[dict, st
         ):
             return {}, f"{field['label'].replace(' API Key', '')} API key looks too short."
 
-    has_remote = any(
-        value
-        for setting_key, value in keys.items()
-        if setting_key not in {"OPENAI_COMPATIBLE_API_KEY", "MINIMAX_REGION", "ZAI_PLAN"}
-    )
+    has_remote = any(value for setting_key, value in keys.items() if setting_key not in _NOT_TEXT_ACCESS_KEYS)
     has_local = bool(local_source)
     if not has_remote and not has_local and not (pending_subscription or selected_subscription):
         return {}, "Connect Codex, an API provider, or a local model before continuing."
