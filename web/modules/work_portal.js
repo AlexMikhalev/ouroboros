@@ -13,9 +13,11 @@
  * all-chat census (`last_line`, `last_line_at`, `tool_calls`, `detached`; CONTRACTS K8); a fact the
  * row does not carry stays absent, so an older host leaves today's card.
  *
- * A Continue made in the room (by the owner or the mind) is the next episode of the SAME card (owner
- * QB = A): Main sees none of the successor's frames, so the predecessor's admitted link and the
- * successor's census row are its whole present, and its card takes the work's place (task_episodes.js).
+ * A Continue is the next episode of the SAME card (owner QB = A) on every surface, whoever made it:
+ * the predecessor's own record (its admitted link) is read again when the owner presses Continue on a
+ * card here, or when the census lists a new root that may be its successor. A successor whose frames
+ * reach this chat (a room, Main's own work) then joins its card (task_episodes.js); Main sees none of a
+ * portal's successor's frames, so that successor's census row is its whole present there.
  */
 import { apiClient, fetchTaskDetailStrict } from './api_client.js';
 import { showToast } from './toast.js';
@@ -234,32 +236,49 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
         return Boolean(onDomWrite(() => adopt(id)));
     }
 
-    // A Continue in the room is written on the predecessor's own record. A new root in the Project of a settled
-    // portal whose Continue control names no successor yet (or that root) is when to read that record again:
-    // once per root, and again while its claim on that root is still bound.
+    // Read a settled card's own record once for one root that may be its Continue; the card's normal detail path
+    // (`card.note`) then folds an admitted link. An absent record is an answer; a failed read, or a claim on this
+    // root still bound, asks again.
+    function ask(record, rootId) {
+        const pair = `${record?.groupId}|${rootId}`;
+        if (!record || !rootId || asked.has(pair)) return;
+        asked.add(pair);
+        void fetchTaskDetailStrict(record.groupId).then((detail) => {
+            if (detail?.continued_by?.successor_task_id === rootId && !admittedSuccessor(detail)) asked.delete(pair);
+            if (detail && record.root?.isConnected) onDomWrite(() => card.note(record, detail));
+        }, () => asked.delete(pair));
+    }
+
+    // The owner's own press on a card here (task_continue.js) names its successor at once: read the record now, so
+    // the successor joins the same card when its first frame lands, not at the next census.
+    feed?.addEventListener?.('ouro:task-continued', (event) => {
+        const record = records.get(key(event?.detail?.taskId));
+        if (record?.root?.isConnected) ask(record, key(event.detail.successorId));
+    });
+
+    // A Continue made anywhere else (another chat or tab, the mind) is written on the predecessor's own record; the
+    // census then lists its successor. A new root that may be the Continue of a settled card here (its Continue
+    // control names no successor yet, or that root) is when to ask: a root whose frames reach this chat (a room,
+    // Main's own work) has a card here; a portal's successor runs in the portal's Project and has none in Main.
     function askContinued() {
         const roots = [...census.values()].filter((row) => row?.kind === 'managed_task' && !row.parent_task_id
-            && key(row.project_id) && !follows.has(key(row.activity_id)) && !records.get(key(row.activity_id))?.root?.isConnected);
+            && key(row.activity_id) && !follows.has(key(row.activity_id)));
         for (const record of roots.length ? records.values() : []) {
-            const named = isPortal(record) && record.finished && !record.root.dataset.episodeOf
+            const named = !record.isSubagent && record.finished && record.root?.isConnected && !record.root.dataset.episodeOf
                 ? continueControlSuccessor(record) : null;
             for (const row of named === null ? [] : roots) {
                 const rootId = key(row.activity_id);
-                const pair = `${record.groupId}|${rootId}`;
-                if (key(row.project_id) !== record.root.dataset.projectId || (named && named !== rootId) || asked.has(pair)) continue;
-                asked.add(pair);
-                // An absent record is an answer; a failed read, or a claim on this root still bound, asks again.
-                void fetchTaskDetailStrict(record.groupId).then((detail) => {
-                    if (detail?.continued_by?.successor_task_id === rootId && !admittedSuccessor(detail)) asked.delete(pair);
-                    if (detail && record.root?.isConnected) onDomWrite(() => card.note(record, detail));
-                }, () => asked.delete(pair));
+                const candidate = records.get(rootId);
+                const scoped = candidate?.root?.isConnected ? !isPortal(record) && !candidate.episodeName && candidate !== record
+                    : isMain && isPortal(record) && key(row.project_id) === record.root.dataset.projectId;
+                if (scoped && (!named || named === rootId)) ask(record, rootId);
             }
         }
     }
 
-    /** `/api/state`: the census of EVERY chat (a portal's work runs in its room's chat), bindings and names. */
+    /** `/api/state`: the census of EVERY chat (a portal's work runs in its room's chat), bindings and names (Main). */
     function sync(data) {
-        if (!isMain || !data || typeof data !== 'object') return;
+        if (!data || typeof data !== 'object') return;
         if (Array.isArray(data.active_chat_activities)) {
             census.clear();
             for (const row of data.active_chat_activities) {
@@ -268,6 +287,7 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
             }
             censusComplete = data.active_chat_activities_complete === true && data.supervisor_ready === true && isConnected();
         }
+        if (!isMain) return askContinued();  // a room has no portals; its cards still follow a Continue
         if (Array.isArray(data.projects)) for (const project of data.projects) if (project?.id) projects.set(project.id, project);
         if (data.task_bindings && typeof data.task_bindings === 'object') bindings = data.task_bindings;
         onDomWrite(() => {

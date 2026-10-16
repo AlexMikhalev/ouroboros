@@ -172,8 +172,11 @@ export function syncContinueAction(record, detail, { read = fetchTaskDetail } = 
         event.stopPropagation();
         button.disabled = true;
         const successor = await continueTaskAction(record.groupId, { actionNonce: view.actionNonce || '' });
-        if (successor) renderSuccessor(button, successor);
-        else button.disabled = false;
+        if (!successor) { button.disabled = false; return; }
+        renderSuccessor(button, successor);
+        // The card's own chat reads the predecessor's record now, so the successor joins this card (work_portal.js).
+        record.root?.dispatchEvent?.(new CustomEvent('ouro:task-continued', { bubbles: true,
+            detail: { taskId: String(record.groupId || ''), successorId: successor } }));
     };
     return !existing;
 }

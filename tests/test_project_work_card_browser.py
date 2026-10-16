@@ -68,7 +68,7 @@ def project_chat(request):
                  {"activity_id": "transfer", "project_id": "beta", "chat_id": 8, "kind": "managed_task",
                   "phase": "budget_paused", "pause_cause": "owner", "started_at": 1791467880},
              ]}
-    conversions, details, requests = {}, {}, []
+    conversions, details, requests, continues = {}, {}, [], {}
     history = {"messages": rows, "progress": [], "has_more": False, "page_cursor": "work-cards",
                "next_cursor": None, "window": {"complete": True}, "coverage": {
                    "v": 1, "view": "work", "upper": {"chat": len(rows), "progress": 0}, "spans": {
@@ -102,6 +102,8 @@ def project_chat(request):
         if path.startswith("/api/tasks/"):
             task_id = path.split("/")[-1]
             data = details.get(task_id, {"task_id": task_id, "status": "running"})
+        if path.startswith("/api/tasks/") and path.endswith("/continue"):
+            data = continues.get(path.split("/")[-2], {"ok": False, "error": "not admitted"})
         route.fulfill(content_type="application/json", body=json.dumps(data))
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(WEB)))
@@ -123,7 +125,8 @@ def project_chat(request):
                     page.wait_for_function("() => window.chat && document.querySelector('#chat-messages .chat-bubble')")
                     page.evaluate("s=>chat.hydrateStateSnapshot(s)", state)
                 yield {"page": page, "expect": playwright.expect, "rows": rows, "state": state, "conversions": conversions,
-                       "details": details, "requests": requests, "engine": engine, "theme": theme, "width": width}
+                       "details": details, "requests": requests, "continues": continues, "history": history,
+                       "engine": engine, "theme": theme, "width": width}
                 assert not errors
             finally:
                 browser.close()
@@ -349,3 +352,87 @@ def test_main_portal_follows_a_continue_made_in_the_project_room(project_chat, j
     assert page.locator('#chat-messages [data-continue-task]:visible').count() == 0, "no Continued stands as its action"
     assert page.locator('.project-handoff, [data-system-type="project_started"], [data-system-type="project_handoff"]').count() == 0
     card.screenshot(path=_evidence(tmp_path, project_chat, f"continue-{journey}"), animations="disabled")
+
+
+def _room_history(chat, rows):
+    """The room's own history as the host serves it; `rows` replace the Main rows the fixture booted with."""
+    chat["rows"][:] = rows
+    coverage = chat["history"]["coverage"]
+    coverage["upper"]["chat"] = coverage["spans"]["chat"]["to"] = len(rows)
+
+
+def _room_line(task_id, text, ts, **extra):
+    return {"role": "assistant", "is_progress": True, "narration": True, "chat_id": 7, "task_id": task_id, "text": text,
+            "ts": ts, "history_id": f"r-{task_id}-{ts}", **extra}
+
+
+@pytest.mark.parametrize("chat_id", [7], ids=["room"])
+def test_room_card_follows_a_continue_pressed_in_the_room(project_chat, chat_id, tmp_path):
+    """Owner QB = A in the Project room itself: Continue pressed on the room's card is the next episode of the SAME
+    card there, live (the successor takes the work's place, first name, chip and controls; the ended episode is one
+    line) and after a reload of the room."""
+    page, expect, state = project_chat["page"], project_chat["expect"], project_chat["state"]
+    owner = {"role": "user", "text": "Audit the review runner here", "chat_id": 7, "source": "web",
+             "ts": "2026-10-08T13:57:00Z", "history_id": "r-0", "row_address": "row:7@2026-10-08T13:57:00Z#cccccccccccc"}
+    first_line = _room_line("creation", "Comparing the reviewer verdicts across the last three runs.", "2026-10-08T13:57:33Z",
+                            suggested_name="Review runner › integration", cancelable=True)
+    _room_history(project_chat, [owner, first_line])
+    page.reload()
+    creation = _card(page, "creation")
+    expect(creation).to_be_visible(timeout=15000)
+    page.evaluate("s => chat.hydrateStateSnapshot(s)", state)
+    # The work fails in its room: the room reads its record and offers Continue on the same card.
+    project_chat["details"]["creation"] = _interrupted(continuation_offer={"eligible": True, "cause": "model_provider_failed"})
+    page.evaluate("""() => emit('chat', {chat_id: 7, role: 'system', system_type: 'task_summary', task_id: 'creation',
+        status: 'failed', reason_code: 'model_provider_failed', outcome_axes: {lifecycle: {status: 'failed'}},
+        content: 'The model provider failed.', ts: '2026-10-08T14:09:00Z'})""")
+    state["active_chat_activities"] = [row for row in state["active_chat_activities"] if row["activity_id"] != "creation"]
+    page.evaluate("s => chat.hydrateStateSnapshot(s)", state)
+    expect(creation.locator('.chat-live-phase').first).to_have_text("Failed", timeout=15000)
+    expect(creation.locator('[data-continue-task]')).to_have_text("Continue")
+    # The owner presses Continue in the room; the host admits the successor and its first line reaches the room.
+    project_chat["continues"]["creation"] = {"ok": True, "successor_task_id": SUCCESSOR, "status": "scheduled"}
+    project_chat["details"]["creation"] = _continued()
+    creation.locator('[data-continue-task]').click()
+    expect(creation.locator('[data-continue-task]')).to_have_text("Continued")
+    page.evaluate("""id => emit('chat', {chat_id: 7, role: 'assistant', is_progress: true, narration: true, task_id: id,
+        content: 'Continuing the audit', ts: '2026-10-08T14:12:00Z', cancelable: true})""", SUCCESSOR)
+    state["active_chat_activities"].append({"activity_id": SUCCESSOR, "chat_id": 7, "project_id": "alpha",
+                                            "kind": "managed_task", "phase": "working", "started_at": 1791468720,
+                                            "cancelable": True})
+    page.evaluate("s => chat.hydrateStateSnapshot(s)", state)
+
+    def assert_one_card(label):
+        card = _card(page, SUCCESSOR)
+        expect(card).to_be_visible(timeout=15000)
+        expect(_card(page, "creation")).to_be_hidden()
+        assert _visible_cards(page) == [SUCCESSOR], f"{label}: one card for the work"
+        assert page.evaluate("""id => { const cards = [...document.querySelectorAll('#chat-messages > *')];
+            const at = cards.findIndex((node) => node.dataset.taskId === id);
+            return cards[at - 1]?.dataset.taskId === 'creation'; }""", SUCCESSOR), f"{label}: at the work's first place"
+        expect(card.locator('[data-live-title]')).to_have_text("Review runner › integration")
+        expect(card.locator('.chat-live-phase').first).to_have_text("Working")
+        expect(card.locator('.chat-live-actions > button')).to_have_text(["Reply", "Stop…"])
+        episodes = card.locator('.chat-live-episode')
+        expect(episodes).to_have_count(2)
+        expect(episodes.nth(0)).to_contain_text("Episode 1 · 13:57–14:09 · Failed")
+        expect(episodes.nth(1)).to_have_text("Episode 2 · since 14:12")
+        expect(episodes.nth(1)).to_have_attribute("data-current", "1")
+        assert page.locator('#chat-messages [data-continue-task]:visible').count() == 0, "no Continued stands as its action"
+        card.screenshot(path=_evidence(tmp_path, project_chat, f"room-continue-{label}"), animations="disabled")
+
+    assert_one_card("live")
+    # The room reloads: its history holds the ended episode's summary (with the admitted offer the host merges into
+    # it) and the successor's line.
+    summary = {"role": "system", "system_type": "task_summary", "chat_id": 7, "task_id": "creation",
+               "text": "The model provider failed.", "ts": "2026-10-08T14:09:00Z", "history_id": "r-summary",
+               "status": "failed", "task_terminal_status": "failed", "reason_code": "model_provider_failed",
+               "outcome_axes": {"lifecycle": {"status": "failed"}}, "outcome_final": True,
+               "terminal_time": {"occurred_at": "2026-10-08T14:09:00Z", "attempt": {"started_at": "2026-10-08T13:57:33Z"}},
+               "continuation_offer": _continued()["continuation_offer"]}
+    _room_history(project_chat, [owner, {**first_line, "task_terminal_status": "failed"}, summary,
+                                 _room_line(SUCCESSOR, "Continuing the audit", "2026-10-08T14:12:00Z", cancelable=True)])
+    page.reload()
+    expect(_card(page, SUCCESSOR)).to_be_attached(timeout=15000)
+    page.evaluate("s => chat.hydrateStateSnapshot(s)", state)
+    assert_one_card("reload")

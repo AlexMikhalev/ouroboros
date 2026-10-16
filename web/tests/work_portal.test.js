@@ -18,12 +18,26 @@ ElementStub.prototype.querySelector = function (selector) {
     return null;
 };
 
+// A bubbling event, as the browser delivers the Continue control's announcement to its chat's feed.
+const originalDispatch = ElementStub.prototype.dispatchEvent;
+after(() => { ElementStub.prototype.dispatchEvent = originalDispatch; });
+ElementStub.prototype.dispatchEvent = function (event) {
+    for (let node = this; node; node = node.parentNode) {
+        for (const fn of node.listeners?.get(event.type) || []) fn(event);
+        if (!event.bubbles) break;
+    }
+    return true;
+};
+
 const settle = async () => { for (let i = 0; i < 8; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); };
 
-function fixture({ history = [], details = {} } = {}) {
+function fixture({ history = [], details = {}, continues = {}, chatId = 1 } = {}) {
     const reads = [];
-    const env = installDom(async (url) => {
+    const env = installDom(async (url, init = {}) => {
         const path = String(url);
+        if (init.method === 'POST' && path.endsWith('/continue')) {
+            return { ok: true, json: async () => continues[path.split('/').at(-2)] || { ok: false, error: 'not admitted' } };
+        }
         if (path.startsWith('/api/tasks/')) reads.push(path.split('/').pop().split('?')[0]);
         return { ok: true, json: async () => (path.startsWith('/api/chat/history') ? { messages: history, window: { complete: true } }
             : path.startsWith('/api/tasks/') ? details[path.split('/').pop().split('?')[0]] || { status: 'running' }
@@ -34,7 +48,7 @@ function fixture({ history = [], details = {} } = {}) {
     const instance = createChatInstance({
         ws: { on(type, fn) { handlers.set(type, fn); return () => handlers.delete(type); }, isConnected: () => true, send() {} },
         state: { activePage: 'chat', projectChatIds: new Set([7]), unreadCount: 0 },
-        updateUnreadBadge() {}, chatId: 1, idPrefix: 'chat', mountEl: env.mount,
+        updateUnreadBadge() {}, chatId, asPanel: chatId !== 1, idPrefix: 'chat', mountEl: env.mount,
         stateSnapshots: { begin: () => ({ generation: ++generation, requestedAt: Date.now() }), gate() { return Promise.resolve(this.begin()); },
             isCurrent: () => true, apply() {} },
     });
@@ -43,9 +57,10 @@ function fixture({ history = [], details = {} } = {}) {
     return {
         instance, messages, card, reads,
         part: (id, attr) => card(id)?.querySelector(`[data-${attr}]`),
-        narrate: (taskId, content, seconds = 0) => handlers.get('chat')({ chat_id: 1, role: 'assistant', is_progress: true,
-            narration: true, task_id: taskId, content, ts: `2026-10-10T12:00:${String(seconds).padStart(2, '0')}Z` }),
-        frame: (row) => handlers.get('chat')({ chat_id: 1, ...row }),
+        narrate: (taskId, content, seconds = 0, extra = {}) => handlers.get('chat')({ chat_id: chatId, role: 'assistant',
+            is_progress: true, narration: true, task_id: taskId, content, ts: `2026-10-10T12:00:${String(seconds).padStart(2, '0')}Z`,
+            ...extra }),
+        frame: (row) => handlers.get('chat')({ chat_id: chatId, ...row }),
         emit: (type, row) => handlers.get(type)?.(row),
         state: (data) => instance.hydrateStateSnapshot({ supervisor_ready: true, active_chat_activities_complete: true,
             active_chat_activities: [], ...data }),
@@ -334,5 +349,130 @@ test('an admitted successor held in the room carries Resume as its one primary, 
         await settle();
         assert.deepEqual(controls(f, 'w-1-c1'), ['Reply', 'Stop…']);
         assert.equal(f.part('w-1-c1', 'live-activity').textContent, 'Continuing the audit.');
+    } finally { f.close(); }
+});
+
+// A work's own card where its frames land (owner QB = A on every surface): the Project room, or Main for a work that
+// never moved. A Continue pressed there, or made anywhere else, folds the ended episode into the successor's card, live
+// and not only after a reload. `here` builds census rows of that chat.
+async function failedInRoom(f, details, here = room) {
+    f.narrate('w-1', 'Reading the logs before the audit.', 0);
+    f.emit('task_named', { task_id: 'w-1', suggested_name: 'Audit the projects' });
+    f.state({ active_chat_activities: [here({ cancelable: true })] });
+    await settle();
+    details['w-1'] = failedDetail({ continuation_offer: { eligible: true, cause: 'model_provider_failed' } });
+    f.frame({ role: 'system', system_type: 'task_summary', task_id: 'w-1', status: 'failed', reason_code: 'model_provider_failed',
+        outcome_axes: { lifecycle: { status: 'failed' } }, content: 'The model provider failed.', ts: '2026-10-10T12:00:20Z' });
+    f.state({ active_chat_activities: [] });
+    await settle();
+    assert.equal(f.part('w-1', 'live-phase').textContent, 'Failed');
+    assert.ok(controls(f, 'w-1').includes('Continue'), 'the interrupted work offers Continue on its own card');
+    return f.card('w-1');
+}
+
+// The real Continue control answers from the fixture's POST /continue; its toast gets a body and its dismiss timer
+// may not hold the run.
+function quietToasts() {
+    document.body ||= new ElementStub('body', document);
+    const real = globalThis.setTimeout;
+    globalThis.setTimeout = (fn, ms, ...args) => { const timer = real(fn, ms, ...args); if (ms >= 1000) timer?.unref?.(); return timer; };
+    return () => { globalThis.setTimeout = real; };
+}
+
+const pressContinue = (f, id) => f.card(id).querySelector('[data-continue-task]').onclick({ stopPropagation() {} });
+const successorFrame = (f) => f.narrate('w-1-c1', 'Continuing the audit.', 40, { cancelable: true });
+
+function assertRoomFollowed(f, node) {
+    const next = f.card('w-1-c1');
+    assert.ok(next, 'the successor\'s card is in the room');
+    assert.equal(node.hidden, true, 'the ended episode folds into it: never a second card');
+    assert.equal(next.hidden, false);
+    const feed = f.messages.children;
+    assert.equal(feed.indexOf(next), feed.indexOf(node) + 1, 'it stands where the work began');
+    assert.equal(f.part('w-1-c1', 'live-title').textContent, 'Audit the projects', 'the work keeps its first name');
+    assert.equal(f.part('w-1-c1', 'live-phase').textContent, 'Working', 'the current episode owns the chip');
+    assert.ok(controls(f, 'w-1-c1').includes('Stop…'), 'and its controls');
+    assert.ok(!controls(f, 'w-1-c1').includes('Continued'));
+    const episodes = f.part('w-1-c1', 'live-episodes');
+    assert.equal(episodes.hidden, false);
+    assert.match(episodes.innerHTML, /Episode 1<\/span> · <span class="chat-live-episode-span">[^<]+<\/span> · <span class="chat-live-episode-outcome" data-tone="error">Failed<\/span>/,
+        'the ended episode is one meta line on the same card');
+    assert.match(episodes.innerHTML, /data-episode="2" data-current="1"/);
+}
+
+const chats = [[7, room], [1, (extra = {}) => room({ chat_id: 1, ...extra })]];  // the room; Main's own work
+
+test('a Continue pressed on the work\'s own card is the same card there, live, whether the successor speaks before or after the answer', async () => {
+    for (const [chatId, here] of chats) for (const successorFirst of [false, true]) {
+        const details = {};
+        const f = fixture({ details, chatId, continues: { 'w-1': { ok: true, successor_task_id: 'w-1-c1' } } });
+        const restore = quietToasts();
+        try {
+            const node = await failedInRoom(f, details, here);
+            details['w-1'] = failedDetail(continuedBy());  // the record the host has written once the press is admitted
+            const pressed = pressContinue(f, 'w-1');
+            if (successorFirst) successorFrame(f);
+            await pressed;
+            await settle();
+            if (!successorFirst) {
+                assert.equal(f.card('w-1-c1'), null);
+                assert.equal(node.hidden, false, 'nothing folds before the successor has a card');
+                successorFrame(f);
+            }
+            await settle();
+            assertRoomFollowed(f, node);
+        } finally { restore(); f.close(); }
+    }
+});
+
+test('a Continue made elsewhere (another chat or tab, the mind): the card\'s chat reads its record when the census lists the new root', async () => {
+    for (const [chatId, here] of chats) {
+    const details = {};
+    const f = fixture({ details, chatId });
+    try {
+        const node = await failedInRoom(f, details, here);
+        const reads = () => f.reads.filter((id) => id === 'w-1').length;
+        const read = reads();
+        // Another work starts in the room: the settled card's record names no successor, so nothing changes.
+        f.narrate('w-9', 'Another audit.', 30);
+        f.state({ active_chat_activities: [here({ activity_id: 'w-9' })] });
+        await settle();
+        assert.equal(reads(), read + 1, 'a new root in this chat: the settled card reads its own record');
+        assert.equal(node.hidden, false);
+        f.state({ active_chat_activities: [here({ activity_id: 'w-9' })] });
+        await settle();
+        assert.equal(reads(), read + 1, 'once per root, never a poll');
+        // Continued elsewhere: the successor speaks in the room before its link is read, and nothing is guessed.
+        details['w-1'] = failedDetail(continuedBy());
+        successorFrame(f);
+        await settle();
+        assert.equal(node.hidden, false, 'no census, no read: two cards stay as they are');
+        f.state({ active_chat_activities: [here({ activity_id: 'w-9' }), here({ activity_id: 'w-1-c1', cancelable: true })] });
+        await settle();
+        assertRoomFollowed(f, node);
+        assert.equal(f.card('w-9').hidden, false, 'the unrelated work keeps its own card');
+    } finally { f.close(); }
+    }
+});
+
+test('after a room reload its history folds the same chain: one card for the work', async () => {
+    const offer = { eligible: false, refusal: 'already_continued', state: 'admitted', successor_task_id: 'w-1-c1' };
+    const history = [
+        { role: 'user', text: 'audit the projects', chat_id: 7, source: 'web', ts: '2026-10-10T11:59:00Z', history_id: 'h-1',
+            row_address: 'row:7@h#1' },
+        { role: 'assistant', is_progress: true, narration: true, chat_id: 7, task_id: 'w-1', text: 'Reading the logs before the audit.',
+            ts: '2026-10-10T12:00:00Z', history_id: 'h-2', suggested_name: 'Audit the projects', task_terminal_status: 'failed',
+            reason_code: 'model_provider_failed', outcome_axes: { lifecycle: { status: 'failed' } }, outcome_final: true,
+            continuation_offer: offer },
+        { role: 'assistant', is_progress: true, narration: true, chat_id: 7, task_id: 'w-1-c1', text: 'Continuing the audit.',
+            ts: '2026-10-10T12:00:40Z', history_id: 'h-3', cancelable: true },
+    ];
+    const f = fixture({ history, chatId: 7, details: { 'w-1': failedDetail(continuedBy()) } });
+    try {
+        await f.instance.refreshHistory({ revision: 1 });
+        await settle();
+        f.state({ active_chat_activities: [room({ activity_id: 'w-1-c1', cancelable: true })] });
+        await settle();
+        assertRoomFollowed(f, f.card('w-1'));
     } finally { f.close(); }
 });
