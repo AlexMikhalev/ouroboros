@@ -403,7 +403,8 @@ def test_every_pytest_process_takes_a_short_sibling_session_root(tmp_path, mode)
     (probe / "session_probe.py").write_text(_SESSION_PROBE, encoding="utf-8")
     # Under the launcher its root is the parent; bare pytest keeps an explicitly chosen TMPDIR.
     selected = {"OUROBOROS_TEST_TEMP_ROOT": str(parent)} if mode == "launcher" else {"TMPDIR": str(parent)}
-    env = _nested_env(PYTHONPATH=str(probe), SESSION_PROBE_OUT=str(out), **selected)
+    # Two real workers are the scenario, so this child is explicitly allocated two slots.
+    env = _nested_env(PYTHONPATH=str(probe), SESSION_PROBE_OUT=str(out), OURO_TEST_WORKER_BUDGET="2", **selected)
     result = subprocess.run([sys.executable, "-m", "pytest", _NODE, "-o", "addopts=", "-q",
                              "-n", "2", "-p", "session_probe"],
                             cwd=REPO, env=env, text=True, capture_output=True, timeout=300)

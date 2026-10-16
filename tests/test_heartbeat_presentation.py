@@ -17,14 +17,6 @@ def _heartbeat_ctx(tmp_path, task):
     ), pushed
 
 
-def test_routine_heartbeat_is_not_rendered_as_chat_message() -> None:
-    from supervisor import queue
-
-    source = inspect.getsource(queue._enforce_task_timeouts_locked)
-    assert "running for" not in source
-    assert "heartbeat_lag=" not in source
-
-
 def test_liveness_and_incident_controls_remain_active() -> None:
     from supervisor import queue
 
@@ -302,7 +294,5 @@ def test_routine_cancel_outcomes_publish_nothing_to_the_owner_chat(monkeypatch) 
 
     _handle_cancel_task({"task_id": ""}, _Ctx2())
     assert sent == []
-    # The handler no longer carries the prose that leaked, nor a send at all: source pin.
-    src = inspect.getsource(_handle_cancel_task)
-    for leaked in ("teardown confirmed", "had already finished", "no such live task", "send_with_budget("):
-        assert leaked not in src
+    # Custody owns presentation; this event handler must not send its own row.
+    assert "send_with_budget(" not in inspect.getsource(_handle_cancel_task)

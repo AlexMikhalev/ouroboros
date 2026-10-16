@@ -116,6 +116,7 @@ def test_nonrefused_gate_keeps_real_test_and_skip_exhibits(tmp_path, monkeypatch
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "cyber_pro")
     monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
     monkeypatch.setenv("OUROBOROS_PREFLIGHT_TEST_WORKERS", "2")
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "2")  # nested slots: the gate must really run two workers
     execute, lanes = preflight_runner._execute_pytest_pass, []
 
     def counted(*args):

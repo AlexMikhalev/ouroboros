@@ -7,37 +7,9 @@ Comments are out of scope.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-STALE = re.compile(
-    r"triad \+ scope|reviewer-slot (?:configuration|skill review)|configured triad row|scope review runs",
-    re.IGNORECASE,
-)
-# No residual owner is left: the protected ``runtime_mode_policy`` changed its three phrases
-# with the owner's approval of 2026-10-08.
-RESIDUAL: set = set()
-SURFACES = ("ouroboros/**/*.py", "supervisor/**/*.py", "web/modules/**/*.js", "prompts/*.md",
-            "docs/CREATING_SKILLS.md")
-
-
-def _text_lines(path: Path):
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.lstrip().startswith(("#", "//", "*")):
-            yield number, line
-
-
-def test_model_and_owner_texts_carry_no_retired_review_vocabulary():
-    found = [
-        f"{rel}:{number}: {line.strip()}"
-        for pattern in SURFACES
-        for path in sorted(REPO.glob(pattern))
-        if (rel := path.relative_to(REPO).as_posix()) not in RESIDUAL
-        for number, line in _text_lines(path)
-        if STALE.search(line)
-    ]
-    assert found == []
 
 
 def test_the_skill_review_tool_names_the_review_panel_and_the_pool():

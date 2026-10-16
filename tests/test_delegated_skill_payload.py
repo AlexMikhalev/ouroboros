@@ -460,7 +460,7 @@ def test_capture_transports_utf8_with_nul_and_loader_junk_stays_out(tmp_path, mo
     entry = _payload_entry(handle, skill)
     capture = _capture_terminal_patch(ctx, entry)
     assert capture["status"] == "ready_with_changes", capture
-    manifest = json.loads(pathlib.Path(capture["manifest_artifact"]).read_text())
+    manifest = json.loads(pathlib.Path(capture["manifest_artifact"]).read_text(encoding="utf-8"))
     assert manifest["capture_kind"] == "skill_payload"
     assert set(manifest["tracked_changed"]) == {"table.txt", "plugin.py", "notes.txt"}
     assert manifest["blocked_reserved_paths"] == []
@@ -576,7 +576,7 @@ def test_reserved_path_patch_refuses_whole_apply_and_preserves_candidate(tmp_pat
 
     ctx, skill, handle, entry, capture = _captured(tmp_path, monkeypatch, edit=edit)
     assert capture["status"] == "ready_with_changes", capture
-    manifest = json.loads(pathlib.Path(capture["manifest_artifact"]).read_text())
+    manifest = json.loads(pathlib.Path(capture["manifest_artifact"]).read_text(encoding="utf-8"))
     assert manifest["blocked_reserved_paths"] == [".clawhub.json"]
     out = _integrate_delegated_patch(ctx, "run-p1", "apply", "")
     assert "INTEGRATE_DELEGATED_RESERVED_PATHS" in out, out
@@ -884,18 +884,15 @@ def test_reconcile_queue_failure_degrades_the_receipt_honestly(tmp_path, monkeyp
     custody._CUSTODY.clear()
 
 
-@pytest.mark.parametrize("iteration", range(50))
-def test_parallel_starts_on_same_payload_yield_exactly_one_winner(tmp_path, monkeypatch, iteration):
-    """Gate fix 5 + Sol delta 5a: deterministic REQUESTED→STARTED window, x50.
+def test_parallel_starts_on_same_payload_yield_exactly_one_winner(tmp_path, monkeypatch):
+    """Gate fix 5 + Sol delta 5a: one deterministic REQUESTED→STARTED window.
 
     Both starts pass the cheap early check and provision; the winner then claims
     (durable START_REQUESTED) and is HELD inside the gateway POST — after its
     request row, before its STARTED row. The loser runs its locked busy predicate
     strictly inside that window: the old two-pass read could miss a holder whose
-    transition landed between the passes; the single-pass snapshot cannot. Fifty
-    fresh-drive cases prove the interleaving is stable, not schedule-lucky.
-    In the parallel lane each repeat has its own pytest timeout; repeated real
-    provisioning and store imports must not consume one repeat's hang budget.
+    transition landed between the passes; the single-pass snapshot cannot. The
+    barrier and events force that ordering, so repetition adds no new schedule.
     (Both starts are one task here; distinct owners: tests/test_custody_keyed_readers.py.)"""
     import threading
     from contextlib import contextmanager
@@ -909,7 +906,7 @@ def test_parallel_starts_on_same_payload_yield_exactly_one_winner(tmp_path, monk
     real_provision = integration._provision_payload_snapshot
     real_snapshot, real_open = current.payload_snapshot, store.open_store
     inside = threading.local()
-    base = tmp_path / f"iter{iteration}"
+    base = tmp_path / "race"
     base.mkdir()
     ctx = _payload_ctx(base, monkeypatch)
     _seed_skill(base / "data")
@@ -950,7 +947,7 @@ def test_parallel_starts_on_same_payload_yield_exactly_one_winner(tmp_path, monk
             # the busy snapshot's read transaction closed and BEFORE its
             # projections are built — the exact hole a two-pass (re-reading)
             # predicate had. Only one shared read still reports busy here.
-            fired.append(iteration)
+            fired.append(True)
             release.set()
             thread.join(timeout=30)
 
@@ -969,16 +966,17 @@ def test_parallel_starts_on_same_payload_yield_exactly_one_winner(tmp_path, monk
 
     thread = threading.Thread(target=_winner, name="winner")
     thread.start()
-    loser = json.loads(_exact_payload_start(
-        ctx, "start loser", root="skill_payload", bucket="external",
-        skill_name="alpha"))
-    release.set()
-    thread.join(timeout=60)
-    assert not thread.is_alive(), f"iteration {iteration}: winner hung"
-    assert loser["status"] == "refused", (iteration, loser)
-    assert loser["reason"] == "payload_delegation_busy", (iteration, loser)
-    assert winner_out and winner_out[0]["status"] == "started", (iteration, winner_out)
-    assert fired == [iteration], f"iteration {iteration}: the window hook never ran"
+    try:
+        loser = json.loads(_exact_payload_start(
+            ctx, "start loser", root="skill_payload", bucket="external", skill_name="alpha"))
+    finally:
+        release.set()
+        thread.join(timeout=60)
+    assert not thread.is_alive(), "winner hung"
+    assert loser["status"] == "refused", loser
+    assert loser["reason"] == "payload_delegation_busy", loser
+    assert winner_out and winner_out[0]["status"] == "started", winner_out
+    assert fired == [True], "the window hook never ran"
     custody._CUSTODY.clear()
 
 

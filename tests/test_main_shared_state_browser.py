@@ -1,4 +1,9 @@
-"""The real app's shared state reader invalidates Main, retaining newer live questions."""
+"""The real app's shared state reader invalidates Main, retaining newer live questions.
+
+Main has no section of its own for what waits on the owner: Project questions stand in the
+feed (a census-only one is mounted at its own date by the waiting pill) and a task needing the
+owner is one System message there, with the task's own controls.
+"""
 import json
 import os
 import re
@@ -14,6 +19,22 @@ from tests.ui_chat_viewport_smoke import (
 )
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
+
+_PILL = '#page-chat .chat-toolbar-row > button.chat-question-nav'
+_ACTION = '#chat-messages .chat-bubble.owner-action[data-owner-action="paused-task"]'
+
+
+def _reach_census_question(page, card, text):
+    """The census names a question beyond Main's history and mounts no copy: the pill does."""
+    from playwright.sync_api import expect
+
+    pill = page.locator(_PILL)
+    expect(pill).to_be_visible()
+    expect(pill).to_have_text(text)
+    assert card.count() == 0, "the census never mounts a copy"
+    pill.click()
+    expect(card).to_have_count(1)
+    assert card.locator('.chat-quiz-question').evaluate("el => el === document.activeElement")
 
 
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
@@ -55,8 +76,8 @@ def test_shared_app_read_failure_reaches_main_without_overwriting_newer_question
                 route.fulfill(response=response, json={**response.json(), **census})
 
         page.route("**/api/state", state_read)
-        # A live Main pointer validates against its canonical task before enabling
-        # answers; serve that existing read too, rather than treating an unknown
+        # A Main copy that lost its authority re-reads its canonical task before it takes
+        # answers again; serve that existing read too, rather than treating an unknown
         # synthetic task as a confirmed question.
         page.route("**/api/tasks/question-task", lambda route: route.fulfill(json={
             "task_id": "question-task", "project_id": "build", "question_rooms": {
@@ -69,15 +90,13 @@ def test_shared_app_read_failure_reaches_main_without_overwriting_newer_question
             page.goto(server["url"], wait_until="domcontentloaded")
             page.locator("#chat-input").wait_for(state="visible")
             _wait_socket_open_quiescent(page)
-            attention = page.locator(".main-attention")
-            attention.locator(".main-attention-summary").click()
-            resume = attention.get_by_role("button", name="Resume", exact=True)
-            cached = attention.locator('.chat-quiz-card[data-quiz-id="cached"]')
-            live = attention.locator('.chat-quiz-card[data-quiz-id="newer"]')
-            unavailable = attention.get_by_text("Current questions and actions could not be refreshed.", exact=False)
+            resume = page.locator(_ACTION).get_by_role("button", name="Resume", exact=True)
+            cached = page.locator('#chat-messages .chat-quiz-card[data-quiz-id="cached"]')
+            live = page.locator('#chat-messages .chat-quiz-card[data-quiz-id="newer"]')
             expect(resume).to_be_enabled()
+            _reach_census_question(page, cached, "2 waiting")
             expect(cached).to_have_attribute("data-state", "open")
-            stages.append("cached census enables Resume and question")
+            stages.append("cached census enables Resume; the pill mounts its question at its own date")
             page.screenshot(path=str(evidence / "before-failure.png"))
             budget = page.locator('#chat-budget-text')
             known_budget = budget.inner_text()
@@ -90,7 +109,6 @@ def test_shared_app_read_failure_reaches_main_without_overwriting_newer_question
                     break
                 page.wait_for_timeout(20)
             assert held, "socket open requested a fresh census"
-            expect(unavailable).not_to_be_visible()
             expect(budget).to_have_text(known_budget)
             expect(cached).to_have_attribute('data-state', 'open')
             stages.append('healthy socket open retires generations without fabricating failure')
@@ -115,7 +133,6 @@ def test_shared_app_read_failure_reaches_main_without_overwriting_newer_question
                                   "system_type": "project_question_pointer"})
             expect(live).to_have_attribute("data-state", "open")
             held.pop().fulfill(status=503, json={"error": "fixture shared state failure"})
-            expect(unavailable).to_be_visible()
             expect(budget).to_have_text('Unavailable')
             expect(resume).to_be_disabled()
             expect(cached).to_have_attribute("data-state", "unknown")
@@ -129,7 +146,6 @@ def test_shared_app_read_failure_reaches_main_without_overwriting_newer_question
             expect(resume).to_be_enabled()
             expect(cached).to_have_attribute("data-state", "open")
             expect(live).to_have_attribute("data-state", "open")
-            expect(unavailable).not_to_be_visible()
             stages.append("new complete census restores availability")
             _wait_state_reads_quiescent(page)
             # The existing Main poll is a second producer of failed reads. Admit
@@ -149,8 +165,8 @@ def test_shared_app_read_failure_reaches_main_without_overwriting_newer_question
             assert chat_read is not None, 'real chat poll was not observed'
             chat_read.fulfill(status=503, json={'error': 'fixture chat state failure'})
             expect(budget).to_have_text('Unavailable')
-            expect(unavailable).to_be_visible()
             expect(resume).to_be_disabled()
+            expect(cached).to_have_attribute("data-state", "unknown")
             stages.append('chat-originated failure remains unavailable rather than loading')
             assert not errors, errors
         finally:
@@ -222,16 +238,14 @@ def test_project_panel_read_failure_reaches_main_without_overwriting_newer_quest
             page.goto(server["url"], wait_until="domcontentloaded")
             page.locator("#chat-input").wait_for(state="visible")
             _wait_socket_open_quiescent(page)
-            attention = page.locator(".main-attention")
-            attention.locator(".main-attention-summary").click()
-            resume = attention.get_by_role("button", name="Resume", exact=True)
-            cached = attention.locator('.chat-quiz-card[data-quiz-id="cached"]')
-            live = attention.locator('.chat-quiz-card[data-quiz-id="newer"]')
-            unavailable = attention.get_by_text("Current questions and actions could not be refreshed.", exact=False)
+            resume = page.locator(_ACTION).get_by_role("button", name="Resume", exact=True)
+            cached = page.locator('#chat-messages .chat-quiz-card[data-quiz-id="cached"]')
+            live = page.locator('#chat-messages .chat-quiz-card[data-quiz-id="newer"]')
             budget = page.locator("#chat-budget-text")
             expect(resume).to_be_enabled()
+            _reach_census_question(page, cached, "2 waiting")
             expect(cached).to_have_attribute("data-state", "open")
-            stages.append("cached census enables Resume and question")
+            stages.append("cached census enables Resume; the pill mounts its question at its own date")
             _wait_state_reads_quiescent(page)
 
             # Hold a shared read so Main's periodic poll joins it instead of reading;
@@ -252,7 +266,6 @@ def test_project_panel_read_failure_reaches_main_without_overwriting_newer_quest
                                   "system_type": "project_question_pointer"})
             expect(live).to_have_attribute("data-state", "open")
             held.pop(0).fulfill(status=503, json={"error": "fixture Project panel state failure"})
-            expect(unavailable).to_be_visible()
             expect(budget).to_have_text("Unavailable")
             expect(resume).to_be_disabled()
             expect(cached).to_have_attribute("data-state", "unknown")
@@ -265,7 +278,6 @@ def test_project_panel_read_failure_reaches_main_without_overwriting_newer_quest
             _emit_ws_frame(page, {"type": "projects_changed"})
             expect(resume).to_be_enabled()
             expect(cached).to_have_attribute("data-state", "open")
-            expect(unavailable).not_to_be_visible()
             stages.append("new complete census restores availability")
             assert not errors, errors
         finally:
@@ -316,7 +328,7 @@ def test_genuine_socket_close_withdraws_main_authority_until_a_fresh_census(dire
     rows; a complete read that HTTP still answers offline (its waiting activity's question pointer
     included), reopening alone and a question read begun before the drop restore nothing; the
     post-open census does, without overwriting a newer live question that arrived after that census
-    was requested and validated by its own read."""
+    was requested (a live frame is current at once)."""
     from playwright.sync_api import expect, sync_playwright
 
     from supervisor.message_bus import log_chat
@@ -393,65 +405,78 @@ def test_genuine_socket_close_withdraws_main_authority_until_a_fresh_census(dire
             served_sha = str(page.request.get(server["url"] + "/api/state").json().get("sha") or "")
             if served_sha:  # a drop before the served SHA is known would reload the page (ws.js decide)
                 page.wait_for_function("sha => window.__ouroWs?._lastSha === sha", arg=served_sha, timeout=30_000)
-            attention = page.locator(".main-attention")
-            attention.locator(".main-attention-summary").click()
-            resume = attention.get_by_role("button", name="Resume", exact=True)
-            stop = attention.get_by_role("button", name="Stop…", exact=True)
-            cached = attention.locator('.chat-quiz-card[data-quiz-id="cached"]')
-            live = attention.locator('.chat-quiz-card[data-quiz-id="newer"]')
-            pending = attention.locator('.chat-quiz-card[data-quiz-id="inflight"]')
-            unavailable = attention.get_by_text("Current questions and actions could not be refreshed.", exact=False)
+            # The census's waiting activity places its question in the feed; the paused task is one
+            # System message there with its own Resume and Stop.
+            action = page.locator(_ACTION)
+            resume = action.get_by_role("button", name="Resume", exact=True)
+            stop = action.get_by_role("button", name="Stop…", exact=True)
+            cached = page.locator('#chat-messages .chat-quiz-card[data-quiz-id="cached"]')
+            live = page.locator('#chat-messages .chat-quiz-card[data-quiz-id="newer"]')
+            pending = page.locator('#chat-messages .chat-quiz-card[data-quiz-id="inflight"]')
             budget, status = page.locator("#chat-budget-text"), page.locator("#chat-status")
             settled = page.locator("#chat-messages").get_by_text(settled_text, exact=True)
             comment, composer = cached.locator(".chat-quiz-comment"), page.locator("#chat-input")
+            close = cached.get_by_role("button", name="Close question without answering", exact=True)
             expect(resume).to_be_enabled()
             expect(stop).to_be_enabled()
             expect(cached).to_have_attribute("data-state", "open")
+            expect(close).to_be_enabled()
             expect(settled).to_have_count(1)
             known_budget = budget.inner_text()
             comment.fill("Draft kept across the drop")
             composer.fill("Composer text kept across the drop")
+            expect(close).to_be_disabled()  # a typed answer holds the card's quiet Close
             stages.append("cached census enables Resume, Stop and question; drafts typed")
-            # Both Main forms resize the same composer container at narrow widths.
+            # Main's composer row carries the waiting pill among its own controls: narrow container
+            # widths keep the drafts and the controls, and raise no window/ResizeObserver errors.
             for width in (390, 320):
                 page.set_viewport_size({"width": width, "height": 844})
-                for _ in range(2):
-                    attention.locator(".main-attention-summary").click()
-                    page.wait_for_timeout(180)
-                    attention.locator(".main-attention-summary").click()
-                    page.wait_for_timeout(180)
-                    expect(comment).to_have_value("Draft kept across the drop")
-                    expect(resume).to_be_enabled()
+                page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
+                page.wait_for_timeout(250)
+                expect(comment).to_have_value("Draft kept across the drop")
+                expect(resume).to_be_enabled()
+                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
                 assert not page.evaluate("window.__windowErrors"), page.evaluate("window.__windowErrors")
-                page.screenshot(path=str(evidence / f"needs-you-{width}.png"))
-            stages.append("narrow question plus action disclosure has no window/ResizeObserver errors")
+                page.screenshot(path=str(evidence / f"main-{width}.png"))
+            stages.append("narrow Main with its question copy and owner action has no window/ResizeObserver errors")
             page.set_viewport_size({"width": 1100, "height": 900})
 
-            def deliver(frame):
+            def emit(frame):
                 page.evaluate("""frame => window.__ouroWs.ws.dispatchEvent(
-                    new MessageEvent('message', {data: JSON.stringify(frame)}))""",
-                              {**frame, "type": "chat", "chat_id": 1, "role": "system",
-                               "system_type": "project_question_pointer"})
+                    new MessageEvent('message', {data: JSON.stringify(frame)}))""", frame)
 
-            # A question published just before the drop: Main validates its copy by the copy's own
-            # detail read, which is still in flight when the socket closes.
+            def deliver(frame):
+                emit({**frame, "type": "chat", "chat_id": 1, "role": "system",
+                      "system_type": "project_question_pointer"})
+
+            # A question published just before the drop: its live frame is current at once. A partial
+            # census that cannot name it withdraws it, and its next delivery revalidates the copy by
+            # its own detail read, which is still in flight when the socket closes. Until the hold
+            # every census stays partial: a complete one without the question would retire its copy.
+            census["current_questions_complete"] = False
             deliver(inflight)
-            expect(pending).to_have_attribute("data-state", "unknown")
+            expect(pending).to_have_attribute("data-state", "open")
+            expect(pending.locator(".chat-quiz-option").first).to_be_enabled()
+            emit({"type": "projects_changed"})  # a fresh shared read, requested after the frame
+            expect(pending).to_have_attribute("data-state", "unknown", timeout=15_000)
+            expect(cached).to_have_attribute("data-state", "open")
+            expect(resume).to_be_enabled()
+            deliver(inflight)
             for _ in range(250):
                 if details:
                     break
                 page.wait_for_timeout(20)
-            assert len(details) == 1, "the copy's own read is in flight at the drop"
-            stages.append("a newly delivered question's own detail read is in flight")
+            assert len(details) == 1, "the withdrawn copy's own read is in flight at the drop"
+            stages.append("a live question withdrawn by a partial census re-reads its record; the read is in flight")
 
             def authority():
                 return {"resume": resume.is_enabled(), "stop": stop.is_enabled(),
                         "question": cached.get_attribute("data-state"), "comment": comment.is_enabled(),
-                        "draft": comment.input_value(), "refresh_failure": unavailable.is_visible(),
+                        "draft": comment.input_value(), "close": close.is_enabled(),
                         "in_flight": pending.get_attribute("data-state"),
                         "in_flight_answer": pending.locator(".chat-quiz-option").first.is_enabled()}
             withdrawn = {"resume": False, "stop": False, "question": "unknown", "comment": False,
-                         "draft": "Draft kept across the drop", "refresh_failure": True,
+                         "draft": "Draft kept across the drop", "close": False,
                          "in_flight": "unknown", "in_flight_answer": False}
 
             # Reads the app requests up to its own reopen belong to retired generations. Every refused
@@ -469,6 +494,7 @@ def test_genuine_socket_close_withdraws_main_authority_until_a_fresh_census(dire
                 });
             }""")
             holding = True
+            census["current_questions_complete"] = True
             page.evaluate("window.__refuseSockets = true; window.__ouroWs.ws.close()")
             expect(status).to_have_text("Reconnecting…")
             expect(page.locator("#reconnect-overlay")).to_have_class(re.compile(r"\bvisible\b"))
@@ -478,7 +504,6 @@ def test_genuine_socket_close_withdraws_main_authority_until_a_fresh_census(dire
             expect(comment).to_be_disabled()
             expect(comment).to_have_value("Draft kept across the drop")
             expect(composer).to_have_value("Composer text kept across the drop")
-            expect(unavailable).to_be_visible()
             expect(budget).to_have_text("Unavailable")
             expect(settled).to_have_count(1)
             page.wait_for_function("() => window.__socketRefusals >= 1", timeout=10_000)
@@ -542,7 +567,6 @@ def test_genuine_socket_close_withdraws_main_authority_until_a_fresh_census(dire
             expect(resume).to_be_disabled()
             expect(stop).to_be_disabled()
             expect(cached).to_have_attribute("data-state", "unknown")
-            expect(unavailable).to_be_visible()
             expect(budget).to_have_text(known_budget)  # a reading, not an action: the offline body set it
             stages.append("offline body with its activity's question pointer, reopened socket with census "
                           "held and a read begun before the drop: authority stays withdrawn")
@@ -558,8 +582,8 @@ def test_genuine_socket_close_withdraws_main_authority_until_a_fresh_census(dire
                     break
                 page.wait_for_timeout(20)
             assert post_open, "the reopened socket requested a fresh census"
-            # This frame arrives on the reopened socket after that census was requested; its own
-            # read, begun after the reopen, validates it.
+            # This frame arrives on the reopened socket after that census was requested: a live
+            # frame is current at once, and the older census cannot overwrite it.
             deliver(newer)
             expect(live).to_have_attribute("data-state", "open")
             census["current_questions"] = [question, inflight]
@@ -570,10 +594,10 @@ def test_genuine_socket_close_withdraws_main_authority_until_a_fresh_census(dire
             expect(pending).to_have_attribute("data-state", "open")
             expect(pending.locator(".chat-quiz-option").first).to_be_enabled()
             expect(live).to_have_attribute("data-state", "open")
-            expect(unavailable).not_to_be_visible()
             expect(budget).to_have_text(known_budget)
             expect(comment).to_be_enabled()
             expect(comment).to_have_value("Draft kept across the drop")
+            expect(close).to_be_disabled()  # the restored form still holds Close for the kept draft
             expect(composer).to_have_value("Composer text kept across the drop")
             expect(settled).to_have_count(1)
             stages.append("fresh census restores controls; newer live question and drafts kept")

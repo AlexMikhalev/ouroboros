@@ -43,8 +43,8 @@
  * @property {ActiveDirectTurn[]=} active_direct_turns  // active direct/ephemeral chat turns snapshot
  * @property {boolean=} active_chat_activities_complete
  * @property {ActiveChatActivity[]=} active_chat_activities  // combined snapshot: direct/ephemeral turns + root managed queue tasks
- * @property {Array<Object>=} current_questions Canonical accepted question forms, independent of bounded history.
- * @property {boolean=} current_questions_complete False retains previously observed questions.
+ * @property {Array<Object>=} current_questions Canonical unanswered questions (Project forms and Main's own, by identity), independent of bounded history.
+ * @property {boolean=} current_questions_complete False retains previously observed questions its gaps name.
  * @property {Array<{reason:string,task_id?:string,quiz_id?:string}>=} current_questions_gaps Canonical source availability diagnostics.
  * @property {Array<Object>=} main_attention Live human recovery owners, including children; the activity census stays root-only.
  * @property {boolean=} main_attention_complete False retains previously observed actions.

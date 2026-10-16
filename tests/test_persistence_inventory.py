@@ -768,7 +768,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # read at Panic and covered by the existing ``claudexor/**`` row.
 # 378 -> 377: the retired plan engine's operative-spec source (context_checkpoints/plan-spec-*.json);
 # earlier records keep theirs, nothing writes one any more.
-EXPECTED_SCAN_PATHS = 377
+# 377 -> 378 (test health): adoption reads the receipt directory ``state/preflight_receipts``
+# (``ouroboros/preflight_qualification.py``; the existing receipts row).
+EXPECTED_SCAN_PATHS = 378
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
