@@ -565,6 +565,36 @@ def test_pacer_flush_drops_queued_voice_and_stale_epochs(zoom):
     assert peer_mod.OutboundPacer(lambda frame: None, rate=16000).frame_bytes == 640
 
 
+def test_a_failing_microphone_send_is_logged_once_per_streak_with_its_count(zoom, caplog):
+    now, attempts = [0.0], []
+    outcomes = [False, False, False, True, False, False]  # three fail, one goes through, two fail until stop
+    stop = threading.Event()
+
+    def send(frame):
+        attempts.append(frame)
+        if not outcomes[len(attempts) - 1]:
+            raise OSError("the SDK refused the audio frame")
+
+    def sleep(seconds):
+        now[0] += seconds
+        if len(attempts) == len(outcomes):
+            stop.set()
+
+    pacer = zoom.meeting_peer.OutboundPacer(send, rate=32000, clock=lambda: now[0], sleep=sleep)
+    pacer.feed(b"\x01\x00" * 640 * len(outcomes), 0)  # one exact 20 ms frame per attempt
+    with caplog.at_level(logging.WARNING, logger="zoom_bot.peer"):
+        pacer.run(stop)
+    records = [(record.levelno, record.getMessage(), record.exc_info is not None)
+               for record in caplog.records if record.name == "zoom_bot.peer"]
+    assert records == [
+        (logging.ERROR, "virtual microphone send failed", True),
+        (logging.WARNING, "virtual microphone send recovered after 3 failed frames", False),
+        (logging.ERROR, "virtual microphone send failed", True),
+        (logging.WARNING, "virtual microphone send still failing when the voice stopped: 2 failed frames", False),
+    ]
+    assert len(attempts) == 6 and pacer.sent_frames == 1
+
+
 def test_meeting_audio_keeps_reaching_the_real_hub_across_interruptions(zoom, tmp_path):
     """The real Host door and hub: Zoom attaches after the call's epoch moved, and its
     microphone still reaches the call after each interruption, the 16-bit wrap included."""

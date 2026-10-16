@@ -244,7 +244,13 @@ class OutboundPacer:
             self._cond.notify_all()
 
     def run(self, stop: threading.Event) -> None:
+        """Keep time; a failing send is logged once per streak, with its count when it ends.
+
+        The microphone takes a frame every 20 ms, so an exception per frame would bury
+        the log: the first failure carries its traceback, the rest are counted.
+        """
         next_at: Optional[float] = None
+        failing = 0  # failed sends in the current streak
         while not stop.is_set() and not self._closed:
             frame = self.take_frame()
             if frame is None:
@@ -261,11 +267,19 @@ class OutboundPacer:
                 next_at = now
             try:
                 self._send(frame)
-                self.sent_frames += 1
             except Exception:
-                log.exception("virtual microphone send failed")
+                if not failing:
+                    log.exception("virtual microphone send failed")
+                failing += 1
+            else:
+                self.sent_frames += 1
+                if failing:
+                    log.warning("virtual microphone send recovered after %d failed frames", failing)
+                    failing = 0
             next_at += self.frame_sec
             self._sleep(max(0.0, next_at - self._clock()))
+        if failing:
+            log.warning("virtual microphone send still failing when the voice stopped: %d failed frames", failing)
 
 
 class ParticipantTracker:
