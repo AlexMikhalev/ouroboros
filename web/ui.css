@@ -746,7 +746,7 @@ textarea.ui-control { resize: vertical; }
 :root[data-theme] .btn-save:not(:disabled):hover { background: var(--tone-green-hover); }
 :root[data-theme] .btn-danger { border-color: transparent; background: var(--tone-red); color: var(--status-error-fg); box-shadow: var(--elev-rest); }
 :root[data-theme] .btn-danger:not(:disabled):hover { border-color: transparent; background: var(--tone-red-hover); }
-:root[data-theme] .btn:not(:disabled):hover { transform: none; }
+:root[data-theme] .btn:hover { transform: none; }
 :root[data-theme] :is(.btn, .theme-choice):not(:disabled):active { transform: none; filter: var(--press); }
 :root[data-theme] .btn-ghost:not(:disabled):active { box-shadow: none; }
 :root[data-theme] .btn:disabled { box-shadow: none; }
