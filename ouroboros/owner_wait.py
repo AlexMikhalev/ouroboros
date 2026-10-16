@@ -635,7 +635,7 @@ def consume_warm_resume(ctx: Any) -> bool:
         return True
 
 
-def owner_pause_resume_notice(ctx: Any, checkpoint: dict, outcome: str) -> dict:
+def owner_pause_resume_notice(ctx: Any, checkpoint: dict, outcome: str, *, cold: bool = False) -> dict:
     """The host frame a warm-parked member reads when the owner's Pause ends.
 
     States only what this process knows about each review it detached from:
@@ -646,6 +646,14 @@ def owner_pause_resume_notice(ctx: Any, checkpoint: dict, outcome: str) -> dict:
     from ouroboros.review_pause import review_operation_state
 
     pause = checkpoint.get("owner_pause") if isinstance(checkpoint.get("owner_pause"), dict) else {}
+    if cold:
+        return {"role": "user", "content": (
+            "[SYSTEM NOTICE]\nThe application stopped while this owner Pause was warm. "
+            "Detached review operations recorded at the pause: "
+            + json.dumps(pause.get("detached_reviews") or [], ensure_ascii=False)
+            + ". Their former process-local state is not current liveness or a verdict. "
+            "Collect the original review records before deciding what remains; "
+            "an unknown paid outcome is not permission to dispatch it again.")}
     lines = []
     for item in pause.get("detached_reviews") or []:
         if not isinstance(item, dict):
@@ -1033,14 +1041,25 @@ def resume_native_loop(tools: Any, state: dict, messages: list, trace: dict,
             mode, state["round_idx"], plan)
 
 
-def prepare_owner_wait_handoffs(root: Any, running: dict, transaction_id: str) -> set[str]:
-    """Select only parked native continuations for the planned restart owner."""
+def prepare_owner_wait_handoffs(root: Any, running: dict, transaction_id: str, *,
+                                include_sleep: bool = True) -> set[str]:
+    """Prepare returning waits; owner-Pause keeps its own retention.
+
+    Planned restarts and updates may return a sleeper to its existing wait.
+    Manual Restart excludes sleep: it stays held until explicit Resume.
+    """
     selected = set()
+    reasons = {"owner", "review", "sleep"} if include_sleep else {"owner", "review"}
     for task_id, meta in running.items():
         task = meta.get("task") or {}
-        row = load_task_result(root, task_id, strict=True) or {}
+        try:
+            row = load_task_result(root, task_id, strict=True) or {}
+        except (OSError, ValueError, TypeError, RuntimeError):
+            log.warning("Restart handoff could not read task %s; its retention stays unresolved", task_id, exc_info=True)
+            continue
         wait = row.get("owner_wait") or {}
-        if wait.get("state") != "waiting" or not wait.get("source_ref"):
+        if (wait.get("state") != "waiting" or wait.get("reason") not in reasons
+                or not wait.get("source_ref")):
             continue
         read_actor_source_bytes(root, task_id, wait["source_ref"])
         task["_owner_wait_resume"] = {**wait, "restart_transaction_id": transaction_id}

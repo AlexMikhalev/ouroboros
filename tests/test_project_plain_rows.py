@@ -580,7 +580,7 @@ def test_host_verdict_and_the_card_line_compose_the_same_sentence():
 
     for case in _parity_cases():
         clause = case.get("acceptance_clause") or ""
-        if clause:
+        if "acceptance_clause" in case:
             assert _completion_verdict(case["record"], {}) == clause, case["name"]
 
 

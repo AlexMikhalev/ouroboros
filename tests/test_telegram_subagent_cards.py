@@ -99,11 +99,12 @@ def test_real_reply_is_sent(tmp_path, monkeypatch):
     assert len(_Rec.sent) == 1 and "answer" in _Rec.sent[0][1]
 
 
+@pytest.mark.parametrize("notify", ["off", "on"])
 @pytest.mark.parametrize("silent", [None, "off", "on"], ids=["default", "off", "on"])
-def test_a_terminal_answer_reaches_telegram_alone_and_keeps_the_silent_reply_chain(tmp_path, monkeypatch, silent):
+def test_a_terminal_answer_reaches_telegram_alone_and_keeps_the_silent_reply_chain(tmp_path, monkeypatch, silent, notify):
     """The real terminal delivery sends the model's answer alone through Telegram's
     edit mode: the host notice stays a field of the result and never becomes a
-    second message (the non-clean line of the notifier carries that fact now)."""
+    second message; additional completion notices have their own opt-in toggle."""
     from collections import deque
     import queue
 
@@ -113,7 +114,9 @@ def test_a_terminal_answer_reaches_telegram_alone_and_keeps_the_silent_reply_cha
     from supervisor import events_chat_delivery as delivery, message_bus
     from supervisor.terminal_delivery import pending_deliveries
 
-    settings = {} if silent is None else {"TELEGRAM_SILENT_MODE": silent}
+    settings = {"TELEGRAM_NOTIFY_TASKS": notify}
+    if silent is not None:
+        settings["TELEGRAM_SILENT_MODE"] = silent
     plugin, api = _setup(tmp_path, monkeypatch, **settings)
     handle = plugin._make_outbound(api)
     published, frames = [], []

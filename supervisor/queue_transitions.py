@@ -491,9 +491,8 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
     """Explicitly resume one budget-paused task and, if needed, its root latch.
 
     A replay-safe ZERO-dispatch row is released as before. An EXACT
-    continuation row (#1196) receives one single-use grant instead
-    (``grant_exact_budget_resume``); it is never re-run from scratch. A row held
-    behind a lifted root fence is released only by recording the selection.
+    continuation gets a single-use ``grant_exact_budget_resume``, never a rerun.
+    A lifted root fence releases a held row only after recording its selection.
     ``selected_by`` names the MODEL-issued request (owner Q9); an empty value is
     the owner's own act, which needs no root grant above itself.
     """
@@ -527,16 +526,17 @@ def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[st
     with q._queue_lock:
         located = next((item for item in q.PENDING if str(item.get("id") or "") == task_id), None)
         if located is not None and not located.get("_budget_pause"):
-            from supervisor.restart_retention import pause_retention, park_saved_pause, RETAIN_SLEEP
+            from supervisor.restart_retention import pause_retention, park_saved_pause, RETAIN_SLEEP, RETAIN_OWNER_PAUSE
 
             retention_root = pathlib.Path(located.get("budget_drive_root") or q.DRIVE_ROOT)
             attempt = int(located.get("_attempt") or 1)
-            if pause_retention(retention_root, task_id, attempt) == RETAIN_SLEEP:
+            if pause_retention(retention_root, task_id, attempt) in {RETAIN_SLEEP, RETAIN_OWNER_PAUSE}:
                 parked = park_saved_pause(located, attempt, retention_root, pause_source="explicit_resume")
                 if not parked or not parked.get("_budget_pause"):
                     return {"ok": False, "error": "sleep_retention_unwritable"}
                 located.update(parked)
-                if not q.persist_queue_snapshot(reason="saved_sleep_retained"):
+                located.pop("_owner_wait_resume", None)
+                if not q.persist_queue_snapshot(reason="saved_pause_retained"):
                     return {"ok": False, "error": "snapshot_not_persisted"}
         exact = bool(located is not None and isinstance(located.get("_budget_pause"), dict)
                      and located["_budget_pause"].get("exact_continuation"))

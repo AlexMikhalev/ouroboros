@@ -128,7 +128,7 @@ test('one status-word family: the card phase matches the host over the shared fi
     for (const { name, record, phase, headline, acceptance_clause: clause } of fixture.cases) {
         const resolved = taskDoneIsTerminal(record) ? taskTerminalPhase(record) : 'working';
         assert.deepEqual(taskPresentation(resolved), { phase, headline }, name);
-        if (clause) {
+        if (clause !== undefined) {
             // The host composes the same sentence for its durable prose rows and
             // terminates it there; the card line adds no punctuation of its own.
             const detail = taskReasonDetail(record);
@@ -386,7 +386,7 @@ test('standing limitations are stated beside the primary cause, each once', () =
     'Some sub-task results were deferred instead of being folded into this answer · Only some of the plan reviewers answered; the work went on with their notes.');
     // A clause that is not last drops its own full stop; equivalent clauses state themselves once.
     assert.equal(taskReasonDetail(openPlan('unanswered', { delegated_runs_unreconciled: ['run-a1'] })),
-        'Only some of the plan reviewers answered; the work went on with their notes.');
+        'Only some of the plan reviewers answered; the work went on with their notes · Some delegated work was never reconciled.');
     assert.equal(taskReasonDetail({ ...openPlan('unanswered'), reason_code: 'delegated_custody_unreconciled',
         delegated_runs_unreconciled: ['run-a1'] }),
     'Only some of the plan reviewers answered; the work went on with their notes · Some delegated work was never reconciled.');

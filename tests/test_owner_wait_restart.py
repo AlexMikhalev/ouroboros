@@ -375,10 +375,20 @@ def test_old_snapshot_never_revives_unproven_or_spent_wait(restart_case, monkeyp
         path = task_artifact_dir_path(case.root, case.task_id) / case.wait["source_ref"]["path"]
         path.write_bytes(b"broken source")
     restored = restore_stale_snapshot(case)
-    if refusal in {"spent_wait", "bad_source"}:
+    if refusal == "spent_wait":
         assert restored == 0 and not workers.PENDING
         return
     [row] = workers.PENDING
+    if refusal == "bad_source":
+        assert restored == 1 and budget_hold_fact(row)["dispatchable"] is False
+        assert row["_owner_wait_resume"]["source_ref"] == case.wait["source_ref"]
+        assert path.read_bytes() == b"broken source", "holding must not rewrite the original"
+        commands = stdqueue.Queue()
+        workers.WORKERS[0] = affirm_ready(workers.Worker(0, InertProcess(), commands))
+        monkeypatch.setattr(workers, "load_state", lambda: {})
+        workers.assign_tasks()
+        assert commands.empty() and not workers.RUNNING
+        return
     if refusal == "owner_restart":  # the owner's acknowledged Restart returns the wait it named
         assert row["_owner_wait_resume"]["source_ref"] == case.wait["source_ref"]
         assert budget_hold_fact(row) is None

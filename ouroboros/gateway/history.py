@@ -837,6 +837,8 @@ def _collect_chat_rows(
                 rec["text"] = strip_markdown(rec["text"])
                 if isinstance(entry.get("terminal_time"), dict):
                     rec["terminal_time"] = dict(entry["terminal_time"])
+                if isinstance(entry.get("completion_notice"), dict):
+                    rec["completion_notice"] = dict(entry["completion_notice"])
                 for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer",
                             "completion_reason", "delivery_id", "handoff_id"):
                     if key in entry:

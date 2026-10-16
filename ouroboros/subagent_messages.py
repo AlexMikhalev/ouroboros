@@ -192,7 +192,7 @@ def apply_chat_row_metadata(record, message_meta):
     if isinstance(meta.get("spoken"), dict):
         record["spoken"] = dict(meta["spoken"])
     if record_type in ("project_started", "project_handoff", "project_completion_summary"):
-        for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer", "completion_reason", "handoff_id", "terminal_time"):
+        for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer", "completion_reason", "completion_notice", "handoff_id", "terminal_time"):
             if key in meta:
                 record[key] = meta[key]
     if meta.get("delivery_id"):

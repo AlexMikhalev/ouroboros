@@ -449,6 +449,7 @@
  * @property {Object=} terminal_time  // host-owned occurrence; ts remains publication time
  * @property {string=} completion_answer  // a Project root's model-authored final answer, mirrored into Main
  * @property {string=} completion_reason One recorded nonclean-outcome fact beside the answer.
+ * @property {Object=} completion_notice Transport view: neutral, detail, phase, optional preserved salvage.
  * @property {string=} delivery_id Stable logical publication identity across transport retries.
  * @property {string=} set_at  // a `reminder` row: when its words were written (live frame only; the text carries the signature)
  * @property {string=} scheduled_for  // a `reminder` row: the due point it was written for
