@@ -115,6 +115,8 @@ class _Peer:
     muted: bool = False
     tracks: dict[int, _Track] = field(default_factory=dict)
     outgoing: deque = field(default_factory=deque)
+    queued_audio: int = 0  # frames and controls in ``outgoing``, kept so a send never rescans it
+    queued_controls: int = 0
     input_seq: int | None = None
     output_seq: int = 0
     failure: str = ""
@@ -166,8 +168,7 @@ class LiveCallHub(cp.CallHub):
             return {**self._counts, "pending_events": len(self._events),
                     "input_samples": sum(len(t.samples) for p in self._peers.values()
                                          for t in p.tracks.values()),
-                    "output_frames": sum(isinstance(m, bytes) for p in self._peers.values()
-                                         for m in p.outgoing)}
+                    "output_frames": sum(p.queued_audio for p in self._peers.values())}
 
     def _live(self) -> None:
         if self._closed:
@@ -205,7 +206,7 @@ class LiveCallHub(cp.CallHub):
         if peer.failure:
             return
         audio = isinstance(message, bytes)
-        count = sum(isinstance(m, bytes) == audio for m in peer.outgoing)
+        count = peer.queued_audio if audio else peer.queued_controls
         limit = self._output_limit if audio else self._control_limit
         if count >= limit:
             if not audio:
@@ -214,8 +215,13 @@ class LiveCallHub(cp.CallHub):
                 return
             oldest = next(i for i, m in enumerate(peer.outgoing) if isinstance(m, bytes))
             del peer.outgoing[oldest]
+            peer.queued_audio -= 1
             self._counts["output_dropped_frames"] += 1
         peer.outgoing.append(message)
+        if audio:
+            peer.queued_audio += 1
+        else:
+            peer.queued_controls += 1
 
     def join(self, info: cp.PeerInfo, rate: int) -> None:
         with self._condition:
@@ -331,7 +337,14 @@ class LiveCallHub(cp.CallHub):
                 raise CallPeerError("peer_left")
             if peer.failure:
                 raise CallPeerError(peer.failure)
-            return peer.outgoing.popleft() if peer.outgoing else None
+            if not peer.outgoing:
+                return None
+            message = peer.outgoing.popleft()
+            if isinstance(message, bytes):
+                peer.queued_audio -= 1
+            else:
+                peer.queued_controls -= 1
+            return message
 
     def set_engine_rates(self, input_rate: int, output_rate: int) -> None:
         _rate(input_rate), _rate(output_rate)
@@ -369,6 +382,7 @@ class LiveCallHub(cp.CallHub):
                                       and cp.decode_control(m)["type"] != "flush")
                 peer.converter = LinearResampler(self._output_rate, peer.rate)
                 peer.outgoing.appendleft(cp.encode_control({"type": "flush", "epoch": self._epoch}))
+                peer.queued_audio, peer.queued_controls = 0, len(peer.outgoing)
             return self._epoch
 
     def _broadcast(self, message: dict) -> None:
@@ -435,12 +449,6 @@ def _owner_hub_locked(chat_id: int) -> LiveCallHub | None:
         if not hub.closed and hub.spec.chat_id == chat_id and hub.spec.opened_by == cp.OPENED_BY_OWNER:
             return hub
     return None
-
-
-def owner_hub_for_room(chat_id: int) -> LiveCallHub | None:
-    """The room's open owner call, if any: a second surface joins it instead of paying for another."""
-    with _REGISTRY_LOCK:
-        return _owner_hub_locked(chat_id)
 
 
 def open_owner_hub(spec: cp.CallSpec) -> tuple[LiveCallHub, bool]:
