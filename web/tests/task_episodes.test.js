@@ -16,10 +16,14 @@ before(() => {
 after(() => { globalThis.document = priorDocument; });
 
 test('only the host\'s explicit, admitted chain counts', () => {
-    assert.equal(admittedSuccessor({ continued_by: { successor_task_id: 's-1' } }), 's-1');
+    assert.equal(admittedSuccessor({ continued_by: { state: 'admitted', successor_task_id: 's-1' } }), 's-1');
     assert.equal(admittedSuccessor({ continuation_offer: { state: 'admitted', successor_task_id: 's-2' } }), 's-2');
     assert.equal(admittedSuccessor({ continuation_offer: { state: 'bound', successor_task_id: 's-3' } }), '',
         'a bound but unadmitted claim is not an episode yet');
+    // The claim names its successor before admission (owner_continue.claim_on_predecessor): bound is pending.
+    assert.equal(admittedSuccessor({ continued_by: { state: 'bound', successor_task_id: 's-4', action_nonce: 'n-4' } }), '',
+        'a bound continued_by claim is not an episode either');
+    assert.equal(admittedSuccessor({ continued_by: { successor_task_id: 's-5' } }), '', 'a claim without its state proves nothing');
     assert.equal(admittedSuccessor({ task_name: 'Continue: Audit' }), '', 'a name is not a chain');
     assert.equal(admittedSuccessor(null), '');
 });
@@ -80,8 +84,8 @@ test('the successor\'s card takes the work\'s first place and name; the predeces
         const add = (record) => { records.set(record.groupId, record); episodes.sync(record); };
         if (successorFirst) add(next);
         add(first);
-        episodes.note(first, { continued_by: { successor_task_id: 't-2' }, status: 'failed', system_type: 'task_summary',
-            ts: '2026-10-10T18:15:00Z' });
+        episodes.note(first, { continued_by: { state: 'admitted', successor_task_id: 't-2' }, status: 'failed',
+            system_type: 'task_summary', ts: '2026-10-10T18:15:00Z' });
         if (!successorFirst) add(next);
         assert.equal(first.root.hidden, true, 'the predecessor folds away');
         assert.equal(first.root.dataset.episodeOf, 't-2');
@@ -92,4 +96,21 @@ test('the successor\'s card takes the work\'s first place and name; the predeces
         assert.match(next.episodesEl.innerHTML, /Episode 1.*Episode 2/s);
         assert.equal(episodes.sync({ groupId: 'other', isSubagent: false, root: { dataset: {} } }), false, 'not in a chain');
     }
+});
+
+test('a bound claim never folds a card, even when the claimed successor\'s card is here; its admission does', () => {
+    const records = new Map();
+    const episodes = createTaskEpisodes({ records, reanchor: () => false, activity: () => null });
+    const first = card('t-1', 1000, 'Audit the projects');
+    const next = card('t-2', 5000, 'Continue: Audit the projects');
+    for (const record of [first, next]) { records.set(record.groupId, record); episodes.sync(record); }
+    const claim = { state: 'bound', successor_task_id: 't-2', action_nonce: 'n-1' };
+    episodes.note(first, { status: 'failed', continued_by: claim });
+    episodes.sync(next);
+    assert.equal(first.root.hidden, false, 'a bound claim is pending: the work\'s card stays');
+    assert.equal(next.titleEl.textContent, 'Continue: Audit the projects', 'and the claimed successor takes nothing');
+    assert.equal(next.episodesEl.hidden, true);
+    episodes.note(first, { status: 'failed', continued_by: { ...claim, state: 'admitted' } });
+    assert.equal(first.root.hidden, true, 'admitted: the predecessor folds into the successor\'s card');
+    assert.equal(next.titleEl.textContent, 'Audit the projects');
 });

@@ -4,18 +4,18 @@
  * title — `Episode 1 · 17:33–18:15 · Failed: <the shared cause sentence>`, `Episode 2 · since 19:42` —
  * never a column of chips.
  *
- * The chain is the host's explicit fact only: a settled task's `continued_by.successor_task_id`, or
- * its `continuation_offer.successor_task_id` once the offer says `admitted`. Names, projects or an
- * origin message shared by two tasks are not a chain.
+ * The chain is the host's explicit fact only: a settled task's `continued_by` or `continuation_offer`
+ * naming its successor once it says `admitted`. A `bound` claim is still pending (its card offers
+ * Retry Continue) and is no episode yet. Names, projects or an origin message shared by two tasks are
+ * not a chain.
  */
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
 import { taskDoneIsTerminal, taskPresentation, taskReasonDetail, taskTerminalPhase } from './log_events.js';
 import { fmt } from './i18n.js';
 
 export function admittedSuccessor(row) {
-    const offer = row?.continuation_offer;
-    const viaOffer = offer && typeof offer === 'object' && offer.state === 'admitted' ? offer.successor_task_id : '';
-    return String(row?.continued_by?.successor_task_id || viaOffer || '').trim();
+    const admitted = (link) => (link && typeof link === 'object' && link.state === 'admitted' ? link.successor_task_id : '');
+    return String(admitted(row?.continued_by) || admitted(row?.continuation_offer) || '').trim();
 }
 
 /** Fold one row's facts into a task's episode: when its attempt started, when and how it ended. */
