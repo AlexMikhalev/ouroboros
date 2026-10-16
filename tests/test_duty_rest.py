@@ -65,6 +65,32 @@ def test_an_external_stamp_or_the_retry_instant_wakes_a_rest(root):
     assert later.examine == ["b"]  # its own persisted retry instant arrived
 
 
+def test_a_members_own_input_wakes_only_that_member(root):
+    rest = o.DutyRest(root, "probe", {"a": {"usage_revision": 1}, "b": {"usage_revision": 7}})
+    rest.wait("a", "post_task_synthesis_open")
+    rest.wait("b", "post_task_synthesis_open")
+    rest.commit()
+    assert marks(root)["probe:a"]["inputs"] == {"usage_revision": 1}
+    assert o.DutyRest(root, "probe", {"a": {"usage_revision": 2}, "b": {"usage_revision": 7}}).examine == ["a"]
+
+
+def test_an_unreadable_store_rests_nothing_and_examines_every_candidate(root, monkeypatch):
+    rest = o.DutyRest(root, "probe", {"a": {}})
+    rest.wait("a", "owner_resume")
+    rest.commit()
+
+    def busy(*_a, **_k):
+        raise store.StoreBusy("current store busy", reason="contention")
+
+    monkeypatch.setattr(store, "open_store", busy)
+    blind = o.DutyRest(root, "probe", {"a": {}, "b": {}})
+    assert blind.examine == ["a", "b"] and not blind.resting
+    blind.wait("a", "owner_resume")
+    blind.commit()  # nothing to write: no signature was read
+    with pytest.raises(store.StoreBusy):
+        o.DutyRest(root, "probe", name=SET)  # a set whose members are unknown cannot be passed over
+
+
 def test_wake_examines_a_rest_without_dropping_it(root):
     rest = o.DutyRest(root, "probe", name=SET)
     rest.wait("a", "owner_resume")
@@ -277,3 +303,33 @@ def test_a_projection_deferred_on_its_child_files_never_reads_the_delivery_regis
     waits = {}
     terminal_projection.settle_terminal_projection(tmp_path, "unadopted-1", waits=waits)
     assert waits == {"on": "child_files"}
+
+
+# ---------------------------------------------------------------- abandoned usage: cost projection (20 s duty)
+
+from ouroboros.terminal_cost_reconciliation import reconcile_abandoned_usage  # noqa: E402
+from tests.test_terminal_cost_reconciliation import attempt, dirty  # noqa: E402
+from tests.test_terminal_cost_reconciliation import env as cost_env  # noqa: E402,F401
+
+
+def test_usage_duty_reads_no_unsettled_owner_and_rests_an_open_late_phase(cost_env, monkeypatch):
+    env = cost_env
+    for tid in ("paused", "live"):
+        write_task_result(env.root, tid, "running", result="r")
+        attempt(env, tid)
+    write_task_result(env.root, "paused", "completed", result="r", root_phase_checkpoint={"post_task_synthesis": "paused"})
+    bodies = counted_bodies(monkeypatch)
+    reconcile_abandoned_usage(env.root)
+    assert "live" not in bodies and "paused" in bodies  # a running owner's projection waits unread
+    assert marks(env.root)["cost_projection:paused"]["waits_on"] == ["post_task_synthesis_open"]
+    assert {"paused", "live"} <= set(dirty(env))  # the debt stays
+    bodies[:] = []
+    before = revision(env.root)
+    reconcile_abandoned_usage(env.root)
+    assert bodies == [] and revision(env.root) == before
+    write_task_result(env.root, "paused", "completed", note="a new fact")
+    reconcile_abandoned_usage(env.root)
+    assert set(bodies) == {"paused"}  # back exactly once
+    bodies[:] = []
+    reconcile_abandoned_usage(env.root)
+    assert bodies == []

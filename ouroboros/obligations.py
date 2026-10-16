@@ -289,14 +289,22 @@ class DutyRest:
 
         self.root, self.duty, self.inputs = Path(root), _check_name(duty), dict(inputs or {})
         prefix = self.duty + ":"
-        with store.open_store(self.root, write=False) as txn:
-            source = members_in(txn, name) if name else (candidates or {})
-            self.candidates = {str(tid): dict((candidates or {}).get(tid) or {}) for tid in source}
-            self.signatures = {record["task_id"]: [record["write_seq"], record["updated_at"]] for record in txn.conn.execute(
-                "SELECT task_id, write_seq, updated_at FROM tasks WHERE task_id IN (SELECT value FROM json_each(?))",
-                (json.dumps(sorted(self.candidates)),))}
-            self.marks = {record["id"][len(prefix):]: json.loads(record["facts"]) for record in txn.conn.execute(
-                "SELECT id, facts FROM obligations WHERE set_name=? AND id>=? AND id<?", (REST_SET, prefix, self.duty + ";"))}
+        self.candidates = {str(tid): dict(facts or {}) for tid, facts in (candidates or {}).items()}
+        self.signatures: dict[str, list] = {}
+        self.marks: dict[str, dict] = {}
+        try:
+            with store.open_store(self.root, write=False) as txn:
+                if name:
+                    self.candidates = {str(tid): {} for tid in members_in(txn, name)}
+                self.signatures = {record["task_id"]: [record["write_seq"], record["updated_at"]] for record in
+                                   txn.conn.execute("SELECT task_id, write_seq, updated_at FROM tasks WHERE task_id IN "
+                                                    "(SELECT value FROM json_each(?))", (json.dumps(sorted(self.candidates)),))}
+                self.marks = {record["id"][len(prefix):]: json.loads(record["facts"]) for record in txn.conn.execute(
+                    "SELECT id, facts FROM obligations WHERE set_name=? AND id>=? AND id<?", (REST_SET, prefix, self.duty + ";"))}
+        except StoreError:
+            if name:
+                raise  # the set's members are unknown: the duty cannot pass
+            self.signatures, self.marks = {}, {}  # unknown rests prove nothing: every candidate is examined
         now_at, wake = _instant(now or utc_now_iso()), set(wake)
         self.resting = {tid: mark for tid, mark in self.marks.items()
                         if tid in self.candidates and self._holds(tid, mark, now_at, wake)}
