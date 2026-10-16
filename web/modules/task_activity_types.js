@@ -14,6 +14,11 @@
 /** Shared census facts from the gateway; phase and outcome are independent. */
 /**
  * @typedef {Object} ActiveChatActivity
+ * @property {string=} last_line Visible model narration; empty when not recorded.
+ * @property {string=} last_line_at
+ * @property {number=} tool_calls
+ * @property {boolean=} detached Durable detached_at; independent of carrier/phase.
+ * @property {string=} project_name
  * @property {string=} status  // recorded lifecycle outcome; phase still owns current activity
  * @property {Object=} outcome_axes
  * @property {string=} reason_code

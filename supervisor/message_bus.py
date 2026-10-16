@@ -1507,6 +1507,8 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
         if progress_meta:
             progress_record.update(dict(progress_meta))
         if append_jsonl(DATA_DIR / "logs" / "progress.jsonl", progress_record):
+            from ouroboros.task_activity_facts import record_narration
+            record_narration(DATA_DIR, progress_record)
             meta.update(projection_fields(progress_record))
     else:
         stored = log_chat(
