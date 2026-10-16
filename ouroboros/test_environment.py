@@ -52,7 +52,7 @@ def scrub_environment(source, *, keep=()) -> dict[str, str]:
 # them (a durable test receipt must survive a Restart); every other key stays.
 LAUNCH_ONLY_PREFIXES = ("XPC_", "_PYI_")
 LAUNCH_ONLY_KEYS = frozenset({"PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "SECURITYSESSIONID",
-                              "LaunchInstanceID"})
+                              "LaunchInstanceID", "LAUNCHINSTANCEID"})
 
 
 def without_launch_descriptors(env: dict) -> dict[str, str]:
