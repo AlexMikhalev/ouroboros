@@ -333,3 +333,32 @@ def test_usage_duty_reads_no_unsettled_owner_and_rests_an_open_late_phase(cost_e
     bodies[:] = []
     reconcile_abandoned_usage(env.root)
     assert bodies == []
+
+
+# ---------------------------------------------------------------- pending drives at boot
+
+from ouroboros.startup_task_files import recover_terminal_task_files  # noqa: E402
+
+
+def test_boot_rests_settled_drives_that_wait_on_their_child_and_reports_them_as_found(tmp_path, monkeypatch):
+    gone = tmp_path / "state" / "headless_tasks" / "gone" / "data"  # the child drive was settled away
+    write_task_result(tmp_path, "gone", "failed", result="r", child_drive_root=str(gone))
+    dead = tmp_path / "state" / "headless_tasks" / "dead" / "data"
+    dead.mkdir(parents=True)
+    write_task_result(dead, "dead", "running", result="unfinished")  # a child that never settled
+    write_task_result(tmp_path, "dead", "completed", result="r", child_drive_root=str(dead))
+    assert {"gone", "dead"} <= set(o.members(tmp_path, "pending_drives"))
+    first = recover_terminal_task_files(tmp_path, set())
+    assert first["unresolved"] == ["dead"] and first["errors"] == []
+    rests = marks(tmp_path)
+    assert rests["drive_recovery:gone"]["waits_on"] == ["child_drive_absent"]
+    assert rests["drive_recovery:dead"]["waits_on"] == ["child_result_unsettled"]
+    bodies, before = counted_bodies(monkeypatch), revision(tmp_path)
+    again = recover_terminal_task_files(tmp_path, set())
+    assert again["unresolved"] == ["dead"]  # reported as found, still excluded from healing
+    assert bodies == [] and revision(tmp_path) == before
+    write_task_result(dead, "dead", "running", note="the child store moved")
+    recover_terminal_task_files(tmp_path, set())
+    assert set(bodies) == {"dead"}  # back exactly once
+    bodies[:] = []
+    assert recover_terminal_task_files(tmp_path, set())["unresolved"] == ["dead"] and bodies == []

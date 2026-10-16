@@ -318,15 +318,18 @@ class DutyRest:
                 and all(current.get(key) == value for key, value in (mark.get("inputs") or {}).items())
                 and (not mark.get("due_at") or (due is not None and now_at is not None and due > now_at)))
 
-    def wait(self, task_id: str, *waits_on: str, due_at: str | None = None, inputs: Iterable[str] = ()) -> None:
+    def wait(self, task_id: str, *waits_on: str, due_at: str | None = None, inputs: Iterable[str] = (),
+             report: dict | None = None) -> None:
         """TASK_ID, examined this pass, cannot progress until what it WAITS_ON changes; ``inputs``
-        names the pass's external stamps the outcome depends on (a member's own always count)."""
+        names the pass's external stamps the outcome depends on (a member's own always count);
+        ``report`` is what the duty states about the member while it rests."""
         tid = str(task_id)
         if tid not in self.candidates or self.signatures.get(tid) is None or not waits_on:
             return
         stamps = {**{key: self.inputs[key] for key in inputs if key in self.inputs}, **self.candidates[tid]}
         self._outcomes[tid] = {"task_id": tid, "signature": self.signatures[tid], "waits_on": sorted(set(waits_on)),
-                               **({"inputs": stamps} if stamps else {}), **({"due_at": str(due_at)} if due_at else {})}
+                               **({"inputs": stamps} if stamps else {}), **({"due_at": str(due_at)} if due_at else {}),
+                               **({"report": dict(report)} if report else {})}
 
     def commit(self) -> None:
         """Write the pass's new outcomes and drop the rests of members that left, in one write
